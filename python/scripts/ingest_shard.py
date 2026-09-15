@@ -147,6 +147,12 @@ async def amain(args, target=None) -> int:
         if row.error:
             print(f"[{shard_id}]   failed {os.path.basename(row.source)}: {row.error}",
                   flush=True)
+    # This script builds a BARE ``JsonlLoader()`` — no passthrough allow-list at
+    # all — so a JATS shard ingested through it loses pmcid/pmid/journal/… on
+    # every record. That drop used to be invisible; say it out loud.
+    dropped = getattr(pipeline.loader, "dropped", None)
+    if dropped:
+        print(f"[{shard_id}] dropped record metadata — {dropped.summary()}", flush=True)
     # Arm ADR-0002's build-spec guard for the store this shard wrote into. The
     # chunk count is deliberately omitted: many shards write one store, so a
     # per-shard count would describe the corpus wrongly. It is the SPEC that arms

@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ragstack import metadata_schema
 from ragstack.ingestion.enrich import (
     EMPTY,
     EnrichedDoc,
@@ -214,8 +217,8 @@ def _doi_from_pdf_metadata(doc: object) -> str:
 _PASSTHROUGH_SCALARS = (str, int, float, bool)
 
 
-def _passthrough_value(value: object) -> Any | None:
-    """Return ``value`` if it is safe to stamp on every chunk, else ``None``.
+def _passthrough_value(key: str, value: object) -> Any | None:
+    """Return the value to stamp on every chunk for ``key``, or ``None`` to drop it.
 
     ``None`` means "drop this key", which is how the empty-value rule of
     :func:`~ragstack.ingestion.enrich.index_metadata` is kept consistent for
@@ -224,7 +227,29 @@ def _passthrough_value(value: object) -> Any | None:
     ``null``. Blank-but-not-empty strings count as empty here too, so a
     whitespace-only raw value can never take the slot of an enriched field that
     ``index_metadata`` dropped for being empty.
+
+    A key the type table declares an INTEGER field
+    (:data:`ragstack.metadata_schema.KNOWN_INT_FIELDS` — today ``year``) is
+    coerced here, and dropped when it cannot be. Passing the raw value through
+    was a *silent, within-collection* type split: ``index_metadata`` drops a
+    field when the enricher derived none, and the passthrough then filled the
+    empty slot with the corpus's raw string — so one collection could hold
+    ``year: 2019`` on one chunk and ``year: "2019"`` on the next, with a correct
+    ``{"year": 2019}`` filter matching only the first. The producer must write
+    the type the filter demands; that rule lives in exactly one table, and this
+    is where the loader consults it.
+
+    NOTE on reachability: for ``year`` specifically, ``enrich.derive_year`` now
+    consults the record's declared year first, so ``index_metadata`` almost
+    always fills the slot and this branch never runs. It is the guard for the
+    other fields ``KNOWN_INT_FIELDS`` will grow to hold, and for a record whose
+    declared year ``derive_year`` rejected but whose raw value the corpus still
+    carries under an opted-in key.
     """
+    # Read through the module, not a bound copy: there is ONE table, and a
+    # second reference to it is a second thing to keep in sync.
+    if key in metadata_schema.KNOWN_INT_FIELDS:
+        return metadata_schema.coerce_declared(key, value)
     if isinstance(value, _PASSTHROUGH_SCALARS):
         if isinstance(value, str) and not value.strip():
             return None
@@ -234,6 +259,52 @@ def _passthrough_value(value: object) -> Any | None:
     ):
         return value
     return None
+
+
+#: Record-metadata keys that are dropped from every chunk BY DESIGN, on every
+#: corpus — ``enrich._HEAVY_FIELDS``. Excluded from the drop report because a
+#: line that appears unconditionally on every run carries no information and
+#: teaches an operator to stop reading the report.
+_CONSUMED_BY_DESIGN = frozenset({"abstract", "citations"})
+
+
+@dataclass
+class DropReport:
+    """Which record-metadata keys did not reach a document, by CAUSE and count.
+
+    The two causes need different actions from different people, so they are not
+    one number:
+
+    ``not_allowed``
+        The key is not in ``passthrough_keys`` at all. A **policy** gap: the
+        allow-list is a per-corpus argument, and this is constant across the
+        corpus — every record loses the key. This is the shape of the
+        ``open-access`` defect.
+
+    ``unusable``
+        The key IS opted in, but its value could not be stamped on ``n`` records
+        — empty, a nested object, or a declared-int field carrying something that
+        is not an int. A **data** problem, usually a minority of records, and the
+        count is the interesting part: ``pmid`` unusable on 3 of 40,000 records
+        is noise, on 40,000 of 40,000 it is a broken extractor.
+    """
+
+    not_allowed: Counter[str] = field(default_factory=Counter)
+    unusable: Counter[str] = field(default_factory=Counter)
+
+    def __bool__(self) -> bool:
+        return bool(self.not_allowed or self.unusable)
+
+    def summary(self) -> str:
+        """One line for an operator log, or ``""`` when nothing was dropped."""
+        parts = []
+        if self.not_allowed:
+            parts.append("never in --metadata-passthrough: " + ", ".join(
+                f"{k} (x{n})" for k, n in sorted(self.not_allowed.most_common())))
+        if self.unusable:
+            parts.append("opted in but unusable: " + ", ".join(
+                f"{k} on {n} record(s)" for k, n in sorted(self.unusable.most_common())))
+        return "; ".join(parts)
 
 
 class JsonlLoader:
@@ -284,6 +355,13 @@ class JsonlLoader:
         # Qdrant point id is uuid5 of tenant+chunk_id). Default off, so the
         # existing ASM/PDF path is byte-for-byte unchanged.
         self._passthrough = frozenset(passthrough_keys or ())
+        # What this loader discarded, accumulated across ``load()`` calls. NOT a
+        # behaviour change — the keys were always dropped; what was missing is
+        # any way to find out. A silent drop is how the 47.6M-chunk
+        # ``open-access`` collection ended up without ``year`` on 85.2% of its
+        # chunks, and a caller who cannot see the drop cannot notice the omission
+        # until a filter returns a plausible-looking wrong answer months later.
+        self.dropped = DropReport()
 
     def load(self, source: str) -> list[Document]:
         path = Path(source)
@@ -318,10 +396,13 @@ class JsonlLoader:
         added (see :func:`_passthrough_value`); an absent or empty key is simply
         omitted rather than stamped as ``""``/``null``, matching
         :func:`~ragstack.ingestion.enrich.index_metadata`.
+
+        Every key that does NOT make it onto the document is counted in
+        :attr:`dropped`, by cause, so the drop is observable instead of silent —
+        the allow-list is a per-corpus argument and forgetting an entry is
+        otherwise invisible until a filter quietly under-returns.
         """
         meta = index_metadata(enriched)
-        if not self._passthrough:
-            return meta
         # No isinstance guard on ``raw``: ``enrich()`` ran first on this same
         # record and already did ``metadata.get(...)``, so a non-dict ``metadata``
         # raised before we got here (see the note in the module tests).
@@ -330,11 +411,24 @@ class JsonlLoader:
         # Iterate the record (not the allow-list) so key order is the record's —
         # deterministic — rather than a frozenset's arbitrary iteration order.
         for key, value in raw.items():
-            if key not in self._passthrough or key in meta:
+            if key in meta:
+                # The enriched field won a collision — not a loss: the value
+                # reached the document under the same name.
                 continue
-            safe = _passthrough_value(value)
-            if safe is not None:
-                extra[key] = safe
+            if key in _CONSUMED_BY_DESIGN:
+                # ``abstract``/``citations`` are ``_HEAVY_FIELDS``: excluded from
+                # every chunk on purpose, on every corpus, forever. Counting them
+                # would put a constant line of noise on every JATS shard and
+                # train an operator to ignore the report.
+                continue
+            if key not in self._passthrough:
+                self.dropped.not_allowed[key] += 1
+                continue
+            safe = _passthrough_value(key, value)
+            if safe is None:
+                self.dropped.unusable[key] += 1
+                continue
+            extra[key] = safe
         return {**extra, **meta}
 
     def _document(self, record: dict) -> Document | None:

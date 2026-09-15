@@ -109,6 +109,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ragstack.metadata_schema import KNOWN_INT_FIELDS as _KNOWN_INT_FIELDS
+
 #: Reserved ``Chunk`` fields that ``_chunk_from_payload`` (stores/qdrant.py)
 #: pops OUT of a record's payload before it becomes ``Chunk.metadata`` — so a
 #: filter on one of these could never match a real row. Defined here (not in
@@ -128,9 +130,13 @@ _REFUSED_KEYS = PAYLOAD_RESERVED | {"library_id"}
 #: metadata table) and Elasticsearch dynamically maps it as a ``long`` — its
 #: query-time coercion of ``"2025"`` is precisely the laxness that made the
 #: same filter return ten hits on the BM25 leg and zero on the vector leg.
-#: Lives here, next to :data:`PAYLOAD_RESERVED`, as the seed of the declared
-#: metadata schema in docs/plans/metadata-and-kg.md.
-KNOWN_INT_FIELDS = frozenset({"year"})
+#:
+#: DEFINED in :mod:`ragstack.metadata_schema` and re-exported here. The table has
+#: to be readable from both ends — this module asks "may a caller send this?",
+#: and every producer asks "what must I write?" — and the producer side cannot
+#: import this module without executing ``ragstack.stores.__init__`` (pydantic,
+#: neo4j, qdrant-client), which a CPU-only CWL worker must not pay for.
+KNOWN_INT_FIELDS = _KNOWN_INT_FIELDS
 
 #: The one sentence every refusal ends with, so a caller learns the whole
 #: grammar from any single 400 — including that range operators are a planned

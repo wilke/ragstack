@@ -124,6 +124,13 @@ async def amain(args) -> int:
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
           + (f"  ERROR: {receipt.error}" if receipt.error else ""), flush=True)
+    # The allow-list is a per-corpus argument and forgetting an entry is
+    # otherwise invisible: the chunks simply lack the field, and nobody finds
+    # out until a filter under-returns against a store nobody can re-stamp
+    # without a full re-ingest. Say which keys this shard threw away.
+    dropped = getattr(pipeline.loader, "dropped", None)
+    if dropped:
+        print(f"[{shard_id}] dropped record metadata — {dropped.summary()}", flush=True)
     return 0 if receipt.status == COMPLETED else 1
 
 

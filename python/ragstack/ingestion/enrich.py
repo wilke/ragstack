@@ -22,6 +22,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Re-exported: the coercions live in the dependency-free leaf so a CPU-only CWL
+# worker (ingestion/jats.py) can import them without pydantic. Kept importable
+# from here because this is where year handling has always lived.
+from ragstack.metadata_schema import (  # noqa: F401
+    MIN_PLAUSIBLE_YEAR,
+    coerce_year,
+    plausible_year_range,
+)
+
 # --- document classes -------------------------------------------------------
 # Tagged onto every chunk as ``doc_type`` so retrieval can filter (e.g. exclude
 # front-matter/supplements) without re-deriving it.
@@ -218,20 +227,62 @@ def _trim_text_doi(doi: str) -> str:
     return doi
 
 
-def derive_year(path: str, doi: str, text: str) -> int | None:
-    """Best-effort publication year from the issue dir / DOI / leading text.
+def derive_year(path: str, doi: str, text: str, meta_year: Any = None) -> int | None:
+    """Best-effort publication year — the record's own declared year first, then
+    the issue dir / DOI / leading text.
+
+    ``meta_year`` is the year the *source format declared* (JATS
+    ``<article-meta>/<pub-date>/<year>``), and it wins: the same
+    metadata-beats-inference precedence :func:`derive_doi` already applies. It
+    was previously not consulted at all, which is the whole of the
+    ``open-access`` year gap — that JATS corpus carries a parseable ``pub-date``
+    year on 100% of sampled files, yet only **14.8%** of the collection's 47.6M
+    chunks have a ``year``, because the only source in play was the regex scan
+    below and a JATS record's ``path`` is a bare ``PMC123``.
 
     Path and DOI are structured, trustworthy sources and are scanned for any
     in-range year. Free text is not: a bare 4-digit number there is as likely to
     be a measurement or count as a year, so the text fallback only fires on a
-    year next to a publication-context word (copyright/received/accepted/…)."""
+    year next to a publication-context word (copyright/received/accepted/…).
+
+    EVERY arm is bounded by :func:`~ragstack.metadata_schema.coerce_year`,
+    including the two inference arms. Bounding only the declared value was the
+    original mistake and it was measurably the wrong half: ASM records declare no
+    year at all, so **all 16,176 of the future-dated chunks across ASM's three
+    production indices** (tok256 9,916 · tok512 4,980 · semantic 1,280, measured
+    read-only 2026-09-15) came out of the arms below — more than the 8,408 on
+    ``open-access``. The mechanisms are exactly what you would expect a bare
+    4-digit scan to do:
+
+    * a scratch **UUID** in the path — ``/local/scratch/03220d5a-2049-4ab5-…/``
+      yields 2049 for an article whose real year, ``mra.2021.10.issue-33``, is
+      further along the same path;
+    * an **ISSN inside a DOI** — ``10.1186/2049-2618-*`` is the journal
+      *Microbiome*, ISSN 2049-2618;
+    * an **accession in a caption** — ``BGS.GSE2028/9680`` yields 2028.
+
+    A bound cannot fix the underlying imprecision (a UUID segment reading ``2015``
+    is in range and would still win over the real year — tracked separately); it
+    does guarantee the field never holds a value that is impossible on its face.
+
+    The result is an ``int`` or ``None``, never a string."""
+    declared = coerce_year(meta_year)
+    if declared is not None:
+        return declared
     for hay in (path, doi):
-        m = _YEAR.search(hay)
-        if m:
-            return int(m.group(1))
-    m = _YEAR_IN_TEXT.search(text[:4000])
-    if m:
-        return int(m.group(1))
+        # EVERY candidate, not just the first: the first match is routinely the
+        # wrong one (a scratch UUID's ``2049`` sits ahead of the real
+        # ``mra.2021.10.issue-33`` in the very same path), so taking the first
+        # PLAUSIBLE match recovers the true year rather than merely dropping the
+        # false one. Same rule as jats.py's first-plausible-<pub-date>.
+        for m in _YEAR.finditer(hay):
+            inferred = coerce_year(int(m.group(1)))
+            if inferred is not None:
+                return inferred
+    for m in _YEAR_IN_TEXT.finditer(text[:4000]):
+        inferred = coerce_year(int(m.group(1)))
+        if inferred is not None:
+            return inferred
     return None
 
 
@@ -334,7 +385,7 @@ def enrich(
         title=(meta.get("title") or "").strip(),
         authors=parse_authors(meta.get("authors", "")),
         keywords=split_keywords(meta.get("keywords", "")),
-        year=derive_year(path, doi, text),
+        year=derive_year(path, doi, text, meta.get("year")),
         abstract=(meta.get("abstract") or "").strip(),
         n_citations=len(citations),
         citations=citations,
