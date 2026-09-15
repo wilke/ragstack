@@ -122,13 +122,19 @@ curl -s -X POST $BASE/v1/ingest/upload -H "$AUTH" \
 `.txt` happens to work without this because `curl` guesses `text/plain`; `.md`
 does not.
 
-**Whether Markdown keeps its markup depends on the ingest backend.** On a GoWe
-deployment (`INGEST_BACKEND=gowe`, which is what the hackathon tenant runs) the
-PDF extractor handles it and stores the **rendered** text — headings, `**bold**`
-and `-` bullets are gone from what is indexed. On a local-backend deployment
-`.md` is read by the plain text loader and the markup survives verbatim
-(`ingestion/loaders.py:433`). Either is fine for retrieval; it matters only if
-you meant to match on the markup.
+**Whether Markdown keeps its markup depends on how it is ingested.** On a local
+backend, `.md` is read by the plain text loader and the markup survives verbatim
+(`ingestion/loaders.py:433`). On a GoWe deployment (`INGEST_BACKEND=gowe`, which
+is what the hackathon tenant runs) the file goes through the PDF extractor
+instead, and **what happens there depends on the extractor's PyMuPDF version**:
+on the deployed worker it opens the file and stores the **rendered** text —
+headings, `**bold**` and `-` bullets gone from what is indexed — while an older
+PyMuPDF refuses to open it at all and the item fails.
+
+Both were observed: rendered text retrieved from the hackathon tenant, and a
+`could not open PDF` refusal reproduced locally on PyMuPDF 1.27. So do not
+assume either outcome for a GoWe deployment you have not tried. It matters only
+if you meant to match on the markup; for retrieval either is fine.
 
 PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
 `UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
