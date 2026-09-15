@@ -599,3 +599,216 @@ def test_chunk_one_refuses_to_run_without_store_targets() -> None:
     combined = proc.stdout + proc.stderr
     for flag in ("--qdrant-url", "--es-url"):
         assert flag in combined, f"the refusal does not name {flag}: {combined[-400:]}"
+
+
+# --- WHICH registry (#563) -------------------------------------------------- #
+#
+# `ingest_shard`/`load_embeddings`/`load_graph` all resolve a collection through
+# the COLLECTION REGISTRY, and until now they learned WHICH registry from the
+# worker's own process environment — set once per worker GROUP, so one group
+# served exactly one tenant. Every other piece of a tenant's physical state
+# already travels on the submission (`qdrant_url`, `es_url`, `collection`,
+# `embedding_url`, `tenant`); this one did not. Pointing the shared group at the
+# dev tenant's sqlite registry made every `hackathon` ingest resolve against the
+# wrong database and exit 2 AFTER extract had already succeeded — each job dead
+# half-done. These tests are placed after the walker helpers above because the
+# sweep at the bottom reuses them.
+
+
+def test_collection_id_is_bound_to_the_ingest_step(wf: dict) -> None:
+    """#563, second defect. ``collection_id`` has always been a REQUIRED workflow
+    input, but it was forwarded only to ``pack`` (the archive manifest) — the
+    ``ingest`` step bound ``--collection <physical store name>`` and nothing
+    else. So ``ingest_shard.py`` took ``resolve_by_store_name``'s MIGRATION
+    fallback instead of the intended ``resolve(collection_id)``, and its refusal
+    ended "Pass --collection-id <id>" — advice the caller could not act on,
+    because the workflow had no way to bind it."""
+    ingest = _steps(wf)["ingest"]
+    assert ingest["in"]["collection_id"] == "collection_id"
+    binding = ingest["run"]["inputs"]["collection_id"]["inputBinding"]
+    assert binding["prefix"] == "--collection-id"
+    # …and the physical name stays bound too: with both present the id wins and
+    # `--collection` is CHECKED against the entry (ingest_target._checked), which
+    # is a stronger guarantee than dropping it would be.
+    assert ingest["run"]["inputs"]["collection"]["inputBinding"]["prefix"] == \
+        "--collection"
+
+
+def test_registry_is_an_optional_named_input_threaded_to_ingest_shard(wf: dict) -> None:
+    """#563: WHICH registry travels on the submission, as a NAME.
+
+    Optional, because absent must mean exactly the pre-#563 behaviour — the
+    worker's own unsuffixed COLLECTION_STORE_* — which is what keeps the `dev`
+    tenant running untouched through the transition. And a plain ``string``,
+    because a credential may never be a workflow input value: ``inputs`` and
+    ``submitted_inputs`` on a GoWe submission are an immutable snapshot the UI
+    renders and the engine stores in plaintext."""
+    inp = wf["inputs"]["registry"]
+    assert inp["type"] == ["null", "string"]
+    assert "default" not in inp
+    ingest = _steps(wf)["ingest"]
+    assert ingest["in"]["registry"] == "registry"
+    tool_in = ingest["run"]["inputs"]["registry"]
+    assert tool_in["type"] == ["null", "string"]
+    assert tool_in["inputBinding"]["prefix"] == "--registry"
+
+
+#: A database URL, in any of the spellings this repo's registries take. The
+#: point of the `registry` NAME is that none of these may ever appear as a
+#: workflow input: `submitted_inputs` is an immutable snapshot the UI renders
+#: and the engine stores in plaintext, so a DSN put there is permanent.
+_DSN_SHAPED = re.compile(r"(?i)(postgres(ql)?(\+\w+)?|mysql|sqlite)(:|://)")
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_no_workflow_input_carries_a_dsn(cwl: Path) -> None:
+    """The invariant behind the name, swept over every workflow: no input is
+    named like a DSN and none defaults to one. The credential reaches the
+    container through ``gowe-worker --secret-file``, which the worker injects as
+    container env and redacts from captured task output — whereas ``--env-file``
+    values are logged in clear at INFO, and a workflow input is worse still."""
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    for name, spec in (doc.get("inputs") or {}).items():
+        assert not _DSN_SHAPED.search(str(name)), (
+            f"{cwl.name}: input {name!r} is named like a DSN")
+        for where, value in _defaults(spec):
+            assert not _DSN_SHAPED.search(str(value)), (
+                f"{cwl.name}: input {name!r} defaults to something DSN-shaped "
+                f"at {where}: {value!r}")
+
+
+# --- the registry sweep: every workflow that resolves through the registry --- #
+
+#: CLIs that resolve a collection through ``ragstack.ops.ingest_target``.
+_REGISTRY_CLIS = ("ingest_shard", "load_embeddings", "load_graph",
+                  "ingest_jsonl", "ingest_chunks")
+
+
+def _invokes_a_registry_cli(doc: object) -> bool:
+    """Does this document RUN a CLI that resolves through the registry?
+
+    Same walker as the write-CLI sweep, so the same two evasions (a script
+    injected through ``arguments``/``valueFrom``, a CLI run as ``python -m``)
+    are closed here too rather than re-opened by a second, weaker reader."""
+    return any(
+        _script_key(token) in _REGISTRY_CLIS
+        for command in _invoked_scripts(doc)
+        for token in command.split()
+    )
+
+
+def _requirements(tool: object) -> dict:
+    """A tool's requirements as a name -> body mapping (CWL allows either a
+    mapping or a list of ``{class: ...}`` records; the repo uses both)."""
+    reqs = (tool or {}).get("requirements") if isinstance(tool, dict) else None
+    if isinstance(reqs, dict):
+        return reqs
+    if isinstance(reqs, list):
+        return {r.get("class", ""): r for r in reqs if isinstance(r, dict)}
+    return {}
+
+
+def _pins_its_own_registry(tool: object) -> bool:
+    """Does this tool carry the registry IN THE WORKFLOW, per submission?
+
+    ``jats-ingest.cwl`` stages the tenant's sqlite registry as a ``File`` input
+    and points the tool at it with an ``EnvVarRequirement``. That answers the
+    same question this sweep asks — WHICH registry — one submission at a time,
+    so it is exempt rather than broken. It is not the general answer (a sqlite
+    file can be staged; a postgres DSN cannot be, which is the whole reason
+    ``registry`` is a name), but where it applies it is strictly stronger."""
+    env = _requirements(tool).get("EnvVarRequirement") or {}
+    envdef = env.get("envDef", env) if isinstance(env, dict) else {}
+    return any(str(k).startswith("COLLECTION_STORE_") for k in envdef or {})
+
+
+def test_the_registry_sweep_matches_the_workflows_that_resolve() -> None:
+    """Anti-vacuity guard, the twin of the write-CLI one: pinned by name because
+    the interesting failure is shrinkage — a workflow that stops matching drops
+    silently out of the presence test below and takes its ``registry`` with
+    it."""
+    resolvers = {
+        f.name for f in _cwl_files()
+        if _invokes_a_registry_cli(yaml.safe_load(f.read_text(encoding="utf-8")))
+    }
+    assert resolvers == {
+        "graph-extract.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
+        "load-embeddings.cwl", "pdf-ingest.cwl", "pdf-ingest-scatter.cwl",
+        "restore-collection.cwl",
+    }, f"the set of registry-resolving workflows changed: {sorted(resolvers)}"
+
+
+def test_exactly_one_workflow_pins_its_own_registry() -> None:
+    """Anti-vacuity guard for the exemption above: it must apply to
+    ``jats-ingest.cwl`` and to nothing else. An exemption that silently widens
+    is how a sweep stops sweeping."""
+    exempt = set()
+    for f in _cwl_files():
+        doc = yaml.safe_load(f.read_text(encoding="utf-8"))
+        for step in (doc.get("steps") or {}).values():
+            if _pins_its_own_registry(step.get("run", {})):
+                exempt.add(f.name)
+    assert exempt == {"jats-ingest.cwl"}, f"exemption widened to {sorted(exempt)}"
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_every_registry_workflow_says_which_registry(cwl: Path) -> None:
+    """A workflow that resolves through the registry must be able to SAY WHICH
+    ONE — declare ``registry``, thread it to the resolving step, and bind it to
+    ``--registry``. Presence, exactly like the store-target sweep above: a
+    workflow that declares nothing has nothing for a defaults check to examine,
+    and every worker falls through to whatever registry its GROUP was configured
+    for. One group could then serve one tenant, which is the outage.
+
+    And it must bind ``--collection-id``, because binding only the physical
+    ``--collection`` sends the tool down ``resolve_by_store_name``'s migration
+    fallback — which cannot tell two entries over one store apart, and whose
+    refusal advises a flag the workflow never binds."""
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    if not _invokes_a_registry_cli(doc):
+        pytest.skip(f"{cwl.name} resolves nothing through the registry")
+
+    steps = doc.get("steps") or {}
+    resolving = [
+        name for name, step in steps.items()
+        if _invokes_a_registry_cli(step.get("run", {}))
+    ]
+    assert resolving, f"{cwl.name}: no step found running a registry CLI"
+
+    for name in resolving:
+        step = steps[name]
+        tool = step.get("run") or {}
+        tool_inputs = tool.get("inputs") or {}
+        step_in = step.get("in") or {}
+
+        cid = tool_inputs.get("collection_id")
+        assert isinstance(cid, dict) and (cid.get("inputBinding") or {}).get(
+            "prefix") == "--collection-id", (
+            f"{cwl.name}: step {name!r} resolves through the registry but does "
+            f"not bind --collection-id, so the tool falls back to matching the "
+            f"PHYSICAL store name (#563)."
+        )
+        assert step_in.get("collection_id") == "collection_id", (
+            f"{cwl.name}: step {name!r} declares collection_id but is not "
+            f"handed the workflow input"
+        )
+
+        if _pins_its_own_registry(tool):
+            continue
+        assert "registry" in (doc.get("inputs") or {}), (
+            f"{cwl.name} resolves through the registry but declares no "
+            f"'registry' input, so every worker uses whichever registry its "
+            f"worker GROUP was configured for — one group, one tenant (#563)."
+        )
+        assert step_in.get("registry") == "registry", (
+            f"{cwl.name}: step {name!r} is not handed 'registry' — declaring "
+            f"the input without threading it is the same hole one level down."
+        )
+        spec = tool_inputs.get("registry")
+        assert isinstance(spec, dict), (
+            f"{cwl.name}: step {name!r}'s tool does not declare 'registry'")
+        assert (spec.get("inputBinding") or {}).get("prefix") == "--registry", (
+            f"{cwl.name}: step {name!r} threads 'registry' but does not bind it "
+            f"to --registry — the value reaches the tool and never reaches the "
+            f"command, so the worker silently uses its group's registry."
+        )

@@ -42,7 +42,7 @@ def _spec(cid="corpus", collection="store_a", **over):
 
 def _args(**over):
     base = {"collection_id": "", "collection": "", "qdrant_url": "",
-            "create_via_api": "", "api_key": "", "api_bearer": ""}
+            "create_via_api": "", "api_key": "", "api_bearer": "", "registry": ""}
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -118,6 +118,290 @@ def test_physical_name_claimed_twice_is_refused_not_guessed():
     with pytest.raises(it.TargetError) as e:
         it.resolve_by_store_name("shared", settings=_settings(), specs=specs)
     assert "2 registry entries" in str(e.value)
+
+
+# --------------------------------------------------------------------------
+# WHICH registry — the named-registry selection (#563)
+# --------------------------------------------------------------------------
+#
+# The outage these guard. A GoWe ingest submission carries a tenant's whole
+# physical state as visible workflow inputs, seeded per job by that tenant's API
+# — except the COLLECTION REGISTRY, which the worker read from its own process
+# environment, set once per worker GROUP. On 2026-09-15 the shared `ragstack`
+# group was pinned to the DEV tenant's sqlite registry, so every `hackathon`
+# collection resolved against the wrong database and the ingest step exited 2
+# AFTER extract had already succeeded — each job dead half-done, with
+#
+#     physical store 'ragstack_lib_scratch_uiguide_...' is claimed by no
+#     registry entry (sqlite:/rag/data/tenants/dev/state/ragstack_collections.db)
+#
+# The fix is a visible `registry` NAME on the submission, resolved by the tool
+# against per-name environment variables. Everything below is about the two ways
+# that can go wrong: resolving the RIGHT name against the WRONG registry, and
+# resolving an UNKNOWN name against whatever the worker happens to hold.
+
+
+def _registry_file(tmp_path, name, *specs):
+    """A json-backed registry named ``name``, wired into the per-registry env."""
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(
+        [json.loads(spec.model_dump_json()) for spec in specs]))
+    return path
+
+
+def _configure(monkeypatch, name, path):
+    suffix = it.registry_env_suffix(name)
+    monkeypatch.setenv(f"COLLECTION_STORE_BACKEND_{suffix}", "json")
+    monkeypatch.setenv(f"COLLECTIONS_FILE_{suffix}", str(path))
+
+
+def test_no_registry_named_is_byte_identical_to_before(tmp_path, monkeypatch):
+    """Backward compatibility, stated as an identity: with no ``--registry`` the
+    settings object is handed through UNTOUCHED, so the unsuffixed
+    COLLECTION_STORE_* path is not merely equivalent to the old one — it is the
+    old one. The `dev` tenant runs this path through the whole transition.
+
+    The suffixed variables are set here precisely so that "it happened to work"
+    and "it ignored them" are distinguishable."""
+    ours = _registry_file(tmp_path, "ours", _spec("mine", "store_mine"))
+    _configure(monkeypatch, "elsewhere", _registry_file(
+        tmp_path, "elsewhere", _spec("theirs", "store_theirs")))
+    s = _settings(collections_file=str(ours))
+
+    assert it.registry_settings("", s) is s
+    assert it.resolve("mine", settings=s).collection == "store_mine"
+    with pytest.raises(it.TargetError):
+        it.resolve("theirs", settings=s)
+
+
+def test_a_named_registry_resolves_against_that_registry(tmp_path, monkeypatch):
+    _configure(monkeypatch, "hackathon", _registry_file(
+        tmp_path, "hackathon", _spec("uiguide", "ragstack_lib_scratch_uiguide")))
+    s = _settings(collections_file="")
+
+    t = it.resolve("uiguide", settings=s, registry="hackathon")
+    assert t.collection == "ragstack_lib_scratch_uiguide"
+
+
+def test_the_suffix_is_the_uppercased_name_with_the_rest_mapped_to_underscore():
+    assert it.registry_env_suffix("hackathon") == "HACKATHON"
+    assert it.registry_env_suffix("prod-eu") == "PROD_EU"
+    assert it.registry_env_suffix("prod.eu") == "PROD_EU"
+
+
+def test_an_unconfigured_registry_refuses_and_does_not_fall_back(tmp_path, monkeypatch):
+    """**The regression test for the outage.** A ``--registry`` naming a registry
+    this worker knows nothing about must FAIL, not quietly consult whichever
+    tenant's registry this worker group was configured for.
+
+    The unsuffixed variables here are deliberately set to a registry that WOULD
+    resolve the id: if the guard is removed, this test does not merely fail, it
+    reproduces the bug — one tenant's collection resolved against another
+    tenant's registry."""
+    dev = _registry_file(tmp_path, "dev", _spec("uiguide", "dev_store"))
+    s = _settings(collections_file=str(dev))
+    # ... and prove the fallback really would have resolved it.
+    assert it.resolve("uiguide", settings=s).collection == "dev_store"
+
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("uiguide", settings=s, registry="hackathon")
+    msg = str(e.value)
+    assert "hackathon" in msg                              # WHICH name
+    assert "COLLECTION_STORE_BACKEND_HACKATHON" in msg     # and what was looked for
+    assert "dev_store" not in msg                          # never the other tenant's
+
+
+def test_a_configured_backend_without_its_coordinate_is_refused(monkeypatch):
+    """Half-configured is unconfigured. Falling through to the unsuffixed
+    COLLECTION_STORE_PATH here is the same cross-tenant resolution one step
+    later."""
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "sqlite")
+    monkeypatch.delenv("COLLECTION_STORE_PATH_HACKATHON", raising=False)
+    s = _settings(collection_store_backend="sqlite",
+                  collection_store_path="/rag/data/tenants/dev/state/c.db")
+    with pytest.raises(it.TargetError) as e:
+        it.registry_settings("hackathon", s)
+    msg = str(e.value)
+    assert "COLLECTION_STORE_PATH_HACKATHON" in msg
+    assert "/rag/data/tenants/dev" not in msg
+
+
+def test_an_unknown_backend_is_refused_rather_than_defaulted(monkeypatch):
+    """``make_collection_store`` warns and falls back to ``json`` for an unknown
+    backend; here that would silently mean "the unsuffixed json registry"."""
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "mysql")
+    with pytest.raises(it.TargetError) as e:
+        it.registry_settings("hackathon", _settings())
+    assert "mysql" in str(e.value)
+
+
+def test_two_registries_side_by_side_do_not_see_each_others_collections(
+        tmp_path, monkeypatch):
+    """The cross-tenant test: ONE worker, TWO registries, and an id that exists
+    in exactly one of them. This is the shape a shared worker group has to
+    survive, and the shape a per-group COLLECTION_STORE_* cannot express."""
+    _configure(monkeypatch, "alpha", _registry_file(
+        tmp_path, "alpha", _spec("shared-id", "alpha_store")))
+    _configure(monkeypatch, "beta", _registry_file(
+        tmp_path, "beta", _spec("beta-only", "beta_store")))
+    s = _settings(collections_file="")
+
+    assert it.resolve("shared-id", settings=s,
+                      registry="alpha").collection == "alpha_store"
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("shared-id", settings=s, registry="beta")
+    msg = str(e.value)
+    assert "registry 'beta'" in msg      # the refusal says WHICH registry
+    assert "beta-only" in msg            # the ids that registry does hold
+    assert "alpha_store" not in msg
+
+
+def test_a_named_registry_never_inherits_the_unsuffixed_postgres_dsn(monkeypatch):
+    """``make_collection_store`` falls back from ``collection_store_dsn`` to
+    ``postgres_dsn``; across tenants that fallback IS the bug, so a named
+    registry blanks every unsuffixed coordinate rather than inheriting one."""
+    _configure(monkeypatch, "hackathon", "/nonexistent/hackathon.json")
+    view = it.registry_settings("hackathon", _settings(
+        collection_store_dsn="postgresql://u:p@dev/x",
+        postgres_dsn="postgresql://u:p@dev/x",
+        collection_store_path="/rag/data/tenants/dev/state/c.db",
+        collections_json='[{"id": "leak"}]',
+    ))
+    assert view.collection_store_dsn == ""
+    assert view.postgres_dsn == ""
+    assert view.collection_store_path == ""
+    assert view.collections_json == ""
+    # …while everything that is NOT a registry coordinate still delegates.
+    assert view.qdrant_url == "http://localhost:6333"
+
+
+# --- registry NAMES: validated before they build an env var name ------------ #
+
+@pytest.mark.parametrize("bad", [
+    "../dev",            # path traversal
+    "dev/state",         # path separator
+    "dev=hackathon",     # '=' — an env assignment
+    "dev;rm -rf /",      # shell metacharacters
+    "dev hackathon",     # whitespace
+    "$DEV",              # expansion
+    "-dev",              # leading punctuation
+    "d" * 65,            # oversized
+])
+def test_an_invalid_registry_name_is_refused_before_any_env_lookup(bad, monkeypatch):
+    """The name arrives on a submission and is used to BUILD AN ENVIRONMENT
+    VARIABLE NAME, so it is validated first and the environment is not touched
+    at all. The monkeypatched lookup fails the test loudly if it ever is."""
+    def _never(name):  # pragma: no cover - the point is that it is not reached
+        raise AssertionError(f"looked up the environment for {name!r}")
+
+    monkeypatch.setattr(it, "_registry_env_names", _never)
+    with pytest.raises(it.TargetError) as e:
+        it.registry_settings(bad, _settings())
+    assert "registry name" in str(e.value)
+
+
+def test_a_valid_registry_name_is_accepted_by_the_settings_validator():
+    """The same rule, enforced where an operator can still fix it cheaply: a
+    typo in COLLECTION_REGISTRY_NAME should stop the API at config load, not
+    surface as a refused ingest after the extract stage has already run."""
+    from ragstack.config import Settings
+
+    assert it.validate_registry_name(" hackathon ") == "hackathon"
+    assert it.validate_registry_name("") == ""
+    assert Settings(collection_registry_name="hackathon",
+                    qdrant_url="http://127.0.0.1:1").collection_registry_name == "hackathon"
+    with pytest.raises(Exception) as e:
+        Settings(collection_registry_name="../dev", qdrant_url="http://127.0.0.1:1")
+    assert "registry name" in str(e.value)
+
+
+# --- a refusal is read by people who are not entitled to the credential ------ #
+
+_DSN = "postgresql+asyncpg://ragstack:hunter2@127.0.0.1:1/ragstack"
+
+
+def test_a_refusal_names_the_variables_and_never_the_dsn(monkeypatch):
+    """A named registry's DSN is a WORKER SECRET (it arrives through
+    `gowe-worker --secret-file`, never as a workflow input, because
+    `submitted_inputs` is an immutable snapshot). Refusals from this module are
+    printed to task stderr, so they name the VARIABLE and never its value."""
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "postgres")
+    monkeypatch.setenv("COLLECTION_STORE_DSN_HACKATHON", _DSN)
+    view = it.registry_settings("hackathon", _settings())
+    description = it._registry_description(view)
+    assert "COLLECTION_STORE_DSN_HACKATHON" in description
+    assert "hunter2" not in description and _DSN not in description
+
+    # and the same for the "you did not configure it" refusal
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_OTHER", "postgres")
+    monkeypatch.delenv("COLLECTION_STORE_DSN_OTHER", raising=False)
+    with pytest.raises(it.TargetError) as e:
+        it.registry_settings("other", _settings(collection_store_dsn=_DSN,
+                                                postgres_dsn=_DSN))
+    assert "hunter2" not in str(e.value)
+
+
+def test_a_driver_error_carrying_the_dsn_is_scrubbed(monkeypatch):
+    """asyncpg and SQLAlchemy quote the URL they failed on, and this module
+    embeds that text in its "could not read the registry" refusal. Both the
+    configured spelling and the one the driver normalised to must be scrubbed —
+    `postgresql+asyncpg://` reaches asyncpg as `postgresql://`."""
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "postgres")
+    monkeypatch.setenv("COLLECTION_STORE_DSN_HACKATHON", _DSN)
+
+    normalized = _DSN.replace("+asyncpg", "")
+
+    def boom(settings):
+        raise RuntimeError(f"connection to {normalized} failed: refused")
+
+    monkeypatch.setattr(it, "load_specs", boom)
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("c", settings=_settings(), registry="hackathon")
+    msg = str(e.value)
+    assert "hunter2" not in msg
+    assert "connection to" in msg  # the diagnosis survives the scrubbing
+
+
+# --- the flags, as a bulk writer sees them ---------------------------------- #
+
+def test_the_registry_flag_reaches_resolution_from_the_command_line(
+        tmp_path, monkeypatch):
+    _configure(monkeypatch, "hackathon", _registry_file(
+        tmp_path, "hackathon", _spec("uiguide", "hack_store")))
+    args = _args(collection_id="uiguide", registry="hackathon")
+    t = it.resolve_from_args(args, settings=_settings(collections_file=""))
+    assert t.collection == "hack_store"
+
+
+def test_the_registry_flag_is_declared_on_every_bulk_writer():
+    """Added via ``add_arguments`` so the five bulk writers inherit it together,
+    rather than four of them growing a private spelling."""
+    p = argparse.ArgumentParser()
+    it.add_arguments(p)
+    assert p.parse_args([]).registry == ""
+    assert p.parse_args(["--registry", "hackathon"]).registry == "hackathon"
+
+
+def test_the_id_wins_over_the_physical_name_and_a_mismatch_is_refused(
+        tmp_path, monkeypatch):
+    """#563's second defect: `pdf-ingest-scatter.cwl` declared `collection_id` as
+    a REQUIRED input but bound only `--collection`, so the tool took the
+    physical-name fallback. With both bound the ID is what resolves, and the
+    physical name is CHECKED against the entry rather than used to name
+    anything — a contradiction is refused, not silently written to."""
+    _configure(monkeypatch, "hackathon", _registry_file(
+        tmp_path, "hackathon", _spec("uiguide", "hack_store")))
+    s = _settings(collections_file="")
+
+    both = _args(collection_id="uiguide", collection="hack_store",
+                 registry="hackathon")
+    assert it.resolve_from_args(both, settings=s).collection_id == "uiguide"
+
+    wrong = _args(collection_id="uiguide", collection="dev_store",
+                  registry="hackathon")
+    with pytest.raises(it.TargetError) as e:
+        it.resolve_from_args(wrong, settings=s)
+    assert "contradicts" in str(e.value)
 
 
 # --------------------------------------------------------------------------

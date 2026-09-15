@@ -91,6 +91,41 @@
 # (the registry's `next_version()` and the collection id); a hand-driven run
 # sets them in the inputs file.
 #
+# WHICH REGISTRY (#563). `ingest` resolves `collection_id` through the COLLECTION
+# REGISTRY to get the physical store names, the build spec and the ACLs — and
+# until now the worker read WHICH registry from its own process environment
+# (COLLECTION_STORE_BACKEND/_PATH/_DSN), which a GoWe worker group sets ONCE for
+# the whole group. Every other piece of a tenant's physical state already travels
+# on the submission (`qdrant_url`, `es_url`, `collection`, `embedding_url`,
+# `tenant`, seeded per job by that tenant's API); the registry did not. So one
+# worker group could serve exactly one tenant, and pointing the shared group at
+# the dev tenant's sqlite registry made every `hackathon` ingest resolve against
+# the wrong database and exit 2 AFTER extract had already succeeded — each job
+# dead half-done.
+#
+# The optional `registry` input carries the missing piece as a NAME (`hackathon`,
+# `dev`), and the tool resolves it against its OWN environment:
+# COLLECTION_STORE_BACKEND_<NAME> plus COLLECTION_STORE_{PATH,DSN}_<NAME>.
+#
+# WHY A NAME AND NOT THE COORDINATES. A credential may never be a workflow input
+# value. `GET /api/v1/submissions/{id}` returns `inputs` AND `submitted_inputs`,
+# and `submitted_inputs` is an immutable snapshot — a DSN placed there is
+# permanent, is rendered by the UI, is returned again on every task record, and
+# sits in the engine's SQLite in plaintext (only provider tokens are encrypted).
+# GoWe has no named-secret-reference mechanism today (that is GoWe#260, no
+# timeline). What it does have is worker-level `--secret-file` entries, injected
+# into every container the worker runs as `apptainer --env NAME=value` and
+# redacted from captured task output — whereas `--env-file` values are logged IN
+# CLEAR at INFO. So the NAME rides here in the open, and the DSN only ever comes
+# from the worker's secret file. When GoWe#260 lands, this env-suffix convention
+# is swapped for a `secret://` reference and nothing else in this file changes.
+#
+# An unconfigured `registry` name is FATAL and never falls back to the unsuffixed
+# COLLECTION_STORE_* variables: a silent fallback to another tenant's registry is
+# precisely the outage above. Omitting `registry` is the other contract — the
+# worker's own unsuffixed variables, i.e. exactly today's behaviour, which is how
+# the `dev` tenant keeps running untouched through the transition.
+#
 # TOKENIZER CACHE. The `ingest` step's `fixed_token` chunking loads the embedding
 # model's HF tokenizer (~1.5 s of import + load from a warm cache per task —
 # amortized over the batch here). The worker image reads it from `HF_HOME`
@@ -183,8 +218,21 @@ inputs:
       registry's ordered version list. REQUIRED."
   collection_id:
     type: string
-    doc: "Registry collection id (#263), recorded in the archive manifest. NOT
-      the physical `collection` store name above. REQUIRED."
+    doc: "Registry collection id (#263): what `ingest` RESOLVES through the
+      registry to get the physical stores and the build spec, and what `pack`
+      records in the archive manifest. NOT the physical `collection` store name
+      above. REQUIRED."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry `ingest` resolves `collection_id` against,
+      by NAME (#563) — e.g. `hackathon`. A name, never coordinates and never a
+      credential: the worker reads COLLECTION_STORE_BACKEND_<NAME> and
+      COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment, where the DSN
+      arrives through `gowe-worker --secret-file`. Seeded per job by the tenant
+      API from COLLECTION_REGISTRY_NAME. Omitted = the worker's unsuffixed
+      COLLECTION_STORE_* variables, i.e. the pre-#563 behaviour. A name the
+      worker has nothing configured for is REFUSED, never silently fallen back
+      from. See the header for why the DSN cannot travel here."
   spec_hash:
     type: ["null", string]
     doc: "The collection's build-spec hash (ADR-0002), recorded in the manifest."
@@ -297,6 +345,8 @@ steps:
       qdrant_url: qdrant_url
       es_url: es_url
       max_chunks: max_chunks
+      collection_id: collection_id
+      registry: registry
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -337,6 +387,21 @@ steps:
         qdrant_url: {type: string, inputBinding: {prefix: --qdrant-url, position: 13}}
         es_url: {type: string, inputBinding: {prefix: --es-url, position: 14}}
         max_chunks: {type: int, default: 0, inputBinding: {prefix: --max-chunks, position: 18}}
+        # #563: the workflow has always REQUIRED `collection_id` and forwarded it
+        # to `pack`, but bound only `--collection` here — so the tool took
+        # ingest_target.resolve_by_store_name()'s migration fallback (match the
+        # PHYSICAL name against the registry) instead of the intended
+        # resolve(collection_id), and its refusal advised "Pass --collection-id
+        # <id>", which the caller could not act on. With both bound the id wins
+        # and `--collection` is CHECKED against the entry rather than used to
+        # name anything (ingest_target._checked), so a physical name that
+        # contradicts the entry is refused instead of quietly written to.
+        collection_id:
+          type: ["null", string]
+          inputBinding: {prefix: --collection-id, position: 19}
+        registry:
+          type: ["null", string]
+          inputBinding: {prefix: --registry, position: 20}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.

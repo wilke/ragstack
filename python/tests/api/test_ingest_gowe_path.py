@@ -425,6 +425,64 @@ async def test_ingest_submission_carries_the_api_settings_store_urls(client, gow
     assert inputs["es_url"] == ES_UNDER_TEST
 
 
+# --- #563: …and WHICH REGISTRY, by name, alongside them --------------------- #
+
+@pytest.mark.asyncio
+async def test_no_registry_is_sent_when_the_setting_is_unset(client, gowe):
+    """The default is silence, and silence is the pre-#563 contract: the worker
+    uses its own unsuffixed COLLECTION_STORE_* variables. A deployment that has
+    not adopted the convention — the `dev` tenant, right through the transition
+    — must submit exactly what it submitted before."""
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    assert "registry" not in gowe["engine"].submissions[0]["inputs"]
+
+
+@pytest.mark.asyncio
+async def test_the_registry_name_is_seeded_per_job(client, gowe, monkeypatch):
+    """The last piece of a tenant's physical state that did not travel on the
+    submission. The worker resolved WHICH registry from its own process
+    environment, set once per worker GROUP — so the shared group served exactly
+    one tenant's registry, and every `hackathon` ingest resolved against the dev
+    tenant's database and died after extract had already succeeded."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "collection_registry_name", "hackathon")
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    assert gowe["engine"].submissions[0]["inputs"]["registry"] == "hackathon"
+
+
+@pytest.mark.asyncio
+async def test_the_submission_never_carries_a_registry_credential(
+    client, gowe, monkeypatch
+):
+    """A NAME, and only a name. ``GET /api/v1/submissions/{id}`` returns both
+    ``inputs`` and ``submitted_inputs``, and ``submitted_inputs`` is an
+    IMMUTABLE snapshot — rendered by the UI, returned again on every task
+    record, stored in the engine's SQLite in plaintext (only provider tokens are
+    encrypted). A DSN placed there could never be withdrawn. So even with the
+    API's own registry sitting on a credentialled postgres, nothing about that
+    credential may appear anywhere in what is submitted."""
+    import json
+
+    from ragstack.config import settings
+
+    dsn = "postgresql+asyncpg://ragstack:hunter2@db.internal/ragstack"
+    monkeypatch.setattr(settings, "collection_registry_name", "hackathon")
+    monkeypatch.setattr(settings, "collection_store_backend", "postgres")
+    monkeypatch.setattr(settings, "collection_store_dsn", dsn)
+    monkeypatch.setattr(settings, "postgres_dsn", dsn)
+
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    submitted = json.dumps(gowe["engine"].submissions[0])
+    assert "hackathon" in submitted          # the name did travel …
+    assert "hunter2" not in submitted        # … and nothing else did
+    assert "postgres" not in submitted
+    assert dsn not in submitted
+
+
 @pytest.mark.asyncio
 async def test_a_routed_collection_is_ingested_to_its_routed_instance(
     client, gowe, monkeypatch

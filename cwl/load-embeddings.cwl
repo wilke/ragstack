@@ -35,6 +35,29 @@ inputs:
   collection:
     type: string
     doc: "Qdrant collection name (vector dim is read from the embedding headers)."
+  collection_id:
+    type: ["null", string]
+    doc: "Registry collection id (#263) — the id the load RESOLVES through the
+      registry, from which the physical store names come. Optional here only for
+      compatibility with existing inputs files: without it the tool falls back
+      to matching the PHYSICAL `collection` name against the registry
+      (ingest_target.resolve_by_store_name), which still refuses an unregistered
+      store but cannot tell two entries over one store apart. Give it. When both
+      are given the id wins and `collection` is CHECKED against the entry rather
+      than used to name anything."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry to resolve `collection_id` against, by NAME
+      (#563) — e.g. `hackathon`. A name, never coordinates and never a
+      credential: the worker reads COLLECTION_STORE_BACKEND_<NAME> and
+      COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment, where the DSN
+      arrives through `gowe-worker --secret-file` (a workflow input would land
+      in the submission's immutable `submitted_inputs` snapshot forever). Seeded
+      per job by the tenant API from COLLECTION_REGISTRY_NAME. Omitted = the
+      worker's unsuffixed COLLECTION_STORE_* variables, i.e. the pre-#563
+      behaviour; a name the worker has nothing configured for is REFUSED rather
+      than silently fallen back from — one worker group could otherwise serve
+      only one tenant's registry."
   es_index:
     type: ["null", string]
     doc: "Elasticsearch index (defaults to the collection name)."
@@ -68,6 +91,8 @@ steps:
     in:
       embeddings: embeddings
       collection: collection
+      collection_id: collection_id
+      registry: registry
       es_index: es_index
       tenant: tenant
       qdrant_url: qdrant_url
@@ -124,6 +149,16 @@ steps:
           inputBinding:
             prefix: --backpressure
             position: 9
+        collection_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --collection-id
+            position: 11
+        registry:
+          type: ["null", string]
+          inputBinding:
+            prefix: --registry
+            position: 12
       arguments:
         - position: 10
           prefix: --out
