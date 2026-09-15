@@ -139,6 +139,7 @@ func NewFakeBackend() *FakeBackend {
 func FixtureFleet() *registry.Fleet {
 	f := registry.LiveFixture()
 	addManagedFixture(f)
+	addInstanceFixture(f)
 	// One prepared artifact, so `tenant create` has something to create from.
 	f.Artifacts[ConformanceArtifactID] = &registry.Artifact{
 		SHA: conformanceSHA, Tag: "conformance",
@@ -213,6 +214,63 @@ func addManagedFixture(f *registry.Fleet) {
 	f.DisplayOrder = append(f.DisplayOrder, managedFixtureName)
 }
 
+// fixtureAPIPid is the pid an active instance-supervised fixture tenant's
+// pidfile names. A constant, because the fixture has to be deterministic: the
+// conformance suite hashes the doctor's findings and compares two runs.
+const fixtureAPIPid = "4242"
+
+// instanceFixtureName is the tenant the ctl supervises ITSELF (PR-D2).
+//
+// It is a SECOND managed fixture rather than a second supervisor on the first
+// one, because the two are not alternatives to be swapped between: the
+// conformance suite has to be able to assert, in one run, that a systemd
+// tenant plans unit steps and an instance tenant plans instance and spawn
+// steps. One row that changed shape between tests would prove neither.
+//
+// It is deliberately the SIMPLER shape — sqlite state, static UI — so that
+// what a test about it is asserting is the supervisor and nothing else; the
+// postgres and the dev-UI cases are `ctlfixture`'s and the ops unit tests'.
+const instanceFixtureName = "ctlfixture-inst"
+
+func addInstanceFixture(f *registry.Fleet) {
+	r := paths.NewRoots(f.RagRoot, paths.Overrides{})
+	tp := paths.TenantPaths(r, instanceFixtureName, instanceFixtureName)
+	t := registry.NewTenant(instanceFixtureName, instanceFixtureName)
+	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
+	t.Code = registry.Code{Tag: "v1.5.3", SHA: registry.NullString(strings.Repeat("ab", 20))}
+	t.ArtifactID = managedFixtureArtifactID
+	t.Ports = paths.Block(10)
+	t.API = registry.API{Bind: "127.0.0.1", PidFile: tp.PidFile, Log: tp.APILog}
+	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + instanceFixtureName + "/ui/"}
+	t.Supervisor, t.Owner, t.State = string(model.SupervisorInstance), "svcbvbrc", "active"
+	t.DesiredBoot, t.EnvLayout = "enabled", "managed"
+	t.EnvFileSHA256, t.SecretsFileSHA256 = emptySHA256Hex, emptySHA256Hex
+	t.Identity = registry.Identity{Provider: "bvbrc", AdminSubjectsCount: 1}
+	t.SecretRefs = []registry.SecretRef{
+		{Key: "API_KEYS", File: "secrets.env"},
+		{Key: "API_KEY_TENANTS", File: "secrets.env"},
+		{Key: "API_KEY_ROLES", File: "secrets.env"},
+	}
+	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}
+	t.Stores.Qdrant = registry.Qdrant{
+		URL: fmt.Sprintf("http://localhost:%d", t.Ports.QdrantHTTP),
+		// The instance names the hand-started tenants already use, which is
+		// the whole reason the supervisor uses them.
+		Instance: registry.NullString("qdrant-" + instanceFixtureName),
+		SIF:      "/rag/apptainer/images/qdrant.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		ExtraEnv: map[string]string{},
+	}
+	t.Stores.Elasticsearch = registry.Elasticsearch{
+		URL:      fmt.Sprintf("http://localhost:%d", t.Ports.ESHTTP),
+		Instance: registry.NullString("elasticsearch-" + instanceFixtureName),
+		SIF:      "/rag/apptainer/images/elasticsearch.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		Heap: "1g", ProvisionHeap: "1g", PathRepo: "/usr/share/elasticsearch/snapshots", ExtraEnv: map[string]string{},
+	}
+	t.Stores.Postgres = registry.SQLiteStore()
+	f.Tenants[instanceFixtureName] = t
+	f.DisplayOrder = append(f.DisplayOrder, instanceFixtureName)
+}
+
 // emptySHA256Hex is the digest of nothing — the fixture's stand-in for a file
 // hash, and a value that can never be mistaken for a credential.
 const emptySHA256Hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -233,7 +291,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		Collections: map[string][]string{}, Indices: map[string][]string{},
 		QdrantCounts: map[string]int64{}, ESCounts: map[string]int64{},
 		QdrantSnapshotDirs: map[string]string{}, UnitPorts: map[string]int{},
-		CollectionsByOrigin: map[string][]string{},
+		CollectionsByOrigin: map[string][]string{}, InstancePorts: map[string]int{},
 	}
 	for name, t := range f.Tenants {
 		tp := paths.TenantPaths(roots, name, t.ManifestName)
@@ -241,11 +299,38 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		// a fence that stops the unit really frees the socket.
 		_, _, _, _, apiUnit, _ := render.UnitNames(name)
 		opts.UnitPorts[apiUnit] = t.Ports.API
+		// And, for the other supervisor, the instances its stores run as: the
+		// same fixture and the same reason. A store this host started has to
+		// be a store a readiness probe can find, whether it was started by a
+		// unit or by `apptainer instance run`.
+		if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive {
+			opts.InstancePorts["qdrant-"+t.ManifestName] = t.Ports.QdrantHTTP
+		}
+		if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive {
+			opts.InstancePorts["elasticsearch-"+t.ManifestName] = t.Ports.ESHTTP
+		}
+		if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
+			opts.InstancePorts["postgres-"+t.ManifestName] = t.Ports.PG
+		}
 		if t.State == "active" {
 			opts.Listening = append(opts.Listening, t.Ports.API)
 			opts.Routed = append(opts.Routed, name)
-			if t.Supervisor == string(model.SupervisorSystemd) {
+			switch t.Supervisor {
+			case string(model.SupervisorSystemd):
 				opts.Active = append(opts.Active, apiUnit)
+			case string(model.SupervisorInstance):
+				// An instance-supervised tenant that is UP is one whose
+				// pidfile names a live process and whose stores are running
+				// instances: that is what `running` reads, and without it a
+				// fence would find nothing to stop and a start would spawn a
+				// second API beside the first.
+				opts.Files[tp.PidFile] = []byte(fixtureAPIPid + "\n")
+				opts.AlivePIDs = append(opts.AlivePIDs, 4242)
+				opts.RunningInstances = append(opts.RunningInstances,
+					"qdrant-"+t.ManifestName, "elasticsearch-"+t.ManifestName)
+				if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
+					opts.RunningInstances = append(opts.RunningInstances, "postgres-"+t.ManifestName)
+				}
 			}
 		}
 		if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive && t.Stores.Qdrant.Capabilities.Snapshot {

@@ -103,6 +103,16 @@ type FakeOptions struct {
 	// answers a fact rather than a fixture. A tenant created AFTER the driver
 	// set was built says so with FakeInstances.BindInstancePort.
 	InstancePorts map[string]int
+	// RunningInstances are the instances already up when the fake is built —
+	// an instance-supervised tenant the fixture says is ACTIVE. Without them
+	// such a tenant looks stopped to `running`, so a fence would find nothing
+	// to stop and a start would run a second copy of a store that is already
+	// there.
+	RunningInstances []string
+	// AlivePIDs are the pids Proc.Alive answers true for without this fake
+	// having spawned them — the pid in an adopted or fixture tenant's
+	// pidfile. Spawn adds to the same set.
+	AlivePIDs []int
 	// Crontab is the account's crontab at the start. Nil is an account that
 	// has never had one — which List reports as an empty body and no error,
 	// as the real crontab(1) wrapper does.
@@ -202,6 +212,19 @@ func NewFake(opts FakeOptions) *Fake {
 	f.instances = &FakeInstances{
 		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, nextPID: 21001,
+	}
+	for _, name := range opts.RunningInstances {
+		f.instances.Running[name] = jobs.Instance{Name: name, PID: f.instances.nextPID, Image: "fixture.sif"}
+		f.instances.nextPID++
+		if port, ok := f.instances.ports[name]; ok {
+			f.proc.Ports[port] = true
+		}
+	}
+	for _, pid := range opts.AlivePIDs {
+		if f.proc.alive == nil {
+			f.proc.alive = map[int]bool{}
+		}
+		f.proc.alive[pid] = true
 	}
 	f.crontab = &FakeCrontab{r: &f.recorder, Body: append([]byte(nil), opts.Crontab...)}
 	return f

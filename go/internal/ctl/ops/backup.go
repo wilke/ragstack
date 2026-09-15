@@ -903,6 +903,11 @@ func pgPortOf(t *registry.Tenant) int {
 
 // ---------------------------------------------------------------- config
 
+// isYAMLName is the config allowlist's one suffix rule.
+func isYAMLName(name string) bool {
+	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
+}
+
 // addConfigCopies is the ALLOWLIST: the public files a bundle carries, named
 // one by one.
 //
@@ -967,6 +972,35 @@ func (p *planner) addConfigCopies(bundleDir string) {
 			}
 			if err := copyIn(tp.ProvisionEnv, filepath.Join("config", "provision.env")); err != nil {
 				return "", err
+			}
+			// Every *.yaml / *.yml under <data_dir>/config.
+			//
+			// The prompt templates live there (ADR-0008:
+			// PROMPT_TEMPLATES_FILE names a YAML file the API loads at
+			// startup, and its records are the prompts the tenant answers
+			// with). A bundle that carried the tenant's data and not its
+			// prompts would restore a tenant that answers differently from the
+			// one that was backed up — which is the kind of difference nobody
+			// notices until a user does.
+			//
+			// It stays an ALLOWLIST: a suffix, in one directory, not
+			// recursively. `secrets.env` and its `.bak-*` siblings are in that
+			// same directory and belong only inside the encrypted payload, and
+			// a rule that copied "the config directory" would carry every
+			// credential this tenant ever had the first time somebody dropped
+			// a file in it.
+			cfgDir := filepath.Dir(tp.ProvisionEnv)
+			cfgEnts, err := files.ReadDir(ctx, cfgDir)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return "", fmt.Errorf("listing %s: %w", cfgDir, err)
+			}
+			for _, e := range cfgEnts {
+				if e.IsDir || !isYAMLName(e.Name) {
+					continue
+				}
+				if err := copyIn(filepath.Join(cfgDir, e.Name), filepath.Join("config", e.Name)); err != nil {
+					return "", err
+				}
 			}
 			// The per-collection manifests are named by the host, not by the
 			// ctl, so they are listed rather than guessed.
