@@ -40,13 +40,13 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 		return err
 	}
 	t := p.t
-	if t.Owner == p.op.deps.owner() && t.Supervisor == supervisorSystemd {
+	if t.Owner == p.op.deps.owner() && managedSupervisor(t.Supervisor) {
 		// The account is the PROCESS's (Deps.Owner), not a constant: a --direct
 		// run as wilke owns what it created, and a refusal naming svcbvbrc
 		// would send an operator looking for units under an account that has
 		// none of them.
-		return p.refuse("%s is already owned by %s and supervised by systemd; there is nothing to hand over",
-			t.Name, p.op.deps.owner())
+		return p.refuse("%s is already owned by %s and supervised by %s; there is nothing to hand over",
+			t.Name, p.op.deps.owner(), t.Supervisor)
 	}
 	if err := p.requireFencedBackup("handover"); err != nil {
 		return err
@@ -83,6 +83,10 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 			return "daemon-reload", sc.Ops.Drivers.Systemd().DaemonReload(ctx)
 		},
 	})
+	// A handover always lands on UNITS: it is the operation that gives a
+	// hand-started tenant the supervision `instance` mode does not need units
+	// for, and switching an existing row between the two supervisors is
+	// `tenant set-supervisor`, which is PR-E.
 	legs, _ := p.legs(nil)
 	for _, c := range legs {
 		if c.Managed {

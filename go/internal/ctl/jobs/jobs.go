@@ -438,6 +438,27 @@ type Instances interface {
 	// fleet half of which is already down — and a stop that failed because it
 	// had nothing to do would turn every one of those into a failed job.
 	Stop(ctx context.Context, name string) error
+	// SeedConfigDir copies <sif>:<containerDir>/. into hostDir —
+	// `apptainer exec --bind <hostDir>:/__seed <sif> cp -R <containerDir>/. /__seed/`,
+	// which is exactly what `ragstack-ctl es-seed-config` runs today from the
+	// ES unit's ExecStartPre.
+	//
+	// It is on THIS interface rather than behind a general "run any apptainer
+	// command" seam for the same reason every other driver here is an exact
+	// allowlist: the ctl needs one `apptainer exec`, with one bind and one
+	// fixed argv, and a generic exec seam would be the place the next caller
+	// puts a string a tenant's own configuration reached.
+	//
+	// It is unconditional. WHETHER to seed — the host directory is empty, so
+	// an operator's own elasticsearch.yml is never overwritten — is the
+	// caller's decision, taken through Files.ReadDir, because that is policy
+	// and this is the copy.
+	//
+	// `supervisor: instance` needs it because the config bind SHADOWS the
+	// image's own /usr/share/elasticsearch/config: an empty host directory is
+	// an Elasticsearch that exits before it logs anything useful, and an
+	// instance supervisor has no ExecStartPre to hang the seed off.
+	SeedConfigDir(ctx context.Context, sif, containerDir, hostDir string) error
 }
 
 // Crontab is the CURRENT user's crontab, which on this host is the only boot

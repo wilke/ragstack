@@ -383,7 +383,9 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 			"it is down. There is no read-only mode in v1 — the registry carries no read-only flag and the gateway " +
 			"has nothing to render one from, so a fence is an outage for this tenant, not a degraded service. " +
 			"Read-only serving is v1.x")
-		p.addAPIStop()
+		if err := p.addAPIStop(); err != nil {
+			return err
+		}
 		p.addFenceVerify()
 	}
 
@@ -411,7 +413,9 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	p.addBackupRecord(fence)
 
 	if fence {
-		p.addAPIStart()
+		if err := p.addAPIStart(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1691,28 +1695,33 @@ func gatewayRoutes(ctx context.Context, sc *jobs.StepContext, name string) (rout
 }
 
 // addAPIStop stops the tenant API whichever way this tenant is supervised.
-func (p *planner) addAPIStop() {
-	if p.t.Supervisor != supervisorSystemd {
-		_ = p.planManualStop(nil)
-		return
+func (p *planner) addAPIStop() error {
+	if p.sup == nil {
+		return p.planManualStop(nil)
 	}
 	legs, _ := p.legs([]string{"api"})
 	for _, c := range legs {
-		p.addUnitStep("stop", c)
+		if err := p.sup.stopLeg(p, c); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func (p *planner) addAPIStart() {
-	if p.t.Supervisor != supervisorSystemd {
+func (p *planner) addAPIStart() error {
+	if p.sup == nil {
 		p.warn("this tenant is hand-started: the ctl stopped it for the fence but cannot start it again — " +
 			"restart it the way it was started, or hand it over first")
-		return
+		return nil
 	}
 	legs, _ := p.legs([]string{"api"})
 	for _, c := range legs {
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addReadyStep(legs)
+	return nil
 }
 
 func (p *planner) addFenceVerify() {

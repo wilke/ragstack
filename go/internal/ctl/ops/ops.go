@@ -66,6 +66,17 @@ type Deps struct {
 	// false, and a unit conditioned on it never starts and never says why,
 	// which is the least debuggable failure systemd has.
 	MountPoint string
+	// DefaultSupervisor is the supervisor `create` gives a tenant whose
+	// request names none: ctl.env's CTL_DEFAULT_SUPERVISOR (api.EngineConfig
+	// carries it here). Empty — and anything that is not `systemd` or
+	// `instance` — means the contract's default, `systemd`.
+	//
+	// It is a DEPLOYMENT fact rather than a contract one. create_request.json
+	// promises `systemd`; on coconut the service account has no linger, no
+	// user manager and no logind session under cron, so `instance` is the only
+	// supervisor that can actually start a tenant at boot. A host says so once
+	// rather than every caller remembering the argument.
+	DefaultSupervisor string
 	// Owner is the account the ctl runs as — the `owner` a created tenant's
 	// row records and the account whose units the lifecycle verbs may touch.
 	// It is the PROCESS's identity (the daemon's svcbvbrc, a --direct run's
@@ -238,9 +249,13 @@ type planner struct {
 	oc   jobs.Context
 	args map[string]any
 
-	tenant   string
-	tpaths   paths.Tenant
-	t        *registry.Tenant
+	tenant string
+	tpaths paths.Tenant
+	t      *registry.Tenant
+	// sup is HOW this tenant's legs are started and stopped
+	// (ops/supervisor.go). NIL for a `manual` row — a tenant somebody else
+	// started — which every lifecycle verb refuses by name.
+	sup      supervisor
 	steps    []jobs.Step
 	warnings []string
 	locks    []model.LockName
@@ -254,6 +269,7 @@ func newPlanner(o *op, oc jobs.Context, args map[string]any) *planner {
 		p.t = oc.Tenant
 		p.tenant = oc.Tenant.Name
 		p.tpaths = paths.TenantPaths(oc.Roots, oc.Tenant.Name, oc.Tenant.ManifestName)
+		p.sup = supervisorFor(oc.Tenant.Supervisor)
 	}
 	return p
 }

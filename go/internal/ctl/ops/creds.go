@@ -105,8 +105,7 @@ func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
 	})
 	p.result["key_id"] = label
 	p.result["role"] = role
-	p.addRestartOrPending(args, "the new key is configured; it is EFFECTIVE only after the API reloads its env")
-	return nil
+	return p.addRestartOrPending(args, "the new key is configured; it is EFFECTIVE only after the API reloads its env")
 }
 
 // ---------------------------------------------------------------- key revoke
@@ -182,9 +181,8 @@ func planKeyRevoke(ctx context.Context, p *planner, args map[string]any) error {
 		},
 	})
 	p.result["key_id"] = id
-	p.addRestartOrPending(args, "the key is revoked in the FILE; it keeps working until the API reloads its env "+
+	return p.addRestartOrPending(args, "the key is revoked in the FILE; it keeps working until the API reloads its env "+
 		"(and the proof is the old key answering 401)")
-	return nil
 }
 
 // ledgerRole is the role recorded for the ledger id, or "".
@@ -445,20 +443,25 @@ func (p *planner) addEnvEdit(ctx context.Context, e envEdit) {
 
 // addRestartOrPending plans the restart the caller asked for, or records that
 // the change is configured but not yet effective.
-func (p *planner) addRestartOrPending(args map[string]any, pending string) {
-	if argBoolOf(args, "restart") && p.t.Supervisor == supervisorSystemd {
+func (p *planner) addRestartOrPending(args map[string]any, pending string) error {
+	if argBoolOf(args, "restart") && p.sup != nil {
 		legs, _ := p.legs([]string{"api"})
 		for _, c := range legs {
-			p.addUnitStep("stop", c)
-			p.addUnitStep("start", c)
+			if err := p.sup.stopLeg(p, c); err != nil {
+				return err
+			}
+			if err := p.sup.startLeg(p, c); err != nil {
+				return err
+			}
 		}
 		p.addReadyStep(legs)
 		p.result["effective"] = true
-		return
+		return nil
 	}
 	p.result["effective"] = false
 	p.result["pending_until_restart"] = true
 	p.warn(pending)
+	return nil
 }
 
 // readFile reads a file through the Files driver for a PLAN preview.

@@ -200,7 +200,7 @@ func NewFake(opts FakeOptions) *Fake {
 	// the units and the LISTEN set are: a store this host started has to be a
 	// store a readiness probe can find.
 	f.instances = &FakeInstances{
-		r: &f.recorder, proc: f.proc, ports: copyMapInt(opts.InstancePorts),
+		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, nextPID: 21001,
 	}
 	f.crontab = &FakeCrontab{r: &f.recorder, Body: append([]byte(nil), opts.Crontab...)}
@@ -723,11 +723,17 @@ type FakeInstances struct {
 	r    *recorder
 	mu   sync.Mutex
 	proc *FakeProc
+	// files is the in-memory filesystem SeedConfigDir copies into.
+	files *FakeFiles
 	// ports links an instance name to the port running it binds.
 	ports   map[string]int
 	nextPID int
 	// Running is the instance table, by name.
 	Running map[string]jobs.Instance
+	// Seeded records every SeedConfigDir as "<sif>:<containerDir>→<hostDir>",
+	// in order: what a test reads to see that the ES config bind was filled
+	// from the image BEFORE the instance started.
+	Seeded []string
 }
 
 var _ jobs.Instances = (*FakeInstances)(nil)
@@ -814,6 +820,32 @@ func (i *FakeInstances) Stop(_ context.Context, name string) error {
 		i.proc.mu.Lock()
 		delete(i.proc.Ports, port)
 		i.proc.mu.Unlock()
+	}
+	return nil
+}
+
+// SeedConfigDir copies the image's config directory into hostDir.
+//
+// The fake has no image to read, so it writes the ONE file whose absence is
+// the failure this seam exists to prevent: an Elasticsearch whose config bind
+// shadows the image's own and holds no jvm.options exits before it logs
+// anything useful. A caller that seeds and then lists the directory sees a
+// populated one, which is what makes the "seed only when empty" rule testable.
+func (i *FakeInstances) SeedConfigDir(_ context.Context, sif, containerDir, hostDir string) error {
+	if err := i.r.record("instances", "SeedConfigDir", sif, containerDir, hostDir); err != nil {
+		return err
+	}
+	if sif == "" || containerDir == "" || hostDir == "" {
+		return fmt.Errorf("%w: instances.SeedConfigDir needs an image, a source inside it and a host directory",
+			jobs.ErrRefused)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Seeded = append(i.Seeded, sif+":"+containerDir+"→"+hostDir)
+	if i.files != nil {
+		for _, name := range []string{"elasticsearch.yml", "jvm.options", "log4j2.properties"} {
+			i.files.Put(strings.TrimSuffix(hostDir, "/")+"/"+name, []byte("# seeded from "+sif+"\n"), 0o644)
+		}
 	}
 	return nil
 }

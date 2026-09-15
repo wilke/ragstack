@@ -295,10 +295,12 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 	// ---- 4. the stores, and only the stores --------------------------------
 	for _, c := range legs {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addStoreReadyGate(spec)
 
@@ -309,7 +311,9 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 
 	// ---- 6. the API, then the proof ---------------------------------------
 	for _, c := range apiLegs {
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addAPIReadyGate(target)
 	p.addRestoreVerify(target, bundleDir, from)
