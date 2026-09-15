@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -217,7 +219,7 @@ func addManagedFixture(f *registry.Fleet) {
 // fixtureAPIPid is the pid an active instance-supervised fixture tenant's
 // pidfile names. A constant, because the fixture has to be deterministic: the
 // conformance suite hashes the doctor's findings and compares two runs.
-const fixtureAPIPid = "4242"
+const fixtureAPIPid = 4242
 
 // instanceFixtureName is the tenant the ctl supervises ITSELF (PR-D2).
 //
@@ -308,6 +310,15 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		}
 		if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive {
 			opts.InstancePorts["elasticsearch-"+t.ManifestName] = t.Ports.ESHTTP
+			// A tenant that has ever run has a POPULATED elasticsearch config
+			// bind: the directory shadows the image's own, and the unit's
+			// `ExecStartPre=… es-seed-config` (or, in instance mode, the
+			// supervisor itself) filled it from the image the first time.
+			// Without it every restart of a fixture tenant would try to seed a
+			// directory that is not there — which is a refusal, because
+			// apptainer refuses a bind whose source is missing.
+			opts.Files[filepath.Join(tp.ESConfig, "elasticsearch.yml")] =
+				[]byte("# fixture elasticsearch.yml (--fake-drivers)\n")
 		}
 		if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
 			opts.InstancePorts["postgres-"+t.ManifestName] = t.Ports.PG
@@ -324,8 +335,11 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 				// instances: that is what `running` reads, and without it a
 				// fence would find nothing to stop and a start would spawn a
 				// second API beside the first.
-				opts.Files[tp.PidFile] = []byte(fixtureAPIPid + "\n")
-				opts.AlivePIDs = append(opts.AlivePIDs, 4242)
+				opts.Files[tp.PidFile] = []byte(strconv.Itoa(fixtureAPIPid) + "\n")
+				if opts.AlivePIDs == nil {
+					opts.AlivePIDs = map[int]int{}
+				}
+				opts.AlivePIDs[fixtureAPIPid] = t.Ports.API
 				opts.RunningInstances = append(opts.RunningInstances,
 					"qdrant-"+t.ManifestName, "elasticsearch-"+t.ManifestName)
 				if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
@@ -350,10 +364,17 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 	return opts
 }
 
-// fixtureRestoreTargets pre-answers, for the port blocks a `restore --as` would
-// ALLOCATE, the facts a tenant that has just been restored would present: its
-// stores holding the counts the bundle recorded, and its own API reporting the
-// collection inventory.
+// fixtureRestoreTargets pre-answers, for the port blocks a `restore --as`
+// would ALLOCATE, the one fact a tenant that has just been restored cannot
+// present by itself: its stores holding the COUNTS the bundle recorded.
+//
+// The INVENTORY is not seeded here. It used to be, and with two ctl-managed
+// fixture tenants it could not be: both restore into the same pool of unused
+// blocks, so whichever tenant the map happened to visit last decided what
+// every restored tenant claimed to hold — and a restore from the other one
+// then failed its own verification. The fake tenant API answers an unseeded
+// origin from the qdrant collections of the same block instead, which
+// `Qdrant.Recover` fills in as it recovers each one.
 //
 // It exists for the same reason fixtureListening does, and it is the same kind
 // of accommodation. The fake stores keep no data: `Qdrant.Recover` and
@@ -371,7 +392,10 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 func fixtureRestoreTargets(f *registry.Fleet, opts *drivers.FakeOptions) {
 	next, _ := registry.Allocate(f)
 	for _, t := range f.Tenants {
-		if t.Supervisor != string(model.SupervisorSystemd) ||
+		// Every tenant the ctl SUPERVISES, either way: a restore copies the
+		// source's supervisor onto the twin, so an instance-mode source has
+		// the same need for a pre-answered target as a systemd one.
+		if t.Supervisor != string(model.SupervisorSystemd) && t.Supervisor != string(model.SupervisorInstance) ||
 			t.Stores.Qdrant.Ownership != registry.OwnershipExclusive ||
 			!t.Stores.Qdrant.Capabilities.Snapshot {
 			continue
@@ -392,7 +416,6 @@ func fixtureRestoreTargets(f *registry.Fleet, opts *drivers.FakeOptions) {
 			for _, idx := range indices {
 				opts.ESCounts[esURL+"/"+idx] = opts.ESCounts[t.Stores.Elasticsearch.URL+"/"+idx]
 			}
-			opts.CollectionsByOrigin[fmt.Sprintf("http://127.0.0.1:%d", block.API)] = collections
 		}
 	}
 }

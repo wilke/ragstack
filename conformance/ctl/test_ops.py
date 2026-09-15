@@ -1534,3 +1534,225 @@ async def test_a_cli_only_op_has_no_http_route(
         assert other.status_code in (404, 405), (
             f"POST {path} answered {other.status_code}; a CLI-only op must have no route"
         )
+
+
+# =========================================================================== #
+# `supervisor: instance` — the ctl supervising a tenant itself (PR-D2)
+#
+# The host these tests run against has no user manager: `systemctl --user`
+# cannot be driven from cron, so a tenant that must come back after a reboot
+# has to be started by the control plane itself — apptainer instances for the
+# stores, a detached uvicorn with a pidfile for the API.
+#
+# What is asserted here is that the SEAM holds: the same verbs, the same
+# plans, the same confirms and the same job states, with different steps
+# underneath. The fixture carries one such tenant (`ctlfixture-inst`) so that
+# a single run can show both supervisors side by side; a row that changed
+# shape between tests would prove neither.
+# =========================================================================== #
+async def instance_tenant(client: httpx.AsyncClient) -> str:
+    """The fixture tenant the ctl supervises ITSELF.
+
+    Found rather than named, like :func:`managed_tenant`, so the suite does not
+    encode the fixture's spelling."""
+    resp = await client.get("/v1/fleet")
+    assert resp.status_code == 200, resp.text
+    for row in resp.json().get("tenants", []):
+        if row.get("supervisor") == "instance" and row.get("state") != "quarantined":
+            return row["name"]
+    pytest.skip("the fixture fleet has no live instance-supervised tenant")
+
+
+def step_kinds(plan_or_job: dict[str, Any]) -> set[str]:
+    return {s["kind"] for s in plan_or_job.get("steps", [])}
+
+
+async def test_create_with_supervisor_instance_plans_instances_not_units(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`create --supervisor instance` writes NO unit files and drives no user
+    manager. The plan is the approval document, so the absence has to be
+    visible in it: a skipped step saying why there are no units, instance and
+    proc steps where the systemd ones were, and not one `would_write` under the
+    units directory."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={
+            "name": name, "artifact_id": CONFORMANCE_ARTIFACT, "supervisor": "instance",
+        }),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+
+    kinds = step_kinds(plan)
+    assert "systemd" not in kinds, f"an instance-mode create planned systemd steps: {sorted(kinds)}"
+    assert {"instance", "proc"} <= kinds, f"no instance/proc steps: {sorted(kinds)}"
+
+    titles = [s["title"] for s in plan["steps"]]
+    assert any("skip the unit files" in t for t in titles), titles
+    assert any(t.startswith(f"start the instance qdrant-{name}") for t in titles), titles
+    assert any(t.startswith(f"start the instance elasticsearch-{name}") for t in titles), titles
+    assert any("start the API detached" in t for t in titles), titles
+
+    for step in plan["steps"]:
+        for write in step["would_write"]:
+            assert "/units/" not in write["path"], (
+                f"step {step['n']} would write a unit file under instance mode: {write['path']}"
+            )
+    # The command an operator is approving is a real one, and it is the command
+    # the unit renderer would have put in ExecStart.
+    runs = [r["argv"] for s in plan["steps"] for r in s["would_run"]]
+    inst = [a for a in runs if a[:4] == ["/usr/bin/apptainer", "instance", "run", "--no-home"]]
+    assert inst, f"no `apptainer instance run` in the plan: {runs}"
+    assert any("--bind" in a for a in inst), inst
+
+
+async def test_create_default_supervisor_is_the_contracts(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A create that names no supervisor takes the DEPLOYMENT's default
+    (CTL_DEFAULT_SUPERVISOR), and this daemon configures none — so the
+    contract's `systemd` applies and the units are back."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": name, "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    assert "systemd" in step_kinds(plan), [s["kind"] for s in plan["steps"]]
+    assert any("write the unit " in s["title"] for s in plan["steps"]), [s["title"] for s in plan["steps"]]
+
+
+async def test_start_stop_restart_of_an_instance_tenant(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The three lifecycle verbs on the other supervisor, run to `succeeded`
+    and put back where they were found.
+
+    `start` of a tenant that is already up is a NO-OP that succeeds: that is
+    what makes `fleet start --all` — and so a periodic run of it, which is this
+    deployment's only watchdog — safe to run over a live fleet."""
+    tenant = await instance_tenant(client)
+
+    started = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/start", schemas, args={}, timeout=60.0
+    )
+    assert started["state"] == "succeeded", json.dumps(started)[:1000]
+    assert "systemd" not in step_kinds(started), [s["kind"] for s in started["steps"]]
+    assert step_titled(started, f"start the instance qdrant-{tenant}") is not None, (
+        [s["title"] for s in started["steps"]]
+    )
+
+    stopped = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/stop", schemas, args={}, confirm=tenant, timeout=60.0
+    )
+    assert stopped["state"] == "succeeded", json.dumps(stopped)[:1000]
+    assert step_titled(stopped, f"stop the instance qdrant-{tenant}") is not None, (
+        [s["title"] for s in stopped["steps"]]
+    )
+    assert step_titled(stopped, "stop the API through its pidfile") is not None, (
+        [s["title"] for s in stopped["steps"]]
+    )
+    # `desired_boot` is the registry's in instance mode: there is no boot link,
+    # and a stop still has to record that this tenant is not to come back.
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.status_code == 200, shown.text
+    assert shown.json()["summary"]["state"] == "stopped", shown.json()["summary"]
+
+    restarted = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/restart", schemas, args={}, confirm=tenant, timeout=60.0
+    )
+    assert restarted["state"] == "succeeded", json.dumps(restarted)[:1000]
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.json()["summary"]["state"] == "active", shown.json()["summary"]
+
+
+async def test_a_fenced_backup_of_an_instance_tenant(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The fence is the API stopping, whichever supervisor stops it. Under
+    `instance` that is the pidfile, the identity check and the proof that the
+    port is free — and the tenant is started again the same way afterwards."""
+    tenant = await instance_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": True}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", json.dumps(job)[:1200]
+    assert job["result"]["fenced"] is True, job["result"]
+    assert step_titled(job, "stop the API through its pidfile") is not None, (
+        [s["title"] for s in job["steps"]]
+    )
+    assert step_titled(job, "stop ragstack-") is None, (
+        f"an instance-mode fence stopped a unit: {[s['title'] for s in job['steps']]}"
+    )
+    assert step_titled(job, "fence verify") is not None, [s["title"] for s in job["steps"]]
+
+
+async def test_an_instance_tenant_restores_into_an_instance_twin(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`restore --as` copies the source's supervisor onto the twin.
+
+    A copy that came up under a different supervisor is not a copy: its
+    processes are found a different way, its boot behaviour is decided
+    somewhere else, and the selftest's own "restored tenant matches the
+    source" comparison — which includes `supervisor` — reads it as a
+    different tenant. It is the same rule the artifact, the UI mode and the
+    store kind already follow."""
+    source = await instance_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source)
+    target = new_tenant_name()
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{source}/ops/restore", schemas,
+        args={"from": bundle, "as": target}, confirm=source, timeout=120.0,
+    )
+    assert job["state"] == "succeeded", json.dumps(
+        [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+         for s in job["steps"]], indent=1)
+
+    twin = await client.get(f"/v1/tenants/{target}")
+    assert twin.status_code == 200, twin.text
+    validate(twin.json(), "tenant_response", schemas)
+    assert twin.json()["registry"]["supervisor"] == "instance", twin.json()["registry"]
+    # And it was laid down with no unit files, like its original.
+    titles = [s["title"] for s in job["steps"]]
+    assert any("skip the unit files" in t for t in titles), titles
+    assert not any(t.startswith("write the unit ") for t in titles), titles
+
+
+async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The end of an instance-supervised tenant's life: its legs stopped
+    through the instance table and the pidfile, its data directory renamed
+    rather than deleted, and NO unit file removed — because it never had one.
+    The plan says that as a step rather than leaving a gap where four
+    removals used to be.
+
+    It runs last in this file on purpose: a decommission is the one verb that
+    ends a tenant, and the fixture row it acts on is the one the tests above
+    need alive. The bundle the preceding restore verified is what makes it
+    allowed at all."""
+    tenant = await instance_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/decommission", schemas,
+        args={}, confirm=tenant, timeout=120.0,
+    )
+    assert job["state"] == "succeeded", json.dumps(
+        [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+         for s in job["steps"]], indent=1)
+
+    titles = [s["title"] for s in job["steps"]]
+    assert any("skip removing the unit files" in t for t in titles), titles
+    assert not any("remove the rendered unit files" in t for t in titles), titles
+    assert not any("daemon-reload" in t for t in titles), titles
+    assert any(t.startswith(f"stop the instance qdrant-{tenant}") for t in titles), titles
+    assert any("quarantine the data directory" in t for t in titles), titles
+
+    after = await client.get(f"/v1/tenants/{tenant}")
+    assert after.status_code == 200, after.text
+    assert after.json()["summary"]["state"] == "quarantined", after.json()["summary"]
