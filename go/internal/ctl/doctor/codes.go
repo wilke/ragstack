@@ -267,4 +267,16 @@ const (
 	// refuses against contracts/ctl/schemas/registry.json, so adopt could not
 	// commit a stopped tenant at all.
 	APIBindAssumed = "api_bind_assumed"
+
+	// HomePathInProduction: a registry path (data_dir, worktree, python_env,
+	// an artifact's worktree), a ctl.env host-tool value, or a tenant's live
+	// API process cwd/argv[0] resolves under /home or starts with ~ — the
+	// plan's "nothing in production may reference a home directory" bar
+	// (Production layout: install-ops, node under /rag/tools,
+	// rebase-worktree). Warn, never error: this sweep exists to make the
+	// production-layout migration's progress (and any regression back into
+	// $HOME) visible, not to block an op the way worktree_outside_mirror or
+	// secrets_unreadable_by_ctl do for the specific things a home-directory
+	// checkout breaks.
+	HomePathInProduction = "home_path_in_production"
 )

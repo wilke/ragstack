@@ -656,6 +656,13 @@ type Git interface {
 	// Describe is `git -C <dir> describe --tags --always --dirty`, recorded in
 	// manifests so a bundle says which code wrote it.
 	Describe(ctx context.Context, dir string) (string, error)
+	// HeadSHA is `git -C <dir> rev-parse --verify HEAD^{commit}`, the 40-hex
+	// commit dir's HEAD resolves to right now — on a branch, detached, or
+	// anything else HEAD can be. Unlike ResolveRef, dir is a WORKING TREE, not
+	// a bare mirror: `tenant rebase-worktree` uses it to pin the sha a
+	// pre-existing (non-ctl-managed) worktree is actually sitting at, before
+	// checking that same sha out fresh from the mirror.
+	HeadSHA(ctx context.Context, dir string) (sha string, err error)
 }
 
 // Build is the node/vite surface. It is split from Git because the two fail

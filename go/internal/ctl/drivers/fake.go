@@ -1814,6 +1814,23 @@ func (g *FakeGit) Describe(_ context.Context, dir string) (string, error) {
 	return "fake-describe", nil
 }
 
+// HeadSHA returns the sha this fake has recorded for the worktree at dir —
+// the same Worktrees table AddWorktree populates, and which a test may also
+// seed directly (FakeOptions.Worktrees) to stand in for a worktree this fake
+// never checked out itself, such as `tenant rebase-worktree`'s pre-existing,
+// non-ctl-managed source tree.
+func (g *FakeGit) HeadSHA(_ context.Context, dir string) (string, error) {
+	if err := g.r.record("git", "HeadSHA", dir); err != nil {
+		return "", err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if sha, ok := g.Worktrees[dir]; ok {
+		return sha, nil
+	}
+	return "", fmt.Errorf("%w: %s is not a worktree this fake knows", jobs.ErrRefused, dir)
+}
+
 // isSHA reports whether s is a 40-character hex object name.
 func isSHA(s string) bool {
 	if len(s) != 40 {

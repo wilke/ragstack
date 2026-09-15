@@ -73,6 +73,15 @@ type Options struct {
 	// ImportCheck resolves `import ragstack` under a tenant's python env and
 	// PYTHONPATH; nil ⇒ the real argv-only probe. Return ("", nil) to skip.
 	ImportCheck func(pythonEnv, worktree string) (string, error)
+	// CtlEnv is the CTL_* host-tool/directory values HomePathInProduction
+	// checks for a home-directory path — the same names
+	// api.SetHostToolsFromEnv reads into the engine's driver config (kept
+	// here as literal strings: api imports doctor for the live doctor route,
+	// so doctor importing api back would cycle). Nil reads the current
+	// process's environment, which is what ctl-daemon.sh's load_env put
+	// there for the daemon; a test passes an explicit map instead of
+	// mutating its own environment.
+	CtlEnv map[string]string
 }
 
 // Run diagnoses fleet against the host and returns the contract's response.
@@ -106,8 +115,12 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 	if d.opts.ImportCheck == nil {
 		d.opts.ImportCheck = realImportCheck
 	}
+	if d.opts.CtlEnv == nil {
+		d.opts.CtlEnv = ctlEnvFromProcess()
+	}
 	d.listeners()
 	d.hostChecks()
+	d.homePathHostChecks()
 	d.manifestChecks()
 	d.gatewayChecks()
 	for _, t := range d.scopedTenants() {
@@ -329,6 +342,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.codeChecks(t)
 	d.storeChecks(t)
 	d.permissionChecks(t)
+	d.homePathCheck(t)
 	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
 }
 
@@ -482,6 +496,92 @@ func (d *run) codeChecks(t *registry.Tenant) {
 	}
 	if !under(resolved, t.Worktree) {
 		d.add(model.LevelWarn, ImportRagstackOutsideWorktree, t.Name, fmt.Sprintf("import ragstack resolves to %s, outside %s: the running code is not the recorded code", resolved, t.Worktree))
+	}
+}
+
+// ctlEnvKeys are the CTL_* variables api/env.go defines for a host-tool
+// binary, the mirror, or a cache/state directory — the ones the
+// production-layout plan means by "a ctl.env value": a home-directory path
+// there is exactly how coconut ran CTL_NODE_BIN=~/.local/bin/node until
+// `make install-node` gave it somewhere under /rag to point at instead.
+var ctlEnvKeys = []string{
+	"CTL_SYSTEMCTL_BIN", "CTL_GIT_BIN", "CTL_NODE_BIN", "CTL_NPM_BIN",
+	"CTL_APPTAINER_BIN", "CTL_MIRROR", "CTL_NPM_CACHE",
+	"CTL_STATE_DIR", "CTL_CONFIG_DIR",
+}
+
+// ctlEnvFromProcess is Options.CtlEnv's default: whatever of ctlEnvKeys is
+// set in THIS process's environment, which for the daemon is ctl.env as
+// ctl-daemon.sh's load_env put it there, and for a --direct CLI run is
+// whatever the operator's shell exported.
+func ctlEnvFromProcess() map[string]string {
+	out := map[string]string{}
+	for _, k := range ctlEnvKeys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// homePathReason says why path violates "nothing in production may
+// reference a home directory" (plan, 2026-09-15), or "" when it does not.
+// /home is a literal prefix, not a lookup of any one account's actual home:
+// a production path must not depend on WHICH account's home it happens to
+// be under, so /home/<anyone> is flagged the same way as /home/wilke.
+func homePathReason(path string) string {
+	switch p := strings.TrimSpace(path); {
+	case p == "":
+		return ""
+	case p == "~" || strings.HasPrefix(p, "~/"):
+		return "starts with ~"
+	case p == "/home" || strings.HasPrefix(p, "/home/"):
+		return "is under /home"
+	default:
+		return ""
+	}
+}
+
+// homePathHostChecks is HomePathInProduction's host-scoped half: a prepared
+// artifact's worktree and the ctl.env host-tool values, neither of which
+// belongs to one tenant. codeChecks's registry paths and a tenant's live API
+// process are homePathCheck below, run per tenant.
+func (d *run) homePathHostChecks() {
+	for id, a := range d.fleet.Artifacts {
+		if why := homePathReason(a.Worktree); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, "", fmt.Sprintf("artifacts[%s].worktree=%q %s", id, a.Worktree, why))
+		}
+	}
+	for _, k := range ctlEnvKeys {
+		v, ok := d.opts.CtlEnv[k]
+		if !ok {
+			continue
+		}
+		if why := homePathReason(v); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, "", fmt.Sprintf("%s=%q (ctl.env) %s", k, v, why))
+		}
+	}
+}
+
+// homePathCheck is HomePathInProduction's per-tenant half: t's own registry
+// paths, and — the one live-host fact this needs — its API process's cwd and
+// argv[0], off the SAME listener table tenantChecks already built from
+// hostfacts (which reads /proc for exactly this, for an adopted,
+// pre-handover tenant this account cannot otherwise attribute).
+func (d *run) homePathCheck(t *registry.Tenant) {
+	check := func(field, path string) {
+		if why := homePathReason(path); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, t.Name, fmt.Sprintf("%s=%q %s", field, path, why))
+		}
+	}
+	check("data_dir", t.DataDir)
+	check("worktree", t.Worktree)
+	check("python_env", t.PythonEnv)
+	if l, ok := d.ports[t.Ports.API]; ok {
+		check("live api process cwd", l.Cwd)
+		if len(l.Cmdline) > 0 {
+			check("live api process argv[0]", l.Cmdline[0])
+		}
 	}
 }
 
