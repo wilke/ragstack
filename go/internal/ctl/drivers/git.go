@@ -48,6 +48,17 @@ type RealGit struct {
 var _ jobs.Git = (*RealGit)(nil)
 
 func (g *RealGit) git(ctx context.Context, args ...string) ([]byte, error) {
+	// safe.directory=*: git refuses ("dubious ownership") to touch a
+	// repository owned by another account, which is the normal case here —
+	// the mirror and the tenant worktrees are wilke's, the ctl runs as the
+	// service account, and a worktree's gitdir points back into the mirror,
+	// so naming one path would not be enough. The check protects a person
+	// from a planted repository in a directory they happened to cd into;
+	// this driver runs only on paths it validated first (checkMirror,
+	// checkDest, the approved roots) and never executes hooks, so the
+	// ownership of those paths is a fact about the deployment, not a
+	// warning. Scoped to this argv, never written to any gitconfig.
+	args = append([]string{"-c", "safe.directory=*"}, args...)
 	stdout, _, err := g.run.Run(ctx, Spec{Program: g.Bin, Args: args, Timeout: gitTimeout})
 	return stdout, err
 }
