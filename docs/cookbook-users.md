@@ -106,6 +106,24 @@ watch -n 5 "curl -s $BASE/v1/ingest/$JOB -H '$AUTH' | jq '{status, error, chunks
 curl -s $BASE/v1/collections -H "$AUTH" | jq '.collections[] | select(.id=="my-papers") | .count'
 ```
 
+**Name the content type for anything that is not a PDF.** The gate reads the
+multipart content type, not the file extension, and `curl` guesses it from the
+extension — it has no guess for `.md`, so a bare `-F files=@notes.md` sends
+`application/octet-stream` and is refused with a `400` that lists the accepted
+types but not the fix. Declare it:
+
+```bash
+curl -s -X POST $BASE/v1/ingest/upload -H "$AUTH" \
+  -F collection=my-papers \
+  -F "files=@notes.md;type=text/markdown" \
+  -F "files=@abstract.txt;type=text/plain"
+```
+
+`.txt` happens to work without this because `curl` guesses `text/plain`; `.md`
+does not. Markdown is stored **rendered**, not verbatim — headings, `**bold**`
+and `-` bullets are gone from the indexed text, which is fine for retrieval but
+not if you meant to match on the markup.
+
 PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
 `UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
 `%PDF`, is `415`. ≤ 50 MB each (`413`), ≤ 50 files and ≤ 500 MB per request.
