@@ -173,7 +173,13 @@ test-ctl: ## Run the ctl package tests (goldens, parity vs new-tenant.sh, canari
 # location to name, not two.
 OPS_SCRIPTS := ctl-daemon.sh ctl-as-svc.sh restore.sh pre-reboot.sh snapshot.sh verify.sh
 
-check-ops: ## bash -n + a home-directory-reference lint on the six ops/coconut scripts install-ops installs
+# OPS_PY_HELPERS ships alongside OPS_SCRIPTS: render_inventory.py is
+# snapshot.sh's helper, which looks for it beside itself (i.e. under
+# $(CTL_PREFIX)) before falling back to $REPO/ops/coconut — left uninstalled,
+# a snapshot run from $(CTL_PREFIX) alone never renders INVENTORY.md.
+OPS_PY_HELPERS := render_inventory.py
+
+check-ops: ## bash -n/ast-parse + a home-directory-reference lint on the seven ops/coconut files install-ops installs
 	@ok=1; \
 	for f in $(OPS_SCRIPTS); do \
 	  s="ops/coconut/$$f"; \
@@ -186,11 +192,22 @@ check-ops: ## bash -n + a home-directory-reference lint on the six ops/coconut s
 	    ok=0; \
 	  fi; \
 	done; \
+	for f in $(OPS_PY_HELPERS); do \
+	  s="ops/coconut/$$f"; \
+	  if [ ! -f "$$s" ]; then echo "check-ops: missing $$s" >&2; ok=0; continue; fi; \
+	  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$$s" || { echo "check-ops: $$s failed ast parse" >&2; ok=0; }; \
+	  hits=$$(grep -vE '^[[:space:]]*#' "$$s" | grep -nE '/home/|~/' || true); \
+	  if [ -n "$$hits" ]; then \
+	    echo "check-ops: $$s references a home directory outside a full-line comment:" >&2; \
+	    echo "$$hits" | sed "s|^|  $$s:|" >&2; \
+	    ok=0; \
+	  fi; \
+	done; \
 	if [ "$$ok" != 1 ]; then exit 1; fi; \
-	echo "check-ops: ok — bash -n clean, no /home or ~/ outside a comment, in: $(OPS_SCRIPTS)"
+	echo "check-ops: ok — bash -n/ast-parse clean, no /home or ~/ outside a comment, in: $(OPS_SCRIPTS) $(OPS_PY_HELPERS)"
 
-install-ops: check-ops ## Install ops/coconut's daemon/wrapper scripts into $(CTL_PREFIX) (0755)
-	@for f in $(OPS_SCRIPTS); do \
+install-ops: check-ops ## Install ops/coconut's daemon/wrapper scripts and render_inventory.py helper into $(CTL_PREFIX) (0755)
+	@for f in $(OPS_SCRIPTS) $(OPS_PY_HELPERS); do \
 	  install -m 0755 "ops/coconut/$$f" "$(CTL_PREFIX)/$$f" && echo "install-ops: $(CTL_PREFIX)/$$f"; \
 	done
 
