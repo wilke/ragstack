@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,15 +120,29 @@ func (p *RealProc) Owner(_ context.Context, port int) (int, int, error) {
 	return 0, 0, nil
 }
 
-// signals is the signal allowlist. Three signals, all of them a request to a
-// process rather than an execution: TERM and INT ask a server to shut down,
-// HUP asks it to reload. SIGKILL is absent on purpose — the ctl never takes
-// the decision to lose a store's in-flight writes, and the ES graceful-stop
-// check in the selftest exists to prove nothing does.
+// signals is the signal allowlist. TERM and INT ask a server to shut down,
+// HUP asks it to reload, and KILL is the escalation the instance supervisor
+// sends ONLY after a TERM and a full stop timeout have passed with the port
+// still held — never as a first move, never to a store (stores are stopped
+// through `apptainer instance stop`, which is graceful, and the selftest's
+// ES check proves it). It was absent at first, and the escalation the plan
+// promised ("TERM, then up to 60 s, then KILL") refused itself on the host.
+// Every signal here is still gated by the identity proof above.
 var signals = map[string]syscall.Signal{
 	"TERM": syscall.SIGTERM,
 	"INT":  syscall.SIGINT,
 	"HUP":  syscall.SIGHUP,
+	"KILL": syscall.SIGKILL,
+}
+
+// SignalNames is the allowlist by name, for the fake to agree with.
+func SignalNames() []string {
+	out := make([]string, 0, len(signals))
+	for k := range signals {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Signal sends sig to pid after proving the process is the one the caller

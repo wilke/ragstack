@@ -173,7 +173,9 @@ func TestFleetGrantRefusesARootYouDoNotOwn(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping: running as root, which this design never does")
 	}
-	rc, out, errs := capture(t, "fleet", "grant", "--user", name, "--roots", "/usr")
+	// --rag-root / so /usr passes the containment check and reaches the
+	// ownership one; outside the rag root a grant is a usage error instead.
+	rc, out, errs := capture(t, "fleet", "grant", "--user", name, "--roots", "/usr", "--rag-root", "/")
 	if rc != exitRefused {
 		t.Fatalf("rc %d (want %d refused): %s %s", rc, exitRefused, out, errs)
 	}

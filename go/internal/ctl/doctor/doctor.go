@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
@@ -760,7 +761,13 @@ func (d *run) aclGrantsOthers(tenant, path string, w hostfacts.Writability) {
 	var offenders []string
 	seen := map[string]bool{}
 	for _, g := range w.ACLGrants {
-		if !g.Group && (g.Name == d.opts.CtlUser || g.Name == d.ctlAccount() || (g.Owner != "" && g.Name == g.Owner)) {
+		if !g.Group && (g.Name == d.opts.CtlUser || g.Name == d.ctlAccount() || (g.Owner != "" && g.Name == g.Owner) ||
+			g.Name == d.managedRootOwner(path)) {
+			// The managed ROOT's owner is exempt too: `fleet grant` names the
+			// tree owner in every default ACL so that files the service
+			// account creates stay shared, and a doctor run AS the daemon
+			// would otherwise report the owner's own entry on every tenant
+			// the ctl created.
 			continue
 		}
 		if seen[g.String()] {
@@ -1001,4 +1008,24 @@ func firstArg(argv []string) string {
 		return "unknown"
 	}
 	return argv[0]
+}
+
+// managedRootOwner is the owner of the managed root (data, repos or backups
+// tree) that contains path, or "" when path is under none or the root cannot
+// be stat'ed here (a fixture run): the tree's owner is the account whose entry
+// every default ACL under it carries.
+func (d *run) managedRootOwner(path string) string {
+	for _, root := range []string{d.roots.DataDir, d.roots.ReposDir, d.roots.BackupsDir} {
+		if root == "" || !(path == root || strings.HasPrefix(path, root+"/")) {
+			continue
+		}
+		fi, err := os.Stat(root)
+		if err != nil {
+			return ""
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			return hostfacts.UsernameOf(int(st.Uid))
+		}
+	}
+	return ""
 }

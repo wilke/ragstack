@@ -206,7 +206,7 @@ func TestInstancesSeedConfigDirCopiesTheImageConfigIntoTheBind(t *testing.T) {
 }
 
 func TestInstancesRunPutsExtraEnvInTheChildEnvironmentAndNeverOnTheArgv(t *testing.T) {
-	d, s, _, sif := newInstances(t)
+	d, s, root, sif := newInstances(t)
 	s.respond("list", `{"instances":[]}`, "", 0)
 	const password = "hunter2-not-on-a-cmdline"
 	err := d.Run(context.Background(), jobs.InstanceSpec{
@@ -231,12 +231,17 @@ func TestInstancesRunPutsExtraEnvInTheChildEnvironmentAndNeverOnTheArgv(t *testi
 	env := s.childEnv("run")
 	for _, want := range []string{
 		"APPTAINERENV_POSTGRES_PASSWORD=" + password,
-		"APPTAINER_CACHEDIR=/rag/state/apptainer/cache",
-		"APPTAINER_CONFIGDIR=/rag/state/apptainer/config",
+		// The DRIVER's apptainer directories, not the spec's: os/exec keeps
+		// the last value of a repeated key and the driver appends its own
+		// last, so a spec cannot redirect apptainer's instance registry.
+		"APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config"),
 	} {
 		if !containsLine(env, want) {
 			t.Errorf("the child environment is missing %q (it has %v)", want, env)
 		}
+	}
+	if last := lastLineWithPrefix(env, "APPTAINER_CONFIGDIR="); last != "APPTAINER_CONFIGDIR="+filepath.Join(root, "apptainer", "config") {
+		t.Errorf("the last APPTAINER_CONFIGDIR the child sees is %q, want the driver's", last)
 	}
 }
 
@@ -448,4 +453,16 @@ func containsLine(lines []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// lastLineWithPrefix is the last environment line starting with prefix: the
+// value os/exec hands the child for a repeated key.
+func lastLineWithPrefix(env []string, prefix string) string {
+	last := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			last = e
+		}
+	}
+	return last
 }

@@ -340,7 +340,9 @@ func editBootCrontab(current string, want bool) (string, bool, error) {
 	}
 	marked := 0
 	for _, l := range lines {
-		if strings.Contains(l, bootMarker) {
+		// The marker identifies a line only at its END: a comment elsewhere
+		// in the crontab that mentions it is the operator's, not ours.
+		if strings.HasSuffix(strings.TrimSpace(l), bootMarker) {
 			marked++
 		}
 	}

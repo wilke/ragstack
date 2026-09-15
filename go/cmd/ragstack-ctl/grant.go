@@ -142,6 +142,12 @@ func grantRoots(csv, ragRoot string) ([]string, int) {
 		if !filepath.IsAbs(p) {
 			return nil, usageErr("fleet grant: --roots entry %q is not an absolute path", p)
 		}
+		// Every root lives under the rag root: a grant is a recursive rewrite
+		// of group and other bits, and pointing it at a home directory would
+		// be a mistake this command must not be able to make.
+		if _, err := paths.SafePath(ragRoot, filepath.Clean(p)); err != nil {
+			return nil, usageErr("fleet grant: --roots entry %q is not under the rag root %s (%v)", p, ragRoot, err)
+		}
 		out = append(out, filepath.Clean(p))
 	}
 	if len(out) == 0 {

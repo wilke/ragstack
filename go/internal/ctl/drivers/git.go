@@ -55,10 +55,14 @@ func (g *RealGit) git(ctx context.Context, args ...string) ([]byte, error) {
 	// so naming one path would not be enough. The check protects a person
 	// from a planted repository in a directory they happened to cd into;
 	// this driver runs only on paths it validated first (checkMirror,
-	// checkDest, the approved roots) and never executes hooks, so the
+	// checkDest, the approved roots) and disables hooks below, so the
 	// ownership of those paths is a fact about the deployment, not a
 	// warning. Scoped to this argv, never written to any gitconfig.
-	args = append([]string{"-c", "safe.directory=*"}, args...)
+	// core.hooksPath=/dev/null: `worktree add` DOES run the repository's
+	// post-checkout hook, and with the ownership check disabled that would be
+	// a hook from a repository another account may write to. No verb this
+	// driver runs needs a hook.
+	args = append([]string{"-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null"}, args...)
 	stdout, _, err := g.run.Run(ctx, Spec{Program: g.Bin, Args: args, Timeout: gitTimeout})
 	return stdout, err
 }

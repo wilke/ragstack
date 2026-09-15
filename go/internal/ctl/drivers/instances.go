@@ -55,11 +55,12 @@ type RealInstances struct {
 
 var _ jobs.Instances = (*RealInstances)(nil)
 
-// env is Env plus a call's own additions (spec.ExtraEnv), the driver's first
-// so a spec cannot redirect apptainer's state directory.
+// env is a call's own additions (spec.ExtraEnv) followed by the driver's Env:
+// os/exec keeps the LAST value of a repeated key, so the driver's state
+// directories win and a spec cannot redirect apptainer's instance registry.
 func (i *RealInstances) env(extra []string) []string {
-	out := append([]string(nil), i.Env...)
-	return append(out, extra...)
+	out := append([]string(nil), extra...)
+	return append(out, i.Env...)
 }
 
 // The three timeouts, which differ by what the command actually waits for.

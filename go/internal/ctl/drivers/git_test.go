@@ -131,7 +131,7 @@ func TestGitAddAndRemoveWorktreeBuildTheExpectedArgv(t *testing.T) {
 	// Every git call carries `-c safe.directory=*` first: the mirror and the
 	// tenant worktrees belong to the operator, the driver runs as the service
 	// account, and git's ownership check would otherwise refuse them all.
-	want := "-c safe.directory=* -C " + mirror + " worktree add --detach " + dest + " " + testSHA
+	want := "-c safe.directory=* -c core.hooksPath=/dev/null -C " + mirror + " worktree add --detach " + dest + " " + testSHA
 	if got := stub.argv(); got[len(got)-1] != want {
 		t.Errorf("AddWorktree ran %q, want %q", got[len(got)-1], want)
 	}
@@ -162,7 +162,7 @@ func TestGitAddAndRemoveWorktreeBuildTheExpectedArgv(t *testing.T) {
 		t.Fatalf("RemoveWorktree = %v", err)
 	}
 	argv = stub.argv()
-	if want := "-c safe.directory=* -C " + mirror + " worktree remove --force " + dest; argv[len(argv)-2] != want {
+	if want := "-c safe.directory=* -c core.hooksPath=/dev/null -C " + mirror + " worktree remove --force " + dest; argv[len(argv)-2] != want {
 		t.Errorf("RemoveWorktree ran %q, want %q", argv[len(argv)-2], want)
 	}
 
