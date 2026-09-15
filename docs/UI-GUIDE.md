@@ -91,9 +91,15 @@ Same tab, with your collection selected: drop files into the upload area.
 *A real job mid-flight: the job id, a `running` badge, and the counts — 3 total, 0
 completed, 0 failed, 3 pending. This is what you watch; it is not instant.*
 
-- **PDFs only, in the browser.** The picker offers nothing else. Plain text goes
-  through `POST /v1/ingest/upload` and works properly — the text is extracted,
-  chunked, embedded and retrievable like anything else, not a degraded path.
+- **PDFs only, in the browser.** The picker offers nothing else. Plain text and
+  Markdown go through `POST /v1/ingest/upload` and work properly — both were
+  tested on this deployment and produce retrievable chunks like a PDF, not a
+  degraded path. Two things to know if you go that route:
+  **you must declare the file's content type** (see
+  [cookbook-users.md](cookbook-users.md) — `curl` guesses it from the extension
+  and guesses wrong for `.md`), and **Markdown arrives rendered, not verbatim**:
+  headings, `**bold**` and `-` bullets become plain text, so do not expect to
+  match on the markup later.
   **XML is the exception:** it passes the upload check and then fails during
   processing with "no loader for .xml". The open-access corpora were built from
   JATS offline through a separate workflow, not through this endpoint.

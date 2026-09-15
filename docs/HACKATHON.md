@@ -97,7 +97,10 @@ These are real and current. None of them will lose your data.
   its new owner ([#558](https://github.com/wilke/ragstack/issues/558)).
 - **The upload box takes PDFs only**, even though the API accepts plain text,
   Markdown and XML. For anything that is not a PDF, use `POST /v1/ingest/upload`
-  directly.
+  directly — and **name the content type in the request**, because the server
+  checks the declared type, not the file extension. `curl -F files=@notes.md`
+  sends `application/octet-stream` and is refused; `-F "files=@notes.md;type=text/markdown"`
+  works.
 - **`.xml` is accepted and then fails** during processing with "no loader for
   .xml". Convert to text or PDF.
 - **One ingest job at a time.** Starting a second while one is running returns
