@@ -135,6 +135,53 @@ func (p *planner) bundleDirOf(sc *jobs.StepContext) (string, error) {
 	return filepath.Join(sc.Ops.Roots.BackupsDir, p.t.Name, id), nil
 }
 
+// chooseBundleID settles the bundle id ONCE, in the first step that writes:
+// the job's creation second, bumped forward a second at a time while a bundle
+// (finished or partial) of that id already exists. The chosen id is
+// checkpointed, and every later step reads it back through bundleID.
+//
+// Without it two backups of one tenant created within the same second — the
+// conformance suite does exactly that, and a retried backup on the host can —
+// shared one directory: the second job's legs landed beside the first's, its
+// SHA256SUMS then vouched for files it had not written, and a restore of
+// either bundle refused it as tampered. The contract's id pattern has no room
+// for a suffix, so the second is what moves.
+func (p *planner) chooseBundleID(ctx context.Context, sc *jobs.StepContext) error {
+	if sc == nil || sc.Job == nil {
+		return nil
+	}
+	for _, st := range sc.Job.Steps {
+		for _, id := range st.ExternalIDs {
+			if strings.HasPrefix(id, bundleIDPrefix) {
+				return nil // already settled (a resumed job keeps its directory)
+			}
+		}
+	}
+	at, err := time.Parse(time.RFC3339, sc.Job.CreatedAt)
+	if err != nil {
+		return nil // bundleID falls back to the op clock
+	}
+	taken := map[string]bool{}
+	entries, err := sc.Ops.Drivers.Files().ReadDir(ctx, filepath.Join(sc.Ops.Roots.BackupsDir, p.t.Name))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("listing %s's bundles: %w", p.t.Name, err)
+	}
+	for _, e := range entries {
+		taken[strings.TrimSuffix(e.Name, partialSuffix)] = true
+	}
+	for i := 0; i < 60; i++ {
+		id := at.Add(time.Duration(i)*time.Second).UTC().Format(stampFormat) + bundleSuffix
+		if !taken[id] {
+			if i > 0 {
+				sc.Logf("bundle id %s: the job's own second was taken by an earlier bundle", id)
+			}
+			return sc.Checkpoint(bundleIDPrefix + id)
+		}
+	}
+	return fmt.Errorf("%w: sixty consecutive bundle ids from %s are taken; wait a minute", jobs.ErrRefused,
+		at.UTC().Format(stampFormat))
+}
+
 // recorded reports whether this step already checkpointed id.
 func recorded(sc *jobs.StepContext, id string) bool {
 	if sc == nil || sc.Step == nil {
@@ -414,6 +461,9 @@ func (p *planner) addBundleDir(bundleDir string) {
 		Warnings: []string{"the bundle is written under a `" + partialSuffix + "` name and renamed only once its " +
 			"manifest is in it, so an interrupted backup never looks like a complete one"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if err := p.chooseBundleID(ctx, sc); err != nil {
+				return "", err
+			}
 			dir, err := p.partialDirOf(sc)
 			if err != nil {
 				return "", err

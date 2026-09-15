@@ -53,6 +53,10 @@ func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
 			st.Checkpoint = true
 			st.ExternalIDs = append(st.ExternalIDs, ids...)
 			r.fake.Note("checkpoint", ids...)
+			// Mirror the step records into the job the way the engine keeps
+			// them: a run half that reads a checkpoint back through
+			// sc.Job.Steps (the bundle id does) must see it here too.
+			r.syncJobSteps()
 			return nil
 		},
 		Reserve: func(resource string, _ *time.Time) error {
@@ -60,6 +64,22 @@ func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
 			return nil
 		},
 		Logf: func(format string, args ...any) {},
+	}
+}
+
+// syncJobSteps rebuilds job.Steps from the per-step records, in step order.
+func (r *runner) syncJobSteps() {
+	r.job.Steps = r.job.Steps[:0]
+	max := 0
+	for n := range r.steps {
+		if n > max {
+			max = n
+		}
+	}
+	for n := 1; n <= max; n++ {
+		if st, ok := r.steps[n]; ok {
+			r.job.Steps = append(r.job.Steps, *st)
+		}
 	}
 }
 

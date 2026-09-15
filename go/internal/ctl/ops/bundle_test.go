@@ -721,3 +721,37 @@ func sameJSON(a, b any) bool {
 	jb, _ := json.Marshal(b)
 	return string(ja) == string(jb)
 }
+
+// Two backups of one tenant created in the same second must not share a
+// bundle directory: the second job's legs landed beside the first's, its
+// SHA256SUMS vouched for files it had not written, and a restore of either
+// refused the bundle as tampered. The second id moves forward one second.
+func TestTwoBackupsInTheSameSecondGetDistinctBundleIDs(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	ids := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		p := plan(t, oc, "backup", map[string]any{"fence": true})
+		r := newRunner(oc, fake)
+		r.job.ID = "01ARZ3NDEKTSV4RRFFQ69G5FA" + string(rune('A'+i))
+		r.job.CreatedAt = "2026-09-14T09:30:00Z"
+		r.runAll(t, p)
+		for _, st := range r.steps {
+			for _, id := range st.ExternalIDs {
+				if strings.HasPrefix(id, bundleIDPrefix) {
+					ids[strings.TrimPrefix(id, bundleIDPrefix)] = true
+				}
+			}
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("two same-second backups used bundle ids %v, want two distinct ones", ids)
+	}
+	for _, want := range []string{"20260914T093000Z-backup", "20260914T093001Z-backup"} {
+		if !ids[want] {
+			t.Errorf("bundle id %s missing from %v", want, ids)
+		}
+		if fake.FakeFiles().Content("/rag/backups/tenants/dev/"+want+"/manifest.json") == nil {
+			t.Errorf("bundle %s has no manifest; files = %v", want, fake.FakeFiles().Paths())
+		}
+	}
+}
