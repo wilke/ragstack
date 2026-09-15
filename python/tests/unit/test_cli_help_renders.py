@@ -12,6 +12,7 @@ batch, and the grep came back empty because the process was crashing rather than
 because the flag was absent.
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ import pytest
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 _CLIS = [
     "load_embeddings.py",
+    "copy_collection.py",
     "ingest_shard.py",
     "embed_shard.py",
     "gowe_batch_ingest.py",
@@ -34,9 +36,20 @@ def test_help_renders(name, capsys):
     path = _SCRIPTS / name
     if not path.exists():
         pytest.skip(f"{name} not present")
-    spec = importlib.util.spec_from_file_location(f"_cli_{name}", path)
+    mod_name = f"_cli_{name.removesuffix('.py')}"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Register BEFORE executing, the way importlib documents it. Not a detail:
+    # a module-level @dataclass under `from __future__ import annotations` makes
+    # dataclasses resolve every string annotation via
+    # `sys.modules.get(cls.__module__)`, which is None for an unregistered
+    # module — so the import dies with an AttributeError inside dataclasses
+    # and the CLI looks broken when it is fine.
+    sys.modules[mod_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(mod_name, None)
     if not hasattr(mod, "parse_args"):
         pytest.skip(f"{name} has no parse_args")
     # SystemExit(0) is argparse's normal --help exit. Any other exception —
