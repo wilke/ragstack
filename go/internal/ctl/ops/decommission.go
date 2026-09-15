@@ -47,7 +47,7 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	managed := t.Supervisor == supervisorSystemd && t.Owner == p.op.deps.owner()
 	sandbox := p.isSandbox()
 	if !managed && !sandbox {
-		return p.refuse("%s is neither a ctl-managed tenant (supervisor systemd, owner svcbvbrc — it is %s/%s) nor a "+
+		return p.refuse("%s is neither a tenant this ctl runs (supervisor systemd, owner "+p.op.deps.owner()+" — it is %s/%s) nor a "+
 			"selftest sandbox (ports %d–%d): v1 decommission quarantines only what the ctl runs",
 			t.Name, t.Supervisor, t.Owner, paths.SelftestBase, paths.SelftestEnd)
 	}

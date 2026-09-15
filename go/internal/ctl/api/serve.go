@@ -138,9 +138,14 @@ func RunServe(args []string) int {
 		Mode:         model.WorkerDaemon,
 		Host:         hostname(),
 		FakeDrivers:  *fakeDrivers,
-		SecretsTTL:   DefaultSecretsTTL,
-		Logger:       logger,
-		Now:          time.Now,
+		// The fixture host is coconut's daemon: its tenants are owned by the
+		// service account, so the fixture daemon acts as that account whoever
+		// runs it. Without this a conformance run as wilke refused to
+		// decommission a fixture tenant as "owned by somebody else".
+		Owner:      fakeOwner(*fakeDrivers),
+		SecretsTTL: DefaultSecretsTTL,
+		Logger:     logger,
+		Now:        time.Now,
 	}
 	SetHostToolsFromEnv(&cfg)
 	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
@@ -518,4 +523,13 @@ func RootsFromEnv(ragRoot string) paths.Roots {
 		CtlStateDir:  strings.TrimSpace(os.Getenv(EnvStateDir)),
 		CtlConfigDir: strings.TrimSpace(os.Getenv(EnvConfigDir)),
 	})
+}
+
+// fakeOwner is the account the --fake-drivers daemon acts as; "" lets
+// BuildEngine take the process's own user for a real daemon.
+func fakeOwner(fake bool) string {
+	if fake {
+		return "svcbvbrc"
+	}
+	return ""
 }
