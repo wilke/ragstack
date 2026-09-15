@@ -34,6 +34,36 @@ now**, so that is the tag the commands below use.
 
 ---
 
+### How to read a citation
+
+Code references are `file:line` against the tree at the tag named above.
+
+- A path starting `python/`, `go/`, `ops/coconut/`, `frontend/` or `contracts/`
+  is relative to the **repository root** — `python/ragstack/tenancy.py:36`. This
+  form is always unambiguous and is the one to prefer.
+- Any other path is relative to **`python/ragstack/`** — `api/security.py:990`,
+  `ops/evict.py:158` (which is `python/ragstack/ops/evict.py`, not the repo's
+  `ops/`).
+- A **bare filename** — `collections.py:1569` — means the file the surrounding
+  section is about.
+- **Documentation is cited too**, and differently: a bare `ctl-quickstart.md:143`
+  is a sibling in `docs/runbooks/`, while anything else is repo-root
+  (`CLAUDE.md:102`, `docs/runbooks/ctl-deploy.md:1135`). Prose renumbers far
+  faster than code, so read a doc line number as a hint and the surrounding
+  heading as the real anchor.
+
+That last form is the one to watch. Several of these basenames exist more than
+once in the tree (`collections.py` and `documents.py` both do), so a bare
+citation resolves from its section, not from a search. **Anything checking these
+mechanically needs that rule, or it will resolve to the wrong file and report
+correct citations as broken** — which is worse than not checking, because the
+next person edits good citations to satisfy a bad resolver. If such a check is
+ever written, qualify the citations first or give the checker the convention.
+
+One exception is called out where it appears: `/rag/config/proxy/snippets/…` is a
+**live-host path**, not a repo file. Nothing here can pin it, and it drifts with
+the gateway.
+
 ## Two rules before anything starts
 
 ### Never stop a service by process-name pattern
