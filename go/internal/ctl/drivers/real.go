@@ -231,15 +231,6 @@ func (i *RealInstances) Stop(context.Context, string) error {
 	return pending(jobs.ErrRefused, "instances", "Stop")
 }
 
-// SeedConfigDir will be
-// `<Bin> exec --bind <hostDir>:/__seed <sif> cp -R <containerDir>/. /__seed/`
-// — the same argv `ragstack-ctl es-seed-config` runs from the ES unit's
-// ExecStartPre, which the instance supervisor has to run itself because it has
-// no ExecStartPre.
-func (i *RealInstances) SeedConfigDir(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "instances", "SeedConfigDir")
-}
-
 // defaultCrontabBin is crontab(1) on coconut.
 const defaultCrontabBin = "/usr/bin/crontab"
 
