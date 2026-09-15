@@ -182,17 +182,33 @@ def _settings() -> Any:
 
 
 #: A registry NAME, as it travels on a workflow input (``registry: hackathon``).
-#: Deliberately the same shape as a collection id: it arrives from a submission
-#: and is used to BUILD AN ENVIRONMENT VARIABLE NAME, so it is validated before
-#: any lookup rather than after. No path separator, no ``=``, no shell
-#: metacharacter, no leading punctuation, nothing empty.
-_REGISTRY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
+#: It arrives from a submission and is used to BUILD AN ENVIRONMENT VARIABLE
+#: NAME, so it is validated before any lookup rather than after: no path
+#: separator, no ``=``, no shell metacharacter, no leading punctuation, nothing
+#: empty.
+#:
+#: **Lowercase and underscore only, and that is load-bearing.** The name is
+#: mapped to an env-var suffix by uppercasing, so a character set that also
+#: admitted ``-``/``.``/uppercase would map ``dev``, ``Dev``, ``DEV``, ``a-b``,
+#: ``a.b`` and ``a_b`` onto the SAME variables — two tenants whose names differ
+#: only by case or punctuation would silently share one registry, which is the
+#: very failure this module exists to prevent, reintroduced one level up.
+#: Restricting the input makes the map injective at no cost: every registry has
+#: exactly one spelling, and a second spelling is refused at validation instead
+#: of colliding at lookup.
+_REGISTRY_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 
-#: ``registry=hackathon`` -> ``COLLECTION_STORE_BACKEND_HACKATHON``. Uppercase,
-#: and anything outside ``[A-Z0-9_]`` becomes ``_`` (so ``prod.eu`` and
-#: ``prod-eu`` both reach ``..._PROD_EU`` — collapsing two names onto one
-#: registry is visible in the refusal, unlike an env name that cannot be set).
+
 def registry_env_suffix(name: str) -> str:
+    """``hackathon`` -> ``HACKATHON``, the suffix of this registry's variables.
+
+    Uppercasing is the whole transform, and because
+    :data:`_REGISTRY_NAME_RE` admits only ``[a-z0-9_]`` the map is INJECTIVE:
+    distinct valid names have distinct suffixes. The substitution below is a
+    no-op for any name that passed validation and exists only so an unvalidated
+    caller cannot produce a syntactically impossible variable name — it is not
+    the collision-avoidance mechanism, the character set is.
+    """
     return re.sub(r"[^A-Z0-9_]", "_", name.strip().upper())
 
 
@@ -210,10 +226,15 @@ def validate_registry_name(value: str) -> str:
         return ""
     if not _REGISTRY_NAME_RE.match(name):
         raise ValueError(
-            f"registry name {name!r} is invalid. A registry name selects an "
-            f"environment variable, so it must match {_REGISTRY_NAME_RE.pattern} "
-            "(letters, digits, '_', '.', '-'; at most 64 characters). It names a "
-            "REGISTRY, never a path, a DSN or any other coordinate."
+            f"registry name {name!r} is invalid. Use lowercase letters, digits "
+            "and '_' only, starting with a letter or digit, at most 64 "
+            f"characters (e.g. 'hackathon', 'prod_eu') — the pattern is "
+            f"{_REGISTRY_NAME_RE.pattern}. Uppercase, '-' and '.' are refused "
+            "rather than folded, because the name becomes an environment "
+            "variable SUFFIX by uppercasing: folding them would let 'dev' and "
+            "'Dev', or 'a-b' and 'a_b', name the same registry while reading as "
+            "two. The name selects a REGISTRY, never a path, a DSN or any other "
+            "coordinate."
         )
     return name
 
@@ -376,26 +397,52 @@ def _secret_values(settings: Any) -> list[str]:
     exception that embeds it — asyncpg and SQLAlchemy both quote the URL they
     failed on — would otherwise print it to task stderr under the eyes of
     whoever is reading the job that failed.
+
+    Three spellings per DSN, because a driver need not echo the string it was
+    given: the whole URL, the password as configured, and the password
+    percent-DECODED. That last one is the non-obvious case — a password written
+    ``p%40ss`` in the DSN is ``p@ss`` by the time a library that parsed the URL
+    reports it, and a scrub that only knew the encoded form would print the
+    plaintext. No leak from asyncpg 0.31 was reproducible today (refused
+    connection, bad port, bad scheme, garbage DSN, bad sslmode were all probed);
+    this is hardening against the next driver, not a repair.
     """
-    out = []
+    from urllib.parse import unquote, urlsplit
+
+    out: list[str] = []
     for field in ("collection_store_dsn", "postgres_dsn"):
         value = (getattr(settings, field, "") or "").strip()
-        if value:
-            out.append(value)
+        if not value:
+            continue
+        out.append(value)
+        try:
+            password = urlsplit(value).password
+        except ValueError:  # a DSN too malformed to split is still scrubbed whole
+            password = None
+        for form in (password, unquote(password) if password else None):
+            # One-character passwords are skipped: scrubbing every "a" out of an
+            # error message destroys the diagnosis and protects nothing real.
+            if form and len(form) > 1 and form not in out:
+                out.append(form)
     return out
 
 
 def _redact(text: str, settings: Any) -> str:
     """Scrub credentials out of third-party error text.
 
-    Two passes, because neither alone is enough: the exact configured value
-    (which catches a DSN with no password in it, e.g. a unix-socket URL), and
-    the structural ``user:password@`` form (which catches the same DSN after a
-    driver normalised it — ``postgresql+asyncpg://`` becomes ``postgresql://``
-    before asyncpg ever quotes it).
+    Several passes, because no one of them is enough: the exact configured value
+    (which catches a DSN with no password in it, e.g. a unix-socket URL), the
+    password on its own in both its encoded and decoded spellings (a library
+    that parsed the URL reports the decoded one), and the structural
+    ``user:password@`` form (which catches the same DSN after a driver
+    normalised it — ``postgresql+asyncpg://`` becomes ``postgresql://`` before
+    asyncpg ever quotes it).
+
+    Longest first, so scrubbing the bare password cannot leave a mangled URL
+    behind that the whole-value pass would then fail to recognise.
     """
-    for secret in _secret_values(settings):
-        text = text.replace(secret, "<redacted DSN>")
+    for secret in sorted(_secret_values(settings), key=len, reverse=True):
+        text = text.replace(secret, "<redacted>")
     return _DSN_PASSWORD_RE.sub(r"\1<redacted>\2", text)
 
 
@@ -662,19 +709,28 @@ def add_arguments(parser: Any) -> None:
                    help="X-API-Key for --create-via-api (env RAGSTACK_API_KEY)")
     g.add_argument("--api-bearer", default=os.getenv("RAGSTACK_BEARER", ""),
                    help="bearer token for --create-via-api (env RAGSTACK_BEARER)")
-    g.add_argument("--registry",
-                   default=os.getenv("RAGSTACK_COLLECTION_REGISTRY", ""),
-                   metavar="NAME",
+    # NO env default, deliberately — unlike every other flag in this group.
+    # An ambient RAGSTACK_COLLECTION_REGISTRY would be set in a worker group's
+    # env-file, and the whole point of #563 is that ONE shared group serves many
+    # tenants: an ambient default there would mean "absent on the submission" no
+    # longer restores the pre-#563 behaviour but silently selects one tenant's
+    # registry for every job that omitted the input. It would also override
+    # jats-ingest.cwl's exemption, whose tool binds no --registry precisely
+    # because it pins COLLECTION_STORE_* itself per submission. WHICH registry
+    # is a per-JOB fact and must arrive on the command line or not at all.
+    g.add_argument("--registry", default="", metavar="NAME",
                    help="WHICH collection registry to resolve --collection-id "
                         "against, by NAME (e.g. 'hackathon'); read from "
                         "COLLECTION_STORE_BACKEND_<NAME> and "
                         "COLLECTION_STORE_{PATH,DSN}_<NAME> in THIS process's "
-                        "environment (env RAGSTACK_COLLECTION_REGISTRY). A name, "
-                        "never coordinates and never a credential, so it is safe "
-                        "as a visible workflow input (#563). Omitted = the "
-                        "unsuffixed COLLECTION_STORE_* settings. A name nothing "
-                        "is configured for is refused, never silently fallen "
-                        "back from.")
+                        "environment. A name, never coordinates and never a "
+                        "credential, so it is safe as a visible workflow input "
+                        "(#563). Has no env default on purpose: it is a per-job "
+                        "fact, and an ambient one on a shared worker group would "
+                        "silently pick a tenant. Omitted = the unsuffixed "
+                        "COLLECTION_STORE_* settings. A name nothing is "
+                        "configured for is refused, never silently fallen back "
+                        "from.")
 
 
 def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget:

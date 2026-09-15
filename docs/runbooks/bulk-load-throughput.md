@@ -81,8 +81,25 @@ which the tool resolves against per-registry variables in its own container:
 | `COLLECTION_STORE_DSN_<NAME>` | operator | **`--secret-file` only** |
 | `registry` (the name) | the tenant API, per job, from `COLLECTION_REGISTRY_NAME` | the submission |
 
-`<NAME>` is the registry name uppercased with everything outside `[A-Z0-9_]`
-mapped to `_`.
+There is deliberately **no `RAGSTACK_COLLECTION_REGISTRY` env fallback** for
+`--registry`. On a shared worker group an ambient default would silently pick
+one tenant's registry for every job that omitted the input, and would override
+`jats-ingest.cwl`, whose tool binds no `--registry` because it pins
+`COLLECTION_STORE_*` itself per submission. Do not add one.
+
+`<NAME>` is simply the registry name uppercased. Registry names are
+**lowercase letters, digits and `_` only** (`^[a-z0-9][a-z0-9_]{0,63}$`);
+`Hackathon`, `prod-eu` and `prod.eu` are refused rather than folded, because
+folding them would let two names that read as different tenants resolve to the
+same `COLLECTION_STORE_*_<NAME>` variables.
+
+**The suffixed variables are read from the process environment only.** The
+unsuffixed `COLLECTION_STORE_*` also come from a `.env` file (pydantic's
+`env_file`); the per-registry ones do not — they are looked up with `os.getenv`
+in the tool. That is right for a container, where the worker injects them as
+real environment variables, and surprising on the host: testing a `--registry`
+invocation from a checkout with the values only in `.env` will report the
+registry as unconfigured. `export` them, or use `env VAR=… python …`.
 
 Two rules that are not stylistic:
 

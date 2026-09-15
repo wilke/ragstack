@@ -201,8 +201,12 @@ COLLECTION_STORE_BACKEND_DEV=sqlite
 COLLECTION_STORE_PATH_DEV=/rag/data/tenants/dev/state/ragstack_collections.db
 ```
 
-The suffix is the name uppercased with everything outside `[A-Z0-9_]` mapped to
-`_`. The API seeds the input per job from `COLLECTION_REGISTRY_NAME`, the same
+The suffix is simply the name uppercased — registry names are **lowercase
+letters, digits and `_` only** (`^[a-z0-9][a-z0-9_]{0,63}$`), so that no two
+names can reach the same variables: `Hackathon` and `prod-eu` are refused, not
+folded onto `hackathon` and `prod_eu`. The variables are read from the process
+environment only (`os.getenv`), not from a `.env` file. The API seeds the input
+per job from `COLLECTION_REGISTRY_NAME`, the same
 way it seeds `qdrant_url`/`es_url`; omitting it keeps the pre-#563 behaviour
 (the worker's unsuffixed `COLLECTION_STORE_*`), which is how the `dev` tenant
 keeps running untouched. A name the worker has nothing configured for is

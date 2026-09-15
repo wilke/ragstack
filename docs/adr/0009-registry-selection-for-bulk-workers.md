@@ -56,9 +56,19 @@ The obvious fix — put the registry's coordinates on the submission next to
    per-registry suffix: `COLLECTION_STORE_BACKEND_<NAME>` plus
    `COLLECTION_STORE_DSN_<NAME>` or `COLLECTION_STORE_PATH_<NAME>` (and
    `COLLECTIONS_FILE_<NAME>` for the json backend). Suffix = the name
-   uppercased, with every character outside `[A-Z0-9_]` replaced by `_`. The
-   name is validated against a strict pattern before use — it arrives on a
-   submission and builds an environment variable name.
+   uppercased. The name is validated against `^[a-z0-9][a-z0-9_]{0,63}$` before
+   use — it arrives on a submission and builds an environment variable name.
+
+   **Lowercase and underscore only, and that restriction is the point.** Because
+   the suffix is the name uppercased, an alphabet that also admitted uppercase,
+   `-` or `.` would map `dev`/`Dev`/`DEV` and `a-b`/`a.b`/`a_b` onto the same
+   variables — two tenants whose names differed only by case or punctuation
+   would silently share one registry, which is this decision's own failure mode
+   reintroduced one level up, and invisible: unlike a missing variable, a
+   collision resolves *successfully* against the wrong database. Restricting the
+   input makes the map injective at no cost: every registry has exactly one
+   spelling, and a second spelling is refused at validation rather than folded
+   at lookup.
 3. A `registry` that names an **unconfigured** registry is fatal. It does **not**
    fall back to the unsuffixed `COLLECTION_STORE_*` variables: a silent fallback
    to another tenant's registry is precisely the defect above. The refusal names
@@ -67,6 +77,14 @@ The obvious fix — put the registry's coordinates on the submission next to
    unsuffixed variables — so a deployment that has not adopted the convention is
    byte-for-byte unchanged.
 5. The DSN reaches the container **only** through the worker's `--secret-file`.
+6. `--registry` takes **no ambient environment default**, unlike every other
+   flag on the bulk writers. An ambient default would live in a worker group's
+   env-file, and this decision's whole direction is one shared group serving
+   many tenants — so "absent on the submission" would stop meaning the previous
+   behaviour and start silently meaning one particular tenant's registry. It
+   would also override `jats-ingest.cwl`'s exemption, whose tool binds no
+   `--registry` precisely because it pins `COLLECTION_STORE_*` itself. WHICH
+   registry is a per-**job** fact and arrives on the command line or not at all.
 
 ## Consequences
 

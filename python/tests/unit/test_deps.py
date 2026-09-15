@@ -1,4 +1,6 @@
 """Unit tests for backend wiring — the require_durable_backends gate."""
+import json
+
 import pytest
 
 from ragstack.api import deps
@@ -413,3 +415,77 @@ def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
         index = deps._build_text_index()
     assert isinstance(index, InMemoryTextIndex)
     assert any("text index is in-memory" in r.message for r in caplog.records)
+
+
+# --- #563: WHICH registry, on the two submission paths that are not ingest --- #
+#
+# `_gowe_inputs` (the ingest path) is covered in tests/api/test_ingest_gowe_path.py.
+# These two are the OTHER submitters — restore and graph-extract — and they were
+# written without tests: deleting both seeds left the whole suite green. A seed
+# nothing asserts is a seed that silently stops working, which on this path means
+# a restore or a graph load resolving against another tenant's registry.
+
+
+def _static_inputs_for_restore(monkeypatch):
+    """The static workflow inputs `_build_lifecycle_gate` gives its restorer."""
+    import httpx
+
+    from ragstack.collection_store import InMemoryCollectionStore
+
+    monkeypatch.setattr(deps.settings, "collection_restore_inputs_json", "")
+    http = httpx.AsyncClient(base_url="http://127.0.0.1:1")
+    gate = deps._build_lifecycle_gate(InMemoryCollectionStore(), http)
+    return gate.restorer.static_inputs
+
+
+def _static_inputs_for_graph_extract(monkeypatch):
+    """The static workflow inputs `_build_graph_extract_runner` gives its runner."""
+    import httpx
+
+    from ragstack.collection_store import InMemoryCollectionStore
+
+    monkeypatch.setattr(deps.settings, "graph_extract_inputs_json", "")
+    http = httpx.AsyncClient(base_url="http://127.0.0.1:1")
+    runner = deps._build_graph_extract_runner(None, InMemoryCollectionStore(), http)
+    return runner.static_inputs
+
+
+@pytest.mark.parametrize("static_inputs_for", [
+    _static_inputs_for_restore, _static_inputs_for_graph_extract,
+], ids=["restore", "graph-extract"])
+def test_no_registry_is_seeded_when_the_setting_is_unset(
+        static_inputs_for, monkeypatch):
+    """Default is silence, and silence is the pre-#563 contract: the worker uses
+    its own unsuffixed COLLECTION_STORE_*."""
+    monkeypatch.setattr(deps.settings, "collection_registry_name", "")
+    assert "registry" not in static_inputs_for(monkeypatch)
+
+
+@pytest.mark.parametrize("static_inputs_for", [
+    _static_inputs_for_restore, _static_inputs_for_graph_extract,
+], ids=["restore", "graph-extract"])
+def test_the_registry_name_is_seeded_on_every_submission_path(
+        static_inputs_for, monkeypatch):
+    """Restore replays into the stores named by a registry entry and
+    graph-extract's load leg resolves its graph scope the same way, so both need
+    to say WHICH registry for exactly the reason the ingest path does — and both
+    read it from the same setting, so neither may be the one that was forgotten."""
+    monkeypatch.setattr(deps.settings, "collection_registry_name", "hackathon")
+    assert static_inputs_for(monkeypatch)["registry"] == "hackathon"
+
+
+@pytest.mark.parametrize("static_inputs_for", [
+    _static_inputs_for_restore, _static_inputs_for_graph_extract,
+], ids=["restore", "graph-extract"])
+def test_no_submission_path_seeds_a_registry_credential(
+        static_inputs_for, monkeypatch):
+    """A NAME, and only a name, on every path. `submitted_inputs` is an
+    immutable snapshot the UI renders and the engine stores in plaintext, so a
+    DSN placed there could never be withdrawn."""
+    dsn = "postgresql+asyncpg://ragstack:hunter2@db.internal/ragstack"
+    monkeypatch.setattr(deps.settings, "collection_registry_name", "hackathon")
+    monkeypatch.setattr(deps.settings, "collection_store_dsn", dsn)
+    monkeypatch.setattr(deps.settings, "postgres_dsn", dsn)
+    blob = json.dumps(static_inputs_for(monkeypatch), default=str)
+    assert "hackathon" in blob
+    assert "hunter2" not in blob and dsn not in blob

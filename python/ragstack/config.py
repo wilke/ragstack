@@ -153,6 +153,12 @@ class Settings(BaseSettings):
     # DSN placed there is permanent. The DSN reaches the container through the
     # worker's --secret-file instead.
     #
+    # Lowercase letters, digits and '_' only: the name becomes the variable
+    # SUFFIX by uppercasing, so admitting 'Dev' or 'a-b' would let two names that
+    # read as different tenants resolve to one registry — this setting's own
+    # failure mode, one level up. Validated here so a typo stops the API at
+    # config load rather than surfacing as a refused ingest after extract ran.
+    #
     # Empty (the default) = today's behaviour exactly: no `registry` input is
     # sent and the worker uses its unsuffixed COLLECTION_STORE_* variables. That
     # is what keeps the `dev` tenant running untouched through the transition.

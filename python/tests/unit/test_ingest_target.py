@@ -183,10 +183,38 @@ def test_a_named_registry_resolves_against_that_registry(tmp_path, monkeypatch):
     assert t.collection == "ragstack_lib_scratch_uiguide"
 
 
-def test_the_suffix_is_the_uppercased_name_with_the_rest_mapped_to_underscore():
+def test_the_suffix_is_the_uppercased_name():
     assert it.registry_env_suffix("hackathon") == "HACKATHON"
-    assert it.registry_env_suffix("prod-eu") == "PROD_EU"
-    assert it.registry_env_suffix("prod.eu") == "PROD_EU"
+    assert it.registry_env_suffix("prod_eu") == "PROD_EU"
+
+
+def test_two_names_that_would_share_one_suffix_cannot_both_exist():
+    """**The name -> env-var-suffix map must be INJECTIVE.**
+
+    The suffix is the name uppercased, so an alphabet admitting uppercase, '-'
+    or '.' would map ``dev``/``Dev``/``DEV`` and ``a-b``/``a.b``/``a_b`` onto the
+    same COLLECTION_STORE_*_ variables. Two tenants whose names differ only by
+    case or punctuation would then silently share one registry — which is this
+    PR's own bug, reintroduced one level up, and invisible: unlike a missing
+    variable, a collision resolves successfully against the wrong database.
+
+    So the collision is refused at VALIDATION rather than folded at lookup: of
+    each colliding pair exactly one spelling is a legal name, and the others do
+    not reach the environment at all. Asserted as a property over the pairs, not
+    as "uppercase is rejected", because the property is what matters."""
+    for canonical, colliding in (("dev", ("Dev", "DEV", "dEv")),
+                                 ("a_b", ("a-b", "a.b", "A_B"))):
+        assert it.validate_registry_name(canonical) == canonical
+        for name in colliding:
+            assert it.registry_env_suffix(name) == it.registry_env_suffix(
+                canonical), "the pair must actually collide, or this proves nothing"
+            with pytest.raises(ValueError):
+                it.validate_registry_name(name)
+
+    # And the map really is injective over names that ARE legal.
+    legal = ["dev", "hackathon", "prod_eu", "a_b", "ab", "x1", "1x"]
+    suffixes = [it.registry_env_suffix(n) for n in legal]
+    assert len(set(suffixes)) == len(legal)
 
 
 def test_an_unconfigured_registry_refuses_and_does_not_fall_back(tmp_path, monkeypatch):
@@ -286,6 +314,11 @@ def test_a_named_registry_never_inherits_the_unsuffixed_postgres_dsn(monkeypatch
     "$DEV",              # expansion
     "-dev",              # leading punctuation
     "d" * 65,            # oversized
+    "Dev",               # uppercase — would collide with 'dev'
+    "DEV",               # …and so would this
+    "a-b",               # '-' — would collide with 'a_b'
+    "a.b",               # '.' — likewise
+    "_dev",              # leading underscore: not a name, a suffix fragment
 ])
 def test_an_invalid_registry_name_is_refused_before_any_env_lookup(bad, monkeypatch):
     """The name arrives on a submission and is used to BUILD AN ENVIRONMENT
@@ -308,6 +341,12 @@ def test_a_valid_registry_name_is_accepted_by_the_settings_validator():
 
     assert it.validate_registry_name(" hackathon ") == "hackathon"
     assert it.validate_registry_name("") == ""
+    # The message has to teach the rule, not only report the rejection: an
+    # operator who typed `Hackathon` needs to be told lowercase, here, once.
+    with pytest.raises(ValueError) as bad:
+        it.validate_registry_name("Hackathon")
+    assert "lowercase" in str(bad.value)
+    assert "hackathon" in str(bad.value) or "prod_eu" in str(bad.value)
     assert Settings(collection_registry_name="hackathon",
                     qdrant_url="http://127.0.0.1:1").collection_registry_name == "hackathon"
     with pytest.raises(Exception) as e:
@@ -362,6 +401,47 @@ def test_a_driver_error_carrying_the_dsn_is_scrubbed(monkeypatch):
     assert "connection to" in msg  # the diagnosis survives the scrubbing
 
 
+def test_a_percent_encoded_password_is_scrubbed_in_both_spellings(monkeypatch):
+    """A driver need not echo the string it was given. A password written
+    ``p%40ss`` in the DSN is ``p@ss`` by the time a library that PARSED the URL
+    reports it, so scrubbing only the configured spelling would print the
+    plaintext. No leak was reproducible from asyncpg 0.31 today; this is
+    hardening against the next driver."""
+    dsn = "postgresql://ragstack:p%40ssw0rd@127.0.0.1:1/ragstack"
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "postgres")
+    monkeypatch.setenv("COLLECTION_STORE_DSN_HACKATHON", dsn)
+
+    def boom(settings):
+        # Neither the whole DSN nor its structural form — just the password, the
+        # way a parsed-and-reported error surfaces it.
+        raise RuntimeError("password authentication failed for password p@ssw0rd")
+
+    monkeypatch.setattr(it, "load_specs", boom)
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("c", settings=_settings(), registry="hackathon")
+    msg = str(e.value)
+    assert "p@ssw0rd" not in msg
+    assert "p%40ssw0rd" not in msg
+    assert "password authentication failed" in msg  # diagnosis survives
+
+
+def test_a_one_character_password_does_not_shred_the_message(monkeypatch):
+    """Discriminator for the scrub above. Replacing every occurrence of a
+    one-character secret would gut an error message and protect nothing — the
+    character is not the credential in any meaningful sense."""
+    monkeypatch.setenv("COLLECTION_STORE_BACKEND_HACKATHON", "postgres")
+    monkeypatch.setenv("COLLECTION_STORE_DSN_HACKATHON",
+                       "postgresql://ragstack:a@127.0.0.1:1/ragstack")
+
+    def boom(settings):
+        raise RuntimeError("cannot allocate a database handle")
+
+    monkeypatch.setattr(it, "load_specs", boom)
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("c", settings=_settings(), registry="hackathon")
+    assert "cannot allocate a database handle" in str(e.value)
+
+
 # --- the flags, as a bulk writer sees them ---------------------------------- #
 
 def test_the_registry_flag_reaches_resolution_from_the_command_line(
@@ -380,6 +460,31 @@ def test_the_registry_flag_is_declared_on_every_bulk_writer():
     it.add_arguments(p)
     assert p.parse_args([]).registry == ""
     assert p.parse_args(["--registry", "hackathon"]).registry == "hackathon"
+
+
+def test_the_registry_flag_has_no_ambient_env_default(monkeypatch):
+    """Unlike every other flag in this group, ``--registry`` must NOT fall back
+    to an environment variable.
+
+    An ambient default would be set in a worker group's env-file, and the whole
+    point of #563 is that ONE shared group serves many tenants: "absent on the
+    submission" would then stop meaning the pre-#563 behaviour and start
+    silently meaning one particular tenant's registry. It would also defeat
+    ``jats-ingest.cwl``'s exemption, whose tool binds no ``--registry``
+    precisely because it pins COLLECTION_STORE_* itself, per submission.
+
+    Asserted against the spellings a reader might reach for, so reintroducing
+    any of them fails here."""
+    for var in ("RAGSTACK_COLLECTION_REGISTRY", "RAGSTACK_REGISTRY",
+                "COLLECTION_REGISTRY_NAME", "REGISTRY"):
+        monkeypatch.setenv(var, "dev")
+    p = argparse.ArgumentParser()
+    it.add_arguments(p)
+    assert p.parse_args([]).registry == "", (
+        "--registry picked up an ambient environment default; on a shared "
+        "worker group that silently selects one tenant's registry for every "
+        "job that omitted the input (#563)"
+    )
 
 
 def test_the_id_wins_over_the_physical_name_and_a_mismatch_is_refused(
