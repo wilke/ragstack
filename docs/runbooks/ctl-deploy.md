@@ -883,6 +883,130 @@ handed-over tenant's row says `desired_boot: enabled`.
 | boot | `ragstack-ctl selftest --boot` | exit 0 once items 1–2 are done |
 | no collateral | `ragstack-ctl doctor` · `jq .generation /rag/data/tenants/registry.json` | the five adopted tenants unchanged; the generation advanced only by the selftest's own writes; no new tombstones |
 
+## PR-D2: Grant the service account access with ACLs (no root)
+
+`svcbvbrc` (uid 10078) has to read and write the three managed roots, which
+`wilke` owns. This week there is no root on coconut, so `chown` is not
+available — and `chmod g+w` is not an option either, because svcbvbrc's only
+group is `cels`, which has **1869 members**. A named POSIX ACL entry names one
+account and nobody else, and `/rag` is ext4 with ACLs honoured (proven
+2026-09-15: a default ACL set via `setxattr` let svcbvbrc create a file in a
+wilke-owned directory).
+
+There is no `setfacl` and no `getfacl` on this host, so the ctl writes the
+`system.posix_acl_access` / `system.posix_acl_default` xattrs itself
+(`go/internal/ctl/acl`). Nothing below runs as root, uses sudo, chmods, chowns
+or follows a symlink.
+
+### What `fleet grant` does
+
+It is a **local CLI action** — no job, no daemon, no `op_request`. Only a
+path's owner may set its ACL, and the daemon runs as the account being
+granted, so it must be run **as `wilke`**.
+
+Per path, it sets the access ACL and — for a directory — the same list again
+as the **default** ACL, so everything created inside later inherits the grant:
+
+| path | entries written |
+|---|---|
+| a directory | `user::<unchanged>` `user:svcbvbrc:rwx` `group::---` `mask::rwx` `other::---` |
+| a regular file | `user::<unchanged>` `user:svcbvbrc:rw-` `group::---` `mask::rw-` `other::---` |
+| `secrets.env`, `ctl-secrets.env`, `*.bak-*` | `user:svcbvbrc:r--` — the account loads credentials, it never rewrites them |
+
+Three rules make this safe to run over a live tree:
+
+- **The owner's bits are carried across, never chosen.** Writing an access ACL
+  rewrites `st_mode`'s owner/group/other bits as a kernel side effect, so the
+  owner triple is read out of what is already there and written back
+  unchanged. An executable keeps its `x`.
+- **`group::` is zeroed only when the owning group is `cels` (gid 20001)** —
+  the entire point. Any other owning group keeps its bits. `other::` is always
+  zeroed: a tenant data root was never meant to be world-readable.
+- **A path you do not own is reported and skipped**, symlinks are never
+  followed, and the walk never crosses onto another filesystem.
+
+Zeroing `other::` takes world read away from the managed roots (today they are
+`0755`). Check that nothing outside the grant was relying on it: on coconut
+nginx runs **as `svcbvbrc`** (`ps -eo user,comm | grep nginx`), so the named
+entry covers it and the static UI keeps serving. Any *other* account that has
+to read a subtree gets its own run — `fleet grant --user <them> --roots <dir>`
+— not a restored `other::` bit.
+
+> **`ls -l` will look different, and it is not what you think.** Once a path
+> carries a mask, the group triple `ls` prints IS THE MASK, not the owning
+> group's permission. A granted directory shows `drwxrwx---` while `group::`
+> is `---` and the group has nothing. `doctor` knows this (it reads the ACL,
+> not the mode); a human reading `ls` should look for the trailing `+`.
+
+### Run it — dry run first
+
+```bash
+# as wilke, from anywhere
+/rag/bin/ragstack-ctl fleet grant --user svcbvbrc --dry-run
+```
+
+The default roots are `/rag/data/tenants`, `/rag/repos/tenants` and
+`/rag/backups/tenants` (`--roots A,B,C` overrides; every entry must be
+absolute). `--recursive` is on by default. The dry run prints the whole
+before → after table and writes nothing — **read it**, particularly the skip
+lines at the end, then:
+
+```bash
+/rag/bin/ragstack-ctl fleet grant --user svcbvbrc
+/rag/bin/ragstack-ctl fleet grant --user svcbvbrc --json | jq '{changed, skipped}'   # for a script
+```
+
+Exit codes: `0` ok · `1` error · `2` usage · **`3` refused — a root you do not
+own**; the message names the owner and prints the command for them to run.
+Re-running is a no-op: a path that already carries the grant is reported `ok`.
+
+### Read the doctor findings
+
+```bash
+/rag/bin/ragstack-ctl doctor            # or: doctor --json | jq '.findings[] | select(.code|startswith("acl"))'
+```
+
+| code | level | means |
+|---|---|---|
+| `acl_grant_present` | info | svcbvbrc holds `rwx` on the listed roots through an ACL. This is the goal state. If it adds "*carry no DEFAULT ACL*", the grant reached today's files but **not** tomorrow's — re-run without `--recursive=false`. |
+| `ctl_account_no_access` | warn (**error** for `create`, `backup`, `restore`) | svcbvbrc neither owns the root nor has a grant on it. Those three ops would fail partway with `EACCES`, so they are refused instead. The finding's `repair` field is the exact `fleet grant` command. |
+| `acl_grants_others` | **error** | a named ACL entry gives **write** to someone who is neither the service account nor the path's owner — or gives it to a named **group** at all. The mode bits cannot show this, which is why the check exists. Revoke it (below). |
+
+A root that svcbvbrc *owns* raises neither of the first two: ownership already
+carries everything an ACL could add. That is what the sysadmin migration will
+leave behind.
+
+### Revoke
+
+```bash
+/rag/bin/ragstack-ctl fleet grant --user svcbvbrc --revoke --dry-run
+/rag/bin/ragstack-ctl fleet grant --user svcbvbrc --revoke
+```
+
+Revoke removes only that account's named entries, and drops the `mask` once no
+named entry is left for it to cap — folding the mask into `group::` on the way
+out, so removing one account's grant can never *widen* the owning group's
+access. To revoke somebody else's grant that `acl_grants_others` found, pass
+their name and the root it sits under: `--user <them> --revoke --roots <dir>`.
+
+### One thing to know before relying on inheritance
+
+The kernel clamps an inherited ACL's **mask** by the *group* bits of the mode
+a file is created with. A file created `0644` (umask `0022`) inside a granted
+directory leaves svcbvbrc with `r--`, however `rwx` the default ACL said; a
+file created `0664` (umask `0002`) leaves it `rw-`. The instance supervisor
+spawns tenant processes with umask `0002` for exactly this reason. Anything
+created by hand with a default umask needs a `fleet grant` re-run, which is
+cheap and idempotent.
+
+### This is temporary
+
+`plan-svcbvbrc-systemd-migration-2026-09-15.md` replaces every one of these
+grants with plain **ownership** once the machine is dedicated and root is
+available. At that point `fleet grant --revoke` removes the ACLs and
+`acl_grant_present` stops appearing — its absence, with no
+`ctl_account_no_access` beside it, is how you will know the migration landed.
+
 ---
 
 ## Verification summary
@@ -900,6 +1024,8 @@ handed-over tenant's row says `desired_boot: enabled`.
 | 6 | `ls -l /rag/config/proxy/{conf.d/05-tenants,snippets/tenants-ui-static}.generated.conf` | both symlinks into `…/gateway/current/` |
 | 6 | `ops/coconut/verify.sh` | ALL GOOD |
 | 7 | `ctl-daemon.sh status` | `running (pid …)` + `{"status":"ok",…}` |
+| PR-D2 | `fleet grant --user svcbvbrc --dry-run` (as wilke) | a before → after table; nothing written |
+| PR-D2 | `fleet grant --user svcbvbrc` then `doctor` | `acl_grant_present` info listing the three roots; no `ctl_account_no_access`, no `acl_grants_others` |
 
 **Exit codes.** Every step above is checkable in a script: `0` ok, `1` error,
 `2` usage, `3` refused. `ctl-as-svc.sh` passes the ctl's status through

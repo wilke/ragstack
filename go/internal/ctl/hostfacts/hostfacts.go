@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/ragstack/ragstack/internal/ctl/acl"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
@@ -66,10 +67,44 @@ const StateUnknown = "unknown"
 
 // Writability is the verdict of the permission check doctor runs over unit
 // files, binaries, SIFs and tenant data dirs.
+//
+// Since PR-D2 the mode bits are only half the answer: `fleet grant` gives the
+// service account access through a named POSIX ACL entry, so a path can be
+// perfectly 0750 and still be writable by an account the mode says nothing
+// about. ACLGrants carries every such entry found on the path's ancestry, and
+// doctor decides which of them are the deliberate grant and which are not.
 type Writability struct {
 	Writable bool   // true ⇒ some component is writable outside ragops
 	Path     string // the offending component (empty when not writable)
 	Reason   string // human-readable why, e.g. "group-writable by cels (mode 0775)"
+
+	// Owner is the account that owns the path itself ("" when unreadable).
+	// A named ACL entry for the owner is not a grant to anyone new.
+	Owner string
+	// ACLGrants are the named user/group ACL entries with WRITE on any
+	// component of the path. Read-only entries are not carried: they cannot
+	// replace what the ctl executes, which is what this probe is about.
+	ACLGrants []ACLGrant
+}
+
+// ACLGrant is one named POSIX ACL entry that gives write access, and the path
+// component it sits on.
+type ACLGrant struct {
+	Path  string // the component carrying the entry
+	Owner string // the account owning Path ("" when unreadable)
+	Group bool   // false ⇒ a named user, true ⇒ a named group
+	ID    uint32 // uid or gid
+	Name  string // resolved name, or "uid <n>" / "gid <n>"
+	Perm  string // EFFECTIVE permission after the mask, e.g. "rwx"
+}
+
+// String renders the grant the way doctor quotes it in a finding.
+func (g ACLGrant) String() string {
+	kind := "user"
+	if g.Group {
+		kind = "group"
+	}
+	return fmt.Sprintf("%s:%s:%s on %s", kind, g.Name, g.Perm, g.Path)
 }
 
 // Gitdir locations.
@@ -114,8 +149,15 @@ type Host interface {
 	// as the current user: for any other user it answers StateUnknown.
 	UnitState(user, unit string) UnitStatus
 	// WritableByOthers reports whether any component of path is writable by
-	// other, or by a group that is not the ragops group.
+	// other, or by a group that is not the ragops group, and carries the
+	// named POSIX ACL entries that grant write on the way.
 	WritableByOthers(path string) (Writability, error)
+	// ACL reads the two POSIX ACLs of path without following symlinks. The
+	// access list is never empty (a path with no xattr has the ACL its mode
+	// implies); the default list is empty unless the directory carries one.
+	// This is how doctor tells "the service account was granted access" from
+	// "the service account happens to own it".
+	ACL(path string) (access, dflt acl.ACL, err error)
 	// Gitdir resolves a worktree's gitdir and classifies its location.
 	Gitdir(worktree string) (Gitdir, error)
 	// GitDescribe runs `git -C <worktree> describe --tags --always`.

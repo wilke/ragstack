@@ -95,6 +95,32 @@ const (
 	// executes.
 	WritableByOthers = "writable_by_others"
 
+	// ACLGrantsOthers: a path the ctl trusts carries a named POSIX ACL entry
+	// giving WRITE to somebody who is neither the ctl account nor the path's
+	// own owner — a named user, or any named group at all. Error, and the
+	// same error writable_by_others is, for the same reason: mode 0750 says
+	// nothing about a named ACL entry, so without this check `fleet grant`
+	// would open a hole the permission table cannot see.
+	//
+	// A named GROUP is always reported, whichever group it is: the grant the
+	// ctl writes never creates one, and on this host the only group anyone
+	// would reach for is the 1869-member `cels` — which is exactly what the
+	// ACL scheme exists to avoid.
+	ACLGrantsOthers = "acl_grants_others"
+
+	// ACLGrantPresent: the ctl account holds rwx on a managed root through a
+	// named ACL entry — the deliberate result of `fleet grant --user
+	// svcbvbrc`. Info, listing the roots, so a review sees the interim
+	// arrangement stated rather than having to infer it from a mode line.
+	ACLGrantPresent = "acl_grant_present"
+
+	// CtlAccountNoAccess: the account the daemon runs as neither OWNS a
+	// managed root nor holds rwx on it through an ACL. Every op that writes
+	// under that root fails partway with EACCES instead, so this is a warn on
+	// its own and an error for create, backup and restore (preconditions.go).
+	// The repair is `fleet grant`, run by the owner — not by the ctl.
+	CtlAccountNoAccess = "ctl_account_no_access"
+
 	// LingerMissing: /var/lib/systemd/linger/<ctl user> is absent, so the
 	// user manager dies at logout and nothing starts at boot. Warn (error for
 	// the ops that depend on boot persistence).

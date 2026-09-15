@@ -205,6 +205,7 @@ func (d *run) hostChecks() {
 		}
 	}
 	d.heapSum()
+	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
 		for _, u := range units {
@@ -603,10 +604,117 @@ func (d *run) writable(tenant, path string) {
 		return // absent paths are another check's problem
 	}
 	w, err := d.host.WritableByOthers(path)
-	if err != nil || !w.Writable {
+	if err != nil {
 		return
 	}
-	d.add(model.LevelError, WritableByOthers, tenant, fmt.Sprintf("%s: %s is %s", path, w.Path, w.Reason))
+	if w.Writable {
+		d.add(model.LevelError, WritableByOthers, tenant, fmt.Sprintf("%s: %s is %s", path, w.Path, w.Reason))
+	}
+	d.aclGrantsOthers(tenant, path, w)
+}
+
+// aclGrantsOthers reports the named ACL entries on a trusted path that hand
+// WRITE to someone the ctl did not intend.
+//
+// Named entries that are legitimate and silent: the ctl SERVICE account's
+// (that is what `fleet grant` writes), the account this process happens to be
+// running as, and the path owner's own (a redundant entry for somebody who
+// already holds the owner triple). Everything else is an error — including
+// every named GROUP, because the grant never writes one and a group on this
+// host means the 1869 members of cels.
+//
+// The service account is exempted by its CONFIGURED name rather than by
+// Username(): doctor is run by wilke as often as by svcbvbrc (the acceptance
+// step is "as wilke: fleet grant, then doctor"), and a check that only knew
+// the running account would paint every granted path red the moment the owner
+// ran it.
+func (d *run) aclGrantsOthers(tenant, path string, w hostfacts.Writability) {
+	var offenders []string
+	seen := map[string]bool{}
+	for _, g := range w.ACLGrants {
+		if !g.Group && (g.Name == d.opts.CtlUser || g.Name == d.ctlAccount() || (g.Owner != "" && g.Name == g.Owner)) {
+			continue
+		}
+		if seen[g.String()] {
+			continue
+		}
+		seen[g.String()] = true
+		offenders = append(offenders, g.String())
+	}
+	if len(offenders) == 0 {
+		return
+	}
+	d.addRepair(model.LevelError, ACLGrantsOthers, tenant,
+		fmt.Sprintf("%s: POSIX ACL grants write to %s", path, strings.Join(offenders, "; ")),
+		fmt.Sprintf("ragstack-ctl fleet grant --user <name> --revoke --roots %s (run as the owner)", filepath.Dir(path)))
+}
+
+// aclManagedRoots answers the question the interim runtime turns on: can the
+// service account the daemon runs as actually write the three managed roots?
+//
+// It can, in exactly two ways — it owns the root, or a named ACL entry gives
+// it rwx. Neither is assumed. The host has no root this week, so ownership is
+// not something the ctl can arrange, and `fleet grant` (run by the OWNER,
+// wilke) is the arrangement that exists. This check is what tells an operator
+// which of the three roots the grant has reached.
+//
+// It asks about the CONFIGURED service account, not about whoever is running
+// doctor: the useful answer for wilke — who is the one who can fix it — is
+// "can svcbvbrc get in", and that answer must not change with the shell it
+// was asked from.
+func (d *run) aclManagedRoots() {
+	uid := d.ctlUID()
+	if uid < 0 {
+		return // an account this host does not know: nothing to say about it
+	}
+	ctl := d.opts.CtlUser
+	var granted, missing, noDefault []string
+	for _, root := range []string{d.roots.DataDir, d.roots.ReposDir, d.roots.BackupsDir} {
+		if _, err := os.Lstat(root); err != nil {
+			continue // a root that does not exist yet is `tenant create`'s problem
+		}
+		w, werr := d.host.WritableByOthers(root)
+		if werr == nil && w.Owner == ctl {
+			continue // ownership already carries everything an ACL could add
+		}
+		access, dflt, err := d.host.ACL(root)
+		if err != nil {
+			continue // an unreadable ACL is not evidence of a missing one
+		}
+		switch {
+		case access.HasRWX(uint32(uid)):
+			granted = append(granted, root)
+			// A grant with no default ACL stops at the files that exist
+			// today: the next tenant's data dir inherits nothing.
+			if !dflt.HasRWX(uint32(uid)) {
+				noDefault = append(noDefault, root)
+			}
+		default:
+			missing = append(missing, root)
+		}
+	}
+	if len(granted) > 0 {
+		detail := fmt.Sprintf("%s holds rwx through a POSIX ACL on %s", ctl, strings.Join(granted, ", "))
+		if len(noDefault) > 0 {
+			detail += fmt.Sprintf(" — but %s carry no DEFAULT ACL, so anything created under them later inherits nothing", strings.Join(noDefault, ", "))
+		}
+		d.add(model.LevelInfo, ACLGrantPresent, "", detail)
+	}
+	if len(missing) > 0 {
+		d.addRepair(model.LevelWarn, CtlAccountNoAccess, "",
+			fmt.Sprintf("%s neither owns nor holds an ACL grant on %s: every op that writes there fails with EACCES",
+				ctl, strings.Join(missing, ", ")),
+			fmt.Sprintf("as the owner: ragstack-ctl fleet grant --user %s --roots %s", ctl, strings.Join(missing, ",")))
+	}
+}
+
+// ctlUID is the numeric id of the configured service account: the option when
+// a caller stated it (every test does), else NSS. -1 when unresolvable.
+func (d *run) ctlUID() int {
+	if d.opts.CtlUID > 0 {
+		return d.opts.CtlUID
+	}
+	return hostfacts.LookupUID(d.opts.CtlUser)
 }
 
 // ---------------------------------------------------------------- helpers

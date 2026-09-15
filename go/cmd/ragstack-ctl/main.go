@@ -104,6 +104,11 @@ func usage() {
   fleet status [--json]                     the dashboard view: host band + one row per tenant
   fleet artifact prepare --tag REF          resolve, check out and npm ci a release (CLI-only)
   fleet artifact list [--json]              the prepared artifacts
+  fleet grant --user NAME [--roots A,B,C] [--recursive] [--revoke] [--dry-run]
+                                            POSIX-ACL access to the managed roots for a service
+                                            account. LOCAL action, run as the path OWNER — only an
+                                            owner may set an ACL, and the daemon runs as the account
+                                            being granted. There is no setfacl on this host.
   tenant create <name> --artifact ID        allocate, provision, start and route a new tenant
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
@@ -967,9 +972,13 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) > 0 && args[0] == "artifact" {
 		return cmdFleetArtifact(args[1:], registryPath, ragRoot, jsonOut)
 	}
+	if len(args) > 0 && args[0] == "grant" {
+		return cmdFleetGrant(args[1:], ragRoot, jsonOut)
+	}
 	if len(args) == 0 || args[0] != "status" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl fleet status [--json]")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet artifact prepare|list …")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet grant --user NAME [--dry-run] …")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)

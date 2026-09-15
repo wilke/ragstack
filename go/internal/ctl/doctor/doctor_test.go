@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/acl"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
@@ -103,6 +104,13 @@ func newWorld(t *testing.T) *world {
 		Free:        map[string]int64{ragRoot: 400 << 30},
 		Groups:      map[string][]string{DefaultSudoersGroup: {"wilke"}},
 		Writables:   map[string]hostfacts.Writability{},
+		// The healthy baseline is the post-`fleet grant` state: the service
+		// account reaches the managed roots through a named ACL entry,
+		// because on this host it can reach them no other way.
+		ACLs: map[string]hostfacts.FakeACL{
+			roots.DataDir:  {Access: grantedACL(ctlUID), Default: grantedACL(ctlUID)},
+			roots.ReposDir: {Access: grantedACL(ctlUID), Default: grantedACL(ctlUID)},
+		},
 		Gitdirs: map[string]hostfacts.Gitdir{
 			tenant.Worktree: {Path: filepath.Join(tenant.Worktree, ".git"), Location: hostfacts.GitdirMirror},
 		},
@@ -116,6 +124,19 @@ func newWorld(t *testing.T) *world {
 				return filepath.Join(worktree, "python", "ragstack", "__init__.py"), nil
 			},
 		},
+	}
+}
+
+// grantedACL is what `fleet grant --user svcbvbrc` leaves on a managed root
+// owned by wilke whose group is cels: the one account named, the group and
+// the world given nothing.
+func grantedACL(uid int) acl.ACL {
+	return acl.ACL{
+		{Tag: acl.TagUserObj, ID: acl.UndefinedID, Perm: acl.PermRWX},
+		{Tag: acl.TagUser, ID: uint32(uid), Perm: acl.PermRWX},
+		{Tag: acl.TagGroupObj, ID: acl.UndefinedID, Perm: acl.PermNone},
+		{Tag: acl.TagMask, ID: acl.UndefinedID, Perm: acl.PermRWX},
+		{Tag: acl.TagOther, ID: acl.UndefinedID, Perm: acl.PermNone},
 	}
 }
 
@@ -520,6 +541,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		ESHeapDrift, StoreNotListening, UIPortNotListening, UnsupportedEnvKey,
 		APIKeyRoleUnknown, ExternalRefOutsideDataDir, UnmanagedFiles, DataDirOffLayout,
 		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
+		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,
 	} {
 		known[c] = true
 	}
@@ -1063,4 +1085,146 @@ func TestPostgresStoreFindings(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------- ACL grants
+
+// TestACLGrantPresentIsInfo: the interim arrangement is REPORTED, not
+// inferred. An operator reading a doctor run has to be able to see that
+// svcbvbrc reaches the managed roots through an ACL rather than through
+// ownership, because that is the fact the sysadmin migration will undo.
+func TestACLGrantPresentIsInfo(t *testing.T) {
+	w := newWorld(t)
+	got := byCode(w.run(t))
+	f, ok := got[ACLGrantPresent]
+	if !ok || f.Level != model.LevelInfo {
+		t.Fatalf("acl_grant_present = %+v, want an info finding", f)
+	}
+	if !strings.Contains(f.Detail, w.roots.DataDir) || !strings.Contains(f.Detail, DefaultCtlUser) {
+		t.Errorf("the finding must name the account and the roots: %q", f.Detail)
+	}
+	if _, bad := got[CtlAccountNoAccess]; bad {
+		t.Error("a granted root must not also be reported as unreachable")
+	}
+}
+
+// TestACLGrantWithoutADefaultIsCalledOut: a grant that reached today's files
+// but set no default ACL silently stops at the next tenant created under the
+// root. The info finding says so rather than reading as "all good".
+func TestACLGrantWithoutADefaultIsCalledOut(t *testing.T) {
+	w := newWorld(t)
+	w.host.ACLs[w.roots.DataDir] = hostfacts.FakeACL{Access: grantedACL(ctlUID)} // no Default
+	f := byCode(w.run(t))[ACLGrantPresent]
+	if !strings.Contains(f.Detail, "DEFAULT ACL") {
+		t.Fatalf("a grant with no default ACL must say so: %q", f.Detail)
+	}
+}
+
+func TestCtlAccountNoAccessIsWarnAndBlocksCreate(t *testing.T) {
+	w := newWorld(t)
+	delete(w.host.ACLs, w.roots.DataDir) // the grant never ran for this root
+	got := byCode(w.run(t))
+	f, ok := got[CtlAccountNoAccess]
+	if !ok || f.Level != model.LevelWarn {
+		t.Fatalf("ctl_account_no_access = %+v, want a warn finding", f)
+	}
+	if !strings.Contains(f.Repair, "fleet grant") {
+		t.Errorf("the repair must be the command that fixes it: %q", f.Repair)
+	}
+	// The three ops that write under a managed root cannot proceed over it.
+	for _, op := range []string{"create", "backup", "restore"} {
+		w.opts.Op = op
+		if got := byCode(w.run(t))[CtlAccountNoAccess]; got.Level != model.LevelError {
+			t.Errorf("op %q: level %s, want error", op, got.Level)
+		}
+	}
+	// A read-only op still only warns.
+	w.opts.Op = ""
+	if got := byCode(w.run(t))[CtlAccountNoAccess]; got.Level != model.LevelWarn {
+		t.Errorf("with no op the level is %s, want warn", got.Level)
+	}
+}
+
+// TestOwningTheRootNeedsNoGrant: ownership carries everything an ACL could
+// add, so the post-migration state (svcbvbrc owns /rag/data/tenants) must not
+// report a missing grant.
+func TestOwningTheRootNeedsNoGrant(t *testing.T) {
+	w := newWorld(t)
+	for _, root := range []string{w.roots.DataDir, w.roots.ReposDir} {
+		delete(w.host.ACLs, root)
+		w.host.Writables[root] = hostfacts.Writability{Owner: DefaultCtlUser}
+	}
+	got := byCode(w.run(t))
+	if f, bad := got[CtlAccountNoAccess]; bad {
+		t.Fatalf("the owner of a root was told it has no access: %q", f.Detail)
+	}
+	if _, present := got[ACLGrantPresent]; present {
+		t.Error("ownership is not an ACL grant and must not be reported as one")
+	}
+}
+
+// TestACLGrantsOthersIsRed: the check writable_by_others could not make. A
+// named entry is invisible to the mode bits, so a 0750 unit file can still be
+// rewritable by an account nobody intended.
+func TestACLGrantsOthersIsRed(t *testing.T) {
+	cases := []struct {
+		name  string
+		grant hostfacts.ACLGrant
+		want  bool
+		why   string
+	}{
+		{"a stranger with write", hostfacts.ACLGrant{
+			Owner: "wilke", Name: "mallory", ID: 6001, Perm: "rw-",
+		}, true, "a named user nobody granted"},
+		{"any named group", hostfacts.ACLGrant{
+			Owner: "wilke", Group: true, Name: "cels", ID: 20001, Perm: "rwx",
+		}, true, "1869 people is exactly what the ACL scheme avoids"},
+		{"the service account", hostfacts.ACLGrant{
+			Owner: "wilke", Name: DefaultCtlUser, ID: 10078, Perm: "rwx",
+		}, false, "that IS the grant fleet grant writes"},
+		{"the owner's own redundant entry", hostfacts.ACLGrant{
+			Owner: "wilke", Name: "wilke", ID: 1000, Perm: "rwx",
+		}, false, "the owner already has the owner triple"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			write(t, unitPath(w), "[Unit]\n")
+			w.host.Writables[unitPath(w)] = hostfacts.Writability{
+				Owner: "wilke", ACLGrants: []hostfacts.ACLGrant{withPath(c.grant, unitPath(w))},
+			}
+			got := byCode(w.run(t))
+			f, raised := got[ACLGrantsOthers]
+			if raised != c.want {
+				t.Fatalf("acl_grants_others raised=%v, want %v (%s): %+v", raised, c.want, c.why, f)
+			}
+			if c.want && f.Level != model.LevelError {
+				t.Errorf("level %s, want error", f.Level)
+			}
+			if c.want && !strings.Contains(f.Detail, c.grant.Name) {
+				t.Errorf("the finding must name who holds the grant: %q", f.Detail)
+			}
+		})
+	}
+}
+
+// TestReadOnlyACLEntriesAreNotAFinding: hostfacts only carries entries with
+// WRITE, and doctor must not invent a finding for anything else. A read-only
+// grant cannot replace what the ctl executes, which is what this check is for.
+func TestReadOnlyACLEntriesAreNotAFinding(t *testing.T) {
+	w := newWorld(t)
+	write(t, unitPath(w), "[Unit]\n")
+	w.host.Writables[unitPath(w)] = hostfacts.Writability{Owner: "wilke"} // no write grants carried
+	if f, bad := byCode(w.run(t))[ACLGrantsOthers]; bad {
+		t.Fatalf("a path with no write grants raised %+v", f)
+	}
+}
+
+func unitPath(w *world) string {
+	return filepath.Join(w.roots.UnitsDir(), "ragstack-dev-api.service")
+}
+
+func withPath(g hostfacts.ACLGrant, path string) hostfacts.ACLGrant {
+	g.Path = path
+	return g
 }
