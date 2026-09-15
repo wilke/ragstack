@@ -306,3 +306,34 @@ func TestBackupPruneListsAnOldPartialAndSparesAFreshOne(t *testing.T) {
 		}
 	}
 }
+
+// The three reads take a tenant NAME from the command line and build a path
+// out of it, so the name is checked against the same grammar the registry
+// enforces before it is joined under `/rag/backups/tenants` — and the bundle
+// id, which is the second half of that path, is checked for containment.
+func TestBackupReadsRefuseANameThatIsNotATenant(t *testing.T) {
+	root := t.TempDir()
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"list", []string{"backup", "list", "../../etc", "--rag-root", root}},
+		{"verify", []string{"backup", "verify", "../../etc", "passwd", "--rag-root", root}},
+		{"verify-id", []string{"backup", "verify", "dev", "../../../etc", "--rag-root", root}},
+		{"prune", []string{"backup", "prune", "..", "--dry-run", "--rag-root", root}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rc, out, errs := capture(t, c.args...)
+			if rc != exitUsage {
+				t.Fatalf("rc %d, want %d (out %q, err %q)", rc, exitUsage, out, errs)
+			}
+			if errs == "" {
+				t.Errorf("the refusal says nothing")
+			}
+		})
+	}
+	// …and a real name still works: the check is a grammar, not a whitelist.
+	if rc, _, errs := capture(t, "backup", "list", "dev", "--rag-root", root); rc != exitOK {
+		t.Errorf("listing a tenant with no bundles = %d (%s)", rc, errs)
+	}
+}

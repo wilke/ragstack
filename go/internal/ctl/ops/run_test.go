@@ -222,9 +222,11 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	r.runAll(t, p)
 
 	trace := strings.Join(fake.CallKeys(), "\n")
+	if strings.Contains(trace, "gateway.Apply") {
+		t.Errorf("a fenced backup published a gateway generation; nothing in the render changes:\n%s", trace)
+	}
 	for _, want := range []string{
-		// the fence, in order
-		"job.checkpoint(gateway:apply:pending)\ngateway.Apply(false)",
+		// the fence: the API unit stops, and that is the whole of it
 		"systemd.Stop(ragstack-dev-api.service)",
 		// every snapshot name recorded before the call that makes it
 		"job.checkpoint(qdrant:pending:chunks)\nqdrant.Snapshot(chunks,http://localhost:24041)",
@@ -265,6 +267,64 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	}
 	if body := string(fake.FakeFiles().Content(manifest)); !strings.Contains(body, `"fenced": true`) {
 		t.Errorf("manifest =\n%s", body)
+	}
+}
+
+// TestARolledBackBackupRecordPutsTheOldRecoveryPointBack is the MEDIUM
+// finding: `last_backup` pointing at a directory that is not there.
+//
+// The record step is not the last step of a fenced backup — the fence release
+// comes after it — so a failure there rolls this step back. The finalize step's
+// own rollback renames the bundle back to `<id>.partial`, and a record step
+// with no rollback left the row naming the finished path: a recovery point an
+// operator would go looking for and not find, in place of the one that really
+// is on disk.
+func TestARolledBackBackupRecordPutsTheOldRecoveryPointBack(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	// The recovery point this tenant already had, and must still have.
+	prev := &registry.BackupRecord{
+		Bundle: "/rag/backups/tenants/dev/20260901T000000Z-backup", At: "2026-09-01T00:00:00Z",
+		Kind: "backup", Fenced: true, Verified: true,
+	}
+	oc.Fleet.Tenants["dev"].LastBackup = prev
+
+	p, r := runBackup(t, oc, fake, map[string]any{"fence": true})
+	rec := p.Steps[stepIndex(p, "registry", "record the bundle as this tenant's last backup")]
+	if got := oc.Fleet.Tenants["dev"].LastBackup; got == nil || got.Bundle != bundlePath("dev") {
+		t.Fatalf("after the run last_backup = %+v, want the new bundle", got)
+	}
+	// The previous record was written DURABLY before the row was changed: a
+	// worker that died here still has it to put back.
+	ids := r.externalIDs(rec.Plan.N)
+	if _, ok := externalIDValue(ids, prevLastBackupID); !ok {
+		t.Fatalf("the step recorded no previous last_backup: %v", ids)
+	}
+
+	if _, err := rec.Rollback(context.Background(), r.ctx(rec)); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	got := oc.Fleet.Tenants["dev"].LastBackup
+	if got == nil || got.Bundle != prev.Bundle || !got.Verified || got.At != prev.At {
+		t.Fatalf("after the rollback last_backup = %+v, want the previous record %+v", got, prev)
+	}
+}
+
+// TestARolledBackFirstBackupLeavesNoRecoveryPointAtAll is the same rule for a
+// tenant that had never been backed up: the row goes back to naming nothing,
+// not to naming a bundle the finalize rollback has just un-named.
+func TestARolledBackFirstBackupLeavesNoRecoveryPointAtAll(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	oc.Fleet.Tenants["dev"].LastBackup = nil
+
+	p, r := runBackup(t, oc, fake, map[string]any{"fence": true})
+	rec := p.Steps[stepIndex(p, "registry", "record the bundle as this tenant's last backup")]
+	if _, err := rec.Rollback(context.Background(), r.ctx(rec)); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if got := oc.Fleet.Tenants["dev"].LastBackup; got != nil {
+		t.Fatalf("after the rollback last_backup = %+v, want none", got)
 	}
 }
 
@@ -690,6 +750,113 @@ func TestCreateRefusesToOverwriteAnExistingSecretsFile(t *testing.T) {
 	}
 	if got := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env")); got != "API_KEYS='[]'\n" {
 		t.Errorf("the existing secrets file was modified: %q", got)
+	}
+}
+
+// TestCreateRefusesADataDirectoryThatIsNotEmpty is the other half of the
+// rename-aside rollback below.
+//
+// A create or restore that failed leaves `<data_dir>.failed-<ts>` — and an
+// operator who moves that tree back, or a create over a tenant somebody laid
+// down by hand, must not lay a second tenant on top of the first one's store
+// files. An EMPTY directory is fine: that is what a rollback with nothing to
+// preserve leaves, and what the deployment's own layout may already have.
+func TestCreateRefusesADataDirectoryThatIsNotEmpty(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment", []byte("x"), 0o640)
+
+	fs := p.Steps[stepIndex(p, "fs", "create the tenant directories")]
+	_, err := r.run(fs)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "remove or rename it first") {
+		t.Fatalf("error = %v, want a refusal naming the non-empty directory", err)
+	}
+	if !strings.Contains(err.Error(), "/rag/data/tenants/sandbox") {
+		t.Errorf("the refusal does not name the path: %v", err)
+	}
+	// And it touched nothing: the refusal is before the first MkdirAll.
+	if got := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment")); got != "x" {
+		t.Errorf("the refused step modified the existing tree: %q", got)
+	}
+	if fake.Count("files.MkdirAll") != 0 {
+		t.Errorf("the refused step made %d directories", fake.Count("files.MkdirAll"))
+	}
+}
+
+// TestCreateRefusesAnEmptyDataDirectoryNot is the exception stated as a test:
+// an empty tree is not evidence of anything and never blocks a create.
+func TestCreateRefusesAnEmptyDataDirectoryNot(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	if err := fake.Files().MkdirAll(context.Background(), "/rag/data/tenants/sandbox", 0o2770); err != nil {
+		t.Fatal(err)
+	}
+	fs := p.Steps[stepIndex(p, "fs", "create the tenant directories")]
+	if _, err := r.run(fs); err != nil {
+		t.Fatalf("an EMPTY existing data dir = %v, want the step to proceed", err)
+	}
+}
+
+// TestAFailedCreateRenamesTheTreeAsideRatherThanDeletingIt is the HIGH finding:
+// the rollback used to leave the tree at the tenant's own path, so the plan's
+// "what can remain is the empty tree" was false the moment a store had written
+// into it — and the next create of that name laid a tenant on top of it.
+//
+// The rule is a RENAME. The ctl has no recursive delete and a rollback is not
+// the place to acquire one: whatever the stores wrote is moved aside, named
+// with the job's stamp, and left for a person.
+func TestAFailedCreateRenamesTheTreeAsideRatherThanDeletingIt(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	// The git step fails: far enough in that the directories exist and the
+	// stores could have written, early enough that nothing is running.
+	boom := errors.New("fatal: could not create work tree")
+	fake.Fail("git.AddWorktree:/rag/repos/tenants/sandbox", boom)
+
+	ran := []jobs.Step{}
+	failed := false
+	for _, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			if !errors.Is(err, boom) {
+				t.Fatalf("step %d (%s): %v", s.Plan.N, s.Plan.Title, err)
+			}
+			failed = true
+			break
+		}
+		ran = append(ran, s)
+	}
+	if !failed {
+		t.Fatal("the create ran to the end; this case is about one that does not")
+	}
+	if len(ran) < 2 {
+		t.Fatalf("the job stopped after %d step(s); it must get past the directories", len(ran))
+	}
+	// A store wrote into the tree before the failure, which is the whole point.
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment", []byte("points"), 0o640)
+
+	for i := len(ran) - 1; i >= 0; i-- {
+		if ran[i].Rollback == nil {
+			continue
+		}
+		if _, err := ran[i].Rollback(context.Background(), r.ctx(ran[i])); err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", ran[i].Plan.N, ran[i].Plan.Title, err)
+		}
+	}
+	// Nothing at the tenant's own path — the name is free for the next attempt.
+	if got := fake.FakeFiles().Dirs["/rag/data/tenants/sandbox"]; got != 0 {
+		t.Errorf("the rolled-back create left /rag/data/tenants/sandbox in place (mode %04o)", got)
+	}
+	if anyPathWithPrefix(fake, "/rag/data/tenants/sandbox/") {
+		t.Errorf("the rolled-back create left files under the tenant's own path: %v", tenantFiles(fake, "sandbox"))
+	}
+	// …and the bytes are still there, one rename away, stamped with the job.
+	aside := failedTrees(fake, "sandbox")
+	if len(aside) != 1 {
+		t.Fatalf("trees left aside = %v, want one /rag/data/tenants/sandbox.failed-<ts>", aside)
+	}
+	if got := string(fake.FakeFiles().Content(aside[0] + "/qdrant/storage/collections/chunks/segment")); got != "points" {
+		t.Errorf("%s does not hold what the store wrote (%q): the rollback deleted data", aside[0], got)
+	}
+	// The stamp is the run's clock, not the plan's placeholder.
+	if !strings.HasSuffix(aside[0], ".failed-20260914T093000Z") {
+		t.Errorf("the tree aside is named %q; want the job's stamp", aside[0])
 	}
 }
 

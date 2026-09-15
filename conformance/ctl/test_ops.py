@@ -958,6 +958,16 @@ async def test_a_fenced_backup_runs_every_leg_to_succeeded(
     )
     assert job["result"]["fenced"] is True and job["result"]["best_effort"] is False, job["result"]
 
+    # The fence is the API unit stopping and NOTHING else. There is no
+    # read-only mode: the registry carries no read-only flag, so a "publish a
+    # generation serving it read-only" step published the generation that was
+    # already live — a no-op that held the gateway lock for the length of a
+    # backup and told an operator the tenant was being served when it was not.
+    assert step_titled(job, "read-only") is None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "read-write") is None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "stop ragstack-") is not None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "fence verify") is not None, [s["title"] for s in job["steps"]]
+
     # The manifest step, by name: a bundle without one is a directory of files
     # no restore can read.
     manifest = step_titled(job, "bundle manifest")
@@ -1015,6 +1025,15 @@ async def test_an_unfenced_backup_is_best_effort(
     assert any("best_effort" in w for w in plan["warnings"]), plan["warnings"]
     assert step_titled(plan, "fence verify") is None, [s["title"] for s in plan["steps"]]
     assert step_titled(plan, "read-only") is None, [s["title"] for s in plan["steps"]]
+
+    # And the FENCED plan says what a fence really costs: the API is stopped
+    # and the route answers 502 while it is down.
+    fenced = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True}))
+    assert fenced.status_code == 200, fenced.text
+    fplan = fenced.json()
+    validate(fplan, "plan", schemas)
+    assert any("502" in w for w in fplan["warnings"]), fplan["warnings"]
+    assert not any("serves it read-only" in w for w in fplan["warnings"]), fplan["warnings"]
 
     job = await submit_and_settle(client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={}, timeout=60.0)
     assert job["state"] == "succeeded", job.get("error")

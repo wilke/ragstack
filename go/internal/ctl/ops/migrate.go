@@ -41,7 +41,12 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 	}
 	t := p.t
 	if t.Owner == p.op.deps.owner() && t.Supervisor == supervisorSystemd {
-		return p.refuse("%s is already owned by svcbvbrc and supervised by systemd; there is nothing to hand over", t.Name)
+		// The account is the PROCESS's (Deps.Owner), not a constant: a --direct
+		// run as wilke owns what it created, and a refusal naming svcbvbrc
+		// would send an operator looking for units under an account that has
+		// none of them.
+		return p.refuse("%s is already owned by %s and supervised by systemd; there is nothing to hand over",
+			t.Name, p.op.deps.owner())
 	}
 	if err := p.requireFencedBackup("handover"); err != nil {
 		return err

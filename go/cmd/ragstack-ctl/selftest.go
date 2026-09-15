@@ -172,6 +172,11 @@ type selftest struct {
 	restored  string // ctltest-<stamp>-r
 	adminKey  string
 
+	// ran is true once the engine has ACCEPTED a job for this run: before
+	// that, nothing of the sandbox exists on the host and nothing needs
+	// sweeping, however the run ends.
+	ran bool
+
 	steps  []stepResult
 	checks []checkResult
 }
@@ -204,9 +209,14 @@ the sandbox range is read, written, started or stopped.
 There is no --server: a selftest runs the engine IN THIS PROCESS, against the
 host it is testing. Pointing it at a daemon would test the daemon's host.
 
-exit: 0 everything green · 3 refused (including a --boot checklist with a FAIL)
-      · 4 a job failed or a check failed (the sandbox is left in place; remove
-      it with "ragstack-ctl selftest --sweep")
+exit: 0 everything green · 3 refused (no prepared artifact, a red doctor, a
+      --boot checklist with a FAIL) · 4 a job failed or a check FAILED
+
+A run whose JOB failed stops where it failed and leaves the sandbox in place
+for inspection; remove it afterwards with "ragstack-ctl selftest --sweep". A
+run whose jobs all succeeded sweeps its sandboxes even when a CHECK failed —
+they are quarantined by then, there is nothing left to look at, and there are
+only five sandbox blocks. Pass --keep to leave them behind either way.
 `)
 	return exitUsage
 }
@@ -323,8 +333,17 @@ func (s *selftest) main(ctx context.Context) int {
 	err := s.execute(ctx)
 	s.report()
 	switch {
-	case err != nil && errors.Is(err, jobs.ErrRefused):
+	// A RED (or unforced yellow) doctor is a refusal like any other: the
+	// engine answers 409 `doctor_red` rather than `refused`, and a classifier
+	// that only knew ErrRefused reported the documented exit 3 as the exit 4
+	// of a failed job — sending an operator to look for a broken step when
+	// what happened is that the host is not fit to be operated on.
+	case err != nil && (errors.Is(err, jobs.ErrRefused) || errors.Is(err, jobs.ErrDoctorRed)):
 		fmt.Fprintf(stderr, "ragstack-ctl: selftest refused: %v\n", err)
+		// Only if one exists: a refusal before the create — no artifact, a red
+		// doctor on the first job — created no sandbox, and advice to sweep
+		// one sends an operator looking for a tenant that is not there.
+		s.sayHowToSweep()
 		return exitRefused
 	case err != nil && len(s.steps) == 0:
 		// Nothing was submitted, so nothing is half-done: this is the command
@@ -338,6 +357,10 @@ func (s *selftest) main(ctx context.Context) int {
 		s.sayHowToSweep()
 		return exitJobFailed
 	case s.failedChecks() > 0:
+		// The sandboxes are GONE by now (execute sweeps unless --keep): every
+		// job succeeded, so both were decommissioned and quarantined, and a
+		// quarantined tree is exactly what the sweep is allowed to remove. The
+		// FAIL is in the report above and the exit code is 4 either way.
 		fmt.Fprintf(stderr, "ragstack-ctl: %d check(s) FAILED; the jobs themselves all succeeded\n", s.failedChecks())
 		s.sayHowToSweep()
 		return exitJobFailed
@@ -346,7 +369,16 @@ func (s *selftest) main(ctx context.Context) int {
 }
 
 func (s *selftest) sayHowToSweep() {
-	if s.opts.keep || s.primary == "" {
+	if s.primary == "" || !s.ran {
+		// No job was ever accepted, so there is no row, no tree and no units.
+		// Saying "the sandbox is left in place" anyway is how an operator comes
+		// to run the one destructive command in the control plane looking for a
+		// leftover that does not exist.
+		return
+	}
+	if s.opts.keep {
+		fmt.Fprintf(stderr, "--keep: the sandbox tenants and their trees are left behind; remove them with "+
+			"`ragstack-ctl selftest --sweep`\n")
 		return
 	}
 	fmt.Fprintf(stderr, "the sandbox tenants are left in place for inspection; remove them with "+
@@ -475,7 +507,17 @@ func (s *selftest) execute(ctx context.Context) error {
 	// ---- the host is clean -------------------------------------------------
 	s.checks = append(s.checks, s.quarantineChecks(ctx, names)...)
 
-	if !s.opts.keep && s.failedChecks() == 0 {
+	// The sweep is conditioned on `--keep` and on nothing else.
+	//
+	// It used to be suppressed by a failed CHECK as well, and that was the
+	// wrong rule twice over: a run that gets this far has had every JOB
+	// succeed, so both sandboxes are decommissioned and quarantined and there
+	// is nothing live to inspect — and the five sandbox blocks are exhausted
+	// by three such runs, which is exactly the acceptance ("run it three
+	// times"). The FAIL is still in the report and the exit code is still 4.
+	// A run whose JOB failed never reaches here: execute returns at the error,
+	// the sandbox is left in place, and main says how to remove it.
+	if !s.opts.keep {
 		removed, refused, err := s.sweep(ctx)
 		for _, r := range refused {
 			s.checks = append(s.checks, checkResult{Name: "sweep refusal", Verdict: checkFail, Detail: r})
@@ -583,6 +625,11 @@ func (s *selftest) submit(ctx context.Context, label, verb, tenant string, args 
 		return nil, err
 	}
 	res.JobID = job.ID
+	// A job was ACCEPTED, so from here on something may exist on the host: a
+	// row, a tree, units. It is what tells `main` whether advice to sweep a
+	// sandbox names anything real — a refusal at the doctor gate or the plan
+	// never got this far and created nothing.
+	s.ran = true
 	job, err = s.follow(ctx, job)
 	res.Duration = s.now().Sub(started)
 	if job != nil {
@@ -1250,13 +1297,14 @@ func (s *selftest) sandboxRows() (map[string]bool, error) {
 	return out, nil
 }
 
-// orphanSandbox is a sandbox tree named by a bare sandbox name — no
-// `.quarantined-` infix — which is what a rolled-back create, or a restore
-// whose create half was undone, leaves behind: the row is gone, the units are
-// gone, only the directory tree remains. Such a tree is sweepable when NO
+// orphanSandbox is a sandbox tree no registry row claims: either a bare
+// sandbox name — no infix at all — or the `.failed-<ts>` tree a rolled-back
+// create or restore renames aside. In both cases the row is gone, the units are
+// gone and only the directory tree remains. Such a tree is sweepable when NO
 // registry row of that name exists; with a row it is a tenant, and the sweep
-// refuses it.
-var orphanSandbox = regexp.MustCompile(`^ctltest-[0-9a-z-]+$`)
+// refuses it. (A `.failed-` name can never match a row: registry names have no
+// dot in them.)
+var orphanSandbox = regexp.MustCompile(`^ctltest-[0-9a-z-]+(\.failed-[0-9A-Za-z-]+)?$`)
 
 // sweepRows deletes the sandbox tenants' registry rows.
 //

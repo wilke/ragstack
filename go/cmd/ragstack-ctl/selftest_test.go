@@ -312,8 +312,17 @@ func TestSweepRefusesEveryPathItWasNotBuiltToRemove(t *testing.T) {
 	if _, err := sweepPath(root, "ctltest-20260914t111111z", live); err != nil {
 		t.Fatalf("sweepPath refused an orphan sandbox tree with no registry row: %v", err)
 	}
+	// The tree a rolled-back create or restore renames aside. It has no
+	// registry row (a row's name can hold no dot), nothing runs from it, and
+	// nothing else in the control plane will ever remove it.
+	failed := "ctltest-20260914t123000z-r.failed-20260914T124500Z"
+	mk(failed)
+	if _, err := sweepPath(root, failed, live); err != nil {
+		t.Fatalf("sweepPath refused the `.failed-` tree a rolled-back restore leaves: %v", err)
+	}
 
 	refused := []string{
+		"dev.failed-20260914T124500Z",              // a production tenant's failed tree
 		"dev.quarantined-20260914t124500z",         // a production tenant's quarantine
 		"asm",                                      // a live tenant
 		"ctltest-20260914t123000z",                 // a sandbox that still has a registry row
@@ -599,4 +608,137 @@ func fillFixtureRow(roots paths.Roots, t *registry.Tenant, state string) {
 	t.Stores.Qdrant.URL = fmt.Sprintf("http://127.0.0.1:%d", t.Ports.QdrantHTTP)
 	t.Stores.Elasticsearch.URL = fmt.Sprintf("http://127.0.0.1:%d", t.Ports.ESHTTP)
 	t.Stores.Postgres = registry.SQLiteStore()
+}
+
+// ---------------------------------------------------------------- exit codes
+
+// stubEngine is a jobs.Engine that refuses every Submit with one error. It is
+// how the exit-code classification is tested without a host that can be made
+// red.
+type stubEngine struct{ err error }
+
+func (e stubEngine) Submit(context.Context, jobs.Request) (*model.Plan, *model.Job, error) {
+	return nil, nil, e.err
+}
+func (e stubEngine) Get(context.Context, string) (*model.Job, error) { return nil, e.err }
+func (e stubEngine) List(context.Context, jobs.ListFilter) ([]model.Job, bool, error) {
+	return nil, false, e.err
+}
+func (e stubEngine) StepLog(context.Context, string, int) (string, error) { return "", e.err }
+func (e stubEngine) Resume(context.Context, string, jobs.Principal) (*model.Job, error) {
+	return nil, e.err
+}
+func (e stubEngine) Continue(context.Context, string, jobs.Principal) (*model.Job, error) {
+	return nil, e.err
+}
+func (e stubEngine) Cancel(context.Context, string, jobs.Principal, string) (*model.Job, error) {
+	return nil, e.err
+}
+func (e stubEngine) Secrets(context.Context, string, jobs.Principal) (*model.SecretsResponse, error) {
+	return nil, e.err
+}
+func (e stubEngine) Audit(context.Context, int) ([]model.AuditRow, bool, error) {
+	return nil, false, e.err
+}
+func (e stubEngine) Reconcile(context.Context) ([]string, error) { return nil, e.err }
+
+// A RED doctor is a REFUSAL — exit 3, the code the runbook documents — not the
+// exit 4 of a failed job. The engine answers it with ErrDoctorRed rather than
+// ErrRefused, and a classifier that only knew the latter sent an operator
+// looking for a broken step when what happened is that the host is not fit to
+// be operated on.
+func TestARedDoctorExitsRefusedAndSaysNothingAboutSweeping(t *testing.T) {
+	s, _, _ := newFixtureSelftest(t)
+	s.eng = stubEngine{err: &jobs.RefusalError{
+		Err: fmt.Errorf("%w: red; the host has 2 finding(s)", jobs.ErrDoctorRed),
+		Extra: map[string]any{
+			"doctor_hash": "sha256:" + strings.Repeat("a", 64), "status": string(model.StatusRed),
+		},
+	}}
+	errs := captureStderr(t, func() {
+		if rc := s.main(context.Background()); rc != exitRefused {
+			t.Errorf("a red doctor exited %d, want %d", rc, exitRefused)
+		}
+	})
+	if !strings.Contains(errs, "refused") {
+		t.Errorf("stderr does not report a refusal: %s", errs)
+	}
+	// No job was ever accepted, so nothing of the sandbox exists: advice to
+	// sweep one would send an operator after a leftover that is not there.
+	if strings.Contains(errs, "--sweep") {
+		t.Errorf("a refusal before any job ran advised a sweep: %s", errs)
+	}
+}
+
+// A failed CHECK no longer suppresses the sweep.
+//
+// Every JOB succeeded to get this far, so both sandboxes are decommissioned and
+// quarantined: there is nothing live to inspect, and leaving the trees behind
+// exhausted the five sandbox blocks in three runs — which is exactly the
+// acceptance ("run it three times"). The FAIL is still in the report and the
+// run still exits 4.
+func TestAFailedCheckStillSweepsTheSandboxes(t *testing.T) {
+	s, _, out := newFixtureSelftest(t)
+	// A check that fails, injected before the run: `execute` appends its own
+	// checks to this slice and asks `failedChecks()` nothing until the end.
+	s.checks = append(s.checks, checkResult{Name: "injected", Verdict: checkFail, Detail: "a check the host failed"})
+	if err := s.execute(context.Background()); err != nil {
+		t.Fatalf("selftest.execute: %v\n%s", err, out.String())
+	}
+	if s.failedChecks() == 0 {
+		t.Fatal("the injected FAIL is gone; this case is about a run that has one")
+	}
+	swept := false
+	for _, c := range s.checks {
+		if c.Name == "sweep" && c.Verdict == checkPass {
+			swept = true
+		}
+	}
+	if !swept {
+		t.Errorf("a run with a failed check did not sweep: %v", s.checks)
+	}
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range f.Tenants {
+		t.Errorf("the sweep left the registry row %s behind", name)
+	}
+	// And the run still reports the failure: `main` turns a failed check into
+	// exit 4 whether or not the trees were swept.
+	if s.failedChecks() != 1 {
+		t.Errorf("failed checks = %d, want the injected one", s.failedChecks())
+	}
+}
+
+// --keep is the one thing that stops the sweep, and it says so.
+func TestKeepLeavesTheSandboxesAndSaysHowToRemoveThem(t *testing.T) {
+	s, _, out := newFixtureSelftest(t)
+	s.opts.keep = true
+	if err := s.execute(context.Background()); err != nil {
+		t.Fatalf("selftest.execute: %v\n%s", err, out.String())
+	}
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Tenants[fixturePrimary]; !ok {
+		t.Errorf("--keep swept the sandbox row anyway; the registry holds %d tenant(s)", len(f.Tenants))
+	}
+	errs := captureStderr(t, s.sayHowToSweep)
+	if !strings.Contains(errs, "--sweep") {
+		t.Errorf("--keep does not say how to remove what it kept: %q", errs)
+	}
+}
+
+// captureStderr runs fn with the package's stderr redirected, and returns what
+// it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	old := stderr
+	stderr = &buf
+	defer func() { stderr = old }()
+	fn()
+	return buf.String()
 }
