@@ -17,6 +17,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -114,7 +115,7 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 		d.tenantChecks(ctx, t)
 	}
 
-	findings := applyPreconditions(d.findings, d.opts.Op)
+	findings := applyPreconditions(d.findings, d.opts.Op, d.instanceTenants())
 	sortFindings(findings)
 	return &model.DoctorResponse{
 		Status:      model.StatusFor(findings),
@@ -126,6 +127,32 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 		},
 		Findings: findings,
 	}
+}
+
+// instanceTenants names the rows the ctl supervises ITSELF.
+//
+// It exists for one precondition: `start` and `restart` raise
+// env_not_systemd_parsable to an error because a UNIT would load the wrong
+// values out of a file systemd cannot parse. In instance mode there is no
+// unit — the ctl parses tenant.env and secrets.env itself, with the same
+// lenient parser `env-normalize` repairs them with — so the finding stays the
+// warning envCheck raised it as, and the tenant is still startable by the
+// operator who is on their way to fixing it.
+//
+// It narrows nothing else: every other precondition applies to both
+// supervisors, because every other one is about the host rather than about
+// systemd's grammar.
+func (d *run) instanceTenants() map[string]bool {
+	out := map[string]bool{}
+	if d.fleet == nil {
+		return out
+	}
+	for name, t := range d.fleet.Tenants {
+		if t.Supervisor == string(model.SupervisorInstance) {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // Hash is sha256 over the sorted `code|tenant|detail` lines of a finding set.
@@ -205,6 +232,7 @@ func (d *run) hostChecks() {
 		}
 	}
 	d.heapSum()
+	d.bootHook()
 	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
@@ -647,6 +675,70 @@ func (d *run) aclGrantsOthers(tenant, path string, w hostfacts.Writability) {
 	d.addRepair(model.LevelError, ACLGrantsOthers, tenant,
 		fmt.Sprintf("%s: POSIX ACL grants write to %s", path, strings.Join(offenders, "; ")),
 		fmt.Sprintf("ragstack-ctl fleet grant --user <name> --revoke --roots %s (run as the owner)", filepath.Dir(path)))
+}
+
+// BootRecordFile is where `fleet enable-boot --cron` records what it
+// installed, under the ctl's own state directory. It is the doctor's ONLY
+// evidence about the crontab.
+const BootRecordFile = "boot.json"
+
+// BootRecord is that file: whether a marked `@reboot` line is installed, what
+// the line says, and when the ctl put it there.
+//
+// It is a RECORD, not an observation. The doctor does not run `crontab -l` —
+// a diagnostic that shells out to read an account's boot configuration fails
+// differently on every host, needs the right account to be asked from, and
+// would make the doctor a thing that executes programs on behalf of a read.
+// The ctl knows what it installed, so it writes it down; `fleet enable-boot
+// --no-cron` clears it. The cost is that a line an operator added by hand is
+// invisible here, and the finding says so.
+type BootRecord struct {
+	Cron bool   `json:"cron"`
+	Line string `json:"line"`
+	At   string `json:"at"`
+}
+
+// bootHook reports whether ANYTHING will bring the tenants back after a
+// reboot.
+//
+// There are two hooks on this host and the account has at most one of them: a
+// user manager that survives logout (linger, which systemd tenants need) or a
+// `@reboot` crontab line running `fleet start --all` (which is what instance
+// mode has, because cron gets no logind session here and so cannot drive
+// `systemctl --user` at all). With neither, a reboot is a fleet that stays
+// down until somebody notices.
+func (d *run) bootHook() {
+	path := filepath.Join(d.roots.CtlStateDir, BootRecordFile)
+	var rec BootRecord
+	b, err := os.ReadFile(path)
+	if err == nil {
+		if jerr := json.Unmarshal(b, &rec); jerr != nil {
+			d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
+				"%s cannot be read as a boot record (%v), so the ctl cannot say whether a @reboot line is installed; "+
+					"re-run `ragstack-ctl fleet enable-boot --cron`", path, jerr))
+			return
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return // an unreadable state dir is not evidence about the crontab
+	}
+	if rec.Cron {
+		detail := fmt.Sprintf("a @reboot crontab line is recorded in %s", path)
+		if rec.At != "" {
+			detail += " (installed " + rec.At + ")"
+		}
+		if rec.Line != "" {
+			detail += ": " + rec.Line
+		}
+		d.add(model.LevelInfo, BootCronPresent, "", detail)
+		return
+	}
+	if d.host.Linger(d.opts.CtlUser) {
+		return // the user manager is the boot hook; linger_missing covers the rest
+	}
+	d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
+		"%s has no linger AND the ctl has recorded no @reboot crontab line (%s): nothing on this host starts a "+
+			"tenant after a reboot. `ragstack-ctl fleet enable-boot --cron` installs one. A line added by hand is "+
+			"not visible here — the ctl reports only what it installed itself", d.opts.CtlUser, path))
 }
 
 // aclManagedRoots answers the question the interim runtime turns on: can the

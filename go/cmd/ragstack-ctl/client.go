@@ -109,6 +109,14 @@ type opFlags struct {
 	wantSecrets  bool
 	fetchSecrets func(jobID string) (*model.SecretsResponse, error)
 
+	// engine is the in-process engine a --direct submission runs through when
+	// the caller already built one. It exists for `fleet start|stop --all`,
+	// which submits one job per tenant: without it every tenant would open its
+	// own SQLite jobs.db handle, and a fleet of five would leave five of them
+	// behind for the length of the run. Nil means submitDirect builds one, as
+	// every single-tenant command does.
+	engine jobs.Engine
+
 	// mountPoint overrides what a rendered unit's ConditionPathIsMountPoint
 	// names. It is deliberately not a flag: `selftest --rag-root <scratch>`
 	// sets it, because that is the one run whose paths move into a sandbox tree
@@ -914,9 +922,12 @@ func directPrincipal() (jobs.Principal, error) {
 }
 
 func submitDirect(o *opFlags, target opTarget, req model.OpRequest) int {
-	eng, err := buildDirectEngine(o)
-	if err != nil {
-		return failClient(err)
+	eng := o.engine
+	if eng == nil {
+		var err error
+		if eng, err = buildDirectEngine(o); err != nil {
+			return failClient(err)
+		}
 	}
 	p, err := directPrincipal()
 	if err != nil {
