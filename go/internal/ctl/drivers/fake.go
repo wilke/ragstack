@@ -1800,6 +1800,20 @@ func (g *FakeGit) RemoveWorktree(_ context.Context, mirror, dest string) error {
 	return nil
 }
 
+// RepairWorktree records the repair; the fake keeps no back-pointers, so the
+// only state it can reflect is that the path is now a known worktree.
+func (g *FakeGit) RepairWorktree(_ context.Context, mirror, path string) error {
+	if err := g.r.record("git", "RepairWorktree", path, mirror); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, ok := g.Worktrees[path]; !ok {
+		g.Worktrees[path] = "repaired"
+	}
+	return nil
+}
+
 // Describe names the code in dir: the short sha of the worktree when this
 // fake checked it out, and an obviously fake string when it did not.
 func (g *FakeGit) Describe(_ context.Context, dir string) (string, error) {

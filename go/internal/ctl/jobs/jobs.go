@@ -663,6 +663,12 @@ type Git interface {
 	// pre-existing (non-ctl-managed) worktree is actually sitting at, before
 	// checking that same sha out fresh from the mirror.
 	HeadSHA(ctx context.Context, dir string) (sha string, err error)
+	// RepairWorktree is `git -C <mirror> worktree repair <path>`: after a
+	// worktree directory is RENAMED (tenant rebase-worktree swaps
+	// `<worktree>.mirror` into place), the mirror's administrative entry
+	// still names the old path and `git worktree list` shows it prunable;
+	// repair rewrites both back-pointers from the directory's own .git file.
+	RepairWorktree(ctx context.Context, mirror, path string) error
 }
 
 // Build is the node/vite surface. It is split from Git because the two fail

@@ -195,6 +195,12 @@ func TestRebaseWorktreeSuccess(t *testing.T) {
 	if mirrorSide := wt + ".mirror"; fileExists(mirrorSide) {
 		t.Errorf("the intermediate %s must not survive a successful rebase", mirrorSide)
 	}
+	// The mirror's own record names the FINAL path: a rename alone left it
+	// naming <wt>.mirror, and `git worktree list` called the checkout prunable.
+	list := runGit(t, fx.mirror, "worktree", "list", "--porcelain")
+	if !strings.Contains(list, "worktree "+wt+"\n") || strings.Contains(list, ".mirror") || strings.Contains(list, "prunable") {
+		t.Errorf("the mirror's worktree list was not repaired after the rename:\n%s", list)
+	}
 }
 
 func fileExists(p string) bool {

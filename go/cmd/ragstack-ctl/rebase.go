@@ -217,6 +217,15 @@ func cmdTenantRebaseWorktree(args []string, registryPath, ragRoot string) int {
 			mirrorSide, mirrorSide, t.Worktree, err, t.Worktree, mirrorSide, t.Worktree))
 	}
 
+	// The rename moved the directory but not the mirror's record of it: the
+	// entry under <mirror>/worktrees/ still named <worktree>.mirror and
+	// `git worktree list` showed it prunable (seen on coconut with the
+	// hackathon tenant; repaired by hand). Repair is advisory here — the
+	// checkout itself is complete and correct — so a failure is reported with
+	// the command to run, not treated as a failed rebase.
+	if err := real.Git().RepairWorktree(ctx, mirrorDir, t.Worktree); err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: the checkout is in place but the mirror's worktree record was not repaired (%v); run:\n  git -C %s worktree repair %s\n", err, mirrorDir, t.Worktree)
+	}
 	fmt.Fprintf(stdout, "rebased %s: %s now checked out from %s at %s\n", name, t.Worktree, mirrorDir, sha)
 	fmt.Fprintf(stdout, "the old checkout is untouched at %s; once you no longer need it:\n  %s\n", homeSide, removeLine)
 	fmt.Fprintln(stdout, "the running API keeps working (same code, modules already loaded) — restart it at the next maintenance window to pick up the new path.")

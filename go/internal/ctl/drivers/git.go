@@ -147,6 +147,20 @@ func (g *RealGit) RemoveWorktree(ctx context.Context, mirror, dest string) error
 	return err
 }
 
+// RepairWorktree fixes the mirror's back-pointers for a worktree that was
+// moved by rename rather than by `git worktree move`.
+func (g *RealGit) RepairWorktree(ctx context.Context, mirror, path string) error {
+	path, err := g.checkDest(path)
+	if err != nil {
+		return err
+	}
+	if err := g.checkMirror(ctx, mirror); err != nil {
+		return err
+	}
+	_, err = g.git(ctx, "-C", mirror, "worktree", "repair", path)
+	return err
+}
+
 // Describe names the code in dir.
 func (g *RealGit) Describe(ctx context.Context, dir string) (string, error) {
 	if !filepath.IsAbs(dir) {
