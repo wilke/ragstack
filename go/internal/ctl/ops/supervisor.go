@@ -48,6 +48,8 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
+	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
@@ -597,9 +599,10 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 	pidfile, logPath := p.apiPidFile(), tp.APILog
 	worktree, port := p.t.Worktree, c.Port
 	tenantEnv, secretsEnv := tp.TenantEnv, tp.SecretsEnv
+	ownStores := ownStoreProbes(p.t, tp)
 
 	p.addFor("proc", step{
-		Kind: "proc", Title: fmt.Sprintf("start the API detached (pidfile %s)", filepath.Base(pidfile)),
+		Kind: "proc", Title: fmt.Sprintf("start the API detached once its stores answer (pidfile %s)", filepath.Base(pidfile)),
 		Targets:  []string{pidfile},
 		WouldRun: []model.WouldRun{{Argv: append([]string{program}, args...)}},
 		WouldWrite: []model.WouldWrite{
@@ -617,6 +620,15 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 			if up {
 				sc.Logf("the API is already running as pid %d", pid)
 				return fmt.Sprintf("already running: pid %d", pid), nil
+			}
+			// The stores first, exactly as the api unit's ExecStartPre
+			// `wait-ready` does: uvicorn's startup creates the qdrant
+			// collection and the elasticsearch index, and an API spawned
+			// while Elasticsearch is still opening its segments dies on a
+			// connection timeout — coconut's first instance-mode selftest
+			// did, fifteen seconds after the spawn.
+			if err := awaitOwnStores(ctx, sc, ownStores); err != nil {
+				return "", err
 			}
 			env, err := apiEnviron(ctx, sc, tenantEnv, secretsEnv, unitEnv)
 			if err != nil {
@@ -933,3 +945,61 @@ func (d Deps) defaultSupervisor() string {
 // KnownSupervisor reports whether s is a value `create` may be given. It is
 // exported for the CLI, which validates the flag before the request is built.
 func KnownSupervisor(s string) bool { return s == supervisorSystemd || s == supervisorInstance }
+
+// storeProbe is one readiness question about a store this tenant owns.
+type storeProbe struct {
+	what  string
+	probe func(context.Context, *jobs.StepContext) error
+}
+
+// ownStoreProbes are the stores the tenant runs itself — an exclusive qdrant,
+// an exclusive elasticsearch, a local postgres — which is what `wait-ready`
+// gates the api unit on. A shared or external store is somebody else's to
+// keep up and is not waited for.
+func ownStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
+	var out []storeProbe
+	if q := t.Stores.Qdrant; q.Ownership == registry.OwnershipExclusive && q.URL != "" {
+		url := q.URL
+		out = append(out, storeProbe{"qdrant", func(c context.Context, sc *jobs.StepContext) error {
+			return sc.Ops.Drivers.Qdrant().Ready(c, url)
+		}})
+	}
+	if e := t.Stores.Elasticsearch; e.Ownership == registry.OwnershipExclusive && e.URL != "" {
+		url := e.URL
+		out = append(out, storeProbe{"elasticsearch", func(c context.Context, sc *jobs.StepContext) error {
+			return sc.Ops.Drivers.Elasticsearch().Ready(c, url)
+		}})
+	}
+	if pg := t.Stores.Postgres; pg.Kind == registry.PostgresKindLocal {
+		spec := jobs.PostgresSpec{SIF: string(pg.SIF), RunDir: tp.PostgresRun, DB: t.Name, User: t.Name, Port: pgPortOf(t)}
+		out = append(out, storeProbe{"postgres", func(c context.Context, sc *jobs.StepContext) error {
+			return sc.Ops.Drivers.Postgres().Ready(c, spec)
+		}})
+	}
+	return out
+}
+
+// awaitOwnStores polls every probe until it answers or createReadyTimeout
+// passes. Wall clock and a real sleep, for the reason create's readiness gate
+// gives: this is a run half waiting for a process to open its files.
+func awaitOwnStores(ctx context.Context, sc *jobs.StepContext, probes []storeProbe) error {
+	deadline := time.Now().Add(createReadyTimeout)
+	for _, pr := range probes {
+		for {
+			err := pr.probe(ctx, sc)
+			if err == nil {
+				sc.Logf("%s answers", pr.what)
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("%s did not become ready within %s: %w", pr.what, createReadyTimeout, err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(createReadyPoll):
+			}
+		}
+	}
+	return nil
+}
