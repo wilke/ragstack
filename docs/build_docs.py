@@ -161,13 +161,12 @@ PAGES = [
 # at the rendered pages. Anything not listed here is left alone — repo-root links like
 # ../SPEC.md deliberately fall through to GitHub.
 _LINK_MAP = {p["src"]: p["out"] for p in PAGES}
-_LINK_MAP["adr/README.md"] = "adr.html"
 
 
 def _rewrite_links(md_text: str, src: str, out: str = "") -> str:
     """Resolve every relative link in a source doc against the built site.
 
-    Pages get flattened into ``docs/``, so a doc's own relative links no longer
+    Pages are written under ``docs/`` (some in subfolders), so a doc's own links no longer
     hold — one written from ``docs/adr/`` resolves from a different depth than the
     page it becomes. Each link is resolved to a repo path first, then either mapped
     to its built page or sent to GitHub. Nothing is left to dangle.

@@ -12,6 +12,7 @@ on:
     # unpublished doc is cheap; not rebuilding on a published one is a stale site.
     paths:
       - "docs/**/*.md"
+      - "docs/images/**"
       - docs/build_docs.py
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -33,6 +34,12 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
+        # The footer stamp runs `git describe --tags`. checkout's defaults are a
+        # depth-1 fetch with no tags, which degrades the stamp to a bare sha —
+        # correct, but it cannot tell you which release the site came from.
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       # Enables GitHub Pages (Actions source) if it isn't already — this is what
       # was missing, and why the deploy 404'd.
       - name: Configure Pages

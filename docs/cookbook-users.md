@@ -109,7 +109,7 @@ curl -s $BASE/v1/collections -H "$AUTH" | jq '.collections[] | select(.id=="my-p
 **Name the content type for anything that is not a PDF.** The gate reads the
 multipart content type, not the file extension, and `curl` guesses it from the
 extension — it has no guess for `.md`, so a bare `-F files=@notes.md` sends
-`application/octet-stream` and is refused with a `400` that lists the accepted
+`application/octet-stream` and is refused with a `415` that lists the accepted
 types but not the fix. Declare it:
 
 ```bash
@@ -120,9 +120,15 @@ curl -s -X POST $BASE/v1/ingest/upload -H "$AUTH" \
 ```
 
 `.txt` happens to work without this because `curl` guesses `text/plain`; `.md`
-does not. Markdown is stored **rendered**, not verbatim — headings, `**bold**`
-and `-` bullets are gone from the indexed text, which is fine for retrieval but
-not if you meant to match on the markup.
+does not.
+
+**Whether Markdown keeps its markup depends on the ingest backend.** On a GoWe
+deployment (`INGEST_BACKEND=gowe`, which is what the hackathon tenant runs) the
+PDF extractor handles it and stores the **rendered** text — headings, `**bold**`
+and `-` bullets are gone from what is indexed. On a local-backend deployment
+`.md` is read by the plain text loader and the markup survives verbatim
+(`ingestion/loaders.py:433`). Either is fine for retrieval; it matters only if
+you meant to match on the markup.
 
 PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
 `UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
