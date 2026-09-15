@@ -34,6 +34,28 @@ now**, so that is the tag the commands below use.
 
 ---
 
+### How to read a citation
+
+Code references are `file:line` against the tree at the tag named above.
+
+- A path is relative to **`python/ragstack/`** — `api/security.py:990`.
+- Unless it starts with `go/`, `ops/coconut/`, `frontend/` or `contracts/`, which
+  are relative to the **repository root**.
+- A **bare filename** — `collections.py:1569` — means the file the surrounding
+  section is about.
+
+That last form is the one to watch. Several of these basenames exist more than
+once in the tree (`collections.py` and `documents.py` both do), so a bare
+citation resolves from its section, not from a search. **Anything checking these
+mechanically needs that rule, or it will resolve to the wrong file and report
+correct citations as broken** — which is worse than not checking, because the
+next person edits good citations to satisfy a bad resolver. If such a check is
+ever written, qualify the citations first or give the checker the convention.
+
+One exception is called out where it appears: `/rag/config/proxy/snippets/…` is a
+**live-host path**, not a repo file. Nothing here can pin it, and it drifts with
+the gateway.
+
 ## Two rules before anything starts
 
 ### Never stop a service by process-name pattern

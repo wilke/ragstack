@@ -8,9 +8,27 @@ see [`tenant-upgrade.md`](tenant-upgrade.md); for a 503 with a `Reference:` id
 see [`tracing-a-503.md`](tracing-a-503.md).
 
 Every endpoint, field name, status code and default below was read out of the
-code at `v1.6.1` and is cited `file:line` against `python/ragstack/`. Where a
-value is a **product default** rather than a particular tenant's setting, it says
-so — a tenant's live values are in its own `tenant.env`, never in this file.
+code at `v1.6.1` and is cited `file:line`. Where a value is a **product default**
+rather than a particular tenant's setting, it says so — a tenant's live values
+are in its own `tenant.env`, never in this file.
+
+### How to read a citation
+
+Code references are `file:line` against the tree at the tag named above.
+
+- A path is relative to **`python/ragstack/`** — `api/security.py:990`.
+- Unless it starts with `go/`, `ops/coconut/`, `frontend/` or `contracts/`, which
+  are relative to the **repository root**.
+- A **bare filename** — `collections.py:1569` — means the file the surrounding
+  section is about.
+
+That last form is the one to watch. Several of these basenames exist more than
+once in the tree (`collections.py` and `documents.py` both do), so a bare
+citation resolves from its section, not from a search. **Anything checking these
+mechanically needs that rule, or it will resolve to the wrong file and report
+correct citations as broken** — which is worse than not checking, because the
+next person edits good citations to satisfy a bad resolver. If such a check is
+ever written, qualify the citations first or give the checker the convention.
 
 ---
 
