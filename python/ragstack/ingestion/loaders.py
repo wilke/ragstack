@@ -424,10 +424,11 @@ class JsonlLoader:
             if key not in self._passthrough:
                 self.dropped.not_allowed[key] += 1
                 continue
-            if _passthrough_value(key, value) is None:
+            safe = _passthrough_value(key, value)
+            if safe is None:
                 self.dropped.unusable[key] += 1
                 continue
-            extra[key] = _passthrough_value(key, value)
+            extra[key] = safe
         return {**extra, **meta}
 
     def _document(self, record: dict) -> Document | None:
