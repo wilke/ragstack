@@ -7,8 +7,7 @@ terminal.
 For the hackathon deployment's URLs and limits, see [HACKATHON.md](HACKATHON.md).
 For the same ground as copy-paste API calls, see [cookbook-users.md](cookbook-users.md).
 
-> **Screenshots pending.** Marked `[screenshot: …]` below. Anyone with the app
-> open can drop them in; the prose stands without them.
+> Screenshots are of the hackathon tenant.
 
 ## What you are looking at
 
@@ -39,7 +38,11 @@ The sign-in control is in the **header**, on the right. There are three ways in:
 - **Paste a token** — the same value `p3-login` writes to `~/.patric_token`.
 - **API key** — if an operator issued you one.
 
-`[screenshot: header with the sign-in control and the login panel open]`
+![The sign-in panel, opened from the header](images/ui/01-signin.png)
+
+*Signing in: BV-BRC is the identity provider, and the panel says outright that your
+password goes directly to BV-BRC. “Already have a token? Paste it instead” is the
+second route.*
 
 Two things that catch people out:
 
@@ -59,7 +62,10 @@ send your token there.
 
 Go to **Collections** and click **＋ New collection**.
 
-`[screenshot: Collections tab with the inline New collection form open]`
+![The inline New collection form on the Collections tab](images/ui/02-new-collection.png)
+
+*Chunking stays on “Server default (recommended)”. Note the form tells you chunking is
+fixed when the collection is created — like the name, it is not editable later.*
 
 - **Name.** This is both the id and the display label, so it must be unique on the
   whole deployment, and **it cannot be changed later** — there is no rename
@@ -80,7 +86,10 @@ the limit counts collections you own, not names.
 
 Same tab, with your collection selected: drop files into the upload area.
 
-`[screenshot: upload area mid-ingest, with the progress readout]`
+![An ingest job running, three documents pending](images/ui/03-ingest-progress.png)
+
+*A real job mid-flight: the job id, a `running` badge, and the counts — 3 total, 0
+completed, 0 failed, 3 pending. This is what you watch; it is not instant.*
 
 - **PDFs only, in the browser.** The picker offers nothing else. The API also
   accepts plain text, Markdown and XML (JATS) — which is how the open-access
@@ -98,6 +107,11 @@ are uploaded, then chunked and embedded in the background.
 **If it ends in `failed`,** the app cannot tell you why — the reason is only
 visible to an operator. Note the time and ask one.
 
+**Retrying with the same file needs a new name.** A filename already present in the
+collection's sources is refused rather than replaced — *"'X.pdf' already exists in
+the collection's sources … it was left untouched"* — and the message names the API
+remedy. Rename the file, or use a fresh collection, when retrying a failed upload.
+
 On deployments that run ingest through BV-BRC (including the hackathon tenant),
 your uploads are written into **your own BV-BRC Workspace**, not onto the RAGStack
 server, and processed by a workflow running as you. This is also why upload needs
@@ -105,10 +119,14 @@ a BV-BRC token specifically — an API key alone is refused.
 
 ## Asking a question
 
-Go to **Explore**. Before you ask, **pick your collection in the chip above the
-question box** — that is the collection picker, and it is easy to miss.
+Go to **Explore**. Before you ask, **pick your collection in the chip row just
+below the question box** — that is the collection picker, and it is easy to miss.
 
-`[screenshot: Explore with the collection chip expanded]`
+![Explore showing a cited answer, with the chip row beneath the question box](images/ui/04-explore.png)
+
+*The chip row — collection, `hybrid`, `rerank on`, `k 5`, Options — sits directly under
+the question box. The answer carries a `[2]` citation chip, and THIS RUN reports what
+the query actually did: kept 5, 1.63s.*
 
 Type your question and submit. You get an answer with **numbered citation chips**
 — `[1]`, `[2]` — each pointing at the source chunk it came from. Click one to see
@@ -128,17 +146,27 @@ A single chunk is often not enough context. Open **Evidence** for a claim-by-cla
 view of one run, with previous/next controls that walk you through the
 surrounding text of the document a citation came from.
 
+Evidence paints itself in dark chrome by design — coming from the light Explore
+screen, that is the app working as intended, not a theme glitch.
+
 **Compare** is the other direction: the same question, several retrieval
 configurations, side by side. Useful when you are trying to work out whether a
 disappointing answer is the corpus's fault or the settings'.
 
-`[screenshot: Evidence view with the prev/next reader]`
+![Evidence: claims on the left, the source reader on the right](images/ui/05-evidence.png)
+
+*Claim-by-claim on the left; on the right, SOURCE 2 OF 5 with the ‹ prev / next ›
+reader. The bar across the top shows which retrieval legs contributed — VECTOR, ES,
+then RRF fusing them to 5 kept.*
 
 ## Sharing a collection
 
 **Collections → Share** on the collection you want to share.
 
-`[screenshot: the Share dialog listing current grants]`
+![The Share panel with an owner row and a public grant](images/ui/06-share.png)
+
+*An owner row, a public read grant with its Revoke control, the share-with-a-user
+field and the group dropdown. “Public ✓ — make private” toggles the one `@public` row.*
 
 You can grant:
 
@@ -172,7 +200,11 @@ where they are. Any signed-in user can create a group, becomes its owner, and ca
 add and remove members. Then share a collection with the whole group at once
 instead of person by person.
 
-`[screenshot: Ops tab, Groups panel]`
+![Ops → Groups, showing a group with no members yet](images/ui/07-groups.png)
+
+*Groups under Ops: owner, created date, the add-a-user form, and the reminder that an
+empty group grants no one anything. Captured on an admin account, so every Ops section
+is live here; on an ordinary account about half show a dim admin-only note instead.*
 
 ## About the Ops tab
 

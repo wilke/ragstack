@@ -146,7 +146,10 @@ def _rewrite_links(md_text: str, src: str) -> str:
             return f"{label}({built}{anchor})"
         return f"{label}({REPO}/blob/main/{repo_path}{anchor})"
 
-    return re.sub(r"(\[[^\]]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
+    # The negative lookbehind keeps ![alt](src) out of this: an image target is a
+    # site asset copied by assemble_site, not a document link, and sending it to
+    # GitHub would render a blob page where an <img> should be.
+    return re.sub(r"(?<!!)(\[[^\]]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
 
 
 def gh_slug(text: str) -> str:
@@ -248,8 +251,15 @@ def assemble_site(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for name in [p["out"] for p in PAGES] + ["index.html"]:
         shutil.copy2(HERE / name, dest / name)
+    # Screenshots and any other page assets. Pages are flattened to the site root,
+    # so a doc referencing images/x.png resolves here without rewriting.
+    images = HERE / "images"
+    n_assets = 0
+    if images.is_dir():
+        shutil.copytree(images, dest / "images", dirs_exist_ok=True)
+        n_assets = sum(1 for f in (dest / "images").rglob("*") if f.is_file())
     (dest / ".nojekyll").touch()
-    print(f"  assembled {len(PAGES) + 1} pages -> {dest}")
+    print(f"  assembled {len(PAGES) + 1} pages + {n_assets} assets -> {dest}")
 
 
 def main() -> None:
