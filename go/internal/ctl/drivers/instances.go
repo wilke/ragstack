@@ -184,6 +184,31 @@ func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 	return err
 }
 
+// SeedConfigDir is
+// `apptainer exec --bind <hostDir>:/__seed <sif> cp -R <containerDir>/. /__seed/`
+// — the argv `ragstack-ctl es-seed-config` runs from the ES unit's
+// ExecStartPre, which the instance supervisor must run itself because it has
+// no ExecStartPre. Unconditional: "only when the host directory is empty" is
+// policy and lives in ops, so an operator's own elasticsearch.yml is never
+// overwritten by THIS call being reached twice.
+func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, hostDir string) error {
+	sif, err := checkSIF(sif)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(containerDir) || filepath.Clean(containerDir) != containerDir || containerDir == "/" {
+		return fmt.Errorf("%w: the container config directory %q must be an absolute, clean path", jobs.ErrRefused, containerDir)
+	}
+	binds, err := i.bindArgs([]string{hostDir + ":/__seed"})
+	if err != nil {
+		return err
+	}
+	argv := append([]string{"exec"}, binds...)
+	argv = append(argv, sif, "cp", "-R", containerDir+"/.", "/__seed/")
+	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv, Timeout: instanceRunTimeout})
+	return err
+}
+
 // Stop is `apptainer instance stop <name>`, and an instance that is not
 // running is SUCCESS.
 //

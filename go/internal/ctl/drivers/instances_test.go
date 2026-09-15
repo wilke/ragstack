@@ -148,6 +148,29 @@ func TestInstancesRunBuildsTheArgvApptainerExpects(t *testing.T) {
 	}
 }
 
+func TestInstancesSeedConfigDirCopiesTheImageConfigIntoTheBind(t *testing.T) {
+	d, s, root, sif := newInstances(t)
+	host := filepath.Join(root, "elasticsearch", "config")
+	if err := os.MkdirAll(host, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SeedConfigDir(context.Background(), sif, "/usr/share/elasticsearch/config", host); err != nil {
+		t.Fatal(err)
+	}
+	want := "exec --bind " + host + ":/__seed " + sif + " cp -R /usr/share/elasticsearch/config/. /__seed/"
+	if got := s.argv(); len(got) != 1 || got[0] != want {
+		t.Fatalf("SeedConfigDir argv = %v, want [%q]", got, want)
+	}
+	// The host side is a bind like any other: outside the roots it is refused
+	// before apptainer runs, and a relative container path is refused too.
+	if err := d.SeedConfigDir(context.Background(), sif, "/usr/share/elasticsearch/config", "/etc/es"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a host dir outside the roots = %v, want a refusal", err)
+	}
+	if err := d.SeedConfigDir(context.Background(), sif, "config", host); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a relative container dir = %v, want a refusal", err)
+	}
+}
+
 func TestInstancesRunPutsExtraEnvInTheChildEnvironmentAndNeverOnTheArgv(t *testing.T) {
 	d, s, _, sif := newInstances(t)
 	s.respond("list", `{"instances":[]}`, "", 0)
