@@ -51,6 +51,9 @@ type RealOptions struct {
 	GitBin       string // /usr/bin/git
 	NodeBin      string // /rag/tools/node/current/bin/node
 	NpmBin       string // /rag/tools/node/current/bin/npm
+	// CrontabBin is crontab(1), the only boot hook a host whose service
+	// account has no user manager has (PR-D2). ctl.env CTL_CRONTAB_BIN.
+	CrontabBin string // /usr/bin/crontab
 	// Mirror is the bare repository artifacts are prepared from. Default
 	// <RagRoot>/repos/ragstack.git. The ctl never creates it — cloning the
 	// mirror is an operator's deploy-time act.
@@ -88,8 +91,8 @@ const (
 
 // Real is the real driver set: the gateway and the filesystem (PR-C), the
 // host drivers (systemd, proc, git, build) and the store drivers (qdrant,
-// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired. Nothing
-// on it is pending; Pending() is kept for the next driver that is.
+// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired, and
+// PR-D2's instances and crontab. Every driver in it runs: Pending() is empty.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
@@ -104,6 +107,9 @@ type Real struct {
 	pg      *RealPostgres
 	sqlite  *RealSQLite
 	archive *RealArchive
+	// PR-D2: the store half and the boot hook of `supervisor: instance`.
+	instances *RealInstances
+	crontab   *RealCrontab
 }
 
 var _ jobs.Drivers = (*Real)(nil)
@@ -138,8 +144,13 @@ func NewReal(o RealOptions) *Real {
 		files:   &RealFiles{Roots: roots},
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
-		// `doctor` answer a port question from the same parser.
-		proc:    &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
+		// `doctor` answer a port question from the same parser; the roots
+		// bound the pidfile and the log Spawn creates.
+		proc: &RealProc{
+			Listeners: hostfacts.NewReal(o.Roots).Listeners,
+			ProcRoot:  func() string { return "/proc" },
+			Roots:     roots,
+		},
 		git:     &RealGit{run: run, Bin: o.GitBin, Roots: roots},
 		build:   &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
 		qdrant:  &RealQdrant{h: h},
@@ -148,6 +159,11 @@ func NewReal(o RealOptions) *Real {
 		pg:      &RealPostgres{opts: o, run: run},
 		sqlite:  &RealSQLite{opts: o},
 		archive: &RealArchive{opts: o},
+		// The instance driver binds host paths into a container, so it gets
+		// the same approved roots the drivers that write under them do.
+		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
+			Env: apptainerEnv(o.Roots.CtlStateDir)},
+		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
 
@@ -179,6 +195,8 @@ func (r *Real) Build() jobs.Build                 { return r.build }
 func (r *Real) Postgres() jobs.Postgres           { return r.pg }
 func (r *Real) SQLite() jobs.SQLite               { return r.sqlite }
 func (r *Real) Archive() jobs.Archive             { return r.archive }
+func (r *Real) Instances() jobs.Instances         { return r.instances }
+func (r *Real) Crontab() jobs.Crontab             { return r.crontab }
 
 // ---------------------------------------------------------------- gateway
 
@@ -416,6 +434,18 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	if err != nil {
 		return err
 	}
+	return writeAtomic(path, data, mode)
+}
+
+// writeAtomic is WriteAtomic's body without the containment check, for the one
+// other place that writes a file the ctl's own bookkeeping depends on:
+// proc.Spawn's pidfile, which is written after THAT driver has checked the
+// path against its own roots. Two copies of "temporary file in the same
+// directory, mode before the rename, fsync the directory afterwards" would be
+// two places to get it wrong.
+//
+// path must already be resolved and approved by the caller.
+func writeAtomic(path string, data []byte, mode uint32) (err error) {
 	// The RESOLVED directory: the temporary file and the rename target have to
 	// be the same directory the check approved, or the two are different
 	// places whenever a component is a link.
@@ -754,5 +784,15 @@ func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
 			return 0, err
 		}
 		dir = parent
+	}
+}
+
+// apptainerEnv is the apptainer state the ctl owns — the same two directories
+// the rendered units set — so every apptainer call, from any account the ctl
+// runs as, reads and writes one instance registry.
+func apptainerEnv(ctlStateDir string) []string {
+	return []string{
+		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
+		"APPTAINER_CONFIGDIR=" + filepath.Join(ctlStateDir, "apptainer", "config"),
 	}
 }

@@ -364,7 +364,7 @@ if want proxy; then
   else
     say "  ✗ :9000 is DOWN. Options:"
     say "     a) admin: install/enable the unit from ops/ansible (it owns this file now — a hand `cp` would be overwritten):"
-    say "          cd ~/Development/ragstack/ops/ansible && ./check.sh root -K     # preview"
+    say "          cd /rag/repos/ragstack/ops/ansible && ./check.sh root -K     # preview"
     say "          ansible-playbook -i inventory/coconut.yml site.yml --tags root -K -e proxy_switch_now=true"
     say "        (proxy_switch_now also removes svcbvbrc's @reboot start-proxy.sh crontab line, so boot start has one owner)"
     say "     b) re-run: $0 --only proxy --proxy   (starts it under this account with a fresh self-signed cert)"

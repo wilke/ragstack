@@ -104,6 +104,13 @@ type createSpec struct {
 	Start   bool
 	Gateway bool
 
+	// Supervisor is how the new tenant's processes will be started:
+	// `systemd` or `instance` (ops/supervisor.go). It comes from the request's
+	// `supervisor` argument, or — when the request named none — from the
+	// deployment's CTL_DEFAULT_SUPERVISOR. `restore --as` copies the SOURCE
+	// tenant's, so a restored twin is supervised the way its original is.
+	Supervisor string
+
 	// Owner is the account recorded on the row: the one running the ctl.
 	Owner string
 
@@ -247,12 +254,33 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 	if esHeap == "" {
 		esHeap = defaultESHeap
 	}
+	// The supervisor the request named, or the deployment's. A value nobody
+	// chose must not land in the args (and so in the plan hash and the audit
+	// row), which is why the schema has no default and the resolution happens
+	// here, where the ctl's own configuration is readable.
+	sup := argStringOf(args, "supervisor")
+	if sup == "" {
+		sup = p.op.deps.defaultSupervisor()
+	}
+	if !KnownSupervisor(sup) {
+		// Unreachable from a validated request (the args enum is
+		// {systemd, instance}); stated because the value can also come from
+		// ctl.env, which nothing else validates.
+		return p.refuse("supervisor %q is not one a tenant can be created with (systemd|instance); `manual` describes "+
+			"a tenant somebody else started, which `adopt` records and `create` cannot produce", sup)
+	}
+	uiMode := argStringOf(args, "ui_mode")
+	if sup == supervisorInstance && uiMode == registry.UIModeDev {
+		return p.refuse("ui_mode `dev` and supervisor `instance` cannot be combined: a Vite dev server is not " +
+			"supervised in instance mode. Use ui_mode `static` (nginx serves <data_dir>/ui/dist) or create the " +
+			"tenant on systemd units")
+	}
 	spec := createSpec{
 		Name: name, ArtifactID: artifactID, Artifact: artifact, Index: index, Base: base,
 		StoreKind: storeKind, ESHeap: esHeap, Provider: provider, Subjects: subjects,
 		Keys: keys, Accounts: serviceAccountArgs(args), Settings: set,
-		UIMode: argStringOf(args, "ui_mode"),
-		Start:  boolArgOrDefault(args, "start", true), Gateway: boolArgOrDefault(args, "gateway", true),
+		UIMode: uiMode, Supervisor: sup,
+		Start: boolArgOrDefault(args, "start", true), Gateway: boolArgOrDefault(args, "gateway", true),
 		Mirror: p.op.deps.Mirror, Owner: p.op.deps.owner(),
 	}
 	if !registry.KnownOwner(spec.Owner) {
@@ -277,6 +305,13 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	t := spec.Tenant
 	name := spec.Name
 	p.t, p.tenant = t, name
+	// The planner is now pointed at the tenant this job is MAKING, so its
+	// supervisor is the new row's — the one `install` and `startTenant` below
+	// go through, and the one `restore --as` inherits from its source.
+	p.sup = supervisorFor(t.Supervisor)
+	if p.sup == nil {
+		return p.refuse("%s would be created with supervisor %q, which is not one the ctl can start", name, t.Supervisor)
+	}
 	p.tpaths = paths.TenantPaths(p.oc.Roots, name, name)
 	tp := p.tpaths
 
@@ -635,85 +670,23 @@ func planCreateSteps(p *planner, spec createSpec) error {
 		})
 	}
 
-	// ---- 7. units ---------------------------------------------------------
-	p.addUnitsWrite(units)
-	for _, unit := range sortedUnitNames(units) {
-		unit := unit
-		path := filepath.Join(p.oc.Roots.UnitsDir(), unit)
-		p.addFor("systemd", step{
-			Kind: "systemd", Title: "systemctl --user link " + unit, Targets: []string{path},
-			WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "link", path}}},
-			Warnings: []string{"the ctl writes units into its own config tree, which the user manager does not " +
-				"search; linking is what makes a rendered unit a real one until the SYSTEMD_UNIT_PATH drop-in exists"},
-			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				if err := sc.Checkpoint("unit:" + unit); err != nil {
-					return "", err
-				}
-				return "linked " + unit, sc.Ops.Drivers.Systemd().Link(ctx, path)
-			},
-			// The link is undone by `disable`, which is what removes the symlink
-			// `link` made (the unit was never enabled, so that is all it
-			// removes). Without this rollback coconut's first failed sandbox
-			// create left three dangling links in the user manager, listed as
-			// loaded/failed units of a tenant that no longer existed. The
-			// failed state is cleared too, so a later create of the same name
-			// does not inherit a start-limit counter; "not loaded" there is not
-			// an error, it is the state this rollback wants.
-			Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				// A refusal here means the manager already forgot the unit — the
-				// enable step's own rollback (disable, in reverse order before
-				// this one) does that for the target — and "already gone" is
-				// this rollback's goal, not its failure.
-				if err := sc.Ops.Drivers.Systemd().Disable(ctx, unit); err != nil {
-					sc.Logf("disable %s: %v (treated as already unlinked)", unit, err)
-					return "already unlinked " + unit, nil
-				}
-				_ = sc.Ops.Drivers.Systemd().ResetFailed(ctx, unit)
-				return "unlinked " + unit, nil
-			},
-		})
-	}
-	p.addFor("systemd", step{
-		Kind: "systemd", Title: "systemctl --user daemon-reload",
-		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "daemon-reload", sc.Ops.Drivers.Systemd().DaemonReload(ctx)
-		},
-	})
-	if t.DesiredBoot == "enabled" {
-		// The TARGET is what is enabled, and only the target: the service units
-		// carry no [Install] section (they are PartOf the target and pulled in by
-		// its Wants), so `systemctl enable` on one of them is an error, not a
-		// stronger guarantee.
-		p.addFor("systemd", step{
-			Kind: "systemd", Title: "enable " + target + " (desired_boot)", Targets: []string{target},
-			WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "enable", target}}},
-			Run:      unitRun("enable", target),
-			Rollback: unitRun("disable", target),
-		})
+	// ---- 7. supervision ---------------------------------------------------
+	//
+	// WHAT a supervisor installs is the supervisor's business (ops/
+	// supervisor.go): systemd writes the rendered units, links them and
+	// enables the target; instance mode installs nothing and says so.
+	if err := p.sup.install(p, units, target); err != nil {
+		return err
 	}
 
 	// ---- 8. start + readiness ---------------------------------------------
 	if spec.Start {
-		p.addFor("systemd", step{
-			Kind: "systemd", Title: "start " + target, Targets: []string{target},
-			WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "start", target}}},
-			Run:      unitRun("start", target),
-			Rollback: unitRun("stop", target),
-			Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
-				active, err := sc.Ops.Drivers.Systemd().IsActive(ctx, target)
-				if err != nil {
-					return jobs.ReconcileStuck, err
-				}
-				if active {
-					return jobs.ReconcileDone, nil
-				}
-				return jobs.ReconcileRedo, nil
-			},
-		})
+		if err := p.sup.startTenant(p, target); err != nil {
+			return err
+		}
 		p.addReadyGate(spec)
 	} else {
-		p.skip("systemd", "skip the start", "start is false: the tenant is provisioned and enabled but not running",
+		p.skip(p.sup.kind(), "skip the start", "start is false: the tenant is provisioned and enabled but not running",
 			target)
 	}
 
@@ -1169,7 +1142,7 @@ func prospectiveTenant(roots paths.Roots, f *registry.Fleet, spec createSpec) *r
 	if uiMode == registry.UIModeDev {
 		t.UI.Port = registry.NullPort(t.Ports.Base + 10)
 	}
-	t.Supervisor, t.Owner, t.State = supervisorSystemd, orDefault(spec.Owner, "svcbvbrc"), "provisioned"
+	t.Supervisor, t.Owner, t.State = orDefault(spec.Supervisor, DefaultSupervisor), orDefault(spec.Owner, "svcbvbrc"), "provisioned"
 	t.DesiredBoot, t.EnvLayout = "enabled", "managed"
 	t.Identity = registry.Identity{Provider: spec.Provider, AdminSubjectsCount: len(spec.Subjects)}
 	t.Settings = spec.Settings

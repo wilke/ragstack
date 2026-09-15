@@ -70,6 +70,13 @@ var executableSurface = set(
 	"INGEST_ROOT", "COLLECTION_MANIFEST_DIR",
 	"USER_STORE_PATH", "JOB_STORE_PATH", "COLLECTION_STORE_PATH", "GRADING_STORE_PATH",
 	"COLLECTIONS_FILE", "MODELS_REGISTRY_FILE", "DOI_ENRICHMENT_CACHE_DIR",
+	// PROMPT_TEMPLATES_FILE names a YAML/JSON file the API LOADS AND VALIDATES
+	// AT STARTUP (ADR-0008): its records become the prompts the tenant answers
+	// with. That is the same class as COLLECTIONS_FILE and the CWL paths — a
+	// path whose content the process executes on — so it is CLI-editable by an
+	// operator who can already see the file, and refused over HTTP, where a
+	// session that could repoint it would be choosing what every answer says.
+	"PROMPT_TEMPLATES_FILE",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
 	"QDRANT_URL", "ELASTICSEARCH_URL", "NEO4J_URI", "REDIS_URL",
 	"EMBEDDING_ENDPOINTS", "EMBEDDING_SIDECAR_URL", "CROSSENCODER_SIDECAR_URL",

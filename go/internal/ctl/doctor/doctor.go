@@ -17,6 +17,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -26,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
@@ -73,6 +75,15 @@ type Options struct {
 	// ImportCheck resolves `import ragstack` under a tenant's python env and
 	// PYTHONPATH; nil ⇒ the real argv-only probe. Return ("", nil) to skip.
 	ImportCheck func(pythonEnv, worktree string) (string, error)
+	// CtlEnv is the CTL_* host-tool/directory values HomePathInProduction
+	// checks for a home-directory path — the same names
+	// api.SetHostToolsFromEnv reads into the engine's driver config (kept
+	// here as literal strings: api imports doctor for the live doctor route,
+	// so doctor importing api back would cycle). Nil reads the current
+	// process's environment, which is what ctl-daemon.sh's load_env put
+	// there for the daemon; a test passes an explicit map instead of
+	// mutating its own environment.
+	CtlEnv map[string]string
 }
 
 // Run diagnoses fleet against the host and returns the contract's response.
@@ -106,15 +117,19 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 	if d.opts.ImportCheck == nil {
 		d.opts.ImportCheck = realImportCheck
 	}
+	if d.opts.CtlEnv == nil {
+		d.opts.CtlEnv = ctlEnvFromProcess()
+	}
 	d.listeners()
 	d.hostChecks()
+	d.homePathHostChecks()
 	d.manifestChecks()
 	d.gatewayChecks()
 	for _, t := range d.scopedTenants() {
 		d.tenantChecks(ctx, t)
 	}
 
-	findings := applyPreconditions(d.findings, d.opts.Op)
+	findings := applyPreconditions(d.findings, d.opts.Op, d.instanceTenants())
 	sortFindings(findings)
 	return &model.DoctorResponse{
 		Status:      model.StatusFor(findings),
@@ -126,6 +141,32 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 		},
 		Findings: findings,
 	}
+}
+
+// instanceTenants names the rows the ctl supervises ITSELF.
+//
+// It exists for one precondition: `start` and `restart` raise
+// env_not_systemd_parsable to an error because a UNIT would load the wrong
+// values out of a file systemd cannot parse. In instance mode there is no
+// unit — the ctl parses tenant.env and secrets.env itself, with the same
+// lenient parser `env-normalize` repairs them with — so the finding stays the
+// warning envCheck raised it as, and the tenant is still startable by the
+// operator who is on their way to fixing it.
+//
+// It narrows nothing else: every other precondition applies to both
+// supervisors, because every other one is about the host rather than about
+// systemd's grammar.
+func (d *run) instanceTenants() map[string]bool {
+	out := map[string]bool{}
+	if d.fleet == nil {
+		return out
+	}
+	for name, t := range d.fleet.Tenants {
+		if t.Supervisor == string(model.SupervisorInstance) {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // Hash is sha256 over the sorted `code|tenant|detail` lines of a finding set.
@@ -205,6 +246,8 @@ func (d *run) hostChecks() {
 		}
 	}
 	d.heapSum()
+	d.bootHook()
+	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
 		for _, u := range units {
@@ -328,6 +371,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.codeChecks(t)
 	d.storeChecks(t)
 	d.permissionChecks(t)
+	d.homePathCheck(t)
 	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
 }
 
@@ -484,6 +528,92 @@ func (d *run) codeChecks(t *registry.Tenant) {
 	}
 }
 
+// ctlEnvKeys are the CTL_* variables api/env.go defines for a host-tool
+// binary, the mirror, or a cache/state directory — the ones the
+// production-layout plan means by "a ctl.env value": a home-directory path
+// there is exactly how coconut ran CTL_NODE_BIN=~/.local/bin/node until
+// `make install-node` gave it somewhere under /rag to point at instead.
+var ctlEnvKeys = []string{
+	"CTL_SYSTEMCTL_BIN", "CTL_GIT_BIN", "CTL_NODE_BIN", "CTL_NPM_BIN",
+	"CTL_APPTAINER_BIN", "CTL_MIRROR", "CTL_NPM_CACHE",
+	"CTL_STATE_DIR", "CTL_CONFIG_DIR",
+}
+
+// ctlEnvFromProcess is Options.CtlEnv's default: whatever of ctlEnvKeys is
+// set in THIS process's environment, which for the daemon is ctl.env as
+// ctl-daemon.sh's load_env put it there, and for a --direct CLI run is
+// whatever the operator's shell exported.
+func ctlEnvFromProcess() map[string]string {
+	out := map[string]string{}
+	for _, k := range ctlEnvKeys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// homePathReason says why path violates "nothing in production may
+// reference a home directory" (plan, 2026-09-15), or "" when it does not.
+// /home is a literal prefix, not a lookup of any one account's actual home:
+// a production path must not depend on WHICH account's home it happens to
+// be under, so /home/<anyone> is flagged the same way as /home/wilke.
+func homePathReason(path string) string {
+	switch p := strings.TrimSpace(path); {
+	case p == "":
+		return ""
+	case p == "~" || strings.HasPrefix(p, "~/"):
+		return "starts with ~"
+	case p == "/home" || strings.HasPrefix(p, "/home/"):
+		return "is under /home"
+	default:
+		return ""
+	}
+}
+
+// homePathHostChecks is HomePathInProduction's host-scoped half: a prepared
+// artifact's worktree and the ctl.env host-tool values, neither of which
+// belongs to one tenant. codeChecks's registry paths and a tenant's live API
+// process are homePathCheck below, run per tenant.
+func (d *run) homePathHostChecks() {
+	for id, a := range d.fleet.Artifacts {
+		if why := homePathReason(a.Worktree); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, "", fmt.Sprintf("artifacts[%s].worktree=%q %s", id, a.Worktree, why))
+		}
+	}
+	for _, k := range ctlEnvKeys {
+		v, ok := d.opts.CtlEnv[k]
+		if !ok {
+			continue
+		}
+		if why := homePathReason(v); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, "", fmt.Sprintf("%s=%q (ctl.env) %s", k, v, why))
+		}
+	}
+}
+
+// homePathCheck is HomePathInProduction's per-tenant half: t's own registry
+// paths, and — the one live-host fact this needs — its API process's cwd and
+// argv[0], off the SAME listener table tenantChecks already built from
+// hostfacts (which reads /proc for exactly this, for an adopted,
+// pre-handover tenant this account cannot otherwise attribute).
+func (d *run) homePathCheck(t *registry.Tenant) {
+	check := func(field, path string) {
+		if why := homePathReason(path); why != "" {
+			d.add(model.LevelWarn, HomePathInProduction, t.Name, fmt.Sprintf("%s=%q %s", field, path, why))
+		}
+	}
+	check("data_dir", t.DataDir)
+	check("worktree", t.Worktree)
+	check("python_env", t.PythonEnv)
+	if l, ok := d.ports[t.Ports.API]; ok {
+		check("live api process cwd", l.Cwd)
+		if len(l.Cmdline) > 0 {
+			check("live api process argv[0]", l.Cmdline[0])
+		}
+	}
+}
+
 func (d *run) storeChecks(t *registry.Tenant) {
 	for _, s := range []struct{ key, url string }{
 		{"QDRANT_URL", t.Stores.Qdrant.URL},
@@ -603,10 +733,187 @@ func (d *run) writable(tenant, path string) {
 		return // absent paths are another check's problem
 	}
 	w, err := d.host.WritableByOthers(path)
-	if err != nil || !w.Writable {
+	if err != nil {
 		return
 	}
-	d.add(model.LevelError, WritableByOthers, tenant, fmt.Sprintf("%s: %s is %s", path, w.Path, w.Reason))
+	if w.Writable {
+		d.add(model.LevelError, WritableByOthers, tenant, fmt.Sprintf("%s: %s is %s", path, w.Path, w.Reason))
+	}
+	d.aclGrantsOthers(tenant, path, w)
+}
+
+// aclGrantsOthers reports the named ACL entries on a trusted path that hand
+// WRITE to someone the ctl did not intend.
+//
+// Named entries that are legitimate and silent: the ctl SERVICE account's
+// (that is what `fleet grant` writes), the account this process happens to be
+// running as, and the path owner's own (a redundant entry for somebody who
+// already holds the owner triple). Everything else is an error — including
+// every named GROUP, because the grant never writes one and a group on this
+// host means the 1869 members of cels.
+//
+// The service account is exempted by its CONFIGURED name rather than by
+// Username(): doctor is run by wilke as often as by svcbvbrc (the acceptance
+// step is "as wilke: fleet grant, then doctor"), and a check that only knew
+// the running account would paint every granted path red the moment the owner
+// ran it.
+func (d *run) aclGrantsOthers(tenant, path string, w hostfacts.Writability) {
+	var offenders []string
+	seen := map[string]bool{}
+	for _, g := range w.ACLGrants {
+		if !g.Group && (g.Name == d.opts.CtlUser || g.Name == d.ctlAccount() || (g.Owner != "" && g.Name == g.Owner) ||
+			g.Name == d.managedRootOwner(path)) {
+			// The managed ROOT's owner is exempt too: `fleet grant` names the
+			// tree owner in every default ACL so that files the service
+			// account creates stay shared, and a doctor run AS the daemon
+			// would otherwise report the owner's own entry on every tenant
+			// the ctl created.
+			continue
+		}
+		if seen[g.String()] {
+			continue
+		}
+		seen[g.String()] = true
+		offenders = append(offenders, g.String())
+	}
+	if len(offenders) == 0 {
+		return
+	}
+	d.addRepair(model.LevelError, ACLGrantsOthers, tenant,
+		fmt.Sprintf("%s: POSIX ACL grants write to %s", path, strings.Join(offenders, "; ")),
+		fmt.Sprintf("ragstack-ctl fleet grant --user <name> --revoke --roots %s (run as the owner)", filepath.Dir(path)))
+}
+
+// BootRecordFile is where `fleet enable-boot --cron` records what it
+// installed, under the ctl's own state directory. It is the doctor's ONLY
+// evidence about the crontab.
+const BootRecordFile = "boot.json"
+
+// BootRecord is that file: whether a marked `@reboot` line is installed, what
+// the line says, and when the ctl put it there.
+//
+// It is a RECORD, not an observation. The doctor does not run `crontab -l` —
+// a diagnostic that shells out to read an account's boot configuration fails
+// differently on every host, needs the right account to be asked from, and
+// would make the doctor a thing that executes programs on behalf of a read.
+// The ctl knows what it installed, so it writes it down; `fleet enable-boot
+// --no-cron` clears it. The cost is that a line an operator added by hand is
+// invisible here, and the finding says so.
+type BootRecord struct {
+	Cron bool   `json:"cron"`
+	Line string `json:"line"`
+	At   string `json:"at"`
+}
+
+// bootHook reports whether ANYTHING will bring the tenants back after a
+// reboot.
+//
+// There are two hooks on this host and the account has at most one of them: a
+// user manager that survives logout (linger, which systemd tenants need) or a
+// `@reboot` crontab line running `fleet start --all` (which is what instance
+// mode has, because cron gets no logind session here and so cannot drive
+// `systemctl --user` at all). With neither, a reboot is a fleet that stays
+// down until somebody notices.
+func (d *run) bootHook() {
+	path := filepath.Join(d.roots.CtlStateDir, BootRecordFile)
+	var rec BootRecord
+	b, err := os.ReadFile(path)
+	if err == nil {
+		if jerr := json.Unmarshal(b, &rec); jerr != nil {
+			d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
+				"%s cannot be read as a boot record (%v), so the ctl cannot say whether a @reboot line is installed; "+
+					"re-run `ragstack-ctl fleet enable-boot --cron`", path, jerr))
+			return
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return // an unreadable state dir is not evidence about the crontab
+	}
+	if rec.Cron {
+		detail := fmt.Sprintf("a @reboot crontab line is recorded in %s", path)
+		if rec.At != "" {
+			detail += " (installed " + rec.At + ")"
+		}
+		if rec.Line != "" {
+			detail += ": " + rec.Line
+		}
+		d.add(model.LevelInfo, BootCronPresent, "", detail)
+		return
+	}
+	if d.host.Linger(d.opts.CtlUser) {
+		return // the user manager is the boot hook; linger_missing covers the rest
+	}
+	d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
+		"%s has no linger AND the ctl has recorded no @reboot crontab line (%s): nothing on this host starts a "+
+			"tenant after a reboot. `ragstack-ctl fleet enable-boot --cron` installs one. A line added by hand is "+
+			"not visible here — the ctl reports only what it installed itself", d.opts.CtlUser, path))
+}
+
+// aclManagedRoots answers the question the interim runtime turns on: can the
+// service account the daemon runs as actually write the three managed roots?
+//
+// It can, in exactly two ways — it owns the root, or a named ACL entry gives
+// it rwx. Neither is assumed. The host has no root this week, so ownership is
+// not something the ctl can arrange, and `fleet grant` (run by the OWNER,
+// wilke) is the arrangement that exists. This check is what tells an operator
+// which of the three roots the grant has reached.
+//
+// It asks about the CONFIGURED service account, not about whoever is running
+// doctor: the useful answer for wilke — who is the one who can fix it — is
+// "can svcbvbrc get in", and that answer must not change with the shell it
+// was asked from.
+func (d *run) aclManagedRoots() {
+	uid := d.ctlUID()
+	if uid < 0 {
+		return // an account this host does not know: nothing to say about it
+	}
+	ctl := d.opts.CtlUser
+	var granted, missing, noDefault []string
+	for _, root := range []string{d.roots.DataDir, d.roots.ReposDir, d.roots.BackupsDir} {
+		if _, err := os.Lstat(root); err != nil {
+			continue // a root that does not exist yet is `tenant create`'s problem
+		}
+		w, werr := d.host.WritableByOthers(root)
+		if werr == nil && w.Owner == ctl {
+			continue // ownership already carries everything an ACL could add
+		}
+		access, dflt, err := d.host.ACL(root)
+		if err != nil {
+			continue // an unreadable ACL is not evidence of a missing one
+		}
+		switch {
+		case access.HasRWX(uint32(uid)):
+			granted = append(granted, root)
+			// A grant with no default ACL stops at the files that exist
+			// today: the next tenant's data dir inherits nothing.
+			if !dflt.HasRWX(uint32(uid)) {
+				noDefault = append(noDefault, root)
+			}
+		default:
+			missing = append(missing, root)
+		}
+	}
+	if len(granted) > 0 {
+		detail := fmt.Sprintf("%s holds rwx through a POSIX ACL on %s", ctl, strings.Join(granted, ", "))
+		if len(noDefault) > 0 {
+			detail += fmt.Sprintf(" — but %s carry no DEFAULT ACL, so anything created under them later inherits nothing", strings.Join(noDefault, ", "))
+		}
+		d.add(model.LevelInfo, ACLGrantPresent, "", detail)
+	}
+	if len(missing) > 0 {
+		d.addRepair(model.LevelWarn, CtlAccountNoAccess, "",
+			fmt.Sprintf("%s neither owns nor holds an ACL grant on %s: every op that writes there fails with EACCES",
+				ctl, strings.Join(missing, ", ")),
+			fmt.Sprintf("as the owner: ragstack-ctl fleet grant --user %s --roots %s", ctl, strings.Join(missing, ",")))
+	}
+}
+
+// ctlUID is the numeric id of the configured service account: the option when
+// a caller stated it (every test does), else NSS. -1 when unresolvable.
+func (d *run) ctlUID() int {
+	if d.opts.CtlUID > 0 {
+		return d.opts.CtlUID
+	}
+	return hostfacts.LookupUID(d.opts.CtlUser)
 }
 
 // ---------------------------------------------------------------- helpers
@@ -701,4 +1008,24 @@ func firstArg(argv []string) string {
 		return "unknown"
 	}
 	return argv[0]
+}
+
+// managedRootOwner is the owner of the managed root (data, repos or backups
+// tree) that contains path, or "" when path is under none or the root cannot
+// be stat'ed here (a fixture run): the tree's owner is the account whose entry
+// every default ACL under it carries.
+func (d *run) managedRootOwner(path string) string {
+	for _, root := range []string{d.roots.DataDir, d.roots.ReposDir, d.roots.BackupsDir} {
+		if root == "" || !(path == root || strings.HasPrefix(path, root+"/")) {
+			continue
+		}
+		fi, err := os.Stat(root)
+		if err != nil {
+			return ""
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			return hostfacts.UsernameOf(int(st.Uid))
+		}
+	}
+	return ""
 }

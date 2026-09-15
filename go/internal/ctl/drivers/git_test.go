@@ -128,7 +128,10 @@ func TestGitAddAndRemoveWorktreeBuildTheExpectedArgv(t *testing.T) {
 	if err := d.AddWorktree(ctx, mirror, testSHA, dest); err != nil {
 		t.Fatalf("AddWorktree = %v", err)
 	}
-	want := "-C " + mirror + " worktree add --detach " + dest + " " + testSHA
+	// Every git call carries `-c safe.directory=*` first: the mirror and the
+	// tenant worktrees belong to the operator, the driver runs as the service
+	// account, and git's ownership check would otherwise refuse them all.
+	want := "-c safe.directory=* -c core.hooksPath=/dev/null -C " + mirror + " worktree add --detach " + dest + " " + testSHA
 	if got := stub.argv(); got[len(got)-1] != want {
 		t.Errorf("AddWorktree ran %q, want %q", got[len(got)-1], want)
 	}
@@ -159,7 +162,7 @@ func TestGitAddAndRemoveWorktreeBuildTheExpectedArgv(t *testing.T) {
 		t.Fatalf("RemoveWorktree = %v", err)
 	}
 	argv = stub.argv()
-	if want := "-C " + mirror + " worktree remove --force " + dest; argv[len(argv)-2] != want {
+	if want := "-c safe.directory=* -c core.hooksPath=/dev/null -C " + mirror + " worktree remove --force " + dest; argv[len(argv)-2] != want {
 		t.Errorf("RemoveWorktree ran %q, want %q", argv[len(argv)-2], want)
 	}
 
@@ -182,6 +185,32 @@ func TestGitDescribe(t *testing.T) {
 	}
 	if _, err := d.Describe(context.Background(), "repos/tenants/dev"); !errors.Is(err, jobs.ErrRefused) {
 		t.Errorf("Describe of a relative path = %v, want a refusal", err)
+	}
+}
+
+func TestGitHeadSHA(t *testing.T) {
+	d, stub, root := newGit(t)
+	stub.respond("revparse", testSHA+"\n", "", 0)
+	sha, err := d.HeadSHA(context.Background(), root)
+	if err != nil {
+		t.Fatalf("HeadSHA = %v", err)
+	}
+	if sha != testSHA {
+		t.Errorf("HeadSHA = %q, want %s", sha, testSHA)
+	}
+	if _, err := d.HeadSHA(context.Background(), "repos/tenants/dev"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA of a relative path = %v, want a refusal", err)
+	}
+	if _, err := d.HeadSHA(context.Background(), filepath.Join(root, "no-such-dir")); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA of a directory that does not exist = %v, want a refusal", err)
+	}
+}
+
+func TestGitHeadSHARefusesAGarbageAnswer(t *testing.T) {
+	d, stub, root := newGit(t)
+	stub.respond("revparse", "not-a-sha\n", "", 0)
+	if _, err := d.HeadSHA(context.Background(), root); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA with a non-sha answer = %v, want a refusal", err)
 	}
 }
 
@@ -237,6 +266,17 @@ func TestGitAgainstRealGit(t *testing.T) {
 	}
 	if _, err := d.ResolveRef(ctx, mirror, "no-such-tag"); err == nil {
 		t.Error("ResolveRef of an unknown ref succeeded")
+	}
+
+	// HeadSHA works against a WORKING TREE (source, on branch main) — the
+	// opposite of ResolveRef, which just refused that same path for not
+	// being bare — and agrees with what ResolveRef resolved "main" to.
+	headSHA, err := d.HeadSHA(ctx, source)
+	if err != nil {
+		t.Fatalf("HeadSHA = %v", err)
+	}
+	if headSHA != sha {
+		t.Errorf("HeadSHA(source) = %s, want %s (what ResolveRef(mirror, main) resolved to)", headSHA, sha)
 	}
 
 	dest := filepath.Join(root, "artifacts", "wt")

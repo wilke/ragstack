@@ -158,7 +158,7 @@ type Tenant struct {
 	Stores       Stores     `json:"stores"`
 	UI           UI         `json:"ui"`
 
-	Supervisor  string `json:"supervisor"`   // systemd|manual
+	Supervisor  string `json:"supervisor"`   // systemd|manual|instance
 	Owner       string `json:"owner"`        // svcbvbrc|wilke
 	State       string `json:"state"`        // provisioned|active|stopped|migrating|quarantined|decommissioned
 	DesiredBoot string `json:"desired_boot"` // enabled|disabled

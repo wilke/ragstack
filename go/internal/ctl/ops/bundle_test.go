@@ -755,3 +755,56 @@ func TestTwoBackupsInTheSameSecondGetDistinctBundleIDs(t *testing.T) {
 		}
 	}
 }
+
+// The config allowlist carries the tenant's YAML — the prompt templates
+// (ADR-0008) among them — and carries no credential.
+//
+// A bundle with the data and without the prompts restores a tenant that
+// answers differently from the one that was backed up. A bundle that took
+// "the config directory" would carry secrets.env and every .bak- of it in the
+// clear, which is why this is a suffix allowlist in one directory and not a
+// copy of a tree.
+func TestTheBundleCarriesConfigYAMLAndNoSecretFile(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	files := fake.FakeFiles()
+	files.Put("/rag/data/tenants/dev/config/provision.env", []byte("TENANT_STORE_KIND=sqlite\n"), 0o640)
+	files.Put("/rag/data/tenants/dev/config/prompts.yaml", []byte("templates:\n  - id: default\n"), 0o640)
+	files.Put("/rag/data/tenants/dev/config/personas.yml", []byte("personas: []\n"), 0o640)
+	// Things the allowlist must NOT pick up, in the same directory.
+	files.Put("/rag/data/tenants/dev/config/secrets.env", ledgerEnv(), 0o600)
+	files.Put("/rag/data/tenants/dev/config/secrets.env.bak-20260101T000000Z", ledgerEnv(), 0o600)
+	files.Put("/rag/data/tenants/dev/config/notes.txt", []byte("not a config file\n"), 0o640)
+
+	runBackup(t, oc, fake, map[string]any{"fence": true})
+
+	var man map[string]any
+	if err := json.Unmarshal(fake.FakeFiles().Content(bundlePath("dev", "manifest.json")), &man); err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, e := range man["files"].([]any) {
+		listed[e.(map[string]any)["file"].(string)] = true
+	}
+	for _, want := range []string{"config/tenant.env", "config/provision.env",
+		"config/prompts.yaml", "config/personas.yml"} {
+		if !listed[want] {
+			t.Errorf("%s is not in the manifest's files[]: %v", want, listed)
+		}
+	}
+	for _, unwanted := range []string{"config/secrets.env",
+		"config/secrets.env.bak-20260101T000000Z", "config/notes.txt"} {
+		if listed[unwanted] {
+			t.Errorf("%s is in the manifest's files[] and must never be", unwanted)
+		}
+	}
+	// And the bytes really travelled, not just the name.
+	if got := fake.FakeFiles().Content(bundlePath("dev", "config/prompts.yaml")); len(got) == 0 {
+		t.Errorf("config/prompts.yaml is listed but the bundle holds nothing at it")
+	}
+	for _, rel := range bundleFiles(fake) {
+		if strings.Contains(rel, "secrets.env") {
+			t.Errorf("%s is in the bundle directory", rel)
+		}
+	}
+}

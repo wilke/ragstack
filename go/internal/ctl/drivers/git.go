@@ -48,6 +48,21 @@ type RealGit struct {
 var _ jobs.Git = (*RealGit)(nil)
 
 func (g *RealGit) git(ctx context.Context, args ...string) ([]byte, error) {
+	// safe.directory=*: git refuses ("dubious ownership") to touch a
+	// repository owned by another account, which is the normal case here —
+	// the mirror and the tenant worktrees are wilke's, the ctl runs as the
+	// service account, and a worktree's gitdir points back into the mirror,
+	// so naming one path would not be enough. The check protects a person
+	// from a planted repository in a directory they happened to cd into;
+	// this driver runs only on paths it validated first (checkMirror,
+	// checkDest, the approved roots) and disables hooks below, so the
+	// ownership of those paths is a fact about the deployment, not a
+	// warning. Scoped to this argv, never written to any gitconfig.
+	// core.hooksPath=/dev/null: `worktree add` DOES run the repository's
+	// post-checkout hook, and with the ownership check disabled that would be
+	// a hook from a repository another account may write to. No verb this
+	// driver runs needs a hook.
+	args = append([]string{"-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null"}, args...)
 	stdout, _, err := g.run.Run(ctx, Spec{Program: g.Bin, Args: args, Timeout: gitTimeout})
 	return stdout, err
 }
@@ -147,6 +162,20 @@ func (g *RealGit) RemoveWorktree(ctx context.Context, mirror, dest string) error
 	return err
 }
 
+// RepairWorktree fixes the mirror's back-pointers for a worktree that was
+// moved by rename rather than by `git worktree move`.
+func (g *RealGit) RepairWorktree(ctx context.Context, mirror, path string) error {
+	path, err := g.checkDest(path)
+	if err != nil {
+		return err
+	}
+	if err := g.checkMirror(ctx, mirror); err != nil {
+		return err
+	}
+	_, err = g.git(ctx, "-C", mirror, "worktree", "repair", path)
+	return err
+}
+
 // Describe names the code in dir.
 func (g *RealGit) Describe(ctx context.Context, dir string) (string, error) {
 	if !filepath.IsAbs(dir) {
@@ -157,6 +186,31 @@ func (g *RealGit) Describe(ctx context.Context, dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// HeadSHA resolves dir's HEAD to the 40-hex commit it names right now.
+//
+// dir is a working tree, not the bare mirror — this is the one Git method
+// that reads a checkout the ctl did not create (a pre-handover, home-directory
+// worktree), so unlike ResolveRef it is not preceded by checkMirror. `^{commit}`
+// peels an annotated tag the same way ResolveRef does, for the rare worktree
+// whose HEAD lands on one.
+func (g *RealGit) HeadSHA(ctx context.Context, dir string) (string, error) {
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%w: %q must be an absolute path", jobs.ErrRefused, dir)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: %s is not a directory on this host", jobs.ErrRefused, dir)
+	}
+	out, err := g.git(ctx, "-C", dir, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(string(out))
+	if !shaRE.MatchString(sha) {
+		return "", fmt.Errorf("%w: %s's HEAD resolved to %q, which is not a commit sha", jobs.ErrRefused, dir, sha)
+	}
+	return sha, nil
 }
 
 // checkDest bounds the two methods that create and delete directory trees,

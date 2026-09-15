@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/acl"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
@@ -576,6 +577,11 @@ func (r *Real) WritableByOthers(path string) (Writability, error) {
 		cur = filepath.Join(cur, part)
 		comps = append(comps, cur)
 	}
+	// The verdict accumulates: the FIRST mode failure is the one reported
+	// (it is the shallowest, and fixing it is the operator's first move),
+	// but the ACL scan keeps going, because a named grant deeper down is a
+	// separate finding with a separate repair.
+	w := Writability{}
 	for _, c := range comps {
 		fi, err := os.Lstat(c)
 		if err != nil {
@@ -591,24 +597,112 @@ func (r *Real) WritableByOthers(path string) (Writability, error) {
 			// no operator can act on.
 			continue
 		}
+		st, hasStat := fi.Sys().(*syscall.Stat_t)
+		af := r.aclFacts(c)
+		// The owner is resolved lazily: doctor needs it for the path itself
+		// and for any component carrying a named grant, and an NSS lookup
+		// per ancestor of every path doctor checks is not free.
+		if hasStat && (c == target || len(af.grants) > 0) {
+			owner := UsernameOf(int(st.Uid))
+			if c == target {
+				w.Owner = owner
+			}
+			for i := range af.grants {
+				af.grants[i].Owner = owner
+			}
+		}
+		w.ACLGrants = append(w.ACLGrants, af.grants...)
+
+		if w.Writable {
+			continue // the mode verdict is already settled
+		}
 		mode := fi.Mode().Perm()
 		if mode&0o002 != 0 {
-			return Writability{Writable: true, Path: c, Reason: fmt.Sprintf("world-writable (mode %#o)", mode)}, nil
-		}
-		if mode&0o020 == 0 {
+			w.Writable, w.Path, w.Reason = true, c, fmt.Sprintf("world-writable (mode %#o)", mode)
 			continue
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok {
+		// Once a path carries a MASK entry, st_mode's group triple is the
+		// MASK, not the owning group's permission — `ls -l` shows 0770 on a
+		// directory whose group:: is ---. Reading the mode there reported
+		// every path `fleet grant` touched as group-writable by cels, which
+		// is the exact opposite of what the grant does. Ask the ACL.
+		groupWritable := mode&0o020 != 0
+		if af.masked {
+			groupWritable = af.groupWrite
+		}
+		if !groupWritable || !hasStat {
 			continue
 		}
 		if r.ragopsGID >= 0 && int(st.Gid) == r.ragopsGID {
 			continue
 		}
 		name := groupName(st.Gid)
-		return Writability{Writable: true, Path: c, Reason: fmt.Sprintf("group-writable by %s (mode %#o), not %s", name, mode, OwnerGroup)}, nil
+		w.Writable, w.Path, w.Reason = true, c, fmt.Sprintf("group-writable by %s (mode %#o), not %s", name, mode, OwnerGroup)
 	}
-	return Writability{}, nil
+	return w, nil
+}
+
+// aclFact is what one component's access ACL says about who may write it.
+type aclFact struct {
+	grants     []ACLGrant // named entries with EFFECTIVE write
+	masked     bool       // a MASK entry exists, so st_mode's group triple is the mask
+	groupWrite bool       // the OWNING group's effective write bit
+}
+
+// aclFacts reads one path component's access ACL. A filesystem without ACLs,
+// or a path this account may not read, yields the zero value: an unreadable
+// fact is not a finding here, it is the absence of one, and the mode bits
+// remain the answer.
+func (r *Real) aclFacts(path string) aclFact {
+	access, err := acl.Get(path, acl.KindAccess)
+	if err != nil {
+		return aclFact{}
+	}
+	var out aclFact
+	if _, ok := access.Find(acl.TagMask, acl.UndefinedID); ok {
+		out.masked = true
+	}
+	if g, ok := access.Find(acl.TagGroupObj, acl.UndefinedID); ok {
+		out.groupWrite = access.Effective(g)&acl.PermWrite != 0
+	}
+	for _, e := range access {
+		if !e.Named() {
+			continue
+		}
+		eff := access.Effective(e)
+		if eff&acl.PermWrite == 0 {
+			continue
+		}
+		g := ACLGrant{Path: path, Group: e.Tag == acl.TagGroup, ID: e.ID, Perm: eff.String()}
+		if g.Group {
+			g.Name = groupName(e.ID)
+		} else if g.Name = UsernameOf(int(e.ID)); g.Name == "" {
+			g.Name = fmt.Sprintf("uid %d", e.ID)
+		}
+		out.grants = append(out.grants, g)
+	}
+	return out
+}
+
+// ACL reads both POSIX ACLs of path. It is the read half of `fleet grant`:
+// the CLI writes them, doctor reads them back, and neither shells out.
+func (r *Real) ACL(path string) (acl.ACL, acl.ACL, error) {
+	access, err := acl.Get(path, acl.KindAccess)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return access, nil, err
+	}
+	if !fi.IsDir() {
+		return access, nil, nil // only a directory carries a default ACL
+	}
+	dflt, err := acl.Get(path, acl.KindDefault)
+	if err != nil {
+		return access, nil, err
+	}
+	return access, dflt, nil
 }
 
 // groupName resolves a gid, with the same NSS fallback as UsernameOf.

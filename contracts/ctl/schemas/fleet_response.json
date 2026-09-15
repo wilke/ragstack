@@ -50,7 +50,7 @@
         "manifest_name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
         "state": { "type": "string", "enum": ["provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"] },
         "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
-        "supervisor": { "type": "string", "enum": ["systemd", "manual"] },
+        "supervisor": { "type": "string", "enum": ["systemd", "manual", "instance"] },
         "stores_mode": {
           "description": "`dedicated`: both qdrant and elasticsearch are `exclusive`. `shared`: both on the shared stores. `mixed`: one of each (lucid-next). `unknown`: ownership not yet confirmed.",
           "type": "string",

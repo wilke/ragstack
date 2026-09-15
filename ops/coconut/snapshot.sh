@@ -22,6 +22,17 @@ import json, os, re, subprocess, hashlib, time, urllib.request, glob, pwd
 OUT = os.environ["OUT"]
 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 me = pwd.getpwuid(os.getuid()).pw_name
+# HOME_DIR / DEV_REPO / CONFIRMATION_RUN: this snapshot inspects the operator's
+# own dev checkout and the quarantined labeler worktree (both still live under
+# a home directory today — that IS the fact restore.sh/verify.sh diff
+# against), so their paths are read from the environment rather than
+# hardcoded to one account. The defaults reproduce today's wilke-only
+# behaviour exactly; SOMETHING here still names a home directory (this
+# script's whole job is reporting what is really on the host), which is why
+# it, unlike ctl-daemon.sh/ctl-as-svc.sh, is not held to check-ops's bare grep.
+HOME_DIR = os.environ.get("SNAPSHOT_HOME_DIR") or os.path.expanduser("~")
+DEV_REPO = os.environ.get("SNAPSHOT_DEV_REPO") or os.path.join(HOME_DIR, "Development", "ragstack")
+CONFIRMATION_RUN = os.environ.get("SNAPSHOT_CONFIRMATION_RUN") or os.path.join(HOME_DIR, "Development", "worktrees", "confirmation-run")
 
 def sh(cmd, timeout=30):
     try:
@@ -96,8 +107,8 @@ for line in sh("apptainer instance list").splitlines()[1:]:
         if len(f) < 5: continue
         src, dst = f[3], f[4]
         if dst.startswith(("/proc", "/sys", "/dev", "/etc/", "/usr/bin/nvidia", "/usr/share/egl", "/usr/share/glvnd", "/usr/share/nvidia", "/usr/lib")): continue
-        if src == "/" and dst in ("/home/" + me, "/tmp", "/var/tmp"): continue
-        if dst == "/tmp" or dst == "/var/tmp" or dst == "/home/" + me: continue
+        if src == "/" and dst in (HOME_DIR, "/tmp", "/var/tmp"): continue
+        if dst == "/tmp" or dst == "/var/tmp" or dst == HOME_DIR: continue
         binds.append({"container": dst, "host_rel_to_/rag": src})
     inst.append({"name": name, "pid": pid, "image": image, "binds": binds})
 
@@ -170,8 +181,8 @@ for port in (8000, 8003, 8004):
 # --- code + config identity ------------------------------------------------------
 def gitsha(path):
     return sh(f"git -C {path} rev-parse --short HEAD 2>/dev/null").strip() or None
-repos = {p: gitsha(p) for p in ["/rag/repos/ragstack", "/rag/repos/GoWe", os.path.expanduser("~/Development/ragstack"),
-                                os.path.expanduser("~/Development/worktrees/confirmation-run")] + sorted(glob.glob("/rag/repos/tenants/*"))}
+repos = {p: gitsha(p) for p in ["/rag/repos/ragstack", "/rag/repos/GoWe", DEV_REPO,
+                                CONFIRMATION_RUN] + sorted(glob.glob("/rag/repos/tenants/*"))}
 def sha(path):
     try: return hashlib.sha256(open(path, "rb").read()).hexdigest()[:16]
     except Exception: return None
@@ -201,4 +212,20 @@ json.dump(snap, open(f"{OUT}/snapshot.json", "w"), indent=1, default=str)
 print(f"wrote {OUT}/snapshot.json")
 PY
 echo "$OUT"
-python3 "$(dirname "$0")/render_inventory.py" "$OUT"
+
+# render_inventory.py is a helper, not one of the six scripts `make
+# install-ops` installs (Makefile OPS_SCRIPTS) — so once this script runs
+# from $(CTL_PREFIX) (/rag/bin) alone, its usual next-door location is gone.
+# Fall back to the operator clone's copy (plan "Production layout":
+# /rag/repos/ragstack is kept around for exactly this) before giving up on
+# just the human-readable half: snapshot.json above is already written and
+# is what verify.sh actually diffs, so a missing renderer is a degraded run,
+# not a failed one.
+REPO=${REPO:-/rag/repos/ragstack}
+render=$(dirname "$0")/render_inventory.py
+[[ -f $render ]] || render=$REPO/ops/coconut/render_inventory.py
+if [[ -f $render ]]; then
+    python3 "$render" "$OUT"
+else
+    echo "snapshot.sh: render_inventory.py not found beside this script or under \$REPO/ops/coconut ($REPO) — skipping $OUT/INVENTORY.md" >&2
+fi

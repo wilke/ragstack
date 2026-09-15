@@ -3,20 +3,19 @@
 //
 // Two sets ship here:
 //
-//   - NewFake: in-memory fakes for ALL seven drivers. Every one is
+//   - NewFake: in-memory fakes for EVERY driver. Every one is
 //     inspectable (the calls it received, in order, and the state it keeps)
 //     and every one can be told to fail a specific call, which is what lets
 //     the engine and API tests exercise failure, rollback and reconcile
 //     without a host. `serve --fake-drivers` runs on these.
-//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), and
-//     the host drivers that run a program (systemd, proc, git and build,
-//     over the argv runner in exec.go) and the store drivers (qdrant,
-//     elasticsearch, the tenant API, postgres, sqlite and tar) — all of
-//     PR-D. Nothing is pending on this build; should a driver be added
-//     before it is wired, its methods answer
-//     `jobs.ErrRefused: <driver>.<method> lands in PR-D` rather than
-//     pretending, so an op planned today runs as far as it honestly can and
-//     stops with a sentence that says why.
+//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), the
+//     host drivers that run a program (systemd, proc, git and build, over the
+//     argv runner in exec.go) and the store drivers (qdrant, elasticsearch,
+//     the tenant API, postgres, sqlite and tar) from PR-D, and PR-D2's
+//     instances (apptainer) and crontab, through which `supervisor: instance`
+//     runs a tenant's stores and installs its boot hook. All fourteen are
+//     wired — Real.Pending() is empty — and the machinery that let an unwired
+//     driver say so in a dry run is still there for the next one.
 //
 // Nothing here decides policy. A driver does what it is told or refuses
 // because it cannot; the refusals that mean "this operation is not allowed"
@@ -25,8 +24,11 @@ package drivers
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 )
 
 // Call is one driver method invocation as the fakes record it. Args are the
@@ -119,39 +121,45 @@ func (r *recorder) Clear() {
 	r.calls = nil
 }
 
-// pending is the refusal every real driver method that lands in PR-D answers
-// with. It is a jobs.ErrRefused, so the API layer reports 409 `refused` and
-// the CLI exits 3 — the same answer a capability refusal gets, because from
-// the caller's side they are the same fact: the ctl will not do this today.
-func pending(err error, driver, method string) error {
-	return fmt.Errorf("%w: %s.%s lands in %s", err, driver, method, PendingPR)
-}
-
-// PendingPR names the PR the unwired drivers land in. One string, so the
-// refusal a step hits at RUN time and the warning its PLAN carries cannot
-// drift apart.
-const PendingPR = "PR-D"
-
-// pendingReal is the set of drivers the REAL set has not wired yet — the
-// single source both `Real.Pending` and the refusals above are read from. It
-// is named by the driver names the ops package's steps declare, which are the
-// names in the refusal text (`systemd.Start lands in PR-D`).
-var pendingReal = []string{
-	// Empty since PR-D wired the last of them. A driver agent deletes a name
-	// here in the same commit that wires the driver, and the list stays so
-	// that a future driver has somewhere to be pending from — and so a plan
-	// can warn about it before anything can run it.
-}
-
-// Pending is the drivers this set cannot run, by name.
+// PendingPR names the PR an unwired driver would land in. It is read by
+// ops/pending.go, which puts the same sentence in a PLAN that the driver would
+// refuse a RUN with, so the two cannot drift apart.
 //
-// It exists so a PLAN can say what a RUN will refuse. Before it, `tenant
-// start --dry-run` on the real driver set printed a plan of systemd steps with
-// nothing to suggest that every one of them would answer "lands in PR-D" the
-// moment it ran — a dry run that reads as approval for an operation the build
-// cannot perform. The planner asks the driver set it was given, so the same
-// verb planned against the fakes (which run everything) carries no warning.
+// Nothing is pending today: PR-D2 wired the last two (instances and crontab)
+// and proc's Spawn and Alive with them. The const and pendingReal stay because
+// the machinery is what makes the NEXT unwired driver honest in a dry run —
+// a name goes back on the list, and every plan step that uses it says so.
+const PendingPR = "PR-D2"
+
+// pendingReal is the set of drivers the REAL set has not wired — the single
+// source both `Real.Pending` and a plan's warning are read from. Empty: every
+// one of the fourteen drivers runs.
+var pendingReal []string
+
 func (r *Real) Pending() []string { return append([]string(nil), pendingReal...) }
 
-// Pending is empty for the fakes: every one of the twelve drivers runs.
+// Pending is empty for the fakes: every one of the fourteen drivers runs.
 func (f *Fake) Pending() []string { return nil }
+
+// ---------------------------------------------------------------- instances
+
+// instanceNameRE is the ONLY shape an instance name the ctl starts or stops
+// may have: `<kind>-<tenant>`, for the three store kinds a tenant owns.
+//
+// It is the same class of allowlist as systemd.go's checkUnit, for the same
+// reason. `apptainer instance stop` takes a name, coconut's account runs
+// instances this control plane did not start (the gateway's nginx among
+// them), and a stop of an unconstrained name is one registry typo away from
+// taking down something nobody asked about. The tenant half is the tenant-name
+// grammar, so an instance name is derivable from a row and nothing else.
+var instanceNameRE = regexp.MustCompile(`^(qdrant|elasticsearch|postgres)-[a-z][a-z0-9-]{0,31}$`)
+
+// checkInstanceName applies that allowlist. Shared by the fake and the real
+// driver so the refusal a test sees is the refusal the host gives.
+func checkInstanceName(name string) error {
+	if !instanceNameRE.MatchString(name) {
+		return fmt.Errorf("%w: %q is not an instance this control plane manages "+
+			"(want <qdrant|elasticsearch|postgres>-<tenant>)", jobs.ErrRefused, name)
+	}
+	return nil
+}

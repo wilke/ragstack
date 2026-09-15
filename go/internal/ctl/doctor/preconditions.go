@@ -42,9 +42,12 @@ var preconditions = map[string][]string{
 	// reserve it fills the filesystem the tenants run on. It must also know
 	// which processes are the tenant's before it fences them — and must not
 	// capture a store that died mid-write as if it were a clean snapshot.
-	"backup": {DiskLow, PortOwnerMismatch, PortNotListening},
+	// It also WRITES a bundle under <backups>/tenants: an account that can
+	// neither own nor reach that root produces a half-written bundle, which
+	// is worse than a refused backup.
+	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess},
 	// A restore creates a fresh tenant and stages a whole bundle into it.
-	"restore": {DiskLow, StoreURLDisallowed},
+	"restore": {DiskLow, StoreURLDisallowed, CtlAccountNoAccess},
 	// Handover moves a tenant onto systemd units under the service account:
 	// the env file must be loadable by systemd, the code traceable, the
 	// paths not writable by anyone outside ragops, and boot persistence real.
@@ -82,7 +85,7 @@ var preconditions = map[string][]string{
 	"gateway-apply": {GatewayMapMismatch, RegistryManifestMismatch, ManifestUnknownRow},
 	// Creating a tenant allocates from the registry, so the projection must
 	// be coherent, and the host must have room.
-	"create": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow},
+	"create": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow, CtlAccountNoAccess},
 	// Adopting RECORDS a tenant the ctl did not make; nearly everything the
 	// run finds is what adoption exists to write down, so almost nothing
 	// blocks it. Two things do: a store URL the daemon will refuse to dial
@@ -178,7 +181,9 @@ func KnownOp(op string) bool {
 // applyPreconditions raises the warnings op cannot tolerate to errors. It
 // copies: the caller's findings keep their unscoped levels, so the same run
 // can be presented to several ops.
-func applyPreconditions(findings []model.Finding, op string) []model.Finding {
+// instanceTenants names the rows whose supervisor is `instance`; for those,
+// env_not_systemd_parsable is never raised (see run.instanceTenants).
+func applyPreconditions(findings []model.Finding, op string, instanceTenants map[string]bool) []model.Finding {
 	out := make([]model.Finding, len(findings))
 	copy(out, findings)
 	if op == "" {
@@ -194,6 +199,11 @@ func applyPreconditions(findings []model.Finding, op string) []model.Finding {
 		delete(red, c) // tolerating wins: a row cannot both raise and lower
 	}
 	for i := range out {
+		if out[i].Code == EnvNotSystemdParsable && instanceTenants[string(out[i].Tenant)] {
+			// There is no unit to load this file, so systemd's grammar is not
+			// what decides whether this tenant can start.
+			continue
+		}
 		switch {
 		case out[i].Level == model.LevelWarn && red[out[i].Code]:
 			out[i].Level = model.LevelError

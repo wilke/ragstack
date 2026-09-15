@@ -100,6 +100,14 @@ type Supervisor string
 const (
 	SupervisorSystemd Supervisor = "systemd"
 	SupervisorManual  Supervisor = "manual"
+	// SupervisorInstance is the ctl supervising the tenant ITSELF (PR-D2):
+	// apptainer instances for the stores and a detached uvicorn with a pidfile
+	// for the api, started and stopped by jobs rather than by a user manager.
+	// It exists because svcbvbrc has no linger, no user manager and no logind
+	// session under cron — `systemctl --user` cannot be reached from boot on
+	// this host at all — and because the machine is not dedicated yet, so the
+	// root items the systemd path needs are postponed rather than abandoned.
+	SupervisorInstance Supervisor = "instance"
 )
 
 // Level is a doctor finding's severity (doctor_response.json#/$defs/Finding).

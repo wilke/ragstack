@@ -24,7 +24,11 @@ func TestClassify(t *testing.T) {
 		"INGEST_ROOT": ExecutableSurface, "COLLECTION_MANIFEST_DIR": ExecutableSurface,
 		"USER_STORE_PATH": ExecutableSurface, "JOB_STORE_PATH": ExecutableSurface, "COLLECTION_STORE_PATH": ExecutableSurface,
 		"COLLECTIONS_FILE": ExecutableSurface, "MODELS_REGISTRY_FILE": ExecutableSurface, "GOWE_WORKFLOW_CWL": ExecutableSurface,
-		"QDRANT_URL": ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
+		// A path the API loads and validates at startup, whose records become
+		// the prompts the tenant answers with (ADR-0008): executable surface,
+		// so `env set` may write it and an HTTP caller may not.
+		"PROMPT_TEMPLATES_FILE": ExecutableSurface,
+		"QDRANT_URL":            ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
 		"EMBEDDING_ENDPOINTS": ExecutableSurface, "EMBEDDING_SIDECAR_URL": ExecutableSurface, "CROSSENCODER_SIDECAR_URL": ExecutableSurface,
 		"LLM_ENDPOINT": ExecutableSurface, "GOWE_URL": ExecutableSurface, "WORKSPACE_URL": ExecutableSurface,
 		"MODEL_URL_ALLOWLIST": ExecutableSurface, "PORT": ExecutableSurface, "ROOT_PATH": ExecutableSurface,

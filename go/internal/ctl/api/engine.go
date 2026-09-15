@@ -82,6 +82,7 @@ type EngineConfig struct {
 	Node      string
 	Npm       string
 	Apptainer string
+	Crontab   string
 	Mirror    string
 	NpmCache  string
 	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
@@ -92,6 +93,11 @@ type EngineConfig struct {
 	// Owner is the account this process runs as, recorded as the owner of
 	// every tenant it creates. Empty means the current OS user.
 	Owner string
+	// DefaultSupervisor is CTL_DEFAULT_SUPERVISOR: the supervisor a `tenant
+	// create` that names none gets (PR-D2). Empty means the contract's
+	// default, `systemd`. SetHostToolsFromEnv fills it, so the daemon and the
+	// --direct CLI resolve it the same way.
+	DefaultSupervisor string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -208,6 +214,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			NodeBin:      cfg.Node,
 			NpmBin:       cfg.Npm,
 			Apptainer:    cfg.Apptainer,
+			CrontabBin:   cfg.Crontab,
 			Mirror:       cfg.Mirror,
 			NpmCache:     cfg.NpmCache,
 			Logger:       cfg.Logger,
@@ -252,6 +259,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Ops: ops.NewRegistry(ops.Deps{
 			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
 			MountPoint: cfg.MountPoint, Owner: cfg.Owner,
+			DefaultSupervisor: cfg.DefaultSupervisor,
 		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
@@ -532,8 +540,14 @@ func SetHostToolsFromEnv(cfg *EngineConfig) {
 		{EnvNodeBin, &cfg.Node},
 		{EnvNpmBin, &cfg.Npm},
 		{EnvApptainerBin, &cfg.Apptainer},
+		{EnvCrontabBin, &cfg.Crontab},
 		{EnvMirror, &cfg.Mirror},
 		{EnvNpmCache, &cfg.NpmCache},
+		// Not a host TOOL, but the same rule and the same two callers: a
+		// --direct run and the daemon must give a create the same default
+		// supervisor, or an operator would be creating two kinds of tenant
+		// depending on which way the request arrived.
+		{EnvDefaultSupervisor, &cfg.DefaultSupervisor},
 	} {
 		if v := strings.TrimSpace(os.Getenv(f.env)); v != "" {
 			*f.field = v

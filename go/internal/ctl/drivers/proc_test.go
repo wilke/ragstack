@@ -107,8 +107,10 @@ func TestProcSignalChecksIdentityBeforeItSignalsAnything(t *testing.T) {
 		t.Errorf("signalling a process whose cmdline does not match = %v, want a refusal", err)
 	}
 	// A signal outside the allowlist: refused, whatever the identity says.
-	if err := p.Signal(ctx, pid, dir, "sleep", "KILL"); !errors.Is(err, jobs.ErrRefused) {
-		t.Errorf("SIGKILL = %v, want a refusal", err)
+	// (KILL is IN the list — it is the instance supervisor's escalation after
+	// a TERM and a full stop timeout — so a signal that is not is used here.)
+	if err := p.Signal(ctx, pid, dir, "sleep", "USR1"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("SIGUSR1 = %v, want a refusal", err)
 	}
 	if err := p.Signal(ctx, 1, dir, "sleep", "TERM"); !errors.Is(err, jobs.ErrRefused) {
 		t.Errorf("signalling pid 1 = %v, want a refusal", err)

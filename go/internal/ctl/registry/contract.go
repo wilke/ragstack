@@ -55,7 +55,7 @@ var (
 	enumPGKind      = []string{PostgresKindSQLite, PostgresKindLocal, PostgresKindExternal}
 	enumPGOwnership = []string{OwnershipExclusive, OwnershipExternal}
 	enumUIMode      = []string{UIModeStatic, UIModeDev, UIModeExternal}
-	enumSupervisor  = []string{"systemd", "manual"}
+	enumSupervisor  = []string{"systemd", "manual", "instance"}
 	enumOwner       = []string{"svcbvbrc", "wilke"}
 	enumState       = []string{"provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"}
 	enumDesiredBoot = []string{"enabled", "disabled"}

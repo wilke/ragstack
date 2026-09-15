@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -180,104 +179,52 @@ func TestRealFilesRemoveNeverFollowsASymlink(t *testing.T) {
 
 // ---------------------------------------------------------------- PR-D
 
-// pendingSurfaces pairs each driver name with the interface it satisfies and
-// the value the REAL set hands out for it.
+// TestEveryRealDriverIsTheDriverAndNotAStub is what is left of the pending
+// table PR-D and PR-D2 emptied.
 //
-// The interface TYPE is what makes this table worth having: the test walks
-// every method the interface declares, so a method added to jobs.Systemd
-// tomorrow is covered the moment it exists. Listing the calls by hand — which
-// is what this test used to do — covers only the methods somebody remembered,
-// and the one that is forgotten is the one that panics on a host.
-func pendingSurfaces(d *Real) map[string]struct {
-	typ reflect.Type
-	val reflect.Value
-} {
-	type surface = struct {
-		typ reflect.Type
-		val reflect.Value
+// Real.Pending() is the list of drivers the real set cannot run, and a plan
+// warns about a step that uses one. It is empty now that instances, crontab
+// and proc's Spawn and Alive are wired, so the assertion runs the other way
+// round: every accessor hands out the REAL driver, and nothing claims to be
+// pending. The day a driver arrives unwired, its name goes back on the list
+// and this test is where that is stated.
+func TestEveryRealDriverIsTheDriverAndNotAStub(t *testing.T) {
+	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
+	if p := d.Pending(); len(p) != 0 {
+		t.Errorf("Real.Pending() = %v, want none: every driver is wired", p)
 	}
-	return map[string]surface{}
+	if p := NewFake(FakeOptions{}).Pending(); len(p) != 0 {
+		t.Errorf("Fake.Pending() = %v, want none: the fakes run every driver", p)
+	}
+	for _, c := range []struct {
+		name string
+		ok   bool
+	}{
+		{"files", isType[*RealFiles](d.Files())},
+		{"gateway", isType[*RealGateway](d.Gateway())},
+		{"systemd", isType[*RealSystemd](d.Systemd())},
+		{"proc", isType[*RealProc](d.Proc())},
+		{"git", isType[*RealGit](d.Git())},
+		{"build", isType[*RealBuild](d.Build())},
+		{"qdrant", isType[*RealQdrant](d.Qdrant())},
+		{"elasticsearch", isType[*RealElasticsearch](d.Elasticsearch())},
+		{"tenantapi", isType[*RealTenantAPI](d.TenantAPI())},
+		{"postgres", isType[*RealPostgres](d.Postgres())},
+		{"sqlite", isType[*RealSQLite](d.SQLite())},
+		{"archive", isType[*RealArchive](d.Archive())},
+		{"instances", isType[*RealInstances](d.Instances())},
+		{"crontab", isType[*RealCrontab](d.Crontab())},
+	} {
+		if !c.ok {
+			t.Errorf("%s is not the real driver", c.name)
+		}
+	}
 }
 
-func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
-	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
-	surfaces := pendingSurfaces(d)
-	// The table and Pending() describe the same set, or one of them is lying
-	// to an operator reading a plan.
-	if len(surfaces) != len(d.Pending()) {
-		t.Fatalf("the table covers %d drivers, Pending() names %d (%v)", len(surfaces), len(d.Pending()), d.Pending())
-	}
-	for _, name := range d.Pending() {
-		if _, ok := surfaces[name]; !ok {
-			t.Fatalf("%s is reported pending but this test does not cover it", name)
-		}
-	}
-	for name, s := range surfaces {
-		for i := 0; i < s.typ.NumMethod(); i++ {
-			m := s.typ.Method(i)
-			// Zero arguments throughout: a pending method must refuse before
-			// it looks at anything, so a nil context and empty strings are
-			// exactly the call that proves it.
-			args := make([]reflect.Value, m.Type.NumIn())
-			for j := range args {
-				args[j] = reflect.Zero(m.Type.In(j))
-			}
-			out := s.val.MethodByName(m.Name).Call(args)
-			if len(out) == 0 {
-				t.Fatalf("%s.%s returns nothing; every driver method must be able to refuse", name, m.Name)
-			}
-			last := out[len(out)-1]
-			err, ok := last.Interface().(error)
-			if !ok {
-				t.Fatalf("%s.%s does not return an error last", name, m.Name)
-			}
-			if !errors.Is(err, jobs.ErrRefused) {
-				t.Errorf("%s.%s = %v, want a jobs.ErrRefused", name, m.Name, err)
-				continue
-			}
-			want := name + "." + m.Name + " lands in PR-D"
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%s.%s = %q, want it to contain %q", name, m.Name, err, want)
-			}
-		}
-	}
-	// The wired ones are real.
-	if _, ok := d.Files().(*RealFiles); !ok {
-		t.Error("Files() is not the real driver")
-	}
-	if _, ok := d.Gateway().(*RealGateway); !ok {
-		t.Error("Gateway() is not the real driver")
-	}
-	if _, ok := d.Systemd().(*RealSystemd); !ok {
-		t.Error("Systemd() is not the real driver")
-	}
-	if _, ok := d.Proc().(*RealProc); !ok {
-		t.Error("Proc() is not the real driver")
-	}
-	if _, ok := d.Git().(*RealGit); !ok {
-		t.Error("Git() is not the real driver")
-	}
-	if _, ok := d.Build().(*RealBuild); !ok {
-		t.Error("Build() is not the real driver")
-	}
-	if _, ok := d.Qdrant().(*RealQdrant); !ok {
-		t.Error("Qdrant() is not the real driver")
-	}
-	if _, ok := d.Elasticsearch().(*RealElasticsearch); !ok {
-		t.Error("Elasticsearch() is not the real driver")
-	}
-	if _, ok := d.TenantAPI().(*RealTenantAPI); !ok {
-		t.Error("TenantAPI() is not the real driver")
-	}
-	if _, ok := d.Postgres().(*RealPostgres); !ok {
-		t.Error("Postgres() is not the real driver")
-	}
-	if _, ok := d.SQLite().(*RealSQLite); !ok {
-		t.Error("SQLite() is not the real driver")
-	}
-	if _, ok := d.Archive().(*RealArchive); !ok {
-		t.Error("Archive() is not the real driver")
-	}
+// isType reports whether v is a T.
+func isType[T any](v any) bool {
+	_, ok := v.(T)
+	return ok
 }
 
 func TestRealGatewayRefusesWithoutARegistryLoader(t *testing.T) {
@@ -350,25 +297,6 @@ func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
 	_, err := f.Files().ReadFile(context.Background(), "/rag/nope")
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ReadFile of an absent path = %v, want an os.ErrNotExist a caller can match", err)
-	}
-}
-
-func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
-	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
-	got := strings.Join(d.Pending(), ",")
-	if got != "" {
-		t.Errorf("Real.Pending() = %q", got)
-	}
-	// No driver that WORKS is on the list — and every one of them works now,
-	// so a name here means a driver was unwired without saying so.
-	for _, name := range d.Pending() {
-		switch name {
-		case "gateway", "files", "systemd", "proc", "git", "build", "qdrant", "elasticsearch", "tenantapi", "postgres", "sqlite", "archive":
-			t.Errorf("%s is wired; it must not be reported as pending", name)
-		}
-	}
-	if p := NewFake(FakeOptions{}).Pending(); len(p) != 0 {
-		t.Errorf("Fake.Pending() = %v, want none: the fakes run every driver", p)
 	}
 }
 

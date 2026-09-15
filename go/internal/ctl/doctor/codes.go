@@ -95,6 +95,50 @@ const (
 	// executes.
 	WritableByOthers = "writable_by_others"
 
+	// ACLGrantsOthers: a path the ctl trusts carries a named POSIX ACL entry
+	// giving WRITE to somebody who is neither the ctl account nor the path's
+	// own owner — a named user, or any named group at all. Error, and the
+	// same error writable_by_others is, for the same reason: mode 0750 says
+	// nothing about a named ACL entry, so without this check `fleet grant`
+	// would open a hole the permission table cannot see.
+	//
+	// A named GROUP is always reported, whichever group it is: the grant the
+	// ctl writes never creates one, and on this host the only group anyone
+	// would reach for is the 1869-member `cels` — which is exactly what the
+	// ACL scheme exists to avoid.
+	ACLGrantsOthers = "acl_grants_others"
+
+	// ACLGrantPresent: the ctl account holds rwx on a managed root through a
+	// named ACL entry — the deliberate result of `fleet grant --user
+	// svcbvbrc`. Info, listing the roots, so a review sees the interim
+	// arrangement stated rather than having to infer it from a mode line.
+	ACLGrantPresent = "acl_grant_present"
+
+	// CtlAccountNoAccess: the account the daemon runs as neither OWNS a
+	// managed root nor holds rwx on it through an ACL. Every op that writes
+	// under that root fails partway with EACCES instead, so this is a warn on
+	// its own and an error for create, backup and restore (preconditions.go).
+	// The repair is `fleet grant`, run by the owner — not by the ctl.
+	CtlAccountNoAccess = "ctl_account_no_access"
+
+	// BootCronMissing: the account has no user manager to bring tenants back
+	// (linger_missing) AND the ctl has no record of a `@reboot` crontab line
+	// either, so nothing on this host starts a tenant after a reboot. Warn.
+	//
+	// The evidence is <CtlStateDir>/boot.json, which `fleet enable-boot
+	// --cron` writes. The doctor deliberately does NOT run `crontab -l`: a
+	// diagnostic that shells out to read another account's boot configuration
+	// is a diagnostic that fails differently on every host, and the ctl
+	// already knows what it installed. The cost is stated: a line an operator
+	// added by hand is invisible here, and `fleet enable-boot --cron` is what
+	// makes it visible.
+	BootCronMissing = "boot_cron_missing"
+
+	// BootCronPresent: the ctl recorded a `@reboot` crontab line for this
+	// deployment (<CtlStateDir>/boot.json). Info, quoting the line, so a
+	// review sees the interim boot hook stated rather than inferred.
+	BootCronPresent = "boot_cron_present"
+
 	// LingerMissing: /var/lib/systemd/linger/<ctl user> is absent, so the
 	// user manager dies at logout and nothing starts at boot. Warn (error for
 	// the ops that depend on boot persistence).
@@ -241,4 +285,16 @@ const (
 	// refuses against contracts/ctl/schemas/registry.json, so adopt could not
 	// commit a stopped tenant at all.
 	APIBindAssumed = "api_bind_assumed"
+
+	// HomePathInProduction: a registry path (data_dir, worktree, python_env,
+	// an artifact's worktree), a ctl.env host-tool value, or a tenant's live
+	// API process cwd/argv[0] resolves under /home or starts with ~ — the
+	// plan's "nothing in production may reference a home directory" bar
+	// (Production layout: install-ops, node under /rag/tools,
+	// rebase-worktree). Warn, never error: this sweep exists to make the
+	// production-layout migration's progress (and any regression back into
+	// $HOME) visible, not to block an op the way worktree_outside_mirror or
+	// secrets_unreadable_by_ctl do for the specific things a home-directory
+	// checkout breaks.
+	HomePathInProduction = "home_path_in_production"
 )

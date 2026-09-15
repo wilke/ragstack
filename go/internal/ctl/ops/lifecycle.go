@@ -13,20 +13,28 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
-// Supervisor values (registry.json tenant.supervisor).
-const (
-	supervisorSystemd = "systemd"
-	supervisorManual  = "manual"
-)
-
 // component is one leg of a tenant the lifecycle ops act on.
+//
+// It names the leg in BOTH supervisors' vocabularies — the unit a systemd
+// tenant's leg is, the apptainer instance an instance-mode tenant's store is,
+// and the pidfile its api is — so that the supervisor seam (ops/supervisor.go)
+// takes one value and neither implementation has to re-derive the other's
+// names from the registry row.
 type component struct {
 	Name string // api | ui | qdrant | es | postgres
 	Unit string
 	Port int
-	// Managed is false when the ctl owns no unit for this leg — a shared
-	// store, an external UI — in which case Why says so and the plan records
-	// a skipped step rather than pretending.
+	// Leg is render's name for this store leg (render.LegQdrant, LegES,
+	// LegPostgres), empty for api and ui. It is what StoreArgv is asked for.
+	Leg string
+	// Instance is the apptainer instance name a store leg runs under in
+	// instance mode (`<kind>-<manifest_name>`), empty for api and ui.
+	Instance string
+	// PidFile is the api leg's pidfile, empty for every other leg.
+	PidFile string
+	// Managed is false when the ctl supervises no process for this leg — a
+	// shared store, an external UI — in which case Why says so and the plan
+	// records a skipped step rather than pretending.
 	Managed bool
 	Why     string
 }
@@ -37,10 +45,10 @@ func (p *planner) legs(only []string) ([]component, error) {
 	t := p.t
 	_, qdrantUnit, esUnit, pgUnit, apiUnit, uiUnit := render.UnitNames(t.Name)
 	all := []component{
-		storeLeg("qdrant", qdrantUnit, t.Stores.Qdrant.Ownership, t.Stores.Qdrant.Capabilities, t.Ports.QdrantHTTP),
-		storeLeg("es", esUnit, t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities, t.Ports.ESHTTP),
+		storeLeg(t, "qdrant", render.LegQdrant, qdrantUnit, t.Stores.Qdrant.Ownership, t.Stores.Qdrant.Capabilities, t.Ports.QdrantHTTP),
+		storeLeg(t, "es", render.LegES, esUnit, t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities, t.Ports.ESHTTP),
 		postgresLeg(t, pgUnit),
-		{Name: "api", Unit: apiUnit, Port: t.Ports.API, Managed: true},
+		{Name: "api", Unit: apiUnit, Port: t.Ports.API, PidFile: p.apiPidFile(), Managed: true},
 		uiLeg(t, uiUnit),
 	}
 	if len(only) == 0 {
@@ -62,8 +70,8 @@ func (p *planner) legs(only []string) ([]component, error) {
 	return out, nil
 }
 
-func storeLeg(name, unit, ownership string, caps registry.Capabilities, port int) component {
-	c := component{Name: name, Unit: unit, Port: port}
+func storeLeg(t *registry.Tenant, name, leg, unit, ownership string, caps registry.Capabilities, port int) component {
+	c := component{Name: name, Unit: unit, Port: port, Leg: leg, Instance: instanceNameFor(leg, t.ManifestName)}
 	switch {
 	case ownership != registry.OwnershipExclusive:
 		c.Why = fmt.Sprintf("the %s store is %s, not exclusive to this tenant: the ctl supervises only what it owns", name, ownership)
@@ -86,7 +94,8 @@ func storeLeg(name, unit, ownership string, caps registry.Capabilities, port int
 // same rule storeLeg applies to a shared qdrant, said for the one store whose
 // "no server at all" case is the common one.
 func postgresLeg(t *registry.Tenant, unit string) component {
-	c := component{Name: "postgres", Unit: unit, Port: t.Ports.PG}
+	c := component{Name: "postgres", Unit: unit, Port: t.Ports.PG,
+		Leg: render.LegPostgres, Instance: instanceNameFor(render.LegPostgres, t.ManifestName)}
 	switch t.Stores.Postgres.Kind {
 	case registry.PostgresKindLocal:
 		if !t.Stores.Postgres.Capabilities.Stop {
@@ -133,7 +142,7 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 	// LockRegistry/LockManifest because the last step records the new state:
 	// the registry write is part of the operation, not a side effect of it.
 	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
-	if err := p.requireSystemd("start"); err != nil {
+	if err := p.requireSupervised("start"); err != nil {
 		return err
 	}
 	only := argStringsOf(args, "only")
@@ -141,20 +150,18 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 	if err != nil {
 		return err
 	}
-	p.addFor("systemd", step{
-		Kind: "systemd", Title: "systemctl --user daemon-reload",
-		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "daemon-reload", sc.Ops.Drivers.Systemd().DaemonReload(ctx)
-		},
-	})
+	if err := p.sup.preStart(p); err != nil {
+		return err
+	}
 	started := 0
 	for _, c := range legs {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 		started++
 	}
 	if started == 0 {
@@ -181,7 +188,7 @@ func planStop(_ context.Context, p *planner, args map[string]any) error {
 	force, keepEnabled := argBoolOf(args, "force"), argBoolOf(args, "keep_enabled")
 	only := argStringsOf(args, "only")
 
-	if p.t.Supervisor != supervisorSystemd {
+	if p.sup == nil {
 		// A hand-started tenant has no unit to stop. With --force there is
 		// still an honest way to stop it — the pidfile, verified against
 		// /proc before the signal — and that path is the rollback half of a
@@ -201,10 +208,12 @@ func planStop(_ context.Context, p *planner, args map[string]any) error {
 	}
 	for _, c := range reverse(legs) {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("stop", c)
+		if err := p.sup.stopLeg(p, c); err != nil {
+			return err
+		}
 	}
 	if keepEnabled {
 		p.warn("desired_boot is left as it is (keep_enabled)")
@@ -213,7 +222,9 @@ func planStop(_ context.Context, p *planner, args map[string]any) error {
 		p.result["desired_boot"] = "disabled"
 		for _, c := range reverse(legs) {
 			if c.Managed {
-				p.addUnitStep("disable", c)
+				if err := p.sup.disableLeg(p, c); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -307,7 +318,7 @@ func (p *planner) planManualStop(only []string) error {
 
 func planRestart(ctx context.Context, p *planner, args map[string]any) error {
 	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
-	if err := p.requireSystemd("restart"); err != nil {
+	if err := p.requireSupervised("restart"); err != nil {
 		return err
 	}
 	only := argStringsOf(args, "only")
@@ -317,14 +328,18 @@ func planRestart(ctx context.Context, p *planner, args map[string]any) error {
 	}
 	for _, c := range reverse(legs) {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("stop", c)
+		if err := p.sup.stopLeg(p, c); err != nil {
+			return err
+		}
 	}
 	for _, c := range legs {
 		if c.Managed {
-			p.addUnitStep("start", c)
+			if err := p.sup.startLeg(p, c); err != nil {
+				return err
+			}
 		}
 	}
 	p.addReadyStep(legs)
@@ -337,15 +352,6 @@ func planRestart(ctx context.Context, p *planner, args map[string]any) error {
 	p.addRegistryEffect("restart", fmt.Sprintf("record %s as active in the registry", p.tenant),
 		func(t *registry.Tenant) { t.State = "active" })
 	return nil
-}
-
-// requireSystemd is the one refusal every lifecycle op shares.
-func (p *planner) requireSystemd(verb string) error {
-	if p.t.Supervisor == supervisorSystemd {
-		return nil
-	}
-	return p.refuse("%s is a hand-started tenant (supervisor: %s); `%s` needs units the ctl owns — hand it over first "+
-		"(`ragstack-ctl tenant handover %s`)", p.t.Name, p.t.Supervisor, verb, p.t.Name)
 }
 
 // addUnitStep plans one systemctl verb against one unit, with the unit name

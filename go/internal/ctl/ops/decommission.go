@@ -44,12 +44,21 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	// made or supervises: renaming the data directory of a hand-run tenant
 	// belonging to another account is destroying somebody else's work with a
 	// tool that cannot put it back.
-	managed := t.Supervisor == supervisorSystemd && t.Owner == p.op.deps.owner()
+	managed := managedSupervisor(t.Supervisor) && t.Owner == p.op.deps.owner()
 	sandbox := p.isSandbox()
 	if !managed && !sandbox {
-		return p.refuse("%s is neither a tenant this ctl runs (supervisor systemd, owner "+p.op.deps.owner()+" — it is %s/%s) nor a "+
+		return p.refuse("%s is neither a tenant this ctl runs (supervisor systemd or instance, owner "+p.op.deps.owner()+" — it is %s/%s) nor a "+
 			"selftest sandbox (ports %d–%d): v1 decommission quarantines only what the ctl runs",
 			t.Name, t.Supervisor, t.Owner, paths.SelftestBase, paths.SelftestEnd)
+	}
+	if p.sup == nil {
+		// Unreachable through `managed` above, which already requires a
+		// supervisor the ctl can start. It is stated because the OTHER way in
+		// is the sandbox exemption, and a sandbox row that somehow carried
+		// `supervisor: manual` would otherwise reach the seam with nothing
+		// behind it.
+		return p.refuse("%s is supervised by %q, which is not something the ctl can stop; there is nothing for "+
+			"`decommission` to take down", t.Name, t.Supervisor)
 	}
 	if sandbox {
 		// A sandbox needs no recovery point. It was created by the selftest
@@ -67,13 +76,22 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	legs, _ := p.legs(nil)
 	for _, c := range reverse(legs) {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("stop", c)
-		p.addUnitStep("disable", c)
+		if err := p.sup.stopLeg(p, c); err != nil {
+			return err
+		}
+		if err := p.sup.disableLeg(p, c); err != nil {
+			return err
+		}
 	}
-	p.addUnitFileRemoval()
+	// The supervision artefacts: unit files for a systemd tenant, nothing for
+	// an instance one — which is the only difference a decommission sees
+	// between the two.
+	if err := p.sup.remove(p); err != nil {
+		return err
+	}
 	// The registry step comes BEFORE the publish: the gateway renders routes
 	// for active rows only, so the generation without this tenant can only be
 	// rendered once the row says quarantined.
