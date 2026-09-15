@@ -226,8 +226,12 @@ yet (GoWe#260); when it lands, the env-suffix convention is swapped for a
 
 The corollary for a worker group's blast radius is stated in
 [docs/adr/0009-registry-selection-for-bulk-workers.md](../docs/adr/0009-registry-selection-for-bulk-workers.md):
-one shared group means every container it runs carries every tenant's DSN, which
-is safe only where the tenants are same-org and the image is trusted.
+one shared group means every container it runs carries every tenant's DSN. Note
+that splitting into per-tenant groups does **not** contain that — a group is not
+a confidentiality boundary. `CanJoinGroup` is enforced only where a *worker*
+registers; nothing authorizes a *submitter* to a group, so any authenticated GoWe
+user can target any group with any image. What contains it today is that GoWe
+sits behind the tenant APIs, which submit a fixed registered workflow.
 
 ### Step 2 tools (bulk ingest)
 

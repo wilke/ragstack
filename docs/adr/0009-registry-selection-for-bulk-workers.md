@@ -1,6 +1,6 @@
 # 0009. Which collection registry a bulk worker resolves against
 
-Status: Proposed (2026-09-15, issue #563; GoWe#260)
+Status: Proposed (2026-09-15, issue #563; GoWe#260, #261, #262)
 
 ## Context
 
@@ -88,14 +88,32 @@ The obvious fix — put the registry's coordinates on the submission next to
 
 ## Consequences
 
-* One worker group can serve every tenant. The per-tenant group remains
-  available and is still the isolation boundary where it is needed.
+* One worker group can serve every tenant.
+* **A worker group is NOT a confidentiality boundary.** This ADR originally said
+  the per-tenant group "is still the isolation boundary where it is needed."
+  That was wrong, and the correction matters more than the original claim did.
+  In GoWe as deployed, `CanJoinGroup` is enforced at exactly one call site —
+  `internal/server/handler_workers.go:64`, the **worker registration** path. It
+  guards the worker→group edge. Nothing authorizes the **submitter**→group edge:
+  the scheduler reads `sub.Labels["worker_group"]` and dispatches, so any
+  authenticated GoWe user can target any group, with any image, and every
+  container on that worker inherits the worker's full `--secret-file` /
+  `--env-file` environment. A per-tenant group defends against a rogue *worker*,
+  not against another *user*.
 * **The trade-off, stated plainly:** with one shared group, every container that
-  group runs carries **every** tenant's registry DSN in its environment. That is
-  safe only where the tenants are same-org and the tool image is trusted. If
-  either ceases to hold — a tenant outside the trust boundary, or a workflow
-  that can run arbitrary user code in that image — per-tenant worker groups are
-  the answer again, and this ADR does not remove them.
+  group runs carries **every** tenant's registry DSN in its environment. Given
+  the point above, splitting into per-tenant groups does not fix that — it
+  narrows which worker holds which secret at rest and nothing more. The actual
+  containment today is that GoWe is fronted by the tenant APIs, which submit a
+  fixed registered workflow: a tenant user never chooses a group, an image, or a
+  tool. Treat the group as **placement and convenience, not security**, until
+  GoWe#261 (submitter-side group ACL) and GoWe#262 (per-group image and
+  admin-registered-workflow restriction) land.
+* **Because a group was never the boundary, any credential that has sat in a
+  worker env file should be rotated once it no longer needs to be there** — at
+  the time of writing, `NEO4J_PASSWORD` on the `ragstack` group and the
+  hackathon `COLLECTION_STORE_DSN`. Rotation is cheap; the assumption that a
+  group contained them was not true for the period they were there.
 * Defence in depth, not a substitute for care: the worker redacts secret values
   from captured task output, and `ragstack.ops.ingest_target` scrubs DSNs out of
   third-party error text before printing a refusal. Neither licenses putting a
@@ -104,13 +122,26 @@ The obvious fix — put the registry's coordinates on the submission next to
   tree**. A `ragstack-ctl tenant backup --fence` bundle and `restore --as <new>`
   therefore carry no DSN for the new name: a restored tenant needs a manual
   worker-secret-file entry before it can ingest. Known follow-up.
-* Forward-compatible without being forward-dependent. `COLLECTION_STORE_DSN_<NAME>`
-  is already a valid GoWe#260 reference name (their names allow `[A-Za-z0-9_.-]+`),
-  so nothing is renamed later. And because `registry` is a bare name rather than
-  a secret reference, the env-suffix resolution keeps working *alongside*
-  GoWe#260 — adopting `secret://` becomes optional, taken only if we want their
-  per-tool allowlist enforcement (`gowe:Execution.secrets: ["registry-*-dsn"]`,
-  where an unknown or non-allowlisted reference fails the task before execution).
+* Forward-compatible without being forward-dependent, and this survived GoWe#260
+  being re-scoped. #260 was originally worker-side `secret://<name>` references
+  resolved against the worker's own secret file; it is now **submission-time
+  secrets** — `POST /submissions` takes an optional `secrets: {NAME: value}` map,
+  encrypted at rest the way the BV-BRC token already is, never echoed into
+  `inputs`, `submitted_inputs`, the task job, the UI or the logs, delivered only
+  to tasks whose tool opts in (`gowe:Execution.secret_env: [COLLECTION_STORE_DSN]`),
+  and scrubbed from the task row at terminal state.
+
+  That fits here better, because the tenant API already holds the credential at
+  submit time. On #260 landing: the tenant API adds
+  `secrets: {COLLECTION_STORE_DSN: <that tenant's dsn>}` to the submission and the
+  per-group secret files go away; the tool reads `COLLECTION_STORE_DSN` from its
+  environment exactly as it does now, with no suffix. **Nothing in this ADR
+  changes** — the visible `registry` name, the CWL binding and the loud failure
+  all stay, and `--registry` keeps earning its place as the audit trail of which
+  registry a job actually used. Confidentiality then binds to the *submission*
+  rather than to the worker: no worker holds a tenant credential at rest, and the
+  shared group needs no trust condition at all — the same-org question reduces to
+  compute placement, which is GoWe#261/#262.
 
 ## Related
 
