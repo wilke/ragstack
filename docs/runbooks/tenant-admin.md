@@ -8,7 +8,7 @@ see [`tenant-upgrade.md`](tenant-upgrade.md); for a 503 with a `Reference:` id
 see [`tracing-a-503.md`](tracing-a-503.md).
 
 Every endpoint, field name, status code and default below was read out of the
-code at `v1.6.0` and is cited `file:line` against `python/ragstack/`. Where a
+code at `v1.6.1` and is cited `file:line` against `python/ragstack/`. Where a
 value is a **product default** rather than a particular tenant's setting, it says
 so — a tenant's live values are in its own `tenant.env`, never in this file.
 
@@ -29,7 +29,7 @@ Two credential types, and **exactly one per request**:
 | `X-API-Key: <key>` | a minted API key; its role comes from `API_KEY_ROLES`, falling back to `DEFAULT_ROLE` (`api/security.py:165-192`) |
 | `Authorization: <token>` | a user's bearer identity (BV-BRC p3-token or a JWT) |
 
-`api/security.py:88-101` declares both. **The `Bearer ` prefix is optional** —
+`api/security.py:81-92` declares both. **The `Bearer ` prefix is optional** —
 `_bearer_credential()` (`api/security.py:657-670`) strips it case-insensitively
 when present, because the BV-BRC wire format does not use it. Both
 `Authorization: Bearer <jwt>` and a raw `Authorization: <p3-token>` work.
@@ -41,7 +41,7 @@ Authorization, not both"`. If you are debugging with a shell that exports an
 user's token in.
 
 The `Authorization` header is only an auth *input* when `IDENTITY_PROVIDER` is
-not `none` (`config.py:679-681`, product default `"none"`); otherwise
+not `none` (`config.py:673-679`, product default `"none"`); otherwise
 `_authenticate` goes straight to the API-key path (`api/security.py:850-856`).
 The BV-BRC provider's issuer literal is `bvbrc` (`identity/bvbrc.py:62`).
 
@@ -70,7 +70,7 @@ a one-time warning (`normalize_role`, `api/security.py:109-124`). `engineer` and
 `manager` were removed outright and are **rejected at startup**
 (`api/security.py:104`, `:941-950`) — so a tenant whose `tenant.env` still names
 one will not boot. `admin` short-circuits every role gate
-(`require_role`, `api/security.py:1226-1259`, the bypass at `:1253`).
+(`require_role`, `api/security.py:1226-1259`, the bypass at `:1252`).
 
 ### A bearer identity never inherits `DEFAULT_ROLE`
 
@@ -104,15 +104,21 @@ tenant you are on:
 grep -E '^DEFAULT_ROLE=' /rag/data/tenants/$T/config/tenant.env
 ```
 
-`DEFAULT_ROLE` only ever applies to the API-key and keyless paths. Startup warns
-loudly when it is `admin` with keys configured (`api/security.py:995-1021`).
+`DEFAULT_ROLE` only ever applies to the API-key and keyless paths. The one
+startup warning about it is narrower than it sounds: `validate_rate_limit_settings()`
+(`api/security.py:990-1023`) warns only when `DEFAULT_ROLE=admin` **and at least
+one `RATE_LIMIT_*` setting is greater than 0** — because an `admin` principal is
+exempt from the rate-limit bucket, so the limiter would be a silent no-op for
+every keyless or unmapped-key caller. With no rate limit configured there is no
+warning at all, and configured API keys are not what triggers it. It only warns;
+it never refuses to start.
 
 ### The two admin sources
 
 | source | where | notes |
 |---|---|---|
 | `ADMIN_SUBJECTS` env allowlist | `config.py:656-661` (comma-split); read at call time by `admin_subject_allowlist()`, `api/security.py:391-400` | Checked **first**, precisely because it needs no store — it is the recovery path when the user store is down |
-| `users.role == 'admin'` | column at `user_store.py:199`; `UserRecord.is_admin` at `user_store.py:203-210`; auth-path read `_stored_role_is_admin`, `api/security.py:568-596` | "only the literal `'admin'` elevates"; `''` reads as user. **Fails closed to `user`** on any store error |
+| `users.role == 'admin'` | column at `user_store.py:198`; `UserRecord.is_admin` at `user_store.py:203-210`; auth-path read `_stored_role_is_admin`, `api/security.py:568-596` | "only the literal `'admin'` elevates"; `''` reads as user. **Fails closed to `user`** on any store error |
 
 Both are named as "exactly two admin sources" at `api/security.py:28-39`.
 Validated at startup by `validate_admin_subjects_settings()`
@@ -254,7 +260,7 @@ curl -s -X POST "$BASE/v1/admin/service-accounts/ingest-bot/enable"  -H "X-API-K
 **A service account is spelled `@service:<subject>` when you grant it access** —
 e.g. `@service:ingest-bot`. That prefix is `_SERVICE_PREFIX`
 (`api/routers/collections.py:1408`) and is parsed at
-`api/routers/collections.py:1521-1553`. Only the `@`-sigil form is accepted; a
+`api/routers/collections.py:1517-1548`. Only the `@`-sigil form is accepted; a
 bare `service:x` is instead read as the federated subject with issuer `service`.
 
 ---
@@ -273,8 +279,9 @@ per-route. **The path parameter is `{collection_id}`.**
 | `POST /v1/collections/{collection_id}/owner` | `collections.py:1865` | 200 |
 
 Listing and granting are **owner-or-admin** — `enforce_access(principal,
-entry.id, "owner")` at `collections.py:1594`. As an operator with an admin
-credential you can therefore act on a user's behalf without their token. Denials
+entry.id, "owner")` at `collections.py:1594` (list) and `:1650` (grant). As an
+operator with an admin credential you can therefore act on a user's behalf
+without their token. Denials
 are leak-safe: 404 for a collection you cannot read, 403 for readable-but-not-
 owned, 503 when the authorization store is down ("refusing to serve (fail
 closed)").
@@ -305,17 +312,17 @@ Body `ShareGrantRequest` (`collections.py:1411-1439`), `extra="forbid"`:
 `grantee` (required), `permission` (default `"read"`), `issuer` (default
 `"bvbrc"`).
 
-**Grantee grammar** — `_resolve_grantee()`, `api/routers/collections.py:1477-1569`.
+**Grantee grammar** — `_resolve_grantee()`, `api/routers/collections.py:1477-1566`.
 First match wins, after `strip()`:
 
 | form | resolves to | line |
 |---|---|---|
-| empty / whitespace | 422 `"grantee must not be empty or whitespace"` | `:1505` |
-| `@public` or bare `public` | the built-in group `public` | `:1507` |
-| `@group:<id>` or `group:<id>` | that group. Empty id → 422 | `:1511-1518` |
-| `@service:<subject>` | that service account, kept verbatim and colon-free | `:1521-1553` |
-| anything containing `:` | a verbatim federated `issuer:subject` | `:1554-1565` |
-| a bare username | qualified to `<issuer>:<name>`, i.e. `bvbrc:<name>` by default | `:1566-1569` |
+| empty / whitespace | 422 `"grantee must not be empty or whitespace"` | `:1501-1502` |
+| `@public` or bare `public` | the built-in group `public` | `:1503-1504` |
+| `@group:<id>` or `group:<id>` | that group. Empty id → 422 | `:1507-1514` |
+| `@service:<subject>` | that service account, kept verbatim and colon-free | `:1517-1548` |
+| anything containing `:` | a verbatim federated `issuer:subject` | `:1549-1562` |
+| a bare username | qualified to `<issuer>:<name>`, i.e. `bvbrc:<name>` by default | `:1563-1566` |
 
 Group forms are matched **before** the colon rule, so `group:eng` is never
 mis-read as issuer `group`. `@service:` rejects a subject containing `:`
@@ -346,9 +353,10 @@ if perm != PERM_READ:
 So `"permission":"owner"` → **400** pointing at the transfer route, and
 `"permission":"write"` → **422**. Write and delegated (grant-option) shares are a
 deferred MVP cut (`authz.py:24`). Other statuses: 409 when the grantee already
-owns the collection (`:1699`) or already holds an active grant (`:1731`); 422
-`"unknown group {id!r}; create it via POST /v1/groups first"` (`:1686`) — groups
-must exist before they can be granted to.
+owns the collection (`collections.py:1698-1701`) or already holds an active grant
+(`collections.py:1729-1732`, where the store's `ShareInvariantError` becomes the
+409); 422 `"unknown group {id!r}; create it via POST /v1/groups first"`
+(`collections.py:1682-1685`) — groups must exist before they can be granted to.
 
 ### Revoke — soft, and it cascades
 
@@ -392,10 +400,10 @@ Body `OwnerTransferRequest` (`collections.py:1814-1840`): `subject`, `issuer`,
 `previous_owner`, `revoked_share_id`, `previous_owner_retains_read`, `share`.
 
 - **The outgoing owner keeps nothing.** Their row is soft-revoked and they get no
-  consolation read grant — the transfer is explicitly non-cascading
-  (`collections.py:1885-1893`). If they still need access, grant them `read`
+  consolation read grant — the handler's docstring spells out why
+  (`collections.py:1891-1903`). If they still need access, grant them `read`
   afterwards as a separate call.
-- 400 on a group subject (`:1897-1902`) — ownership is grantable to users only.
+- 400 on a group subject (`:1947-1956`) — ownership is grantable to users only.
 - 409 when the recipient already owns it, or there is no active owner row, or
   the recipient is at their owner quota (§5).
 - 422 for a malformed subject, or a recipient who has never been seen (when the
@@ -405,9 +413,11 @@ Body `OwnerTransferRequest` (`collections.py:1814-1840`): `subject`, `issuer`,
 
 ### Groups
 
-Any authenticated caller can create and list; get/delete/member-management are
-owner-or-admin (`api/main.py:219-224`, `groups.py:207`, `_authorize_group` at
-`groups.py:281`, `:315`, `:351`). A non-member gets a leak-safe 404.
+Any authenticated caller can create and list (`api/main.py:219-224` gates the
+router with `resolve_principal` only; `create_group` at `groups.py:203-207`);
+get/delete/member-management are owner-or-admin through `_authorize_group`
+(`groups.py:156`), called at `groups.py:254`, `:272`, `:309` and `:352`. A
+non-member gets a leak-safe 404.
 
 | verb + path | line | status | body / params |
 |---|---|---|---|
@@ -420,7 +430,8 @@ owner-or-admin (`api/main.py:219-224`, `groups.py:207`, `_authorize_group` at
 
 Members resolve through the same `_resolve_grantee`, and **groups do not nest**:
 a `@public`/`@group:` member is 422 `"a group member must be a user, not a
-group (no nesting)"` (`groups.py:319-321`, `:355-357`). Removing a non-member is
+group (no nesting)"` (`groups.py:311-314` on add, `:354-357` on remove).
+Removing a non-member is
 a 204 no-op. An empty name is 422; a reserved name (`public`) or a name collision
 for the same owner is 409. Then share to the group with
 `{"grantee":"@group:<group_id>"}`.
@@ -464,19 +475,20 @@ practice it is load-bearing at read time**, because there are two independent
 gates and a query must pass both:
 
 - **Gate A — authorization.** `enforce_access` → `resolve_access`
-  (`authz.py:61-120`): owner, grant, public, or admin bypass.
+  (`authz.py:63-131`): owner, grant, public, or admin bypass.
 - **Gate B — data visibility.** A `tenant_id` filter merged into the store query
   **last**, so a client-supplied `filters` payload cannot widen it
   (`tenancy.py:78-84`; `readable_tenants()` at `tenancy.py:39-50` yields
-  `[tenant, "public"] + extra`). Applied at `api/routers/query.py:667` (single
-  collection), `:683`/`:693` (multi-collection), `:828` (`/v1/chunks`), and
+  `[tenant, "public"] + extra`). Applied at `api/routers/query.py:673` (single
+  collection), `:689`/`:699` (multi-collection), `:834` (`/v1/chunks`), and —
+  as a bare `readable_tenants()` call, without a filter dict to merge into —
   `documents.py:1474` for the document listing. Enforced in the store against the
   chunk payload (`stores/qdrant.py:56`, indexed at `:304`; the ES
   `metadata.tenant_id` mapping).
 
 The gap between the gates is closed **only for grantees, and only via the
 current owner's subject** — `shared_scope()`, `api/scope.py:39-77`, whose own
-docstring (`:43-50`) names the hazard:
+docstring (`:45-49`) names the hazard:
 
 > "Read authorization (the ACL share) and data visibility (the per-chunk
 > `tenant_id` vector scope) are two independent gates. A private collection's
@@ -490,7 +502,9 @@ and whose implementation (`scope.py:66-77`) widens to `[owner_of(collection)]`
 ### The three ways it bites
 
 1. **Chunks ingested by an admin into a user's collection.** Write access is
-   owner-or-admin only (`documents.py:295-304`, `authz.py:24`), so an organiser
+   owner-or-admin only (`authz.py:24`; the ingest gate is
+   `_authorize_ingest_target`, `documents.py:267-304`, whose `enforce_access`
+   call is at `:356`), so an organiser
    can *only* do this with an admin credential — but with one, it works, and the
    chunks are stamped with the **organiser's** subject. The owner then queries:
    `shared_scope` sees that they *are* the owner and returns `[]`
@@ -508,7 +522,7 @@ and whose implementation (`scope.py:66-77`) widens to `[owner_of(collection)]`
    another registry entry. There, even a legitimate **grantee** sees nothing.
 
 A fourth, quieter one: `shared_scope` **fails soft** — an ACL-store hiccup logs
-and returns `[]` (`scope.py:71-75`), so grantees silently see zero results
+and returns `[]` (`scope.py:70-74`), so grantees silently see zero results
 instead of a 503.
 
 ### The safe patterns
@@ -526,8 +540,8 @@ instead of a 503.
 ### How to recognise it in under a minute
 
 An empty answer with a healthy store is the signature. Counts agree with queries
-(they use the same widening — `count_scope`/`count_scope_many`, `scope.py:110`,
-`:129`), so a collection that reports chunks but answers nothing is a different
+(they use the same widening — `count_scope`/`count_scope_many`, `scope.py:114`,
+`:134`), so a collection that reports chunks but answers nothing is a different
 bug; a collection that reports **0 chunks to its owner** while the ingest job
 says `completed` with a positive `chunks` count (§6) is this one.
 
@@ -555,7 +569,7 @@ a tenant may override.**
 | `MAX_COLLECTIONS` | `100` | `config.py:158` |
 | `MAX_COLLECTIONS_PER_OWNER` | `5` | `config.py:210` |
 | `ALLOW_USER_COLLECTION_CREATE` | `true` | `config.py:192` |
-| `MAX_CHUNKS_PER_COLLECTION` | `50_000` | `config.py:179` |
+| `MAX_CHUNKS_PER_COLLECTION` | `50_000` | `config.py:178` |
 
 There are **no env-var aliases**: `Settings` (`config.py:25`) declares no
 `env_prefix` and no `validation_alias`, so each field maps to its own name,
@@ -564,7 +578,7 @@ case-insensitively. The env var is spelled exactly as above.
 Semantics that surprise people:
 
 - **`0` means the cap is disabled**, not "refuse everything" — `MAX_COLLECTIONS=0`
-  (`config.py:145-146`, `api/eviction.py:255-262`) and
+  (`config.py:144`, `api/eviction.py:255-264`) and
   `MAX_COLLECTIONS_PER_OWNER=0` (`config.py:209`).
 - **Admins are exempt from `MAX_COLLECTIONS_PER_OWNER` but not from
   `MAX_COLLECTIONS`** (`config.py:203-207`, `api/access.py:256-261`).
@@ -631,13 +645,16 @@ retries **once**. A second `AT_CAP` is a 507 — *"a concurrent create took the
 slot the eviction freed; retry"* (`collections.py:674-676`).
 
 The LRU key is `last_accessed_at`, falling back to `created_at`, then `-inf`
-(`ops/evict.py:159-163`, sorted at `:219` by `(lru_stamp(r), r.spec.id)`).
+(`lru_stamp`, `ops/evict.py:158-166`, sorted at `:219` by `(lru_stamp(r), r.spec.id)`).
 Batched access touches are flushed before the sort so the key is not stale
 (`api/eviction.py:10-12`). A collection is eligible only if it is `active`, not
 `archive_pending`, has archive versions, has no in-flight job, and is not
-`protected` (`ops/evict.py:16-22`). Restore admission evicts through the same
-machinery but answers **503 + `Retry-After`** rather than 507
-(`api/eviction.py:298-313`).
+`protected` (`ops/evict.py:16-21`). Restore admission drives the same evict-one
+machinery (`RestoreCapacity.make_room`, `api/eviction.py:298-313`, called from
+`api/lifecycle.py:289`) but answers **503 + `Retry-After`** rather than 507: when
+`make_room()` returns a reason instead of `None`, the gate raises it at
+`api/lifecycle.py:251` through `_retry` (`api/lifecycle.py:178-183`, which is
+where the `Retry-After` header is attached).
 
 ### The operator's handle
 
@@ -646,7 +663,7 @@ curl -s -X POST -H "X-API-Key: $ADMIN_KEY" \
   "$BASE/v1/admin/collections/evict?need=3&dry_run=true" | python3 -m json.tool
 ```
 
-`api/routers/admin_collections.py:23-28`; `need` is `1..1000` (default 1),
+`api/routers/admin_collections.py:22-28`; `need` is `1..1000` (default 1),
 `dry_run` defaults false. **It always returns 200** — a shortfall is data, not an
 error (`admin_collections.py:6-7`). `EvictionResponse` (`api/eviction.py:89-95`):
 
@@ -674,7 +691,7 @@ Qdrant and ES resources.
 - **403**, not 507, when the *effective* cap is zero —
   `collections.py:424-434`, raised at `:660`. `effective_limit()` is
   `max_collections` minus one when a shared-surface pointer exists
-  (`api/eviction.py:255-263`), so a tenant with `MAX_COLLECTIONS=1` and a shared
+  (`api/eviction.py:255-264`), so a tenant with `MAX_COLLECTIONS=1` and a shared
   surface has an effective cap of 0 and refuses **every** create with a 403. If
   users report "I cannot create anything at all", check for the 403 before
   investigating capacity.
@@ -704,7 +721,7 @@ curl -s -H "X-API-Key: $ADMIN_KEY" "$BASE/v1/jobs?limit=25" | python3 -m json.to
 `limit` is 1–100, default 25 (`jobs.py:42`). `JobSummary` (`jobs.py:27-33`):
 `job_id`, `status`, `source`, **`error`**, `chunks`, `items{pending, completed,
 failed}`. Status vocabulary: `accepted`, `running`, `completed`, `failed`,
-`unknown` (`jobstore.py:26-32`).
+`unknown` (`jobstore.py:26-31`).
 
 **`error` is a caller-safe label only** — an exception class name, never a raw
 path or an upstream message (`jobstore.py:43-45`). So it tells you the *class* of

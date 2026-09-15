@@ -2,17 +2,28 @@
 
 **This procedure is manual and operator-run.** There is no
 `ragstack-ctl tenant update` verb — do not go looking for one. The control
-plane's full verb list is printed by `ragstack-ctl` with no arguments and is
-the `usage` block at `go/cmd/ragstack-ctl/main.go:71-195`; it has
+plane's verb list is printed by `ragstack-ctl` with no arguments — the `usage`
+block at `go/cmd/ragstack-ctl/main.go:71-232`. It lists
 `tenant create|list|show|logs|start|restart|stop|backup|restore|decommission`
-and `tenant rebase-worktree`, and **no** `update`, `upgrade` or `deploy` verb.
-A grep of the repo for `tenant update` returns nothing.
+(`main.go:121-131`) and **no** `update`, `upgrade` or `deploy` verb. A grep of
+the repo for `tenant update` returns nothing.
+
+> **The usage block is not the complete verb list.** `tenant rebase-worktree`
+> exists and is dispatched (`main.go:1054`, implemented in
+> `go/cmd/ragstack-ctl/rebase.go`) with its own usage line at `main.go:1037`,
+> but it is **absent from the top-level `usage()` block** — so `ragstack-ctl`
+> with no arguments does not mention it. That is a gap in `usage()`, not a
+> missing command. Read the block as the printed summary, not as the complete
+> verb list.
 
 So moving a tenant to a new tag is five steps you run yourself, and one `adopt
 --readopt` at the end so the registry stops describing the code that *used* to
-be there. The recipe below is what was actually performed for the **v1.6.0**
-upgrade of `hackathon` and `dev` on 2026-09-15; the artifacts of that run
-(`/rag/backups/tenants/*/20260915T11*-pre-v1.6.0/`) are the worked example.
+be there. The recipe below is what was actually performed on 2026-09-15, twice:
+first for the **v1.6.0** upgrade of `hackathon` and `dev`
+(`/rag/backups/tenants/*/20260915T11*-pre-v1.6.0/`), then for the **v1.6.1**
+upgrade of the same two (`/rag/backups/tenants/*/20260915T12*-pre-v1.6.1/`).
+Those backup trees are the worked example; **`v1.6.1` is where the fleet is
+now**, so that is the tag the commands below use.
 
 > **Tracked as a future control-plane feature.** The brief this runbook was
 > written from names a "PR-F / v1.1" for the `tenant update` verb.
@@ -40,8 +51,8 @@ argv — `/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host
 0.0.0.0 --port <port>` — differing only in `--port` and in `cwd`. A pattern that
 matches one matches all five, plus any scratch server an agent left running.
 `ops/coconut/restore.sh` states the same prohibition in its own header
-(`ops/coconut/restore.sh:26`, "kill by process-name pattern, ever (MEMORY: #402)")
-and is built around `record_pid_by_port` (`ops/coconut/restore.sh:116-124`) for
+(`ops/coconut/restore.sh:38`, "kill by process-name pattern, ever (MEMORY: #402)")
+and is built around `record_pid_by_port` (`ops/coconut/restore.sh:129-134`) for
 exactly this reason.
 
 **Stop a tenant API like this:**
@@ -86,8 +97,9 @@ sed -n '/map \$tenant \$tenant_ui/,/^}/p' /rag/config/proxy/conf.d/05-tenants.ge
 
 **Present in the map → dev UI.** **Absent → static UI**, and it will instead
 have an `alias <data_dir>/ui/dist/` block in
-`/rag/config/proxy/snippets/tenants-ui-static.generated.conf`. As of registry
-generation 198, `hackathon` is the only absent one — it is static; `dev`,
+`/rag/config/proxy/snippets/tenants-ui-static.generated.conf`. In the generated
+map in use today — rendered from registry generation 198, which is what its own
+header records — `hackathon` is the only absent one; it is static. `dev`,
 `demo`, `lucid-next` and `asm-next` are all in the map and are dev-UI. The
 registry says the same thing in `tenants.<name>.ui.mode`
 (`static|dev|external`, written by `adopt --ui-mode`,
@@ -121,7 +133,7 @@ The convention already on disk, which this runbook adopts:
 
 ```bash
 T=hackathon; D=/rag/data/tenants/$T; W=/rag/repos/tenants/$T
-TAG=v1.6.0
+TAG=v1.6.1
 B=/rag/backups/tenants/$T/$(date -u +%Y%m%dT%H%M%SZ)-pre-$TAG
 mkdir -p "$B"
 cp -a "$D/config" "$B/config"
@@ -187,8 +199,9 @@ Three things that are easy to get wrong:
   installed by `make install-node`, added in PR-D2 / #554). That is what the ctl
   and the v1.6.x tenant upgrades used. Put it on `PATH` rather than relying on a
   login shell picking up an nvm install under `$HOME`.
-- `ops/coconut/restore.sh:147` still resolves node from `$HOME` in its preflight,
-  so that line — not the toolchain — is the thing that wants a login shell.
+- `ops/coconut/restore.sh:158-159` still resolves `npx` from `$HOME` (nvm /
+  `~/.local`) in its preflight and tells you to re-run from a login shell, so
+  that check — not the shared toolchain — is the thing that wants one.
 
 - **`--chmod=D770,F660`.** A plain `rsync -a` preserves the build's 644/755
   modes; the tree's convention is 2770 dirs and 660 files. The directory ACLs
@@ -255,7 +268,8 @@ CODE=/rag/repos/tenants/$T/python
 
 Then **record the pid of the process that owns the port, not of the launcher
 subshell** — `$!` here is the wrapper, which is `restore.sh`'s own documented
-bug-avoidance note (`ops/coconut/restore.sh:102-104`):
+bug-avoidance note (`ops/coconut/restore.sh:114-115`, above `launch()`; the
+recording itself is `record_pid_by_port`, `:129-134`):
 
 ```bash
 sleep 10
@@ -274,7 +288,7 @@ The pidfile path the registry expects is
 restarted by any of the above. It reads the worktree live, so after step 2 it
 will hot-reload or want a restart of its own; restart it with
 `/rag/config/proxy/ui-dev.sh <tenant> <port> <worktree>/frontend`, the same
-launcher `ops/coconut/restore.sh:292` uses.
+launcher `ops/coconut/restore.sh:344` uses.
 
 ## 6. Re-adopt so the registry records the new code
 
@@ -313,12 +327,13 @@ Four independent checks. Do all four — each can pass while another fails.
 
 **1. `/v1/version` reports the tag and sha you deployed.** This endpoint was
 added post-`v1.5.3` (commit `eb41858`, PR-A / #531) and **first ships in
-`v1.6.0`** — `git tag --contains eb41858` returns `v1.6.0` only. It needs *a*
-credential but not an admin one (`python/ragstack/api/routers/version.py:36`,
+`v1.6.0`** — `git tag --contains eb41858` returns `v1.6.0` and `v1.6.1`, and no
+earlier tag. It needs *a* credential but not an admin one
+(`python/ragstack/api/routers/version.py:35-36`,
 mounted with `Depends(resolve_tenant)` at `python/ragstack/api/main.py:209`):
 unauthenticated it answers `401 {"detail":"missing or invalid API key"}` on a
-v1.6.0 tenant, and `404 {"detail":"Not Found"}` on a v1.5.3 one. **That
-difference is itself the check** — a 404 after an upgrade to v1.6.0 means the
+v1.6.x tenant, and `404 {"detail":"Not Found"}` on a v1.5.3 one. **That
+difference is itself the check** — a 404 after an upgrade to v1.6.x means the
 process is still running the old code.
 
 ```bash
@@ -397,7 +412,7 @@ prohibition on rolling back; verify it against the release notes.
 
 ## Current fleet state
 
-Verified 2026-09-15 against `/rag/data/tenants/registry.json` (generation 201),
+Verified 2026-09-15 against `/rag/data/tenants/registry.json` (generation 205),
 the five tenant worktrees, `05-tenants.generated.conf` (generation 198), and a
 live `/health` + `/v1/version` probe of each API. **Re-verify before you rely on
 it — this table drifts with every upgrade.**
