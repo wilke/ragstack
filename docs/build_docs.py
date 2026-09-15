@@ -15,6 +15,7 @@ import argparse
 import html
 import os
 import re
+import posixpath
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -110,34 +111,49 @@ PAGES = [
         blurb="Spin up the UI + API locally against SciFact data — the fastest way to see RAGStack running.",
     ),
     dict(
-        src="adr/README.md", out="adr.html", label="Decisions",
+        src="adr/README.md", out="adr/index.html", label="Decisions",
         card="Architecture Decision Records",
-        blurb="Why the system is shaped the way it is — one record per significant decision, with the options weighed and the consequences accepted.",
+        blurb="Why the system is shaped the way it is: execution topology, collection identity, access control, users and shares, tenant anatomy, the control plane, prompt templates.",
     ),
     dict(
-        src="adr/0001-execution-topology.md", out="adr-0001-execution-topology.html",
-        label="ADR 0001", card="ADR 0001 — Execution topology",
-        blurb="Which work runs in the workflow engine, which in Go, and which in Python.",
+        src="adr/0001-execution-topology.md", out="adr/0001-execution-topology.html", label="ADR 0001 · Superseded by 0006",
+        card="ADR 0001 — Execution topology", index=False,
+        blurb="",
     ),
     dict(
-        src="adr/0002-collection-identity.md", out="adr-0002-collection-identity.html",
-        label="ADR 0002", card="ADR 0002 — Collection identity",
-        blurb="Content-addressed physical stores plus a durable registry, and the two production failures that forced them.",
+        src="adr/0002-collection-identity.md", out="adr/0002-collection-identity.html", label="ADR 0002 · Accepted",
+        card="ADR 0002 — Collection identity", index=False,
+        blurb="",
     ),
     dict(
-        src="adr/0003-access-control.md", out="adr-0003-access-control.html",
-        label="ADR 0003", card="ADR 0003 — Access control",
-        blurb="A tenant is a Qdrant instance, ownership sits on the collection instead of the chunk, and a library is just a collection.",
+        src="adr/0003-access-control.md", out="adr/0003-access-control.html", label="ADR 0003 · Accepted",
+        card="ADR 0003 — Access control", index=False,
+        blurb="",
     ),
     dict(
-        src="adr/0004-users-groups-shares.md", out="adr-0004-users-groups-shares.html",
-        label="ADR 0004", card="ADR 0004 — Users, groups, shares",
-        blurb="Profile rows on first auth, pending shares by verified email, public as a built-in group, and WITH GRANT OPTION instead of rwx.",
+        src="adr/0004-users-groups-shares.md", out="adr/0004-users-groups-shares.html", label="ADR 0004 · Accepted",
+        card="ADR 0004 — Users, groups, shares", index=False,
+        blurb="",
     ),
     dict(
-        src="adr/0005-tenant-anatomy.md", out="adr-0005-tenant-anatomy.html",
-        label="ADR 0005", card="ADR 0005 — Anatomy of a tenant",
-        blurb="A tenant is one API endpoint plus dedicated stateful stores — including its own Elasticsearch — provisioned by script, sharing only stateless compute.",
+        src="adr/0005-tenant-anatomy.md", out="adr/0005-tenant-anatomy.html", label="ADR 0005 · Accepted",
+        card="ADR 0005 — Anatomy of a tenant", index=False,
+        blurb="",
+    ),
+    dict(
+        src="adr/0006-execution-topology-revised.md", out="adr/0006-execution-topology-revised.html", label="ADR 0006 · Proposed",
+        card="ADR 0006 — Execution topology, revised", index=False,
+        blurb="",
+    ),
+    dict(
+        src="adr/0007-tenant-control-plane.md", out="adr/0007-tenant-control-plane.html", label="ADR 0007 · Proposed",
+        card="ADR 0007 — Tenant control plane", index=False,
+        blurb="",
+    ),
+    dict(
+        src="adr/0008-prompt-templates.md", out="adr/0008-prompt-templates.html", label="ADR 0008 · Proposed",
+        card="ADR 0008 — Server-side prompt templates", index=False,
+        blurb="",
     ),
 ]
 
@@ -148,7 +164,7 @@ _LINK_MAP = {p["src"]: p["out"] for p in PAGES}
 _LINK_MAP["adr/README.md"] = "adr.html"
 
 
-def _rewrite_links(md_text: str, src: str) -> str:
+def _rewrite_links(md_text: str, src: str, out: str = "") -> str:
     """Resolve every relative link in a source doc against the built site.
 
     Pages get flattened into ``docs/``, so a doc's own relative links no longer
@@ -157,6 +173,7 @@ def _rewrite_links(md_text: str, src: str) -> str:
     to its built page or sent to GitHub. Nothing is left to dangle.
     """
     src_dir = PurePosixPath("docs") / PurePosixPath(src).parent
+    out_dir = str(PurePosixPath(out).parent) if "/" in out else "."
 
     def sub(mo: re.Match) -> str:
         label, target, anchor = mo.group(1), mo.group(2), mo.group(3) or ""
@@ -166,7 +183,10 @@ def _rewrite_links(md_text: str, src: str) -> str:
         repo_path = str(PurePosixPath(os.path.normpath(str(src_dir / target))))
         built = _LINK_MAP.get(repo_path[len("docs/"):] if repo_path.startswith("docs/") else "")
         if built:
-            return f"{label}({built}{anchor})"
+            # Pages can sit in subfolders (adr/), so a site-root path is only
+            # correct for a root-level page. Re-anchor it on the current page's
+            # own directory.
+            return f"{label}({posixpath.relpath(built, out_dir)}{anchor})"
         return f"{label}({REPO}/blob/main/{repo_path}{anchor})"
 
     # The negative lookbehind keeps ![alt](src) out of this: an image target is a
@@ -187,7 +207,7 @@ def gh_slug(text: str) -> str:
 
 
 def render_page(page: dict) -> None:
-    raw = _rewrite_links((HERE / page["src"]).read_text(encoding="utf-8"), page["src"])
+    raw = _rewrite_links((HERE / page["src"]).read_text(encoding="utf-8"), page["src"], page["out"])
 
     m = re.match(r"#\s+(.+)\n", raw)
     title = m.group(1).strip() if m else page["card"]
@@ -231,7 +251,9 @@ def render_page(page: dict) -> None:
         .replace("__MERMAID__", mermaid_script)
         .replace("__REPO__", REPO)
         .replace("__BUILD__", html.escape(BUILD))
+        .replace("__ROOT__", "../" * page["out"].count("/"))
     )
+    (HERE / page["out"]).parent.mkdir(parents=True, exist_ok=True)
     (HERE / page["out"]).write_text(out, encoding="utf-8")
     print(f"  {page['out']:32} {len(diagrams)} diagrams, {(HERE / page['out']).stat().st_size // 1024} KB")
 
@@ -257,6 +279,8 @@ def _build_nav(tokens: list[dict]) -> str:
 def build_index() -> None:
     cards = []
     for p in PAGES:
+        if not p.get("index", True):
+            continue
         cards.append(
             f'<a class="doc-card" href="{p["out"]}">'
             f'<span class="card-tag">{p["label"]}</span>'
@@ -268,7 +292,7 @@ def build_index() -> None:
            .replace("__REPO__", REPO)
            .replace("__BUILD__", html.escape(BUILD)))
     (HERE / "index.html").write_text(out, encoding="utf-8")
-    print(f"  {'index.html':32} landing ({len(PAGES)} docs)")
+    print(f"  {'index.html':32} landing ({len(cards)} cards, {len(PAGES)} pages)")
 
 
 def assemble_site(dest: Path) -> None:
@@ -280,6 +304,7 @@ def assemble_site(dest: Path) -> None:
     """
     dest.mkdir(parents=True, exist_ok=True)
     for name in [p["out"] for p in PAGES] + ["index.html"]:
+        (dest / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / name, dest / name)
     # Screenshots and any other page assets. Pages are flattened to the site root,
     # so a doc referencing images/x.png resolves here without rewriting.
@@ -454,7 +479,7 @@ _PAGE = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
     "<title>__TITLE__ · RAGStack</title>\n<style>" + _CSS + _PAGE_CSS + "</style>\n</head>\n<body>\n"
     '<header class="hero"><div class="hero-inner">\n'
-    '  <a class="home" href="index.html">&larr; RAGStack docs</a>\n'
+    '  <a class="home" href="__ROOT__index.html">&larr; RAGStack docs</a>\n'
     '  <p class="kicker">RAGStack · Documentation</p>\n'
     '  <h1 class="title">__TITLE__</h1>\n'
     '  <p class="tagline">__TAGLINE__</p>\n'
