@@ -27,6 +27,41 @@ MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
 # The docs to publish, in nav order. `card`/`blurb` drive the index landing page.
 PAGES = [
     dict(
+        src="HACKATHON.md", out="hackathon.html", label="Start here",
+        card="Hackathon — start here",
+        blurb="The landing sheet for the hackathon deployment: the two URLs, signing in with a BV-BRC account, this tenant's real limits, and the rough edges worth knowing before you hit them.",
+    ),
+    dict(
+        src="UI-GUIDE.md", out="ui-guide.html", label="User guide",
+        card="Using the app in your browser",
+        blurb="The web app click by click: sign in, create a collection, upload documents, ask a question, read around a hit, share it with a teammate — no terminal required.",
+    ),
+    dict(
+        src="USER-GUIDE.md", out="user-guide.html", label="User guide",
+        card="User guide",
+        blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
+    ),
+    dict(
+        src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
+        card="Cookbook — tasks, by audience",
+        blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
+    ),
+    dict(
+        src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
+        card="Cookbook — Using a deployment",
+        blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
+    ),
+    dict(
+        src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
+        card="Cookbook — New-Org Ingest",
+        blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
+    ),
+    dict(
+        src="API.md", out="api.html", label="Reference",
+        card="API Reference",
+        blurb="Every endpoint: auth and tenancy, request and response shapes, status codes, limits, and the data models.",
+    ),
+    dict(
         src="ARCHITECTURE.md", out="architecture.html", label="Overview",
         card="Architecture Overview",
         blurb="A high-level map — capabilities, components, data-flow diagrams, and the full API + service-script surface.",
@@ -45,31 +80,6 @@ PAGES = [
         src="model-registry.md", out="model-registry.html", label="Design",
         card="Model Registry & Dynamic Config",
         blurb="Register models and assign them to tasks (embedding, LLM, reranker) at runtime — the design, the phased plan, and the as-built API.",
-    ),
-    dict(
-        src="USER-GUIDE.md", out="user-guide.html", label="User guide",
-        card="User guide",
-        blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
-    ),
-    dict(
-        src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
-        card="Cookbook — tasks, by audience",
-        blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
-    ),
-    dict(
-        src="API.md", out="api.html", label="Reference",
-        card="API Reference",
-        blurb="Every endpoint: auth and tenancy, request and response shapes, status codes, limits, and the data models.",
-    ),
-    dict(
-        src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
-        card="Cookbook — Using a deployment",
-        blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
-    ),
-    dict(
-        src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
-        card="Cookbook — New-Org Ingest",
-        blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
     ),
     dict(
         src="LOCAL-DEMO.md", out="local-demo.html", label="Runbook",
@@ -136,7 +146,14 @@ def _rewrite_links(md_text: str, src: str) -> str:
             return f"{label}({built}{anchor})"
         return f"{label}({REPO}/blob/main/{repo_path}{anchor})"
 
-    return re.sub(r"(\[[^\]]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
+    # The negative lookbehind keeps ![alt](src) out of this: an image target is a
+    # site asset copied by assemble_site, not a document link, and sending it to
+    # GitHub would render a blob page where an <img> should be. Excluding "[" from
+    # the label additionally stops a nested [![alt](img)](page.md) from having its
+    # IMAGE rewritten — at the cost of leaving that shape's outer link alone, so
+    # the link would stay a raw .md path. No doc uses the nested form; if one ever
+    # does, handle it explicitly rather than widening this pattern.
+    return re.sub(r"(?<!!)(\[[^\]\[]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
 
 
 def gh_slug(text: str) -> str:
@@ -238,8 +255,15 @@ def assemble_site(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for name in [p["out"] for p in PAGES] + ["index.html"]:
         shutil.copy2(HERE / name, dest / name)
+    # Screenshots and any other page assets. Pages are flattened to the site root,
+    # so a doc referencing images/x.png resolves here without rewriting.
+    images = HERE / "images"
+    n_assets = 0
+    if images.is_dir():
+        shutil.copytree(images, dest / "images", dirs_exist_ok=True)
+        n_assets = sum(1 for f in (dest / "images").rglob("*") if f.is_file())
     (dest / ".nojekyll").touch()
-    print(f"  assembled {len(PAGES) + 1} pages -> {dest}")
+    print(f"  assembled {len(PAGES) + 1} pages + {n_assets} assets -> {dest}")
 
 
 def main() -> None:

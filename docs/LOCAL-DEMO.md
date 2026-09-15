@@ -1,5 +1,9 @@
 # Local demo — run the UI + API on your machine with SciFact data
 
+> **Already have a URL for a running deployment? Do not read this page.** This
+> builds a whole stack on your own machine. Start at
+> **[HACKATHON.md](HACKATHON.md)** or **[USER-GUIDE.md](USER-GUIDE.md)** instead.
+
 A tested recipe to bring up the **full stack locally** (Explore + Ops UI, hybrid
 retrieval, catalog) seeded with the **SciFact** benchmark corpus. Two embedding
 options: a fully self-contained local model, or fast remote GPUs over an SSH tunnel.
