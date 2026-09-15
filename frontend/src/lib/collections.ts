@@ -11,7 +11,67 @@
 // *collection*. The demo UI used to call it a "library"; there is no separate
 // concept for that name to mean, so do not reintroduce it here.
 
-import { apiDetail } from "./chunkers";
+import { apiDetail, apiDetailObject } from "./chunkers";
+
+/** Today's 409: the id is taken. Kept as a named constant so the quota branch
+ *  below is provably NOT returning it (see collections.test.ts). */
+const CREATE_ID_TAKEN =
+  "A collection with that id already exists — pick another id, or leave the id blank only if you meant to reuse an existing build spec.";
+
+/**
+ * The two remedies the server names for a full owner quota, in the user's words.
+ *
+ * Both, always. Deleting is the only one with a button, but it destroys an
+ * ingest that cost GPU hours; transfer is the non-destructive way out and a
+ * message that omits it pushes people into the destructive one. It has no UI
+ * today (issue #556) and the copy must not imply a control that isn't there —
+ * an owner CAN do it themselves (POST /v1/collections/{id}/owner is
+ * owner-or-admin), so "ask an admin" would also be wrong.
+ *
+ * It does NOT say transfer "keeps the data", which an earlier version did.
+ * Transfer frees the quota slot and the chunks survive, but the RECIPIENT cannot
+ * retrieve them: chunks are stamped with the owner's tenant at ingest and nothing
+ * re-stamps them, while `shared_scope` — the widening that rescues a grantee — is
+ * explicitly a no-op for someone who OWNS the collection (issue #558). Promising
+ * the data comes through would be a second piece of impossible advice in the same
+ * sentence as the first one this fix removed.
+ *
+ * "delete a collection you own" names WHERE, because this message renders in the
+ * Collections view, which has no delete control — deletion lives in Ops.
+ */
+const OWNER_QUOTA_REMEDY =
+  "To create another, first free one up: delete a collection you own (Ops → Collections), " +
+  "or transfer one to another owner — transfer is an API call today, and the new owner " +
+  "cannot search a transferred collection yet.";
+
+/**
+ * The owner-quota 409 (issue #290 server-side, #555 here), or null when this
+ * 409 is something else.
+ *
+ * Keyed on the server's `detail.error` discriminator, never on its prose: the
+ * message is a fragment written for operators ("already owns 10 collection(s),
+ * at the quota of 10 (MAX_COLLECTIONS_PER_OWNER); free one up …") and matching
+ * on words in it would break the moment someone rewords it.
+ *
+ * We take the server's NUMBERS and its remedy list but not its sentence, which
+ * is the one place this module deviates from "prefer the server's own words":
+ * that sentence has no subject and names an env var, and
+ * contracts/schemas/error.json says outright that `detail` is operator prose
+ * that may name internal settings. Numbers are data and cannot drift; prose can.
+ */
+function ownerQuotaMessage(body: string): string | null {
+  const detail = apiDetailObject(body);
+  if (detail?.error !== "owner_quota_exceeded") return null;
+  const owned = detail.owned;
+  const limit = detail.limit;
+  // Only when BOTH are real numbers: half a pair reads worse than neither, and
+  // the fields are typed `{}` in the contract, so a string "10" is possible.
+  if (typeof owned === "number" && typeof limit === "number") {
+    const s = owned === 1 ? "" : "s";
+    return `You already own ${owned} collection${s} — the limit on this server is ${limit}. ${OWNER_QUOTA_REMEDY}`;
+  }
+  return `You're already at the limit for collections you own on this server. ${OWNER_QUOTA_REMEDY}`;
+}
 
 /**
  * What went wrong creating a collection, in a sentence a user can act on.
@@ -23,8 +83,11 @@ import { apiDetail } from "./chunkers";
  */
 export function collectionCreateMessage(status: number | null, body: string): string {
   if (status == null) return "Could not create the collection — could not reach the API.";
-  if (status === 409)
-    return "A collection with that id already exists — pick another id, or leave the id blank only if you meant to reuse an existing build spec.";
+  // TWO distinct 409s, and telling them apart is the whole of #555: an id
+  // collision (rename and retry) and a full owner quota (renaming cannot help —
+  // the id was never the problem). Guessing collision for both was worse than a
+  // generic error because it was confidently wrong advice.
+  if (status === 409) return ownerQuotaMessage(body) ?? CREATE_ID_TAKEN;
   if (status === 404)
     return "That embedding model isn't in the registry on this server, so a collection can't be bound to it.";
   if (status === 400) {
