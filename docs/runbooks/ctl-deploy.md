@@ -28,7 +28,7 @@ directory.** Every path below is under `/rag`; a developer's
 | What | Lives at | How it gets there |
 |---|---|---|
 | `ragstack-ctl` binary | `/rag/bin/ragstack-ctl-<ver>` (+ `ragstack-ctl` symlink) | `make install-ctl`, built from `/rag/repos/ragstack` |
-| daemon/wrapper scripts | `/rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh}` | `make install-ops` (source: `ops/coconut/` in the repo) |
+| daemon/wrapper scripts + snapshot helper | `/rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh,render_inventory.py}` | `make install-ops` (source: `ops/coconut/` in the repo) |
 | the bare mirror | `/rag/repos/ragstack.git` | `git clone --bare` once; `git fetch` after every push — never worked in |
 | tenant worktrees | `/rag/repos/tenants/<name>`, checked out **from the mirror** | `tenant create` / `tenant rebase-worktree` (§ below) |
 | operator clone | `/rag/repos/ragstack` | `git clone /rag/repos/ragstack.git /rag/repos/ragstack` — a plain, disposable checkout; builds and `make` targets run here, never in a developer's home |
@@ -42,14 +42,15 @@ directory.** Every path below is under `/rag`; a developer's
 git push origin <tag>                                    # from wherever the tag was cut
 git -C /rag/repos/ragstack.git fetch --all --tags         # the mirror picks it up
 cd /rag/repos/ragstack && git fetch --tags && git checkout <tag>
-make install-ctl install-ops                              # binary + daemon/wrapper scripts onto /rag/bin
+make install-ctl install-ops                              # binary + daemon/wrapper scripts + render_inventory.py onto /rag/bin
 /rag/bin/ctl-daemon.sh stop && /rag/bin/ctl-daemon.sh start   # restart onto the new binary
 ```
 
-`make check-ops` is install-ops's own gate (`bash -n` on the six scripts, plus
-a grep that fails the build if any of them references `/home/` or `~/` outside
-a comment) — `install-ops` runs it first, so a script that regressed into
-referencing a home directory never reaches `/rag/bin`.
+`make check-ops` is install-ops's own gate (`bash -n` on the six scripts,
+`ast.parse` on render_inventory.py, plus a grep that fails the build if any
+of the seven references `/home/` or `~/` outside a comment) —
+`install-ops` runs it first, so a file that regressed into referencing a
+home directory never reaches `/rag/bin`.
 
 The five tenant worktrees checked out under `~/Development/ragstack/.git/
 worktrees/<t>` before this plan (`doctor`'s `worktree_outside_mirror`) are
@@ -166,7 +167,7 @@ make go-mode           # -> GO_MODE=container  (host `go` on PATH would win: GO_
 make build-ctl         # go/bin/ragstack-ctl, static, -trimpath, built inside the image
 make test-ctl          # race detector; must be green before installing
 make install-ctl       # /rag/bin/ragstack-ctl-<ver> + symlink
-make install-ops       # /rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh}, 0755
+make install-ops       # /rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh,render_inventory.py}, 0755
 /rag/bin/ragstack-ctl version
 ```
 

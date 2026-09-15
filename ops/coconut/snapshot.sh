@@ -224,14 +224,14 @@ print(f"wrote {OUT}/snapshot.json")
 PY
 echo "$OUT"
 
-# render_inventory.py is a helper, not one of the six scripts `make
-# install-ops` installs (Makefile OPS_SCRIPTS) — so once this script runs
-# from $(CTL_PREFIX) (/rag/bin) alone, its usual next-door location is gone.
-# Fall back to the operator clone's copy (plan "Production layout":
-# /rag/repos/ragstack is kept around for exactly this) before giving up on
-# just the human-readable half: snapshot.json above is already written and
-# is what verify.sh actually diffs, so a missing renderer is a degraded run,
-# not a failed one.
+# render_inventory.py is `make install-ops`'s helper (Makefile
+# OPS_PY_HELPERS), installed beside this script into $(CTL_PREFIX). Fall
+# back to the operator clone's copy (plan "Production layout":
+# /rag/repos/ragstack is kept around for exactly this) for an older
+# $(CTL_PREFIX) that predates that, before giving up on just the
+# human-readable half: snapshot.json above is already written and is what
+# verify.sh actually diffs, so a missing renderer is a degraded run, not a
+# failed one.
 REPO=${REPO:-/rag/repos/ragstack}
 render=$(dirname "$0")/render_inventory.py
 [[ -f $render ]] || render=$REPO/ops/coconut/render_inventory.py
