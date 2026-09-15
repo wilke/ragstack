@@ -97,8 +97,23 @@ inputs:
       registry's ordered version list. REQUIRED."
   collection_id:
     type: string
-    doc: "Registry collection id (#263), recorded in the archive manifest. NOT
-      the physical `collection` store name above. REQUIRED."
+    doc: "Registry collection id (#263): what `load` RESOLVES through the
+      registry to get the physical stores, and what `pack` records in the
+      archive manifest. NOT the physical `collection` store name above.
+      REQUIRED."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry to resolve `collection_id` against, by NAME
+      (#563) — e.g. `hackathon`. A name, never coordinates and never a
+      credential: the worker reads COLLECTION_STORE_BACKEND_<NAME> and
+      COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment, where the DSN
+      arrives through `gowe-worker --secret-file` (a workflow input would land
+      in the submission's immutable `submitted_inputs` snapshot forever). Seeded
+      per job by the tenant API from COLLECTION_REGISTRY_NAME. Omitted = the
+      worker's unsuffixed COLLECTION_STORE_* variables, i.e. the pre-#563
+      behaviour; a name the worker has nothing configured for is REFUSED rather
+      than silently fallen back from — one worker group could otherwise serve
+      only one tenant's registry."
   spec_hash:
     type: ["null", string]
     doc: "The collection's build-spec hash (ADR-0002), recorded in the manifest
@@ -195,6 +210,8 @@ steps:
     in:
       embeddings: embed/embeddings
       collection: collection
+      collection_id: collection_id
+      registry: registry
       es_index: es_index
       tenant: tenant
       qdrant_url: qdrant_url
@@ -226,6 +243,19 @@ steps:
         es_url: {type: string, inputBinding: {prefix: --es-url, position: 7}}
         fail_on_error: {type: boolean, inputBinding: {prefix: --fail-on-error, position: 8}}
         backpressure: {type: boolean, inputBinding: {prefix: --backpressure, position: 9}}
+        # #563: this workflow has always REQUIRED `collection_id` and forwarded it
+        # to `pack`, but bound only `--collection` here — so the loader took
+        # ingest_target.resolve_by_store_name()'s migration fallback instead of
+        # the intended resolve(collection_id), and its refusal advised "Pass
+        # --collection-id <id>", which the caller could not act on. With both
+        # bound the id wins and `--collection` is CHECKED against the entry
+        # rather than used to name anything (ingest_target._checked).
+        collection_id:
+          type: ["null", string]
+          inputBinding: {prefix: --collection-id, position: 11}
+        registry:
+          type: ["null", string]
+          inputBinding: {prefix: --registry, position: 12}
       arguments:
         - {position: 10, prefix: --out, valueFrom: load-summary.json}
       outputs:

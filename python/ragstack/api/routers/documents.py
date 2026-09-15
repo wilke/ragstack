@@ -579,7 +579,19 @@ def _gowe_inputs(
     ``max_chunks`` (#291): the job's chunk cap, threaded to the worker's
     ``ingest_shard --max-chunks`` — the worker has the store URLs, so it
     performs the same one-count check before its first write. Sent only when
-    a cap applies (the workflow input defaults to 0 = unlimited)."""
+    a cap applies (the workflow input defaults to 0 = unlimited).
+
+    ``registry`` (#563): WHICH collection registry the worker resolves
+    ``collection_id`` against, by NAME. It is the last piece of this tenant's
+    physical state that did not travel on the submission — the worker read it
+    from its own process environment, set once per worker GROUP, so a shared
+    group could serve exactly one tenant's registry and every other tenant's
+    ingest resolved against the wrong database. A NAME and never coordinates:
+    ``inputs``/``submitted_inputs`` are an immutable, UI-rendered, plaintext
+    snapshot, so a DSN put there would be permanent; the DSN reaches the
+    container through the worker's ``--secret-file``. Sent only when
+    ``COLLECTION_REGISTRY_NAME`` is set, so a deployment that has not adopted
+    the convention submits exactly what it submitted before."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -603,6 +615,8 @@ def _gowe_inputs(
         inputs["chunk_overlap"] = entry.chunk_overlap
     if max_chunks is not None and max_chunks > 0:
         inputs["max_chunks"] = int(max_chunks)
+    if settings.collection_registry_name:
+        inputs["registry"] = settings.collection_registry_name
     return inputs
 
 

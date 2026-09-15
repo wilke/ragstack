@@ -26,6 +26,18 @@ Everything physical then comes from the registry entry rather than the command
 line: the vector collection, its Qdrant instance (a routed collection lives
 elsewhere), and the ES index. The CLI's own build parameters are *checked*
 against the entry, never used to name anything.
+
+WHICH registry (#563). All of the above presumes the process knows where the
+registry is, and on the GoWe ingest plane it did not: the worker read
+``COLLECTION_STORE_*`` from its own environment, which ``gowe-worker`` is given
+once per worker GROUP — so one group served exactly one tenant, and a shared
+group pointed at the wrong tenant's registry failed every task after the extract
+stage had already run. :func:`registry_settings` adds the missing piece as a
+NAME (``--registry hackathon``) resolved against per-registry environment
+variables, so one worker can serve many tenants. A name and never coordinates:
+a GoWe submission's ``submitted_inputs`` is an immutable, UI-rendered,
+plaintext-stored snapshot, so a DSN placed there would be permanent. See
+``docs/adr/0009-registry-selection-for-bulk-workers.md``.
 """
 from __future__ import annotations
 
@@ -33,6 +45,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -168,6 +181,271 @@ def _settings() -> Any:
     return settings
 
 
+#: A registry NAME, as it travels on a workflow input (``registry: hackathon``).
+#: It arrives from a submission and is used to BUILD AN ENVIRONMENT VARIABLE
+#: NAME, so it is validated before any lookup rather than after: no path
+#: separator, no ``=``, no shell metacharacter, no leading punctuation, nothing
+#: empty.
+#:
+#: **Lowercase and underscore only, and that is load-bearing.** The name is
+#: mapped to an env-var suffix by uppercasing, so a character set that also
+#: admitted ``-``/``.``/uppercase would map ``dev``, ``Dev``, ``DEV``, ``a-b``,
+#: ``a.b`` and ``a_b`` onto the SAME variables — two tenants whose names differ
+#: only by case or punctuation would silently share one registry, which is the
+#: very failure this module exists to prevent, reintroduced one level up.
+#: Restricting the input makes the map injective at no cost: every registry has
+#: exactly one spelling, and a second spelling is refused at validation instead
+#: of colliding at lookup.
+_REGISTRY_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+
+
+def registry_env_suffix(name: str) -> str:
+    """``hackathon`` -> ``HACKATHON``, the suffix of this registry's variables.
+
+    Uppercasing is the whole transform, and because
+    :data:`_REGISTRY_NAME_RE` admits only ``[a-z0-9_]`` the map is INJECTIVE:
+    distinct valid names have distinct suffixes. The substitution below is a
+    no-op for any name that passed validation and exists only so an unvalidated
+    caller cannot produce a syntactically impossible variable name — it is not
+    the collision-avoidance mechanism, the character set is.
+    """
+    return re.sub(r"[^A-Z0-9_]", "_", name.strip().upper())
+
+
+def validate_registry_name(value: str) -> str:
+    """Return a clean registry name, or raise ``ValueError`` saying why not.
+
+    Split out from :func:`registry_settings` so ``Settings`` can reject a typo at
+    config load (a ``ValueError`` is what pydantic turns into a readable
+    ``ValidationError``) instead of letting it surface as a refused ingest after
+    the extract stage has already run. An empty value is valid and means "no
+    registry named".
+    """
+    name = (value or "").strip()
+    if not name:
+        return ""
+    if not _REGISTRY_NAME_RE.match(name):
+        raise ValueError(
+            f"registry name {name!r} is invalid. Use lowercase letters, digits "
+            "and '_' only, starting with a letter or digit, at most 64 "
+            f"characters (e.g. 'hackathon', 'prod_eu') — the pattern is "
+            f"{_REGISTRY_NAME_RE.pattern}. Uppercase, '-' and '.' are refused "
+            "rather than folded, because the name becomes an environment "
+            "variable SUFFIX by uppercasing: folding them would let 'dev' and "
+            "'Dev', or 'a-b' and 'a_b', name the same registry while reading as "
+            "two. The name selects a REGISTRY, never a path, a DSN or any other "
+            "coordinate."
+        )
+    return name
+
+
+def _registry_env_names(name: str) -> dict[str, str]:
+    s = registry_env_suffix(name)
+    return {
+        "backend": f"COLLECTION_STORE_BACKEND_{s}",
+        "path": f"COLLECTION_STORE_PATH_{s}",
+        "dsn": f"COLLECTION_STORE_DSN_{s}",
+        "file": f"COLLECTIONS_FILE_{s}",
+        "inline": f"COLLECTIONS_JSON_{s}",
+    }
+
+
+class _RegistryView:
+    """``settings`` as seen by one NAMED registry.
+
+    Everything unrelated to the registry (``qdrant_url``, the routes table)
+    delegates to the real settings object; every coordinate of *which registry*
+    comes from the per-name environment and from nowhere else. That "nowhere
+    else" is the whole point — see :func:`registry_settings`.
+    """
+
+    __slots__ = ("_base", "_over", "registry_name")
+
+    def __init__(self, base: Any, name: str, over: dict[str, Any]) -> None:
+        self._base = base
+        self._over = over
+        self.registry_name = name
+
+    def __getattr__(self, item: str) -> Any:
+        try:
+            return self._over[item]
+        except KeyError:
+            return getattr(self._base, item)
+
+
+def registry_settings(name: str, settings: Any | None = None) -> Any:
+    """Resolve a registry NAME to the settings that read that registry.
+
+    The bug this exists for (#563). A GoWe ingest submission carries nearly all
+    of a tenant's physical state as visible workflow inputs — ``qdrant_url``,
+    ``es_url``, ``collection``, ``embedding_url``, ``tenant`` — seeded per job by
+    that tenant's API. The one piece that did not travel was the COLLECTION
+    REGISTRY: the worker read it from its own process environment, set once per
+    worker GROUP. So a group served exactly one tenant, and pointing the shared
+    group at the dev tenant's sqlite registry made every ``hackathon`` ingest
+    resolve against the wrong database and exit 2 *after* extract had already
+    succeeded — every job dead half-done.
+
+    A name, not coordinates, and emphatically not a credential: ``inputs`` and
+    ``submitted_inputs`` on ``GET /api/v1/submissions/{id}`` are an immutable
+    snapshot the UI renders and SQLite stores in plaintext, so a DSN placed there
+    is permanent. The name selects a per-registry suffix
+    (``COLLECTION_STORE_BACKEND_HACKATHON`` and friends); the DSN reaches the
+    container through the worker's ``--secret-file``, which GoWe injects as
+    container env and redacts from captured task output. When GoWe#260 (named
+    secret references) lands, this env convention is swapped for a ``secret://``
+    input and nothing else here changes.
+
+    **An unconfigured name is fatal, and never falls back.** Falling back to the
+    unsuffixed ``COLLECTION_STORE_*`` is precisely the outage: it is how a
+    hackathon ingest silently consulted the dev tenant's registry. An empty name
+    is the *other* contract — "no registry was named" — and gives back today's
+    behaviour, the unsuffixed vars, byte for byte.
+    """
+    base = settings or _settings()
+    # Validated BEFORE any lookup: the name builds an environment variable name
+    # and arrives from a submission.
+    try:
+        name = validate_registry_name(name)
+    except ValueError as e:
+        raise TargetError(f"--registry: {e}") from None
+    if not name:
+        return base
+
+    env = _registry_env_names(name)
+    backend = (os.getenv(env["backend"], "") or "").strip().lower()
+    over: dict[str, Any] = {
+        "collection_store_backend": backend,
+        # Blank every unsuffixed coordinate: a named registry inherits NOTHING.
+        # `make_collection_store` falls back from `collection_store_dsn` to
+        # `postgres_dsn`, and that fallback across tenants is the bug.
+        "collection_store_path": "",
+        "collection_store_dsn": "",
+        "postgres_dsn": "",
+        "collections_file": "",
+        "collections_json": "",
+    }
+
+    def _refuse(why: str, looked: list[str]) -> TargetError:
+        # Names only — never a value. A DSN read from a worker secret must not
+        # be reachable through an error message.
+        return TargetError(
+            f"registry {name!r} {why}.\n"
+            f"Looked for: {', '.join(looked)}\n"
+            "Refusing to fall back to the unsuffixed COLLECTION_STORE_* "
+            "variables: those name whichever tenant's registry this worker group "
+            "was configured for, and resolving one tenant's collection against "
+            "another tenant's registry is the failure this input exists to "
+            "prevent (#563). Configure the registry on the worker (the DSN "
+            "belongs in --secret-file, never in a workflow input), or drop "
+            "--registry to use this process's own COLLECTION_STORE_* settings."
+        )
+
+    if not backend:
+        raise _refuse(
+            "is not configured on this worker", [env["backend"]]
+        )
+    if backend == "sqlite":
+        path = (os.getenv(env["path"], "") or "").strip()
+        if not path:
+            raise _refuse(
+                f"is configured as {backend!r} but names no database file",
+                [env["backend"], env["path"]],
+            )
+        over["collection_store_path"] = path
+    elif backend == "postgres":
+        dsn = (os.getenv(env["dsn"], "") or "").strip()
+        if not dsn:
+            raise _refuse(
+                f"is configured as {backend!r} but names no DSN",
+                [env["backend"], env["dsn"]],
+            )
+        over["collection_store_dsn"] = dsn
+        over["postgres_dsn"] = dsn
+    elif backend == "json":
+        file = (os.getenv(env["file"], "") or "").strip()
+        inline = os.getenv(env["inline"], "") or ""
+        if not file and not inline.strip():
+            raise _refuse(
+                f"is configured as {backend!r} but names no registry file",
+                [env["backend"], env["file"], env["inline"]],
+            )
+        over["collections_file"] = file
+        over["collections_json"] = inline
+    elif backend != "memory":
+        # `make_collection_store` warns and falls back to `json` for an unknown
+        # backend. Here that would quietly read an unconfigured json registry,
+        # so say what was set instead.
+        raise _refuse(
+            f"names an unknown backend {backend!r} "
+            "(use json, sqlite, postgres or memory)",
+            [env["backend"]],
+        )
+    return _RegistryView(base, name, over)
+
+
+#: ``scheme://user:PASSWORD@host`` — the shape of every DSN this module can be
+#: pointed at, matched structurally so a value the driver rewrote on its way to
+#: the exception (asyncpg normalises the URL it failed on) is still caught.
+_DSN_PASSWORD_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://[^\s/@:]+:)[^\s/@]*(@)")
+
+
+def _secret_values(settings: Any) -> list[str]:
+    """Values that must never appear in an operator-facing message.
+
+    The registry DSN reaches a worker container as a secret (#563); a driver
+    exception that embeds it — asyncpg and SQLAlchemy both quote the URL they
+    failed on — would otherwise print it to task stderr under the eyes of
+    whoever is reading the job that failed.
+
+    Three spellings per DSN, because a driver need not echo the string it was
+    given: the whole URL, the password as configured, and the password
+    percent-DECODED. That last one is the non-obvious case — a password written
+    ``p%40ss`` in the DSN is ``p@ss`` by the time a library that parsed the URL
+    reports it, and a scrub that only knew the encoded form would print the
+    plaintext. No leak from asyncpg 0.31 was reproducible today (refused
+    connection, bad port, bad scheme, garbage DSN, bad sslmode were all probed);
+    this is hardening against the next driver, not a repair.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    out: list[str] = []
+    for field in ("collection_store_dsn", "postgres_dsn"):
+        value = (getattr(settings, field, "") or "").strip()
+        if not value:
+            continue
+        out.append(value)
+        try:
+            password = urlsplit(value).password
+        except ValueError:  # a DSN too malformed to split is still scrubbed whole
+            password = None
+        for form in (password, unquote(password) if password else None):
+            # One-character passwords are skipped: scrubbing every "a" out of an
+            # error message destroys the diagnosis and protects nothing real.
+            if form and len(form) > 1 and form not in out:
+                out.append(form)
+    return out
+
+
+def _redact(text: str, settings: Any) -> str:
+    """Scrub credentials out of third-party error text.
+
+    Several passes, because no one of them is enough: the exact configured value
+    (which catches a DSN with no password in it, e.g. a unix-socket URL), the
+    password on its own in both its encoded and decoded spellings (a library
+    that parsed the URL reports the decoded one), and the structural
+    ``user:password@`` form (which catches the same DSN after a driver
+    normalised it — ``postgresql+asyncpg://`` becomes ``postgresql://`` before
+    asyncpg ever quotes it).
+
+    Longest first, so scrubbing the bare password cannot leave a mangled URL
+    behind that the whole-value pass would then fail to recognise.
+    """
+    for secret in sorted(_secret_values(settings), key=len, reverse=True):
+        text = text.replace(secret, "<redacted>")
+    return _DSN_PASSWORD_RE.sub(r"\1<redacted>\2", text)
+
+
 def load_specs(settings: Any | None = None) -> list[Any]:
     """Every spec in the configured collection registry.
 
@@ -231,23 +509,42 @@ def _specs_or_raise(settings: Any, specs: list[Any] | None) -> list[Any]:
     try:
         return load_specs(settings)
     except Exception as e:  # noqa: BLE001 — every failure is the same refusal
+        # The driver's message quotes the URL it failed on, and for a named
+        # registry that URL is a worker secret (#563) — redact it before it
+        # reaches task stderr.
         raise TargetError(
             f"could not read the collection registry ({_registry_description(settings)}): "
-            f"{type(e).__name__}: {e}\n"
+            f"{type(e).__name__}: {_redact(str(e), settings)}\n"
             "Refusing to ingest: an unreadable registry is not an empty one, and "
             "guessing would write into a store nothing claims (#263)."
         ) from e
 
 
 def _registry_description(settings: Any) -> str:
+    """Which registry was consulted, in one line, with no credential in it.
+
+    This string ends up in every refusal, so it names the registry by NAME when
+    one is in play (#563) — "sqlite:/rag/data/tenants/dev/state/..." was a true
+    but useless answer to "why did the hackathon tenant's ingest fail?". The
+    postgres branch names the *variables* rather than the DSN for the same
+    reason the DSN is not a workflow input: this text is read by people who are
+    not entitled to the credential.
+    """
+    name = (getattr(settings, "registry_name", "") or "").strip()
+    env = _registry_env_names(name) if name else {}
     backend = (getattr(settings, "collection_store_backend", "json") or "json").lower()
     if backend == "sqlite":
-        return f"sqlite:{settings.collection_store_path}"
-    if backend == "postgres":
-        return "postgres (COLLECTION_STORE_DSN / POSTGRES_DSN)"
-    if backend == "json":
-        return f"json:{settings.collections_file or '<COLLECTIONS_JSON inline>'}"
-    return backend
+        where = f"sqlite:{settings.collection_store_path}"
+    elif backend == "postgres":
+        where = (
+            f"postgres ({env['dsn']})" if name
+            else "postgres (COLLECTION_STORE_DSN / POSTGRES_DSN)"
+        )
+    elif backend == "json":
+        where = f"json:{settings.collections_file or '<COLLECTIONS_JSON inline>'}"
+    else:
+        where = backend
+    return f"registry {name!r}: {where}" if name else where
 
 
 def resolve(
@@ -256,14 +553,19 @@ def resolve(
     settings: Any | None = None,
     specs: list[Any] | None = None,
     qdrant_url: str = "",
+    registry: str = "",
 ) -> IngestTarget:
     """Resolve an id to its registry entry, or refuse.
 
     The refusal names the registry that was consulted and both ways to create the
     entry. An unhelpful "not found" here is what tempts an operator into reaching
     for the old ``--collection <name>`` behaviour, which is the hole this closes.
+
+    ``registry`` names WHICH registry to consult (#563); empty is today's
+    behaviour, the process's own ``COLLECTION_STORE_*`` settings. See
+    :func:`registry_settings`.
     """
-    s = settings or _settings()
+    s = registry_settings(registry, settings)
     entries = _specs_or_raise(s, specs)
     for spec in entries:
         if spec.id == collection_id:
@@ -289,6 +591,7 @@ def resolve_by_store_name(
     settings: Any | None = None,
     specs: list[Any] | None = None,
     qdrant_url: str = "",
+    registry: str = "",
 ) -> IngestTarget:
     """Resolve a *physical* store name to the registry entry that claims it.
 
@@ -297,8 +600,11 @@ def resolve_by_store_name(
     gets its manifest written); one that would have minted an invisible store is
     refused. That split is deliberate: a flag day would strand running pipelines,
     while a warning would be ignored by exactly the callers that matter.
+
+    ``registry`` selects which registry claims it (#563), exactly as in
+    :func:`resolve`.
     """
-    s = settings or _settings()
+    s = registry_settings(registry, settings)
     entries = _specs_or_raise(s, specs)
     matches = [e for e in entries if e.collection == name]
     if len(matches) == 1:
@@ -403,6 +709,28 @@ def add_arguments(parser: Any) -> None:
                    help="X-API-Key for --create-via-api (env RAGSTACK_API_KEY)")
     g.add_argument("--api-bearer", default=os.getenv("RAGSTACK_BEARER", ""),
                    help="bearer token for --create-via-api (env RAGSTACK_BEARER)")
+    # NO env default, deliberately — unlike every other flag in this group.
+    # An ambient RAGSTACK_COLLECTION_REGISTRY would be set in a worker group's
+    # env-file, and the whole point of #563 is that ONE shared group serves many
+    # tenants: an ambient default there would mean "absent on the submission" no
+    # longer restores the pre-#563 behaviour but silently selects one tenant's
+    # registry for every job that omitted the input. It would also override
+    # jats-ingest.cwl's exemption, whose tool binds no --registry precisely
+    # because it pins COLLECTION_STORE_* itself per submission. WHICH registry
+    # is a per-JOB fact and must arrive on the command line or not at all.
+    g.add_argument("--registry", default="", metavar="NAME",
+                   help="WHICH collection registry to resolve --collection-id "
+                        "against, by NAME (e.g. 'hackathon'); read from "
+                        "COLLECTION_STORE_BACKEND_<NAME> and "
+                        "COLLECTION_STORE_{PATH,DSN}_<NAME> in THIS process's "
+                        "environment. A name, never coordinates and never a "
+                        "credential, so it is safe as a visible workflow input "
+                        "(#563). Has no env default on purpose: it is a per-job "
+                        "fact, and an ambient one on a shared worker group would "
+                        "silently pick a tenant. Omitted = the unsuffixed "
+                        "COLLECTION_STORE_* settings. A name nothing is "
+                        "configured for is refused, never silently fallen back "
+                        "from.")
 
 
 def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget:
@@ -411,7 +739,11 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
     cid = getattr(args, "collection_id", "") or ""
     physical = getattr(args, "collection", "") or ""
     url = getattr(args, "qdrant_url", "") or ""
-    s = settings or _settings()
+    # Resolve the NAMED registry once, here, so every path below — including the
+    # re-resolve after --create-via-api — consults the same one, and so an
+    # unconfigured name is refused before the registry is read rather than after
+    # (#563).
+    s = registry_settings(getattr(args, "registry", "") or "", settings)
 
     if not cid:
         if physical:

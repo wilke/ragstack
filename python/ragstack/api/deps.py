@@ -1416,11 +1416,16 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     except ValueError as e:
         log.warning("collection_restore_inputs_json is invalid (%s); ignoring", e)
         extra = {}
-    static_inputs = {
+    static_inputs: dict[str, Any] = {
         "qdrant_url": settings.qdrant_url,
         "es_url": settings.elasticsearch_url,
         **extra,
     }
+    # Which registry the replay resolves `collection_id` against (#563). Same
+    # reasoning as the ingest path: a NAME, never coordinates, and only when
+    # this deployment has adopted the convention.
+    if settings.collection_registry_name:
+        static_inputs["registry"] = settings.collection_registry_name
     workspace = WorkspaceClient(
         settings.workspace_url, http, timeout=settings.workspace_timeout
     )
@@ -1478,6 +1483,9 @@ def _build_graph_extract_runner(
         "max_failed_fraction": settings.graph_extraction_max_failed_fraction,
         **extra,
     }
+    # The load leg resolves `collection_id` through the registry too (#563).
+    if settings.collection_registry_name:
+        static_inputs["registry"] = settings.collection_registry_name
     return GraphExtractRunner(
         job_store, store,
         workspace=WorkspaceClient(settings.workspace_url, http, timeout=settings.workspace_timeout),

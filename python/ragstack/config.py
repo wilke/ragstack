@@ -134,6 +134,46 @@ class Settings(BaseSettings):
     collection_store_backend: str = "json"  # json | memory | sqlite | postgres
     collection_store_path: str = "ragstack_collections.db"
     collection_store_dsn: str = ""
+    # The NAME of this tenant's registry, as a bulk worker knows it (#563).
+    #
+    # The three settings above say where THIS PROCESS's registry lives. A GoWe
+    # bulk ingest runs somewhere else entirely, and the worker reads its registry
+    # from its own process environment — set once per worker GROUP, so one group
+    # could serve exactly one tenant. Every other piece of a tenant's physical
+    # state already travels on the submission as a visible workflow input
+    # (`qdrant_url`, `es_url`, `collection`, `embedding_url`, `tenant`); this is
+    # the piece that did not, and on 2026-09-15 it made every `hackathon` ingest
+    # resolve against the dev tenant's sqlite registry and die half-done.
+    #
+    # So the API seeds this NAME as the `registry` workflow input, next to the
+    # store URLs, and the worker resolves it against its own
+    # COLLECTION_STORE_BACKEND_<NAME> / COLLECTION_STORE_{PATH,DSN}_<NAME>.
+    # A name and never coordinates: `inputs`/`submitted_inputs` on a GoWe
+    # submission are an immutable, UI-rendered, plaintext-stored snapshot, so a
+    # DSN placed there is permanent. The DSN reaches the container through the
+    # worker's --secret-file instead.
+    #
+    # Lowercase letters, digits and '_' only: the name becomes the variable
+    # SUFFIX by uppercasing, so admitting 'Dev' or 'a-b' would let two names that
+    # read as different tenants resolve to one registry — this setting's own
+    # failure mode, one level up. Validated here so a typo stops the API at
+    # config load rather than surfacing as a refused ingest after extract ran.
+    #
+    # Empty (the default) = today's behaviour exactly: no `registry` input is
+    # sent and the worker uses its unsuffixed COLLECTION_STORE_* variables. That
+    # is what keeps the `dev` tenant running untouched through the transition.
+    collection_registry_name: str = ""
+
+    @field_validator("collection_registry_name")
+    @classmethod
+    def _validate_collection_registry_name(cls, value: str) -> str:
+        # Fail at config load, not on the worker: the name is used to build an
+        # environment variable name, and a typo that only surfaces as a refused
+        # ingest costs a whole extract stage first. Lazy import keeps config free
+        # of an ops dependency.
+        from ragstack.ops.ingest_target import validate_registry_name
+
+        return validate_registry_name(value)
     # Hard cap on registered collections, enforced at POST /v1/collections.
     # ADR-0003: the collection count is the binding constraint — each collection
     # costs a physical Qdrant collection + ES index (budget ~100-150 per

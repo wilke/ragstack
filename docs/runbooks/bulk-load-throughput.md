@@ -33,6 +33,15 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
    group still resolves `/scout/containers/ragstack-worker.sif`. Installing a
    rebuild into one does nothing for the other. `ps -eo args | grep gowe-worker`
    lists every group's `--image-dir`; update each one you mean to move.
+
+   The per-tenant group exists because of the *second* half of #563: a worker
+   group also carries exactly one collection registry, so pinning the shared
+   `ragstack` group at the dev tenant's sqlite registry broke every `hackathon`
+   ingest. That half is now fixed in the workflows (`registry`, below) and the
+   per-tenant group is no longer required for registry reasons — but it is still
+   required for **image** reasons while only one image dir carries the `postgres`
+   extra. Collapse the groups only once every image dir a tenant might land on
+   has that extra.
 4. **Never overwrite the image in place while a load is running** — a container
    is mapped to that file. Stage it under a versioned name and swap at a batch
    boundary. (An atomic `mv` on the same filesystem preserves the running
@@ -46,6 +55,70 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
    ```
 
    Three matches or stop. This one check prevents the whole failure mode above.
+
+## Which collection registry the load resolves against (#563)
+
+`load_embeddings.py` and `ingest_shard.py` resolve the collection through the
+**collection registry** to get the physical store names and the build spec. They
+used to learn WHICH registry from the worker's own environment
+(`COLLECTION_STORE_BACKEND` / `_PATH` / `_DSN`), which `gowe-worker` is given
+once per **worker group** — so one group served one tenant, and a shared group
+pointed at the wrong tenant's registry failed every task with
+
+```
+physical store '…' is claimed by no registry entry (sqlite:/rag/data/tenants/dev/…)
+```
+
+*after* extract had already run. Each affected job died half-done.
+
+The write workflows now take an optional **`registry`** input carrying a NAME,
+which the tool resolves against per-registry variables in its own container:
+
+| variable | who sets it | where |
+|---|---|---|
+| `COLLECTION_STORE_BACKEND_<NAME>` | operator | `gowe-worker --env-file` (not a secret) |
+| `COLLECTION_STORE_PATH_<NAME>` | operator | `--env-file` (a path, not a secret) |
+| `COLLECTION_STORE_DSN_<NAME>` | operator | **`--secret-file` only** |
+| `registry` (the name) | the tenant API, per job, from `COLLECTION_REGISTRY_NAME` | the submission |
+
+There is deliberately **no `RAGSTACK_COLLECTION_REGISTRY` env fallback** for
+`--registry`. On a shared worker group an ambient default would silently pick
+one tenant's registry for every job that omitted the input, and would override
+`jats-ingest.cwl`, whose tool binds no `--registry` because it pins
+`COLLECTION_STORE_*` itself per submission. Do not add one.
+
+`<NAME>` is simply the registry name uppercased. Registry names are
+**lowercase letters, digits and `_` only** (`^[a-z0-9][a-z0-9_]{0,63}$`);
+`Hackathon`, `prod-eu` and `prod.eu` are refused rather than folded, because
+folding them would let two names that read as different tenants resolve to the
+same `COLLECTION_STORE_*_<NAME>` variables.
+
+**The suffixed variables are read from the process environment only.** The
+unsuffixed `COLLECTION_STORE_*` also come from a `.env` file (pydantic's
+`env_file`); the per-registry ones do not — they are looked up with `os.getenv`
+in the tool. That is right for a container, where the worker injects them as
+real environment variables, and surprising on the host: testing a `--registry`
+invocation from a checkout with the values only in `.env` will report the
+registry as unconfigured. `export` them, or use `env VAR=… python …`.
+
+Two rules that are not stylistic:
+
+* **The DSN may only ever come from `--secret-file`.** `gowe-worker` logs
+  `--env-file` values in clear at INFO and `--secret-file` names only; and a
+  workflow input is worse than either, because `submitted_inputs` on a GoWe
+  submission is an immutable snapshot rendered by the UI and stored in the
+  engine's SQLite in plaintext. A DSN placed there could never be withdrawn.
+* **An unconfigured name fails loudly.** It does not fall back to the unsuffixed
+  `COLLECTION_STORE_*` — a silent fallback to another tenant's registry is the
+  outage. Omit `registry` entirely and you get the old behaviour, unchanged.
+
+Verify before submitting a real batch, the same way you verify the flags above:
+
+```
+<run the worker image> python /opt/ragstack/scripts/load_embeddings.py --help | grep -- --registry
+```
+
+One match or the image predates #563 and will reject the input.
 
 ## Settings to enable, and when each is safe
 

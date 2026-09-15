@@ -56,6 +56,19 @@ inputs:
     type: string
     doc: "Registry collection id (#263): the manifest must name it, and the
       load step resolves the physical graph scope from its entry."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry the load step resolves `collection_id`
+      against, by NAME (#563) — e.g. `hackathon`. A name, never coordinates and
+      never a credential: the worker reads COLLECTION_STORE_BACKEND_<NAME> and
+      COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment, where the DSN
+      arrives through `gowe-worker --secret-file` (a workflow input would land
+      in the submission's immutable `submitted_inputs` snapshot forever). Seeded
+      per job by the tenant API from COLLECTION_REGISTRY_NAME. Omitted = the
+      worker's unsuffixed COLLECTION_STORE_* variables, i.e. the pre-#563
+      behaviour; a name the worker has nothing configured for is REFUSED rather
+      than silently fallen back from — one worker group could otherwise serve
+      only one tenant's registry."
   tenant:
     type: string
     default: "public"
@@ -182,6 +195,7 @@ steps:
     in:
       version_dir: extract/archive
       collection_id: collection_id
+      registry: registry
       max_triples: max_triples
       graph_backend: graph_backend
       neo4j_uri: neo4j_uri
@@ -220,6 +234,9 @@ steps:
         neo4j_uri:
           type: string
           inputBinding: {prefix: --neo4j-uri, position: 5}
+        registry:
+          type: ["null", string]
+          inputBinding: {prefix: --registry, position: 7}
       arguments:
         - {position: 6, prefix: --out, valueFrom: graph-load-summary.json}
       outputs:

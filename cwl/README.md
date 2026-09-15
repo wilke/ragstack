@@ -181,6 +181,54 @@ it predates the image — but don't submit it to GoWe as-is.
 **4. Input/output files must live under the server's `--upload-download-dirs`**
 (and be readable by the worker host).
 
+**5. Tell the submission WHICH collection registry to resolve against (#563).**
+The steps that resolve a collection — `ingest_shard.py`, `load_embeddings.py`,
+`load_graph.py` — read the registry from their own process environment, and
+`gowe-worker` is given that environment **once per worker group**. So a group
+served exactly one tenant: with the shared `ragstack` group pinned to the dev
+tenant's sqlite registry, every `hackathon` ingest resolved against the wrong
+database and exited 2 *after* extract had already succeeded.
+
+Every write workflow now takes an optional **`registry`** input carrying a
+**name** (`hackathon`, `dev`), threaded to the resolving step as `--registry`.
+The tool resolves the name against per-registry variables in its own container:
+
+```
+COLLECTION_STORE_BACKEND_HACKATHON=postgres
+COLLECTION_STORE_DSN_HACKATHON=postgresql+asyncpg://…      # secret-file ONLY
+# or, for a sqlite registry:
+COLLECTION_STORE_BACKEND_DEV=sqlite
+COLLECTION_STORE_PATH_DEV=/rag/data/tenants/dev/state/ragstack_collections.db
+```
+
+The suffix is simply the name uppercased — registry names are **lowercase
+letters, digits and `_` only** (`^[a-z0-9][a-z0-9_]{0,63}$`), so that no two
+names can reach the same variables: `Hackathon` and `prod-eu` are refused, not
+folded onto `hackathon` and `prod_eu`. The variables are read from the process
+environment only (`os.getenv`), not from a `.env` file. The API seeds the input
+per job from `COLLECTION_REGISTRY_NAME`, the same
+way it seeds `qdrant_url`/`es_url`; omitting it keeps the pre-#563 behaviour
+(the worker's unsuffixed `COLLECTION_STORE_*`), which is how the `dev` tenant
+keeps running untouched. A name the worker has nothing configured for is
+**refused** — it never falls back to the unsuffixed variables, because falling
+back to another tenant's registry is the bug being fixed.
+
+**The DSN goes in `gowe-worker --secret-file`, never in `--env-file` and never
+in a workflow input.** `--env-file` values are logged in clear at INFO;
+`--secret-file` logs names only, injects the value into every container the
+worker runs, and redacts it from captured task output. And a workflow input is
+worse than either: `GET /api/v1/submissions/{id}` returns `submitted_inputs`, an
+**immutable** snapshot that the UI renders and the engine stores in plaintext —
+a DSN placed there could never be withdrawn. GoWe has no named-secret reference
+yet (GoWe#260); when it lands, the env-suffix convention is swapped for a
+`secret://` reference and nothing else changes. `COLLECTION_STORE_BACKEND_<NAME>`
+(non-secret) may go in `--env-file`; only the DSN must not.
+
+The corollary for a worker group's blast radius is stated in
+[docs/adr/0009-registry-selection-for-bulk-workers.md](../docs/adr/0009-registry-selection-for-bulk-workers.md):
+one shared group means every container it runs carries every tenant's DSN, which
+is safe only where the tenants are same-org and the image is trusted.
+
 ### Step 2 tools (bulk ingest)
 
 - **`python/scripts/ingest_shard.py`** — scatter step. Ingests **one** JSONL shard
