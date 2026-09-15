@@ -51,6 +51,25 @@ class OpenAILLM:
         max_tokens: int = 512,
         temperature: float = 0.0,
     ) -> str:
+        """The answer text. See :meth:`complete_detailed` when the caller needs to
+        know whether the model was CUT OFF rather than finished."""
+        text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+        return text
+
+    async def complete_detailed(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+    ) -> tuple[str, str]:
+        """``(text, finish_reason)``.
+
+        The reason is carried out rather than dropped because ``"length"`` — the
+        model hit ``max_tokens`` mid-answer — is indistinguishable from a complete
+        answer by looking at the text. For a prose answer that is a cosmetic
+        truncation; for a TSV extraction table it silently removes ROWS, and the
+        caller has no way to tell a short table from a cut-off one.
+        """
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -78,7 +97,8 @@ class OpenAILLM:
         content = (choices[0].get("message") or {}).get("content")
         if not content:
             raise ValueError("LLM returned an empty answer")
-        return content
+        finish_reason = choices[0].get("finish_reason") or ""
+        return content, finish_reason
 
     async def complete_text(
         self, prompt: str, max_tokens: int = 512, temperature: float = 0.0
@@ -223,14 +243,25 @@ class RagGenerator:
         ]
         return await self._llm.complete(messages)
 
-    async def generate_with(self, system: str, user: str) -> str:
-        """Generate from an already-rendered pair of messages (ADR-0008).
+    async def generate_with(
+        self, system: str, user: str, max_tokens: int = 512
+    ) -> tuple[str, bool]:
+        """``(answer, truncated)`` from an already-rendered pair of messages.
 
         Takes rendered STRINGS rather than a template, so this module stays
         unaware of `ragstack.prompts`: message assembly and the transport live
         here, template semantics live there, and neither has to know the other's
         rules. The caller renders with :meth:`format_context`.
+
+        `truncated` is the second half of the fix for a real defect: an
+        extraction template asks for "as many entries as the literature
+        supports" while the transport caps the answer, so a table lost ROWS with
+        nothing on screen to say so — the number of rows silently tracked how
+        verbose the model happened to be per row. Raising the cap makes that
+        rarer; reporting it makes it honest when it still happens.
         """
-        return await self._llm.complete(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        text, reason = await self._llm.complete_detailed(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=max_tokens,
         )
+        return text, reason == "length"

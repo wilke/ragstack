@@ -79,7 +79,10 @@ _OUTPUTS = ("text", "table")
 # `slots:` — which, tolerated, would silently load a template with no declared
 # slots and no length caps.
 _TEMPLATE_KEYS = frozenset(
-    {"id", "version", "label", "output", "columns", "slots", "system", "user"}
+    {
+        "id", "version", "label", "output", "columns", "slots", "system", "user",
+        "max_output_tokens",
+    }
 )
 _SLOT_KEYS = frozenset({"name", "required", "max_len", "label"})
 
@@ -149,6 +152,11 @@ class PromptTemplate:
     system: str
     user: str
     hash: str
+    #: Ceiling on GENERATED tokens for this template, or None to use the server's
+    #: llm_max_output_tokens. A table template needs materially more room than a
+    #: prose one: it asks for as many rows as the literature supports, and a cap
+    #: that is comfortable for a paragraph silently truncates the table mid-row.
+    max_output_tokens: int | None = None
 
     def slot(self, name: str) -> Slot | None:
         return next((s for s in self.slots if s.name == name), None)
@@ -258,6 +266,7 @@ def content_hash(
     *,
     version: int,
     label: str,
+    max_output_tokens: int | None = None,
     output: str,
     columns: Iterable[str] | None,
     slots: Iterable[Slot],
@@ -299,6 +308,9 @@ def content_hash(
     payload = {
         "version": version,
         "label": label,
+        # Content: it changes how much of the answer survives, so two tenants
+        # whose templates differ only here can produce different tables.
+        "max_output_tokens": max_output_tokens,
         "output": output,
         "columns": list(columns) if columns is not None else None,
         "system": system,
@@ -432,6 +444,13 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise _fail(where, "version", f"must be an integer >= 1, got {version!r}")
 
+    max_output_tokens = raw.get("max_output_tokens")
+    if max_output_tokens is not None and (
+        not isinstance(max_output_tokens, int)
+        or isinstance(max_output_tokens, bool)
+        or max_output_tokens < 1
+    ):
+        raise _fail(where, "max_output_tokens", f"must be an integer >= 1, got {max_output_tokens!r}")
     label = raw.get("label")
     if not isinstance(label, str) or not label:
         raise _fail(where, "label", f"must be a non-empty string, got {label!r}")
@@ -543,9 +562,11 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
         slots=slots,
         system=system,
         user=user,
+        max_output_tokens=max_output_tokens,
         hash=content_hash(
             version=version,
             label=label,
+            max_output_tokens=max_output_tokens,
             output=output,
             columns=columns,
             slots=slots,

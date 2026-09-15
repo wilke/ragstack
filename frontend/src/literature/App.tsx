@@ -319,6 +319,14 @@ export function App() {
         // No echo fields means the SERVER fell back — no LLM wired, or
         // generation failed (ADR-0008 §3b). Say that, rather than attributing
         // the text to a template and a model that did not produce it.
+        // A truncated table has lost ROWS, and nothing in the text says so — the
+        // row count otherwise tracks how verbose the model was per row, which is
+        // why raising the source count could REDUCE the rows shown. Say it.
+        setAnswerNote(
+          res.truncated
+            ? "The model hit its length limit, so this table is cut short — there may be more rows in the sources than are shown."
+            : "",
+        );
         setProvenance(
           res.template
             ? `${res.template} v${res.template_version ?? "?"}` +

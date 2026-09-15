@@ -40,6 +40,10 @@
     "model": {
       "description": "The registered model id the answer was actually generated with, after the per-request `llm` override and the server default are resolved. Echoed rather than assumed: a template does NOT pin a model (ADR-0008 decision 5), so this is how a degraded result is attributed to a swapped default instead of being mistaken for a prompt regression.",
       "type": "string"
+    },
+    "truncated": {
+      "description": "True when the model hit its token ceiling mid-answer; omitted otherwise. Present only on the templated path, where it matters most: a truncated TSV table has lost ROWS, and nothing in the answer text says so \u2014 the row count silently tracks how verbose the model happened to be per row. Raise the template's max_output_tokens (or the server's llm_max_output_tokens) if this appears routinely.",
+      "type": "boolean"
     }
   },
   "additionalProperties": false

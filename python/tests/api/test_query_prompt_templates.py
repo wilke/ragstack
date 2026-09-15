@@ -33,6 +33,7 @@ _TEMPLATES = [
         "label": "Protein-Protein Interaction (PPI)",
         "output": "table",
         "columns": ["Pathogen", "Protein A", "Protein B", "Reference"],
+        "max_output_tokens": 2500,
         "slots": [
             {"name": "organism", "required": True, "max_len": 120},
             {"name": "genes", "required": False, "max_len": 200},
@@ -67,9 +68,19 @@ def capturing_llm(monkeypatch):
         def __init__(self) -> None:
             self.messages: list[dict[str, str]] | None = None
 
-        async def complete(self, messages, max_tokens: int = 512, temperature: float = 0.0) -> str:
+        async def complete_detailed(
+            self, messages, max_tokens: int = 512, temperature: float = 0.0
+        ) -> tuple[str, str]:
             self.messages = messages
-            return "Pathogen\tProtein A\tProtein B\tReference\nSARS-CoV-2\tSpike\tACE2\t10.1/x"
+            self.max_tokens = max_tokens
+            return (
+                "Pathogen\tProtein A\tProtein B\tReference\nSARS-CoV-2\tSpike\tACE2\t10.1/x",
+                "stop",
+            )
+
+        async def complete(self, messages, max_tokens: int = 512, temperature: float = 0.0) -> str:
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
 
     llm = _LLM()
     monkeypatch.setattr(app.state, "generator", RagGenerator(llm), raising=False)
@@ -346,3 +357,76 @@ async def test_the_templated_prompt_is_grounded_in_the_retrieved_passages(
     for s in sources:
         snippet = s["content"][:40].strip()
         assert snippet and snippet in user["content"], "a retrieved passage did not reach the prompt"
+
+
+async def test_a_truncated_answer_is_reported_not_hidden(client, templates, monkeypatch):
+    """The defect this closes: a table cut off at the token ceiling lost ROWS with
+    nothing on screen to say so, so the row count tracked how verbose the model
+    was per row rather than what the corpus contained — which is why raising
+    top_k could REDUCE the number of rows returned."""
+
+    class _Truncating:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            return "A\tB\nx\ty\nz\tcut-off-mid-wo", "length"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Truncating()), raising=False)
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["truncated"] is True
+
+
+async def test_an_untruncated_answer_omits_the_flag(client, templates, capturing_llm):
+    """Omitted, not false — the same rule the provenance fields follow, so a
+    response only carries what it has something to say about."""
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert "truncated" not in resp.json()
+
+
+async def test_the_template_ceiling_reaches_the_model(client, templates, monkeypatch):
+    """A template's max_output_tokens must actually be sent, not merely stored."""
+    seen: dict[str, int] = {}
+
+    class _Recording:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            seen["max_tokens"] = max_tokens
+            return "A\tB\nx\ty", "stop"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Recording()), raising=False)
+    await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert seen["max_tokens"] == templates["ppi-extraction"].max_output_tokens

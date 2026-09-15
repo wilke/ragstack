@@ -879,3 +879,52 @@ def test_ids_outside_the_published_pattern_are_refused(tmp_path: Path, bad: str)
     — none of which exercise the pattern."""
     with pytest.raises(TemplateValidationError, match="does not match"):
         _load_one(tmp_path, id=bad)
+
+
+def test_a_table_template_may_raise_its_own_token_ceiling(tmp_path: Path) -> None:
+    """`max_output_tokens` exists because the 512-token default silently ate rows.
+
+    An extraction template asks for as many entries as the literature supports
+    and then loses the ones that do not fit — with nothing in the text to say so,
+    which made the row count track how verbose the model happened to be rather
+    than what the corpus contained.
+    """
+    t = _load_one(tmp_path, max_output_tokens=2500)
+    assert t.max_output_tokens == 2500
+    assert _load_one(tmp_path).max_output_tokens is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, "2500", 12.5, True])
+def test_a_bad_token_ceiling_is_refused_at_load(tmp_path: Path, bad: object) -> None:
+    with pytest.raises(TemplateValidationError, match="max_output_tokens"):
+        _load_one(tmp_path, max_output_tokens=bad)
+
+
+def test_the_token_ceiling_is_content(tmp_path: Path) -> None:
+    """It changes how much of the answer survives, so two tenants whose templates
+    differ only here can produce materially different tables from one corpus."""
+    assert _load_one(tmp_path).hash != _load_one(tmp_path, max_output_tokens=2500).hash
+
+
+def test_the_shipped_table_templates_all_raise_the_ceiling(tmp_path: Path) -> None:
+    """Regression for the defect that motivated the field.
+
+    Every TABLE template we ship must raise its own ceiling. At the 512-token
+    server default a table is bounded by TOTAL output, so the number of rows
+    that survive tracks how verbose the model happens to be per row — measured
+    against a live model on 2026-09-15, the same prompt produced 12 rows ending
+    mid-reference at 512 (finish_reason "length") and 12 complete rows at 2500
+    ("stop"), while a wordier draw of the same template returned only 2. A prose
+    template does not need it and deliberately does not declare one.
+    """
+    from pathlib import Path as _P
+
+    example = _P(__file__).resolve().parents[2] / "contracts" / "fixtures" / "prompt-templates.example.yaml"
+    templates = load_templates(example)
+    for t in templates.values():
+        if t.output == "table":
+            assert t.max_output_tokens and t.max_output_tokens >= 2000, (
+                f"{t.id} is a table template with no meaningful ceiling"
+            )
+        else:
+            assert t.max_output_tokens is None

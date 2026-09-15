@@ -25,7 +25,11 @@
 # retrieved passages), {{columns}} (tab-joined), {{label}}.
 
 - id: ppi-extraction
-  version: 1
+  version: 2
+  # A table asks for as many rows as the literature supports, so it needs
+  # materially more room than a prose answer. At the 512-token server default
+  # this template lost rows mid-word with nothing on screen to say so.
+  max_output_tokens: 2500
   label: Protein-Protein Interaction (PPI)
   output: table
   columns: [Pathogen, Protein A, Protein B, Interaction Type, Method, Assertion, Reference]
@@ -55,7 +59,11 @@
     {{context}}
 
 - id: protein-function
-  version: 1
+  version: 2
+  # A table asks for as many rows as the literature supports, so it needs
+  # materially more room than a prose answer. At the 512-token server default
+  # this template lost rows mid-word with nothing on screen to say so.
+  max_output_tokens: 2500
   label: Protein Function
   output: table
   columns: [Organism, Gene Name, Function, Assertion, Reference]
@@ -84,7 +92,11 @@
     {{context}}
 
 - id: mutation
-  version: 1
+  version: 2
+  # A table asks for as many rows as the literature supports, so it needs
+  # materially more room than a prose answer. At the 512-token server default
+  # this template lost rows mid-word with nothing on screen to say so.
+  max_output_tokens: 2500
   label: Mutation
   output: table
   columns: [Organism, Gene Name, Mutation, Phenotype, Assertion, Reference]

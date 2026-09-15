@@ -3775,6 +3775,13 @@ components:
             the same (id, version) with drifted bodies while claiming the same
             identity; the hash makes that detectable (ADR-0008 decision 4).
             Present only when a templated generation produced the answer.
+        truncated:
+          type: boolean
+          description: >-
+            True when the model hit its token ceiling mid-answer; omitted
+            otherwise. A truncated TSV table has lost ROWS and nothing in the
+            answer text says so, so the row count silently tracks how verbose
+            the model happened to be per row.
         model:
           type: string
           description: >-
@@ -5084,6 +5091,13 @@ components:
                     label:
                       type: string
                   additionalProperties: false
+              max_output_tokens:
+                description: Ceiling on GENERATED tokens for this template; absent means the server's llm_max_output_tokens
+                  applies. A table template needs materially more room than a prose one — it asks for as many
+                  rows as the literature supports, and a cap comfortable for a paragraph truncates the table
+                  mid-row.
+                type: integer
+                minimum: 1
             additionalProperties: false
             allOf:
             - description: '`columns` is required when output is `table` and forbidden when it is `text`.
