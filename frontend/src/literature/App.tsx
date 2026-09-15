@@ -39,6 +39,7 @@ import {
   modeById,
   modesFrom,
   templateVars,
+  truncationNote,
   sortedCollections,
   DOC_TYPES,
   YEAR_COVERAGE_NOTE,
@@ -323,13 +324,7 @@ export function App() {
         // row count otherwise tracks how verbose the model was per row, which is
         // why raising the source count could REDUCE the rows shown. A prose
         // template loses sentences instead, so it gets different wording.
-        setAnswerNote(
-          res.truncated
-            ? template.output === "table"
-              ? "The model hit its length limit, so this table is cut short — there may be more rows in the sources than are shown."
-              : "The model hit its length limit, so this answer is cut short."
-            : "",
-        );
+        setAnswerNote(truncationNote(res.truncated, template.output));
         setProvenance(
           res.template
             ? `${res.template} v${res.template_version ?? "?"}` +

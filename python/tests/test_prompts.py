@@ -950,8 +950,40 @@ def test_a_template_without_a_ceiling_keeps_its_hash(tmp_path: Path) -> None:
     would serve the same (id, version) with different hashes. That is the drift
     detector firing where nothing drifted.
     """
+    import json as _json
+    from pathlib import Path as _P
+
     from ragstack.prompts import content_hash
 
-    kw = dict(version=1, label="L", output="text", columns=None, slots=(), system="s", user="u")
-    assert content_hash(**kw) == content_hash(**kw, max_output_tokens=None)
+    kw = {
+        "version": 1,
+        "label": "L",
+        "output": "text",
+        "columns": None,
+        "slots": (),
+        "system": "s",
+        "user": "u",
+    }
+    # The assertion that actually BITES. Comparing content_hash(no kwarg) with
+    # content_hash(max_output_tokens=None) is vacuous: both take the SAME branch
+    # in the fixed code AND in the broken one, so it cannot see the defect. A
+    # review proved it — restoring the unconditional payload key left all 3888
+    # tests green while reverting literature-summary's hash to e1f00e1ba9444840.
+    #
+    # Pin the SHIPPED value instead. It is the thing that must not move: a tenant
+    # that recorded (literature-summary, v1, b6a671b3a40015cf) as an experimental
+    # condition has to still match after an upgrade that did not touch its bytes.
+    example = _P(__file__).resolve().parents[2] / "contracts" / "fixtures" / "prompt-templates.example.yaml"
+    assert load_templates(example)["literature-summary"].hash == "b6a671b3a40015cf", (
+        "a template that declares no ceiling changed hash — the drift detector "
+        "is firing where nothing drifted"
+    )
+    # And the key is genuinely absent from the hashed payload, not merely null.
+    from ragstack.prompts import _canonical_payload_json
+
+    payload = {"version": 1, "label": "L", "output": "text", "columns": None,
+               "system": "s", "user": "u", "slots": []}
+    assert "max_output_tokens" not in _json.loads(
+        _canonical_payload_json(payload)
+    ), "an unset ceiling reached the hash payload"
     assert content_hash(**kw) != content_hash(**kw, max_output_tokens=2500)

@@ -174,3 +174,21 @@ async def test_finish_reason_is_read_from_the_real_response_body(reason, expecte
 
     assert text == "A\tB"
     assert got == expected
+
+
+@pytest.mark.asyncio
+async def test_an_empty_answer_names_the_finish_reason():
+    """`length` with an empty body is the WORST truncation case — the ceiling was
+    so low the model produced nothing usable — and it surfaces as a generic
+    failure. Naming the reason in the error is the only place that fact survives,
+    so it needs an assertion or it silently regresses."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http)
+        with pytest.raises(ValueError, match="finish_reason=length"):
+            await llm.complete([{"role": "user", "content": "hi"}])

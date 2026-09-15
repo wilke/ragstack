@@ -316,7 +316,6 @@ def content_hash(
     payload = {
         "version": version,
         "label": label,
-
         "output": output,
         "columns": list(columns) if columns is not None else None,
         "system": system,
@@ -334,8 +333,14 @@ def content_hash(
     # decision 4 exists to avoid.
     if max_output_tokens is not None:
         payload["max_output_tokens"] = max_output_tokens
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(_canonical_payload_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
+def _canonical_payload_json(payload: dict[str, Any]) -> str:
+    """The exact bytes the hash is taken over. Split out so a test can assert
+    what is IN the payload rather than only comparing two hashes — comparing
+    hashes could not see an unset ceiling leaking in as an explicit null."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
