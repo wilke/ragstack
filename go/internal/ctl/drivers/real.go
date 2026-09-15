@@ -51,12 +51,9 @@ type RealOptions struct {
 	GitBin       string // /usr/bin/git
 	NodeBin      string // /rag/tools/node/current/bin/node
 	NpmBin       string // /rag/tools/node/current/bin/npm
-	// CrontabBin is crontab(1), the only boot hook this host has for an
-	// account with no user manager (PR-D2). Default /usr/bin/crontab. It has
-	// no ctl.env key yet on purpose: the Crontab driver is not wired, and a
-	// variable that configures nothing is a setting that silently does
-	// nothing — the driver agent adds the key with the implementation.
-	CrontabBin string
+	// CrontabBin is crontab(1), the only boot hook a host whose service
+	// account has no user manager has (PR-D2). ctl.env CTL_CRONTAB_BIN.
+	CrontabBin string // /usr/bin/crontab
 	// Mirror is the bare repository artifacts are prepared from. Default
 	// <RagRoot>/repos/ragstack.git. The ctl never creates it — cloning the
 	// mirror is an operator's deploy-time act.
@@ -94,8 +91,8 @@ const (
 
 // Real is the real driver set: the gateway and the filesystem (PR-C), the
 // host drivers (systemd, proc, git, build) and the store drivers (qdrant,
-// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired. PR-D2's
-// two — instances and crontab — are declared here and refuse (see Pending).
+// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired, and
+// PR-D2's instances and crontab. Every driver in it runs: Pending() is empty.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
@@ -110,9 +107,7 @@ type Real struct {
 	pg      *RealPostgres
 	sqlite  *RealSQLite
 	archive *RealArchive
-	// PR-D2's seam: the interfaces exist so the supervisor and the fleet-boot
-	// ops can be written and tested against the fakes; the host halves land
-	// with the driver agent.
+	// PR-D2: the store half and the boot hook of `supervisor: instance`.
 	instances *RealInstances
 	crontab   *RealCrontab
 }
@@ -149,8 +144,13 @@ func NewReal(o RealOptions) *Real {
 		files:   &RealFiles{Roots: roots},
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
-		// `doctor` answer a port question from the same parser.
-		proc:    &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
+		// `doctor` answer a port question from the same parser; the roots
+		// bound the pidfile and the log Spawn creates.
+		proc: &RealProc{
+			Listeners: hostfacts.NewReal(o.Roots).Listeners,
+			ProcRoot:  func() string { return "/proc" },
+			Roots:     roots,
+		},
 		git:     &RealGit{run: run, Bin: o.GitBin, Roots: roots},
 		build:   &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
 		qdrant:  &RealQdrant{h: h},
@@ -159,9 +159,9 @@ func NewReal(o RealOptions) *Real {
 		pg:      &RealPostgres{opts: o, run: run},
 		sqlite:  &RealSQLite{opts: o},
 		archive: &RealArchive{opts: o},
-		// Built with the same runner and program paths the wired drivers get,
-		// so that landing them is writing the method bodies and nothing else.
-		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer)},
+		// The instance driver binds host paths into a container, so it gets
+		// the same approved roots the drivers that write under them do.
+		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots},
 		crontab:   &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
@@ -196,82 +196,6 @@ func (r *Real) SQLite() jobs.SQLite               { return r.sqlite }
 func (r *Real) Archive() jobs.Archive             { return r.archive }
 func (r *Real) Instances() jobs.Instances         { return r.instances }
 func (r *Real) Crontab() jobs.Crontab             { return r.crontab }
-
-// ------------------------------------------------- instances, crontab (PR-D2)
-
-// RealInstances is `apptainer instance run|stop|list` over the shared runner.
-//
-// NOT WIRED. The seam exists so `supervisor: instance` can be written and
-// tested against the fakes; every method refuses with the same
-// `<driver>.<method> lands in PR-D2` a plan warns about, so a job that reaches
-// one stops with a sentence instead of pretending.
-type RealInstances struct {
-	run *runner
-	// Bin is apptainer, absolute. The instance driver runs the SAME program
-	// the units' ExecStart names.
-	Bin string
-}
-
-var _ jobs.Instances = (*RealInstances)(nil)
-
-// List will be `<Bin> instance list --json`.
-func (i *RealInstances) List(context.Context) ([]jobs.Instance, error) {
-	return nil, pending(jobs.ErrRefused, "instances", "List")
-}
-
-// Run will be `<Bin> instance run --no-home <--bind …> <--env …> <sif> <name>
-// <args…>`, with spec.ExtraEnv in the child's environment and nowhere else.
-func (i *RealInstances) Run(context.Context, jobs.InstanceSpec) error {
-	return pending(jobs.ErrRefused, "instances", "Run")
-}
-
-// Stop will be `<Bin> instance stop <name>`, treating an absent instance as
-// success.
-func (i *RealInstances) Stop(context.Context, string) error {
-	return pending(jobs.ErrRefused, "instances", "Stop")
-}
-
-// defaultCrontabBin is crontab(1) on coconut.
-const defaultCrontabBin = "/usr/bin/crontab"
-
-// RealCrontab is the current account's crontab through crontab(1).
-//
-// NOT WIRED, for the same reason RealInstances is not.
-type RealCrontab struct {
-	run *runner
-	// Bin is crontab(1), absolute.
-	Bin string
-}
-
-var _ jobs.Crontab = (*RealCrontab)(nil)
-
-// List will be `<Bin> -l`, mapping "no crontab for <user>" to an empty body.
-func (c *RealCrontab) List(context.Context) ([]byte, error) {
-	return nil, pending(jobs.ErrRefused, "crontab", "List")
-}
-
-// Set will be `<Bin> -` with the body on stdin.
-func (c *RealCrontab) Set(context.Context, []byte) error {
-	return pending(jobs.ErrRefused, "crontab", "Set")
-}
-
-// RealProc's two PR-D2 methods live here rather than in proc.go, beside the
-// other refusals, because that is where a reader looks for what this build
-// cannot do. The REST of RealProc is wired — Listening, Signal and Owner all
-// run — so `proc` is NOT on Pending(): see pendingReal's comment for why the
-// warning stays at driver granularity and what that costs.
-
-// Spawn will fork a detached process (setsid, stdin /dev/null, stdout+stderr
-// appended to LogPath, umask 0002) and write the pidfile 0644 before
-// returning.
-func (p *RealProc) Spawn(context.Context, jobs.SpawnSpec) (int, error) {
-	return 0, pending(jobs.ErrRefused, "proc", "Spawn")
-}
-
-// Alive will report whether /proc/<pid> exists.
-func (p *RealProc) Alive(context.Context, int) (bool, error) {
-	return false, pending(jobs.ErrRefused, "proc", "Alive")
-}
 
 // ---------------------------------------------------------------- gateway
 
@@ -509,6 +433,18 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	if err != nil {
 		return err
 	}
+	return writeAtomic(path, data, mode)
+}
+
+// writeAtomic is WriteAtomic's body without the containment check, for the one
+// other place that writes a file the ctl's own bookkeeping depends on:
+// proc.Spawn's pidfile, which is written after THAT driver has checked the
+// path against its own roots. Two copies of "temporary file in the same
+// directory, mode before the rename, fsync the directory afterwards" would be
+// two places to get it wrong.
+//
+// path must already be resolved and approved by the caller.
+func writeAtomic(path string, data []byte, mode uint32) (err error) {
 	// The RESOLVED directory: the temporary file and the rename target have to
 	// be the same directory the check approved, or the two are different
 	// places whenever a component is a link.

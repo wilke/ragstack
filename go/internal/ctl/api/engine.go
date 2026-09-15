@@ -82,6 +82,7 @@ type EngineConfig struct {
 	Node      string
 	Npm       string
 	Apptainer string
+	Crontab   string
 	Mirror    string
 	NpmCache  string
 	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
@@ -208,6 +209,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			NodeBin:      cfg.Node,
 			NpmBin:       cfg.Npm,
 			Apptainer:    cfg.Apptainer,
+			CrontabBin:   cfg.Crontab,
 			Mirror:       cfg.Mirror,
 			NpmCache:     cfg.NpmCache,
 			Logger:       cfg.Logger,
@@ -532,6 +534,7 @@ func SetHostToolsFromEnv(cfg *EngineConfig) {
 		{EnvNodeBin, &cfg.Node},
 		{EnvNpmBin, &cfg.Npm},
 		{EnvApptainerBin, &cfg.Apptainer},
+		{EnvCrontabBin, &cfg.Crontab},
 		{EnvMirror, &cfg.Mirror},
 		{EnvNpmCache, &cfg.NpmCache},
 	} {

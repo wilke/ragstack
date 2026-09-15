@@ -120,6 +120,10 @@ const (
 	EnvNodeBin      = "CTL_NODE_BIN"
 	EnvNpmBin       = "CTL_NPM_BIN"
 	EnvApptainerBin = "CTL_APPTAINER_BIN"
+	// EnvCrontabBin is crontab(1) — the boot hook of `supervisor: instance`,
+	// which is the only one an account with no user manager and no logind
+	// session under cron has (PR-D2, "Host facts").
+	EnvCrontabBin = "CTL_CRONTAB_BIN"
 	// EnvMirror is the BARE repository `fleet artifact prepare` resolves refs
 	// and adds worktrees in. Default <rag-root>/repos/ragstack.git. The ctl
 	// never creates it: cloning the mirror is an operator's deploy-time act.
@@ -141,7 +145,7 @@ const (
 func HostToolEnvKeys() []string {
 	return []string{
 		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
-		EnvMirror, EnvNpmCache,
+		EnvCrontabBin, EnvMirror, EnvNpmCache,
 	}
 }
 
