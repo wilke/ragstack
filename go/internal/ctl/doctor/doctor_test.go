@@ -224,6 +224,137 @@ func TestWritableByOthersIsRed(t *testing.T) {
 	}
 }
 
+// findingsForCode is byCode without the collapse: HomePathInProduction can
+// legitimately fire more than once (a tenant's worktree AND its live cwd, an
+// artifact AND a ctl.env value), so a test needs every occurrence, not just
+// the last one a map keeps.
+func findingsForCode(resp *model.DoctorResponse, code string) []model.Finding {
+	var out []model.Finding
+	for _, f := range resp.Findings {
+		if f.Code == code {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// TestHomePathInProductionIsClean is the baseline: newWorld's tenant lives
+// entirely under the temp /rag, so the sweep finds nothing to warn about.
+func TestHomePathInProductionIsClean(t *testing.T) {
+	w := newWorld(t)
+	if got := findingsForCode(w.run(t), HomePathInProduction); len(got) != 0 {
+		t.Errorf("home_path_in_production = %+v, want none in a fully-under-/rag fixture", got)
+	}
+}
+
+// TestHomePathInProductionFlagsRegistryPaths covers data_dir, worktree and
+// python_env — the plan's own examples of what still points at $HOME today.
+func TestHomePathInProductionFlagsRegistryPaths(t *testing.T) {
+	cases := []struct {
+		name   string
+		break_ func(t *registry.Tenant)
+		want   string
+	}{
+		{"worktree", func(t *registry.Tenant) { t.Worktree = "/home/wilke/Development/ragstack" }, "worktree="},
+		{"data_dir", func(t *registry.Tenant) { t.DataDir = "/home/wilke/data/dev" }, "data_dir="},
+		{"python_env", func(t *registry.Tenant) { t.PythonEnv = "~/.venvs/ragstack" }, "python_env="},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			c.break_(w.tenant)
+			got := findingsForCode(w.run(t), HomePathInProduction)
+			if len(got) != 1 {
+				t.Fatalf("home_path_in_production = %+v, want exactly 1", got)
+			}
+			if got[0].Level != model.LevelWarn {
+				t.Errorf("level = %s, want warn", got[0].Level)
+			}
+			if string(got[0].Tenant) != "dev" {
+				t.Errorf("tenant = %q, want dev", got[0].Tenant)
+			}
+			if !strings.Contains(got[0].Detail, c.want) {
+				t.Errorf("detail %q does not name the field (%s)", got[0].Detail, c.want)
+			}
+		})
+	}
+}
+
+// TestHomePathInProductionFlagsLiveAPIProcess is the hostfacts half: an
+// adopted tenant's process cwd (or, absent a readable cwd, argv[0]) under
+// /home is exactly as much a violation as the registry row is.
+func TestHomePathInProductionFlagsLiveAPIProcess(t *testing.T) {
+	w := newWorld(t)
+	w.host.Ports = []hostfacts.Listener{{
+		Port: devAPI, Pid: 1001, User: "wilke",
+		Cmdline: []string{"/home/wilke/Development/ragstack/python/.venv/bin/python", "-m", "uvicorn"},
+		Cwd:     "/home/wilke/Development/ragstack/python",
+	}}
+	got := findingsForCode(w.run(t), HomePathInProduction)
+	if len(got) != 2 {
+		t.Fatalf("home_path_in_production = %+v, want 2 (cwd and argv[0])", got)
+	}
+	for _, f := range got {
+		if string(f.Tenant) != "dev" {
+			t.Errorf("tenant = %q, want dev: %+v", f.Tenant, f)
+		}
+	}
+}
+
+// TestHomePathInProductionFlagsArtifactWorktree is the one host-scoped
+// (tenant == "") registry source: a prepared artifact belongs to no single
+// tenant.
+func TestHomePathInProductionFlagsArtifactWorktree(t *testing.T) {
+	w := newWorld(t)
+	w.fleet.Artifacts["main-abc123456789"] = &registry.Artifact{
+		SHA: strings.Repeat("a", 40), Tag: "main",
+		Worktree:  "/home/wilke/state/artifacts/main-abc/worktree",
+		UIDist:    filepath.Join(w.roots.RagRoot, "data", "ctl", "artifacts", "main-abc", "ui", "dist"),
+		PythonEnv: "/rag/envs/ragstack", PreparedBy: "wilke",
+	}
+	got := findingsForCode(w.run(t), HomePathInProduction)
+	if len(got) != 1 {
+		t.Fatalf("home_path_in_production = %+v, want exactly 1", got)
+	}
+	if got[0].Tenant != "" {
+		t.Errorf("an artifact finding is host-scoped: tenant = %q", got[0].Tenant)
+	}
+	if !strings.Contains(got[0].Detail, "artifacts[main-abc123456789]") {
+		t.Errorf("detail does not name the artifact: %q", got[0].Detail)
+	}
+}
+
+// TestHomePathInProductionFlagsCtlEnv covers coconut's actual current state
+// (plan "Host facts"): CTL_NODE_BIN at ~/.local/bin/node, until install-node
+// gives it somewhere under /rag/tools to point at instead.
+func TestHomePathInProductionFlagsCtlEnv(t *testing.T) {
+	w := newWorld(t)
+	w.opts.CtlEnv = map[string]string{"CTL_NODE_BIN": "~/.local/bin/node", "CTL_GIT_BIN": "/usr/bin/git"}
+	got := findingsForCode(w.run(t), HomePathInProduction)
+	if len(got) != 1 {
+		t.Fatalf("home_path_in_production = %+v, want exactly 1 (CTL_GIT_BIN is not a home path)", got)
+	}
+	if got[0].Tenant != "" {
+		t.Errorf("a ctl.env finding is host-scoped: tenant = %q", got[0].Tenant)
+	}
+	if !strings.Contains(got[0].Detail, "CTL_NODE_BIN") {
+		t.Errorf("detail does not name the variable: %q", got[0].Detail)
+	}
+}
+
+// TestHomePathInProductionNeverBlocksAnOp: it is a warning under every op,
+// including the ones that block on far less (plan: "keep it a warning, it
+// never blocks an op").
+func TestHomePathInProductionNeverBlocksAnOp(t *testing.T) {
+	w := newWorld(t)
+	w.tenant.Worktree = "/home/wilke/Development/ragstack"
+	w.opts.Op = "handover"
+	got := findingsForCode(w.run(t), HomePathInProduction)
+	if len(got) != 1 || got[0].Level != model.LevelWarn {
+		t.Fatalf("home_path_in_production under --op handover = %+v, want a single warn", got)
+	}
+}
+
 // TestPortFindings: the three ways ports and the registry disagree.
 func TestPortFindings(t *testing.T) {
 	// A crashed tenant is a WARNING on its own merits: `start` and `restart`

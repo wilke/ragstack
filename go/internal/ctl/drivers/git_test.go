@@ -185,6 +185,32 @@ func TestGitDescribe(t *testing.T) {
 	}
 }
 
+func TestGitHeadSHA(t *testing.T) {
+	d, stub, root := newGit(t)
+	stub.respond("revparse", testSHA+"\n", "", 0)
+	sha, err := d.HeadSHA(context.Background(), root)
+	if err != nil {
+		t.Fatalf("HeadSHA = %v", err)
+	}
+	if sha != testSHA {
+		t.Errorf("HeadSHA = %q, want %s", sha, testSHA)
+	}
+	if _, err := d.HeadSHA(context.Background(), "repos/tenants/dev"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA of a relative path = %v, want a refusal", err)
+	}
+	if _, err := d.HeadSHA(context.Background(), filepath.Join(root, "no-such-dir")); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA of a directory that does not exist = %v, want a refusal", err)
+	}
+}
+
+func TestGitHeadSHARefusesAGarbageAnswer(t *testing.T) {
+	d, stub, root := newGit(t)
+	stub.respond("revparse", "not-a-sha\n", "", 0)
+	if _, err := d.HeadSHA(context.Background(), root); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("HeadSHA with a non-sha answer = %v, want a refusal", err)
+	}
+}
+
 // TestGitAgainstRealGit is the one test that uses the host's own git: the
 // stubs prove the argv and the refusals, and this proves the argv is one git
 // actually accepts. It is also the only test in this file that is skipped
@@ -237,6 +263,17 @@ func TestGitAgainstRealGit(t *testing.T) {
 	}
 	if _, err := d.ResolveRef(ctx, mirror, "no-such-tag"); err == nil {
 		t.Error("ResolveRef of an unknown ref succeeded")
+	}
+
+	// HeadSHA works against a WORKING TREE (source, on branch main) — the
+	// opposite of ResolveRef, which just refused that same path for not
+	// being bare — and agrees with what ResolveRef resolved "main" to.
+	headSHA, err := d.HeadSHA(ctx, source)
+	if err != nil {
+		t.Fatalf("HeadSHA = %v", err)
+	}
+	if headSHA != sha {
+		t.Errorf("HeadSHA(source) = %s, want %s (what ResolveRef(mirror, main) resolved to)", headSHA, sha)
 	}
 
 	dest := filepath.Join(root, "artifacts", "wt")

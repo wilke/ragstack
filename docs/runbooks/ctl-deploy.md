@@ -11,10 +11,58 @@ one symlink and sends one `SIGHUP`; every other step writes only to
 `/rag/data/ctl`, `/rag/config/ctl` and `/rag/data/tenants/registry.json`.
 
 **Accounts.** Build and install as `wilke`. Everything that writes control-plane
-state runs as `svcbvbrc` through `ops/coconut/ctl-as-svc.sh` (sudo lives in
+state runs as `svcbvbrc` through `/rag/bin/ctl-as-svc.sh` (sudo lives in
 that one wrapper; the ctl has no sudo in any code path). Until the `svcbvbrc`
 hand-over (PR-E) the nginx master is owned by whoever started the proxy — see
 step 6, which refuses rather than guesses.
+
+---
+
+## Where production code lives
+
+Plan decision (2026-09-15): **nothing in production may reference a home
+directory.** Every path below is under `/rag`; a developer's
+`~/Development/ragstack` is where the code is *written*, never where it
+*runs from* or is *built for a deploy*.
+
+| What | Lives at | How it gets there |
+|---|---|---|
+| `ragstack-ctl` binary | `/rag/bin/ragstack-ctl-<ver>` (+ `ragstack-ctl` symlink) | `make install-ctl`, built from `/rag/repos/ragstack` |
+| daemon/wrapper scripts | `/rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh}` | `make install-ops` (source: `ops/coconut/` in the repo) |
+| the bare mirror | `/rag/repos/ragstack.git` | `git clone --bare` once; `git fetch` after every push — never worked in |
+| tenant worktrees | `/rag/repos/tenants/<name>`, checked out **from the mirror** | `tenant create` / `tenant rebase-worktree` (§ below) |
+| operator clone | `/rag/repos/ragstack` | `git clone /rag/repos/ragstack.git /rag/repos/ragstack` — a plain, disposable checkout; builds and `make` targets run here, never in a developer's home |
+| prepared artifacts | `/rag/data/ctl/artifacts/<tag>-<sha>/worktree` | `fleet artifact prepare --tag <ref>` |
+| Python env(s) tenants run under | `/rag/envs/ragstack` (or a per-artifact env under `/rag/data/ctl/artifacts/…`) | `make install-python` / the artifact's own env |
+| node (for `npm ci` / frontend builds) | `/rag/tools/node/<ver>`, `/rag/tools/node/current` symlink | `make install-node NODE_VERSION=vX.Y.Z`; `ctl.env`: `CTL_NODE_BIN=/rag/tools/node/current/bin/node`, `CTL_NPM_BIN=/rag/tools/node/current/bin/npm` (already the ctl's compiled-in defaults — `drivers/real.go`'s `defaultNodeBin`/`defaultNpmBin`) |
+
+**Deploy sequence**, once code is reviewed and tagged:
+
+```bash
+git push origin <tag>                                    # from wherever the tag was cut
+git -C /rag/repos/ragstack.git fetch --all --tags         # the mirror picks it up
+cd /rag/repos/ragstack && git fetch --tags && git checkout <tag>
+make install-ctl install-ops                              # binary + daemon/wrapper scripts onto /rag/bin
+/rag/bin/ctl-daemon.sh stop && /rag/bin/ctl-daemon.sh start   # restart onto the new binary
+```
+
+`make check-ops` is install-ops's own gate (`bash -n` on the six scripts, plus
+a grep that fails the build if any of them references `/home/` or `~/` outside
+a comment) — `install-ops` runs it first, so a script that regressed into
+referencing a home directory never reaches `/rag/bin`.
+
+The five tenant worktrees checked out under `~/Development/ragstack/.git/
+worktrees/<t>` before this plan (`doctor`'s `worktree_outside_mirror`) are
+moved onto the mirror with `ragstack-ctl tenant rebase-worktree <name>` — see
+that command's own `--help` for what it does and does not touch. It is a
+**local, direct-only** action (no daemon route): run it as the worktree's
+OWNER (today, wilke), not through `ctl-as-svc.sh`.
+
+`doctor`'s `home_path_in_production` finding (warn, never blocks an op) is
+the standing check that this table stays true: it flags a registry
+`data_dir`/`worktree`/`python_env`, a prepared artifact's worktree, a
+`ctl.env` host-tool value, or a tenant's live API process cwd/argv[0], if any
+of them is still under `/home` or starts with `~`.
 
 ---
 
@@ -25,11 +73,11 @@ step 6, which refuses rather than guesses.
 | Go toolchain | `make go-mode` → `GO_MODE=container` (or `host`) | `make golang-sif` pulls `golang:1.23.12` (the `toolchain` line of `go/go.mod`) into `/rag/apptainer/images/golang.sif`; coconut has no Go on `PATH`, so the ctl targets build inside that image. A host toolchain still works: `GO=~/sdk/go1.23.12/bin/go`. |
 | `/rag/config/ctl`, `/rag/data/ctl` | `ls -ld /rag/config/ctl /rag/data/ctl` | Step 3. |
 | `coconut-proxy` change deployed | `ls -l /rag/config/proxy/conf.d/05-tenants.generated.conf` | Step 1 — do it first (see the ordering note there). |
-| sudo to `svcbvbrc` from a tty | `ops/coconut/ctl-as-svc.sh version` | Ask the admin for the `(svcbvbrc) NOPASSWD: ALL` rule (it exists today). |
+| sudo to `svcbvbrc` from a tty | `/rag/bin/ctl-as-svc.sh version` | Ask the admin for the `(svcbvbrc) NOPASSWD: ALL` rule (it exists today). |
 
 The root items of the ansible `coconut-host` role (linger, the
 `user@<uid>` drop-in, the proxy unit, the sysctl) are **not done yet**. That is
-why step 7 runs the daemon with `ops/coconut/ctl-daemon.sh` instead of
+why step 7 runs the daemon with `/rag/bin/ctl-daemon.sh` instead of
 `systemctl --user`. Nothing else in this runbook depends on them.
 
 ---
@@ -97,13 +145,28 @@ symlinks if a generation is already published (step 6 rollback).
 
 ## 2. Build off-host and install
 
+Build from **`/rag/repos/ragstack`**, the operator clone of the bare mirror
+(see "Where production code lives" below) — not a developer's
+`~/Development/ragstack`, which is where the code is EDITED, not where a
+deploy is BUILT from. Push the tag, let the mirror pick it up, then check it
+out where the build runs:
+
 ```bash
-cd ~/Development/ragstack
+# on the machine that pushes (a dev checkout, or CI): tag and push as usual
+git -C ~/Development/ragstack push origin <tag>
+
+# on coconut, as wilke: the mirror already has every ref a push updates
+# (it is a clone of the same remote, fetched — never worked in — see below)
+git -C /rag/repos/ragstack.git fetch --all --tags
+
+cd /rag/repos/ragstack
+git fetch --tags && git checkout <tag>
 make golang-sif        # once per toolchain bump: pulls golang:1.23.12 → /rag/apptainer/images/golang.sif (~290 MB)
 make go-mode           # -> GO_MODE=container  (host `go` on PATH would win: GO_MODE=host)
 make build-ctl         # go/bin/ragstack-ctl, static, -trimpath, built inside the image
 make test-ctl          # race detector; must be green before installing
 make install-ctl       # /rag/bin/ragstack-ctl-<ver> + symlink
+make install-ops       # /rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh}, 0755
 /rag/bin/ragstack-ctl version
 ```
 
@@ -136,9 +199,9 @@ The wrapper runs `$CTL_BIN` with the arguments it is given, so pointing
 through the same single sudo path:
 
 ```bash
-ops/coconut/ctl-as-svc.sh version              # proves the sudo path works
+/rag/bin/ctl-as-svc.sh version              # proves the sudo path works
 
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
     mkdir -p /rag/data/ctl/{home,locks,gateway,goldens,tmp,artifacts,ui/dist,apptainer/{cache,config}} \
              /rag/config/ctl/{units,templates}
     chmod 2770 /rag/data/ctl /rag/config/ctl
@@ -164,7 +227,7 @@ Copy the set out of the checkout you built from, once:
 
 ```bash
 G=~/Development/ragstack/go/internal/ctl/testdata/live-2026-09-10/gateway
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c "
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "
     install -m 0644 -D -t /rag/data/ctl/goldens $G/root.json $G/tenants.json \
         $G/api-unknown-404.json $G/catchall-404.json
     ls -l /rag/data/ctl/goldens
@@ -258,13 +321,13 @@ EOF
 # so a failure here is a bare non-zero exit with no reason. To diagnose,
 # re-run the same command WITHOUT `>/dev/null` using a dummy payload —
 # never the real secrets.
-base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl.env.tmp &&
     mv /rag/config/ctl/ctl.env.tmp /rag/config/ctl/ctl.env &&
     chmod 0640 /rag/config/ctl/ctl.env
 ' >/dev/null
-base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl-secrets.env.tmp &&
     mv /rag/config/ctl/ctl-secrets.env.tmp /rag/config/ctl/ctl-secrets.env &&
@@ -274,7 +337,7 @@ base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh 
 # Verify WITHOUT ever printing content: ownership/mode, ACL if this host has
 # one, and a line-count / key-prefix sanity check. Asserts, so a bad install
 # fails this command rather than silently passing.
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
     set -e
     stat -c "%U:%G %a %n" /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
     if command -v getfacl >/dev/null 2>&1; then
@@ -318,7 +381,7 @@ does **not** refuse to start without `ctl.env`: `serve` takes its settings from
 the environment, so with the file gone it binds the default
 `127.0.0.1:23990`, serves the anonymous `/health`, and answers every
 authenticated operation `401 auth_required` because no key is configured. It
-looks up and is unusable. Stop it with `ops/coconut/ctl-daemon.sh stop` rather
+looks up and is unusable. Stop it with `/rag/bin/ctl-daemon.sh stop` rather
 than relying on it to fall over.
 
 ---
@@ -394,7 +457,7 @@ line per tenant, `--commit` records it — after which the warning clears.
 ```bash
 # a) the diff must be a SEMANTIC NO-OP: the generated maps route exactly what
 #    the hand-written ones route today.
-ops/coconut/ctl-as-svc.sh gateway diff
+/rag/bin/ctl-as-svc.sh gateway diff
 #    -> semantic_noop: true
 
 # b) the dry run stages a temp copy of /rag/config/proxy with the generation's
@@ -404,15 +467,15 @@ ops/coconut/ctl-as-svc.sh gateway diff
 #    Run as an account that cannot read tls/proxy.key it reports substituting a
 #    throwaway self-signed pair IN THE STAGED COPY — otherwise nginx -t would
 #    fail on file ownership rather than on the change under test.
-ops/coconut/ctl-as-svc.sh gateway apply --dry-run
+/rag/bin/ctl-as-svc.sh gateway apply --dry-run
 
 # c) publish. The four golden bodies are compared byte-for-byte: this is
 #    PR-B's go/no-go. The directory is the one installed in step 3a.
-ops/coconut/ctl-as-svc.sh gateway apply --expect-bodies /rag/data/ctl/goldens
+/rag/bin/ctl-as-svc.sh gateway apply --expect-bodies /rag/data/ctl/goldens
 
-ops/coconut/ctl-as-svc.sh gateway status
+/rag/bin/ctl-as-svc.sh gateway status
 ls -l /rag/config/proxy/conf.d/05-tenants.generated.conf   # -> …/gateway/current/…
-ops/coconut/verify.sh <snapshot>                           # ALL GOOD
+/rag/bin/verify.sh <snapshot>                           # ALL GOOD
 ```
 
 `apply` runs, in this order:
@@ -458,13 +521,13 @@ a second one is refused immediately (exit 3) rather than queued.
 
 If the reload is refused with *"nginx master is owned by uid N; run as that
 account"*, the proxy is running as someone else (today: `wilke`). Either run
-the apply as that account (`CTL_USER=wilke ops/coconut/ctl-as-svc.sh …`, or
+the apply as that account (`CTL_USER=wilke /rag/bin/ctl-as-svc.sh …`, or
 just `/rag/bin/ragstack-ctl gateway apply` as `wilke`) or restart the proxy
 under `svcbvbrc` first. The ctl will not signal a process it does not own.
 
 **Rollback (in order of preference):**
 
-1. `ops/coconut/ctl-as-svc.sh gateway rollback` — stages the target generation
+1. `/rag/bin/ctl-as-svc.sh gateway rollback` — stages the target generation
    and runs `nginx -t` on it, repoints `current`, HUPs, confirms the reload, and
    probes the gateway against **the target generation's own** tenant list (not
    today's registry: an old generation routes what it routed). On any failure
@@ -475,7 +538,7 @@ under `svcbvbrc` first. The ctl will not signal a process it does not own.
 2. First publish, nothing to roll back to: remove the two symlinks, restore the
    bootstrap copies from the proxy repo, reload.
    ```bash
-   CTL_BIN=/bin/rm ops/coconut/ctl-as-svc.sh \
+   CTL_BIN=/bin/rm /rag/bin/ctl-as-svc.sh \
        /rag/config/proxy/conf.d/05-tenants.generated.conf \
        /rag/config/proxy/snippets/tenants-ui-static.generated.conf
    cd ~/Development/coconut-proxy && ./deploy.sh && ./proxy.sh reload
@@ -484,7 +547,7 @@ under `svcbvbrc` first. The ctl will not signal a process it does not own.
    **Remove the two symlinks FIRST, before the deploy** — the order matters and
    is not obvious:
    ```bash
-   CTL_BIN=/bin/rm ops/coconut/ctl-as-svc.sh \
+   CTL_BIN=/bin/rm /rag/bin/ctl-as-svc.sh \
        /rag/config/proxy/conf.d/05-tenants.generated.conf \
        /rag/config/proxy/snippets/tenants-ui-static.generated.conf
    cd ~/Development/coconut-proxy && git checkout main && ./deploy.sh && ./proxy.sh reload
@@ -505,7 +568,7 @@ back on the last verified generation is `gateway repair`, which takes the lock
 and which an operator runs:
 
 ```bash
-ops/coconut/ctl-as-svc.sh gateway repair    # moves `current`, acknowledges the txn
+/rag/bin/ctl-as-svc.sh gateway repair    # moves `current`, acknowledges the txn
 /rag/config/proxy/proxy.sh reload           # repair does NOT signal; this is what makes it live
 ```
 
@@ -521,8 +584,8 @@ Root has not installed the linger + `user@<uid>` drop-in yet, so the user unit
 cannot start at boot. Until then:
 
 ```bash
-ops/coconut/ctl-daemon.sh start
-ops/coconut/ctl-daemon.sh status          # pid + GET /health
+/rag/bin/ctl-daemon.sh start
+/rag/bin/ctl-daemon.sh status          # pid + GET /health
 curl -s -H "X-API-Key: <operator-key>" localhost:23990/v1/gateway | head -c 400
 tail -f /rag/data/ctl/ctl.log
 ```
@@ -542,11 +605,11 @@ mount at all.
 Once root has done its part, switch to the supervised form:
 
 ```bash
-CTL_BIN=/usr/bin/install ops/coconut/ctl-as-svc.sh -m 0644 \
+CTL_BIN=/usr/bin/install /rag/bin/ctl-as-svc.sh -m 0644 \
     ops/systemd/ragstack-ctl.service /rag/config/ctl/units/
-ops/coconut/ctl-daemon.sh stop
-CTL_BIN=/bin/systemctl ops/coconut/ctl-as-svc.sh --user daemon-reload
-CTL_BIN=/bin/systemctl ops/coconut/ctl-as-svc.sh --user enable --now ragstack-ctl.service
+/rag/bin/ctl-daemon.sh stop
+CTL_BIN=/bin/systemctl /rag/bin/ctl-as-svc.sh --user daemon-reload
+CTL_BIN=/bin/systemctl /rag/bin/ctl-as-svc.sh --user enable --now ragstack-ctl.service
 ```
 
 (The `systemctl --user` calls are exactly why `ctl-as-svc.sh` exports
@@ -554,7 +617,7 @@ CTL_BIN=/bin/systemctl ops/coconut/ctl-as-svc.sh --user enable --now ragstack-ct
 neither, and systemd answers "Failed to connect to bus", which reads like a
 broken systemd rather than a missing variable.)
 
-**Rollback:** `ops/coconut/ctl-daemon.sh stop` — it signals only a process whose
+**Rollback:** `/rag/bin/ctl-daemon.sh stop` — it signals only a process whose
 executable is this binary and whose `argv[1]` is `serve`; never `pkill`, and
 never a pid that merely has "ragstack-ctl" somewhere in its command line.
 Nothing else depends on the daemon: every CLI verb works without it.
@@ -753,7 +816,7 @@ ragstack-ctl fleet artifact list                # note the id
 ragstack-ctl selftest                           # sqlite state, no gateway
 ragstack-ctl selftest --postgres local          # the tenant's own postgres on +5
 ragstack-ctl selftest --with-gateway            # publishes and drops a ctltest-* route
-ops/coconut/verify.sh                           # must still say ALL GOOD
+/rag/bin/verify.sh                           # must still say ALL GOOD
 ```
 
 Run the first form **three times**; the plan's acceptance is three green runs
@@ -843,7 +906,7 @@ will not bring its tenants back is a host this command declines to certify.
 The drop-in row reports `n/a` for any account other than `svcbvbrc`: it is a
 root item on the **daemon** account, and a FAIL against `wilke`'s own manager
 would be a finding nobody can act on. Run it as `wilke` for the linger and
-target rows; run it as `svcbvbrc` (`ops/coconut/ctl-as-svc.sh selftest --boot`)
+target rows; run it as `svcbvbrc` (`/rag/bin/ctl-as-svc.sh selftest --boot`)
 for the drop-in row, where today it correctly reports linger and drop-in FAIL
 until root has run the `coconut-host` role.
 
@@ -879,7 +942,7 @@ handed-over tenant's row says `desired_boot: enabled`.
 | artifact | `ragstack-ctl fleet artifact list` | at least one prepared id |
 | selftest | `ragstack-ctl selftest` ×3 | exit 0, every step `succeeded`, every check PASS or n/a |
 | selftest | `ragstack-ctl selftest --postgres local` | exit 0 |
-| selftest | `ragstack-ctl selftest --with-gateway` then `ops/coconut/verify.sh` | exit 0, then ALL GOOD |
+| selftest | `ragstack-ctl selftest --with-gateway` then `/rag/bin/verify.sh` | exit 0, then ALL GOOD |
 | boot | `ragstack-ctl selftest --boot` | exit 0 once items 1–2 are done |
 | no collateral | `ragstack-ctl doctor` · `jq .generation /rag/data/tenants/registry.json` | the five adopted tenants unchanged; the generation advanced only by the selftest's own writes; no new tombstones |
 
@@ -898,7 +961,7 @@ handed-over tenant's row says `desired_boot: enabled`.
 | 3a | `ls /rag/data/ctl/goldens` | the four `*.json` bodies |
 | 6 | `gateway apply --expect-bodies /rag/data/ctl/goldens` | `verified`, same master pid, four bodies identical, `confirm reload` ok |
 | 6 | `ls -l /rag/config/proxy/{conf.d/05-tenants,snippets/tenants-ui-static}.generated.conf` | both symlinks into `…/gateway/current/` |
-| 6 | `ops/coconut/verify.sh` | ALL GOOD |
+| 6 | `/rag/bin/verify.sh` | ALL GOOD |
 | 7 | `ctl-daemon.sh status` | `running (pid …)` + `{"status":"ok",…}` |
 
 **Exit codes.** Every step above is checkable in a script: `0` ok, `1` error,

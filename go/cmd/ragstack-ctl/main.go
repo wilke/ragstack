@@ -1009,6 +1009,7 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|ui [--lines N]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission <name> [op args]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
 		return exitUsage
 	}
 	// The operation verbs take the op envelope (--dry-run/--yes/--wait/…) and
@@ -1020,6 +1021,13 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	// has its own builder.
 	if args[0] == "create" {
 		return cmdTenantCreate(args[1:], registryPath, ragRoot, jsonOut)
+	}
+	// rebase-worktree is a local, direct-only action (no op envelope, no job,
+	// no daemon route): it renames directories the worktree's OWNER account
+	// can rename, which is not necessarily the ctl account a job runs as
+	// until PR-E's handover. See rebase.go.
+	if args[0] == "rebase-worktree" {
+		return cmdTenantRebaseWorktree(args[1:], registryPath, ragRoot)
 	}
 	if tenantOpVerbs[args[0]] {
 		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)

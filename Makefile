@@ -10,6 +10,7 @@
        frontend-install frontend-dev frontend-build frontend-gen-api \
        frontend-build-admin \
        build-ctl install-ctl test-ctl golang-sif go-mode \
+       check-ops install-ops install-node \
        test-all
 
 help: ## Show this help
@@ -158,6 +159,76 @@ install-ctl: build-ctl ## Install go/bin/ragstack-ctl as $(CTL_PREFIX)/ragstack-
 
 test-ctl: ## Run the ctl package tests (goldens, parity vs new-tenant.sh, canaries) with the race detector
 	cd go && $(GO) test ./internal/ctl/... ./cmd/ragstack-ctl/... -race
+
+# ---------------------------------------------------------------------------
+# Production layout (plan "nothing in production may reference a home
+# directory"): the daemon/wrapper scripts, and node, out from under wilke's
+# home directory and onto /rag.
+# ---------------------------------------------------------------------------
+
+# OPS_SCRIPTS is install-ops's and check-ops's shared list. ctl-daemon.sh and
+# ctl-as-svc.sh are the ones anything actually depends on running correctly
+# from $(CTL_PREFIX) today; restore.sh/pre-reboot.sh/snapshot.sh/verify.sh are
+# the reboot runbook's, installed alongside them so the runbook has one
+# location to name, not two.
+OPS_SCRIPTS := ctl-daemon.sh ctl-as-svc.sh restore.sh pre-reboot.sh snapshot.sh verify.sh
+
+check-ops: ## bash -n + a home-directory-reference lint on the six ops/coconut scripts install-ops installs
+	@ok=1; \
+	for f in $(OPS_SCRIPTS); do \
+	  s="ops/coconut/$$f"; \
+	  if [ ! -f "$$s" ]; then echo "check-ops: missing $$s" >&2; ok=0; continue; fi; \
+	  bash -n "$$s" || { echo "check-ops: $$s failed bash -n" >&2; ok=0; }; \
+	  hits=$$(grep -vE '^[[:space:]]*#' "$$s" | grep -nE '/home/|~/' || true); \
+	  if [ -n "$$hits" ]; then \
+	    echo "check-ops: $$s references a home directory outside a full-line comment:" >&2; \
+	    echo "$$hits" | sed "s|^|  $$s:|" >&2; \
+	    ok=0; \
+	  fi; \
+	done; \
+	if [ "$$ok" != 1 ]; then exit 1; fi; \
+	echo "check-ops: ok — bash -n clean, no /home or ~/ outside a comment, in: $(OPS_SCRIPTS)"
+
+install-ops: check-ops ## Install ops/coconut's daemon/wrapper scripts into $(CTL_PREFIX) (0755)
+	@for f in $(OPS_SCRIPTS); do \
+	  install -m 0755 "ops/coconut/$$f" "$(CTL_PREFIX)/$$f" && echo "install-ops: $(CTL_PREFIX)/$$f"; \
+	done
+
+# NODE_PREFIX default matches drivers/real.go's defaultNodeBin/defaultNpmBin
+# (/rag/tools/node/current/bin/{node,npm}) and the CTL_NODE_BIN/CTL_NPM_BIN
+# rows in docs/runbooks/ctl-deploy.md — the three must move together.
+NODE_PREFIX ?= /rag/tools/node
+NODE_VERSION ?=
+NODE_DIST_BASE ?= https://nodejs.org/dist
+
+install-node: ## Download node NODE_VERSION=vX.Y.Z into $(NODE_PREFIX)/<ver> (SHASUMS256.txt-verified) and swing $(NODE_PREFIX)/current at it
+	@if [ -z "$(NODE_VERSION)" ]; then \
+	  echo "install-node: pass NODE_VERSION=vX.Y.Z, e.g. make install-node NODE_VERSION=v26.7.0" >&2; \
+	  exit 2; \
+	fi
+	@set -e; \
+	dest="$(NODE_PREFIX)/$(NODE_VERSION)"; \
+	if [ -x "$$dest/bin/node" ]; then \
+	  echo "install-node: $$dest already installed"; \
+	else \
+	  tarball="node-$(NODE_VERSION)-linux-x64.tar.xz"; \
+	  base="$(NODE_DIST_BASE)/$(NODE_VERSION)"; \
+	  tmp=$$(mktemp -d) || exit 1; \
+	  trap 'rm -rf "$$tmp"' EXIT; \
+	  echo "install-node: downloading $$base/$$tarball"; \
+	  curl -fsSL -o "$$tmp/$$tarball" "$$base/$$tarball"; \
+	  curl -fsSL -o "$$tmp/SHASUMS256.txt" "$$base/SHASUMS256.txt"; \
+	  ( cd "$$tmp" && grep -E " $$tarball\$$" SHASUMS256.txt | sha256sum -c - ) || { \
+	    echo "install-node: $$tarball did not match the published SHASUMS256.txt — refusing to install it" >&2; exit 1; }; \
+	  mkdir -p "$(NODE_PREFIX)"; \
+	  tar -xJf "$$tmp/$$tarball" -C "$$tmp"; \
+	  rm -rf "$$dest"; \
+	  mkdir -p "$$dest"; \
+	  cp -a "$$tmp/node-$(NODE_VERSION)-linux-x64/." "$$dest/"; \
+	  echo "install-node: installed $$dest"; \
+	fi; \
+	ln -sfn "$(NODE_VERSION)" "$(NODE_PREFIX)/current"; \
+	echo "install-node: $(NODE_PREFIX)/current -> $(NODE_VERSION)"
 
 # ---------------------------------------------------------------------------
 # Conformance

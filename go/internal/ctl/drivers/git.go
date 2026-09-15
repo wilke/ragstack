@@ -159,6 +159,31 @@ func (g *RealGit) Describe(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HeadSHA resolves dir's HEAD to the 40-hex commit it names right now.
+//
+// dir is a working tree, not the bare mirror — this is the one Git method
+// that reads a checkout the ctl did not create (a pre-handover, home-directory
+// worktree), so unlike ResolveRef it is not preceded by checkMirror. `^{commit}`
+// peels an annotated tag the same way ResolveRef does, for the rare worktree
+// whose HEAD lands on one.
+func (g *RealGit) HeadSHA(ctx context.Context, dir string) (string, error) {
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%w: %q must be an absolute path", jobs.ErrRefused, dir)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: %s is not a directory on this host", jobs.ErrRefused, dir)
+	}
+	out, err := g.git(ctx, "-C", dir, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(string(out))
+	if !shaRE.MatchString(sha) {
+		return "", fmt.Errorf("%w: %s's HEAD resolved to %q, which is not a commit sha", jobs.ErrRefused, dir, sha)
+	}
+	return sha, nil
+}
+
 // checkDest bounds the two methods that create and delete directory trees,
 // and returns the RESOLVED path they must name to git.
 //

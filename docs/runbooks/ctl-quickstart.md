@@ -13,21 +13,26 @@ is one symlink switch plus one `SIGHUP` to nginx (step 7).
 
 **Accounts.** Everything as `wilke` on coconut in a real terminal (sudo has
 `requiretty`). Anything that writes control-plane state runs as `svcbvbrc`
-through `ops/coconut/ctl-as-svc.sh`; that wrapper is the only sudo path.
+through `/rag/bin/ctl-as-svc.sh`; that wrapper is the only sudo path.
 
-Both repos are on `main` (ragstack 919df6b, coconut-proxy 14baa1b).
+Both repos are on `main` (ragstack 919df6b, coconut-proxy 14baa1b). ragstack
+is built and installed from **`/rag/repos/ragstack`**, the operator clone of
+the bare mirror `/rag/repos/ragstack.git` — see the full runbook's "Where
+production code lives" for the whole layout; a developer's
+`~/Development/ragstack` is where the code is written, not where a deploy is
+built from.
 
 ---
 
 ## 0. Baseline and sanity
 
 ```bash
-cd ~/Development/ragstack && git checkout main && git pull --ff-only
+git -C /rag/repos/ragstack.git fetch --all --tags   # the mirror: pick up what you are about to deploy
+cd /rag/repos/ragstack && git fetch --tags && git checkout main
 cd ~/Development/coconut-proxy && git checkout main && git pull --ff-only
-cd ~/Development/ragstack
 
-S=$HOME/snapshots/pre-ctl-$(date +%F); ops/coconut/snapshot.sh "$S"   # read-only baseline
-ops/coconut/ctl-as-svc.sh version        # proves sudo -> svcbvbrc works (fails until step 2 installs the binary; that is fine)
+S=$HOME/snapshots/pre-ctl-$(date +%F); /rag/bin/snapshot.sh "$S"   # read-only baseline
+/rag/bin/ctl-as-svc.sh version        # proves sudo -> svcbvbrc works (fails until step 2 installs the binary; that is fine)
 ```
 
 **Expect:** `snapshot.json` + `INVENTORY.md` under `$S`. Keep `$S` — step 7 diffs against it.
@@ -47,15 +52,15 @@ curl -s localhost:9000/ragstack/tenants
 (the bootstrap copy — the ctl replaces it with a symlink in step 7).
 **Undo:** `git checkout <previous main> && ./deploy.sh && ./proxy.sh reload`.
 
-## 2. Build, test, install the binary
+## 2. Build, test, install the binary and the ops scripts
 
 ```bash
-cd ~/Development/ragstack
-make golang-sif                        # once: golang:1.23.12 → /rag/apptainer/images/golang.sif
-make go-mode                           # -> GO_MODE=container
-make build-ctl test-ctl install-ctl    # built and tested inside the image; caches under /rag/cache/go
+cd /rag/repos/ragstack
+make golang-sif                                  # once: golang:1.23.12 → /rag/apptainer/images/golang.sif
+make go-mode                                     # -> GO_MODE=container
+make build-ctl test-ctl install-ctl install-ops  # built and tested inside the image; caches under /rag/cache/go
 /rag/bin/ragstack-ctl version
-ops/coconut/ctl-as-svc.sh version
+/rag/bin/ctl-as-svc.sh version
 ```
 
 **Expect:** `go-mode` says `container`; both `version` calls print the same version and
@@ -65,21 +70,22 @@ ops/coconut/ctl-as-svc.sh version
 ## 3. State directories and golden bodies (as svcbvbrc)
 
 ```bash
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
     mkdir -p /rag/data/ctl/{home,locks,gateway,goldens,tmp,artifacts,ui/dist,apptainer/{cache,config}} \
              /rag/config/ctl/{units,templates}
     chmod 2770 /rag/data/ctl /rag/config/ctl
     chmod 0700 /rag/data/ctl/tmp
 '
-G=~/Development/ragstack/go/internal/ctl/testdata/live-2026-09-10/gateway
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c "
+G=/rag/repos/ragstack/go/internal/ctl/testdata/live-2026-09-10/gateway
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "
     install -m 0644 -D -t /rag/data/ctl/goldens $G/root.json $G/tenants.json $G/api-unknown-404.json $G/catchall-404.json
     ls -l /rag/data/ctl/goldens
 "
 ```
 
-**Expect:** four `*.json` files listed. If `install` cannot read `$G`
-(`~/Development` not readable by svcbvbrc), copy the four files to `/tmp` first.
+**Expect:** four `*.json` files listed. If `install` cannot read `$G` (the
+operator clone's permissions do not let svcbvbrc traverse it), copy the four
+files to `/tmp` first.
 **Undo:** `rmdir` the empty directories.
 
 ## 4. `ctl.env` and `ctl-secrets.env`
@@ -112,14 +118,14 @@ CTL_API_KEY_ROLES='{"<operator-key>":"operator","<viewer-key>":"viewer"}'
 EOF
 
 for f in ctl.env:0640 ctl-secrets.env:0600; do n=${f%%:*}; m=${f##*:}
-  base64 -w76 <"$D/$n" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c "
+  base64 -w76 <"$D/$n" | CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "
     umask 077; base64 -d > /rag/config/ctl/$n.tmp && mv /rag/config/ctl/$n.tmp /rag/config/ctl/$n && chmod $m /rag/config/ctl/$n" >/dev/null
 done   # >/dev/null is load-bearing: the pty echoes stdin back out, i.e. your secrets, base64-encoded
        # (it also swallows every base64 -d/mv/chmod error, so a failure here is a bare
        # non-zero exit with no reason; to diagnose, re-run without >/dev/null using a
        # dummy payload, never the real secrets)
 
-CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c '
   set -e; stat -c "%U:%G %a %n" /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
   [ "$(stat -c %a /rag/config/ctl/ctl.env)" = 640 ] && [ "$(stat -c %a /rag/config/ctl/ctl-secrets.env)" = 600 ]
   [ "$(grep -c "^CTL_" /rag/config/ctl/ctl.env)" -ge 5 ] && [ "$(grep -c "^CTL_" /rag/config/ctl/ctl-secrets.env)" -ge 2 ]
@@ -157,8 +163,8 @@ blocks; the ctl allocates from here on.
 ## 6. Prove the gateway generation is a no-op
 
 ```bash
-ops/coconut/ctl-as-svc.sh gateway diff                # -> semantic_noop: true
-ops/coconut/ctl-as-svc.sh gateway apply --dry-run     # real nginx -t on a staged copy; writes nothing live
+/rag/bin/ctl-as-svc.sh gateway diff                # -> semantic_noop: true
+/rag/bin/ctl-as-svc.sh gateway apply --dry-run     # real nginx -t on a staged copy; writes nothing live
 ```
 
 **Expect:** `semantic_noop: true`; dry run passes `nginx -t`. If the dry run warns
@@ -177,10 +183,10 @@ generation 2, avoids that entirely.
 ## 7. Publish (the one live change)
 
 ```bash
-ops/coconut/ctl-as-svc.sh gateway apply --expect-bodies /rag/data/ctl/goldens
-ops/coconut/ctl-as-svc.sh gateway status
+/rag/bin/ctl-as-svc.sh gateway apply --expect-bodies /rag/data/ctl/goldens
+/rag/bin/ctl-as-svc.sh gateway status
 ls -l /rag/config/proxy/conf.d/05-tenants.generated.conf /rag/config/proxy/snippets/tenants-ui-static.generated.conf
-ops/coconut/verify.sh "$S"
+/rag/bin/verify.sh "$S"
 ```
 
 **Expect:** result `verified`; same master pid; `confirm reload` ok (new worker set,
@@ -195,9 +201,9 @@ and install them as svcbvbrc into `/rag/data/ctl/goldens`; a stale golden fails
 the probe and the publish reverts — harmlessly, but it costs a generation
 number each time.
 If refused with *"nginx master is owned by uid N"* the proxy is running as wilke:
-run the apply as wilke (`CTL_USER=wilke ops/coconut/ctl-as-svc.sh gateway apply …`)
+run the apply as wilke (`CTL_USER=wilke /rag/bin/ctl-as-svc.sh gateway apply …`)
 or restart the proxy under svcbvbrc first. Nothing was written in that case.
-**Undo:** `ops/coconut/ctl-as-svc.sh gateway rollback` (stages, tests, HUPs,
+**Undo:** `/rag/bin/ctl-as-svc.sh gateway rollback` (stages, tests, HUPs,
 confirms, probes the target). First publish with nothing to roll back to:
 remove the two symlinks, then `cd ~/Development/coconut-proxy && ./deploy.sh && ./proxy.sh reload`
 — symlinks first, deploy second, never the other way round (full runbook, step 6).
@@ -205,15 +211,15 @@ remove the two symlinks, then `cd ~/Development/coconut-proxy && ./deploy.sh && 
 ## 8. Start the daemon
 
 ```bash
-ops/coconut/ctl-daemon.sh start
-ops/coconut/ctl-daemon.sh status                        # pid, launched-from vs installed binary, GET /health
+/rag/bin/ctl-daemon.sh start
+/rag/bin/ctl-daemon.sh status                        # pid, launched-from vs installed binary, GET /health
 curl -s -H "X-API-Key: <operator-key>" localhost:23990/v1/fleet | head -c 400
 ```
 
 **Expect:** `running (pid …)` and `{"status":"ok",…}`; the fleet call lists four tenants.
 The daemon binds loopback only; the public `/ragstack/admin/` mount stays off until
 the registry sets `ctl.gateway_enabled: true`.
-**Undo:** `ops/coconut/ctl-daemon.sh stop`. It signals only the process whose recorded
+**Undo:** `/rag/bin/ctl-daemon.sh stop`. It signals only the process whose recorded
 identity (`ctl.pid.meta`) matches; a mismatch is refused, not deleted. After a later
 `make install-ctl`, `status` says "installed binary changed since launch; restart".
 
@@ -246,12 +252,12 @@ JSON
 
 # gateway: the proxy tree must carry the two generated include paths (coconut-proxy is
 # coconut-specific in its hand-written parts; the generated includes are host-neutral)
-ops/coconut/ctl-as-svc.sh gateway apply --dry-run
-ops/coconut/ctl-as-svc.sh gateway apply           # no --expect-bodies: the goldens are coconut's responses
+/rag/bin/ctl-as-svc.sh gateway apply --dry-run
+/rag/bin/ctl-as-svc.sh gateway apply           # no --expect-bodies: the goldens are coconut's responses
 # then step 8
 ```
 
-Tenants are still started by hand (or `ops/coconut/restore.sh`) until PR-D;
+Tenants are still started by hand (or `/rag/bin/restore.sh`) until PR-D;
 adoption is read-only inventory. Adding a tenant is `tenant create` (below).
 
 **Adding a tenant to a migrated host: `fleet artifact prepare` + `tenant create`.**
@@ -363,10 +369,10 @@ alone — dropping it means deleting `registry.json` and re-running `adopt-all
 | Check | Command | Expect |
 |---|---|---|
 | tenants routed | `curl -s localhost:9000/ragstack/tenants` | unchanged four |
-| registry | `ops/coconut/ctl-as-svc.sh doctor` | 0 red |
-| gateway | `ops/coconut/ctl-as-svc.sh gateway status` | `txn_state: complete`, generation 1 |
-| daemon | `ops/coconut/ctl-daemon.sh status` | running + health ok |
-| fleet | `ops/coconut/verify.sh "$S"` | ALL GOOD |
+| registry | `/rag/bin/ctl-as-svc.sh doctor` | 0 red |
+| gateway | `/rag/bin/ctl-as-svc.sh gateway status` | `txn_state: complete`, generation 1 |
+| daemon | `/rag/bin/ctl-daemon.sh status` | running + health ok |
+| fleet | `/rag/bin/verify.sh "$S"` | ALL GOOD |
 
 Exit codes everywhere: `0` ok · `1` error · `2` usage · `3` refused. The wrapper
 passes them through; its output comes off a pty, so `tr -d '\r'` before any
