@@ -27,6 +27,41 @@ MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
 # The docs to publish, in nav order. `card`/`blurb` drive the index landing page.
 PAGES = [
     dict(
+        src="HACKATHON.md", out="hackathon.html", label="Start here",
+        card="Hackathon — start here",
+        blurb="The landing sheet for the hackathon deployment: the two URLs, signing in with a BV-BRC account, this tenant's real limits, and the rough edges worth knowing before you hit them.",
+    ),
+    dict(
+        src="UI-GUIDE.md", out="ui-guide.html", label="User guide",
+        card="Using the app in your browser",
+        blurb="The web app click by click: sign in, create a collection, upload documents, ask a question, read around a hit, share it with a teammate — no terminal required.",
+    ),
+    dict(
+        src="USER-GUIDE.md", out="user-guide.html", label="User guide",
+        card="User guide",
+        blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
+    ),
+    dict(
+        src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
+        card="Cookbook — tasks, by audience",
+        blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
+    ),
+    dict(
+        src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
+        card="Cookbook — Using a deployment",
+        blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
+    ),
+    dict(
+        src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
+        card="Cookbook — New-Org Ingest",
+        blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
+    ),
+    dict(
+        src="API.md", out="api.html", label="Reference",
+        card="API Reference",
+        blurb="Every endpoint: auth and tenancy, request and response shapes, status codes, limits, and the data models.",
+    ),
+    dict(
         src="ARCHITECTURE.md", out="architecture.html", label="Overview",
         card="Architecture Overview",
         blurb="A high-level map — capabilities, components, data-flow diagrams, and the full API + service-script surface.",
@@ -45,31 +80,6 @@ PAGES = [
         src="model-registry.md", out="model-registry.html", label="Design",
         card="Model Registry & Dynamic Config",
         blurb="Register models and assign them to tasks (embedding, LLM, reranker) at runtime — the design, the phased plan, and the as-built API.",
-    ),
-    dict(
-        src="USER-GUIDE.md", out="user-guide.html", label="User guide",
-        card="User guide",
-        blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
-    ),
-    dict(
-        src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
-        card="Cookbook — tasks, by audience",
-        blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
-    ),
-    dict(
-        src="API.md", out="api.html", label="Reference",
-        card="API Reference",
-        blurb="Every endpoint: auth and tenancy, request and response shapes, status codes, limits, and the data models.",
-    ),
-    dict(
-        src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
-        card="Cookbook — Using a deployment",
-        blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
-    ),
-    dict(
-        src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
-        card="Cookbook — New-Org Ingest",
-        blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
     ),
     dict(
         src="LOCAL-DEMO.md", out="local-demo.html", label="Runbook",

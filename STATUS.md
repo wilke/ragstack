@@ -2,17 +2,26 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-09-06
-**Deployed:** all four tenants on [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3)
-(**`652be18`**) — lucid-next 24000, asm-next 24020, dev 24040, demo 24060, behind the nginx
-gateway on `:9000` at `/ragstack/<tenant>/api/`. All four verified `200` on `/health`,
-directly and through the gateway, on 2026-09-06. Their checkouts are
-`/rag/repos/tenants/<name>` and their data `/rag/data/tenants/<name>` — **note the data
-dirs drop the `-next` suffix**. `/rag/repos/ragstack` is a **frozen** pre-security
-checkout (`6d6fcf6`) that serves nothing; do not restart anything from it.
-**`main @ 55a0fc2`, six commits ahead of the deployed tag** — of which only
-[#488](https://github.com/wilke/ragstack/pull/488) changes runtime behaviour (the
-word/sentence chunker fill default).
+**Last updated:** 2026-09-15
+**Deployed:** five tenants, no longer all on one tag — behind the nginx gateway on
+`:9000` at `/ragstack/<tenant>/api/`, and publicly at
+`https://www.bv-brc.org/ragstack/<tenant>/`.
+
+| Tenant | Port | Code | UI |
+|---|---|---|---|
+| `hackathon` | 24080 | [`v1.6.1`](https://github.com/wilke/ragstack/releases/tag/v1.6.1) (**`4ea2e38`**) | static build |
+| `dev` | 24040 | `v1.6.1` | dev server 8090 |
+| `asm-next` | 24020 | `v1.5.3-60-g2f0bafc` — `v1.6.0`'s parent; `python/` identical to it, other trees differ | dev server 5212 |
+| `demo` | 24060 | [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3) (**`652be18`**) | dev server 5210 |
+| `lucid-next` | 24000 | `v1.5.3` | dev server 5211 |
+
+Their checkouts are `/rag/repos/tenants/<name>` and their data
+`/rag/data/tenants/<name>` — **note the data dirs drop the `-next` suffix**
+(`asm-next` → `/rag/data/tenants/asm`, `lucid-next` → `/rag/data/tenants/lucid`).
+`/rag/repos/ragstack` is a **frozen** pre-security checkout (`6d6fcf6`) that serves
+nothing and is ~350 commits behind; do not restart anything from it, and do not read
+it as documentation. The upgrade procedure is
+[docs/runbooks/tenant-upgrade.md](docs/runbooks/tenant-upgrade.md).
 
 > Two facts in this header were wrong until 2026-09-06: `v1.5.3` was recorded as `b0fa27b`
 > (it is `652be18`) and `main` as `31ad073`. Distrust either value if you see it quoted

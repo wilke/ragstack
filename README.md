@@ -13,6 +13,11 @@ served by two implementations of one contract-first HTTP API.
 | Scorer / reranker | Cross-encoder + Reciprocal Rank Fusion |
 | REST API | FastAPI (Python), with auth, tenancy and rate limiting |
 
+> **Using a deployment someone else is running?** You do not need this repository.
+> Go to **[docs/HACKATHON.md](docs/HACKATHON.md)** for the hackathon deployment, or
+> **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)** for a deployment generally. Everything
+> below is for building and running RAGStack yourself.
+
 ## Quick Start
 
 Everything runs through the root `Makefile`, which `cd`s into the right
@@ -48,6 +53,10 @@ started. The API listens on **8000** by convention.
 
 Start here, in this order:
 
+- **[docs/HACKATHON.md](docs/HACKATHON.md)** — the landing sheet for the hackathon
+  deployment: URLs, sign-in, this tenant's limits, and the known rough edges.
+- **[docs/UI-GUIDE.md](docs/UI-GUIDE.md)** — the browser app, click by click:
+  create a collection, upload, ask, share.
 - **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)** — for people *using* a deployment:
   sign in, make a collection, ingest, query, read the config.
 - **[docs/COOKBOOK.md](docs/COOKBOOK.md)** — the same ground as questions, for

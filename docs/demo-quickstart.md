@@ -1,5 +1,10 @@
 # RAGStack demo quickstart
 
+> **Already have a URL for a running deployment? Do not read this page.** It
+> stands up a new server from scratch and needs admin rights you will not have on
+> someone else's. Start at **[HACKATHON.md](HACKATHON.md)** or
+> **[USER-GUIDE.md](USER-GUIDE.md)** instead.
+
 Stand up a RAGStack demo from scratch on a fresh host: create a collection,
 upload some PDFs, ask questions over the API, and point Claude (Claude Desktop
 or Claude Code) at it over MCP.
