@@ -17,7 +17,8 @@
 #   uis         the four base-aware Vite dev servers :5210 demo, :5211 lucid-next, :5212 asm-next, :8090 dev
 #               (hackathon is NOT here: its UI is a static build nginx serves from
 #                /rag/data/tenants/hackathon/ui/dist — there is no dev server to start)
-#   gowe        gowe-server :8091 + 21 workers via /scout/wf/gowe/start-gowe.sh, then prometheus :9090, grafana :3001
+#   gowe        gowe-server :8091 + 25 workers via /scout/wf/gowe/start-gowe.sh, then prometheus :9090, grafana :3001
+#               (25 = 21 + the four `ragstack-hackathon` workers added 2026-09-15; see #563)
 #   labelers    the quarantined confirmation-run labelers (Scout/Qwen) via their supervisor
 #   proxy       nginx :9000 — only reports unless --proxy (see below)
 #   legacy-ui   :5173 and :5175 (skipped by default; their APIs :8000/:8010 were already down)
@@ -351,7 +352,7 @@ fi
 
 # ---------------------------------------------------------------- gowe
 if want gowe; then
-  say "== GoWe (server :8091 + 21 workers, then monitoring) — via the fleet's own launcher"
+  say "== GoWe (server :8091 + 25 workers, then monitoring) — via the fleet's own launcher"
   # GoWe was redeployed to v0.19.0 on 2026-09-09 (base path, worker keys). Its operator notes
   # (/scout/wf/gowe/README.md) define the post-reboot procedure and ship an idempotent launcher
   # that reads the worker key from its 0600 file; this script defers to it rather than carrying a
@@ -371,7 +372,7 @@ if want gowe; then
       c=$({ tr '\0' ' ' < "$pr/cmdline"; } 2>/dev/null); [[ $c == ./bin/gowe-worker* ]] || continue
       n=$((n+1)); wn=$(echo "$c" | grep -o -- '--name [^ ]*' | cut -d' ' -f2); [[ -n $wn ]] && echo "${pr#/proc/}" > "$PIDS/$wn.pid"
     done
-    say "    $n gowe-worker processes running (expected 21); pids recorded under $PIDS"; (( n == 21 )) || fail=1
+    say "    $n gowe-worker processes running (expected 25); pids recorded under $PIDS"; (( n == 25 )) || fail=1
   fi
   if (( DRY )); then echo "  [dry-run] $W/start-monitoring.sh"; else "$W/start-monitoring.sh" 2>&1 | sed 's/^/  /'; fi
   wait_http http://127.0.0.1:9090/-/ready 120 "prometheus :9090" || say "    (monitoring only)"
