@@ -11,7 +11,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 |---|---|---|---|
 | `hackathon` | 24080 | [`v1.6.1`](https://github.com/wilke/ragstack/releases/tag/v1.6.1) (**`4ea2e38`**) | static build |
 | `dev` | 24040 | `v1.6.1` | dev server 8090 |
-| `asm-next` | 24020 | `v1.5.3-60-g2f0bafc` — `v1.6.0`'s parent; `python/` identical to it, other trees differ | dev server 5212 |
+| `asm-next` | 24020 | `v1.6.1` | dev server 5212 |
 | `demo` | 24060 | [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3) (**`652be18`**) | dev server 5210 |
 | `lucid-next` | 24000 | `v1.5.3` | dev server 5211 |
 

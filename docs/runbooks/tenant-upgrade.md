@@ -167,7 +167,7 @@ Skip this whole step for a dev-UI tenant.
 cd "$W/frontend"
 npm ci
 npx vite build --base "/ragstack/$T/ui/"
-rsync -a --delete dist/ "$D/ui/dist/"
+rsync -a --delete --chmod=D770,F660 dist/ "$D/ui/dist/"
 ```
 
 Three things that are easy to get wrong:
@@ -183,9 +183,17 @@ Three things that are easy to get wrong:
   clean way to pass `--base` and additionally gates the deploy on a full
   typecheck. Use the direct `npx` form; run `npm run typecheck` separately if
   you want the check.
-- **`node`/`npx` live only under `$HOME`** (nvm / `~/.local`) on this host, so
-  run this from a **login shell** — `ops/coconut/restore.sh:147` fails its own
-  preflight on exactly this.
+- **Use the shared toolchain at `/rag/tools/node/current/bin`** (node v26.7.0,
+  installed by `make install-node`, added in PR-D2 / #554). That is what the ctl
+  and the v1.6.x tenant upgrades used. Put it on `PATH` rather than relying on a
+  login shell picking up an nvm install under `$HOME`.
+- `ops/coconut/restore.sh:147` still resolves node from `$HOME` in its preflight,
+  so that line — not the toolchain — is the thing that wants a login shell.
+
+- **`--chmod=D770,F660`.** A plain `rsync -a` preserves the build's 644/755
+  modes; the tree's convention is 2770 dirs and 660 files. The directory ACLs
+  make nginx work either way, so this is about matching the tree, not about
+  whether the UI serves.
 
 The destination is the `alias` path nginx already serves:
 `alias /rag/data/tenants/hackathon/ui/dist/;` in
@@ -211,21 +219,21 @@ fails fast on some classes of stale config rather than starting wrong — see
 
 ## 5. Restart the API by the recipe in `ops/coconut/restore.sh`
 
-The canonical launch is `restore.sh`'s `apis` group,
-`ops/coconut/restore.sh:259-283`. Two facts about it matter here:
+The canonical launch is `restore.sh`'s `apis` group. Since **`eb9803f`**
+(PR #559) that group covers every registry tenant including `hackathon`, and
+exports `RAGSTACK_GIT_TAG` / `RAGSTACK_GIT_SHA` from each tenant's own worktree
+on every launch — so a script-started API and a hand-started one report the same
+thing at `/v1/version`.
 
-- **`restore.sh` does not know about `hackathon`.** Its `apis` loop is a
-  literal list of four — `"lucid-next lucid 24000" "asm-next asm 24020"
-  "dev dev 24040" "demo demo 24060"` (`ops/coconut/restore.sh:263` and `:276`).
-  `hackathon` is absent, so a post-reboot `restore.sh` run will **not** bring it
-  back. Launch it by hand with the same recipe, and treat this as a known gap.
-- **`restore.sh` does not export `RAGSTACK_GIT_TAG` / `RAGSTACK_GIT_SHA`.**
-  Nothing under `ops/` sets them. The live `hackathon` process has them because
-  the operator exported them by hand at launch. **If you omit them, `/v1/version`
-  falls back to running `git describe` / `git rev-parse` in the worktree
-  (`python/ragstack/version.py:186-196`) — which usually still reports the right
-  thing, but stops being the supervisor's authoritative word about *what was
-  launched*.** Export them.
+> Before `eb9803f` neither was true: the `apis` loop was a literal list of four
+> with `hackathon` absent, and nothing under `ops/` set the version variables.
+> If you are working on a checkout older than that commit, both caveats apply and
+> you must launch `hackathon` by hand.
+
+When you do launch by hand, still export the two variables. Omitting them makes
+`/v1/version` fall back to `git describe` / `git rev-parse` in the worktree
+(`python/ragstack/version.py:186-196`) — usually the right answer, but no longer
+the supervisor's authoritative word about *what was launched*.
 
 Stop the old process by its recorded pid (see "Never stop a service by
 process-name pattern" above), then:
@@ -367,7 +375,7 @@ OLD=$(cat "$B/worktree-sha")
 git -C "$W" checkout --detach "$OLD"
 # static UI: rebuild and re-rsync — the dist does NOT roll back with the worktree
 cd "$W/frontend" && npm ci && npx vite build --base "/ragstack/$T/ui/" \
-  && rsync -a --delete dist/ "$D/ui/dist/"
+  && rsync -a --delete --chmod=D770,F660 dist/ "$D/ui/dist/"
 #   (or restore the saved bundle directly: rsync -a --delete "$B/ui-dist/" "$D/ui/dist/")
 # restart by recorded pid, with RAGSTACK_GIT_TAG/SHA re-derived from $OLD
 # re-adopt: ragstack-ctl adopt <t> … --readopt --commit
@@ -398,7 +406,7 @@ it — this table drifts with every upgrade.**
 |---|---|---|---|---|---|
 | `hackathon` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24080 | **static** (`<data_dir>/ui/dist`) | `/rag/data/tenants/hackathon` |
 | `dev` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24040 | dev, Vite `:8090` | `/rag/data/tenants/dev` |
-| `asm-next` | `v1.5.3-60-g2f0bafc` | `2f0bafc` | 24020 | dev, Vite `:5212` | `/rag/data/tenants/asm` |
+| `asm-next` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24020 | dev, Vite `:5212` | `/rag/data/tenants/asm` |
 | `demo` | `v1.5.3` | `652be18` (= `v1.5.3`) | 24060 | dev, Vite `:5210` | `/rag/data/tenants/demo` |
 | `lucid-next` | `v1.5.3` | `652be18` (= `v1.5.3`) | 24000 | dev, Vite `:5211` | `/rag/data/tenants/lucid` |
 
@@ -414,24 +422,25 @@ an upgrade at the wrong tenant's state.
 
 ### About `asm-next`
 
-`asm-next` sits on `2f0bafc`, which is **`v1.6.0`'s immediate parent**, not a
-separate line of development. The brief this runbook was written from described
-it as "main `2f0bafc`, tenant code identical to v1.6.0". Precisely:
+`asm-next` ran on `2f0bafc` — **`v1.6.0`'s immediate parent**, not a separate line
+of development — until it was moved to **`v1.6.1` (`4ea2e38`)** and re-adopted on
+2026-09-15. All three of `dev`, `hackathon` and `asm-next` are now on `v1.6.1`
+with the v2 templates; `demo` and `lucid-next` remain on `v1.5.3`.
 
-- The registry records `code.tag` as `v1.5.3-60-g2f0bafc` (a `git describe`),
-  not the literal string `main`. The *prepared artifact*
-  `main-2f0bafce7b55` in `registry.json` → `artifacts` does carry
-  `tag: "main"`, but `asm-next`'s `artifact_id` is `null` — it is not running
-  from that artifact.
-- **The API code really is identical.** `git diff --stat 2f0bafc f779d0c --
-  python/` is empty. The whole v1.6.0 delta is the ctl control plane
+The detail is worth keeping because it is the shape of every "is this tenant
+current?" question:
+
+- While it sat on `2f0bafc` the registry recorded `code.tag` as
+  `v1.5.3-60-g2f0bafc` (a `git describe`), **not** the literal string `main` —
+  a registry tag only becomes a release tag when the worktree is checked out at
+  that tag and re-adopted.
+- **The API code was already identical.** `git diff --stat 2f0bafc f779d0c --
+  python/` is empty; the whole v1.6.0 delta was the ctl control plane
   (`go/internal/ctl/**`), `contracts/ctl/**`, `ops/`, `docs/`, `conformance/`,
   `Makefile`, and **one** frontend file — `frontend/src/admin/api/ctlSchema.d.ts`,
-  the generated TypeScript typings for the ctl admin UI, which no tenant UI
-  imports.
-- So `asm-next` is functionally on v1.6.0 for everything a tenant's users touch,
-  and `/v1/version` answers there. Its registry tag will keep reading
-  `v1.5.3-60-g2f0bafc` until it is checked out at the tag and re-adopted.
+  generated typings for the ctl admin UI that no tenant UI imports.
+- So "functionally current" and "reads as current in the registry" are different
+  claims. Check `code.tag`, not just behaviour.
 
 ---
 
