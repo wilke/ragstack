@@ -42,9 +42,25 @@ type RealInstances struct {
 	// so `--bind /etc:/qdrant/storage` out of a mangled registry row is not a
 	// misconfiguration, it is a store with /etc in it.
 	Roots []string
+	// Env is apptainer's OWN environment for EVERY call this driver makes:
+	// APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR under the ctl's state dir.
+	// The instance registry lives under the config dir, so a `list` or a
+	// `stop` made without it looks in $HOME/.apptainer and sees NOTHING —
+	// which is how coconut's first instance-mode selftests left every
+	// sandbox store running: Run set the directories for the start, Stop and
+	// List ran without them, reported "absent", and three sandboxes' worth
+	// of qdrant and elasticsearch kept the block's ports for the next run.
+	Env []string
 }
 
 var _ jobs.Instances = (*RealInstances)(nil)
+
+// env is Env plus a call's own additions (spec.ExtraEnv), the driver's first
+// so a spec cannot redirect apptainer's state directory.
+func (i *RealInstances) env(extra []string) []string {
+	out := append([]string(nil), i.Env...)
+	return append(out, extra...)
+}
 
 // The three timeouts, which differ by what the command actually waits for.
 //
@@ -73,9 +89,10 @@ const (
 // between runs on a build of apptainer that stops sorting.
 func (i *RealInstances) List(ctx context.Context) ([]jobs.Instance, error) {
 	stdout, _, err := i.run.Run(ctx, Spec{
-		Program: i.Bin,
-		Args:    []string{"instance", "list", "--json"},
-		Timeout: instanceListTimeout,
+		Program:  i.Bin,
+		Args:     []string{"instance", "list", "--json"},
+		ExtraEnv: i.env(nil),
+		Timeout:  instanceListTimeout,
 	})
 	if err != nil {
 		return nil, err
@@ -178,7 +195,7 @@ func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 	_, _, err = i.run.Run(ctx, Spec{
 		Program:  i.Bin,
 		Args:     argv,
-		ExtraEnv: childEnv,
+		ExtraEnv: i.env(childEnv),
 		Timeout:  instanceRunTimeout,
 	})
 	return err
@@ -205,7 +222,7 @@ func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, ho
 	}
 	argv := append([]string{"exec"}, binds...)
 	argv = append(argv, sif, "cp", "-R", containerDir+"/.", "/__seed/")
-	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv, Timeout: instanceRunTimeout})
+	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv, ExtraEnv: i.env(nil), Timeout: instanceRunTimeout})
 	return err
 }
 
@@ -226,9 +243,10 @@ func (i *RealInstances) Stop(ctx context.Context, name string) error {
 		return err
 	}
 	_, _, err := i.run.Run(ctx, Spec{
-		Program: i.Bin,
-		Args:    []string{"instance", "stop", name},
-		Timeout: instanceStopTimeout,
+		Program:  i.Bin,
+		Args:     []string{"instance", "stop", name},
+		ExtraEnv: i.env(nil),
+		Timeout:  instanceStopTimeout,
 	})
 	if err == nil || isNoSuchInstance(err) {
 		return nil

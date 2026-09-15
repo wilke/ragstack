@@ -30,7 +30,41 @@ func newInstances(t *testing.T) (*RealInstances, *stub, string, string) {
 	if err := os.MkdirAll(filepath.Join(root, "storage"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return &RealInstances{run: &runner{}, Bin: s.Path, Roots: []string{root}}, s, root, sif
+	return &RealInstances{run: &runner{}, Bin: s.Path, Roots: []string{root},
+		Env: []string{"APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config")}}, s, root, sif
+}
+
+// Every apptainer call carries the ctl's APPTAINER_CONFIGDIR: the instance
+// registry lives there, and a List or Stop without it answers about a
+// different, empty registry (which is how sandboxes were once left running).
+func TestInstancesEveryCallCarriesTheCtlApptainerConfigDir(t *testing.T) {
+	d, s, root, sif := newInstances(t)
+	s.respond("list", `{"instances":[]}`, "", 0)
+	want := "APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config")
+	_, _ = d.List(context.Background())
+	_ = d.Stop(context.Background(), "qdrant-dev")
+	_ = d.Run(context.Background(), jobs.InstanceSpec{Name: "qdrant-dev", SIF: sif})
+	if err := d.SeedConfigDir(context.Background(), sif, "/usr/share/elasticsearch/config", filepath.Join(root, "storage")); err != nil {
+		t.Fatalf("SeedConfigDir: %v", err)
+	}
+	// The stub keys a call by its SECOND argv element: `instance <verb>` gives
+	// the verb, `exec --bind …` gives "--bind".
+	for _, key := range []string{"list", "stop", "run", "--bind"} {
+		env := s.childEnv(key)
+		if len(env) == 0 {
+			t.Errorf("no %s call reached the stub", key)
+			continue
+		}
+		found := false
+		for _, e := range env {
+			if e == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the %s call lacks %s in its environment: %v", key, want, env)
+		}
+	}
 }
 
 // listJSON is a captured `apptainer instance list --json` document.

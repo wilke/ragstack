@@ -161,8 +161,9 @@ func NewReal(o RealOptions) *Real {
 		archive: &RealArchive{opts: o},
 		// The instance driver binds host paths into a container, so it gets
 		// the same approved roots the drivers that write under them do.
-		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots},
-		crontab:   &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
+		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
+			Env: apptainerEnv(o.Roots.CtlStateDir)},
+		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
 
@@ -783,5 +784,15 @@ func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
 			return 0, err
 		}
 		dir = parent
+	}
+}
+
+// apptainerEnv is the apptainer state the ctl owns — the same two directories
+// the rendered units set — so every apptainer call, from any account the ctl
+// runs as, reads and writes one instance registry.
+func apptainerEnv(ctlStateDir string) []string {
+	return []string{
+		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
+		"APPTAINER_CONFIGDIR=" + filepath.Join(ctlStateDir, "apptainer", "config"),
 	}
 }
