@@ -103,17 +103,32 @@ The obvious fix — put the registry's coordinates on the submission next to
 * **The trade-off, stated plainly:** with one shared group, every container that
   group runs carries **every** tenant's registry DSN in its environment. Given
   the point above, splitting into per-tenant groups does not fix that — it
-  narrows which worker holds which secret at rest and nothing more. The actual
-  containment today is that GoWe is fronted by the tenant APIs, which submit a
-  fixed registered workflow: a tenant user never chooses a group, an image, or a
-  tool. Treat the group as **placement and convenience, not security**, until
+  narrows which worker holds which secret at rest and nothing more.
+* **And nothing else contains it either.** An earlier draft of this ADR said the
+  containment was that GoWe sits behind the tenant APIs. That is the same mistake
+  as the one this ADR corrects — naming a control as a boundary when it is not
+  one — so it is recorded rather than quietly replaced. The tenant APIs submit a
+  fixed, server-registered workflow with a server-configured group, and no tenant
+  input reaches the submission's labels, image or tool; all of that is true and
+  none of it is containment, because **the API submits *as the caller***
+  (`python/ragstack/api/security.py` `gowe_caller` returns the principal's own
+  token, and `documents.py` 401s a principal without one). Everyone who can use
+  the ingest path therefore already holds a credential GoWe accepts directly, and
+  GoWe's submission API is publicly proxied — only `/api/v1/workers` is guarded
+  at the gateway. Group names are enumerable via `GET /api/v1/fleet`, and GoWe
+  auto-provisions a user on first contact, so there is no membership list to be
+  outside of. Treat the group as **placement and convenience, not security**.
   GoWe#261 (submitter-side group ACL) and GoWe#262 (per-group image and
-  admin-registered-workflow restriction) land.
-* **Because a group was never the boundary, any credential that has sat in a
-  worker env file should be rotated once it no longer needs to be there** — at
-  the time of writing, `NEO4J_PASSWORD` on the `ragstack` group and the
-  hackathon `COLLECTION_STORE_DSN`. Rotation is cheap; the assumption that a
-  group contained them was not true for the period they were there.
+  admin-registered-workflow restriction) are the controls; until they land there
+  is no boundary, only the absence of an attempt.
+* **Consequently, credentials that have sat in a worker env file should be
+  rotated as part of that hardening** — `NEO4J_PASSWORD` on the `ragstack` group,
+  the hackathon `COLLECTION_STORE_DSN`, and, by exactly the same argument,
+  `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` on the `default` group, which is where an
+  unlabelled submission lands. This deployment is a development and
+  demonstration environment, so the rotation is scheduled with #261/#262 rather
+  than treated as an incident; the principle is that the assumption a group
+  contained them was never true for the period they were there.
 * Defence in depth, not a substitute for care: the worker redacts secret values
   from captured task output, and `ragstack.ops.ingest_target` scrubs DSNs out of
   third-party error text before printing a refusal. Neither licenses putting a
@@ -128,7 +143,9 @@ The obvious fix — put the registry's coordinates on the submission next to
   secrets** — `POST /submissions` takes an optional `secrets: {NAME: value}` map,
   encrypted at rest the way the BV-BRC token already is, never echoed into
   `inputs`, `submitted_inputs`, the task job, the UI or the logs, delivered only
-  to tasks whose tool opts in (`gowe:Execution.secret_env: [COLLECTION_STORE_DSN]`),
+  to tasks whose tool opts in — either naming what it needs
+  (`gowe:Execution.secret_env: [COLLECTION_STORE_DSN]`) or taking all of the
+  submission's secrets with `inject_secrets: true` —
   and scrubbed from the task row at terminal state.
 
   That fits here better, because the tenant API already holds the credential at
