@@ -71,10 +71,10 @@ Go to **Collections** and click **＋ New collection**.
 The collection is **private to you** the moment it exists. Nobody else can read it,
 or even tell that it exists, until you share it.
 
-**If creation is refused with "a collection with that id already exists":** on a
-deployment with a per-owner quota, that message is also what you get when you have
-hit your limit — the app currently shows the wrong explanation. Count your
-collections; if you are at the cap, delete one. Renaming will not help.
+**If you are at your collection limit,** the app tells you so directly — how many
+you own, what the limit is, and what to do about it. The remedies are to delete a
+collection you own, or to transfer one to another owner. Renaming does not help:
+the limit counts collections you own, not names.
 
 ## Uploading documents
 
@@ -82,12 +82,15 @@ Same tab, with your collection selected: drop files into the upload area.
 
 `[screenshot: upload area mid-ingest, with the progress readout]`
 
-- **PDFs only, in the browser.** The picker offers nothing else. The API accepts
-  plain text and Markdown too, so if you need those, use `POST /v1/ingest/upload`
-  directly.
-- Up to 50 files per upload, 50 MB per document.
-- **One ingest job at a time.** Start a second while one is running and you get a
-  refusal — wait.
+- **PDFs only, in the browser.** The picker offers nothing else. The API also
+  accepts plain text, Markdown and XML (JATS) — which is how the open-access
+  corpora were built — so for those use `POST /v1/ingest/upload` directly.
+- **Three separate limits:** up to 50 files per upload, 50 MB per document, and
+  500 MB total per upload. A single oversized file and an oversized batch are
+  refused for different reasons.
+- **One ingest job at a time**, per person. Start a second while one is running
+  and you get a refusal with a retry hint — wait. (Admin principals are exempt,
+  so an operator demoing may not see this.)
 
 Progress appears as the job runs, per document. Ingest is not instant: the files
 are uploaded, then chunked and embedded in the background.
@@ -153,6 +156,14 @@ not yours, you get a refusal the dialog explains.
 
 **Transferring ownership is API-only** — there is no control for it in the app.
 See [cookbook-users.md](cookbook-users.md).
+
+> **Transfer moves ownership, not searchability.** Documents are stamped with the
+> owner's identity when they are ingested, and nothing re-stamps them on transfer,
+> so the new owner receives a collection they cannot search. Sharing does not have
+> this problem — a share widens the recipient's view correctly; it is ownership
+> transfer specifically that breaks. Tracked as
+> [#558](https://github.com/wilke/ragstack/issues/558). Prefer sharing until it is
+> fixed.
 
 ### Groups
 
