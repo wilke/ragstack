@@ -206,10 +206,31 @@ class RagGenerator:
             used += sep + len(block)
         return "\n\n".join(parts)
 
+    def format_context(self, sources: list[Source]) -> str:
+        """The passages as they will reach the model, within the char budget.
+
+        Public because a templated request renders ``{{context}}`` itself
+        (ADR-0008) and must get the SAME text the default path would produce —
+        same budget, same passage-first fitting, same neighbour delimiters. A
+        second formatter would be a second set of rules to keep in step.
+        """
+        return self._format_context(sources) if sources else "(no relevant passages found)"
+
     async def generate(self, query: str, sources: list[Source]) -> str:
-        context = self._format_context(sources) if sources else "(no relevant passages found)"
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"},
+            {"role": "user", "content": f"Context:\n{self.format_context(sources)}\n\nQuestion: {query}"},
         ]
         return await self._llm.complete(messages)
+
+    async def generate_with(self, system: str, user: str) -> str:
+        """Generate from an already-rendered pair of messages (ADR-0008).
+
+        Takes rendered STRINGS rather than a template, so this module stays
+        unaware of `ragstack.prompts`: message assembly and the transport live
+        here, template semantics live there, and neither has to know the other's
+        rules. The caller renders with :meth:`format_context`.
+        """
+        return await self._llm.complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        )

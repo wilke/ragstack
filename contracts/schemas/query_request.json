@@ -4,7 +4,9 @@
   "title": "QueryRequest",
   "description": "Full RAG pipeline query request with rewrite, retrieve, rerank, and generate.",
   "type": "object",
-  "required": ["query"],
+  "required": [
+    "query"
+  ],
   "properties": {
     "query": {
       "type": "string"
@@ -19,7 +21,9 @@
       "items": {
         "type": "string"
       },
-      "default": ["passthrough"]
+      "default": [
+        "passthrough"
+      ]
     },
     "filters": {
       "description": "Metadata equality constraints, ANDed. A value is a string, an integer or a boolean, or a list of strings or a list of integers (membership) \u2014 one type per list, booleans only as scalars, and an empty list matches nothing (issue #196). The bound is what Qdrant's MatchValue/MatchAny can represent: float, null, an object, a nested list, a boolean inside a list and a mixed str/int list are all refused with 400. Range operators such as {\"gte\": 2025} are NOT supported. Values are matched by type, never coerced: `year` is an integer field, so {\"year\": \"2025\"} is a 400 rather than a silent zero-hit read (issue #471).",
@@ -27,15 +31,23 @@
       "additionalProperties": {
         "anyOf": [
           {
-            "type": ["string", "integer", "boolean"]
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ]
           },
           {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           {
             "type": "array",
-            "items": { "type": "integer" }
+            "items": {
+              "type": "integer"
+            }
           }
         ]
       },
@@ -51,23 +63,35 @@
     },
     "rerank": {
       "description": "Per-request rerank control. null (default) preserves the server-wide default; false forces a rerank skip; true is a no-op when no reranker is wired.",
-      "type": ["boolean", "null"],
+      "type": [
+        "boolean",
+        "null"
+      ],
       "default": null
     },
     "rerank_candidates": {
       "description": "Override for the candidate-pool depth fed to the reranker. null (default) uses the server default (max(top_k, server's rerank_candidates)).",
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "default": null
     },
     "collection": {
       "description": "Registry collection id to query. null (default) uses the default collection; an unknown id returns 404. See GET /v1/collections.",
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null
     },
     "collections": {
-      "description": "Multi-collection fused retrieval (issue #253): registry collection ids to query together. Every id is resolved and read-authorized BEFORE any retrieval runs (an unknown or unreadable id is a 404 for the whole request — no partial answers; a dormant member is a 503 + Retry-After for the whole request); then one single-collection retrieval leg runs per id, concurrently, the legs are fused with RRF, reranked once over the union and cut to top_k. Each returned Source carries the member it came from in `collection`; a document present in two collections appears once per collection. Mutually exclusive with `collection` (both → 422). 1 to 5 unique ids (more, duplicates, or an empty list → 422); a single id behaves exactly like `collection`. Never expressed as one many-valued store filter — one leg per collection.",
-      "type": ["array", "null"],
+      "description": "Multi-collection fused retrieval (issue #253): registry collection ids to query together. Every id is resolved and read-authorized BEFORE any retrieval runs (an unknown or unreadable id is a 404 for the whole request \u2014 no partial answers; a dormant member is a 503 + Retry-After for the whole request); then one single-collection retrieval leg runs per id, concurrently, the legs are fused with RRF, reranked once over the union and cut to top_k. Each returned Source carries the member it came from in `collection`; a document present in two collections appears once per collection. Mutually exclusive with `collection` (both \u2192 422). 1 to 5 unique ids (more, duplicates, or an empty list \u2192 422); a single id behaves exactly like `collection`. Never expressed as one many-valued store filter \u2014 one leg per collection.",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "string"
       },
@@ -79,7 +103,11 @@
     "retrieval_mode": {
       "description": "Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or bm25 (sparse only). The graph leg is orthogonal (use_graph).",
       "type": "string",
-      "enum": ["hybrid", "vector", "bm25"],
+      "enum": [
+        "hybrid",
+        "vector",
+        "bm25"
+      ],
       "default": "hybrid"
     },
     "context_window": {
@@ -91,13 +119,36 @@
     },
     "llm": {
       "description": "Registered model id to generate the answer with for THIS request only (global assignment untouched; retrieval unchanged). Unknown id 404; non-llm model 400. See GET /v1/models/available.",
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null
     },
     "reranker": {
       "description": "Registered model id to rerank with for THIS request only. Unknown id 404; non-reranker model 400. See GET /v1/models/available.",
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null
+    },
+    "template": {
+      "description": "Named server-side prompt template to render the GENERATION prompt with (ADR-0008). Templates are per-tenant deployment config; see GET /v1/prompt-templates for the ids and their declared slots. Unknown id -> 404. NOT the retrieval string: `query` is what gets embedded and BM25'd, while this shapes only what the model is asked to do with the passages that come back. The server never derives one from the other, and a caller must not put an instruction block in `query`. null/absent (the default) leaves generation byte-identical to a server without templates. Bounded by the same pattern as `id` in prompt_templates_response.json \u2014 it is the same identifier, it is caller-supplied, and it is reflected into the 404 body and the logs.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "template_vars": {
+      "description": "Values for the slots the selected template declares. String values only, each within the slot's declared max_len; a slot the template does not declare is a 422, and a required slot left unset is a 422. Values are substituted LITERALLY and the result is not re-rendered, so template syntax inside a value is inert text, and they are never placed in the system message. This bounds abuse and keeps a request reproducible; it does NOT make a value trusted \u2014 see ADR-0008. Ignored when `template` is null.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
     }
   },
   "additionalProperties": false
