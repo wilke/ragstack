@@ -57,9 +57,11 @@ var preconditions = map[string][]string{
 	// it copies a tree the tenant is supposed to be serving from.
 	"migrate-local": {DiskLow, PortOwnerMismatch, EnvNotSystemdParsable, PortNotListening},
 	// Decommission quarantines a tenant whose recovery bundle must exist and
-	// whose identity must be certain; a tenant that is already down is not a
-	// tenant whose state the ctl can vouch for.
-	"decommission": {PortOwnerMismatch, DiskLow, PortNotListening},
+	// whose identity must be certain. A tenant that is already DOWN is the
+	// normal input — the selftest stops its sandbox before it quarantines it,
+	// and an operator tidies up a tenant that was stopped first — so
+	// port_not_listening is tolerated (see below), not raised.
+	"decommission": {PortOwnerMismatch, DiskLow},
 	// Credential and env edits rewrite the env files the API will reload, so
 	// the grammar must already be clean.
 	"key-mint":      {EnvNotSystemdParsable},
@@ -118,6 +120,7 @@ var tolerates = map[string][]string{
 	"start":         {PortNotListening},
 	"restart":       {PortNotListening},
 	"stop":          {PortNotListening},
+	"decommission":  {PortNotListening},
 }
 
 // Tolerated lists the findings op lowers to warn.

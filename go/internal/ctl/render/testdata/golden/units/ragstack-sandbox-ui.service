@@ -13,6 +13,7 @@ UMask=0002
 WorkingDirectory=/rag/repos/tenants/sandbox/frontend
 Environment=VITE_API_TARGET=http://127.0.0.1:24080
 ExecStart=/rag/repos/tenants/sandbox/frontend/node_modules/.bin/vite --host 127.0.0.1 --port 5300 --strictPort --base /ragstack/sandbox/ui/
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=30
 Restart=on-failure

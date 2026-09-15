@@ -97,12 +97,47 @@ const (
 	// EnvExternalStorePorts lists the shared-store ports a tenant may point at
 	// from outside its own block (6333, 6343, 9200). ctl.env.
 	EnvExternalStorePorts = "CTL_EXTERNAL_STORE_PORTS"
+
+	// The host programs the real drivers run and the two directories they work
+	// from (PR-D). Each is an ABSOLUTE path; the drivers never search PATH, so
+	// a host that keeps one of these somewhere unusual — coconut's node lives
+	// under a user's ~/.local, not /rag/tools — says so here rather than
+	// relying on the daemon's environment. ctl.env, all optional: each falls
+	// back to the default drivers.NewReal names.
+	EnvSystemctlBin = "CTL_SYSTEMCTL_BIN"
+	EnvGitBin       = "CTL_GIT_BIN"
+	EnvNodeBin      = "CTL_NODE_BIN"
+	EnvNpmBin       = "CTL_NPM_BIN"
+	EnvApptainerBin = "CTL_APPTAINER_BIN"
+	// EnvMirror is the BARE repository `fleet artifact prepare` resolves refs
+	// and adds worktrees in. Default <rag-root>/repos/ragstack.git. The ctl
+	// never creates it: cloning the mirror is an operator's deploy-time act.
+	EnvMirror = "CTL_MIRROR"
+	// EnvNpmCache is the npm cache `fleet artifact prepare` installs through.
+	// Default <rag-root>/cache/npm — never ~/.npm, which is shared with
+	// whatever else the account runs and is in no backup.
+	EnvNpmCache = "CTL_NPM_CACHE"
 )
+
+// HostToolEnvKeys are the PR-D host-program variables.
+//
+// They are kept out of the Ansible-template reconciliation for now: the
+// `ragstack-ctl` role's ctl.env template is another agent's file in this PR
+// series, and the defaults are correct for a host that installs node where the
+// plan says. An operator sets them by hand in ctl.env today (documented in
+// docs/runbooks/ctl-deploy.md); when the role templates them, fold this list
+// into the reconciled set by deleting the exception in env_template_test.go.
+func HostToolEnvKeys() []string {
+	return []string{
+		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
+		EnvMirror, EnvNpmCache,
+	}
+}
 
 // EnvKeys returns every CTL_* variable the daemon reads, sorted the way this
 // file declares them. Used by the Ansible-template reconciliation test.
 func EnvKeys() []string {
-	return []string{
+	return append([]string{
 		EnvListen,
 		EnvAPIKeys, EnvAPIKeyRoles, EnvAPIKeyNames, EnvAPIKeyPrincipals,
 		EnvAdminSubjects, EnvViewerSubjects,
@@ -111,7 +146,7 @@ func EnvKeys() []string {
 		EnvLogLevel, EnvLogFormat,
 		EnvRateLimitPerCredential, EnvRateLimitTarpitAt, EnvRateLimitTarpitDelay,
 		EnvExternalStorePorts,
-	}
+	}, HostToolEnvKeys()...)
 }
 
 // SecretEnvKeys are the variables that must live in ctl-secrets.env (0600)

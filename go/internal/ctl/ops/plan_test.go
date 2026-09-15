@@ -92,9 +92,24 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 	if mutate != nil {
 		mutate(tenant)
 	}
+	// The artifact every ctl-managed fixture tenant was built from. It is in
+	// the FLEET rather than only on the row because `restore --as` lays its
+	// fresh tenant down from the source's artifact, and a row naming an
+	// artifact the fleet does not have is an inconsistent registry rather than
+	// a fixture.
+	f.Artifacts[testArtifactID] = &registry.Artifact{
+		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3",
+		Worktree:  "/rag/data/ctl/artifacts/" + testArtifactID + "/worktree",
+		UIDist:    "/rag/data/ctl/artifacts/" + testArtifactID + "/worktree/frontend/dist",
+		PythonEnv: "/rag/envs/ragstack", PreparedAt: "2026-09-14T09:00:00Z", PreparedBy: "local:3581",
+		SchemaCompatible: true,
+	}
 	tp := paths.TenantPaths(roots, tenant.Name, tenant.ManifestName)
 	fake := drivers.NewFake(drivers.FakeOptions{
 		Roots: []string{"/rag"},
+		// The fixture tenant is routed by the live gateway, so the fence and
+		// the quarantine have a route to publish over.
+		Routed: []string{name},
 		Files: map[string][]byte{
 			tp.TenantEnv:  env,
 			tp.SecretsEnv: ledgerEnv(),
@@ -106,7 +121,14 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 		Listening:   []int{tenant.Ports.API},
 		Collections: map[string][]string{tenant.Stores.Qdrant.URL: {"docs", "chunks"}},
 		Indices:     map[string][]string{tenant.Stores.Elasticsearch.URL: {"dev-chunks"}},
-		Now:         func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },
+		// Where this store's snapshots land on the host, so the backup's move
+		// into the bundle is moving a file rather than a name.
+		QdrantSnapshotDirs: map[string]string{tenant.Stores.Qdrant.URL: tp.QdrantSnapshots},
+		QdrantCounts: map[string]int64{
+			tenant.Stores.Qdrant.URL + "/docs": 1200, tenant.Stores.Qdrant.URL + "/chunks": 88_000,
+		},
+		ESCounts: map[string]int64{tenant.Stores.Elasticsearch.URL + "/dev-chunks": 88_000},
+		Now:      func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },
 	})
 	return jobs.Context{
 		Roots: roots, Fleet: f, Tenant: tenant, Drivers: fake,
@@ -116,9 +138,13 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 	}, fake
 }
 
+// testArtifactID is the prepared artifact the fixture fleet carries.
+const testArtifactID = "v1.5.3-abababababab"
+
 // managed turns a fixture tenant into one the ctl supervises and owns.
 func managed(t *registry.Tenant) {
 	t.Supervisor, t.Owner, t.State = "systemd", "svcbvbrc", "active"
+	t.ArtifactID = testArtifactID
 	t.EnvLayout, t.API.Bind = "managed", "127.0.0.1"
 	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + t.Name + "/ui/"}
 	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}
@@ -126,10 +152,40 @@ func managed(t *registry.Tenant) {
 	t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities = registry.OwnershipExclusive, caps
 }
 
+// testMirror is the bare repository the fixture deployment checks tenant
+// worktrees out of.
+const testMirror = "/rag/repos/ragstack.git"
+
+// testDeps are the Deps a planned op runs with in these tests: a registry
+// writer that validates and bumps the generation IN MEMORY (registry.Save's
+// contract without the file), and the configured mirror.
+//
+// SaveFleet is wired rather than nil because the ops that write the registry
+// are the ops whose last step is the one worth asserting: a test whose
+// registry step refused would be a test that never executed the step it was
+// written for.
+func testDeps(oc jobs.Context) Deps {
+	return Deps{
+		Roots: oc.Roots, Now: oc.Now, Mirror: testMirror,
+		SaveFleet: func(f *registry.Fleet) error {
+			if err := f.Validate(); err != nil {
+				return err
+			}
+			// registry.Save stamps these three before it validates the document
+			// it is about to write; a memory saver that skipped them would fail
+			// the contract for a reason the real one never hits.
+			f.Generation++
+			f.UpdatedAt = oc.Now().UTC().Format(time.RFC3339)
+			f.UpdatedBy = "ops tests"
+			return f.ValidateContract()
+		},
+	}
+}
+
 // plan runs one verb and returns the planned steps.
 func plan(t *testing.T, oc jobs.Context, verb string, args map[string]any) *jobs.Planned {
 	t.Helper()
-	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup(verb)
+	op, ok := NewRegistry(testDeps(oc)).Lookup(verb)
 	if !ok {
 		t.Fatalf("no op %q", verb)
 	}
@@ -143,7 +199,7 @@ func plan(t *testing.T, oc jobs.Context, verb string, args map[string]any) *jobs
 // planErr runs one verb expecting a refusal.
 func planErr(t *testing.T, oc jobs.Context, verb string, args map[string]any) error {
 	t.Helper()
-	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup(verb)
+	op, ok := NewRegistry(testDeps(oc)).Lookup(verb)
 	if !ok {
 		t.Fatalf("no op %q", verb)
 	}
@@ -161,6 +217,26 @@ func titles(p *jobs.Planned) []string {
 		out = append(out, s.Plan.Kind+": "+s.Plan.Title)
 	}
 	return out
+}
+
+// stepWarnings are the warnings of the first step matching kind/substr.
+func stepWarnings(p *jobs.Planned, kind, substr string) []string {
+	for _, s := range p.Steps {
+		if s.Plan.Kind == kind && strings.Contains(s.Plan.Title, substr) {
+			return s.Plan.Warnings
+		}
+	}
+	return nil
+}
+
+// stepIndex is the index of the first step matching kind/substr, or -1.
+func stepIndex(p *jobs.Planned, kind, substr string) int {
+	for i, s := range p.Steps {
+		if s.Plan.Kind == kind && strings.Contains(s.Plan.Title, substr) {
+			return i
+		}
+	}
+	return -1
 }
 
 func hasStep(p *jobs.Planned, kind, substr string) bool {
@@ -192,9 +268,11 @@ func TestPlanStartOrdersStoresThenAPIAndGatesOnReadiness(t *testing.T) {
 		"systemd: systemctl --user daemon-reload",
 		"systemd: start ragstack-dev-qdrant.service",
 		"systemd: start ragstack-dev-es.service",
+		"systemd: skip postgres",
 		"systemd: start ragstack-dev-api.service",
 		"systemd: skip ui",
 		"probe: wait for the API to listen on 24040",
+		"registry: record dev as active (desired_boot enabled) in the registry",
 	}
 	if got := titles(p); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
@@ -213,8 +291,12 @@ func TestPlanStartOrdersStoresThenAPIAndGatesOnReadiness(t *testing.T) {
 			t.Errorf("step %d is numbered %d", i+1, s.Plan.N)
 		}
 	}
-	if w := p.Steps[4].Plan.Warnings; len(w) != 1 || !strings.Contains(w[0], "static") {
+	if w := stepWarnings(p, "systemd", "skip ui"); len(w) != 1 || !strings.Contains(w[0], "static") {
 		t.Errorf("the skipped UI step does not explain itself: %v", w)
+	}
+	// The sqlite relational store is skipped for its own reason, not the UI's.
+	if w := stepWarnings(p, "systemd", "skip postgres"); len(w) != 1 || !strings.Contains(w[0], "SQLite") {
+		t.Errorf("the skipped postgres leg does not explain itself: %v", w)
 	}
 }
 
@@ -288,25 +370,54 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 	oc, _ := fixture(t, "dev", managed)
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	want := []string{
-		"nginx: gateway: publish a generation serving dev read-only",
+		// The precheck comes BEFORE the fence: refusing for want of disk
+		// after the API is stopped would be an outage for nothing.
+		"probe: check the backup filesystem has room",
+		// No "serve it read-only" publish either side: the registry carries no
+		// read-only flag, so such a step published the generation that was
+		// already live and fenced nothing. The fence IS the API unit stopping.
 		"systemd: stop ragstack-dev-api.service",
 		"probe: fence verify: nothing listens on 24040",
-		"qdrant: snapshot every qdrant collection",
-		"es: snapshot every elasticsearch index into a per-bundle repo",
+		"fs: create the bundle directory (written as <id>.partial, mode 2770)",
+		"qdrant: snapshot every qdrant collection into the bundle",
+		"es: snapshot every elasticsearch index into a per-bundle repo, verify it and move it into the bundle",
 		"sqlitebackup: copy ragstack_users.db into the bundle",
 		"sqlitebackup: copy ragstack_jobs.db into the bundle",
 		"sqlitebackup: copy ragstack_collections.db into the bundle",
 		"sqlitebackup: copy ragstack_grading.db into the bundle",
-		"fs: write the bundle manifest",
+		"postgres: skip the postgres leg",
+		"fs: copy the public config allowlist, the manifests and the rendered units into the bundle",
+		"fs: skip the encrypted secrets payload",
+		"fs: write MIGRATE.md, the bundle's own runbook",
+		"fs: write SHA256SUMS and the bundle manifest",
+		// The rename is the LAST write: until it happens the directory is
+		// `.partial` and no reader mistakes it for a finished bundle.
+		"fs: rename the bundle into place (drop the .partial suffix)",
+		"registry: record the bundle as this tenant's last backup",
 		"systemd: start ragstack-dev-api.service",
 		"probe: wait for the API to listen on 24040",
-		"nginx: gateway: publish a generation serving dev read-write",
 	}
 	if got := titles(p); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
 	if p.Result()["fenced"] != true || p.Result()["best_effort"] != false {
 		t.Errorf("result = %v", p.Result())
+	}
+	// The plan says what a fence really is, and does not promise a mode the
+	// build does not have.
+	if !anyWarning(p, "the gateway route answers 502") || !anyWarning(p, "Read-only serving is v1.x") {
+		t.Errorf("the fence warning does not say the route answers 502: %v", p.Plan.Warnings)
+	}
+	for _, w := range p.Plan.Warnings {
+		if strings.Contains(w, "serves it read-only") {
+			t.Errorf("the plan still claims a read-only fence: %q", w)
+		}
+	}
+	// And no gateway lock is held for the length of a backup.
+	for _, l := range p.Locks {
+		if l == model.LockGateway {
+			t.Errorf("a fenced backup takes the gateway lock but publishes nothing: %v", p.Locks)
+		}
 	}
 	// The bundle's paths carry a placeholder, never a clock: a plan is
 	// computed twice and compared.
@@ -354,7 +465,7 @@ func TestPlanRestoreOnlyEverIntoAFreshTenant(t *testing.T) {
 		t.Fatalf("restoring over an existing tenant = %v, want a refusal", err)
 	}
 	p := plan(t, oc, "restore", map[string]any{"from": bundle, "as": "dev-copy"})
-	if !hasStep(p, "fs", "verify the bundle manifest") {
+	if !hasStep(p, "fs", "verify the bundle") {
 		t.Errorf("a restore that does not verify the bundle first: %v", titles(p))
 	}
 	if p.Result()["restored_as"] != "dev-copy" {
@@ -440,12 +551,29 @@ func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 		tn.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: true}
 	})
 	p := plan(t, oc, "decommission", nil)
-	if !hasStep(p, "fs", "quarantine the data directory") {
-		t.Fatalf("no quarantine step: %v", titles(p))
+	for _, want := range [][2]string{
+		{"fs", "quarantine the data directory"},
+		{"fs", "remove the rendered unit files"},
+		{"systemd", "daemon-reload"},
+		{"registry", "quarantined"},
+		{"fs", "RECOVERY.json"},
+	} {
+		if !hasStep(p, want[0], want[1]) {
+			t.Fatalf("no %s step containing %q: %v", want[0], want[1], titles(p))
+		}
+	}
+	// Everything decommission writes is a RECORD — the registry row, the
+	// recovery note — and never a change to the tenant's own data, which is
+	// renamed and left exactly as it was.
+	allowed := map[string]bool{
+		oc.Roots.Registry(): true,
+		oc.Tenant.DataDir + ".quarantined-<ts>/" + recoveryFile: true,
 	}
 	for _, s := range p.Steps {
 		for _, w := range s.Plan.WouldWrite {
-			t.Errorf("decommission writes %s — v1 renames, it never deletes or writes", w.Path)
+			if !allowed[w.Path] {
+				t.Errorf("decommission writes %s — v1 renames, it never deletes or rewrites tenant data", w.Path)
+			}
 		}
 	}
 	if p.Result()["state"] != "quarantined" {
@@ -552,7 +680,7 @@ func TestPlanRenderUnitsWritesNothingUnlessApply(t *testing.T) {
 		t.Error("the rendered units are not shown")
 	}
 	for _, w := range p.Steps[0].Plan.WouldWrite {
-		if !strings.HasPrefix(w.Path, "/rag/config/ctl/units/dev/") {
+		if !strings.HasPrefix(w.Path, "/rag/config/ctl/units/ragstack-dev") {
 			t.Errorf("unit path = %s, want it under the ctl's units dir", w.Path)
 		}
 		if w.Mode != "0644" {
@@ -647,12 +775,23 @@ func TestPlanUpdateCodeIsRefusedUntilV11(t *testing.T) {
 	}
 }
 
-func TestPlanCreateRendersTheWholeTenantAndStopsAtTheRegistryWrite(t *testing.T) {
-	oc, _ := fixture(t, "dev", nil)
+// createFixture is a fleet with one prepared artifact and no tenant selected:
+// `create` is fleet-scoped until it has allocated the tenant it is making.
+func createFixture(t *testing.T) (jobs.Context, *drivers.Fake) {
+	t.Helper()
+	oc, fake := fixture(t, "dev", nil)
 	oc.Fleet.Artifacts["v1.5.3"] = &registry.Artifact{
-		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3", PythonEnv: "/rag/envs/ragstack", SchemaCompatible: true,
+		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3",
+		Worktree: "/rag/data/ctl/artifacts/v1.5.3/worktree", UIDist: "/rag/data/ctl/artifacts/v1.5.3/worktree/frontend/dist",
+		PythonEnv: "/rag/envs/ragstack", PreparedAt: "2026-09-14T09:00:00Z", PreparedBy: "local:3581",
+		SchemaCompatible: true,
 	}
 	oc.Tenant = nil
+	return oc, fake
+}
+
+func TestPlanCreateRendersTheWholeTenant(t *testing.T) {
+	oc, _ := createFixture(t)
 	p := plan(t, oc, "create", map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
 	if p.Steps[0].Plan.Kind != "registry" || !strings.Contains(p.Steps[0].Plan.Title, "index 4") {
 		t.Fatalf("the first step is not the allocation: %v", titles(p))
@@ -660,21 +799,50 @@ func TestPlanCreateRendersTheWholeTenantAndStopsAtTheRegistryWrite(t *testing.T)
 	if string(p.Plan.Tenant) != "sandbox" {
 		t.Errorf("plan tenant = %q", p.Plan.Tenant)
 	}
+	// Every driver the create touches has a step, in order.
+	for _, want := range [][2]string{
+		{"registry", "allocate sandbox"},
+		{"fs", "create the tenant directories"},
+		{"fs", "write secrets.env"},
+		{"envfile", "write tenant.env"},
+		{"envfile", "write provision.env"},
+		{"git", "check the worktree out"},
+		{"apptainer", "build the tenant UI"},
+		{"systemd", "systemctl --user link ragstack-sandbox-api.service"},
+		{"systemd", "systemctl --user daemon-reload"},
+		{"systemd", "enable ragstack-sandbox.target"},
+		{"systemd", "start ragstack-sandbox.target"},
+		{"probe", "wait for sandbox's stores and API"},
+		{"nginx", "publish the gateway generation"},
+		{"registry", "record sandbox as active"},
+	} {
+		if !hasStep(p, want[0], want[1]) {
+			t.Errorf("no %s step %q in:\n  %s", want[0], want[1], strings.Join(titles(p), "\n  "))
+		}
+	}
+	if a, b := stepIndex(p, "registry", "allocate sandbox"), stepIndex(p, "fs", "write secrets.env"); a > b {
+		t.Errorf("the allocation must precede the secrets write (%d > %d)", a, b)
+	}
+
 	// The whole tenant is visible in the dry run: its env file and its units.
 	var env, unit bool
 	for _, s := range p.Steps {
 		for _, w := range s.Plan.WouldWrite {
 			if strings.HasSuffix(w.Path, "/config/tenant.env") {
 				env = true
-				// The rendered placeholders are secret-CLASS assignments, so the
-				// redactor flattens them too: a preview never shows a key line,
-				// placeholder or not.
-				if !strings.Contains(string(w.Preview), "API_KEYS="+settings.Redacted) {
-					t.Errorf("tenant.env preview shows a key line:\n%s", w.Preview)
+				// The key ledger is NOT in tenant.env at all any more: the
+				// managed layout puts every secret-class line in secrets.env,
+				// so the preview an operator approves is the file that will be
+				// written, whole.
+				if strings.Contains(string(w.Preview), "API_KEYS") {
+					t.Errorf("tenant.env preview carries a key line:\n%s", w.Preview)
 				}
 				if !strings.Contains(string(w.Preview), "USER_STORE_PATH=/rag/data/tenants/sandbox/state") {
 					t.Errorf("tenant.env preview is not this tenant's file:\n%s", w.Preview)
 				}
+			}
+			if strings.HasSuffix(w.Path, "/config/secrets.env") && string(w.Preview) != "" {
+				t.Errorf("secrets.env must have NO preview, got %q", w.Preview)
 			}
 			if strings.HasSuffix(w.Path, "-api.service") {
 				unit = true
@@ -687,12 +855,106 @@ func TestPlanCreateRendersTheWholeTenantAndStopsAtTheRegistryWrite(t *testing.T)
 	if !env || !unit {
 		t.Errorf("the plan shows env=%v unit=%v; a dry run has to show both", env, unit)
 	}
-	// And it refuses honestly where the registry write lands.
-	_, err := p.Steps[0].Run(context.Background(), &jobs.StepContext{
-		Ops: oc, Step: &model.Step{}, Checkpoint: func(...string) error { return nil },
+}
+
+// A plan is computed twice and must be identical both times: the engine hashes
+// it under the locks and refuses the job when it moved. `create` is the plan
+// with the most moving parts (an allocation, three rendered files, five units),
+// so it is the one worth asserting directly.
+func TestPlanCreateIsPure(t *testing.T) {
+	oc, _ := createFixture(t)
+	args := map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3", "postgres": "local",
+		"keys": []any{map[string]any{"label": "ops", "role": "admin"}},
+	}
+	a := plan(t, oc, "create", args)
+	b := plan(t, oc, "create", args)
+	if a.Plan.PlanHash == "" {
+		t.Fatal("the plan carries no hash")
+	}
+	if a.Plan.PlanHash != b.Plan.PlanHash {
+		t.Errorf("two plans of the same request differ:\n  %s\n  %s", a.Plan.PlanHash, b.Plan.PlanHash)
+	}
+}
+
+func TestPlanCreateWithPostgresLocalAddsTheUnitAndTheSecrets(t *testing.T) {
+	oc, _ := createFixture(t)
+	p := plan(t, oc, "create", map[string]any{"name": "sandbox", "artifact_id": "v1.5.3", "postgres": "local"})
+	var unit string
+	for _, s := range p.Steps {
+		for _, w := range s.Plan.WouldWrite {
+			if strings.HasSuffix(w.Path, "-postgres.service") {
+				unit = string(w.Preview)
+			}
+			if strings.HasSuffix(w.Path, "/config/provision.env") {
+				if !strings.Contains(string(w.Preview), "TENANT_STORE_KIND=postgres-local") {
+					t.Errorf("provision.env does not record the store kind:\n%s", w.Preview)
+				}
+				if !strings.Contains(string(w.Preview), "TENANT_PG_PORT=24085") {
+					t.Errorf("provision.env does not record the +5 port:\n%s", w.Preview)
+				}
+			}
+		}
+	}
+	if unit == "" {
+		t.Fatalf("no postgres unit in:\n  %s", strings.Join(titles(p), "\n  "))
+	}
+	if strings.Contains(unit, "POSTGRES_PASSWORD") || strings.Contains(unit, "TENANT_PG_PASSWORD") {
+		t.Errorf("the unit names the password; it must not appear in the unit file or on its argv at all:\n%s", unit)
+	}
+	// The password reaches the unit through secrets.env alone, and never
+	// through the command line: systemd expands ${…} in ExecStart into the
+	// argv, and /proc/<pid>/cmdline is 0444 to every account on this host. The
+	// unit therefore names no password at all (asserted just above); what it
+	// has is the EnvironmentFile, which carries
+	// APPTAINERENV_POSTGRES_PASSWORD for apptainer to forward into the
+	// container.
+	for _, want := range []string{
+		"EnvironmentFile=/rag/data/tenants/sandbox/config/secrets.env",
+		"-c port=24085 -c listen_addresses=127.0.0.1",
+		"TimeoutStopSec=90",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("the postgres unit lacks %q:\n%s", want, unit)
+		}
+	}
+	// The api unit orders itself after it, and the target wants it.
+	for _, s := range p.Steps {
+		for _, w := range s.Plan.WouldWrite {
+			if strings.HasSuffix(w.Path, "-api.service") && !strings.Contains(string(w.Preview),
+				"Requires=ragstack-sandbox-qdrant.service ragstack-sandbox-es.service ragstack-sandbox-postgres.service") {
+				t.Errorf("the api unit does not require the postgres unit:\n%s", w.Preview)
+			}
+			if strings.HasSuffix(w.Path, "sandbox.target") && !strings.Contains(string(w.Preview),
+				"ragstack-sandbox-postgres.service") {
+				t.Errorf("the target does not want the postgres unit:\n%s", w.Preview)
+			}
+		}
+	}
+}
+
+func TestPlanCreateWithoutStartSkipsTheStartAndTheServiceAccounts(t *testing.T) {
+	oc, _ := createFixture(t)
+	p := plan(t, oc, "create", map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3", "start": false, "gateway": false,
+		"service_accounts": []any{map[string]any{"subject": "gowe", "role": "user", "purpose": "workflows"}},
 	})
-	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "PR-D") {
-		t.Errorf("the registry write = %v, want a PR-D refusal", err)
+	if hasStep(p, "systemd", "start ragstack-sandbox.target") {
+		t.Error("start:false still started the target")
+	}
+	if !hasStep(p, "systemd", "skip the start") {
+		t.Error("start:false did not say it was skipping the start")
+	}
+	if !hasStep(p, "tenantapi", "skip the service accounts") {
+		t.Errorf("a service account was planned against an API that is not running:\n  %s",
+			strings.Join(titles(p), "\n  "))
+	}
+	if !hasStep(p, "nginx", "skip the gateway publish") {
+		t.Error("gateway:false did not say it was skipping the publish")
+	}
+	if !hasStep(p, "registry", "record sandbox as provisioned") {
+		t.Errorf("a tenant that was not started must not be recorded active:\n  %s",
+			strings.Join(titles(p), "\n  "))
 	}
 }
 

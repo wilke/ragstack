@@ -89,8 +89,26 @@ basis can hit the RAM ceiling well before the collection-count trigger fires.
 
 ## 2. Provision tenant N+1
 
-Per [ADR-0005](../adr/0005-tenant-anatomy.md) decision 4, provisioning is a script,
-not an API. Always preview first — `--dry-run` prints the complete plan (dirs,
+**On a host the control plane has adopted, this is `ragstack-ctl tenant create`.**
+It does everything below plus the parts the script never did — the port-block
+allocation, the systemd units, the credential ledger, the gateway route and the
+registry row — as one job with a rollback per step:
+
+```bash
+/rag/bin/ragstack-ctl fleet artifact prepare --tag <tag>          # once per release
+/rag/bin/ragstack-ctl --direct tenant create <new-tenant> \
+    --artifact <tag>-<sha[:12]> --postgres local --es-heap 1g --dry-run
+```
+
+See [ctl-quickstart.md](ctl-quickstart.md), "Adding a tenant to a migrated
+host", for the flags and for what the job prints once (the minted keys). The
+rest of this section is `apptainer/new-tenant.sh`, which is still the right
+tool on a host with no registry — and is the reference for WHAT a tenant is,
+which the ctl reproduces file for file (`render/parity_test.go` runs the script
+as the oracle).
+
+Per [ADR-0005](../adr/0005-tenant-anatomy.md) decision 4, script provisioning is
+a script, not an API. Always preview first — `--dry-run` prints the complete plan (dirs,
 ports, files, commands) and touches nothing:
 
 ```bash

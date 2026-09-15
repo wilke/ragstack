@@ -37,7 +37,20 @@ func tenantOpUsage(verb string) int {
 	case "backup":
 		return usageErr("usage: ragstack-ctl tenant backup <name> [--fence] [--tar] %s", opFlagSummary)
 	case "restore":
-		return usageErr("usage: ragstack-ctl tenant restore <name> --from <bundle-id> --as <fresh-tenant> %s", opFlagSummary)
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant restore <source> --from <bundle-id> --as <fresh-tenant> %s
+
+  <source>  the tenant the bundle was taken from. restore is destructive on it
+            only in the bookkeeping sense — it marks the bundle verified — so
+            its confirm value is the SOURCE name: --yes-destructive <source>.
+  --as      a tenant that does NOT exist. v1 restores side by side: the fresh
+            tenant is built from the source's artifact, the bundle is poured
+            into it, and its counts are checked against the manifest before
+            anything is published.
+
+The restored tenant's credentials are FRESH and are printed ONCE, when the job
+succeeds. That needs the job to be followed, so --wait is implied.
+`, opFlagSummary)
+		return exitUsage
 	default:
 		return usageErr("usage: ragstack-ctl tenant %s <name> %s", verb, opFlagSummary)
 	}
@@ -108,6 +121,14 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		}
 		opArgs["from"] = *from
 		opArgs["as"] = *as
+		// A restore MINTS the fresh tenant's credentials, and they exist for
+		// exactly one read. So the command has to still be there when the job
+		// ends: --wait is implied for an execute, exactly as it is for `tenant
+		// create`. A dry run prints a plan and mints nothing.
+		if !*o.dryRun {
+			*o.wait = true
+			o.wantSecrets = true
+		}
 	}
 	return submitOp(o, tenantOpTarget(name, verb), opArgs)
 }

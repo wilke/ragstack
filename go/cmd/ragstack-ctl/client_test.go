@@ -8,7 +8,10 @@ package main
 // be skipped on every machine that matters and would stop catching anything.
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 )
 
@@ -924,5 +928,56 @@ func TestJobCancelSendsTheConfirmFlags(t *testing.T) {
 	capture(t, "job", "cancel", "01JB0000000000000000000000", "--server", f.srv.URL)
 	if _, ok := f.last(t).envelope(t)["confirm"]; ok {
 		t.Error("job cancel sent a confirm without either flag")
+	}
+}
+
+// ---------------------------------------------------------------- secrets
+
+// An idempotent REPLAY is not a failure.
+//
+// The second submit with the same idempotency key is answered with the FIRST
+// one's finished job, and that job's envelope was destroyed by the read that
+// delivered it — to this operator, on the first run. `deliverSecrets` used to
+// exit 1 on the 410, which told a script that a create which had in fact
+// succeeded had failed, and sent an operator to mint replacements for keys they
+// already hold.
+func TestDeliveringAnAlreadyTakenEnvelopeIsNotAFailure(t *testing.T) {
+	var out, errb bytes.Buffer
+	stdout, stderr = &out, &errb
+	defer func() { stdout, stderr = os.Stdout, os.Stderr }()
+
+	asJSON := false
+	o := &opFlags{asJSON: &asJSON}
+	o.fetchSecrets = func(jobID string) (*model.SecretsResponse, error) {
+		return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered 410: %w", jobID, jobs.ErrGone)
+	}
+	if rc := deliverSecrets(o, "01ARZ3NDEKTSV4RRFFQ69G5FAV"); rc != exitOK {
+		t.Fatalf("a replayed job's taken envelope exited %d, want %d (%s)", rc, exitOK, errb.String())
+	}
+	if !strings.Contains(out.String(), "delivered by the earlier run") {
+		t.Errorf("stdout does not say the credentials were already delivered: %q", out.String())
+	}
+	if errb.Len() != 0 {
+		t.Errorf("a replay wrote to stderr: %q", errb.String())
+	}
+}
+
+// Every other failure to collect still is one: the job succeeded, the keys are
+// in no file, and the operator has to be told before the envelope expires.
+func TestAnUncollectableEnvelopeStillFails(t *testing.T) {
+	var out, errb bytes.Buffer
+	stdout, stderr = &out, &errb
+	defer func() { stdout, stderr = os.Stdout, os.Stderr }()
+
+	asJSON := false
+	o := &opFlags{asJSON: &asJSON}
+	o.fetchSecrets = func(string) (*model.SecretsResponse, error) {
+		return nil, errors.New("connection refused")
+	}
+	if rc := deliverSecrets(o, "01ARZ3NDEKTSV4RRFFQ69G5FAV"); rc != exitError {
+		t.Fatalf("an unreachable daemon exited %d, want %d", rc, exitError)
+	}
+	if !strings.Contains(errb.String(), "could not be collected") {
+		t.Errorf("stderr = %q", errb.String())
 	}
 }

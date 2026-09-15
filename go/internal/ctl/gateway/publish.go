@@ -52,7 +52,17 @@ type Options struct {
 	Sig    Signaller
 	Prober Prober
 
-	By           string // audit principal
+	By string // audit principal
+	// LockHeld says the caller already holds LockName — the job engine takes
+	// the gateway lock as part of the fleet lock order, on the SAME inode this
+	// package locks — so Publish, Rollback and Reload must not take it again:
+	// flock(2) on a second descriptor of a file this process already holds
+	// does not nest, it refuses, and every gateway publish made from inside a
+	// job (create, backup --fence, decommission, gateway-apply) failed with
+	// "another publish holds .lock" until this existed. Only the job
+	// engine's driver sets it; a bare `ragstack-ctl gateway apply` takes the
+	// lock here.
+	LockHeld     bool
 	Apptainer    string // default /usr/bin/apptainer
 	NginxSIF     string // default <ImagesDir>/nginx.sif
 	PIDFile      string // default <ProxyDir>/run/nginx.pid
@@ -152,12 +162,14 @@ func Publish(ctx context.Context, f *registry.Fleet, opts Options) (*Result, err
 	st := NewState(opts.Roots)
 	res := &Result{DryRun: opts.DryRun}
 
-	lock, err := st.lock()
-	if err != nil {
-		res.step("lock", err, "")
-		return res, err
+	if !opts.LockHeld {
+		lock, err := st.lock()
+		if err != nil {
+			res.step("lock", err, "")
+			return res, err
+		}
+		defer lock.unlock()
 	}
-	defer lock.unlock()
 
 	// An incomplete publication is repaired before a new one starts: the
 	// pointer must be honest before it is moved again.
@@ -1427,12 +1439,14 @@ func Rollback(ctx context.Context, f *registry.Fleet, to int, opts Options) (*Re
 	st := NewState(opts.Roots)
 	res := &Result{}
 
-	lock, err := st.lock()
-	if err != nil {
-		res.step("lock", err, "")
-		return res, err
+	if !opts.LockHeld {
+		lock, err := st.lock()
+		if err != nil {
+			res.step("lock", err, "")
+			return res, err
+		}
+		defer lock.unlock()
 	}
-	defer lock.unlock()
 
 	// The record is read BEFORE the repair, because the repair is one of the
 	// things that makes the pointer stop meaning what it says: it moves

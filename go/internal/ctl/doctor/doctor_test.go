@@ -660,7 +660,7 @@ func TestPortNotListeningLetsStartThrough(t *testing.T) {
 		}
 	}
 	// Every other mutating op that names it still refuses.
-	for _, op := range []string{"backup", "handover", "migrate-local", "decommission", "update-code"} {
+	for _, op := range []string{"backup", "handover", "migrate-local", "update-code"} {
 		w.opts.Op = op
 		if resp := w.run(t); resp.Status != model.StatusRed {
 			t.Errorf("--op %s over a crashed tenant = %s, want red", op, resp.Status)

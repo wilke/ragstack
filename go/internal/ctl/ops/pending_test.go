@@ -36,6 +36,16 @@ func (w *watched) Elasticsearch() jobs.Elasticsearch {
 	return w.Fake.Elasticsearch()
 }
 
+// The PR-D half of the seam. A driver missing from this list is one whose
+// steps this test cannot see being used — which reads as "the plan warns about
+// a driver it never uses" and is a failure about the test, not the plan.
+func (w *watched) Git() jobs.Git           { w.used["git"] = true; return w.Fake.Git() }
+func (w *watched) Build() jobs.Build       { w.used["build"] = true; return w.Fake.Build() }
+func (w *watched) Postgres() jobs.Postgres { w.used["postgres"] = true; return w.Fake.Postgres() }
+func (w *watched) SQLite() jobs.SQLite     { w.used["sqlite"] = true; return w.Fake.SQLite() }
+func (w *watched) Archive() jobs.Archive   { w.used["archive"] = true; return w.Fake.Archive() }
+func (w *watched) Files() jobs.Files       { w.used["files"] = true; return w.Fake.Files() }
+
 // planCase is one verb planned on the fixture, with whatever the tenant has
 // to look like for it to plan at all. Every verb that reaches a plan is here:
 // a verb that refuses at plan time has no steps and so nothing to warn about.
@@ -186,7 +196,15 @@ func TestThePendingWarningNamesTheSamePRTheDriverRefusesWith(t *testing.T) {
 // saying they would all refuse.
 func TestAPlanOnRealDriversWarnsOnTheLifecycleSteps(t *testing.T) {
 	oc, _ := fixture(t, "dev", managed)
-	oc.Drivers = drivers.NewReal(drivers.RealOptions{Roots: paths.NewRoots("/rag", paths.Overrides{})})
+	real := drivers.NewReal(drivers.RealOptions{Roots: paths.NewRoots("/rag", paths.Overrides{})})
+	// PR-D wired the systemd driver, so `start` no longer plans a step this
+	// build cannot run. The test stays for the NEXT driver that is pending on
+	// a lifecycle step: it asserts the warning wherever one is still due, and
+	// skips while none is.
+	if !containsString(real.Pending(), "systemd") {
+		t.Skip("the systemd driver is wired; the lifecycle steps have nothing left to warn about")
+	}
+	oc.Drivers = real
 	p := plan(t, oc, "start", nil)
 	warned := 0
 	for _, s := range p.Steps {

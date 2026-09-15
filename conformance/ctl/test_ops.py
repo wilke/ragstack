@@ -906,3 +906,631 @@ async def test_settings_round_trip_bumps_the_registry_generation(
         f"the generation did not move: {was['registry_generation']} -> "
         f"{now['registry_generation']}"
     )
+
+
+# =========================================================================== #
+# backup and decommission (PR-D)
+# =========================================================================== #
+async def managed_tenant(client: httpx.AsyncClient) -> str:
+    """The fixture tenant the ctl itself supervises.
+
+    The four captured coconut tenants are hand-started with every store
+    capability false — a fleet on which `backup` skips both stores and
+    `decommission` is refused by design. Asserting the backup legs against one
+    of those would be asserting that nothing happened. The fixture carries one
+    systemd/svcbvbrc tenant with exclusive stores for exactly this, and it is
+    FOUND here rather than named, so the suite does not encode the fixture's
+    spelling."""
+    resp = await client.get("/v1/fleet")
+    assert resp.status_code == 200, resp.text
+    for row in resp.json().get("tenants", []):
+        if row.get("supervisor") == "systemd":
+            return row["name"]
+    pytest.skip("the fixture fleet has no ctl-supervised tenant; the backup legs cannot be exercised")
+
+
+def step_titled(plan_or_job: dict[str, Any], needle: str) -> dict[str, Any] | None:
+    """The first step whose title contains *needle*."""
+    for step in plan_or_job.get("steps", []):
+        if needle in step.get("title", ""):
+            return step
+    return None
+
+
+async def test_a_fenced_backup_runs_every_leg_to_succeeded(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The whole verb, end to end, on the fake host: fence, snapshot both
+    stores, copy the state, write the manifest, rename the bundle into place
+    and record it in the registry.
+
+    ``succeeded`` and not merely terminal: a build whose drivers refuse leaves
+    a job that FAILED with a tidy plan attached, which is the outcome this test
+    exists to catch."""
+    tenant = await managed_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": True}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", (
+        f"the fenced backup settled as {job['state']}: {json.dumps(job.get('error'))} · steps "
+        + json.dumps([{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+                      for s in job["steps"]])
+    )
+    assert job["result"]["fenced"] is True and job["result"]["best_effort"] is False, job["result"]
+
+    # The fence is the API unit stopping and NOTHING else. There is no
+    # read-only mode: the registry carries no read-only flag, so a "publish a
+    # generation serving it read-only" step published the generation that was
+    # already live — a no-op that held the gateway lock for the length of a
+    # backup and told an operator the tenant was being served when it was not.
+    assert step_titled(job, "read-only") is None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "read-write") is None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "stop ragstack-") is not None, [s["title"] for s in job["steps"]]
+    assert step_titled(job, "fence verify") is not None, [s["title"] for s in job["steps"]]
+
+    # The manifest step, by name: a bundle without one is a directory of files
+    # no restore can read.
+    manifest = step_titled(job, "bundle manifest")
+    assert manifest is not None, [s["title"] for s in job["steps"]]
+    assert manifest["state"] == "succeeded", manifest
+
+    # The rename is the LAST write of the bundle, and it happens after the
+    # manifest: that ordering is what makes `<id>.partial` mean "unfinished".
+    rename = step_titled(job, "rename the bundle into place")
+    assert rename is not None and rename["n"] > manifest["n"], [s["title"] for s in job["steps"]]
+
+    # And the registry learned its recovery point, unverified.
+    record = step_titled(job, "record the bundle as this tenant's last backup")
+    assert record is not None and record["state"] == "succeeded", record
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.status_code == 200, shown.text
+    last = shown.json()["summary"]["last_backup"]
+    assert last and last["fenced"] is True and last["verified"] is False, last
+
+
+async def test_the_elasticsearch_leg_verifies_and_unregisters_its_repository(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`_restore` has no dry run, so the bundle's proof that its snapshot is
+    readable is a SECOND, read-only registration of the same directory, listed
+    and then dropped. Both registrations are the ctl's own and both are
+    unregistered before the directory moves — a repository elasticsearch still
+    holds while its files walk away is the way this leg corrupts a cluster."""
+    tenant = await managed_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": True}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", job.get("error")
+    leg = step_titled(job, "elasticsearch index into a per-bundle repo")
+    assert leg is not None, [s["title"] for s in job["steps"]]
+    assert "verify it and move it into the bundle" in leg["title"], leg["title"]
+    ids = leg["external_ids"]
+    assert any(i.startswith("es:verify:") for i in ids), (
+        f"the verification repository is not recorded before it is registered: {ids}"
+    )
+    assert any(i.startswith("es:ctl-") for i in ids), ids
+
+
+async def test_an_unfenced_backup_is_best_effort(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Without ``--fence`` nothing stopped the tenant writing, so the bundle is
+    `best_effort` and the plan says in as many words that it can never be
+    restored, handed over or decommissioned from."""
+    tenant = await managed_tenant(client)
+    preview = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={}))
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    assert any("best_effort" in w for w in plan["warnings"]), plan["warnings"]
+    assert step_titled(plan, "fence verify") is None, [s["title"] for s in plan["steps"]]
+    assert step_titled(plan, "read-only") is None, [s["title"] for s in plan["steps"]]
+
+    # And the FENCED plan says what a fence really costs: the API is stopped
+    # and the route answers 502 while it is down.
+    fenced = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True}))
+    assert fenced.status_code == 200, fenced.text
+    fplan = fenced.json()
+    validate(fplan, "plan", schemas)
+    assert any("502" in w for w in fplan["warnings"]), fplan["warnings"]
+    assert not any("serves it read-only" in w for w in fplan["warnings"]), fplan["warnings"]
+
+    job = await submit_and_settle(client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={}, timeout=60.0)
+    assert job["state"] == "succeeded", job.get("error")
+    assert job["result"]["best_effort"] is True and job["result"]["fenced"] is False, job["result"]
+
+
+async def test_without_recipients_the_secrets_are_excluded_and_the_plan_says_so(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The fail-closed rule, read where an operator would read it. This daemon
+    has no age recipient configured, so the bundle is written WITHOUT the
+    tenant's secret files — never with them in the clear — and the plan warns
+    before anything runs that a restore from it will mint fresh credentials."""
+    tenant = await managed_tenant(client)
+    preview = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True}))
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    warned = [w for w in plan["warnings"] if "no age recipient is configured" in w]
+    assert warned, plan["warnings"]
+    assert "EXCLUDED" in warned[0], warned[0]
+    skip = step_titled(plan, "skip the encrypted secrets payload")
+    assert skip is not None, [s["title"] for s in plan["steps"]]
+    # And no step claims it would write a secrets payload.
+    for step in plan["steps"]:
+        for write in step.get("would_write", []):
+            assert not write["path"].endswith("secrets.age"), step["title"]
+
+
+async def test_the_postgres_leg_is_planned_only_for_a_postgres_local_tenant(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """A tenant whose relational state is SQLite files has nothing to dump, and
+    the plan says so as a skipped step rather than silently omitting it: the
+    operator asked for a backup of everything, and "there is no postgres here"
+    is an outcome."""
+    managed = await managed_tenant(client)
+    dumped = await client.post(f"/v1/tenants/{managed}/ops/backup", json=op_body(args={"fence": True}))
+    assert dumped.status_code == 200, dumped.text
+    assert step_titled(dumped.json(), "dump the tenant's postgres database") is not None, (
+        [s["title"] for s in dumped.json()["steps"]]
+    )
+
+    sqlite_only = await client.post(f"/v1/tenants/{some_tenant}/ops/backup", json=op_body(args={}))
+    assert sqlite_only.status_code == 200, sqlite_only.text
+    plan = sqlite_only.json()
+    assert step_titled(plan, "dump the tenant's postgres database") is None, [s["title"] for s in plan["steps"]]
+    skipped = step_titled(plan, "skip the postgres leg")
+    assert skipped is not None, [s["title"] for s in plan["steps"]]
+    assert skipped["warnings"], skipped
+
+
+# =========================================================================== #
+# restore --as (PR-D) — the deep verify
+# =========================================================================== #
+async def fenced_bundle(
+    client: httpx.AsyncClient, schemas: dict[str, dict], tenant: str, *, fence: bool = True
+) -> str:
+    """Take a bundle of *tenant* and return its id."""
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": fence}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", json.dumps(job)[:800]
+    bundle = (job["result"] or {}).get("bundle")
+    assert isinstance(bundle, str) and bundle.endswith("-backup"), job["result"]
+    return bundle
+
+
+async def test_restore_rebuilds_a_fresh_tenant_and_marks_the_bundle_verified(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The whole verb, end to end: a fenced bundle, a tenant that did not exist
+    a moment ago built from the source's artifact, the stores recovered into it,
+    its counts checked against the manifest, and — only then — `verified` set on
+    the backup.
+
+    ``verified`` is the point. Nothing else in the control plane sets it, and
+    `decommission` and `handover` both refuse without it, so this is the
+    operation that makes a backup a recovery point rather than a directory."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source)
+    target = new_tenant_name()
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{source}/ops/restore", schemas,
+        args={"from": bundle, "as": target}, confirm=source, timeout=120.0,
+    )
+    assert job["state"] == "succeeded", (
+        f"the restore settled as {job['state']}: {json.dumps(job.get('error'))} · steps "
+        + json.dumps([{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+                      for s in job["steps"]])
+    )
+    result = job["result"] or {}
+    assert result.get("restored_as") == target and result.get("bundle") == bundle, result
+    assert result.get("counts"), f"the restore reports no counts: {result}"
+
+    # The fresh tenant is real, active, and the read surface serves it.
+    shown = await client.get(f"/v1/tenants/{target}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["summary"]["state"] == "active", body["summary"]
+    assert body["registry"]["last_ops"].get("restore", {}).get("outcome") == "succeeded", (
+        body["registry"]["last_ops"]
+    )
+
+    # …and the SOURCE's bundle is now proved.
+    src = await client.get(f"/v1/tenants/{source}")
+    assert src.status_code == 200, src.text
+    last = src.json()["summary"]["last_backup"]
+    assert last and last["verified"] is True, (
+        f"a succeeded restore did not mark {source}'s bundle verified: {last}"
+    )
+
+    # The restored tenant's credentials are FRESH and come back exactly once.
+    first = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert first.status_code == 200, first.text
+    validate(first.json(), "secrets_response", schemas)
+    labels = {s["label"] for s in first.json()["secrets"]}
+    assert "bootstrap-admin" in labels, labels
+    for secret in first.json()["secrets"]:
+        assert len(secret["value"]) == 64, f"{secret['label']} is not token_hex(32)"
+    second = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert_error(second, 410, "not_found", schemas)
+
+    # And the job result carries no credential, only fingerprints.
+    for key in result.get("keys") or []:
+        assert key["fingerprint"].startswith("sha256:"), key
+        assert "value" not in key, f"the restore result carries a key VALUE: {key}"
+
+
+async def test_restore_from_a_best_effort_bundle_fails_with_the_reason(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """An unfenced bundle is a copy of a moving target. The restore does not
+    discover that halfway through — the FIRST step reads the manifest and
+    refuses — and the refusal says `best_effort`, so an operator reading a failed
+    job knows to take a fenced backup rather than to go looking at the stores."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source, fence=False)
+    target = new_tenant_name()
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{source}/ops/restore", schemas,
+        args={"from": bundle, "as": target}, confirm=source, timeout=120.0,
+    )
+    assert job["state"] == "failed", json.dumps(job)[:800]
+    detail = json.dumps(job.get("error")) + json.dumps([s.get("error") for s in job["steps"]])
+    assert "best_effort" in detail, detail
+
+    # And nothing was left behind: the name is free again.
+    after = await client.get(f"/v1/tenants/{target}")
+    assert after.status_code == 404, (
+        f"a failed restore left {target} in the registry ({after.status_code})"
+    )
+
+
+async def test_restore_is_destructive_on_the_SOURCE_and_says_so(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The plan is the approval document, and the thing being approved is an
+    operation on TWO tenants. Its confirm value is the source's name — that is
+    the row whose backup record changes and the row the lock is held on — and
+    the plan names the fresh tenant in its steps so an operator can see what is
+    about to be built."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source)
+    target = new_tenant_name()
+
+    preview = await client.post(
+        f"/v1/tenants/{source}/ops/restore",
+        json=op_body(dry_run=True, args={"from": bundle, "as": target}),
+    )
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    assert plan["requires_confirm"] is True and plan["confirm_value"] == source, plan
+
+    titles = [s["title"] for s in plan["steps"]]
+    for needle in ("verify the bundle", "allocate " + target, "recover every collection",
+                   "verify the restored tenant against the bundle"):
+        assert any(needle in t for t in titles), f"no step matching {needle!r} in {titles}"
+
+    # The fresh tenant's credential file is named and NOT previewed.
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    secrets = next((p for p in writes if p.endswith("/config/secrets.env")), None)
+    assert secrets and target in secrets, f"the plan does not name {target}'s secrets.env: {sorted(writes)}"
+    assert not writes[secrets]["preview"], writes[secrets]["preview"]
+
+    # An execute without the confirm is 428, not a restore.
+    resp = await client.post(
+        f"/v1/tenants/{source}/ops/restore",
+        json=op_body(dry_run=False, args={"from": bundle, "as": target}),
+    )
+    assert resp.status_code == 428, f"a destructive op ran without a confirm: {resp.status_code}"
+
+
+async def test_decommission_refuses_a_tenant_the_ctl_does_not_run(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """v1 quarantines only what the ctl supervises and owns. Renaming the data
+    directory of a hand-started tenant belonging to another account is
+    destroying somebody else's work with a tool that cannot put it back, so it
+    is refused at PLAN time — before any lock, and with a sentence naming what
+    the tenant actually is."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/decommission", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "quarantines only what the ctl runs" in err["detail"], err["detail"]
+    assert "not wired" not in err["detail"], (
+        f"decommission must be refused as a policy decision, not as an unwired engine: {err['detail']}"
+    )
+
+
+async def test_decommission_of_a_managed_tenant_needs_a_verified_bundle(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The prerequisite that makes quarantine reversible: a fenced bundle a
+    restore has PROVED. The fixture tenant's bundles are unverified (only a
+    `restore --as` sets that flag), so the refusal names the bundle and what to
+    do with it rather than proceeding."""
+    tenant = await managed_tenant(client)
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "backup" in err["detail"], err["detail"]
+
+
+# =========================================================================== #
+# `tenant create` — the verb that makes a tenant (#537)
+#
+# Every case runs against the FIXTURE host (--fake-drivers), which carries one
+# prepared artifact. The tenant names are unique per run because a create that
+# succeeded is a registry row that stays there for the life of the daemon: a
+# fixed name would make the second test in the session assert against the first
+# test's tenant.
+# =========================================================================== #
+
+#: The artifact the fixture daemon has prepared (go/internal/ctl/api/fake.go).
+CONFORMANCE_ARTIFACT = "conformance-artifact"
+
+
+def new_tenant_name() -> str:
+    """A fresh tenant name matching ``^[a-z][a-z0-9-]{0,31}$``."""
+    return f"conf-{uuid.uuid4().hex[:8]}"
+
+
+async def test_create_dry_run_plans_every_driver_it_will_touch(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A create's dry run is the approval document for the whole operation, so
+    it has to name every kind of work the job will do — the allocation, the
+    directories, the credential file, the env files, the checkout, the UI build,
+    the units, the start, the tenant-API calls and the gateway publish. A plan
+    that showed only the steps whose drivers happen to be wired would be an
+    approval for something other than what runs."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": name, "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    assert plan["op"] == "create" and plan["tenant"] == name, plan
+    kinds = {s["kind"] for s in plan["steps"]}
+    for want in {"registry", "fs", "envfile", "git", "apptainer", "systemd", "probe", "nginx"}:
+        assert want in kinds, f"no {want!r} step in the create plan: {sorted(kinds)}"
+
+    # The whole tenant is visible: its env file and its units are previewed…
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    env = next((p for p in writes if p.endswith("/config/tenant.env")), None)
+    assert env, f"the plan previews no tenant.env: {sorted(writes)}"
+    assert writes[env]["preview"], "tenant.env was previewed as null"
+    unit = next((p for p in writes if p.endswith("-api.service")), None)
+    assert unit, f"the plan previews no api unit: {sorted(writes)}"
+
+    # …and the credential file is named WITHOUT a preview. plan.json makes the
+    # preview null for secret-bearing content, and a create's secrets.env is the
+    # one file in the fleet whose whole content is credentials.
+    secrets = next((p for p in writes if p.endswith("/config/secrets.env")), None)
+    assert secrets, f"the plan does not name secrets.env: {sorted(writes)}"
+    assert not writes[secrets]["preview"], (
+        f"secrets.env was previewed: {writes[secrets]['preview'][:200]!r}"
+    )
+
+    # A dry run writes nothing: the tenant does not exist afterwards.
+    after = await client.get(f"/v1/tenants/{name}")
+    assert after.status_code == 404, f"the dry run created the tenant: {after.status_code}"
+
+
+async def test_create_executes_and_delivers_the_credentials_once(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The end-to-end case: a create that succeeds produces a tenant the read
+    surface serves, a result that carries FINGERPRINTS, and an envelope that
+    carries the values exactly once."""
+    name = new_tenant_name()
+    job = await submit_and_settle(
+        client, "/v1/tenants", schemas,
+        args={
+            "name": name, "artifact_id": CONFORMANCE_ARTIFACT,
+            "keys": [{"label": "ops", "role": "user"}],
+        },
+        timeout=60.0,
+    )
+    assert job["state"] == "succeeded", json.dumps(job)[:1200]
+
+    result = job["result"] or {}
+    assert result.get("name") == name, result
+    assert isinstance(result.get("ports"), dict), result
+    assert result.get("artifact_id") == CONFORMANCE_ARTIFACT, result
+    keys = result.get("keys") or []
+    labels = {k["label"] for k in keys}
+    assert "bootstrap-admin" in labels, (
+        f"create must always mint the bootstrap admin the ctl itself uses: {labels}"
+    )
+    assert "ops" in labels, labels
+    for k in keys:
+        assert k["fingerprint"].startswith("sha256:"), k
+        assert "value" not in k, f"the job result carries a key VALUE: {k}"
+
+    # The tenant is real: the read surface serves it, with no secret in it.
+    shown = await client.get(f"/v1/tenants/{name}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["summary"]["state"] in {"active", "provisioned"}, body["summary"]
+    assert body["registry"]["ports"]["base"] == result["ports"]["base"], (
+        "the tenant the read surface serves is not the one the job reported"
+    )
+    # Fingerprints, never values: the registry is not a place a key lives.
+    for k in body["registry"]["keys"]:
+        assert k["fingerprint"].startswith("sha256:"), k
+        assert "value" not in k, k
+
+    # The values come back once, and only once.
+    first = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert first.status_code == 200, first.text
+    validate(first.json(), "secrets_response", schemas)
+    delivered = {s["label"]: s["value"] for s in first.json()["secrets"]}
+    assert set(delivered) == labels, f"envelope {sorted(delivered)} != ledger {sorted(labels)}"
+    for label, value in delivered.items():
+        assert len(value) == 64, f"{label} is {len(value)} characters, want token_hex(32)"
+    second = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert_error(second, 410, "not_found", schemas)
+
+
+async def test_create_is_idempotent_under_one_key(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The same create sent twice under the same idempotency key is ONE tenant.
+    Without this, a client that retried after a dropped response would allocate
+    a second port block and a second set of credentials for a tenant that
+    already exists."""
+    name = new_tenant_name()
+    key = idem()
+    args = {"name": name, "artifact_id": CONFORMANCE_ARTIFACT}
+    body = op_body(dry_run=False, args=args, idempotency_key=key)
+    body.update(await doctor_force(client, "/v1/tenants", args=args))
+
+    first = await client.post("/v1/tenants", json=body)
+    assert first.status_code == 202, first.text
+    job = await poll_to_terminal(client, first.json()["id"], schemas, timeout=60.0)
+    assert job["state"] == "succeeded", json.dumps(job)[:800]
+
+    again = await client.post("/v1/tenants", json=body)
+    assert again.status_code == 202, again.text
+    assert again.json()["id"] == job["id"], (
+        f"a replay minted a second job ({again.json()['id']} != {job['id']}) — and therefore "
+        "a second tenant"
+    )
+
+    # A DIFFERENT request under the same key is a conflict, not a silent
+    # substitution of one operation for another.
+    other = dict(body, args={"name": new_tenant_name(), "artifact_id": CONFORMANCE_ARTIFACT})
+    assert_error(await client.post("/v1/tenants", json=other), 409, "duplicate", schemas)
+
+
+async def test_create_with_postgres_local_adds_the_unit_and_the_pg_secrets(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """``postgres: local`` is the PR-D addition to CreateArgs. It changes three
+    things an operator can see in the plan: a postgres unit, the instance's two
+    writable directories, and the provision record that says which kind this
+    tenant was built as."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(
+            dry_run=True,
+            args={"name": name, "artifact_id": CONFORMANCE_ARTIFACT, "postgres": "local"},
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    pg_unit = next((p for p in writes if p.endswith("-postgres.service")), None)
+    assert pg_unit, f"postgres: local planned no postgres unit: {sorted(writes)}"
+    body = writes[pg_unit]["preview"] or ""
+    assert "EnvironmentFile=" in body and "/config/secrets.env" in body, body
+    # The password is a REFERENCE, never a literal: /rag/config/ctl/units is
+    # world-readable. (The plan redactor flattens the reference too, so what is
+    # asserted here is the absence of an assignment.)
+    assert "TENANT_PG_PASSWORD=" not in body, f"the unit assigns the password:\n{body}"
+
+    provision = next((p for p in writes if p.endswith("/config/provision.env")), None)
+    assert provision, sorted(writes)
+    assert "TENANT_STORE_KIND=postgres-local" in (writes[provision]["preview"] or ""), (
+        writes[provision]["preview"]
+    )
+
+    targets = {t for s in plan["steps"] for t in s["targets"]}
+    for want in ("postgres/data", "postgres/run"):
+        assert any(want in t for t in targets), (
+            f"the instance's {want} directory is never created; apptainer refuses a missing bind"
+        )
+
+    # The default is sqlite, and it plans none of that.
+    plain = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": new_tenant_name(), "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    assert plain.status_code == 200, plain.text
+    plain_writes = {w["path"] for s in plain.json()["steps"] for w in s["would_write"]}
+    assert not any(p.endswith("-postgres.service") for p in plain_writes), plain_writes
+
+
+@pytest.mark.parametrize(
+    "args,why",
+    [
+        ({"artifact_id": "not-prepared"}, "an artifact nobody prepared"),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "identity_provider": "none",
+             "admin_subjects": ["bvbrc:alice@patricbrc.org"]},
+            "admin subjects with no identity provider to issue them",
+        ),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "identity_provider": "bvbrc",
+             "admin_subjects": ["oidc:alice@example.com"]},
+            "an admin subject issued by somebody other than the provider",
+        ),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "template_from": "zz-not-a-tenant"},
+            "a template tenant that does not exist",
+        ),
+    ],
+    ids=["unknown-artifact", "subjects-without-provider", "foreign-issuer", "unknown-template"],
+)
+async def test_create_refusals_are_409_with_a_reason(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict],
+    args: dict[str, Any], why: str,
+) -> None:
+    """Each of these is a policy refusal, answered 409 ``refused`` at PLAN time
+    — before a lock is taken and before anything is written. A 422 would tell
+    the caller its document was malformed and invite it to fix the spelling; it
+    is not malformed, it is asking for something the control plane will not do."""
+    resp = await client.post(
+        "/v1/tenants", json=op_body(dry_run=True, args=dict(args, name=new_tenant_name()))
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "not wired" not in err["detail"], f"{why}: refused for the wrong reason: {err['detail']}"
+
+
+async def test_create_refuses_a_name_that_is_taken(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """A tenant name is a directory, a gateway segment and a set of instance
+    names. Creating a second tenant with one that is taken would have two
+    tenants writing the same tree."""
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": some_tenant, "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    assert some_tenant in err["detail"], err["detail"]
+
+
+@pytest.mark.parametrize("verb", ["artifact-prepare", "create-sandbox"])
+async def test_a_cli_only_op_has_no_http_route(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str, verb: str
+) -> None:
+    """``fleet artifact prepare`` and ``create-sandbox`` are jobs like any
+    other — planned, locked, audited — and they have NO route. The first runs
+    ``npm ci`` (the one step in the control plane that reaches the network) and
+    takes a repository path; the second allocates out of the selftest port range
+    and is how ``ragstack-ctl selftest`` creates and destroys tenants in a loop.
+    Both are trusted-operator, ``--direct`` operations. The router refuses them
+    as verbs outside the enum, which is the same answer a name nobody defined
+    gets: a CLI-only op must not be half-reachable.
+
+    Not gated on the engine: the verb enum is the router's own, so this holds on
+    any daemon that answers."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/{verb}", json=op_body())
+    body = assert_error(resp, 422, "validation", schemas)
+    assert body.get("extra", {}).get("fields") == ["verb"], body
+    for path in (f"/v1/fleet/artifacts", "/v1/artifacts"):
+        other = await client.post(path, json=op_body())
+        assert other.status_code in (404, 405), (
+            f"POST {path} answered {other.status_code}; a CLI-only op must have no route"
+        )

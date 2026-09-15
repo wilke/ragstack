@@ -15,6 +15,10 @@ func TestClassify(t *testing.T) {
 		"NEO4J_PASSWORD": Secret, "NEO4J_AUTH": Secret, "GOWE_TOKEN": Secret,
 		"TENANT_PG_PASSWORD": Secret, "TENANT_API_KEY_USER": Secret, "TENANT_API_KEY_ADMIN": Secret,
 		"SOME_SECRET": Secret, "X_TOKEN_Y": Secret, "FOO_KEY": Secret,
+		// The postgres password's SECOND name: secrets.env carries it so the
+		// unit can hand the value to apptainer through the environment instead
+		// of an argv, and it has to redact exactly like the first.
+		"APPTAINERENV_POSTGRES_PASSWORD": Secret,
 		// executable surface
 		"PYTHONPATH": ExecutableSurface, "PATH": ExecutableSurface, "HF_HOME": ExecutableSurface,
 		"INGEST_ROOT": ExecutableSurface, "COLLECTION_MANIFEST_DIR": ExecutableSurface,

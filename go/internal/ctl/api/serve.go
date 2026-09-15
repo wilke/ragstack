@@ -119,7 +119,7 @@ func RunServe(args []string) int {
 	// diagnoses a broken host with, and taking it down because the mutation
 	// half is unavailable would remove the only view of the problem. Every
 	// mutation then answers 409 `refused` naming the reason (jobs.go).
-	roots := paths.NewRoots(*ragRoot, paths.Overrides{CtlStateDir: strings.TrimSpace(os.Getenv(EnvStateDir))})
+	roots := RootsFromEnv(*ragRoot)
 	if *fakeDrivers && strings.TrimSpace(os.Getenv(EnvStateDir)) == "" {
 		// A fixture daemon WRITES: jobs.db, locks, gateway generations. With
 		// the default state dir those land next to the production daemon's
@@ -138,10 +138,16 @@ func RunServe(args []string) int {
 		Mode:         model.WorkerDaemon,
 		Host:         hostname(),
 		FakeDrivers:  *fakeDrivers,
-		SecretsTTL:   DefaultSecretsTTL,
-		Logger:       logger,
-		Now:          time.Now,
+		// The fixture host is coconut's daemon: its tenants are owned by the
+		// service account, so the fixture daemon acts as that account whoever
+		// runs it. Without this a conformance run as wilke refused to
+		// decommission a fixture tenant as "owned by somebody else".
+		Owner:      fakeOwner(*fakeDrivers),
+		SecretsTTL: DefaultSecretsTTL,
+		Logger:     logger,
+		Now:        time.Now,
 	}
+	SetHostToolsFromEnv(&cfg)
 	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		d, err := backend.Doctor(ctx, tenant, op)
 		if err != nil {
@@ -153,6 +159,11 @@ func RunServe(args []string) int {
 		// The fixture daemon has no registry file: the engine plans against
 		// and saves into the same in-memory fleet the read surface serves.
 		cfg.LoadFleet, cfg.SaveFleet = fb.LoadFleet, fb.SaveFleet
+		// …and a mirror to check tenant worktrees out of. Nothing is read from
+		// disk (the fake Git driver answers from its ref table), but a create
+		// with no mirror configured refuses, which would make every conformance
+		// create a refusal about the harness rather than about the op.
+		cfg.Mirror = ConformanceMirror
 	}
 	engine, err := BuildEngine(cfg)
 	var engineErr error
@@ -498,4 +509,27 @@ func splitList(raw string) ([]string, error) {
 		return nil, errors.New("is empty; an empty issuer allowlist authenticates nobody and must be stated by removing the variable, not by blanking it")
 	}
 	return out, nil
+}
+
+// RootsFromEnv is the deployment layout under ragRoot with the two
+// directories an operator may relocate through the environment applied:
+// CTL_STATE_DIR (jobs.db, locks, gateway generations, artifacts) and
+// CTL_CONFIG_DIR (ctl.env, the rendered units). The daemon and the --direct
+// CLI both build their roots here, so a selftest run as wilke with a scratch
+// state and units directory and the svcbvbrc daemon resolve every OTHER path
+// — the registry, the tenant trees, the backups — identically.
+func RootsFromEnv(ragRoot string) paths.Roots {
+	return paths.NewRoots(ragRoot, paths.Overrides{
+		CtlStateDir:  strings.TrimSpace(os.Getenv(EnvStateDir)),
+		CtlConfigDir: strings.TrimSpace(os.Getenv(EnvConfigDir)),
+	})
+}
+
+// fakeOwner is the account the --fake-drivers daemon acts as; "" lets
+// BuildEngine take the process's own user for a real daemon.
+func fakeOwner(fake bool) string {
+	if fake {
+		return "svcbvbrc"
+	}
+	return ""
 }

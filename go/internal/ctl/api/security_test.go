@@ -1190,8 +1190,21 @@ func TestEveryOpTheHandlersSubmitResolvesInTheRegistry(t *testing.T) {
 	}
 
 	// And the other direction: an op the registry knows that no handler can
-	// ever reach is dead code, or a route somebody forgot to wire.
+	// ever reach is dead code, or a route somebody forgot to wire — UNLESS it
+	// is one of the CLI-only verbs, which have no HTTP route on purpose
+	// (ops.CLIVerbs; `fleet artifact prepare` runs `npm ci` and takes a
+	// repository path, so it is `--direct` and trusted-operator only).
+	cliOnly := map[string]bool{}
+	for _, v := range ops.CLIVerbs {
+		cliOnly[v] = true
+		if opVerbs[v] {
+			t.Errorf("%q is CLI-only but api.opVerbs exposes it over HTTP", v)
+		}
+	}
 	for _, verb := range reg.Verbs() {
+		if cliOnly[verb] {
+			continue
+		}
 		if _, ok := submitted[verb]; !ok {
 			t.Errorf("the registry has op %q and nothing in the API submits it", verb)
 		}

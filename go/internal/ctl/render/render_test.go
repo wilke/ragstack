@@ -846,3 +846,178 @@ func TestNginxTenantsRefusesAnEmptyUIMode(t *testing.T) {
 		t.Errorf("the refusal does not name the tenant and the field: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------- postgres unit
+
+// postgresLocal turns a managed tenant into one that runs its OWN postgres.
+func postgresLocal(t *registry.Tenant) {
+	t.Stores.Postgres = registry.Postgres{
+		Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive,
+		Capabilities: registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true},
+		URL:          registry.NullString(fmt.Sprintf("postgresql://localhost:%d", t.Ports.PG)),
+		Port:         registry.NullPort(t.Ports.PG),
+		Instance:     registry.NullString("postgres-" + t.Name),
+		SIF:          "/rag/apptainer/images/postgres.sif",
+		DataDir:      registry.NullString(t.DataDir + "/postgres"),
+	}
+}
+
+// The tenant's postgres password appears NOWHERE in the unit: not as a
+// literal, and — the bug this test exists for — not as a ${…} reference in
+// ExecStart either.
+//
+// systemd expands ${…} in ExecStart into the process's ARGV, and
+// /proc/<pid>/cmdline is 0444: every account on a host whose only group has
+// 1869 members could read the running instance's password out of it with `ps`.
+// The value now reaches the container through the EnvironmentFile alone, which
+// carries it as APPTAINERENV_POSTGRES_PASSWORD (ops/create.go writes it there)
+// for apptainer to forward in as POSTGRES_PASSWORD.
+func TestUnitsPostgresLocalKeepsThePasswordOffTheArgv(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	postgresLocal(tn)
+	units, err := Units(tn, UnitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg := string(units["ragstack-sandbox-postgres.service"])
+	for _, forbidden := range []string{"POSTGRES_PASSWORD", "TENANT_PG_PASSWORD", "PGPASSWORD"} {
+		if strings.Contains(pg, forbidden) {
+			t.Errorf("the postgres unit names %s; the password must not be in the unit file or on its argv:\n%s",
+				forbidden, pg)
+		}
+	}
+	// What replaces it: the unit still reads the tenant's 0640 secrets.env,
+	// which is where the value lives.
+	if !strings.Contains(pg, "EnvironmentFile="+string(tn.DataDir)+"/config/secrets.env") {
+		t.Errorf("the postgres unit does not load the tenant's secrets.env:\n%s", pg)
+	}
+	// No OTHER unit picked it up either.
+	for name, body := range units {
+		if strings.Contains(string(body), "POSTGRES_PASSWORD") {
+			t.Errorf("%s carries POSTGRES_PASSWORD:\n%s", name, body)
+		}
+	}
+}
+
+func TestUnitsPostgresLocal(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	postgresLocal(tn)
+	units, err := Units(tn, UnitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg, ok := units["ragstack-sandbox-postgres.service"]
+	if !ok {
+		t.Fatalf("no postgres unit; units = %v", sortedKeysOf(units))
+	}
+	golden(t, "units/ragstack-sandbox-postgres.service", pg)
+	// The plan's must-haves, asserted independently of the golden. The password
+	// does not appear here AT ALL — see TestUnitsPostgresLocalKeepsThePasswordOffTheArgv;
+	// the unit gets it through EnvironmentFile as APPTAINERENV_POSTGRES_PASSWORD,
+	// which apptainer forwards into the container.
+	for _, w := range []string{
+		"EnvironmentFile=/rag/data/tenants/sandbox/config/secrets.env",
+		"--bind /rag/data/tenants/sandbox/postgres/data:/var/lib/postgresql/data",
+		"--bind /rag/data/tenants/sandbox/postgres/run:/var/run/postgresql",
+		"--env PGDATA=/var/lib/postgresql/data/pgdata",
+		"postgres -c port=24085 -c listen_addresses=127.0.0.1",
+		"ConditionPathIsDirectory=/rag/data/tenants/sandbox/postgres/data",
+		"KillMode=mixed", "TimeoutStopSec=90",
+		"StandardOutput=append:/rag/data/tenants/sandbox/logs/postgres-sandbox.log",
+	} {
+		if !strings.Contains(string(pg), w) {
+			t.Errorf("the postgres unit lacks %q:\n%s", w, pg)
+		}
+	}
+	// It is ordered INTO the tenant: the API needs its relational store before
+	// it opens, and the target has to pull it in or nothing ever starts it.
+	api := string(units["ragstack-sandbox-api.service"])
+	want := "ragstack-sandbox-qdrant.service ragstack-sandbox-es.service ragstack-sandbox-postgres.service"
+	if !strings.Contains(api, "Requires="+want) || !strings.Contains(api, "After="+want) {
+		t.Errorf("the api unit does not order itself after the postgres unit:\n%s", api)
+	}
+	if target := string(units["ragstack-sandbox.target"]); !strings.Contains(target, "Wants="+want+" ragstack-sandbox-api.service") {
+		t.Errorf("the target does not want the postgres unit:\n%s", target)
+	}
+
+	// sqlite and external run no server the ctl owns, so they get no unit.
+	for _, kind := range []string{registry.PostgresKindSQLite, registry.PostgresKindExternal} {
+		other := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+		other.Stores.Postgres = registry.Postgres{Kind: kind, Ownership: registry.OwnershipExclusive}
+		if kind == registry.PostgresKindExternal {
+			other.Stores.Postgres.Ownership = registry.OwnershipExternal
+		}
+		u, err := Units(other, UnitConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := u["ragstack-sandbox-postgres.service"]; ok {
+			t.Errorf("store kind %q rendered a postgres unit", kind)
+		}
+	}
+
+	// A local postgres with no image cannot be rendered — an ExecStart with an
+	// empty SIF path is a unit that fails at start with nothing to read.
+	noSIF := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	postgresLocal(noSIF)
+	noSIF.Stores.Postgres.SIF = ""
+	if _, err := Units(noSIF, UnitConfig{}); err == nil {
+		t.Error("a local postgres with no sif was rendered")
+	}
+	// And a port that is not the block's +5 is a disagreement between the row
+	// and the allocation, not a preference.
+	wrongPort := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	postgresLocal(wrongPort)
+	wrongPort.Stores.Postgres.Port = registry.NullPort(24099)
+	if _, err := Units(wrongPort, UnitConfig{}); err == nil {
+		t.Error("a postgres port outside the tenant's block was rendered")
+	}
+}
+
+// A sandbox tenant lives under a scratch root INSIDE /rag, and
+// ConditionPathIsMountPoint on such a directory is false — a unit conditioned
+// on it would silently never start. MountPoint keeps the condition on the real
+// mount while every path in the unit points at the sandbox tree.
+func TestUnitConfigMountPointIsSeparateFromRagRoot(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	tn.DataDir = "/rag/data/ctl/selftest/tenants/sandbox"
+	units, err := Units(tn, UnitConfig{RagRoot: "/rag/data/ctl/selftest", MountPoint: "/rag"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range units {
+		if !strings.Contains(string(body), "ConditionPathIsMountPoint=/rag\n") {
+			t.Errorf("%s does not condition on the real mount:\n%s", name, body)
+		}
+		if strings.Contains(string(body), "ConditionPathIsMountPoint=/rag/data") {
+			t.Errorf("%s conditions on a path inside the mount:\n%s", name, body)
+		}
+	}
+	if es := string(units["ragstack-sandbox-es.service"]); !strings.Contains(es,
+		"--bind /rag/data/ctl/selftest/tenants/sandbox/elasticsearch/data:") {
+		t.Errorf("the es unit does not bind the sandbox tree:\n%s", es)
+	}
+	// es-seed-config still gets the deployment root it reads the image from,
+	// not the mount point.
+	if es := string(units["ragstack-sandbox-es.service"]); !strings.Contains(es,
+		"es-seed-config sandbox --rag-root /rag/data/ctl/selftest") {
+		t.Errorf("es-seed-config was given the mount point instead of the rag root:\n%s", es)
+	}
+	// Default: MountPoint follows RagRoot, so nothing changes for a deployment.
+	plain, err := Units(managedTenant("sandbox", 4, "enabled", registry.UIModeStatic), UnitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plain["ragstack-sandbox.target"]), "ConditionPathIsMountPoint=/rag\n") {
+		t.Error("the default MountPoint is not the rag root")
+	}
+}
+
+func sortedKeysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

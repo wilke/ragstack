@@ -38,7 +38,6 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
-	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
 const (
@@ -102,6 +101,20 @@ type opFlags struct {
 	registry       *string
 	ragRoot        *string
 	asJSON         *bool
+
+	// wantSecrets is set by the commands that MINT credentials (`tenant
+	// create`): after a successful wait, the envelope is collected and printed
+	// once. fetchSecrets is filled in by whichever transport submitted the job,
+	// so the collection goes back the same way the submission went.
+	wantSecrets  bool
+	fetchSecrets func(jobID string) (*model.SecretsResponse, error)
+
+	// mountPoint overrides what a rendered unit's ConditionPathIsMountPoint
+	// names. It is deliberately not a flag: `selftest --rag-root <scratch>`
+	// sets it, because that is the one run whose paths move into a sandbox tree
+	// while the mount those units wait for is still /rag. Empty means
+	// Roots.RagRoot, which is right everywhere else.
+	mountPoint string
 }
 
 func addOpFlags(fs *flag.FlagSet, registryPath, ragRoot string, jsonOut bool) *opFlags {
@@ -536,6 +549,28 @@ func submitOp(o *opFlags, target opTarget, args map[string]any) int {
 		return exitUsage
 	}
 	ctx := context.Background()
+	o.fetchSecrets = func(jobID string) (*model.SecretsResponse, error) {
+		r, err := c.get(ctx, "/v1/jobs/"+jobID+"/secrets", nil)
+		if err != nil {
+			return nil, err
+		}
+		// 410 is the contract's "this envelope has already been read, or it
+		// expired". It is wrapped in the engine's own sentinel so that the one
+		// caller who has to tell it apart — an idempotent REPLAY, which gets
+		// back the first request's finished job — can, whichever transport it
+		// came through.
+		if r.Status == http.StatusGone {
+			return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered 410: %w", jobID, jobs.ErrGone)
+		}
+		if r.Status != http.StatusOK {
+			return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered %d", jobID, r.Status)
+		}
+		var out model.SecretsResponse
+		if err := json.Unmarshal(r.Body, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
 	resp, err := c.do(ctx, http.MethodPost, target.path, req)
 	if err != nil {
 		return failClient(err)
@@ -636,6 +671,11 @@ func followJob(ctx context.Context, o *opFlags, job *model.Job, interval time.Du
 	for {
 		if code, done := waitExit(job.State); done {
 			finishWait(job, o)
+			if code == exitOK && o.wantSecrets {
+				if c := deliverSecrets(o, job.ID); c != exitOK {
+					return c
+				}
+			}
 			return code
 		}
 		if time.Now().After(deadline) {
@@ -670,6 +710,50 @@ func followJob(ctx context.Context, o *opFlags, job *model.Job, interval time.Du
 		job = next
 		report(job)
 	}
+}
+
+// deliverSecrets collects the one-time envelope and prints it.
+//
+// It runs ONCE, right after the job succeeded, because that is the only moment
+// the values exist anywhere an operator can reach: the envelope is destroyed by
+// the first successful read and expires 15 minutes after it was created. A
+// failure to collect is reported as its own thing rather than as the job's —
+// the tenant was created either way, and telling an operator the create failed
+// would send them to roll back a tenant that is running.
+func deliverSecrets(o *opFlags, jobID string) int {
+	if o.fetchSecrets == nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: this transport cannot collect the credentials; "+
+			"`ragstack-ctl job show %s` names them and the envelope expires in 15 minutes\n", jobID)
+		return exitOK
+	}
+	resp, err := o.fetchSecrets(jobID)
+	if errors.Is(err, jobs.ErrGone) {
+		// An idempotent REPLAY, not a failure. The second `create` with the
+		// same idempotency key is answered with the FIRST one's finished job,
+		// and that job's envelope was destroyed by the read that delivered it
+		// — to this operator, on the first run. Exiting 1 here told a script
+		// that a create which had in fact succeeded twice over had failed, and
+		// sent an operator to mint replacements for keys they already hold.
+		fmt.Fprintf(stdout, "\nthe credentials for job %s were delivered by the earlier run of this request "+
+			"(the envelope is read once and destroyed); this is a replay of that job, and nothing new was "+
+			"created. If you no longer have them, mint replacements with `ragstack-ctl key mint`.\n", jobID)
+		return exitOK
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: the job succeeded but its credentials could not be collected: %v\n"+
+			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)
+		return exitError
+	}
+	if *o.asJSON {
+		return encode(resp)
+	}
+	fmt.Fprintf(stdout, "\ncredentials for job %s — SHOWN ONCE, they are not stored anywhere and cannot be shown again:\n",
+		resp.JobID)
+	for _, s := range resp.Secrets {
+		fmt.Fprintf(stdout, "  %-20s %-6s %s\n", s.Label, s.Role, s.Value)
+	}
+	fmt.Fprintf(stdout, "Save them now. The registry keeps fingerprints only.\n")
+	return exitOK
 }
 
 // finishWait prints the job's ending. Under --json the whole job document is
@@ -775,20 +859,40 @@ func printJob(j *model.Job, asJSON bool) int {
 // starts returning a real engine, --direct starts working here with no change
 // to this file.
 func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
+	eng, _, err := buildDirectEngineAndDrivers(o)
+	return eng, err
+}
+
+// buildDirectEngineAndDrivers is buildDirectEngine, and it also hands back the
+// driver set the engine was built with. Only `selftest` needs both: it submits
+// jobs through the engine and then asks the same host whether the ports are
+// free, the units are gone and the quarantine is there.
+func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) {
 	host, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
+		return nil, nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
 	}
-	roots := paths.NewRoots(*o.ragRoot, paths.Overrides{})
-	return api.BuildEngine(api.EngineConfig{
+	// The same CTL_STATE_DIR / CTL_CONFIG_DIR the daemon honours: a --direct
+	// run that ignored them would open the daemon's jobs.db and write units
+	// into the daemon's tree even when the operator pointed it elsewhere.
+	roots := api.RootsFromEnv(*o.ragRoot)
+	cfg := api.EngineConfig{
 		Roots:        roots,
 		RegistryPath: resolveRegistry(*o.registry, *o.ragRoot),
 		StorePath:    filepath.Join(roots.CtlStateDir, "jobs.db"),
 		Mode:         model.WorkerDirect,
 		Host:         host,
+		Mirror:       mirrorPath(*o.ragRoot),
+		MountPoint:   o.mountPoint,
 		SecretsTTL:   api.DefaultSecretsTTL,
 		Now:          time.Now,
-	})
+	}
+	// The same CTL_* variables the daemon reads, through the same helper: a
+	// --direct run and the daemon must resolve `systemctl`, `git`, node, the
+	// mirror and the npm cache identically, or an operator would be debugging
+	// two different driver sets.
+	api.SetHostToolsFromEnv(&cfg)
+	return api.BuildEngineAndDrivers(cfg)
 }
 
 // directPrincipal is who a --direct run is. Nothing about it comes from a
@@ -817,6 +921,9 @@ func submitDirect(o *opFlags, target opTarget, req model.OpRequest) int {
 	p, err := directPrincipal()
 	if err != nil {
 		return failClient(err)
+	}
+	o.fetchSecrets = func(jobID string) (*model.SecretsResponse, error) {
+		return eng.Secrets(context.Background(), jobID, p)
 	}
 	plan, job, err := eng.Submit(context.Background(), jobs.Request{
 		Op:                  target.op,

@@ -292,6 +292,21 @@ CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
 shred -u "$D/ctl.env" "$D/ctl-secrets.env" && rmdir "$D"
 ```
 
+**Optional `ctl.env` rows: where the host programs are.** The real drivers run
+programs by absolute path and never search `PATH`. Each variable below is
+optional; unset takes the default. Add a row only when this host differs —
+coconut's node does, which is the reason these exist.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `CTL_SYSTEMCTL_BIN` | `/usr/bin/systemctl` | the `systemctl --user` the unit verbs run. |
+| `CTL_GIT_BIN` | `/usr/bin/git` | the `git` that resolves refs and manages artifact worktrees. |
+| `CTL_NODE_BIN` | `/rag/tools/node/current/bin/node` | the node that runs `vite build` for a tenant UI. |
+| `CTL_NPM_BIN` | `/rag/tools/node/current/bin/npm` | the npm `fleet artifact prepare` installs an artifact's frontend with. |
+| `CTL_APPTAINER_BIN` | `/usr/bin/apptainer` | the apptainer the gateway and the store drivers exec. |
+| `CTL_MIRROR` | `<rag-root>/repos/ragstack.git` | the BARE mirror artifacts are prepared from. The ctl never creates it — see the root items. |
+| `CTL_NPM_CACHE` | `<rag-root>/cache/npm` | the npm cache an artifact install writes through (never `~/.npm`). |
+
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.
 `ctl-daemon.sh` PARSES both files (`KEY=VALUE`, one pair of surrounding quotes
 stripped, nothing expanded — the same rule systemd's `EnvironmentFile` applies)
@@ -572,6 +587,303 @@ detail, and the suite says so rather than asserting against a surface that
 performs nothing. The authorization, envelope-validation and viewer-reduction
 tests in that module run either way. Verified 2026-09-12 on coconut over a
 scratch registry adopted from the four live tenants: 105 passed, 2 skipped.
+
+## PR-D: root items and the boot rehearsal
+
+PR-D is the release in which the control plane stops planning and starts
+running: `tenant create`, `backup --fence`, `restore --as`, `decommission` and
+`selftest` all touch the host. Four things have to be true on coconut before
+they can, and three of them are **root** items this runbook cannot do for you.
+The fourth — the mirror — is a `wilke` item, and it is already done.
+
+Nothing below changes a tenant. Every step is either a root action on the
+`svcbvbrc` account or a read.
+
+### 1. Linger for `svcbvbrc` (root)
+
+```bash
+sudo loginctl enable-linger svcbvbrc
+ls -l /var/lib/systemd/linger/svcbvbrc     # the file IS the state
+```
+
+Without it there is no `user@10078.service` unless somebody is logged in as
+`svcbvbrc`, so `systemctl --user` fails with "Failed to connect to bus" and
+**nothing comes back after a reboot**. This is why PR-D's acceptance runs as
+`wilke` through `--direct`: same engine, same flock files, a user manager that
+exists. The daemon path needs this.
+
+The ansible `coconut-host` role does it (`--tags root -K`, section 2).
+
+### 2. The `user@10078.service.d` drop-in (root)
+
+```ini
+# /etc/systemd/system/user@10078.service.d/ragstack.conf
+[Unit]
+RequiresMountsFor=/rag
+After=remote-fs.target network-online.target
+[Service]
+Environment=SYSTEMD_UNIT_PATH=/rag/config/ctl/units:
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart user@10078.service     # ONLY PID 1 re-reads this file
+sudo -u svcbvbrc XDG_RUNTIME_DIR=/run/user/10078 systemctl --user show -p UnitPath --value
+```
+
+Two facts, both load-bearing:
+
+* **`RequiresMountsFor=/rag`** — every rendered unit carries
+  `ConditionPathIsMountPoint=/rag`. A manager that starts before `/rag` is
+  mounted finds the condition false, *skips* each unit, and exits 0. Nothing
+  fails; the tenants are simply not there.
+* **`SYSTEMD_UNIT_PATH=/rag/config/ctl/units:`** (the trailing colon keeps the
+  default search path) — the ctl writes units into its own config tree, which
+  the manager does not search. Until the drop-in is in effect the ctl works
+  around it by `systemctl --user link`-ing each rendered unit, which is
+  idempotent and harmless but leaves the manager's view depending on a link
+  somebody could remove.
+
+`SYSTEMD_UNIT_PATH` is a *process* environment variable of the manager, so a
+`daemon-reload` does not pick it up — only a restart of `user@10078.service`
+does. The ansible role asserts the variable actually reached the manager
+rather than trusting that the file was written.
+
+The ansible `coconut-host` role writes it (`--tags root -K`, section 3).
+
+### 3. The ops group — the outstanding decision (root)
+
+There is no `ragops` group on coconut. Everything is group **`cels`, with 1869
+members**. And:
+
+```
+drwxr-xr-x  wilke  cels   /rag/data/tenants
+drwxr-xr-x  wilke  cels   /rag/repos/tenants
+-rw-rw----  wilke  cels   /rag/data/tenants/registry.json
+```
+
+Both tenant roots are **`wilke` 755**, so the `svcbvbrc` daemon **cannot create
+a tenant**: `tenant create` makes `<data_dir>` and `<worktree>` under them, and
+svcbvbrc may not write either. That is the whole of the gap — the ctl itself is
+ready.
+
+The ctl will not work around it. It never `chmod`s a parent it did not create
+(the `Files.MkdirAll` contract says so in as many words), because "fixing" the
+mode of a directory shared with 1869 accounts is not a repair, it is a change
+nobody asked for. New tenant trees the ctl creates are 2770 with the setgid bit
+so the group is inherited; the parents are somebody's to decide.
+
+**The decision, stated plainly:** a small group has to own
+`/rag/data/tenants` and `/rag/repos/tenants` — say `ragops`, containing `wilke`
+and `svcbvbrc` — and those two directories have to become `2775` (or `2770`)
+group `ragops`. `cels` is not that group: giving 1869 accounts write access to
+every tenant's data directory is a larger change than the one being avoided.
+Until it is made, run PR-D's verbs as `wilke` through `--direct` (which is what
+the acceptance does) and treat the daemon's create path as undeployed.
+
+The ansible `coconut-host` role creates the group and enrols both accounts; the
+`ragstack-ctl` role's "group pass" then chgrps the trees. Neither has run.
+
+### 4. The bare mirror (wilke — done)
+
+```bash
+git clone --mirror https://github.com/wilke/ragstack.git /rag/repos/ragstack.git
+git -C /rag/repos/ragstack.git config core.sharedRepository group
+```
+
+`fleet artifact prepare` REQUIRES it: an artifact is a worktree checked out of
+the mirror at a reviewed sha, and every tenant runs its own checkout at a
+pinned sha (MEMORY: "tenant code isolation"). The ctl never creates the
+mirror — cloning it is a deploy-time act, and a control plane that could
+create its own code source would be a control plane that decides what code it
+runs.
+
+It exists on coconut since 2026-09-14. Before it, tenant worktrees hung off
+`~/Development/ragstack` and `doctor` reported `worktree_outside_mirror`.
+
+Keep it current: `git -C /rag/repos/ragstack.git remote update --prune`. The
+`ragstack-ctl` ansible role clones it if it is absent (section 3, check-mode
+safe: it stats first and the clone carries `creates:`).
+
+### 5. node — `CTL_NODE_BIN` / `CTL_NPM_BIN`
+
+`fleet artifact prepare` runs `npm ci` and `tenant create` runs `vite build`,
+both by absolute path. The defaults are `/rag/tools/node/current/bin/{node,npm}`
+— where the ansible role unpacks the pinned tarball. **That tree does not exist
+on coconut yet.** The only node here is the operator's own:
+
+```bash
+ls -l ~wilke/.local/bin/node      # v26.7 today
+```
+
+So until the role's node block has run, set both explicitly in
+`/rag/config/ctl/ctl.env` (or `host_vars`, which templates them):
+
+```
+CTL_NODE_BIN=/home/wilke/.local/bin/node
+CTL_NPM_BIN=/home/wilke/.local/bin/npm
+```
+
+`CTL_MIRROR` and `CTL_NPM_CACHE` are templated alongside them and default to
+`/rag/repos/ragstack.git` and `/rag/cache/npm`.
+
+Note that `frontend/package.json` pins no `engines` range, so "which node" is
+currently an operator decision rather than a checked one. Pinning it is the
+follow-up; `node_version` in `group_vars/all.yml` is a placeholder until then.
+
+### 6. The selftest, as `wilke`
+
+`ragstack-ctl selftest` is the acceptance of everything above. It creates a
+**sandbox** tenant — ports 26000–26099, name `ctltest-<stamp>` — ingests
+`/rag/documents/test_api.md` into it, takes a fenced backup, stops it, restores
+the bundle into a second sandbox, quarantines both and then proves the host is
+clean. It touches no other tenant: every op it submits names a `ctltest-` name,
+`registry.Allocate` never hands out a sandbox block, and `Allocate` ignores
+sandbox rows and tombstones so the production index does not move.
+
+It runs the engine **in this process**. There is no `--server`, deliberately: a
+run pointed at a daemon would create tenants on that daemon's host and then
+look for the evidence on this one.
+
+```bash
+cd ~/Development/ragstack                       # or wherever the checkout is
+ragstack-ctl --direct fleet artifact prepare --tag $(git rev-parse HEAD)
+ragstack-ctl fleet artifact list                # note the id
+
+ragstack-ctl selftest                           # sqlite state, no gateway
+ragstack-ctl selftest --postgres local          # the tenant's own postgres on +5
+ragstack-ctl selftest --with-gateway            # publishes and drops a ctltest-* route
+ops/coconut/verify.sh                           # must still say ALL GOOD
+```
+
+Run the first form **three times**; the plan's acceptance is three green runs
+in a row, which is what catches a leftover the previous run did not clean up.
+
+Exit codes: `0` everything green · `3` refused (no prepared artifact, a **red
+doctor**, a `--boot` checklist with a FAIL) · `4` a job failed or a check FAILED.
+
+What happens to the sandboxes at the end depends on WHICH of the two kinds of
+exit-4 it was:
+
+* **a JOB failed** — the run stops where it failed and leaves the sandbox in
+  place for inspection (it may still be running, or half-decommissioned). It
+  says so, and you remove it afterwards with `ragstack-ctl selftest --sweep`.
+* **every job succeeded and a CHECK failed** — both sandboxes were
+  decommissioned and quarantined before the check ran, so there is nothing live
+  to look at, and they are **swept**. The FAIL is in the report and the exit
+  code is still 4. (Leaving them behind used to exhaust the five sandbox blocks
+  in three runs — which is exactly the acceptance below.)
+* **`--keep`** — nothing is swept, whatever the outcome, and the run says how
+  to remove what it kept.
+
+```bash
+ragstack-ctl selftest --sweep
+```
+
+`--sweep` is the only deletion the control plane performs, and it is guarded on
+every axis at once. A directory is removed only if its name matches one of two
+patterns **and** its resolved path (after `EvalSymlinks`) sits **directly**
+under one of three roots:
+
+| pattern | what it is |
+|---|---|
+| `^ctltest-[0-9a-z-]+\.quarantined-[0-9A-Za-z-]+$` | what `decommission` renames a sandbox's tree to |
+| `^ctltest-[0-9a-z-]+$` — **only when no registry row of that name exists** | an orphan: a rolled-back create left the tree and no row. With a row it is a tenant, and the sweep refuses it |
+| `^ctltest-[0-9a-z-]+\.failed-[0-9A-Za-z-]+$` | the tree a **rolled-back create or restore renames aside**, holding whatever the stores wrote. No row can ever name it (a registry name has no dot) |
+
+The three roots are `/rag/data/tenants` (the data trees), `/rag/repos/tenants`
+(the worktrees) and `/rag/backups/tenants` (a sandbox's own bundle directories).
+Registry rows are removed only when the row's **port block** is in the sandbox
+range AND its state is `quarantined`: a row named `ctltest-*` on a production
+block is refused and reported rather than deleted, and a sandbox that is not
+quarantined is refused with "decommission it first" — the sweep once deleted the
+row of a live sandbox and orphaned its units.
+
+A `.failed-` or orphan tree belonging to a PRODUCTION tenant is not sweepable by
+any of these rules and never will be: removing one is an operator's own `rm -rf`
+after looking at it.
+
+Two things the selftest reports as named checks rather than as job failures,
+because the job succeeds either way and the difference only shows up later:
+
+* **`es stopped gracefully`** — the tail of
+  `/rag/data/tenants/<t>/logs/es-<t>.log` has to end with a `stopped`/`closed`
+  line. A JVM that was killed instead of stopping may not have flushed its
+  translog, and a bundle taken next would be a bundle of that.
+* **`es journal has no SIGKILL`** — `journalctl --user -u ragstack-<t>-es.service
+  --since <run start>` must not contain `SIGKILL`. Systemd reports a unit
+  "stopped" whether it exited or was killed after `TimeoutStopSec`.
+
+Either check reports `n/a` when the evidence is not there to read (no ES log,
+no journalctl), which is not the same as FAIL and does not fail the run.
+
+The op-scoped doctor gates every job. coconut is permanently **yellow** (drift
+on an adopted tenant, and so on), so the selftest quotes the doctor hash back —
+exactly as an operator would with `--force-with-doctor-diff` — and records in
+its report that it did. A **red** doctor is never forced: the run refuses with
+exit 3 and names the hash, and that is a finding to act on before anything else
+in PR-D is trusted.
+
+### 7. The boot rehearsal
+
+```bash
+ragstack-ctl selftest --boot
+```
+
+Checklist only — it creates nothing. Exit `3` on any FAIL, because a host that
+will not bring its tenants back is a host this command declines to certify.
+
+| Check | What it reads | FAIL means |
+|---|---|---|
+| `linger` | `/var/lib/systemd/linger/<current user>` | item 1 above has not been done for this account |
+| `user@ drop-in` | `/etc/systemd/system/user@<uid>.service.d/*.conf` | item 2: no `RequiresMountsFor=/rag`, or no `SYSTEMD_UNIT_PATH` |
+| `<target>: is-enabled` | `systemctl --user is-enabled` per target | the registry says `desired_boot: enabled` and systemd says disabled — that tenant will not come back |
+| `default.target pulls in every enabled tenant` | `systemctl --user list-dependencies default.target` | the symlink exists but the manager does not agree it is in the boot graph |
+
+The drop-in row reports `n/a` for any account other than `svcbvbrc`: it is a
+root item on the **daemon** account, and a FAIL against `wilke`'s own manager
+would be a finding nobody can act on. Run it as `wilke` for the linger and
+target rows; run it as `svcbvbrc` (`ops/coconut/ctl-as-svc.sh selftest --boot`)
+for the drop-in row, where today it correctly reports linger and drop-in FAIL
+until root has run the `coconut-host` role.
+
+`--boot` reads the **live fleet**: it checks every tenant whose registry row
+says `desired_boot: enabled`. A sandbox is never one of those for long —
+`decommission` sets `desired_boot: disabled` before the run ends, so even
+`selftest --keep && selftest --boot` shows no sandbox target, and the pairing
+proves nothing. There is nothing to arrange here.
+
+On a host whose adopted tenants are **hand-started** (the state coconut is in
+today), no row says `desired_boot: enabled`, so the checklist is the first two
+rows plus one that reads:
+
+```
+desired_boot targets   n/a   no tenant's row says desired_boot enabled, so there is nothing that should come back
+```
+
+That `n/a` is **not a gap and not a FAIL** — it exits 0 — it is the registry
+saying that no tenant is claimed to come back by itself, which is true until the
+tenants are handed over. The rows that matter today are `linger` and the `user@`
+drop-in; the `is-enabled` and `default.target` rows start reporting the moment a
+handed-over tenant's row says `desired_boot: enabled`.
+
+### PR-D verification summary
+
+| Item | Command | Expected |
+|---|---|---|
+| linger | `ls -l /var/lib/systemd/linger/svcbvbrc` | the file exists |
+| drop-in | `sudo -u svcbvbrc XDG_RUNTIME_DIR=/run/user/10078 systemctl --user show -p UnitPath --value` | contains `/rag/config/ctl/units` |
+| group | `stat -c '%U %G %a' /rag/data/tenants /rag/repos/tenants` | a small ops group, mode 277x — **open decision** |
+| mirror | `git -C /rag/repos/ragstack.git rev-parse --verify HEAD^{commit}` | a 40-hex sha |
+| node | `$CTL_NODE_BIN --version` | a version, from an absolute path |
+| artifact | `ragstack-ctl fleet artifact list` | at least one prepared id |
+| selftest | `ragstack-ctl selftest` ×3 | exit 0, every step `succeeded`, every check PASS or n/a |
+| selftest | `ragstack-ctl selftest --postgres local` | exit 0 |
+| selftest | `ragstack-ctl selftest --with-gateway` then `ops/coconut/verify.sh` | exit 0, then ALL GOOD |
+| boot | `ragstack-ctl selftest --boot` | exit 0 once items 1–2 are done |
+| no collateral | `ragstack-ctl doctor` · `jq .generation /rag/data/tenants/registry.json` | the five adopted tenants unchanged; the generation advanced only by the selftest's own writes; no new tombstones |
+
+---
 
 ## Verification summary
 

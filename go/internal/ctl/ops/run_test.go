@@ -2,7 +2,9 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -30,7 +33,12 @@ type runner struct {
 }
 
 func newRunner(oc jobs.Context, fake *drivers.Fake) *runner {
-	return &runner{oc: oc, fake: fake, job: &model.Job{ID: "job-1"}, steps: map[int]*model.Step{}}
+	// A real ULID: the registry records last_ops[verb].job_id, and the contract
+	// gives it the ULID pattern — a placeholder id would make every registry
+	// step fail validation for a reason no real job has.
+	return &runner{oc: oc, fake: fake,
+		job:   &model.Job{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Principal: "local:3581"},
+		steps: map[int]*model.Step{}}
 }
 
 func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
@@ -45,6 +53,10 @@ func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
 			st.Checkpoint = true
 			st.ExternalIDs = append(st.ExternalIDs, ids...)
 			r.fake.Note("checkpoint", ids...)
+			// Mirror the step records into the job the way the engine keeps
+			// them: a run half that reads a checkpoint back through
+			// sc.Job.Steps (the bundle id does) must see it here too.
+			r.syncJobSteps()
 			return nil
 		},
 		Reserve: func(resource string, _ *time.Time) error {
@@ -52,6 +64,22 @@ func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
 			return nil
 		},
 		Logf: func(format string, args ...any) {},
+	}
+}
+
+// syncJobSteps rebuilds job.Steps from the per-step records, in step order.
+func (r *runner) syncJobSteps() {
+	r.job.Steps = r.job.Steps[:0]
+	max := 0
+	for n := range r.steps {
+		if n > max {
+			max = n
+		}
+	}
+	for n := 1; n <= max; n++ {
+		if st, ok := r.steps[n]; ok {
+			r.job.Steps = append(r.job.Steps, *st)
+		}
 	}
 }
 
@@ -130,7 +158,7 @@ func TestAUnitStepReconcilesFromTheDriverState(t *testing.T) {
 	r := newRunner(oc, fake)
 	r.runAll(t, p)
 
-	start := p.Steps[3] // start the api
+	start := p.Steps[stepIndex(p, "systemd", "start ragstack-dev-api.service")]
 	got, err := start.Reconcile(context.Background(), r.ctx(start))
 	if err != nil || got != jobs.ReconcileDone {
 		t.Fatalf("reconcile of a step that ran = %v (%v), want done", got, err)
@@ -214,14 +242,24 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	r.runAll(t, p)
 
 	trace := strings.Join(fake.CallKeys(), "\n")
+	if strings.Contains(trace, "gateway.Apply") {
+		t.Errorf("a fenced backup published a gateway generation; nothing in the render changes:\n%s", trace)
+	}
 	for _, want := range []string{
-		// the fence, in order
-		"job.checkpoint(gateway:apply:pending)\ngateway.Apply(false)",
+		// the fence: the API unit stops, and that is the whole of it
 		"systemd.Stop(ragstack-dev-api.service)",
 		// every snapshot name recorded before the call that makes it
 		"job.checkpoint(qdrant:pending:chunks)\nqdrant.Snapshot(chunks,http://localhost:24041)",
 		"job.checkpoint(qdrant:pending:docs)\nqdrant.Snapshot(docs,http://localhost:24041)",
-		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z-backup/20260914T093000Z-backup)",
+		// The repository name the contract spells is `ctl-<ts>`; the snapshot
+		// inside it is the whole bundle id.
+		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z/20260914t093000z-backup)",
+		// The verification: the same directory, re-registered READ-ONLY under
+		// a second name, listed, and both registrations dropped again.
+		"es.RegisterRepo(verify-20260914T093000Z-backup,/usr/share/elasticsearch/snapshots/20260914T093000Z-backup,true,http://localhost:24043)",
+		"es.Snapshots(verify-20260914T093000Z-backup,http://localhost:24043)",
+		"es.UnregisterRepo(verify-20260914T093000Z-backup,http://localhost:24043)",
+		"es.UnregisterRepo(ctl-20260914T093000Z,http://localhost:24043)",
 		// and the tenant comes back
 		"systemd.Start(ragstack-dev-api.service)",
 	} {
@@ -236,6 +274,14 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	}
 	if names := fake.FakeQdrant().Snapshots["docs"]; len(names) != 1 {
 		t.Errorf("qdrant snapshot ledger = %v", fake.FakeQdrant().Snapshots)
+	}
+	// The ES snapshot covers EXACTLY the inventory this part recorded. The
+	// driver used to snapshot `*`, which is not the same set: Indices() leaves
+	// out the cluster's own dot-prefixed system indices, so the bundle held
+	// indices its manifest never listed.
+	if got := fake.FakeElasticsearch().SnapshotIndices; len(got) != 1 ||
+		!strings.HasSuffix(got[0], " dev-chunks") {
+		t.Errorf("es snapshots = %v, want one over the inventory (dev-chunks)", got)
 	}
 	// The bundle landed under the backups root with the run-time stamp.
 	var manifest string
@@ -252,6 +298,64 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	}
 }
 
+// TestARolledBackBackupRecordPutsTheOldRecoveryPointBack is the MEDIUM
+// finding: `last_backup` pointing at a directory that is not there.
+//
+// The record step is not the last step of a fenced backup — the fence release
+// comes after it — so a failure there rolls this step back. The finalize step's
+// own rollback renames the bundle back to `<id>.partial`, and a record step
+// with no rollback left the row naming the finished path: a recovery point an
+// operator would go looking for and not find, in place of the one that really
+// is on disk.
+func TestARolledBackBackupRecordPutsTheOldRecoveryPointBack(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	// The recovery point this tenant already had, and must still have.
+	prev := &registry.BackupRecord{
+		Bundle: "/rag/backups/tenants/dev/20260901T000000Z-backup", At: "2026-09-01T00:00:00Z",
+		Kind: "backup", Fenced: true, Verified: true,
+	}
+	oc.Fleet.Tenants["dev"].LastBackup = prev
+
+	p, r := runBackup(t, oc, fake, map[string]any{"fence": true})
+	rec := p.Steps[stepIndex(p, "registry", "record the bundle as this tenant's last backup")]
+	if got := oc.Fleet.Tenants["dev"].LastBackup; got == nil || got.Bundle != bundlePath("dev") {
+		t.Fatalf("after the run last_backup = %+v, want the new bundle", got)
+	}
+	// The previous record was written DURABLY before the row was changed: a
+	// worker that died here still has it to put back.
+	ids := r.externalIDs(rec.Plan.N)
+	if _, ok := externalIDValue(ids, prevLastBackupID); !ok {
+		t.Fatalf("the step recorded no previous last_backup: %v", ids)
+	}
+
+	if _, err := rec.Rollback(context.Background(), r.ctx(rec)); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	got := oc.Fleet.Tenants["dev"].LastBackup
+	if got == nil || got.Bundle != prev.Bundle || !got.Verified || got.At != prev.At {
+		t.Fatalf("after the rollback last_backup = %+v, want the previous record %+v", got, prev)
+	}
+}
+
+// TestARolledBackFirstBackupLeavesNoRecoveryPointAtAll is the same rule for a
+// tenant that had never been backed up: the row goes back to naming nothing,
+// not to naming a bundle the finalize rollback has just un-named.
+func TestARolledBackFirstBackupLeavesNoRecoveryPointAtAll(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	oc.Fleet.Tenants["dev"].LastBackup = nil
+
+	p, r := runBackup(t, oc, fake, map[string]any{"fence": true})
+	rec := p.Steps[stepIndex(p, "registry", "record the bundle as this tenant's last backup")]
+	if _, err := rec.Rollback(context.Background(), r.ctx(rec)); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if got := oc.Fleet.Tenants["dev"].LastBackup; got != nil {
+		t.Fatalf("after the rollback last_backup = %+v, want none", got)
+	}
+}
+
 // TestBackupWritesEveryLegIntoOneStampedBundle is finding 4's regression: the
 // sqlite leg baked the plan's `new-bundle` PLACEHOLDER into the path it wrote
 // at run time, so every backup this tenant ever took overwrote one directory
@@ -260,7 +364,7 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 	oc, fake := fixtureEnv(t, "dev", managed, tenantEnv())
 	// The state databases exist, so the sqlite leg copies rather than skips.
 	for _, db := range sqliteDBs {
-		fake.FakeFiles().Put("/rag/data/tenants/dev/state/"+db, []byte("sqlite-"+db), 0o640)
+		fake.FakeFiles().Put("/rag/data/tenants/dev/state/"+db.File, []byte("sqlite-"+db.File), 0o640)
 	}
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	r := newRunner(oc, fake)
@@ -278,8 +382,8 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 		}
 	}
 	for _, db := range sqliteDBs {
-		if got := string(fake.FakeFiles().Content(want + "state/" + db)); got != "sqlite-"+db {
-			t.Errorf("%s is not in the stamped bundle; the bundle holds %v", db, bundled)
+		if got := string(fake.FakeFiles().Content(want + "state/" + db.File)); got != "sqlite-"+db.File {
+			t.Errorf("%s is not in the stamped bundle; the bundle holds %v", db.File, bundled)
 		}
 	}
 	if string(fake.FakeFiles().Content(want+"manifest.json")) == "" {
@@ -308,7 +412,7 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 func TestBackupFailsAStateFileItCannotREAD(t *testing.T) {
 	oc, fake := fixture(t, "dev", managed)
 	boom := errors.New("permission denied")
-	fake.Fail("files.ReadFile:/rag/data/tenants/dev/state/ragstack_users.db", boom)
+	fake.Fail("sqlite.Backup:/rag/data/tenants/dev/state/ragstack_users.db", boom)
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	r := newRunner(oc, fake)
 	var got error
@@ -442,7 +546,8 @@ func TestEnvNormalizeSplitsTheFileInTwo(t *testing.T) {
 func TestDecommissionRenamesTheTreeAndCanPutItBack(t *testing.T) {
 	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
 		managed(tn)
-		tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true}
+		tn.LastBackup = &registry.BackupRecord{Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup",
+			At: "2026-09-14T09:30:00Z", Kind: "backup", Fenced: true, Verified: true}
 	})
 	p := plan(t, oc, "decommission", nil)
 	r := newRunner(oc, fake)
@@ -456,11 +561,28 @@ func TestDecommissionRenamesTheTreeAndCanPutItBack(t *testing.T) {
 	if len(fake.FakeGateway().Applies) != 1 {
 		t.Errorf("gateway applies = %v", fake.FakeGateway().Applies)
 	}
-	if fake.Count("files.Remove") != 0 {
-		t.Error("decommission deleted something; v1 only ever renames")
+	// The ONLY deletions are the ctl's own rendered unit files: v1 never
+	// deletes a byte of a tenant's data.
+	for _, c := range fake.Calls() {
+		if c.Key() != "files.Remove" {
+			continue
+		}
+		if !strings.HasPrefix(c.Args[0], "/rag/config/ctl/units/") {
+			t.Errorf("decommission deleted %s; v1 removes its own unit files and nothing else", c.Args[0])
+		}
 	}
-	last := p.Steps[len(p.Steps)-1]
-	if _, err := last.Rollback(context.Background(), r.ctx(last)); err != nil {
+	// The rename is the step that has to be reversible: rolling it back is
+	// how an operator gets a tenant they quarantined by mistake back.
+	var rename jobs.Step
+	for _, s := range p.Steps {
+		if strings.Contains(s.Plan.Title, "quarantine the data directory") {
+			rename = s
+		}
+	}
+	if rename.Rollback == nil {
+		t.Fatalf("the quarantine rename has no rollback: %v", titles(p))
+	}
+	if _, err := rename.Rollback(context.Background(), r.ctx(rename)); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	if fake.FakeFiles().Content("/rag/data/tenants/dev/config/tenant.env") == nil {
@@ -488,4 +610,528 @@ func TestGatewayApplyAndReloadGoStraightThroughTheDriver(t *testing.T) {
 	if fake.FakeGateway().Generation != 1 {
 		t.Error("a reload published a generation")
 	}
+}
+
+// ---------------------------------------------------------------- create
+
+// createRunner is `create` planned and ready to run against the fake host:
+// the artifact's node_modules are there, and the API port comes up when the
+// target starts (the fake links units to ports; a target is not a unit with a
+// port, so the fixture says so directly).
+func createRunner(t *testing.T, args map[string]any) (*jobs.Planned, *runner, jobs.Context, *drivers.Fake) {
+	t.Helper()
+	oc, fake := createFixture(t)
+	art := oc.Fleet.Artifacts["v1.5.3"]
+	fake.FakeBuild().Installed[art.Worktree] = true
+	p := plan(t, oc, "create", args)
+	// The tenant's API answers as soon as its target is started.
+	fake.FakeProc().Ports[oc.Fleet.PortBase+4*oc.Fleet.PortStride] = true
+	return p, newRunner(oc, fake), oc, fake
+}
+
+func TestCreateRunsEveryStepAgainstTheFakeHost(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3",
+		"keys":             []any{map[string]any{"label": "ops", "role": "user"}},
+		"service_accounts": []any{map[string]any{"subject": "gowe", "role": "user", "purpose": "workflows"}},
+	})
+	r.runAll(t, p)
+
+	// 1. The registry row exists, is active, and carries FINGERPRINTS.
+	row, ok := oc.Fleet.Tenants["sandbox"]
+	if !ok {
+		t.Fatal("no registry row for the tenant that was just created")
+	}
+	if row.State != "active" || row.DesiredBoot != "enabled" || row.EnvLayout != "managed" {
+		t.Errorf("row = state %q, desired_boot %q, env_layout %q", row.State, row.DesiredBoot, row.EnvLayout)
+	}
+	if row.Ports.Base != 24080 || row.Ports.PG != 24085 {
+		t.Errorf("ports = %+v", row.Ports)
+	}
+	if len(row.Keys) != 2 {
+		t.Fatalf("key ledger has %d rows, want the bootstrap admin plus the one asked for: %+v", len(row.Keys), row.Keys)
+	}
+	if row.Keys[0].ID != bootstrapAdminLabel || row.Keys[0].Role != "admin" {
+		t.Errorf("the bootstrap admin is not the first ledger row: %+v", row.Keys[0])
+	}
+	for _, k := range row.Keys {
+		if !strings.HasPrefix(k.Fingerprint, "sha256:") || len(k.Fingerprint) != len("sha256:")+16 {
+			t.Errorf("key %q fingerprint = %q", k.ID, k.Fingerprint)
+		}
+	}
+	if row.LastOps["create"].Outcome != "succeeded" || row.LastOps["create"].JobID != r.job.ID {
+		t.Errorf("last_ops.create = %+v", row.LastOps["create"])
+	}
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry the create wrote does not match the contract: %v", err)
+	}
+
+	// 2. The files. secrets.env holds the ledger; tenant.env holds none of it.
+	files := fake.FakeFiles()
+	secrets := string(files.Content("/rag/data/tenants/sandbox/config/secrets.env"))
+	if !strings.Contains(secrets, "API_KEYS=") || !strings.Contains(secrets, "API_KEY_ROLES=") {
+		t.Errorf("secrets.env has no key ledger:\n%s", secrets)
+	}
+	env := string(files.Content("/rag/data/tenants/sandbox/config/tenant.env"))
+	if strings.Contains(env, "API_KEY") {
+		t.Errorf("tenant.env carries a credential:\n%s", env)
+	}
+	if !strings.Contains(env, "QDRANT_URL=http://localhost:24081") {
+		t.Errorf("tenant.env is not this tenant's:\n%s", env)
+	}
+	if got := files.Content("/rag/data/tenants/sandbox/config/provision.env"); !strings.Contains(string(got),
+		"TENANT_STORE_KIND=sqlite") {
+		t.Errorf("provision.env = %s", got)
+	}
+	// The tree was made 2770 so the group is inherited, and the secrets file
+	// 0640 so only the ctl account and its group can read it.
+	if mode := files.Dirs["/rag/data/tenants/sandbox"]; mode != 0o2770 {
+		t.Errorf("the tenant dir was created %04o, want 2770 (setgid)", mode)
+	}
+	if mode := files.Files["/rag/data/tenants/sandbox/config/secrets.env"].Mode; mode != 0o640 {
+		t.Errorf("secrets.env mode = %04o", mode)
+	}
+
+	// 3. The units are on disk AND linked, and the target was enabled+started.
+	for _, unit := range []string{"ragstack-sandbox-qdrant.service", "ragstack-sandbox-es.service",
+		"ragstack-sandbox-api.service", "ragstack-sandbox.target"} {
+		if files.Content("/rag/config/ctl/units/"+unit) == nil {
+			t.Errorf("unit %s was not written", unit)
+		}
+		if fake.FakeSystemd().Linked[unit] != "/rag/config/ctl/units/"+unit {
+			t.Errorf("unit %s was not linked (linked = %v)", unit, fake.FakeSystemd().Linked[unit])
+		}
+	}
+	if got := fake.FakeSystemd().ActiveUnits(); strings.Join(got, ",") != "ragstack-sandbox.target" {
+		t.Errorf("active units = %v, want just the target (the ctl starts the target, not each leg)", got)
+	}
+
+	// 4. The worktree, the UI build, the service account and the gateway.
+	if sha := fake.FakeGit().Worktrees["/rag/repos/tenants/sandbox"]; sha != strings.Repeat("ab", 20) {
+		t.Errorf("worktree sha = %q", sha)
+	}
+	if got := fake.FakeBuild().Builds; len(got) != 1 ||
+		!strings.Contains(got[0], "/ragstack/sandbox/ui/ /rag/data/tenants/sandbox/ui/dist") {
+		t.Errorf("UI builds = %v", got)
+	}
+	if got := fake.FakeTenantAPI().Accounts; len(got) != 1 || !strings.Contains(got[0], "create gowe user") {
+		t.Errorf("service accounts = %v", got)
+	}
+	if fake.FakeGateway().Generation == 0 {
+		t.Error("no gateway generation was published")
+	}
+
+	// 5. The credentials are delivered ONCE, through the envelope, and the
+	// result carries fingerprints only.
+	secretsOut := p.Secrets()
+	if len(secretsOut) != 2 {
+		t.Fatalf("the envelope carries %d secrets, want 2", len(secretsOut))
+	}
+	for _, s := range secretsOut {
+		if len(s.Value) != 64 {
+			t.Errorf("secret %q is %d characters, want token_hex(32)", s.Label, len(s.Value))
+		}
+		if strings.Contains(secrets, s.Value) != true {
+			t.Errorf("the minted value for %q is not in the file that was written", s.Label)
+		}
+		// And nowhere else: not in the plan, not in the result, not in a target.
+		for _, st := range p.Steps {
+			if strings.Contains(st.Plan.Title+strings.Join(st.Plan.Targets, " "), s.Value) {
+				t.Errorf("step %d leaks the %q credential", st.Plan.N, s.Label)
+			}
+		}
+		for _, id := range r.externalIDs(3) {
+			if strings.Contains(id, s.Value) {
+				t.Errorf("a checkpoint leaks the %q credential", s.Label)
+			}
+		}
+	}
+	res := p.Result()
+	blob, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range secretsOut {
+		if strings.Contains(string(blob), s.Value) {
+			t.Fatalf("the job RESULT carries the %q credential", s.Label)
+		}
+	}
+	if len(res["keys"].([]any)) != 2 {
+		t.Errorf("result keys = %v", res["keys"])
+	}
+}
+
+// secrets.env is the only copy of credentials that are never shown again, so
+// `create` refuses to overwrite one — and refuses for the right reason, not
+// because a read failed.
+func TestCreateRefusesToOverwriteAnExistingSecretsFile(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/config/secrets.env", []byte("API_KEYS='[]'\n"), 0o640)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error = %v, want a refusal naming the existing file", err)
+	}
+	if got := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env")); got != "API_KEYS='[]'\n" {
+		t.Errorf("the existing secrets file was modified: %q", got)
+	}
+}
+
+// TestCreateRefusesADataDirectoryThatIsNotEmpty is the other half of the
+// rename-aside rollback below.
+//
+// A create or restore that failed leaves `<data_dir>.failed-<ts>` — and an
+// operator who moves that tree back, or a create over a tenant somebody laid
+// down by hand, must not lay a second tenant on top of the first one's store
+// files. An EMPTY directory is fine: that is what a rollback with nothing to
+// preserve leaves, and what the deployment's own layout may already have.
+func TestCreateRefusesADataDirectoryThatIsNotEmpty(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment", []byte("x"), 0o640)
+
+	fs := p.Steps[stepIndex(p, "fs", "create the tenant directories")]
+	_, err := r.run(fs)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "remove or rename it first") {
+		t.Fatalf("error = %v, want a refusal naming the non-empty directory", err)
+	}
+	if !strings.Contains(err.Error(), "/rag/data/tenants/sandbox") {
+		t.Errorf("the refusal does not name the path: %v", err)
+	}
+	// And it touched nothing: the refusal is before the first MkdirAll.
+	if got := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment")); got != "x" {
+		t.Errorf("the refused step modified the existing tree: %q", got)
+	}
+	if fake.Count("files.MkdirAll") != 0 {
+		t.Errorf("the refused step made %d directories", fake.Count("files.MkdirAll"))
+	}
+}
+
+// TestCreateRefusesAnEmptyDataDirectoryNot is the exception stated as a test:
+// an empty tree is not evidence of anything and never blocks a create.
+func TestCreateRefusesAnEmptyDataDirectoryNot(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	if err := fake.Files().MkdirAll(context.Background(), "/rag/data/tenants/sandbox", 0o2770); err != nil {
+		t.Fatal(err)
+	}
+	fs := p.Steps[stepIndex(p, "fs", "create the tenant directories")]
+	if _, err := r.run(fs); err != nil {
+		t.Fatalf("an EMPTY existing data dir = %v, want the step to proceed", err)
+	}
+}
+
+// TestAFailedCreateRenamesTheTreeAsideRatherThanDeletingIt is the HIGH finding:
+// the rollback used to leave the tree at the tenant's own path, so the plan's
+// "what can remain is the empty tree" was false the moment a store had written
+// into it — and the next create of that name laid a tenant on top of it.
+//
+// The rule is a RENAME. The ctl has no recursive delete and a rollback is not
+// the place to acquire one: whatever the stores wrote is moved aside, named
+// with the job's stamp, and left for a person.
+func TestAFailedCreateRenamesTheTreeAsideRatherThanDeletingIt(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	// The git step fails: far enough in that the directories exist and the
+	// stores could have written, early enough that nothing is running.
+	boom := errors.New("fatal: could not create work tree")
+	fake.Fail("git.AddWorktree:/rag/repos/tenants/sandbox", boom)
+
+	ran := []jobs.Step{}
+	failed := false
+	for _, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			if !errors.Is(err, boom) {
+				t.Fatalf("step %d (%s): %v", s.Plan.N, s.Plan.Title, err)
+			}
+			failed = true
+			break
+		}
+		ran = append(ran, s)
+	}
+	if !failed {
+		t.Fatal("the create ran to the end; this case is about one that does not")
+	}
+	if len(ran) < 2 {
+		t.Fatalf("the job stopped after %d step(s); it must get past the directories", len(ran))
+	}
+	// A store wrote into the tree before the failure, which is the whole point.
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/qdrant/storage/collections/chunks/segment", []byte("points"), 0o640)
+
+	for i := len(ran) - 1; i >= 0; i-- {
+		if ran[i].Rollback == nil {
+			continue
+		}
+		if _, err := ran[i].Rollback(context.Background(), r.ctx(ran[i])); err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", ran[i].Plan.N, ran[i].Plan.Title, err)
+		}
+	}
+	// Nothing at the tenant's own path — the name is free for the next attempt.
+	if got := fake.FakeFiles().Dirs["/rag/data/tenants/sandbox"]; got != 0 {
+		t.Errorf("the rolled-back create left /rag/data/tenants/sandbox in place (mode %04o)", got)
+	}
+	if anyPathWithPrefix(fake, "/rag/data/tenants/sandbox/") {
+		t.Errorf("the rolled-back create left files under the tenant's own path: %v", tenantFiles(fake, "sandbox"))
+	}
+	// …and the bytes are still there, one rename away, stamped with the job.
+	aside := failedTrees(fake, "sandbox")
+	if len(aside) != 1 {
+		t.Fatalf("trees left aside = %v, want one /rag/data/tenants/sandbox.failed-<ts>", aside)
+	}
+	if got := string(fake.FakeFiles().Content(aside[0] + "/qdrant/storage/collections/chunks/segment")); got != "points" {
+		t.Errorf("%s does not hold what the store wrote (%q): the rollback deleted data", aside[0], got)
+	}
+	// The stamp is the run's clock, not the plan's placeholder.
+	if !strings.HasSuffix(aside[0], ".failed-20260914T093000Z") {
+		t.Errorf("the tree aside is named %q; want the job's stamp", aside[0])
+	}
+}
+
+func TestCreateRollsBackEverythingItMade(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	r.runAll(t, p)
+	for i := len(p.Steps) - 1; i >= 0; i-- {
+		s := p.Steps[i]
+		if s.Rollback == nil {
+			continue
+		}
+		if _, err := s.Rollback(context.Background(), r.ctx(s)); err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", s.Plan.N, s.Plan.Title, err)
+		}
+	}
+	if _, ok := oc.Fleet.Tenants["sandbox"]; ok {
+		t.Error("the registry row survived the rollback")
+	}
+	// No tombstone: nothing ever ran under this allocation, so the port block
+	// is not spent. A tombstone here would burn a block per failed create.
+	if len(oc.Fleet.Tombstones) != 0 {
+		t.Errorf("the rollback left %d tombstone(s): %+v", len(oc.Fleet.Tombstones), oc.Fleet.Tombstones)
+	}
+	if _, ok := fake.FakeGit().Worktrees["/rag/repos/tenants/sandbox"]; ok {
+		t.Error("the worktree survived the rollback")
+	}
+	if fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env") != nil {
+		t.Error("secrets.env survived the rollback")
+	}
+	if units := fake.FakeSystemd().ActiveUnits(); len(units) != 0 {
+		t.Errorf("still active after the rollback: %v", units)
+	}
+	if p.Secrets() != nil {
+		t.Error("the envelope survived a rollback: those keys are in no file")
+	}
+}
+
+func TestCreateWithPostgresLocalStartsAndRecordsTheInstance(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3", "postgres": "local",
+	})
+	r.runAll(t, p)
+	row := oc.Fleet.Tenants["sandbox"]
+	pg := row.Stores.Postgres
+	if pg.Kind != registry.PostgresKindLocal || int(pg.Port) != 24085 || string(pg.URL) != "postgresql://localhost:24085" {
+		t.Errorf("stores.postgres = %+v", pg)
+	}
+	if string(pg.Instance) != "postgres-sandbox" || string(pg.DataDir) != "/rag/data/tenants/sandbox/postgres" {
+		t.Errorf("stores.postgres = %+v", pg)
+	}
+	secrets := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env"))
+	// TWO names for ONE password. TENANT_PG_PASSWORD is what new-tenant.sh, the
+	// runbooks and the registry's secret ref use;
+	// APPTAINERENV_POSTGRES_PASSWORD is what gets the value INTO the container
+	// without putting it on a command line — the unit loads this file with
+	// EnvironmentFile and apptainer forwards APPTAINERENV_<KEY> as <KEY>. The
+	// unit used to carry `--env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD}`, which
+	// systemd expanded straight into a /proc/<pid>/cmdline every account on the
+	// host can read.
+	for _, want := range []string{
+		"TENANT_PG_PASSWORD=", "APPTAINERENV_POSTGRES_PASSWORD=",
+		"USER_STORE_DSN=", "POSTGRES_DSN=", "COLLECTION_STORE_DSN=",
+	} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("secrets.env lacks %s:\n%s", want, secrets)
+		}
+	}
+	// Same value under both names, or the role the entrypoint creates has a
+	// password nothing else knows.
+	pgPass, apptainerPass := envValue(secrets, "TENANT_PG_PASSWORD"), envValue(secrets, "APPTAINERENV_POSTGRES_PASSWORD")
+	if pgPass == "" || pgPass != apptainerPass {
+		t.Errorf("TENANT_PG_PASSWORD=%q but APPTAINERENV_POSTGRES_PASSWORD=%q; they are one secret", pgPass, apptainerPass)
+	}
+	env := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/tenant.env"))
+	if strings.Contains(env, "_DSN") {
+		t.Errorf("a DSN (which carries the password) stayed in tenant.env:\n%s", env)
+	}
+	if !strings.Contains(env, "USER_STORE_BACKEND=postgres") {
+		t.Errorf("tenant.env does not point at postgres:\n%s", env)
+	}
+	// Both writable paths of the instance exist, or apptainer refuses the bind.
+	for _, d := range []string{"/rag/data/tenants/sandbox/postgres/data", "/rag/data/tenants/sandbox/postgres/run"} {
+		if _, ok := fake.FakeFiles().Dirs[d]; !ok {
+			t.Errorf("%s was not created; the unit binds it", d)
+		}
+	}
+	// The registry row must still satisfy the contract with a postgres store.
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry does not match the contract: %v", err)
+	}
+	// And the readiness gate really asked postgres.
+	found := false
+	for _, k := range fake.CallKeys() {
+		if strings.HasPrefix(k, "postgres.Ready(") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the readiness gate never probed postgres: %v", fake.CallKeys())
+	}
+	_ = p
+}
+
+// ---------------------------------------------------------------- artifact
+
+func TestArtifactPrepareResolvesChecksOutInstallsAndRecords(t *testing.T) {
+	oc, fake := fixture(t, "dev", nil)
+	oc.Tenant = nil
+	sha := strings.Repeat("cd", 20)
+	fake.FakeGit().Refs["v1.6.0"] = sha
+	p := plan(t, oc, "artifact-prepare", map[string]any{"tag": "v1.6.0"})
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	id := "v1.6.0-" + sha[:12]
+	a, ok := oc.Fleet.Artifacts[id]
+	if !ok {
+		t.Fatalf("no artifact %q; have %v", id, oc.Fleet.Artifacts)
+	}
+	if a.SHA != sha || a.Tag != "v1.6.0" || a.PythonEnv != "/rag/envs/ragstack" {
+		t.Errorf("artifact = %+v", a)
+	}
+	want := "/rag/data/ctl/artifacts/" + id + "/worktree"
+	if a.Worktree != want {
+		t.Errorf("worktree = %q, want %q", a.Worktree, want)
+	}
+	if fake.FakeGit().Worktrees[want] != sha {
+		t.Errorf("the worktree was not checked out at the resolved sha: %v", fake.FakeGit().Worktrees)
+	}
+	if !fake.FakeBuild().Installed[want] {
+		t.Error("npm ci did not run in the artifact's worktree")
+	}
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry the prepare wrote does not match the contract: %v", err)
+	}
+	if got := p.Result()["artifact_id"]; got != id {
+		t.Errorf("result artifact_id = %v", got)
+	}
+
+	// An artifact is IMMUTABLE: preparing the same commit again is refused
+	// rather than silently replacing a worktree tenants are running from.
+	p2 := plan(t, oc, "artifact-prepare", map[string]any{"tag": "v1.6.0"})
+	if _, err := r.run(p2.Steps[0]); !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("re-preparing = %v, want a refusal", err)
+	}
+}
+
+func TestArtifactPrepareRefusesWithoutAMirror(t *testing.T) {
+	oc, _ := fixture(t, "dev", nil)
+	oc.Tenant = nil
+	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup("artifact-prepare") // no Mirror
+	if !ok {
+		t.Fatal("no artifact-prepare op")
+	}
+	_, err := op.Plan(context.Background(), oc, map[string]any{"tag": "v1"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "clone --mirror") {
+		t.Fatalf("error = %v, want a refusal that says how to create the mirror", err)
+	}
+}
+
+func TestArtifactIDIsSanitizedAndKeepsTheSha(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	for _, tc := range []struct{ tag, want string }{
+		{"v1.5.3", "v1.5.3-" + sha[:12]},
+		{"release/1.5", "release-1.5-" + sha[:12]},
+		{"feature/a b+c", "feature-a-b-c-" + sha[:12]},
+		{"///", "artifact-" + sha[:12]},
+		{strings.Repeat("x", 200), strings.Repeat("x", 67) + "-" + sha[:12]},
+	} {
+		got, err := ArtifactID(tc.tag, sha)
+		if err != nil {
+			t.Errorf("ArtifactID(%q) = %v", tc.tag, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ArtifactID(%q) = %q, want %q", tc.tag, got, tc.want)
+		}
+		if !strings.HasSuffix(got, sha[:12]) {
+			t.Errorf("ArtifactID(%q) lost the sha: %q", tc.tag, got)
+		}
+	}
+	if _, err := ArtifactID("v1", "short"); err == nil {
+		t.Error("an unresolved sha was accepted")
+	}
+}
+
+// ---------------------------------------------------------------- lock safety
+//
+// The engine holds `<state>/locks/registry.lock` for the length of a job;
+// registry.Save takes `<data>/tenants/registry.json.lock` and
+// `manifest.tsv.lock` of its own. Those are different inodes, so the two
+// cannot deadlock — but "different inodes" is a fact about the path
+// derivation, and a refactor that pointed the engine's lock at the registry's
+// file would deadlock every registry-writing job forever, with no error and no
+// timeout. So it is asserted rather than reasoned about.
+func TestSaveFleetInsideAJobDoesNotDeadlockAgainstTheEngineLocks(t *testing.T) {
+	root := t.TempDir()
+	roots := paths.NewRoots(root, paths.Overrides{})
+	regPath := roots.Registry()
+	f := registry.NewFleet(root)
+	if err := registry.Save(regPath, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := jobs.NewLocks(roots).Path(model.LockRegistry, ""); got == regPath+".lock" {
+		t.Fatalf("the engine's registry lock IS registry.json.lock (%s): a job that writes the registry would "+
+			"deadlock against itself", got)
+	}
+
+	// Hold exactly what a `start` job holds, through the real flock files.
+	set, err := jobs.NewLocks(roots).Take(
+		[]model.LockName{model.LockRegistry, model.LockManifest, model.LockTenant}, "dev",
+		jobs.LockHolder{JobID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", PID: os.Getpid(), Since: "2026-09-14T09:30:00Z"},
+		time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Release()
+
+	done := make(chan error, 1)
+	go func() {
+		loaded, lerr := registry.LoadNoRepair(regPath)
+		if lerr != nil {
+			done <- lerr
+			return
+		}
+		loaded.DisplayOrder = []string{}
+		done <- registry.Save(regPath, loaded, "inside the job")
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("registry.Save under the engine's locks: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("registry.Save blocked for 10s while the engine held its own locks — the two lock sets overlap")
+	}
+	if got, err := registry.LoadNoRepair(regPath); err != nil || got.Generation != 2 {
+		t.Fatalf("after the save: generation %v (%v), want 2", got, err)
+	}
+}
+
+// envValue reads one KEY=VALUE line out of a rendered env file.
+func envValue(body, key string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }

@@ -194,6 +194,15 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 
 	plan, planned, oc, err := e.plan(ctx, op, req)
 	if err != nil {
+		// A retry of a mutation that already ran can fail to PLAN: `tenant
+		// create` refuses a name that is taken, `key-mint` a label that exists.
+		// Those refusals are right for a new request and wrong for a replay —
+		// and the replay is exactly what the idempotency key is for. So when a
+		// plan fails, the key is consulted: if it already names a job for the
+		// same op, tenant and principal, that job IS the answer.
+		if prior := e.priorJobFor(ctx, req); prior != nil {
+			return nil, prior, nil
+		}
 		return nil, nil, err
 	}
 	argsRedacted := oc.Redactor.RedactArgs(req.Args)
@@ -275,6 +284,46 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 	return plan, accepted, nil
 }
 
+// priorJobFor is the job this exact request already created, or nil.
+//
+// "Exact" is checked rather than assumed: op, tenant and PRINCIPAL must all
+// match. A key is a caller-chosen string, and handing back somebody else's job
+// because they happened to pick the same one would be an authorization hole
+// dressed as a convenience. The fingerprint is not compared — it contains the
+// plan hash, and this path exists precisely because the plan could not be
+// computed — so the three fields that identify the work are the check.
+func (e *engine) priorJobFor(ctx context.Context, req Request) *model.Job {
+	if req.DryRun || req.IdempotencyKey == "" {
+		return nil
+	}
+	ks, ok := e.o.Store.(KeyedStore)
+	if !ok {
+		return nil
+	}
+	prior, err := ks.JobForKey(ctx, req.IdempotencyKey)
+	if err != nil || prior == nil {
+		return nil
+	}
+	if prior.Op != req.Op || string(prior.Tenant) != req.Tenant || prior.Principal != req.Principal.Subject {
+		return nil
+	}
+	return prior
+}
+
+// tenantCreator is the OPTIONAL interface an Op implements to say that the
+// tenant its request names does not exist yet.
+//
+// Optional rather than a method on Op (jobs.go, the seam): an Op that does not
+// implement it makes no claim and is taken to act on a tenant that is already
+// there, which is right for every verb but one.
+type tenantCreator interface{ CreatesTenant() bool }
+
+// creatorOf reports whether op says it creates the tenant it names.
+func creatorOf(op Op) bool {
+	c, ok := op.(tenantCreator)
+	return ok && c.CreatesTenant()
+}
+
 // plan builds the Context, runs the op's planner and completes the Plan with
 // the facts the ENGINE owns (op, tenant, generation, doctor, confirm, hash) —
 // an op cannot forge them.
@@ -286,12 +335,31 @@ func (e *engine) plan(ctx context.Context, op Op, req Request) (*model.Plan, *Pl
 	var tenant *registry.Tenant
 	if req.Tenant != "" {
 		t, ok := fleet.Tenants[req.Tenant]
-		if !ok || t == nil {
+		switch {
+		case ok && t != nil:
+			tenant = t
+		case creatorOf(op):
+			// `create` names the tenant it is ABOUT TO MAKE. The name is on the
+			// request so the audit row and the tenant lock know which tenant
+			// this job is for before the plan exists — and a lookup that
+			// insisted the tenant already existed made the one verb that
+			// creates one impossible to submit. Its planner refuses a name that
+			// IS taken, which is the check that matters here.
+			tenant = nil
+		default:
 			return nil, nil, Context{}, fmt.Errorf("%w: no tenant %q in the registry", ErrNotFound, req.Tenant)
 		}
-		tenant = t
 	}
-	doctor, err := e.o.Doctor(ctx, req.Tenant, req.Op)
+	// The doctor is scoped to the tenant the op acts on — except when that
+	// tenant does not exist yet. A `create`'s op-scoped doctor is the FLEET
+	// doctor: there is no tenant tree to check, and asking for one by a name
+	// nothing knows is how this returned "not found" for a request whose whole
+	// point was that the name is free.
+	doctorTenant := req.Tenant
+	if tenant == nil {
+		doctorTenant = ""
+	}
+	doctor, err := e.o.Doctor(ctx, doctorTenant, req.Op)
 	if err != nil {
 		return nil, nil, Context{}, fmt.Errorf("running the op-scoped doctor: %w", err)
 	}
@@ -462,6 +530,14 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	defer e.recoverRun(r, req, argsRedacted, started)
 	job := r.job
 	steps := r.planned.Steps
+	// Bookkeeping runs on a context that CANNOT be cancelled, for the same
+	// reason stepContext's hooks do: a cooperative Cancel that lands after the
+	// last step has passed its checks used to reach `finish` with the cancelled
+	// run context, the terminal write and the audit row both failed with
+	// "context canceled", and the job sat in the store as `running` for ever —
+	// the exact state Cancel exists to end. The cancellation still reaches
+	// every STEP through ctx; it never reaches the record of what the steps did.
+	pctx := context.WithoutCancel(ctx)
 
 	for i := from; i < len(steps); i++ {
 		if ctx.Err() != nil {
@@ -476,7 +552,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 		st.Error = ""
 		n := st.N
 		job.CurrentStep = &n
-		e.save(ctx, job)
+		e.save(pctx, job)
 
 		sc := e.stepContext(ctx, r, i)
 		log, err := steps[i].Run(ctx, sc)
@@ -487,7 +563,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			log = "done"
 		}
 		if log != "" {
-			e.appendLog(ctx, job, st, log)
+			e.appendLog(pctx, job, st, log)
 		}
 		if err != nil || ctx.Err() != nil {
 			if err == nil {
@@ -496,7 +572,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			st.State = model.StepFailed
 			st.FinishedAt = model.NullString(e.o.Now().UTC().Format(time.RFC3339))
 			st.Error = model.NullString(e.o.Redactor.Redact(err.Error()))
-			e.save(ctx, job)
+			e.save(pctx, job)
 
 			state := model.JobFailed
 			code := "step_failed"
@@ -509,14 +585,14 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 		}
 		st.State = model.StepSucceeded
 		st.FinishedAt = model.NullString(e.o.Now().UTC().Format(time.RFC3339))
-		e.save(ctx, job)
+		e.save(pctx, job)
 
 		if steps[i].Cutover && i < len(steps)-1 {
 			// The parked state. The locks stay HELD and the run stays
 			// registered: a handover that has cut traffic over but not yet
 			// committed must not let anything else touch this tenant.
 			job.State = model.JobAwaitingCutover
-			e.save(ctx, job)
+			e.save(pctx, job)
 			e.o.Logger.Info("job parked awaiting cutover", "job", job.ID, "step", st.N)
 			return
 		}
@@ -528,7 +604,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	}
 	if r.planned.Secrets != nil {
 		if secrets := r.planned.Secrets(); len(secrets) > 0 {
-			if err := e.putEnvelope(ctx, job, secrets); err != nil {
+			if err := e.putEnvelope(pctx, job, secrets); err != nil {
 				// A mint that cannot be delivered must not report success:
 				// job.result would say `secrets_available` for an envelope
 				// nobody can ever take, and the operator would go looking for
@@ -546,7 +622,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			}
 		}
 	}
-	e.finish(ctx, r, model.JobSucceeded, nil, argsRedacted, req, started)
+	e.finish(pctx, r, model.JobSucceeded, nil, argsRedacted, req, started)
 }
 
 // stepContext builds the per-step view, including the two durability hooks a
@@ -1000,11 +1076,18 @@ func (e *engine) Continue(ctx context.Context, id string, p Principal) (*model.J
 		}
 		from = i + 1
 	}
+	// The cancel function is installed BEFORE the job is saved as running: a
+	// Cancel that reads the running state from the store takes the
+	// cooperative path and calls r.cancel, and between the save and this
+	// assignment that used to be a nil func — a panic in the one place the
+	// contract promises a refusal or an orderly stop.
+	runCtx, cancel := context.WithCancel(context.Background())
+	e.mu.Lock()
+	r.cancel = cancel
+	e.mu.Unlock()
 	job.State = model.JobRunning
 	e.save(ctx, job)
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
 	continued := cloneJob(job)
 	go e.runSteps(runCtx, r, req, argsRedacted, started, from)
 	return continued, nil

@@ -5,14 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/fleet"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/render"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
 )
 
@@ -93,9 +97,219 @@ func cloneFleet(f *registry.Fleet) (*registry.Fleet, error) {
 	return &out, nil
 }
 
+// ConformanceArtifactID is the prepared artifact the fixture carries so that
+// `tenant create` can be exercised end to end against --fake-drivers.
+//
+// It is in the FIXTURE rather than in registry.LiveFixture because it is not a
+// fact about coconut on 2026-09-10: it is a fact about the fake host the
+// conformance suite runs against, and the live fixture is the reference the
+// manifest, nginx and display-order goldens are asserted against.
+const ConformanceArtifactID = "conformance-artifact"
+
+// ConformanceMirror is the bare repository the fixture daemon prepares and
+// checks out from. Nothing reads it on disk — the fake Git driver answers from
+// its ref table — but the path has to be a real, absolute one because the ops
+// refuse a mirror that is not.
+const ConformanceMirror = "/rag/repos/ragstack.git"
+
+// conformanceSHA is the commit the fixture artifact pins. Forty hex characters
+// so it matches the contract's GitSha, and recognisably not a real commit.
+const conformanceSHA = "c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0"
+
 // NewFakeBackend returns the fixture backend.
 func NewFakeBackend() *FakeBackend {
-	return &FakeBackend{fleet: registry.LiveFixture(), now: time.Now}
+	return &FakeBackend{fleet: FixtureFleet(), now: time.Now}
+}
+
+// FixtureFleet is the 2026-09-10 capture PLUS one tenant the ctl itself
+// supervises.
+//
+// The four captured tenants are all hand-started, wilke-owned, with every
+// store capability false — which is the truth about coconut and is also a
+// fleet on which no lifecycle verb can do anything. `backup`, on such a
+// tenant, skips both stores and stops the API through a pidfile; a
+// conformance suite pointed at only those four could not tell a backup that
+// works from one that does nothing.
+//
+// So the fixture carries `ctlfixture`: systemd-supervised, svcbvbrc-owned,
+// exclusive stores with snapshot confirmed, a postgres-local relational store.
+// It is the tenant the mutation conformance exercises, and it exists ONLY in
+// the fake backend — registry.LiveFixture, which the adopt and projection
+// tests compare against the real host, is untouched.
+func FixtureFleet() *registry.Fleet {
+	f := registry.LiveFixture()
+	addManagedFixture(f)
+	// One prepared artifact, so `tenant create` has something to create from.
+	f.Artifacts[ConformanceArtifactID] = &registry.Artifact{
+		SHA: conformanceSHA, Tag: "conformance",
+		Worktree:   "/rag/data/ctl/artifacts/" + ConformanceArtifactID + "/worktree",
+		UIDist:     "/rag/data/ctl/artifacts/" + ConformanceArtifactID + "/worktree/frontend/dist",
+		PythonEnv:  "/rag/envs/ragstack",
+		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
+	}
+	// And the artifact the managed fixture tenant was BUILT from. A row whose
+	// `artifact_id` names nothing the fleet holds is an inconsistent registry,
+	// and `restore --as` is the verb that notices: it lays the fresh tenant
+	// down from the SOURCE tenant's artifact and refuses when that artifact is
+	// not prepared on this host.
+	f.Artifacts[managedFixtureArtifactID] = &registry.Artifact{
+		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3",
+		Worktree:   "/rag/data/ctl/artifacts/" + managedFixtureArtifactID + "/worktree",
+		UIDist:     "/rag/data/ctl/artifacts/" + managedFixtureArtifactID + "/worktree/frontend/dist",
+		PythonEnv:  "/rag/envs/ragstack",
+		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
+	}
+	return f
+}
+
+// managedFixtureArtifactID is the artifact `ctlfixture` records.
+const managedFixtureArtifactID = "v1.5.3-abababababab"
+
+// managedFixtureName is the tenant the mutation conformance acts on.
+const managedFixtureName = "ctlfixture"
+
+func addManagedFixture(f *registry.Fleet) {
+	r := paths.NewRoots(f.RagRoot, paths.Overrides{})
+	tp := paths.TenantPaths(r, managedFixtureName, managedFixtureName)
+	t := registry.NewTenant(managedFixtureName, managedFixtureName)
+	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
+	t.Code = registry.Code{Tag: "v1.5.3", SHA: registry.NullString(strings.Repeat("ab", 20))}
+	t.ArtifactID = managedFixtureArtifactID
+	t.Ports = paths.Block(9)
+	t.API = registry.API{Bind: "127.0.0.1", PidFile: tp.PidFile, Log: tp.APILog}
+	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + managedFixtureName + "/ui/"}
+	t.Supervisor, t.Owner, t.State = "systemd", "svcbvbrc", "active"
+	t.DesiredBoot, t.EnvLayout = "enabled", "managed"
+	t.EnvFileSHA256, t.SecretsFileSHA256 = emptySHA256Hex, emptySHA256Hex
+	t.Identity = registry.Identity{Provider: "bvbrc", AdminSubjectsCount: 1}
+	t.SecretRefs = []registry.SecretRef{
+		{Key: "API_KEYS", File: "secrets.env"},
+		{Key: "API_KEY_TENANTS", File: "secrets.env"},
+		{Key: "API_KEY_ROLES", File: "secrets.env"},
+		{Key: "TENANT_PG_PASSWORD", File: "secrets.env"},
+	}
+	// Capabilities all true: this is a tenant whose stores an operator has
+	// CONFIRMED are its own, which is what lets backup snapshot them.
+	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}
+	t.Stores.Qdrant = registry.Qdrant{
+		URL: fmt.Sprintf("http://localhost:%d", t.Ports.QdrantHTTP), Instance: registry.NullString("qdrant-" + managedFixtureName),
+		SIF: "/rag/apptainer/images/qdrant.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		ExtraEnv: map[string]string{},
+	}
+	t.Stores.Elasticsearch = registry.Elasticsearch{
+		URL: fmt.Sprintf("http://localhost:%d", t.Ports.ESHTTP), Instance: registry.NullString("elasticsearch-" + managedFixtureName),
+		SIF: "/rag/apptainer/images/elasticsearch.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		Heap: "1g", ProvisionHeap: "1g", PathRepo: "/usr/share/elasticsearch/snapshots", ExtraEnv: map[string]string{},
+	}
+	// The one postgres-local tenant in the fixture, so the backup's postgres
+	// leg is exercised rather than skipped everywhere.
+	t.Stores.Postgres = registry.Postgres{
+		Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		URL: registry.NullString(fmt.Sprintf("postgresql://localhost:%d", t.Ports.PG)), Port: registry.NullPort(t.Ports.PG),
+		Instance: registry.NullString("postgres-" + managedFixtureName), SIF: "/rag/apptainer/images/postgres.sif",
+		DataDir: registry.NullString(tp.DataDir + "/postgres"),
+	}
+	f.Tenants[managedFixtureName] = t
+	f.DisplayOrder = append(f.DisplayOrder, managedFixtureName)
+}
+
+// emptySHA256Hex is the digest of nothing — the fixture's stand-in for a file
+// hash, and a value that can never be mistaken for a credential.
+const emptySHA256Hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// FixtureDrivers is the in-memory HOST the fake-drivers daemon runs on: the
+// env files the fixture tenants would have, plus, for every tenant whose
+// stores the registry says are its own, the collections, indices, counts and
+// snapshot directory those stores would hold.
+//
+// Seeded from the FLEET rather than written out, so a tenant added to the
+// fixture gets a host that matches its registry row instead of one somebody
+// remembered to update.
+func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) drivers.FakeOptions {
+	opts := drivers.FakeOptions{
+		Now:         now,
+		Roots:       []string{roots.DataDir, roots.CtlConfigDir, roots.CtlStateDir, roots.BackupsDir},
+		Files:       fixtureFiles(roots, f),
+		Collections: map[string][]string{}, Indices: map[string][]string{},
+		QdrantCounts: map[string]int64{}, ESCounts: map[string]int64{},
+		QdrantSnapshotDirs: map[string]string{}, UnitPorts: map[string]int{},
+		CollectionsByOrigin: map[string][]string{},
+	}
+	for name, t := range f.Tenants {
+		tp := paths.TenantPaths(roots, name, t.ManifestName)
+		// The API is up for an active tenant, and its unit moves the port, so
+		// a fence that stops the unit really frees the socket.
+		_, _, _, _, apiUnit, _ := render.UnitNames(name)
+		opts.UnitPorts[apiUnit] = t.Ports.API
+		if t.State == "active" {
+			opts.Listening = append(opts.Listening, t.Ports.API)
+			opts.Routed = append(opts.Routed, name)
+			if t.Supervisor == string(model.SupervisorSystemd) {
+				opts.Active = append(opts.Active, apiUnit)
+			}
+		}
+		if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive && t.Stores.Qdrant.Capabilities.Snapshot {
+			url := t.Stores.Qdrant.URL
+			opts.Collections[url] = []string{name + "_docs", name + "_chunks"}
+			opts.QdrantCounts[url+"/"+name+"_docs"] = 1200
+			opts.QdrantCounts[url+"/"+name+"_chunks"] = 34000
+			opts.QdrantSnapshotDirs[url] = tp.QdrantSnapshots
+		}
+		if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive && t.Stores.Elasticsearch.Capabilities.Snapshot {
+			url := t.Stores.Elasticsearch.URL
+			opts.Indices[url] = []string{name + "-chunks"}
+			opts.ESCounts[url+"/"+name+"-chunks"] = 34000
+		}
+	}
+	fixtureRestoreTargets(f, &opts)
+	return opts
+}
+
+// fixtureRestoreTargets pre-answers, for the port blocks a `restore --as` would
+// ALLOCATE, the facts a tenant that has just been restored would present: its
+// stores holding the counts the bundle recorded, and its own API reporting the
+// collection inventory.
+//
+// It exists for the same reason fixtureListening does, and it is the same kind
+// of accommodation. The fake stores keep no data: `Qdrant.Recover` and
+// `_restore` move no points on this host, and the fake tenant API has no
+// collection store to read back. Without this seed the fixture could only ever
+// represent a FAILED restore — the verification step would ask the fresh
+// tenant's stores for the bundle's counts and be told zero — and the verb could
+// not be exercised end to end at all.
+//
+// What it does NOT fake is any of the work. The copies, the recover calls, the
+// repository registration and the counts the step asks for are all real calls
+// on this host, and they are asserted directly in
+// go/internal/ctl/ops/restore_test.go, where the target's numbers are seeded per
+// test rather than for every block.
+func fixtureRestoreTargets(f *registry.Fleet, opts *drivers.FakeOptions) {
+	next, _ := registry.Allocate(f)
+	for _, t := range f.Tenants {
+		if t.Supervisor != string(model.SupervisorSystemd) ||
+			t.Stores.Qdrant.Ownership != registry.OwnershipExclusive ||
+			!t.Stores.Qdrant.Capabilities.Snapshot {
+			continue
+		}
+		collections := append([]string(nil), opts.Collections[t.Stores.Qdrant.URL]...)
+		indices := append([]string(nil), opts.Indices[t.Stores.Elasticsearch.URL]...)
+		sort.Strings(collections)
+		for i := 0; i < fixtureFutureBlocks; i++ {
+			block := paths.BlockAt(f.PortBase, f.PortStride, next+i)
+			// `prospectiveTenant` builds the fresh tenant's URLs on 127.0.0.1;
+			// the captured tenants spell theirs `localhost`. A seed under the
+			// wrong spelling is a seed that answers nothing.
+			qURL := fmt.Sprintf("http://127.0.0.1:%d", block.QdrantHTTP)
+			esURL := fmt.Sprintf("http://127.0.0.1:%d", block.ESHTTP)
+			for _, c := range collections {
+				opts.QdrantCounts[qURL+"/"+c] = opts.QdrantCounts[t.Stores.Qdrant.URL+"/"+c]
+			}
+			for _, idx := range indices {
+				opts.ESCounts[esURL+"/"+idx] = opts.ESCounts[t.Stores.Elasticsearch.URL+"/"+idx]
+			}
+			opts.CollectionsByOrigin[fmt.Sprintf("http://127.0.0.1:%d", block.API)] = collections
+		}
+	}
 }
 
 // NewFakeBackendAt is NewFakeBackend with the clock injected, so a test can
@@ -165,10 +379,22 @@ func (b *FakeBackend) row(t *registry.Tenant) model.FleetRow {
 			// none, so the honest answer is "not probed", not "ok".
 			Deep: model.HealthNA,
 		},
-		Units:      rowUnits(t),
-		DiskBytes:  fakeDisk(t.Name),
-		LastBackup: nil, // no backup tooling exists yet; that is the plan's premise
+		Units:     rowUnits(t),
+		DiskBytes: fakeDisk(t.Name),
+		// The bundle the backup verb recorded, if one has run against this
+		// fixture: the projection is fleet.Row's, so what the dashboard shows
+		// with fake drivers is what it shows on a host.
+		LastBackup: fakeLastBackup(t),
 	}
+}
+
+// fakeLastBackup projects the registry's backup record exactly as
+// fleet.Row does.
+func fakeLastBackup(t *registry.Tenant) *model.LastBackup {
+	if t.LastBackup == nil {
+		return nil
+	}
+	return &model.LastBackup{At: t.LastBackup.At, Fenced: t.LastBackup.Fenced, Verified: t.LastBackup.Verified}
 }
 
 func healthFor(up bool) model.HealthState {

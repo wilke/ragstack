@@ -314,6 +314,16 @@ func (p *planner) planSA(args map[string]any, action string, destructive bool) e
 		}
 	}
 	origin := fmt.Sprintf("http://127.0.0.1:%d", p.t.Ports.API)
+	// Role and purpose are sa-create's arguments; sa-disable and sa-enable do
+	// not take them, and the tenant API does not need them to act on a subject
+	// that already exists — so they are empty there rather than guessed from
+	// the registry row, which can disagree with the tenant's own ledger.
+	role, purpose := argStringOf(args, "role"), argStringOf(args, "purpose")
+	// The admin credential this call presents is read from the tenant's
+	// secrets.env by the real client (PR-D). The planner does not read secrets,
+	// so it passes none and the pending driver refuses before any request is
+	// made.
+	apiKey := ""
 	p.addFor("tenantapi", step{
 		Kind: "tenantapi", Title: fmt.Sprintf("%s the service account %q through the tenant API", action, subject),
 		Destructive: destructive, Targets: []string{subject, origin},
@@ -321,14 +331,16 @@ func (p *planner) planSA(args map[string]any, action string, destructive bool) e
 			if err := sc.Checkpoint("sa:" + action + ":" + subject); err != nil {
 				return "", err
 			}
-			if err := sc.Ops.Drivers.TenantAPI().ServiceAccount(ctx, origin, subject, action); err != nil {
+			if err := sc.Ops.Drivers.TenantAPI().ServiceAccount(
+				ctx, origin, apiKey, subject, role, purpose, action); err != nil {
 				return "", err
 			}
 			return action + " " + subject, nil
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			inverse := map[string]string{"create": "disable", "disable": "enable", "enable": "disable"}[action]
-			return "rolled back to " + inverse, sc.Ops.Drivers.TenantAPI().ServiceAccount(ctx, origin, subject, inverse)
+			return "rolled back to " + inverse, sc.Ops.Drivers.TenantAPI().ServiceAccount(
+				ctx, origin, apiKey, subject, role, purpose, inverse)
 		},
 	})
 	p.result["subject"] = subject

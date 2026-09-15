@@ -10,7 +10,6 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
-	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
@@ -41,8 +40,13 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 		return err
 	}
 	t := p.t
-	if t.Owner == "svcbvbrc" && t.Supervisor == supervisorSystemd {
-		return p.refuse("%s is already owned by svcbvbrc and supervised by systemd; there is nothing to hand over", t.Name)
+	if t.Owner == p.op.deps.owner() && t.Supervisor == supervisorSystemd {
+		// The account is the PROCESS's (Deps.Owner), not a constant: a --direct
+		// run as wilke owns what it created, and a refusal naming svcbvbrc
+		// would send an operator looking for units under an account that has
+		// none of them.
+		return p.refuse("%s is already owned by %s and supervised by systemd; there is nothing to hand over",
+			t.Name, p.op.deps.owner())
 	}
 	if err := p.requireFencedBackup("handover"); err != nil {
 		return err
@@ -178,8 +182,15 @@ func (p *planner) addSourceStop() {
 }
 
 // addUnitsWrite plans the unit files of a handover or a create.
+//
+// FLAT under UnitsDir, not in a per-tenant subdirectory: the user manager's
+// drop-in sets `SYSTEMD_UNIT_PATH=/rag/config/ctl/units:` and systemd does not
+// search a unit path recursively, so a unit written one level down is a unit
+// the manager can never find by name. The names already carry the tenant
+// (`ragstack-<name>-api.service`), which is what made a subdirectory look
+// harmless.
 func (p *planner) addUnitsWrite(units map[string][]byte) {
-	dir := filepath.Join(p.oc.Roots.UnitsDir(), p.t.Name)
+	dir := p.oc.Roots.UnitsDir()
 	for _, name := range sortedNames(units) {
 		path, body := filepath.Join(dir, name), units[name]
 		p.add(step{
@@ -249,78 +260,6 @@ func planMigrateLocal(_ context.Context, p *planner, args map[string]any) error 
 		Kind: "registry", Title: "commit: record the new data dir and port block", Targets: []string{t.Name},
 		Run: p.pendingRun("registry", "Relocate"),
 	})
-	return nil
-}
-
-// ---------------------------------------------------------------- decommission
-
-func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
-	p.need(model.LockRegistry, model.LockManifest, model.LockTenant, model.LockGateway)
-	t := p.t
-	// v1 quarantines; it never purges. And it quarantines only what the ctl
-	// made or supervises: renaming the data directory of a hand-run tenant
-	// belonging to another account is destroying somebody else's work with a
-	// tool that cannot put it back.
-	managed := t.Supervisor == supervisorSystemd && t.Owner == "svcbvbrc"
-	sandbox := t.Ports.Base >= paths.SelftestBase && t.Ports.Base <= paths.SelftestEnd
-	if !managed && !sandbox {
-		return p.refuse("%s is neither a ctl-managed tenant (supervisor systemd, owner svcbvbrc — it is %s/%s) nor a "+
-			"selftest sandbox (ports %d–%d): v1 decommission quarantines only what the ctl runs",
-			t.Name, t.Supervisor, t.Owner, paths.SelftestBase, paths.SelftestEnd)
-	}
-	if err := p.requireFencedBackup("decommission"); err != nil {
-		return err
-	}
-	legs, _ := p.legs(nil)
-	for _, c := range reverse(legs) {
-		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
-			continue
-		}
-		p.addUnitStep("stop", c)
-		p.addUnitStep("disable", c)
-	}
-	p.add(step{
-		Kind: "nginx", Title: "publish a generation without " + t.Name, Destructive: true, Targets: []string{t.Name},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			if err := sc.Checkpoint("gateway:apply:pending"); err != nil {
-				return "", err
-			}
-			gen, detail, err := sc.Ops.Drivers.Gateway().Apply(ctx, false)
-			if err != nil {
-				return "", err
-			}
-			return detail, sc.Checkpoint("gateway:gen:" + strconv.Itoa(gen))
-		},
-	})
-	p.add(step{
-		Kind: "fs", Title: "quarantine the data directory (rename to .quarantined-<ts>)", Destructive: true,
-		Targets: []string{t.DataDir, t.DataDir + ".quarantined-<ts>"},
-		Warnings: []string{"nothing is deleted: the tree is renamed, stays inside the retention-protected root and " +
-			"outside every deletion root. A live purge is v1.x and a separately named op"},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			dst := t.DataDir + ".quarantined-" + p.stampOf(sc)
-			if err := sc.Checkpoint("dir:" + dst); err != nil {
-				return "", err
-			}
-			if err := sc.Ops.Drivers.Files().Rename(ctx, t.DataDir, dst); err != nil {
-				return "", err
-			}
-			return "quarantined at " + dst, nil
-		},
-		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			for _, id := range sc.Step.ExternalIDs {
-				if strings.HasPrefix(id, "dir:") {
-					dst := strings.TrimPrefix(id, "dir:")
-					return "restored " + t.DataDir, sc.Ops.Drivers.Files().Rename(ctx, dst, t.DataDir)
-				}
-			}
-			return "", fmt.Errorf("no quarantine directory was recorded")
-		},
-	})
-	p.result["state"] = "quarantined"
-	p.result["tombstone"] = map[string]any{"manifest_name": t.ManifestName, "index": t.Ports.Index, "base": t.Ports.Base}
-	p.warn("the port block is tombstoned permanently: the allocator never reuses an index that has been decommissioned")
 	return nil
 }
 

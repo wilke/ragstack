@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +102,9 @@ func usage() {
   wait-ready <name> [--timeout S]           block until the tenant's own stores answer (unit ExecStartPre)
   es-seed-config <name> [--rag-root DIR]    seed an empty ES config bind from the image (unit ExecStartPre)
   fleet status [--json]                     the dashboard view: host band + one row per tenant
+  fleet artifact prepare --tag REF          resolve, check out and npm ci a release (CLI-only)
+  fleet artifact list [--json]              the prepared artifacts
+  tenant create <name> --artifact ID        allocate, provision, start and route a new tenant
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
   tenant logs <name> --file api|qdrant|es|ui [--lines N]
@@ -161,7 +165,22 @@ flags every operation accepts:
   gateway rollback [--to N]                 switch back + HUP + probe
   gateway repair                            put the current pointer back on the last verified generation
 
-  backup | selftest                         not implemented in this PR
+  backup list [<tenant>]                    every bundle on this host: id, kind, fenced, verified, size
+  backup verify <tenant> <bundle-id>        re-hash every file against SHA256SUMS + check the manifest
+                                            (the SHALLOW check; the deep one is "tenant restore --as")
+  backup prune <tenant> --dry-run           what a retention pass WOULD remove. v1 removes nothing:
+                                            --dry-run is required and deletion is an operator's own rm
+
+  selftest [--keep] [--with-gateway] [--artifact ID] [--postgres local] [--fixture PATH]
+                                            create a SANDBOX tenant (ctltest-*, ports 26000-26099),
+                                            ingest a fixture, back it up fenced, stop it, restore it
+                                            into a second sandbox, quarantine both and prove the host
+                                            is clean. Runs the engine IN THIS PROCESS: no --server.
+  selftest --boot                           the boot checklist only: linger, the user@ drop-in,
+                                            is-enabled and default.target for every tenant whose row
+                                            says desired_boot enabled (exit 3 on any FAIL)
+  selftest --sweep                          remove the quarantined ctltest-* trees and registry rows
+                                            a previous run left behind, and nothing else
 
 adopt-all on coconut adopts, in this order (data dirs and worktrees derived
 from --rag-root, i.e. /rag by default):
@@ -255,9 +274,10 @@ func run(args []string) int {
 		return cmdUnits(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "job":
 		return cmdJob(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
-	case "backup", "selftest":
-		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR\n", rest[0])
-		return exitUsage
+	case "backup":
+		return cmdBackup(rest[1:], *globalRagRoot, *jsonOut)
+	case "selftest":
+		return cmdSelftest(rest[1:], *registryPath, *globalRagRoot)
 	case "help", "-h", "--help":
 		usage()
 		return exitOK
@@ -944,8 +964,12 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 }
 
 func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
+	if len(args) > 0 && args[0] == "artifact" {
+		return cmdFleetArtifact(args[1:], registryPath, ragRoot, jsonOut)
+	}
 	if len(args) == 0 || args[0] != "status" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl fleet status [--json]")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet artifact prepare|list …")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)
@@ -983,6 +1007,7 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|ui [--lines N]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission <name> [op args]")
 		return exitUsage
 	}
@@ -990,6 +1015,12 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	// a different flag set from the three reads, so they are their own
 	// command rather than more cases in the switch below. Splitting here
 	// keeps `tenant list|show|logs` byte-for-byte what it was.
+	// `create` is an op too, but its args are create_request.json's CreateArgs
+	// rather than x-ctl-op-args[verb] and its route is POST /v1/tenants, so it
+	// has its own builder.
+	if args[0] == "create" {
+		return cmdTenantCreate(args[1:], registryPath, ragRoot, jsonOut)
+	}
 	if tenantOpVerbs[args[0]] {
 		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)
 	}
@@ -1129,6 +1160,10 @@ func sortedKeys(m map[string]int) []string {
 // it every api unit on the host fails its start with "exit 2 usage" and a
 // tenant whose stores are still opening its segments starts anyway and 500s.
 
+// target is one readiness probe of `wait-ready`: a store URL and the name an
+// operator reads in the log line.
+type target struct{ kind, url string }
+
 // waitPoll is how long to wait between attempts. The stores it waits for take
 // tens of seconds to open their data; polling faster only adds load.
 const waitPoll = 2 * time.Second
@@ -1174,7 +1209,6 @@ func cmdWaitReady(args []string, registryPath, ragRoot string) int {
 		return exitError
 	}
 
-	type target struct{ kind, url string }
 	var targets []target
 	if q := t.Stores.Qdrant; q.Ownership == registry.OwnershipExclusive && q.URL != "" {
 		targets = append(targets, target{"qdrant", strings.TrimSuffix(q.URL, "/") + "/collections"})
@@ -1185,7 +1219,20 @@ func cmdWaitReady(args []string, registryPath, ragRoot string) int {
 		targets = append(targets, target{"elasticsearch",
 			strings.TrimSuffix(e.URL, "/") + "/_cluster/health?wait_for_status=yellow&timeout=1s"})
 	}
-	if len(targets) == 0 {
+	// The tenant's OWN postgres, when it has one. A TCP connect, not a
+	// pg_isready: the socket auth pg_isready would use is INSIDE the container,
+	// and this runs as the api unit's ExecStartPre, before the API exists. "The
+	// port accepts a connection" is the strongest thing an outside observer can
+	// honestly assert, and it is enough — the unit that binds it is the one the
+	// ctl started.
+	pgPort := 0
+	if pg := t.Stores.Postgres; pg.Kind == registry.PostgresKindLocal {
+		pgPort = int(pg.Port)
+		if pgPort == 0 {
+			pgPort = t.Ports.PG
+		}
+	}
+	if len(targets) == 0 && pgPort == 0 {
 		fmt.Fprintf(stdout, "%s: no exclusively-owned store to wait for\n", name)
 		return exitOK
 	}
@@ -1203,6 +1250,7 @@ func cmdWaitReady(args []string, registryPath, ragRoot string) int {
 	defer cancel()
 	prober := hostfacts.NewProber()
 	pending := targets
+	pgPending := pgPort != 0
 	for {
 		var next []target
 		for _, tg := range pending {
@@ -1214,22 +1262,44 @@ func cmdWaitReady(args []string, registryPath, ragRoot string) int {
 			next = append(next, tg)
 		}
 		pending = next
-		if len(pending) == 0 {
+		if pgPending && tcpAccepts(ctx, pgPort) {
+			fmt.Fprintf(stdout, "%s: postgres ready\n", name)
+			pgPending = false
+		}
+		if len(pending) == 0 && !pgPending {
 			return exitOK
 		}
 		if time.Now().After(deadline) || time.Until(deadline) <= 0 {
-			for _, tg := range pending {
-				fmt.Fprintf(stderr, "ragstack-ctl wait-ready: %s: %s did not become ready within %ds\n", name, tg.kind, *timeout)
-			}
-			return exitError
+			return waitReadyTimedOut(name, pending, pgPending, *timeout)
 		}
 		select {
 		case <-ctx.Done():
-			for _, tg := range pending {
-				fmt.Fprintf(stderr, "ragstack-ctl wait-ready: %s: %s did not become ready within %ds\n", name, tg.kind, *timeout)
-			}
-			return exitError
+			return waitReadyTimedOut(name, pending, pgPending, *timeout)
 		case <-time.After(waitPoll):
 		}
 	}
+}
+
+// tcpAccepts reports whether something is listening on a loopback port. It
+// dials and hangs up: the postgres unit's readiness is "the server bound its
+// port", and anything more would need a credential this process does not have.
+func tcpAccepts(ctx context.Context, port int) bool {
+	d := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// waitReadyTimedOut names every leg that never answered.
+func waitReadyTimedOut(name string, pending []target, pgPending bool, timeout int) int {
+	for _, tg := range pending {
+		fmt.Fprintf(stderr, "ragstack-ctl wait-ready: %s: %s did not become ready within %ds\n", name, tg.kind, timeout)
+	}
+	if pgPending {
+		fmt.Fprintf(stderr, "ragstack-ctl wait-ready: %s: postgres did not become ready within %ds\n", name, timeout)
+	}
+	return exitError
 }

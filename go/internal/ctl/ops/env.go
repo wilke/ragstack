@@ -175,7 +175,11 @@ func planRenderUnits(_ context.Context, p *planner, args map[string]any) error {
 		// not at run time.
 		return p.refuse("%s's units cannot be rendered: %v", p.t.Name, err)
 	}
-	dir := filepath.Join(p.oc.Roots.UnitsDir(), p.t.Name)
+	// FLAT under the units dir, exactly where `create` puts them: the
+	// SYSTEMD_UNIT_PATH drop-in names that directory and systemd does not
+	// search it recursively, so a per-tenant subdirectory would be a unit
+	// file no manager ever finds.
+	dir := p.oc.Roots.UnitsDir()
 	names := make([]string, 0, len(units))
 	for name := range units {
 		names = append(names, name)

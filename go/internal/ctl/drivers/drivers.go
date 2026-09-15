@@ -8,9 +8,12 @@
 //     and every one can be told to fail a specific call, which is what lets
 //     the engine and API tests exercise failure, rollback and reconcile
 //     without a host. `serve --fake-drivers` runs on these.
-//   - NewReal: the REAL gateway and filesystem drivers — the two whose host
-//     surface PR-C already owns (internal/ctl/gateway, and atomic writes
-//     under approved roots). Every other real method answers
+//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), and
+//     the host drivers that run a program (systemd, proc, git and build,
+//     over the argv runner in exec.go) and the store drivers (qdrant,
+//     elasticsearch, the tenant API, postgres, sqlite and tar) — all of
+//     PR-D. Nothing is pending on this build; should a driver be added
+//     before it is wired, its methods answer
 //     `jobs.ErrRefused: <driver>.<method> lands in PR-D` rather than
 //     pretending, so an op planned today runs as far as it honestly can and
 //     stops with a sentence that says why.
@@ -133,7 +136,12 @@ const PendingPR = "PR-D"
 // single source both `Real.Pending` and the refusals above are read from. It
 // is named by the driver names the ops package's steps declare, which are the
 // names in the refusal text (`systemd.Start lands in PR-D`).
-var pendingReal = []string{"systemd", "proc", "qdrant", "elasticsearch", "tenantapi"}
+var pendingReal = []string{
+	// Empty since PR-D wired the last of them. A driver agent deletes a name
+	// here in the same commit that wires the driver, and the list stays so
+	// that a future driver has somewhere to be pending from — and so a plan
+	// can warn about it before anything can run it.
+}
 
 // Pending is the drivers this set cannot run, by name.
 //
@@ -145,5 +153,5 @@ var pendingReal = []string{"systemd", "proc", "qdrant", "elasticsearch", "tenant
 // verb planned against the fakes (which run everything) carries no warning.
 func (r *Real) Pending() []string { return append([]string(nil), pendingReal...) }
 
-// Pending is empty for the fakes: every one of the seven drivers runs.
+// Pending is empty for the fakes: every one of the twelve drivers runs.
 func (f *Fake) Pending() []string { return nil }

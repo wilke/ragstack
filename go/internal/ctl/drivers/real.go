@@ -2,22 +2,30 @@ package drivers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
+	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
-// RealOptions configure the real driver set. Two drivers are real today —
-// the gateway (internal/ctl/gateway) and the filesystem — because those are
-// the two host surfaces PR-C owns end to end.
+// RealOptions configure the real driver set: the gateway
+// (internal/ctl/gateway), the filesystem, and the four host drivers that run a
+// program — systemd, proc, git and build.
 type RealOptions struct {
 	Roots paths.Roots
 	// Fleet loads the registry the gateway renders from. It is a FUNCTION,
@@ -34,18 +42,68 @@ type RealOptions struct {
 	PIDFile   string
 	NginxSIF  string
 	Apptainer string
+	// The host programs the PR-D drivers run: absolute paths, all overridable
+	// from ctl.env (CTL_SYSTEMCTL_BIN and friends). They are configuration
+	// rather than constants because coconut's node is not where a packaged one
+	// would be (plan "Host facts"), and because a test points them at stubs.
+	// Empty takes the default named beside each.
+	SystemctlBin string // /usr/bin/systemctl
+	GitBin       string // /usr/bin/git
+	NodeBin      string // /rag/tools/node/current/bin/node
+	NpmBin       string // /rag/tools/node/current/bin/npm
+	// Mirror is the bare repository artifacts are prepared from. Default
+	// <RagRoot>/repos/ragstack.git. The ctl never creates it — cloning the
+	// mirror is an operator's deploy-time act.
+	Mirror string
+	// NpmCache is the npm cache `fleet artifact prepare` installs through.
+	// Default <RagRoot>/cache/npm.
+	NpmCache string
+	// Redact is applied to a program's captured stderr and to everything a
+	// store says back before it reaches an error, a job log or an audit row.
+	// Nil is the identity function — which is why nothing in this package
+	// DEPENDS on it for a secret the ctl itself holds: those are kept out of
+	// the string instead. The daemon passes the engine's redactor.
+	Redact func(string) string
+	// Logger records each host program run at debug level (program, argv,
+	// duration — never the output). Nil discards.
+	Logger *slog.Logger
 	// ApprovedRoots are the only directories the Files driver writes under.
 	// Empty means the two roots every op needs — the tenant data tree and the
 	// ctl config tree — never "everything".
 	ApprovedRoots []string
+	// StoreLongTimeout is the ceiling on a store call that can legitimately
+	// take a long time (a snapshot, a restore, a recover, an exact count, a
+	// pg_dump). Zero takes LongTimeout.
+	StoreLongTimeout time.Duration
 }
 
-// Real is the real driver set: gateway and files, and an honest refusal for
-// everything that lands in PR-D.
+// Default program paths. They are the ones ops/ansible installs and the ones
+// the plan names; a host that puts them elsewhere says so in ctl.env.
+const (
+	defaultSystemctlBin = "/usr/bin/systemctl"
+	defaultGitBin       = "/usr/bin/git"
+	defaultNodeBin      = "/rag/tools/node/current/bin/node"
+	defaultNpmBin       = "/rag/tools/node/current/bin/npm"
+)
+
+// Real is the real driver set: the gateway and the filesystem (PR-C), the
+// host drivers (systemd, proc, git, build) and the store drivers (qdrant,
+// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired. Nothing
+// on it is pending; Pending() is kept for the next driver that is.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
 	files   *RealFiles
+	systemd *RealSystemd
+	proc    *RealProc
+	git     *RealGit
+	build   *RealBuild
+	qdrant  *RealQdrant
+	es      *RealElasticsearch
+	api     *RealTenantAPI
+	pg      *RealPostgres
+	sqlite  *RealSQLite
+	archive *RealArchive
 }
 
 var _ jobs.Drivers = (*Real)(nil)
@@ -53,22 +111,74 @@ var _ jobs.Drivers = (*Real)(nil)
 // NewReal builds the real driver set.
 func NewReal(o RealOptions) *Real {
 	if len(o.ApprovedRoots) == 0 {
-		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir}
+		// The tenant worktrees root is on the list too: `tenant create`
+		// checks a worktree out under it and `decommission` moves one aside.
+		// It was missing on coconut's first selftest and the create refused
+		// its own worktree path.
+		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir, o.Roots.ReposDir}
 	}
+	o.SystemctlBin = orDefault(o.SystemctlBin, defaultSystemctlBin)
+	o.GitBin = orDefault(o.GitBin, defaultGitBin)
+	o.NodeBin = orDefault(o.NodeBin, defaultNodeBin)
+	o.NpmBin = orDefault(o.NpmBin, defaultNpmBin)
+	o.Mirror = orDefault(o.Mirror, filepath.Join(o.Roots.RagRoot, "repos", "ragstack.git"))
+	o.NpmCache = orDefault(o.NpmCache, filepath.Join(o.Roots.RagRoot, "cache", "npm"))
+
+	// ONE runner behind every host driver: the env sanitizer, the redactor
+	// and the process-group kill are rules that hold for all of them, and a
+	// driver with its own exec.Cmd would be a place they could stop holding.
+	run := &runner{Redact: o.Redact, Logger: o.Logger}
+	roots := append([]string(nil), o.ApprovedRoots...)
+	// One HTTP client for the three HTTP drivers, so the connection pool, the
+	// redirect refusal and the timeouts are one decision rather than three.
+	h := newHTTPStores(o)
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
-		files:   &RealFiles{Roots: append([]string(nil), o.ApprovedRoots...)},
+		files:   &RealFiles{Roots: roots},
+		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
+		// The listener table comes from hostfacts, so this driver and
+		// `doctor` answer a port question from the same parser.
+		proc:    &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
+		git:     &RealGit{run: run, Bin: o.GitBin, Roots: roots},
+		build:   &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
+		qdrant:  &RealQdrant{h: h},
+		es:      &RealElasticsearch{h: h},
+		api:     &RealTenantAPI{h: h},
+		pg:      &RealPostgres{opts: o, run: run},
+		sqlite:  &RealSQLite{opts: o},
+		archive: &RealArchive{opts: o},
 	}
 }
 
-func (r *Real) Systemd() jobs.Systemd             { return pendingSystemd{} }
-func (r *Real) Proc() jobs.Proc                   { return pendingProc{} }
+// orDefault is the empty-means-default rule every program path follows.
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+// Mirror is the bare repository this driver set prepares artifacts from, as
+// NewReal resolved it. `fleet artifact prepare` reads it rather than
+// recomputing the default beside its own flag.
+func (r *Real) Mirror() string { return r.opts.Mirror }
+
+// NpmCache is the npm cache directory, as NewReal resolved it.
+func (r *Real) NpmCache() string { return r.opts.NpmCache }
+
+func (r *Real) Systemd() jobs.Systemd             { return r.systemd }
+func (r *Real) Proc() jobs.Proc                   { return r.proc }
 func (r *Real) Gateway() jobs.GatewayDriver       { return r.gateway }
 func (r *Real) Files() jobs.Files                 { return r.files }
-func (r *Real) Qdrant() jobs.Qdrant               { return pendingQdrant{} }
-func (r *Real) Elasticsearch() jobs.Elasticsearch { return pendingES{} }
-func (r *Real) TenantAPI() jobs.TenantAPI         { return pendingTenantAPI{} }
+func (r *Real) Qdrant() jobs.Qdrant               { return r.qdrant }
+func (r *Real) Elasticsearch() jobs.Elasticsearch { return r.es }
+func (r *Real) TenantAPI() jobs.TenantAPI         { return r.api }
+func (r *Real) Git() jobs.Git                     { return r.git }
+func (r *Real) Build() jobs.Build                 { return r.build }
+func (r *Real) Postgres() jobs.Postgres           { return r.pg }
+func (r *Real) SQLite() jobs.SQLite               { return r.sqlite }
+func (r *Real) Archive() jobs.Archive             { return r.archive }
 
 // ---------------------------------------------------------------- gateway
 
@@ -88,7 +198,27 @@ func (g *RealGateway) options(dryRun bool) gateway.Options {
 		NginxSIF:  g.opts.NginxSIF,
 		Apptainer: g.opts.Apptainer,
 		DryRun:    dryRun,
+		// This driver runs only inside a job, and every op whose plan carries
+		// a gateway step declares LockGateway (an ops test asserts it), so
+		// the engine already holds the gateway package's lock file.
+		LockHeld: true,
 	}
+}
+
+// Routes reads the tenant list the live proxy tree serves.
+func (g *RealGateway) Routes(_ context.Context) ([]string, error) {
+	lists, err := doctor.LiveTenantLists(g.opts.Roots.ProxyDir)
+	if err != nil {
+		return nil, err
+	}
+	if lists.NamesJSON == "" {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(lists.NamesJSON), &names); err != nil {
+		return nil, fmt.Errorf("the live tenant list %s does not parse: %w", lists.NamesSource, err)
+	}
+	return names, nil
 }
 
 func (g *RealGateway) fleet() (*registry.Fleet, error) {
@@ -167,22 +297,28 @@ type RealFiles struct {
 	approved []string // Roots, plus each root as EvalSymlinks resolves it
 }
 
-// check resolves path and returns the RESOLVED path the caller must operate
-// on.
+// check resolves path against this driver's approved roots (both spellings:
+// a deployment whose /rag/data is itself a symlink is a normal host, not an
+// escape) and returns the RESOLVED path the caller must operate on.
+func (f *RealFiles) check(path string) (string, error) {
+	return resolvedContained(path, f.roots())
+}
+
+// resolvedContained is the containment check every driver that writes,
+// deletes or binds a host path uses, and the path it returns is the one the
+// caller must then operate on.
 //
-// paths.SafePath is lexical: it compares cleaned strings, so
+// paths.SafePath is LEXICAL: it compares cleaned strings, so
 // `<root>/link/../../etc/passwd` is refused but `<root>/link/passwd`, where
 // `link` is a symlink to /etc, is not — nothing in the string says the
-// component is a link. Containment that a single symlinked directory defeats
-// is not containment, so the parent directory is resolved through
-// filepath.EvalSymlinks FIRST and the check is made on what came back. The
-// caller then opens THAT path, not the one it was given, so the check and the
-// syscall cannot be made to disagree by a link planted between them.
-//
-// The approved roots are resolved the same way and both spellings accepted: a
-// deployment whose /rag/data is itself a symlink is a normal host, not an
-// escape.
-func (f *RealFiles) check(path string) (string, error) {
+// component is a link. Five drivers used to check the path they were given
+// and then operate on another (or on the same string, having resolved it only
+// for a Stat), which is containment a single symlinked directory defeats. So
+// the parent directory is resolved through filepath.EvalSymlinks FIRST, the
+// check is made on what came back, and the RESOLVED path is what is returned:
+// the check and the syscall cannot then be made to disagree by a link planted
+// between them.
+func resolvedContained(path string, roots []string) (string, error) {
 	if _, err := paths.SafePath("/", path); err != nil {
 		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
@@ -191,26 +327,60 @@ func (f *RealFiles) check(path string) (string, error) {
 		return "", fmt.Errorf("%w: resolving the parent of %s: %v", jobs.ErrRefused, path, err)
 	}
 	resolved := filepath.Join(dir, filepath.Base(path))
-	if !contained(resolved, f.roots()) {
+	// Both spellings of every root are accepted: a deployment whose /rag/data
+	// is itself reached through a symlink is a normal host, not an escape, and
+	// resolving the PATH without resolving the roots would refuse it.
+	if !contained(resolved, resolveRoots(roots)) {
 		if resolved != path {
 			return "", fmt.Errorf("%w: %s resolves to %s, which is outside every approved root %v",
-				jobs.ErrRefused, path, resolved, f.Roots)
+				jobs.ErrRefused, path, resolved, roots)
 		}
-		return "", outsideRoots(path, f.Roots)
+		return "", outsideRoots(path, roots)
 	}
 	return resolved, nil
 }
 
-// roots is Roots plus the symlink-resolved spelling of each.
-func (f *RealFiles) roots() []string {
-	f.once.Do(func() {
-		f.approved = append([]string(nil), f.Roots...)
-		for _, r := range f.Roots {
-			if real, err := resolveDir(r); err == nil && real != r {
-				f.approved = append(f.approved, real)
-			}
+// resolveRoots is roots plus the symlink-resolved spelling of each. A root
+// that does not resolve (it is not there yet) is kept as written.
+func resolveRoots(roots []string) []string {
+	out := append([]string(nil), roots...)
+	for _, r := range roots {
+		if real, err := resolveDir(r); err == nil && real != r {
+			out = append(out, real)
 		}
-	})
+	}
+	return out
+}
+
+// resolvedContainedNoLeafLink is resolvedContained for a path whose LEAF is
+// about to be written through or deleted: an extraction directory, a vite
+// `--emptyOutDir`, a `git worktree remove --force`.
+//
+// Resolving the parent is not enough for those. `<root>/dist`, where `dist` is
+// a symlink to /etc, is lexically inside the root AND its parent resolves
+// inside the root — and `vite build --emptyOutDir` then empties /etc. A
+// symlink at the leaf is therefore refused outright rather than followed:
+// nothing the ctl creates is a symlink, so one sitting where a destructive
+// operation is about to happen is not a layout, it is a plant.
+func resolvedContainedNoLeafLink(path string, roots []string) (string, error) {
+	resolved, err := resolvedContained(path, roots)
+	if err != nil {
+		return "", err
+	}
+	st, lerr := os.Lstat(resolved)
+	switch {
+	case lerr == nil && st.Mode()&os.ModeSymlink != 0:
+		return "", fmt.Errorf("%w: %s is a symlink; the ctl never writes or deletes through one",
+			jobs.ErrRefused, resolved)
+	case lerr != nil && !errors.Is(lerr, os.ErrNotExist):
+		return "", lerr
+	}
+	return resolved, nil
+}
+
+// roots is Roots plus the symlink-resolved spelling of each, resolved once.
+func (f *RealFiles) roots() []string {
+	f.once.Do(func() { f.approved = resolveRoots(f.Roots) })
 	return f.approved
 }
 
@@ -267,7 +437,11 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	// Mode BEFORE the rename: CreateTemp makes 0600, and a chmod after the
 	// rename would leave the final path at the wrong mode for as long as the
 	// two syscalls are apart — on a secrets file, that window is the bug.
-	if err = tmp.Chmod(os.FileMode(mode)); err != nil {
+	//
+	// fileMode, not os.FileMode: a caller asking for 0o2770 means setgid, and
+	// os.FileMode(0o2770) silently drops it (Go keeps setuid/setgid/sticky in
+	// flag bits outside the low nine) — the same bug CopyFile already avoided.
+	if err = tmp.Chmod(fileMode(mode)); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -290,7 +464,183 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	return nil
 }
 
-// Rename moves from to to; both must be under an approved root.
+// CopyFile streams src to dst, atomically and under the approved roots.
+//
+// It is WriteAtomic with an io.Copy where the []byte was: the same temporary
+// file in the destination's own directory, the same mode set BEFORE the
+// rename, the same directory fsync afterwards. What it does not do is hold the
+// file in memory — a restore copies qdrant snapshots and elasticsearch
+// segments, which are gigabytes each.
+//
+// The SOURCE is opened with O_NOFOLLOW. Reading is not root-checked here (it is
+// not for ReadFile either), but a bundle is operator input that may have been
+// copied in from another host, and a symlink inside one must not become a copy
+// of whatever it points at inside a tenant's data directory.
+func (f *RealFiles) CopyFile(_ context.Context, src, dst string, mode uint32) (err error) {
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("%w: %s is a symlink; the ctl never copies through one", jobs.ErrRefused, src)
+		}
+		return err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("%w: %s is a directory, not a file to copy", jobs.ErrRefused, src)
+	}
+
+	dst, err = f.check(dst)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(name)
+		}
+	}()
+	if _, err = io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(fileMode(mode)); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(name, dst); err != nil {
+		return err
+	}
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// MkdirAll creates path and every missing parent under it, and is REAL: it is
+// how `tenant create` lays down a tenant tree.
+//
+// Two rules make it different from a bare os.MkdirAll:
+//
+//   - it never chmods a directory that already existed. /rag/data/tenants is
+//     wilke 755 and its group, `cels`, has 1869 members; a driver that
+//     "corrected" the mode of a parent it did not create would be silently
+//     re-permissioning a directory shared with the whole host. Only the
+//     directories THIS call created are chmodded.
+//   - the mode is applied with an explicit chmod rather than left to mkdir.
+//     mkdir(2) masks the mode with the process umask and does not reliably
+//     keep the setgid bit, and setgid is the whole point of a 2770 tenant
+//     tree: it is what makes every file the tenant later writes inherit the
+//     group instead of the writer's primary one.
+//
+// The second rule used to hold for the LEAF alone: os.MkdirAll created every
+// intermediate level and only the leaf was chmodded, so `MkdirAll(<tenant>/a/b,
+// 0o2770)` left `a` at 0750 under the ordinary 022 umask — no setgid, no group
+// write. A tenant tree is created a level at a time by different steps, so the
+// missing levels are real ones. Each component is therefore created here, one
+// mkdir at a time, and chmodded only when THIS call is the one whose mkdir
+// succeeded; a component another process won the race for is left exactly as
+// an existing directory would be.
+func (f *RealFiles) MkdirAll(_ context.Context, path string, mode uint32) error {
+	resolved, err := f.check(path)
+	if err != nil {
+		return err
+	}
+	// Lstat, not Stat: a symlink sitting where the directory should be is not
+	// a directory this driver will write through, whatever it points at.
+	if st, lerr := os.Lstat(resolved); lerr == nil {
+		if !st.IsDir() {
+			return fmt.Errorf("%w: %s already exists and is not a directory", jobs.ErrRefused, resolved)
+		}
+		return nil
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return lerr
+	}
+	// The missing components, deepest first, down to the first existing
+	// ancestor.
+	var missing []string
+	for p := resolved; ; {
+		if _, lerr := os.Lstat(p); lerr == nil {
+			break
+		} else if !errors.Is(lerr, os.ErrNotExist) {
+			return lerr
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break // reached the filesystem root without finding one
+		}
+		p = parent
+	}
+	perm := fileMode(mode)
+	for i := len(missing) - 1; i >= 0; i-- {
+		dir := missing[i]
+		if err := os.Mkdir(dir, perm); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				// Somebody else created it between the scan and now: it is
+				// not a directory this call made, so its mode is not this
+				// call's to set.
+				continue
+			}
+			return err
+		}
+		// A component ABOVE the approved root — /rag/data itself, when a
+		// fixture's tree starts empty — is created because MkdirAll must, but
+		// its mode is not this call's business either: it is the deployment's,
+		// not the tenant's. Only what is strictly inside a root is chmodded.
+		if !contained(dir, f.roots()) {
+			continue
+		}
+		if err := os.Chmod(dir, perm); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fileMode turns a POSIX mode as the callers write it (0o2770) into the
+// os.FileMode Go wants, where setuid/setgid/sticky are flag bits outside the
+// low nine rather than the octal digits they are in a shell.
+func fileMode(mode uint32) os.FileMode {
+	perm := os.FileMode(mode & 0o777)
+	if mode&syscall.S_ISUID != 0 {
+		perm |= os.ModeSetuid
+	}
+	if mode&syscall.S_ISGID != 0 {
+		perm |= os.ModeSetgid
+	}
+	if mode&syscall.S_ISVTX != 0 {
+		perm |= os.ModeSticky
+	}
+	return perm
+}
+
+// Rename moves from to to; both must be under an approved root, and `to` must
+// not exist.
+//
+// rename(2) REPLACES an existing destination silently — a file, or an empty
+// directory — which in this package would be the one write path that
+// overwrites without saying so: every other refuses (WriteAtomic is atomic
+// over its own target, Archive.Create, SQLite.Backup and Extract all refuse an
+// existing name). `decommission` renames a tenant tree aside and `restore`
+// moves a staged one into place; both would rather fail than land on top of
+// something that is already there.
 func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	rfrom, err := f.check(from)
 	if err != nil {
@@ -298,6 +648,11 @@ func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	}
 	rto, err := f.check(to)
 	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(rto); err == nil {
+		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, rto)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return os.Rename(rfrom, rto)
@@ -336,68 +691,68 @@ func (f *RealFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// ---------------------------------------------------------------- PR-D
+// ReadDir lists one directory level, sorted by name (os.ReadDir's order).
+// Like ReadFile it is a read and so is not root-checked; an absent directory
+// comes back as fs.ErrNotExist for callers that tell absence from failure.
+func (f *RealFiles) ReadDir(_ context.Context, dir string) ([]jobs.DirEntry, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobs.DirEntry, 0, len(ents))
+	for _, e := range ents {
+		// A symlink is reported as neither: it is not a directory this driver
+		// will descend into, and a caller that copies it would be copying
+		// whatever it points at, which may be outside the tenant tree
+		// entirely. IsDir() is false for a symlink here (ReadDir does not
+		// follow), so the entry lands as a plain name and the copy step's own
+		// open decides.
+		out = append(out, jobs.DirEntry{Name: e.Name(), IsDir: e.IsDir()})
+	}
+	return out, nil
+}
 
-// The drivers PR-D ships. Each method refuses with the driver and method
-// named, so a job that reaches one stops with a sentence an operator can act
-// on rather than with a nil-pointer panic. They are five types rather than
-// one because Qdrant.Snapshot and Elasticsearch.Snapshot are different
-// methods with the same name.
-type (
-	pendingSystemd   struct{}
-	pendingProc      struct{}
-	pendingQdrant    struct{}
-	pendingES        struct{}
-	pendingTenantAPI struct{}
-)
+// Sha256 streams path through sha256 and reports the digest and the size.
+//
+// Streaming rather than ReadFile: a bundle's SHA256SUMS covers elasticsearch
+// segment files of several gigabytes each, and hashing them by first loading
+// them into the daemon's heap is how a backup takes the host down.
+func (f *RealFiles) Sha256(_ context.Context, path string) (string, int64, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer fh.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, fh)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
 
-var (
-	_ jobs.Systemd       = pendingSystemd{}
-	_ jobs.Proc          = pendingProc{}
-	_ jobs.Qdrant        = pendingQdrant{}
-	_ jobs.Elasticsearch = pendingES{}
-	_ jobs.TenantAPI     = pendingTenantAPI{}
-)
-
-func (pendingSystemd) DaemonReload(context.Context) error {
-	return pending(jobs.ErrRefused, "systemd", "DaemonReload")
-}
-func (pendingSystemd) Start(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Start")
-}
-func (pendingSystemd) Stop(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Stop")
-}
-func (pendingSystemd) Enable(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Enable")
-}
-func (pendingSystemd) Disable(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Disable")
-}
-func (pendingSystemd) IsActive(context.Context, string) (bool, error) {
-	return false, pending(jobs.ErrRefused, "systemd", "IsActive")
-}
-func (pendingProc) Listening(context.Context, int) (bool, error) {
-	return false, pending(jobs.ErrRefused, "proc", "Listening")
-}
-func (pendingProc) Signal(context.Context, int, string, string, string) error {
-	return pending(jobs.ErrRefused, "proc", "Signal")
-}
-func (pendingQdrant) Collections(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "qdrant", "Collections")
-}
-func (pendingQdrant) Snapshot(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "qdrant", "Snapshot")
-}
-func (pendingES) Indices(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "elasticsearch", "Indices")
-}
-func (pendingES) Snapshot(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Snapshot")
-}
-func (pendingTenantAPI) Health(context.Context, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "Health")
-}
-func (pendingTenantAPI) ServiceAccount(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "ServiceAccount")
+// DiskFree is the bytes available to THIS account on the filesystem holding
+// path — statfs f_bavail, not f_bfree: the difference is the reserved blocks
+// only root may use, and a precheck that counted those would approve a backup
+// that then filled the filesystem for everything else on the host.
+//
+// The deepest existing ancestor is measured, because the bundle directory
+// itself does not exist yet when the precheck runs.
+func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
+	dir := path
+	for {
+		var st syscall.Statfs_t
+		err := syscall.Statfs(dir, &st)
+		if err == nil {
+			return int64(st.Bavail) * int64(st.Bsize), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return 0, err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return 0, err
+		}
+		dir = parent
+	}
 }

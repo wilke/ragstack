@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/user"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +73,25 @@ type EngineConfig struct {
 	// fixture so the mutation surface is exercised end to end without a host.
 	LoadFleet func() (*registry.Fleet, error)
 	SaveFleet func(*registry.Fleet) error
+	// The host programs and directories the real drivers use, all absolute.
+	// Empty takes drivers.NewReal's default for each. SetHostToolsFromEnv
+	// fills them from the CTL_* variables, and both the daemon and the
+	// --direct CLI call it, so the two build the same driver set.
+	Systemctl string
+	Git       string
+	Node      string
+	Npm       string
+	Apptainer string
+	Mirror    string
+	NpmCache  string
+	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
+	// Empty means Roots.RagRoot. Only a run against a SANDBOX root sets it —
+	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
+	// the scratch tree and the mount the units wait for is still /rag.
+	MountPoint string
+	// Owner is the account this process runs as, recorded as the owner of
+	// every tenant it creates. Empty means the current OS user.
+	Owner string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -90,8 +111,32 @@ const DefaultSecretsTTL = 15 * time.Minute
 // their TTL (age sealing to the backup recipients lands with PR-D's bundle
 // encryption).
 func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
+	eng, _, err := BuildEngineAndDrivers(cfg)
+	return eng, err
+}
+
+// BuildEngineAndDrivers is BuildEngine, and it also hands back the driver set
+// the engine was built with.
+//
+// One caller needs both: `ragstack-ctl selftest` submits jobs through the
+// engine and then asks the HOST what happened — is anything still listening on
+// the sandbox block, does systemd still know these units, is the quarantined
+// directory there. Those questions have to be put to the SAME host the jobs
+// ran against, or a selftest against `--fake-drivers` would be interrogating a
+// second, empty fixture and reporting it as the truth.
+//
+// It is a second constructor rather than an accessor on the engine because a
+// jobs.Engine that could hand out its drivers would be an engine any caller
+// could reach around; here the drivers are available only to whoever built the
+// engine in the first place.
+func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Owner == "" {
+		if u, err := user.Current(); err == nil {
+			cfg.Owner = u.Username
+		}
 	}
 	if cfg.SecretsTTL == 0 {
 		cfg.SecretsTTL = DefaultSecretsTTL
@@ -104,7 +149,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	}
 	store, err := jobs.NewStore(cfg.StorePath)
 	if err != nil {
-		return nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
+		return nil, nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
 	}
 	loadFleet := cfg.LoadFleet
 	if loadFleet == nil {
@@ -116,24 +161,62 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		saveFleet = func(f *registry.Fleet) error { return registry.Save(cfg.RegistryPath, f, by) }
 	}
 
+	// One redactor for the whole engine: the step logs the engine writes AND
+	// the program output the drivers capture pass through the same seeded
+	// table, so a secret cannot reach a log by arriving through the half that
+	// was built without it.
+	redactor := newEngineRedactor(cfg.Roots, loadFleet, cfg.Logger)
+
 	var drv jobs.Drivers
 	if cfg.FakeDrivers {
 		// The fake files driver honours the same approved roots the real one
 		// defaults to; with none, every write is a containment refusal.
-		files := map[string][]byte{}
-		if f, err := loadFleet(); err == nil {
-			files = fixtureFiles(cfg.Roots, f)
-		}
-		drv = drivers.NewFake(drivers.FakeOptions{
+		opts := drivers.FakeOptions{
 			Now:   cfg.Now,
-			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
-			Files: files,
-		})
+			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir, cfg.Roots.ReposDir},
+		}
+		if f, err := loadFleet(); err == nil {
+			// The whole in-memory host, seeded from the fixture fleet: the env
+			// files AND the stores those tenants' registry rows describe, so a
+			// verb that reads a collection list or moves a snapshot is running
+			// against a host that matches the registry it planned from.
+			opts = FixtureDrivers(cfg.Roots, f, cfg.Now)
+			opts.Roots = append(opts.Roots, cfg.Roots.ReposDir)
+			// The fixture host knows what a prepared artifact is: its worktree
+			// has node_modules (Build.UI refuses without them, exactly as the
+			// real driver does) and its sha resolves in the mirror. Without
+			// these, every `tenant create` against --fake-drivers would fail on
+			// a fact about the fixture rather than on anything the op did.
+			opts.Refs = map[string]string{}
+			for _, a := range f.Artifacts {
+				opts.Installed = append(opts.Installed, a.Worktree)
+				opts.Refs[a.Tag] = a.SHA
+			}
+		}
+		// The fake systemd has no PartOf: starting a target does not bind the
+		// api port, so the readiness gate of a create would time out. The next
+		// unallocated blocks' API ports are pre-answered instead.
+		opts.Listening = append(opts.Listening, fixtureListening(loadFleet)...)
+		drv = drivers.NewFake(opts)
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
-			Roots: cfg.Roots,
-			Fleet: loadFleet,
-			By:    fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host),
+			Roots:        cfg.Roots,
+			Fleet:        loadFleet,
+			By:           fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host),
+			SystemctlBin: cfg.Systemctl,
+			GitBin:       cfg.Git,
+			NodeBin:      cfg.Node,
+			NpmBin:       cfg.Npm,
+			Apptainer:    cfg.Apptainer,
+			Mirror:       cfg.Mirror,
+			NpmCache:     cfg.NpmCache,
+			Logger:       cfg.Logger,
+			// The drivers redact captured stderr with the same redactor the
+			// engine logs through: a `git` that quotes a URL with a token in
+			// it, or a `psql` that echoes a DSN, must not reach a job log
+			// just because it arrived as a program's output rather than as an
+			// op's string.
+			Redact: redactor.Redact,
 		})
 	}
 
@@ -165,13 +248,16 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		doctorFn = cfg.Doctor
 	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
-		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet}),
+		Store: store,
+		Ops: ops.NewRegistry(ops.Deps{
+			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
+			MountPoint: cfg.MountPoint, Owner: cfg.Owner,
+		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
 		Drivers:      drv,
-		Redactor:     newEngineRedactor(cfg.Roots, loadFleet, cfg.Logger),
+		Redactor:     redactor,
 		Doctor:       doctorFn,
 		Now:          cfg.Now,
 		Host:         cfg.Host,
@@ -179,8 +265,39 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		SecretsTTL:   cfg.SecretsTTL,
 		Logger:       cfg.Logger,
 	})
-	return eng, nil
+	return eng, drv, nil
 }
+
+// fixtureListening is the LISTEN set the fixture host starts with: the API
+// port of the next few port blocks.
+//
+// It exists because the fake systemd is a pair of sets and knows nothing about
+// `PartOf`: starting `ragstack-<t>.target` does not start the api unit that
+// binds the port, so `tenant create`'s readiness gate — which waits for the
+// API to answer, as it must on a real host — would wait out its whole timeout
+// against the fixture. Seeding the blocks a create would ALLOCATE is the
+// smallest honest way to say "on this fake host, a started tenant answers".
+//
+// It is deliberately the FUTURE blocks only. The fixture tenants' own ports are
+// left alone, so a plan that asserts nothing is listening on an existing
+// tenant's port still answers a fact about the fixture rather than this seed.
+func fixtureListening(loadFleet func() (*registry.Fleet, error)) []int {
+	f, err := loadFleet()
+	if err != nil {
+		return nil
+	}
+	next, _ := registry.Allocate(f)
+	out := make([]int, 0, fixtureFutureBlocks)
+	for i := 0; i < fixtureFutureBlocks; i++ {
+		out = append(out, paths.BlockAt(f.PortBase, f.PortStride, next+i).API)
+	}
+	return out
+}
+
+// fixtureFutureBlocks is how many unallocated blocks the fixture pre-answers
+// on. A conformance run creates a handful of tenants in one session; the limit
+// only has to cover that.
+const fixtureFutureBlocks = 32
 
 // engineRedactor is the jobs.Redactor the engine applies to step logs,
 // previews and audit args. Text goes through the value-seeded
@@ -393,4 +510,33 @@ func envQuote(v string) string {
 		return v
 	}
 	return "'" + strings.ReplaceAll(v, "'", "") + "'"
+}
+
+// SetHostToolsFromEnv fills cfg's host-program paths and directories from the
+// CTL_* environment.
+//
+// It is ONE function because the daemon and `--direct` must build the same
+// driver set: a host where `systemctl` lives somewhere unusual, or whose node
+// is not where the plan says, would otherwise work through one entry point and
+// refuse through the other, and the operator debugging that would have no
+// reason to suspect which process read which variable. An unset or blank
+// variable leaves the field empty, which is how a caller says "take
+// drivers.NewReal's default".
+func SetHostToolsFromEnv(cfg *EngineConfig) {
+	for _, f := range []struct {
+		env   string
+		field *string
+	}{
+		{EnvSystemctlBin, &cfg.Systemctl},
+		{EnvGitBin, &cfg.Git},
+		{EnvNodeBin, &cfg.Node},
+		{EnvNpmBin, &cfg.Npm},
+		{EnvApptainerBin, &cfg.Apptainer},
+		{EnvMirror, &cfg.Mirror},
+		{EnvNpmCache, &cfg.NpmCache},
+	} {
+		if v := strings.TrimSpace(os.Getenv(f.env)); v != "" {
+			*f.field = v
+		}
+	}
 }

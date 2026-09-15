@@ -24,3 +24,19 @@ ctl_log_format: json                       # text|json
 ctl_rate_limit_per_credential: 20          # ratelimit.DefaultPerCredential
 ctl_rate_limit_tarpit_at: 20               # ratelimit.DefaultTarpitAt
 ctl_rate_limit_tarpit_delay: 2s            # ratelimit.DefaultTarpitDelay; capped at ratelimit.MaxTarpitDelay (5s)
+
+# Host tools the PR-D drivers run (api.HostToolEnvKeys()). All absolute: the
+# drivers run argv with no PATH lookup and no shell, so a program that is not
+# where these say it is fails with the path in the message rather than with a
+# surprise binary.
+ctl_systemctl_bin: /usr/bin/systemctl
+ctl_git_bin: /usr/bin/git
+ctl_apptainer_bin: /usr/bin/apptainer
+# node: /rag/tools/node/current once `node_install` has unpacked the pinned
+# tarball. On coconut TODAY the only node is the operator's own (~/.local/bin,
+# v26.7), so a deployment that has not run the node block sets these two in
+# host_vars — see docs/runbooks/ctl-deploy.md.
+ctl_node_bin: "{{ rag_root }}/tools/node/current/bin/node"
+ctl_npm_bin: "{{ rag_root }}/tools/node/current/bin/npm"
+ctl_mirror: "{{ rag_root }}/repos/ragstack.git"
+ctl_npm_cache: "{{ rag_root }}/cache/npm"
