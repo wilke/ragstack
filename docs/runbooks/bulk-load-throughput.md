@@ -24,6 +24,15 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
    running worker's own command line for its `--image-dir` and install there.
    Getting this wrong is silent: the batch runs happily on the old image and the
    new flags simply never take effect.
+
+   **There is now more than one image dir.** Because the CWL names the image
+   bare, `--image-dir` is the only way to give one worker group a different
+   image, and the `ragstack-hackathon` group uses that: it resolves
+   `/scout/containers/ragstack-hackathon/ragstack-worker.sif` (built with the
+   `postgres` extra for that tenant's registry — see #563), while the `ragstack`
+   group still resolves `/scout/containers/ragstack-worker.sif`. Installing a
+   rebuild into one does nothing for the other. `ps -eo args | grep gowe-worker`
+   lists every group's `--image-dir`; update each one you mean to move.
 4. **Never overwrite the image in place while a load is running** — a container
    is mapped to that file. Stage it under a versioned name and swap at a batch
    boundary. (An atomic `mv` on the same filesystem preserves the running

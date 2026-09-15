@@ -12,7 +12,7 @@ From: python:3.12-slim-bookworm
 # CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
 # `/v1/embeddings`); none of them run a model locally, so torch/CUDA are
 # deliberately NOT installed. Deps are the ragstack package + its
-# [vector,pdf,text,tokenization,graph] extras:
+# [vector,pdf,text,tokenization,graph,postgres] extras:
 #   - qdrant-client  (vector store upserts)
 #   - pymupdf        (PDF text extraction — the `pdf` extra / PdfLoader)
 #   - elasticsearch  (BM25 text index)
@@ -21,6 +21,14 @@ From: python:3.12-slim-bookworm
 #                      graph replay path, write triples via it (#404);
 #                      extract_graph.py does not need it. The `<6` cap
 #                      lives in python/pyproject.toml only, not repeated here)
+#   - asyncpg        (the `postgres` extra). NOT for bulk data — for READING the
+#                      collection registry. ingest_shard.py resolves its target
+#                      through ragstack.ops.ingest_target, which reads the
+#                      registry named by COLLECTION_STORE_BACKEND in the
+#                      worker's env; a tenant on a postgres registry needs this
+#                      driver or the resolve raises and the step exits 2. The
+#                      sqlite backend hid this because it uses stdlib sqlite3
+#                      (2026-09-15: every hackathon ingest failed on it; #563).
 #   - httpx/pydantic/cryptography come in via the base ragstack dependency set.
 # `transformers` does not pull torch (torch is an optional backend); sentencepiece
 # + protobuf are added so slow-path tokenizers still load without torch present.
@@ -73,7 +81,18 @@ From: python:3.12-slim-bookworm
     # itself but gets the extra installed too since it's cheap and shares an
     # image with the scripts that do. Its `<6` cap also lives in pyproject.toml
     # only, same reasoning as ES.
-    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph]"
+    #
+    # The `postgres` extra (asyncpg) is required to READ the collection registry,
+    # not to move bulk data. ingest_shard.py resolves its target through
+    # ragstack.ops.ingest_target before it embeds anything, and that reads the
+    # registry named by COLLECTION_STORE_BACKEND in the worker's env. On a tenant
+    # whose registry is postgres, PostgresCollectionStore raises without asyncpg,
+    # _specs_or_raise turns it into a refusal, and the step exits 2 — after the
+    # extract step has already succeeded, so the job dies half-done. sqlite hid
+    # this from the day the registry read landed (#263) because
+    # SqliteCollectionStore uses stdlib sqlite3 — the gap only shows the first
+    # time a tenant on a postgres registry ingests (#563).
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres]"
 
     # Tokenizer robustness without torch: some HF slow tokenizers need these.
     python -m pip install sentencepiece protobuf
@@ -87,7 +106,7 @@ From: python:3.12-slim-bookworm
     # alone is not a substitute for the post-build check documented in
     # cwl/README.md (constructing Neo4jGraphStore also needs a reachable bolt
     # URL), but it does catch the driver being missing from the image (#404).
-    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j; print('build import ok')"
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j, asyncpg; print('build import ok')"
 
 %environment
     # Models (the HF tokenizer) are read from a bind-mounted HF_HOME at runtime,
