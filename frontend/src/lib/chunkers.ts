@@ -291,30 +291,81 @@ export function describeChunking(c: ChunkingSource): string {
 }
 
 /**
- * Pull the human-readable reason out of a FastAPI error body.
+ * The `detail` member of an error body, parsed — `undefined` when the response
+ * was not JSON (an nginx HTML page, a bare "Internal Server Error") or carried
+ * no `detail` at all.
  *
- * The client surfaces the raw response text, which is `{"detail": "..."}` for an
- * HTTPException and a nested list of objects for a 422 validation error. Return
- * a single readable sentence, or "" when the body isn't something worth showing
- * a user (so the caller can fall back to a generic message rather than dumping
- * JSON on screen).
+ * Split out of `apiDetail` because `detail` is deliberately UNTYPED in the
+ * contract (contracts/schemas/error.json): a string nearly everywhere, an array
+ * for FastAPI's own 422, and an OBJECT for the structured `owner_quota_exceeded`
+ * 409. Callers that need the object's fields — the numbers, or the `error`
+ * discriminator — must not each re-implement "is this body even JSON".
  */
-export function apiDetail(raw: string): string {
+function parsedDetail(raw: string): unknown {
   const text = (raw ?? "").trim();
-  if (!text.startsWith("{") && !text.startsWith("[")) return "";
+  if (!text.startsWith("{") && !text.startsWith("[")) return undefined;
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    return "";
+    return undefined;
   }
-  const detail = (body as { detail?: unknown })?.detail;
+  return (body as { detail?: unknown })?.detail;
+}
+
+/**
+ * The structured `detail` object, or null when this body's `detail` is a string,
+ * an array, absent, or the body isn't JSON.
+ *
+ * This is how a caller branches on the server's own machine-readable error CODE
+ * (`detail.error`) instead of pattern-matching its prose. Prose drifts — a
+ * reworded sentence silently reroutes the UI — while the code is part of the
+ * contract. Arrays are excluded on purpose: `typeof [] === "object"` in JS, and
+ * a 422's validation list is emphatically not a structured error object.
+ */
+export function apiDetailObject(raw: string): Record<string, unknown> | null {
+  const detail = parsedDetail(raw);
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return null;
+  return detail as Record<string, unknown>;
+}
+
+/**
+ * Pull the human-readable reason out of a FastAPI error body.
+ *
+ * The client surfaces the raw response text, which is `{"detail": "..."}` for an
+ * HTTPException, a nested list of objects for a 422 validation error, and an
+ * object with a `message` for the structured errors (today: the
+ * `owner_quota_exceeded` 409). Return a single readable sentence, or "" when the
+ * body isn't something worth showing a user (so the caller can fall back to a
+ * generic message rather than dumping JSON on screen).
+ *
+ * The object branch is the #555 fix: this used to fall through to "" for an
+ * object, so a 409 that explained itself perfectly well arrived at the UI as
+ * "no detail" and every caller printed its generic fallback instead. Never
+ * JSON.stringify the object as a consolation prize — that is how an internal
+ * setting name or a raw store error ends up in front of an attendee.
+ */
+export function apiDetail(raw: string): string {
+  const detail = parsedDetail(raw);
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const msgs = detail
       .map((d) => (typeof (d as { msg?: unknown })?.msg === "string" ? (d as { msg: string }).msg : ""))
       .filter(Boolean);
     if (msgs.length > 0) return msgs.join("; ");
+    return "";
+  }
+  if (detail !== null && typeof detail === "object") {
+    const obj = detail as Record<string, unknown>;
+    const message = obj.message;
+    if (typeof message === "string" && message.trim() !== "") return message.trim();
+    // No `message`: the error CODE is the only readable thing left, and a
+    // de-underscored code ("owner quota exceeded") is still a truthful summary,
+    // where "" would make the caller claim the server said nothing. An object
+    // with neither is the one case that really is unshowable — "" there is the
+    // documented "fall back to your generic sentence", not a dropped message.
+    const code = obj.error;
+    if (typeof code === "string" && code.trim() !== "") return code.trim().replace(/_/g, " ");
   }
   return "";
 }

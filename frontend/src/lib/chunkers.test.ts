@@ -3,6 +3,7 @@ import {
   CHUNK_METHODS,
   DEFAULT_CHUNK_FORM,
   apiDetail,
+  apiDetailObject,
   buildChunkConfig,
   describeChunking,
   isChunkMethod,
@@ -172,5 +173,82 @@ describe("apiDetail", () => {
     expect(apiDetail("{not json")).toBe("");
     expect(apiDetail("")).toBe("");
     expect(apiDetail('{"other": 1}')).toBe("");
+  });
+});
+
+// --- object-valued detail (#555) --------------------------------------------
+// `detail` is untyped in contracts/schemas/error.json: a string nearly
+// everywhere, an array for FastAPI's 422, an OBJECT for the
+// `owner_quota_exceeded` 409. The object shape used to fall through to "" and
+// the server's explanation was dropped on the floor.
+describe("apiDetail with a structured detail object", () => {
+  const QUOTA =
+    '{"detail": {"error": "owner_quota_exceeded", "owned": 10, "limit": 10,' +
+    ' "message": "already owns 10 collection(s), at the quota of 10' +
+    ' (MAX_COLLECTIONS_PER_OWNER); free one up (delete or transfer it away)' +
+    ' before acquiring another"}}';
+
+  it("prefers the object's own message", () => {
+    expect(apiDetail(QUOTA)).toContain("at the quota of 10");
+    expect(apiDetail(QUOTA)).not.toContain("{");
+  });
+
+  it("falls back to the error code when there is no message", () => {
+    // Not "" — the caller would then claim the server explained nothing — and
+    // not the JSON, which is never shown to a user.
+    const msg = apiDetail('{"detail": {"error": "owner_quota_exceeded", "owned": 3, "limit": 3}}');
+    expect(msg).toBe("owner quota exceeded");
+    expect(msg).not.toContain("{");
+    expect(msg).not.toContain("owned");
+  });
+
+  it("ignores a blank or non-string message and code", () => {
+    expect(apiDetail('{"detail": {"error": "x_failed", "message": "   "}}')).toBe("x failed");
+    expect(apiDetail('{"detail": {"error": "x_failed", "message": 17}}')).toBe("x failed");
+    // Neither field: genuinely nothing readable, so the caller's generic
+    // sentence is the right answer.
+    expect(apiDetail('{"detail": {"owned": 3, "limit": 3}}')).toBe("");
+    expect(apiDetail('{"detail": {"error": 7}}')).toBe("");
+    expect(apiDetail('{"detail": {}}')).toBe("");
+  });
+
+  it("leaves the string and array shapes exactly as they were", () => {
+    // These are the shapes every other caller relies on; the object branch must
+    // not have reordered or shadowed them.
+    expect(apiDetail('{"detail": "collection \'x\' already exists"}')).toBe(
+      "collection 'x' already exists",
+    );
+    expect(apiDetail('{"detail": [{"msg": "field required"}, {"msg": "not a number"}]}')).toBe(
+      "field required; not a number",
+    );
+    // An array whose entries carry no `msg` is still nothing to show — and an
+    // array must never be treated as a structured object (typeof [] is
+    // "object" in JS, which is exactly the trap here).
+    expect(apiDetail('{"detail": [{"loc": ["body"]}]}')).toBe("");
+    expect(apiDetail('{"detail": [{"message": "nope"}]}')).toBe("");
+  });
+
+  it("still returns empty for a malformed or null body", () => {
+    expect(apiDetail('{"detail": {"error": "owner_quota_exceeded"')).toBe(""); // truncated JSON
+    expect(apiDetail('{"detail": null}')).toBe("");
+    expect(apiDetail("null")).toBe("");
+    expect(apiDetail("<html>502 Bad Gateway</html>")).toBe("");
+  });
+});
+
+describe("apiDetailObject", () => {
+  it("returns the object for a structured detail", () => {
+    expect(
+      apiDetailObject('{"detail": {"error": "owner_quota_exceeded", "owned": 10, "limit": 10}}'),
+    ).toEqual({ error: "owner_quota_exceeded", owned: 10, limit: 10 });
+  });
+
+  it("returns null for every shape that is not a structured object", () => {
+    expect(apiDetailObject('{"detail": "plain sentence"}')).toBeNull();
+    expect(apiDetailObject('{"detail": [{"msg": "field required"}]}')).toBeNull();
+    expect(apiDetailObject('{"detail": null}')).toBeNull();
+    expect(apiDetailObject('{"other": 1}')).toBeNull();
+    expect(apiDetailObject("{not json")).toBeNull();
+    expect(apiDetailObject("")).toBeNull();
   });
 });

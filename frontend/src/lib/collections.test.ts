@@ -447,3 +447,98 @@ describe("gatewayApiBase derivation", () => {
     expect(derive("/gui/")).toBeNull();
   });
 });
+
+// --- the two create 409s (#555) ---------------------------------------------
+// POST /v1/collections answers 409 for an id collision AND for a full per-owner
+// quota. The UI told everyone to rename, which cannot fix a quota — the id was
+// never the problem. The discriminator is the server's own `detail.error`.
+describe("collectionCreateMessage: owner quota vs id collision", () => {
+  const quotaBody = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      detail: {
+        error: "owner_quota_exceeded",
+        owned: 10,
+        limit: 10,
+        message:
+          "already owns 10 collection(s), at the quota of 10 (MAX_COLLECTIONS_PER_OWNER); " +
+          "free one up (delete or transfer it away) before acquiring another",
+        ...over,
+      },
+    });
+
+  it("says they are at the limit, with the server's numbers", () => {
+    const msg = collectionCreateMessage(409, quotaBody());
+    expect(msg).toContain("10");
+    expect(msg).toMatch(/limit/i);
+    expect(msg).not.toContain("{");
+  });
+
+  it("names BOTH remedies and never suggests renaming", () => {
+    const msg = collectionCreateMessage(409, quotaBody());
+    expect(msg).toMatch(/delete/i);
+    expect(msg).toMatch(/transfer/i);
+    // The bug verbatim: this 409 must not reach the id-collision copy.
+    expect(msg).not.toMatch(/already exists/i);
+    expect(msg).not.toMatch(/pick another id/i);
+    expect(msg).not.toMatch(/rename/i);
+  });
+
+  it("does not imply a transfer button exists (#556: there is no UI for it)", () => {
+    expect(collectionCreateMessage(409, quotaBody())).toMatch(/no transfer control|API call/i);
+  });
+
+  it("still says they are at the limit when the numbers are missing or wrong-typed", () => {
+    // `detail` is typed `{}` in the contract, so owned/limit are not guaranteed
+    // numbers. Losing them must cost the counts, not the diagnosis.
+    for (const body of [
+      quotaBody({ owned: undefined, limit: undefined }),
+      quotaBody({ owned: "10", limit: "10" }),
+      quotaBody({ owned: 10, limit: null }),
+    ]) {
+      const msg = collectionCreateMessage(409, body);
+      expect(msg).toMatch(/at the limit/i);
+      expect(msg).toMatch(/delete/i);
+      expect(msg).toMatch(/transfer/i);
+      expect(msg).not.toMatch(/already exists/i);
+    }
+  });
+
+  it("pluralises the count honestly", () => {
+    expect(collectionCreateMessage(409, quotaBody({ owned: 1, limit: 1 }))).toContain(
+      "own 1 collection —",
+    );
+    expect(collectionCreateMessage(409, quotaBody({ owned: 2, limit: 2 }))).toContain(
+      "own 2 collections",
+    );
+  });
+
+  it("keeps today's message for an id collision", () => {
+    // Every 409 that is NOT the quota code, including one with a structured
+    // detail of some other kind, is the collision the UI already explained.
+    const collision = collectionCreateMessage(409, '{"detail":"collection \'x\' already exists"}');
+    expect(collision).toContain("already exists");
+    expect(collision).toContain("pick another id");
+    expect(collision).not.toMatch(/transfer/i);
+    expect(collectionCreateMessage(409, '{"detail":{"error":"something_else"}}')).toBe(collision);
+    expect(collectionCreateMessage(409, "")).toBe(collision);
+  });
+
+  it("falls back to the collision copy for a body it cannot parse", () => {
+    // Never guess quota from an unreadable body: a wrong "you are at your
+    // limit" would send someone off to delete an ingest for no reason.
+    expect(collectionCreateMessage(409, "<html>409</html>")).toContain("pick another id");
+    expect(collectionCreateMessage(409, '{"detail": {"error": "owner_quota_exceeded"')).toContain(
+      "pick another id",
+    );
+  });
+
+  it("does not match the quota on prose alone", () => {
+    // A string detail that happens to talk about quotas is still not the
+    // structured error — the code is the contract, the wording is not.
+    const msg = collectionCreateMessage(
+      409,
+      '{"detail":"already owns 10 collection(s), at the quota of 10"}',
+    );
+    expect(msg).toContain("pick another id");
+  });
+});
