@@ -154,6 +154,77 @@ def test_build_vector_store_uses_routed_url(monkeypatch):
     assert captured["collection"] == "ragstack_sfr_semantic"
 
 
+def test_es_url_for_routes_configured_index(monkeypatch):
+    # A routed INDEX resolves to its cluster; others fall back to elasticsearch_url.
+    monkeypatch.setattr(deps.settings, "elasticsearch_url", "http://localhost:9200")
+    monkeypatch.setattr(
+        deps.settings, "es_collection_routes",
+        {"ragstack_sfr_semantic": "http://localhost:9243"},
+    )
+    assert deps._es_url_for("ragstack_sfr_semantic") == "http://localhost:9243"
+    assert deps._es_url_for("ragstack_sfr_tok256") == "http://localhost:9200"
+
+
+def test_es_url_for_default_when_no_routes(monkeypatch):
+    # Empty routes → every index uses elasticsearch_url (single-instance, unchanged).
+    monkeypatch.setattr(deps.settings, "elasticsearch_url", "http://localhost:9200")
+    monkeypatch.setattr(deps.settings, "es_collection_routes", {})
+    assert deps._es_url_for("anything") == "http://localhost:9200"
+
+
+def test_build_text_index_uses_routed_url(monkeypatch):
+    # The routed cluster URL reaches the ES client, not the default elasticsearch_url
+    # — the text-leg mirror of test_build_vector_store_uses_routed_url.
+    import ragstack.stores.elasticsearch as esmod
+
+    captured: dict = {}
+
+    class _Stub:
+        def __init__(self, url, index, api_key=None, **kw):
+            captured["url"] = url
+            captured["index"] = index
+
+    monkeypatch.setattr(esmod, "ElasticsearchTextIndex", _Stub)
+    monkeypatch.setattr(deps.settings, "text_backend", "elasticsearch")
+    monkeypatch.setattr(deps.settings, "elasticsearch_url", "http://localhost:9200")
+    monkeypatch.setattr(
+        deps.settings, "es_collection_routes",
+        {"ragstack_sfr_semantic": "http://localhost:9243"},
+    )
+
+    deps._build_text_index_for("ragstack_sfr_semantic")
+    assert captured == {"url": "http://localhost:9243", "index": "ragstack_sfr_semantic"}
+    # An unrouted index on the same call path still gets the bare setting.
+    deps._build_text_index_for("ragstack_sfr_tok256")
+    assert captured["url"] == "http://localhost:9200"
+
+
+def test_build_text_index_routes_on_the_index_not_the_collection(monkeypatch):
+    """The route key is the ES index name.
+
+    `_build_text_index_for` is called with `spec.es_index()` (and with
+    `_es_index_name()` for the default), so a table keyed by the Qdrant
+    collection routes nothing here — the safe direction, but worth pinning: it
+    is the asymmetry between the two tables."""
+    import ragstack.stores.elasticsearch as esmod
+
+    captured: dict = {}
+
+    class _Stub:
+        def __init__(self, url, index, api_key=None, **kw):
+            captured["url"] = url
+
+    monkeypatch.setattr(esmod, "ElasticsearchTextIndex", _Stub)
+    monkeypatch.setattr(deps.settings, "text_backend", "elasticsearch")
+    monkeypatch.setattr(deps.settings, "elasticsearch_url", "http://localhost:9200")
+    monkeypatch.setattr(
+        deps.settings, "es_collection_routes",
+        {"ragstack_sfr_tok512": "http://localhost:9243"},  # a COLLECTION name
+    )
+    deps._build_text_index_for("shared_text_v1")  # the entry's actual index
+    assert captured["url"] == "http://localhost:9200"
+
+
 def test_es_index_follows_explicit_collection_when_default(monkeypatch):
     # With the explicit override set and elasticsearch_index left at its default,
     # the BM25 leg follows the pinned collection so hybrid reads one corpus.

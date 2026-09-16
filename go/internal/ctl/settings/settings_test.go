@@ -44,6 +44,10 @@ func TestClassify(t *testing.T) {
 		"DEFAULT_COLLECTION_ID": Public, "CHUNK_METHOD": Public, "CHUNK_SIZE": Public, "CHUNK_OVERLAP": Public,
 		"DOI_ENRICHMENT_ENABLED": Public, "DOI_ENRICHMENT_MAILTO": Public, "RETRIEVAL_DEMOTE_BOILERPLATE": Public,
 		"RETRIEVAL_MAX_PER_DOC": Public, "IDENTITY_KEY_CACHE_TTL_SECONDS": Public,
+		// The two per-collection routing tables are one class, together: both are
+		// JSON maps of physical-store-name -> instance URL, and a tenant that may
+		// set one over HTTP may set the other.
+		"QDRANT_COLLECTION_ROUTES": Public, "ES_COLLECTION_ROUTES": Public,
 		// public despite the pattern (reviewed exceptions)
 		"CHUNK_MAX_TOKENS": Public, "CHUNK_TOKEN_COUNTER": Public, "EMBEDDING_MAX_BATCH_TOKENS": Public,
 		"EMBEDDING_CHARS_PER_TOKEN": Public, "GOWE_RECEIPTS_OUTPUT_KEY": Public, "GOWE_SHARDS_INPUT_KEY": Public,

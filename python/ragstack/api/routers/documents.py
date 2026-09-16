@@ -76,7 +76,7 @@ from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
-from ragstack.store_routing import qdrant_url_for
+from ragstack.store_routing import es_url_for, qdrant_url_for
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
 from ragstack.workspace import (
     WorkspaceAuthError,
@@ -572,9 +572,15 @@ def _gowe_inputs(
     the submission carried no store URLs at all and the CWL's own defaults
     (``http://localhost:6333``/``:9200``) decided, which on this host is
     production: a dev-tenant ingest created a collection and an index on the
-    production instances. The URL for the vector store is the one **serving
-    this entry's collection**, honouring ``qdrant_collection_routes``; the text
-    index has no routing analogue, so ``elasticsearch_url`` goes bare.
+    production instances. Each URL is the one **serving this entry's own store
+    on that leg** — the vector leg through ``qdrant_collection_routes``, keyed
+    by the physical collection, and the text leg through
+    ``es_collection_routes``, keyed by the physical index (``es_index``, sent
+    just above). The worker must write where the API reads, so both legs
+    resolve through ``ragstack.store_routing``, the same functions the API's own
+    store construction uses; a bare ``elasticsearch_url`` here would send a
+    routed collection's chunks to the default cluster while the API queried the
+    routed one, which is #407 on the other leg.
 
     ``max_chunks`` (#291): the job's chunk cap, threaded to the worker's
     ``ingest_shard --max-chunks`` — the worker has the store URLs, so it
@@ -601,7 +607,7 @@ def _gowe_inputs(
         "collection": entry.collection,
         "es_index": entry.es_index(),
         "qdrant_url": qdrant_url_for(entry.collection, settings),
-        "es_url": settings.elasticsearch_url,
+        "es_url": es_url_for(entry.es_index(), settings),
     }
     if entry.model:
         inputs["embedding_model"] = entry.model

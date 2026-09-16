@@ -139,6 +139,11 @@ var public = set(
 	"EMBEDDING_MAX_CONCURRENCY",
 	"EMBEDDING_MODEL",
 	"EMBEDDING_MODEL_DIM",
+	// The twin of QDRANT_COLLECTION_ROUTES (below) and classified with it: a
+	// JSON index->URL table. Note that the bare QDRANT_URL / ELASTICSEARCH_URL
+	// are executable-surface while both routing tables are public; whichever
+	// class that becomes, the two twins belong in the same one.
+	"ES_COLLECTION_ROUTES",
 	"GOWE_OUTPUT_WAIT_TIMEOUT",
 	"GOWE_POLL_INTERVAL",
 	"GOWE_RECEIPTS_OUTPUT_KEY",

@@ -781,8 +781,12 @@ async def create_collection(
         # which is the same MAX_COLLECTIONS-blind DoS.
         #
         # Guarded by _shared_store_users for the same reason purge is: never
-        # destroy a store another entry is serving.
-        if not _shared_store_users(registry, built):
+        # destroy a store another entry is serving — and by _routed_store_legs
+        # for the same reason again, one scope out: a routed leg may already
+        # have held this store before this create touched it, and rolling it
+        # back would drop another deployment's data. An orphan store is the
+        # cheaper failure than someone else's deleted corpus.
+        if not _shared_store_users(registry, built) and not _routed_store_legs(built):
             for obj, op in (
                 (built.vector_store, "drop_collection"),
                 (built.text_index, "drop_index"),
@@ -1173,6 +1177,46 @@ def _shared_store_users(registry: CollectionRegistry, entry: CollectionEntry) ->
     )
 
 
+def _routed_store_legs(entry: CollectionEntry) -> list[str]:
+    """This entry's legs that live on a ROUTED instance, described for an operator.
+
+    ``_shared_store_users`` one scope out. That guard answers "does another id in
+    THIS registry serve this store"; a routing table answers the same question
+    across deployments, and answers it "assume yes": ``QDRANT_COLLECTION_ROUTES``
+    and ``ES_COLLECTION_ROUTES`` exist precisely to point a collection at an
+    instance this deployment does not own — a second Qdrant process holding a
+    corpus several tenants read, a cluster that already had the index. A route is
+    an operator's statement that the store is somewhere deliberate; nothing in
+    the registry records who else is reading it, so a purge cannot be shown to be
+    safe and must not be guessed at. The blast radius is the same as #228's and
+    strictly larger: another tenant's corpus, unrecoverable from any registry
+    here.
+
+    Note what this does NOT refuse: dropping the registry row (``purge=false``).
+    That is exactly how a routed collection is meant to be released — the binding
+    goes, the shared store stays. This mirrors ``_shared_store_users``: a routed
+    leg makes the entry "shared", so it takes the shared branch of BOTH delete
+    guards and the pair stays total (see the comment at the call site).
+
+    Keyed the way each table is keyed — the physical collection for Qdrant, the
+    physical index for ES — never the registry id.
+    """
+    legs: list[str] = []
+    qroutes = getattr(settings, "qdrant_collection_routes", None) or {}
+    eroutes = getattr(settings, "es_collection_routes", None) or {}
+    if entry.collection in qroutes:
+        legs.append(
+            f"its Qdrant collection {entry.collection!r} is routed to "
+            f"{qroutes[entry.collection]} by QDRANT_COLLECTION_ROUTES"
+        )
+    if entry.es_index() in eroutes:
+        legs.append(
+            f"its Elasticsearch index {entry.es_index()!r} is routed to "
+            f"{eroutes[entry.es_index()]} by ES_COLLECTION_ROUTES"
+        )
+    return legs
+
+
 async def _purge_physical(
     entry: CollectionEntry, report: PurgeReport, *, graph_store: Any = None,
 ) -> None:
@@ -1247,6 +1291,14 @@ async def delete_collection(
     data is not this caller's to destroy (owning a registry id is not owning the
     physical store it may share content-addressed with others).
 
+    It is refused (409) for the same reason when either leg is ROUTED — the
+    Qdrant collection through ``QDRANT_COLLECTION_ROUTES`` or the ES index
+    through ``ES_COLLECTION_ROUTES``. A route names an instance this deployment
+    does not own, whose other readers this registry cannot enumerate, so the
+    purge cannot be shown to be safe. ``purge=false`` still works and is the
+    intended way to release a routed collection: the binding goes, the shared
+    store stays.
+
     Deleting also revokes every ACL row of the collection (the owner row and all
     shares, softly — audit history survives), so a later collection reusing the
     same id starts with a clean slate instead of inheriting the deleted one's
@@ -1306,6 +1358,12 @@ async def delete_collection(
     # entry (one leg claimed, one not) refused BOTH ways and therefore
     # undeletable. Keep these in lockstep.
     #
+    # A ROUTED leg counts as shared for both guards, for the same reason and with
+    # the same totality requirement: routing points a leg at an instance this
+    # deployment does not own, so purge is refused — but the unregister branch
+    # must then ACCEPT it, or a routed collection would be refused both ways and
+    # become undeletable. Hence `shared` below, used by both tests.
+    #
     # Between them they make ADR-0002 decision 5 — "a physical index has exactly
     # one registry entry" — TOTAL. #279 enforced the "not two" half at registry
     # build. This is the "not zero" half: unregistering the last entry for a
@@ -1313,6 +1371,8 @@ async def delete_collection(
     # deps.py already refuses that state at startup ("serving it under NO id is
     # worse"); the delete path used to manufacture it at runtime, on request.
     sharers = _shared_store_users(registry, entry)
+    routed = _routed_store_legs(entry)
+    shared = bool(sharers) or bool(routed)
     if purge and sharers:
         raise HTTPException(
             409,
@@ -1321,7 +1381,19 @@ async def delete_collection(
             f"and purging would destroy their data too. Unregister it instead "
             f"(purge=false), or purge the other collections first.",
         )
-    if not purge and not sharers:
+    if purge and routed:
+        raise HTTPException(
+            409,
+            f"cannot purge collection {collection_id!r}: {'; '.join(routed)}. A "
+            "routed store lives on an instance this deployment does not own and "
+            "may be read by other deployments, none of which this registry can "
+            "see — so a purge here could destroy a corpus that is not this "
+            "collection's to destroy. Unregister it instead (purge=false), which "
+            "drops the registry entry and leaves the store; to really delete the "
+            "data, remove the route first and purge on the deployment that owns "
+            "the instance.",
+        )
+    if not purge and not shared:
         raise HTTPException(
             409,
             f"cannot unregister collection {collection_id!r} without purging: no "

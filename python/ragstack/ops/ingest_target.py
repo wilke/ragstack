@@ -24,8 +24,9 @@ cap and the owner row all come from the normal path.
 
 Everything physical then comes from the registry entry rather than the command
 line: the vector collection, its Qdrant instance (a routed collection lives
-elsewhere), and the ES index. The CLI's own build parameters are *checked*
-against the entry, never used to name anything.
+elsewhere), the ES index, and that index's Elasticsearch cluster (a routed index
+likewise lives elsewhere). The CLI's own build parameters are *checked* against
+the entry, never used to name anything.
 
 WHICH registry (#563). All of the above presumes the process knows where the
 registry is, and on the GoWe ingest plane it did not: the worker read
@@ -65,6 +66,12 @@ class IngestTarget:
     qdrant_url: str
     collection: str  # physical vector store name — from the spec, not the CLI
     es_index: str
+    # The cluster serving `es_index`, resolved the same way `qdrant_url` resolves
+    # the instance serving `collection`: a route wins over the command line, and
+    # otherwise the command line wins over the ambient setting. Defaulted so a
+    # caller that constructs a target positionally (tests, older callers) is
+    # unchanged; `target_from_spec` always fills it.
+    es_url: str = ""
 
     @property
     def model(self) -> str:
@@ -484,8 +491,27 @@ def _qdrant_url_for(collection: str, settings: Any, override: str = "") -> str:
     return override or settings.qdrant_url
 
 
+def _es_url_for(index: str, settings: Any, override: str = "") -> str:
+    """The Elasticsearch cluster serving ``index``.
+
+    :func:`_qdrant_url_for` one leg over, and for the same reason: a **routed**
+    index already lives on another cluster, so the route wins over ``--es-url``
+    — writing the text leg to the default cluster would build a second,
+    invisible half of a corpus whose vectors are elsewhere, and leave the API
+    reading the routed index it never filled. Unrouted, the operator's explicit
+    ``--es-url`` beats the ambient setting.
+
+    Keyed by the physical INDEX name (``spec.es_index()``), not the collection
+    id — see ``config.es_collection_routes``.
+    """
+    routes = getattr(settings, "es_collection_routes", None) or {}
+    if index in routes:
+        return routes[index]
+    return override or settings.elasticsearch_url
+
+
 def target_from_spec(
-    spec: Any, settings: Any | None = None, *, qdrant_url: str = ""
+    spec: Any, settings: Any | None = None, *, qdrant_url: str = "", es_url: str = ""
 ) -> IngestTarget:
     s = settings or _settings()
     return IngestTarget(
@@ -494,6 +520,7 @@ def target_from_spec(
         qdrant_url=_qdrant_url_for(spec.collection, s, qdrant_url),
         collection=spec.collection,
         es_index=spec.es_index(),
+        es_url=_es_url_for(spec.es_index(), s, es_url),
     )
 
 
@@ -553,6 +580,7 @@ def resolve(
     settings: Any | None = None,
     specs: list[Any] | None = None,
     qdrant_url: str = "",
+    es_url: str = "",
     registry: str = "",
 ) -> IngestTarget:
     """Resolve an id to its registry entry, or refuse.
@@ -569,7 +597,7 @@ def resolve(
     entries = _specs_or_raise(s, specs)
     for spec in entries:
         if spec.id == collection_id:
-            return target_from_spec(spec, s, qdrant_url=qdrant_url)
+            return target_from_spec(spec, s, qdrant_url=qdrant_url, es_url=es_url)
     known = ", ".join(sorted(e.id for e in entries)) or "<registry is empty>"
     raise TargetError(
         f"collection {collection_id!r} is not in the registry "
@@ -591,6 +619,7 @@ def resolve_by_store_name(
     settings: Any | None = None,
     specs: list[Any] | None = None,
     qdrant_url: str = "",
+    es_url: str = "",
     registry: str = "",
 ) -> IngestTarget:
     """Resolve a *physical* store name to the registry entry that claims it.
@@ -608,7 +637,7 @@ def resolve_by_store_name(
     entries = _specs_or_raise(s, specs)
     matches = [e for e in entries if e.collection == name]
     if len(matches) == 1:
-        return target_from_spec(matches[0], s, qdrant_url=qdrant_url)
+        return target_from_spec(matches[0], s, qdrant_url=qdrant_url, es_url=es_url)
     if len(matches) > 1:
         # ADR-0002 decision 5 broken the other way; the API refuses to start in
         # this state, so do not guess which entry's ACLs govern the write.
@@ -739,6 +768,7 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
     cid = getattr(args, "collection_id", "") or ""
     physical = getattr(args, "collection", "") or ""
     url = getattr(args, "qdrant_url", "") or ""
+    esurl = getattr(args, "es_url", "") or ""
     # Resolve the NAMED registry once, here, so every path below — including the
     # re-resolve after --create-via-api — consults the same one, and so an
     # unconfigured name is refused before the registry is read rather than after
@@ -748,7 +778,9 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
     if not cid:
         if physical:
             return _checked(
-                resolve_by_store_name(physical, settings=s, qdrant_url=url), args
+                resolve_by_store_name(physical, settings=s, qdrant_url=url,
+                                     es_url=esurl),
+                args,
             )
         raise TargetError(
             "--collection-id is required: a bulk load writes into a store named "
@@ -758,7 +790,7 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
         )
 
     try:
-        target = resolve(cid, settings=s, qdrant_url=url)
+        target = resolve(cid, settings=s, qdrant_url=url, es_url=esurl)
     except TargetError:
         if not getattr(args, "create_via_api", ""):
             raise
@@ -775,7 +807,7 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
     # durable entry is what every later reader sees, and if the API wrote to a
     # different registry than this CLI reads, that is exactly the misconfiguration
     # worth failing on here instead of after a 500k-row load.
-    return _checked(resolve(cid, settings=s, qdrant_url=url), args)
+    return _checked(resolve(cid, settings=s, qdrant_url=url, es_url=esurl), args)
 
 
 def resolve_or_exit(args: Any, *, settings: Any | None = None, **build: Any) -> IngestTarget:

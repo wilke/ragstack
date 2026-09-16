@@ -62,7 +62,7 @@ from ragstack.rewriting.rewriters import (
     PassthroughRewriter,
 )
 from ragstack.scoring.scorers import RRFScorer, SidecarReranker
-from ragstack.store_routing import qdrant_url_for
+from ragstack.store_routing import es_url_for, qdrant_url_for
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 from ragstack.workspace import WorkspaceClient
@@ -82,6 +82,18 @@ def _qdrant_url_for(collection: str) -> str:
     Reads this module's ``settings`` global on purpose — ``ops.store_inventory``
     swaps it to audit another deployment's config through the serving code."""
     return qdrant_url_for(collection, settings)
+
+
+def _es_url_for(index: str) -> str:
+    """The Elasticsearch base URL serving ``index`` — see
+    :func:`ragstack.store_routing.es_url_for`, which holds the logic.
+
+    The text leg's twin of :func:`_qdrant_url_for`, and a delegate for the same
+    reasons: one implementation, and a name at this path that
+    ``ops/store_inventory.py`` can call under swapped settings to answer for
+    ANOTHER deployment. Keyed by the physical index name, not the collection id.
+    """
+    return es_url_for(index, settings)
 
 
 def _derived_collection_name() -> str:
@@ -880,7 +892,12 @@ def _es_index_name() -> str:
 
 def _build_text_index_for(index: str):
     """The text index bound to a specific ES index name — the shared core of the
-    default builder and each registry collection's BM25 leg."""
+    default builder and each registry collection's BM25 leg.
+
+    The cluster is resolved from the index through ``es_collection_routes``
+    (:func:`_es_url_for`), the mirror of what ``_build_vector_store`` does with
+    ``qdrant_collection_routes``. Empty routes → ``elasticsearch_url``, so a
+    single-instance deployment builds exactly the client it built before."""
     if settings.text_backend == "elasticsearch":
         try:
             from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -892,8 +909,11 @@ def _build_text_index_for(index: str):
                 ) from e
             log.warning("elasticsearch client not installed — using in-memory text index")
             return InMemoryTextIndex()
+        url = _es_url_for(index)
+        if url != settings.elasticsearch_url:
+            log.info("elasticsearch: index %r routed to instance %s", index, url)
         return ElasticsearchTextIndex(
-            settings.elasticsearch_url,
+            url,
             index,
             settings.elasticsearch_api_key or None,
             timeout=settings.elasticsearch_timeout,
@@ -1416,6 +1436,16 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     except ValueError as e:
         log.warning("collection_restore_inputs_json is invalid (%s); ignoring", e)
         extra = {}
+    # Deployment-wide defaults, not per-collection targets: this gate is built
+    # once at startup, before any record exists, and `inputs_for` adds only the
+    # record's identity. So NEITHER leg is routed here — `qdrant_url` has never
+    # honoured `qdrant_collection_routes` on this path and `es_url` does not
+    # honour `es_collection_routes` either. Restoring a ROUTED collection
+    # therefore still aims the worker at the default instances; fixing it means
+    # resolving the URLs from the record inside `CollectionRestorer.inputs_for`,
+    # for both legs at once, and is deliberately left out of the ES-routing
+    # change rather than fixed for one leg only. `COLLECTION_RESTORE_INPUTS_JSON`
+    # is the operator override in the meantime (it wins the merge below).
     static_inputs: dict[str, Any] = {
         "qdrant_url": settings.qdrant_url,
         "es_url": settings.elasticsearch_url,

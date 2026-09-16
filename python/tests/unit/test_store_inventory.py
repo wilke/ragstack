@@ -158,6 +158,67 @@ def test_routed_collection_is_claimed_on_its_own_instance(tmp_path):
     assert claim.key.backend == si.canonical_url("http://localhost:6343")
 
 
+def test_routed_index_is_claimed_on_its_own_cluster(tmp_path):
+    """The text leg's twin. A StoreKey is (url, name), so a routed index claimed
+    under the DEFAULT cluster is two errors at once: a MISSING row for the
+    cluster that does not hold it, and — the dangerous one — an UNCLAIMED row
+    for the cluster that does, in a report whose output is an input to deletion.
+
+    Note the route is keyed on the INDEX (`text_b`), not the collection
+    (`store_b`), and the vector leg is untouched by it."""
+    reg = _write_registry(tmp_path, [
+        {"id": "b", "collection": "store_b", "text_index": "text_b",
+         "embedding_model_dim": 4},
+    ])
+    dep = si.claims_for("routed-es", "x.env", {
+        "QDRANT_URL": "http://localhost:6333",
+        "ELASTICSEARCH_URL": "http://localhost:9200",
+        "ES_COLLECTION_ROUTES": '{"text_b": "http://localhost:9243"}',
+        "COLLECTIONS_FILE": str(reg),
+    })
+    assert dep.errors == []
+    text = next(c for c in dep.claims if c.leg == si.TEXT and c.key.name == "text_b")
+    assert text.key.backend == si.canonical_url("http://localhost:9243")
+    vector = next(c for c in dep.claims if c.leg == si.VECTOR)
+    assert vector.key.backend == si.canonical_url("http://localhost:6333")
+    # The deployment's reported default cluster is unchanged — a per-index route
+    # moves one claim, it does not redefine the deployment.
+    assert dep.es_url == si.canonical_url("http://localhost:9200")
+
+
+def test_a_route_for_another_index_leaves_this_claim_on_the_default_cluster(tmp_path):
+    """Discriminator for the test above, matching the Qdrant side."""
+    reg = _write_registry(tmp_path, [
+        {"id": "b", "collection": "store_b", "embedding_model_dim": 4},
+    ])
+    dep = si.claims_for("routed-es", "x.env", {
+        "QDRANT_URL": "http://localhost:6333",
+        "ELASTICSEARCH_URL": "http://localhost:9200",
+        "ES_COLLECTION_ROUTES": '{"some_other": "http://localhost:9243"}',
+        "COLLECTIONS_FILE": str(reg),
+    })
+    assert dep.errors == []
+    text = next(c for c in dep.claims if c.leg == si.TEXT)
+    assert text.key.backend == si.canonical_url("http://localhost:9200")
+
+
+def test_the_pinned_default_text_leg_is_routed_too(tmp_path):
+    """The settings-default claim, not just the registry rows: a deployment with
+    no collections file at all still names one index, and a route on it moves
+    that claim the same way."""
+    dep = si.claims_for("lucid", "x.env", {
+        "QDRANT_URL": "http://localhost:6343",
+        "QDRANT_COLLECTION_EXPLICIT": "lucid_sfr_tok256",
+        "ELASTICSEARCH_URL": "http://localhost:9200",
+        "ES_COLLECTION_ROUTES": '{"lucid_sfr_tok256": "http://localhost:9243"}',
+    })
+    assert dep.errors == []
+    text = next(c for c in dep.claims if c.leg == si.TEXT)
+    assert (text.key.name, text.key.backend) == (
+        "lucid_sfr_tok256", si.canonical_url("http://localhost:9243")
+    )
+
+
 def test_broken_registry_is_reported_not_swallowed():
     dep = si.claims_for("bad", "x.env", {
         "QDRANT_URL": "http://localhost:6333",
