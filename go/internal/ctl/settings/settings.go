@@ -70,6 +70,12 @@ var executableSurface = set(
 	"INGEST_ROOT", "COLLECTION_MANIFEST_DIR",
 	"USER_STORE_PATH", "JOB_STORE_PATH", "COLLECTION_STORE_PATH", "GRADING_STORE_PATH",
 	"COLLECTIONS_FILE", "MODELS_REGISTRY_FILE", "DOI_ENRICHMENT_CACHE_DIR",
+	// The two per-collection routing tables (JSON physical-store-name -> instance
+	// URL) decide where the process connects for that collection, exactly as the
+	// bare QDRANT_URL / ELASTICSEARCH_URL do for the tenant, so they are CLI-only
+	// like those: an HTTP caller must not be able to repoint a corpus at another
+	// instance. Twins, one class, together.
+	"QDRANT_COLLECTION_ROUTES", "ES_COLLECTION_ROUTES",
 	// PROMPT_TEMPLATES_FILE names a YAML/JSON file the API LOADS AND VALIDATES
 	// AT STARTUP (ADR-0008): its records become the prompts the tenant answers
 	// with. That is the same class as COLLECTIONS_FILE and the CWL paths — a
@@ -139,11 +145,6 @@ var public = set(
 	"EMBEDDING_MAX_CONCURRENCY",
 	"EMBEDDING_MODEL",
 	"EMBEDDING_MODEL_DIM",
-	// The twin of QDRANT_COLLECTION_ROUTES (below) and classified with it: a
-	// JSON index->URL table. Note that the bare QDRANT_URL / ELASTICSEARCH_URL
-	// are executable-surface while both routing tables are public; whichever
-	// class that becomes, the two twins belong in the same one.
-	"ES_COLLECTION_ROUTES",
 	"GOWE_OUTPUT_WAIT_TIMEOUT",
 	"GOWE_POLL_INTERVAL",
 	"GOWE_RECEIPTS_OUTPUT_KEY",
@@ -204,7 +205,6 @@ var public = set(
 	"PUBLISHER_PROFILE",
 	"QDRANT_COLLECTION",
 	"QDRANT_COLLECTION_EXPLICIT",
-	"QDRANT_COLLECTION_ROUTES",
 	"QDRANT_POSTMORTEM_PROBE",
 	"QDRANT_TIMEOUT",
 	"QDRANT_UPSERT_BATCH_SIZE",
