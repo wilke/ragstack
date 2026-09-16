@@ -54,6 +54,10 @@ precedence rule.
 |---|---|
 | `asm-semantic` | The American Society for Microbiology journal corpus, semantically chunked — **6,718,269 passages**. Shared read-only with everyone, so any BV-BRC login can search it. You cannot add to it or change it. |
 
+`asm-semantic` is also this tenant's **default collection**: ask a question
+without choosing one and that is what gets searched, in the UI and over the API
+alike. You only need to name a collection when you want a different one.
+
 So you can skip straight to asking questions — steps 2 and 3 below are only needed
 when you want to search **your own** documents. Anything you create is private to
 you until you share it, and lives alongside the shared corpus rather than in it.
