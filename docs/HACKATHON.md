@@ -64,13 +64,19 @@ cannot add to them or change them.
 > and those papers are in the index. Check the title and the DOI before you rely
 > on a passage. `asm-semantic` had no retraction screening at all.
 
-`asm-semantic` is also this tenant's **default collection**: ask a question
-without choosing one and that is what gets searched, in the UI and over the API
-alike. You only need to name a collection when you want a different one.
+**`open-access` is this tenant's default collection.** Ask a question without
+choosing one and that is what gets searched, in the UI and over the API alike —
+the 47.6M-passage PMC corpus, not ASM. To search the ASM journals instead, pick
+`asm-semantic` in the collection chip row, or name it explicitly over the API:
 
-So you can skip straight to asking questions — steps 2 and 3 below are only needed
-when you want to search **your own** documents. Anything you create is private to
-you until you share it, and lives alongside the shared corpus rather than in it.
+```json
+{"query": "...", "collection": "asm-semantic"}
+```
+
+Either way you can skip straight to asking questions — steps 2 and 3 below are
+only needed when you want to search **your own** documents. Anything you create
+is private to you until you share it, and lives alongside the shared corpora
+rather than in them.
 
 ## This tenant's limits
 
@@ -95,7 +101,8 @@ you hit a limit, the server's refusal tells you which one.
 
 ## The six things you came to do
 
-Steps 2 and 3 are optional — `asm-semantic` is already there to query.
+Steps 2 and 3 are optional — both shared corpora are already there to query,
+and `open-access` is what you get if you do not pick one.
 
 | | In the browser | From the API |
 |---|---|---|
