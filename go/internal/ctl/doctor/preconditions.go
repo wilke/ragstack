@@ -139,11 +139,11 @@ var tolerates = map[string][]string{
 	// on its own merits today; the row is here so that an op-scoped raise
 	// elsewhere can never reach the op that repairs it — the same lesson
 	// env-normalize taught.)
-	"adopt": {StoresUnconfirmed},
-	"start":         {PortNotListening},
-	"restart":       {PortNotListening},
-	"stop":          {PortNotListening},
-	"decommission":  {PortNotListening},
+	"adopt":        {StoresUnconfirmed},
+	"start":        {PortNotListening},
+	"restart":      {PortNotListening},
+	"stop":         {PortNotListening},
+	"decommission": {PortNotListening},
 }
 
 // handoverPreconditions is the handover row, per DESTINATION supervisor.

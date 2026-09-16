@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -85,6 +86,16 @@ func (r *runner) syncJobSteps() {
 
 func (r *runner) run(s jobs.Step) (string, error) {
 	return s.Run(context.Background(), r.ctx(s))
+}
+
+// rollback runs one step's Rollback against the SAME step record its Run used,
+// which is what the engine does: the external IDs a Run checkpointed are how
+// its Rollback finds the thing to undo.
+func (r *runner) rollback(s jobs.Step) (string, error) {
+	if s.Rollback == nil {
+		return "", fmt.Errorf("step %d (%s) has no rollback", s.Plan.N, s.Plan.Title)
+	}
+	return s.Rollback(context.Background(), r.ctx(s))
 }
 
 // runAll runs every step of a plan and fails on the first error.

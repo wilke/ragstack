@@ -126,12 +126,30 @@ func usage() {
 
   tenant start|restart <name> [--only api,ui,qdrant,es] [--force]
   tenant stop <name> [--only …] [--keep-enabled] [--force]
-  tenant backup <name> [--fence] [--tar]    only a FENCED bundle can be verified
+  tenant backup <name> [--fence] [--tar] [--scope config,state]
+                                            only a FENCED bundle can be verified; --scope
+                                            config,state is the LIGHT bundle (config + sealed
+                                            secrets + sqlite state + the rollback descriptor,
+                                            no store snapshots, no fence, seconds)
   tenant restore <name> --from <bundle-id> --as <fresh-tenant>
   tenant decommission <name>
                                             the tenant operations. Each posts one
                                             op_request to the daemon and is answered
                                             with a Plan (--dry-run) or a Job.
+
+  tenant set-ui-mode <name> static|external [--ui-port P]
+                                            how the UI is served. static BUILDS it from the
+                                            tenant's worktree, installs <data_dir>/ui/dist,
+                                            stops that tenant's Vite server by port AND
+                                            identity, publishes a gateway generation and
+                                            proves GET /ragstack/<name>/ui/ = 200. external
+                                            is registry-only: nothing is built or stopped.
+  tenant set-bind <name> 127.0.0.1|0.0.0.0  the address the API binds. Registry only
+                                            (api.bind is where both launch paths read it);
+                                            effective at the next restart.
+                                            Both are CLI-only: --direct is implied and
+                                            --server is refused. They are the ops run on a
+                                            tenant BEFORE its handover.
 
   key mint <tenant> <label> --role admin|user [--restart]
   key revoke <tenant> <id> [--restart]
@@ -1035,6 +1053,8 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission <name> [op args]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")
 		return exitUsage
 	}
 	// The operation verbs take the op envelope (--dry-run/--yes/--wait/…) and
@@ -1053,6 +1073,15 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	// until PR-E's handover. See rebase.go.
 	if args[0] == "rebase-worktree" {
 		return cmdTenantRebaseWorktree(args[1:], registryPath, ragRoot)
+	}
+	// The PR-E preparation ops. They ARE jobs (submitOp), but CLI-only ones:
+	// the daemon has no route for either, so --direct is implied and --server
+	// is refused. See prepare.go.
+	switch args[0] {
+	case "set-ui-mode":
+		return cmdTenantSetUIMode(args[1:], registryPath, ragRoot, jsonOut)
+	case "set-bind":
+		return cmdTenantSetBind(args[1:], registryPath, ragRoot, jsonOut)
 	}
 	if tenantOpVerbs[args[0]] {
 		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)

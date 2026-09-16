@@ -35,7 +35,19 @@ func tenantOpUsage(verb string) int {
 	case "stop":
 		return usageErr("usage: ragstack-ctl tenant stop <name> [--only api,ui,qdrant,es] [--keep-enabled] [--force] %s", opFlagSummary)
 	case "backup":
-		return usageErr("usage: ragstack-ctl tenant backup <name> [--fence] [--tar] %s", opFlagSummary)
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant backup <name> [--fence] [--tar] [--scope config,state] %s
+
+  --fence   stop the API for the duration so the stores hold still. Only a
+            fenced bundle can be verified and count toward a prerequisite.
+  --scope   which legs to capture; the default is all of them. `+"`config,state`"+`
+            is the LIGHT bundle: the config allowlist, the sealed secret files,
+            the SQLite state (VACUUM INTO, as the full bundle does), the
+            rendered units, the registry row and the rollback descriptor — no
+            store snapshots, no fence, and the API keeps serving. It runs in
+            seconds and is the safety net a handover takes; it is never a
+            restore prerequisite. --fence with a light scope is refused.
+`, opFlagSummary)
+		return exitUsage
 	case "restore":
 		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant restore <source> --from <bundle-id> --as <fresh-tenant> %s
 
@@ -66,10 +78,12 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 
 	var (
 		only                multiFlag
+		scope               multiFlag
 		force, keepEnabled  *bool
 		fence, tar          *bool
 		from, as            *string
 		wantsOnly, wantsFrm bool
+		wantsScope          bool
 	)
 	switch verb {
 	case "start", "restart", "stop":
@@ -82,6 +96,8 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 	case "backup":
 		fence = fs.Bool("fence", false, "fenced backup: gateway read-only, API stopped, no running jobs — only fenced bundles verify")
 		tar = fs.Bool("tar", false, "tar the bundle")
+		wantsScope = true
+		fs.Var(&scope, "scope", "which legs to capture: config, state, stores (repeatable or a comma list; default all three)")
 	case "restore":
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
@@ -114,6 +130,9 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 	}
 	if tar != nil && set["tar"] {
 		opArgs["tar"] = *tar
+	}
+	if wantsScope && len(scope) > 0 {
+		opArgs["scope"] = []string(scope)
 	}
 	if wantsFrm {
 		if *from == "" || *as == "" {
