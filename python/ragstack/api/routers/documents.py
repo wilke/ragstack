@@ -1,8 +1,10 @@
 """Document management endpoints."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -1075,21 +1077,88 @@ async def _sniff_upload(upload: UploadFile) -> str:
     return kind
 
 
+#: Typographic characters that publishers routinely put in PDF filenames, mapped
+#: to the ASCII they stand in for. Folding these keeps the name readable —
+#: ``N\u2010glycosylation`` becomes ``N-glycosylation``, not ``Nglycosylation``.
+_ASCII_LOOKALIKES = {
+    0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2015: "-",
+    0x2212: "-",
+    0x2018: "'", 0x2019: "'", 0x201A: "'", 0x201B: "'",
+    0x201C: "'", 0x201D: "'", 0x201E: "'", 0x201F: "'",
+    0x00A0: " ", 0x2007: " ", 0x2008: " ", 0x2009: " ", 0x200A: " ", 0x202F: " ",
+    0x200B: "", 0x200C: "", 0x200D: "", 0x00AD: "", 0xFEFF: "",
+    0x2026: "...",
+}
+
+#: Characters that are ASCII but change the meaning of the ``ws://`` URI the
+#: name ends up inside. ``#`` matters most: item ids are ``<source>#<index>``
+#: (``…/sources/a.pdf#0``), so a ``#`` in the filename splits the id in the
+#: wrong place.
+_URI_HOSTILE = str.maketrans({"#": "_", "%": "_", "?": "_"})
+
+
+def _ascii_fold(name: str) -> str:
+    r"""Reduce *name* to ASCII, keeping it readable.
+
+    BV-BRC's Workspace cannot address a path with a non-ASCII component at all:
+    ``get_download_url`` raises ``[-32603] Can't escape \x{2010}, try
+    uri_escape_utf8() instead``. So a publisher PDF named with a typographic
+    hyphen — ``The FEBS Journal - 2021 - Pralow - Comprehensive
+    N\u2010glycosylation analysis.pdf`` — cannot be pre-staged, and the ingest
+    fails at ``extract`` with a message that names neither the file nor the
+    character (GoWe#267). Folding at upload time is the durable fix: nothing
+    downstream ever sees the non-ASCII name.
+
+    Typographic lookalikes are mapped to their ASCII counterparts first, then
+    NFKD decomposition drops accents (``é`` → ``e``), then anything still
+    non-ASCII is replaced with ``_`` rather than deleted, so two names that
+    differ only outside ASCII stay different and the 409-on-collision check
+    still means what it says.
+    """
+    folded = name.translate(_ASCII_LOOKALIKES)
+    decomposed = unicodedata.normalize("NFKD", folded)
+    out = []
+    lossy = False
+    for ch in decomposed:
+        if unicodedata.combining(ch):
+            continue
+        if ch.isascii():
+            out.append(ch)
+        else:
+            out.append("_")
+            lossy = True
+    ascii_name = "".join(out).translate(_URI_HOSTILE)
+    if not lossy:
+        return ascii_name
+    # Characters were replaced rather than mapped, so distinct names can collide
+    # ("\u4e2d\u6587A.pdf" and "\u4e2d\u6587B.pdf" both become "___.pdf"). Without a
+    # disambiguator the second upload 409s against a filename the user never
+    # chose. Key the tag off the ORIGINAL name so it is stable across retries.
+    tag = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]  # noqa: S324 - not security
+    stem, dot, ext = ascii_name.rpartition(".")
+    return f"{stem}-{tag}{dot}{ext}" if dot else f"{ascii_name}-{tag}"
+
+
 def _safe_upload_name(raw: str | None, fallback: str, kind: str) -> str:
-    """Reduce a client-supplied filename to a safe, traversal-free basename.
+    """Reduce a client-supplied filename to a safe, traversal-free ASCII basename.
 
     Keeps only the final path component (drops any directory parts, absolute
-    prefixes, and ``..`` segments), strips other separators, and forces a
-    suffix the ingest manifest picks up for ``kind`` (see ``_UPLOAD_KINDS``)
-    unless the name already carries one. Falls back to ``fallback`` when
-    nothing usable remains. The result is still re-confined under the staging
-    dir by the caller — this is the first line of defence, not the only one.
+    prefixes, and ``..`` segments), strips other separators, folds the result to
+    ASCII (see ``_ascii_fold`` — the Workspace cannot address a non-ASCII path),
+    and forces a suffix the ingest manifest picks up for ``kind`` (see
+    ``_UPLOAD_KINDS``) unless the name already carries one. Falls back to
+    ``fallback`` when nothing usable remains. The result is still re-confined
+    under the staging dir by the caller — this is the first line of defence, not
+    the only one.
     """
     # PurePosixPath/ntpath both leave ".." as a name component, so take the last
     # component and reject the dot-names explicitly.
     base = raw.replace("\\", "/").rsplit("/", 1)[-1].strip() if raw else ""
     base = base.replace("\x00", "")
-    if base in ("", ".", ".."):
+    # Fold before the dot-name check: a name that is only non-ASCII folds to
+    # separators or nothing, and must land on the fallback rather than be written.
+    base = _ascii_fold(base).strip().strip("/").strip()
+    if base in ("", ".", "..") or set(base) <= {".", "_", " ", "-"}:
         return fallback
     suffixes = _kind_suffixes(kind)
     if not base.lower().endswith(suffixes):
