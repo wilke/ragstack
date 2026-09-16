@@ -77,6 +77,14 @@ func minimalArgs(verb string) map[string]any {
 		return map[string]any{"tag": "main"}
 	case "settings-put":
 		return map[string]any{"ctl": map[string]any{"gateway_enabled": true}}
+	case "set-ui-mode":
+		// `static` is the direction that publishes a generation, so it is the
+		// one this invariant has to see. A verb left out here plans with no
+		// args, fails Validate and SKIPS — which is how a gateway step can
+		// acquire no lock and no test.
+		return map[string]any{"mode": "static"}
+	case "set-bind":
+		return map[string]any{"bind": "127.0.0.1"}
 	}
 	return map[string]any{}
 }
