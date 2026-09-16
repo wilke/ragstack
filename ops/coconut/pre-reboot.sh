@@ -2,6 +2,7 @@
 # ops/coconut/pre-reboot.sh — stop coconut's service stack cleanly before a planned reboot.
 #
 #   ./pre-reboot.sh [--dry-run] [--all]
+#   ./pre-reboot.sh --tenant NAME [--dry-run]   one tenant, from its registry row
 #
 # Order (reverse of restore.sh, consumers before providers):
 #   1. labelers      s0c_supervise.sh stop scout|qwen  (checkpointed; resume after)
@@ -16,10 +17,18 @@
 #                    Qdrant/ES/Neo4j/Postgres get a graceful SIGTERM so their WALs flush
 #                    before the disk goes away
 #
-# TENANT LISTS: `ragstack-ctl tenant list` (the control plane's registry) is the source of
-# truth for which tenants exist; the literal lists here are the interim until PR-E teaches
-# these scripts to read it, and must be kept in step with restore.sh's by hand. hackathon
-# was added 2026-09-15.
+# TENANTS COME FROM THE REGISTRY, exactly as in restore.sh: /rag/data/tenants/registry.json,
+# read with jq, is what says which tenants exist, which UI each has and where its pidfile is.
+# There is no literal tenant list here any more, so the two scripts cannot drift apart.
+#
+# A row whose `owner` is `svcbvbrc` is SKIPPED: the control plane owns that tenant, and this
+# account cannot signal its processes anyway (/proc/<pid>/cwd is unreadable across accounts).
+# Stop it with `ragstack-ctl fleet stop --all` — or `ragstack-ctl tenant stop <n>` — as the
+# service account, before or after this script.
+#
+# `--tenant NAME` stops exactly one tenant — its UI, its API, its own store instances — and
+# nothing else. It is the rollback half of a handover and the quickest way to take one
+# tenant down by hand.
 #
 # Never by process-name pattern (MEMORY: #402 took the fleet down that way). Every kill here
 # resolves a pid from a pid file, a listening port or an apptainer instance name, then checks
@@ -32,8 +41,20 @@
 #
 # Run snapshot.sh FIRST so verify.sh has a baseline to compare against after the restore.
 set -uo pipefail
-DRY=0; ALL=0
-for a in "$@"; do case $a in --dry-run) DRY=1 ;; --all) ALL=1 ;; -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d'; exit 0 ;; *) echo "unknown arg $a" >&2; exit 2 ;; esac; done
+DRY=0; ALL=0; TENANT=""
+DATA=${DATA:-/rag/data}
+REGISTRY=${REGISTRY:-$DATA/tenants/registry.json}
+JQ=${JQ:-/usr/bin/jq}
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --dry-run) DRY=1 ;;
+    --all) ALL=1 ;;
+    --tenant) [[ -n ${2:-} ]] || { echo "--tenant needs a name" >&2; exit 2; }; TENANT=$2; shift ;;
+    -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d'; exit 0 ;;
+    *) echo "unknown arg $1" >&2; exit 2 ;;
+  esac; shift
+done
+[[ -z $TENANT || $TENANT =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "--tenant: $TENANT is not a tenant name" >&2; exit 2; }
 ts() { date -u +%FT%TZ; }
 say() { echo "$(ts) $*"; }
 port_pid() { ss -ltnpH 2>/dev/null | awk -v p="$1" '$4 ~ "[:.]"p"$"' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
@@ -58,6 +79,40 @@ stop_port() {                 # stop_port PORT label expected-cmd-substring [exp
   [[ -z $cwdp || $d == "$cwdp"* ]] || { say "  [$label :$port] REFUSING: pid $p cwd $d is not under $cwdp"; return 1; }
   sig "$p" "$label :$port"; wait_gone "$p" 30
 }
+# stop_tenant_ui NAME — the tenant's Vite server, by port AND identity.
+#
+# Which tenants have one is the registry's answer: ui.mode `dev` or `external`
+# is a Vite server this account runs, `static` is a directory nginx serves.
+stop_tenant_ui() {
+  local name=$1 mode port wt
+  mode=$(reg_get "$name" '.ui.mode'); port=$(reg_get "$name" '.ui.port'); wt=$(reg_get "$name" '.worktree')
+  case $mode in
+    dev|external)
+      [[ -n $port ]] || { say "  [ui $name] ui.mode=$mode with no port in the registry — nothing to stop"; return 0; }
+      stop_port "$port" "ui $name" "vite" "$wt" ;;
+    static) say "  [ui $name] static build served by nginx — no process to stop" ;;
+    *)      say "  [ui $name] ui.mode=${mode:-unrecorded} — nothing to stop" ;;
+  esac
+}
+
+# stop_tenant_api NAME — by pidfile first, port second, identity always.
+stop_tenant_api() {
+  local name=$1 tdir port pf code p d c
+  tdir=$(reg_get "$name" '.data_dir'); port=$(reg_get "$name" '.ports.api')
+  pf=$(reg_get "$name" '.api.pidfile'); [[ -n $pf ]] || pf=$tdir/api-$name.pid
+  code=$(reg_get "$name" '.worktree')/python
+  [[ -n $port ]] || { say "  [api $name] the registry row has no api port — nothing to stop"; return 0; }
+  p=$(cat "$pf" 2>/dev/null || true)
+  [[ -n $p ]] && kill -0 "$p" 2>/dev/null || p=$(port_pid "$port")
+  [[ -z $p ]] && { say "  [api $name] not running"; return 0; }
+  d=$(cwd_of "$p"); c=$(cmd_of "$p")
+  if [[ $c == *"uvicorn ragstack.api.main:app"* && $d == "$code" ]]; then
+    sig "$p" "api $name :$port"; wait_gone "$p" 30
+  else
+    say "  [api $name] REFUSING pid $p: cwd=$d cmd=$(echo "$c" | cut -c1-60)"
+  fi
+}
+
 stop_instance() {
   apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" || { say "  [$1] no such instance"; return 0; }
   if (( DRY )); then say "  [dry-run] apptainer instance stop -s SIGTERM -t 120 $1"; return 0; fi
@@ -66,6 +121,69 @@ stop_instance() {
   local i=0; while apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" && (( i < 130 )); do sleep 2; i=$((i+2)); done
   apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" && say "    ✗ [$1] still listed after ${i}s" || say "    ✓ [$1] gone"
 }
+
+# ---------------------------------------------------------------- the registry
+#
+# The same four helpers restore.sh has, for the same reason: no tenant name may
+# be spelled in this file. reg_rows is SILENT (its output is captured); the
+# skips are announced once, by reg_announce.
+reg_ready() {
+  [[ -r $REGISTRY ]] || { say "  ✗ $REGISTRY is not readable — no tenant can be stopped from it"; return 1; }
+  [[ -x $JQ ]] || { say "  ✗ $JQ is missing — the tenant lists are read with jq"; return 1; }
+  "$JQ" -e . "$REGISTRY" >/dev/null 2>&1 || { say "  ✗ $REGISTRY is not valid JSON"; return 1; }
+  return 0
+}
+reg_get() { "$JQ" -r --arg n "$1" ".tenants[\$n]$2 // empty" "$REGISTRY" 2>/dev/null; }
+reg_names() { "$JQ" -r '(.display_order // []) + ((.tenants|keys) - (.display_order // [])) | .[]' "$REGISTRY"; }
+reg_rows() {
+  local name
+  for name in $(reg_names); do
+    [[ -n $TENANT && $name != "$TENANT" ]] && continue
+    "$JQ" -e --arg n "$name" '.tenants[$n]' "$REGISTRY" >/dev/null 2>&1 || continue
+    [[ $(reg_get "$name" '.owner') == svcbvbrc ]] && continue
+    echo "$name"
+  done
+}
+reg_announce() {
+  local name
+  reg_ready || return 0
+  for name in $(reg_names); do
+    [[ -n $TENANT && $name != "$TENANT" ]] && continue
+    [[ $(reg_get "$name" '.owner') == svcbvbrc ]] || continue
+    say "  [$name] owned by the control plane: this account cannot signal its processes."
+    say "        stop it as the service account: /rag/bin/ctl-as-svc.sh ragstack-ctl tenant stop $name"
+  done
+}
+# The tenant's own exclusive store instances, "<kind> <instance>" per line.
+tenant_store_instances() {
+  local name=$1 inst
+  if [[ $(reg_get "$name" '.stores.postgres.kind') == local ]]; then
+    inst=$(reg_get "$name" '.stores.postgres.instance'); [[ -n $inst ]] && echo "postgres $inst"
+  fi
+  if [[ $(reg_get "$name" '.stores.elasticsearch.ownership') == exclusive ]]; then
+    inst=$(reg_get "$name" '.stores.elasticsearch.instance'); [[ -n $inst ]] && echo "elasticsearch $inst"
+  fi
+  if [[ $(reg_get "$name" '.stores.qdrant.ownership') == exclusive ]]; then
+    inst=$(reg_get "$name" '.stores.qdrant.instance'); [[ -n $inst ]] && echo "qdrant $inst"
+  fi
+}
+
+reg_announce
+if [[ -n $TENANT ]]; then
+  # One tenant: its UI, its API, its own stores. Nothing shared, nothing else's.
+  rows=$(reg_ready && reg_rows)
+  [[ -n $rows ]] || { say "no usable registry row for '$TENANT' in $REGISTRY"; exit 1; }
+  say "== $TENANT UI"
+  stop_tenant_ui "$TENANT"
+  say "== $TENANT API"
+  stop_tenant_api "$TENANT"
+  say "== $TENANT stores (its own instances only)"
+  while read -r kind inst; do
+    [[ -n $inst ]] && stop_instance "$inst"
+  done <<< "$(tenant_store_instances "$TENANT")"
+  say "== done ($TENANT). The shared stores, the sidecars, GoWe and every other tenant are untouched."
+  exit 0
+fi
 
 say "== 1. labelers"
 S=$HOME/Development/worktrees/confirmation-run/docs/plans/results/stage0
@@ -77,21 +195,13 @@ if [[ -x $S/s0c_supervise.sh ]]; then
 else say "  supervisor not found ($S)"; fi
 
 say "== 2. tenant UIs"
-for spec in "demo 5210 /rag/repos/tenants/demo" "lucid-next 5211 /rag/repos/tenants/lucid-next" "asm-next 5212 /rag/repos/tenants/asm-next" "dev 8090 /rag/repos/tenants/dev"; do
-  set -- $spec; stop_port "$2" "ui $1" "vite" "$3"
-done
+# ui.mode `static` is a build nginx serves from a directory: there is no process
+# of ours to stop, and hunting for a vite that does not exist would report a
+# failure where there is none.
+if reg_ready; then for t in $(reg_rows); do stop_tenant_ui "$t"; done; else say "  ✗ no registry: no tenant UI was stopped"; fi
 
 say "== 3. tenant APIs (pid files, cwd verified)"
-# hackathon added 2026-09-15 — see TENANT LISTS at the top; mirrors restore.sh's api loops.
-for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
-  set -- $spec; name=$1 tdir=/rag/data/tenants/$2 port=$3; pf=$tdir/api-$name.pid
-  p=$(cat "$pf" 2>/dev/null || true)
-  [[ -n $p ]] && kill -0 "$p" 2>/dev/null || p=$(port_pid "$port")
-  [[ -z $p ]] && { say "  [api $name] not running"; continue; }
-  d=$(cwd_of "$p"); c=$(cmd_of "$p")
-  if [[ $c == *"uvicorn ragstack.api.main:app"* && $d == /rag/repos/tenants/$name/python ]]; then sig "$p" "api $name :$port"; wait_gone "$p" 30
-  else say "  [api $name] REFUSING pid $p: cwd=$d cmd=$(echo "$c" | cut -c1-60)"; fi
-done
+if reg_ready; then for t in $(reg_rows); do stop_tenant_api "$t"; done; else say "  ✗ no registry: no tenant API was stopped"; fi
 
 say "== 4. GoWe workers → server → monitoring"
 G=/scout/Experiments/GoWe
@@ -115,13 +225,30 @@ stop_instance crossencoder; stop_instance embedding
 say "== 6. SFR vLLM fleet"
 for port in 9001 9002 9003 9004 9005 9006; do stop_port "$port" "sfr" "vllm serve Salesforce/SFR-Embedding-Mistral" /rag/repos/ragstack/python; done
 
-say "== 7. stores (dependents first, then the shared prod stores)"
-# hackathon's three dedicated stores lead the list (added 2026-09-15): nothing else depends
-# on them, and the "no apptainer instances left" check below is only truthful once they are
-# stopped too. stop_instance rather than the tenant's own bin/down.sh — down.sh takes
-# apptainer's default 10 s grace, which lands a SIGKILL inside an ES/Postgres flush; the
-# three names are exactly the ones down.sh would stop.
-for i in qdrant-hackathon elasticsearch-hackathon postgres-hackathon qdrant-dev elasticsearch-dev neo4j-dev elasticsearch-lucid qdrant2 elasticsearch qdrant neo4j postgres redis; do stop_instance "$i"; done
+say "== 7. stores (every tenant's own instances first, then the shared prod stores)"
+# The per-tenant instances lead, in REVERSE display order: nothing else depends on
+# them, and the "no apptainer instances left" check below is only truthful once they
+# are stopped too. Their names come from the registry (stores.*.instance), never from
+# a list here — which is what keeps this in step with restore.sh's half.
+#
+# stop_instance rather than each tenant's own bin/down.sh: down.sh takes apptainer's
+# default 10 s grace, which lands a SIGKILL inside an ES or Postgres flush, and the
+# names it would stop are exactly these.
+if reg_ready; then
+  # Reverse of the start order, so a tenant's postgres outlives nothing that needs it.
+  tac_rows=$(reg_rows | tac)
+  for t in $tac_rows; do
+    while read -r kind inst; do
+      [[ -n $inst ]] && stop_instance "$inst"
+    done <<< "$(tenant_store_instances "$t")"
+  done
+else
+  say "  ✗ no registry: no per-tenant store instance was stopped — the check below will list them"
+fi
+# neo4j-dev is dev's graph store and is NOT in the registry (no tenant row records a
+# neo4j instance; every tenant has GRAPH_BACKEND=disabled). It stays literal until
+# something records it.
+for i in neo4j-dev qdrant2 elasticsearch qdrant neo4j postgres redis; do stop_instance "$i"; done
 if (( ! DRY )); then
   sleep 5; left=$(apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')
   [[ -z $left ]] && say "  ✓ no apptainer instances left" || say "  ✗ still listed: $left"

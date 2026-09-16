@@ -2,21 +2,23 @@
 # ops/coconut/restore.sh — bring coconut's service stack back after a reboot.
 #
 #   ./restore.sh [--dry-run] [--only GROUP[,GROUP]] [--skip GROUP[,GROUP]] [--proxy]
+#   ./restore.sh --tenant NAME [--dry-run]      one tenant, from its registry row
 #
 # Groups, in start order (each one waits for its health check before the next):
 #   preflight   mounts, sysctl, images, envs, GPUs
-#   stores      qdrant :6333, qdrant2 :6343, qdrant-dev :24041,
-#               elasticsearch :9200, elasticsearch-lucid :24003, elasticsearch-dev :24043,
-#               neo4j-dev :24046/24047, postgres :5432, redis :6379, neo4j :7474 (best effort),
-#               and hackathon's own three: qdrant-hackathon :24081, elasticsearch-hackathon :24083,
-#               postgres-hackathon :24085 (via the tenant's generated bin/up.sh)
+#   stores      the SHARED ones — qdrant :6333, qdrant2 :6343, elasticsearch :9200,
+#               neo4j-dev :24046/24047, postgres :5432, redis :6379, neo4j :7474 (best effort) —
+#               and then every store a REGISTRY tenant owns outright (its instance name,
+#               SIF and ports come from the row; the tenant's own bin/up.sh runs it when
+#               it has one, because that script owns the binds and the pg password)
 #   sidecars    crossencoder :50052 (GPU 0), embedding :50053 (CPU)
 #   sfr         six SFR-Embedding-Mistral vLLM endpoints :9001–:9006 on GPUs 0–5
-#   apis        the five tenant APIs :24000 lucid-next, :24020 asm-next, :24040 dev, :24060 demo,
-#               :24080 hackathon
-#   uis         the four base-aware Vite dev servers :5210 demo, :5211 lucid-next, :5212 asm-next, :8090 dev
-#               (hackathon is NOT here: its UI is a static build nginx serves from
-#                /rag/data/tenants/hackathon/ui/dist — there is no dev server to start)
+#   apis        every registry tenant's API, on the port, bind, pidfile and log its row
+#               records, from the worktree its row records
+#   uis         every registry tenant whose ui.mode is `dev` or `external` — both are a
+#               Vite server THIS account runs (`external` is one the control plane
+#               deliberately does not manage; ui.mode `static` is a build nginx serves
+#               from <data_dir>/ui/dist and has no process at all)
 #   gowe        gowe-server :8091 + 25 workers via /scout/wf/gowe/start-gowe.sh, then prometheus :9090, grafana :3001
 #               (25 = 21 + the four `ragstack-hackathon` workers added 2026-09-15; see #563)
 #   labelers    the quarantined confirmation-run labelers (Scout/Qwen) via their supervisor
@@ -27,12 +29,28 @@
 # already listed is skipped, so the script is safe to re-run and safe to run on
 # a live system (it will report "already running" for everything).
 #
-# TENANT LISTS: the control plane's registry (`ragstack-ctl tenant list`) is the
-# source of truth for which tenants exist and on which ports. The literal lists
-# below are the interim until PR-E teaches these scripts to read that registry —
-# until then a new tenant must be added here BY HAND, in every list (stores,
-# apis, and pre-reboot.sh's mirror image), or it silently does not come back
-# after a reboot. hackathon was added 2026-09-15 for exactly that reason.
+# TENANTS COME FROM THE REGISTRY. /rag/data/tenants/registry.json is the source
+# of truth for which tenants exist, which ports they hold, where their code and
+# data are, which stores are theirs alone and how their UI is served — and this
+# script reads it with jq. There is no literal tenant list here any more: a
+# tenant added to the registry comes back after a reboot without this file being
+# edited, which is the failure `hackathon` hit in September (it existed for days
+# before anybody noticed it was in none of the lists).
+#
+# Two consequences worth knowing before you read on:
+#
+#   * a row whose `owner` is `svcbvbrc` is SKIPPED, with a line saying so. That
+#     tenant has been handed over to the control plane and is started by
+#     `ragstack-ctl fleet start --all` from the service account's @reboot
+#     crontab line. Two starters for one tenant is two servers on one port.
+#   * `--tenant NAME` does exactly one tenant — its own stores, its API and its
+#     UI — and nothing else: no shared stores, no sidecars, no GoWe. It is the
+#     rollback half of a handover (PR-E: release → take → `restore.sh --tenant
+#     <n>`), and it is also the fastest way to bring one tenant back by hand.
+#
+# What it still does NOT read from the registry: the shared stores (:6333,
+# :6343, :9200, postgres, redis, neo4j), the sidecars, the SFR fleet and GoWe.
+# None of them is a registry tenant; they are this host's furniture.
 #
 # What it deliberately does NOT do:
 #   - stop anything (see pre-reboot.sh)
@@ -60,17 +78,27 @@ LOG=$RUN/logs; PIDS=$RUN/pids
 mkdir -p "$LOG" "$PIDS"
 IMG=/rag/apptainer/images
 DATA=/rag/data
-DRY=0; ONLY=""; SKIP=""; PROXY=0
+DRY=0; ONLY=""; SKIP=""; PROXY=0; TENANT=""
+REGISTRY=${REGISTRY:-$DATA/tenants/registry.json}
+JQ=${JQ:-/usr/bin/jq}
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY=1 ;;
     --only) [[ -n ${2:-} ]] || { echo "--only needs a group list" >&2; exit 2; }; ONLY=$2; shift ;;
     --skip) [[ -n ${2:-} ]] || { echo "--skip needs a group list" >&2; exit 2; }; SKIP=$2; shift ;;
+    --tenant) [[ -n ${2:-} ]] || { echo "--tenant needs a name" >&2; exit 2; }; TENANT=$2; shift ;;
     --proxy) PROXY=1 ;;
     -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac; shift
 done
+# --tenant is one tenant and nothing else. The groups it implies are the three
+# a tenant is made of; --only still narrows further (`--tenant dev --only apis`
+# restarts just its API), and --skip still subtracts.
+if [[ -n $TENANT ]]; then
+  [[ $TENANT =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "--tenant: $TENANT is not a tenant name" >&2; exit 2; }
+  [[ -z $ONLY ]] && ONLY="stores,apis,uis"
+fi
 
 ts() { date -u +%FT%TZ; }
 say() { echo "$(ts) $*"; }
@@ -120,6 +148,185 @@ launch() {                    # launch NAME cwd logfile -- cmd...   (detached in
   ( cd "$cwd" && exec setsid nohup "$@" >> "$log" 2>&1 < /dev/null ) &
 }
 
+# ---------------------------------------------------------------- the registry
+#
+# Four helpers and one rule: every tenant fact this script uses comes from
+# registry.json, read with jq. Nothing below has a tenant name in it.
+#
+# `reg_rows` is the ONE place the "handed over" skip lives, so a tenant that has
+# moved to the control plane is skipped by every group at once rather than by
+# each of them remembering to.
+reg_ready() {                 # reg_ready → 0 when the registry can be read
+  [[ -r $REGISTRY ]] || { say "  ✗ $REGISTRY is not readable — no tenant can be started from it"; return 1; }
+  [[ -x $JQ ]] || { say "  ✗ $JQ is missing — the tenant lists are read with jq"; return 1; }
+  "$JQ" -e . "$REGISTRY" >/dev/null 2>&1 || { say "  ✗ $REGISTRY is not valid JSON"; return 1; }
+  return 0
+}
+# reg_rows → the tenant names this script may act on, one per line, in display
+# order. SILENT: three groups capture its output, and a log line that ends up
+# inside a captured tenant list becomes a "tenant" the script then tries to
+# start (it did, in review — every word of the handover notice became a row).
+# Everything worth saying about the skips is said once, by reg_announce.
+reg_rows() {
+  local names name
+  # display_order first (the order the gateway advertises), then anything the
+  # registry holds that nobody ordered — the same rule the ctl itself applies.
+  names=$("$JQ" -r '(.display_order // []) + ((.tenants|keys) - (.display_order // [])) | .[]' "$REGISTRY") || return 1
+  for name in $names; do
+    [[ -n $TENANT && $name != "$TENANT" ]] && continue
+    "$JQ" -e --arg n "$name" '.tenants[$n]' "$REGISTRY" >/dev/null 2>&1 || continue
+    [[ $(reg_get "$name" '.owner') == svcbvbrc ]] && continue
+    [[ $(reg_get "$name" '.state') == decommissioned ]] && continue
+    echo "$name"
+  done
+}
+
+# reg_announce says, ONCE, which rows this run is deliberately not acting on.
+# It is the line an operator needs after a handover: a tenant that does not
+# appear in any group below has not been forgotten, it has an owner.
+reg_announce() {
+  local name owner state
+  reg_ready || return 0
+  for name in $("$JQ" -r '(.display_order // []) + ((.tenants|keys) - (.display_order // [])) | .[]' "$REGISTRY"); do
+    [[ -n $TENANT && $name != "$TENANT" ]] && continue
+    owner=$(reg_get "$name" '.owner'); state=$(reg_get "$name" '.state')
+    if [[ $owner == svcbvbrc ]]; then
+      say "  [$name] handed over to the control plane: svcbvbrc's @reboot line starts it (ragstack-ctl fleet start --all). This script leaves it alone."
+    elif [[ $state == decommissioned ]]; then
+      say "  [$name] decommissioned: nothing of it is started"
+    fi
+  done
+}
+reg_get() {                   # reg_get NAME '.json.path' → the value, "" for null/absent
+  "$JQ" -r --arg n "$1" ".tenants[\$n]$2 // empty" "$REGISTRY" 2>/dev/null
+}
+reg_missing() {               # reg_missing NAME — say why --tenant found nothing
+  say "  ✗ no usable registry row for '$1' in $REGISTRY"
+  say "    (a row whose owner is svcbvbrc is started by the ctl, not by this script)"
+}
+# reg_ready's messages are the same case: it is called inside `if`, not inside
+# a capture, so its `say` lines stay on stdout with the rest of the log.
+
+# tenant_store_specs NAME → one "<kind> <instance> <port>" line per store leg
+# this tenant owns ALONE. A shared leg is deliberately absent: it is somebody
+# else's furniture and appears in the shared-stores block above, once.
+tenant_store_specs() {
+  local name=$1 inst port
+  if [[ $(reg_get "$name" '.stores.qdrant.ownership') == exclusive ]]; then
+    inst=$(reg_get "$name" '.stores.qdrant.instance'); port=$(reg_get "$name" '.ports.qdrant_http')
+    [[ -n $inst && -n $port ]] && echo "qdrant $inst $port"
+  fi
+  if [[ $(reg_get "$name" '.stores.elasticsearch.ownership') == exclusive ]]; then
+    inst=$(reg_get "$name" '.stores.elasticsearch.instance'); port=$(reg_get "$name" '.ports.es_http')
+    [[ -n $inst && -n $port ]] && echo "elasticsearch $inst $port"
+  fi
+  if [[ $(reg_get "$name" '.stores.postgres.kind') == local ]]; then
+    inst=$(reg_get "$name" '.stores.postgres.instance'); port=$(reg_get "$name" '.stores.postgres.port')
+    [[ -z $port ]] && port=$(reg_get "$name" '.ports.pg')
+    [[ -n $inst && -n $port ]] && echo "postgres $inst $port"
+  fi
+}
+
+# tenant_up_script NAME → the tenant's own store launcher, or "".
+#
+# Preferred over anything reconstructed here, always: apptainer/new-tenant.sh
+# generated it FOR this tenant, it owns the binds, the ES `-E` arguments and the
+# randomly generated postgres password (which must never appear in this file),
+# and it is idempotent — an instance already listed is skipped. `up-es.sh` is
+# the older one-store spelling (lucid has one and no up.sh).
+tenant_up_script() {
+  local data=$1 cand
+  for cand in "$data/bin/up.sh" "$data/bin/up-es.sh"; do
+    [[ -x $cand ]] && { echo "$cand"; return 0; }
+  done
+  return 1
+}
+
+# tenant_stores_up NAME — bring up one tenant's exclusive store instances.
+tenant_stores_up() {
+  local name=$1 data up kind inst port sif heap specs
+  data=$(reg_get "$name" '.data_dir')
+  [[ -n $data ]] || { say "  [$name] the registry row has no data_dir — stores NOT started"; return 1; }
+  specs=$(tenant_store_specs "$name")
+  [[ -n $specs ]] || { say "  [$name] no exclusively-owned stores (it runs on the shared ones)"; return 0; }
+  # A launcher starts every leg itself, so start_instance never runs and
+  # STARTED[] would stay empty; mark the legs whose port is not answering YET so
+  # the waits below are full waits for those and a glance for the rest.
+  while read -r kind inst port; do
+    [[ -n $inst ]] || continue
+    port_up "$port" || STARTED[$inst]=1
+  done <<< "$specs"
+
+  if up=$(tenant_up_script "$data"); then
+    run "[$name stores] $up" "$up"
+    return 0
+  fi
+
+  # No launcher: rebuild each instance from the registry row and the standard
+  # layout — the same binds, ports and entrypoints the hand-written blocks used
+  # to carry, now derived from the row instead of retyped per tenant.
+  while read -r kind inst port; do
+    [[ -n $inst ]] || continue
+    case $kind in
+      qdrant)
+        sif=$(reg_get "$name" '.stores.qdrant.sif'); [[ -n $sif ]] || sif=$IMG/qdrant.sif
+        start_instance "$inst" "$sif" \
+          --bind "$data/qdrant/storage:/qdrant/storage" --bind "$data/qdrant/snapshots:/qdrant/snapshots" \
+          --env QDRANT__SERVICE__HTTP_PORT="$port" \
+          --env QDRANT__SERVICE__GRPC_PORT="$(reg_get "$name" '.ports.qdrant_grpc')" \
+          -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh' ;;
+      elasticsearch)
+        sif=$(reg_get "$name" '.stores.elasticsearch.sif'); [[ -n $sif ]] || sif=$IMG/elasticsearch.sif
+        heap=$(reg_get "$name" '.stores.elasticsearch.heap'); [[ -n $heap ]] || heap=1g
+        # The config bind SHADOWS the image's own config directory, so an empty
+        # host directory is an Elasticsearch that exits before it logs anything.
+        seed_if_empty "$sif" /usr/share/elasticsearch/config "$data/elasticsearch/config"
+        start_instance "$inst" "$sif" \
+          --bind "$data/elasticsearch/data:/usr/share/elasticsearch/data" \
+          --bind "$data/elasticsearch/logs:/usr/share/elasticsearch/logs" \
+          --bind "$data/elasticsearch/config:/usr/share/elasticsearch/config" \
+          --bind "$data/elasticsearch/snapshots:/usr/share/elasticsearch/snapshots" \
+          --env ES_JAVA_OPTS="-Xms$heap -Xmx$heap" \
+          -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node \
+             -Expack.security.enabled=false -Ehttp.port="$port" \
+             -Etransport.port="$(reg_get "$name" '.ports.es_transport')" ;;
+      postgres)
+        # Deliberately NOT reconstructed: a dedicated postgres needs the role
+        # password new-tenant.sh generated, which lives in the tenant's
+        # secrets.env and must not be read into this script's environment or
+        # its argv. A tenant with a local postgres and no launcher is a gap an
+        # operator has to see, not one to paper over with a default password.
+        say "  ✗ [$name] postgres $inst (:$port) needs $data/bin/up.sh, which is missing — NOT started"
+        return 1 ;;
+    esac
+  done <<< "$specs"
+}
+
+# tenant_stores_wait NAME — readiness for the legs tenant_stores_up started.
+tenant_stores_wait() {
+  local name=$1 kind inst port rc=0 pgi pgok
+  while read -r kind inst port; do
+    [[ -n $inst ]] || continue
+    case $kind in
+      qdrant)        wait_if_started "$inst" "http://127.0.0.1:$port/collections" 120 "$inst :$port" || rc=1 ;;
+      elasticsearch) wait_if_started "$inst" "http://127.0.0.1:$port/" 180 "$inst :$port" || rc=1 ;;
+      postgres)
+        # No HTTP surface: pg_isready stands in for wait_http. It IS fatal —
+        # a tenant with a dedicated postgres keeps its users, ACL grants,
+        # collections and jobs in it, so its API cannot serve without it.
+        if (( ! DRY )); then
+          pgi=0; pgok=0
+          while (( pgi < 60 )); do
+            apptainer exec "$IMG/postgres.sif" pg_isready -h 127.0.0.1 -p "$port" >/dev/null 2>&1 && { pgok=1; break; }
+            sleep 5; pgi=$((pgi+5))
+          done
+          (( pgok )) && say "    ✓ $inst ready (:$port)" || { say "    ✗ $inst (:$port) not ready within ${pgi}s"; rc=1; }
+        fi ;;
+    esac
+  done <<< "$(tenant_store_specs "$name")"
+  return $rc
+}
+
 declare -A STARTED=()          # name → 1 when THIS run launched it (skipped services get a short wait only)
 wait_if_started() {            # wait_if_started NAME url seconds label — full wait only if we started it
   local name=$1 url=$2 secs=$3 label=$4
@@ -142,6 +349,11 @@ record_pid_by_cmd() {          # record_pid_by_cmd NAME argv0-prefix substring �
 }
 
 fail=0
+# Which tenants this run will NOT act on, said once and up front.
+if [[ -z $ONLY || $ONLY == *tenant* || $ONLY == *apis* || $ONLY == *stores* || $ONLY == *uis* ]]; then
+  reg_announce
+fi
+
 # ---------------------------------------------------------------- preflight
 if want preflight; then
   say "== preflight"
@@ -168,6 +380,12 @@ fi
 # ---------------------------------------------------------------- stores
 if want stores; then
   say "== stores"
+  # The shared stores are this host's furniture, not any tenant's: `--tenant`
+  # leaves them exactly where it found them (a tenant-scoped restore runs while
+  # the rest of the fleet is up).
+  if [[ -n $TENANT ]]; then
+  say "  (--tenant $TENANT: the shared stores are not this tenant's and are left alone)"
+  else
   start_instance qdrant "$IMG/qdrant.sif" \
     --bind "$DATA/qdrant/storage:/qdrant/storage" --bind "$DATA/qdrant/snapshots:/qdrant/snapshots" \
     --bind "/rag/cache/load3corpus:/rag/cache/load3corpus" \
@@ -180,10 +398,6 @@ if want stores; then
     --env QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12 \
     --env QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1 \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
-  start_instance qdrant-dev "$IMG/qdrant.sif" \
-    --bind "$DATA/tenants/dev/qdrant/storage:/qdrant/storage" --bind "$DATA/tenants/dev/qdrant/snapshots:/qdrant/snapshots" \
-    --env QDRANT__SERVICE__HTTP_PORT=24041 --env QDRANT__SERVICE__GRPC_PORT=24042 \
-    -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
 
   # ES: dotted settings as native -E args (apptainer --env shell-sources and mangles them);
   # call docker-entrypoint.sh directly (tini eats -E). Heaps are the LIVE values, not up.sh's.
@@ -192,16 +406,6 @@ if want stores; then
     --bind "$DATA/elasticsearch/data:/usr/share/elasticsearch/data" --bind "$DATA/elasticsearch/logs:/usr/share/elasticsearch/logs" \
     --bind "$DATA/elasticsearch/config:/usr/share/elasticsearch/config" --env ES_JAVA_OPTS="-Xms1g -Xmx1g" \
     -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false
-  seed_if_empty "$IMG/elasticsearch.sif" /usr/share/elasticsearch/config "$DATA/tenants/lucid/elasticsearch/config"
-  start_instance elasticsearch-lucid "$IMG/elasticsearch.sif" \
-    --bind "$DATA/tenants/lucid/elasticsearch/data:/usr/share/elasticsearch/data" --bind "$DATA/tenants/lucid/elasticsearch/logs:/usr/share/elasticsearch/logs" \
-    --bind "$DATA/tenants/lucid/elasticsearch/config:/usr/share/elasticsearch/config" --env ES_JAVA_OPTS="-Xms2g -Xmx2g" \
-    -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=24003 -Etransport.port=24004
-  seed_if_empty "$IMG/elasticsearch.sif" /usr/share/elasticsearch/config "$DATA/tenants/dev/elasticsearch/config"
-  start_instance elasticsearch-dev "$IMG/elasticsearch.sif" \
-    --bind "$DATA/tenants/dev/elasticsearch/data:/usr/share/elasticsearch/data" --bind "$DATA/tenants/dev/elasticsearch/logs:/usr/share/elasticsearch/logs" \
-    --bind "$DATA/tenants/dev/elasticsearch/config:/usr/share/elasticsearch/config" --env ES_JAVA_OPTS="-Xms1g -Xmx1g" \
-    -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=24043 -Etransport.port=24044
 
   # neo4j-dev: password comes from dev's secrets.env (never printed). Binds as live: /data, /logs, conf.
   if ! instance_up neo4j-dev; then
@@ -221,21 +425,6 @@ if want stores; then
     --env POSTGRES_USER=ragstack --env POSTGRES_PASSWORD=ragstack --env POSTGRES_DB=ragstack --env PGDATA=/var/lib/postgresql/data/pgdata --
   start_instance redis "$IMG/redis.sif" --bind "$DATA/redis/data:/data" --
 
-  # hackathon's three dedicated stores (tenant added to this script 2026-09-15).
-  # Called through the script apptainer/new-tenant.sh generated FOR the tenant rather
-  # than re-typed here: it owns the binds, the ES -E args and the postgres password
-  # (which must not appear in this file), and it is idempotent — instances already
-  # listed are skipped, so this stays safe on a live host like every other step.
-  # It starts all three itself, so start_instance never runs and STARTED[] would stay
-  # empty; mark the ones whose port is not answering YET so wait_if_started below does
-  # a full wait for those and a 10 s glance for the rest.
-  HACK=$DATA/tenants/hackathon
-  if [[ -x $HACK/bin/up.sh ]]; then
-    for spec in "qdrant-hackathon 24081" "elasticsearch-hackathon 24083" "postgres-hackathon 24085"; do
-      set -- $spec; port_up "$2" || STARTED[$1]=1
-    done
-    run "[hackathon stores] qdrant :24081/:24082, elasticsearch :24083/:24084, postgres :24085" "$HACK/bin/up.sh"
-  else say "  ✗ $HACK/bin/up.sh missing — hackathon's stores were NOT started"; fail=1; fi
 
   # neo4j (shared, prod): its instance existed on 2026-09-09 but the JVM inside had been dead
   # since 2026-06-04 (no :7474/:7687 listener). Every tenant has GRAPH_BACKEND=disabled, so this
@@ -247,29 +436,38 @@ if want stores; then
 
   wait_if_started qdrant http://127.0.0.1:6333/collections 120 "qdrant :6333" || fail=1
   wait_if_started qdrant2 http://127.0.0.1:6343/collections 120 "qdrant2 :6343" || fail=1
-  wait_if_started qdrant-dev http://127.0.0.1:24041/collections 120 "qdrant-dev :24041" || fail=1
   wait_if_started elasticsearch http://127.0.0.1:9200/ 180 "elasticsearch :9200" || fail=1
-  wait_if_started elasticsearch-lucid http://127.0.0.1:24003/ 180 "elasticsearch-lucid :24003" || fail=1
-  wait_if_started elasticsearch-dev http://127.0.0.1:24043/ 180 "elasticsearch-dev :24043" || fail=1
   wait_if_started neo4j-dev http://127.0.0.1:24046/ 120 "neo4j-dev :24046" || say "    (neo4j-dev: graph leg is disabled on every tenant; not fatal)"
   if [[ -n ${STARTED[neo4j]:-} ]]; then wait_http http://127.0.0.1:7474/ 60 "neo4j :7474" || say "    (neo4j: was already dead before the reboot; not fatal)"; else say "    (neo4j: not started by this run — skipped; it has been dead since 2026-06-04)"; fi
   (( DRY )) || { apptainer exec "$IMG/redis.sif" redis-cli -p 6379 ping 2>/dev/null | grep -q PONG && say "    ✓ redis PONG" || say "    ✗ redis"; }
   (( DRY )) || { apptainer exec "$IMG/postgres.sif" pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && say "    ✓ postgres ready" || say "    ✗ postgres"; }
-  wait_if_started qdrant-hackathon http://127.0.0.1:24081/collections 120 "qdrant-hackathon :24081" || fail=1
-  wait_if_started elasticsearch-hackathon http://127.0.0.1:24083/ 180 "elasticsearch-hackathon :24083" || fail=1
-  # postgres-hackathon has no HTTP surface, so pg_isready stands in for wait_http (same
-  # probe as the shared :5432 check above). It IS fatal here, unlike :5432: hackathon's
-  # users, ACL grants, collections and jobs live in this database, so its API cannot
-  # serve without it. Bounded retry because a just-started postgres answers late.
-  if (( ! DRY )); then
-    pgi=0; pgok=0
-    while (( pgi < 60 )); do
-      apptainer exec "$IMG/postgres.sif" pg_isready -h 127.0.0.1 -p 24085 >/dev/null 2>&1 && { pgok=1; break; }
-      sleep 5; pgi=$((pgi+5))
+  fi
+
+  # ---- per-tenant stores, from the registry -------------------------------
+  #
+  # One loop for every tenant that owns a store outright — dev's qdrant and
+  # elasticsearch, lucid's elasticsearch, hackathon's three — where there used
+  # to be a hand-written block per tenant and a matching wait twenty lines
+  # further down. A tenant added to the registry is covered by both halves at
+  # once, which is the whole point.
+  if reg_ready; then
+    rows=$(reg_rows)
+    if [[ -n $TENANT && -z $rows ]]; then reg_missing "$TENANT"; fail=1; fi
+    for t in $rows; do
+      tenant_stores_up "$t" || fail=1
     done
-    (( pgok )) && say "    ✓ postgres-hackathon ready (:24085)" || { say "    ✗ postgres-hackathon (:24085) not ready within ${pgi}s"; fail=1; }
+    for t in $rows; do
+      tenant_stores_wait "$t" || fail=1
+    done
+  else
+    say "  ✗ no readable registry: per-tenant stores were NOT started"; fail=1
   fi
 fi
+
+# From here on the groups are fleet-wide furniture: the sidecars, the SFR fleet,
+# GoWe, the labelers and the gateway. `--tenant` never touches them — it already
+# narrowed ONLY to the three groups a tenant is made of, so these are skipped by
+# `want` without a special case.
 
 # ---------------------------------------------------------------- sidecars
 if want sidecars; then
@@ -302,52 +500,88 @@ fi
 # ---------------------------------------------------------------- apis
 if want apis; then
   say "== tenant APIs"
-  # name  data-dir  port          (hackathon added 2026-09-15 — see TENANT LISTS at the top)
-  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
-    set -- $spec; name=$1 tdir=$DATA/tenants/$2 port=$3
+  if ! reg_ready; then
+    say "  ✗ no readable registry: no tenant API was started"; fail=1
+  else
+  rows=$(reg_rows)
+  if [[ -n $TENANT && -z $rows ]]; then reg_missing "$TENANT"; fail=1; fi
+  for name in $rows; do
+    tdir=$(reg_get "$name" '.data_dir'); port=$(reg_get "$name" '.ports.api')
+    code=$(reg_get "$name" '.worktree')/python
+    penv=$(reg_get "$name" '.python_env'); [[ -n $penv ]] || penv=/rag/envs/ragstack
+    pidf=$(reg_get "$name" '.api.pidfile'); [[ -n $pidf ]] || pidf=$tdir/api-$name.pid
+    logf=$(reg_get "$name" '.api.log');     [[ -n $logf ]] || logf=$tdir/logs/api-$name.log
+    # The BIND comes from the row too (api.bind). It is the one place the value
+    # lives — `ragstack-ctl tenant set-bind` writes it, render.APIArgv reads it
+    # for a ctl-supervised start, and this reads it for a hand start — so a
+    # tenant moved to loopback before its handover comes back on loopback here
+    # rather than on 0.0.0.0 because a script remembered the old default.
+    bind=$(reg_get "$name" '.api.bind'); [[ -n $bind ]] || bind=127.0.0.1
+    if [[ -z $tdir || -z $port || $code == /python ]]; then
+      say "  [api $name] incomplete registry row (data_dir=$tdir port=$port worktree=$code) — NOT started"; fail=1; continue
+    fi
     if port_up "$port"; then say "  [api $name :$port] already listening — skipping"; continue; fi
-    code=/rag/repos/tenants/$name/python
     [[ -f $tdir/config/tenant.env ]] || { say "  [api $name] missing $tdir/config/tenant.env"; fail=1; continue; }
     # /v1/version must report the artifact this launch actually runs, the way the ctl unit
     # does it (ADR-0007, go/internal/ctl/render/storeargv.go): the TENANT WORKTREE's tag and
     # sha, not whatever checkout `ragstack` happens to import from. `-c safe.directory=*` so
     # a worktree owned by another account still answers; empty on failure is tolerated —
     # ragstack.version falls back, and an unset value must not stop a reboot recovery.
-    gtag=$(git -c safe.directory='*' -C "/rag/repos/tenants/$name" describe --tags --always 2>/dev/null || true)
-    gsha=$(git -c safe.directory='*' -C "/rag/repos/tenants/$name" rev-parse HEAD 2>/dev/null || true)
-    if (( DRY )); then echo "  [dry-run] api $name: (set -a; . $tdir/config/tenant.env; [ -f $tdir/config/secrets.env ] && . $tdir/config/secrets.env; set +a; cd $code; HF_HOME=/rag/cache PYTHONPATH=$code RAGSTACK_GIT_TAG=$gtag RAGSTACK_GIT_SHA=$gsha nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port $port >> $tdir/logs/api-$name.log) ; pid → $tdir/api-$name.pid"; continue; fi
-    say "  [api $name :$port] launching from $code (${gtag:-no tag} ${gsha:0:12})"
+    wt=$(reg_get "$name" '.worktree')
+    gtag=$(git -c safe.directory='*' -C "$wt" describe --tags --always 2>/dev/null || true)
+    gsha=$(git -c safe.directory='*' -C "$wt" rev-parse HEAD 2>/dev/null || true)
+    if (( DRY )); then echo "  [dry-run] api $name: (set -a; . $tdir/config/tenant.env; [ -f $tdir/config/secrets.env ] && . $tdir/config/secrets.env; set +a; cd $code; HF_HOME=/rag/cache PYTHONPATH=$code RAGSTACK_GIT_TAG=$gtag RAGSTACK_GIT_SHA=$gsha nohup $penv/bin/python -m uvicorn ragstack.api.main:app --host $bind --port $port >> $logf) ; pid → $pidf"; continue; fi
+    say "  [api $name :$port] launching from $code (${gtag:-no tag} ${gsha:0:12}) on $bind"
     STARTED[api-$name]=1
+    mkdir -p "$(dirname "$logf")"
     ( set -a; . "$tdir/config/tenant.env"; [[ -f $tdir/config/secrets.env ]] && . "$tdir/config/secrets.env"; set +a
       export HF_HOME=/rag/cache PYTHONPATH=$code RAGSTACK_GIT_TAG="$gtag" RAGSTACK_GIT_SHA="$gsha"
-      cd "$code" && exec setsid nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port "$port" \
-        >> "$tdir/logs/api-$name.log" 2>&1 < /dev/null ) &
+      cd "$code" && exec setsid nohup "$penv/bin/python" -m uvicorn ragstack.api.main:app --host "$bind" --port "$port" \
+        >> "$logf" 2>&1 < /dev/null ) &
   done
-  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
-    set -- $spec; name=$1 tdir=$DATA/tenants/$2 port=$3
+  for name in $rows; do
+    tdir=$(reg_get "$name" '.data_dir'); port=$(reg_get "$name" '.ports.api')
+    pidf=$(reg_get "$name" '.api.pidfile'); [[ -n $pidf ]] || pidf=$tdir/api-$name.pid
+    [[ -n $port ]] || continue
     wait_if_started "api-$name" "http://127.0.0.1:$port/health" 180 "api $name :$port" || { fail=1; continue; }
     # the pid file is the handle pre-reboot.sh and the restart recipes use — it must hold the uvicorn pid, not a shell
-    [[ -n ${STARTED[api-$name]:-} ]] && (( ! DRY )) && record_pid_by_port "api-$name" "$port" "$tdir/api-$name.pid"
+    [[ -n ${STARTED[api-$name]:-} ]] && (( ! DRY )) && record_pid_by_port "api-$name" "$port" "$pidf"
   done
+  fi
 fi
 
 # ---------------------------------------------------------------- uis
 if want uis; then
   say "== tenant UIs (base-aware Vite dev servers, via /rag/config/proxy/ui-dev.sh)"
-  # Four, not five: hackathon's UI is a STATIC build (nginx serves
-  # /rag/data/tenants/hackathon/ui/dist), so it has no dev server to start and must
-  # stay out of these loops — adding it here would wait forever on a port nobody owns.
-  for spec in "demo 5210" "lucid-next 5211" "asm-next 5212" "dev 8090"; do
-    set -- $spec; t=$1 port=$2; dir=/rag/repos/tenants/$t/frontend
+  # Which tenants have one is the REGISTRY's answer, not a list here: ui.mode
+  # `dev` and `external` are both a Vite server this account runs (`external`
+  # is the mode the control plane records for a UI it deliberately does not
+  # manage — plan PR-E decision D2, which is how `dev` keeps its dev server
+  # after its handover), and `static` is a build nginx serves from
+  # <data_dir>/ui/dist with no process to start. A static tenant in these loops
+  # would wait out its full timeout on a port nobody will ever own.
+  if ! reg_ready; then
+    say "  ✗ no readable registry: no tenant UI was started"; fail=1
+  else
+  rows=$(reg_rows)
+  for t in $rows; do
+    mode=$(reg_get "$t" '.ui.mode'); port=$(reg_get "$t" '.ui.port')
+    [[ $mode == dev || $mode == external ]] || continue
+    [[ -n $port ]] || { say "  [ui $t] ui.mode=$mode with no port in the registry — nothing to start"; continue; }
+    dir=$(reg_get "$t" '.worktree')/frontend
     if port_up "$port"; then say "  [ui $t :$port] already listening — skipping"; continue; fi
     [[ -d $dir/node_modules ]] || say "  [ui $t] WARNING: $dir/node_modules missing — run npm install there first"
     STARTED[ui-$t]=1
     run "[ui $t :$port]" /rag/config/proxy/ui-dev.sh "$t" "$port" "$dir"
   done
-  for spec in "demo 5210" "lucid-next 5211" "asm-next 5212" "dev 8090"; do
-    set -- $spec; wait_if_started "ui-$1" "http://127.0.0.1:$2/" 120 "ui $1 :$2" || { fail=1; continue; }
-    [[ -n ${STARTED[ui-$1]:-} ]] && (( ! DRY )) && record_pid_by_port "ui-$1" "$2"
+  for t in $rows; do
+    mode=$(reg_get "$t" '.ui.mode'); port=$(reg_get "$t" '.ui.port')
+    [[ $mode == dev || $mode == external ]] || continue
+    [[ -n $port ]] || continue
+    wait_if_started "ui-$t" "http://127.0.0.1:$port/" 120 "ui $t :$port" || { fail=1; continue; }
+    [[ -n ${STARTED[ui-$t]:-} ]] && (( ! DRY )) && record_pid_by_port "ui-$t" "$port"
   done
+  fi
 fi
 
 # ---------------------------------------------------------------- gowe
