@@ -85,13 +85,65 @@ def test_uri_hostile_ascii_is_replaced(raw: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["../../etc/passwd", "/abs/path/x.pdf", "a\\b\\c.pdf", "dir/sub/name.pdf"],
+    [
+        "../../etc/passwd",
+        "/abs/path/x.pdf",
+        "a\\b\\c.pdf",
+        "dir/sub/name.pdf",
+        # The fold MANUFACTURES separators the first split never saw, so these
+        # must be split a second time. NFKD: U+FF0F -> "/", U+FF3C -> "\\",
+        # U+FF0E -> ".", U+2024/U+2025/U+2026 -> "."/".."/"...", and
+        # U+2100/U+2101/U+2105/U+2106/U+FE68 expand to forms containing "/" or
+        # "\\". Before that second split, "..\uff0f..\uff0fetc\uff0fpasswd" came
+        # back as "../../etc/passwd.pdf" from the function documented as the
+        # traversal-free basename.
+        "..\uff0f..\uff0fetc\uff0fpasswd",
+        "\uff0e\uff0e\uff0fx.pdf",
+        "\u2025\uff0fx.pdf",
+        "dir\uff0fsub\uff0fname.pdf",
+        "..\uff3c..\uff3cx.pdf",
+        "x\x00\uff0fy.pdf",
+        "\u2100x.pdf",
+        "\u2101x.pdf",
+        "\u2105x.pdf",
+        "\u2106x.pdf",
+        "\ufe68x.pdf",
+    ],
 )
 def test_traversal_and_directory_parts_are_still_dropped(raw: str) -> None:
     out = safe(raw)
     assert "/" not in out
     assert "\\" not in out
     assert not out.startswith("..")
+
+
+def test_a_fullwidth_slash_name_yields_the_same_basename_as_its_ascii_twin() -> None:
+    """The fullwidth spelling must not be treated more leniently than the plain one."""
+    assert safe("..\uff0f..\uff0fetc\uff0fpasswd") == safe("../../etc/passwd") == "passwd.pdf"
+    # and a benign nested spelling keeps its last component rather than 500ing
+    # downstream on a path that resolves inside the staging dir but has no parent
+    assert safe("dir\uff0fsub\uff0fname.pdf") == "name.pdf"
+
+
+def test_a_lone_surrogate_folds_instead_of_crashing() -> None:
+    """Unreachable through Starlette's multipart decode, but the tag's utf-8
+    encode would raise rather than fold, turning a filename into a 500."""
+    for cp in ("\ud800", "\udfff", "\udc00"):
+        out = safe(f"{cp}.pdf")
+        assert out.isascii()
+        assert out.endswith(".pdf")
+
+
+def test_an_ascii_name_of_only_punctuation_now_falls_back() -> None:
+    """Deliberate behaviour change, recorded so it is not mistaken for a bug.
+
+    ``---.pdf``/``#.pdf``/``%%%.pdf`` used to be written through as-is. They
+    carry no information, and ``#``/``%`` fold to ``_`` anyway, so they now take
+    the fallback. The consequence: a collection already holding ``---.pdf`` will
+    not 409 against a re-upload of the same name.
+    """
+    for raw in ("---", "...", "_-_", "#", "%%%", "???", "_ _"):
+        assert safe(raw) == FALLBACK
 
 
 @pytest.mark.parametrize("raw", [None, "", ".", "..", "   ", "\x00"])

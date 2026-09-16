@@ -1125,6 +1125,8 @@ def _ascii_fold(name: str) -> str:
         if ch.isascii():
             out.append(ch)
         else:
+            # Surrogates land here too: unreachable through Starlette's
+            # multipart decode, but they would crash the tag's utf-8 encode.
             out.append("_")
             lossy = True
     ascii_name = "".join(out).translate(_URI_HOSTILE)
@@ -1134,7 +1136,7 @@ def _ascii_fold(name: str) -> str:
     # ("\u4e2d\u6587A.pdf" and "\u4e2d\u6587B.pdf" both become "___.pdf"). Without a
     # disambiguator the second upload 409s against a filename the user never
     # chose. Key the tag off the ORIGINAL name so it is stable across retries.
-    tag = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]  # noqa: S324 - not security
+    tag = hashlib.sha1(name.encode("utf-8", "surrogatepass")).hexdigest()[:6]
     stem, dot, ext = ascii_name.rpartition(".")
     return f"{stem}-{tag}{dot}{ext}" if dot else f"{ascii_name}-{tag}"
 
@@ -1157,7 +1159,15 @@ def _safe_upload_name(raw: str | None, fallback: str, kind: str) -> str:
     base = base.replace("\x00", "")
     # Fold before the dot-name check: a name that is only non-ASCII folds to
     # separators or nothing, and must land on the fallback rather than be written.
-    base = _ascii_fold(base).strip().strip("/").strip()
+    base = _ascii_fold(base)
+    # ...and split AGAIN. The fold can MANUFACTURE separators the first split
+    # never saw: NFKD maps U+FF0F FULLWIDTH SOLIDUS to "/", U+FF3C to a
+    # backslash, and U+FF0E/U+2024/U+2025/U+2026 to "." or "..". Without this,
+    # a fullwidth-slash name leaves here as "../../etc/passwd" -- confinement
+    # downstream refuses it, but this function is documented as THE
+    # traversal-free basename and must not hand one on. It also stopped
+    # benign "dir/sub/name.pdf" spellings from 500ing on the staging branch.
+    base = base.replace("\\", "/").rsplit("/", 1)[-1].strip()
     if base in ("", ".", "..") or set(base) <= {".", "_", " ", "-"}:
         return fallback
     suffixes = _kind_suffixes(kind)
