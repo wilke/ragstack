@@ -5,7 +5,8 @@ someone needs to be made an admin, someone wants their data shared with a
 colleague, someone hit a limit and got a number they cannot explain. Everything
 here is done through the tenant's own API. For moving a tenant to a new release
 see [`tenant-upgrade.md`](tenant-upgrade.md); for a 503 with a `Reference:` id
-see [`tracing-a-503.md`](tracing-a-503.md).
+see [`tracing-a-503.md`](tracing-a-503.md); to duplicate a collection onto
+another tenant see [`copy-collection.md`](copy-collection.md).
 
 Every endpoint, field name, status code and default below was read out of the
 code at `v1.6.1` and is cited `file:line`. Where a value is a **product default**

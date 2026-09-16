@@ -48,9 +48,15 @@ precedence rule.
 
 ## What is already here
 
-**Nothing — and that is the point.** This tenant starts with one empty default
-collection and no corpus. You create your own collection and put your own
-documents in it. Everything you ingest is private to you until you share it.
+**A corpus you can query the moment you sign in**, plus whatever you add yourself.
+
+| Collection | What it is |
+|---|---|
+| `asm-semantic` | The American Society for Microbiology journal corpus, semantically chunked — **6,718,269 passages**. Shared read-only with everyone, so any BV-BRC login can search it. You cannot add to it or change it. |
+
+So you can skip straight to asking questions — steps 2 and 3 below are only needed
+when you want to search **your own** documents. Anything you create is private to
+you until you share it, and lives alongside the shared corpus rather than in it.
 
 ## This tenant's limits
 
@@ -74,6 +80,8 @@ You cannot read these from the API yourself — `GET /v1/config` is admin-only. 
 you hit a limit, the server's refusal tells you which one.
 
 ## The six things you came to do
+
+Steps 2 and 3 are optional — `asm-semantic` is already there to query.
 
 | | In the browser | From the API |
 |---|---|---|
