@@ -1040,6 +1040,86 @@ async def test_an_unfenced_backup_is_best_effort(
     assert job["result"]["best_effort"] is True and job["result"]["fenced"] is False, job["result"]
 
 
+async def test_a_light_bundle_skips_the_stores_and_never_fences(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """``--scope config,state`` is the bundle a handover takes as its safety
+    net: the tenant's configuration, its sealed secrets and its SQLite state,
+    no store snapshots, no fence, and the API still serving throughout.
+
+    The three things asserted here are the three an operator would be misled
+    by if they were wrong: that every store leg is answered as a SKIP (so a
+    plan cannot be read as "the stores are in it"), that nothing stops the API,
+    and that the result and the registry record the scope so `last_backup`
+    cannot be mistaken for a recovery point."""
+    tenant = await managed_tenant(client)
+    preview = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"scope": ["config", "state"]})
+    )
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    for leg in ("skip the qdrant leg", "skip the elasticsearch leg", "skip the postgres leg"):
+        assert step_titled(plan, leg) is not None, [s["title"] for s in plan["steps"]]
+    assert step_titled(plan, "stop ragstack-") is None, [s["title"] for s in plan["steps"]]
+    assert step_titled(plan, "fence verify") is None, [s["title"] for s in plan["steps"]]
+    assert any("LIGHT bundle" in w for w in plan["warnings"]), plan["warnings"]
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas,
+        args={"scope": ["config", "state"]}, timeout=60.0,
+    )
+    assert job["state"] == "succeeded", (
+        f"the light backup settled as {job['state']}: {json.dumps(job.get('error'))}"
+    )
+    assert job["result"]["scope"] == ["config", "state"], job["result"]
+    assert job["result"]["fenced"] is False, job["result"]
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.status_code == 200, shown.text
+    last = shown.json()["summary"]["last_backup"]
+    assert last and last["verified"] is False and last["fenced"] is False, last
+
+
+async def test_an_unusable_backup_scope_is_refused(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Two scopes describe a bundle nobody could use, and both are refused at
+    PLAN time with a sentence saying why — not accepted and then found wanting
+    by whoever tries to restore from one.
+
+    A leg nobody defined is a different answer again: 422 `validation`, from
+    the args schema, before a plan exists at all."""
+    tenant = await managed_tenant(client)
+    # No `config`: no tenant.env, no registry row, no secrets — nothing to
+    # rebuild a tenant FROM.
+    resp = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"scope": ["state", "stores"]})
+    )
+    assert resp.status_code == 409, resp.text
+    err = resp.json()
+    validate(err, "error", schemas)
+    assert err["code"] == "refused" and "restored" in err["detail"], err
+
+    # `--fence` with a light scope: an outage bought for nothing.
+    resp = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup",
+        json=op_body(args={"scope": ["config", "state"], "fence": True}),
+    )
+    assert resp.status_code == 409, resp.text
+    err = resp.json()
+    validate(err, "error", schemas)
+    assert err["code"] == "refused" and "outage" in err["detail"], err
+
+    # A leg outside the enum never reaches the planner.
+    resp = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"scope": ["secrets"]})
+    )
+    assert resp.status_code == 422, resp.text
+    err = resp.json()
+    validate(err, "error", schemas)
+    assert err["code"] == "validation", err
+
+
 async def test_without_recipients_the_secrets_are_excluded_and_the_plan_says_so(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
 ) -> None:

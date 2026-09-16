@@ -392,6 +392,19 @@ Optional: a conformance run against the deployed daemon needs a second daemon
 on another port with the rate limiter off — see the full runbook, "Running the
 conformance suite against the deployed daemon".
 
+Preparing an adopted tenant for handover — `env normalize`, `set-ui-mode`,
+`rebase-worktree`, `set-bind`, `adopt --confirm-stores` and the light
+`backup --scope config,state` — has its own runbook:
+[`ctl-handover.md`](ctl-handover.md), "Preparing a tenant for handover". None
+of those six changes what a user sees; together they are what makes
+`doctor --op handover` green.
+
+The reboot runbook (`restore.sh`, `pre-reboot.sh`, `snapshot.sh`) reads the
+registry now: there is no tenant list in those scripts to keep in step, a row
+whose `owner` is `svcbvbrc` is skipped because the ctl's own `@reboot` line
+starts it, and `restore.sh --tenant <n>` / `pre-reboot.sh --tenant <n>` act on
+exactly one tenant.
+
 Still waiting on root (not blocking any step above): linger + `user@10078`
 drop-in, then the daemon moves from `ctl-daemon.sh` to `systemctl --user`
 (full runbook, step 7, second half).
