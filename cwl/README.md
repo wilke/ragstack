@@ -464,7 +464,8 @@ real instance is one hand-run away from writing to it.
 
 They are **not** operator config either. The API seeds them into every ingest
 submission per run from its own `QDRANT_URL` / `ELASTICSEARCH_URL` settings
-(honouring `QDRANT_COLLECTION_ROUTES` for the vector store). Because
+(honouring `QDRANT_COLLECTION_ROUTES` for the vector store and
+`ES_COLLECTION_ROUTES` for the text index). Because
 `GoWeBackend.run` merges `{**static_inputs, **per_run_inputs}`, the per-run value
 wins — `GOWE_WORKFLOW_INPUTS_JSON` is *structurally* unable to redirect an ingest
 at another instance, and setting these keys in it is **refused at boot** rather

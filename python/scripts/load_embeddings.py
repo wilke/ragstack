@@ -127,6 +127,10 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # Both names come from the registry entry, never from the command line.
         # A contradicting --es-index was refused during resolution.
         es_index = target.es_index
+        # The cluster comes from the entry too: a routed index (ES_COLLECTION_ROUTES)
+        # overrides --es-url, so a bulk load cannot fill the default cluster's copy
+        # of an index the API reads from another one.
+        es_url = target.es_url or args.es_url
         vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout,
                                    upsert_batch_size=args.upsert_batch_size,
@@ -145,7 +149,7 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # wall clock. Parking index.refresh_interval (below) is the smaller,
         # complementary half — it governs the periodic background refresh, which an
         # explicit per-request refresh bypasses entirely.
-        tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index,
+        tindex = ElasticsearchTextIndex(url=es_url, index=es_index,
                                         refresh_on_write=not args.bulk_refresh)
         await tindex.ensure_index()
     # Replay does its own per-version delete-prior (a document's chunks may

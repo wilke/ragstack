@@ -15,13 +15,15 @@ import pytest
 
 from ragstack.api import deps
 from ragstack.config import settings
-from ragstack.store_routing import qdrant_url_for
+from ragstack.store_routing import es_url_for, qdrant_url_for
 
 
 @pytest.fixture(autouse=True)
 def _pinned(monkeypatch):
     monkeypatch.setattr(settings, "qdrant_url", "http://127.0.0.1:1/default")
     monkeypatch.setattr(settings, "qdrant_collection_routes", {})
+    monkeypatch.setattr(settings, "elasticsearch_url", "http://127.0.0.1:2/default")
+    monkeypatch.setattr(settings, "es_collection_routes", {})
 
 
 def test_unrouted_collection_uses_qdrant_url():
@@ -70,6 +72,78 @@ def test_the_module_does_not_import_the_api():
     assert imported == {"__future__", "typing"}, imported
 
 
+# --------------------------------------------------------------------------- #
+# the text leg: es_url_for, the twin of qdrant_url_for
+# --------------------------------------------------------------------------- #
+
+
+def test_es_empty_routes_is_byte_for_byte_the_bare_setting():
+    """The whole compatibility promise: a deployment that sets no routes gets
+    `elasticsearch_url`, unchanged, for every index — including one whose name
+    happens to match a Qdrant route."""
+    assert es_url_for("anything", settings) == "http://127.0.0.1:2/default"
+    assert es_url_for("", settings) == "http://127.0.0.1:2/default"
+
+
+def test_es_routed_index_uses_its_cluster(monkeypatch):
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"routed_idx": "http://127.0.0.1:2/routed"})
+    assert es_url_for("routed_idx", settings) == "http://127.0.0.1:2/routed"
+
+
+def test_es_unrouted_index_is_not_captured_by_a_neighbours_route(monkeypatch):
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"routed_idx": "http://127.0.0.1:2/routed"})
+    assert es_url_for("other_idx", settings) == "http://127.0.0.1:2/default"
+
+
+def test_es_key_is_the_physical_index_not_the_collection_id(monkeypatch):
+    """The deliberate asymmetry with the Qdrant table.
+
+    A spec's id, its Qdrant collection and its ES index are three different
+    strings. `es_collection_routes` is keyed by the LAST of them, so a table that
+    names the id or the collection routes nothing — which is the safe direction
+    (the default cluster, i.e. today's behaviour) rather than a half-routed
+    corpus."""
+    from ragstack.collection_store import CollectionSpec
+
+    spec = CollectionSpec(
+        id="sfr-512",
+        collection="ragstack_sfr_tok512",
+        text_index="shared_text_v1",
+        embedding_model="m",
+        embedding_model_dim=8,
+    )
+    assert (spec.id, spec.collection, spec.es_index()) == (
+        "sfr-512", "ragstack_sfr_tok512", "shared_text_v1"
+    )
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"shared_text_v1": "http://127.0.0.1:2/routed"})
+    assert es_url_for(spec.es_index(), settings) == "http://127.0.0.1:2/routed"
+    # …and neither of the other two names is a key.
+    assert es_url_for(spec.id, settings) == "http://127.0.0.1:2/default"
+    assert es_url_for(spec.collection, settings) == "http://127.0.0.1:2/default"
+
+
+def test_es_routes_are_independent_of_qdrant_routes(monkeypatch):
+    """One leg routed, the other not, is the expected shape — the vector leg's
+    reason (a per-process VMA budget) has no ES counterpart."""
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"phys": "http://127.0.0.1:1/routed"})
+    assert qdrant_url_for("phys", settings) == "http://127.0.0.1:1/routed"
+    assert es_url_for("phys", settings) == "http://127.0.0.1:2/default"
+
+
+def test_es_deps_helper_is_the_same_function(monkeypatch):
+    """`api.deps._es_url_for` is a delegate, not a second copy — see the Qdrant
+    test above; a divergence between the cluster the API queries and the one it
+    seeds into an ingest is #407 on the text leg."""
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"routed_idx": "http://127.0.0.1:2/routed"})
+    for index in ("routed_idx", "other_idx"):
+        assert deps._es_url_for(index) == es_url_for(index, settings)
+
+
 def test_the_ops_inventory_still_audits_another_deployments_config(monkeypatch):
     """The routing must follow the settings object it is HANDED, never an
     ambient one.
@@ -84,13 +158,22 @@ def test_the_ops_inventory_still_audits_another_deployments_config(monkeypatch):
     from ragstack.ops import store_inventory as si
 
     monkeypatch.setattr(settings, "qdrant_url", "http://127.0.0.1:1/THIS-PROCESS")
+    monkeypatch.setattr(settings, "elasticsearch_url", "http://127.0.0.1:1/THIS-ES")
     other = si.settings_from_env({
         "QDRANT_URL": "http://127.0.0.1:2/other-deployment",
         "QDRANT_COLLECTION_ROUTES": '{"routed_phys": "http://127.0.0.1:3/other-routed"}',
-        "ELASTICSEARCH_URL": "http://127.0.0.1:2",
+        "ELASTICSEARCH_URL": "http://127.0.0.1:2/other-es",
+        "ES_COLLECTION_ROUTES": '{"routed_idx": "http://127.0.0.1:4/other-routed-es"}',
     })[0]
     with si._patched_settings(other) as patched:
         assert patched._qdrant_url_for("routed_phys") == "http://127.0.0.1:3/other-routed"
         assert patched._qdrant_url_for("plain_phys") == "http://127.0.0.1:2/other-deployment"
+        # The text leg too — and this also pins that ES_COLLECTION_ROUTES survives
+        # the env round-trip as a dict (pydantic-settings JSON-decodes complex
+        # fields only through the ENV source, never through init kwargs; see
+        # settings_from_env's "Fidelity" note).
+        assert patched._es_url_for("routed_idx") == "http://127.0.0.1:4/other-routed-es"
+        assert patched._es_url_for("plain_idx") == "http://127.0.0.1:2/other-es"
     # …and the swap is undone: this process answers for itself again.
     assert deps._qdrant_url_for("plain_phys") == "http://127.0.0.1:1/THIS-PROCESS"
+    assert deps._es_url_for("plain_idx") == "http://127.0.0.1:1/THIS-ES"

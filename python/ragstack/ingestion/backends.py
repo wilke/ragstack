@@ -148,7 +148,8 @@ def _make_gowe_backend(
         raise ValueError(
             f"gowe_workflow_inputs_json may not set {', '.join(reserved)}: ingest store "
             "targets are seeded per run from the QDRANT_URL / ELASTICSEARCH_URL settings "
-            "(and QDRANT_COLLECTION_ROUTES) and would override these keys silently. "
+            "(and QDRANT_COLLECTION_ROUTES / ES_COLLECTION_ROUTES) and would override "
+            "these keys silently. "
             "Remove them from GOWE_WORKFLOW_INPUTS_JSON and set those settings instead; "
             "the blob remains for genuine per-deployment extras."
         )

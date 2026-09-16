@@ -21,6 +21,8 @@ def _settings(**over):
     base = {
         "qdrant_url": "http://localhost:6333",
         "qdrant_collection_routes": {},
+        "elasticsearch_url": "http://localhost:9200",
+        "es_collection_routes": {},
         "collection_store_backend": "json",
         "collection_store_path": "",
         "collections_file": "",
@@ -41,7 +43,7 @@ def _spec(cid="corpus", collection="store_a", **over):
 
 
 def _args(**over):
-    base = {"collection_id": "", "collection": "", "qdrant_url": "",
+    base = {"collection_id": "", "collection": "", "qdrant_url": "", "es_url": "",
             "create_via_api": "", "api_key": "", "api_bearer": "", "registry": ""}
     base.update(over)
     return argparse.Namespace(**base)
@@ -58,6 +60,7 @@ def test_resolve_returns_the_entrys_physical_names():
     assert t.collection == "ragstack_sfr_tok256"
     assert t.es_index == "ragstack_sfr"  # legs may differ; both come from the entry
     assert t.qdrant_url == "http://localhost:6333"
+    assert t.es_url == "http://localhost:9200"
 
 
 def test_resolve_refuses_an_unknown_id_and_says_how_to_fix_it():
@@ -90,6 +93,40 @@ def test_explicit_url_wins_for_an_unrouted_collection():
     t = it.resolve("c", settings=_settings(), specs=[_spec("c")],
                    qdrant_url="http://other:6333")
     assert t.qdrant_url == "http://other:6333"
+
+
+def test_routed_index_wins_over_the_command_line_es_url():
+    """The text leg's twin: filling the default cluster's copy of a routed index
+    leaves the cluster the API queries empty, and the corpus half-built."""
+    s = _settings(es_collection_routes={"shared_text": "http://localhost:9243"})
+    t = it.resolve("c", settings=s,
+                   specs=[_spec("c", "store_a", text_index="shared_text")],
+                   es_url="http://elsewhere:9200")
+    assert t.es_url == "http://localhost:9243"
+
+
+def test_explicit_es_url_wins_for_an_unrouted_index():
+    t = it.resolve("c", settings=_settings(), specs=[_spec("c")],
+                   es_url="http://other:9200")
+    assert t.es_url == "http://other:9200"
+
+
+def test_es_route_is_keyed_on_the_index_not_the_collection():
+    """The deliberate asymmetry between the two tables. Here the entry's index
+    (`shared_text`) differs from its collection (`store_a`); a table naming the
+    collection must route nothing, or a corpus splits across two clusters."""
+    s = _settings(es_collection_routes={"store_a": "http://localhost:9243"})
+    t = it.resolve("c", settings=s,
+                   specs=[_spec("c", "store_a", text_index="shared_text")])
+    assert t.es_url == "http://localhost:9200"
+
+
+def test_the_two_legs_route_independently():
+    s = _settings(qdrant_collection_routes={"store_a": "http://localhost:6343"},
+                  es_collection_routes={"shared_text": "http://localhost:9243"})
+    t = it.resolve("c", settings=s,
+                   specs=[_spec("c", "store_a", text_index="shared_text")])
+    assert (t.qdrant_url, t.es_url) == ("http://localhost:6343", "http://localhost:9243")
 
 
 # --------------------------------------------------------------------------

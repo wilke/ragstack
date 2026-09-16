@@ -102,12 +102,16 @@ seeded per run**. They are not workflow defaults and they are not operator
 config:
 
 - **The API seeds them.** `api/routers/documents.py` puts `qdrant_url` and
-  `es_url` into every submission's inputs, taking `qdrant_url` from
-  `store_routing.qdrant_url_for(collection, settings)` — so a collection routed
-  to its own Qdrant instance via `QDRANT_COLLECTION_ROUTES` is honoured — and
-  `es_url` from `elasticsearch_url`. The restore path does the same in
-  `api/deps.py`. One implementation, because a second copy that forgot
-  `qdrant_collection_routes` is exactly how a write lands on the wrong instance.
+  `es_url` into every submission's inputs, taking each from the routing function
+  for its own leg — `store_routing.qdrant_url_for(collection, settings)` (keyed
+  by the physical collection, so `QDRANT_COLLECTION_ROUTES` is honoured) and
+  `store_routing.es_url_for(es_index, settings)` (keyed by the physical index,
+  so `ES_COLLECTION_ROUTES` is honoured). One implementation per leg, because a
+  second copy that forgot a routing table is exactly how a write lands on the
+  wrong instance. **The restore path does NOT route** — its gate is built once
+  at startup, before any record exists, so it seeds the bare `QDRANT_URL` /
+  `ELASTICSEARCH_URL` for both legs; `COLLECTION_RESTORE_INPUTS_JSON` is the
+  override until both are resolved per record.
 - **The CWL inputs are REQUIRED, with no default.** `cwl/pdf-ingest-scatter.cwl`,
   `cwl/restore-collection.cwl` and `cwl/load-embeddings.cwl` all declare
   `qdrant_url` / `es_url` as `type: string` with the default deliberately
@@ -124,7 +128,8 @@ config:
   ```
   gowe_workflow_inputs_json may not set qdrant_url, es_url: ingest store
   targets are seeded per run from the QDRANT_URL / ELASTICSEARCH_URL settings
-  (and QDRANT_COLLECTION_ROUTES) and would override these keys silently.
+  (and QDRANT_COLLECTION_ROUTES / ES_COLLECTION_ROUTES) and would override
+  these keys silently.
   ```
 
   The blob remains for genuine per-deployment extras. If your API will not start

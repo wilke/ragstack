@@ -114,6 +114,10 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
         # Both names come from the registry entry, never from the command line
         # (#263). A contradicting --es-index was refused during resolution.
         es_index = target.es_index
+        # …and so does the ES cluster: a routed index lives on another cluster and
+        # the route wins over --es-url (ES_COLLECTION_ROUTES). Unrouted, this is
+        # exactly the --es-url the operator passed.
+        es_url = target.es_url or args.es_url
         dim = len((await embedder.embed(["dimension probe"]))[0])
         # The probed dim must match the entry, or this shard's vectors are not the
         # ones the entry promises (ADR-0002).
@@ -121,7 +125,7 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
         vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout)
         await vstore.ensure_collection()
-        tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
+        tindex = ElasticsearchTextIndex(url=es_url, index=es_index)
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=chunker, embedder=embedder,
                              vector_store=vstore, text_index=tindex,

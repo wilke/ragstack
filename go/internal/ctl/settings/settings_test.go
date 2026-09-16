@@ -44,6 +44,10 @@ func TestClassify(t *testing.T) {
 		"DEFAULT_COLLECTION_ID": Public, "CHUNK_METHOD": Public, "CHUNK_SIZE": Public, "CHUNK_OVERLAP": Public,
 		"DOI_ENRICHMENT_ENABLED": Public, "DOI_ENRICHMENT_MAILTO": Public, "RETRIEVAL_DEMOTE_BOILERPLATE": Public,
 		"RETRIEVAL_MAX_PER_DOC": Public, "IDENTITY_KEY_CACHE_TTL_SECONDS": Public,
+		// The two per-collection routing tables are one class, together, and it is
+		// the CLI-only class: a JSON map of physical-store-name -> instance URL
+		// decides where the process connects, like QDRANT_URL / ELASTICSEARCH_URL.
+		"QDRANT_COLLECTION_ROUTES": ExecutableSurface, "ES_COLLECTION_ROUTES": ExecutableSurface,
 		// public despite the pattern (reviewed exceptions)
 		"CHUNK_MAX_TOKENS": Public, "CHUNK_TOKEN_COUNTER": Public, "EMBEDDING_MAX_BATCH_TOKENS": Public,
 		"EMBEDDING_CHARS_PER_TOKEN": Public, "GOWE_RECEIPTS_OUTPUT_KEY": Public, "GOWE_SHARDS_INPUT_KEY": Public,

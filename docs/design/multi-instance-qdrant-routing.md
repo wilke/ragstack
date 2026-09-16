@@ -50,8 +50,52 @@ collection, so it composes: tenant → (its) collection → instance.
   --qdrant-url http://localhost:6343`.
 - **Serving** (API): set `QDRANT_COLLECTION_EXPLICIT=ragstack_sfr_semantic` +
   `QDRANT_COLLECTION_ROUTES` as above.
-- Elasticsearch is **not** VMA-constrained (separate service) → BM25 stays on the one
-  ES instance; routing is vector-only. If ES ever needs splitting, mirror this field.
+- Elasticsearch is **not** VMA-constrained, so the ES table below exists for a
+  different reason — placement, not a per-process ceiling.
+
+## The text leg: `ES_COLLECTION_ROUTES`
+
+The BM25 half has the same table, `ES_COLLECTION_ROUTES`, and the same semantics:
+
+```jsonc
+// ES_COLLECTION_ROUTES (JSON env). An index not listed uses ELASTICSEARCH_URL.
+{ "ragstack_sfr_semantic": "http://localhost:9243" }
+```
+
+`store_routing.es_url_for(index, settings)` answers it,
+`deps._build_text_index_for` connects there, and empty routes ⇒ byte-for-byte
+today's behaviour. Everything that must name a per-collection text store resolves
+through that one function: the API's own BM25 leg, the `es_url` seeded into a GoWe
+ingest submission, the bulk CLIs' `IngestTarget.es_url`, and `store_inventory`'s
+text claims.
+
+**Why, given ES is not VMA-constrained.** Not a ceiling — placement. A tenant can
+point a collection's text leg at a cluster that already holds the index (a shared
+corpus, a pre-built index, the cluster with the disk or the heap for it) instead of
+copying it, so a collection's vector and text halves can each live wherever they
+already are. And, like the Qdrant table, it is the per-index, reversible cut-over
+lever onto a new cluster.
+
+**The key is the physical INDEX name, not the collection id** — deliberately
+asymmetric with the Qdrant table, whose key is the physical *collection* name. Each
+table is keyed by the store its leg actually addresses; for the text leg that is
+whatever `text_index` / `es_index()` resolves to, which is not the id (a blank
+`text_index` falls back to the Qdrant collection name, and several ids may
+deliberately alias one index). Keying on the id would route one alias and strand
+the rest on the default cluster — one corpus, silently split across two.
+
+**A routed store is shared state.** A route names an instance this deployment does
+not own and whose other readers no registry here can enumerate, so
+`DELETE /v1/collections/{id}?purge=true` refuses (409) when either leg is routed,
+the way it already refuses a store another registry id serves. `purge=false` still
+works and is how a routed collection is released: the binding goes, the store stays.
+
+**Known gap.** The `restore-collection` submission seeds the bare
+`QDRANT_URL`/`ELASTICSEARCH_URL` — the gate is built once at startup, before any
+record exists, so neither leg is routed there. Restoring a routed collection aims
+the worker at the default instances; `COLLECTION_RESTORE_INPUTS_JSON` is the
+override until both legs are resolved per record inside
+`CollectionRestorer.inputs_for`.
 
 ## The migration path: → a sharded cluster
 

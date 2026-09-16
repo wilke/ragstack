@@ -403,3 +403,86 @@ async def test_the_two_forms_are_exact_complements(client, manifests):
             f"unregister={unreg.status_code} purge={purge.status_code}"
         )
         break  # the first delete mutates the registry; one pass is the assertion
+
+
+# --- routed stores: shared across deployments, so purge is refused ---------- #
+#
+# `_shared_store_users` asks "does another id in THIS registry serve this
+# store". A routing table asks the same question across deployments and answers
+# it "assume yes": QDRANT_COLLECTION_ROUTES / ES_COLLECTION_ROUTES exist to
+# point a leg at an instance this deployment does not own, whose other readers
+# nothing here can enumerate. Same blast radius as #228's, strictly larger.
+
+
+async def test_purge_refused_when_the_qdrant_collection_is_routed(
+    client, manifests, monkeypatch
+):
+    _, vs, ti = _add("phys_routed_q", cid="routed-q")
+    await _populate(vs, ti)
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"phys_routed_q": "http://qdrant2.test:6333"})
+    r = await client.delete("/v1/collections/routed-q?purge=true")
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "phys_routed_q" in detail                # which store
+    assert "http://qdrant2.test:6333" in detail     # and where it lives
+    assert "QDRANT_COLLECTION_ROUTES" in detail     # and which knob says so
+    # Refused, not half-done: the data is still there.
+    assert await vs.count() == 1
+    assert app.state.collections.resolve("routed-q") is not None
+
+
+async def test_purge_refused_when_the_es_index_is_routed(client, manifests, monkeypatch):
+    """The text leg's twin, and the case the ES table adds: the vector leg is
+    unrouted and local, so nothing in the Qdrant guard fires — only the index is
+    shared, and purging would drop an index another deployment reads."""
+    _, vs, ti = _add("phys_local_q", cid="routed-es", text_index="shared_text_v1")
+    await _populate(vs, ti)
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"shared_text_v1": "http://es2.test:9200"})
+    r = await client.delete("/v1/collections/routed-es?purge=true")
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "shared_text_v1" in detail
+    assert "http://es2.test:9200" in detail
+    assert "ES_COLLECTION_ROUTES" in detail
+    # Refused, not half-done: neither leg was touched.
+    assert await ti.search("hello") != []
+    assert await vs.count() == 1
+    assert app.state.collections.resolve("routed-es") is not None
+
+
+async def test_an_es_route_for_another_index_does_not_refuse_the_purge(
+    client, manifests, monkeypatch
+):
+    """Discriminator: routes configured, but naming a different index. A guard
+    that fired on "any routes are set" would make every collection in a routed
+    deployment unpurgeable."""
+    _, vs, ti = _add("phys_unrouted", cid="unrouted-es")
+    await _populate(vs, ti)
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"some_other_index": "http://es2.test:9200"})
+    r = await client.delete("/v1/collections/unrouted-es?purge=true")
+    assert r.status_code == 200, r.text
+    assert await vs.count() == 0
+
+
+async def test_a_routed_collection_can_still_be_unregistered(
+    client, manifests, monkeypatch
+):
+    """The other half of the guard, and the reason it had to touch the
+    unregister branch too. A routed entry has no registry sharers, so the
+    "no other entry claims this store" refusal would have fired — leaving the
+    collection refused BOTH ways and permanently undeletable. Routed counts as
+    shared for both branches, so the pair stays total."""
+    _add("phys_routed_both", cid="routed-both", text_index="shared_text_v2")
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"phys_routed_both": "http://qdrant2.test:6333"})
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"shared_text_v2": "http://es2.test:9200"})
+    purge = await client.delete("/v1/collections/routed-both?purge=true")
+    unreg = await client.delete("/v1/collections/routed-both")
+    assert purge.status_code == 409, purge.text
+    assert unreg.status_code == 204, unreg.text
+    allowed = [r.status_code for r in (unreg, purge) if r.status_code < 300]
+    assert len(allowed) == 1

@@ -13,7 +13,8 @@ GOWE_WORKFLOW_INPUTS_JSON='{"qdrant_url":"...","es_url":"..."}'
 ```
 
 The fix makes the API seed those two inputs itself, per run, from `QDRANT_URL` /
-`ELASTICSEARCH_URL` (honouring `QDRANT_COLLECTION_ROUTES`). Because
+`ELASTICSEARCH_URL` (honouring `QDRANT_COLLECTION_ROUTES` and, since the ES
+twin landed, `ES_COLLECTION_ROUTES`). Because
 `GoWeBackend.run` merges `{**static_inputs, **per_run_inputs}`, the per-run value
 wins — so after the upgrade the blob's copies are **inert**. Config that is inert
 while an operator believes it is live is the same failure mode as #407 itself, so

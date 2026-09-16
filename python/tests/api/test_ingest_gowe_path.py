@@ -68,6 +68,7 @@ from tests.workspace_support import FakeWorkspace as WorkspaceService
 QDRANT_UNDER_TEST = "http://127.0.0.1:1/qdrant-under-test"
 ES_UNDER_TEST = "http://127.0.0.1:1/es-under-test"
 ROUTED_UNDER_TEST = "http://127.0.0.1:1/routed-qdrant-under-test"
+ROUTED_ES_UNDER_TEST = "http://127.0.0.1:1/routed-es-under-test"
 
 TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIGNATURE"
 SUBJECT = "alice@patricbrc.org"
@@ -223,6 +224,7 @@ async def gowe(client, monkeypatch, _acl_store):
     monkeypatch.setattr(settings, "qdrant_url", QDRANT_UNDER_TEST)
     monkeypatch.setattr(settings, "elasticsearch_url", ES_UNDER_TEST)
     monkeypatch.setattr(settings, "qdrant_collection_routes", {})
+    monkeypatch.setattr(settings, "es_collection_routes", {})
 
     engine = FakeEngine()
     workspace = FakeWorkspace(engine)
@@ -494,7 +496,12 @@ async def test_a_routed_collection_is_ingested_to_its_routed_instance(
     the API's own store construction uses — seeding the bare ``qdrant_url``
     instead would build a second, invisible copy of a store that already exists
     on the routed instance. This is the deliberate divergence from the restore
-    path, which still seeds the unrouted URL (tracked as a follow-up)."""
+    path, which still seeds the unrouted URL (tracked as a follow-up).
+
+    The vector leg alone is routed here: ``es_collection_routes`` is empty, so
+    ``es_url`` stays the bare setting. One leg routed and the other not is a
+    legitimate configuration — the two tables are independent — and pinning it
+    keeps the legs from being wired to one another."""
     from ragstack.config import settings
 
     monkeypatch.setattr(settings, "qdrant_collection_routes",
@@ -503,8 +510,68 @@ async def test_a_routed_collection_is_ingested_to_its_routed_instance(
     assert r.status_code == 202, r.text
     inputs = gowe["engine"].submissions[0]["inputs"]
     assert inputs["qdrant_url"] == ROUTED_UNDER_TEST
-    # ES has no routing analogue in config, so it stays the bare setting.
     assert inputs["es_url"] == ES_UNDER_TEST
+
+
+@pytest.mark.asyncio
+async def test_a_routed_index_is_ingested_to_its_routed_cluster(
+    client, gowe, monkeypatch
+):
+    """The text leg's twin of the test above (``ES_COLLECTION_ROUTES``).
+
+    The worker must write the BM25 half where the API reads it. A bare
+    ``elasticsearch_url`` here is #407 one leg over: the chunks land in the
+    default cluster's copy of the index while every query hits the routed
+    cluster, which stays empty — a silently half-ingested corpus rather than a
+    connection error.
+
+    The key is the PHYSICAL INDEX (``entry.es_index()``, sent on the same
+    submission as ``es_index``), not the collection id ``lib1``."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"lib1_phys": ROUTED_ES_UNDER_TEST})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["es_index"] == "lib1_phys"
+    assert inputs["es_url"] == ROUTED_ES_UNDER_TEST
+    # The vector leg is untouched by an ES route.
+    assert inputs["qdrant_url"] == QDRANT_UNDER_TEST
+
+
+@pytest.mark.asyncio
+async def test_both_legs_route_independently(client, gowe, monkeypatch):
+    """Vector and text routed to different instances on one submission — the
+    configuration the tables exist for: a collection whose two halves live on
+    shared instances that neither this tenant nor each other owns."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"lib1_phys": ROUTED_UNDER_TEST})
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"lib1_phys": ROUTED_ES_UNDER_TEST})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["qdrant_url"] == ROUTED_UNDER_TEST
+    assert inputs["es_url"] == ROUTED_ES_UNDER_TEST
+
+
+@pytest.mark.asyncio
+async def test_an_es_route_for_another_index_does_not_touch_this_one(
+    client, gowe, monkeypatch
+):
+    """Discriminator for the ES test above, matching the Qdrant one: routes
+    configured but naming a DIFFERENT index fall back to ``elasticsearch_url``.
+    Without it, a seed that returned "the first route" would pass."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "es_collection_routes",
+                        {"some_other_index": ROUTED_ES_UNDER_TEST})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    assert gowe["engine"].submissions[0]["inputs"]["es_url"] == ES_UNDER_TEST
 
 
 @pytest.mark.asyncio

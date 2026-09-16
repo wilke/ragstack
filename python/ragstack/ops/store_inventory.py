@@ -117,7 +117,8 @@ def settings_from_env(values: dict[str, str]) -> tuple[Any, list[str]]:
     constructed the way the API constructs it, rather than passed as init
     kwargs. Two reasons, both load-bearing:
 
-    * **Fidelity.** Complex fields (``qdrant_collection_routes`` is a ``dict``)
+    * **Fidelity.** Complex fields (``qdrant_collection_routes`` and
+      ``es_collection_routes`` are ``dict``s)
       are JSON-decoded by pydantic-settings' env source and *not* by init
       kwargs, so the kwargs route rejects a config the API accepts — and a
       deployment this tool cannot describe is a deployment whose stores all
@@ -252,11 +253,25 @@ def _patched_settings(s: Any) -> Iterator[Any]:
         deps.settings = original
 
 
-def default_store_names(s: Any) -> tuple[str, str, str]:
-    """``(qdrant_url_for_default, vector_name, text_name)`` for a settings object."""
+def default_store_names(s: Any) -> tuple[str, str, str, str]:
+    """``(qdrant_url, vector_name, text_name, es_url)`` for a settings object.
+
+    Both URLs are the ROUTED ones for their own leg's store, not the bare
+    ``qdrant_url``/``elasticsearch_url`` settings: a :class:`StoreKey` is
+    ``(url, name)``, so a store reported under the wrong url reads as a store
+    that is not there — a MISSING row for the instance that does hold it, and,
+    far worse, an UNCLAIMED row for the routed one, whose output is an input to
+    deletion.
+    """
     with _patched_settings(s) as deps:
         vector = deps._derived_collection_name()
-        return canonical_url(deps._qdrant_url_for(vector)), vector, deps._es_index_name()
+        text = deps._es_index_name()
+        return (
+            canonical_url(deps._qdrant_url_for(vector)),
+            vector,
+            text,
+            canonical_url(deps._es_url_for(text)),
+        )
 
 
 def _registry_path(s: Any) -> str:
@@ -310,22 +325,26 @@ def claims_for(name: str, config_path: str, values: dict[str, str]) -> Deploymen
     dep.unknown_keys = unknown
     dep.qdrant_api_key = s.qdrant_api_key or ""
     dep.es_api_key = getattr(s, "elasticsearch_api_key", "") or ""
+    # The deployment's DEFAULT cluster — what `render_text`/`to_dict` show as its
+    # text leg and what `collect` probes. A per-index route can move an individual
+    # claim off it (below); it does not change the deployment's default.
     dep.es_url = canonical_url(s.elasticsearch_url)
 
     try:
-        qdrant_url, vector, text = default_store_names(s)
+        qdrant_url, vector, text, text_url = default_store_names(s)
     except Exception as e:  # noqa: BLE001
         dep.errors.append(f"default store name: {type(e).__name__}: {e}")
         qdrant_url, vector, text = canonical_url(s.qdrant_url), "", ""
+        text_url = dep.es_url
     dep.qdrant_url = qdrant_url or canonical_url(s.qdrant_url)
 
     if vector:
         dep.claims.append(
             Claim(StoreKey(dep.qdrant_url, vector), VECTOR, name, "settings-default")
         )
-    if text and dep.es_url:
+    if text and text_url:
         dep.claims.append(
-            Claim(StoreKey(dep.es_url, text), TEXT, name, "settings-default")
+            Claim(StoreKey(text_url, text), TEXT, name, "settings-default")
         )
 
     try:
@@ -337,12 +356,16 @@ def claims_for(name: str, config_path: str, values: dict[str, str]) -> Deploymen
     for spec in specs:
         with _patched_settings(s) as deps:
             vec_url = canonical_url(deps._qdrant_url_for(spec.collection))
+            # Keyed on the index, not the id — `es_collection_routes` is, and a
+            # StoreKey names the store, so a routed index must be claimed under
+            # the cluster that actually holds it.
+            txt_url = canonical_url(deps._es_url_for(spec.es_index()))
         dep.claims.append(
             Claim(StoreKey(vec_url, spec.collection), VECTOR, name, f"registry:{spec.id}")
         )
-        if dep.es_url:
+        if txt_url:
             dep.claims.append(
-                Claim(StoreKey(dep.es_url, spec.es_index()), TEXT, name, f"registry:{spec.id}")
+                Claim(StoreKey(txt_url, spec.es_index()), TEXT, name, f"registry:{spec.id}")
             )
     return dep
 

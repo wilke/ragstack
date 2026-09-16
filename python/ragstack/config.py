@@ -579,6 +579,35 @@ class Settings(BaseSettings):
     # bound was raised to 60s as the incident's interim mitigation, there was no
     # way to give the text leg the same headroom.
     elasticsearch_timeout: float | None = None
+    # Multi-instance Elasticsearch routing: the twin of ``qdrant_collection_routes``,
+    # mapping one index to an alternate Elasticsearch base URL so its BM25 leg is
+    # served from a SEPARATE cluster. An index not listed here uses
+    # ``elasticsearch_url`` (single-instance, byte-for-byte unchanged). JSON env:
+    #   ES_COLLECTION_ROUTES='{"ragstack_sfr_semantic":"http://localhost:9243"}'
+    #
+    # **The key is the physical ES INDEX name, not the collection id** — the
+    # deliberate asymmetry with the Qdrant table, whose key is the physical
+    # COLLECTION name. Both tables are keyed by the physical store each leg
+    # actually addresses; for the text leg that store is whatever a collection's
+    # ``text_index`` / ``es_index()`` resolves to, which is NOT the collection id
+    # (a spec with a blank ``text_index`` falls back to its Qdrant collection
+    # name, and several ids may deliberately alias one index). Keying on the id
+    # would route one of those aliases and strand the others on the default
+    # cluster, i.e. split a single corpus across two clusters silently.
+    #
+    # Why it exists. The Qdrant table exists for a per-PROCESS ``vm.max_map_count``
+    # ceiling; Elasticsearch is not VMA-constrained, so this table is not about
+    # that. It is about placement: a tenant can point a collection's text leg at a
+    # cluster that already holds the index (a shared corpus, a pre-built index, a
+    # cluster with the disk or the heap for it) instead of copying it, and — like
+    # the Qdrant table — it is the per-index, reversible cut-over lever onto a new
+    # cluster.
+    #
+    # A routed index is SHARED STATE by assumption: it is reachable from outside
+    # this deployment's own instance, so ``DELETE /v1/collections/{id}?purge=true``
+    # refuses to destroy it (409) the way it refuses a store another registry id
+    # is serving.
+    es_collection_routes: dict[str, str] = {}
 
     # Neo4j (knowledge graph). "memory" is the in-process dev graph (lost on
     # restart); "neo4j" is the durable property-graph backend (M4). Neo4j 5

@@ -670,11 +670,16 @@ async def run(
             target.check_build(dim=dim)
             qdrant_url, coll = target.qdrant_url, target.collection
             es_index = target.es_index
+            # Both legs' instances come from the entry: a routed index
+            # (ES_COLLECTION_ROUTES) overrides --es-url, as a routed collection
+            # already overrides --qdrant-url.
+            es_url = target.es_url or args.es_url
         else:
             qdrant_url, coll = args.qdrant_url, (
                 args.collection or collection_name("ragstack", args.embedding_model, dim)
             )
             es_index = args.es_index
+            es_url = args.es_url
         store = QdrantVectorStore(
             url=qdrant_url, collection=coll, vector_size=dim, timeout=args.qdrant_timeout
         )
@@ -682,7 +687,7 @@ async def run(
         print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
         text_index = None
         if args.text_backend == "elasticsearch":
-            text_index = ElasticsearchTextIndex(url=args.es_url, index=es_index)
+            text_index = ElasticsearchTextIndex(url=es_url, index=es_index)
             await text_index.ensure_index()
             print(f"elasticsearch index {es_index!r} ready", file=sys.stderr)
 
