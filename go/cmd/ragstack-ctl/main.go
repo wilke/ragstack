@@ -86,14 +86,20 @@ func usage() {
                                             rendered include lines name — the same flag, and the
                                             same meaning, as gateway render.
 
-  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode M] [--ui-port P] [--force] --preview|--commit
+  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode M] [--ui-port P] [--force]
+        [--readopt] [--confirm-stores qdrant,elasticsearch,postgres] --preview|--commit
                                             read a hand-started tenant into a registry row.
                                             --ui-mode is static|dev|external and defaults to dev when
                                             --ui-port is given, external when it is not. static is a
                                             vite build nginx serves from <data-dir>/ui/dist and takes
                                             NO --ui-port (the pair is a usage error); its dist has to
                                             exist, or the preview raises ui_dist_missing (error).
-  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection] [--readopt]
+                                            --confirm-stores re-verifies each named EXCLUSIVE leg from /proc
+                                            (exactly one process on the port, an argv that binds a path under
+                                            the tenant's data dir, no other registry row naming it) and then
+                                            sets capabilities.{stop,snapshot,restore} on it. purge stays false;
+                                            a shared leg is refused; it is all-or-nothing across the legs.
+  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection] [--readopt] [--confirm-stores …]
                                             the four live coconut tenants in one batch (see below).
                                             --spec entries take an optional ui_mode field with the same
                                             meaning as --ui-mode.
@@ -690,6 +696,10 @@ type adoptSpec struct {
 	// (dev when ui_port > 0, external when it is 0). `static` is a UI nginx
 	// serves from <data_dir>/ui/dist and takes no port.
 	UIMode string `json:"ui_mode,omitempty"`
+	// ConfirmStores are the store legs to re-verify and confirm on this row
+	// (adopt.ConfirmableLegs). Empty leaves every capability false, which is
+	// what adoption has always done.
+	ConfirmStores []string `json:"confirm_stores,omitempty"`
 }
 
 // validateSpecs judges the arguments that can be judged without reading the
@@ -697,12 +707,19 @@ type adoptSpec struct {
 // failed read halfway through a batch.
 func validateSpecs(specs []adoptSpec) error {
 	for _, s := range specs {
+		name := s.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
 		if err := adopt.ValidateUIMode(s.UIMode, s.UIPort); err != nil {
-			name := s.Name
-			if name == "" {
-				name = "(unnamed)"
-			}
 			return fmt.Errorf("%s: %w", name, err)
+		}
+		// A typo in a leg name is a usage error, refused before any host is
+		// read — the same courtesy --ui-mode gets.
+		if len(s.ConfirmStores) > 0 {
+			if err := adopt.ValidateLegs(s.ConfirmStores); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -742,6 +759,10 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	force := fs.Bool("force", false, "commit even when the preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
 	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
+	var confirmStores multiFlag
+	fs.Var(&confirmStores, "confirm-stores",
+		"re-verify these EXCLUSIVE store legs from /proc and set capabilities.{stop,snapshot,restore} on them: "+
+			"qdrant, elasticsearch, postgres (repeatable or a comma list)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 
@@ -760,7 +781,8 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "adopt: choose exactly one of --preview and --commit")
 		return exitUsage
 	}
-	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName, UIPort: *uiPort, UIMode: *uiMode}
+	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName,
+		UIPort: *uiPort, UIMode: *uiMode, ConfirmStores: []string(confirmStores)}
 	if err := validateSpecs([]adoptSpec{spec}); err != nil {
 		fmt.Fprintf(stderr, "adopt: %v\n", err)
 		return exitUsage
@@ -776,7 +798,11 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 	force := fs.Bool("force", false, "commit even when a preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
 	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
-	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode} (default: the four live tenants)")
+	var confirmStores multiFlag
+	fs.Var(&confirmStores, "confirm-stores",
+		"re-verify these EXCLUSIVE store legs from /proc on EVERY tenant in the batch and set "+
+			"capabilities.{stop,snapshot,restore} on them: qdrant, elasticsearch, postgres")
+	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode,confirm_stores} (default: the four live tenants)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 	if err := fs.Parse(args); err != nil {
@@ -795,6 +821,16 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 		specs = nil
 		if err := json.Unmarshal(b, &specs); err != nil {
 			return fail(fmt.Errorf("%s: %w", *specFile, err))
+		}
+	}
+	// A batch-wide --confirm-stores applies to every spec that does not name
+	// its own legs, so the common case (one list, the whole fleet) is one
+	// flag and a --spec file can still be specific.
+	if len(confirmStores) > 0 {
+		for i := range specs {
+			if len(specs[i].ConfirmStores) == 0 {
+				specs[i].ConfirmStores = []string(confirmStores)
+			}
 		}
 	}
 	if err := validateSpecs(specs); err != nil {
@@ -838,6 +874,14 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	roots := paths.NewRoots(ragRoot, paths.Overrides{})
 	results := make([]previewResult, 0, len(specs))
 	rows := make([]*registry.Tenant, 0, len(specs))
+	// The registry as it stands, for --confirm-stores' "no other row names
+	// this store" check. A registry that is not there yet is not an error —
+	// the first adoption creates one — so this is best effort, and a load
+	// failure that matters will be raised again by the commit itself.
+	var current *registry.Fleet
+	if wantsConfirmation(specs) {
+		current, _ = registry.LoadNoRepair(registryPath)
+	}
 	for _, s := range specs {
 		t, findings, err := adopt.Preview(roots, s.Name, adopt.Options{
 			DataDir: s.DataDir, Worktree: s.Worktree,
@@ -845,6 +889,26 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 		})
 		if err != nil {
 			return fail(fmt.Errorf("adopt %s: %w", s.Name, err))
+		}
+		// The confirmation runs against the PREVIEW row, before it is printed
+		// or committed, so `--preview` shows exactly the capabilities
+		// `--commit` would write — the invariant the whole adopt flow rests on.
+		if len(s.ConfirmStores) > 0 {
+			confirmed, cerr := adopt.ConfirmStores(t, s.ConfirmStores, adopt.ConfirmOptions{
+				Fleet: current, Roots: roots,
+			})
+			findings = append(findings, confirmed...)
+			if cerr != nil {
+				// Printed with the findings already gathered, then refused:
+				// an operator has to see WHICH legs passed before the one that
+				// did not.
+				results = append(results, previewResult{Tenant: t, Findings: findings})
+				for _, r := range results {
+					printPreview(r)
+				}
+				fmt.Fprintf(stderr, "\nragstack-ctl: %v\n", cerr)
+				return exitRefused
+			}
 		}
 		results = append(results, previewResult{Tenant: t, Findings: findings})
 		rows = append(rows, t)
@@ -887,6 +951,16 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	}
 	fmt.Fprintf(stdout, "\ncommitted %d tenant(s) to %s (+ manifest.tsv beside it)\n", len(rows), registryPath)
 	return exitOK
+}
+
+// wantsConfirmation reports whether any spec asked for a store confirmation.
+func wantsConfirmation(specs []adoptSpec) bool {
+	for _, s := range specs {
+		if len(s.ConfirmStores) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // errorFindings collects every error-level finding across a batch preview.
