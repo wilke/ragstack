@@ -50,8 +50,12 @@ def test_health_is_open_and_answers():
 def test_version_reports_what_is_deployed():
     """Present since v1.6.0. A 404 here means the tenant predates it."""
     r = _get("/v1/version", auth=True)
-    if r.status_code == 401:
+    if r.status_code == 401 and not TOKEN:
         pytest.skip("set RAGSTACK_LIVE_TOKEN to check /v1/version")
+    # A 401 WITH a token set is a bad credential, not an absent one. Skipping
+    # there would report "set RAGSTACK_LIVE_TOKEN" to someone who did set it,
+    # and hide a whole run behind a plausible message -- the claimed-but-false
+    # precondition that tests/conftest.py (#432) exists to turn into a failure.
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("version"), body
@@ -71,14 +75,25 @@ def test_core_endpoints_require_a_credential():
         assert r.status_code in (401, 403), f"{path} answered {r.status_code}: {r.text[:200]}"
 
 
-def test_admin_only_config_is_refused_for_a_normal_caller():
-    """GET /v1/config is admin-only, which is why users cannot read their own quota."""
+def test_admin_only_config_is_refused_or_allowed_but_never_errors():
+    """``GET /v1/config`` answers 200 for an admin and 403 for anyone else.
+
+    **This cannot prove the refusal**, and the name says so deliberately. The
+    test has no way to learn the caller's role — the API exposes no who-am-I
+    route (``contracts/openapi.yaml``) — so a normal user wrongly granted 200,
+    which is the defect worth catching, is indistinguishable here from an admin
+    correctly getting 200, and would skip rather than fail.
+
+    What it does pin is that the route is reachable and answers one of the two
+    documented statuses: a 401, 404 or 5xx fails. Proving the refusal needs a
+    known-non-admin credential, which belongs in the keyed conformance suite
+    (``make test-conformance-keyed``, four distinct principals) rather than in a
+    smoke test pointed at whatever tenant the operator chose.
+    """
     if not TOKEN:
         pytest.skip("set RAGSTACK_LIVE_TOKEN")
     r = _get("/v1/config", auth=True)
     assert r.status_code in (200, 403), r.text
-    if r.status_code == 200:
-        pytest.skip("this credential is an admin; the refusal path needs a user token")
 
 
 def test_collections_listing_is_a_list_for_an_authenticated_caller():
