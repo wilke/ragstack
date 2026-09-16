@@ -5,7 +5,7 @@ clone this repository, install anything, or run a server. If a guide in `docs/`
 tells you to run `make` or `uvicorn`, you are in the wrong document — that is for
 people building RAGStack, not using it.
 
-**Running code:** `v1.6.1`.
+**Running code:** `v1.6.2`.
 
 ## Your two URLs
 
@@ -52,7 +52,17 @@ precedence rule.
 
 | Collection | What it is |
 |---|---|
-| `asm-semantic` | The American Society for Microbiology journal corpus, semantically chunked — **6,718,269 passages**. Shared read-only with everyone, so any BV-BRC login can search it. You cannot add to it or change it. |
+| `asm-semantic` | American Society for Microbiology journals, semantically chunked — **6,718,269 passages**. |
+| `open-access` | The PubMed Central open-access corpus — **47,625,155 passages**, roughly 1.4 million articles. |
+
+Both are shared read-only with everyone, so any BV-BRC login can search them. You
+cannot add to them or change them.
+
+> **On retractions in `open-access`:** retraction *notices* and the articles they
+> link to were excluded when the corpus was built — 183 articles. Retractions
+> marked only by a `RETRACTED ARTICLE:` prefix in the title were **not** caught,
+> and those papers are in the index. Check the title and the DOI before you rely
+> on a passage. `asm-semantic` had no retraction screening at all.
 
 `asm-semantic` is also this tenant's **default collection**: ask a question
 without choosing one and that is what gets searched, in the UI and over the API
