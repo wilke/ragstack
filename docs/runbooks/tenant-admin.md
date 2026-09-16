@@ -5,10 +5,11 @@ someone needs to be made an admin, someone wants their data shared with a
 colleague, someone hit a limit and got a number they cannot explain. Everything
 here is done through the tenant's own API. For moving a tenant to a new release
 see [`tenant-upgrade.md`](tenant-upgrade.md); for a 503 with a `Reference:` id
-see [`tracing-a-503.md`](tracing-a-503.md).
+see [`tracing-a-503.md`](tracing-a-503.md); to duplicate a collection onto
+another tenant see [`copy-collection.md`](copy-collection.md).
 
 Every endpoint, field name, status code and default below was read out of the
-code at `v1.6.1` and is cited `file:line`. Where a value is a **product default**
+code at `v1.6.2` and is cited `file:line`. Where a value is a **product default**
 rather than a particular tenant's setting, it says so — a tenant's live values
 are in its own `tenant.env`, never in this file.
 
@@ -723,6 +724,46 @@ Qdrant and ES resources.
   investigating capacity.
 
 ---
+
+## 6b. Exposing a shared corpus without copying it
+
+A tenant can serve a collection whose stores live on **another instance**, so a
+large corpus is registered once and read by several tenants rather than copied
+per tenant. Introduced in `v1.6.2` (`ES_COLLECTION_ROUTES`, the twin of the
+existing `QDRANT_COLLECTION_ROUTES`).
+
+Both legs must be routed — the vector leg and the text leg — or retrieval reads
+one store and misses the other:
+
+```bash
+# in the tenant's tenant.env, keyed by the PHYSICAL store name, not the collection id
+QDRANT_COLLECTION_ROUTES='{"ragstack_lib_<store>":"http://localhost:6333"}'
+ES_COLLECTION_ROUTES='{"ragstack_lib_<store>":"http://localhost:9200"}'
+```
+
+**Order matters: register, then route.** Register the collection on the tenant
+with the *same collection id* AND the *same build spec* as the origin — same
+model, dimension and chunking. The physical name is hashed from
+`name|model|dim|chunk` (`stores/qdrant.py:186`), so the id is part of it:
+registering the same corpus under a different id mints a different store name and
+the routes silently miss. A different
+spec mints a different name and the routes will not match anything.
+
+**Never purge a routed collection.** A purge would destroy stores the tenant does
+not own and other tenants are still reading. `v1.6.2` refuses it, but the reason
+to know this is that the refusal is the *second* line of defence, not the first.
+
+Verifying a route landed:
+
+```bash
+# the routed index must NOT appear in the tenant's own Elasticsearch
+curl -s "http://127.0.0.1:<tenant_es_port>/_cat/indices?h=index" | grep <store>
+# …and a query against the collection must return hits and scores matching the origin
+```
+
+A routed collection still needs its own share and, on a keyed deployment, an
+entry in the read-only keys' allowlist — routing makes the data reachable, not
+readable.
 
 ## 7. Diagnosing a user report
 

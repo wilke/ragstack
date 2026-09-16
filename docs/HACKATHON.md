@@ -5,7 +5,7 @@ clone this repository, install anything, or run a server. If a guide in `docs/`
 tells you to run `make` or `uvicorn`, you are in the wrong document — that is for
 people building RAGStack, not using it.
 
-**Running code:** `v1.6.1`.
+**Running code:** `v1.6.2`.
 
 ## Your two URLs
 
@@ -48,9 +48,35 @@ precedence rule.
 
 ## What is already here
 
-**Nothing — and that is the point.** This tenant starts with one empty default
-collection and no corpus. You create your own collection and put your own
-documents in it. Everything you ingest is private to you until you share it.
+**A corpus you can query the moment you sign in**, plus whatever you add yourself.
+
+| Collection | What it is |
+|---|---|
+| `asm-semantic` | American Society for Microbiology journals, semantically chunked — **6,718,269 passages**. |
+| `open-access` | The PubMed Central open-access corpus — **47,625,155 passages**, roughly 1.4 million articles. |
+
+Both are shared read-only with everyone, so any BV-BRC login can search them. You
+cannot add to them or change them.
+
+> **On retractions in `open-access`:** retraction *notices* and the articles they
+> link to were excluded when the corpus was built — 183 articles. Retractions
+> marked only by a `RETRACTED ARTICLE:` prefix in the title were **not** caught,
+> and those papers are in the index. Check the title and the DOI before you rely
+> on a passage. `asm-semantic` had no retraction screening at all.
+
+**`open-access` is this tenant's default collection.** Ask a question without
+choosing one and that is what gets searched, in the UI and over the API alike —
+the 47.6M-passage PMC corpus, not ASM. To search the ASM journals instead, pick
+`asm-semantic` in the collection chip row, or name it explicitly over the API:
+
+```json
+{"query": "...", "collection": "asm-semantic"}
+```
+
+Either way you can skip straight to asking questions — steps 2 and 3 below are
+only needed when you want to search **your own** documents. Anything you create
+is private to you until you share it, and lives alongside the shared corpora
+rather than in them.
 
 ## This tenant's limits
 
@@ -74,6 +100,9 @@ You cannot read these from the API yourself — `GET /v1/config` is admin-only. 
 you hit a limit, the server's refusal tells you which one.
 
 ## The six things you came to do
+
+Steps 2 and 3 are optional — both shared corpora are already there to query,
+and `open-access` is what you get if you do not pick one.
 
 | | In the browser | From the API |
 |---|---|---|
