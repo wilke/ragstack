@@ -152,6 +152,53 @@ async def test_wrong_content_type_is_415_local(client, rooted):
 
 
 @pytest.mark.asyncio
+async def test_octet_stream_is_415_then_the_same_bytes_are_accepted_as_markdown(
+    client, rooted
+):
+    """The refusal an attendee actually hits, and the fix the docs give them.
+
+    ``curl -F files=@notes.md`` guesses the content type from the extension and
+    has no guess for ``.md``, so it sends ``application/octet-stream`` and the
+    upload is refused. The status is 415 and the message lists the accepted
+    types but not the remedy, which is why it reads as "Markdown is not
+    supported" rather than "declare the type" — see ``docs/cookbook-users.md``
+    recipe 4. ``.txt`` slips through only because curl guesses ``text/plain``.
+
+    Pinned as a pair because the remedy is the load-bearing half. The refusal
+    itself is structural — ``application/octet-stream`` cannot be accepted even
+    if an operator lists it, because the allowlist is intersected with the kinds
+    the server can actually load (``allowed & _UPLOAD_KINDS``), which is the same
+    reason an allowlisted ``application/json`` is still 415 in
+    ``test_allowlist_is_the_setting``. What can regress is the other side: stop
+    listing the accepted types in the message and the documented advice stops
+    working while every other test here still passes — that message format is
+    pinned nowhere else. Dropping ``text/markdown`` from the allowlist is caught
+    here too, but not only here (``test_documented_defaults`` and
+    ``test_text_and_markdown_are_accepted_and_ingested_local`` also fail).
+    """
+    body = b"# Probe\n\nA **markdown** probe file.\n\n- bullet one\n"
+
+    refused = await client.post(
+        "/v1/ingest/upload", files=_files(("notes.md", body, "application/octet-stream"))
+    )
+    assert refused.status_code == 415, refused.text
+    detail = refused.json()["detail"]
+    assert "not an accepted upload content type" in detail
+    # Recipe 4 tells the reader to declare one of these two, so these two must
+    # stay in the message. Deliberately not a whole-list assertion: the set the
+    # server accepts may grow, and pinning it here would make every addition
+    # edit this test for no benefit to the docs.
+    assert "text/markdown" in detail and "text/plain" in detail
+    assert _staged(rooted) == []
+    assert app.state.job_store._jobs == {}  # refused before a job exists
+
+    accepted = await client.post(
+        "/v1/ingest/upload", files=_files(("notes.md", body, "text/markdown"))
+    )
+    assert accepted.status_code == 202, accepted.text
+
+
+@pytest.mark.asyncio
 async def test_allowlist_is_the_setting(client, rooted, monkeypatch):
     monkeypatch.setattr(settings, "upload_content_types", ["application/pdf"])
     r = await client.post("/v1/ingest/upload", files=_files(("n.txt", b"text", "text/plain")))
