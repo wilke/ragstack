@@ -154,6 +154,16 @@ func byCode(resp *model.DoctorResponse) map[string]model.Finding {
 	return out
 }
 
+// confirmStores is what `adopt --readopt --confirm-stores qdrant,elasticsearch`
+// writes: the three capabilities an operator confirms on an exclusive leg.
+// `purge` stays false — it is the one that destroys data, and no op asks for
+// it in v1.
+func (w *world) confirmStores() {
+	caps := registry.Capabilities{Stop: true, Snapshot: true, Restore: true}
+	w.tenant.Stores.Qdrant.Capabilities = caps
+	w.tenant.Stores.Elasticsearch.Capabilities = caps
+}
+
 func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -161,25 +171,50 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-// TestHealthyFleetIsGreenWithInfoOnly: the baseline raises nothing above
-// info, and the two info rows every adopted tenant carries are present.
+// TestHealthyFleetIsGreenWithInfoOnly: the baseline raises nothing above info
+// EXCEPT the one gap PR-E exists to close, and the two info rows every adopted
+// tenant carries are present.
+//
+// The baseline is an ADOPTED tenant that nobody has prepared yet, so its two
+// exclusively-owned stores still have `capabilities.stop: false` and
+// stores_unconfirmed is a warn. That is the honest state of this fleet and the
+// reason the finding was added; confirming the legs (what `adopt --readopt
+// --confirm-stores` writes) is what makes the fleet green, and the second half
+// of this test asserts exactly that.
 func TestHealthyFleetIsGreenWithInfoOnly(t *testing.T) {
 	w := newWorld(t)
 	resp := w.run(t)
 	for _, f := range resp.Findings {
-		if f.Level != model.LevelInfo {
+		if f.Level != model.LevelInfo && f.Code != StoresUnconfirmed {
 			t.Errorf("healthy fleet raised %s/%s: %s", f.Level, f.Code, f.Detail)
 		}
 	}
-	if resp.Status != model.StatusGreen {
-		t.Errorf("status = %s, want green", resp.Status)
-	}
 	got := byCode(resp)
-	for _, code := range []string{SudoersGroup, CapabilitiesUnconfirmed} {
+	for _, code := range []string{SudoersGroup, CapabilitiesUnconfirmed, StoresUnconfirmed} {
 		if _, ok := got[code]; !ok {
 			t.Errorf("missing the %s row", code)
 		}
 	}
+	if lvl := got[StoresUnconfirmed].Level; lvl != model.LevelWarn {
+		t.Errorf("stores_unconfirmed = %s, want warn", lvl)
+	}
+	if resp.Status != model.StatusYellow {
+		t.Errorf("status = %s, want yellow: two exclusive stores the ctl may not stop", resp.Status)
+	}
+	w.confirmStores()
+	confirmed := w.run(t)
+	for _, f := range confirmed.Findings {
+		if f.Level != model.LevelInfo {
+			t.Errorf("a confirmed fleet raised %s/%s: %s", f.Level, f.Code, f.Detail)
+		}
+	}
+	if confirmed.Status != model.StatusGreen {
+		t.Errorf("status after confirming the stores = %s, want green", confirmed.Status)
+	}
+	if _, still := byCode(confirmed)[CapabilitiesUnconfirmed]; still {
+		t.Error("capabilities_unconfirmed survived a confirmation: it claims every capability is false")
+	}
+	resp = confirmed
 	if resp.Scope.Tenant != "" || resp.Scope.Op != "" {
 		t.Errorf("fleet-wide scope must be null/null, got %+v", resp.Scope)
 	}
@@ -673,6 +708,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		APIKeyRoleUnknown, ExternalRefOutsideDataDir, UnmanagedFiles, DataDirOffLayout,
 		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
 		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,
+		BootCronMissing, BootCronPresent, StoresUnconfirmed,
 	} {
 		known[c] = true
 	}
@@ -987,9 +1023,15 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		"admin-remove", "sa-create", "sa-disable", "sa-enable", "env-set",
 		"env-unset", "env-normalize", "render-units", "update-code", "create",
 		"adopt", "gateway-apply", "settings-put",
+		// PR-E's preparation ops. They have no HTTP ROUTE (they are
+		// x-ctl-cli-op-args verbs), but they are ops a doctor run can be
+		// scoped to — which is how an operator sees what would block one
+		// before running it — so they are in the doctor `op` enum and must
+		// have precondition rows like every other.
+		"set-ui-mode", "set-bind",
 	}
-	if len(contract) != 24 {
-		t.Fatalf("the contract enum has 24 ops, this copy has %d", len(contract))
+	if len(contract) != 26 {
+		t.Fatalf("the contract enum has 26 ops, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {
@@ -1110,8 +1152,13 @@ func TestSecretsUnreadableByCtlIsInfoBeforeHandover(t *testing.T) {
 	if f, bad := byCode(w.run(t))[EnvNotSystemdParsable]; bad {
 		t.Errorf("an unreadable secrets.env was also reported as unparsable: %+v", f)
 	}
-	if resp.Status != model.StatusGreen {
-		t.Errorf("status = %s, want green: an info finding is not a defect", resp.Status)
+	// Green once the stores are confirmed: the unreadable secrets file itself
+	// contributes only an info row, which is the claim under test. (Before the
+	// confirmation the fleet is yellow for stores_unconfirmed, which has
+	// nothing to do with a file mode.)
+	w.confirmStores()
+	if got := w.run(t); got.Status != model.StatusGreen {
+		t.Errorf("status = %s, want green: an info finding is not a defect", got.Status)
 	}
 }
 

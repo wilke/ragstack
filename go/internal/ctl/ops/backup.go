@@ -44,6 +44,45 @@ const envLayoutManaged = "managed"
 // update-code and by a recovery drill, neither of which exists in v1.
 const bundleKind = "backup"
 
+// The three legs a bundle can be asked for (`backup.scope`'s item enum).
+//
+// A scope is a statement about the REQUEST, not about what each leg then
+// managed to capture: a leg in scope that had no capability to snapshot still
+// says so in the manifest and in the warnings. What the scope decides is which
+// steps are PLANNED at all — which is why it is read at plan time and appears
+// in the plan hash.
+const (
+	scopeConfig = "config"
+	scopeState  = "state"
+	scopeStores = "stores"
+)
+
+// fullScope is what `backup` with no scope means: everything.
+var fullScope = []string{scopeConfig, scopeState, scopeStores}
+
+// scopeSet is an ordered, deduplicated scope with membership.
+type scopeSet map[string]bool
+
+func (s scopeSet) has(leg string) bool { return s[leg] }
+
+// list renders the scope in the contract's own order, which is the order the
+// manifest and the registry record it in (sorted would put `config` first
+// anyway, but the order being DECLARED means a leg added later cannot change
+// the spelling of an existing bundle's scope).
+func (s scopeSet) list() []string {
+	out := []string{}
+	for _, leg := range fullScope {
+		if s[leg] {
+			out = append(out, leg)
+		}
+	}
+	return out
+}
+
+// light reports whether this bundle skips the store legs — the `--scope
+// config,state` bundle the PR-E handover takes as its safety net.
+func (s scopeSet) light() bool { return !s.has(scopeStores) }
+
 // partialSuffix marks a bundle that is still being written. The directory is
 // created as `<id>.partial` and renamed to `<id>` as the LAST step before the
 // registry is told about it, so an interrupted job leaves something an
@@ -243,7 +282,7 @@ var sqliteDBs = []stateDB{
 // member added to the contract becomes a member verify demands without anybody
 // remembering to copy it across.
 var BundleManifestRequired = []string{
-	"schema_version", "kind", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
+	"schema_version", "kind", "scope", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
 	"best_effort", "tenant", "artifact", "python_env", "images", "paths_relative_to", "inventory",
 	"stores", "sqlite", "files", "external", "secrets", "units", "registry_row", "migrate_md",
 	"consistent", "verified", "warnings", "sha256sums",
@@ -349,6 +388,10 @@ type secretsPart struct {
 func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	fence := argBoolOf(args, "fence")
 	tarIt := argBoolOf(args, "tar")
+	scope, err := backupScopeOf(p, args, fence)
+	if err != nil {
+		return err
+	}
 	// The registry lock as well as the tenant's: the last step records
 	// `last_backup` and `last_ops.backup`, and the manifest projection is
 	// derived from the registry, so the same two locks a settings write takes.
@@ -367,7 +410,15 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	p.result["fenced"] = fence
 	p.result["best_effort"] = !fence
 	p.result["kind"] = bundleKind
+	p.result["scope"] = scope.list()
 
+	if scope.light() {
+		p.warn("this is a LIGHT bundle (scope " + strings.Join(scope.list(), ",") + "): the tenant's configuration, " +
+			"its sealed secret files and its SQLite state, and NO store snapshots. It runs in seconds, it does not " +
+			"stop the API, and it is never a restore, handover or decommission prerequisite — those need a fenced " +
+			"full bundle. It is the pre-handover safety net: enough to rebuild the tenant's identity and its " +
+			"configuration, over stores that are not moving anywhere")
+	}
 	if !fence {
 		p.warn("an unfenced bundle is `best_effort: true`: it is NOT eligible for restore, handover or decommission " +
 			"prerequisites, because nothing stopped the tenant writing while it was taken")
@@ -398,19 +449,41 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	// make the plan depend on the host (and so on the moment it was made).
 	// The per-collection checkpoint that reconcile needs happens inside the
 	// step, before each snapshot call.
-	p.addQdrantSnapshots(bundleDir, fence)
-	p.addESSnapshots(bundleDir, fence)
-	p.addSQLiteCopies(bundleDir)
-	p.addPostgresDump(bundleDir)
-	p.addConfigCopies(bundleDir)
-	p.addSecrets(bundleDir)
+	// The leg order is the bundle's, unchanged by the scope: a leg the scope
+	// left out is a SKIP step in the place its real step would have been, so
+	// two plans of the same tenant can be read side by side.
+	if scope.has(scopeStores) {
+		p.addQdrantSnapshots(bundleDir, fence)
+		p.addESSnapshots(bundleDir, fence)
+	} else {
+		p.skipOutOfScope("qdrant", "skip the qdrant leg", scope)
+		p.skipOutOfScope("es", "skip the elasticsearch leg", scope)
+	}
+	if scope.has(scopeState) {
+		p.addSQLiteCopies(bundleDir)
+	} else {
+		p.skipOutOfScope("sqlitebackup", "skip the sqlite state leg", scope)
+	}
+	if scope.has(scopeStores) {
+		p.addPostgresDump(bundleDir)
+	} else {
+		p.skipOutOfScope("postgres", "skip the postgres leg", scope)
+	}
+	// config is required (backupScopeOf refuses a scope without it), so these
+	// three are unconditional; they are inside the same guard for the day a
+	// later scope makes them optional.
+	if scope.has(scopeConfig) {
+		p.addConfigCopies(bundleDir)
+		p.addRollbackDescriptor(bundleDir)
+		p.addSecrets(bundleDir)
+	}
 	p.addMigrateMD(bundleDir)
-	p.addBundleManifest(bundleDir, fence)
+	p.addBundleManifest(bundleDir, fence, scope)
 	p.addBundleFinalize(bundleDir)
 	if tarIt {
 		p.addBundleTar(bundleDir)
 	}
-	p.addBackupRecord(fence)
+	p.addBackupRecord(fence, scope)
 
 	if fence {
 		if err := p.addAPIStart(); err != nil {
@@ -418,6 +491,92 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// backupScopeOf reads and judges `scope`.
+//
+// Absent means the full bundle, which is what `backup` has always meant and
+// what every existing caller keeps getting. The two refusals are the two ways
+// a scope can describe a bundle nobody could use:
+//
+//   - without `config` there is no tenant.env, no registry row, no sealed
+//     secrets and no rendered units, so nothing a restore could rebuild a
+//     tenant FROM — a directory of store snapshots is not a backup;
+//   - with `fence` and without `stores` the fence stops the API in order to
+//     hold still a set of files the bundle is not going to read. That is an
+//     outage bought for nothing, and the light bundle exists precisely because
+//     the tenant may keep serving through it.
+func backupScopeOf(p *planner, args map[string]any, fence bool) (scopeSet, error) {
+	legs := argStringsOf(args, "scope")
+	if len(legs) == 0 {
+		legs = fullScope
+	}
+	scope := scopeSet{}
+	for _, leg := range legs {
+		scope[leg] = true
+	}
+	if !scope.has(scopeConfig) {
+		return nil, p.refuse("a bundle without `config` in its scope carries no tenant.env, no registry row and no "+
+			"secrets, so nothing could be restored from it; asked for %s", strings.Join(scope.list(), ","))
+	}
+	if fence && scope.light() {
+		return nil, p.refuse("`fence` stops the tenant API so that the STORES hold still while they are " +
+			"snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the " +
+			"light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope")
+	}
+	return scope, nil
+}
+
+// skipOutOfScope records a leg the SCOPE left out — as a step, not a warning,
+// because an operator reading a plan has to see every leg answered.
+func (p *planner) skipOutOfScope(kind, title string, scope scopeSet) {
+	p.skip(kind, title, "the requested scope is "+strings.Join(scope.list(), ",")+
+		", which does not include this leg: the bundle records it as `excluded` and cannot satisfy a "+
+		"full-recovery prerequisite for it", p.t.Name)
+}
+
+// addRollbackDescriptor copies the row's pre-handover launch record into the
+// bundle as a file of its own.
+//
+// It is already inside registry-row.json, and that is exactly why it is worth
+// lifting out: `ops/coconut/restore.sh --tenant <name>` reads a descriptor to
+// bring one tenant back WITHOUT the control plane, and a recovery that has to
+// find it inside a 400-line registry row is a recovery nobody performs at 3am.
+// One file, one `jq`, the same bytes.
+func (p *planner) addRollbackDescriptor(bundleDir string) {
+	if p.t.RollbackDescriptor == nil {
+		p.skip("fs", "skip the rollback descriptor",
+			"this row has no rollback_descriptor: it was created by the ctl rather than adopted, so there is no "+
+				"pre-ctl launch to describe", p.t.Name)
+		return
+	}
+	preview, _ := json.MarshalIndent(p.t.RollbackDescriptor, "", "  ")
+	path := filepath.Join(bundleDir, "rollback-descriptor.json")
+	p.addFor("files", step{
+		Kind: "fs", Title: "write rollback-descriptor.json (how this tenant ran before the ctl knew about it)",
+		Targets: []string{p.t.Name}, WouldWrite: []model.WouldWrite{p.preview(path, "0640", preview)},
+		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// The row the ENGINE loaded under the locks, like every other
+			// step: the descriptor is immutable, so the two agree, and reading
+			// the live one keeps that an assertion rather than an assumption.
+			rd := p.rowOf(sc).RollbackDescriptor
+			if rd == nil {
+				return "the row's rollback_descriptor is gone; nothing written", nil
+			}
+			body, err := json.MarshalIndent(rd, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			dst, err := p.partialPath(sc, "rollback-descriptor.json")
+			if err != nil {
+				return "", err
+			}
+			if err := sc.Ops.Drivers.Files().WriteAtomic(ctx, dst, append(body, '\n'), 0o640); err != nil {
+				return "", err
+			}
+			return dst, nil
+		},
+	})
 }
 
 // addFreeSpaceCheck refuses a bundle the filesystem cannot hold.
@@ -1270,12 +1429,12 @@ func (p *planner) addMigrateMD(bundleDir string) {
 
 // ---------------------------------------------------------------- manifest
 
-func (p *planner) addBundleManifest(bundleDir string, fence bool) {
+func (p *planner) addBundleManifest(bundleDir string, fence bool, scope scopeSet) {
 	// The PLAN's preview is the manifest's SHAPE: every key the contract
 	// requires, with the values that are already known and a placeholder where
 	// the run will put a fact it cannot have yet. An operator reading a dry run
 	// sees exactly which document is going to be written.
-	preview, _ := json.MarshalIndent(p.manifestSkeleton(fence), "", "  ")
+	preview, _ := json.MarshalIndent(p.manifestSkeleton(fence, scope), "", "  ")
 	path := filepath.Join(bundleDir, "manifest.json")
 	p.addFor("files", step{
 		Kind: "fs", Title: "write SHA256SUMS and the bundle manifest", Targets: []string{bundleDir},
@@ -1320,7 +1479,7 @@ func (p *planner) addBundleManifest(bundleDir string, fence bool) {
 			}
 			digest := sha256.Sum256(sums.Bytes())
 
-			man := p.manifest(sc, fence, parts, hex.EncodeToString(digest[:]))
+			man := p.manifest(sc, fence, scope, parts, hex.EncodeToString(digest[:]))
 			body, err := json.MarshalIndent(man, "", "  ")
 			if err != nil {
 				return "", err
@@ -1337,20 +1496,29 @@ func (p *planner) addBundleManifest(bundleDir string, fence bool) {
 
 // manifestSkeleton is the manifest as the PLAN can know it: every required key
 // present, the host facts blank. It is what the dry run previews.
-func (p *planner) manifestSkeleton(fence bool) map[string]any {
-	return p.manifestFrom(nil, bundlePlaceholder, "", fence, bundleParts{}, strings.Repeat("0", 64))
+func (p *planner) manifestSkeleton(fence bool, scope scopeSet) map[string]any {
+	return p.manifestFrom(nil, bundlePlaceholder, "", fence, scope, bundleParts{}, strings.Repeat("0", 64))
 }
 
 // manifest is the real document.
-func (p *planner) manifest(sc *jobs.StepContext, fence bool, parts bundleParts, sumsDigest string) map[string]any {
-	return p.manifestFrom(sc, p.bundleID(sc), p.stampRFC3339(sc), fence, parts, sumsDigest)
+func (p *planner) manifest(sc *jobs.StepContext, fence bool, scope scopeSet, parts bundleParts,
+	sumsDigest string) map[string]any {
+	return p.manifestFrom(sc, p.bundleID(sc), p.stampRFC3339(sc), fence, scope, parts, sumsDigest)
 }
 
-func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence bool,
+func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence bool, scope scopeSet,
 	parts bundleParts, sumsDigest string) map[string]any {
 	t := p.rowOf(sc)
 	warnings := append([]string{}, parts.warnings()...)
-	consistent := fence && parts.consistent()
+	// A bundle with no store legs cannot be consistent, whatever the counts
+	// say: `consistent` is the claim that the stores in it hold what they held
+	// when it was taken, and this one holds none of them.
+	consistent := fence && scope.has(scopeStores) && parts.consistent()
+	if scope.light() {
+		warnings = append(warnings, "scope "+strings.Join(scope.list(), ",")+": this bundle carries no store "+
+			"snapshots. It restores a tenant's configuration, credentials and SQLite state; its qdrant "+
+			"collections, elasticsearch indices and postgres database are NOT in it")
+	}
 	if fence && !consistent && sc != nil {
 		warnings = append(warnings, "a count moved under the fence, or a store the inventory named is not in the "+
 			"bundle: this bundle is NOT consistent")
@@ -1362,6 +1530,7 @@ func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence
 	return map[string]any{
 		"schema_version": version.SchemaVersion,
 		"kind":           bundleKind,
+		"scope":          scope.list(),
 		"bundle_id":      id,
 		"created_at":     createdAt,
 		"created_by":     principal,
@@ -1546,7 +1715,7 @@ func (p *planner) addBundleTar(bundleDir string) {
 
 // addBackupRecord is the registry's half: the row learns which bundle is its
 // recovery point, and that nothing has verified it yet.
-func (p *planner) addBackupRecord(fence bool) {
+func (p *planner) addBackupRecord(fence bool, scope scopeSet) {
 	name := p.t.Name
 	p.add(step{
 		Kind: "registry", Title: "record the bundle as this tenant's last backup", Targets: []string{name},
@@ -1588,7 +1757,8 @@ func (p *planner) addBackupRecord(fence bool) {
 			// every operator-facing surface — `backup list`, `restore --from`,
 			// the manifest's own bundle_id — speaks the id. The two differ by
 			// a basename, and this is the one place that has to know it.
-			row.LastBackup = &registry.BackupRecord{Bundle: dir, At: at, Kind: bundleKind, Fenced: fence, Verified: false}
+			row.LastBackup = &registry.BackupRecord{Bundle: dir, At: at, Kind: bundleKind, Fenced: fence,
+				Verified: false, Scope: scope.list()}
 			if row.LastOps == nil {
 				row.LastOps = map[string]registry.OpRecord{}
 			}
@@ -1602,7 +1772,8 @@ func (p *planner) addBackupRecord(fence bool) {
 			// job's result is a value no caller can do anything with.
 			p.result["bundle"] = id
 			p.result["bundle_dir"] = dir
-			return fmt.Sprintf("last_backup = %s (fenced=%v, verified=false)", id, fence), nil
+			return fmt.Sprintf("last_backup = %s (scope %s, fenced=%v, verified=false)", id,
+				strings.Join(scope.list(), ","), fence), nil
 		},
 		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			save := p.op.deps.SaveFleet

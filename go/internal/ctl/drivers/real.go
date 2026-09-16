@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -237,6 +238,27 @@ func (g *RealGateway) Routes(_ context.Context) ([]string, error) {
 		return nil, fmt.Errorf("the live tenant list %s does not parse: %w", lists.NamesSource, err)
 	}
 	return names, nil
+}
+
+// Probe GETs one path through the LIVE gateway and answers its status.
+//
+// It reuses the gateway package's own prober — loopback-only, short timeout,
+// redirects NOT followed — and the same BaseURL the publish probes with, so
+// "what this op checked" and "what the publish checked" are the same gateway
+// seen the same way. The path is rooted here rather than joined loosely: a
+// caller that passed a scheme and a host would be choosing which server to
+// dial, which is the whole thing this driver's allowlist exists to prevent.
+func (g *RealGateway) Probe(ctx context.Context, path string) (int, error) {
+	if !strings.HasPrefix(path, "/") || strings.Contains(path, "//") {
+		return 0, fmt.Errorf("%w: %q is not an absolute gateway path", jobs.ErrRefused, path)
+	}
+	base := g.opts.BaseURL
+	if base == "" {
+		return 0, fmt.Errorf("%w: no gateway base URL is configured, so nothing can be probed through it",
+			jobs.ErrRefused)
+	}
+	status, _, err := gateway.NewRealProber().Get(ctx, strings.TrimSuffix(base, "/")+path)
+	return status, err
 }
 
 func (g *RealGateway) fleet() (*registry.Fleet, error) {

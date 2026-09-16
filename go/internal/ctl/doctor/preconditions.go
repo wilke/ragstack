@@ -48,14 +48,28 @@ var preconditions = map[string][]string{
 	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess},
 	// A restore creates a fresh tenant and stages a whole bundle into it.
 	"restore": {DiskLow, StoreURLDisallowed, CtlAccountNoAccess},
-	// Handover moves a tenant onto systemd units under the service account:
-	// the env file must be loadable by systemd, the code traceable, the
-	// paths not writable by anyone outside ragops, and boot persistence real.
-	"handover": {
-		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
-		WorktreeGitdirUnreadable, LingerMissing, UserDropInMissing,
-		RuntimeDirMissing, WritableByOthers, PortNotListening,
+	// Handover's row is per DESTINATION (handoverPreconditions below); this
+	// entry is the default destination's, so that RedCodes("handover") — the
+	// engine's own call — gates the handover this deployment can actually
+	// perform. See handoverPreconditions for both lists and why they differ.
+	"handover": handoverInstance,
+	// set-ui-mode `static` BUILDS a bundle out of the tenant's worktree and
+	// then publishes a gateway generation that serves it. Two things must
+	// therefore be true and are not negotiable: the code it builds from has to
+	// be traceable to the mirror (a UI built out of a home-directory checkout
+	// is a bundle nobody can reproduce), and the paths it writes into must not
+	// be rewritable by somebody outside ragops between the build and the
+	// rename. The gateway's own coherence is the third: publishing over a
+	// routing table that already disagrees with the registry would make the
+	// "only the UI row changed" claim false.
+	"set-ui-mode": {
+		WorktreeOutsideMirror, WorktreeGitdirUnreadable, WritableByOthers,
+		GatewayMapMismatch, RegistryManifestMismatch, ManifestUnknownRow,
 	},
+	// set-bind writes ONE registry field and touches no process, so the only
+	// thing that can make it wrong is a registry whose projection is already
+	// incoherent — the same gate `create` has, for the same reason.
+	"set-bind": {RegistryManifestMismatch, ManifestUnknownRow},
 	// A local migration is a handover's barrier plus disk for the copy, and
 	// it copies a tree the tenant is supposed to be serving from.
 	"migrate-local": {DiskLow, PortOwnerMismatch, EnvNotSystemdParsable, PortNotListening},
@@ -120,10 +134,85 @@ var preconditions = map[string][]string{
 // op leaves the condition behind, not that the condition is acceptable.
 var tolerates = map[string][]string{
 	"env-normalize": {EnvNotSystemdParsable},
+	// `adopt --readopt --confirm-stores` is the ONLY way to clear
+	// stores_unconfirmed, so the finding must not refuse it. (It is a warning
+	// on its own merits today; the row is here so that an op-scoped raise
+	// elsewhere can never reach the op that repairs it — the same lesson
+	// env-normalize taught.)
+	"adopt": {StoresUnconfirmed},
 	"start":         {PortNotListening},
 	"restart":       {PortNotListening},
 	"stop":          {PortNotListening},
 	"decommission":  {PortNotListening},
+}
+
+// handoverPreconditions is the handover row, per DESTINATION supervisor.
+//
+// A handover's preconditions are facts about the RUNTIME the tenant is moving
+// onto, and PR-D2 gave this deployment a second one. The systemd list demands
+// a user manager that will exist at boot — linger, the root drop-in that puts
+// SYSTEMD_UNIT_PATH and RequiresMountsFor=/rag on it, a runtime dir to talk to
+// — and on coconut none of those three is installable this week. The instance
+// list demands what actually brings a tenant back there instead: the service
+// account's `@reboot` crontab line (boot_cron_missing) and its ACL access to
+// the managed roots (ctl_account_no_access), which are the negatives of the
+// brief's `boot_cron_present` and `acl_grant_present`.
+//
+// Five conditions are in BOTH lists because they are about the tenant rather
+// than about the supervisor: an env file the ctl will parse, a port whose
+// owner is the account the registry names, code traceable to the mirror, paths
+// nobody outside ragops can rewrite, and an API that is actually up to be
+// handed over. stores_unconfirmed joins them at PR-E: a handover that moves
+// the API and leaves the tenant's own stores running as another account splits
+// the tenant between two accounts, and neither can then restart it.
+var (
+	handoverSystemd = []string{
+		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
+		WorktreeGitdirUnreadable, LingerMissing, UserDropInMissing,
+		RuntimeDirMissing, WritableByOthers, PortNotListening, StoresUnconfirmed,
+	}
+	handoverInstance = []string{
+		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
+		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening,
+		StoresUnconfirmed, BootCronMissing, CtlAccountNoAccess,
+	}
+	handoverPreconditions = map[string][]string{
+		SupervisorSystemd:  handoverSystemd,
+		SupervisorInstance: handoverInstance,
+	}
+)
+
+// The destination supervisors a handover can name. They are the registry's
+// `supervisor` values, repeated here rather than imported because doctor is
+// below registry in the import graph for every other check too.
+const (
+	SupervisorSystemd  = "systemd"
+	SupervisorInstance = "instance"
+	// DefaultHandoverDestination is what RedCodes("handover") gates on: the
+	// supervisor this deployment can actually hand a tenant over TO. PR-D2
+	// postponed systemd until the machine is dedicated and the three root
+	// items are installed; until then every handover lands on `instance`.
+	DefaultHandoverDestination = SupervisorInstance
+)
+
+// RedCodesForDestination is RedCodes for an op whose preconditions depend on
+// where the tenant is going. Only `handover` has such a row today; every other
+// op ignores dest.
+//
+// An unknown destination falls back to the default rather than to no gate at
+// all: a typo in a destination must never be the thing that turns the
+// precondition table off.
+func RedCodesForDestination(op, dest string) []string {
+	if op != "handover" {
+		return RedCodes(op)
+	}
+	codes, ok := handoverPreconditions[dest]
+	if !ok {
+		codes = handoverPreconditions[DefaultHandoverDestination]
+	}
+	out := make([]string, len(codes))
+	copy(out, codes)
+	return out
 }
 
 // Tolerated lists the findings op lowers to warn.

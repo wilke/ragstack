@@ -372,7 +372,102 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.storeChecks(t)
 	d.permissionChecks(t)
 	d.homePathCheck(t)
-	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
+	d.capabilityChecks(t)
+}
+
+// capabilityChecks reports what the ctl may and may not do to this tenant's
+// stores.
+//
+// Two findings, and the difference between them is the whole point:
+//
+//   - capabilities_unconfirmed (INFO) is the adopted tenant's normal state —
+//     nothing is confirmed, so every store op refuses. It used to be added
+//     unconditionally, which meant a tenant whose legs an operator HAD
+//     confirmed still reported "store capabilities are all false" for as long
+//     as the row existed.
+//   - stores_unconfirmed (WARN) is narrower and is the one a handover reads:
+//     a leg this tenant owns EXCLUSIVELY, which the ctl would therefore be
+//     expected to start and stop after the handover, whose `stop` capability
+//     is still false. Such a handover moves the API to the service account
+//     and leaves the tenant's own qdrant/elasticsearch/postgres running as
+//     whoever started them — which is not a handover, it is a split tenant.
+//     The repair is `adopt <t> --readopt --confirm-stores <legs>`, and `adopt`
+//     TOLERATES the finding (preconditions.go) because it is the op that
+//     clears it.
+func (d *run) capabilityChecks(t *registry.Tenant) {
+	var unconfirmed []string
+	confirmed := 0
+	for _, leg := range exclusiveLegs(t) {
+		if leg.caps.Stop {
+			confirmed++
+			continue
+		}
+		unconfirmed = append(unconfirmed, leg.name)
+	}
+	if allCapabilitiesFalse(t) {
+		d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name,
+			"store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms "+
+				"process identity, backing path and exclusive ownership")
+	}
+	if len(unconfirmed) > 0 {
+		d.add(model.LevelWarn, StoresUnconfirmed, t.Name, fmt.Sprintf(
+			"%s exclusively owned by this tenant but capabilities.stop is still false: the ctl would supervise the "+
+				"API and leave %s running as whoever started them. Confirm with `ragstack-ctl adopt %s --readopt "+
+				"--confirm-stores %s --commit`",
+			strings.Join(unconfirmed, ", "), plural(len(unconfirmed), "it", "them"), t.Name,
+			strings.Join(unconfirmed, ",")))
+	}
+	_ = confirmed
+}
+
+// exclusiveLeg is one store leg of a tenant, for the two questions this file
+// asks of it: what it is called, and what an operator has confirmed about it.
+type exclusiveLeg struct {
+	name string
+	caps registry.Capabilities
+}
+
+// exclusiveLegs are the store legs this tenant owns ALONE — the ones a
+// handover would make the ctl responsible for starting and stopping. A shared
+// leg is deliberately absent: confirming `stop` on a store three tenants use
+// would be confirming the ctl may take the other two down.
+func exclusiveLegs(t *registry.Tenant) []exclusiveLeg {
+	var out []exclusiveLeg
+	if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive {
+		out = append(out, exclusiveLeg{"qdrant", t.Stores.Qdrant.Capabilities})
+	}
+	if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive {
+		out = append(out, exclusiveLeg{"elasticsearch", t.Stores.Elasticsearch.Capabilities})
+	}
+	// Only a `local` postgres is a server of this tenant's that the ctl could
+	// start or stop. `sqlite` is exclusive too (its files are the tenant's
+	// alone) and has no process at all, so a `stop` capability on it would
+	// describe nothing.
+	if t.Stores.Postgres.Kind == registry.PostgresKindLocal &&
+		t.Stores.Postgres.Ownership == registry.OwnershipExclusive {
+		out = append(out, exclusiveLeg{"postgres", t.Stores.Postgres.Capabilities})
+	}
+	return out
+}
+
+// allCapabilitiesFalse reports the adopted tenant's starting state: nothing
+// confirmed on any leg.
+func allCapabilitiesFalse(t *registry.Tenant) bool {
+	for _, c := range []registry.Capabilities{
+		t.Stores.Qdrant.Capabilities, t.Stores.Elasticsearch.Capabilities, t.Stores.Postgres.Capabilities,
+	} {
+		if c.Stop || c.Purge || c.Snapshot || c.Restore {
+			return false
+		}
+	}
+	return true
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // postgresCheck asks the one question a dedicated relational store raises:

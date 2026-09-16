@@ -179,6 +179,13 @@ func NewRegistry(d Deps) jobs.Registry {
 	// the verb that allocates out of the SELFTEST port range, and nothing
 	// reachable over the network should be able to do that (ops/sandbox.go).
 	add("create-sandbox", false, planCreateSandbox)
+	// The PR-E preparation ops (ops/prepare.go). CLI-only for the reasons the
+	// contract's x-ctl-cli-op-args comment gives; `set-ui-mode` is destructive
+	// because its static direction stops a running dev server and moves the
+	// directory nginx is serving, `set-bind` is not because it writes one
+	// registry field and touches no process.
+	add("set-ui-mode", true, planSetUIMode)
+	add("set-bind", false, planSetBind)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)

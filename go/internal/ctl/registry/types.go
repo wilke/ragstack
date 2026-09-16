@@ -411,12 +411,21 @@ type OpRecord struct {
 }
 
 // BackupRecord summarises the last backup.
+//
+// Scope says WHAT the bundle holds: the full bundle's ["config","state",
+// "stores"], or the ["config","state"] of a light one (`tenant backup --scope
+// config,state`). It is not redundant with Fenced — a light bundle is
+// unfenced by construction, but so is a full best-effort one, and only Scope
+// tells them apart. Nothing reads it as a prerequisite (Fenced+Verified do
+// that); it exists so that `last_backup` cannot be read as a claim the bundle
+// does not make.
 type BackupRecord struct {
-	Bundle   string `json:"bundle"`
-	At       string `json:"at"`
-	Kind     string `json:"kind"` // backup|pre-update|recovery
-	Fenced   bool   `json:"fenced"`
-	Verified bool   `json:"verified"`
+	Bundle   string   `json:"bundle"`
+	At       string   `json:"at"`
+	Kind     string   `json:"kind"` // backup|pre-update|recovery
+	Fenced   bool     `json:"fenced"`
+	Verified bool     `json:"verified"`
+	Scope    []string `json:"scope"`
 }
 
 // UnpinnedVersion and UnpinnedDigest are the contract-shaped markers for a
