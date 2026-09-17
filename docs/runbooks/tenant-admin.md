@@ -725,6 +725,43 @@ Qdrant and ES resources.
 
 ---
 
+## 6a. Which ingest backend a tenant runs, and what it costs you
+
+`INGEST_BACKEND` takes exactly two values, and the router **501s anything else**
+(`api/routers/documents.py::_refuse_unknown_backend`). It decides where an upload
+is staged, and therefore what credential a caller needs:
+
+| `INGEST_BACKEND` | Uploads staged to | Caller needs |
+|---|---|---|
+| `local` (the default, when the key is unset) | `INGEST_ROOT` on the API host | any authenticated principal — an API key is fine |
+| `gowe` | the **caller's own BV-BRC Workspace**, `ws://…`, and a workflow submitted as them | a **BV-BRC bearer token**; an API key or keyless caller gets 401 |
+
+The `gowe` rule has one implementation, `api/security.py::gowe_caller`, and its
+docstring is explicit that there is no fallback identity and none may be added:
+writing into somebody's Workspace requires that somebody's credential.
+
+Read the fleet before assuming:
+
+```bash
+for t in /rag/data/tenants/*/config/tenant.env; do
+  printf '%-14s ' "$(basename "$(dirname "$(dirname "$t")")")"
+  grep -hE '^INGEST_BACKEND=' "$t" || echo 'INGEST_BACKEND=local (unset)'
+done
+```
+
+**Why an operator cares.** A test rig, a scripted bulk load, or any automation
+holding an API key can exercise the upload path only on a `local` tenant. On a
+`gowe` tenant the same automation needs a real user's token, which is a different
+kind of secret with a different lifetime. Put automation that must upload on a
+`local`-backend tenant, and keep the token-based path for testing the Workspace
+behaviour itself.
+
+**Other object stores are not a configuration away.** There is no Shock or S3
+backend: `_refuse_unknown_backend` rejects any value that is not `local` or
+`gowe` with a 501, so adding one is an implementation task (a backend in
+`ingestion/`, its staging and reference-resolution rules, and the guard widened),
+not a `tenant.env` edit.
+
 ## 6b. Exposing a shared corpus without copying it
 
 A tenant can serve a collection whose stores live on **another instance**, so a
