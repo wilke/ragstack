@@ -461,13 +461,10 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 		bp := ptr + "/last_backup"
 		c.pattern(bp+"/bundle", b.Bundle, reAbsPath)
 		c.enum(bp+"/kind", b.Kind, enumBackupKind)
-		// The contract types `scope` as a required array, so a record written
-		// before it existed (or by hand) fails here rather than being read
-		// back as "this bundle carries nothing".
-		if len(b.Scope) == 0 {
-			c.failf(bp+"/scope", "a backup record must say what the bundle holds (%s)",
-				strings.Join(enumBackupScope, "|"))
-		}
+		// An ABSENT scope is legal and means the full bundle: the field arrived
+		// after records without it had been written, and Load backfills them
+		// (registry.backfillBackupScope). What is checked is the content of a
+		// scope that IS there.
 		seen := map[string]bool{}
 		for i, leg := range b.Scope {
 			c.enum(fmt.Sprintf("%s/scope/%d", bp, i), leg, enumBackupScope)

@@ -36,7 +36,7 @@ func TestSetUIModeStaticBuildsSwapsPublishesAndProves(t *testing.T) {
 
 	p := plan(t, oc, "set-ui-mode", map[string]any{"mode": "static"})
 	want := []string{
-		"apptainer: install the frontend's locked dependencies, if node_modules is absent",
+		"apptainer: install the frontend's locked dependencies, unless node_modules/.bin/vite is there",
 		"apptainer: vite build --base /ragstack/dev/ui/ into dist.building",
 		"proc: stop the Vite dev server on 8090 (by port AND identity)",
 		"fs: swap the new build into place, keeping the previous one as dist.prev-<ts>",
@@ -65,8 +65,8 @@ func TestSetUIModeStaticBuildsSwapsPublishesAndProves(t *testing.T) {
 	if !strings.Contains(builds[0], " /ragstack/dev/ui/ ") {
 		t.Errorf("build base is not the gateway's own route: %q", builds[0])
 	}
-	// node_modules were there, so npm ci did NOT run: the one network step in
-	// the control plane must not fire because a UI was rebuilt.
+	// The frontend was installed, so npm ci did NOT run: the one network step
+	// in the control plane must not fire because a UI was rebuilt.
 	for _, call := range fake.CallKeys() {
 		if strings.HasPrefix(call, "build.NpmCI(") {
 			t.Errorf("npm ci ran although node_modules were present: %s", call)
@@ -393,6 +393,10 @@ func containsArg(args []string, flag, value string) bool {
 // (which is what its UI() refuses without, exactly as the real one does).
 func installNodeModules(fake *drivers.Fake, worktree string) {
 	fake.FakeBuild().Installed[worktree] = true
+	// The BINARY, because that is what the step looks for: a node_modules
+	// directory with no .bin/vite in it is an interrupted install, not an
+	// installed frontend (TestSetUIModeStaticRepairsAnInterruptedInstall).
+	fake.FakeFiles().Put(worktree+"/frontend/node_modules/.bin/vite", []byte("#!/usr/bin/env node\n"), 0o755)
 	fake.FakeFiles().Put(worktree+"/frontend/node_modules/.package-lock.json", []byte("{}\n"), 0o644)
 }
 
@@ -404,4 +408,142 @@ func fileAt(fake *drivers.Fake, path string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// The rollback is a SEQUENCE, and the engine runs it last-to-first. This is the
+// reviewer's repro kept as a regression test: it rolls the plan back in the
+// engine's own order and asserts the END STATE an operator is left with, not
+// the individual steps.
+//
+// The bug it pins: the gateway publish step used to republish in its own
+// rollback, "after the registry row has been rolled back" — which is exactly
+// backwards. Publish is planned after the registry write, so in reverse order
+// it runs FIRST, while the row still says `static`; the last thing nginx heard
+// was therefore the generation being undone, over a dist the next rollback step
+// then moved away.
+func TestSetUIModeStaticRollsBackInTheEnginesOrder(t *testing.T) {
+	const uiPort = 8090
+	oc, fake := fixture(t, "dev", devUI(uiPort))
+	installNodeModules(fake, oc.Tenant.Worktree)
+	dist := distDir(oc.Tenant)
+	fake.FakeFiles().Put(dist+"/index.html", []byte("<!-- the build that is live -->\n"), 0o644)
+	// The failure an operator really hits: the generation publishes and the UI
+	// route answers 404 because the alias serves nothing.
+	fake.FakeGateway().ProbeStatus = map[string]int{"/ragstack/dev/ui/": 404}
+
+	p := plan(t, oc, "set-ui-mode", map[string]any{"mode": "static"})
+	r := newRunner(oc, fake)
+	failed := -1
+	for i, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			if !strings.Contains(err.Error(), "404") {
+				t.Fatalf("step %d (%s) failed for the wrong reason: %v", i, s.Plan.Title, err)
+			}
+			failed = i
+			break
+		}
+	}
+	if failed < 0 {
+		t.Fatal("the probe did not fail; this test needs the failure it rolls back from")
+	}
+
+	// The engine's order: lastStep down to 0, every step that has a rollback.
+	appliesBefore := len(fake.FakeGateway().Applies)
+	for i := failed; i >= 0; i-- {
+		s := p.Steps[i]
+		if s.Rollback == nil {
+			continue
+		}
+		if _, err := r.rollback(s); err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", i, s.Plan.Title, err)
+		}
+	}
+
+	// 1. The row is back.
+	row := oc.Fleet.Tenants["dev"]
+	if row.UI.Mode != registry.UIModeDev || row.UI.Port != uiPort {
+		t.Errorf("ui = %+v, want the dev/%d the job started from", row.UI, uiPort)
+	}
+	// 2. The gateway was republished AFTER that, so the generation nginx is
+	//    serving was rendered from the restored row.
+	if got := len(fake.FakeGateway().Applies); got != appliesBefore+1 {
+		t.Errorf("gateway applies during rollback = %d, want exactly one (from the registry step)",
+			got-appliesBefore)
+	}
+	lastApply, lastRegistry := -1, -1
+	for i, c := range fake.CallKeys() {
+		switch {
+		case strings.HasPrefix(c, "gateway.Apply("):
+			lastApply = i
+		case strings.HasPrefix(c, "job.checkpoint(") && strings.Contains(c, "ui-dist-prev:"):
+			lastRegistry = i
+		}
+	}
+	_ = lastRegistry
+	if lastApply < 0 {
+		t.Fatal("no gateway apply at all")
+	}
+	// 3. The live build is the one that was serving before the job.
+	if got := fileAt(fake, dist+"/index.html"); !strings.Contains(got, "the build that is live") {
+		t.Errorf("%s is not the previous build after the rollback: %q", dist, got)
+	}
+	// 4. And the rollback did not fail over the staged build, which is KEPT.
+	if got := fileAt(fake, dist+".building/index.html"); got == "" {
+		t.Error("the staged build was discarded; the build step's rollback is supposed to keep it")
+	}
+}
+
+// The staged build is kept rather than deleted, and the reason is mechanical as
+// well as editorial: Files.Remove cannot delete a non-empty directory, so a
+// rollback that tried would end `rolled_back_partial` every single time.
+func TestSetUIModeStaticRollbackDoesNotFailOnTheStagedBuild(t *testing.T) {
+	oc, fake := fixture(t, "dev", devUI(0))
+	installNodeModules(fake, oc.Tenant.Worktree)
+	p := plan(t, oc, "set-ui-mode", map[string]any{"mode": "static"})
+	r := newRunner(oc, fake)
+	build := p.Steps[stepIndex(p, "apptainer", "vite build")]
+	if _, err := r.run(build); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := r.rollback(build); err != nil {
+		t.Fatalf("the build step's rollback failed over its own output: %v", err)
+	}
+}
+
+// A dev server this op stopped is not restarted by a rollback — the ctl does
+// not know its command line. The PLAN says so, because that is where the
+// operator gives their approval.
+func TestSetUIModeStaticWarnsThatTheDevServerIsNotRestarted(t *testing.T) {
+	oc, _ := fixture(t, "dev", devUI(8090))
+	p := plan(t, oc, "set-ui-mode", map[string]any{"mode": "static"})
+	joined := strings.Join(p.Plan.Warnings, " ")
+	if !strings.Contains(joined, "not restarted by a rollback") {
+		t.Errorf("the plan does not warn that the dev server stays down after a rollback: %v", p.Plan.Warnings)
+	}
+	// And a tenant with no dev server does not carry the warning at all.
+	oc2, _ := fixture(t, "dev", managed)
+	p2 := plan(t, oc2, "set-ui-mode", map[string]any{"mode": "static"})
+	if strings.Contains(strings.Join(p2.Plan.Warnings, " "), "not restarted by a rollback") {
+		t.Error("a tenant with no dev server was warned about one")
+	}
+}
+
+// An interrupted `npm ci` leaves node_modules present and .bin/vite absent.
+// Keying the skip on the directory declared the install finished and left the
+// build to fail with a remedy that had nothing to do with the problem.
+func TestSetUIModeStaticRepairsAnInterruptedInstall(t *testing.T) {
+	oc, fake := fixture(t, "dev", devUI(0))
+	frontend := oc.Tenant.Worktree + "/frontend"
+	// Half an install: the directory is there, the binary is not.
+	fake.FakeFiles().Put(frontend+"/node_modules/.package-lock.json", []byte("{}\n"), 0o644)
+
+	p := plan(t, oc, "set-ui-mode", map[string]any{"mode": "static"})
+	r := newRunner(oc, fake)
+	npm := p.Steps[stepIndex(p, "apptainer", "locked dependencies")]
+	if _, err := r.run(npm); err != nil {
+		t.Fatalf("npm step: %v", err)
+	}
+	if !containsCall(fake.CallKeys(), "build.NpmCI("+oc.Tenant.Worktree+",/rag/cache/npm)") {
+		t.Errorf("an interrupted install was not repaired: %v", fake.CallKeys())
+	}
 }

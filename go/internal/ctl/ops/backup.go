@@ -281,8 +281,12 @@ var sqliteDBs = []stateDB{
 // (bundle_test.go) reads the schema file and fails when the two drift, so a
 // member added to the contract becomes a member verify demands without anybody
 // remembering to copy it across.
+//
+// `scope` is deliberately NOT in it: the member is optional, because a bundle
+// written before it existed has none and `backup verify` must not condemn every
+// bundle already on disk. Absent means the full bundle.
 var BundleManifestRequired = []string{
-	"schema_version", "kind", "scope", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
+	"schema_version", "kind", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
 	"best_effort", "tenant", "artifact", "python_env", "images", "paths_relative_to", "inventory",
 	"stores", "sqlite", "files", "external", "secrets", "units", "registry_row", "migrate_md",
 	"consistent", "verified", "warnings", "sha256sums",

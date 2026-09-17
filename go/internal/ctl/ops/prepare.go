@@ -132,19 +132,27 @@ func planSetUIModeStatic(p *planner) error {
 	frontend := filepath.Join(t.Worktree, "frontend")
 	prevMode, prevPort := t.UI.Mode, int(t.UI.Port)
 
+	// The skip is keyed on the vite BINARY, not on the node_modules directory.
+	// An interrupted `npm ci` leaves a directory with some of a thousand
+	// packages in it and no `.bin/vite`; keying on the directory declared that
+	// install finished, skipped the repair for good, and left the build step to
+	// fail with "prepare the artifact first" — a remedy that has nothing to do
+	// with the problem. The file this step exists to produce is the thing to
+	// look for.
+	vite := filepath.Join(frontend, "node_modules", ".bin", "vite")
 	p.addFor("build", step{
-		Kind: "apptainer", Title: "install the frontend's locked dependencies, if node_modules is absent",
+		Kind: "apptainer", Title: "install the frontend's locked dependencies, unless node_modules/.bin/vite is there",
 		Targets: []string{frontend},
-		Warnings: []string{"this step reaches the NETWORK (`npm ci`) — and only when " + frontend +
-			"/node_modules is not already there; it is why set-ui-mode is CLI-only"},
+		Warnings: []string{"this step reaches the NETWORK (`npm ci`) — and only when " + vite +
+			" is not already there; it is why set-ui-mode is CLI-only"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			present, err := dirPresent(ctx, sc, filepath.Join(frontend, "node_modules"))
+			present, err := filePresent(ctx, sc, vite)
 			if err != nil {
 				return "", err
 			}
 			if present {
-				sc.Logf("%s/node_modules is present; nothing to install", frontend)
-				return "node_modules is already installed", nil
+				sc.Logf("%s is present; nothing to install", vite)
+				return "the frontend's dependencies are already installed", nil
 			}
 			if err := sc.Ops.Drivers.Build().NpmCI(ctx, t.Worktree, npmCacheDir(sc.Ops.Roots)); err != nil {
 				return "", err
@@ -176,9 +184,16 @@ func planSetUIModeStatic(p *planner) error {
 			}
 			return staging, nil
 		},
-		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			// The staging tree is this job's own and nothing serves from it.
-			return "removed " + staging, sc.Ops.Drivers.Files().Remove(ctx, staging)
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			// The staged build is KEPT, deliberately, and this is the one place
+			// that decides it. Two reasons: `Files.Remove` cannot delete a
+			// non-empty directory, so every rollback used to end
+			// `rolled_back_partial` over a tree nothing serves from; and the
+			// swap step's own rollback moves the new build BACK here, so a
+			// rollback that also deleted it would contradict the step above it.
+			// The next run's `vite build --emptyOutDir` clears it.
+			sc.Logf("the staged build is left at %s for inspection; the next build clears it", staging)
+			return "left the staged build at " + staging, nil
 		},
 	})
 
@@ -240,6 +255,11 @@ func planSetUIModeStatic(p *planner) error {
 		},
 	})
 
+	if prevPort != 0 {
+		p.warn(fmt.Sprintf("the Vite dev server on %d is STOPPED and is not restarted by a rollback: the ctl does "+
+			"not know its command line. If this job rolls back, start it again the way you started it before "+
+			"(the registry row and the gateway will be pointing at %d again)", prevPort, prevPort))
+	}
 	p.addUIRegistryStep("record ui.mode static (the port is cleared: nginx serves a directory)",
 		registry.UIModeStatic, 0, prevMode, prevPort)
 	p.addGatewayPublishFor("the static alias for " + base + " replaces this tenant's $tenant_ui row")
@@ -294,11 +314,14 @@ func (p *planner) addDevServerStop(port int, frontend string) {
 			sc.Logf("SIGTERM to pid %d (vite in %s)", pid, frontend)
 			return fmt.Sprintf("stopped the dev server on %d (pid %d)", port, pid), nil
 		},
-		// Deliberately no Rollback: restarting somebody's dev server is not
-		// something the ctl knows how to do (its command line is the
-		// operator's, not the registry's), and the rolled-back registry row
-		// says `external` again, which is exactly the statement "a server
-		// somebody else runs belongs on this port".
+		// Deliberately no Rollback, and this is the one thing a rollback of
+		// this op does NOT put back. The ctl does not know how to start that
+		// server: its command line is the operator's, not the registry's, and
+		// nothing recorded it. A rolled-back row says `dev`/`external` again —
+		// which is precisely the statement "a server somebody else runs belongs
+		// on this port" — and the gateway routes to it again, so the repair is
+		// the operator starting their dev server, exactly as they started it
+		// the first time. The plan says so up front, and so does the runbook.
 	})
 }
 
@@ -341,7 +364,14 @@ func (p *planner) addUIRegistryStep(title, mode string, port int, prevMode strin
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			return write(sc, mode, port)
 		},
-		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+		// This rollback carries the REPUBLISH as well as the row, because it is
+		// the first point in the reverse order at which the row says the right
+		// thing again. The publish step above cannot do it (it runs while the
+		// row still says what the job set), and a republish left undone would
+		// leave nginx serving a generation rendered from a row that no longer
+		// exists — the static alias for a tenant whose dist the next rollback
+		// step is about to move away.
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			if prevMode == "" {
 				// The row never recorded a mode (a pre-PR-B adoption). Putting
 				// back the empty string would make the gateway renderer refuse
@@ -349,7 +379,21 @@ func (p *planner) addUIRegistryStep(title, mode string, port int, prevMode strin
 				// the mode this op set.
 				return "the row recorded no ui.mode before this job; it is left as " + mode, nil
 			}
-			return write(sc, prevMode, prevPort)
+			detail, err := write(sc, prevMode, prevPort)
+			if err != nil {
+				return "", err
+			}
+			// Best effort, and it says so: the row is back whatever the gateway
+			// does, and a rollback that failed because nginx could not be
+			// signalled would leave the operator with neither.
+			gen, gdetail, gerr := sc.Ops.Drivers.Gateway().Apply(ctx, false)
+			if gerr != nil {
+				sc.Logf("the row is %s again but the gateway could not be republished (%v) — "+
+					"run `ragstack-ctl gateway apply`", prevMode, gerr)
+				return detail + "; the gateway still serves the previous generation: republish it by hand", nil
+			}
+			sc.Logf("republished as gen-%d from the restored row: %s", gen, gdetail)
+			return detail + "; gateway republished from the restored row", nil
 		},
 	})
 }
@@ -388,15 +432,23 @@ func (p *planner) addGatewayPublishFor(what string) {
 			p.result["gateway_generation"] = gen
 			return detail, nil
 		},
-		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+		// NO rollback here, and the reason is the engine's rollback ORDER.
+		//
+		// Steps roll back last-to-first, and this step is planned AFTER the
+		// registry write — so at this point the row still says what the job set
+		// it to, and a publish from here would render exactly the generation
+		// being undone. (The comment that used to sit here claimed the
+		// opposite. It was wrong, and a reviewer's repro proved it.)
+		//
+		// The republish belongs to the step that restores the row, which runs
+		// next: addUIRegistryStep's rollback publishes after it has put the row
+		// back. This one only says what it left behind.
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			if len(sc.Step.ExternalIDs) == 0 {
 				return "nothing was published", nil
 			}
-			// The registry row has already been rolled back by the time this
-			// runs (rollback is reverse order), so re-publishing renders the
-			// PREVIOUS shape rather than replaying a generation number.
-			_, detail, err := sc.Ops.Drivers.Gateway().Apply(ctx, false)
-			return detail, err
+			sc.Logf("the generation stays published for now; the registry rollback republishes from the restored row")
+			return "left to the registry rollback, which republishes from the restored row", nil
 		},
 	})
 }
@@ -432,6 +484,19 @@ func (p *planner) addUIProbe(base string) {
 // treat as a reason to rebuild or to skip a rename.
 func dirPresent(ctx context.Context, sc *jobs.StepContext, path string) (bool, error) {
 	if _, err := sc.Ops.Drivers.Files().ReadDir(ctx, path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// filePresent is dirPresent for one FILE, and the distinction matters: the
+// question "are the frontend's dependencies installed" is answered by
+// node_modules/.bin/vite existing, not by the directory above it existing.
+func filePresent(ctx context.Context, sc *jobs.StepContext, path string) (bool, error) {
+	if _, err := sc.Ops.Drivers.Files().ReadFile(ctx, path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}

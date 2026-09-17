@@ -78,9 +78,9 @@ func cmdTenantSetUIMode(args []string, registryPath, ragRoot string, jsonOut boo
 	name, mode := pos[0], pos[1]
 	if mode != registry.UIModeStatic && mode != registry.UIModeExternal {
 		if mode == registry.UIModeDev {
-			return usageErr("set-ui-mode does not move a tenant INTO `dev`: a Vite dev server is not something the " +
-				"ctl supervises (instance mode refuses one outright). A hand-run dev server is `external` " +
-				"— `set-ui-mode %s external --ui-port <P>`")
+			return usageErr("set-ui-mode does not move a tenant INTO `dev`: a Vite dev server is not something the "+
+				"ctl supervises (instance mode refuses one outright). A hand-run dev server is `external` "+
+				"— `ragstack-ctl tenant set-ui-mode %s external --ui-port <P>`", name)
 		}
 		return usageErr("set-ui-mode: mode %q is not static or external", mode)
 	}

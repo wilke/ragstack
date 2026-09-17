@@ -167,6 +167,7 @@ func LoadNoRepair(path string) (*Fleet, error) {
 		return nil, fmt.Errorf("%w: %s has schema_version %d, this binary reads %d", ErrSchema, path, f.SchemaVersion, SchemaVersion)
 	}
 	f.backfillPostgres()
+	f.backfillBackupScope()
 	// Structural first (it names the offending JSON pointer), then the
 	// cross-field invariants. A registry that does not match the published
 	// contract is refused at load: that is how a bug that wrote a secret into
@@ -179,6 +180,23 @@ func LoadNoRepair(path string) (*Fleet, error) {
 		return nil, fmt.Errorf("registry: %s: %w", path, err)
 	}
 	return &f, nil
+}
+
+// backfillBackupScope fills in `last_backup.scope` for a record written before
+// the field existed.
+//
+// A bundle taken by the deployed binary is a FULL one — `--scope` is what
+// introduced any other kind — so an absent scope means all three legs. Without
+// this, every registry on disk the day this ships would be refused at load, and
+// refused WHOLE: one row's missing member takes the fleet down, which is the
+// worst possible way to learn about a new optional field.
+func (f *Fleet) backfillBackupScope() {
+	for _, t := range f.Tenants {
+		if t == nil || t.LastBackup == nil || len(t.LastBackup.Scope) > 0 {
+			continue
+		}
+		t.LastBackup.Scope = []string{"config", "state", "stores"}
+	}
 }
 
 // backfillPostgres fills in `stores.postgres` for a row written before the

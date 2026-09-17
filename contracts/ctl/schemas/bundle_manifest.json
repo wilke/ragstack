@@ -5,7 +5,7 @@
   "description": "`manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`), NEVER in the clear; with no recipient configured the bundle is still written and `secrets.included` is false, so the data is backed up and the credentials are honestly declared missing. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.",
   "type": "object",
   "required": [
-    "schema_version", "kind", "scope", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
+    "schema_version", "kind", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
     "best_effort", "tenant", "artifact", "python_env", "images", "paths_relative_to", "inventory",
     "stores", "sqlite", "files", "external", "secrets", "units", "registry_row", "migrate_md",
     "consistent", "verified", "warnings", "sha256sums"
@@ -14,7 +14,7 @@
     "schema_version": { "type": "integer", "const": 1 },
     "kind": { "type": "string", "enum": ["backup", "pre-update", "recovery"] },
     "scope": {
-      "description": "WHICH legs this bundle was asked for, sorted. A full bundle is `[\"config\", \"state\", \"stores\"]`; `tenant backup --scope config,state` writes a LIGHT bundle — the config allowlist, the SQLite state files, the rendered units, the registry row and the rollback descriptor, no store snapshots and no fence — which is what a handover's safety net needs and takes seconds rather than hours.\n\nIt is a statement about the REQUEST, not about what each leg then managed to capture: a leg that was in scope and was skipped for want of a capability still says so in `stores.*.included` and in `warnings`. A bundle without `stores` in its scope is never `consistent` and never satisfies a restore prerequisite.",
+      "description": "WHICH legs this bundle was asked for, sorted. OPTIONAL: a bundle written before the field existed carries no `scope`, and a `backup verify` that refused those would condemn every bundle already on disk. Absent means the full bundle, the only kind that existed then. A full bundle is `[\"config\", \"state\", \"stores\"]`; `tenant backup --scope config,state` writes a LIGHT bundle — the config allowlist, the SQLite state files, the rendered units, the registry row and the rollback descriptor, no store snapshots and no fence — which is what a handover's safety net needs and takes seconds rather than hours.\n\nIt is a statement about the REQUEST, not about what each leg then managed to capture: a leg that was in scope and was skipped for want of a capability still says so in `stores.*.included` and in `warnings`. A bundle without `stores` in its scope is never `consistent` and never satisfies a restore prerequisite.",
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "enum": ["config", "state", "stores"] }
