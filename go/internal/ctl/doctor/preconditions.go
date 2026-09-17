@@ -121,6 +121,22 @@ var preconditions = map[string][]string{
 	// allocator's record and the registry are supposed to converge, and a
 	// stray row means two allocators).
 	"adopt": {StoreURLDisallowed, ManifestUnknownRow},
+	// artifact-prepare runs `npm ci` and a `git` checkout into the ctl's own
+	// artifact tree. Nothing about a TENANT can make that wrong — it names
+	// none — but a host with no room produces a half-checked-out artifact that
+	// a later `create` would build from, and the ctl account has to be able to
+	// write the tree it is checking out into.
+	"artifact-prepare": {DiskLow, CtlAccountNoAccess},
+	// create-sandbox is `create` onto the selftest port block, so it is
+	// `create`'s row: the same allocator, the same stores, the same host.
+	// vm_max_map_count_low is the one that bites — a sandbox Elasticsearch
+	// dies on it exactly as a tenant's does.
+	"create-sandbox": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow, CtlAccountNoAccess},
+	// gateway-reload re-tests and HUPs the LIVE tree without publishing a new
+	// generation, so unlike gateway-apply it does not need the routing table
+	// to already agree with the registry — that is often WHY it is being run.
+	// It needs the live tree to be one this account owns.
+	"gateway-reload": {CtlAccountNoAccess},
 	// settings-put rewrites the ctl's own configuration, not a tenant's, so
 	// no tenant finding is a reason to refuse it — and an empty row is the
 	// point: an op absent from this table has NO gate at all (RedCodes
@@ -246,6 +262,28 @@ func RedCodesForDestination(op, dest string) []string {
 	}
 	out := make([]string, len(codes))
 	copy(out, codes)
+	return out
+}
+
+// GateCodes are the findings whose presence as a WARNING means op needs the
+// operator's acknowledgement: its precondition set MINUS what it tolerates.
+//
+// It is the same subtraction applyPreconditions makes ("tolerating wins: a row
+// cannot both raise and lower"), and it has to be, because the engine's yellow
+// gate and the doctor's own levels are two readings of one table. Without it
+// the gate demanded a `--force-with-doctor-diff` for exactly the finding an op
+// exists to clear.
+func GateCodes(op, dest string) []string {
+	tolerated := map[string]bool{}
+	for _, c := range Tolerated(op) {
+		tolerated[c] = true
+	}
+	var out []string
+	for _, c := range RedCodesForDestination(op, dest) {
+		if !tolerated[c] {
+			out = append(out, c)
+		}
+	}
 	return out
 }
 

@@ -928,7 +928,16 @@ func (d *run) bootHook() {
 			return
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return // an unreadable state dir is not evidence about the crontab
+		// FAIL CLOSED. An unreadable boot record is not "no opinion": this
+		// finding answers "will anything bring the tenants back after a
+		// reboot", and a check that vanishes when it cannot read its own
+		// evidence answers `green` to a question it did not ask. It used to
+		// `return` here, so a permissions mistake on the state directory made
+		// the one precondition that guards a reboot silently disappear.
+		d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
+			"%s could not be read (%v), so the ctl cannot say whether anything starts a tenant after a reboot. "+
+				"Read it as the account that owns it, or re-run `ragstack-ctl fleet enable-boot --cron`", path, err))
+		return
 	}
 	if rec.Cron {
 		detail := fmt.Sprintf("a @reboot crontab line is recorded in %s", path)

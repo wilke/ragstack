@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 )
 
 // The contract is the source of truth for `x-ctl-op-args`; the Go table in
@@ -472,4 +474,49 @@ func propNames(m map[string]contractProp) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestEveryVerbHasAPreconditionRow closes the gap the PR-E2 review found: the
+// doctor's totality test compared its table against the CONTRACT enum, and
+// three verbs the engine answers are not in that enum at all
+// (`artifact-prepare`, `create-sandbox`, `gateway-reload`). All three had no
+// precondition row, and an op with no row has NO gate — `RedCodes` returns nil
+// — which is a different statement from "nothing blocks it".
+//
+// So the question is asked of the thing that actually decides what a verb is:
+// the engine's own registry.
+func TestEveryVerbHasAPreconditionRow(t *testing.T) {
+	// The verbs that are deliberately ungated, each with the reason. A verb
+	// added to this list is a decision; a verb MISSING from the table without
+	// being here is an omission, which is what this test is for.
+	exempt := map[string]string{
+		// `create` and `create-sandbox` DO have rows; `gateway-apply` too.
+		// Nothing is exempt today, and the map stays so that the next
+		// deliberate exemption has somewhere to be justified.
+	}
+	for _, verb := range NewRegistry(Deps{}).Verbs() {
+		if why, ok := exempt[verb]; ok {
+			t.Logf("%s is deliberately ungated: %s", verb, why)
+			continue
+		}
+		if !doctor.KnownOp(verb) {
+			t.Errorf("the engine answers %q and doctor has no precondition row for it: that op runs with NO "+
+				"gate at all (RedCodes returns nil), and `doctor --op %s` refuses as an unknown op", verb, verb)
+		}
+	}
+	// And the other direction: a row for a verb nobody answers is a typo that
+	// would silently gate nothing.
+	answered := map[string]bool{}
+	for _, verb := range NewRegistry(Deps{}).Verbs() {
+		answered[verb] = true
+	}
+	// `adopt` is the one op that is not a job verb: it is its own command
+	// (internal/ctl/adopt), and it has a row because its RUN consults the
+	// doctor the same way.
+	answered["adopt"] = true
+	for _, op := range doctor.Ops() {
+		if !answered[op] {
+			t.Errorf("doctor has a precondition row for %q, which the engine does not answer", op)
+		}
+	}
 }

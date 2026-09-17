@@ -1042,9 +1042,17 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		// preparation step that makes a `new-tenant.sh` postgres startable by
 		// the instance supervisor at all.
 		"set-supervisor", "env-pg-password",
+		// And the three that had no row at all until the PR-E2 review found
+		// them. An op absent from the table has NO gate — RedCodes returns nil
+		// — which is a different statement from "nothing blocks it", and these
+		// three each have something that does: a host with no room, an
+		// Elasticsearch that dies on vm.max_map_count, a tree the ctl account
+		// cannot write. `ops.TestEveryVerbHasAPreconditionRow` is what keeps
+		// the next one from being forgotten.
+		"artifact-prepare", "create-sandbox", "gateway-reload",
 	}
-	if len(contract) != 28 {
-		t.Fatalf("the contract enum has 28 ops, this copy has %d", len(contract))
+	if len(contract) != 31 {
+		t.Fatalf("the op list has 31 entries, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {
@@ -1472,6 +1480,24 @@ func TestHandoverPreconditionsFollowTheDestination(t *testing.T) {
 	}
 	if got := Tolerated("handover"); len(got) != 1 || got[0] != PortNotListening {
 		t.Errorf("Tolerated(handover) = %v, want [%s]", got, PortNotListening)
+	}
+	// And the engine's gate asks for the set MINUS what the op tolerates: a
+	// yellow `port_not_listening` must not demand an acknowledgement from the
+	// very op whose precondition is that the tenant is down.
+	for _, c := range GateCodes("handover", SupervisorInstance) {
+		if c == PortNotListening {
+			t.Error("GateCodes(handover) still contains port_not_listening")
+		}
+	}
+	for _, c := range GateCodes("env-normalize", "") {
+		if c == EnvNotSystemdParsable {
+			t.Error("GateCodes(env-normalize) demands an acknowledgement for the finding it repairs")
+		}
+	}
+	for _, c := range GateCodes("start", "") {
+		if c == PortNotListening {
+			t.Error("GateCodes(start) demands an acknowledgement for a tenant that is down — which is when it runs")
+		}
 	}
 	// The default is what RedCodes (and therefore the engine) gates on.
 	if got, want := RedCodes("handover"), RedCodesForDestination("handover", DefaultHandoverDestination); len(got) != len(want) {
