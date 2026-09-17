@@ -82,12 +82,20 @@ def resolve(dois, email, sleep=0.2):
     ids = _get(IDCONV + "?" + urllib.parse.urlencode(
         {"ids": ",".join(dois), "format": "json", "tool": "ragstack", "email": email}))
     for rec in ids.get("records", []):
-        doi = rec.get("doi")
+        # Key on requested-id, NOT doi. The converter echoes what you SENT in
+        # "requested-id" and returns the publisher's canonical casing in "doi":
+        # ask for 10.1128/jvi.02415-06 and "doi" comes back 10.1128/JVI.02415-06.
+        # Keying on "doi" therefore drops pmid/pmcid for every DOI stored in a
+        # case other than canonical — most of ASM — silently and per-record.
+        doi = rec.get("requested-id") or rec.get("doi")
         if doi in out:
+            # pmid arrives as a JSON int; ingestion/jats.py keeps pmid/pmcid as
+            # strings, so coerce or a repaired collection disagrees with a
+            # JATS-ingested one about the field's type.
             if rec.get("pmid"):
-                out[doi]["pmid"] = rec["pmid"]
+                out[doi]["pmid"] = str(rec["pmid"])
             if rec.get("pmcid"):
-                out[doi]["pmcid"] = rec["pmcid"]
+                out[doi]["pmcid"] = str(rec["pmcid"])
     for doi in dois:
         try:
             m = _get(CROSSREF + urllib.parse.quote(doi) + "?" + urllib.parse.urlencode({"mailto": email}))["message"]
