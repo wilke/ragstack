@@ -378,10 +378,12 @@ Keep a line→subject map for the distribution record — the split makes
 collections attributable to `hackathon-a-20`, but mapping that to a person still
 needs the record of who received which key.
 
-> **Re-adopt afterwards**, as the service account, so the ctl ledger's
-> `tenant_string` per key follows the new subjects. As of 2026-09-17 a plain
-> re-adopt resets a ctl-supervised row's owner and supervisor; a fix is in
-> flight, so re-adopt **after** it lands rather than immediately.
+> **Re-adopt afterwards** so the ctl ledger's `tenant_string` per key follows
+> the new subjects. Until **`5a05168`** (#589) a plain `--readopt` reset a
+> ctl-supervised row's owner and supervisor and dropped its handover block —
+> which happened for real, minutes after hackathon's first handover, from a
+> re-adopt run to refresh the key ledger after exactly this kind of
+> `secrets.env` edit. On anything carrying that fix, re-adopt is safe.
 
 ### ⚠️ Confinement makes a created collection vanish
 

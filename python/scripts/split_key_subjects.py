@@ -15,8 +15,16 @@ Dry-run by default. Prints only subjects and counts — never a key value.
 Leaves alone: admin-role keys, and any key whose subject is not --from.
 """
 from __future__ import annotations
-import argparse, json, pathlib, re, shutil, sys
-from datetime import datetime, timezone
+
+import argparse
+import collections
+import hashlib
+import json
+import pathlib
+import re
+import shutil
+import sys
+import time
 
 VAR = re.compile(r"^(?P<k>API_KEY_TENANTS|API_KEY_ROLES)=(?P<q>['\"]?)(?P<v>.*)(?P=q)$", re.M)
 
@@ -53,8 +61,7 @@ def main() -> None:
     # guessed subject and would have split one key instead of thirty, because
     # "which subjects exist" and "how the keys divide between them" are
     # different questions and only the second one matters here.
-    import collections as _c
-    dist = _c.Counter((sub, roles.get(k)) for k, sub in tenants.items())
+    dist = collections.Counter((sub, roles.get(k)) for k, sub in tenants.items())
     print("key distribution (counts only, no key values):")
     for (sub, role), n in sorted(dist.items(), key=lambda kv: -kv[1]):
         print(f"  subject={sub:<18} role={str(role):<6} keys={n}")
@@ -73,7 +80,6 @@ def main() -> None:
         sys.exit(f"no keys with subject={a.src!r} and role={a.role!r} — nothing to do")
 
     # Deterministic and stable: sorted by key hash so a re-run maps identically.
-    import hashlib
     targets.sort(key=lambda k: hashlib.sha256(k.encode()).hexdigest())
     width = max(2, len(str(len(targets))))
     assign = {k: f"{a.prefix}-{i:0{width}d}" for i, k in enumerate(targets, 1)}
@@ -105,7 +111,7 @@ def main() -> None:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
         return
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     backup = a.secrets.with_name(f"{a.secrets.name}.bak-split-subjects-{stamp}")
     shutil.copy2(a.secrets, backup)
 
