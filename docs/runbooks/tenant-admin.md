@@ -325,9 +325,26 @@ curl -s -X POST "$BASE/v1/admin/service-accounts" -H "$ADMIN" \
      -H 'Content-Type: application/json' \
      -d '{"subject":"attendee-01","label":"attendee 01"}'
 
-# 3. apply (takes a timestamped backup), then restart by the RECORDED PID
+# 3. apply (takes a timestamped backup), then restart — see below for HOW
 python3 python/scripts/split_key_subjects.py <tenant>/config/secrets.env --apply
 ```
+
+**How you restart depends on the tenant's supervisor**, and getting it wrong on a
+handed-over tenant is worse than doing nothing — the supervisor will restart what
+you killed, and you will be fighting it rather than the tenant:
+
+```bash
+ragstack-ctl --json fleet status | jq -r '.tenants[] | "\(.name) \(.supervisor)"'
+```
+
+| `supervisor` | restart with |
+|---|---|
+| `manual` | stop by the **recorded pid** (never a process-name pattern), then relaunch by the recipe in [`tenant-upgrade.md`](tenant-upgrade.md) |
+| `instance` (handed over) | the control plane only — `ragstack-ctl key mint\|revoke … --restart --prove` for key changes, or `tenant restart <name>`. See [`ctl-handover.md`](ctl-handover.md) |
+
+For a handed-over tenant the key edit and its restart should ride along with a
+ctl operation that already restarts it, so the tenant stops once rather than
+twice.
 
 ### ⚠️ Confinement makes a created collection vanish
 
