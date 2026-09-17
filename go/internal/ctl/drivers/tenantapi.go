@@ -140,8 +140,30 @@ func scrub(err error, apiKey string) error {
 	if !strings.Contains(msg, apiKey) {
 		return err
 	}
-	return fmt.Errorf("%s", strings.ReplaceAll(msg, apiKey, "<redacted api key>"))
+	// `%w`, wrapping the ORIGINAL: flattening it to a string dropped whatever
+	// sentinel it carried, and those sentinels are what the API layer maps to
+	// statuses (a jobs.ErrRefused became a 500). The message is the redacted
+	// one; the chain is the real one, and errors.Is keeps working.
+	return fmt.Errorf("%s (%w)", strings.ReplaceAll(msg, apiKey, "<redacted api key>"), redactedCause{err, apiKey})
 }
+
+// redactedCause carries the original error's CHAIN without its text.
+//
+// It exists because `scrub` has two jobs that pull in opposite directions: the
+// message must not contain the credential, and `errors.Is` must still find
+// whatever sentinel the original wrapped. Wrapping the original directly would
+// reprint the un-redacted message; this wrapper prints the redaction and
+// unwraps to the original.
+type redactedCause struct {
+	err    error
+	apiKey string
+}
+
+func (r redactedCause) Error() string {
+	return strings.ReplaceAll(r.err.Error(), r.apiKey, "<redacted api key>")
+}
+
+func (r redactedCause) Unwrap() error { return r.err }
 
 // Health is the unauthenticated liveness probe.
 func (a *RealTenantAPI) Health(ctx context.Context, origin string) error {

@@ -161,14 +161,21 @@ func tenantOpTarget(name, verb string) opTarget {
 func keyUsage() int {
 	fmt.Fprintf(stderr, `usage: ragstack-ctl key <verb> <tenant> … %s
 
-  mint   <tenant> <label> --role admin|user [--restart] [--prove]
+  mint   <tenant> <label> --role admin|user [--restart] [--prove] [--tenant-string S]
   revoke <tenant> <id> [--restart] [--prove]
+
+--tenant-string is the principal the tenant API stamps on everything the key
+writes — NOT the tenant's name: the adopted ledgers use values like asm-ops,
+svc-asm-web and asm-ro. Left out, the mint follows whatever convention the
+tenant's own ledger already uses, and refuses when that ledger uses more than
+one. A key with the wrong one authenticates and then sees none of the tenant's
+documents, which is what --prove now checks for.
 
 --prove dials the tenant API after the restart and records the verdict on the
 job: a surviving admin key answers 200 (so the API is up and authenticating),
-the minted key answers 200, the revoked key answers 401. The credentials are
-read from the tenant's own env files; the job records fingerprints and status
-codes, never a value.
+the minted key answers 200 AND can see the tenant's collections, the revoked
+key answers 401. The credentials are read from the tenant's own env files; the
+job records fingerprints and status codes, never a value.
 
 The minted value is NEVER printed by the mint itself: collect it once with
 `+"`ragstack-ctl job show <id>`"+` and the daemon's secrets envelope.
@@ -187,7 +194,9 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	role := fs.String("role", "", "admin|user (required for mint)")
 	restart := fs.Bool("restart", false, "restart the tenant API so the new key set is live")
 	prove := fs.Bool("prove", false, "after the restart, dial the tenant: 200 for what should work, 401 for what "+
-		"should not (needs --restart)")
+		"should not, and the minted key must SEE the tenant's collections (needs --restart)")
+	tenantString := fs.String("tenant-string", "", "the principal API_KEY_TENANTS maps the minted key to "+
+		"(default: the convention the tenant's own ledger already uses)")
 
 	want := 2 // <tenant> <label|id>
 	pos, rest := takePositionals(args, want)
@@ -208,6 +217,9 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		}
 		if set["prove"] {
 			opArgs["prove"] = *prove
+		}
+		if *tenantString != "" {
+			opArgs["tenant_string"] = *tenantString
 		}
 		return submitOp(o, tenantOpTarget(pos[0], "key-mint"), opArgs)
 	case "revoke":

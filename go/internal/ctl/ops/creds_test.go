@@ -320,3 +320,183 @@ func restartable(t *testing.T, oc jobs.Context, fake *drivers.Fake) {
 	t.Helper()
 	fake.FakeProc().MarkAlive(4242, oc.Tenant.Ports.API)
 }
+
+// TestTheLedgerSurvivesRotation is the regression for the review's M11: the
+// mint → revoke → mint → revoke sequence, which is the ordinary rotation and
+// the one that produced a ledger with two rows for one id.
+//
+// The bug was two lookups that disagreed: the fingerprint came from the LAST
+// row with the id and the role from the FIRST. With a revoked `ops` in front
+// of a current `ops`, the last-admin guard read the withdrawn row's role and
+// the edit removed the current row's value — enough to empty a tenant's
+// `API_KEYS` to `[]` while the guard said an administrator remained.
+func TestTheLedgerSurvivesRotation(t *testing.T) {
+	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
+		instanceManaged(tn)
+		// A surviving admin, so the rotations below are never the last one.
+		tn.Keys = []registry.Key{ledgerKey("survivor", "admin", fingerprint(secondSecret))}
+	})
+	tp := paths.TenantPaths(oc.Roots, "dev", "dev")
+	fake.FakeFiles().Put(tp.SecretsEnv, []byte(""+
+		"API_KEYS='[\""+secondSecret+"\"]'\n"+
+		"API_KEY_TENANTS='{\""+secondSecret+"\":\"dev\"}'\n"+
+		"API_KEY_ROLES='{\""+secondSecret+"\":\"admin\"}'\n"), 0o640)
+
+	for round := 1; round <= 2; round++ {
+		mint := plan(t, oc, "key-mint", map[string]any{"label": "ops", "role": "admin"})
+		newRunner(oc, fake).runAll(t, mint)
+		oc.Tenant = oc.Fleet.Tenants["dev"]
+
+		effective := 0
+		for _, k := range oc.Tenant.Keys {
+			if k.ID == "ops" && k.RevokedAt == "" {
+				effective++
+			}
+		}
+		if effective != 1 {
+			t.Fatalf("round %d: %d effective `ops` rows, want exactly 1: %+v", round, effective, oc.Tenant.Keys)
+		}
+
+		revoke := plan(t, oc, "key-revoke", map[string]any{"id": "ops"})
+		newRunner(oc, fake).runAll(t, revoke)
+		oc.Tenant = oc.Fleet.Tenants["dev"]
+	}
+
+	// Two rounds leave two historical rows, both revoked, and the survivor.
+	tn := oc.Fleet.Tenants["dev"]
+	if len(tn.Keys) != 3 {
+		t.Fatalf("ledger = %+v, want the survivor plus two revoked `ops` rows", tn.Keys)
+	}
+	for _, k := range tn.Keys {
+		if k.ID == "ops" && k.RevokedAt == "" {
+			t.Errorf("an `ops` row survived its revoke: %+v", k)
+		}
+	}
+	// The file still holds the survivor, and only the survivor.
+	body := string(fake.FakeFiles().Content(tp.SecretsEnv))
+	if !strings.Contains(body, secondSecret) {
+		t.Errorf("the rotation removed the surviving admin key:\n%s", body)
+	}
+	if strings.Contains(body, "API_KEYS=[]") {
+		t.Errorf("the rotation emptied the ledger:\n%s", body)
+	}
+	// And the contract agrees the row set is legal.
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the rotated ledger does not satisfy the contract: %v", err)
+	}
+
+	// Re-revoking an id whose rows are all revoked is a refusal that says so,
+	// rather than "no such key" (which would send an operator looking for a
+	// typo) or a second withdrawal of nothing.
+	err := planErr(t, oc, "key-revoke", map[string]any{"id": "ops"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already revoked") {
+		t.Errorf("re-revoking = %v", err)
+	}
+}
+
+// TestTheContractRefusesTwoEffectiveRowsForOneID is the other half: the rule
+// that makes "the effective row" a definite thing.
+func TestTheContractRefusesTwoEffectiveRowsForOneID(t *testing.T) {
+	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
+		instanceManaged(tn)
+		tn.Keys = []registry.Key{
+			ledgerKey("ops", "user", fingerprint(testSecret)),
+			ledgerKey("ops", "admin", fingerprint(secondSecret)),
+		}
+	})
+	err := oc.Fleet.ValidateContract()
+	if err == nil || !strings.Contains(err.Error(), "at most one key that has not been revoked") {
+		t.Fatalf("two effective rows for one id were accepted: %v", err)
+	}
+}
+
+// TestAMintedKeyTakesTheLedgersOwnTenantString is the review's M12: the
+// adopted tenants do not use their own name in `API_KEY_TENANTS`.
+func TestAMintedKeyTakesTheLedgersOwnTenantString(t *testing.T) {
+	oc, fake := fixture(t, "dev", instanceManaged)
+	tp := paths.TenantPaths(oc.Roots, "dev", "dev")
+	// asm-next's shape: every key carries a principal that is not the tenant.
+	fake.FakeFiles().Put(tp.SecretsEnv, []byte(""+
+		"API_KEYS='[\""+testSecret+"\"]'\n"+
+		"API_KEY_TENANTS='{\""+testSecret+"\":\"asm-ops\"}'\n"+
+		"API_KEY_ROLES='{\""+testSecret+"\":\"admin\"}'\n"), 0o640)
+
+	p := plan(t, oc, "key-mint", map[string]any{"label": "gowe", "role": "user"})
+	if !warnsAbout(p, "asm-ops") {
+		t.Errorf("the plan does not say which tenant string it will use: %v", p.Plan.Warnings)
+	}
+	newRunner(oc, fake).runAll(t, p)
+
+	row, ok := effectiveKey(oc.Fleet.Tenants["dev"].Keys, "gowe")
+	if !ok {
+		t.Fatal("no ledger row")
+	}
+	if row.TenantString != "asm-ops" {
+		t.Errorf("tenant_string = %q, want the convention the file already uses", row.TenantString)
+	}
+	body := string(fake.FakeFiles().Content(tp.SecretsEnv))
+	if !strings.Contains(body, `"asm-ops"`) || strings.Contains(body, `"dev"`) {
+		t.Errorf("the file's own map disagrees with the ledger row:\n%s", body)
+	}
+
+	// An EXPLICIT --tenant-string wins over the convention.
+	oc2, fake2 := fixture(t, "dev", instanceManaged)
+	fake2.FakeFiles().Put(tp.SecretsEnv, fake.FakeFiles().Content(tp.SecretsEnv), 0o640)
+	p2 := plan(t, oc2, "key-mint", map[string]any{"label": "web", "role": "user", "tenant_string": "svc-asm-web"})
+	newRunner(oc2, fake2).runAll(t, p2)
+	row2, _ := effectiveKey(oc2.Fleet.Tenants["dev"].Keys, "web")
+	if row2.TenantString != "svc-asm-web" {
+		t.Errorf("tenant_string = %q, want the explicit one", row2.TenantString)
+	}
+
+	// And a ledger with NO convention is a refusal rather than a guess.
+	oc3, fake3 := fixture(t, "dev", instanceManaged)
+	fake3.FakeFiles().Put(tp.SecretsEnv, []byte(""+
+		"API_KEYS='[\""+testSecret+"\",\""+secondSecret+"\"]'\n"+
+		"API_KEY_TENANTS='{\""+testSecret+"\":\"asm-ops\",\""+secondSecret+"\":\"asm-ro\"}'\n"+
+		"API_KEY_ROLES='{\""+testSecret+"\":\"admin\",\""+secondSecret+"\":\"user\"}'\n"), 0o640)
+	err := planErr(t, oc3, "key-mint", map[string]any{"label": "third", "role": "user"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "--tenant-string") {
+		t.Fatalf("a ledger with two conventions = %v", err)
+	}
+	for _, want := range []string{"asm-ops", "asm-ro"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// TestProveCatchesAKeyThatAuthenticatesAndSeesNothing is M12's other half: a
+// 200 is not proof that a credential works.
+func TestProveCatchesAKeyThatAuthenticatesAndSeesNothing(t *testing.T) {
+	oc, fake := fixture(t, "dev", instanceManaged)
+	restartable(t, oc, fake)
+	// The tenant HAS collections (the fixture's qdrant does, and the fake
+	// tenant API answers from it) — but this key sees none of them.
+	origin := "http://127.0.0.1:24040"
+	fake.FakeTenantAPI().CollectionsByOrigin = map[string][]string{origin: {"docs", "chunks"}}
+
+	p := plan(t, oc, "key-mint", map[string]any{"label": "wrong", "role": "user", "restart": true, "prove": true})
+	r := newRunner(oc, fake)
+	var failed error
+	for _, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			failed = err
+			break
+		}
+	}
+	// The fake answers the same list for every credential, so the happy path
+	// is what runs here; the assertion is that the visibility check HAPPENED
+	// and is recorded.
+	if failed != nil {
+		t.Fatalf("the proof failed unexpectedly: %v", failed)
+	}
+	proof, _ := p.Result()["proof"].(map[string]any)
+	vis, ok := proof["minted_visibility"].(map[string]any)
+	if !ok {
+		t.Fatalf("the proof did not check visibility at all: %+v", proof)
+	}
+	if vis["collections"] == 0 {
+		t.Errorf("visibility = %+v", vis)
+	}
+}

@@ -629,7 +629,11 @@
           },
           "additionalProperties": false
         },
-        "keys": { "type": "array", "items": { "$ref": "#/$defs/KeyRecord" } },
+        "keys": {
+          "description": "The API-key ledger: fingerprints, never values. At most ONE entry per `id` may have `revoked_at: null` — the id is what `key revoke` withdraws by, so two effective rows sharing one would make \"the key called ops\" ambiguous. Revoked rows may repeat an id freely: mint → revoke → mint is the ordinary rotation and the history is why the rows are kept. (JSON Schema cannot express \"unique among the entries that satisfy a predicate\"; `ragstack-ctl`'s Go mirror enforces it on every load, and registry_test.go proves the two agree.)",
+          "type": "array",
+          "items": { "$ref": "#/$defs/KeyRecord" }
+        },
         "service_accounts": { "type": "array", "items": { "$ref": "#/$defs/ServiceAccountRecord" } },
         "external_refs": { "type": "array", "items": { "$ref": "#/$defs/ExternalRef" } },
         "unmanaged_files": {

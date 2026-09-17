@@ -250,6 +250,11 @@ const (
 	patSandboxName = `^ctltest-[a-z0-9-]{1,23}$`
 	// patHandoverToken is the release's nonce: 16 random bytes as hex.
 	patHandoverToken = `^[0-9a-f]{32}$`
+	// patTenantString is the value API_KEY_TENANTS maps a key to — the
+	// principal the tenant API stamps on everything that key writes. It is NOT
+	// patTenantName: the adopted ledgers use `asm-ops`, `svc-asm-web`,
+	// `asm-ro`, which are the tenant's own vocabulary rather than the fleet's.
+	patTenantString = `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`
 )
 
 var (
@@ -323,6 +328,7 @@ var argSchemas = map[string]argSpec{
 		{Name: "role", Kind: argString, Required: true, Enum: roles},
 		{Name: "restart", Kind: argBool},
 		{Name: "prove", Kind: argBool},
+		{Name: "tenant_string", Kind: argString, Pattern: patTenantString},
 	}},
 	"key-revoke": {Verb: "key-revoke", Fields: []argField{
 		{Name: "id", Kind: argString, Required: true, Pattern: patLabel},

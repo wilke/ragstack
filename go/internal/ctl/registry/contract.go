@@ -399,6 +399,26 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 	c.enum(ptr+"/identity/provider", t.Identity.Provider, enumIdentity)
 	c.nonNegative(ptr+"/identity/admin_subjects_count", int64(t.Identity.AdminSubjectsCount))
 
+	// At most ONE effective row per ledger id. The id is what `key revoke`
+	// withdraws by, so two effective rows sharing one make "the key called
+	// ops" an ambiguous thing — and the op that resolved it two different ways
+	// (the last row for the fingerprint, the first for the role) could be
+	// walked past its own last-admin guard. Revoked rows may repeat an id
+	// freely: mint → revoke → mint is the ordinary rotation, and the history
+	// is the point of keeping them.
+	effectiveIDs := map[string]int{}
+	for i, k := range t.Keys {
+		if k.RevokedAt != "" {
+			continue
+		}
+		if prev, dup := effectiveIDs[k.ID]; dup {
+			c.failf(fmt.Sprintf("%s/keys/%d/id", ptr, i),
+				"%q is already the id of the effective key at keys/%d; a ledger id names at most one key that has "+
+					"not been revoked", k.ID, prev)
+			continue
+		}
+		effectiveIDs[k.ID] = i
+	}
 	for i, k := range t.Keys {
 		kp := fmt.Sprintf("%s/keys/%d", ptr, i)
 		c.pattern(kp+"/id", k.ID, reKeyID)

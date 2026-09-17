@@ -18,7 +18,11 @@ var (
 	// assignPattern matches `KEY=value` at a line start (optionally preceded
 	// by whitespace, a diff marker or a comment marker, the shapes the
 	// new-tenant.sh diff redactor had to cover). The value runs to end of line.
-	assignPattern = regexp.MustCompile(`(?m)^([ \t]*[-+]?[ \t]*(?:#[ \t]*)?)([A-Z][A-Z0-9_]*)=(.*)$`)
+	//
+	// The key class is case-INSENSITIVE: a hand-edited `postgres_dsn=` is as
+	// much a credential as `POSTGRES_DSN=`, and the redactor that only knew
+	// the upper-case shape left the lower-case one in the log verbatim.
+	assignPattern = regexp.MustCompile(`(?m)^([ \t]*[-+]?[ \t]*(?:#[ \t]*)?)([A-Za-z][A-Za-z0-9_]*)=(.*)$`)
 	// inlineAssignPattern is assignPattern without the line anchor: the same
 	// `KEY=value` shape wherever it appears INSIDE a line — `export KEY=v`,
 	// one argv element of a rollback descriptor, a JSON-embedded
@@ -31,7 +35,7 @@ var (
 	// The bare-word alternative still stops at the first character that ends
 	// a shell word or a JSON string, so a surrounding quote, comma or brace
 	// is never swallowed with it.
-	inlineAssignPattern = regexp.MustCompile(`([A-Z][A-Z0-9_]*)=('[^'\n]*'|"[^"\n]*"|[^\s"',;}\]]+)`)
+	inlineAssignPattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_]*)=('[^'\n]*'|"[^"\n]*"|[^\s"',;}\]]+)`)
 	// urlCredPattern is a credential carried in a URL authority
 	// (`scheme://user:pass@host`): a DSN, a proxy URL, a git remote. The
 	// whole userinfo goes — the username is half the credential.

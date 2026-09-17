@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
@@ -42,18 +43,19 @@ func (p *planner) credFile() (path string, legacy bool) {
 func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
 	p.need(model.LockTenant)
 	label, role := argStringOf(args, "label"), argStringOf(args, "role")
-	for _, k := range p.t.Keys {
-		if k.ID == label && k.RevokedAt == "" {
-			return p.refuse("%s already has an effective key labelled %q; revoke it first or pick another label",
-				p.t.Name, label)
-		}
+	if _, ok := effectiveKey(p.t.Keys, label); ok {
+		return p.refuse("%s already has an effective key labelled %q; revoke it first or pick another label",
+			p.t.Name, label)
 	}
 	path, legacy := p.credFile()
 	if legacy {
 		p.warn("this tenant's env layout is `legacy`: its key ledger lives in tenant.env rather than secrets.env; " +
 			"`env normalize` splits them")
 	}
-	tenant := p.t.Name
+	tenant, err := p.mintTenantString(ctx, args, path)
+	if err != nil {
+		return err
+	}
 
 	// minted is filled by the RUN half and read by Planned.Secrets. The value
 	// is generated when the job runs and never at plan time: a plan is
@@ -103,7 +105,7 @@ func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
 			return "minted " + label + " (" + fingerprint(key) + ")", nil
 		},
 	})
-	p.addKeyLedgerRow(label, role, &minted)
+	p.addKeyLedgerRow(label, role, tenant, &minted)
 	p.result["key_id"] = label
 	p.result["role"] = role
 	if err := p.addRestartOrPending(args, "the new key is configured; it is EFFECTIVE only after the API reloads "+
@@ -126,7 +128,7 @@ func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
 // The FINGERPRINT is recorded, never the value — that is the whole discipline
 // of this ledger — and it is computed at run time from the value the env step
 // minted, because a plan is hashed, logged and shown twice.
-func (p *planner) addKeyLedgerRow(label, role string, minted *string) {
+func (p *planner) addKeyLedgerRow(label, role, tenantString string, minted *string) {
 	name := p.tenant
 	p.add(step{
 		Kind: "registry", Title: fmt.Sprintf("record the key %q in the registry ledger (fingerprint only)", label),
@@ -142,7 +144,7 @@ func (p *planner) addKeyLedgerRow(label, role string, minted *string) {
 			fp := fingerprint(*minted)
 			err := p.saveTenant(sc, "key-mint", func(t *registry.Tenant) error {
 				t.Keys = append(t.Keys, registry.Key{
-					ID: label, Label: label, Role: role, TenantString: name, Fingerprint: fp,
+					ID: label, Label: label, Role: role, TenantString: tenantString, Fingerprint: fp,
 					CreatedAt: p.stampRFC3339(sc), CreatedBy: sc.Job.Principal, Effective: true,
 				})
 				return nil
@@ -173,27 +175,98 @@ func (p *planner) addKeyLedgerRow(label, role string, minted *string) {
 	})
 }
 
+// mintTenantString decides what a minted key's TENANT STRING will be, and it
+// asks the file rather than assuming the tenant's name.
+//
+// `API_KEY_TENANTS` maps each key to the string the tenant API stamps on
+// everything that key writes — the owner of a collection, the principal in an
+// ACL row. It is NOT the tenant's name on the adopted rows: asm-next's live
+// ledger uses `asm-ops`, `svc-asm-web` and `asm-ro`, and a key minted with
+// `asm-next` in that slot authenticates perfectly and then sees none of the
+// corpus, because every existing document belongs to somebody else. That is a
+// credential that looks like it works and does not, which is the worst kind to
+// hand somebody.
+//
+// So: an explicit `--tenant-string` wins. Otherwise the file's own convention
+// decides, and only when the file HAS one — a ledger whose keys already
+// disagree is a ledger this op will not guess for.
+func (p *planner) mintTenantString(ctx context.Context, args map[string]any, path string) (string, error) {
+	if s := argStringOf(args, "tenant_string"); s != "" {
+		return s, nil
+	}
+	b, err := p.readFile(ctx, path)
+	if err != nil {
+		// No file to read a convention out of: the tenant's name is the only
+		// answer there is, and `create` writes exactly that.
+		return p.t.Name, nil
+	}
+	f, _, perr := envfile.ParseLenient(b)
+	if perr != nil {
+		return p.t.Name, nil
+	}
+	tenants, jerr := jsonMap(f, keyAPITenant)
+	if jerr != nil {
+		return p.t.Name, nil
+	}
+	seen := map[string]bool{}
+	for _, v := range tenants {
+		if v != "" {
+			seen[v] = true
+		}
+	}
+	switch len(seen) {
+	case 0:
+		return p.t.Name, nil
+	case 1:
+		for v := range seen {
+			if v != p.t.Name {
+				p.warn("the minted key's tenant string is `" + v + "`, which is what every key already in " +
+					filepath.Base(path) + " uses — not the tenant's name (`" + p.t.Name + "`). A key stamped with " +
+					"the wrong one authenticates and then sees none of the tenant's documents")
+			}
+			return v, nil
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for v := range seen {
+		names = append(names, v)
+	}
+	sort.Strings(names)
+	return "", p.refuse("%s's key ledger uses %d different tenant strings (%s), so there is no convention for this "+
+		"mint to follow — and a key stamped with the wrong one authenticates and then sees none of the tenant's "+
+		"documents. Name it: `--tenant-string <one of them>`", p.t.Name, len(names), strings.Join(names, ", "))
+}
+
 // ---------------------------------------------------------------- key revoke
 
 func planKeyRevoke(ctx context.Context, p *planner, args map[string]any) error {
 	p.need(model.LockTenant)
 	id := argStringOf(args, "id")
-	var want string
-	for _, k := range p.t.Keys {
-		if k.ID == id {
-			want = k.Fingerprint
+	// ONE lookup, and it is the EFFECTIVE row.
+	//
+	// This used to be two: the fingerprint came from the LAST row with this
+	// id and the role from the FIRST. A ledger holding a revoked `ops` and a
+	// current `ops` — which the mint→revoke→mint sequence produces — therefore
+	// answered "the role of the withdrawn key" to the last-admin guard while
+	// revoking the value of the current one. A `user` row in front of an
+	// `admin` row was enough to walk past the guard and empty the file's
+	// `API_KEYS` to `[]`.
+	row, ok := effectiveKey(p.t.Keys, id)
+	if !ok {
+		if _, historic := anyKey(p.t.Keys, id); historic {
+			return p.refuse("%s's key %q is already revoked; there is nothing left to withdraw (the ledger keeps "+
+				"the row so that who held it stays answerable)", p.t.Name, id)
 		}
-	}
-	if want == "" {
 		return p.refuse("%s has no key %q in its ledger (the ctl revokes by ledger id, never by value)", p.t.Name, id)
 	}
+	want := row.Fingerprint
 	effective := 0
 	for _, k := range p.t.Keys {
 		if k.Role == "admin" && k.RevokedAt == "" && k.ID != id {
 			effective++
 		}
 	}
-	if effective == 0 && ledgerRole(p.t.Keys, id) == "admin" {
+	if effective == 0 && row.Role == "admin" {
 		return p.refuse("%q is the last effective admin key of %s; revoking it would leave the tenant with no "+
 			"administrator (mint a replacement first)", id, p.t.Name)
 	}
@@ -266,6 +339,9 @@ func planKeyRevoke(ctx context.Context, p *planner, args map[string]any) error {
 // `effective: false` are the contract's way of saying it.
 func (p *planner) addKeyRevokeLedgerRow(id string) {
 	name := p.tenant
+	// Written by the Run and read by the Rollback: which row this step
+	// revoked, as opposed to every row that ever carried this id.
+	var revokedAt string
 	p.add(step{
 		Kind: "registry", Title: fmt.Sprintf("mark the key %q revoked in the registry ledger", id),
 		Destructive: true, Targets: []string{name, id},
@@ -274,6 +350,7 @@ func (p *planner) addKeyRevokeLedgerRow(id string) {
 			"answer who held a credential last month, which is the question a ledger exists for"},
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			at := p.stampRFC3339(sc)
+			revokedAt = at
 			found := false
 			err := p.saveTenant(sc, "key-revoke", func(t *registry.Tenant) error {
 				for i := range t.Keys {
@@ -294,9 +371,15 @@ func (p *planner) addKeyRevokeLedgerRow(id string) {
 			return id + " is revoked in the ledger", nil
 		},
 		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			// Only the row THIS step revoked, found by the timestamp it wrote.
+			// Undoing every row with this id would resurrect the ones an
+			// earlier rotation withdrew — a mint→revoke→mint→revoke ledger
+			// would come back with two effective keys of the same name, which
+			// the contract refuses and which is a credential nobody meant to
+			// reissue.
 			err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
 				for i := range t.Keys {
-					if t.Keys[i].ID == id {
+					if t.Keys[i].ID == id && string(t.Keys[i].RevokedAt) == revokedAt {
 						t.Keys[i].RevokedAt, t.Keys[i].Effective = "", true
 					}
 				}
@@ -321,6 +404,41 @@ type keyProof struct {
 	mintedLabel  string
 	revoked      *string
 	revokedLabel string
+}
+
+// proveVisibility is the second half of a mint's proof: the key can SEE
+// something.
+//
+// The tenant API filters every listing by the caller's principal, so a key
+// minted with the wrong tenant string answers 200 to an authenticated request
+// and returns an empty world. Comparing against what the ADMIN key sees is
+// what makes "empty" meaningful: a tenant that really has no collections is
+// not a failure, and one that has forty and shows this key none is.
+func proveVisibility(ctx context.Context, sc *jobs.StepContext, api jobs.TenantAPI,
+	origin, admin, minted string, results map[string]any) error {
+	theirs, err := api.Collections(ctx, origin, admin)
+	if err != nil {
+		sc.Logf("the tenant's own collection listing could not be read (%v); the visibility half of the proof "+
+			"is skipped", err)
+		return nil
+	}
+	if len(theirs) == 0 {
+		results["minted_visibility"] = map[string]any{"collections": 0, "note": "the tenant has none to see"}
+		return nil
+	}
+	mine, err := api.Collections(ctx, origin, minted)
+	if err != nil {
+		return fmt.Errorf("listing collections with the minted key: %w", err)
+	}
+	results["minted_visibility"] = map[string]any{"collections": len(mine), "tenant_has": len(theirs)}
+	if len(mine) == 0 {
+		return fmt.Errorf("%w: the minted key authenticates (200) and can see NONE of this tenant's %d "+
+			"collection(s). That is what a wrong tenant string looks like: the key is valid and every document "+
+			"belongs to somebody else. Revoke it and mint again with `--tenant-string <the value the ledger uses>`",
+			jobs.ErrRefused, len(theirs))
+	}
+	sc.Logf("the minted key sees %d of the tenant's %d collection(s)", len(mine), len(theirs))
+	return nil
 }
 
 // addKeyProof dials the tenant API and records the verdict on the job.
@@ -364,6 +482,11 @@ func (p *planner) addKeyProof(args map[string]any, pr keyProof) error {
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			api := sc.Ops.Drivers.TenantAPI()
 			results := map[string]any{}
+			// The results map is published on the job BEFORE any refusal can
+			// leave this step: a proof that failed is exactly the one an
+			// operator needs the numbers from, and `p.result` set only on the
+			// happy path meant a failed job recorded nothing at all.
+			p.result["proof"] = results
 			check := func(what, key, fp string, wantStatus int) error {
 				status, err := api.KeyStatus(ctx, origin, key)
 				if err != nil {
@@ -386,11 +509,32 @@ func (p *planner) addKeyProof(args map[string]any, pr keyProof) error {
 				return "", fmt.Errorf("%w: no admin key could be read from the tenant's env files, so there is no "+
 					"credential to check the API against", jobs.ErrRefused)
 			}
-			if err := check("surviving_admin", admin, fingerprint(admin), 200); err != nil {
+			// It must be a DIFFERENT key from the one being proved. On a
+			// tenant whose only admin key is the one this job just minted,
+			// `adminKeyFromEnvFiles` hands back that very value — and the
+			// proof then becomes "the minted key answers 200, and so does the
+			// minted key", which rules nothing out. Say so rather than
+			// reporting a check that checked one thing twice.
+			if pr.minted != nil && admin == *pr.minted {
+				sc.Logf("the only admin credential in this tenant's env files IS the key this job minted; the " +
+					"surviving-admin half of the proof would be the same request twice and is recorded as skipped")
+				results["surviving_admin"] = map[string]any{
+					"skipped": "the tenant's only admin key is the one this job minted",
+				}
+			} else if err := check("surviving_admin", admin, fingerprint(admin), 200); err != nil {
 				return "", err
 			}
 			if pr.minted != nil && *pr.minted != "" {
 				if err := check("minted", *pr.minted, fingerprint(*pr.minted), 200); err != nil {
+					return "", err
+				}
+				// A 200 is not enough. A key whose TENANT STRING is wrong
+				// authenticates perfectly and then sees none of the tenant's
+				// documents, because every one of them belongs to a different
+				// principal — a credential that looks like it works and does
+				// not. So: if the tenant has collections at all, the minted
+				// key has to be able to see some.
+				if err := proveVisibility(ctx, sc, api, origin, admin, *pr.minted, results); err != nil {
 					return "", err
 				}
 			}
@@ -403,21 +547,36 @@ func (p *planner) addKeyProof(args map[string]any, pr keyProof) error {
 					return "", err
 				}
 			}
-			p.result["proof"] = results
 			return fmt.Sprintf("%d credential(s) answered as expected", len(results)), nil
 		},
 	})
 	return nil
 }
 
-// ledgerRole is the role recorded for the ledger id, or "".
-func ledgerRole(keys []registry.Key, id string) string {
+// effectiveKey is THE row for a ledger id: the one that is not revoked.
+//
+// The contract makes that unique (registry.ValidateContract refuses a second
+// effective row for one id), so "the effective row" is a definite thing and
+// every caller asks for it the same way. A ledger with only revoked rows for
+// the id answers false, which is a different outcome from "no such id" and the
+// caller says so.
+func effectiveKey(keys []registry.Key, id string) (registry.Key, bool) {
 	for _, k := range keys {
-		if k.ID == id {
-			return k.Role
+		if k.ID == id && k.RevokedAt == "" {
+			return k, true
 		}
 	}
-	return ""
+	return registry.Key{}, false
+}
+
+// anyKey is "this id has been used before", revoked rows included.
+func anyKey(keys []registry.Key, id string) (registry.Key, bool) {
+	for _, k := range keys {
+		if k.ID == id {
+			return k, true
+		}
+	}
+	return registry.Key{}, false
 }
 
 // ---------------------------------------------------------------- admins

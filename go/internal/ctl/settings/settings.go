@@ -49,7 +49,11 @@ var secretExplicit = set(
 
 // secretPattern is the key-shaped secret detector shared with the redactors
 // (and with the sed in apptainer/new-tenant.sh's keep-mode diff).
-var secretPattern = regexp.MustCompile(`(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)`)
+// `(?i)`, because a key is secret-shaped whatever case somebody typed it in.
+// A hand-edited `postgres_dsn=` or `Api_Key=` classified as Unsupported —
+// which meant `env set` would take it, `tenant backup` would copy it into the
+// public half of a bundle, and the redactors would leave it in a log.
+var secretPattern = regexp.MustCompile(`(?i)(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)`)
 
 // publicDespitePattern are ragstack settings whose NAME trips secretPattern
 // but whose value is a number or an identifier, never a credential. Listed

@@ -277,6 +277,17 @@ func planEnvPGPassword(_ context.Context, p *planner, _ map[string]any) error {
 		return p.refuse("%s runs no postgres server of its own (stores.postgres.kind is %s): there is no role "+
 			"password to write", p.t.Name, p.t.Stores.Postgres.Kind)
 	}
+	// A `legacy` tenant keeps everything in tenant.env and has no secrets.env
+	// at all — and secrets.env is the ONE file the instance supervisor reads
+	// the password out of. Writing the key into tenant.env instead would put a
+	// credential in the public half of every bundle; creating a secrets.env
+	// here would be `env normalize`'s job done badly, by an op that knows
+	// nothing about which other keys belong in it.
+	if p.t.SecretsFileSHA256 == "" {
+		return p.refuse("%s has no secrets.env (env_layout is `%s`), and that is the only file the instance "+
+			"supervisor reads the postgres password from. Split the tenant's secrets out first: "+
+			"`ragstack-ctl env normalize %s`", p.t.Name, orNone(p.t.EnvLayout), p.t.Name)
+	}
 	secretsEnv := p.tpaths.SecretsEnv
 	upSh := filepath.Join(p.t.DataDir, "bin", "up.sh")
 	p.addFor("files", step{
