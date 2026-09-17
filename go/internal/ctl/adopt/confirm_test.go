@@ -1,6 +1,9 @@
 package adopt
 
 import (
+	"errors"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -9,10 +12,16 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
-// confirmFixture is a tenant shaped like the adopted ones: its own qdrant and
-// elasticsearch on its block, a dedicated postgres, and a host on which each
-// is served by exactly one apptainer instance binding a path under the
-// tenant's data dir.
+// confirmFixture is a tenant shaped like the adopted ones on coconut: its own
+// qdrant and elasticsearch on its block, a dedicated postgres, and a host on
+// which each is served by the process INSIDE an apptainer instance.
+//
+// That last part is the whole point of the fixture. The recorded argv of every
+// live store leg is the container's own — `./qdrant`, the elasticsearch JVM,
+// `postgres` — with no `--bind` anywhere, because the `apptainer instance run
+// --bind …` that set the mounts up is a different process that exited long
+// ago. A fixture whose listeners carried `--bind` (this one did) let a
+// confirmation pass in the tests and refuse on every real tenant.
 func confirmFixture() (*registry.Tenant, *hostfacts.Fake) {
 	block := paths.Block(4)
 	data := "/rag/data/tenants/hack"
@@ -31,17 +40,50 @@ func confirmFixture() (*registry.Tenant, *hostfacts.Fake) {
 		Port: registry.NullPort(block.PG), Instance: "postgres-hack",
 		DataDir: registry.NullString(data + "/postgres"),
 	}
-	host := &hostfacts.Fake{Ports: []hostfacts.Listener{
-		instanceListener(block.QdrantHTTP, 101, data+"/qdrant/storage", "/qdrant/storage"),
-		instanceListener(block.ESHTTP, 102, data+"/elasticsearch/data", "/usr/share/elasticsearch/data"),
-		instanceListener(block.PG, 103, data+"/postgres/data", "/var/lib/postgresql/data"),
-	}}
+	host := &hostfacts.Fake{
+		Ports: []hostfacts.Listener{
+			containedListener(block.QdrantHTTP, 101, "./qdrant"),
+			containedListener(block.ESHTTP, 102, "/usr/share/elasticsearch/jdk/bin/java", "-Xms1g", "org.elasticsearch.bootstrap.Elasticsearch"),
+			containedListener(block.PG, 103, "postgres"),
+		},
+		// What /proc/<pid>/mountinfo says, translated to host paths — the
+		// shape hostfacts.StorageBinds returns for the live instances, down to
+		// the incidental mounts (/etc/hosts, /var/tmp) every apptainer
+		// container carries and the broad `/rag` bind two of them have.
+		Binds: map[int][]hostfacts.StorageBind{
+			101: {
+				{HostPath: "/etc/hosts", ContainerPath: "/etc/hosts", Device: "252:0"},
+				{HostPath: data + "/qdrant/snapshots", ContainerPath: "/qdrant/snapshots", Device: "252:8"},
+				{HostPath: data + "/qdrant/storage", ContainerPath: "/qdrant/storage", Device: "252:8"},
+				{HostPath: "/var/tmp", ContainerPath: "/var/tmp", Device: "252:1"},
+			},
+			102: {
+				{HostPath: "/rag", ContainerPath: "/rag", Device: "252:8"},
+				{HostPath: data + "/elasticsearch/config", ContainerPath: "/usr/share/elasticsearch/config", Device: "252:8"},
+				{HostPath: data + "/elasticsearch/data", ContainerPath: "/usr/share/elasticsearch/data", Device: "252:8"},
+				{HostPath: data + "/elasticsearch/logs", ContainerPath: "/usr/share/elasticsearch/logs", Device: "252:8"},
+			},
+			103: {
+				{HostPath: data + "/postgres/run", ContainerPath: "/run/postgresql", Device: "252:8"},
+				{HostPath: data + "/postgres/data", ContainerPath: "/var/lib/postgresql/data", Device: "252:8"},
+			},
+		},
+	}
 	return t, host
 }
 
-// instanceListener is one apptainer instance holding a port, with the argv
-// shape the live instances have (`--bind host:container`).
-func instanceListener(port, pid int, hostPath, containerPath string) hostfacts.Listener {
+// containedListener is a process holding a port from INSIDE a container: a
+// plausible argv and no bind on it anywhere.
+func containedListener(port, pid int, argv ...string) hostfacts.Listener {
+	return hostfacts.Listener{
+		Port: port, Addr: "0.0.0.0", Pid: pid, UID: 1000, User: "wilke", Cmdline: argv,
+	}
+}
+
+// starterListener is the OTHER shape: a process that is itself the `apptainer
+// instance run`, whose binds are on its command line. It is the fallback path
+// storageUnderDataDir keeps, and a caller outside this host may still be in it.
+func starterListener(port, pid int, hostPath, containerPath string) hostfacts.Listener {
 	return hostfacts.Listener{
 		Port: port, Addr: "0.0.0.0", Pid: pid, UID: 1000, User: "wilke",
 		Cmdline: []string{
@@ -53,12 +95,7 @@ func instanceListener(port, pid int, hostPath, containerPath string) hostfacts.L
 }
 
 func itoa(n int) string {
-	out := ""
-	for n > 0 {
-		out = string(rune('0'+n%10)) + out
-		n /= 10
-	}
-	return out
+	return strconv.Itoa(n)
 }
 
 func TestConfirmStoresSetsTheThreeCapabilitiesAndNeverPurge(t *testing.T) {
@@ -113,6 +150,7 @@ func TestConfirmStoresRefusesASharedLeg(t *testing.T) {
 
 func TestConfirmStoresRefusesWhatItCannotVerify(t *testing.T) {
 	block := paths.Block(4)
+	data := "/rag/data/tenants/hack"
 	for _, c := range []struct {
 		name   string
 		break_ func(*registry.Tenant, *hostfacts.Fake)
@@ -126,8 +164,7 @@ func TestConfirmStoresRefusesWhatItCannotVerify(t *testing.T) {
 		{
 			name: "two processes on one port",
 			break_: func(_ *registry.Tenant, h *hostfacts.Fake) {
-				h.Ports = append(h.Ports, instanceListener(block.QdrantHTTP, 999,
-					"/rag/data/tenants/hack/qdrant/storage", "/qdrant/storage"))
+				h.Ports = append(h.Ports, containedListener(block.QdrantHTTP, 999, "./qdrant"))
 			},
 			want: "2 different processes",
 		},
@@ -137,19 +174,40 @@ func TestConfirmStoresRefusesWhatItCannotVerify(t *testing.T) {
 			want:   "cannot attribute",
 		},
 		{
-			name: "binds somebody else's storage",
+			name: "mounts somebody else's storage",
 			break_: func(_ *registry.Tenant, h *hostfacts.Fake) {
-				h.Ports[0] = instanceListener(block.QdrantHTTP, 101,
-					"/rag/data/tenants/other/qdrant/storage", "/qdrant/storage")
+				h.Binds[101] = []hostfacts.StorageBind{
+					{HostPath: "/rag/data/tenants/other/qdrant/storage", ContainerPath: "/qdrant/storage"},
+				}
 			},
-			want: "none of which is under this tenant's data dir",
+			want: "mounts nothing under this tenant's data dir",
 		},
 		{
-			name: "no bind at all",
+			// The anomaly worth seeing: something of the tenant's IS mounted,
+			// but not where a qdrant keeps its collections. Its storage is
+			// somewhere this tenant does not own.
+			name: "mounts the tenant's snapshots but not its storage",
 			break_: func(_ *registry.Tenant, h *hostfacts.Fake) {
+				h.Binds[101] = []hostfacts.StorageBind{
+					{HostPath: data + "/qdrant/snapshots", ContainerPath: "/qdrant/snapshots"},
+				}
+			},
+			want: "its storage is somewhere else",
+		},
+		{
+			name: "no mounts and no bind at all",
+			break_: func(_ *registry.Tenant, h *hostfacts.Fake) {
+				h.Binds[101] = nil
 				h.Ports[0].Cmdline = []string{"/usr/bin/qdrant"}
 			},
-			want: "no --bind at all",
+			want: "has no mounts and no --bind",
+		},
+		{
+			name: "the mount table cannot be read",
+			break_: func(_ *registry.Tenant, h *hostfacts.Fake) {
+				h.Errs = map[string]error{"storagebinds": errors.New("permission denied")}
+			},
+			want: "reading the mounts of pid 101",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -163,6 +221,28 @@ func TestConfirmStoresRefusesWhatItCannotVerify(t *testing.T) {
 				t.Error("a refused confirmation wrote a capability anyway")
 			}
 		})
+	}
+}
+
+// The other shape a store can be in: the process holding the port IS the
+// `apptainer instance run`, so its binds are on its command line. mountinfo
+// says nothing for it, and the argv fallback is what carries the confirmation.
+func TestConfirmStoresFallsBackToTheCommandLine(t *testing.T) {
+	tn, host := confirmFixture()
+	block := paths.Block(4)
+	host.Ports[0] = starterListener(block.QdrantHTTP, 101,
+		"/rag/data/tenants/hack/qdrant/storage", "/qdrant/storage")
+	host.Binds[101] = nil
+
+	findings, err := ConfirmStores(tn, []string{"qdrant"}, ConfirmOptions{Host: host})
+	if err != nil {
+		t.Fatalf("a starter process with its binds on the argv was refused: %v", err)
+	}
+	if !tn.Stores.Qdrant.Capabilities.Stop {
+		t.Error("the capability was not set")
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Detail, "from the command line") {
+		t.Errorf("the finding does not say which source the evidence came from: %+v", findings)
 	}
 }
 
@@ -233,5 +313,47 @@ func TestValidateLegsRefusesTyposBeforeAnyHostIsRead(t *testing.T) {
 	}
 	if err := ValidateLegs([]string{"qdrant", "elasticsearch", "postgres"}); err != nil {
 		t.Errorf("the whole legal set was refused: %v", err)
+	}
+}
+
+// TestConfirmStoresAgainstTheLiveHost is the reviewer's repro, kept as a
+// regression test: the five exclusive legs on coconut, confirmed through the
+// real /proc probe rather than a fixture.
+//
+// It is the test the fixture could not be: the fixture's shape is an assertion
+// ABOUT the host, and the bug it missed was that the assertion was wrong. Gated
+// on REVIEW_LIVE=1 because it reads this host's live processes and skips
+// wherever they are not there — which is every machine but this one.
+func TestConfirmStoresAgainstTheLiveHost(t *testing.T) {
+	if os.Getenv("REVIEW_LIVE") == "" {
+		t.Skip("set REVIEW_LIVE=1 to confirm the live coconut tenants (reads /proc, writes nothing)")
+	}
+	f, err := registry.Load("/rag/data/tenants/registry.json")
+	if err != nil {
+		t.Skipf("no live registry: %v", err)
+	}
+	roots := paths.NewRoots("/rag", paths.Overrides{})
+	for _, tc := range []struct {
+		tenant, leg string
+	}{
+		{"dev", "qdrant"}, {"dev", "elasticsearch"},
+		{"hackathon", "qdrant"}, {"hackathon", "elasticsearch"}, {"hackathon", "postgres"},
+		{"lucid-next", "elasticsearch"},
+	} {
+		t.Run(tc.tenant+"/"+tc.leg, func(t *testing.T) {
+			row := f.Tenants[tc.tenant]
+			if row == nil {
+				t.Skipf("no %s row on this host", tc.tenant)
+			}
+			copyOf := *row // ConfirmStores MUTATES; never the loaded registry
+			findings, err := ConfirmStores(&copyOf, []string{tc.leg}, ConfirmOptions{Fleet: f, Roots: roots})
+			if err != nil {
+				t.Fatalf("the live %s leg of %s could not be confirmed: %v", tc.leg, tc.tenant, err)
+			}
+			if len(findings) != 1 || !strings.Contains(findings[0].Detail, "/rag/data/tenants/") {
+				t.Fatalf("the evidence does not name the storage: %+v", findings)
+			}
+			t.Logf("%s", findings[0].Detail)
+		})
 	}
 }

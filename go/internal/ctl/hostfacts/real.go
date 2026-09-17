@@ -394,6 +394,166 @@ func (r *Real) ProcEnv(pid int, allow func(string) bool) (map[string]string, err
 	return out, nil
 }
 
+// ---------------------------------------------------------------- mountinfo
+
+// pseudoFS are the filesystem types whose mounts say nothing about where a
+// process keeps its data: the kernel's own, the container runtime's, and the
+// SIF rootfs itself.
+var pseudoFS = map[string]bool{
+	"proc": true, "sysfs": true, "devtmpfs": true, "devpts": true, "tmpfs": true,
+	"mqueue": true, "securityfs": true, "cgroup": true, "cgroup2": true, "pstore": true,
+	"bpf": true, "configfs": true, "debugfs": true, "tracefs": true, "hugetlbfs": true,
+	"fusectl": true, "binfmt_misc": true, "nsfs": true, "squashfs": true, "overlay": true,
+	"fuse.squashfuse": true, "autofs": true, "ramfs": true,
+}
+
+// mountEntry is the part of one /proc/<pid>/mountinfo line this file reads.
+type mountEntry struct {
+	dev, root, mountPoint, fsType string
+}
+
+// StorageBinds returns the host directories pid has mounted into itself.
+//
+// The translation is the whole trick and is worth stating. A mountinfo line
+// gives the mount's ROOT — a path inside the SOURCE filesystem, not on this
+// host — so `/data/tenants/dev/qdrant/storage` on device 252:8 is not a path
+// anything can open. THIS process's own mountinfo says where that device is
+// mounted here (252:8 root `/` at `/rag`), and the host path is that mount
+// point plus the part of the root below the self-mount's own root:
+//
+//	self:   252:8  /            /rag
+//	target: 252:8  /data/…/storage  /qdrant/storage
+//	        →  /rag  +  /data/…/storage  =  /rag/data/…/storage
+//
+// A device this process has not mounted, or a root outside every self-mount of
+// it, yields nothing: an unresolvable bind is DROPPED rather than guessed at,
+// because the one use of this list is deciding whether a store's files are
+// inside a tenant's data dir.
+func (r *Real) StorageBinds(pid int) ([]StorageBind, error) {
+	self, err := r.mountEntries(os.Getpid())
+	if err != nil {
+		return nil, fmt.Errorf("reading this process's own mounts: %w", err)
+	}
+	target, err := r.mountEntries(pid)
+	if err != nil {
+		return nil, err
+	}
+	// Longest self-root first, so a nested bind mount of the same device wins
+	// over the filesystem's own root.
+	byDev := map[string][]mountEntry{}
+	for _, m := range self {
+		byDev[m.dev] = append(byDev[m.dev], m)
+	}
+	for dev := range byDev {
+		ms := byDev[dev]
+		sort.Slice(ms, func(i, j int) bool { return len(ms[i].root) > len(ms[j].root) })
+		byDev[dev] = ms
+	}
+
+	var out []StorageBind
+	seen := map[string]bool{}
+	for _, m := range target {
+		if pseudoFS[m.fsType] || m.mountPoint == "/" {
+			continue
+		}
+		host, ok := resolveMountRoot(m, byDev[m.dev])
+		if !ok || seen[host+"\x00"+m.mountPoint] {
+			continue
+		}
+		seen[host+"\x00"+m.mountPoint] = true
+		out = append(out, StorageBind{HostPath: host, ContainerPath: m.mountPoint, Device: m.dev})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ContainerPath < out[j].ContainerPath })
+	return out, nil
+}
+
+// resolveMountRoot maps a target mount's root onto this host through the
+// self-mounts of the same device.
+func resolveMountRoot(m mountEntry, selfMounts []mountEntry) (string, bool) {
+	for _, s := range selfMounts {
+		rest, ok := underRoot(m.root, s.root)
+		if !ok {
+			continue
+		}
+		host := filepath.Join(s.mountPoint, rest)
+		if !filepath.IsAbs(host) {
+			continue
+		}
+		return filepath.Clean(host), true
+	}
+	return "", false
+}
+
+// underRoot reports whether root is selfRoot or below it, and returns the part
+// below. Both are mountinfo roots: absolute, clean, "/" for a whole filesystem.
+func underRoot(root, selfRoot string) (string, bool) {
+	root, selfRoot = filepath.Clean(root), filepath.Clean(selfRoot)
+	if selfRoot == "/" {
+		return strings.TrimPrefix(root, "/"), true
+	}
+	if root == selfRoot {
+		return "", true
+	}
+	if strings.HasPrefix(root, selfRoot+"/") {
+		return strings.TrimPrefix(root, selfRoot+"/"), true
+	}
+	return "", false
+}
+
+// mountEntries parses /proc/<pid>/mountinfo.
+//
+// The format's one trap is the VARIABLE number of optional fields between the
+// mount options and the " - " separator (`shared:`, `master:`, `propagate_from:`),
+// which is why the fstype is found by splitting on that separator rather than
+// by counting columns.
+func (r *Real) mountEntries(pid int) ([]mountEntry, error) {
+	b, err := os.ReadFile(filepath.Join(r.proc(), strconv.Itoa(pid), "mountinfo"))
+	if err != nil {
+		return nil, err
+	}
+	var out []mountEntry
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		head, tail, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		hf, tf := strings.Fields(head), strings.Fields(tail)
+		if len(hf) < 5 || len(tf) < 1 {
+			continue
+		}
+		out = append(out, mountEntry{
+			dev:        hf[2],
+			root:       unoctal(hf[3]),
+			mountPoint: unoctal(hf[4]),
+			fsType:     tf[0],
+		})
+	}
+	return out, nil
+}
+
+// unoctal decodes the \040-style escapes mountinfo uses for space, tab,
+// newline and backslash in a path.
+func unoctal(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 // ------------------------------------------------------------------- systemd
 
 // Linger reports whether the user manager of user survives logout.

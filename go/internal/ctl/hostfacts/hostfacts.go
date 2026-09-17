@@ -44,6 +44,26 @@ type Listener struct {
 	Cwd     string   // /proc/<pid>/cwd target, "" when unknown
 }
 
+// StorageBind is one host directory a process has mounted into itself — the
+// host side of an `apptainer --bind`, read back from the process rather than
+// from the command line that started it.
+//
+// It exists because the argv of a containerized store is the argv of the
+// process INSIDE the container (`./qdrant`, the elasticsearch JVM, `postgres`)
+// and carries no bind at all: the `apptainer instance run --bind …` that set
+// them up is a different, already-exited process. The mounts are the fact that
+// survives, and `/proc/<pid>/mountinfo` is where this account reads them.
+type StorageBind struct {
+	// HostPath is the directory as THIS host sees it (e.g.
+	// /rag/data/tenants/dev/qdrant/storage).
+	HostPath string
+	// ContainerPath is where the process sees it (e.g. /qdrant/storage).
+	ContainerPath string
+	// Device is the "major:minor" the mount is on, kept because it is what
+	// made the translation possible and is worth quoting in a refusal.
+	Device string
+}
+
 // DropIn is what the root drop-in for a user manager declares
 // (/etc/systemd/system/user@<uid>.service.d/*.conf).
 type DropIn struct {
@@ -131,6 +151,17 @@ type Host interface {
 	// ProcEnv returns the environment of pid, keeping only keys allow
 	// accepts. Pass SafeEnvAllowed for the snapshot.sh allowlist.
 	ProcEnv(pid int, allow func(key string) bool) (map[string]string, error)
+	// StorageBinds reads /proc/<pid>/mountinfo and returns the mounts whose
+	// source this account can locate in its OWN namespace, translated to host
+	// paths. Pseudo filesystems (proc, sysfs, tmpfs, cgroup, the container's
+	// own squashfs/overlay rootfs) are dropped: what is left is the data the
+	// process is actually reading and writing.
+	//
+	// It is how `adopt --confirm-stores` answers "is this store's storage
+	// inside the tenant's own data dir". Only the process's own account may
+	// read its mountinfo, which is exactly the account that runs the
+	// confirmation (--direct, as the owner of the tree).
+	StorageBinds(pid int) ([]StorageBind, error)
 	// Linger reports whether /var/lib/systemd/linger/<user> exists.
 	Linger(user string) bool
 	// RuntimeDir reports whether /run/user/<uid> exists.

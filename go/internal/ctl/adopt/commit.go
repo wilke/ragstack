@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -34,6 +36,38 @@ type CommitOptions struct {
 	// last_backup. Off by default: adoption happens once, and a silent
 	// re-adoption is how a hand edit gets lost.
 	Readopt bool
+	// Overrides names the DECISIONS this call is making explicitly. Everything
+	// it does not name that an operator may have decided through a preparation
+	// op is carried over from the existing row rather than re-derived from the
+	// host — see carryOver for why that is not the same as "live facts beat
+	// recorded ones".
+	Overrides Overrides
+}
+
+// Overrides are the preparation-op decisions a re-adoption is replacing.
+//
+// UI corresponds to --ui-mode/--ui-port and Bind to --api-bind. A false field
+// means "this call has no opinion", and carryOver keeps what the row said.
+//
+// ConfirmedLegs is the same idea PER LEG, and it has to be: `--confirm-stores
+// qdrant` on a tenant whose elasticsearch was confirmed last week is a
+// statement about qdrant and about nothing else. A single boolean would have
+// reset the leg it did not name, which is the same class of silent revert this
+// whole mechanism exists to prevent.
+type Overrides struct {
+	UI            bool
+	Bind          bool
+	ConfirmedLegs []string
+}
+
+// confirmed reports whether this call decided leg's capabilities itself.
+func (o Overrides) confirmed(leg string) bool {
+	for _, l := range o.ConfirmedLegs {
+		if l == leg {
+			return true
+		}
+	}
+	return false
 }
 
 // Commit writes one adopted tenant. It is CommitAll with a single row, and
@@ -62,7 +96,7 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 			if !opts.Readopt {
 				return fmt.Errorf("adopt: tenant %q is already in %s — adoption happens once (pass --readopt to replace the row from a fresh preview)", t.Name, registryPath)
 			}
-			carryOver(t, prev)
+			carryOver(t, prev, opts.Overrides)
 		}
 	}
 	// Every refusal decidable from the load alone (duplicate tenants above;
@@ -246,9 +280,44 @@ func reconcile(registryPath string, f *registry.Fleet) error {
 	}
 }
 
+// driftStamp is when the disagreement was observed: the preview's own adoption
+// stamp, which is the moment the host was read. A row whose adopted_at is
+// somehow empty falls back to now — a drift row the contract refuses for want
+// of a timestamp would take the whole commit down over a note.
+func driftStamp(t *registry.Tenant) string {
+	if t.AdoptedAt != "" {
+		return string(t.AdoptedAt)
+	}
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
 // carryOver copies onto a re-adopted row the state adoption does not read
 // from the host, so a --readopt never resets what an operator or a job set.
-func carryOver(next, prev *registry.Tenant) {
+//
+// Three of those fields ARE observable, and carrying them over anyway is the
+// correction PR-E forced. Adoption's rule is "live facts beat recorded ones",
+// which is right for a fact the host is the authority on (an ES heap, a pid, a
+// listening port) and WRONG for a DECISION an operator recorded and the host
+// has not caught up with yet:
+//
+//   - ui.mode / ui.port: `tenant set-ui-mode <t> static` records `static` with
+//     no port. A fresh preview of the same tenant infers `external` (or `dev`)
+//     from --ui-port, so the runbook's own A5 command would have flipped
+//     hackathon's live static UI to `external` with port 0 — a tenant whose
+//     gateway row then points at nothing.
+//   - api.bind: `tenant set-bind <t> 127.0.0.1` is effective at the NEXT
+//     restart, so between A4 and the handover the live process still binds
+//     0.0.0.0 and a re-adoption would write that back over the decision.
+//   - stores.*.capabilities: adoption starts every capability false by design.
+//     A re-adoption that reset them would undo A5 — and `--confirm-stores`
+//     runs on the preview row, so without Overrides.ConfirmedLegs below it
+//     would undo the confirmation made in the very same command. The carry is
+//     per LEG: `--confirm-stores qdrant` says nothing about elasticsearch.
+//
+// The disagreement is not swallowed: a bind that differs from the live process
+// is recorded as a drift row, which is what the registry has for "these two
+// facts do not match and a human should know".
+func carryOver(next, prev *registry.Tenant, over Overrides) {
 	if prev == nil || next == nil {
 		return
 	}
@@ -262,4 +331,31 @@ func carryOver(next, prev *registry.Tenant) {
 		next.LastOps = prev.LastOps
 	}
 	next.LastBackup = prev.LastBackup
+
+	if !over.UI && prev.UI.Mode != "" {
+		next.UI = prev.UI
+	}
+	if !over.Bind && prev.API.Bind != "" {
+		if observed := next.API.Bind; observed != "" && observed != prev.API.Bind {
+			next.Drift = append(next.Drift, registry.Drift{
+				Code: doctor.APIBindDrift, Level: string(model.LevelWarn), Field: "api.bind",
+				Expected: prev.API.Bind, Actual: observed, ObservedAt: driftStamp(next),
+				Note: "the recorded bind is kept: it takes effect at the tenant's next restart",
+			})
+		}
+		next.API.Bind = prev.API.Bind
+	}
+	// Per leg: a confirmation this call made stands, and every OTHER leg keeps
+	// what it had. Adoption starts every capability false, so a leg the caller
+	// did not name would otherwise be un-confirmed by a command that never
+	// mentioned it.
+	if !over.confirmed("qdrant") {
+		next.Stores.Qdrant.Capabilities = prev.Stores.Qdrant.Capabilities
+	}
+	if !over.confirmed("elasticsearch") {
+		next.Stores.Elasticsearch.Capabilities = prev.Stores.Elasticsearch.Capabilities
+	}
+	if !over.confirmed("postgres") {
+		next.Stores.Postgres.Capabilities = prev.Stores.Postgres.Capabilities
+	}
 }

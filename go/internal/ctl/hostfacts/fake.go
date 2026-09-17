@@ -23,6 +23,7 @@ type Fake struct {
 	Self        string // Username(); "" ⇒ "wilke"
 	Ports       []Listener
 	Env         map[int]map[string]string // pid → already SAFE_ENV-filtered env
+	Binds       map[int][]StorageBind     // pid → the host dirs it has mounted
 	Lingering   map[string]bool
 	RuntimeDirs map[int]bool
 	DropIns     map[int]DropIn
@@ -41,6 +42,16 @@ type Fake struct {
 	ProbeStatus map[string]int          // url → status code
 	Collections map[string]StoreListing // qdrant base url → listing
 	Indices     map[string]StoreListing // es base url → listing
+}
+
+// StorageBinds is the recorded mount table of pid. An unknown pid has no
+// mounts, which is a FACT (a process that binds nothing), not an error — the
+// same answer the real probe gives for a process with a bare rootfs.
+func (f *Fake) StorageBinds(pid int) ([]StorageBind, error) {
+	if err := f.Errs["storagebinds"]; err != nil {
+		return nil, err
+	}
+	return append([]StorageBind(nil), f.Binds[pid]...), nil
 }
 
 var (

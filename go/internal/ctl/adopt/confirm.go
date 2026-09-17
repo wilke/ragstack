@@ -14,10 +14,14 @@ package adopt
 //  1. exactly ONE process serves the leg's port. Two pids on one port is two
 //     servers — or a port being handed over — and neither is a thing to
 //     confirm a capability over.
-//  2. that process's argv binds a path under this tenant's OWN data dir. An
-//     apptainer instance's `--bind <host>:<container>` is where its storage
-//     really is, and a leg whose storage is somewhere else is not this
-//     tenant's to stop however the URL is spelled.
+//  2. that process has a directory under this tenant's OWN data dir MOUNTED
+//     where a store of its kind keeps its data. The evidence is
+//     /proc/<pid>/mountinfo, not the command line: the process holding the
+//     port is the one inside the container (`./qdrant`, the elasticsearch JVM,
+//     `postgres`) and carries no `--bind` at all, because the `apptainer
+//     instance run` that set the mounts up exited long ago. A leg whose
+//     storage is somewhere else is not this tenant's to stop however its URL
+//     is spelled.
 //  3. no other registry row names the same store. Two rows pointing at one
 //     port is the definition of shared, whatever either row's `ownership`
 //     says.
@@ -124,7 +128,7 @@ func ConfirmStores(t *registry.Tenant, legs []string, opts ConfirmOptions) ([]mo
 		if err != nil {
 			return findings, err
 		}
-		bind, err := bindUnderDataDir(t, leg, l)
+		bind, err := storageUnderDataDir(host, t, leg, l)
 		if err != nil {
 			return findings, err
 		}
@@ -134,9 +138,10 @@ func ConfirmStores(t *registry.Tenant, legs []string, opts ConfirmOptions) ([]mo
 		note := fmt.Sprintf("%s: pid %d on :%d, binding %s", leg, l.Pid, port, bind)
 		findings = append(findings, model.Finding{
 			Level: model.LevelInfo, Code: "stores_confirmed", Tenant: registry.NullString(t.Name),
-			Detail: fmt.Sprintf("%s confirmed: exactly one process (pid %d, %s) serves :%d, its argv binds %s under "+
-				"the tenant's data dir, and no other registry row names it. capabilities.{stop,snapshot,restore} "+
-				"are set; purge stays false", leg, l.Pid, orDefault(l.User, "owner unreadable"), port, bind),
+			Detail: fmt.Sprintf("%s confirmed: exactly one process (pid %d, %s) serves :%d, it has %s — inside the "+
+				"tenant's own data dir — and no other registry row names it. "+
+				"capabilities.{stop,snapshot,restore} are set; purge stays false",
+				leg, l.Pid, orDefault(l.User, "owner unreadable"), port, bind),
 		})
 		passed = append(passed, pass{leg: leg, set: setterFor(t, leg), note: note})
 	}
@@ -220,21 +225,90 @@ func soleListener(t *registry.Tenant, leg string, port int, ls []hostfacts.Liste
 	return ls[0], nil
 }
 
-// bindRE finds an apptainer `--bind <host>:<container>` in either spelling.
-// The host side is everything up to the first colon; apptainer's own grammar
-// allows a third `:ro` field, which is why the split is on the FIRST colon and
-// the rest is ignored.
+// dataPaths are the container paths each store kind keeps its DATA at, in the
+// images this deployment runs. A bind of the tenant's own directory at one of
+// them is the strongest statement available that the process on the port is
+// this tenant's store: it is not merely mounting something of the tenant's, it
+// is mounting it where its storage lives.
+//
+// They are the destinations the tenants' own launchers and `render.StoreArgv`
+// both use. A leg whose image keeps data elsewhere fails this check and says
+// what it found, which is the right outcome: the ctl must not confirm `stop`
+// on a store whose storage it cannot point at.
+var dataPaths = map[string][]string{
+	"qdrant":        {"/qdrant/storage"},
+	"elasticsearch": {"/usr/share/elasticsearch/data"},
+	"postgres":      {"/var/lib/postgresql/data"},
+}
+
+// bindRE finds an apptainer `--bind <host>:<container>` in either spelling. It
+// is the FALLBACK source (see storageUnderDataDir): a process that is itself an
+// `apptainer instance run` carries its binds on the command line, and one that
+// is not containerized at all carries whatever path it was given.
 var bindRE = regexp.MustCompile(`^--bind(?:=(.*))?$`)
 
-// bindUnderDataDir is fact (2): the process's argv binds a path under this
-// tenant's data dir.
+// storageUnderDataDir is fact (2): the process serving this port keeps its data
+// inside the tenant's own data dir.
 //
-// The argv, not the URL: a URL is what the tenant was CONFIGURED to dial, and
-// the question here is where the process on the other end actually keeps its
-// files. An instance started against another tenant's storage answers the same
-// URL and is not this tenant's to stop.
-func bindUnderDataDir(t *registry.Tenant, leg string, l hostfacts.Listener) (string, error) {
-	var binds []string
+// The evidence is the process's MOUNTS, not its command line. Every store on
+// this host runs inside an apptainer instance, and the process holding the port
+// is the one INSIDE the container — `./qdrant`, the elasticsearch JVM,
+// `postgres`. Its argv carries no `--bind`, because the `apptainer instance run
+// --bind …` that set the mounts up is a different process that exited long ago.
+// Reading the argv found nothing for every live leg, which made the whole
+// confirmation unreachable on the only host it exists for. What survives is
+// /proc/<pid>/mountinfo, and the account that runs this op (--direct, as the
+// owner of the tree) is exactly the account allowed to read it.
+//
+// The argv scan is kept as a second source for the shapes mountinfo cannot
+// describe: an `apptainer instance run` process itself, and a store running
+// directly on the host with its path on the command line.
+func storageUnderDataDir(host hostfacts.Host, t *registry.Tenant, leg string, l hostfacts.Listener) (string, error) {
+	binds, err := host.StorageBinds(l.Pid)
+	if err != nil {
+		return "", fmt.Errorf("adopt %s: reading the mounts of pid %d (the %s process): %w", t.Name, l.Pid, leg, err)
+	}
+	var mine []hostfacts.StorageBind
+	for _, b := range binds {
+		if under(b.HostPath, t.DataDir) {
+			mine = append(mine, b)
+		}
+	}
+	// The strong form: the tenant's own directory mounted where this kind of
+	// store keeps its data.
+	for _, b := range mine {
+		for _, want := range dataPaths[leg] {
+			if b.ContainerPath == want {
+				return fmt.Sprintf("%s at %s", b.HostPath, b.ContainerPath), nil
+			}
+		}
+	}
+	if len(mine) > 0 {
+		// Something of the tenant's is mounted, but not its storage. That is an
+		// anomaly worth seeing rather than a capability worth confirming: a
+		// qdrant with only its snapshots directory bound is writing its
+		// collections somewhere this tenant does not own.
+		return "", fmt.Errorf("adopt %s: pid %d serves the %s port and mounts %s from this tenant's data dir, but "+
+			"nothing at %s, where a %s keeps its data: its storage is somewhere else",
+			t.Name, l.Pid, leg, describeBinds(mine), strings.Join(dataPaths[leg], " or "), leg)
+	}
+	// Fallback: the command line, for a process that IS the apptainer starter
+	// or is not containerized at all.
+	if path, ok := argvBindUnderDataDir(t, l); ok {
+		return path + " (from the command line)", nil
+	}
+	if len(binds) == 0 {
+		return "", fmt.Errorf("adopt %s: pid %d serves the %s port but has no mounts and no --bind on its command "+
+			"line, so nothing says the files it is writing are this tenant's. A store the ctl may stop has to be "+
+			"one it can see the storage of", t.Name, l.Pid, leg)
+	}
+	return "", fmt.Errorf("adopt %s: pid %d serves the %s port but mounts nothing under this tenant's data dir %s "+
+		"(it mounts %s): it is not this tenant's store however its URL is spelled",
+		t.Name, l.Pid, leg, t.DataDir, describeBinds(binds))
+}
+
+// argvBindUnderDataDir is the command-line source: `--bind <host>:<container>`.
+func argvBindUnderDataDir(t *registry.Tenant, l hostfacts.Listener) (string, bool) {
 	for i, arg := range l.Cmdline {
 		m := bindRE.FindStringSubmatch(arg)
 		if m == nil {
@@ -247,20 +321,27 @@ func bindUnderDataDir(t *registry.Tenant, leg string, l hostfacts.Listener) (str
 			}
 			spec = l.Cmdline[i+1]
 		}
-		host, _, _ := strings.Cut(spec, ":")
-		binds = append(binds, host)
-		if under(host, t.DataDir) {
-			return host, nil
+		hostPath, _, _ := strings.Cut(spec, ":")
+		if under(hostPath, t.DataDir) {
+			return hostPath, true
 		}
 	}
-	if len(binds) == 0 {
-		return "", fmt.Errorf("adopt %s: pid %d serves the %s port but its command line has no --bind at all, so "+
-			"nothing says the files it is writing are this tenant's. A store the ctl may stop has to be one it can "+
-			"see the storage of", t.Name, l.Pid, leg)
+	return "", false
+}
+
+// describeBinds renders a mount list for a refusal, capped so a container with
+// thirty mounts does not produce a thirty-line error.
+func describeBinds(binds []hostfacts.StorageBind) string {
+	const max = 6
+	out := make([]string, 0, max+1)
+	for i, b := range binds {
+		if i == max {
+			out = append(out, fmt.Sprintf("… and %d more", len(binds)-max))
+			break
+		}
+		out = append(out, b.HostPath+" at "+b.ContainerPath)
 	}
-	return "", fmt.Errorf("adopt %s: pid %d serves the %s port but binds %s, none of which is under this tenant's "+
-		"data dir %s: it is not this tenant's store however its URL is spelled",
-		t.Name, l.Pid, leg, strings.Join(binds, ", "), t.DataDir)
+	return strings.Join(out, ", ")
 }
 
 // noOtherRowNamesIt is fact (3): the registry has one claimant for this port.
@@ -273,13 +354,19 @@ func noOtherRowNamesIt(f *registry.Fleet, t *registry.Tenant, leg string, port i
 		if name == t.Name || row == nil || row.State == "decommissioned" {
 			continue
 		}
+		// Each leg's port RESOLVED the same way this tenant's was: the URL
+		// when it has one, the row's own port block when it does not. A row
+		// that records a store only through its block — every tenant does,
+		// and `stores.postgres.port` is null for a `local` leg adopted before
+		// the port was written down — would otherwise claim nothing and let
+		// the ctl confirm `stop` on a store two rows share.
 		for _, claim := range []struct {
 			what string
 			port int
 		}{
-			{"qdrant", portOf(row.Stores.Qdrant.URL, 0)},
-			{"elasticsearch", portOf(row.Stores.Elasticsearch.URL, 0)},
-			{"postgres", int(row.Stores.Postgres.Port)},
+			{"qdrant", portOf(row.Stores.Qdrant.URL, row.Ports.QdrantHTTP)},
+			{"elasticsearch", portOf(row.Stores.Elasticsearch.URL, row.Ports.ESHTTP)},
+			{"postgres", pgPortOf(row)},
 		} {
 			if claim.port != 0 && claim.port == port {
 				others = append(others, fmt.Sprintf("%s (%s)", name, claim.what))
@@ -296,6 +383,19 @@ func noOtherRowNamesIt(f *registry.Fleet, t *registry.Tenant, leg string, port i
 }
 
 // ---------------------------------------------------------------- helpers
+
+// pgPortOf is a row's relational-store port: the recorded one, else the port
+// block's +5, and 0 for a tenant with no server of its own at all (a `sqlite`
+// or `external` relational store claims no port on this host).
+func pgPortOf(row *registry.Tenant) int {
+	if row.Stores.Postgres.Kind != registry.PostgresKindLocal {
+		return 0
+	}
+	if p := int(row.Stores.Postgres.Port); p != 0 {
+		return p
+	}
+	return row.Ports.PG
+}
 
 // portOf is the port of a store URL, or fallback when it has none.
 func portOf(raw string, fallback int) int {
