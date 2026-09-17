@@ -39,8 +39,18 @@ function failureMessage(err: unknown): string {
   return "Could not reach the control plane.";
 }
 
-export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void }) {
-  const [method, setMethod] = useState<Method>("key");
+export function LoginView({
+  onSignedIn,
+  // Which tab starts selected. Production never passes it; it exists so the
+  // BV-BRC pair is reachable in a static render test. Without it the only
+  // assertable fields are the key tab's -- i.e. the ones that are NOT the
+  // reported bug.
+  initialMethod = "key",
+}: {
+  onSignedIn?: (s: CtlSession) => void;
+  initialMethod?: Method;
+}) {
+  const [method, setMethod] = useState<Method>(initialMethod);
   const [apiKey, setApiKey] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -61,16 +71,20 @@ export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void
     setError(null);
     try {
       const session = await fn();
-      // Hand off FIRST, then wipe. The wipe is unchanged in intent — nothing
-      // below this line may replay a sign-in — but doing it before the handoff
-      // emptied the password input while the browser's save prompt was still
-      // reading the form, and a password manager that finds a blank password
-      // next to a filled username fills the blank from the field it can see.
-      // That is the reported bug: accepting "update password" wrote the LOGIN
-      // NAME into the stored password.
-      onSignedIn?.(session);
+      // Drop every credential from component state the moment it has been
+      // spent. Nothing below this line may be able to replay a sign-in.
+      //
+      // The wipe stays BEFORE the handoff. An earlier revision of this file
+      // moved it after, on the theory that wiping early blanked the password
+      // input while the browser's save prompt was still reading the form. That
+      // was wrong twice over: Chrome snapshots the form at the `submit` event,
+      // before this handler runs at all, so nothing done here is visible to the
+      // prompt; and `onSignedIn` is optional, so ordering the wipe after it
+      // meant a throwing handoff skipped the wipe entirely and left a
+      // re-submittable form holding a live credential.
       setApiKey("");
       setPassword("");
+      onSignedIn?.(session);
     } catch (err) {
       setError(failureMessage(err));
     } finally {

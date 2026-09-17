@@ -123,12 +123,29 @@ describe("admin login", () => {
   // pair is behind a tab this harness cannot click, and a test that asserted it
   // anyway would be asserting nothing. Its names are covered by the type-checked
   // source and by the manual re-test noted on the issue.
-  it("does not autocomplete the control-plane key as a saved website password", () => {
+  it("gives the control-plane key field its own name, distinct from the password", () => {
     const html = render(createElement(LoginView));
-    // The key tab is the default. It is a secret, not a site password: it must
-    // carry its own name so it can never be stored as the BV-BRC password.
+    // Named so it is a distinct field to any manager that keys on `name`.
+    // NOT a claim that this prevents Chrome storing it as the BV-BRC password:
+    // Chrome saves per ORIGIN and, for a password-with-no-username form, falls
+    // back to the first stored credential for that origin without consulting
+    // `name` at all. That hazard is real, pre-existing, and tracked separately.
     expect(html).toContain('name="ctl-api-key"');
     expect(html).toMatch(/name="ctl-api-key"[^>]*autocomplete="off"|autocomplete="off"[^>]*name="ctl-api-key"/i);
+    expect(html).not.toContain('name="password"'); // the key tab is not the password form
+  });
+
+  it("gives the BV-BRC pair the names a password manager keys on", () => {
+    // The fields the reported bug is actually about. Reachable via
+    // `initialMethod` -- an earlier revision claimed this branch was untestable
+    // because the harness cannot click the tab, which was a false dilemma.
+    const html = render(createElement(LoginView, { initialMethod: "bvbrc" as const }));
+    expect(html).toMatch(/id="ctl-username"[^>]*name="username"/);
+    expect(html).toMatch(/id="ctl-password"[^>]*name="password"/);
+    // autoComplete survives the server renderer un-lowercased, hence /i.
+    expect(html).toMatch(/name="username"[^>]*autocomplete="username"/i);
+    expect(html).toMatch(/name="password"[^>]*autocomplete="current-password"/i);
+    expect(html).not.toContain('name="ctl-api-key"');
   });
 
   it("mounts AdminApp on the login screen when there is no session", () => {
