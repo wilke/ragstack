@@ -185,6 +185,26 @@ const (
 	// the expected state for every adopted tenant.
 	CapabilitiesUnconfirmed = "capabilities_unconfirmed"
 
+	// StoresUnconfirmed: a store leg this tenant owns EXCLUSIVELY still has
+	// `capabilities.stop` false, so the ctl may not start or stop it. Warn on
+	// its own — an adopted tenant is supposed to be in this state, and its
+	// stores go on running perfectly well — and an ERROR for `handover`, which
+	// is the op that would otherwise move the API to the service account and
+	// leave the tenant's own qdrant/elasticsearch/postgres running as whoever
+	// started them. That is not a handover; it is a tenant split across two
+	// accounts, with no single account able to restart it.
+	//
+	// It is NARROWER than capabilities_unconfirmed, which says "nothing is
+	// confirmed anywhere" and is info: this one names the legs that matter and
+	// is scoped to exclusive ownership, because confirming `stop` on a SHARED
+	// store would be confirming the ctl may take other tenants down with it.
+	//
+	// Cleared by `adopt <t> --readopt --confirm-stores <legs>`, which re-reads
+	// the process identity, the binds and the exclusivity from /proc before it
+	// flips anything — and which TOLERATES this finding (preconditions.go),
+	// since an op refused by the finding it repairs is an op nobody can run.
+	StoresUnconfirmed = "stores_unconfirmed"
+
 	// OwnerNotInEnum: the account running a tenant's API is not one of the
 	// contract's owners (svcbvbrc|wilke), so the row adopt would write is one
 	// registry.Load can never read back. Error: the commit is refused rather
@@ -200,6 +220,15 @@ const (
 	// is not broken by it) and an error for the ops that start the store:
 	// see preconditions.go.
 	ESSnapshotsDirMissing = "es_snapshots_dir_missing"
+
+	// APIBindDrift: the registry's api.bind differs from the bind the live API
+	// process is actually using. That is the NORMAL state between `tenant
+	// set-bind` and the tenant's next restart — the bind reaches uvicorn as a
+	// command-line argument at start-up — so it is a drift row rather than a
+	// finding doctor raises: the decision is recorded, the process has not
+	// caught up, and a re-adoption keeps the decision and writes this down.
+	// Warn, recorded by adopt on the row.
+	APIBindDrift = "api_bind_drift"
 
 	// ESHeapDrift: the live ES heap differs from what provision.env records.
 	// Warn; recorded as a registry drift row by adopt.

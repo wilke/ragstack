@@ -65,6 +65,7 @@ var (
 	enumDriftLevel  = []string{"info", "warn", "error"}
 	enumOutcome     = []string{"succeeded", "failed", "rolled_back", "interrupted", "cancelled"}
 	enumBackupKind  = []string{"backup", "pre-update", "recovery"}
+	enumBackupScope = []string{"config", "state", "stores"}
 	enumSAStatus    = []string{"active", "disabled"}
 	enumIdentity    = []string{"bvbrc", "oidc", "none"}
 	enumRouteStatus = []string{"active", "retired"}
@@ -73,7 +74,7 @@ var (
 		"adopt", "create", "start", "stop", "restart", "backup", "restore", "handover",
 		"migrate-local", "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
 		"sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
-		"render-units", "update-code",
+		"render-units", "update-code", "set-ui-mode", "set-bind",
 	}
 )
 
@@ -460,6 +461,18 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 		bp := ptr + "/last_backup"
 		c.pattern(bp+"/bundle", b.Bundle, reAbsPath)
 		c.enum(bp+"/kind", b.Kind, enumBackupKind)
+		// An ABSENT scope is legal and means the full bundle: the field arrived
+		// after records without it had been written, and Load backfills them
+		// (registry.backfillBackupScope). What is checked is the content of a
+		// scope that IS there.
+		seen := map[string]bool{}
+		for i, leg := range b.Scope {
+			c.enum(fmt.Sprintf("%s/scope/%d", bp, i), leg, enumBackupScope)
+			if seen[leg] {
+				c.failf(fmt.Sprintf("%s/scope/%d", bp, i), "%q appears twice; the legs are unique", leg)
+			}
+			seen[leg] = true
+		}
 	}
 }
 

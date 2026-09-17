@@ -44,7 +44,7 @@ func restoreFixture(t *testing.T) (jobs.Context, *drivers.Fake, string) {
 	bundle := "20260914T093000Z-backup"
 	oc.Fleet.Tenants["dev"].LastBackup = &registry.BackupRecord{
 		Bundle: filepath.Join("/rag/backups/tenants/dev", bundle), At: "2026-09-14T09:30:00Z",
-		Kind: "backup", Fenced: true, Verified: false,
+		Kind: "backup", Fenced: true, Verified: false, Scope: fullScope,
 	}
 	// The artifact's node_modules, which `create` builds the UI from and
 	// refuses without — a fact about the fixture host, not about the restore.
@@ -279,7 +279,7 @@ func TestRestoreRefusesAnUnfencedBundle(t *testing.T) {
 	seedState(fake, "dev")
 	runBackup(t, oc, fake, nil) // no fence
 	oc.Fleet.Tenants["dev"].LastBackup = &registry.BackupRecord{
-		Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup", Fenced: false,
+		Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup", Fenced: false, Scope: fullScope,
 	}
 	fake.FakeBuild().Installed["/rag/data/ctl/artifacts/"+testArtifactID+"/worktree"] = true
 
@@ -590,7 +590,7 @@ func TestRestoreOfAPostgresLocalTenantPoursTheDumpBackIn(t *testing.T) {
 	runBackup(t, oc, fake, map[string]any{"fence": true})
 	bundle := "20260914T093000Z-backup"
 	oc.Fleet.Tenants["dev"].LastBackup = &registry.BackupRecord{
-		Bundle: "/rag/backups/tenants/dev/" + bundle, Kind: "backup", Fenced: true,
+		Bundle: "/rag/backups/tenants/dev/" + bundle, Kind: "backup", Fenced: true, Scope: fullScope,
 	}
 	fake.FakeBuild().Installed["/rag/data/ctl/artifacts/"+testArtifactID+"/worktree"] = true
 

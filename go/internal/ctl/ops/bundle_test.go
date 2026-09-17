@@ -22,6 +22,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -604,6 +605,13 @@ func (v *schemaChecker) check(schema map[string]any, doc any, path string) {
 		}
 		return
 	}
+	// `"type": ["string", "null"]` — the contract's other way of spelling
+	// nullable, beside oneOf. A null under such a schema is VALID and must not
+	// be type-checked against the non-null half, which is what a light bundle's
+	// excluded elasticsearch leg (repo: null, snapshot: null) is.
+	if doc == nil && nullable(schema) {
+		return
+	}
 	if c, ok := schema["const"]; ok && !sameJSON(c, doc) {
 		v.fail(path, "is %v, the contract says %v", doc, c)
 	}
@@ -691,6 +699,20 @@ func (v *schemaChecker) check(schema map[string]any, doc any, path string) {
 }
 
 // typeOf reads `type`, which may be a string or a list ("string"|null).
+// nullable reports whether the schema's `type` list admits null.
+func nullable(schema map[string]any) bool {
+	list, ok := schema["type"].([]any)
+	if !ok {
+		return false
+	}
+	for _, one := range list {
+		if s, ok := one.(string); ok && s == "null" {
+			return true
+		}
+	}
+	return false
+}
+
 func typeOf(schema map[string]any) string {
 	switch t := schema["type"].(type) {
 	case string:
@@ -806,5 +828,167 @@ func TestTheBundleCarriesConfigYAMLAndNoSecretFile(t *testing.T) {
 		if strings.Contains(rel, "secrets.env") {
 			t.Errorf("%s is in the bundle directory", rel)
 		}
+	}
+}
+
+// ---------------------------------------------------------------- the light bundle
+//
+// `tenant backup <t> --scope config,state`: the safety net an operator takes
+// in the minutes before a handover. The claim under test is that it captures
+// everything a tenant's IDENTITY is made of and nothing that takes hours, and
+// that it never pretends to be more than that.
+
+func TestALightBundleCapturesConfigAndStateAndNoStores(t *testing.T) {
+	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		// An adopted row's descriptor: the thing restore.sh --tenant reads.
+		tn.RollbackDescriptor = &registry.RollbackDescriptor{
+			CapturedAt: "2026-09-14T08:00:00Z", Owner: "wilke",
+			Paths:         registry.RollbackPaths{DataDir: tn.DataDir, Worktree: tn.Worktree, PythonEnv: tn.PythonEnv},
+			Ports:         tn.Ports,
+			Code:          tn.Code,
+			EnvFileSHA256: strings.Repeat("ab", 32),
+			Images:        registry.RollbackImages{}, LaunchArgs: []registry.LaunchArg{},
+		}
+	})
+	seedState(fake, "dev")
+	fake.FakeFiles().Put("/rag/data/tenants/dev/config/provision.env", []byte("TENANT_STORE_KIND=sqlite\n"), 0o640)
+
+	p := plan(t, oc, "backup", map[string]any{"scope": []string{"config", "state"}})
+	// Every store leg is answered, in the place its real step would have been,
+	// so two plans of the same tenant read side by side.
+	for _, want := range []string{
+		"qdrant: skip the qdrant leg", "es: skip the elasticsearch leg", "postgres: skip the postgres leg",
+	} {
+		if stepIndex(p, strings.SplitN(want, ": ", 2)[0], strings.SplitN(want, ": ", 2)[1]) < 0 {
+			t.Errorf("no step %q in:\n  %s", want, strings.Join(titles(p), "\n  "))
+		}
+	}
+	// And nothing stops the API: the tenant serves right through it.
+	for _, tl := range titles(p) {
+		if strings.Contains(tl, "stop ragstack-dev-api") || strings.Contains(tl, "fence verify") {
+			t.Errorf("a light bundle fenced the tenant: %s", tl)
+		}
+	}
+
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	body := fake.FakeFiles().Content(bundlePath("dev", "manifest.json"))
+	if body == nil {
+		t.Fatalf("no manifest in the bundle; it holds %v", bundleFiles(fake))
+	}
+	var man map[string]any
+	if err := json.Unmarshal(body, &man); err != nil {
+		t.Fatalf("the manifest is not JSON: %v", err)
+	}
+	// It is a contract-valid manifest, light or not: a restore reads the same
+	// document either way and must not have to guess which kind it has.
+	for _, problem := range validateAgainstSchema(t, man) {
+		t.Errorf("manifest: %s", problem)
+	}
+	if got := man["scope"]; fmt.Sprint(got) != "[config state]" {
+		t.Errorf("scope = %v, want [config state]", got)
+	}
+	// A bundle with no stores in it can never claim consistency, and says in
+	// its own warnings what it does not hold.
+	if man["consistent"] != false {
+		t.Errorf("consistent = %v: a bundle with no store snapshots cannot be consistent", man["consistent"])
+	}
+	if !strings.Contains(fmt.Sprint(man["warnings"]), "no store snapshots") {
+		t.Errorf("warnings %v do not say the stores are missing", man["warnings"])
+	}
+
+	// The four things it MUST carry.
+	files := bundleFiles(fake)
+	for _, want := range []string{
+		"config/tenant.env", "state/ragstack_users.db", "registry-row.json", "rollback-descriptor.json",
+		"SHA256SUMS", "manifest.json",
+	} {
+		if !containsStr(files, want) {
+			t.Errorf("the light bundle has no %s; it holds %v", want, files)
+		}
+	}
+	// And the ones it must NOT: a store snapshot is what makes a backup take
+	// hours, and taking none is the entire point.
+	for _, f := range files {
+		if strings.HasPrefix(f, "qdrant/") || strings.HasPrefix(f, "elasticsearch/") || strings.HasPrefix(f, "postgres/") {
+			t.Errorf("the light bundle carries a store leg: %s", f)
+		}
+	}
+	// The descriptor in the bundle is the row's, byte for byte.
+	var rd registry.RollbackDescriptor
+	if err := json.Unmarshal(fake.FakeFiles().Content(bundlePath("dev", "rollback-descriptor.json")), &rd); err != nil {
+		t.Fatalf("rollback-descriptor.json is not a descriptor: %v", err)
+	}
+	if rd.Paths.DataDir != oc.Tenant.DataDir || rd.Owner != "wilke" {
+		t.Errorf("descriptor = %+v, want the row's", rd)
+	}
+
+	// The registry records the scope, and the record is honest about what the
+	// bundle is not: unfenced, so no prerequisite reads it as one.
+	row := oc.Fleet.Tenants["dev"]
+	if row.LastBackup == nil {
+		t.Fatal("last_backup was not recorded")
+	}
+	if got := strings.Join(row.LastBackup.Scope, ","); got != "config,state" {
+		t.Errorf("last_backup.scope = %q, want config,state", got)
+	}
+	if row.LastBackup.Fenced || row.LastBackup.Verified {
+		t.Errorf("last_backup = %+v, want neither fenced nor verified", row.LastBackup)
+	}
+}
+
+// A light bundle is not a recovery point: the ops that need one say so by
+// name, and say which op to run instead.
+func TestALightBundleIsNotAHandoverPrerequisite(t *testing.T) {
+	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		tn.LastBackup = &registry.BackupRecord{
+			Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup", At: "2026-09-14T09:30:00Z",
+			Kind: "backup", Fenced: false, Verified: false, Scope: []string{"config", "state"},
+		}
+	})
+	err := planErr(t, oc, "migrate-local", map[string]any{"phase": "execute"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "best-effort") {
+		t.Errorf("migrate-local over a light bundle = %v, want a refusal", err)
+	}
+}
+
+// The two scopes that describe a bundle nobody could use.
+func TestBackupRefusesAnUnusableScope(t *testing.T) {
+	oc, _ := fixture(t, "dev", managed)
+	err := planErr(t, oc, "backup", map[string]any{"scope": []string{"state", "stores"}})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "nothing could be restored") {
+		t.Errorf("a scope without config = %v, want a refusal", err)
+	}
+	err = planErr(t, oc, "backup", map[string]any{"fence": true, "scope": []string{"config", "state"}})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "outage for nothing") {
+		t.Errorf("--fence on a light scope = %v, want a refusal", err)
+	}
+	// And a leg nobody defined is a validation error, not a refusal: it never
+	// reaches the planner.
+	op, _ := NewRegistry(Deps{}).Lookup("backup")
+	if err := op.Validate(map[string]any{"scope": []string{"secrets"}}); err == nil ||
+		!errors.Is(err, jobs.ErrValidation) {
+		t.Errorf("scope=[secrets] = %v, want a validation error", err)
+	}
+}
+
+// The default is unchanged: a `backup` with no scope is the full bundle every
+// existing caller already gets.
+func TestBackupWithNoScopeIsTheFullBundle(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	seedState(fake, "dev")
+	runBackup(t, oc, fake, map[string]any{"fence": true})
+	var man map[string]any
+	if err := json.Unmarshal(fake.FakeFiles().Content(bundlePath("dev", "manifest.json")), &man); err != nil {
+		t.Fatalf("the manifest is not JSON: %v", err)
+	}
+	if got := fmt.Sprint(man["scope"]); got != "[config state stores]" {
+		t.Errorf("scope = %v, want all three legs", got)
+	}
+	if got := strings.Join(oc.Fleet.Tenants["dev"].LastBackup.Scope, ","); got != "config,state,stores" {
+		t.Errorf("last_backup.scope = %q", got)
 	}
 }

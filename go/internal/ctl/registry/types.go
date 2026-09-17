@@ -411,12 +411,31 @@ type OpRecord struct {
 }
 
 // BackupRecord summarises the last backup.
+//
+// Scope says WHAT the bundle holds: the full bundle's ["config","state",
+// "stores"], or the ["config","state"] of a light one (`tenant backup --scope
+// config,state`). It is not redundant with Fenced — a light bundle is
+// unfenced by construction, but so is a full best-effort one, and only Scope
+// tells them apart. Nothing reads it as a prerequisite (Fenced+Verified do
+// that); it exists so that `last_backup` cannot be read as a claim the bundle
+// does not make.
 type BackupRecord struct {
 	Bundle   string `json:"bundle"`
 	At       string `json:"at"`
 	Kind     string `json:"kind"` // backup|pre-update|recovery
 	Fenced   bool   `json:"fenced"`
 	Verified bool   `json:"verified"`
+	// Scope is the ONE omitempty in this file, and it is deliberate. The field
+	// arrived after the deployed binary had already written records without it,
+	// so it is optional in the contract and ABSENT means the full bundle —
+	// the only kind that existed before. The loader backfills it
+	// (backfillBackupScope), so nothing downstream has to know that.
+	//
+	// omitempty rather than a nullable wrapper because the contract types it as
+	// an array: a nil slice marshals as `null`, and `"scope": null` against
+	// `type: array` is a document the schema refuses. Absent is the shape the
+	// contract allows.
+	Scope []string `json:"scope,omitempty"`
 }
 
 // UnpinnedVersion and UnpinnedDigest are the contract-shaped markers for a

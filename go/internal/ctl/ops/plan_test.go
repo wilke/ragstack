@@ -387,6 +387,9 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 		"sqlitebackup: copy ragstack_grading.db into the bundle",
 		"postgres: skip the postgres leg",
 		"fs: copy the public config allowlist, the manifests and the rendered units into the bundle",
+		// The fixture row was created by the ctl rather than adopted, so it
+		// carries no rollback_descriptor to lift out of it.
+		"fs: skip the rollback descriptor",
 		"fs: skip the encrypted secrets payload",
 		"fs: write MIGRATE.md, the bundle's own runbook",
 		"fs: write SHA256SUMS and the bundle manifest",
@@ -485,7 +488,7 @@ func TestPlanHandoverNeedsAFencedVerifiedBundleAndADescriptor(t *testing.T) {
 	if !strings.Contains(err.Error(), "fenced") {
 		t.Errorf("without a bundle = %v, want the fenced-backup prerequisite", err)
 	}
-	oc.Tenant.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: false}
+	oc.Tenant.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: false, Scope: fullScope}
 	if err := planErr(t, oc, "handover", map[string]any{"phase": "execute"}); !strings.Contains(err.Error(), "verified") {
 		t.Errorf("with an unverified bundle = %v", err)
 	}
@@ -497,7 +500,7 @@ func TestPlanHandoverNeedsAFencedVerifiedBundleAndADescriptor(t *testing.T) {
 
 func TestPlanHandoverStopsTheSourceAndWaitsAtTheCutover(t *testing.T) {
 	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
-		tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true}
+		tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true, Scope: fullScope}
 		tn.RollbackDescriptor = &registry.RollbackDescriptor{CapturedAt: "2026-09-14T00:00:00Z", GatewayGeneration: 7}
 		tn.API.Bind = "127.0.0.1" // the managed unit binds loopback; see render.UnitConfig
 		tn.Stores.Qdrant.Ownership = registry.OwnershipExclusive
@@ -548,7 +551,7 @@ func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 	}
 	oc, _ = fixture(t, "dev", func(tn *registry.Tenant) {
 		managed(tn)
-		tn.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: true}
+		tn.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: true, Scope: fullScope}
 	})
 	p := plan(t, oc, "decommission", nil)
 	for _, want := range [][2]string{
@@ -1069,6 +1072,10 @@ func TestDestructiveVerbsAreExactlyThePlansList(t *testing.T) {
 		"stop": true, "restart": true, "restore": true, "handover": true, "migrate-local": true,
 		"decommission": true, "key-revoke": true, "admin-remove": true, "sa-disable": true,
 		"env-unset": true, "update-code": true,
+		// set-ui-mode's `static` direction stops a running Vite dev server and
+		// moves the directory nginx is serving out from under it; `set-bind`
+		// writes one registry field and touches no process, so it is not.
+		"set-ui-mode": true,
 	}
 	r := NewRegistry(Deps{})
 	for _, verb := range r.Verbs() {

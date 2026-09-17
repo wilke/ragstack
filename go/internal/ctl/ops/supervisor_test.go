@@ -294,6 +294,7 @@ func TestDecommissionOfAnInstanceTenant(t *testing.T) {
 	oc, _ := instanceFixture(t)
 	oc.Tenant.LastBackup = &registry.BackupRecord{
 		Bundle: "20260914T090000Z-fenced", Fenced: true, Verified: true, At: "2026-09-14T09:00:00Z",
+		Scope: fullScope,
 	}
 	d := testDeps(oc)
 	d.Owner = "svcbvbrc"

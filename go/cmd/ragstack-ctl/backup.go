@@ -118,19 +118,33 @@ func cmdBackupList(args []string, ragRoot string, jsonOut bool) int {
 	fmt.Fprintf(stdout, "%-12s  %-28s  %-10s  %-6s  %-8s  %-20s  %10s\n",
 		"TENANT", "ID", "KIND", "FENCED", "VERIFIED", "CREATED", "SIZE")
 	for _, b := range rows {
+		// The scope goes under the id rather than in a column of its own: it is
+		// long, it is the same on almost every row, and the row it distinguishes
+		// is the one worth stopping at.
 		fmt.Fprintf(stdout, "%-12s  %-28s  %-10s  %-6v  %-8v  %-20s  %10s\n",
 			b.Tenant, b.ID, b.Kind, b.Fenced, b.Verified, b.CreatedAt, humanSize(b.Bytes))
+		if b.Scope != "" && b.Scope != "config,state,stores" {
+			fmt.Fprintf(stdout, "%-12s  %-28s  scope %s (no store snapshots: not a recovery point)\n",
+				"", "", b.Scope)
+		}
 	}
 	return exitOK
 }
 
 // bundleRow is one directory under <backups>/<tenant>/.
 type bundleRow struct {
-	Tenant    string `json:"tenant"`
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Fenced    bool   `json:"fenced"`
-	Verified  bool   `json:"verified"`
+	Tenant   string `json:"tenant"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Fenced   bool   `json:"fenced"`
+	Verified bool   `json:"verified"`
+	// Scope is what the bundle HOLDS: "config,state,stores" for a full one,
+	// "config,state" for the light bundle a handover takes. A listing without
+	// it shows two rows that differ by hours of store snapshots and look
+	// identical, which is the listing an operator checks before deciding they
+	// have a backup. A bundle written before the member existed has none, and
+	// reads as the full bundle it is.
+	Scope     string `json:"scope"`
 	CreatedAt string `json:"created_at"`
 	Bytes     int64  `json:"bytes"`
 	Path      string `json:"path"`
@@ -206,8 +220,29 @@ func readBundle(dir, tenant, id string) bundleRow {
 	row.Kind, _ = man["kind"].(string)
 	row.Fenced, _ = man["fenced"].(bool)
 	row.Verified, _ = man["verified"].(bool)
+	row.Scope = manifestScope(man)
 	row.CreatedAt, _ = man["created_at"].(string)
 	return row
+}
+
+// manifestScope renders the manifest's `scope`. An ABSENT one is the full
+// bundle: the member arrived after bundles without it had been written, and
+// every one of those holds all three legs.
+func manifestScope(man map[string]any) string {
+	raw, ok := man["scope"].([]any)
+	if !ok {
+		return "config,state,stores"
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return "config,state,stores"
+	}
+	return strings.Join(out, ",")
 }
 
 func readManifest(dir string) (map[string]any, error) {

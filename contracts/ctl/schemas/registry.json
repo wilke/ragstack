@@ -112,7 +112,7 @@
         "adopt", "create", "start", "stop", "restart", "backup", "restore", "handover",
         "migrate-local", "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
         "sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
-        "render-units", "update-code"
+        "render-units", "update-code", "set-ui-mode", "set-bind"
       ]
     },
     "PublicSettingKey": {
@@ -486,7 +486,7 @@
       "additionalProperties": false
     },
     "LastBackup": {
-      "description": "Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.",
+      "description": "Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.\n\n`scope` says WHAT the bundle holds. A full bundle carries every leg (`[\"config\", \"state\", \"stores\"]`); a light one, taken with `tenant backup --scope config,state`, carries only the tenant's configuration allowlist and its SQLite state and is deliberately cheap enough to run seconds before a handover. A light bundle is never a restore prerequisite — `fenced` is false for it by construction — and the field exists so that `last_backup` cannot be read as a claim the bundle does not make.",
       "type": "object",
       "required": ["bundle", "at", "kind", "fenced", "verified"],
       "properties": {
@@ -494,7 +494,13 @@
         "at": { "$ref": "#/$defs/Timestamp" },
         "kind": { "type": "string", "enum": ["backup", "pre-update", "recovery"] },
         "fenced": { "type": "boolean" },
-        "verified": { "type": "boolean" }
+        "verified": { "type": "boolean" },
+        "scope": {
+          "description": "The legs this bundle carries, sorted. `stores` present means the qdrant / elasticsearch / postgres legs were attempted.\n\nOPTIONAL, and absent means the full bundle: the field arrived after records without it had been written, and a reader that refused those would refuse the whole registry over one row. `ragstack-ctl` backfills an absent scope to all three legs at load.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["config", "state", "stores"] }
+        }
       },
       "additionalProperties": false
     },

@@ -13,6 +13,12 @@
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
     "kind": { "type": "string", "enum": ["backup", "pre-update", "recovery"] },
+    "scope": {
+      "description": "WHICH legs this bundle was asked for, sorted. OPTIONAL: a bundle written before the field existed carries no `scope`, and a `backup verify` that refused those would condemn every bundle already on disk. Absent means the full bundle, the only kind that existed then. A full bundle is `[\"config\", \"state\", \"stores\"]`; `tenant backup --scope config,state` writes a LIGHT bundle — the config allowlist, the SQLite state files, the rendered units, the registry row and the rollback descriptor, no store snapshots and no fence — which is what a handover's safety net needs and takes seconds rather than hours.\n\nIt is a statement about the REQUEST, not about what each leg then managed to capture: a leg that was in scope and was skipped for want of a capability still says so in `stores.*.included` and in `warnings`. A bundle without `stores` in its scope is never `consistent` and never satisfies a restore prerequisite.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["config", "state", "stores"] }
+    },
     "bundle_id": { "description": "`<ts>-<kind>`, the directory basename.", "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-(backup|pre-update|recovery)$" },
     "created_at": { "type": "string" },
     "created_by": { "type": "string", "minLength": 1 },

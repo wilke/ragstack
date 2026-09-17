@@ -18,7 +18,7 @@ fi
 mkdir -p "$OUT"
 export OUT
 python3 - <<'PY'
-import json, os, re, subprocess, hashlib, time, urllib.request, glob, pwd
+import json, os, re, subprocess, hashlib, sys, time, urllib.request, glob, pwd
 OUT = os.environ["OUT"]
 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 me = pwd.getpwuid(os.getuid()).pw_name
@@ -30,6 +30,49 @@ me = pwd.getpwuid(os.getuid()).pw_name
 # behaviour exactly; SOMETHING here still names a home directory (this
 # script's whole job is reporting what is really on the host), which is why
 # it, unlike ctl-daemon.sh/ctl-as-svc.sh, is not held to check-ops's bare grep.
+# TENANTS COME FROM THE REGISTRY. /rag/data/tenants/registry.json is what says
+# which tenants exist, which store ports are theirs and how each UI is served;
+# the literal per-tenant lists that used to be below are gone, so a tenant added
+# to the registry appears in the snapshot (and therefore in verify.sh's diff)
+# without this file being edited.
+#
+# It is read with json.load rather than with jq: this block is already Python,
+# and shelling out to jq to parse JSON from inside a Python program would be a
+# second parser to keep honest. The bash halves of the runbook (restore.sh,
+# pre-reboot.sh) use jq, which is the right tool there for the same reason.
+REGISTRY = os.environ.get("SNAPSHOT_REGISTRY") or "/rag/data/tenants/registry.json"
+try:
+    with open(REGISTRY, encoding="utf-8") as fh:
+        REG = json.load(fh)
+except Exception as e:          # noqa: BLE001 - a snapshot must not fail for want of a registry
+    REG = {"tenants": {}, "display_order": []}
+    print(f"snapshot: WARNING: {REGISTRY} could not be read ({e}); the per-tenant sections will be empty",
+          file=sys.stderr)
+
+def reg_tenants():
+    """Registry tenants in display order, then any the order does not mention."""
+    tenants = REG.get("tenants") or {}
+    order = [n for n in (REG.get("display_order") or []) if n in tenants]
+    return order + sorted(n for n in tenants if n not in order)
+
+def reg_store_ports(kind):
+    """<port> → <tenant> for every tenant that owns that store leg outright."""
+    out = {}
+    for name in reg_tenants():
+        st = ((REG["tenants"][name].get("stores") or {}).get(kind) or {})
+        ports = REG["tenants"][name].get("ports") or {}
+        if kind == "postgres":
+            if st.get("kind") != "local":
+                continue
+            port = st.get("port") or ports.get("pg")
+        else:
+            if st.get("ownership") != "exclusive":
+                continue
+            port = ports.get("qdrant_http" if kind == "qdrant" else "es_http")
+        if port:
+            out[int(port)] = name
+    return out
+
 HOME_DIR = os.environ.get("SNAPSHOT_HOME_DIR") or os.path.expanduser("~")
 DEV_REPO = os.environ.get("SNAPSHOT_DEV_REPO") or os.path.join(HOME_DIR, "Development", "ragstack")
 CONFIRMATION_RUN = os.environ.get("SNAPSHOT_CONFIRMATION_RUN") or os.path.join(HOME_DIR, "Development", "worktrees", "confirmation-run")
@@ -125,9 +168,14 @@ def get(url, timeout=10):
     except Exception as e:
         return None
 stores = {}
-# qdrant: shared :6333, lucid's :6343, dev's :24041, hackathon's :24081 (added 2026-09-15;
-# `ragstack-ctl tenant list` is the registry of record — these literals are the interim).
-for port in (6333, 6343, 24041, 24081):
+# The SHARED stores are this host's furniture and stay literal: qdrant :6333,
+# lucid's second qdrant :6343 and the shared elasticsearch :9200. Every other
+# store port is the registry's answer — the tenants that own one outright — so
+# a tenant added to the registry is snapshotted (and therefore diffed by
+# verify.sh) without this file being edited.
+SHARED_QDRANT = (6333, 6343)
+SHARED_ES = (9200,)
+for port in SHARED_QDRANT + tuple(sorted(reg_store_ports("qdrant"))):
     j = get(f"http://127.0.0.1:{port}/collections")
     cols = {}
     if j:
@@ -136,9 +184,14 @@ for port in (6333, 6343, 24041, 24081):
             try: cols[c["name"]] = json.loads(cj)["result"].get("points_count")
             except Exception: cols[c["name"]] = None
     stores[f"qdrant:{port}"] = cols if j else "DOWN"
-for port in (9200, 24003, 24043, 24083):   # 24083 = elasticsearch-hackathon (added 2026-09-15)
+for port in SHARED_ES + tuple(sorted(reg_store_ports("elasticsearch"))):
     t = get(f"http://127.0.0.1:{port}/_cat/indices?h=index,docs.count&s=index")
     stores[f"elasticsearch:{port}"] = ({l.split()[0]: int(l.split()[1]) for l in t.splitlines() if l.strip() and not l.startswith(".")} if t is not None else "DOWN")
+# A tenant's dedicated postgres has no HTTP surface: recorded as the port it
+# holds and whether anything answers on it, from the listen table this snapshot
+# already read.
+for port, name in sorted(reg_store_ports("postgres").items()):
+    stores[f"postgres:{port}"] = "UP" if port in listen else "DOWN"
 stores["neo4j-dev:24046"] = "UP" if get("http://127.0.0.1:24046/") is not None else "DOWN"
 stores["neo4j:7474"] = "UP" if get("http://127.0.0.1:7474/") is not None else "DOWN"
 
@@ -150,9 +203,11 @@ def code(url):
     except urllib.error.HTTPError as e: return e.code
     except Exception: return None
 health = {}
-# hackathon added 2026-09-15. Its UI is static (nginx serves ui/dist), so it gets an api
-# and a gateway row but no ui row below.
-for t, port in (("lucid-next", 24000), ("asm-next", 24020), ("dev", 24040), ("demo", 24060), ("hackathon", 24080)):
+# Every registry tenant's API and gateway route, in display order.
+for t in reg_tenants():
+    port = (REG["tenants"][t].get("ports") or {}).get("api")
+    if not port:
+        continue
     health[f"api:{t}:{port}"] = code(f"http://127.0.0.1:{port}/health")
     health[f"gateway:{t}"] = code(f"http://127.0.0.1:9000/ragstack/{t}/api/v1/collections?counts=false")
 for t in ("asm", "lucid"):
@@ -164,7 +219,18 @@ health["embedding:50053"] = code("http://127.0.0.1:50053/health") or code("http:
 health["gowe:8091"] = code("http://127.0.0.1:8091/api/v1/health") or code("http://127.0.0.1:8091/")
 health["prometheus:9090"] = code("http://127.0.0.1:9090/-/ready")
 health["grafana:3001"] = code("http://127.0.0.1:3001/api/health")
-for name, port in (("demo", 5210), ("lucid-next", 5211), ("asm-next", 5212), ("dev", 8090), ("asm-legacy", 5173), ("lucid-legacy", 5175)):
+# UIs: a `dev` or `external` mode is a Vite server on a port; a `static` one is a
+# directory nginx serves and has no port to probe (probing one would record a
+# permanent None for a tenant whose UI is perfectly healthy — what the literal
+# list below used to avoid by leaving hackathon out by hand). The two legacy
+# servers are not registry tenants and stay literal.
+for name in reg_tenants():
+    ui = REG["tenants"][name].get("ui") or {}
+    if ui.get("mode") in ("dev", "external") and ui.get("port"):
+        health[f"ui:{name}:{ui['port']}"] = code(f"http://127.0.0.1:{ui['port']}/")
+    elif ui.get("mode") == "static":
+        health[f"ui:{name}:static"] = code(f"http://127.0.0.1:9000/ragstack/{name}/ui/")
+for name, port in (("asm-legacy", 5173), ("lucid-legacy", 5175)):
     health[f"ui:{name}:{port}"] = code(f"http://127.0.0.1:{port}/")
 
 # --- mango (remote; cannot be restored from here) --------------------------------

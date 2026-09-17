@@ -86,14 +86,20 @@ func usage() {
                                             rendered include lines name — the same flag, and the
                                             same meaning, as gateway render.
 
-  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode M] [--ui-port P] [--force] --preview|--commit
+  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode M] [--ui-port P] [--force]
+        [--readopt] [--confirm-stores qdrant,elasticsearch,postgres] --preview|--commit
                                             read a hand-started tenant into a registry row.
                                             --ui-mode is static|dev|external and defaults to dev when
                                             --ui-port is given, external when it is not. static is a
                                             vite build nginx serves from <data-dir>/ui/dist and takes
                                             NO --ui-port (the pair is a usage error); its dist has to
                                             exist, or the preview raises ui_dist_missing (error).
-  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection] [--readopt]
+                                            --confirm-stores re-verifies each named EXCLUSIVE leg from /proc
+                                            (exactly one process on the port, an argv that binds a path under
+                                            the tenant's data dir, no other registry row naming it) and then
+                                            sets capabilities.{stop,snapshot,restore} on it. purge stays false;
+                                            a shared leg is refused; it is all-or-nothing across the legs.
+  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection] [--readopt] [--confirm-stores …]
                                             the four live coconut tenants in one batch (see below).
                                             --spec entries take an optional ui_mode field with the same
                                             meaning as --ui-mode.
@@ -126,12 +132,30 @@ func usage() {
 
   tenant start|restart <name> [--only api,ui,qdrant,es] [--force]
   tenant stop <name> [--only …] [--keep-enabled] [--force]
-  tenant backup <name> [--fence] [--tar]    only a FENCED bundle can be verified
+  tenant backup <name> [--fence] [--tar] [--scope config,state]
+                                            only a FENCED bundle can be verified; --scope
+                                            config,state is the LIGHT bundle (config + sealed
+                                            secrets + sqlite state + the rollback descriptor,
+                                            no store snapshots, no fence, seconds)
   tenant restore <name> --from <bundle-id> --as <fresh-tenant>
   tenant decommission <name>
                                             the tenant operations. Each posts one
                                             op_request to the daemon and is answered
                                             with a Plan (--dry-run) or a Job.
+
+  tenant set-ui-mode <name> static|external [--ui-port P]
+                                            how the UI is served. static BUILDS it from the
+                                            tenant's worktree, installs <data_dir>/ui/dist,
+                                            stops that tenant's Vite server by port AND
+                                            identity, publishes a gateway generation and
+                                            proves GET /ragstack/<name>/ui/ = 200. external
+                                            is registry-only: nothing is built or stopped.
+  tenant set-bind <name> 127.0.0.1|0.0.0.0  the address the API binds. Registry only
+                                            (api.bind is where both launch paths read it);
+                                            effective at the next restart.
+                                            Both are CLI-only: --direct is implied and
+                                            --server is refused. They are the ops run on a
+                                            tenant BEFORE its handover.
 
   key mint <tenant> <label> --role admin|user [--restart]
   key revoke <tenant> <id> [--restart]
@@ -672,6 +696,15 @@ type adoptSpec struct {
 	// (dev when ui_port > 0, external when it is 0). `static` is a UI nginx
 	// serves from <data_dir>/ui/dist and takes no port.
 	UIMode string `json:"ui_mode,omitempty"`
+	// ConfirmStores are the store legs to re-verify and confirm on this row
+	// (adopt.ConfirmableLegs). Empty leaves every capability false, which is
+	// what adoption has always done.
+	ConfirmStores []string `json:"confirm_stores,omitempty"`
+	// APIBind, when set, REPLACES the recorded api.bind on a --readopt.
+	// Absent, the recorded one is kept: `tenant set-bind` takes effect at the
+	// tenant's next restart, so between the two the live process still shows
+	// the old bind and re-deriving it would write the decision away.
+	APIBind string `json:"api_bind,omitempty"`
 }
 
 // validateSpecs judges the arguments that can be judged without reading the
@@ -679,12 +712,22 @@ type adoptSpec struct {
 // failed read halfway through a batch.
 func validateSpecs(specs []adoptSpec) error {
 	for _, s := range specs {
+		name := s.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
 		if err := adopt.ValidateUIMode(s.UIMode, s.UIPort); err != nil {
-			name := s.Name
-			if name == "" {
-				name = "(unnamed)"
-			}
 			return fmt.Errorf("%s: %w", name, err)
+		}
+		// A typo in a leg name is a usage error, refused before any host is
+		// read — the same courtesy --ui-mode gets.
+		if len(s.ConfirmStores) > 0 {
+			if err := adopt.ValidateLegs(s.ConfirmStores); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		if b := s.APIBind; b != "" && b != "127.0.0.1" && b != "0.0.0.0" {
+			return fmt.Errorf("%s: --api-bind %q is not 127.0.0.1 or 0.0.0.0", name, b)
 		}
 	}
 	return nil
@@ -724,6 +767,13 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	force := fs.Bool("force", false, "commit even when the preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
 	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
+	var confirmStores multiFlag
+	fs.Var(&confirmStores, "confirm-stores",
+		"re-verify these EXCLUSIVE store legs from /proc and set capabilities.{stop,snapshot,restore} on them: "+
+			"qdrant, elasticsearch, postgres (repeatable or a comma list)")
+	apiBind := fs.String("api-bind", "",
+		"replace the recorded api.bind on a --readopt (127.0.0.1|0.0.0.0). Absent: the recorded one is KEPT, "+
+			"because `tenant set-bind` takes effect at the next restart")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 
@@ -742,7 +792,8 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "adopt: choose exactly one of --preview and --commit")
 		return exitUsage
 	}
-	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName, UIPort: *uiPort, UIMode: *uiMode}
+	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName,
+		UIPort: *uiPort, UIMode: *uiMode, ConfirmStores: []string(confirmStores), APIBind: *apiBind}
 	if err := validateSpecs([]adoptSpec{spec}); err != nil {
 		fmt.Fprintf(stderr, "adopt: %v\n", err)
 		return exitUsage
@@ -758,7 +809,11 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 	force := fs.Bool("force", false, "commit even when a preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
 	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
-	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode} (default: the four live tenants)")
+	var confirmStores multiFlag
+	fs.Var(&confirmStores, "confirm-stores",
+		"re-verify these EXCLUSIVE store legs from /proc on EVERY tenant in the batch and set "+
+			"capabilities.{stop,snapshot,restore} on them: qdrant, elasticsearch, postgres")
+	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode,confirm_stores} (default: the four live tenants)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 	if err := fs.Parse(args); err != nil {
@@ -777,6 +832,16 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 		specs = nil
 		if err := json.Unmarshal(b, &specs); err != nil {
 			return fail(fmt.Errorf("%s: %w", *specFile, err))
+		}
+	}
+	// A batch-wide --confirm-stores applies to every spec that does not name
+	// its own legs, so the common case (one list, the whole fleet) is one
+	// flag and a --spec file can still be specific.
+	if len(confirmStores) > 0 {
+		for i := range specs {
+			if len(specs[i].ConfirmStores) == 0 {
+				specs[i].ConfirmStores = []string(confirmStores)
+			}
 		}
 	}
 	if err := validateSpecs(specs); err != nil {
@@ -820,6 +885,14 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	roots := paths.NewRoots(ragRoot, paths.Overrides{})
 	results := make([]previewResult, 0, len(specs))
 	rows := make([]*registry.Tenant, 0, len(specs))
+	// The registry as it stands, for --confirm-stores' "no other row names
+	// this store" check. A registry that is not there yet is not an error —
+	// the first adoption creates one — so this is best effort, and a load
+	// failure that matters will be raised again by the commit itself.
+	var current *registry.Fleet
+	if wantsConfirmation(specs) {
+		current, _ = registry.LoadNoRepair(registryPath)
+	}
 	for _, s := range specs {
 		t, findings, err := adopt.Preview(roots, s.Name, adopt.Options{
 			DataDir: s.DataDir, Worktree: s.Worktree,
@@ -827,6 +900,34 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 		})
 		if err != nil {
 			return fail(fmt.Errorf("adopt %s: %w", s.Name, err))
+		}
+		// An explicit bind REPLACES the observed one on the preview row, so
+		// `--preview` shows what `--commit` would write. Without the flag the
+		// observed value stands here and carryOver puts the recorded one back
+		// at commit time (with a drift row), which is the only place that
+		// knows what the row said before.
+		if spec := s.APIBind; spec != "" {
+			t.API.Bind = spec
+		}
+		// The confirmation runs against the PREVIEW row, before it is printed
+		// or committed, so `--preview` shows exactly the capabilities
+		// `--commit` would write — the invariant the whole adopt flow rests on.
+		if len(s.ConfirmStores) > 0 {
+			confirmed, cerr := adopt.ConfirmStores(t, s.ConfirmStores, adopt.ConfirmOptions{
+				Fleet: current, Roots: roots,
+			})
+			findings = append(findings, confirmed...)
+			if cerr != nil {
+				// Printed with the findings already gathered, then refused:
+				// an operator has to see WHICH legs passed before the one that
+				// did not.
+				results = append(results, previewResult{Tenant: t, Findings: findings})
+				for _, r := range results {
+					printPreview(r)
+				}
+				fmt.Fprintf(stderr, "\nragstack-ctl: %v\n", cerr)
+				return exitRefused
+			}
 		}
 		results = append(results, previewResult{Tenant: t, Findings: findings})
 		rows = append(rows, t)
@@ -863,12 +964,48 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	if err := adopt.CommitAll(registryPath, rows, adopt.CommitOptions{
 		Roots: roots, UpdatedBy: fmt.Sprintf("local:%d", os.Getuid()),
 		RepairProjection: repairProjection, Readopt: readopt,
+		// What this invocation is DECIDING, as opposed to re-deriving. A field
+		// nobody named is carried over from the existing row on a --readopt,
+		// so an A5 re-adoption cannot revert what A2 and A4 wrote.
+		Overrides: overridesOf(specs),
 	}); err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
 		return exitRefused
 	}
 	fmt.Fprintf(stdout, "\ncommitted %d tenant(s) to %s (+ manifest.tsv beside it)\n", len(rows), registryPath)
 	return exitOK
+}
+
+// overridesOf is what the batch decided explicitly.
+//
+// Batch-wide rather than per-row because CommitAll writes one generation from
+// one set of options; every verb that can name these flags (`adopt`,
+// `adopt-all`) applies them to the whole batch, so a per-row distinction would
+// be a shape no caller can produce.
+func overridesOf(specs []adoptSpec) adopt.Overrides {
+	var o adopt.Overrides
+	for _, s := range specs {
+		if s.UIMode != "" || s.UIPort != 0 {
+			o.UI = true
+		}
+		if s.APIBind != "" {
+			o.Bind = true
+		}
+		// Per leg, not per call: a confirmation names the legs it verified, and
+		// a leg nobody named keeps whatever the row already said about it.
+		o.ConfirmedLegs = append(o.ConfirmedLegs, s.ConfirmStores...)
+	}
+	return o
+}
+
+// wantsConfirmation reports whether any spec asked for a store confirmation.
+func wantsConfirmation(specs []adoptSpec) bool {
+	for _, s := range specs {
+		if len(s.ConfirmStores) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // errorFindings collects every error-level finding across a batch preview.
@@ -1035,6 +1172,8 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission <name> [op args]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")
 		return exitUsage
 	}
 	// The operation verbs take the op envelope (--dry-run/--yes/--wait/…) and
@@ -1053,6 +1192,15 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	// until PR-E's handover. See rebase.go.
 	if args[0] == "rebase-worktree" {
 		return cmdTenantRebaseWorktree(args[1:], registryPath, ragRoot)
+	}
+	// The PR-E preparation ops. They ARE jobs (submitOp), but CLI-only ones:
+	// the daemon has no route for either, so --direct is implied and --server
+	// is refused. See prepare.go.
+	switch args[0] {
+	case "set-ui-mode":
+		return cmdTenantSetUIMode(args[1:], registryPath, ragRoot, jsonOut)
+	case "set-bind":
+		return cmdTenantSetBind(args[1:], registryPath, ragRoot, jsonOut)
 	}
 	if tenantOpVerbs[args[0]] {
 		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)

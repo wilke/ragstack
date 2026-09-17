@@ -1026,3 +1026,83 @@ func TestValidateRefusesAMixedUpSandboxRow(t *testing.T) {
 		t.Error("a sandbox base that is not a whole block was accepted")
 	}
 }
+
+// A registry written by the CURRENTLY DEPLOYED binary — whose last_backup has
+// no `scope` — must load. This is the reviewer's repro kept as a regression
+// test: the member arrived in this PR, and a reader that required it would
+// refuse every registry on disk the day it shipped, WHOLE, over one row.
+//
+// It is built from the live registry when there is one (that is the document
+// that actually has to survive the upgrade) and from the fixture otherwise.
+func TestARegistryWrittenBeforeScopeExistedStillLoads(t *testing.T) {
+	var doc map[string]any
+	if src, err := os.ReadFile("/rag/data/tenants/registry.json"); err == nil {
+		if err := json.Unmarshal(src, &doc); err != nil {
+			t.Fatalf("the live registry is not JSON: %v", err)
+		}
+	} else {
+		b, err := json.Marshal(LiveFixture())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenants, ok := doc["tenants"].(map[string]any)
+	if !ok || len(tenants) == 0 {
+		t.Fatal("no tenants to put a backup record on")
+	}
+	var name string
+	for n := range tenants {
+		if name == "" || n < name {
+			name = n
+		}
+	}
+	// Exactly what the deployed binary writes today: no `scope` key.
+	tenants[name].(map[string]any)["last_backup"] = map[string]any{
+		"bundle":   "/rag/backups/tenants/" + name + "/20260916T163334Z-backup",
+		"at":       "2026-09-16T16:33:34Z",
+		"kind":     "backup",
+		"fenced":   true,
+		"verified": true,
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.json")
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := LoadNoRepair(path)
+	if err != nil {
+		t.Fatalf("a pre-scope registry was refused at load: %v", err)
+	}
+	got := f.Tenants[name].LastBackup
+	if got == nil {
+		t.Fatal("the backup record disappeared")
+	}
+	if strings.Join(got.Scope, ",") != "config,state,stores" {
+		t.Errorf("scope = %v, want the full bundle a pre-scope record describes", got.Scope)
+	}
+	// And it round-trips: what the loader filled in is what a later write says.
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"scope":["config","state","stores"]`) {
+		t.Errorf("the backfilled record does not marshal its scope: %s", out)
+	}
+	// A record with NO scope at all marshals without the member, which is what
+	// the contract allows — `"scope": null` would be refused by the schema.
+	bare, err := json.Marshal(&BackupRecord{Bundle: "/b", At: "2026-01-01T00:00:00Z", Kind: "backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bare), "scope") {
+		t.Errorf("an empty scope must be ABSENT, not null: %s", bare)
+	}
+}

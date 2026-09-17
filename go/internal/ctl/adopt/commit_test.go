@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -184,4 +185,114 @@ func TestReadoptReplacesTheRowAndKeepsWhatAdoptionCannotSee(t *testing.T) {
 	if row.AdoptedAt != "2026-09-14T00:00:00Z" || row.DesiredBoot != "disabled" {
 		t.Errorf("adopted_at/desired_boot were not carried over: %q %q", row.AdoptedAt, row.DesiredBoot)
 	}
+}
+
+// A re-adoption must not revert the preparation ops. It is the runbook's own
+// A5 command that made this urgent: `adopt <t> --readopt --confirm-stores …`
+// re-derives ui.mode and api.bind from the host, and on hackathon — whose UI is
+// a `static` build with no port — a fresh preview infers `external` with port
+// 0, which is a gateway row pointing at nothing.
+//
+// The row shapes here are the live ones: hackathon static/no-port,
+// dev dev-mode on 8090, both with a live API still bound 0.0.0.0 after
+// `tenant set-bind` recorded 127.0.0.1.
+func TestReadoptKeepsWhatThePreparationOpsDecided(t *testing.T) {
+	prepared := func(uiMode string, uiPort int) *registry.Tenant {
+		row := registry.NewTenant("hack", "hack")
+		row.UI = registry.UI{Mode: uiMode, Port: registry.NullPort(uiPort), Base: "/ragstack/hack/ui/"}
+		row.API = registry.API{Bind: "127.0.0.1", PidFile: "/rag/data/tenants/hack/api-hack.pid",
+			Log: "/rag/data/tenants/hack/logs/api-hack.log"}
+		row.Stores.Qdrant.Capabilities = registry.Capabilities{Stop: true, Snapshot: true, Restore: true}
+		row.AdoptedAt = "2026-09-10T09:00:00Z"
+		return row
+	}
+	// What a fresh preview of the same tenant produces: the UI inferred from
+	// the absent --ui-port, the bind observed off the still-running process,
+	// every capability false.
+	fresh := func() *registry.Tenant {
+		row := registry.NewTenant("hack", "hack")
+		row.UI = registry.UI{Mode: registry.UIModeExternal, Port: 0, Base: "/ragstack/hack/ui/"}
+		row.API = registry.API{Bind: "0.0.0.0"}
+		row.AdoptedAt = "2026-09-16T12:00:00Z"
+		return row
+	}
+
+	t.Run("no flags: every decision is kept", func(t *testing.T) {
+		next, prev := fresh(), prepared(registry.UIModeStatic, 0)
+		carryOver(next, prev, Overrides{})
+		if next.UI.Mode != registry.UIModeStatic || next.UI.Port != 0 {
+			t.Errorf("ui = %+v, want the recorded static/no-port", next.UI)
+		}
+		if next.API.Bind != "127.0.0.1" {
+			t.Errorf("api.bind = %q, want the recorded 127.0.0.1", next.API.Bind)
+		}
+		if !next.Stores.Qdrant.Capabilities.Stop {
+			t.Error("the confirmed qdrant capability was reset by a re-adoption")
+		}
+		// The disagreement with the live process is written down, not swallowed.
+		var drift *registry.Drift
+		for i := range next.Drift {
+			if next.Drift[i].Code == doctor.APIBindDrift {
+				drift = &next.Drift[i]
+			}
+		}
+		if drift == nil {
+			t.Fatalf("no api_bind_drift row: the live 0.0.0.0 disappeared silently (%+v)", next.Drift)
+		}
+		if drift.Expected != "127.0.0.1" || drift.Actual != "0.0.0.0" || drift.ObservedAt == "" {
+			t.Errorf("drift row = %+v", *drift)
+		}
+	})
+
+	t.Run("a dev-mode UI is kept too", func(t *testing.T) {
+		next, prev := fresh(), prepared(registry.UIModeDev, 8090)
+		carryOver(next, prev, Overrides{})
+		if next.UI.Mode != registry.UIModeDev || next.UI.Port != 8090 {
+			t.Errorf("ui = %+v, want dev/8090", next.UI)
+		}
+	})
+
+	t.Run("an explicit flag wins", func(t *testing.T) {
+		next, prev := fresh(), prepared(registry.UIModeStatic, 0)
+		next.API.Bind = "0.0.0.0" // as --api-bind 0.0.0.0 would have set it
+		carryOver(next, prev, Overrides{UI: true, Bind: true, ConfirmedLegs: []string{"qdrant"}})
+		if next.UI.Mode != registry.UIModeExternal {
+			t.Errorf("ui.mode = %q, want the explicitly given external", next.UI.Mode)
+		}
+		if next.API.Bind != "0.0.0.0" {
+			t.Errorf("api.bind = %q, want the explicitly given 0.0.0.0", next.API.Bind)
+		}
+		if next.Stores.Qdrant.Capabilities.Stop {
+			t.Error("--confirm-stores decided the capabilities; the old row must not overwrite them")
+		}
+		if len(next.Drift) != 0 {
+			t.Errorf("an explicit bind is a decision, not a drift: %+v", next.Drift)
+		}
+	})
+
+	t.Run("a partial --confirm-stores says nothing about the other legs", func(t *testing.T) {
+		next, prev := fresh(), prepared(registry.UIModeStatic, 0)
+		// Last week both legs were confirmed; today only qdrant is re-verified.
+		prev.Stores.Elasticsearch.Capabilities = registry.Capabilities{Stop: true, Snapshot: true, Restore: true}
+		next.Stores.Qdrant.Capabilities = registry.Capabilities{Stop: true, Snapshot: true, Restore: true}
+		carryOver(next, prev, Overrides{ConfirmedLegs: []string{"qdrant"}})
+		if !next.Stores.Qdrant.Capabilities.Stop {
+			t.Error("the leg this call confirmed was overwritten by the old row")
+		}
+		if !next.Stores.Elasticsearch.Capabilities.Stop {
+			t.Error("a leg the call never named was un-confirmed by it")
+		}
+	})
+
+	t.Run("the bookkeeping fields are carried as they always were", func(t *testing.T) {
+		next, prev := fresh(), prepared(registry.UIModeStatic, 0)
+		prev.DesiredBoot, prev.RestartPending = "enabled", true
+		prev.LastBackup = &registry.BackupRecord{Bundle: "/rag/backups/tenants/hack/b", At: "2026-09-15T00:00:00Z",
+			Kind: "backup", Scope: []string{"config", "state"}}
+		carryOver(next, prev, Overrides{})
+		if next.AdoptedAt != prev.AdoptedAt || next.DesiredBoot != "enabled" || !next.RestartPending ||
+			next.LastBackup == nil {
+			t.Errorf("a bookkeeping field was dropped: %+v", next)
+		}
+	})
 }

@@ -496,6 +496,20 @@ type GatewayDriver interface {
 	// published include's tenant list). A fence or a quarantine of a tenant
 	// that is not routed has nothing to publish, and says so.
 	Routes(ctx context.Context) ([]string, error)
+	// Probe GETs one PATH (`/ragstack/<t>/ui/`) through the live gateway and
+	// returns the status code.
+	//
+	// It is a path rather than a URL because the base is the gateway's own —
+	// a driver that accepted a URL would be a driver an op could point at any
+	// host — and it answers the status rather than the body because the one
+	// question a step asks here is "does this route serve, 404 or 502".
+	//
+	// A publish already probes `/ragstack/<t>/api/health` for every tenant it
+	// lists (gateway/publish.go's probeOnce), which proves the API route
+	// exists; nothing in that path looks at the UI route, and the static UI is
+	// exactly the route that can be published correctly and still 404 because
+	// the directory behind the alias is empty.
+	Probe(ctx context.Context, path string) (status int, err error)
 }
 
 // Files is the atomic-write surface (mode and group set BEFORE rename;

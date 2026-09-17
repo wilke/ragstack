@@ -145,6 +145,15 @@ func (w *world) run(t *testing.T) *model.DoctorResponse {
 	return Run(context.Background(), w.roots, w.fleet, w.opts)
 }
 
+// runOpts is run() with the world's seams and a caller's scope: the same host,
+// the same fleet, a different question asked of them.
+func (w *world) runOpts(t *testing.T, opts Options) *model.DoctorResponse {
+	t.Helper()
+	merged := w.opts
+	merged.Op, merged.Destination, merged.Tenant = opts.Op, opts.Destination, opts.Tenant
+	return Run(context.Background(), w.roots, w.fleet, merged)
+}
+
 // byCode indexes a response's findings.
 func byCode(resp *model.DoctorResponse) map[string]model.Finding {
 	out := map[string]model.Finding{}
@@ -154,6 +163,16 @@ func byCode(resp *model.DoctorResponse) map[string]model.Finding {
 	return out
 }
 
+// confirmStores is what `adopt --readopt --confirm-stores qdrant,elasticsearch`
+// writes: the three capabilities an operator confirms on an exclusive leg.
+// `purge` stays false — it is the one that destroys data, and no op asks for
+// it in v1.
+func (w *world) confirmStores() {
+	caps := registry.Capabilities{Stop: true, Snapshot: true, Restore: true}
+	w.tenant.Stores.Qdrant.Capabilities = caps
+	w.tenant.Stores.Elasticsearch.Capabilities = caps
+}
+
 func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -161,25 +180,50 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-// TestHealthyFleetIsGreenWithInfoOnly: the baseline raises nothing above
-// info, and the two info rows every adopted tenant carries are present.
+// TestHealthyFleetIsGreenWithInfoOnly: the baseline raises nothing above info
+// EXCEPT the one gap PR-E exists to close, and the two info rows every adopted
+// tenant carries are present.
+//
+// The baseline is an ADOPTED tenant that nobody has prepared yet, so its two
+// exclusively-owned stores still have `capabilities.stop: false` and
+// stores_unconfirmed is a warn. That is the honest state of this fleet and the
+// reason the finding was added; confirming the legs (what `adopt --readopt
+// --confirm-stores` writes) is what makes the fleet green, and the second half
+// of this test asserts exactly that.
 func TestHealthyFleetIsGreenWithInfoOnly(t *testing.T) {
 	w := newWorld(t)
 	resp := w.run(t)
 	for _, f := range resp.Findings {
-		if f.Level != model.LevelInfo {
+		if f.Level != model.LevelInfo && f.Code != StoresUnconfirmed {
 			t.Errorf("healthy fleet raised %s/%s: %s", f.Level, f.Code, f.Detail)
 		}
 	}
-	if resp.Status != model.StatusGreen {
-		t.Errorf("status = %s, want green", resp.Status)
-	}
 	got := byCode(resp)
-	for _, code := range []string{SudoersGroup, CapabilitiesUnconfirmed} {
+	for _, code := range []string{SudoersGroup, CapabilitiesUnconfirmed, StoresUnconfirmed} {
 		if _, ok := got[code]; !ok {
 			t.Errorf("missing the %s row", code)
 		}
 	}
+	if lvl := got[StoresUnconfirmed].Level; lvl != model.LevelWarn {
+		t.Errorf("stores_unconfirmed = %s, want warn", lvl)
+	}
+	if resp.Status != model.StatusYellow {
+		t.Errorf("status = %s, want yellow: two exclusive stores the ctl may not stop", resp.Status)
+	}
+	w.confirmStores()
+	confirmed := w.run(t)
+	for _, f := range confirmed.Findings {
+		if f.Level != model.LevelInfo {
+			t.Errorf("a confirmed fleet raised %s/%s: %s", f.Level, f.Code, f.Detail)
+		}
+	}
+	if confirmed.Status != model.StatusGreen {
+		t.Errorf("status after confirming the stores = %s, want green", confirmed.Status)
+	}
+	if _, still := byCode(confirmed)[CapabilitiesUnconfirmed]; still {
+		t.Error("capabilities_unconfirmed survived a confirmation: it claims every capability is false")
+	}
+	resp = confirmed
 	if resp.Scope.Tenant != "" || resp.Scope.Op != "" {
 		t.Errorf("fleet-wide scope must be null/null, got %+v", resp.Scope)
 	}
@@ -673,6 +717,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		APIKeyRoleUnknown, ExternalRefOutsideDataDir, UnmanagedFiles, DataDirOffLayout,
 		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
 		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,
+		BootCronMissing, BootCronPresent, StoresUnconfirmed,
 	} {
 		known[c] = true
 	}
@@ -987,9 +1032,15 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		"admin-remove", "sa-create", "sa-disable", "sa-enable", "env-set",
 		"env-unset", "env-normalize", "render-units", "update-code", "create",
 		"adopt", "gateway-apply", "settings-put",
+		// PR-E's preparation ops. They have no HTTP ROUTE (they are
+		// x-ctl-cli-op-args verbs), but they are ops a doctor run can be
+		// scoped to — which is how an operator sees what would block one
+		// before running it — so they are in the doctor `op` enum and must
+		// have precondition rows like every other.
+		"set-ui-mode", "set-bind",
 	}
-	if len(contract) != 24 {
-		t.Fatalf("the contract enum has 24 ops, this copy has %d", len(contract))
+	if len(contract) != 26 {
+		t.Fatalf("the contract enum has 26 ops, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {
@@ -1110,8 +1161,13 @@ func TestSecretsUnreadableByCtlIsInfoBeforeHandover(t *testing.T) {
 	if f, bad := byCode(w.run(t))[EnvNotSystemdParsable]; bad {
 		t.Errorf("an unreadable secrets.env was also reported as unparsable: %+v", f)
 	}
-	if resp.Status != model.StatusGreen {
-		t.Errorf("status = %s, want green: an info finding is not a defect", resp.Status)
+	// Green once the stores are confirmed: the unreadable secrets file itself
+	// contributes only an info row, which is the claim under test. (Before the
+	// confirmation the fleet is yellow for stores_unconfirmed, which has
+	// nothing to do with a file mode.)
+	w.confirmStores()
+	if got := w.run(t); got.Status != model.StatusGreen {
+		t.Errorf("status = %s, want green: an info finding is not a defect", got.Status)
 	}
 }
 
@@ -1358,4 +1414,76 @@ func unitPath(w *world) string {
 func withPath(g hostfacts.ACLGrant, path string) hostfacts.ACLGrant {
 	g.Path = path
 	return g
+}
+
+// handover's preconditions depend on the runtime the tenant is moving ONTO,
+// and the selection is on the live path: Options.Destination reaches
+// applyPreconditions, which is what decides whether a finding is red.
+//
+// The two lists differ by five findings, and the difference is the point:
+// gating this deployment's handover on linger/drop-in/runtime-dir — three root
+// items no host here has — would refuse every handover the control plane can
+// actually perform, while dropping boot_cron_missing would let one through onto
+// a host where nothing restarts the tenant after a reboot.
+func TestHandoverPreconditionsFollowTheDestination(t *testing.T) {
+	instance := map[string]bool{}
+	for _, c := range RedCodesForDestination("handover", SupervisorInstance) {
+		instance[c] = true
+	}
+	systemd := map[string]bool{}
+	for _, c := range RedCodesForDestination("handover", SupervisorSystemd) {
+		systemd[c] = true
+	}
+	for _, c := range []string{LingerMissing, UserDropInMissing, RuntimeDirMissing} {
+		if instance[c] {
+			t.Errorf("%s gates an INSTANCE handover: PR-D2 postponed systemd, and no host here has it", c)
+		}
+		if !systemd[c] {
+			t.Errorf("%s does not gate a SYSTEMD handover, which is the runtime that needs it", c)
+		}
+	}
+	for _, c := range []string{BootCronMissing, CtlAccountNoAccess} {
+		if !instance[c] {
+			t.Errorf("%s does not gate an instance handover: nothing would bring the tenant back at boot", c)
+		}
+	}
+	// Shared by both: these are facts about the TENANT, not about the runtime.
+	for _, c := range []string{
+		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
+		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening, StoresUnconfirmed,
+	} {
+		if !instance[c] || !systemd[c] {
+			t.Errorf("%s should gate a handover onto either supervisor", c)
+		}
+	}
+	// The default is what RedCodes (and therefore the engine) gates on.
+	if got, want := RedCodes("handover"), RedCodesForDestination("handover", DefaultHandoverDestination); len(got) != len(want) {
+		t.Errorf("RedCodes(handover) = %v, want the default destination's %v", got, want)
+	}
+	// An unknown destination falls back to the default rather than to NO gate.
+	if got := RedCodesForDestination("handover", "kubernetes"); len(got) == 0 {
+		t.Error("an unknown destination turned the precondition table off")
+	}
+	// Every other op ignores the destination entirely.
+	if a, b := RedCodesForDestination("backup", SupervisorSystemd), RedCodes("backup"); len(a) != len(b) {
+		t.Errorf("backup's preconditions changed with the destination: %v vs %v", a, b)
+	}
+}
+
+// And the wiring itself: a doctor run scoped to `handover` raises what the
+// DESTINATION says it should. The systemd trio is the visible difference, so
+// that is what this drives through Run.
+func TestTheDestinationReachesTheDoctorRun(t *testing.T) {
+	w := newWorld(t)
+	w.confirmStores()
+	w.host.Lingering = map[string]bool{} // no linger for anyone: the systemd gate
+
+	instance := byCode(w.runOpts(t, Options{Op: "handover", Destination: SupervisorInstance}))
+	if f, ok := instance[LingerMissing]; ok && f.Level == model.LevelError {
+		t.Errorf("an instance handover was refused for want of linger: %+v", f)
+	}
+	systemd := byCode(w.runOpts(t, Options{Op: "handover", Destination: SupervisorSystemd}))
+	if f, ok := systemd[LingerMissing]; !ok || f.Level != model.LevelError {
+		t.Errorf("a systemd handover was NOT refused for want of linger: %+v", f)
+	}
 }

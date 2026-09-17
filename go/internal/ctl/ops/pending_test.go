@@ -59,7 +59,7 @@ type planCase struct {
 // descriptor a handover needs.
 func handoverReady(tn *registry.Tenant) {
 	tn.API.Bind = "127.0.0.1"
-	tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true}
+	tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true, Scope: fullScope}
 	tn.RollbackDescriptor = &registry.RollbackDescriptor{CapturedAt: "2026-09-14T00:00:00Z", GatewayGeneration: 7}
 	tn.Stores.Qdrant.Ownership = registry.OwnershipExclusive
 	tn.Stores.Qdrant.Capabilities.Stop = true
@@ -70,7 +70,7 @@ func handoverReady(tn *registry.Tenant) {
 // backedUp is a ctl-managed tenant holding a fenced, verified bundle.
 func backedUp(tn *registry.Tenant) {
 	managed(tn)
-	tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true}
+	tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true, Scope: fullScope}
 }
 
 // withSA is backedUp plus the service account the sa-* verbs act on.

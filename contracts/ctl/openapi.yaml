@@ -171,6 +171,7 @@ x-ctl-op-args:
     properties:
       fence: { description: "Fenced backup: gateway read-only + API stopped + no running jobs. Only fenced bundles can be verified and count toward prerequisites.", type: boolean, default: false }
       tar: { type: boolean, default: false }
+      scope: { description: "Which legs to capture. Absent means all of them (`config`, `state`, `stores`) — the full bundle. `[config, state]` is the LIGHT bundle a handover's safety net takes: the config allowlist, the SQLite state files (`VACUUM INTO`, same as the full bundle), the rendered units, the registry row and the rollback descriptor. It takes seconds, it does not fence (the API keeps serving), and it is refused together with `fence` — a fence that stops nothing it is about to copy would be an outage bought for nothing. `stores` cannot be asked for on its own: a bundle without its tenant's configuration cannot be restored from.", type: array, items: { type: string, enum: [config, state, stores] }, uniqueItems: true }
     additionalProperties: false
   restore:
     type: object
@@ -293,6 +294,25 @@ x-ctl-op-args:
 # and a production port block: `create` refuses a `ctltest-` name and
 # `create-sandbox` refuses every other one, so neither allocator can be reached
 # by the wrong request.
+#
+# `set-ui-mode` and `set-bind` are the PR-E preparation ops: the steps an
+# operator takes on a tenant that is still hand-started, BEFORE its handover.
+# They are here rather than in `x-ctl-op-args` for two reasons that hold today
+# and stop holding the day a tenant is handed over:
+#
+#   * `set-ui-mode static` may run `npm ci`, which is the one step in the whole
+#     control plane that reaches the network (see `artifact-prepare` above), and
+#     it renames directories inside the tenant's data tree — both are the
+#     OWNER's to do, and the owner of those paths is not the daemon's account.
+#   * every row these two edit has `supervisor: manual` and `owner: wilke`. The
+#     daemon cannot see, signal or restart such a tenant at all (it cannot read
+#     another account's `/proc/<pid>/cwd`), so a verb that changed how that
+#     tenant is served would be the daemon acting on a tenant it cannot then
+#     operate.
+#
+# They are otherwise ordinary jobs — planned, locked, checkpointed, audited,
+# rollback-able — so publishing an HTTP route for either is adding its name to
+# the `verb` enum and to the router's `opVerbs`, and nothing else.
 # ---------------------------------------------------------------------------
 x-ctl-cli-op-args:
   artifact-prepare:
@@ -322,6 +342,19 @@ x-ctl-cli-op-args:
       ui_mode: { type: string, enum: [static, dev, external] }
       start: { type: boolean, default: true }
       gateway: { type: boolean, default: true }
+    additionalProperties: false
+  set-ui-mode:
+    type: object
+    required: [mode]
+    properties:
+      mode: { description: "`static` BUILDS the tenant's UI (`npm ci` when node_modules is absent, then `vite build --base /ragstack/<name>/ui/`) out of its own worktree, installs it as `<data_dir>/ui/dist` with the previous dist kept beside it as `dist.prev-<ts>`, stops that tenant's Vite dev server if one is running (found by port AND identity: cwd under `<worktree>/frontend`, `vite` in the argv), records `ui.mode: static` with a null port, publishes a gateway generation in which the static alias replaces the tenant's `$tenant_ui` row, and verifies `GET /ragstack/<name>/ui/` through the live gateway.\n\n`external` is registry-only: `ui.mode: external` with `ui_port`, the `$tenant_ui` row stays, and NOTHING is started, stopped or built. It is how a tenant keeps a Vite dev server somebody else runs (plan PR-E decision D2: `dev` is the documented exception).", type: string, enum: [static, external] }
+      ui_port: { description: "Required for `external` and refused for `static`: a static UI is served by nginx from a directory and has no port.", type: integer, minimum: 1024, maximum: 65535 }
+    additionalProperties: false
+  set-bind:
+    type: object
+    required: [bind]
+    properties:
+      bind: { description: "The address the tenant API binds. It is the registry's `api.bind`, which is where BOTH launch paths read it from — `render.APIArgv`'s `--host` for a ctl-supervised start, and `ops/coconut/restore.sh`'s for a hand start — so this op writes the registry and nothing else.\n\nThere is deliberately no env key: the tenant API has never read one (nothing in `python/ragstack/` looks at `API_HOST` or any sibling), the bind reaches uvicorn only as an argv element, and a key written into `tenant.env` for symmetry would be configuration nothing reads. Effective at the tenant's next restart; the plan says so.", type: string, enum: ["127.0.0.1", "0.0.0.0"] }
     additionalProperties: false
 
 paths:
@@ -736,8 +769,11 @@ paths:
           required: false
           description: >-
             An operation verb (the `verb` enum) or one of `create`, `adopt`,
-            `gateway-apply`, `settings-put`; scopes the run to that
-            operation's preconditions.
+            `gateway-apply`, `settings-put`, `set-ui-mode`, `set-bind`; scopes
+            the run to that operation's preconditions. The last two are jobs
+            with no HTTP route (`x-ctl-cli-op-args`), and a caller may still
+            scope a doctor run to them — that is how an operator sees, before
+            running one, what would block it.
           schema:
             type: string
             enum:
@@ -765,6 +801,8 @@ paths:
               - adopt
               - gateway-apply
               - settings-put
+              - set-ui-mode
+              - set-bind
       responses:
         "200":
           description: Findings

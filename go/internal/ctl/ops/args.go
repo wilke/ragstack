@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -23,6 +24,7 @@ type argKind int
 const (
 	argString argKind = iota
 	argBool
+	argInt
 	argStringArray
 	argObject // create's nested shapes, checked by the op rather than field-wise
 	argObjectArray
@@ -32,6 +34,8 @@ func (k argKind) String() string {
 	switch k {
 	case argBool:
 		return "boolean"
+	case argInt:
+		return "integer"
 	case argStringArray, argObjectArray:
 		return "array"
 	case argObject:
@@ -54,6 +58,11 @@ type argField struct {
 	Unique    bool
 	// ItemPattern constrains an array of strings.
 	ItemPattern string
+	// Minimum and Maximum bound an argInt. Both zero means unbounded — no
+	// contract integer today is legitimately allowed to be 0, so "unset" and
+	// "zero" do not have to be told apart.
+	Minimum int
+	Maximum int
 }
 
 // argSpec is one verb's whole args object. additionalProperties is false for
@@ -142,6 +151,17 @@ func (f argField) check(verb string, v any) error {
 	case argBool:
 		if _, ok := v.(bool); !ok {
 			return bad("must be a boolean, got %T", v)
+		}
+	case argInt:
+		n, ok := asInt(v)
+		if !ok {
+			return bad("must be an integer, got %T", v)
+		}
+		if f.Minimum != 0 && n < f.Minimum {
+			return bad("%d is below the minimum %d", n, f.Minimum)
+		}
+		if f.Maximum != 0 && n > f.Maximum {
+			return bad("%d is above the maximum %d", n, f.Maximum)
 		}
 	case argString:
 		s, ok := v.(string)
@@ -237,6 +257,20 @@ var (
 	components = []string{"api", "ui", "qdrant", "es", "postgres"}
 	phases     = []string{"execute", "commit", "rollback"}
 	roles      = []string{"admin", "user"}
+	// backupScopes is `backup.scope`'s item enum: the three legs a bundle can
+	// be asked for. `secrets` is NOT one of them — the sealed payload follows
+	// `config`, because a bundle carrying a tenant's configuration and not its
+	// credentials is a bundle a restore cannot finish from.
+	backupScopes = []string{"config", "state", "stores"}
+	// uiModes is set-ui-mode's enum. It is NARROWER than the registry's
+	// (static|dev|external): `dev` is a Vite server the CTL would have to
+	// supervise, which `supervisor: instance` refuses outright, so there is no
+	// direction for this op to move a tenant in.
+	uiModes = []string{"static", "external"}
+	// apiBinds is set-bind's enum: registry.json's api.bind minus
+	// `localhost`, which is a name rather than an address and resolves
+	// differently depending on /etc/hosts.
+	apiBinds = []string{"127.0.0.1", "0.0.0.0"}
 )
 
 // argSchemas is the table. The three entries with no contract row (create,
@@ -259,6 +293,7 @@ var argSchemas = map[string]argSpec{
 	"backup": {Verb: "backup", Fields: []argField{
 		{Name: "fence", Kind: argBool},
 		{Name: "tar", Kind: argBool},
+		{Name: "scope", Kind: argStringArray, ItemEnum: backupScopes, Unique: true},
 	}},
 	"restore": {Verb: "restore", Fields: []argField{
 		{Name: "from", Kind: argString, Required: true, Pattern: patBundleID},
@@ -366,6 +401,18 @@ var argSchemas = map[string]argSpec{
 		{Name: "start", Kind: argBool},
 		{Name: "gateway", Kind: argBool},
 	}},
+	// set-ui-mode and set-bind are CLI-only for the reasons the contract's
+	// x-ctl-cli-op-args comment gives: the first reaches the network and
+	// renames directories the daemon's account does not own, and both act on
+	// rows whose tenant the daemon cannot supervise at all (supervisor:
+	// manual, owner: wilke) until PR-E2's handover.
+	"set-ui-mode": {Verb: "set-ui-mode", Fields: []argField{
+		{Name: "mode", Kind: argString, Required: true, Enum: uiModes},
+		{Name: "ui_port", Kind: argInt, Minimum: 1024, Maximum: 65535},
+	}},
+	"set-bind": {Verb: "set-bind", Fields: []argField{
+		{Name: "bind", Kind: argString, Required: true, Enum: apiBinds},
+	}},
 	"artifact-prepare": {Verb: "artifact-prepare", Fields: []argField{
 		{Name: "tag", Kind: argString, Required: true, Pattern: patGitRef},
 		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
@@ -397,7 +444,7 @@ var ContractVerbs = []string{
 // CLIVerbs are the operations that are jobs like any other but have NO HTTP
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
-var CLIVerbs = []string{"artifact-prepare", "create-sandbox"}
+var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind"}
 
 // ---------------------------------------------------------------- helpers
 
@@ -432,6 +479,33 @@ func toSlice(v any) ([]any, error) {
 	}
 }
 
+// asInt reads a contract integer out of a decoded args map. JSON numbers reach
+// the daemon as float64 (encoding/json's default) and the CLI builds the same
+// map with a plain int, so both have to be accepted — and a float64 that is not
+// a whole number is NOT an integer, which is the case a bare type switch on
+// float64 would have let through.
+func asInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		if n != float64(int(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	default:
+		return 0, false
+	}
+}
+
 func sortedKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -451,6 +525,13 @@ func argBoolOf(args map[string]any, name string) bool {
 func argStringOf(args map[string]any, name string) string {
 	s, _ := args[name].(string)
 	return s
+}
+
+// argIntOf reads a validated integer; a missing or malformed value is 0, which
+// every caller reads as "absent" (no contract integer may be zero).
+func argIntOf(args map[string]any, name string) int {
+	n, _ := asInt(args[name])
+	return n
 }
 
 func argStringsOf(args map[string]any, name string) []string {

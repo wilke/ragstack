@@ -976,6 +976,36 @@ type FakeGateway struct {
 	// it, and a create with gateway:true against the fake is routed only when
 	// the caller says so.
 	Routed []string
+	// ProbeStatus is what Probe answers, per PATH. A path with no entry
+	// answers 200 when the tenant it names is Routed and 404 otherwise, which
+	// is what the live gateway does — so a test that seeded Routed gets the
+	// honest default and one testing a broken alias seeds the 404 it wants.
+	ProbeStatus map[string]int
+	// Probes records every path probed, in order.
+	Probes []string
+}
+
+// Probe answers the recorded status for path.
+func (g *FakeGateway) Probe(_ context.Context, path string) (int, error) {
+	if err := g.r.record("gateway", "Probe", path); err != nil {
+		return 0, err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Probes = append(g.Probes, path)
+	if status, ok := g.ProbeStatus[path]; ok {
+		return status, nil
+	}
+	// `/ragstack/<name>/…` — the only shape the gateway routes per tenant.
+	if rest, ok := strings.CutPrefix(path, "/ragstack/"); ok {
+		name, _, _ := strings.Cut(rest, "/")
+		for _, routed := range g.Routed {
+			if routed == name {
+				return 200, nil
+			}
+		}
+	}
+	return 404, nil
 }
 
 // Routes is the fake's live tenant list, sorted.

@@ -39,6 +39,8 @@ type contractProp struct {
 	Unique    bool
 	ItemType  string
 	ItemEnum  []string
+	Minimum   int
+	Maximum   int
 }
 
 type contractSpec struct {
@@ -96,6 +98,10 @@ func TestArgSchemaMatchesContract(t *testing.T) {
 			}
 			if f.MaxLength != cp.MaxLength {
 				t.Errorf("%s.%s: maxLength %d, contract says %d", verb, name, f.MaxLength, cp.MaxLength)
+			}
+			if f.Minimum != cp.Minimum || f.Maximum != cp.Maximum {
+				t.Errorf("%s.%s: bounds [%d,%d], contract says [%d,%d]", verb, name,
+					f.Minimum, f.Maximum, cp.Minimum, cp.Maximum)
 			}
 			if f.Unique != cp.Unique {
 				t.Errorf("%s.%s: uniqueItems %v, contract says %v", verb, name, f.Unique, cp.Unique)
@@ -188,6 +194,13 @@ func TestCLIArgSchemaMatchesContract(t *testing.T) {
 			}
 			if f.Pattern != cp.Pattern {
 				t.Errorf("%s.%s: pattern %q, contract says %q", verb, name, f.Pattern, cp.Pattern)
+			}
+			if !reflect.DeepEqual(sortedCopy(f.Enum), sortedCopy(cp.Enum)) {
+				t.Errorf("%s.%s: enum %v, contract says %v", verb, name, f.Enum, cp.Enum)
+			}
+			if f.Minimum != cp.Minimum || f.Maximum != cp.Maximum {
+				t.Errorf("%s.%s: bounds [%d,%d], contract says [%d,%d]", verb, name,
+					f.Minimum, f.Maximum, cp.Minimum, cp.Maximum)
 			}
 		}
 	}
@@ -294,6 +307,16 @@ func contractPropOf(t *testing.T, verb, name string, m map[string]any) contractP
 				t.Fatalf("%s.%s: maxLength %q", verb, name, str(v))
 			}
 			p.MaxLength = n
+		case "minimum", "maximum":
+			n, err := strconv.Atoi(str(v))
+			if err != nil {
+				t.Fatalf("%s.%s: %s %q", verb, name, k, str(v))
+			}
+			if k == "minimum" {
+				p.Minimum = n
+			} else {
+				p.Maximum = n
+			}
 		case "items":
 			im, ok := v.(map[string]any)
 			if !ok {
