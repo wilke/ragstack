@@ -357,57 +357,136 @@ def test_a_tenant_scoped_dry_run_touches_one_tenant(tmp_path):
     assert "beta" not in text, f"--tenant alpha planned something for beta:\n{text}"
 
 
-@requires_shell
-def test_the_dev_dry_run_plans_the_live_heap_not_up_shs(tmp_path):
-    """The regression this PR's review found, against the LIVE registry.
+# The heap drift these two tests are about: the row records what the store is
+# really running with, ``bin/up.sh`` records what the tenant was provisioned
+# with, and they disagree. Planning up.sh's value is the silent halving.
+_ROW_HEAP = "1g"
+_STALE_HEAP = "512m"
 
-    dev's ``bin/up.sh`` says 512m and its row says 1g. The dry run must plan the
-    row's value — and must not plan up.sh's, which would be the silent halving.
 
-    The instance names are renamed in a scratch copy of the registry so that
-    ``start_instance`` does not short-circuit on the instances that are actually
-    running: a dry run of a live host prints "already running — skipping" and
-    shows no command at all.
+def _heap_registry(tmp_path: Path, owner: str) -> Path:
+    """A one-tenant registry with an exclusively-owned elasticsearch leg.
+
+    ``solo`` owns its elasticsearch outright, its row records ``heap: 1g``, and
+    its provision-time ``bin/up.sh`` carries a stale ``512m`` — the exact drift
+    the ``tenant_up_script`` comment in ``restore.sh`` documents. ``owner``
+    selects the branch under test: anything but ``svcbvbrc`` is a tenant this
+    account still supervises by hand, ``svcbvbrc`` is one handed over to the
+    control plane.
+
+    Everything is synthetic on purpose. This used to read the LIVE registry and
+    assert on whatever ``dev``'s row said, so it broke the day ``dev`` was handed
+    over to the control plane and ``restore.sh`` — correctly — stopped planning
+    its heap at all. A unit test coupled to fleet state re-breaks on every
+    handover; the subject here is the script's derivation, not the fleet.
+
+    Ports are in the 258xx range and the instance name is not one any host runs,
+    so a dry run that somehow stopped being dry could not collide with a live
+    service, and ``start_instance`` cannot short-circuit on an instance that
+    happens to be up (it prints "already running — skipping" and no command).
     """
-    live = Path("/rag/data/tenants/registry.json")
-    if not live.exists():
-        pytest.skip("no live registry on this host")
-    doc = json.loads(live.read_text())
-    row = (doc.get("tenants") or {}).get("dev")
-    if row is None:
-        pytest.skip("no dev row on this host")
-    heap = ((row.get("stores") or {}).get("elasticsearch") or {}).get("heap")
-    if not heap:
-        pytest.skip("the dev row records no elasticsearch heap")
-    row["stores"]["qdrant"]["instance"] = "qdrant-conftest"
-    row["stores"]["elasticsearch"]["instance"] = "elasticsearch-conftest"
-    scratch = tmp_path / "registry.json"
-    scratch.write_text(json.dumps({"schema_version": doc.get("schema_version", 1),
-                                   "display_order": ["dev"], "tenants": {"dev": row}}))
+    data = tmp_path / "data" / "solo"
+    (data / "bin").mkdir(parents=True)
+    up_sh = data / "bin" / "up.sh"
+    up_sh.write_text(
+        "#!/bin/bash\n"
+        "# provision-time launcher — carries the heap the tenant was CREATED with\n"
+        f'exec apptainer instance run --env ES_JAVA_OPTS="-Xms{_STALE_HEAP} -Xmx{_STALE_HEAP}" "$@"\n'
+    )
+    up_sh.chmod(0o755)
+    # start_instance only checks that the image file EXISTS before printing the
+    # plan; it is never executed under --dry-run.
+    sif = tmp_path / "elasticsearch.sif"
+    sif.write_text("")
 
-    env = dict(os.environ, REGISTRY=str(scratch), RUN=str(tmp_path / "run"))
+    reg = {
+        "schema_version": 1,
+        "display_order": ["solo"],
+        "tenants": {
+            "solo": {
+                "name": "solo", "manifest_name": "solo", "owner": owner, "state": "active",
+                "data_dir": str(data),
+                "worktree": str(tmp_path / "repos" / "solo"),
+                "python_env": "/rag/envs/ragstack",
+                "ports": {"index": 91, "base": 25840, "api": 25840,
+                          "es_http": 25843, "es_transport": 25844},
+                "api": {"bind": "127.0.0.1", "pidfile": "", "log": ""},
+                "ui": {"mode": "static", "port": None, "base": "/ragstack/solo/ui/"},
+                "stores": {
+                    "qdrant": {"ownership": "shared", "instance": None},
+                    "elasticsearch": {"ownership": "exclusive",
+                                      "instance": "elasticsearch-unittest",
+                                      "sif": str(sif),
+                                      "heap": _ROW_HEAP},
+                    "postgres": {"kind": "sqlite"},
+                },
+            },
+        },
+    }
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps(reg))
+    return path
+
+
+def _stores_dry_run(registry: Path, tmp_path: Path) -> str:
+    env = dict(os.environ, REGISTRY=str(registry), RUN=str(tmp_path / "run"))
     out = subprocess.run(
-        ["bash", str(OPS / "restore.sh"), "--dry-run", "--tenant", "dev", "--only", "stores"],
+        ["bash", str(OPS / "restore.sh"), "--dry-run", "--tenant", "solo", "--only", "stores"],
         capture_output=True, text=True, env=env, timeout=120,
     )
     # The dry run prints the argv through printf %q, so a value with a space in
     # it comes out escaped (`-Xms1g\ -Xmx1g`). Unescape before matching: the
     # assertion is about the VALUE, not about how the preview quotes it.
-    text = (out.stdout + out.stderr).replace("\\ ", " ")
-    assert f"-Xms{heap} -Xmx{heap}" in text, (
-        f"the dry run does not plan the row's heap ({heap}):\n{text}"
+    return (out.stdout + out.stderr).replace("\\ ", " ")
+
+
+@requires_shell
+def test_a_supervised_tenants_dry_run_plans_the_rows_heap_not_up_shs(tmp_path):
+    """A tenant this account still supervises: the plan comes from the row.
+
+    The row says 1g and ``bin/up.sh`` says 512m. The dry run must plan the row's
+    value — planning up.sh's would quietly halve the heap of a store that came
+    back after a reboot.
+    """
+    text = _stores_dry_run(_heap_registry(tmp_path, owner="wilke"), tmp_path)
+    assert f"-Xms{_ROW_HEAP} -Xmx{_ROW_HEAP}" in text, (
+        f"the dry run does not plan the row's heap ({_ROW_HEAP}):\n{text}"
     )
-    # And the provision-time value is nowhere near it.
-    up_sh = Path(row["data_dir"]) / "bin" / "up.sh"
-    if up_sh.exists():
-        stale = re.findall(r"-Xmx(\d+[mg])", up_sh.read_text())
-        for value in stale:
-            if value != heap:
-                assert f"-Xmx{value}" not in text, (
-                    f"the dry run planned up.sh's stale heap {value} instead of the row's {heap}:\n{text}"
-                )
-    # The ports and the image come from the row too.
-    assert str(row["ports"]["es_http"]) in text and str(row["ports"]["es_transport"]) in text
+    # And the provision-time value is nowhere near it. up.sh is not even invoked
+    # for this leg: it is the postgres launcher only (it holds that role's
+    # generated password), and using it for elasticsearch is what would bring
+    # the stale value back.
+    assert re.search(rf"-Xmx{_STALE_HEAP}\b", text) is None, (
+        f"the dry run planned up.sh's stale heap {_STALE_HEAP} "
+        f"instead of the row's {_ROW_HEAP}:\n{text}"
+    )
+    assert "bin/up.sh" not in text, (
+        f"the elasticsearch leg was planned through the provision-time up.sh:\n{text}"
+    )
+    # The instance, the image and the ports come from the row too.
+    assert "elasticsearch-unittest" in text, text
+    assert "25843" in text and "25844" in text, text
+
+
+@requires_shell
+def test_a_handed_over_tenants_dry_run_plans_no_heap_at_all(tmp_path):
+    """The same row, owned by the control plane: nothing of it is planned.
+
+    ``owner: svcbvbrc`` means svcbvbrc's ``@reboot`` line starts it. Planning its
+    store here would put two starters on one port — so the heap, the instance and
+    the ports must all be absent, and the run must still succeed.
+    """
+    text = _stores_dry_run(_heap_registry(tmp_path, owner="svcbvbrc"), tmp_path)
+    assert "handed over" in text, text
+    assert f"-Xmx{_ROW_HEAP}" not in text, (
+        f"a handed-over tenant's heap was planned:\n{text}"
+    )
+    assert "elasticsearch-unittest" not in text, (
+        f"a handed-over tenant's store instance was planned:\n{text}"
+    )
+    assert "25843" not in text and "25844" not in text, (
+        f"a handed-over tenant's store ports were planned:\n{text}"
+    )
 
 
 @requires_shell

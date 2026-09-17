@@ -69,9 +69,11 @@ def _doc(content: str) -> Document:
 def _prose(n_sentences: int = 900) -> str:
     """Realistic-shaped prose: varied word lengths, varied sentence lengths.
 
-    Sentences stay short (<= ~12 fake tokens) so that at the tightest budget under
-    test (256) a single sentence-granularity step is a small fraction of the
-    budget — the fill bar is then about the packer, not about the fixture.
+    Sentences are 6-12 *words*, which at ``ceil(len(word) / 4)`` tokens per word
+    is 10-24 fake tokens (mean ~12.6) — NOT the "<= ~12 fake tokens" this
+    docstring originally claimed by conflating words with tokens. One sentence is
+    therefore up to 9% of the tightest budget under test (256), which is what
+    ``_legacy_sentence_fill_floor`` below has to make room for.
     """
     words = [
         "the", "genome", "assembly", "pipeline", "annotates", "a", "contig",
@@ -87,6 +89,32 @@ def _prose(n_sentences: int = 900) -> str:
 
 
 PROSE = _prose()
+
+# Largest single sentence-granularity step in the fixture, in fake tokens (24).
+_MAX_SENTENCE_TOKENS = max(COUNTER.count(PROSE[s:e]) for s, e in sentence_spans(PROSE))
+
+# Ceiling on legacy ("summed") fill, budget-independent: summing per-sentence
+# counts over-counts the joined chunk by (#sentences - 1) tokens, and #sentences
+# scales with the budget, so the ratio is flat. This fixture's sum/joined factor
+# is 1.086 (pinned to 1.00-1.10 by the last test in this file) → 1/1.086 = 0.92.
+_LEGACY_SENTENCE_FILL_CEILING = 0.92
+
+
+def _legacy_sentence_fill_floor(budget: int) -> float:
+    """Lowest legacy sentence fill that is *not* a packer defect, at this budget.
+
+    Legacy fill loses on two fronts, and only one of them is budget-independent:
+
+    * over-count — flat, and capped by ``_LEGACY_SENTENCE_FILL_CEILING`` above;
+    * quantisation — the packer stops because the NEXT sentence did not fit, so
+      it can leave up to one whole sentence of the budget unused. That term is
+      ``_MAX_SENTENCE_TOKENS / budget``: ~9% at 256, ~1% at 2048.
+
+    The study's reported ~0.92-0.97 was measured at budgets where the second term
+    vanishes, so a flat 0.88 floor was never reachable at 256 — see the comment
+    on ``test_legacy_mode_reproduces_old_sentence_fill``.
+    """
+    return _LEGACY_SENTENCE_FILL_CEILING - _MAX_SENTENCE_TOKENS / budget
 
 
 def _fills(chunks, budget: int) -> list[float]:
@@ -152,13 +180,25 @@ def test_legacy_mode_reproduces_old_word_fill(budget):
 
 @pytest.mark.parametrize("budget", BUDGETS)
 def test_legacy_mode_reproduces_old_sentence_fill(budget):
+    """Legacy sentence fill, floored per budget rather than flat at 0.88.
+
+    The flat ``0.88 <= fill`` this assertion used to carry was wrong at budget
+    256 from the day it was written (#488): it produced 0.86328125 then and
+    produces the bit-identical 0.86328125 now, on a ``chunkers.py`` that has not
+    been touched since. It is an authoring error, not a regression — the bound
+    came from a study run at larger budgets, and the fixture docstring
+    under-estimated its own sentence length (words read as tokens), which hid
+    the sentence-granularity term that dominates at 256. ``_legacy_sentence_fill_floor``
+    now carries that term explicitly, and is *tighter* than 0.88 at 1024/2048.
+    """
     doc = _doc(PROSE)
     chunks = SentenceChunker(
         chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
         token_counter=COUNTER, budget_mode="summed",
     ).chunk(doc)
     fill = _mean(_fills(chunks, budget))
-    assert 0.88 <= fill <= 0.98, (budget, fill)  # the reported ~0.92-0.97
+    floor = _legacy_sentence_fill_floor(budget)
+    assert floor <= fill <= 0.98, (budget, fill, floor)  # the reported ~0.92-0.97
 
 
 # --------------------------------------------------------------------------- #
