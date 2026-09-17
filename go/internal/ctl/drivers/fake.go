@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -72,6 +73,18 @@ type FakeOptions struct {
 	// answers — the tenant API's own inventory, which is not the same thing
 	// as the collections qdrant holds.
 	CollectionsByOrigin map[string][]string
+	// CollectionCounts maps "<tenant origin>/<collection>" to the chunk count
+	// GET /v1/collections?counts=true reports. Absent falls back to the qdrant
+	// count of the same collection on the same port block, so the handover
+	// census does not need seeding twice.
+	CollectionCounts map[string]int64
+	// RunningIngestJobs maps a tenant origin to the ingest jobs it reports as
+	// still running. Absent is none, which is the ordinary fixture.
+	RunningIngestJobs map[string][]string
+	// KeyStatuses maps an API-KEY VALUE to the status the tenant answers when
+	// it is presented. Absent is 200; a test proving a revocation seeds the
+	// 401 for the value it revoked.
+	KeyStatuses map[string]int
 	// Refs maps a git ref to the sha it resolves to in the mirror.
 	Refs map[string]string
 	// Worktrees maps an existing worktree directory to the sha checked out.
@@ -205,8 +218,11 @@ func NewFake(opts FakeOptions) *Fake {
 		Repos: copyMapRepo(opts.ESRepos), Counts: copyMapInt64(opts.ESCounts),
 	}
 	f.api = &FakeTenantAPI{
-		r: &f.recorder, Versions: copyMapAny(opts.Versions), qdrant: f.qdrant,
+		r: &f.recorder, Versions: copyMapAny(opts.Versions), qdrant: f.qdrant, files: f.files,
 		CollectionsByOrigin: copyMapSlice(opts.CollectionsByOrigin),
+		CountsByOrigin:      copyMapInt64(opts.CollectionCounts),
+		RunningByOrigin:     copyMapSlice(opts.RunningIngestJobs),
+		KeyStatuses:         copyMapInt(opts.KeyStatuses),
 	}
 	f.git = &FakeGit{r: &f.recorder, Refs: copyMapString(opts.Refs), Worktrees: copyMapString(opts.Worktrees)}
 	f.build = &FakeBuild{r: &f.recorder, files: f.files, Installed: setOf(opts.Installed)}
@@ -632,6 +648,56 @@ func (p *FakeProc) Owner(_ context.Context, port int) (int, int, error) {
 	return o.PID, o.UID, nil
 }
 
+// MarkAlive makes a pid this fake did not spawn a live process holding port —
+// the hand-started API a manual tenant runs, which the ctl finds through a
+// pidfile and stops with a signal. A TERM or a KILL frees the port, exactly as
+// it does for a process this fake spawned itself.
+func (p *FakeProc) MarkAlive(pid, port int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.alive == nil {
+		p.alive = map[int]bool{}
+	}
+	if p.spawnPorts == nil {
+		p.spawnPorts = map[int]int{}
+	}
+	if p.Ports == nil {
+		p.Ports = map[int]bool{}
+	}
+	if p.Owners == nil {
+		p.Owners = map[int]PortOwner{}
+	}
+	p.alive[pid] = true
+	p.spawnPorts[pid] = port
+	p.Ports[port] = true
+	p.Owners[port] = PortOwner{PID: pid, UID: os.Getuid()}
+}
+
+// FreePort takes a port out of the LISTEN set, as a fixture adjustment: the
+// tenant this test is about has already been stopped.
+func (p *FakeProc) FreePort(port int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.Ports, port)
+	delete(p.Owners, port)
+}
+
+// SetOwner puts a process behind a port's LISTEN socket. pid 0 is the real
+// driver's answer for a socket this account cannot attribute — another
+// account's — which is the case several refusals are written against.
+func (p *FakeProc) SetOwner(port, pid, uid int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Ports == nil {
+		p.Ports = map[int]bool{}
+	}
+	if p.Owners == nil {
+		p.Owners = map[int]PortOwner{}
+	}
+	p.Ports[port] = true
+	p.Owners[port] = PortOwner{PID: pid, UID: uid}
+}
+
 func (p *FakeProc) Listening(_ context.Context, port int) (bool, error) {
 	if err := p.r.record("proc", "Listening", strconv.Itoa(port)); err != nil {
 		return false, err
@@ -914,6 +980,23 @@ func (i *FakeInstances) Names() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// StopAll clears the instance table without recording a call: it is a
+// FIXTURE adjustment ("this tenant has been stopped"), not something a step
+// did, and a test that had to call Stop() for each name would put those calls
+// in the trace it is about to assert.
+func (i *FakeInstances) StopAll() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for name := range i.Running {
+		if port, ok := i.ports[name]; ok {
+			i.proc.mu.Lock()
+			delete(i.proc.Ports, port)
+			i.proc.mu.Unlock()
+		}
+		delete(i.Running, name)
+	}
 }
 
 // ---------------------------------------------------------------- crontab
@@ -1416,6 +1499,30 @@ func (f *FakeFiles) Put(path string, data []byte, mode uint32) {
 }
 
 // Content is the bytes at path (nil when absent).
+// holdsCredential reports whether any env file on this fake filesystem carries
+// the value, and whether there was any env file to ask at all.
+//
+// The second half is what keeps the answer honest: "no env file mentions this
+// key" and "there are no env files" are different statements, and only the
+// first is evidence that a tenant would refuse it.
+func (f *FakeFiles) holdsCredential(value string) (held, any bool) {
+	if value == "" {
+		return false, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for path, file := range f.Files {
+		if !strings.HasSuffix(path, ".env") {
+			continue
+		}
+		any = true
+		if strings.Contains(string(file.Data), value) {
+			return true, true
+		}
+	}
+	return false, any
+}
+
 func (f *FakeFiles) Content(path string) []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1735,6 +1842,20 @@ type FakeTenantAPI struct {
 	IngestStates map[string]string
 	// nextIngest numbers the job ids this fake hands out.
 	nextIngest int
+	// CountsByOrigin is the census table, keyed "<origin>/<collection>". An
+	// entry that is absent falls back to the qdrant fake's own counts.
+	CountsByOrigin map[string]int64
+	// RunningByOrigin is the ingest jobs a tenant reports as still running.
+	RunningByOrigin map[string][]string
+	// KeyStatuses maps a credential VALUE to the status the tenant answers
+	// for it; an unseeded value answers 200.
+	KeyStatuses map[string]int
+	// KeyProbes records every credential proof as "<origin> <fingerprint>" —
+	// the fingerprint, never the value, for the reason ServiceAccount gives.
+	KeyProbes []string
+	// files is the fake filesystem the tenant's key ledger lives on, so that
+	// KeyStatus can answer from the ledger rather than from a fixture.
+	files *FakeFiles
 }
 
 func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
@@ -1799,10 +1920,16 @@ func (a *FakeTenantAPI) DeepHealth(_ context.Context, origin, _ string) error {
 // `Qdrant.Recover` registers each collection as it recovers it — so the answer
 // is the effect of the steps that just ran rather than a fixture somebody
 // remembered to seed. An EXPLICIT entry, empty list included, always wins.
-func (a *FakeTenantAPI) Collections(_ context.Context, origin, _ string) ([]string, error) {
+func (a *FakeTenantAPI) Collections(ctx context.Context, origin, apiKey string) ([]string, error) {
 	if err := a.r.record("tenantapi", "Collections", origin); err != nil {
 		return nil, err
 	}
+	return a.collections(ctx, origin, apiKey)
+}
+
+// collections is Collections without the call record, so that
+// CollectionCounts records itself once rather than twice.
+func (a *FakeTenantAPI) collections(_ context.Context, origin, _ string) ([]string, error) {
 	a.mu.Lock()
 	seeded, ok := a.CollectionsByOrigin[origin]
 	out := append([]string(nil), seeded...)
@@ -1847,6 +1974,103 @@ func (a *FakeTenantAPI) Ingest(_ context.Context, origin, _, path string) (strin
 	a.Ingests = append(a.Ingests, origin+" "+path)
 	a.nextIngest++
 	return fmt.Sprintf("fake-ingest-%d", a.nextIngest), nil
+}
+
+// CollectionCounts is Collections with the seeded counts attached.
+//
+// The counts come from the same table the qdrant fake answers `Count` out of
+// (`QdrantCounts`, keyed `<url>/<collection>`) when the fixture named none of
+// its own, so a handover census taken through this fake and a qdrant census
+// taken through it agree without a test having to seed the same numbers twice.
+// A collection with no number anywhere is -1: "listed, not counted", which is
+// the value the real driver records for a tenant that answers no count.
+func (a *FakeTenantAPI) CollectionCounts(ctx context.Context, origin, apiKey string) (map[string]int64, error) {
+	if err := a.r.record("tenantapi", "CollectionCounts", origin); err != nil {
+		return nil, err
+	}
+	names, err := a.collections(ctx, origin, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(names))
+	for _, name := range names {
+		out[name] = -1
+		a.mu.Lock()
+		seeded, ok := a.CountsByOrigin[origin+"/"+name]
+		a.mu.Unlock()
+		if ok {
+			out[name] = seeded
+			continue
+		}
+		if a.qdrant == nil {
+			continue
+		}
+		url, ok := qdrantURLForOrigin(origin)
+		if !ok {
+			continue
+		}
+		a.qdrant.mu.Lock()
+		if n, ok := a.qdrant.Counts[url+"/"+name]; ok {
+			out[name] = n
+		}
+		a.qdrant.mu.Unlock()
+	}
+	return out, nil
+}
+
+// RunningIngestJobs answers the seeded ids for this origin, and none by
+// default: the ordinary fixture is a tenant nobody is ingesting into.
+func (a *FakeTenantAPI) RunningIngestJobs(_ context.Context, origin, _ string) ([]string, error) {
+	if err := a.r.record("tenantapi", "RunningIngestJobs", origin); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.RunningByOrigin[origin]...), nil
+}
+
+// KeyStatus answers whether this fake tenant accepts the credential.
+//
+// A seeded status wins. Otherwise the answer comes from the LEDGER this host
+// actually holds: a value that appears in one of the tenant env files on the
+// fake filesystem is accepted, and one that appears in none is refused with a
+// 401. That is what makes a credential PROOF meaningful against the fakes —
+// `key revoke --restart --prove` rewrote the file, so the fake tenant stops
+// accepting the value for the same reason a real one does, rather than because
+// a fixture remembered to say so.
+//
+// A fake with no files at all keeps the old, permissive default: a driver set
+// built without a filesystem has no ledger to disagree with.
+func (a *FakeTenantAPI) KeyStatus(_ context.Context, origin, apiKey string) (int, error) {
+	if err := a.r.record("tenantapi", "KeyStatus", origin); err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	seeded, ok := a.KeyStatuses[apiKey]
+	a.KeyProbes = append(a.KeyProbes, origin+" "+fingerprintFake(apiKey))
+	files := a.files
+	a.mu.Unlock()
+	if ok {
+		return seeded, nil
+	}
+	if files == nil {
+		return 200, nil
+	}
+	held, any := files.holdsCredential(apiKey)
+	if !any {
+		return 200, nil
+	}
+	if held {
+		return 200, nil
+	}
+	return 401, nil
+}
+
+// fingerprintFake keeps a credential out of the fake's own call log while
+// still letting a test tell two probes apart.
+func fingerprintFake(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "sha256:" + hex.EncodeToString(sum[:])[:16]
 }
 
 // IngestStatus answers the seeded state, or "succeeded".

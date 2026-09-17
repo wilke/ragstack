@@ -489,6 +489,11 @@ func (s *selftest) execute(ctx context.Context) error {
 		return err
 	}
 
+	// ---- credentials: mint, restart, prove; revoke, restart, prove --------
+	if err := s.credentials(ctx); err != nil {
+		return err
+	}
+
 	// ---- backup --fence --------------------------------------------------
 	backup, err := s.submit(ctx, "backup --fence", "backup", s.primary, map[string]any{"fence": true}, "")
 	if err != nil {
@@ -563,6 +568,87 @@ func (s *selftest) execute(ctx context.Context) error {
 		})
 	}
 	return nil
+}
+
+// credentials is the creds phase: a key minted into the sandbox's ledger, the
+// API restarted so the ledger is live, and the tenant DIALLED to prove it —
+// then the same key withdrawn and dialled again to prove the 401.
+//
+// It is here rather than in a unit test because the thing being proved is not
+// a rewritten file: it is that the tenant API, restarted by this control
+// plane, actually accepts the key the ctl minted and actually refuses the one
+// it revoked. Nothing short of a live tenant can answer that, and the sandbox
+// is the only live tenant the selftest is allowed to touch.
+//
+// The proof's credentials are read from the sandbox's own secrets.env by the
+// job; this function passes none and prints none.
+func (s *selftest) credentials(ctx context.Context) error {
+	const label = "selftest"
+	mintArgs := map[string]any{"label": label, "role": "user", "restart": true, "prove": true}
+	mint, err := s.submit(ctx, "key mint --restart --prove", "key-mint", s.primary, mintArgs, "")
+	if err != nil {
+		return err
+	}
+	s.checks = append(s.checks, proofCheck("key mint --prove", mint, []string{"surviving_admin", "minted"}))
+
+	revokeArgs := map[string]any{"id": label, "restart": true, "prove": true}
+	revoke, err := s.submit(ctx, "key revoke --restart --prove", "key-revoke", s.primary, revokeArgs, s.primary)
+	if err != nil {
+		return err
+	}
+	s.checks = append(s.checks, proofCheck("key revoke --prove", revoke, []string{"surviving_admin", "revoked"}))
+
+	// The ledger is the registry's, not only the file's: a key the ctl minted
+	// has to be a key the ctl can find afterwards, which is the whole reason
+	// the row exists.
+	row, err := s.tenantRow(s.primary)
+	if err != nil {
+		return err
+	}
+	for _, k := range row.Keys {
+		if k.ID != label {
+			continue
+		}
+		verdict, detail := checkPass, "the ledger row is present and revoked ("+k.Fingerprint+")"
+		if k.RevokedAt == "" || k.Effective {
+			verdict, detail = checkFail, "the ledger row is still effective after a revoke"
+		}
+		s.checks = append(s.checks, checkResult{Name: "key ledger", Verdict: verdict, Detail: detail})
+		return nil
+	}
+	s.checks = append(s.checks, checkResult{
+		Name: "key ledger", Verdict: checkFail,
+		Detail: "the registry holds no keys[] row for " + label + ": a ctl-minted key that cannot be ctl-revoked",
+	})
+	return nil
+}
+
+// proofCheck turns a job's `result.proof` into a check.
+//
+// It asserts the SHAPE the op promises — one entry per credential, each with
+// the status it expected — rather than re-deriving the verdict: the job
+// already failed if a credential answered the wrong thing, so what is left to
+// check here is that the proof was actually taken.
+func proofCheck(name string, job *model.Job, want []string) checkResult {
+	proof, _ := job.Result["proof"].(map[string]any)
+	if len(proof) == 0 {
+		return checkResult{Name: name, Verdict: checkFail, Detail: "the job recorded no proof"}
+	}
+	var missing []string
+	var parts []string
+	for _, k := range want {
+		row, ok := proof[k].(map[string]any)
+		if !ok {
+			missing = append(missing, k)
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%v", k, row["status"]))
+	}
+	if len(missing) > 0 {
+		return checkResult{Name: name, Verdict: checkFail,
+			Detail: "the proof has no " + strings.Join(missing, ", ") + " entry"}
+	}
+	return checkResult{Name: name, Verdict: checkPass, Detail: strings.Join(parts, ", ")}
 }
 
 // isLandsInPRD reports whether err is the placeholder refusal of an op whose

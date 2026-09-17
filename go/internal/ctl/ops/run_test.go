@@ -492,9 +492,12 @@ func TestKeyMintWritesTheLedgerBacksItUpAndDeliversTheValueOnce(t *testing.T) {
 func TestKeyRevokeRemovesTheKeyTheLedgerFingerprintNames(t *testing.T) {
 	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
 		managed(tn)
+		// Complete ledger rows: `key revoke` now WRITES the registry, so the
+		// rows it leaves behind have to satisfy the contract — which they did
+		// not when nothing ever validated a row a test had invented.
 		tn.Keys = []registry.Key{
-			{ID: "ops", Role: "admin", Fingerprint: fingerprint(testSecret), Effective: true},
-			{ID: "survivor", Role: "admin", Fingerprint: "sha256:ffffffffffffffff", Effective: true},
+			ledgerKey("ops", "admin", fingerprint(testSecret)),
+			ledgerKey("survivor", "admin", "sha256:ffffffffffffffff"),
 		}
 	})
 	p := plan(t, oc, "key-revoke", map[string]any{"id": "ops"})
@@ -513,6 +516,14 @@ func TestKeyRevokeRemovesTheKeyTheLedgerFingerprintNames(t *testing.T) {
 	}
 	if p.Result()["pending_until_restart"] != true {
 		t.Errorf("a revoke without a restart is pending; result = %v", p.Result())
+	}
+}
+
+// ledgerKey is a contract-complete registry.Key for the fixtures.
+func ledgerKey(id, role, fp string) registry.Key {
+	return registry.Key{
+		ID: id, Label: id, Role: role, TenantString: "dev", Fingerprint: fp,
+		CreatedAt: "2026-09-14T09:00:00Z", CreatedBy: "local:3581", Effective: true,
 	}
 }
 

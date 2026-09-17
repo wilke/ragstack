@@ -3,12 +3,16 @@ package ops
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/render"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
 )
@@ -86,8 +90,19 @@ func (p *planner) requirePublicKey(key string) error {
 // ---------------------------------------------------------------- env normalize
 
 func planEnvNormalize(ctx context.Context, p *planner, _ map[string]any) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because this op now ends in a registry write:
+	// splitting the secrets out is exactly what moves a tenant from
+	// `env_layout: legacy` to `managed`, and a row that still said `legacy`
+	// afterwards was a row that made `tenant backup` copy tenant.env as a
+	// public file and made every reader believe the split had not happened.
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
 	tenantEnv, secretsEnv := p.tpaths.TenantEnv, p.tpaths.SecretsEnv
+	// Filled by the run half below and read by the registry step after it.
+	var (
+		movedKeys  []string
+		publicSHA  string
+		secretsSHA string
+	)
 
 	// The preview is the whole point of this op — it is the one that RE-WRITES
 	// a file somebody hand-edited — so it is computed from the live file and
@@ -134,6 +149,7 @@ func planEnvNormalize(ctx context.Context, p *planner, _ map[string]any) error {
 			}
 			notes := f.Normalize()
 			public, secrets := envfile.SplitSecrets(f, settings.Classify)
+			movedKeys = secrets.SecretKeys()
 			stamp := p.stampOf(sc)
 			bak := tenantEnv + ".bak-env-normalize-" + stamp
 			if err := sc.Checkpoint("file:"+bak, "file:"+tenantEnv, "file:"+secretsEnv); err != nil {
@@ -142,20 +158,253 @@ func planEnvNormalize(ctx context.Context, p *planner, _ map[string]any) error {
 			if err := files.WriteAtomic(ctx, bak, b, 0o640); err != nil {
 				return "", err
 			}
-			if err := files.WriteAtomic(ctx, tenantEnv, public.Render(), 0o640); err != nil {
+			publicBody := public.Render()
+			if err := files.WriteAtomic(ctx, tenantEnv, publicBody, 0o640); err != nil {
 				return "", err
 			}
-			if len(secrets.SecretKeys()) > 0 {
-				if err := files.WriteAtomic(ctx, secretsEnv, secrets.Render(), 0o640); err != nil {
+			publicSHA = sha256Hex(publicBody)
+			if len(movedKeys) > 0 {
+				secretsBody := secrets.Render()
+				if err := files.WriteAtomic(ctx, secretsEnv, secretsBody, 0o640); err != nil {
 					return "", err
 				}
+				secretsSHA = sha256Hex(secretsBody)
 			}
-			sc.Logf("%d normalization(s); %d secret key(s) moved", len(notes), len(secrets.SecretKeys()))
+			sc.Logf("%d normalization(s); %d secret key(s) moved", len(notes), len(movedKeys))
 			return fmt.Sprintf("normalized (%d change(s))", len(notes)), nil
 		},
 	})
+	p.addEnvLayoutStep(&movedKeys, &publicSHA, &secretsSHA)
 	p.result["pending_until_restart"] = true
 	return nil
+}
+
+// addEnvLayoutStep records what the split actually did.
+//
+// `env_layout` is the registry's word for WHERE this tenant's secrets live,
+// and nothing wrote it after adoption: `env normalize` moved the keys into
+// secrets.env and left the row saying `legacy`, so on hackathon the field
+// still read `legacy` over a tenant whose secrets had been split for days.
+// Everything downstream believes that field — `tenant backup` decides from it
+// whether tenant.env is a public file it may copy in the clear, the handover
+// runbook reads it as a prerequisite, `tenant show` prints it — so the op that
+// performs the split is the op that has to record it.
+//
+// The two checksums go with it: they are what doctor compares the files
+// against, and a normalize that rewrote both files and left the old sums in
+// the row would raise a drift finding for its own work.
+func (p *planner) addEnvLayoutStep(movedKeys *[]string, publicSHA, secretsSHA *string) {
+	name := p.tenant
+	p.add(step{
+		Kind: "registry", Title: "record env_layout and the new file checksums", Targets: []string{name},
+		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
+		Warnings: []string{"env_layout becomes `managed` when — and only when — a secret-class key actually moved " +
+			"into secrets.env; a tenant that had none stays `legacy`, which is the truth about it"},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			moved := map[string]bool{}
+			for _, k := range *movedKeys {
+				moved[k] = true
+			}
+			layout := p.t.EnvLayout
+			err := p.saveTenant(sc, "env-normalize", func(t *registry.Tenant) error {
+				if len(moved) > 0 || t.SecretsFileSHA256 != "" {
+					t.EnvLayout = envLayoutManaged
+				}
+				layout = t.EnvLayout
+				if *publicSHA != "" {
+					t.EnvFileSHA256 = *publicSHA
+				}
+				if *secretsSHA != "" {
+					t.SecretsFileSHA256 = registry.NullString(*secretsSHA)
+				}
+				// A secret_ref still pointing at tenant.env after its key has
+				// moved is a pointer at a file that no longer holds it, which
+				// is what `backup` follows when it seals the secrets.
+				for i := range t.SecretRefs {
+					if moved[t.SecretRefs[i].Key] {
+						t.SecretRefs[i].File = "secrets.env"
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			p.result["env_layout"] = layout
+			p.result["secrets_moved"] = len(moved)
+			return fmt.Sprintf("%s env_layout = %s (%d secret key(s) in secrets.env)", name, layout, len(moved)), nil
+		},
+	})
+}
+
+// ---------------------------------------------------------------- env pg-password
+
+// pgPasswordKeys are the connection strings the role password can be read out
+// of, in the order they are tried. All three carry the same password on a
+// tenant `new-tenant.sh` provisioned; a tenant where they DISAGREE is a tenant
+// nobody can pick a password for, and this op refuses rather than guessing.
+var pgPasswordKeys = []string{"POSTGRES_DSN", "USER_STORE_DSN", "COLLECTION_STORE_DSN"}
+
+// upShPasswordRe finds the literal in the generated `bin/up.sh`
+// (`--env POSTGRES_PASSWORD=…`, or a plain assignment). It is the LAST resort:
+// a tenant whose DSNs carry no password at all.
+//
+// Three alternatives rather than a back-referenced quote: RE2 has no
+// back-references, and spelling the single-quoted, double-quoted and bare
+// forms out is also the only version of this that cannot match across a
+// closing quote.
+var upShPasswordRe = regexp.MustCompile(`POSTGRES_PASSWORD=(?:'([^']*)'|"([^"]*)"|([^\s'";]+))`)
+
+// planEnvPGPassword makes the tenant's own postgres startable by the control
+// plane, and changes nothing else.
+//
+// The instance supervisor starts `postgres-<manifest>` with the role password
+// in `APPTAINERENV_POSTGRES_PASSWORD`, read out of secrets.env at run time
+// (ops/supervisor.go). A tenant provisioned by `apptainer/new-tenant.sh` has
+// it under NO name the supervisor looks for: the literal is inside the
+// generated `bin/up.sh` and inside the connection strings, and provision.env
+// carries the host and the port but not the password. So a handover of such a
+// tenant stops everything and then cannot start its postgres — which is why
+// this op is a PREPARATION step, run days before, and why the release checks
+// its result before it stops anything.
+//
+// It is idempotent (a secrets.env that already carries the key is left exactly
+// as it is), it keeps a timestamped backup of what was there, and it never
+// prints, logs, checkpoints or previews the value.
+func planEnvPGPassword(_ context.Context, p *planner, _ map[string]any) error {
+	p.need(model.LockTenant)
+	if p.t.Stores.Postgres.Kind != registry.PostgresKindLocal {
+		return p.refuse("%s runs no postgres server of its own (stores.postgres.kind is %s): there is no role "+
+			"password to write", p.t.Name, p.t.Stores.Postgres.Kind)
+	}
+	secretsEnv := p.tpaths.SecretsEnv
+	upSh := filepath.Join(p.t.DataDir, "bin", "up.sh")
+	p.addFor("files", step{
+		Kind: "envfile", Title: "derive " + render.APPTAINERENVPostgresPassword + " into secrets.env",
+		Targets:    []string{secretsEnv},
+		WouldWrite: []model.WouldWrite{secretWrite(secretsEnv, "0640")},
+		Warnings: []string{"the value is derived from the connection strings ALREADY in secrets.env and is never " +
+			"printed, logged or previewed; the previous content is kept beside it as `.bak-pg-password-<ts>`",
+			"idempotent: a secrets.env that already carries the key is not rewritten at all"},
+		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			files := sc.Ops.Drivers.Files()
+			b, err := files.ReadFile(ctx, secretsEnv)
+			if err != nil {
+				return "", fmt.Errorf("reading %s: %w", secretsEnv, err)
+			}
+			f, _, err := envfile.ParseLenient(b)
+			if err != nil {
+				return "", fmt.Errorf("%w: %s does not parse: %v", jobs.ErrRefused, secretsEnv, err)
+			}
+			if v, ok := f.Get(render.APPTAINERENVPostgresPassword); ok && strings.TrimSpace(v) != "" {
+				sc.Logf("%s already carries %s; nothing to do", secretsEnv, render.APPTAINERENVPostgresPassword)
+				p.result["written"] = false
+				return "already present", nil
+			}
+			pw, from, err := derivePGPassword(ctx, sc, f, upSh)
+			if err != nil {
+				return "", err
+			}
+			if err := f.Set(render.APPTAINERENVPostgresPassword, pw); err != nil {
+				return "", err
+			}
+			bak := secretsEnv + ".bak-pg-password-" + p.stampOf(sc)
+			if err := sc.Checkpoint("file:"+bak, "file:"+secretsEnv); err != nil {
+				return "", err
+			}
+			if err := files.WriteAtomic(ctx, bak, b, 0o640); err != nil {
+				return "", fmt.Errorf("writing the backup %s: %w", bak, err)
+			}
+			if err := files.WriteAtomic(ctx, secretsEnv, f.Render(), 0o640); err != nil {
+				return "", err
+			}
+			sc.Logf("%s written from %s (backup %s)", render.APPTAINERENVPostgresPassword, from, filepath.Base(bak))
+			p.result["written"] = true
+			p.result["derived_from"] = from
+			return "derived from " + from, nil
+		},
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			bak, ok := externalIDValue(sc.Step.ExternalIDs, "file:")
+			if !ok || !strings.Contains(bak, ".bak-pg-password-") {
+				return "nothing was written", nil
+			}
+			b, err := sc.Ops.Drivers.Files().ReadFile(ctx, bak)
+			if err != nil {
+				return "", err
+			}
+			return "restored " + secretsEnv, sc.Ops.Drivers.Files().WriteAtomic(ctx, secretsEnv, b, 0o640)
+		},
+	})
+	p.warn("this is a PREPARATION op: nothing is restarted, and the running postgres is untouched. It exists so " +
+		"that the handover's take can start `" + instanceNameFor(render.LegPostgres, p.t.ManifestName) + "` at all")
+	return nil
+}
+
+// derivePGPassword reads the role password out of what is already on disk.
+//
+// The DSNs first, and all of them: they are the tenant's own connection
+// strings, so a password read from them is by construction the one postgres is
+// running with. Disagreement is a REFUSAL — a tenant whose three DSNs carry
+// two passwords is one where picking either would start a server the other
+// half of the tenant cannot log into. `bin/up.sh` is the last resort, for a
+// tenant whose DSNs carry no password at all.
+//
+// Nothing here is logged: the error names the FILE and the KEY, never a value.
+func derivePGPassword(ctx context.Context, sc *jobs.StepContext, f *envfile.File, upSh string) (string, string, error) {
+	seen := map[string][]string{}
+	for _, key := range pgPasswordKeys {
+		v, ok := f.Get(key)
+		if !ok || strings.TrimSpace(v) == "" {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(v))
+		if err != nil || u.User == nil {
+			continue
+		}
+		pw, set := u.User.Password()
+		if !set || pw == "" {
+			continue
+		}
+		seen[pw] = append(seen[pw], key)
+	}
+	switch len(seen) {
+	case 1:
+		for pw, keys := range seen {
+			sort.Strings(keys)
+			return pw, "the password in " + strings.Join(keys, ", "), nil
+		}
+	default:
+		if len(seen) > 1 {
+			var where []string
+			for _, keys := range seen {
+				sort.Strings(keys)
+				where = append(where, strings.Join(keys, "+"))
+			}
+			sort.Strings(where)
+			return "", "", fmt.Errorf("%w: the connection strings disagree about the role password (%s carry "+
+				"different ones). Fix them first — a password picked from one of them would start a server the "+
+				"rest of the tenant cannot log into", jobs.ErrRefused, strings.Join(where, " and "))
+		}
+	}
+	// The generated up.sh, for a tenant whose DSNs carry none.
+	b, err := sc.Ops.Drivers.Files().ReadFile(ctx, upSh)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: no connection string in secrets.env carries a password and %s could not be "+
+			"read (%v), so there is nowhere to derive one from. Write %s into secrets.env by hand",
+			jobs.ErrRefused, upSh, err, render.APPTAINERENVPostgresPassword)
+	}
+	m := upShPasswordRe.FindSubmatch(b)
+	if m == nil {
+		return "", "", fmt.Errorf("%w: neither the connection strings in secrets.env nor %s carries a postgres "+
+			"password, so there is nowhere to derive one from", jobs.ErrRefused, upSh)
+	}
+	// Exactly one of the three alternatives matched.
+	for _, g := range m[1:] {
+		if len(g) > 0 {
+			return string(g), filepath.Base(upSh), nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: %s names POSTGRES_PASSWORD with an empty value", jobs.ErrRefused, upSh)
 }
 
 // ---------------------------------------------------------------- render-units
