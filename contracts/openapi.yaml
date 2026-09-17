@@ -3391,7 +3391,9 @@ components:
         - max_upload_files
         - max_upload_bytes_per_request
         - upload_content_types
+        - doi_enrichment_enabled
         - allow_user_collection_create
+        - max_collections_per_owner
         - log_level
       properties:
         vector_backend: { type: string }
@@ -3433,7 +3435,9 @@ components:
         upload_content_types:
           type: array
           items: { type: string }
+        doi_enrichment_enabled: { type: boolean }
         allow_user_collection_create: { type: boolean }
+        max_collections_per_owner: { type: integer }
         log_level: { type: string }
       additionalProperties: false
 

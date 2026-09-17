@@ -248,6 +248,29 @@ inputs:
       reports live/incoming/cap/would_fit under the chunk_cap_exceeded label).
       0 = unlimited. The API derives it per job (the registry override, else
       MAX_CHUNKS_PER_COLLECTION for a user-created collection)."
+  doi_enrichment:
+    type: boolean
+    default: false
+    doc: "Resolve each DISTINCT DOI the extract stage recovered against Crossref
+      (title/authors/journal/year) and the NCBI ID Converter (pmid/pmcid), and
+      fill the fields the document does not already have (#596). WHY IT IS A
+      WORKFLOW INPUT AND NOT WORKER CONFIG: the ingest task is its own container
+      with its own argv, so the tenant API's DOI_ENRICHMENT_* settings cannot
+      reach it — before this, an upload through the gowe backend was born with a
+      DOI and nothing else no matter what the tenant had configured. Seeded per
+      job by the API (documents.py::_gowe_inputs). Default false, so a hand-run
+      workflow makes no outbound request unless asked. Never fails a task: a
+      slow, down or rate-limiting service degrades to 'no title'."
+  doi_mailto:
+    type: ["null", string]
+    doc: "Contact address for Crossref's polite pool and NCBI's email parameter.
+      Not a credential — it is published in the User-Agent of every request."
+  doi_cache_dir:
+    type: ["null", string]
+    doc: "Directory inside the worker for the per-DOI resolution cache, so the
+      same paper ingested into three collections resolves once. Must be a path
+      the worker image has bound; omitted = in-process only, which still costs
+      one lookup per distinct DOI per task, not per chunk."
 
 steps:
   batch:
@@ -347,6 +370,9 @@ steps:
       max_chunks: max_chunks
       collection_id: collection_id
       registry: registry
+      doi_enrichment: doi_enrichment
+      doi_mailto: doi_mailto
+      doi_cache_dir: doi_cache_dir
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -402,6 +428,19 @@ steps:
         registry:
           type: ["null", string]
           inputBinding: {prefix: --registry, position: 20}
+        # #596. A CWL boolean with an inputBinding emits its prefix only when
+        # true, so `false` adds nothing to the argv and the task is byte-for-byte
+        # the pre-#596 invocation.
+        doi_enrichment:
+          type: boolean
+          default: false
+          inputBinding: {prefix: --doi-enrichment, position: 21}
+        doi_mailto:
+          type: ["null", string]
+          inputBinding: {prefix: --doi-mailto, position: 22}
+        doi_cache_dir:
+          type: ["null", string]
+          inputBinding: {prefix: --doi-cache-dir, position: 23}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.

@@ -8,20 +8,27 @@ care about (404, timeout, rate-limit, malformed JSON) is reproduced locally.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from ragstack.ingestion.doi_metadata import (
+    BREAKER_THRESHOLD,
+    DOI_ARG_DEST,
     ENRICHED_FROM_KEY,
+    METADATA_SOURCE_KEY,
     DoiCache,
     DoiEnricher,
     DoiMetadataResolver,
     Resolution,
+    add_doi_enrichment_args,
     default_user_agent,
     document_doi,
+    enricher_from_args,
     map_crossref,
     map_datacite,
+    map_idconv,
     merge_enrichment,
     normalize_doi,
     scan_text_for_doi,
@@ -73,11 +80,47 @@ def _resolver(handler, **kwargs) -> tuple[DoiMetadataResolver, list[httpx.Reques
     client = httpx.AsyncClient(transport=httpx.MockTransport(_record))
     kwargs.setdefault("cache", DoiCache())
     kwargs.setdefault("datacite_fallback", False)
+    # Off unless a test is about the ID Converter, for the same reason
+    # datacite_fallback is: a test asserting "exactly one request" should not
+    # have to know which optional legs happen to be on by default.
+    kwargs.setdefault("pubmed_ids", False)
     return DoiMetadataResolver(client, **kwargs), seen
 
 
 def _crossref_ok(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"status": "ok", "message": CROSSREF_MESSAGE})
+
+
+# The ID Converter's real response shape, copied from a live call made while
+# building this. Two details are load-bearing and both are reproduced exactly:
+# ``pmid`` is a JSON *integer*, and ``doi`` echoes the publisher's original CASE
+# while ``requested-id`` echoes the (lowercased) id we actually asked for.
+IDCONV_RECORD = {
+    "doi": "10.3390/Antibiotics14050475",
+    "pmcid": "PMC12108422",
+    "pmid": 40426541,
+    "requested-id": DOI,
+}
+
+
+def _idconv_ok(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"status": "ok", "records": [IDCONV_RECORD]})
+
+
+def _routed(**by_host):
+    """Dispatch a mock request to a handler chosen by a fragment of its host."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        for fragment, responder in by_host.items():
+            if fragment in request.url.host:
+                return responder(request)
+        raise AssertionError(f"unexpected host {request.url.host}")
+
+    return handler
+
+
+def _hosts(seen: list[httpx.Request]) -> list[str]:
+    return [r.url.host for r in seen]
 
 
 # --------------------------------------------------------------------------- #
@@ -547,3 +590,331 @@ async def test_enricher_shares_one_lookup_across_documents_with_the_same_doi():
     docs[1].id = "doc-2"
     assert await DoiEnricher(resolver).enrich_documents(docs) == 2
     assert len(seen) == 1
+
+
+# --------------------------------------------------------------------------- #
+# NCBI ID Converter (pmid / pmcid) — #596
+# --------------------------------------------------------------------------- #
+
+def test_map_idconv_keys_on_requested_id_not_the_returned_doi():
+    """The record's ``doi`` is the DOI as NCBI stores it, in the publisher's
+    original case; ``requested-id`` is what we sent. Keying on ``doi`` drops
+    every record from a publisher that uppercases its suffix — which is most of
+    ASM — and the drop is silent."""
+    mapped = map_idconv({"records": [IDCONV_RECORD]})
+    assert set(mapped) == {DOI}
+    assert mapped[DOI] == {"pmid": "40426541", "pmcid": "PMC12108422"}
+
+
+def test_map_idconv_stringifies_the_integer_pmid():
+    """``ingestion.jats`` keeps pmid/pmcid as strings on purpose. A corpus that
+    mixes 40426541 with "40426541" gives Elasticsearch two field types for one
+    name across collections."""
+    assert map_idconv({"records": [IDCONV_RECORD]})[DOI]["pmid"] == "40426541"
+
+
+def test_map_idconv_omits_records_that_failed_to_resolve():
+    payload = {
+        "records": [
+            {"doi": "10.9999/nope", "requested-id": "10.9999/nope",
+             "status": "error", "errmsg": "Identifier not found in PMC"},
+            IDCONV_RECORD,
+        ]
+    }
+    assert set(map_idconv(payload)) == {DOI}
+
+
+def test_map_idconv_tolerates_garbage():
+    assert map_idconv({}) == {}
+    assert map_idconv({"records": "nope"}) == {}
+    assert map_idconv({"records": [None, {"pmid": 1}]}) == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_merges_crossref_and_pubmed_ids():
+    resolver, seen = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=_idconv_ok), pubmed_ids=True
+    )
+    resolution = await resolver.resolve(DOI)
+    assert resolution is not None
+    assert resolution.fields["title"] == "High Prevalence of Cefiderocol Resistance"
+    assert resolution.fields["pmid"] == "40426541"
+    assert resolution.fields["pmcid"] == "PMC12108422"
+    assert resolution.service == "crossref+idconv"
+    assert sorted(_hosts(seen)) == ["api.crossref.org", "pmc.ncbi.nlm.nih.gov"]
+
+
+@pytest.mark.asyncio
+async def test_idconv_uses_the_current_endpoint_not_the_redirecting_one():
+    """The widely-copied ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/ URL 301s here,
+    and httpx does not follow redirects by default — asking the old one returns
+    an empty body and no ids at all."""
+    resolver, seen = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=_idconv_ok), pubmed_ids=True,
+        mailto="ops@example.org",
+    )
+    await resolver.resolve(DOI)
+    idconv = next(r for r in seen if "ncbi" in r.url.host)
+    assert str(idconv.url).startswith(
+        "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/"
+    )
+    assert idconv.url.params["ids"] == DOI
+    assert idconv.url.params["tool"] == "ragstack"
+    assert idconv.url.params["email"] == "ops@example.org"
+
+
+@pytest.mark.asyncio
+async def test_pubmed_ids_resolve_even_when_crossref_has_no_record():
+    """A DOI Crossref 404s can still be in PMC, and a pmid/pmcid alone is worth
+    having — so this is a Resolution, not a miss."""
+    resolver, _ = _resolver(
+        _routed(crossref=lambda _r: httpx.Response(404), ncbi=_idconv_ok),
+        pubmed_ids=True,
+    )
+    resolution = await resolver.resolve(DOI)
+    assert resolution is not None
+    assert resolution.service == "idconv"
+    assert resolution.fields == {"pmid": "40426541", "pmcid": "PMC12108422"}
+    assert "title" not in resolution.fields
+
+
+@pytest.mark.asyncio
+async def test_idconv_is_one_batched_request_for_the_whole_shard():
+    """Per DISTINCT DOI, and for the ID Converter not even that: one request for
+    all of them. The regression this guards is 382 chunks -> 382 lookups."""
+    dois = [DOI, "10.1128/jvi.02415-06", "10.1371/journal.pntd.0010774"]
+
+    def idconv(request: httpx.Request) -> httpx.Response:
+        asked = request.url.params["ids"].split(",")
+        return httpx.Response(200, json={"records": [
+            {"requested-id": d, "pmid": 1000 + i, "pmcid": f"PMC{i}"}
+            for i, d in enumerate(asked)
+        ]})
+
+    resolver, seen = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=idconv), pubmed_ids=True
+    )
+    out = await resolver.resolve_many(dois * 50)
+    assert set(out) == set(dois)
+    assert _hosts(seen).count("pmc.ncbi.nlm.nih.gov") == 1
+    assert _hosts(seen).count("api.crossref.org") == 3
+    assert out[dois[1]].fields["pmid"] == "1001"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_idconv_call_still_leaves_the_crossref_record():
+    resolver, _ = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=lambda _r: httpx.Response(500)),
+        pubmed_ids=True,
+    )
+    resolution = await resolver.resolve(DOI)
+    assert resolution is not None
+    assert resolution.service == "crossref"
+    assert resolution.fields["title"]
+    assert "pmid" not in resolution.fields
+
+
+@pytest.mark.asyncio
+async def test_a_failed_idconv_call_blocks_the_negative_cache(tmp_path):
+    """Crossref 404 + an ID Converter that merely fell over is not evidence the
+    DOI has no metadata. Caching that negative would outlive the outage."""
+    resolver, seen = _resolver(
+        _routed(crossref=lambda _r: httpx.Response(404),
+                ncbi=lambda _r: httpx.Response(503)),
+        pubmed_ids=True, cache=DoiCache(tmp_path),
+    )
+    assert await resolver.resolve(DOI) is None
+    assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_authoritative_misses_everywhere_are_negative_cached(tmp_path):
+    """Both services answered and neither has it — that IS cacheable."""
+    resolver, _ = _resolver(
+        _routed(crossref=lambda _r: httpx.Response(404),
+                ncbi=lambda _r: httpx.Response(200, json={"records": [
+                    {"requested-id": DOI, "status": "error"}]})),
+        pubmed_ids=True, cache=DoiCache(tmp_path),
+    )
+    assert await resolver.resolve(DOI) is None
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_many_makes_no_requests_for_already_cached_dois(tmp_path):
+    """The whole point of the cache: the same paper ingested into a second
+    collection resolves zero times, ID Converter batch included."""
+    handler = _routed(crossref=_crossref_ok, ncbi=_idconv_ok)
+    first, first_seen = _resolver(handler, pubmed_ids=True, cache=DoiCache(tmp_path))
+    assert await first.resolve_many([DOI])
+    assert len(first_seen) == 2
+
+    second, second_seen = _resolver(handler, pubmed_ids=True, cache=DoiCache(tmp_path))
+    out = await second.resolve_many([DOI, DOI.upper()])
+    assert out[DOI].fields["pmid"] == "40426541"
+    assert second_seen == []
+
+
+@pytest.mark.asyncio
+async def test_pubmed_ids_can_be_turned_off_independently():
+    resolver, seen = _resolver(_routed(crossref=_crossref_ok), pubmed_ids=False)
+    resolution = await resolver.resolve(DOI)
+    assert resolution is not None and resolution.service == "crossref"
+    assert _hosts(seen) == ["api.crossref.org"]
+
+
+# --------------------------------------------------------------------------- #
+# Circuit breaker — what makes "on by default" affordable
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_breaker_stops_asking_once_the_network_is_unreachable():
+    """An air-gapped host must not pay a timeout per document. After
+    BREAKER_THRESHOLD consecutive transport failures the resolver stops making
+    requests for the rest of its life — and still never fails anything."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host", request=request)
+
+    resolver, seen = _resolver(handler)
+    dois = [f"10.1234/paper-{i}" for i in range(40)]
+    assert await resolver.resolve_many(dois) == {}
+    assert len(seen) == BREAKER_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_breaker_resets_when_a_service_answers_at_all():
+    """A 404 is a working network. Only a failure to reach the service counts."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] % 2:
+            raise httpx.ConnectError("flaky", request=request)
+        return httpx.Response(404)
+
+    resolver, seen = _resolver(handler)
+    dois = [f"10.1234/paper-{i}" for i in range(20)]
+    assert await resolver.resolve_many(dois) == {}
+    assert len(seen) == 20  # never tripped
+
+
+# --------------------------------------------------------------------------- #
+# Provenance
+# --------------------------------------------------------------------------- #
+
+def test_merge_stamps_both_provenance_keys():
+    """``doi_enriched_from`` is this module's own stamp; ``metadata_source`` is
+    the key scripts/backfill_collection_metadata.py writes and the tenant-admin
+    runbook tells operators to grep for. A collection born enriched and one
+    repaired after the fact must answer the same question the same way."""
+    metadata: dict = {}
+    merge_enrichment(metadata, {"title": "T", "pmid": "1"}, "crossref+idconv")
+    assert metadata[ENRICHED_FROM_KEY] == "crossref+idconv"
+    assert metadata[METADATA_SOURCE_KEY] == "crossref+idconv"
+
+
+def test_merge_does_not_overwrite_extracted_pubmed_ids():
+    metadata = {"pmid": "from-the-jats", "pmcid": ""}
+    filled = merge_enrichment(metadata, {"pmid": "40426541", "pmcid": "PMC1"}, "idconv")
+    assert metadata["pmid"] == "from-the-jats"
+    assert metadata["pmcid"] == "PMC1"
+    assert filled == ["pmcid"]
+
+
+# --------------------------------------------------------------------------- #
+# End to end over Documents — the #596 acceptance case
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_enricher_fills_the_whole_scholarly_set_on_an_uploaded_pdf():
+    """The measured failure: doi 382/382, title/authors/journal/pmid/pmcid
+    0/382. One document, one Crossref call, one ID Converter call, all five
+    fields present."""
+    resolver, seen = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=_idconv_ok), pubmed_ids=True
+    )
+    doc = _pdf_doc()
+    assert await DoiEnricher(resolver).enrich_documents([doc]) == 1
+    assert doc.metadata["title"] == "High Prevalence of Cefiderocol Resistance"
+    assert doc.metadata["authors"]
+    assert doc.metadata["journal"] == "Antibiotics"
+    assert doc.metadata["pmid"] == "40426541"
+    assert doc.metadata["pmcid"] == "PMC12108422"
+    assert doc.metadata[METADATA_SOURCE_KEY] == "crossref+idconv"
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_enricher_resolves_per_distinct_doi_not_per_document():
+    """Two papers spread over many documents cost two Crossref lookups and one
+    batched ID Converter call — never one per chunk."""
+    def idconv(request: httpx.Request) -> httpx.Response:
+        asked = request.url.params["ids"].split(",")
+        return httpx.Response(200, json={"records": [
+            {"requested-id": d, "pmid": 7} for d in asked]})
+
+    resolver, seen = _resolver(
+        _routed(crossref=_crossref_ok, ncbi=idconv), pubmed_ids=True
+    )
+    docs = []
+    for i in range(20):
+        doc = _pdf_doc(doi=DOI if i % 2 else "10.1128/jvi.02415-06")
+        doc.id = f"doc-{i}"
+        docs.append(doc)
+    assert await DoiEnricher(resolver).enrich_documents(docs) == 20
+    assert _hosts(seen).count("api.crossref.org") == 2
+    assert _hosts(seen).count("pmc.ncbi.nlm.nih.gov") == 1
+
+
+@pytest.mark.asyncio
+async def test_every_service_down_leaves_the_documents_ingestible():
+    """The non-negotiable one: a total outage costs metadata, never a job."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    resolver, _ = _resolver(handler, pubmed_ids=True)
+    doc = _pdf_doc()
+    assert await DoiEnricher(resolver).enrich_documents([doc]) == 0
+    assert doc.metadata["doi"] == DOI          # the local leg still improved it
+    assert "title" not in doc.metadata
+    assert METADATA_SOURCE_KEY not in doc.metadata
+
+
+# --------------------------------------------------------------------------- #
+# Worker-tool wiring (scripts/ingest_shard.py, scripts/embed_shard.py)
+# --------------------------------------------------------------------------- #
+
+class _Args(SimpleNamespace):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_enricher_from_args_is_none_unless_asked():
+    async with httpx.AsyncClient() as http:
+        assert enricher_from_args(_Args(), http) is None
+        assert enricher_from_args(_Args(doi_enrichment=False), http) is None
+
+
+@pytest.mark.asyncio
+async def test_enricher_from_args_builds_a_configured_enricher(tmp_path):
+    async with httpx.AsyncClient() as http:
+        enricher = enricher_from_args(
+            _Args(doi_enrichment=True, doi_mailto="ops@example.org",
+                  doi_cache_dir=str(tmp_path), doi_timeout=3.0, doi_concurrency=2),
+            http,
+        )
+    assert isinstance(enricher, DoiEnricher)
+
+
+def test_worker_tools_expose_the_same_doi_flags():
+    """ingest_shard (the gowe upload path) and embed_shard (the decoupled bulk
+    plane) must not drift: both are wired through add_doi_enrichment_args."""
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    add_doi_enrichment_args(parser)
+    args = parser.parse_args(["--doi-enrichment", "--doi-mailto", "a@b.c"])
+    assert args.doi_enrichment is True
+    assert args.doi_mailto == "a@b.c"
+    assert parser.parse_args([]).doi_enrichment is False
+    assert set(DOI_ARG_DEST) <= set(vars(parser.parse_args([])))

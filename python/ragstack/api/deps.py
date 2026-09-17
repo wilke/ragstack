@@ -1033,12 +1033,19 @@ def _build_kg_extractor(llm: OpenAILLM | None) -> LLMKGExtractor | None:
 
 
 def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
-    """The Crossref/DataCite metadata enricher, or ``None`` when disabled.
+    """The Crossref/DataCite/ID-Converter metadata enricher, or ``None`` when off.
 
-    Opt-in via ``doi_enrichment_enabled`` (default off) because it is the only
-    part of ingest that reaches the public internet; disabled, ingest keeps the
-    exact behaviour it had before enrichment existed, which is what
-    offline/air-gapped deployments need.
+    ON by default since #596 (``doi_enrichment_enabled``): off is what made every
+    upload-built collection arrive without a title. It is still the only part of
+    ingest that reaches the public internet, so it remains one switch —
+    ``DOI_ENRICHMENT_ENABLED=false`` restores exactly the behaviour ingest had
+    before enrichment existed, which is what offline/air-gapped deployments need.
+
+    This wires the **local** ingest backend (``INGEST_BACKEND=local``), where the
+    pipeline runs in this process. On ``INGEST_BACKEND=gowe`` the work happens in
+    a CWL step in another container, which this app state cannot reach; those
+    settings travel on the submission instead — see
+    ``api/routers/documents.py::_gowe_inputs``.
 
     Shares the app's HTTP client (deps owns its lifecycle) and the app's
     publisher profile, so DOI discovery here uses the same filename->DOI rule as
@@ -1054,10 +1061,11 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
             "use Crossref's anonymous pool. Set a contact address."
         )
     log.info(
-        "doi enrichment enabled (concurrency=%d, timeout=%.1fs, cache=%s)",
+        "doi enrichment enabled (concurrency=%d, timeout=%.1fs, cache=%s, pubmed_ids=%s)",
         settings.doi_enrichment_concurrency,
         settings.doi_enrichment_timeout,
         settings.doi_enrichment_cache_dir or "memory-only",
+        settings.doi_enrichment_pubmed_ids,
     )
     resolver = build_resolver(
         http,
@@ -1067,6 +1075,7 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
         timeout=settings.doi_enrichment_timeout,
         concurrency=settings.doi_enrichment_concurrency,
         datacite_fallback=settings.doi_enrichment_datacite_fallback,
+        pubmed_ids=settings.doi_enrichment_pubmed_ids,
     )
     return DoiEnricher(resolver, profile=resolve_profile(settings.publisher_profile))
 

@@ -121,6 +121,21 @@ inputs:
   job_id:
     type: ["null", string]
     doc: "The RAGStack ingest job id, recorded in the manifest."
+  doi_enrichment:
+    type: boolean
+    default: false
+    doc: "Resolve each DISTINCT DOI against Crossref (title/authors/journal/year)
+      and the NCBI ID Converter (pmid/pmcid) and fill only the fields the
+      document lacks (#596). Applied in the EMBED step, because enrichment runs
+      between load and chunk and the load step downstream only ever sees chunks
+      whose metadata is already fixed. Default false; never fails a task."
+  doi_mailto:
+    type: ["null", string]
+    doc: "Contact address for Crossref's polite pool and NCBI's email parameter."
+  doi_cache_dir:
+    type: ["null", string]
+    doc: "Worker-side directory for the per-DOI resolution cache; omitted =
+      in-process only."
 
 steps:
   extract:
@@ -173,6 +188,9 @@ steps:
       embedding_url: embedding_url
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
+      doi_enrichment: doi_enrichment
+      doi_mailto: doi_mailto
+      doi_cache_dir: doi_cache_dir
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -196,6 +214,18 @@ steps:
         embedding_url:
           type: string[]
           inputBinding: {prefix: --embedding-url, position: 9}
+        # #596. A CWL boolean with an inputBinding emits its prefix only when
+        # true, so `false` leaves this argv exactly as it was.
+        doi_enrichment:
+          type: boolean
+          default: false
+          inputBinding: {prefix: --doi-enrichment, position: 12}
+        doi_mailto:
+          type: ["null", string]
+          inputBinding: {prefix: --doi-mailto, position: 13}
+        doi_cache_dir:
+          type: ["null", string]
+          inputBinding: {prefix: --doi-cache-dir, position: 14}
       arguments:
         - {position: 10, prefix: --out, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
         - {position: 11, prefix: --receipt, valueFrom: receipt.json}

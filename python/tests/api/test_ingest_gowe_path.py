@@ -953,3 +953,67 @@ async def test_omitting_the_collection_onto_the_shared_surface_is_the_same_400(
     assert r.status_code == 400, r.text
     assert "not a registered collection" in r.json()["detail"]
     assert gowe["engine"].submissions == []
+
+
+# --- #596: …and whether the worker resolves scholarly metadata ------------- #
+
+@pytest.mark.asyncio
+async def test_doi_enrichment_travels_on_the_submission(client, gowe, monkeypatch):
+    """The gap #596 exists to close.
+
+    On this backend the ingest runs as ``ingest_shard.py`` inside a container the
+    engine launches, so it cannot read this tenant's ``DOI_ENRICHMENT_*``
+    settings — the enricher the API builds for ITSELF
+    (``deps._build_doi_enricher``) reaches only the ``local`` backend's
+    in-process pipeline. Measured consequence before this: an upload arrived with
+    ``doi`` on every chunk and title/authors/journal/pmid/pmcid on none, whatever
+    the tenant had configured. The setting has to travel with the job, exactly as
+    the store URLs (#407) and the registry name (#563) do."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "doi_enrichment_enabled", True)
+    monkeypatch.setattr(settings, "doi_enrichment_mailto", "ops@example.org")
+    monkeypatch.setattr(settings, "doi_enrichment_cache_dir", "/rag/cache/doi")
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["doi_enrichment"] is True
+    assert inputs["doi_mailto"] == "ops@example.org"
+    assert inputs["doi_cache_dir"] == "/rag/cache/doi"
+
+
+@pytest.mark.asyncio
+async def test_no_doi_keys_are_sent_when_enrichment_is_off(client, gowe, monkeypatch):
+    """Off is the air-gapped contract, and it has to reach the worker as
+    SILENCE: the submission must be byte-for-byte the pre-#596 one, so the task
+    makes no outbound request and an older worker image is not handed a flag it
+    does not know."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "doi_enrichment_enabled", False)
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert "doi_enrichment" not in inputs
+    assert "doi_mailto" not in inputs
+    assert "doi_cache_dir" not in inputs
+
+
+@pytest.mark.asyncio
+async def test_a_contact_address_is_optional_and_never_invented(
+    client, gowe, monkeypatch
+):
+    """Enrichment still runs without one (Crossref's anonymous pool), and the
+    submission must not carry an empty string the worker would pass to
+    ``--doi-mailto``."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "doi_enrichment_enabled", True)
+    monkeypatch.setattr(settings, "doi_enrichment_mailto", "")
+    monkeypatch.setattr(settings, "doi_enrichment_cache_dir", "")
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["doi_enrichment"] is True
+    assert "doi_mailto" not in inputs
+    assert "doi_cache_dir" not in inputs

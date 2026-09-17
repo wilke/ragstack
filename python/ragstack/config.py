@@ -324,16 +324,33 @@ class Settings(BaseSettings):
     publisher_profile: str = "asm"
 
     # DOI metadata enrichment (ragstack.ingestion.doi_metadata). Resolves each
-    # ingested document's DOI against Crossref (DataCite as fallback) and fills
-    # *missing* bibliographic fields — title, authors, journal, year, publisher,
-    # publication_type, url — so PDFs that carry no usable metadata stop showing
-    # up as bare filenames in citations.
+    # ingested document's DOI against Crossref (DataCite as fallback) and the
+    # NCBI ID Converter, and fills *missing* bibliographic fields — title,
+    # authors, journal, year, publisher, publication_type, url, pmid, pmcid — so
+    # PDFs that carry no usable metadata stop showing up as bare filenames in
+    # citations.
     #
-    # OFF by default and network-touching: leaving it off keeps ingest behaviour
-    # byte-for-byte unchanged and offline/air-gapped deployments unaffected.
-    # Precedence is always "existing explicit metadata wins, enrichment fills
-    # gaps" — see ``doi_metadata.merge_enrichment``.
-    doi_enrichment_enabled: bool = False
+    # ON by default since #596. It was off, and the cost was measurable: every
+    # collection built from user uploads was born bare — on the `Dengue`
+    # collection, doi 382/382 and title/authors/journal/pmid/pmcid 0/382 — and
+    # the only repair was an operator running
+    # scripts/backfill_collection_metadata.py after the fact, which nobody knows
+    # to do until a user reports that their citations are filenames. A default
+    # that has to be discovered is not a default.
+    #
+    # What makes ON safe: enrichment can only ADD absent fields (precedence is
+    # always "existing explicit metadata wins" — see
+    # ``doi_metadata.merge_enrichment``), every network path degrades to "no
+    # title" rather than a failed job, lookups are per DISTINCT DOI and cached,
+    # and a resolver that cannot reach the network trips a circuit breaker
+    # (``doi_metadata.BREAKER_THRESHOLD``) after a handful of attempts instead of
+    # paying a timeout per document. An air-gapped deployment sets
+    # DOI_ENRICHMENT_ENABLED=false and gets exactly the pre-#596 behaviour.
+    doi_enrichment_enabled: bool = True
+    # Resolve pmid/pmcid from the NCBI ID Converter as well. Batched — one
+    # request per 200 distinct DOIs — so it is close to free; turn it off for a
+    # corpus PMC will never have a record for.
+    doi_enrichment_pubmed_ids: bool = True
     # Contact address for Crossref's polite pool. Not required, but strongly
     # recommended: it routes requests to better-behaved infrastructure and lets
     # Crossref reach an operator instead of blocking the deployment outright.

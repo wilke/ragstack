@@ -34,6 +34,7 @@ import httpx
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -77,6 +78,13 @@ def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
     loader = JsonlLoader(passthrough_keys=_passthrough_keys(args))
     return IngestionPipeline(loader=loader, chunker=chunker, embedder=embedder,
                              vector_store=InMemoryVectorStore(), text_index=InMemoryTextIndex(),
+                             # #596. This is the embed half of the decoupled
+                             # plane (cwl/pdf-ingest.cwl), and enrichment runs
+                             # between load and chunk, so it has to happen HERE:
+                             # the load stage downstream only sees chunks that
+                             # already carry their metadata. None when
+                             # --doi-enrichment is off.
+                             doi_enricher=enricher_from_args(args, http),
                              boilerplate_filter=filter_from_mode(
                                  args.boilerplate, args.boilerplate_config))
 
@@ -178,6 +186,7 @@ def parse_args(argv=None):
                         "verbatim (enriched fields always win on collision). For a "
                         "JATS/PMC shard: content_type,pmcid,pmid,journal,publisher,"
                         "licence,section_title,sha256,source_url,graphic")
+    add_doi_enrichment_args(p)
     return p.parse_args(argv)
 
 

@@ -926,13 +926,64 @@ readable.
 
 ## 6c. A user's uploaded collection has no title, authors or PubMed ids
 
-Expected, not a fault. A PDF uploaded through the API arrives with whatever the
-loader could scrape from the file — in practice a DOI from the text, a year and
-a document class. `ingestion/enrich.py` is deliberately pure (no I/O, no
-network), so it can find a DOI but can never turn one into a title.
+**Since [#596](https://github.com/wilke/ragstack/issues/596) this is a fault, not
+the expected state.** Ingest now resolves the metadata itself, at upload time, on
+both backends. Check the switch before reaching for the repair tool.
 
-Measured on `Dengue` before repair: `doi` 382/382, and `title`, `authors`,
-`pmcid`, `journal` all **0/382**.
+`ingestion/enrich.py` is still deliberately pure (no I/O, no network) — it finds
+the DOI and can never turn it into a title. The network half is
+`ingestion/doi_metadata.py`, which resolves each **distinct DOI** against
+Crossref (title, authors, journal, year) and the NCBI ID Converter (pmid, pmcid),
+fills only absent fields, and stamps `metadata_source: crossref+idconv`. It is on
+by default (`DOI_ENRICHMENT_ENABLED`, default `true`) and can never fail a job: a
+slow, down or rate-limiting service degrades to "no title".
+
+### First: why did this collection not get enriched?
+
+```bash
+# 1. is it on for this tenant? (admin credential)
+curl -s $BASE/v1/config -H "X-API-Key: $ADMIN" | jq .doi_enrichment_enabled
+
+# 2. on a gowe-backend tenant, the setting has to have travelled on the
+#    submission — the ingest task is a container and cannot read tenant.env.
+#    Look for doi_enrichment in the job's submitted_inputs.
+curl -s $BASE/v1/jobs/<job_id> -H "X-API-Key: $ADMIN" | jq .
+```
+
+Four things that legitimately produce a bare collection even with it on:
+
+- **The collection predates #596.** Enrichment happens at ingest; it does not
+  reach back. Repair it below.
+- **No DOI in the PDF's text.** DOI coverage is the ceiling — a scanned or
+  image-only PDF gets nothing, and nothing downstream can invent it.
+- **The DOI is in neither Crossref nor PMC.** Preprints, grey literature, a
+  mis-scanned DOI.
+- **The worker image is older than the API.** ⚠️ The gowe path runs
+  `/opt/ragstack/scripts/ingest_shard.py` *inside `ragstack-worker.sif`*, so the
+  flag only means anything once that image carries the #596 code. An image
+  without it does not skip enrichment quietly — argparse **refuses the unknown
+  `--doi-enrichment` flag and the task exits 2**, so every ingest on that tenant
+  fails. See the deployment order below.
+
+### ⚠️ Deployment order: worker image before API
+
+Because enrichment is on by default, an API rolled out ahead of its worker image
+submits a flag the old image rejects, and *every* upload on a gowe tenant fails
+until the image catches up. So:
+
+1. rebuild and publish `ragstack-worker.sif` from the same commit, **then**
+2. roll the tenant APIs.
+
+Rolling in the other order, or needing to roll the API first for an unrelated
+reason, is survivable: set `DOI_ENRICHMENT_ENABLED=false` in that tenant's
+`tenant.env` first, and turn it on after the image lands. Note that the worker
+image is shared — on `coconut`, every worker group reads `/scout/containers` —
+so replacing it changes what **all** tenants run, not just the one being tested.
+
+### Then: repair an existing collection
+
+The backfill script is now **repair-only** — for collections built before #596,
+or whose lookups failed at the time. New uploads should never need it.
 
 ```bash
 python3 python/scripts/backfill_collection_metadata.py \
@@ -940,11 +991,13 @@ python3 python/scripts/backfill_collection_metadata.py \
     --index <physical store name>            # dry run; --apply to write
 ```
 
-It resolves each **distinct DOI** once — two lookups for a two-paper
-collection, not one per chunk — against Crossref (title, authors, journal) and
-the NCBI ID Converter (pmid, pmcid), fills only absent fields, and stamps
-`metadata_source: crossref+idconv` so derived values stay distinguishable from
-extracted ones.
+It does the same resolution the ingest path now does — each **distinct DOI**
+once, two lookups for a two-paper collection rather than one per chunk — and
+stamps the same `metadata_source: crossref+idconv`, so a repaired collection and
+one born enriched answer the same query about where their titles came from.
+
+Measured on `Dengue` before repair, back when nothing enriched at upload time:
+`doi` 382/382, and `title`, `authors`, `pmcid`, `journal` all **0/382**.
 
 Three things to know before running it:
 
@@ -959,9 +1012,23 @@ Three things to know before running it:
   other tenants (see 6b), so a write from one tenant changes what every tenant
   reads.
 
-DOI coverage is the ceiling: a scanned PDF with no DOI in its text gets nothing.
 Caller-supplied metadata — the "can we upload a CSV" question — is
 [#575](https://github.com/wilke/ragstack/issues/575) and not implemented.
+
+### Turning it off
+
+An air-gapped deployment, or any host with no outbound route, sets
+`DOI_ENRICHMENT_ENABLED=false` in `tenant.env` and gets exactly the pre-#596
+behaviour: no outbound request at any point of ingest. It is not required —
+a resolver that cannot reach the network trips a circuit breaker after five
+consecutive failures and stops asking for the rest of the run, so the cost of
+leaving it on by mistake is a few seconds per job, not a timeout per document —
+but turning it off is cleaner and removes the log noise.
+
+Two related knobs: `DOI_ENRICHMENT_MAILTO` (a contact address; it routes
+requests to Crossref's polite pool and is worth setting on every tenant) and
+`DOI_ENRICHMENT_CACHE_DIR` (an on-disk per-DOI cache, so the same paper ingested
+into three collections resolves once — set it on any real deployment).
 
 ## 7. Diagnosing a user report
 

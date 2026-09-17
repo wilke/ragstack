@@ -1,4 +1,4 @@
-"""DOI-based scholarly metadata enrichment (Crossref, DataCite fallback).
+"""DOI-based scholarly metadata enrichment (Crossref, DataCite, NCBI ID Converter).
 
 Why this exists: PDFs uploaded through ``/v1/ingest`` reach
 :class:`~ragstack.ingestion.loaders.PdfLoader`, which can only report what the
@@ -21,7 +21,10 @@ duplicating it:
   window than the JSONL corpus ``derive_doi`` was tuned for and widening it there
   would change existing JSONL ingest behaviour.
 * ``enrich`` stays pure/offline (it is the local, no-network leg); everything
-  network-touching lives here, behind an explicit opt-in.
+  network-touching lives here, behind a single switch — ``DOI_ENRICHMENT_ENABLED``,
+  ON by default since #596, because off is what made every upload-built
+  collection arrive with a DOI and nothing else. An air-gapped deployment sets it
+  false and gets the pre-#596 behaviour exactly.
 
 Three properties are non-negotiable:
 
@@ -36,12 +39,25 @@ wins; enrichment only fills gaps* — see :func:`merge_enrichment`. A title the
 loader (or the operator, or the JSONL corpus) already supplied is never
 overwritten by a remote record, in either direction of disagreement. The only
 thing enrichment adds unconditionally is its own provenance stamp
-(``doi_enriched_from``).
+(``doi_enriched_from`` / ``metadata_source``, e.g. ``crossref+idconv``).
 
 **Be polite.** Bounded concurrency, a per-request timeout, a descriptive
 ``User-Agent`` carrying a contact address (Crossref's "polite pool"), a single
-bounded retry that honours ``Retry-After``, and an on-disk cache so re-ingests
-and repeated DOIs never re-hit the API.
+bounded retry that honours ``Retry-After``, an on-disk cache so re-ingests and
+repeated DOIs never re-hit the API, and a circuit breaker that stops asking
+entirely once the network has proven unreachable (:data:`BREAKER_THRESHOLD`).
+
+Three services, two request shapes (#596):
+
+* **Crossref** — one GET per DOI: title, authors, journal, year, publisher,
+  work type, url.
+* **DataCite** — the same, one GET per DOI, tried only on a Crossref 404
+  (datasets, preprints, repository deposits).
+* **NCBI ID Converter** — ``pmid``/``pmcid``, and **batched**: one GET for up
+  to :data:`MAX_IDCONV_IDS` DOIs, so a shard costs one request, not one per
+  document. Note the endpoint: the old ``ncbi.nlm.nih.gov/pmc/utils/idconv/
+  v1.0/`` URL 301-redirects to :data:`IDCONV_URL`, and httpx does not follow
+  redirects by default — asking the old URL silently resolves nothing.
 """
 from __future__ import annotations
 
@@ -67,6 +83,29 @@ log = logging.getLogger(__name__)
 
 CROSSREF_URL = "https://api.crossref.org/works/{doi}"
 DATACITE_URL = "https://api.datacite.org/dois/{doi}"
+#: NCBI's ID Converter, DOI -> pmid/pmcid. This is the CURRENT host+path; the
+#: widely-copied ``https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/`` is a
+#: 301 to it, and httpx (like most clients) does not follow redirects unless
+#: asked, so the old URL just yields an empty body and no ids.
+IDCONV_URL = "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/"
+#: ``tool`` parameter NCBI asks every caller to identify itself with.
+IDCONV_TOOL = "ragstack"
+#: Ids per ID-Converter request. NCBI documents 200 as the maximum.
+MAX_IDCONV_IDS = 200
+
+#: Service names as they appear in the provenance stamp.
+CROSSREF_SERVICE = "crossref"
+DATACITE_SERVICE = "datacite"
+IDCONV_SERVICE = "idconv"
+
+#: Consecutive *transport* failures (connection refused, DNS failure, timeout)
+#: after which a resolver stops making requests for the rest of its life. A
+#: reachable-but-unhappy service (any HTTP response at all, 404/429/5xx
+#: included) resets the count: that is a working network and the other legs may
+#: still answer. Without this, enrichment-on-by-default would cost an
+#: air-gapped deployment ``timeout x distinct_dois / concurrency`` of dead wait
+#: on every single ingest — the one cost that makes "on by default" indefensible.
+BREAKER_THRESHOLD = 5
 
 # Accepts the standard DOI shape and the usual prose wrappers ("doi:10.x/y",
 # "https://doi.org/10.x/y"). Case-insensitive: DOI suffixes are defined to be
@@ -110,6 +149,8 @@ NORMALIZED_FIELDS = (
     "publisher",
     "type",
     "url",
+    "pmid",
+    "pmcid",
 )
 
 # Normalized field -> the metadata key it is written to. Everything is identity
@@ -120,7 +161,17 @@ FIELD_TO_METADATA_KEY["type"] = "publication_type"
 
 # Provenance stamp: which service supplied the filled-in fields. Present only on
 # documents enrichment actually changed, so its absence is meaningful.
+#
+# TWO keys, deliberately, with the same value. ``doi_enriched_from`` is what
+# this module has always written and what the pipeline tests read.
+# ``metadata_source`` is the operator-facing convention:
+# ``scripts/backfill_collection_metadata.py`` stamps it, and the tenant-admin
+# runbook tells operators to grep for it. A collection repaired after the fact
+# and a collection born enriched should answer the same query about where their
+# titles came from, and one extra short string per chunk is a cheap price for
+# that. Both carry the same ``crossref+idconv``-style service list.
 ENRICHED_FROM_KEY = "doi_enriched_from"
+METADATA_SOURCE_KEY = "metadata_source"
 
 # Upper bound on how long a Retry-After may park a request. Politeness must not
 # turn into an unbounded ingest stall, so a longer Retry-After is treated as
@@ -370,6 +421,50 @@ def map_datacite(data: dict[str, Any]) -> dict[str, Any]:
     return _drop_empty(resolved)
 
 
+def map_idconv(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Map an ID-Converter response to ``{requested doi -> {pmid, pmcid}}``.
+
+    Two things about this response shape cost real debugging time:
+
+    *Key on ``requested-id``, not ``doi``.* The record's ``doi`` field is the
+    DOI **as NCBI stores it**, in the publisher's original case
+    (``10.1128/JVI.02415-06``), while we ask in the normalized lowercase form.
+    Keying on ``doi`` therefore silently drops every record whose publisher
+    used uppercase — which is most of ASM. ``requested-id`` echoes exactly what
+    we sent. (``normalize_doi`` is still applied to both, so either spelling
+    lands on the same key.)
+
+    *``pmid`` comes back as a JSON integer.* Everything else in this codebase
+    treats pmid/pmcid as strings — ``ingestion.jats`` says so explicitly — and
+    a corpus that mixes ``40426541`` with ``"40426541"`` gives Elasticsearch
+    two different field types for one name across collections. Coerced to
+    ``str`` here, once.
+
+    Records that failed to resolve carry ``status: "error"`` and no ids; they
+    are simply absent from the result, which is the authoritative "not in PMC".
+    """
+    out: dict[str, dict[str, str]] = {}
+    records = payload.get("records")
+    if not isinstance(records, list):
+        return out
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        key = normalize_doi(str(record.get("requested-id") or "")) or normalize_doi(
+            str(record.get("doi") or "")
+        )
+        if not key:
+            continue
+        ids = {
+            field: str(record[field]).strip()
+            for field in ("pmid", "pmcid")
+            if record.get(field) not in (None, "")
+        }
+        if ids:
+            out[key] = ids
+    return out
+
+
 def _drop_empty(resolved: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in resolved.items() if v not in ("", [], None, {})}
 
@@ -411,8 +506,10 @@ def merge_enrichment(
     corruption of correct data.
 
     Mutates ``metadata`` in place (callers hold the live ``Document.metadata``)
-    and stamps ``doi_enriched_from`` with ``service`` when anything was filled,
-    so a chunk payload records where its bibliographic fields came from.
+    and, when anything was filled, stamps ``service`` (e.g. ``crossref+idconv``)
+    onto both :data:`ENRICHED_FROM_KEY` and :data:`METADATA_SOURCE_KEY`, so a
+    chunk payload records where its bibliographic fields came from in the same
+    key the backfill script uses.
     """
     filled: list[str] = []
     for field, key in FIELD_TO_METADATA_KEY.items():
@@ -425,6 +522,7 @@ def merge_enrichment(
         filled.append(key)
     if filled and service:
         metadata[ENRICHED_FROM_KEY] = service
+        metadata[METADATA_SOURCE_KEY] = service
     return filled
 
 
@@ -468,8 +566,10 @@ class DoiCache:
 
     #: Mapping-format version of a cache entry. Bump on any mapping change.
     #: 1 — initial. 2 — titles normalized (JATS tags stripped, entities decoded,
-    #:     wrapped whitespace collapsed).
-    VERSION = 2
+    #:     wrapped whitespace collapsed). 3 — pmid/pmcid from the NCBI ID
+    #:     Converter folded into the entry (#596); a v2 entry has no PubMed ids
+    #:     and must be re-fetched rather than served as "already resolved".
+    VERSION = 3
 
     def __init__(self, directory: str | Path | None = None) -> None:
         self._dir = Path(directory) if directory else None
@@ -542,13 +642,22 @@ class DoiCache:
 # --------------------------------------------------------------------------- #
 
 class DoiMetadataResolver:
-    """Resolve DOIs to normalized metadata via Crossref, then DataCite.
+    """Resolve DOIs to normalized metadata via Crossref, DataCite and NCBI.
 
     Crossref covers journal articles (the case that motivated this); DataCite
     covers datasets, preprints and repository deposits, and is tried only when
     Crossref *authoritatively* has no record — never when Crossref merely failed
     transiently, since a second service can't fix a network problem and asking it
-    anyway just doubles the load during an outage.
+    anyway just doubles the load during an outage. The NCBI ID Converter adds
+    ``pmid``/``pmcid`` and is orthogonal to both: it answers for a DOI Crossref
+    has never heard of, and it is **batched**, so it costs one request per
+    :data:`MAX_IDCONV_IDS` DOIs rather than one per DOI.
+
+    The unit of work is the DISTINCT DOI, never the document and never the
+    chunk: :meth:`resolve_many` de-duplicates, and :class:`DoiCache` remembers
+    across shards, collections and (with a cache dir) process restarts. A
+    two-paper upload that becomes 382 chunks makes two Crossref requests and one
+    ID-Converter request.
     """
 
     def __init__(
@@ -561,6 +670,7 @@ class DoiMetadataResolver:
         timeout: float = 10.0,
         concurrency: int = 4,
         datacite_fallback: bool = True,
+        pubmed_ids: bool = True,
     ) -> None:
         self._client = client
         self._mailto = mailto.strip()
@@ -571,6 +681,10 @@ class DoiMetadataResolver:
         # a shard contains, at most this many requests are ever in flight.
         self._sem = asyncio.Semaphore(max(1, concurrency))
         self._datacite_fallback = datacite_fallback
+        self._pubmed_ids = pubmed_ids
+        # Circuit breaker state (see BREAKER_THRESHOLD).
+        self._consecutive_transport_failures = 0
+        self._tripped = False
 
     async def resolve(self, doi: str) -> Resolution | None:
         """Resolve one DOI. Returns ``None`` on any miss or failure; never raises."""
@@ -580,36 +694,116 @@ class DoiMetadataResolver:
         cached = self._cache.get(doi)
         if cached is not DoiCache.MISS:
             return cached  # type: ignore[return-value]
-        try:
-            resolution, definitive = await self._fetch(doi)
-        except Exception as e:  # defence in depth — _fetch already catches
-            log.warning("doi enrichment failed for %s: %s", doi, e)
-            return None
-        if resolution is not None:
-            self._cache.put(doi, resolution)
-            return resolution
-        if definitive:
-            # A real "no such record" — cache the negative so re-ingest is free.
-            self._cache.put(doi, None)
-        return None
+        ids, ids_authoritative = await self._fetch_pubmed_ids([doi])
+        return await self._resolve_uncached(doi, ids.get(doi, {}), ids_authoritative)
 
     async def resolve_many(self, dois: list[str]) -> dict[str, Resolution]:
         """Resolve many DOIs concurrently (bounded); unresolved ones are absent.
 
-        Deduplicates first, so a corpus that repeats a DOI (a multi-part article,
-        a re-ingest of overlapping shards) costs exactly one lookup.
+        Deduplicates and consults the cache **first**, so the ID-Converter batch
+        below is sent for exactly the DOIs nothing is known about yet — a
+        re-ingest of an already-resolved corpus makes no requests at all.
         """
         unique = list(dict.fromkeys(d for d in (normalize_doi(x) for x in dois) if d))
-        results = await asyncio.gather(
-            *(self.resolve(d) for d in unique), return_exceptions=True
-        )
         out: dict[str, Resolution] = {}
-        for doi, result in zip(unique, results, strict=True):
+        pending: list[str] = []
+        for doi in unique:
+            cached = self._cache.get(doi)
+            if cached is DoiCache.MISS:
+                pending.append(doi)
+            elif cached is not None:
+                out[doi] = cached  # type: ignore[assignment]
+        if not pending:
+            return out
+
+        # One batched ID-Converter call for the whole shard, before the per-DOI
+        # Crossref fan-out, so each DOI's cache entry is written once with both
+        # halves in it.
+        ids, ids_authoritative = await self._fetch_pubmed_ids(pending)
+        results = await asyncio.gather(
+            *(
+                self._resolve_uncached(doi, ids.get(doi, {}), ids_authoritative)
+                for doi in pending
+            ),
+            return_exceptions=True,
+        )
+        for doi, result in zip(pending, results, strict=True):
             if isinstance(result, Resolution):
                 out[doi] = result
             elif isinstance(result, BaseException):
                 log.warning("doi enrichment failed for %s: %s", doi, result)
         return out
+
+    async def _resolve_uncached(
+        self, doi: str, pubmed_ids: dict[str, str], ids_authoritative: bool
+    ) -> Resolution | None:
+        """Crossref/DataCite for ``doi``, merged with its already-fetched PubMed
+        ids, cached, and returned. Never raises.
+
+        ``pmid``/``pmcid`` are useful on their own: a DOI Crossref cannot
+        resolve but PMC can still yields a linkable record, so an ID-Converter
+        hit alone produces a :class:`Resolution`.
+
+        The negative cache is written only when *every* leg was authoritative —
+        Crossref said 404 **and** a successful ID-Converter response simply had
+        no record. A transient failure on either leg must not be remembered as
+        "this DOI has no metadata", which would survive in the cache directory
+        long after the outage.
+        """
+        try:
+            resolution, definitive = await self._fetch(doi)
+        except Exception as e:  # defence in depth — _fetch already catches
+            log.warning("doi enrichment failed for %s: %s", doi, e)
+            resolution, definitive = None, False
+        fields: dict[str, Any] = dict(resolution.fields) if resolution else {}
+        services: list[str] = [resolution.service] if resolution else []
+        if pubmed_ids:
+            for key, value in pubmed_ids.items():
+                fields.setdefault(key, value)
+            services.append(IDCONV_SERVICE)
+        if fields:
+            merged = Resolution(fields, "+".join(services))
+            self._cache.put(doi, merged)
+            return merged
+        if definitive and ids_authoritative:
+            # A real "no such record" everywhere — cache the negative so a
+            # re-ingest is free.
+            self._cache.put(doi, None)
+        return None
+
+    async def _fetch_pubmed_ids(
+        self, dois: list[str]
+    ) -> tuple[dict[str, dict[str, str]], bool]:
+        """``({doi: {pmid, pmcid}}, authoritative)`` from the NCBI ID Converter.
+
+        ``authoritative`` is True when every request succeeded, so a DOI absent
+        from the mapping really is absent from PMC (and may be negative-cached);
+        False when any request failed, disabled, or the breaker is open.
+        Batched at :data:`MAX_IDCONV_IDS` per request.
+        """
+        if not self._pubmed_ids or not dois:
+            # Disabled is "we asked nothing", not "we failed to learn": it must
+            # not block Crossref's own 404 from being negative-cached.
+            return {}, True
+        out: dict[str, dict[str, str]] = {}
+        authoritative = True
+        for start in range(0, len(dois), MAX_IDCONV_IDS):
+            batch = dois[start : start + MAX_IDCONV_IDS]
+            params = {
+                "ids": ",".join(batch),
+                "format": "json",
+                "tool": IDCONV_TOOL,
+            }
+            if self._mailto:
+                params["email"] = self._mailto
+            payload, _definitive = await self._get_json(IDCONV_URL, params=params)
+            if payload is None:
+                authoritative = False
+                continue
+            out.update(map_idconv(payload))
+        if out:
+            log.debug("id converter resolved pubmed ids for %d doi(s)", len(out))
+        return out, authoritative
 
     async def _fetch(self, doi: str) -> tuple[Resolution | None, bool]:
         """``(resolution, definitive)`` — ``definitive`` is True only when a
@@ -617,11 +811,11 @@ class DoiMetadataResolver:
         worth caching as a negative)."""
         fields, definitive = await self._fetch_crossref(doi)
         if fields is not None:
-            return Resolution(fields, "crossref"), True
+            return Resolution(fields, CROSSREF_SERVICE), True
         if self._datacite_fallback and definitive:
             dc_fields, dc_definitive = await self._fetch_datacite(doi)
             if dc_fields is not None:
-                return Resolution(dc_fields, "datacite"), True
+                return Resolution(dc_fields, DATACITE_SERVICE), True
             return None, dc_definitive
         return None, definitive
 
@@ -647,6 +841,22 @@ class DoiMetadataResolver:
             return None, False
         return (map_datacite(data) or None), definitive
 
+    def _note_transport_failure(self, url: str) -> None:
+        """Count a failure to reach the service at all, and trip the breaker at
+        :data:`BREAKER_THRESHOLD`. Logged once, at warning, when it trips."""
+        self._consecutive_transport_failures += 1
+        if self._consecutive_transport_failures < BREAKER_THRESHOLD or self._tripped:
+            return
+        self._tripped = True
+        log.warning(
+            "doi enrichment disabled for the rest of this run: %d consecutive "
+            "failures to reach %s. Ingest continues without scholarly metadata; "
+            "set DOI_ENRICHMENT_ENABLED=false if this host has no outbound "
+            "network.",
+            self._consecutive_transport_failures,
+            url,
+        )
+
     async def _get_json(
         self, url: str, params: dict[str, str] | None = None
     ) -> tuple[dict[str, Any] | None, bool]:
@@ -658,7 +868,12 @@ class DoiMetadataResolver:
         on a 429/503, capped at :data:`MAX_RETRY_AFTER_SECONDS`; the semaphore is
         held across the wait, so a rate-limited request does not free a slot for
         another request to immediately re-hit the same throttled API.
+
+        Once the breaker has tripped this returns immediately without a request,
+        so the remaining DOIs of a shard cost nothing on an unreachable network.
         """
+        if self._tripped:
+            return None, False
         headers = {"User-Agent": self._user_agent, "Accept": "application/json"}
         async with self._sem:
             for attempt in (0, 1):
@@ -668,7 +883,11 @@ class DoiMetadataResolver:
                     )
                 except Exception as e:
                     log.warning("doi enrichment request failed (%s): %s", url, e)
+                    self._note_transport_failure(url)
                     return None, False
+                # Any HTTP response at all — 404, 429, 5xx included — means the
+                # network works and the service answered, so the breaker resets.
+                self._consecutive_transport_failures = 0
                 if response.status_code == 404:
                     return None, True  # authoritative: no such record
                 if response.status_code in (429, 503) and attempt == 0:
@@ -821,6 +1040,7 @@ def build_resolver(
     timeout: float = 10.0,
     concurrency: int = 4,
     datacite_fallback: bool = True,
+    pubmed_ids: bool = True,
 ) -> DoiMetadataResolver:
     """Convenience constructor used by the API's dependency wiring."""
     return DoiMetadataResolver(
@@ -831,4 +1051,93 @@ def build_resolver(
         timeout=timeout,
         concurrency=concurrency,
         datacite_fallback=datacite_fallback,
+        pubmed_ids=pubmed_ids,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Worker-tool wiring
+# --------------------------------------------------------------------------- #
+#
+# The API builds its enricher from ``Settings`` (api/deps.py). The GoWe/CWL
+# worker tools cannot: each CWL step is its own container, invoked by the engine
+# with an argv the workflow declares, and the tenant's environment does not
+# reach it. So the same knobs have to arrive as command-line flags, seeded per
+# job by the API (``_gowe_inputs``) and threaded through the workflow. These two
+# helpers keep that surface identical across ``scripts/ingest_shard.py`` and
+# ``scripts/embed_shard.py`` instead of duplicated in both.
+
+#: argparse flag names added by :func:`add_doi_enrichment_args`, for callers
+#: that build a Namespace by hand.
+DOI_ARG_DEST = (
+    "doi_enrichment",
+    "doi_mailto",
+    "doi_cache_dir",
+    "doi_timeout",
+    "doi_concurrency",
+    "no_doi_pubmed_ids",
+)
+
+
+def add_doi_enrichment_args(parser: Any) -> None:
+    """Add the DOI-enrichment flags to a worker tool's ``ArgumentParser``.
+
+    OFF unless ``--doi-enrichment`` is passed, which is the opposite of the
+    API's default — deliberately. A worker tool is also the hand-run bulk
+    ingest path, where the operator has a shell and can decide; the API's
+    uploads get enrichment because ``_gowe_inputs`` passes the flag.
+    """
+    group = parser.add_argument_group("DOI metadata enrichment (#596)")
+    group.add_argument(
+        "--doi-enrichment",
+        action="store_true",
+        help="resolve each distinct DOI against Crossref/DataCite and the NCBI "
+             "ID Converter and fill ABSENT title/authors/journal/year/pmid/pmcid. "
+             "Needs outbound network; never fails an ingest.",
+    )
+    group.add_argument(
+        "--doi-mailto", default="",
+        help="contact address for Crossref's polite pool and NCBI's tool/email",
+    )
+    group.add_argument(
+        "--doi-cache-dir", default="",
+        help="directory for the on-disk per-DOI resolution cache (one JSON per "
+             "DOI). Empty = in-process only, so each task re-fetches.",
+    )
+    group.add_argument("--doi-timeout", type=float, default=10.0)
+    group.add_argument("--doi-concurrency", type=int, default=4)
+    group.add_argument(
+        "--no-doi-pubmed-ids", action="store_true",
+        help="skip the NCBI ID Converter (no pmid/pmcid); Crossref only",
+    )
+
+
+def enricher_from_args(args: Any, http: httpx.AsyncClient) -> DoiEnricher | None:
+    """The enricher a worker tool's parsed args ask for, or ``None`` when off.
+
+    ``getattr`` throughout: hand-built Namespaces in tests predate these flags,
+    and a worker tool must not start failing on an argv shape it used to accept.
+    """
+    if not getattr(args, "doi_enrichment", False):
+        return None
+    resolver = build_resolver(
+        http,
+        mailto=getattr(args, "doi_mailto", "") or "",
+        cache_dir=getattr(args, "doi_cache_dir", "") or "",
+        timeout=float(getattr(args, "doi_timeout", 10.0) or 10.0),
+        concurrency=int(getattr(args, "doi_concurrency", 4) or 4),
+        pubmed_ids=not getattr(args, "no_doi_pubmed_ids", False),
+    )
+    return DoiEnricher(resolver, profile=_profile_from_args(args))
+
+
+def _profile_from_args(args: Any) -> PublisherProfile | None:
+    """Honour ``--publisher-profile`` where a tool has one; the default profile
+    otherwise. Imported lazily so this module keeps no import-time dependency on
+    the profile registry beyond the type."""
+    name = getattr(args, "publisher_profile", "") or ""
+    if not name:
+        return None
+    from ragstack.ingestion.enrich import resolve_profile
+
+    return resolve_profile(name)

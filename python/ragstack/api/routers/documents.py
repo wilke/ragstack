@@ -589,6 +589,18 @@ def _gowe_inputs(
     performs the same one-count check before its first write. Sent only when
     a cap applies (the workflow input defaults to 0 = unlimited).
 
+    ``doi_enrichment`` (#596): whether the worker resolves each DISTINCT DOI to
+    a title/authors/journal/pmid/pmcid. It has to travel on the submission for
+    the same reason the store URLs do — the ingest task is a container with its
+    own argv and cannot read this tenant's environment — and that gap is exactly
+    why uploads through this backend arrived with a DOI and nothing else while
+    the *local* backend (which runs the pipeline in this process, with
+    ``app.state.doi_enricher``) enriched them. ``doi_mailto`` is a contact
+    address, not a credential: it is published in the User-Agent of every
+    request enrichment makes, so the immutable, UI-rendered ``submitted_inputs``
+    snapshot is a fine place for it. Sent only when enrichment is on, so a
+    deployment that turns it off submits what it submitted before.
+
     ``registry`` (#563): WHICH collection registry the worker resolves
     ``collection_id`` against, by NAME. It is the last piece of this tenant's
     physical state that did not travel on the submission — the worker read it
@@ -625,6 +637,12 @@ def _gowe_inputs(
         inputs["max_chunks"] = int(max_chunks)
     if settings.collection_registry_name:
         inputs["registry"] = settings.collection_registry_name
+    if settings.doi_enrichment_enabled:
+        inputs["doi_enrichment"] = True
+        if settings.doi_enrichment_mailto:
+            inputs["doi_mailto"] = settings.doi_enrichment_mailto
+        if settings.doi_enrichment_cache_dir:
+            inputs["doi_cache_dir"] = settings.doi_enrichment_cache_dir
     return inputs
 
 

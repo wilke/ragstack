@@ -185,3 +185,24 @@ async def test_read_only_service_account_every_write_is_403(client, monkeypatch)
     create = await client.post("/v1/collections", json={"id": "new-lib"}, headers=_h("svc"))
     assert create.status_code == 403, create.text
     assert "ALLOW_USER_COLLECTION_CREATE" in create.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# …and the one other switch an operator needs to see before blaming the ingest
+# --------------------------------------------------------------------------- #
+
+
+async def test_config_reports_whether_ingest_resolves_scholarly_metadata(
+    client, monkeypatch
+):
+    """#596. "Why has this collection no titles?" is answered first by whether
+    enrichment was on at all, and an operator diagnosing a tenant they do not
+    have a shell on can only ask the API. It is also the single switch that says
+    whether ingest reaches the public internet, which is its own reason to be
+    visible."""
+    body = (await client.get("/v1/config", headers=_h("admin"))).json()
+    assert body["doi_enrichment_enabled"] is True  # on by default since #596
+
+    monkeypatch.setattr(settings, "doi_enrichment_enabled", False)
+    body = (await client.get("/v1/config", headers=_h("admin"))).json()
+    assert body["doi_enrichment_enabled"] is False
