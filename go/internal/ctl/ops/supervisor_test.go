@@ -164,9 +164,13 @@ func TestInstanceStopSignalsThenProvesThePortIsFree(t *testing.T) {
 	for _, want := range []string{
 		"proc.Signal(",
 		"files.Remove(",
-		"instances.Stop(postgres-dev)",
-		"instances.Stop(elasticsearch-dev)",
-		"instances.Stop(qdrant-dev)",
+		// `,ctl` is the namespace: `tenant stop` acts on instances the
+		// CONTROL PLANE started, which is the only registry it may stop in.
+		// The handover's release is the one phase that names the other
+		// (ops/handover.go's releaseNamespace).
+		"instances.Stop(postgres-dev,ctl)",
+		"instances.Stop(elasticsearch-dev,ctl)",
+		"instances.Stop(qdrant-dev,ctl)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("no %q in the call log:\n%s", want, got)

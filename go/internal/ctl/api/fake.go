@@ -419,6 +419,20 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 				if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
 					opts.RunningInstances = append(opts.RunningInstances, "postgres-"+t.ManifestName)
 				}
+			default:
+				// `manual`: a tenant somebody started BY HAND, whose stores are
+				// therefore in the running ACCOUNT's own apptainer registry and
+				// NOT in the control plane's (jobs.InstanceNamespace). It is the
+				// only state a handover release acts on, and a fixture that put
+				// those instances in the ctl's table instead would make a fake
+				// release pass over exactly the arrangement that took the
+				// hackathon tenant down.
+				opts.AccountRunningInstances = append(opts.AccountRunningInstances,
+					"qdrant-"+t.ManifestName, "elasticsearch-"+t.ManifestName)
+				if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
+					opts.AccountRunningInstances = append(opts.AccountRunningInstances,
+						"postgres-"+t.ManifestName)
+				}
 			}
 		}
 		if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive && t.Stores.Qdrant.Capabilities.Snapshot {

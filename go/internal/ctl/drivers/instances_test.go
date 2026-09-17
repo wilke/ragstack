@@ -31,7 +31,9 @@ func newInstances(t *testing.T) (*RealInstances, *stub, string, string) {
 		t.Fatal(err)
 	}
 	return &RealInstances{run: &runner{}, Bin: s.Path, Roots: []string{root},
-		Env: []string{"APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config")}}, s, root, sif
+		Env:        []string{"APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config")},
+		AccountEnv: []string{"APPTAINER_CACHEDIR=" + filepath.Join(root, "apptainer", "cache")},
+	}, s, root, sif
 }
 
 // Every apptainer call carries the ctl's APPTAINER_CONFIGDIR: the instance
@@ -41,8 +43,8 @@ func TestInstancesEveryCallCarriesTheCtlApptainerConfigDir(t *testing.T) {
 	d, s, root, sif := newInstances(t)
 	s.respond("list", `{"instances":[]}`, "", 0)
 	want := "APPTAINER_CONFIGDIR=" + filepath.Join(root, "apptainer", "config")
-	_, _ = d.List(context.Background())
-	_ = d.Stop(context.Background(), "qdrant-dev")
+	_, _ = d.List(context.Background(), jobs.ListOptions{})
+	_ = d.Stop(context.Background(), "qdrant-dev", jobs.StopOptions{})
 	_ = d.Run(context.Background(), jobs.InstanceSpec{Name: "qdrant-dev", SIF: sif})
 	if err := d.SeedConfigDir(context.Background(), sif, "/usr/share/elasticsearch/config", filepath.Join(root, "storage")); err != nil {
 		t.Fatalf("SeedConfigDir: %v", err)
@@ -100,7 +102,7 @@ const listJSON = `{
 func TestInstancesListParsesWhatApptainerPrints(t *testing.T) {
 	d, s, _, _ := newInstances(t)
 	s.respond("list", listJSON, "", 0)
-	got, err := d.List(context.Background())
+	got, err := d.List(context.Background(), jobs.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +129,7 @@ func TestInstancesListOfAnEmptyHostIsNotAnError(t *testing.T) {
 	for _, out := range []string{`{"instances":[]}`, `{}`, "", "\n"} {
 		d, s, _, _ := newInstances(t)
 		s.respond("list", out, "", 0)
-		got, err := d.List(ctx)
+		got, err := d.List(ctx, jobs.ListOptions{})
 		if err != nil {
 			t.Errorf("List of %q = %v, want no error", out, err)
 		}
@@ -140,7 +142,7 @@ func TestInstancesListOfAnEmptyHostIsNotAnError(t *testing.T) {
 func TestInstancesListRefusesOutputItCannotParse(t *testing.T) {
 	d, s, _, _ := newInstances(t)
 	s.respond("list", "not json at all", "", 0)
-	if _, err := d.List(context.Background()); !errors.Is(err, jobs.ErrRefused) {
+	if _, err := d.List(context.Background(), jobs.ListOptions{}); !errors.Is(err, jobs.ErrRefused) {
 		t.Fatalf("List of unparseable output = %v, want a refusal", err)
 	}
 }
@@ -270,7 +272,7 @@ func TestInstancesRefuseEveryNameOutsideTheAllowlist(t *testing.T) {
 		if err := d.Run(ctx, jobs.InstanceSpec{Name: name, SIF: sif}); !errors.Is(err, jobs.ErrRefused) {
 			t.Errorf("Run(%q) = %v, want a refusal", name, err)
 		}
-		if err := d.Stop(ctx, name); !errors.Is(err, jobs.ErrRefused) {
+		if err := d.Stop(ctx, name, jobs.StopOptions{}); !errors.Is(err, jobs.ErrRefused) {
 			t.Errorf("Stop(%q) = %v, want a refusal", name, err)
 		}
 		s.ranNothing("an instance name outside the allowlist")
@@ -358,7 +360,7 @@ func TestInstancesStopOfAnAbsentInstanceIsSuccess(t *testing.T) {
 	// What apptainer 1.5.3 actually says.
 	d, s, _, _ := newInstances(t)
 	s.respond("stop", "", "Error for command \"stop\": no instance found\n", 1)
-	if err := d.Stop(ctx, "qdrant-dev"); err != nil {
+	if err := d.Stop(ctx, "qdrant-dev", jobs.StopOptions{}); err != nil {
 		t.Errorf("Stop of an absent instance = %v, want success", err)
 	}
 
@@ -366,7 +368,7 @@ func TestInstancesStopOfAnAbsentInstanceIsSuccess(t *testing.T) {
 	d, s, _, _ = newInstances(t)
 	s.respond("stop", "", "FATAL: could not stop instance\n", 1)
 	s.respond("list", `{"instances":[]}`, "", 0)
-	if err := d.Stop(ctx, "qdrant-dev"); err != nil {
+	if err := d.Stop(ctx, "qdrant-dev", jobs.StopOptions{}); err != nil {
 		t.Errorf("Stop of an instance List says is gone = %v, want success", err)
 	}
 
@@ -376,14 +378,14 @@ func TestInstancesStopOfAnAbsentInstanceIsSuccess(t *testing.T) {
 	d, s, _, _ = newInstances(t)
 	s.respond("stop", "", "FATAL: could not stop instance\n", 1)
 	s.respond("list", listJSON, "", 0)
-	if err := d.Stop(ctx, "qdrant-dev"); err == nil {
+	if err := d.Stop(ctx, "qdrant-dev", jobs.StopOptions{}); err == nil {
 		t.Error("Stop of an instance that is still running = nil, want the failure")
 	}
 }
 
 func TestInstancesStopBuildsTheArgvApptainerExpects(t *testing.T) {
 	d, s, _, _ := newInstances(t)
-	if err := d.Stop(context.Background(), "elasticsearch-dev"); err != nil {
+	if err := d.Stop(context.Background(), "elasticsearch-dev", jobs.StopOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.argv(); len(got) != 1 || got[0] != "instance stop elasticsearch-dev" {
@@ -408,10 +410,10 @@ func TestInstancesRefusalsMatchTheFake(t *testing.T) {
 		if !errors.Is(fakeErr, jobs.ErrRefused) || !errors.Is(realErr, jobs.ErrRefused) {
 			t.Errorf("Run(%q): fake = %v, real = %v; both must refuse", name, fakeErr, realErr)
 		}
-		if fakeErr := fake.Stop(ctx, name); !errors.Is(fakeErr, jobs.ErrRefused) {
+		if fakeErr := fake.Stop(ctx, name, jobs.StopOptions{}); !errors.Is(fakeErr, jobs.ErrRefused) {
 			t.Errorf("fake Stop(%q) = %v, want a refusal", name, fakeErr)
 		}
-		if realErr := real.Stop(ctx, name); !errors.Is(realErr, jobs.ErrRefused) {
+		if realErr := real.Stop(ctx, name, jobs.StopOptions{}); !errors.Is(realErr, jobs.ErrRefused) {
 			t.Errorf("real Stop(%q) = %v, want a refusal", name, realErr)
 		}
 	}
@@ -436,12 +438,12 @@ func TestInstancesRefusalsMatchTheFake(t *testing.T) {
 	}
 
 	// And a stop of something that is not running is success for both.
-	if err := fake.Stop(ctx, "postgres-dev"); err != nil {
+	if err := fake.Stop(ctx, "postgres-dev", jobs.StopOptions{}); err != nil {
 		t.Errorf("fake Stop of an absent instance = %v, want success", err)
 	}
 	real2, s2, _, _ := newInstances(t)
 	s2.respond("stop", "", "no instance found\n", 1)
-	if err := real2.Stop(ctx, "postgres-dev"); err != nil {
+	if err := real2.Stop(ctx, "postgres-dev", jobs.StopOptions{}); err != nil {
 		t.Errorf("real Stop of an absent instance = %v, want success", err)
 	}
 }
@@ -465,4 +467,128 @@ func lastLineWithPrefix(env []string, prefix string) string {
 		}
 	}
 	return last
+}
+
+// A call in jobs.NamespaceAccountDefault carries NO APPTAINER_CONFIGDIR at
+// all, so apptainer falls back to $HOME/.apptainer.
+//
+// This is the regression for the ten-minute outage on the hackathon tenant.
+// The ctl namespaces every apptainer call under its own state dir so the
+// daemon's instances are findable from any session (PR-D2); the handover's
+// RELEASE half acts on instances the OWNER started by hand, which are in the
+// owner's default registry. Forcing the ctl's CONFIGDIR on that call made
+// `apptainer instance stop postgres-hackathon` look in a registry that held
+// nothing, and Stop's "an instance that is not running is success" rule
+// reported a stop over a postgres that went on serving 24085.
+//
+// The assertion is an ABSENCE, which is the whole point: an empty string would
+// be a config dir named "", not the default.
+func TestInstancesAccountDefaultNamespaceCarriesNoConfigDir(t *testing.T) {
+	d, s, root, sif := newInstances(t)
+	s.respond("list", `{"instances":[]}`, "", 0)
+	ctx := context.Background()
+	acct := jobs.NamespaceAccountDefault
+	_, _ = d.List(ctx, jobs.ListOptions{Namespace: acct})
+	_ = d.Stop(ctx, "qdrant-dev", jobs.StopOptions{Namespace: acct})
+	_ = d.Run(ctx, jobs.InstanceSpec{Name: "qdrant-dev", SIF: sif, Namespace: acct})
+	for _, key := range []string{"list", "stop", "run"} {
+		env := s.childEnv(key)
+		if len(env) == 0 {
+			t.Errorf("no %s call reached the stub", key)
+			continue
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "APPTAINER_CONFIGDIR=") {
+				t.Errorf("the %s call in the account namespace carries %q: it would look in the ctl's registry, "+
+					"not the account's", key, e)
+			}
+		}
+		// The cache is still the ctl's: only the REGISTRY moves.
+		want := "APPTAINER_CACHEDIR=" + filepath.Join(root, "apptainer", "cache")
+		found := false
+		for _, e := range env {
+			if e == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the %s call in the account namespace is missing %q: %v", key, want, env)
+		}
+	}
+}
+
+// And the two namespaces really are two registries as far as the fake is
+// concerned: an instance started in one is absent from the other, and a stop
+// in the wrong one is the no-op that reports success.
+func TestFakeInstancesKeepsTheTwoRegistriesApart(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(FakeOptions{
+		InstancePorts:           map[string]int{"postgres-hackathon": 24085},
+		AccountRunningInstances: []string{"postgres-hackathon"},
+	})
+	in := f.Instances()
+
+	ctl, err := in.List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctl) != 0 {
+		t.Errorf("the ctl registry holds %v; the tenant was started by hand", ctl)
+	}
+	acct, err := in.List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceAccountDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acct) != 1 || acct[0].Name != "postgres-hackathon" {
+		t.Fatalf("the account registry holds %v, want postgres-hackathon", acct)
+	}
+
+	// The coconut stop, exactly: it succeeds, and it changes nothing.
+	if err := in.Stop(ctx, "postgres-hackathon", jobs.StopOptions{Namespace: jobs.NamespaceCtl}); err != nil {
+		t.Fatalf("a stop in the ctl registry = %v; apptainer would say the same", err)
+	}
+	if held, _ := f.Proc().Listening(ctx, 24085); !held {
+		t.Error("the stop in the WRONG registry freed the port: the fake is not modelling the outage")
+	}
+	if got := f.FakeInstances().AccountNames(); len(got) != 1 {
+		t.Errorf("the account registry = %v after a stop in the other one", got)
+	}
+
+	// And the right one takes it down.
+	if err := in.Stop(ctx, "postgres-hackathon", jobs.StopOptions{Namespace: jobs.NamespaceAccountDefault}); err != nil {
+		t.Fatal(err)
+	}
+	if held, _ := f.Proc().Listening(ctx, 24085); held {
+		t.Error("24085 is still held after the instance was stopped in its own registry")
+	}
+}
+
+// The process on an instance's port is its CHILD, and Descends is what ties
+// the two together. An identity check written as `owner == instance.PID`
+// answers "no" about every instance on coconut.
+func TestFakeInstancesPortIsHeldByAChildOfTheInstance(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(FakeOptions{
+		InstancePorts:           map[string]int{"postgres-hackathon": 24085},
+		AccountRunningInstances: []string{"postgres-hackathon"},
+	})
+	list, err := f.Instances().List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceAccountDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := f.Proc().Owner(ctx, 24085)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == list[0].PID {
+		t.Fatal("the fake gives the instance and its listener the same pid; the host does not")
+	}
+	ok, err := f.Proc().Descends(ctx, owner, list[0].PID)
+	if err != nil || !ok {
+		t.Fatalf("Descends(%d, %d) = %v, %v; the listener is the instance's child", owner, list[0].PID, ok, err)
+	}
+	// And a stranger does not descend from it.
+	if ok, _ := f.Proc().Descends(ctx, 999999, list[0].PID); ok {
+		t.Error("an unrelated pid was reported as the instance's")
+	}
 }

@@ -33,16 +33,32 @@ func handoverUsage() int {
 Handover is a TWO-ACCOUNT protocol, because no single process on this host can
 perform it: the service account cannot signal the owner's uvicorn (it cannot
 read another account's /proc/<pid>/cwd) and cannot see the owner's apptainer
-instances (each account has its own instance registry).
+instances (an instance registry is per account AND per APPTAINER_CONFIGDIR).
+
+--release and --abandon therefore act in the RELEASING ACCOUNT's own apptainer
+instance registry ($HOME/.apptainer) rather than the control plane's: the
+tenant they act on was started by hand. Do NOT export APPTAINER_CONFIGDIR when
+running them — a stop aimed at the wrong registry finds nothing, and "nothing
+to stop" is a SUCCESS as far as apptainer is concerned. The release checks this
+before it stops anything and refuses by name if the two disagree.
 
   --release            As the tenant's OWNER. Checks the preparation (loopback
                        bind, a UI that is not a dev server, confirmed store
                        capabilities, a backup, a rollback descriptor, a
                        postgres password the take can read), takes a census of
-                       every collection and index, writes `+"`state: handover`"+`
-                       with a one-shot token, then stops the API by pidfile and
-                       the tenant's own apptainer instances, proving each port
-                       free. Prints the token. --direct is implied.
+                       every collection and index, proves every store instance
+                       is in THIS account's registry and holds the row's port,
+                       writes `+"`state: handover`"+` with a one-shot token, then stops
+                       the API by pidfile and the tenant's own apptainer
+                       instances, waiting for each to leave the instance table
+                       and free its ports. Prints the token. --direct is
+                       implied.
+
+                       RE-ENTRANT: run it again over a row left at
+                       `+"`handover.phase: released`"+` — it re-censuses, re-verifies
+                       and keeps the token the first release minted. If a step
+                       fails, the rollback starts the API and the instances
+                       again, as this account, from the row.
 
   --take --token T     As the SERVICE ACCOUNT. Ports free, supervisor:
                        instance, the tenant's own stores, a bounded wait for
@@ -62,11 +78,15 @@ instances (each account has its own instance registry).
 
   --abandon            As the account that RELEASED it, after the service
                        account has run `+"`ragstack-ctl tenant stop <name>`"+` (or when
-                       the take never happened): every one of the tenant's
-                       ports must be free, and the row goes back to supervisor:
-                       manual, state: active, owner: the releasing account.
-                       Then `+"`ops/coconut/restore.sh --tenant <name>`"+` starts the
-                       tenant exactly as it was started before.
+                       the take never happened): the row goes back to
+                       supervisor: manual, state: active, owner: the releasing
+                       account. Every port of the tenant must be free OR held
+                       by this account's own process — over a handover that was
+                       never taken those are the ORIGINALS and nothing needs
+                       stopping. A port held by a process this account cannot
+                       attribute is the take's and is refused. Then
+                       `+"`ops/coconut/restore.sh --tenant <name>`"+` starts whatever of
+                       the tenant is down.
 
 The owner-side phases (--release, --abandon) run as jobs in the OWNER's own ctl
 state directory, which is not the daemon's:

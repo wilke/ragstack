@@ -343,6 +343,23 @@ type Proc interface {
 	// A pid that is not running is (false, nil): a dead tenant is a fact the
 	// reconcile and the `running` post-check read, not an error.
 	Alive(ctx context.Context, pid int) (bool, error)
+	// Descends reports whether pid IS ancestor, or descends from it, by
+	// walking /proc/<pid>/stat's parent field upwards.
+	//
+	// It exists because an apptainer instance's identity is a FAMILY, not a
+	// pid. `apptainer instance list` names the instance's starter process
+	// (postgres-hackathon: 630746); the process on the tenant's port is its
+	// child (postgres: 631059, `127.0.0.1:24085`). An identity check that
+	// compared the port's owner to the instance's pid therefore answered "the
+	// name and the port do not describe the same process" about every instance
+	// on this host, and the handover release would have refused every real
+	// tenant the moment it looked in a registry that actually had one.
+	//
+	// /proc/<pid>/stat is world-readable, so this answers across accounts —
+	// unlike /proc/<pid>/cwd, which is what Signal's identity check needs and
+	// why that one is the OWNER's to run. A pid (or an ancestor) that is gone
+	// mid-walk is (false, nil): the process ended, which is an answer.
+	Descends(ctx context.Context, pid, ancestor int) (bool, error)
 }
 
 // SpawnSpec is one detached process, as Proc.Spawn starts it.
@@ -374,6 +391,46 @@ type SpawnSpec struct {
 	// Spawn returns.
 	PidFile string
 }
+
+// InstanceNamespace selects WHICH apptainer instance registry a call acts on.
+//
+// apptainer keeps its instance table under `$APPTAINER_CONFIGDIR/instances`,
+// so "the instances of this account" is not one set: it is one set per config
+// directory. The ctl forces its own (`<CtlStateDir>/apptainer/config`) on
+// every call it makes, which is what keeps the daemon's instances findable and
+// stoppable from any session — and it is also what made the first real
+// `--release` on coconut report "stopped postgres-hackathon" while
+// postgres-hackathon (pid 630746, its postgres on 24085) went on running: the
+// tenant had been started BY HAND, so it lives in the releasing account's
+// DEFAULT registry (`$HOME/.apptainer`), the ctl's registry held nothing by
+// that name, and `Stop`'s "an instance that is not running is success" rule
+// turned a lookup in the wrong table into a successful stop. The API was
+// already down by then; the tenant was down for ten minutes.
+//
+// So the namespace is now something every call NAMES. The zero value is the
+// ctl's, because that is what all but one caller wants and an omission must
+// not silently reach for the operator's home directory.
+type InstanceNamespace string
+
+const (
+	// NamespaceCtl is the control plane's own registry,
+	// `<CtlStateDir>/apptainer/config` — every instance the ctl STARTED, and
+	// the only place a take, a start, a stop or a fleet verb looks.
+	NamespaceCtl InstanceNamespace = ""
+	// NamespaceAccountDefault is the running account's DEFAULT registry:
+	// apptainer with no `APPTAINER_CONFIGDIR` at all, i.e. `$HOME/.apptainer`.
+	// It is where a hand-started tenant's instances are, and therefore the
+	// only namespace the RELEASE half of a handover (and `--abandon`) may act
+	// in — those phases run as the owner and act on processes the owner
+	// started before the ctl existed.
+	NamespaceAccountDefault InstanceNamespace = "account-default"
+)
+
+// ListOptions is which registry a List reads. The zero value is the ctl's.
+type ListOptions struct{ Namespace InstanceNamespace }
+
+// StopOptions is which registry a Stop acts in. The zero value is the ctl's.
+type StopOptions struct{ Namespace InstanceNamespace }
 
 // Instance is one apptainer instance, as `apptainer instance list --json`
 // reports it.
@@ -419,6 +476,13 @@ type InstanceSpec struct {
 	// It may therefore carry a secret, and like SpawnSpec.Env it must not be
 	// logged, audited or recorded on a call.
 	ExtraEnv map[string]string
+	// Namespace is the instance registry this run is recorded in. The zero
+	// value is the ctl's own. A release's ROLLBACK is the one caller that sets
+	// it to NamespaceAccountDefault: it puts back an instance it stopped in
+	// the owner's default registry, and an instance restarted into the ctl's
+	// registry instead would be invisible to the `apptainer instance list` the
+	// operator runs next.
+	Namespace InstanceNamespace
 }
 
 // Instances is the apptainer-instance surface `supervisor: instance` runs a
@@ -427,22 +491,36 @@ type InstanceSpec struct {
 // stoppable and findable without a user manager.
 type Instances interface {
 	// List is `apptainer instance list --json`, every instance of the CURRENT
-	// account. No instances is an empty list, not an error.
-	List(ctx context.Context) ([]Instance, error)
+	// account IN opts.Namespace. No instances is an empty list, not an error.
+	//
+	// The namespace is part of the question, not a property of the driver: an
+	// answer of "nothing" means "nothing in THAT registry", and a caller that
+	// acts on it — a stop, an idempotency check — has to have said which one
+	// it meant (see InstanceNamespace).
+	List(ctx context.Context, opts ListOptions) ([]Instance, error)
 	// Run is
 	// `apptainer instance run --no-home <--bind …> <--env …> <sif> <name> <args…>`
 	// with spec.ExtraEnv in the child's environment. It returns when apptainer
 	// has started the instance; readiness is the caller's gate, not this one's.
 	Run(ctx context.Context, spec InstanceSpec) error
-	// Stop is `apptainer instance stop <name>` — SIGTERM to the instance, so
-	// elasticsearch gets the graceful shutdown its units' TimeoutStopSec=120
-	// exists for.
+	// Stop is `apptainer instance stop <name>` in opts.Namespace — SIGTERM to
+	// the instance, so elasticsearch gets the graceful shutdown its units'
+	// TimeoutStopSec=120 exists for.
 	//
-	// An instance that is not running is SUCCESS. Stop is a step that gets
-	// re-run — by a rollback, by a resumed job, by `fleet stop --all` over a
-	// fleet half of which is already down — and a stop that failed because it
-	// had nothing to do would turn every one of those into a failed job.
-	Stop(ctx context.Context, name string) error
+	// An instance that is not running IN THAT NAMESPACE is SUCCESS. Stop is a
+	// step that gets re-run — by a rollback, by a resumed job, by `fleet stop
+	// --all` over a fleet half of which is already down — and a stop that
+	// failed because it had nothing to do would turn every one of those into a
+	// failed job.
+	//
+	// That rule belongs to the CALLERS whose goal is absence of an instance
+	// the ctl itself started. It does NOT make a stop a proof that a PORT was
+	// freed, and a caller whose next step depends on the port (the handover
+	// release, whose take must bind it as another account) must check the
+	// namespace first and poll the port afterwards — ops/handover.go does
+	// both, because this driver saying "nothing to stop" is exactly what a
+	// lookup in the wrong registry looks like.
+	Stop(ctx context.Context, name string, opts StopOptions) error
 	// SeedConfigDir copies <sif>:<containerDir>/. into hostDir —
 	// `apptainer exec --bind <hostDir>:/__seed <sif> cp -R <containerDir>/. /__seed/`,
 	// which is exactly what `ragstack-ctl es-seed-config` runs today from the

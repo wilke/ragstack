@@ -35,7 +35,7 @@ func TestFakeInstancesRunListAndStop(t *testing.T) {
 	in := f.Instances()
 
 	// An empty host lists nothing, and that is not an error.
-	got, err := in.List(ctx)
+	got, err := in.List(ctx, jobs.ListOptions{})
 	if err != nil || len(got) != 0 {
 		t.Fatalf("List on an empty host = %v, %v; want no instances and no error", got, err)
 	}
@@ -47,7 +47,7 @@ func TestFakeInstancesRunListAndStop(t *testing.T) {
 	if err := in.Run(ctx, jobs.InstanceSpec{Name: "elasticsearch-dev", SIF: seamESSIF}); err != nil {
 		t.Fatalf("Run elasticsearch-dev: %v", err)
 	}
-	got, err = in.List(ctx)
+	got, err = in.List(ctx, jobs.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestFakeInstancesRunListAndStop(t *testing.T) {
 		t.Errorf("a duplicate instance name = %v, want a refusal", err)
 	}
 
-	if err := in.Stop(ctx, "qdrant-dev"); err != nil {
+	if err := in.Stop(ctx, "qdrant-dev", jobs.StopOptions{}); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if listening, _ := f.Proc().Listening(ctx, 24081); listening {
@@ -83,7 +83,7 @@ func TestFakeInstancesRunListAndStop(t *testing.T) {
 	// Stopping what is not running is SUCCESS: every caller of Stop is a step
 	// that gets re-run — by a rollback, by a resumed job, by `fleet stop --all`
 	// over a fleet half of which is already down.
-	if err := in.Stop(ctx, "qdrant-dev"); err != nil {
+	if err := in.Stop(ctx, "qdrant-dev", jobs.StopOptions{}); err != nil {
 		t.Errorf("stopping an absent instance = %v, want nil", err)
 	}
 }
@@ -103,7 +103,7 @@ func TestFakeInstancesRefuseNamesThisControlPlaneDoesNotManage(t *testing.T) {
 		if err := f.Instances().Run(ctx, jobs.InstanceSpec{Name: name, SIF: seamSIF}); !errors.Is(err, jobs.ErrRefused) {
 			t.Errorf("Run(%q) = %v, want a refusal", name, err)
 		}
-		if err := f.Instances().Stop(ctx, name); !errors.Is(err, jobs.ErrRefused) {
+		if err := f.Instances().Stop(ctx, name, jobs.StopOptions{}); !errors.Is(err, jobs.ErrRefused) {
 			t.Errorf("Stop(%q) = %v, want a refusal — a stop is the call that takes something down", name, err)
 		}
 	}
