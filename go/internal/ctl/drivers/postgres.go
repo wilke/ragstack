@@ -179,6 +179,107 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 	return nil
 }
 
+// censusSQL is the ONE query Census runs, and it is a literal: nothing from a
+// registry row, a tenant name or an operator reaches it.
+//
+// It counts every ordinary table EXACTLY. `count(*)` per table rather than
+// `pg_stat_user_tables.n_live_tup`, because that column is an estimate, it is
+// reset by a restore, and a handover that proved its migration with an
+// estimate would have proved nothing. `query_to_xml` is how one statement
+// counts every table without the caller first asking for the table list and
+// then building a second statement out of the answer — which is the pattern
+// that turns a schema into a command line.
+//
+// The `=size=` row carries pg_database_size in the same result, so the two
+// facts are read at ONE instant; two queries could straddle a write. And it is
+// one LINE because the argv runner refuses an argument containing a newline —
+// a rule worth keeping, so the SQL is spelled to fit it.
+const censusSQL = "select '=size=' as n, pg_database_size(current_database()) as c" +
+	" union all " +
+	"select t.table_schema || '.' || t.table_name," +
+	" (xpath('/row/c/text()'," +
+	"        query_to_xml(format('select count(*) as c from %I.%I', t.table_schema, t.table_name)," +
+	"                     false, true, '')))[1]::text::bigint" +
+	" from information_schema.tables t" +
+	" where t.table_type = 'BASE TABLE'" +
+	"   and t.table_schema not in ('pg_catalog', 'information_schema')" +
+	" order by 1"
+
+// Census asks the database what it holds, in the terms a dump and a restore
+// preserve: its size, and the exact row count of every table.
+func (p *RealPostgres) Census(ctx context.Context, spec jobs.PostgresSpec) (jobs.PostgresCensus, error) {
+	bin, err := p.check(spec)
+	if err != nil {
+		return jobs.PostgresCensus{}, err
+	}
+	// -A unaligned, -t tuples only, -F the separator, -X no .psqlrc (there is
+	// no home in the container anyway), -v ON_ERROR_STOP so a query that
+	// fails is an exit status rather than a line in the output.
+	argv := argvFor(bin, spec, "", "psql", append(pgConn(spec),
+		"-XAt", "-F", "|", "-v", "ON_ERROR_STOP=1", "-c", censusSQL)...)
+	out, err := p.exec(ctx, argv, p.longTimeout())
+	if err != nil {
+		return jobs.PostgresCensus{}, fmt.Errorf("counting the rows of %s: %w%s", spec.DB, err, detail(out))
+	}
+	return parsePostgresCensus(out)
+}
+
+// parsePostgresCensus reads psql's unaligned output. A line that is not
+// `<name>|<number>` is a refusal rather than a skip: this answer is a PROOF,
+// and a parser that dropped what it did not understand would prove less than
+// it claims while looking the same.
+func parsePostgresCensus(out string) (jobs.PostgresCensus, error) {
+	c := jobs.PostgresCensus{Tables: map[string]int64{}}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, count, ok := strings.Cut(line, "|")
+		n, cerr := strconv.ParseInt(strings.TrimSpace(count), 10, 64)
+		if !ok || cerr != nil {
+			return jobs.PostgresCensus{}, fmt.Errorf("%w: the row census returned a line this driver does not "+
+				"parse (%q); nothing about this database has been proved", jobs.ErrRefused, line)
+		}
+		if name == "=size=" {
+			c.SizeBytes = n
+			continue
+		}
+		c.Tables[name] = n
+	}
+	return c, nil
+}
+
+// handoverTools are the three programs a handover's postgres migration runs,
+// and which of the two halves runs each. initdb is run by the IMAGE's
+// entrypoint rather than by the ctl, which is exactly why it is on this list:
+// nothing else would notice it was missing until a take had already renamed a
+// tenant's cluster aside.
+var handoverTools = []string{"pg_dump", "pg_restore", "initdb"}
+
+// ToolVersions asks each of those tools, inside the tenant's own image, for its
+// version. No socket and no database: this is a question about the IMAGE.
+func (p *RealPostgres) ToolVersions(ctx context.Context, spec jobs.PostgresSpec) (map[string]string, error) {
+	bin, err := p.check(spec)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, tool := range handoverTools {
+		// argvFor binds the socket directory, which costs nothing and keeps
+		// every call this driver makes shaped the same way.
+		argv := argvFor(bin, spec, "", tool, "--version")
+		o, err := p.exec(ctx, argv, 60*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s cannot run %s, which a handover needs (the release dumps with pg_dump; "+
+				"the take restores with pg_restore, and the image's own entrypoint initialises the new cluster "+
+				"with initdb): %v%s", jobs.ErrRefused, spec.SIF, tool, err, detail(o))
+		}
+		out[tool] = strings.TrimSpace(o)
+	}
+	return out, nil
+}
+
 // ctlFile splits a host path into the RESOLVED path itself, the directory to
 // bind and the base name to name inside the container, after checking
 // containment.

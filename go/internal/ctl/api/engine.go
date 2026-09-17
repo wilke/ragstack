@@ -229,9 +229,13 @@ func CheckStateDirOwnership(stateDir string) error {
 		if int(sys.Uid) == self {
 			return nil
 		}
+		// hostfacts.UsernameOf, not os/user: this binary is built
+		// CGO_ENABLED=0, so Go's own lookup reads /etc/passwd only and every
+		// LDAP account on this host — svcbvbrc included, which is the account
+		// this refusal is usually about — is invisible to it. getent asks NSS.
 		owner := "uid " + strconv.Itoa(int(sys.Uid))
-		if u, uerr := user.LookupId(strconv.Itoa(int(sys.Uid))); uerr == nil {
-			owner = u.Username + " (uid " + strconv.Itoa(int(sys.Uid)) + ")"
+		if name := hostfacts.UsernameOf(int(sys.Uid)); name != "" {
+			owner = name + " (uid " + strconv.Itoa(int(sys.Uid)) + ")"
 		}
 		return fmt.Errorf("%w: %s (%s) belongs to %s and this process is uid %d: a job engine opened here writes "+
 			"SQLite's sidecars (jobs.db-wal, jobs.db-shm) as THIS account, and that account's own daemon then "+
@@ -353,6 +357,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	// read a green run on the command line and be refused by a red one from
 	// the daemon, with no way to see which finding did it.
 	ctlUID := hostfacts.LookupUID(fleet.DefaultCtlUser)
+	ctlGID := hostfacts.PrimaryGIDOf(fleet.DefaultCtlUser)
 	doctorFn := func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		f, err := loadFleet()
 		if err != nil {
@@ -366,6 +371,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			RegistryPath:       cfg.RegistryPath,
 			CtlUser:            fleet.DefaultCtlUser,
 			CtlUID:             ctlUID,
+			CtlGID:             ctlGID,
 			SudoersGroup:       fleet.DefaultSudoersGroup,
 			ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
 		})

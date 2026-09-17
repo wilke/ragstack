@@ -258,12 +258,11 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 	// ---- everything that can refuse runs BEFORE anything is stopped.
 
 	p.addHandoverPGPasswordCheck(legs)
-	// …and, beside it, the OTHER thing about postgres that can only be
-	// discovered cheaply now: whether the take will be able to own the data
-	// directory, and whether this filesystem has room for the copy that takes.
-	// Both questions are the same shape — a take that fails on either fails
-	// with the tenant already stopped.
-	p.addPGDataOwnershipCheck(legs)
+	// …and, beside it, the OTHER postgres question that is cheap now and
+	// impossible later: is there room to dump this database and re-create it
+	// as a cluster the other account owns. Both are the same shape — a take
+	// that fails on either fails with the tenant already stopped.
+	p.addPGHandoverSpaceCheck(legs)
 	p.addNoRunningIngest(origin, secretsEnv)
 	p.addCensus(legs, origin, secretsEnv, census)
 	// The LAST thing that can refuse, and the one that has to run before the
@@ -276,11 +275,24 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 
 	p.addReleaseRegistryStep(census, reentrant)
 	p.addReleaseAPIStop()
+	// The DUMP, in the one-step window it has: the API is stopped, so nothing
+	// is writing, and postgres is not stopped yet, so there is a server to
+	// dump. It is the whole of what a handover moves (ops/pgdata.go).
+	p.addPGDump(legs)
 	for _, c := range reverse(legs) {
 		if c.Name == "api" || c.Name == "ui" || !c.Managed {
 			continue
 		}
 		p.addReleaseStoreStop(c)
+		// …and, for postgres, the socket and lock file the stopped server left
+		// behind. The socket directory is sticky, so ONLY this account can
+		// unlink them, and a take that found the lock file would meet a
+		// postgres refusing to start over its own port.
+		if c.Leg == render.LegPostgres {
+			if m, ok := p.pgMigrationFor(legs, account); ok {
+				p.addPGSocketCleanup(m)
+			}
+		}
 	}
 
 	p.result["phase"] = registry.HandoverReleased
@@ -1264,12 +1276,12 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 		}
 	}
 
-	// The data directory, before ANY store is started and after the ports are
-	// proved free. Both halves of that placement are load-bearing: a directory
-	// moved under processes the release did not manage to stop is the worst
-	// thing this job could do, and a postgres started before the move is the
-	// failure the whole step exists to prevent (ops/pgdata.go).
-	p.addPGDataMigration(legs, account)
+	// The cluster directory, after the ports are proved free and before ANY
+	// store is started. Both halves of that placement are load-bearing: a
+	// directory moved under processes the release did not manage to stop is
+	// the worst thing this job could do, and a postgres started before the
+	// swap is the failure the whole step exists to prevent (ops/pgdata.go).
+	p.addPGClusterSwap(legs, account, h)
 
 	p.addTakeSupervisorStep()
 	for _, c := range legs {
@@ -1284,6 +1296,10 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 			return err
 		}
 	}
+	// The RESTORE, after the stores and before the API: the cluster does not
+	// exist until the instance above has initialised it, and a tenant serving
+	// out of a half-restored database is worse than one that is still down.
+	p.addPGRestore(legs, account, h)
 	for _, c := range legs {
 		if c.Name == "api" && c.Managed {
 			if err := p.sup.startLeg(p, c); err != nil {
@@ -1671,12 +1687,21 @@ func planHandoverCommit(p *planner) error {
 	// the tenant's pre-handover postgres directory is; from here on doctor's
 	// `pre_handover_copy_present` is what remembers, because it reads the disk.
 	if pd := h.PostgresData; pd != nil {
-		p.result["pre_handover_postgres_data"] = pd.PreHandover
-		p.warn("the take copied this tenant's postgres data directory (it could not start on one it did not own) "+
-			"and the ORIGINAL is still at %s. This commit does not delete it: it is the last copy of the tenant's "+
-			"postgres as %s had it, and removing it is a decision for after the soak. `doctor` reports "+
-			"`pre_handover_copy_present` until it is gone; delete it as %s (`rm -rf %s`)",
-			pd.PreHandover, h.ReleasedBy, h.ReleasedBy, pd.PreHandover)
+		if pd.PreHandover != "" {
+			p.result["pre_handover_postgres_data"] = pd.PreHandover
+			p.warn("the take re-created this tenant's postgres from a dump (it could not start on a cluster it "+
+				"did not own, and could not read one either) and the ORIGINAL cluster is still at %s. This "+
+				"commit does not delete it: it is %s's last copy of this database, and removing it is a decision "+
+				"for after the soak. Delete it as %s (`rm -rf %s`)",
+				pd.PreHandover, h.ReleasedBy, h.ReleasedBy, pd.PreHandover)
+		}
+		if pd.Dump != "" {
+			p.result["handover_postgres_dump"] = pd.Dump
+			p.warn("the release's dump is still at %s, and this commit does not delete it either. It is the "+
+				"artefact the take restored, and the only file in this handover that both accounts can read; "+
+				"delete it with the pre-handover cluster", pd.Dump)
+		}
+		p.warn("`doctor` reports `pre_handover_copy_present` naming both until they are gone")
 	}
 	p.warn("`ops/coconut/restore.sh` skips this tenant from now on (\"handed over to the control plane\") and " +
 		"`ragstack-ctl fleet start --all` — the service account's @reboot line — is what brings it back")
@@ -1797,12 +1822,12 @@ func planHandoverAbandon(p *planner) error {
 			},
 		})
 	}
-	// The data directory goes back BEFORE the row does. An abandon that
-	// recorded `manual` and handed the tenant to `restore.sh` while its
-	// postgres directory was still the take's copy would start the releasing
-	// account's postgres on a directory it does not own — the same refusal in
-	// the other direction.
-	p.addPGDataSwapBack(h)
+	// The cluster goes back BEFORE the row does. An abandon that recorded
+	// `manual` and handed the tenant to `restore.sh` while its postgres
+	// directory was still the cluster the TAKE created would start the
+	// releasing account's postgres on a directory it does not own — the same
+	// refusal in the other direction.
+	p.addPGSwapBack(h)
 
 	name := p.tenant
 	phase := h.Phase

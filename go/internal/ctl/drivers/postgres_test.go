@@ -244,3 +244,83 @@ func TestPostgresRefusesAnApptainerThatIsNotInstalled(t *testing.T) {
 		t.Fatalf("Ready without apptainer = %v, want a refusal that says so", err)
 	}
 }
+
+// ---------------------------------------------------------------- census
+
+// The census is the handover's PROOF. A dump and a restore cannot be compared
+// byte for byte — the take restores into a cluster it initialised itself — so
+// what the release records and the take checks is the exact row count of every
+// table, plus the database's size for the free-space arithmetic.
+func TestPostgresCensusReadsSizeAndExactRowCountsInOneQuery(t *testing.T) {
+	bin, log := stubApptainer(t, "printf '=size=|48234496\\npublic.chunks|88000\\npublic.jobs|12\\n'\nexit 0\n")
+	d, spec, _ := pgFixture(t, bin)
+	got, err := d.Postgres().Census(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SizeBytes != 48234496 {
+		t.Errorf("size = %d, want the pg_database_size row", got.SizeBytes)
+	}
+	if got.Tables["public.chunks"] != 88000 || got.Tables["public.jobs"] != 12 || len(got.Tables) != 2 {
+		t.Errorf("tables = %v", got.Tables)
+	}
+	argv := strings.Join(argvOf(t, log), " ")
+	for _, want := range []string{"psql", "-XAt", "ON_ERROR_STOP=1", "count(*)", "pg_database_size"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("argv %q is missing %q", argv, want)
+		}
+	}
+	// n_live_tup is an ESTIMATE, it is reset by a restore, and a handover
+	// proved with one would have proved nothing.
+	if strings.Contains(argv, "n_live_tup") {
+		t.Errorf("the census counts with an estimate rather than exactly: %q", argv)
+	}
+	// Nothing from a registry row reaches the SQL: the query is a literal and
+	// the identifiers inside it come from the catalog via format('%I').
+	if strings.Contains(argv, "ctltest'") {
+		t.Errorf("the tenant name was interpolated into the query: %q", argv)
+	}
+}
+
+// An EMPTY database is an empty census and no error: a tenant that has never
+// been written to is a normal tenant, and a handover must not refuse over one.
+func TestPostgresCensusOfAnEmptyDatabaseIsNotAnError(t *testing.T) {
+	bin, _ := stubApptainer(t, "printf '=size=|7000000\\n'\nexit 0\n")
+	d, spec, _ := pgFixture(t, bin)
+	got, err := d.Postgres().Census(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tables) != 0 || got.SizeBytes != 7000000 {
+		t.Errorf("census of an empty database = %+v", got)
+	}
+}
+
+// A line the parser does not understand is a REFUSAL, not a skip. This answer
+// is weighed against a tenant's entire relational state, and a parser that
+// dropped what it did not recognise would prove less than it claims while
+// looking exactly the same.
+func TestPostgresCensusRefusesOutputItCannotParse(t *testing.T) {
+	for _, out := range []string{
+		"public.chunks|not-a-number\n",
+		"WARNING: something\npublic.chunks|1\n",
+		"public.chunks\n",
+	} {
+		b, _ := stubApptainer(t, "printf '"+strings.ReplaceAll(out, "\n", "\\n")+"'\nexit 0\n")
+		d, spec, _ := pgFixture(t, b)
+		if _, err := d.Postgres().Census(context.Background(), spec); !errors.Is(err, jobs.ErrRefused) {
+			t.Errorf("census over %q = %v, want a refusal", out, err)
+		}
+	}
+}
+
+// psql's own failure is the census's failure, with its output attached: a
+// census that could not be taken must never read as an empty database.
+func TestPostgresCensusReportsPsqlsOwnOutputOnFailure(t *testing.T) {
+	bin, _ := stubApptainer(t, "echo 'FATAL:  database \"ctltest\" does not exist' >&2; exit 2\n")
+	d, spec, _ := pgFixture(t, bin)
+	_, err := d.Postgres().Census(context.Background(), spec)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("census over a missing database = %v, want the tool's own words", err)
+	}
+}

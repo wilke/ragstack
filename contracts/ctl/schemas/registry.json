@@ -504,21 +504,37 @@
           }
         },
         "postgres_data": {
-          "description": "Where the TAKE put a postgres data directory it did not own, and null for every tenant that does not run a postgres of its own (and for one whose directory the taking account already owned).\n\nA handover moves no data — except here. postgres compares its data directory's `st_uid` against its own `geteuid()` and refuses to start when they differ (\"data directory has wrong ownership\"), which no mode and no ACL entry changes, and no account on this host may chown to another. So the take COPIES `<data_dir>/postgres/data` as itself, renames the original to `pre_handover` and renames the copy into place. `--abandon` swaps the two names back; `--commit` leaves the original where it is and doctor raises `pre_handover_copy_present` until an operator deletes it.",
+          "description": "How this handover is moving the tenant's postgres, and null for a tenant that runs none of its own.\n\nA handover moves no data — except here, and it cannot move it the obvious way. postgres refuses a data directory whose `st_uid` is not its own uid (\"data directory has wrong ownership\"), and the taking account cannot COPY one either: a POSIX ACL's named-user entry is filtered by the mask, the mask is the directory's group mode bits, and a PGDATA postgres accepts has none — so `user:svcbvbrc:rwx` on a 0700 pgdata has an effective permission of `---` and no ACL can change that.\n\nSo the migration is LOGICAL. The RELEASE — API already stopped, postgres still running — writes `pg_dump -Fc` to `handover-<ts>.dump` at 0640 (a plain file has no ownership check, and the group both accounts are in can read it) and records its sha256 and the exact row count of every table. The TAKE verifies the checksum, puts an EMPTY directory where the cluster was (the original is renamed to `pre_handover`, which nothing opens again), lets the postgres instance initialise a cluster of its own in it, restores the dump and checks every table's count back.\n\nThe release fills `dump`, `dump_sha256`, `dumped_at` and `tables`; the take fills `pre_handover`, `copy` and `migrated_at`, which are empty strings until it does. `--abandon` renames the two directories back; `--commit` leaves the original cluster and the dump on disk and doctor reports `pre_handover_copy_present` until an operator removes them.",
           "oneOf": [
             {
               "type": "object",
-              "required": ["pre_handover", "copy", "migrated_at"],
+              "required": ["dump", "dump_sha256", "dumped_at", "tables", "pre_handover", "copy", "migrated_at"],
               "properties": {
-                "pre_handover": { "description": "Where the ORIGINAL directory was renamed to: `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing writes to it again.", "$ref": "#/$defs/AbsPath" },
-                "copy": { "description": "The name the take's copy was made under before it was renamed into place: `<data_dir>/postgres/data.<account>-<ts>`. The abandon renames the live directory back to it.", "$ref": "#/$defs/AbsPath" },
-                "migrated_at": { "$ref": "#/$defs/Timestamp" }
+                "dump": { "description": "The release's `pg_dump -Fc` archive, `<data_dir>/postgres/handover-<ts>.dump`, mode 0640.", "$ref": "#/$defs/AbsPath" },
+                "dump_sha256": { "description": "That file's digest. The take checks it before it moves anything: the archive crosses a job boundary, an account boundary and an unbounded amount of wall-clock time.", "$ref": "#/$defs/Sha256Hex" },
+                "dumped_at": { "$ref": "#/$defs/Timestamp" },
+                "tables": {
+                  "description": "The exact row count of every ordinary table at the moment of the dump (`count(*)`, never `n_live_tup` — an estimate is reset by the restore and proves nothing). A dump and a restore cannot be compared byte for byte; this is what the take proves the migration against, and it refuses on ANY difference.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "rows"],
+                    "properties": {
+                      "name": { "description": "`<schema>.<table>`.", "type": "string", "minLength": 1 },
+                      "rows": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "pre_handover": { "description": "Where the take renamed the ORIGINAL cluster: `<data_dir>/postgres/data.pre-handover-<ts>`. Empty until the take has run; nothing opens it again once it has.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },
+                "copy": { "description": "The name the take's own cluster directory was created under, `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into place. An abandon renames the live directory back to it. Empty until the take has run.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },
+                "migrated_at": { "description": "When the two renames happened; empty until the take has run.", "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "string", "maxLength": 0 } ] }
               },
               "additionalProperties": false
             },
             { "type": "null" }
           ]
-        }
+                }
       },
       "additionalProperties": false
     },

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,6 +345,13 @@ func seededFake(t *testing.T) *Fake {
 		if err := f.Files().MkdirAll(ctx, dir, 0o2770); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// …and an ARCHIVE for the restore to read. The fake's Restore reads the
+	// census out of the file the fake's Dump wrote, the way a real pg_restore
+	// reads the rows out of a real one — so a restore with no archive is an
+	// error here exactly as it is on the host.
+	if err := f.Postgres().Dump(ctx, pgSpec(), "/rag/backups/dev/b1/postgres/dev.dump"); err != nil {
+		t.Fatal(err)
 	}
 	f.Clear()
 	return f
@@ -1130,115 +1138,7 @@ func TestRealCopyFileRefusesASymlinkedSource(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------- copying a tree the account does not own
-
-// CopyTree is the driver half of the handover's postgres migration: it exists
-// so that an account which cannot chown — nobody on this host can — can still
-// produce a data directory postgres will start on, by making one it owns.
-//
-// So the properties under test are the ones that decide whether a tenant comes
-// back: every file and directory is reproduced, the modes come across (a 0700
-// pgdata that arrived 0755 is a postgres that refuses for the OTHER reason it
-// refuses), the copy is owned by whoever ran it, and nothing lands on top of a
-// path that is already there.
-func TestRealFilesCopyTreeReproducesTheTreeAsThisAccount(t *testing.T) {
-	f, root := realFiles(t)
-	src := filepath.Join(root, "data")
-	pgdata := filepath.Join(src, "pgdata")
-	if err := os.MkdirAll(filepath.Join(pgdata, "base", "1"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(pgdata, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pgdata, "PG_VERSION"), []byte("16\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pgdata, "base", "1", "1259"), make([]byte, 4096), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	dst := filepath.Join(root, "data.svcbvbrc-20260917T083000Z")
-	bytes, entries, err := f.CopyTree(context.Background(), src, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes != 4096+3 {
-		t.Errorf("copied %d bytes, want the 4099 the tree holds", bytes)
-	}
-	if entries < 6 {
-		t.Errorf("copied %d entries, want every file and directory of the tree", entries)
-	}
-	if got, err := os.ReadFile(filepath.Join(dst, "pgdata", "PG_VERSION")); err != nil || string(got) != "16\n" {
-		t.Errorf("PG_VERSION = %q (err %v)", got, err)
-	}
-	// The mode of the directory postgres inspects, and of the files under it.
-	st, err := os.Stat(filepath.Join(dst, "pgdata"))
-	if err != nil || st.Mode().Perm() != 0o700 {
-		t.Errorf("the copy's pgdata is %v (err %v), want 0700", st.Mode().Perm(), err)
-	}
-	fst, err := os.Stat(filepath.Join(dst, "pgdata", "PG_VERSION"))
-	if err != nil || fst.Mode().Perm() != 0o600 {
-		t.Errorf("the copy's PG_VERSION is %v (err %v), want 0600", fst.Mode().Perm(), err)
-	}
-	// And the whole point: the copy is THIS account's.
-	who, err := f.Stat(context.Background(), filepath.Join(dst, "pgdata"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if who.UID != os.Geteuid() {
-		t.Errorf("the copy is owned by uid %d, want this process's %d", who.UID, os.Geteuid())
-	}
-}
-
-// A destination that is already there is refused rather than merged: two
-// postgres data directories mixed together is not a failure mode anybody can
-// recover from, and it is exactly what a retried step would produce.
-func TestRealFilesCopyTreeRefusesAnExistingDestination(t *testing.T) {
-	f, root := realFiles(t)
-	src, dst := filepath.Join(root, "a"), filepath.Join(root, "b")
-	for _, d := range []string{src, dst} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_, _, err := f.CopyTree(context.Background(), src, dst)
-	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("CopyTree over an existing destination = %v, want a refusal", err)
-	}
-}
-
-// A symlink in the tree is refused BY NAME rather than followed. Following one
-// would copy whatever it points at into the tenant's directory and silently
-// drop the indirection the original depended on — `pg_wal` moved to another
-// filesystem is the usual one, and it is the case where that matters most.
-func TestRealFilesCopyTreeRefusesASymlinkInTheTree(t *testing.T) {
-	f, root := realFiles(t)
-	src := filepath.Join(root, "data")
-	if err := os.MkdirAll(src, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/var/lib/postgresql/wal", filepath.Join(src, "pg_wal")); err != nil {
-		t.Skipf("this filesystem cannot make a symlink: %v", err)
-	}
-	_, _, err := f.CopyTree(context.Background(), src, filepath.Join(root, "copy"))
-	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "pg_wal") {
-		t.Errorf("CopyTree over a tree holding a symlink = %v, want a refusal naming it", err)
-	}
-}
-
-// The containment rule is the same one every other write in this driver obeys.
-func TestRealFilesCopyTreeRefusesOutsideTheApprovedRoots(t *testing.T) {
-	f, root := realFiles(t)
-	src := filepath.Join(root, "data")
-	if err := os.MkdirAll(src, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err := f.CopyTree(context.Background(), src, filepath.Join(t.TempDir(), "elsewhere"))
-	if !errors.Is(err, jobs.ErrRefused) {
-		t.Errorf("CopyTree outside the roots = %v, want a refusal", err)
-	}
-}
+// ------------------------------------------------- what a handover reads and writes
 
 // Stat is the question postgres asks and the mode the drivers write in: the
 // POSIX spelling (setgid is the 0o2000 bit), not Go's flag bits, so that a
@@ -1288,31 +1188,132 @@ func TestRealFilesStatDoesNotFollowASymlink(t *testing.T) {
 	}
 }
 
-// TreeSize is the free-space precheck's other half: what a COPY of this tree
-// would occupy.
-func TestRealFilesTreeSizeAddsUpTheRegularFiles(t *testing.T) {
+// Stat is the ONE read the handover's take makes of the original cluster, and
+// it has to keep working when everything under that directory is unreadable —
+// which on the live host it is, because a PGDATA's ACL mask is its group mode
+// bits and postgres requires those to be empty.
+//
+// This is the test the physical-copy design would have failed. `data` itself
+// is traversable (its own mask is rwx); `pgdata` inside it is not, to anybody
+// but its owner. Asking who owns the parent must not depend on being able to
+// read the child.
+func TestRealFilesStatOfADirectoryWhoseContentsAreUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything; this asserts the unprivileged case")
+	}
 	f, root := realFiles(t)
-	dir := filepath.Join(root, "data")
-	if err := os.MkdirAll(filepath.Join(dir, "base"), 0o700); err != nil {
+	data := filepath.Join(root, "data")
+	pgdata := filepath.Join(data, "pgdata")
+	if err := os.MkdirAll(pgdata, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "base", "big"), make([]byte, 5000), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(pgdata, "PG_VERSION"), []byte("16\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "small"), []byte("x"), 0o600); err != nil {
+	// 000: the effective permission the live tenant's ACL mask produces for
+	// every account but the owner.
+	if err := os.Chmod(pgdata, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	bytes, entries, err := f.TreeSize(context.Background(), dir)
+	t.Cleanup(func() { _ = os.Chmod(pgdata, 0o700) })
+
+	st, err := f.Stat(context.Background(), data)
 	if err != nil {
+		t.Fatalf("Stat of the bind source failed because its contents are unreadable: %v", err)
+	}
+	if st.UID != os.Geteuid() || !st.IsDir {
+		t.Errorf("Stat = %+v, want this account's directory", st)
+	}
+	// And the cluster inside it stays shut, which is the point: the take never
+	// opens it, so it never needs to.
+	if _, err := os.ReadDir(pgdata); err == nil {
+		t.Error("the fixture's pgdata is readable; this test asserts nothing")
+	}
+}
+
+// Sync makes the handover's dump durable. The archive is written INSIDE the
+// container by pg_dump and the ctl never holds its descriptor, so without this
+// the only copy of a tenant's database is bytes in a page cache.
+func TestRealFilesSyncsAFileAndADirectory(t *testing.T) {
+	f, root := realFiles(t)
+	dump := filepath.Join(root, "handover-20260917T083000Z.dump")
+	if err := os.WriteFile(dump, []byte("PGDMP"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if bytes != 5001 {
-		t.Errorf("TreeSize = %d bytes, want 5001", bytes)
+	if err := f.Sync(context.Background(), dump); err != nil {
+		t.Errorf("syncing the dump: %v", err)
 	}
-	if entries != 4 {
-		t.Errorf("TreeSize counted %d entries, want the directory, its subdirectory and the two files", entries)
+	// The DIRECTORY too: the file's contents are durable after the first, its
+	// NAME only after the second.
+	if err := f.Sync(context.Background(), root); err != nil {
+		t.Errorf("syncing the directory: %v", err)
 	}
-	if _, _, err := f.TreeSize(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("TreeSize of an absent directory = %v, want fs.ErrNotExist", err)
+	if err := f.Sync(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("syncing an absent path = %v, want fs.ErrNotExist", err)
+	}
+}
+
+// A rename makes the entry durable in BOTH directories it touches. The
+// handover's two renames are the moment a tenant's data directory changes
+// identity, and the crash-between-them state has to survive the crash.
+func TestRealFilesRenameSyncsTheDirectoriesItChanged(t *testing.T) {
+	f, root := realFiles(t)
+	from := filepath.Join(root, "data")
+	if err := os.MkdirAll(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	to := filepath.Join(root, "data.pre-handover-20260917T083000Z")
+	if err := f.Rename(context.Background(), from, to); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(to); err != nil {
+		t.Errorf("the rename did not happen: %v", err)
+	}
+	if _, err := os.Lstat(from); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the source is still there: %v", err)
+	}
+	// An existing destination is still refused: the handover's renames must
+	// never land on top of a cluster that is already there.
+	if err := os.MkdirAll(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename(context.Background(), from, to); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a rename over an existing path = %v, want a refusal", err)
+	}
+}
+
+// A postgres SOCKET is one of the things the handover's release removes — the
+// stale `.s.PGSQL.<port>` its own server left behind, which only that account
+// can unlink because the run directory is sticky.
+//
+// It is here because an earlier Remove could not do it. That version proved
+// "this is not a symlink" with an O_NOFOLLOW open, and `open()` on a unix
+// socket fails with ENXIO; the step would have worked against every fixture and
+// failed on coconut. A FIFO is the same shape and worse — `open()` on one
+// blocks until a writer appears — so both are pinned.
+func TestRealFilesRemovesASocketAndAFifo(t *testing.T) {
+	f, root := realFiles(t)
+
+	sock := filepath.Join(root, ".s.PGSQL.24085")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("this filesystem cannot hold a unix socket: %v", err)
+	}
+	defer l.Close()
+	if err := f.Remove(context.Background(), sock); err != nil {
+		t.Errorf("removing a unix socket: %v", err)
+	}
+	if _, err := os.Lstat(sock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket is still there: %v", err)
+	}
+
+	fifo := filepath.Join(root, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("this filesystem cannot hold a fifo: %v", err)
+	}
+	// No timeout dance: if Remove ever opens this, the test hangs and the
+	// package's own timeout reports it — which is the failure to see.
+	if err := f.Remove(context.Background(), fifo); err != nil {
+		t.Errorf("removing a fifo: %v", err)
 	}
 }

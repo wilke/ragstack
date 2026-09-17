@@ -356,3 +356,18 @@ const (
 	// filesystem — so doctor names it until somebody removes it.
 	PreHandoverCopyPresent = "pre_handover_copy_present"
 )
+
+// The two names a handover's postgres migration leaves in
+// `<data_dir>/postgres`, and the reason both are constants HERE: doctor scans
+// the disk for them long after the commit has cleared the registry row that
+// named them, and ops/pgdata.go — which creates them — takes its spelling from
+// these, so the two halves cannot drift.
+const (
+	// PreHandoverDirPrefix names the ORIGINAL cluster after the take renamed
+	// it aside: `data.pre-handover-<ts>`.
+	PreHandoverDirPrefix = "data.pre-handover-"
+	// HandoverDumpPrefix names the release's `pg_dump -Fc` archive:
+	// `handover-<ts>.dump`. It is what the take restores, and the only form in
+	// which one account can hand another a postgres on this host.
+	HandoverDumpPrefix = "handover-"
+)

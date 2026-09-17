@@ -78,6 +78,16 @@ type Options struct {
 	RegistryPath string // default <roots>/data/tenants/registry.json
 	CtlUser      string
 	CtlUID       int
+	// CtlGID is the daemon account's PRIMARY group — `cels` on this host, the
+	// group both accounts are in.
+	//
+	// It exists for one question and it is the question the job-store check
+	// turns on: whether the daemon can WRITE a file another account created. On
+	// coconut that is true of the `jobs.db-wal` left there on 2026-09-17, and
+	// only the group bits say so. Zero means "unknown", and the check then
+	// consults only the owner and other bits — conservative in the direction of
+	// saying nothing rather than of raising a finding nobody can clear.
+	CtlGID       int
 	CtlBinary    string
 	SudoersGroup string
 	MinFreeGB    int
@@ -509,24 +519,25 @@ func (d *run) postgresCheck(t *registry.Tenant) {
 		port, instance))
 }
 
-// preHandoverCopyCheck names the original postgres data directory a handover's
-// take left behind.
+// preHandoverCopyCheck names what a handover's postgres migration left behind:
+// the original cluster, and the dump the take restored.
 //
-// The take has to copy a data directory it does not own — postgres compares
-// st_uid with geteuid() and refuses when they differ — and it renames the
-// original to `data.pre-handover-<ts>` rather than deleting it. A commit
-// deliberately leaves it: it is the last copy of this tenant's postgres as the
-// releasing account had it, and `--abandon` renames it back. But the commit
-// also CLEARS the handover block, so after it the registry no longer remembers
-// the directory at all, and the only place the fact still lives is the disk.
+// The take cannot copy a cluster (postgres refuses one it does not own, and no
+// ACL can make one readable to another account), so it dumps, initialises a
+// cluster of its own and restores. Both artefacts are deliberately KEPT: the
+// renamed-aside original is the releasing account's last copy of the database
+// and is what `--abandon` renames back, and the dump is the only file in the
+// whole handover that both accounts can read. A commit clears the handover
+// block, so after it the registry no longer remembers either, and the only
+// place the fact still lives is the disk.
 //
-// Hence a disk check, at INFO, that keeps saying so until somebody removes it.
-// A second copy of a production database on a filesystem shared by every
+// Hence a disk check, at INFO, that keeps saying so until somebody removes
+// them. Two copies of a production database on a filesystem shared by every
 // tenant on the host is not a thing to leave unnamed.
 //
 // The SIZE is not measured: `du` over a postgres data directory is IO doctor
-// runs on every poll, and the operator who is about to delete it will run `du`
-// once themselves. The path is the finding.
+// would pay on every poll, and the operator who is about to delete it will run
+// `du` once themselves. The paths are the finding.
 func (d *run) preHandoverCopyCheck(t *registry.Tenant) {
 	if t.Stores.Postgres.Kind != registry.PostgresKindLocal || t.DataDir == "" {
 		return
@@ -534,13 +545,16 @@ func (d *run) preHandoverCopyCheck(t *registry.Tenant) {
 	dir := filepath.Join(t.DataDir, "postgres")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// Absent or unreadable is another check's problem: this one only
-		// reports what it can see.
+		// Absent or unreadable is another check's problem: this one reports
+		// only what it can see.
 		return
 	}
 	var found []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), PreHandoverDirPrefix) {
+		switch {
+		case e.IsDir() && strings.HasPrefix(e.Name(), PreHandoverDirPrefix):
+			found = append(found, filepath.Join(dir, e.Name()))
+		case !e.IsDir() && strings.HasPrefix(e.Name(), HandoverDumpPrefix) && strings.HasSuffix(e.Name(), ".dump"):
 			found = append(found, filepath.Join(dir, e.Name()))
 		}
 	}
@@ -549,68 +563,120 @@ func (d *run) preHandoverCopyCheck(t *registry.Tenant) {
 	}
 	sort.Strings(found)
 	d.addRepair(model.LevelInfo, PreHandoverCopyPresent, t.Name, fmt.Sprintf(
-		"%s %s beside %s: the postgres data %s the handover take copied because it could not start on a directory "+
-			"it did not own. Keeping it is correct until the handover has soaked — `--abandon` renames it back — "+
-			"but it is a second copy of this tenant's database on a shared filesystem",
-		plural(len(found), "a pre-handover directory", fmt.Sprintf("%d pre-handover directories", len(found))),
-		strings.Join(found, ", "), filepath.Join(dir, "data"),
-		plural(len(found), "directory", "directories")),
-		"rm -rf "+strings.Join(found, " ")+"  # as the account that owns it, and only after `handover --commit`")
+		"a handover left %s beside %s: the postgres cluster this tenant ran on before the take, and/or the dump "+
+			"the take restored from. Keeping them is correct until the handover has soaked — `--abandon` renames "+
+			"the cluster back — but they are a second copy of this tenant's database on a shared filesystem",
+		strings.Join(found, ", "), filepath.Join(dir, "data")),
+		"rm -rf "+strings.Join(found, " ")+"  # as the account that owns them, and only after `handover --commit`")
 }
 
-// PreHandoverDirPrefix is the name ops/pgdata.go renames an original postgres
-// data directory to. The two packages cannot import each other (ops imports
-// doctor through the engine), so the string is declared here and the ops
-// package's own constant is asserted equal to it by a test.
-const PreHandoverDirPrefix = "data.pre-handover-"
-
-// jobStoreCheck reports a job store this deployment's daemon cannot write.
+// jobStoreCheck reports a job store this deployment's daemon may not be able
+// to write.
 //
-// SQLite in WAL mode needs to write three files, not one: the database and the
-// `-wal` and `-shm` sidecars it creates beside it. An account that opens
-// another account's store leaves ITS OWN sidecars there, and from that moment
-// the owner's daemon cannot open its own database read-write — "attempt to
-// write a readonly database (8)" — for the rest of its life. Reads, doctor and
-// the dashboard all go on working, so nothing looks wrong.
+// SQLite in WAL mode writes three files, not one: the database and the `-wal`
+// and `-shm` sidecars beside it. An account that opens another account's store
+// leaves ITS OWN sidecars there, and if the owner cannot then write them, the
+// owner's daemon cannot open its own database read-write — "attempt to write a
+// readonly database (8)" — while its reads, its doctor and its dashboard all go
+// on working. That is 2026-09-17 exactly, and it cost a day.
 //
-// That is 2026-09-17, exactly: a wilke `--direct` run against
-// CTL_STATE_DIR=/rag/data/ctl left `jobs.db-wal` and `jobs.db-shm` owned by
-// wilke beside svcbvbrc's `jobs.db`, and the daemon refused every mutation for
-// a day. `--direct` now refuses another account's state dir before it opens
-// anything, and the daemon retries its store in the background — this finding
-// is what makes the situation VISIBLE while either of those is happening.
+// The question is WRITABILITY, not ownership, and the difference is the whole
+// of this check's history. The sidecars a human repaired that day are STILL
+// another account's:
 //
-// It compares owners rather than trying to open the database: doctor may run
-// as an operator who is not the daemon's account at all, and "can I write it"
-// would then answer the wrong question. The daemon's account is the reference.
+//	-rw-r--r-- 1 svcbvbrc cels  jobs.db
+//	-rw-rw-r-- 1 wilke    cels  jobs.db-wal
+//	-rw-rw-r-- 1 wilke    cels  jobs.db-shm
+//
+// — foreign-owned, group-writable, and perfectly usable by a daemon whose
+// primary group is `cels`. An ownership check calls that broken; an ownership
+// check at ERROR level calls it broken in the one way that refuses every
+// mutation this control plane has, with no op able to repair it and
+// `--force-with-doctor-diff` unable to lift it (that only lifts yellow). So
+// this asks whether the daemon's account can WRITE each file, and says so at
+// WARN: the daemon itself is the only thing that can answer "the store did not
+// open", it reports that on `GET /health` as `engine: unavailable`, and a
+// finding on the filesystem is a warning about a risk rather than a verdict on
+// a process it cannot see.
 func (d *run) jobStoreCheck() {
 	if d.opts.CtlUID <= 0 {
-		// No reference account to compare against (a developer checkout, or a
-		// host where the ctl user does not exist). Silence beats a guess.
+		// No reference account to ask about (a developer checkout, or a host
+		// where the ctl user does not exist). Silence beats a guess.
 		return
 	}
 	store := filepath.Join(d.roots.CtlStateDir, "jobs.db")
 	if _, err := os.Stat(store); err != nil {
 		return // no store yet: nothing has run here
 	}
-	var foreign []string
+	var blocked []string
 	for _, p := range []string{store, store + "-wal", store + "-shm"} {
-		uid, ok := fileUID(p)
-		if !ok || uid == d.opts.CtlUID {
+		if writableByUID(p, d.opts.CtlUID, d.opts.CtlGID) {
 			continue
 		}
-		foreign = append(foreign, fmt.Sprintf("%s (uid %d)", p, uid))
+		owner := "uid ?"
+		if uid, ok := fileUID(p); ok {
+			owner = fmt.Sprintf("uid %d", uid)
+		}
+		blocked = append(blocked, fmt.Sprintf("%s (%s)", p, owner))
 	}
-	if len(foreign) == 0 {
+	if len(blocked) == 0 {
 		return
 	}
-	d.addRepair(model.LevelError, JobEngineUnavailable, "", fmt.Sprintf(
-		"%s not owned by %s (uid %d), the account this daemon runs as: SQLite opens a WAL database read-write only "+
-			"when it can write the database AND both sidecars, so the daemon's whole mutation surface answers 409 "+
-			"refused while reads keep working. GET /health reports `engine: unavailable` for the same fact",
-		strings.Join(foreign, ", "), d.opts.CtlUser, d.opts.CtlUID),
-		"as the owner of those files: rm -f "+store+"-wal "+store+"-shm  # the daemon retries its store in the "+
-			"background and recovers without a restart")
+	d.addRepair(model.LevelWarn, JobEngineUnavailable, "", fmt.Sprintf(
+		"%s cannot be written by %s (uid %d), the account this daemon runs as: SQLite opens a WAL database "+
+			"read-write only when it can write the database AND both sidecars, so the daemon's whole mutation "+
+			"surface would answer 409 refused while its reads keep working. `GET /health` reports the daemon's "+
+			"own verdict as `engine`",
+		strings.Join(blocked, ", "), d.opts.CtlUser, d.opts.CtlUID),
+		"as the owner of those files: chmod g+w "+store+"*  # (or chown them to "+d.opts.CtlUser+
+			"). NEVER delete a -wal: SQLite recovers it into the database on the next open, and removing one "+
+			"from under a live connection loses every committed transaction it still holds")
+}
+
+// writableByUID answers whether the account with this uid (and primary gid)
+// could open path for writing, by the ordinary POSIX rules: owner bits if it
+// owns the file, group bits if it is in the file's group, else other bits.
+//
+// It is an approximation in exactly one direction — it does not read POSIX
+// ACLs, so a file made writable by a named-user ACL entry reads as unwritable
+// here — and that is acceptable for a WARN whose repair is "chmod g+w". It is
+// deliberately NOT `unix.Access`: doctor is usually run by an operator who is
+// not the daemon's account at all, and access(2) would answer about the wrong
+// account.
+//
+// gid 0 means "the primary group is unknown", and then only the owner and
+// other bits are consulted.
+func writableByUID(path string, uid, gid int) bool {
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// An absent sidecar is not a problem: SQLite creates it, in a
+		// directory whose own permissions the writable() check covers.
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return true
+	}
+	mode := st.Mode().Perm()
+	switch {
+	case int(sys.Uid) == uid:
+		return mode&0o200 != 0
+	case gid > 0 && int(sys.Gid) == gid:
+		return mode&0o020 != 0
+	case gid <= 0 && mode&0o020 != 0:
+		// The primary group could not be resolved and the file IS
+		// group-writable. This check cannot tell whether the daemon is in that
+		// group, and the consequence of guessing wrong is a finding an
+		// operator cannot clear on a deployment that works — which is how the
+		// first version of this check refused every mutation on coconut. Fail
+		// open: say nothing rather than raise what cannot be verified.
+		return true
+	default:
+		return mode&0o002 != 0
+	}
 }
 
 // fileUID is the owning uid of path, and whether it could be read at all.

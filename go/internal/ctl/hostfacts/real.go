@@ -313,6 +313,35 @@ func UsernameOf(uid int) string {
 	return ""
 }
 
+// PrimaryGIDOf resolves a username to its PRIMARY group id, with the same NSS
+// fallback and for the same reason: the service account is an LDAP account and
+// Go's CGO-free lookup cannot see it at all.
+//
+// doctor needs it to answer one question — can the daemon's account write a
+// file another account created — and on this host the answer comes from the
+// group bits, because both accounts are in `cels`. Returns -1 when the account
+// does not exist here.
+func PrimaryGIDOf(username string) int {
+	if u, err := user.Lookup(username); err == nil {
+		if gid, err := strconv.Atoi(u.Gid); err == nil {
+			return gid
+		}
+	}
+	out, err := runArgv(binGetent, "passwd", username)
+	if err != nil {
+		return -1
+	}
+	f := strings.Split(strings.TrimSpace(out), ":")
+	if len(f) < 4 {
+		return -1
+	}
+	gid, err := strconv.Atoi(f[3])
+	if err != nil {
+		return -1
+	}
+	return gid
+}
+
 // LookupUID resolves a username to its uid, with the same NSS fallback.
 // Returns -1 when the account does not exist on this host.
 func LookupUID(username string) int {

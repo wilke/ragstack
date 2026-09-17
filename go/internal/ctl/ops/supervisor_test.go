@@ -80,13 +80,15 @@ func TestInstanceStartRunsInstancesAndSpawnsTheAPI(t *testing.T) {
 		t.Errorf("an instance-mode start touched systemd:\n%s", got)
 	}
 	for _, want := range []string{
-		"job.checkpoint(instance:qdrant-dev)",
+		// The instance name AND how long its stderr log already is: a later
+		// step quotes only what THIS attempt appended (ops/pgdata.go).
+		"job.checkpoint(instance:qdrant-dev,errlog:",
 		"instances.Run(qdrant-dev,",
 		// The ES config bind is seeded from the image BEFORE the instance runs.
 		"instances.SeedConfigDir(",
-		"job.checkpoint(instance:elasticsearch-dev)",
+		"job.checkpoint(instance:elasticsearch-dev,errlog:",
 		"instances.Run(elasticsearch-dev,",
-		"job.checkpoint(instance:postgres-dev)",
+		"job.checkpoint(instance:postgres-dev,errlog:",
 		"instances.Run(postgres-dev,",
 		// The pidfile PATH is the durable record and is checkpointed before
 		// the spawn that writes it; the pid follows.

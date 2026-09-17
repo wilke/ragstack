@@ -1115,6 +1115,7 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		RegistryPath:       registryPath,
 		CtlUser:            fleet.DefaultCtlUser,
 		CtlUID:             ctlUID(doctor.DefaultCtlUser),
+		CtlGID:             hostfacts.PrimaryGIDOf(doctor.DefaultCtlUser),
 		SudoersGroup:       fleet.DefaultSudoersGroup,
 		ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
 	})

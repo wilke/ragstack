@@ -465,24 +465,54 @@ type Handover struct {
 	PostgresData *PostgresDataMigration `json:"postgres_data"`
 }
 
-// PostgresDataMigration is where the take put a postgres data directory it did
-// not own.
+// PostgresDataMigration is how a handover moves the one thing it cannot leave
+// where it is: the tenant's postgres.
 //
-// BOTH paths are recorded, not just the original. The abandon has to put the
-// two names back the way they were, and a block naming only the original would
-// leave it guessing at the name of the copy it is renaming away — a guess,
-// over a live data directory, in the one verb whose whole job is to be exactly
-// reversible.
+// It cannot be left because postgres refuses a data directory it does not own
+// (st_uid vs geteuid), and it cannot be copied because the taking account
+// cannot READ one either — a POSIX ACL's named-user entry is filtered by the
+// mask, the mask is the group mode bits, and a PGDATA postgres accepts has
+// none. So the release DUMPS and the take restores into a cluster it
+// initialises itself, and this block carries the handover across the two jobs.
+//
+// The RELEASE fills the first four fields; the TAKE fills the last three, and
+// they are empty until it does. That split is why the paths are plain strings
+// rather than a nested object per phase: an operator reading the row mid-
+// handover should see one block that fills in, not two that have to be
+// correlated.
 type PostgresDataMigration struct {
-	// PreHandover is where the ORIGINAL (the releasing account's) directory
-	// was renamed to: `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing
-	// writes to it again; a commit leaves it, an operator deletes it.
+	// Dump is the release's `pg_dump -Fc` archive:
+	// `<data_dir>/postgres/handover-<ts>.dump`, mode 0640 so the group both
+	// accounts are in can read it.
+	Dump string `json:"dump"`
+	// DumpSHA256 is that file's digest, checked by the take before it moves
+	// anything: the archive crosses a job boundary, an account boundary and an
+	// unbounded amount of wall-clock time.
+	DumpSHA256 string `json:"dump_sha256"`
+	// DumpedAt is when the release took it.
+	DumpedAt string `json:"dumped_at"`
+	// Tables is the exact row count of every table at that moment. A dump and
+	// a restore cannot be compared byte for byte; these counts are what the
+	// take proves the migration against.
+	Tables []PostgresTableCount `json:"tables"`
+	// PreHandover is where the take renamed the ORIGINAL cluster:
+	// `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing opens it again; an
+	// abandon renames it back, and a commit leaves it for the operator.
 	PreHandover string `json:"pre_handover"`
-	// Copy is the name the take's copy was made under before it was renamed
-	// into place: `<data_dir>/postgres/data.<account>-<ts>`.
+	// Copy is the name the take's own cluster directory was created under,
+	// `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into
+	// place. An abandon renames the live directory back to it.
 	Copy string `json:"copy"`
 	// MigratedAt is when the two renames happened.
 	MigratedAt string `json:"migrated_at"`
+}
+
+// PostgresTableCount is one table and how many rows it held when the release
+// dumped it.
+type PostgresTableCount struct {
+	// Name is "<schema>.<table>".
+	Name string `json:"name"`
+	Rows int64  `json:"rows"`
 }
 
 // CensusEntry is one collection or index and how many rows it held at the

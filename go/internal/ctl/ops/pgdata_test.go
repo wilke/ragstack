@@ -1,20 +1,23 @@
 package ops
 
-// The one thing a handover MOVES: a postgres data directory the taking account
-// does not own.
+// The one thing a handover MOVES: a tenant's postgres.
 //
-// These tests exist because the second live handover of the hackathon tenant
-// failed on 2026-09-17 with the tenant down, and nothing in this package could
-// have caught it. postgres compares its data directory's st_uid with its own
-// geteuid() and refuses when they differ — no mode and no ACL entry changes
-// that — and the take started it anyway, waited the full three minutes, and
-// reported `pg_isready … no response`.
+// These tests exist because the second live handover of `hackathon` failed on
+// 2026-09-17 with the tenant down — and because the first fix for it, copying
+// the data directory as the taking account, could not have worked either. On
+// the live host `pgdata` is 0700 wilke with a POSIX ACL granting svcbvbrc rwx
+// and a mask of `---`, so that named-user entry has an effective permission of
+// nothing; and the mask cannot be widened, because it IS the group mode bits
+// and postgres refuses a PGDATA that has any. A file-by-file copy could not
+// read one byte of it.
 //
-// So the fixture below can express a directory owned by SOMEBODY ELSE
-// (drivers.FakeOptions.FileOwners), and the assertions are about the things
-// that decide whether a tenant comes back: the ORDER of the copy against the
-// port proofs and the store starts, the two renames and the state between
-// them, and whether the way back is exact.
+// So the migration is logical: the release dumps, the take initialises a
+// cluster of its own and restores into it. What these tests pin is therefore
+// not "were the bytes copied" but the things that decide whether a tenant comes
+// back — the ORDER of the dump against the two stops, the order of the swap
+// against the port proofs and the store starts, the two renames and the state
+// between them, the row counts that prove the restore, and whether the way back
+// is exact.
 
 import (
 	"context"
@@ -31,51 +34,64 @@ import (
 
 // otherAccountUID is a uid that is not the one the fake host runs as
 // (FakeOptions.FileUID defaults to 0). It stands for wilke on coconut: the
-// account that created the tenant's postgres and that nobody here can chown
+// account that created the tenant's cluster, and that nobody here can chown
 // away from.
 const otherAccountUID = 3581
 
-// pgFixture is a released tenant with a LOCAL postgres whose data directory
-// belongs to another account — the hackathon shape, exactly.
+// pgPaths are the names this whole file is about.
+type pgPaths struct{ data, dir, run string }
+
+// pgSpec is how the pg tools reach the fixture tenant's server.
+func pgSpec(pp pgPaths) jobs.PostgresSpec {
+	return jobs.PostgresSpec{
+		SIF: "/rag/apptainer/images/postgres.sif", RunDir: pp.run, DB: "dev", User: "dev", Port: 24045,
+	}
+}
+
+// pgFixture is a tenant with a LOCAL postgres whose cluster belongs to another
+// account — the hackathon shape, exactly.
 //
-// The tree is seeded with a `pgdata` under the bind source because that is the
-// directory postgres actually inspects (PGDATA is `<bind>/pgdata`), and on
-// coconut the two carry different modes and the same owner.
+// Note what is NOT seeded: any file under `data`. The taking account cannot
+// read the cluster on the real host, so nothing here may depend on reading it,
+// and a fixture that laid files out inside it would quietly permit exactly the
+// design that could not work.
 func pgFixture(t *testing.T, mutate func(*registry.Tenant), owners map[string]int) (jobs.Context, *drivers.Fake, pgPaths) {
 	t.Helper()
 	roots := paths.NewRoots("/rag", paths.Overrides{})
 	tp := paths.TenantPaths(roots, "dev", "dev")
-	pp := pgPaths{
-		data:   tp.PostgresData,
-		pgdata: filepath.Join(tp.PostgresData, "pgdata"),
-		dir:    filepath.Dir(tp.PostgresData),
-	}
-	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
+	pp := pgPaths{data: tp.PostgresData, dir: filepath.Dir(tp.PostgresData), run: tp.PostgresRun}
+	oc, fake := fixtureOpts(t, "dev", func(tn *registry.Tenant) {
 		mutate(tn)
 		withLocalPostgres(tn)
+	}, func(o *drivers.FakeOptions) {
+		// What this tenant's database holds, as the release will find it.
+		o.PostgresContents = map[string]jobs.PostgresCensus{
+			pp.run: {SizeBytes: 48 << 20, Tables: map[string]int64{"public.chunks": 88_000, "public.jobs": 12}},
+		}
+		o.FileOwners = owners
+		if owners == nil {
+			// The cluster directory is the OTHER account's, which is the whole
+			// reason a handover has to do anything here at all.
+			o.FileOwners = map[string]int{pp.data: otherAccountUID}
+		}
 	})
 	takeFixture(t, oc, fake)
+	// Starting an instance BINDS its port on this fake host, so the readiness
+	// gates of a whole take answer a fact rather than hanging on a fixture
+	// that never listens.
+	ins := fake.FakeInstances()
+	ins.BindInstancePort("qdrant-"+oc.Tenant.ManifestName, oc.Tenant.Ports.QdrantHTTP)
+	ins.BindInstancePort("elasticsearch-"+oc.Tenant.ManifestName, oc.Tenant.Ports.ESHTTP)
+	ins.BindInstancePort("postgres-"+oc.Tenant.ManifestName, oc.Tenant.Ports.PG)
 	files := fake.FakeFiles()
-	// The data directory as it is on the host: a `data` the group can write
-	// and a 0700 `pgdata` inside it, both the OTHER account's.
+	files.Dirs[pp.dir] = 0o2770
 	files.Dirs[pp.data] = 0o770
-	files.Dirs[pp.pgdata] = 0o700
-	files.Put(filepath.Join(pp.pgdata, "PG_VERSION"), []byte("16\n"), 0o600)
-	files.Put(filepath.Join(pp.pgdata, "base", "1", "1259"), make([]byte, 8192), 0o600)
-	if owners == nil {
-		owners = map[string]int{pp.data: otherAccountUID}
-	}
-	for p, uid := range owners {
-		files.Owners[p] = uid
-	}
-	// The password the postgres instance is started with, under both names.
+	files.Dirs[pp.run] = 0o2770
 	files.Put(tp.SecretsEnv, append(ledgerEnv(), []byte(
 		"TENANT_PG_PASSWORD="+testSecret+"\n"+
 			"APPTAINERENV_POSTGRES_PASSWORD="+testSecret+"\n")...), 0o640)
 	return oc, fake, pp
 }
-
-type pgPaths struct{ data, pgdata, dir string }
 
 // withLocalPostgres gives a fixture tenant the dedicated postgres instance
 // `new-tenant.sh` gives a real one.
@@ -91,18 +107,179 @@ func withLocalPostgres(tn *registry.Tenant) {
 	}
 }
 
-// ---------------------------------------------------------------- the plan
+// ---------------------------------------------------------------- the release
 
-// WHERE the migration sits is the fix. After the port proofs — a directory
-// moved under processes the release did not manage to stop is the worst thing
-// this job could do — and before the first store starts, because a postgres
-// started on the old directory is the failure itself.
-func TestTakeMigratesThePostgresDataDirectoryBetweenThePortProofsAndTheStores(t *testing.T) {
-	oc, _, _ := pgFixture(t, released, nil)
+// The dump has exactly one window: after the API stop (nothing is writing) and
+// before the postgres stop (there is a server to dump). One step either side,
+// and both of them are in this assertion.
+func TestTheReleaseDumpsBetweenTheAPIStopAndThePostgresStop(t *testing.T) {
+	oc, _, _ := pgFixture(t, prepared, nil)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	got := titles(p)
+
+	apiStop := indexOfStep(got, "stop the hand-started API")
+	dump := indexOfStep(got, "dump this tenant's postgres")
+	pgStop := indexOfStep(got, "stop the instance postgres-dev")
+	cleanup := indexOfStep(got, "remove the stale postgres socket")
+	switch {
+	case apiStop < 0 || dump < 0 || pgStop < 0 || cleanup < 0:
+		t.Fatalf("steps =\n  %s", strings.Join(got, "\n  "))
+	case !(apiStop < dump && dump < pgStop):
+		t.Errorf("the dump is not in its window (api stop %d, dump %d, postgres stop %d):\n  %s",
+			apiStop, dump, pgStop, strings.Join(got, "\n  "))
+	case cleanup < pgStop:
+		t.Errorf("the socket cleanup runs before the server that owns those files is stopped (%d < %d)",
+			cleanup, pgStop)
+	case cleanup < indexOfStep(got, "verify nothing listens on 24045"):
+		// …and after the port is PROVED free, not merely after the stop
+		// returned: removing a live server's socket is how you get a postgres
+		// that is up and unreachable.
+		t.Errorf("the socket cleanup runs before the postgres port is proved free:\n  %s",
+			strings.Join(got, "\n  "))
+	}
+}
+
+// What the release writes, and what it records: an archive the other account
+// can read, its checksum, and the exact row count of every table.
+func TestTheReleaseRecordsTheDumpItsChecksumAndEveryTablesRowCount(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	// Through the plan, not straight to the step: the dump records itself in
+	// the handover block, and it is the REGISTRY step three earlier that
+	// creates one.
+	runUpTo(t, r, p, "dump this tenant's postgres")
+	step, n := stepNamed(t, p, "dump this tenant's postgres")
+
+	log, err := r.run(step)
+	if err != nil {
+		t.Fatalf("the dump failed: %v", err)
+	}
+	if !strings.Contains(log, "2 table(s)") {
+		t.Errorf("the dump reported %q", log)
+	}
+
+	dump := idValue(t, r.externalIDs(n), "pgdump:")
+	if filepath.Dir(dump) != pp.dir || !strings.HasPrefix(filepath.Base(dump), "handover-") {
+		t.Errorf("the dump landed at %q, want <data_dir>/postgres/handover-<ts>.dump", dump)
+	}
+	// 0640: the taking account cannot read the CLUSTER, and this file is what
+	// works around that. A mode without the group bit would make the whole
+	// design fail on the host and nowhere else.
+	if mode := fake.FakeFiles().Files[dump].Mode; mode != 0o640 {
+		t.Errorf("the dump is mode %04o, want 0640 so the other account's group can read it", mode)
+	}
+
+	calls := strings.Join(fake.CallKeys(), "\n")
+	cp := strings.Index(calls, "job.checkpoint(pgdump:")
+	pgDump := strings.Index(calls, "postgres.Dump(")
+	if cp < 0 || pgDump < 0 || cp > pgDump {
+		t.Errorf("the dump's path was not checkpointed before pg_dump ran:\n%s", calls)
+	}
+	// The bytes, then the NAME. A dump in the page cache with an unsynced
+	// directory entry is a handover whose only copy of the database does not
+	// survive the machine.
+	if !strings.Contains(calls, "files.Sync("+dump+")") || !strings.Contains(calls, "files.Sync("+pp.dir+")") {
+		t.Errorf("the dump and its directory were not both fsynced:\n%s", calls)
+	}
+
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	if pd == nil {
+		t.Fatal("the handover block records no postgres migration")
+	}
+	if pd.Dump != dump || pd.DumpSHA256 == "" || pd.DumpedAt == "" {
+		t.Errorf("handover.postgres_data = %+v", pd)
+	}
+	if len(pd.Tables) != 2 || pd.Tables[0].Name != "public.chunks" || pd.Tables[0].Rows != 88_000 {
+		t.Errorf("the recorded row counts are %+v, want the census sorted by table name", pd.Tables)
+	}
+}
+
+// A rolled-back release leaves no archive lying in the tenant's tree, and no
+// row pointing at one.
+func TestTheDumpsRollbackRemovesItAndTheRowEntry(t *testing.T) {
+	oc, fake, _ := pgFixture(t, prepared, nil)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "dump this tenant's postgres")
+	step, n := stepNamed(t, p, "dump this tenant's postgres")
+	if _, err := r.run(step); err != nil {
+		t.Fatal(err)
+	}
+	dump := idValue(t, r.externalIDs(n), "pgdump:")
+
+	if _, err := r.rollback(step); err != nil {
+		t.Fatalf("the rollback failed: %v", err)
+	}
+	if fake.FakeFiles().Content(dump) != nil {
+		t.Errorf("%s is still there after the rollback", dump)
+	}
+	if pd := oc.Fleet.Tenants["dev"].Handover.PostgresData; pd != nil {
+		t.Errorf("the row still records a dump that is gone: %+v", pd)
+	}
+}
+
+// The release is the last cheap moment to discover that the handover cannot
+// finish, and the only moment at which the tenant is still up.
+func TestTheReleaseRefusesWhenThereIsNoRoomToDumpAndReCreate(t *testing.T) {
+	oc, fake, _ := pgFixture(t, prepared, nil)
+	fake.FakeFiles().Free = 1 << 20 // one megabyte
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	step, _ := stepNamed(t, p, "check that there is room to dump")
+
+	_, err := newRunner(oc, fake).run(step)
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("a release with no room = %v, want a refusal", err)
+	}
+	// The numbers say WHICH size they are: a figure in a refusal has to be
+	// checkable against the command that would produce it.
+	for _, want := range []string{"48 MB", "pg_database_size", "64 MB", "statfs", "Free space before releasing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// The socket and its lock file are removed by the RELEASING account, because
+// the directory is sticky and nobody else may unlink them.
+func TestTheReleaseRemovesTheStaleSocketTheTakeCouldNotHave(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+	sock := filepath.Join(pp.run, ".s.PGSQL.24045")
+	files := fake.FakeFiles()
+	files.Put(sock, nil, 0o777)
+	files.Put(sock+".lock", []byte("73\n"), 0o600)
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	step, _ := stepNamed(t, p, "remove the stale postgres socket")
+	log, err := newRunner(oc, fake).run(step)
+	if err != nil {
+		t.Fatalf("the socket cleanup failed: %v", err)
+	}
+	if !strings.Contains(log, ".s.PGSQL.24045.lock") {
+		t.Errorf("the cleanup reported %q", log)
+	}
+	for _, path := range []string{sock, sock + ".lock"} {
+		if files.Content(path) != nil {
+			t.Errorf("%s is still there; a take would meet a postgres refusing to start over its own port", path)
+		}
+	}
+	// Re-running a release must not fail because there is nothing left to do.
+	if _, err := newRunner(oc, fake).run(step); err != nil {
+		t.Errorf("the cleanup is not re-runnable: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------- the take
+
+// WHERE the swap sits is the fix: after the port proofs, before any store
+// starts, and before anything is written to the row.
+func TestTheTakeSwapsTheClusterBetweenThePortProofsAndTheStores(t *testing.T) {
+	oc, fake, _ := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
 	got := titles(p)
 
-	migrate := indexOfStep(got, "migrate the postgres data directory")
+	swap := indexOfStep(got, "put an empty cluster directory in place")
 	lastPort := -1
 	for i, s := range got {
 		if strings.Contains(s, "verify nothing listens") {
@@ -111,247 +288,175 @@ func TestTakeMigratesThePostgresDataDirectoryBetweenThePortProofsAndTheStores(t 
 	}
 	firstStore := indexOfStep(got, "start the instance")
 	sup := indexOfStep(got, "record supervisor: instance")
+	restore := indexOfStep(got, "restore the release's dump")
+	api := indexOfStep(got, "start the API detached")
 	switch {
-	case migrate < 0 || lastPort < 0 || firstStore < 0 || sup < 0:
+	case swap < 0 || lastPort < 0 || firstStore < 0 || sup < 0 || restore < 0 || api < 0:
 		t.Fatalf("steps =\n  %s", strings.Join(got, "\n  "))
-	case migrate < lastPort:
-		t.Errorf("the migration runs before the ports are proved free (%d < %d):\n  %s",
-			migrate, lastPort, strings.Join(got, "\n  "))
-	case migrate > firstStore:
-		t.Errorf("a store starts before the data directory is migrated (%d > %d):\n  %s",
-			migrate, firstStore, strings.Join(got, "\n  "))
-	case migrate > sup:
-		t.Errorf("the migration runs after the supervisor is recorded (%d > %d): nothing should be written to the "+
-			"row before the directory the tenant will run on is in place", migrate, sup)
-	}
-
-	// The plan says what it is about to do to a data directory, and says the
-	// two things an operator has to know afterwards.
-	warnings := strings.Join(stepWarnings(p, "fs", "migrate the postgres data directory"), " | ")
-	for _, want := range []string{"st_uid vs geteuid", "renamed aside and never written to again", "--commit"} {
-		if !strings.Contains(warnings, want) {
-			t.Errorf("the migration step does not warn about %q: %s", want, warnings)
-		}
+	case swap < lastPort:
+		t.Errorf("the swap runs before the ports are proved free (%d < %d)", swap, lastPort)
+	case swap > firstStore || swap > sup:
+		t.Errorf("the swap runs after a store starts or after the row is written (swap %d, store %d, row %d)",
+			swap, firstStore, sup)
+	case !(firstStore < restore && restore < api):
+		t.Errorf("the restore is not between the stores and the API (store %d, restore %d, api %d):\n  %s",
+			firstStore, restore, api, strings.Join(got, "\n  "))
 	}
 }
 
-// A tenant with no postgres of its own plans a SKIP with the reason on it, not
-// a gap. The two are indistinguishable in a job log, and a handover is read
-// out of its job log.
-func TestTakeSkipsTheMigrationForATenantWithNoPostgresOfItsOwn(t *testing.T) {
-	oc, fake := fixture(t, "dev", released)
-	takeFixture(t, oc, fake)
-	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	if !hasStep(p, "files", "skip the postgres data directory") {
-		t.Fatalf("no skipped migration step:\n  %s", strings.Join(titles(p), "\n  "))
-	}
-	why := strings.Join(stepWarnings(p, "files", "skip the postgres data directory"), " ")
-	if !strings.Contains(why, "runs no postgres server of its own") {
-		t.Errorf("the skip does not say why: %q", why)
-	}
-}
-
-// ---------------------------------------------------------------- the run
-
-// The whole operation, in order: the names are checkpointed BEFORE the copy,
-// the copy is made as this account, the original is renamed aside, the copy is
-// renamed into place, and the row records where the original went.
-func TestTheMigrationCopiesThenRenamesTwiceAndRecordsBothPaths(t *testing.T) {
+// The swap: an EMPTY directory into place, the original aside, both names
+// checkpointed first — and the dump verified before anything moves.
+func TestTheSwapVerifiesTheDumpThenRenamesTwice(t *testing.T) {
 	oc, fake, pp := pgFixture(t, released, nil)
+	dump := seedReleasedDump(t, oc, fake)
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, n := stepNamed(t, p, "migrate the postgres data directory")
+	step, n := stepNamed(t, p, "put an empty cluster directory in place")
 	r := newRunner(oc, fake)
 
-	log, err := r.run(step)
-	if err != nil {
-		t.Fatalf("the migration failed: %v", err)
+	if _, err := r.run(step); err != nil {
+		t.Fatalf("the swap failed: %v", err)
 	}
-	if !strings.Contains(log, "migrated") {
-		t.Errorf("the migration reported %q", log)
-	}
-
-	// The two names, recorded before anything was touched: a crash between the
-	// renames leaves a step whose external ids say which directories to look
-	// at, which is the difference between a recoverable state and a mystery.
 	ids := r.externalIDs(n)
-	copyPath, aside := idValue(t, ids, "pgcopy:"), idValue(t, ids, "pgaside:")
-	if !strings.HasPrefix(filepath.Base(copyPath), "data.svcbvbrc-") {
-		t.Errorf("the copy is named %q, want data.<account>-<ts>", copyPath)
+	fresh, aside := idValue(t, ids, "pgfresh:"), idValue(t, ids, "pgaside:")
+	if !strings.HasPrefix(filepath.Base(fresh), "data.svcbvbrc-") {
+		t.Errorf("the new directory is named %q, want data.<account>-<ts>", fresh)
 	}
 	if !strings.HasPrefix(filepath.Base(aside), "data.pre-handover-") {
 		t.Errorf("the original is named %q, want data.pre-handover-<ts>", aside)
 	}
 
 	calls := strings.Join(fake.CallKeys(), "\n")
-	cp := strings.Index(calls, "job.checkpoint(pgcopy:")
-	tree := strings.Index(calls, "files.CopyTree(")
-	if cp < 0 || tree < 0 || cp > tree {
-		t.Errorf("the names were not checkpointed before the copy:\n%s", calls)
-	}
-	// Two renames, in the order that leaves a recoverable state: the original
-	// goes aside first, so `data` is free for the copy. The other order would
-	// need an atomic exchange, and there is none.
+	sum := strings.Index(calls, "files.Sha256("+dump+")")
+	cp := strings.Index(calls, "job.checkpoint(pgfresh:")
 	r1 := strings.Index(calls, "files.Rename("+pp.data+","+aside+")")
-	r2 := strings.Index(calls, "files.Rename("+copyPath+","+pp.data+")")
-	if r1 < 0 || r2 < 0 || r1 > r2 {
-		t.Errorf("the two renames did not happen in order (aside %d, into place %d):\n%s", r1, r2, calls)
+	r2 := strings.Index(calls, "files.Rename("+fresh+","+pp.data+")")
+	switch {
+	case sum < 0 || cp < 0 || r1 < 0 || r2 < 0:
+		t.Fatalf("the swap's calls are not what it claims:\n%s", calls)
+	case sum > cp:
+		t.Error("the dump was checksummed only after the names were committed to")
+	case !(cp < r1 && r1 < r2):
+		t.Errorf("checkpoint/rename order wrong (checkpoint %d, aside %d, into place %d)", cp, r1, r2)
 	}
 
-	// The tenant's data directory is now this account's, byte for byte, and
-	// the original is untouched beside it.
 	files := fake.FakeFiles()
-	if st, err := files.Stat(context.Background(), pp.data); err != nil || st.UID != 0 {
+	// `data` is now THIS account's, and it is EMPTY: that is what makes the
+	// instance initialise a cluster in it.
+	st, err := files.Stat(context.Background(), pp.data)
+	if err != nil || st.UID != 0 {
 		t.Errorf("%s = %+v (err %v), want this account's", pp.data, st, err)
 	}
-	if st, err := files.Stat(context.Background(), filepath.Join(aside, "pgdata")); err != nil || st.UID != otherAccountUID {
-		t.Errorf("the original at %s was not left as it was: %+v (err %v)", aside, st, err)
+	for _, f := range files.Paths() {
+		if strings.HasPrefix(f, pp.data+"/") {
+			t.Errorf("%s is not empty: it holds %s", pp.data, f)
+		}
 	}
-	if got := files.Content(filepath.Join(pp.data, "pgdata", "PG_VERSION")); string(got) != "16\n" {
-		t.Errorf("the copy does not hold the original's files: PG_VERSION = %q", got)
+	// …and the original is untouched, still the other account's.
+	if o, err := files.Stat(context.Background(), aside); err != nil || o.UID != otherAccountUID {
+		t.Errorf("the original at %s = %+v (err %v), want the other account's", aside, o, err)
 	}
-	if st, err := files.Stat(context.Background(), filepath.Join(pp.data, "pgdata")); err != nil || st.Mode != 0o700 {
-		t.Errorf("pgdata's mode was not preserved: %+v (err %v)", st, err)
+	// Nothing ever READ the original cluster: on the live host it could not.
+	for _, c := range fake.CallKeys() {
+		if strings.HasPrefix(c, "files.ReadDir("+pp.data) || strings.HasPrefix(c, "files.ReadFile("+pp.data) {
+			t.Errorf("the take read the original cluster (%s); on the host that is a permission error", c)
+		}
 	}
 
-	// …and the ROW says where the original is, which is what the abandon and
-	// the operator both read.
-	h := oc.Fleet.Tenants["dev"].Handover
-	if h == nil || h.PostgresData == nil {
-		t.Fatalf("the handover block records no postgres migration: %+v", h)
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	if pd.PreHandover != aside || pd.Copy != fresh || pd.MigratedAt == "" {
+		t.Errorf("handover.postgres_data = %+v", pd)
 	}
-	if h.PostgresData.PreHandover != aside || h.PostgresData.Copy != copyPath {
-		t.Errorf("handover.postgres_data = %+v, want pre_handover %s and copy %s", h.PostgresData, aside, copyPath)
-	}
-	if h.PostgresData.MigratedAt == "" {
-		t.Error("handover.postgres_data.migrated_at is empty")
+	if pd.Dump != dump {
+		t.Errorf("the swap lost the release's dump from the row: %+v", pd)
 	}
 }
 
-// A directory the taking account ALREADY owns is not copied. The tenants this
-// control plane creates itself are in that state, and copying a postgres for
-// them would be an outage's worth of IO for nothing.
-func TestTheMigrationCopiesNothingWhenTheAccountAlreadyOwnsTheDirectory(t *testing.T) {
-	oc, fake, _ := pgFixture(t, released, map[string]int{})
+// A dump that is not the one the release recorded is a refusal BEFORE anything
+// moves: the archive crosses a job boundary, an account boundary and a night.
+func TestTheSwapRefusesADumpThatDoesNotMatchItsChecksum(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	dump := seedReleasedDump(t, oc, fake)
+	fake.FakeFiles().Put(dump, []byte("something else entirely"), 0o640)
+
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, _ := stepNamed(t, p, "migrate the postgres data directory")
+	step, _ := stepNamed(t, p, "put an empty cluster directory in place")
+	_, err := newRunner(oc, fake).run(step)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "not the archive the release recorded") {
+		t.Fatalf("a take over a rewritten dump = %v, want a refusal", err)
+	}
+	if calls := strings.Join(fake.CallKeys(), "\n"); strings.Contains(calls, "files.Rename(") {
+		t.Errorf("a refused take renamed something:\n%s", calls)
+	}
+	if st, err := fake.FakeFiles().Stat(context.Background(), pp.data); err != nil || st.UID != otherAccountUID {
+		t.Errorf("the original cluster was disturbed: %+v (err %v)", st, err)
+	}
+}
+
+// An absent dump is the same class of refusal, and it names the way out.
+func TestTheSwapRefusesWhenTheReleasesDumpIsGone(t *testing.T) {
+	oc, fake, _ := pgFixture(t, released, nil)
+	dump := seedReleasedDump(t, oc, fake)
+	delete(fake.FakeFiles().Files, dump)
+
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	step, _ := stepNamed(t, p, "put an empty cluster directory in place")
+	_, err := newRunner(oc, fake).run(step)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "re-run the release") {
+		t.Fatalf("a take with no dump = %v, want a refusal naming the way out", err)
+	}
+}
+
+// A cluster directory this account ALREADY owns is left alone: a re-take of a
+// tenant the control plane already runs must not put an empty directory where
+// a live cluster is.
+func TestTheSwapDoesNothingWhenTheAccountAlreadyOwnsTheCluster(t *testing.T) {
+	oc, fake, _ := pgFixture(t, released, map[string]int{})
+	seedReleasedDump(t, oc, fake)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	step, _ := stepNamed(t, p, "put an empty cluster directory in place")
 
 	log, err := newRunner(oc, fake).run(step)
 	if err != nil {
-		t.Fatalf("the migration failed over a directory this account owns: %v", err)
+		t.Fatalf("the swap failed over a directory this account owns: %v", err)
 	}
-	if !strings.Contains(log, "no migration needed") {
-		t.Errorf("the step reported %q, want it to say there was nothing to do", log)
-	}
-	if calls := strings.Join(fake.CallKeys(), "\n"); strings.Contains(calls, "files.CopyTree(") {
-		t.Errorf("a directory this account owns was copied anyway:\n%s", calls)
-	}
-	if h := oc.Fleet.Tenants["dev"].Handover; h != nil && h.PostgresData != nil {
-		t.Errorf("the row records a migration that did not happen: %+v", h.PostgresData)
-	}
-}
-
-// A filesystem that cannot hold the copy is a refusal, not a half-written
-// tree. The number in the message is what an operator acts on, so it is in the
-// assertion.
-func TestTheMigrationRefusesWhenThereIsNotRoomForTwoCopies(t *testing.T) {
-	oc, fake, _ := pgFixture(t, released, nil)
-	// Room for the tree but not for twice it: the copy would fit and the
-	// database it becomes would not.
-	fake.FakeFiles().Free = 9000
-	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, _ := stepNamed(t, p, "migrate the postgres data directory")
-
-	_, err := newRunner(oc, fake).run(step)
-	if !errors.Is(err, jobs.ErrRefused) {
-		t.Fatalf("a take with no room = %v, want a refusal", err)
-	}
-	for _, want := range []string{"has to be COPIED", "needs 2\u00d7 that", "run the take again"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q: %v", want, err)
-		}
+	if !strings.Contains(log, "no swap needed") {
+		t.Errorf("the step reported %q", log)
 	}
 	if calls := strings.Join(fake.CallKeys(), "\n"); strings.Contains(calls, "files.Rename(") {
-		t.Errorf("a refused migration renamed something:\n%s", calls)
+		t.Errorf("a cluster this account owns was moved anyway:\n%s", calls)
+	}
+	if pd := oc.Fleet.Tenants["dev"].Handover.PostgresData; pd.PreHandover != "" {
+		t.Errorf("the row records a swap that did not happen: %+v", pd)
 	}
 }
 
-// The rollback is the way back out of a take that failed AFTER the move — the
-// exact situation of 2026-09-17, where the API step failed and the engine
-// unwound every step before it. It has to put the tenant back on the directory
-// it was on, and that directory has never been written to.
-func TestTheMigrationsRollbackPutsTheOriginalBack(t *testing.T) {
+// The crash between the two renames: the one state that is neither before nor
+// after, and the whole reason both names are checkpointed first.
+func TestTheSwapFinishesAfterACrashBetweenTheTwoRenames(t *testing.T) {
 	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, n := stepNamed(t, p, "migrate the postgres data directory")
+	step, n := stepNamed(t, p, "put an empty cluster directory in place")
 	r := newRunner(oc, fake)
 	if _, err := r.run(step); err != nil {
-		t.Fatalf("the migration failed: %v", err)
-	}
-	aside := idValue(t, r.externalIDs(n), "pgaside:")
-	copyPath := idValue(t, r.externalIDs(n), "pgcopy:")
-
-	log, err := r.rollback(step)
-	if err != nil {
-		t.Fatalf("the rollback failed: %v", err)
-	}
-	if !strings.Contains(log, "is back at "+pp.data) {
-		t.Errorf("the rollback reported %q", log)
-	}
-	files := fake.FakeFiles()
-	// The ORIGINAL is back, with its owner: this is the property that makes
-	// the rollback exact rather than a restore.
-	st, err := files.Stat(context.Background(), pp.data)
-	if err != nil || st.UID != otherAccountUID {
-		t.Errorf("%s = %+v (err %v), want the other account's original", pp.data, st, err)
-	}
-	if _, err := files.Stat(context.Background(), aside); err == nil {
-		t.Errorf("%s is still there after the rollback: the original was not moved back", aside)
-	}
-	if _, err := files.Stat(context.Background(), copyPath); err != nil {
-		t.Errorf("this account's copy was not put back at %s: %v", copyPath, err)
-	}
-	// …and the row no longer names a directory that is not there.
-	if h := oc.Fleet.Tenants["dev"].Handover; h != nil && h.PostgresData != nil {
-		t.Errorf("the rolled-back row still records a migration: %+v", h.PostgresData)
-	}
-}
-
-// The crash between the two renames. It is the one state this operation can be
-// interrupted in that is neither "before" nor "after", and the whole reason the
-// names are checkpointed first: a re-run FINISHES it rather than starting over
-// or refusing.
-func TestTheMigrationFinishesAfterACrashBetweenTheTwoRenames(t *testing.T) {
-	oc, fake, pp := pgFixture(t, released, nil)
-	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, n := stepNamed(t, p, "migrate the postgres data directory")
-	r := newRunner(oc, fake)
-	if _, err := r.run(step); err != nil {
-		t.Fatalf("the migration failed: %v", err)
-	}
-	copyPath, aside := idValue(t, r.externalIDs(n), "pgcopy:"), idValue(t, r.externalIDs(n), "pgaside:")
-
-	// Put the host back into the mid-rename state: the original is aside, this
-	// account's copy is under its own name, and `data` does not exist.
-	files := fake.FakeFiles()
-	if err := files.Rename(context.Background(), pp.data, copyPath); err != nil {
 		t.Fatal(err)
 	}
+	fresh, aside := idValue(t, r.externalIDs(n), "pgfresh:"), idValue(t, r.externalIDs(n), "pgaside:")
 
-	// Reconcile says REDO — the work is not done and it can be decided — and
-	// the re-run finishes the second rename.
+	// Put the host back into the mid-rename state.
+	files := fake.FakeFiles()
+	if err := files.Rename(context.Background(), pp.data, fresh); err != nil {
+		t.Fatal(err)
+	}
 	got, err := step.Reconcile(context.Background(), r.ctx(step))
 	if err != nil || got != jobs.ReconcileRedo {
 		t.Fatalf("reconcile over the mid-rename state = %v, %v; want redo", got, err)
 	}
-	log, err := r.run(step)
-	if err != nil {
-		t.Fatalf("the re-run did not finish the migration: %v", err)
-	}
-	if !strings.Contains(log, "migrated") {
-		t.Errorf("the re-run reported %q", log)
+	if _, err := r.run(step); err != nil {
+		t.Fatalf("the re-run did not finish the swap: %v", err)
 	}
 	if st, err := files.Stat(context.Background(), pp.data); err != nil || st.UID != 0 {
-		t.Errorf("%s = %+v (err %v), want this account's copy in place", pp.data, st, err)
+		t.Errorf("%s = %+v (err %v), want this account's directory in place", pp.data, st, err)
 	}
 	if _, err := files.Stat(context.Background(), aside); err != nil {
 		t.Errorf("the original is no longer at %s: %v", aside, err)
@@ -360,18 +465,17 @@ func TestTheMigrationFinishesAfterACrashBetweenTheTwoRenames(t *testing.T) {
 
 // A state the step cannot name is STUCK with all three paths in the message,
 // never a guess. The directories in question are a tenant's database.
-func TestTheMigrationIsStuckRatherThanGuessingOverAStateItCannotName(t *testing.T) {
+func TestTheSwapIsStuckRatherThanGuessing(t *testing.T) {
 	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	step, n := stepNamed(t, p, "migrate the postgres data directory")
+	step, n := stepNamed(t, p, "put an empty cluster directory in place")
 	r := newRunner(oc, fake)
 	if _, err := r.run(step); err != nil {
-		t.Fatalf("the migration failed: %v", err)
+		t.Fatal(err)
 	}
 	aside := idValue(t, r.externalIDs(n), "pgaside:")
 
-	// Somebody moved the original away and left `data` in place: neither
-	// "done" nor "the crash between the renames".
 	files := fake.FakeFiles()
 	if err := files.Rename(context.Background(), aside, pp.dir+"/somewhere-else"); err != nil {
 		t.Fatal(err)
@@ -390,88 +494,162 @@ func TestTheMigrationIsStuckRatherThanGuessingOverAStateItCannotName(t *testing.
 	}
 }
 
-// ---------------------------------------------------------------- release, abandon, commit
+// The restore, and the proof. The cluster the instance initialised is EMPTY;
+// after the restore every table has to be back with exactly the rows the
+// release recorded.
+func TestTheRestoreLoadsTheDumpAndProvesEveryTablesRowCount(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	dump := seedReleasedDump(t, oc, fake)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
 
-// The release is the last cheap moment to discover that the take cannot work,
-// and the only moment at which the tenant is still up. It measures and warns;
-// it copies nothing.
-func TestTheReleaseWarnsAboutTheCopyTheTakeWillHaveToMake(t *testing.T) {
-	oc, fake, _ := pgFixture(t, prepared, nil)
-	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
-	step, _ := stepNamed(t, p, "check whether the take can own the postgres data directory")
-
-	log, err := newRunner(oc, fake).run(step)
+	// The cluster the take started is empty — initdb's work, not the
+	// original's.
+	before, err := fake.Postgres().Census(context.Background(), pgSpec(pp))
 	if err != nil {
-		t.Fatalf("the release precondition failed: %v", err)
+		t.Fatal(err)
 	}
-	for _, want := range []string{"owned by uid 3581", "will copy", "free"} {
-		if !strings.Contains(log, want) {
-			t.Errorf("the release does not report %q: %s", want, log)
-		}
+	if len(before.Tables) != 0 {
+		t.Fatalf("the new cluster is not empty before the restore: %+v", before.Tables)
 	}
-	if calls := strings.Join(fake.CallKeys(), "\n"); strings.Contains(calls, "files.CopyTree(") {
-		t.Errorf("the release copied something:\n%s", calls)
+
+	step, _ := stepNamed(t, p, "restore the release's dump")
+	log, err := r.run(step)
+	if err != nil {
+		t.Fatalf("the restore failed: %v", err)
+	}
+	if !strings.Contains(log, "2 table(s)") {
+		t.Errorf("the restore reported %q", log)
+	}
+	if got := fake.FakePostgres().Restores; len(got) != 1 || !strings.Contains(got[0], dump) {
+		t.Errorf("restores = %v, want exactly the release's dump", got)
 	}
 }
 
-// …and it REFUSES when the room is not there, because the alternative is
-// discovering it with the tenant stopped and the take the only way back up.
-func TestTheReleaseRefusesWhenTheTakeCouldNotMakeTheCopy(t *testing.T) {
-	oc, fake, _ := pgFixture(t, prepared, nil)
-	fake.FakeFiles().Free = 9000
-	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
-	step, _ := stepNamed(t, p, "check whether the take can own the postgres data directory")
+// A restore that succeeded and moved LESS than everything is the failure the
+// row counts exist to catch. It must fail the take rather than surface later as
+// a tenant that is quietly short.
+func TestTheRestoreRefusesWhenATableComesBackShort(t *testing.T) {
+	oc, fake, _ := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	fake.FakePostgres().RestoreDrops = map[string]int64{"public.chunks": 5}
 
-	_, err := newRunner(oc, fake).run(step)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+	step, _ := stepNamed(t, p, "restore the release's dump")
+
+	_, err := r.run(step)
 	if !errors.Is(err, jobs.ErrRefused) {
-		t.Fatalf("a release with no room for the take's copy = %v, want a refusal", err)
+		t.Fatalf("a restore that lost rows = %v, want a refusal", err)
 	}
-	for _, want := range []string{"postgres data owned by uid 3581", "needs 2\u00d7 that", "Free space before releasing"} {
+	for _, want := range []string{"public.chunks 88000 → 87995", "FEWER rows", "abandon the handover"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q: %v", want, err)
 		}
 	}
 }
 
-// The abandon hands the tenant back to the account that released it, and that
-// account's postgres will not start on the take's copy either. So the names go
-// back — and the copy that was serving during the soak is KEPT, under its own
-// name, because it is divergent data and deleting it is nobody's call but the
-// operator's.
-func TestTheAbandonSwapsThePostgresDirectoryBack(t *testing.T) {
-	oc, fake, pp := pgFixture(t, released, nil)
-	// Run the take's migration first, so the row and the host are in the state
-	// an abandon actually finds.
-	takePlan := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
-	migrate, mn := stepNamed(t, takePlan, "migrate the postgres data directory")
-	tr := newRunner(oc, fake)
-	if _, err := tr.run(migrate); err != nil {
-		t.Fatalf("the migration failed: %v", err)
-	}
-	copyPath, aside := idValue(t, tr.externalIDs(mn), "pgcopy:"), idValue(t, tr.externalIDs(mn), "pgaside:")
+// ---------------------------------------------------------------- end to end
 
-	// …then the abandon, as the account that released it, over a row that has
-	// since been taken.
+// release → take → commit, every step, against the fake host: the shape an
+// operator actually performs, and the one thing no per-step test can show —
+// that the tenant ends up owning its postgres AND holding its rows.
+func TestReleaseTakeCommitMovesThePostgresEndToEnd(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+
+	// ---- release, as the owner.
+	rel := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	newRunner(oc, fake).runAll(t, rel)
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	if pd == nil || pd.Dump == "" || len(pd.Tables) != 2 {
+		t.Fatalf("the release recorded no usable dump: %+v", pd)
+	}
+
+	// ---- take, as the service account, quoting the token THIS release
+	// minted (a nonce, freshly generated: the take is gated on it).
+	takeFixture(t, oc, fake)
+	take := planAs(t, oc, "svcbvbrc", "handover",
+		map[string]any{"phase": "take", "token": oc.Fleet.Tenants["dev"].Handover.Token})
+	newRunner(oc, fake).runAll(t, take)
+
 	tn := oc.Fleet.Tenants["dev"]
-	tn.State, tn.Owner, tn.Supervisor = "active", "svcbvbrc", supervisorInstance
-	tn.Handover.Phase = registry.HandoverTaken
+	if tn.Owner != "svcbvbrc" || tn.Supervisor != supervisorInstance {
+		t.Errorf("after the take the row says owner %s / supervisor %s", tn.Owner, tn.Supervisor)
+	}
+	// The cluster is this account's, and it holds the rows the release counted.
+	if st, err := fake.FakeFiles().Stat(context.Background(), pp.data); err != nil || st.UID != 0 {
+		t.Errorf("%s = %+v (err %v), want the taking account's", pp.data, st, err)
+	}
+	after, err := fake.Postgres().Census(context.Background(), pgSpec(pp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Tables["public.chunks"] != 88_000 || after.Tables["public.jobs"] != 12 {
+		t.Errorf("the migrated database holds %+v, want what the release counted", after.Tables)
+	}
+	// The original is still there, untouched, in the other account's name.
+	aside := tn.Handover.PostgresData.PreHandover
+	if o, err := fake.FakeFiles().Stat(context.Background(), aside); err != nil || o.UID != otherAccountUID {
+		t.Errorf("the original cluster at %s = %+v (err %v)", aside, o, err)
+	}
+	// The take's cluster carries no postmaster.pid from the original — under a
+	// dump-and-restore it never could, and this is the assertion that keeps it
+	// so if anyone ever reaches for a file copy again.
+	if fake.FakeFiles().Content(filepath.Join(pp.data, "pgdata", "postmaster.pid")) != nil {
+		t.Error("the new cluster carries a postmaster.pid from the original")
+	}
+
+	// ---- commit. The API the take spawned has to be ATTRIBUTABLE to this
+	// account for the commit's own proof; the fake's spawn binds the port but
+	// models no /proc owner for it.
+	fake.FakeProc().MarkAlive(30001, oc.Tenant.Ports.API)
+	commit := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "commit"})
+	newRunner(oc, fake).runAll(t, commit)
+	tn = oc.Fleet.Tenants["dev"]
+	if tn.Handover != nil || tn.DesiredBoot != "enabled" {
+		t.Errorf("after the commit: handover %+v, desired_boot %q", tn.Handover, tn.DesiredBoot)
+	}
+	// Both artefacts survive the commit, and the plan says where they are.
+	if !warnsAbout(commit, aside) || !warnsAbout(commit, pd.Dump) {
+		t.Errorf("the commit does not name what it is leaving behind: %v", commit.Plan.Warnings)
+	}
+	if fake.FakeFiles().Content(pd.Dump) == nil {
+		t.Error("the commit deleted the release's dump")
+	}
+}
+
+// release → take → abandon: the way back, and the property that makes it safe —
+// the original cluster is never opened, so putting it back is exact.
+func TestReleaseTakeAbandonPutsTheOriginalClusterBack(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+
+	rel := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	newRunner(oc, fake).runAll(t, rel)
+	takeFixture(t, oc, fake)
+	take := planAs(t, oc, "svcbvbrc", "handover",
+		map[string]any{"phase": "take", "token": oc.Fleet.Tenants["dev"].Handover.Token})
+	newRunner(oc, fake).runAll(t, take)
+
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	aside, fresh := pd.PreHandover, pd.Copy
+
+	// The operator stops the tenant, then abandons as the account that
+	// released it.
 	fake.FakeInstances().StopAll()
-	fake.FakeProc().FreePort(tn.Ports.API)
-	fake.FakeProc().FreePort(tn.Ports.PG)
-	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
-	swap, _ := stepNamed(t, p, "put the postgres data directory back")
-
-	// It runs BEFORE the row is put back: a row that said `manual` over a
-	// directory the releasing account cannot start on would hand the operator
-	// a tenant that refuses to come up.
-	got := titles(p)
-	if i, j := indexOfStep(got, "put the postgres data directory back"), indexOfStep(got, "put the row back"); i < 0 || j < 0 || i > j {
-		t.Errorf("the directory is not put back before the row (%d, %d):\n  %s", i, j, strings.Join(got, "\n  "))
+	fake.FakeProc().FreePort(oc.Tenant.Ports.API)
+	fake.FakeProc().FreePort(oc.Tenant.Ports.PG)
+	ab := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
+	// The cluster goes back BEFORE the row does: a row saying `manual` over a
+	// directory the releasing account cannot start on is a tenant handed back
+	// broken.
+	got := titles(ab)
+	if i, j := indexOfStep(got, "put the original postgres cluster back"), indexOfStep(got, "put the row back"); i < 0 || j < 0 || i > j {
+		t.Fatalf("the cluster is not put back before the row (%d, %d):\n  %s", i, j, strings.Join(got, "\n  "))
 	}
+	newRunner(oc, fake).runAll(t, ab)
 
-	if _, err := newRunner(oc, fake).run(swap); err != nil {
-		t.Fatalf("the abandon's swap failed: %v", err)
-	}
 	files := fake.FakeFiles()
 	if st, err := files.Stat(context.Background(), pp.data); err != nil || st.UID != otherAccountUID {
 		t.Errorf("%s = %+v (err %v), want the releasing account's original back", pp.data, st, err)
@@ -479,54 +657,14 @@ func TestTheAbandonSwapsThePostgresDirectoryBack(t *testing.T) {
 	if _, err := files.Stat(context.Background(), aside); err == nil {
 		t.Errorf("%s is still there: the original was not moved back", aside)
 	}
-	if _, err := files.Stat(context.Background(), copyPath); err != nil {
-		t.Errorf("the soak's copy was deleted rather than kept at %s: %v", copyPath, err)
+	// The soak's cluster is KEPT under its own name: it has diverged, and
+	// deleting it is nobody's call but the operator's.
+	if _, err := files.Stat(context.Background(), fresh); err != nil {
+		t.Errorf("the take's cluster was deleted rather than kept at %s: %v", fresh, err)
 	}
-}
-
-// An abandon over a handover whose take moved nothing plans a skip that says
-// so, rather than a step that would have nothing to rename.
-func TestTheAbandonSkipsTheSwapWhenTheTakeMovedNothing(t *testing.T) {
-	oc, fake := fixture(t, "dev", taken)
-	fake.FakeInstances().StopAll()
-	fake.FakeProc().FreePort(oc.Tenant.Ports.API)
-	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
-	if !hasStep(p, "files", "skip the postgres data directory") {
-		t.Fatalf("no skipped swap:\n  %s", strings.Join(titles(p), "\n  "))
-	}
-	why := strings.Join(stepWarnings(p, "files", "skip the postgres data directory"), " ")
-	if !strings.Contains(why, "postgres_data is null") {
-		t.Errorf("the skip does not say why: %q", why)
-	}
-}
-
-// The commit KEEPS the original and says where it is — the last moment at
-// which the registry can, because the commit is what clears the block. After
-// that only doctor remembers.
-func TestTheCommitNamesTheDirectoryItIsNotDeleting(t *testing.T) {
-	oc, _, pp := pgFixture(t, taken, nil)
-	aside := filepath.Join(pp.dir, "data.pre-handover-20260917T083000Z")
 	tn := oc.Fleet.Tenants["dev"]
-	tn.Handover.PostgresData = &registry.PostgresDataMigration{
-		PreHandover: aside, Copy: filepath.Join(pp.dir, "data.svcbvbrc-20260917T083000Z"),
-		MigratedAt: "2026-09-17T08:30:00Z",
-	}
-	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "commit"})
-
-	if !warnsAbout(p, aside) {
-		t.Errorf("the commit does not name the pre-handover directory: %v", p.Plan.Warnings)
-	}
-	if !warnsAbout(p, "pre_handover_copy_present") {
-		t.Errorf("the commit does not say what will keep reporting it: %v", p.Plan.Warnings)
-	}
-	if !warnsAbout(p, "rm -rf "+aside) {
-		t.Errorf("the commit does not say how to delete it: %v", p.Plan.Warnings)
-	}
-	if p.Result == nil {
-		t.Fatal("the commit produced no result object")
-	}
-	if got := p.Result()["pre_handover_postgres_data"]; got != aside {
-		t.Errorf("the commit's result carries %v, want the pre-handover path %s", got, aside)
+	if tn.Handover != nil || tn.Owner != "wilke" || tn.Supervisor != supervisorManual {
+		t.Errorf("after the abandon: handover %+v, owner %s, supervisor %s", tn.Handover, tn.Owner, tn.Supervisor)
 	}
 }
 
@@ -536,49 +674,92 @@ func TestTheCommitNamesTheDirectoryItIsNotDeleting(t *testing.T) {
 // bound for it is what turned a five-second failure into a three-minute one —
 // and then reported `pg_isready … no response`, which says nothing about why.
 //
-// The instance's own .err file said why the whole time.
-func TestTheReadinessWaitStopsWhenTheInstanceIsGoneAndQuotesItsLog(t *testing.T) {
-	oc, fake, _ := pgFixture(t, released, nil)
-	// postgres started, wrote its one line and exited: apptainer's `instance
-	// run` SUCCEEDED, the table is empty, and there is a log.
-	ins := fake.FakeInstances()
-	ins.ExitOnRun = map[string]string{"postgres-dev": strings.Join([]string{
-		"2026-09-17 08:31:02.114 UTC [1] FATAL:  data directory \"/var/lib/postgresql/data/pgdata\" has wrong ownership",
-		"2026-09-17 08:31:02.114 UTC [1] HINT:  The server must be started by the user that owns the data directory.",
-		"child process exited with exit code 1",
-	}, "\n")}
-	// …and pg_isready answers what it answered on coconut.
-	fake.FakePostgres().Readiness = map[string]bool{
-		paths.TenantPaths(oc.Roots, "dev", "dev").PostgresRun: false,
-	}
+// This one also pins the other half: only THIS attempt's output is quoted.
+func TestTheReadinessWaitStopsWhenTheInstanceIsGoneAndIgnoresAnOlderLog(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	logPath := "/rag/data/ctl/apptainer/config/instances/logs/coconut/svcbvbrc/postgres-dev.err"
+	// What a PREVIOUS run of this instance left in the log — apptainer appends
+	// for the life of the host. It must not appear in this attempt's failure,
+	// however apt its wording.
+	fake.FakeFiles().Put(logPath, []byte(
+		"2026-09-17 08:31:02 UTC [1] FATAL:  data directory \"/var/lib/postgresql/data/pgdata\" has wrong ownership\n"), 0o644)
+	fake.FakeInstances().ExitOnRun = map[string]string{"postgres-dev": ""}
+	fake.FakePostgres().Readiness = map[string]bool{pp.run: false}
 
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
 	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+	step, _ := stepNamed(t, p, "restore the release's dump")
+
+	_, err := r.run(step)
+	if err == nil {
+		t.Fatal("the restore succeeded over a postgres that never started")
+	}
+	if !strings.Contains(err.Error(), "postgres-dev") || !strings.Contains(err.Error(), "is not coming up") {
+		t.Errorf("the failure does not say the instance is gone: %v", err)
+	}
+	if strings.Contains(err.Error(), "wrong ownership") {
+		t.Errorf("the failure quotes a line from an earlier run of this instance: %v", err)
+	}
+	if !strings.Contains(err.Error(), "without writing anything") {
+		t.Errorf("the failure does not say this attempt wrote nothing: %v", err)
+	}
+}
+
+// …and when this attempt DOES write, its own words are what comes back.
+func TestTheReadinessWaitQuotesWhatThisAttemptWrote(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	fake.FakeInstances().ExitOnRun = map[string]string{"postgres-dev": strings.Join([]string{
+		"2026-09-17 09:02:11 UTC [1] FATAL:  could not create lock file \"postmaster.pid\": Permission denied",
+		"child process exited with exit code 1",
+	}, "\n")}
+	fake.FakePostgres().Readiness = map[string]bool{pp.run: false}
+
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+	step, _ := stepNamed(t, p, "restore the release's dump")
+
+	_, err := r.run(step)
+	if err == nil || !strings.Contains(err.Error(), "could not create lock file") {
+		t.Fatalf("the failure does not quote this attempt's log: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------- helpers
+
+// seedReleasedDump puts a release's artefact on the fake host and in the row:
+// the archive the take verifies, its checksum, and the row counts the take will
+// prove the restore against.
+//
+// It runs the RELEASE's own dump step rather than writing a file by hand, so
+// that no take test can pass against an archive no release would have produced.
+func seedReleasedDump(t *testing.T, oc jobs.Context, fake *drivers.Fake) string {
+	t.Helper()
+	rel := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	step, n := stepNamed(t, rel, "dump this tenant's postgres")
+	r := newRunner(oc, fake)
+	if _, err := r.run(step); err != nil {
+		t.Fatalf("seeding the release's dump: %v", err)
+	}
+	return idValue(t, r.externalIDs(n), "pgdump:")
+}
+
+// runUpTo runs a plan's steps until (not including) the one named.
+func runUpTo(t *testing.T, r *runner, p *jobs.Planned, substr string) {
+	t.Helper()
 	for _, s := range p.Steps {
-		if strings.Contains(s.Plan.Title, "start the API detached") {
-			_, err := r.run(s)
-			if err == nil {
-				t.Fatal("the API step succeeded over a postgres that never started")
-			}
-			// The CAUSE, out of the container's own log, and the hoisted
-			// ownership line first: postgres prints two more lines after it.
-			if !strings.Contains(err.Error(), "wrong ownership") {
-				t.Errorf("the failure does not quote the postgres log: %v", err)
-			}
-			if !strings.Contains(err.Error(), "postgres-dev") ||
-				!strings.Contains(err.Error(), "is not coming up") {
-				t.Errorf("the failure does not say the instance is gone: %v", err)
-			}
+		if strings.Contains(s.Plan.Title, substr) {
 			return
 		}
 		if _, err := r.run(s); err != nil {
 			t.Fatalf("step %d (%s): %v", s.Plan.N, s.Plan.Title, err)
 		}
 	}
-	t.Fatal("the take plans no API start")
+	t.Fatalf("no step named %q in:\n  %s", substr, strings.Join(titles(p), "\n  "))
 }
-
-// ---------------------------------------------------------------- helpers
 
 // stepNamed is the one step of a plan whose title contains substr, and its
 // number. A test that silently matched two steps, or none, would assert
@@ -605,4 +786,60 @@ func idValue(t *testing.T, ids []string, prefix string) string {
 		t.Fatalf("no %s external id in %v", prefix, ids)
 	}
 	return v
+}
+
+// An image that cannot initdb is the one failure a handover could not discover
+// any later than its release: the ctl never runs initdb — the image's
+// entrypoint does — so nothing would notice until a take had already renamed
+// this tenant's cluster aside.
+func TestTheReleaseRefusesAnImageThatCannotInitdb(t *testing.T) {
+	oc, fake, _ := pgFixture(t, prepared, nil)
+	fake.FakePostgres().MissingTools = map[string]bool{"initdb": true}
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	step, _ := stepNamed(t, p, "check that there is room to dump")
+
+	_, err := newRunner(oc, fake).run(step)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "initdb") {
+		t.Fatalf("a release against an image with no initdb = %v, want a refusal naming it", err)
+	}
+}
+
+// A re-take of a tenant this control plane ALREADY runs creates no cluster —
+// and must therefore restore nothing. The postgres answering by then is the
+// tenant's own, live and populated; pouring the release's dump into it would
+// fail on the first relation that already exists, and any restore that did not
+// fail would be worse.
+func TestTheRestoreDoesNothingWhenTheTakeCreatedNoCluster(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, map[string]int{}) // the directory is already this account's
+	// …and it holds a LIVE cluster. The fixture leaves `data` empty for every
+	// other test, because the taking account cannot read another account's
+	// cluster and nothing may depend on doing so — but this is the one case
+	// where the directory IS this account's, so it can have contents, and a
+	// postgres started on it finds a cluster rather than initialising one.
+	fake.FakeFiles().Put(filepath.Join(pp.data, "pgdata", "PG_VERSION"), []byte("16\n"), 0o600)
+	seedReleasedDump(t, oc, fake)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+
+	// The tenant's own rows are there, because no cluster was replaced.
+	before, err := fake.Postgres().Census(context.Background(), pgSpec(pp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Tables["public.chunks"] != 88_000 {
+		t.Fatalf("the fixture's own cluster was replaced: %+v", before.Tables)
+	}
+
+	step, _ := stepNamed(t, p, "restore the release's dump")
+	log, err := r.run(step)
+	if err != nil {
+		t.Fatalf("the restore failed: %v", err)
+	}
+	if !strings.Contains(log, "skipped") {
+		t.Errorf("the restore reported %q, want it to skip", log)
+	}
+	if got := fake.FakePostgres().Restores; len(got) != 0 {
+		t.Errorf("a live cluster was restored into: %v", got)
+	}
 }

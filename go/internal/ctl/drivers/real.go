@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -716,32 +715,63 @@ func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(rfrom, rto)
+	if err := os.Rename(rfrom, rto); err != nil {
+		return err
+	}
+	// Both parents, because rename(2) is atomic but not DURABLE: the entry is
+	// on the disk only once the directory holding it is. The handover's two
+	// renames are the moment a tenant's data directory changes identity, and a
+	// crash between them is a state the step has to be able to name — which it
+	// cannot if the rename that happened is not there any more after a power
+	// cut. A sync that fails is not the rename's failure (it already
+	// happened), so it is best-effort, exactly as writeAtomic's is.
+	syncDir(filepath.Dir(rfrom))
+	if d := filepath.Dir(rto); d != filepath.Dir(rfrom) {
+		syncDir(d)
+	}
+	return nil
 }
 
-// Remove deletes path, refusing to follow a symlink to get there.
+// syncDir fsyncs a directory, best-effort: it makes the names in it durable.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+}
+
+// Remove deletes path, refusing to delete a symlink.
+//
+// The check is LSTAT, and that is a correction. It used to be an O_NOFOLLOW
+// open, on the reasoning that an lstat+unlink pair can be raced where an open
+// cannot — but the race it was guarding against does not exist: unlink(2) and
+// rmdir(2) never follow a final symlink, so the worst a swapped path can
+// produce is the removal of the link itself, never of what it points at. What
+// the open bought was the refusal, and lstat buys that too.
+//
+// What the open COST was everything that is not a regular file or a directory.
+// `open()` on a unix socket fails with ENXIO — verified, and it is the reason
+// this comment exists: the handover's release removes the stale
+// `.s.PGSQL.<port>` socket its postgres left behind, and with the open in place
+// that step failed on the host and on no fixture anywhere. A FIFO would have
+// been worse: `open()` on one BLOCKS until a writer appears.
+//
+// So: absent is success (Remove is idempotent), a symlink is a refusal, and
+// anything else is unlinked. A non-empty directory is refused by os.Remove
+// itself, which is what a caller naming a directory asked for.
 func (f *RealFiles) Remove(_ context.Context, path string) error {
 	path, err := f.check(path)
 	if err != nil {
 		return err
 	}
-	// O_NOFOLLOW is the check, and opening is how it is made: a lstat+unlink
-	// pair can be raced, an open that refuses to follow cannot. ELOOP means
-	// the path ITSELF is a symlink, which is exactly the case to refuse (the
-	// DIRECTORY components are already resolved by check). A directory opens
-	// fine read-only, so it falls through to os.Remove, which removes it when
-	// it is empty and refuses when it is not — what a caller naming a
-	// directory asked for either way.
-	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	st, err := os.Lstat(path)
 	switch {
-	case err == nil:
-		_ = fd.Close()
 	case errors.Is(err, os.ErrNotExist):
-		return nil // already gone; Remove is idempotent
-	case errors.Is(err, syscall.ELOOP):
-		return fmt.Errorf("%w: %s is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
-	default:
+		return nil // already gone
+	case err != nil:
 		return err
+	case st.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("%w: %s is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
 	}
 	return os.Remove(path)
 }
@@ -862,187 +892,28 @@ func fileStatOf(st os.FileInfo) (jobs.FileStat, error) {
 // creates, and the number postgres compares its data directory against.
 func (f *RealFiles) SelfUID(context.Context) (int, error) { return os.Geteuid(), nil }
 
-// TreeSize walks dir and adds up the regular files. A read, so not
-// root-checked; an absent dir is fs.ErrNotExist.
+// Sync fsyncs one path, file or directory.
 //
-// It does NOT follow symlinks (filepath.WalkDir does not), and it does not
-// resolve hard links to a single copy: the number it answers is what a COPY of
-// this tree would occupy, which is the question its one caller asks.
-func (f *RealFiles) TreeSize(_ context.Context, dir string) (int64, int, error) {
-	var bytes int64
-	entries := 0
-	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		entries++
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		bytes += info.Size()
-		return nil
-	})
-	if err != nil {
-		return 0, 0, err
-	}
-	return bytes, entries, nil
-}
-
-// CopyTree copies src to dst as this account: every file and directory it
-// creates is owned by whoever runs it, which is the only way an account that
-// cannot chown gives another account's postgres a data directory it will
-// accept.
+// A read, so it is not root-checked — it changes no content, it only makes
+// content that is already there durable. O_NOFOLLOW for the same reason Remove
+// uses it: nothing the ctl creates is a symlink, and a link where a dump
+// should be is not a thing to follow.
 //
-// The rules, all of which have a failure behind them:
-//
-//   - dst must not exist. This is the same rule Rename has, and for the same
-//     reason: a copy that landed inside a tree already there would mix two
-//     data directories together.
-//   - every entry is lstat'ed and only a regular file or a directory is
-//     copied. A symlink in a postgres data directory (pg_wal moved to another
-//     filesystem is the usual one) is refused by NAME rather than followed,
-//     because following it would copy somebody else's tree into this one and
-//     silently drop the indirection the original depended on.
-//   - modes are preserved, and set before anything is written into the
-//     directory (the walk is top-down, so a 0700 directory is 0700 before its
-//     files land in it).
-//   - every file and every directory is fsynced. The next thing that happens
-//     to this copy is a rename into the original's place; a crash with the
-//     original renamed aside and this tree not yet on disk is the one outcome
-//     this whole operation exists to avoid.
-func (f *RealFiles) CopyTree(ctx context.Context, src, dst string) (int64, int, error) {
-	rdst, err := resolvedContainedNoLeafLink(dst, f.roots())
+// It exists because the handover's postgres dump is written INSIDE the
+// container by pg_dump and the ctl never holds its file descriptor: without
+// this the bytes sit in the page cache, and a machine that dies between the
+// dump and the take leaves a handover whose only copy of a tenant's database
+// is a file that is not all there.
+func (f *RealFiles) Sync(_ context.Context, path string) error {
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return 0, 0, err
-	}
-	if _, lerr := os.Lstat(rdst); lerr == nil {
-		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
-			jobs.ErrRefused, rdst)
-	} else if !errors.Is(lerr, os.ErrNotExist) {
-		return 0, 0, lerr
-	}
-	srcStat, err := os.Lstat(src)
-	if err != nil {
-		return 0, 0, err
-	}
-	if !srcStat.IsDir() {
-		return 0, 0, fmt.Errorf("%w: %s is not a directory, so there is no tree to copy", jobs.ErrRefused, src)
-	}
-
-	var bytes int64
-	entries := 0
-	// The directories this call created, deepest last: they are fsynced on the
-	// way back out, after everything inside them has been written and renamed.
-	var dirs []string
-	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("%w: %s is a symlink; the ctl never syncs through one", jobs.ErrRefused, path)
 		}
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		rel, rerr := filepath.Rel(src, path)
-		if rerr != nil {
-			return rerr
-		}
-		target := filepath.Join(rdst, rel)
-		info, ierr := d.Info() // lstat: WalkDir does not follow links
-		if ierr != nil {
-			return ierr
-		}
-		st, serr := fileStatOf(info)
-		if serr != nil {
-			return serr
-		}
-		entries++
-		switch {
-		case st.IsSymlink:
-			return fmt.Errorf("%w: %s is a symlink; the ctl copies no tree that holds one — following it would copy "+
-				"what it points at into the tenant's tree and drop the indirection the original depended on",
-				jobs.ErrRefused, path)
-		case st.IsDir:
-			if err := os.Mkdir(target, fileMode(st.Mode)); err != nil && !errors.Is(err, os.ErrExist) {
-				return err
-			}
-			// Explicit chmod: mkdir(2) masks the mode with the umask and does
-			// not reliably keep setgid, and a 0700 pgdata that arrived 0755 is
-			// a postgres that refuses for the OTHER reason it refuses.
-			if err := os.Chmod(target, fileMode(st.Mode)); err != nil {
-				return err
-			}
-			dirs = append(dirs, target)
-			return nil
-		case info.Mode().IsRegular():
-			n, cerr := copyRegular(path, target, st.Mode)
-			if cerr != nil {
-				return cerr
-			}
-			bytes += n
-			return nil
-		default:
-			return fmt.Errorf("%w: %s is neither a regular file nor a directory (%s); the ctl copies no tree that "+
-				"holds one", jobs.ErrRefused, path, info.Mode().Type())
-		}
-	})
-	if walkErr != nil {
-		return bytes, entries, walkErr
+		return err
 	}
-	// The directories, deepest FIRST: a directory's fsync records the names in
-	// it, so a parent synced before its child's entries were durable would say
-	// the child exists over a child that does not.
-	for i := len(dirs) - 1; i >= 0; i-- {
-		d, oerr := os.Open(dirs[i])
-		if oerr != nil {
-			return bytes, entries, oerr
-		}
-		serr := d.Sync()
-		_ = d.Close()
-		if serr != nil {
-			return bytes, entries, serr
-		}
-	}
-	return bytes, entries, nil
-}
-
-// copyRegular streams one file to a path that does not exist yet, at mode, and
-// fsyncs it. Unlike CopyFile it writes the destination DIRECTLY rather than
-// through a temporary: the whole tree is new, nothing reads it until the
-// rename that publishes it, and a temporary file per entry would double the
-// inode churn of copying a postgres data directory.
-func copyRegular(src, dst string, mode uint32) (n int64, err error) {
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return 0, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(mode))
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(dst)
-		}
-	}()
-	// O_CREATE applies the umask; the mode is therefore set explicitly, before
-	// a byte is written, exactly as WriteAtomic sets it before its rename.
-	if err = out.Chmod(fileMode(mode)); err != nil {
-		out.Close()
-		return 0, err
-	}
-	if n, err = io.Copy(out, in); err != nil {
-		out.Close()
-		return n, err
-	}
-	if err = out.Sync(); err != nil {
-		out.Close()
-		return n, err
-	}
-	return n, out.Close()
+	defer fd.Close()
+	return fd.Sync()
 }
 
 // apptainerConfigDir is the ctl's own APPTAINER_CONFIGDIR. The instance table

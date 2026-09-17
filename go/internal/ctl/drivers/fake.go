@@ -164,6 +164,14 @@ type FakeOptions struct {
 	// InstanceLogRoot is where this fake files its instance logs. Empty takes
 	// the fixture default.
 	InstanceLogRoot string
+	// PostgresContents is what each tenant's postgres holds, by RUN
+	// DIRECTORY: the size and the exact per-table row counts a dump carries
+	// and a restore replays. A cluster with no entry is EMPTY, which is what a
+	// freshly initdb'd one is.
+	PostgresContents map[string]jobs.PostgresCensus
+	// PostgresRestoreDrops makes a restore lose rows (table name → how many),
+	// which is the one failure the handover's row counts exist to catch.
+	PostgresRestoreDrops map[string]int64
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -254,14 +262,15 @@ func NewFake(opts FakeOptions) *Fake {
 	}
 	f.git = &FakeGit{r: &f.recorder, Refs: copyMapString(opts.Refs), Worktrees: copyMapString(opts.Worktrees)}
 	f.build = &FakeBuild{r: &f.recorder, files: f.files, Installed: setOf(opts.Installed)}
-	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady)}
+	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady),
+		Contents: copyMapCensus(opts.PostgresContents), RestoreDrops: copyMapInt64(opts.PostgresRestoreDrops)}
 	f.sqlite = &FakeSQLite{r: &f.recorder, files: f.files}
 	f.archive = &FakeArchive{r: &f.recorder, files: f.files}
 	// The instances and the LISTEN set are the SAME fixture, for the reason
 	// the units and the LISTEN set are: a store this host started has to be a
 	// store a readiness probe can find.
 	f.instances = &FakeInstances{
-		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
+		r: &f.recorder, proc: f.proc, files: f.files, pg: f.pg, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, AccountRunning: map[string]jobs.Instance{}, nextPID: 21001,
 		LogRoot: opts.InstanceLogRoot, ExitOnRun: copyMapString(opts.InstanceExitOnRun),
 	}
@@ -910,6 +919,11 @@ type FakeInstances struct {
 	proc *FakeProc
 	// files is the in-memory filesystem SeedConfigDir copies into.
 	files *FakeFiles
+	// pg is the postgres driver, so that starting a postgres instance on an
+	// EMPTY data directory initialises an empty cluster — which is what the
+	// image's entrypoint does, and the fact the handover's whole migration
+	// turns on.
+	pg *FakePostgres
 	// ports links an instance name to the port running it binds.
 	ports   map[string]int
 	nextPID int
@@ -1082,11 +1096,70 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	// container and its log — so this writes the log and leaves the table
 	// untouched, exactly as the host does.
 	if text, dies := i.ExitOnRun[spec.Name]; dies {
-		i.files.Put(filepath.Join(i.logRoot(), spec.Name+".err"), []byte(text), 0o644)
+		// APPENDED, as apptainer appends: the log holds every previous run of
+		// this instance, which is exactly why a caller has to know where this
+		// attempt's output starts before it quotes any of it.
+		path := filepath.Join(i.logRoot(), spec.Name+".err")
+		body := append([]byte(nil), i.files.Content(path)...)
+		if text != "" {
+			body = append(body, []byte(text+"\n")...)
+		}
+		i.files.Put(path, body, 0o644)
 		return nil
 	}
 	i.start(spec.Namespace, spec.Name, spec.SIF)
+	i.maybeInitdb(spec)
 	return nil
+}
+
+// maybeInitdb models the one thing the postgres image's entrypoint does that a
+// handover depends on: an EMPTY PGDATA is initialised into an empty cluster.
+//
+// It reads the instance's own binds — `<data>:/var/lib/postgresql/data` and
+// `<run>:/var/run/postgresql` — because that is where the two paths are, and
+// because a fake that took them from anywhere else could disagree with the
+// argv the renderer actually produces. A data directory with anything in it is
+// an EXISTING cluster and is left alone, exactly as the entrypoint leaves one.
+func (i *FakeInstances) maybeInitdb(spec jobs.InstanceSpec) {
+	if i.pg == nil || !strings.HasPrefix(spec.Name, "postgres-") {
+		return
+	}
+	var data, run string
+	for _, b := range spec.Binds {
+		host, container, ok := strings.Cut(b, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSuffix(container, ":ro") {
+		case "/var/lib/postgresql/data":
+			data = host
+		case "/var/run/postgresql":
+			run = host
+		}
+	}
+	if data == "" || run == "" {
+		return
+	}
+	i.files.mu.Lock()
+	empty := true
+	prefix := strings.TrimSuffix(data, "/") + "/"
+	for p := range i.files.Files {
+		if strings.HasPrefix(p, prefix) {
+			empty = false
+			break
+		}
+	}
+	i.files.mu.Unlock()
+	if !empty {
+		return
+	}
+	// initdb: a cluster with the tenant's database in it and not one row.
+	i.pg.mu.Lock()
+	if i.pg.Contents == nil {
+		i.pg.Contents = map[string]jobs.PostgresCensus{}
+	}
+	i.pg.Contents[run] = jobs.PostgresCensus{Tables: map[string]int64{}}
+	i.pg.mu.Unlock()
 }
 
 // LogPaths answers from the table when the instance is running and composes
@@ -1756,8 +1829,8 @@ func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
 // A path that is neither a recorded file nor a recorded (or implied) directory
 // is fs.ErrNotExist, so a caller telling "not there" from "cannot be read"
 // behaves here as it does on the host. The fake has no symlinks, so IsSymlink
-// is always false — a fake that claimed one would be claiming a case CopyTree
-// refuses and nothing here can create.
+// is always false — a fake that claimed one would be claiming a case nothing
+// here can create.
 func (f *FakeFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
 	if err := f.r.record("files", "Stat", path); err != nil {
 		return jobs.FileStat{}, err
@@ -1773,7 +1846,7 @@ func (f *FakeFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) 
 	if f.hasDirLocked(path) {
 		// A directory nothing recorded but a file under it implies. 0700 is
 		// the conservative answer: it is what a postgres data directory
-		// carries, and CopyTree preserving it is what the caller asserts.
+		// carries, and what the handover's ownership questions are asked of.
 		return jobs.FileStat{UID: f.ownerOf(path), Mode: 0o700, IsDir: true}, nil
 	}
 	return jobs.FileStat{}, fmt.Errorf("lstat %s: %w", path, fs.ErrNotExist)
@@ -1786,87 +1859,25 @@ func (f *FakeFiles) SelfUID(context.Context) (int, error) {
 	return f.UID, nil
 }
 
-// TreeSize adds up the in-memory files under dir and counts the entries.
-func (f *FakeFiles) TreeSize(_ context.Context, dir string) (int64, int, error) {
-	if err := f.r.record("files", "TreeSize", dir); err != nil {
-		return 0, 0, err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.Dirs[dir]; !ok && !f.hasDirLocked(dir) {
-		return 0, 0, fmt.Errorf("open %s: %w", dir, fs.ErrNotExist)
-	}
-	prefix := strings.TrimSuffix(dir, "/") + "/"
-	var bytes int64
-	entries := 1 // dir itself, as filepath.WalkDir counts it
-	for p, v := range f.Files {
-		if strings.HasPrefix(p, prefix) {
-			bytes += int64(len(v.Data))
-			entries++
-		}
-	}
-	for d := range f.Dirs {
-		if strings.HasPrefix(d, prefix) {
-			entries++
-		}
-	}
-	return bytes, entries, nil
-}
-
-// CopyTree copies every path under src to dst, AS THIS ACCOUNT: the copy gets
-// no Owners entry, so Stat answers f.UID for all of it. That is the property
-// the handover's migration step exists to produce, and a fake that carried the
-// source's owner across would let the step pass its tests and fail on the
-// host.
+// Sync records the fsync and checks that there is something there to sync.
 //
-// Modes are preserved, dst must not exist, and both halves of the refusal the
-// real driver makes are made here: a destination outside the approved roots,
-// and a destination that is already there.
-func (f *FakeFiles) CopyTree(_ context.Context, src, dst string) (int64, int, error) {
-	if err := f.r.record("files", "CopyTree", src, dst); err != nil {
-		return 0, 0, err
-	}
-	if !contained(dst, f.Roots) {
-		return 0, 0, outsideRoots(dst, f.Roots)
+// The in-memory filesystem has no durability to model, so what this pins is
+// the CALL: the handover's dump step has to sync the dump and its directory,
+// and a fake that accepted any path would let a step that synced the wrong one
+// pass. An absent path is fs.ErrNotExist, as the real driver's open would give.
+func (f *FakeFiles) Sync(_ context.Context, path string) error {
+	if err := f.r.record("files", "Sync", path); err != nil {
+		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.Files[dst]; ok {
-		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
-			jobs.ErrRefused, dst)
+	if _, ok := f.Files[path]; ok {
+		return nil
 	}
-	if _, ok := f.Dirs[dst]; ok || f.hasDirLocked(dst) {
-		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
-			jobs.ErrRefused, dst)
+	if _, ok := f.Dirs[path]; ok || f.hasDirLocked(path) {
+		return nil
 	}
-	if _, ok := f.Dirs[src]; !ok && !f.hasDirLocked(src) {
-		return 0, 0, fmt.Errorf("%w: %s is not a directory, so there is no tree to copy", jobs.ErrRefused, src)
-	}
-	prefix := strings.TrimSuffix(src, "/") + "/"
-	var bytes int64
-	entries := 1
-	if mode, ok := f.Dirs[src]; ok {
-		f.Dirs[dst] = mode
-	} else {
-		f.Dirs[dst] = 0o700
-	}
-	for p, v := range f.Files {
-		if !strings.HasPrefix(p, prefix) {
-			continue
-		}
-		f.Files[filepath.Join(dst, strings.TrimPrefix(p, prefix))] = FakeFile{
-			Data: append([]byte(nil), v.Data...), Mode: v.Mode,
-		}
-		bytes += int64(len(v.Data))
-		entries++
-	}
-	for d, mode := range f.Dirs {
-		if strings.HasPrefix(d, prefix) {
-			f.Dirs[filepath.Join(dst, strings.TrimPrefix(d, prefix))] = mode
-			entries++
-		}
-	}
-	return bytes, entries, nil
+	return fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
 }
 
 // has reports whether path is in the in-memory filesystem. It is not a driver
@@ -2694,6 +2705,28 @@ type FakePostgres struct {
 	// Dumps records every dump as "<runDir> <db> <out>", Restores likewise.
 	Dumps    []string
 	Restores []string
+	// Contents is what each cluster holds, by RUN DIRECTORY — the one thing
+	// that identifies a cluster across this driver's calls. It is not called
+	// `Census` because the driver's METHOD is, and Go lets a type have one or
+	// the other (the same reason `Readiness` is not `Ready`).
+	//
+	// It is a model rather than a seed, and the modelling is the point: Dump
+	// WRITES the current census into the archive it creates, and Restore READS
+	// it back into the target cluster. That is what a dump and a restore
+	// actually are, and it is the only way a test of the handover's postgres
+	// migration can assert that the tenant came back with what it went down
+	// with — the fresh cluster the take initialises starts EMPTY here, exactly
+	// as initdb leaves one.
+	Contents map[string]jobs.PostgresCensus
+	// MissingTools names programs this image does NOT carry, so that a test
+	// can produce the one failure a handover cannot discover any later than
+	// its release: an image with no initdb, which nothing would notice until
+	// a take had already renamed a tenant's cluster aside.
+	MissingTools map[string]bool
+	// RestoreDrops makes a restore lose rows: table name → how many. It is how
+	// a test produces the one failure the row counts exist to catch, a restore
+	// that succeeded and moved less than everything.
+	RestoreDrops map[string]int64
 }
 
 func (p *FakePostgres) pgReady(runDir string) bool {
@@ -2730,9 +2763,33 @@ func (p *FakePostgres) Dump(_ context.Context, spec jobs.PostgresSpec, out strin
 		return fmt.Errorf("%w: %s is not an existing directory to write the dump into",
 			jobs.ErrRefused, filepath.Dir(out))
 	}
+	if !p.pgReady(spec.RunDir) {
+		return fmt.Errorf("pg_dump of %s: no response on the socket in %s", spec.DB, spec.RunDir)
+	}
 	p.Dumps = append(p.Dumps, spec.RunDir+" "+spec.DB+" "+out)
-	p.files.Put(out, []byte("fake pg_dump -Fc of "+spec.DB+"\n"), 0o640)
+	// The archive CARRIES the census, so that a later Restore can put it into
+	// another cluster. A real custom-format dump carries the rows themselves;
+	// this is the smallest model of that which lets a test prove a handover
+	// moved everything.
+	body := "fake pg_dump -Fc of " + spec.DB + "\n"
+	c := p.Contents[spec.RunDir]
+	body += dumpCensusPrefix + "=size==" + strconv.FormatInt(c.SizeBytes, 10) + "\n"
+	for _, name := range sortedKeys(c.Tables) {
+		body += dumpCensusPrefix + name + "=" + strconv.FormatInt(c.Tables[name], 10) + "\n"
+	}
+	p.files.Put(out, []byte(body), 0o640)
 	return nil
+}
+
+// sortedKeys keeps a fake archive byte-identical between two runs of the same
+// dump: a map has no order, and a test that checksums one needs it to.
+func sortedKeys(m map[string]int64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in string) error {
@@ -2741,8 +2798,96 @@ func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in str
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.pgReady(spec.RunDir) {
+		return fmt.Errorf("pg_restore into %s: no response on the socket in %s", spec.DB, spec.RunDir)
+	}
+	body := p.files.Content(in)
+	if body == nil {
+		return fmt.Errorf("the dump to restore is not readable: open %s: %w", in, fs.ErrNotExist)
+	}
+	// The archive carries the census the dump captured; restoring it is what
+	// puts those rows into THIS cluster. A dump this fake did not write has no
+	// census in it, which restores as an empty database — the honest model of
+	// an archive whose contents are unknown.
+	c := dumpCensus(body)
+	for name, drop := range p.RestoreDrops {
+		if n, ok := c.Tables[name]; ok {
+			c.Tables[name] = n - drop
+		}
+	}
+	if p.Contents == nil {
+		p.Contents = map[string]jobs.PostgresCensus{}
+	}
+	p.Contents[spec.RunDir] = c
 	p.Restores = append(p.Restores, spec.RunDir+" "+spec.DB+" "+in)
 	return nil
+}
+
+// ToolVersions answers for an image that carries the three tools, unless a
+// test says otherwise with MissingTools — which is how the one failure that
+// cannot be discovered later (an image with no initdb) is reproduced here.
+func (p *FakePostgres) ToolVersions(_ context.Context, spec jobs.PostgresSpec) (map[string]string, error) {
+	if err := p.r.record("postgres", "ToolVersions", spec.SIF); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[string]string{}
+	for _, tool := range handoverTools {
+		if p.MissingTools[tool] {
+			return nil, fmt.Errorf("%w: %s cannot run %s, which a handover needs", jobs.ErrRefused, spec.SIF, tool)
+		}
+		out[tool] = tool + " (PostgreSQL) 16.13"
+	}
+	return out, nil
+}
+
+// Census is what the cluster on this run directory holds. An unseeded cluster
+// is EMPTY, which is what a freshly initdb'd one is.
+func (p *FakePostgres) Census(_ context.Context, spec jobs.PostgresSpec) (jobs.PostgresCensus, error) {
+	if err := p.r.record("postgres", "Census", spec.RunDir, spec.DB); err != nil {
+		return jobs.PostgresCensus{}, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.pgReady(spec.RunDir) {
+		return jobs.PostgresCensus{}, fmt.Errorf("counting the rows of %s: no response on the socket in %s",
+			spec.DB, spec.RunDir)
+	}
+	c, ok := p.Contents[spec.RunDir]
+	if !ok {
+		return jobs.PostgresCensus{Tables: map[string]int64{}}, nil
+	}
+	return jobs.PostgresCensus{SizeBytes: c.SizeBytes, Tables: copyMapInt64(c.Tables)}, nil
+}
+
+// dumpCensusPrefix marks the census this fake writes into an archive.
+const dumpCensusPrefix = "census:"
+
+// dumpCensus reads the census back out of a fake archive. An archive without
+// one is an empty database.
+func dumpCensus(body []byte) jobs.PostgresCensus {
+	c := jobs.PostgresCensus{Tables: map[string]int64{}}
+	for _, line := range strings.Split(string(body), "\n") {
+		rest, ok := strings.CutPrefix(line, dumpCensusPrefix)
+		if !ok {
+			continue
+		}
+		name, count, ok := strings.Cut(rest, "=")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(count, 10, 64)
+		if err != nil {
+			continue
+		}
+		if name == "=size=" {
+			c.SizeBytes = n
+			continue
+		}
+		c.Tables[name] = n
+	}
+	return c
 }
 
 // ---------------------------------------------------------------- sqlite
@@ -2933,4 +3078,14 @@ func containsString(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// copyMapCensus deep-copies the seeded cluster contents, so that a fixture's
+// map is not mutated by the restore this fake models.
+func copyMapCensus(m map[string]jobs.PostgresCensus) map[string]jobs.PostgresCensus {
+	out := make(map[string]jobs.PostgresCensus, len(m))
+	for k, v := range m {
+		out[k] = jobs.PostgresCensus{SizeBytes: v.SizeBytes, Tables: copyMapInt64(v.Tables)}
+	}
+	return out
 }

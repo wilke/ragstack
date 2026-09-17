@@ -264,10 +264,11 @@ for nothing.
 
 A light bundle is `fenced: false`, `consistent: false` and is never a restore,
 handover or decommission prerequisite — the manifest and `last_backup.scope`
-both say so. It is the pre-handover safety net, not a recovery point: no data
-moves during a handover (the same directories serve the same processes under
-another account), so what has to be recoverable is the tenant's identity and
-configuration, and that is exactly what this holds.
+both say so. It is the pre-handover safety net, not a recovery point: almost no
+data moves during a handover — the same directories serve the same processes
+under another account, and a tenant's own postgres is carried across as a dump
+the release itself takes — so what has to be recoverable is the tenant's
+identity and configuration, and that is exactly what this holds.
 
 For a real recovery point, take a full fenced bundle at a maintenance window:
 `ragstack-ctl tenant backup <t> --fence --yes-destructive <t>`.
@@ -383,8 +384,10 @@ Two things hold at every point between them:
   row has carried since `adopt --commit`. (After an abandon, in that order:
   the abandon refuses while a port is still held, so the restore comes last.)
 
-A handover moves **no data**. The same directories serve the same processes
-under another account, through the ACLs PR-D2 installed. The risk is not data
+A handover moves **almost no data**. The same directories serve the same
+processes under another account, through the ACLs PR-D2 installed — with one
+exception, a tenant with its own postgres, whose cluster the take rebuilds from
+a dump the release takes while the server is still there. The risk is not data
 loss, it is a tenant neither account can start — which is what the census, the
 port proofs and the commit's own liveness check are all for.
 
@@ -485,18 +488,27 @@ The plan, in the order it runs — and the order IS the operation:
    census, the descriptor reference and a one-shot token;
 6. **stop the API** by pidfile, after checking cwd and cmdline (never `pkill`),
    TERM then KILL, and **prove the port free**;
-7. **stop each of the tenant's own apptainer instances** in reverse start order
+7. **`pg_dump -Fc` the tenant's own postgres**, on a tenant that has one. Here
+   and nowhere else: the API is stopped, so nothing is writing, and postgres is
+   not, so there is still a server to dump;
+8. **stop each of the tenant's own apptainer instances** in reverse start order
    — postgres, elasticsearch, qdrant — in *your* registry, each one waited on
    (up to 120 s) until it has left the instance table AND every port of that
-   leg is free, and each followed by its own port proof.
+   leg is free, and each followed by its own port proof;
+9. **remove the stale `.s.PGSQL.<port>` socket and `.s.PGSQL.<port>.lock`** from
+   `<data_dir>/postgres/run`. That directory is sticky, so only the files' owner
+   may unlink them — the take could not — and a postgres that finds a lock file
+   for its port refuses to start.
 
 **Step 1 has a companion on a tenant with its own postgres.** The release also
-stats that tenant's postgres data directory and prints `postgres data owned by
-<uid/account>: the take will copy N MB, and needs 2× that free` — the take has
-to copy the tree to own it (see [Postgres-backed
-tenants](#postgres-backed-tenants-what-the-take-does-to-the-data-directory)
-below) — and it REFUSES when the space is not there. Same reason as step 1:
-discovering it afterwards means discovering it with the tenant already down.
+asks the postgres image whether it can run `pg_dump`, `pg_restore` and `initdb`,
+asks postgres itself for `pg_database_size`, and REFUSES unless the filesystem
+has the database's size **plus 64 MB** free — the dump, and the freshly
+initialised cluster the take will have in place of it. The take does not copy
+this directory: it cannot even read it (see [Postgres-backed
+tenants](#postgres-backed-tenants-the-dump-and-the-cluster-the-take-builds)
+below). Same reason as step 1: discovering any of it afterwards means
+discovering it with the tenant already down.
 
 It prints the token. Keep it: the take needs it, and `ragstack-ctl job show
 <id>` has it in the job's result if the terminal is gone.
@@ -566,13 +578,15 @@ job. From a row left at `handover` / `released` you now have two usable verbs:
 `{"phase":"take","token":"…"}`.)
 
 It checks the token against the row, proves every port free, records
-`supervisor: instance`, **takes ownership of the postgres data directory** when
-the tenant has its own and the directory is not already this account's (below —
-before any store is started, because postgres will not start on a directory
-another account owns), then starts the tenant's own stores, waits for any
-**shared** store the tenant uses but does not own (bounded, 180 s — the two
-accounts' boot orders are not coordinated, so this wait is what makes the order
-irrelevant), and spawns the API with a pidfile. Then it proves it:
+`supervisor: instance`, and — on a tenant with its own postgres — verifies the
+release's dump and **swaps an EMPTY directory in for the cluster** (below; before
+any store is started, because what starts next is the image's own `initdb`).
+Then it starts the tenant's own stores, waits for any **shared** store the
+tenant uses but does not own (bounded, 180 s — the two accounts' boot orders are
+not coordinated, so this wait is what makes the order irrelevant),
+**`pg_restore`s the dump into the new cluster and compares every table's row
+count against what the release recorded** — any difference at all is a refusal —
+and spawns the API with a pidfile. Then it proves it:
 
 * `GET /health` on the tenant's own port;
 * `GET /v1/health/deep` with the tenant's own admin key, read from its
@@ -631,94 +645,127 @@ the `handover` block. The `rollback_descriptor` is deliberately left untouched:
 it is the immutable record of how the tenant ran before the ctl had it, and
 `restore.sh --tenant` still reads it.
 
-What it does NOT clear is `data.pre-handover-<ts>`, if the take made one: the
-copy of the postgres data directory the tenant used to run on stays on disk
-until you delete it, and `doctor` raises the INFO finding
-`pre_handover_copy_present`, naming the path, for as long as it is there.
+What it does NOT clear is what a postgres handover leaves on disk:
+`data.pre-handover-<ts>`, the cluster the tenant used to run on, and
+`handover-<ts>.dump`, the dump the take restored from. Both stay until you
+delete them, and `doctor` raises the INFO finding `pre_handover_copy_present`,
+naming both, for as long as they are there.
 
 After the commit `ops/coconut/restore.sh` skips the tenant ("handed over to the
 control plane") and `ragstack-ctl fleet start --all` — the `@reboot` crontab
 line — is what brings it back.
 
-## Postgres-backed tenants: what the take does to the data directory
+## Postgres-backed tenants: the dump, and the cluster the take builds
 
-Postgres refuses to start on a data directory it does not OWN. It compares that
-directory's `st_uid` against its own `geteuid()` and exits; permissions are not
-consulted at all, so the ACL `fleet grant` installs — which is what makes every
-other part of this handover work — buys nothing here. It just says `data
-directory has wrong ownership` and stops.
+Postgres refuses to start on a data directory it does not OWN: it compares the
+directory's `st_uid` against its own `geteuid()`, says `data directory has wrong
+ownership` and exits, without consulting permissions at all — so the ACL `fleet
+grant` installs buys nothing here. Qdrant and Elasticsearch do not check, which
+is why the second failed live handover (2026-09-17, hackathon) brought both of
+those up and then sat out the full `postgres did not become ready within 3m0s`
+with the tenant down. And nobody here can `chown` to another account — there is
+no root — so the only cluster the service account can own is one it wrote.
 
-Qdrant and Elasticsearch do not check, which is why the second failed live
-handover (2026-09-17, hackathon) brought both of those up and then sat for the
-full three minutes on `postgres did not become ready within 3m0s` with the
-tenant down. Nobody on coconut can `chown` to another account — there is no root
-— so the only way the service account gets a directory it owns is to write one
-itself.
-
-**So the take copies it.** A step after the ports-free proofs and before any
-store is started, on a tenant whose row says `stores.postgres.kind: local`:
-
-1. stat the bind source `<data_dir>/postgres/data` and its `pgdata` child — the
-   directory postgres actually checks. Both already owned by the taking account:
-   it says so and does nothing. That is what the second and every later take of
-   the same tenant sees;
-2. otherwise it refuses unless the filesystem has **2× the tree's size** free.
-   The copy and the original both have to fit, and they both go on existing —
-   the original is not removed at the end of the handover;
-3. copy the tree to `<data_dir>/postgres/data.<account>-<ts>`, as the taking
-   account, so every file in the copy is that account's. Modes are preserved;
-   every file and every directory is fsynced, because what is being written is a
-   database's data directory and a crash before the metadata lands is a corrupt
-   one;
-4. two renames, neither of which may clobber: `data` → `data.pre-handover-<ts>`,
-   then `data.<account>-<ts>` → `data`.
-
-Both names are checkpointed as external ids BEFORE the copy starts, so a crash
-between the two renames is recoverable rather than a puzzle: a re-run finishes
-the second rename, and a state it cannot decide is reported as `stuck` naming
-both paths rather than guessed at. The pre-handover path is recorded in the row,
-at `handover.postgres_data.pre_handover`, beside `copy` and `migrated_at`.
-
-**The original is never written to** — it is renamed, not opened — so the take's
-rollback is exact: it swaps the two names back and the tenant restarts on the
-bytes it always had.
-
-`--dry-run` shows the step with its real numbers, and so does the release's
-precondition one phase earlier — which is the one you want, because it runs
-while the tenant is still up. `hackathon` today (postgres on 24085, svcbvbrc
-taking):
+**And it cannot copy the old one.** An earlier design had the take copy
+`<data_dir>/postgres/data` file by file. The taking account cannot even READ it,
+and not for a reason permissions can fix: a POSIX ACL's named-user entry is
+filtered by the ACL MASK, the mask IS the directory's group mode bits, and a
+PGDATA postgres accepts has none. No `getfacl` on this host — `ls -ld` shows the
+`+`, and the xattr says what it is:
 
 ```bash
-du -sh /rag/data/tenants/hackathon/postgres/data          # 47M → needs 94M free
-df -h  /rag/data/tenants/hackathon/postgres
-stat -c '%U %A %n' /rag/data/tenants/hackathon/postgres/data{,/pgdata}
-# wilke drwx------ /rag/data/tenants/hackathon/postgres/data
-# wilke drwx------ /rag/data/tenants/hackathon/postgres/data/pgdata
+cd /rag/data/tenants/hackathon/postgres
+python3 -c '
+import os,struct,sys,pwd
+T={1:"user_obj::",2:"user:",4:"group_obj::",8:"group:",16:"mask::",32:"other::"}
+P=lambda m:"".join(c if m&b else "-" for c,b in zip("rwx",(4,2,1)))
+for p in sys.argv[1:]: print(p,*(T[t]+(pwd.getpwuid(q).pw_name+":" if t in(2,8) else "")+P(m) for t,m,q in struct.iter_unpack("<HHI",os.getxattr(p,"system.posix_acl_access")[4:])))
+' . data/pgdata
+# .           user_obj::rwx user:svcbvbrc:rwx group_obj::--- mask::rwx other::---
+# data/pgdata user_obj::rwx user:svcbvbrc:rwx group_obj::--- mask::--- other::---
 ```
 
-47 MB is seconds. A postgres grown to tens of gigabytes is a different
-conversation — read the release's number before you release, not after.
+`user:svcbvbrc:rwx` filtered by `mask::---` is an effective `---`: svcbvbrc
+cannot open, list or stat anything under `pgdata`, and widening the mask means
+giving that directory group bits, which postgres then refuses on a different
+line. No ACL configuration exists in which one account copies another's cluster
+— so the handover moves the DATA, not the directory.
 
-### The pre-handover directory
+### What the release writes
 
-`--commit` does **not** delete `data.pre-handover-<ts>`. A commit is the moment
-the tenant is the control plane's, not the moment you are sure of it, so the
-copy stays and `doctor` raises an INFO finding, `pre_handover_copy_present`,
-naming the path for as long as it is there. It does not measure it — `du` over a
-postgres data directory is IO doctor would pay on every poll — so run `du -sh`
-yourself before you decide.
+`pg_dump -Fc` to `<data_dir>/postgres/handover-<ts>.dump`, mode **0640**, in the
+one window there is for it: **after the API is stopped**, so nothing is writing,
+and **before postgres is stopped**, so there is still a server to dump. A plain
+file has no ownership check of any kind, and 0640 in `<data_dir>/postgres` —
+whose ACL mask IS `rwx`, above — is readable through the group both accounts
+share. That is the whole trick. The file is fsynced, and so is its directory.
+Its sha256 and the **exact row count of every table** go into the row at
+`handover.postgres_data` — `count(*)`, never `n_live_tup`, because the take
+compares for equality and a planner estimate would fail every take.
 
-Delete it by hand, as the account that owns it — `wilke`; svcbvbrc cannot —
-once the tenant has soaked and been committed:
+The release refuses, with everything else that can refuse and before anything is
+stopped, unless the image can run `pg_dump`, `pg_restore` and `initdb` and the
+filesystem has the database's size **plus 64 MB** free. `initdb` is probed
+because the image's own entrypoint runs it — nothing else would notice it
+missing until the take had already renamed the cluster aside:
+
+```
+handing this postgres over writes a dump (at most 48 MB (apparent), the
+database's own size) and a freshly initialised cluster (64 MB (apparent)), and
+/rag/data/tenants/hackathon/postgres has 1.2T free of the 112 MB needed. Free
+space before releasing: after the release this tenant is DOWN and the take is
+the only way back up
+```
+
+`hackathon` today — postgres on 24085, data dir
+`/rag/data/tenants/hackathon/postgres`, 47 MB of database, so ~47 MB + 64 MB:
 
 ```bash
+df -h /rag/data/tenants/hackathon/postgres     # Avail 1.2T of 3.9T on /rag
+```
+
+47 MB is seconds; a postgres grown to tens of gigabytes is a different
+conversation, so read that number before you release, not after.
+
+### What the take builds
+
+After the ports-free proofs and before any store is started: verify the dump's
+sha256, create `<data_dir>/postgres/data.<account>-<ts>` as an **empty**
+directory, rename `data` → `data.pre-handover-<ts>`, rename the empty one →
+`data`. Two renames, neither of which may clobber, both names checkpointed as
+external ids BEFORE the first — so a crash between them is finished by a re-run,
+and a state the job cannot decide is reported `stuck`, naming all three paths,
+rather than guessed at.
+
+The postgres instance then starts on that empty directory and the image's
+entrypoint initialises a cluster in it, exactly as it did when the tenant was
+provisioned; the new cluster is the taking account's because that account made
+it. Between the store starts and the API start, `pg_restore` puts the dump into
+it and **every table's row count is compared** against what the release
+recorded: fewer rows, more rows, a missing table or a table the release never
+recorded all fail the take. Stricter than the qdrant/elasticsearch census, which
+tolerates a surplus — this cluster was empty four steps ago, so nothing a
+surplus could be is honest. The original is never opened, never written and
+never listed by the taking account; which is just as well, because it could not
+be.
+
+### The pre-handover cluster, and the dump
+
+`--commit` deletes neither: a commit is the moment the tenant is the control
+plane's, not the moment you are sure of it. `doctor` raises the INFO finding
+`pre_handover_copy_present` naming both until they are gone, and does NOT
+measure them — `du` over a postgres cluster is IO doctor would pay on every poll
+— so run `du -sh` yourself. Delete them by hand, as the account that owns them
+(`wilke`; svcbvbrc cannot), once the tenant has soaked and been committed:
+
+```bash
+du -sh /rag/data/tenants/hackathon/postgres/data.pre-handover-<ts>
 rm -rf /rag/data/tenants/hackathon/postgres/data.pre-handover-<ts>
+rm -f  /rag/data/tenants/hackathon/postgres/handover-<ts>.dump
 ```
 
-Only after the commit. Until then that directory IS the way back: `--abandon`
-swaps the two names again, when the take's copy is in place and the original is
-still there, so an abandoned tenant restarts on the directory it always had,
-owned by the account that is about to start it.
+Only after the commit. Until then that directory IS the way back — `--abandon`
+renames the two back — and an abandon that finds it gone REFUSES.
 
 ### The readiness wait fails fast
 
@@ -732,8 +779,15 @@ postgres's reason:
 ls /rag/data/ctl/apptainer/config/instances/logs/$(hostname)/svcbvbrc/postgres-hackathon.err
 ```
 
+Only what THIS attempt wrote is quoted. apptainer appends to that file for the
+life of the host, so it holds every previous run of the instance; the step that
+starts a store records how long the log already is, as an external id beside the
+instance name, and the failure quotes what came after that offset and nothing
+else. A job that reports "exited without writing anything to …" means exactly
+that — look at the whole file yourself, and at what came before it.
+
 So the ownership failure that cost five minutes of downtime now costs the second
-postgres takes to say `data directory has wrong ownership`.
+postgres takes to say why.
 
 ### The rollback drill
 
@@ -764,11 +818,20 @@ It writes the REGISTRY only: `supervisor: manual`, `state: active`,
 `owner` back to the account that released it, the handover block cleared.
 Nothing is running until step 4.
 
-One exception, on a tenant with its own postgres: the abandon also swaps the
-data directory back — `data` → the take's copy, `data.pre-handover-<ts>` →
-`data` — so step 4 starts the tenant on the directory its own account has owned
-all along. It does that only when the take's copy is in place and the original
-is still there; otherwise it touches neither and says which one it found.
+One exception, on a tenant with its own postgres: the abandon also renames the
+two directories back — `data` → `data.<account>-<ts>`, `data.pre-handover-<ts>`
+→ `data` — so step 4 starts the tenant on the cluster its own account has owned
+all along. That one was never opened after the release, so it comes back exact,
+down to the inode. The take's cluster is KEPT under `data.<account>-<ts>`: it
+has diverged since the take, and throwing away a database somebody may have
+written to is your call, not the job's.
+
+If the row records the swap but `data.pre-handover-<ts>` is GONE — an operator
+ran doctor's `rm -rf` repair before committing, say — the abandon **refuses**
+rather than reporting success. Handing the tenant back on the take's cluster
+would hand `wilke` a directory `wilke`'s postgres will not start, with the row
+already cleared and no way back. The refusal names both paths and gives you the
+two ways out: keep the handover and commit it, or restore from a backup.
 
 A tenant in `state: handover` is skipped by a fleet-wide `restore.sh` (it would
 race the take) and started by an explicit `--tenant <n>` (which is this drill).
@@ -885,15 +948,19 @@ because "who held a credential last month" is the question a ledger exists for.
 | `--take` refuses: "still listening on N" | the release did not free a port | look at the port as the owner; the take must never start a second copy |
 | `--take` fails: "came back with FEWER rows" | a store is up but not on its own data | `tenant stop <t>` as the service account, then `--abandon`, then `restore.sh --tenant <t>` — and look at the instance's binds before trying again |
 | `--take` fails on the shared-store wait | a store this tenant does not own is not up | start it as its owner (`restore.sh` brings the shared stores up), then take again |
-| `--take` fails: "postgres did not become ready", quoting `data directory has wrong ownership` | postgres compares the data directory's `st_uid` against its own uid, not permissions — the ACL is irrelevant to it | the migration step did not run or did not finish: read `handover.postgres_data` in the row and the `.err` path the failure names. The rollback has already swapped the directory names back, so `tenant stop <t>`, `--abandon`, `restore.sh --tenant <t>`, then fix the ownership before taking again |
-| `--take` refuses: "needs 2× … free" | the copy of the postgres data directory and the original both have to fit | free space on that filesystem, or `rm -rf` a `data.pre-handover-<ts>` left by an earlier, committed handover. The release prints the same number before anything is stopped — read it there |
-| the job reports `stuck`, naming `data.pre-handover-<ts>` and `data.<account>-<ts>` | a crash between the two renames; the step will not guess which half happened | look at those two directories and at `data`, then **re-run the take**: the external ids checkpointed before the copy let the job's reconcile finish the second rename. Do not rename them by hand |
+| `--release` refuses: "has X free of the Y needed" | the dump plus a freshly initialised cluster — the database's size + 64 MB — do not fit | free space on that filesystem, or `rm -rf` a `data.pre-handover-<ts>` left by an earlier, committed handover. **Nothing was stopped**: this runs with the other preconditions |
+| `--release` refuses: the image cannot run `pg_dump` / `pg_restore` / `initdb` | the postgres image cannot do what the handover asks of it | fix the image first. `initdb` is the take's, run by the image's own entrypoint — the release probes it because nothing else would notice it missing until the cluster had been renamed aside |
+| `--take` refuses: the dump is missing, or its sha256 does not match | the release's dump was moved, truncated, or never finished | **re-run `--release`** — it is re-entrant and takes a fresh dump. Do not hand-edit the row |
+| `--take` fails: a table's row count does not match the release's | the restore did not land what the dump held — any difference, either direction, on any table | `tenant stop <t>` as the service account, `--abandon`, `restore.sh --tenant <t>`. The original cluster was never opened, so it comes back exact; read the job's per-table diff before taking again |
+| `--take` fails: "postgres did not become ready", quoting `data directory has wrong ownership` | postgres compares the data directory's `st_uid` against its own uid, not permissions — the ACL is irrelevant to it | the rename step did not run or did not finish, so postgres started on the RELEASING account's cluster. Read `handover.postgres_data` in the row and the `.err` path the failure names, then `tenant stop <t>`, `--abandon`, `restore.sh --tenant <t>` |
+| the job reports `stuck`, naming `data`, `data.pre-handover-<ts>` and `data.<account>-<ts>` | a crash between the two renames; the step will not guess which half happened | look at all three, then **re-run the take**: the external ids checkpointed before the FIRST rename let the job's reconcile finish the second. Do not rename them by hand |
 | `--commit` refuses: "nothing to commit" / "only a TAKEN handover" | the take has not run, or it has already been committed | `ragstack-ctl tenant show <t>`: no block means it is already the ctl's |
 | `--commit` refuses: "nothing is listening" | the tenant the take started is down | start it (`tenant start <t>`) and commit, or abandon the handover |
 | `--commit` refuses: "owned by X … running as Y" | the commit is the account that TOOK it | run it as that account |
 | `--abandon` refuses: "released by X … running as Y" | it is gated on `handover.released_by`, not on `owner` | run it as the account that released it |
 | `--abandon` refuses: "still running as the other account" | the take's processes are up | `/rag/bin/ctl-as-svc.sh tenant stop <t>` first |
 | `--abandon` refuses: "is not in the releasing account's own apptainer instance registry" | a store's port is held by your account but the instance is not one this account can stop by name | `apptainer instance list`; an abandon hands the tenant back as a hand-started one, so every leg has to be one |
+| `--abandon` refuses: `data.pre-handover-<ts>` is gone | the cluster the tenant ran on before the take was deleted — doctor's `rm -rf` repair, run before the commit | there is no way back to it: the abandon would hand `wilke` a cluster `wilke`'s postgres will not start. **Commit** the handover instead (the tenant is up and serving), or restore that postgres from a backup |
 | any `--direct` run refuses: "state directory … owned by" another account | `CTL_STATE_DIR` is the daemon's — and a wilke run there leaves sidecar files that break the daemon's job store | `export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest` and run it again |
-| `doctor` red on `job_engine_unavailable`; the daemon refuses every mutation | its job store could not be opened — usually foreign-owned `jobs.db-wal` / `jobs.db-shm` beside `/rag/data/ctl/jobs.db` | `curl -s localhost:<port>/health \| jq .engine`; fix the sidecars' modes (or remove them with the daemon stopped). The daemon retries the open in the background — each attempt logged — and serves mutations again as soon as it succeeds; no restart needed |
+| `doctor` **WARN** on `job_engine_unavailable`; the daemon refuses every mutation | the daemon's account cannot WRITE the job store or its sidecars — doctor checks exactly that, group bits included; usually foreign-owned `jobs.db-wal` / `jobs.db-shm` beside `/rag/data/ctl/jobs.db` | `curl -s localhost:<port>/health \| jq .engine`, then `chmod g+w` the store and its sidecars. **Never delete a `-wal`**: SQLite recovers a WAL into the database on the next open, and removing one from under a live connection loses committed transactions. The daemon retries the open in the background — each attempt logged — and serves mutations again as soon as it succeeds; no restart needed |
 | every op demands `--force-with-doctor-diff` | a warning this op actually depends on | read it: the refusal names the code. Warnings the op does NOT depend on are recorded on the job and never block |

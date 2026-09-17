@@ -684,46 +684,20 @@ type Files interface {
 	// fact the caller must see, not a thing to follow. An absent path is
 	// fs.ErrNotExist, as ReadFile's is.
 	Stat(ctx context.Context, path string) (FileStat, error)
-	// TreeSize is the total size in bytes of the regular files under dir, and
-	// how many entries (files plus directories) the tree holds.
+	// Sync flushes a path to the disk: fsync of a file, or of a directory,
+	// whichever the path names.
 	//
-	// It is the free-space question's other half: a copy of a tree needs room
-	// for the tree, and a precheck that guessed would be the difference
-	// between a take that refuses and a take that fills /rag for every other
-	// tenant on the host. Symlinks and special files count as entries and
-	// contribute no bytes — CopyTree refuses them, so a tree holding one fails
-	// at the copy, with a name, rather than silently coming up short.
-	TreeSize(ctx context.Context, dir string) (bytes int64, entries int, err error)
-	// CopyTree copies the tree at src to dst as THIS account, so that every
-	// file and directory in the copy is owned by the account that ran it. dst
-	// must not exist and must be under the approved roots; src is a read and
-	// is not root-checked.
+	// It exists because two things this control plane writes are not written
+	// by it. pg_dump creates the handover dump INSIDE the container and
+	// returns; the bytes are in the page cache and the name is in an unsynced
+	// directory, and a machine that dies there leaves a handover whose only
+	// copy of a tenant's database is a file that is not all there. The same
+	// goes for a rename: the entry is durable only once its directory is.
 	//
-	// That ownership is the whole point of the method, and it is why this is
-	// not ReadDir plus CopyFile in a loop: an account that cannot chown —
-	// nobody on this host can — can still make a copy it owns, and for a
-	// postgres data directory that copy is the only way the other account's
-	// server will ever start.
-	//
-	// Modes are preserved from the source. Every file is fsynced and so is
-	// every directory, because the next thing that happens to this copy is a
-	// rename into the place the original was: a copy that is not on the disk
-	// when the machine dies is a tenant whose data directory is a half-written
-	// tree with the original already renamed aside.
-	//
-	// It refuses symlinks, device nodes and anything that is not a regular
-	// file or a directory, and it refuses a src that is not a directory. It
-	// answers the bytes and the entries it wrote, so a caller states what it
-	// did rather than what it intended.
-	CopyTree(ctx context.Context, src, dst string) (bytes int64, entries int, err error)
-	// SelfUID is the uid this driver creates files as — the account the ctl is
-	// running as, asked of the same seam that answers Stat.
-	//
-	// It is here rather than read from the process because the two answers
-	// have to come from ONE place: a step that compared a path's owner (a
-	// driver answer) against os.Geteuid() (a process answer) would be right on
-	// the host and meaningless against a fixture, and the fixture is where
-	// every test of the ownership migration runs.
+	// A directory sync makes the NAMES in it durable; a file sync makes its
+	// contents durable. A caller that needs both says both, which is what the
+	// dump step does.
+	Sync(ctx context.Context, path string) error
 	SelfUID(ctx context.Context) (int, error)
 }
 
@@ -955,6 +929,49 @@ type Postgres interface {
 	// bundle's dump belongs to whichever role wrote it, and a restore --as
 	// creates a tenant with a different one.
 	Restore(ctx context.Context, spec PostgresSpec, in string) error
+	// Census is the database's LOGICAL content: its size on disk, and the
+	// exact row count of every ordinary table in it.
+	//
+	// It is what makes a handover's postgres migration provable. That
+	// migration is a dump and a restore into a cluster the other account
+	// initialised — the only kind of copy that works, because a POSIX ACL's
+	// named-user entry is filtered by the mask, the mask IS the group mode
+	// bits, and a PGDATA postgres accepts has none (so no ACL can let another
+	// account read one byte of it). A dump and a restore is therefore not
+	// comparable byte for byte; the only honest proof that it moved everything
+	// is that every table came back with the same number of rows.
+	//
+	// The counts are EXACT (`count(*)` per table), not `n_live_tup`: that
+	// column is an estimate maintained by the statistics collector, it is
+	// reset by the restore, and a proof built on an estimate proves nothing.
+	// The cost is one sequential scan per table at the two quietest moments a
+	// handover has — the API is already stopped.
+	//
+	// SizeBytes is `pg_database_size`, which the release reports before it
+	// dumps: it is the free-space question's input, and an upper bound on the
+	// compressed dump.
+	Census(ctx context.Context, spec PostgresSpec) (PostgresCensus, error)
+	// ToolVersions proves the IMAGE can perform a handover's postgres
+	// migration, by asking each tool the migration needs for its version:
+	// pg_dump (the release), pg_restore and initdb (the take).
+	//
+	// initdb is the one that could not be discovered any other way. The ctl
+	// never runs it — the image's entrypoint does, when it finds an empty
+	// PGDATA — so the first moment an absent or broken initdb would show up is
+	// a take that has already renamed the tenant's cluster aside. Asking the
+	// image while the tenant is still serving costs one `apptainer exec`.
+	ToolVersions(ctx context.Context, spec PostgresSpec) (map[string]string, error)
+}
+
+// PostgresCensus is Postgres.Census's answer: what the database holds, in the
+// only terms that survive a dump and a restore.
+type PostgresCensus struct {
+	// SizeBytes is pg_database_size(<DB>).
+	SizeBytes int64
+	// Tables maps "<schema>.<table>" to its exact row count. An empty database
+	// is an empty map and no error — a tenant that has never been written to
+	// is a normal tenant, and a handover must not refuse over one.
+	Tables map[string]int64
 }
 
 // SQLite backs the ctl's own state files and the tenant's.

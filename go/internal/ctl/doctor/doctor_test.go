@@ -1719,31 +1719,39 @@ func TestNoPreHandoverCopyIsNoFinding(t *testing.T) {
 // The check compares OWNERS rather than trying to open the database: doctor
 // often runs as an operator who is not the daemon's account at all, and "can I
 // write it" would then answer a question nobody asked.
-func TestAForeignJobStoreIsRed(t *testing.T) {
+func TestAJobStoreTheDaemonCannotWriteIsAWarning(t *testing.T) {
 	w := newWorld(t)
 	store := filepath.Join(w.roots.CtlStateDir, "jobs.db")
 	if err := os.MkdirAll(w.roots.CtlStateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	write(t, store, "sqlite")
+	if err := os.Chmod(store, 0o600); err != nil { // owner-only: nobody else can write it
+		t.Fatal(err)
+	}
 	w.opts.CtlUser = DefaultCtlUser
 
 	// The store belongs to whoever ran this test, so a daemon account that IS
 	// this process owns its own store and there is nothing to say.
-	w.opts.CtlUID = os.Geteuid()
+	w.opts.CtlUID, w.opts.CtlGID = os.Geteuid(), os.Getegid()
 	if found := findingsForCode(w.run(t), JobEngineUnavailable); len(found) != 0 {
 		t.Fatalf("a store owned by the daemon's own account raised %+v", found)
 	}
 
-	// …and a daemon account that is anybody else cannot write it.
-	w.opts.CtlUID = os.Geteuid() + 1
+	// …and a daemon account that is anybody else, in another group, cannot
+	// write a 0600 file.
+	w.opts.CtlUID, w.opts.CtlGID = os.Geteuid()+1, os.Getegid()+1
 	found := findingsForCode(w.run(t), JobEngineUnavailable)
 	if len(found) != 1 {
 		t.Fatalf("got %d %s findings, want exactly 1: %+v", len(found), JobEngineUnavailable, found)
 	}
 	f := found[0]
-	if f.Level != model.LevelError {
-		t.Errorf("level = %s, want error: every mutation on this daemon is refused", f.Level)
+	// WARN, not error. An error makes the whole run red, and a red run refuses
+	// every mutation unforceably — over a fact about a file, on a deployment
+	// whose daemon may be running perfectly. The daemon's own verdict is on
+	// GET /health, and that is the one that knows.
+	if f.Level != model.LevelWarn {
+		t.Errorf("level = %s, want warn: a red run refuses every op and no op can repair this", f.Level)
 	}
 	if f.Tenant != "" {
 		t.Errorf("tenant = %q; the job store is a host fact, not a tenant's", f.Tenant)
@@ -1751,16 +1759,44 @@ func TestAForeignJobStoreIsRed(t *testing.T) {
 	if !strings.Contains(f.Detail, store) {
 		t.Errorf("the finding does not name the store: %q", f.Detail)
 	}
-	// The SIDECARS are the mechanism and the reason the finding is not
-	// obvious: an operator looking at a jobs.db they can read has no reason to
-	// suspect the two files beside it.
-	if !strings.Contains(f.Repair, "jobs.db-wal") || !strings.Contains(f.Repair, "jobs.db-shm") {
-		t.Errorf("the repair does not name the sidecars to remove: %q", f.Repair)
+	if !strings.Contains(f.Detail, "health") {
+		t.Errorf("the finding does not point at the daemon's own answer: %q", f.Detail)
 	}
-	// And the repair must not say "restart the daemon": it retries the store
-	// in the background and recovers on its own.
-	if !strings.Contains(f.Repair, "background") {
-		t.Errorf("the repair does not say the daemon recovers by itself: %q", f.Repair)
+	// The repair is a chmod, and it says in as many words not to delete a WAL:
+	// SQLite recovers one into the database on the next open, and removing it
+	// from under a live connection loses committed transactions.
+	if !strings.Contains(f.Repair, "chmod g+w") {
+		t.Errorf("the repair is not a chmod: %q", f.Repair)
+	}
+	if strings.Contains(f.Repair, "rm -f") || strings.Contains(f.Repair, "rm ") {
+		t.Errorf("the repair tells an operator to delete a live WAL: %q", f.Repair)
+	}
+	if !strings.Contains(f.Repair, "NEVER delete a -wal") {
+		t.Errorf("the repair does not warn against deleting the WAL: %q", f.Repair)
+	}
+}
+
+// The group-writable case, which is the state coconut is actually in: the
+// sidecars a human repaired on 2026-09-17 are still wilke's, still 0664, and
+// the daemon — whose primary group is cels — writes them perfectly.
+func TestAGroupWritableForeignStoreIsNoFinding(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(w.roots.CtlStateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(w.roots.CtlStateDir, "jobs.db")
+	for _, p := range []string{store, store + "-wal", store + "-shm"} {
+		write(t, p, "x")
+		if err := os.Chmod(p, 0o664); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.opts.CtlUser = DefaultCtlUser
+	// Another account, in THIS process's group: the daemon and the files share
+	// `cels` on the real host.
+	w.opts.CtlUID, w.opts.CtlGID = os.Geteuid()+1, os.Getegid()
+	if found := findingsForCode(w.run(t), JobEngineUnavailable); len(found) != 0 {
+		t.Errorf("a store the daemon can WRITE was reported at %s: %s", found[0].Level, found[0].Detail)
 	}
 }
 

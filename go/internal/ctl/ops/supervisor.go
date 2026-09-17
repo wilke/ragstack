@@ -438,7 +438,16 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 			// The instance NAME is the external ID, recorded before the call
 			// that creates it: a crash between the two leaves a record
 			// reconcile can act on.
-			if err := sc.Checkpoint("instance:" + name); err != nil {
+			//
+			// …and, beside it, HOW LONG the instance's stderr log already is.
+			// apptainer APPENDS to that file for the life of the host, so it
+			// holds every previous run of this instance — including the ones
+			// that failed. A later step that quoted its tail would quote a line
+			// from a run that is not this one, which is worse than quoting
+			// nothing: it would report yesterday's "wrong ownership" about a
+			// postgres that died of something else today. The offset is what
+			// makes the quote honest (instanceGoneReason).
+			if err := sc.Checkpoint("instance:"+name, errLogMark(ctx, sc, name)); err != nil {
 				return "", err
 			}
 			if err := sc.Ops.Drivers.Instances().Run(ctx, spec); err != nil {
@@ -1123,12 +1132,79 @@ func instanceGoneReason(ctx context.Context, sc *jobs.StepContext, instance stri
 		return fmt.Sprintf("the instance %s is not running and this account cannot say where apptainer put its log",
 			instance), true, nil
 	}
+	offset, marked := errLogOffset(sc, errLog)
+	if !marked {
+		// No mark means no step in THIS job started this instance, so every
+		// byte in that file belongs to an earlier run. Naming the file is
+		// honest; quoting it would not be.
+		return fmt.Sprintf("the instance %s is not running; its log is %s, and nothing in this job recorded where "+
+			"this attempt's output starts, so none of it is quoted here", instance, errLog), true, nil
+	}
 	body, rerr := sc.Ops.Drivers.Files().ReadFile(ctx, errLog)
 	if rerr != nil {
 		return fmt.Sprintf("the instance %s is not running; its log %s could not be read (%v)",
 			instance, errLog, rerr), true, nil
 	}
-	return fmt.Sprintf("the instance %s exited; %s says: %s", instance, errLog, logTail(body)), true, nil
+	if offset > int64(len(body)) {
+		// The file is SHORTER than when this job started the instance:
+		// something truncated or replaced it, and what is in it now is not
+		// this attempt's output.
+		return fmt.Sprintf("the instance %s exited; %s was truncated since this job started it, so none of what "+
+			"is in it now is this attempt's output", instance, errLog), true, nil
+	}
+	tail := logTail(body[offset:])
+	if tail == "" {
+		return fmt.Sprintf("the instance %s exited without writing anything to %s", instance, errLog), true, nil
+	}
+	return fmt.Sprintf("the instance %s exited; %s says: %s", instance, errLog, tail), true, nil
+}
+
+// errLogMark is the external id that records how long an instance's stderr log
+// is BEFORE this job starts it: `errlog:<path>@<bytes>`.
+//
+// A log that cannot be measured is recorded as a bare `errlog:`, which reads as
+// "unmarked" later: a step must not fail to START a store because it could not
+// stat a log file.
+func errLogMark(ctx context.Context, sc *jobs.StepContext, instance string) string {
+	_, errLog, err := sc.Ops.Drivers.Instances().LogPaths(ctx, instance, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
+	if err != nil || errLog == "" {
+		return "errlog:"
+	}
+	size := int64(0)
+	if st, serr := sc.Ops.Drivers.Files().Stat(ctx, errLog); serr == nil {
+		size = st.Size
+	} else if !errors.Is(serr, fs.ErrNotExist) {
+		return "errlog:"
+	}
+	return "errlog:" + errLog + "@" + strconv.FormatInt(size, 10)
+}
+
+// errLogOffset finds the mark THIS JOB recorded for this log.
+//
+// It looks across the whole job rather than at one step, because the step that
+// started the instance and the step that discovers it is gone are two different
+// steps (the store start, and the readiness wait inside the API start or the
+// postgres restore). sc.Job.Steps is how a run half reads back a checkpoint
+// another step wrote — the same way the bundle id is read.
+func errLogOffset(sc *jobs.StepContext, errLog string) (int64, bool) {
+	if sc.Job == nil {
+		return 0, false
+	}
+	want := "errlog:" + errLog + "@"
+	for _, st := range sc.Job.Steps {
+		for _, id := range st.ExternalIDs {
+			rest, ok := strings.CutPrefix(id, want)
+			if !ok {
+				continue
+			}
+			n, err := strconv.ParseInt(rest, 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // logTailLines and logTailBytes bound what a failure message quotes. A store's
@@ -1140,9 +1216,14 @@ const (
 )
 
 // logTail is the last few lines of a log, joined with " / " so that the whole
-// thing is one line of a job error — and with the OWNERSHIP line hoisted to the
-// front when there is one, because that is the sentence the reader needs and
-// postgres prints it several lines before it stops.
+// thing is one line of a job error.
+//
+// It does NOT reorder them. An earlier version hoisted any line containing
+// "wrong ownership" to the front, on the theory that postgres prints it before
+// two lines of consequence — which is true, and which would also hoist a line
+// from a PREVIOUS run of the same instance into the report of this one. The
+// caller slices the log at the offset this job recorded before it started the
+// instance; inside that slice the order is postgres's own.
 func logTail(body []byte) string {
 	if len(body) > logTailBytes {
 		body = body[len(body)-logTailBytes:]
@@ -1155,18 +1236,6 @@ func logTail(body []byte) string {
 	}
 	if len(lines) > logTailLines {
 		lines = lines[len(lines)-logTailLines:]
-	}
-	// The one phrase this whole path exists for. postgres prints it as a FATAL
-	// and then prints a HINT and an exit line after it, so a plain tail buries
-	// the cause under two lines of consequence.
-	for i, l := range lines {
-		if strings.Contains(strings.ToLower(l), "wrong ownership") && i != 0 {
-			lines = append([]string{l}, append(lines[:i:i], lines[i+1:]...)...)
-			break
-		}
-	}
-	if len(lines) == 0 {
-		return "(the log is empty)"
 	}
 	return strings.Join(lines, " / ")
 }
