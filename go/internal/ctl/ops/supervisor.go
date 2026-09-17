@@ -600,6 +600,7 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 	worktree, port := p.t.Worktree, c.Port
 	tenantEnv, secretsEnv := tp.TenantEnv, tp.SecretsEnv
 	ownStores := ownStoreProbes(p.t, tp)
+	sharedStores := sharedStoreProbes(p.t)
 
 	p.addFor("proc", step{
 		Kind: "proc", Title: fmt.Sprintf("start the API detached once its stores answer (pidfile %s)", filepath.Base(pidfile)),
@@ -627,8 +628,21 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 			// while Elasticsearch is still opening its segments dies on a
 			// connection timeout — coconut's first instance-mode selftest
 			// did, fifteen seconds after the spawn.
-			if err := awaitOwnStores(ctx, sc, ownStores); err != nil {
+			if err := awaitStores(ctx, sc, ownStores, createReadyTimeout); err != nil {
 				return "", err
+			}
+			// Then the stores this tenant does NOT own. The ctl did not start
+			// them and never will — they belong to the other account — but it
+			// has to WAIT for them, because at boot the two accounts run
+			// independently: wilke's restore.sh brings the shared qdrant and
+			// elasticsearch up, svcbvbrc's @reboot crontab line runs `fleet
+			// start --all`, and nothing orders the two. Without this wait the
+			// API of a shared-store tenant is spawned first, cannot reach a
+			// store that is half a minute away, and dies — the reboot in which
+			// three tenants came back and one did not.
+			if err := awaitStores(ctx, sc, sharedStores, sharedStoreWait); err != nil {
+				return "", fmt.Errorf("%w (the ctl does not start this store: it belongs to another account, and "+
+					"this wait is all it can do)", err)
 			}
 			env, err := apiEnviron(ctx, sc, tenantEnv, secretsEnv, unitEnv)
 			if err != nil {
@@ -979,11 +993,36 @@ func ownStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 	return out
 }
 
-// awaitOwnStores polls every probe until it answers or createReadyTimeout
-// passes. Wall clock and a real sleep, for the reason create's readiness gate
-// gives: this is a run half waiting for a process to open its files.
-func awaitOwnStores(ctx context.Context, sc *jobs.StepContext, probes []storeProbe) error {
-	deadline := time.Now().Add(createReadyTimeout)
+// sharedStoreProbes are the stores this tenant uses and does NOT own: a shared
+// qdrant, a shared elasticsearch, a postgres in somebody else's server.
+//
+// The ctl never starts or stops one — `capabilities.stop` is false for them by
+// construction, and `legs` reports them unmanaged — but a tenant cannot serve
+// without them, so the one thing it CAN do is wait. That is the difference
+// between this list and ownStoreProbes: the same probe, a longer bound, and no
+// claim of ownership anywhere.
+func sharedStoreProbes(t *registry.Tenant) []storeProbe {
+	var out []storeProbe
+	if q := t.Stores.Qdrant; q.Ownership != registry.OwnershipExclusive && q.URL != "" {
+		url := q.URL
+		out = append(out, storeProbe{"the shared qdrant at " + url, func(c context.Context, sc *jobs.StepContext) error {
+			return sc.Ops.Drivers.Qdrant().Ready(c, url)
+		}})
+	}
+	if e := t.Stores.Elasticsearch; e.Ownership != registry.OwnershipExclusive && e.URL != "" {
+		url := e.URL
+		out = append(out, storeProbe{"the shared elasticsearch at " + url, func(c context.Context, sc *jobs.StepContext) error {
+			return sc.Ops.Drivers.Elasticsearch().Ready(c, url)
+		}})
+	}
+	return out
+}
+
+// awaitStores polls every probe until it answers or the bound passes. Wall
+// clock and a real sleep, for the reason create's readiness gate gives: this
+// is a run half waiting for a process to open its files.
+func awaitStores(ctx context.Context, sc *jobs.StepContext, probes []storeProbe, bound time.Duration) error {
+	deadline := time.Now().Add(bound)
 	for _, pr := range probes {
 		for {
 			err := pr.probe(ctx, sc)
@@ -992,7 +1031,7 @@ func awaitOwnStores(ctx context.Context, sc *jobs.StepContext, probes []storePro
 				break
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("%s did not become ready within %s: %w", pr.what, createReadyTimeout, err)
+				return fmt.Errorf("%s did not become ready within %s: %w", pr.what, bound, err)
 			}
 			select {
 			case <-ctx.Done():

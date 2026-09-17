@@ -164,6 +164,11 @@ func NewRegistry(d Deps) jobs.Registry {
 	add("env-set", false, planEnvSet)
 	add("env-unset", true, planEnvUnset)
 	add("env-normalize", false, planEnvNormalize)
+	// env-pg-password is CLI-only: it rewrites secrets.env, which is 0640 and
+	// owned by the tenant's own account (the daemon has READ access through an
+	// ACL and nothing more), and it is a preparation op for a tenant the
+	// daemon cannot supervise yet.
+	add("env-pg-password", false, planEnvPGPassword)
 	add("render-units", false, planRenderUnits)
 	add("update-code", true, planUpdateCode)
 	add("create", false, planCreate)
@@ -186,6 +191,10 @@ func NewRegistry(d Deps) jobs.Registry {
 	// registry field and touches no process.
 	add("set-ui-mode", true, planSetUIMode)
 	add("set-bind", false, planSetBind)
+	// set-supervisor writes ONE registry field and touches no process, so it
+	// is not destructive; what it can do wrong is claim a supervisor this
+	// account cannot act as, which its own precondition refuses.
+	add("set-supervisor", false, planSetSupervisor)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)

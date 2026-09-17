@@ -233,6 +233,12 @@ func parseOpArgs(t *testing.T, blockKey string) map[string]contractSpec {
 		if indent == 0 {
 			break // the next top-level key
 		}
+		// A comment INSIDE the block. The prose that explains a whole verb
+		// does not fit on the one flow-mapping line this parser demands, and
+		// an entry with no properties has nowhere else to put it.
+		if strings.HasPrefix(strings.TrimSpace(raw), "#") {
+			continue
+		}
 		line := strings.TrimSpace(raw)
 		switch indent {
 		case 2:

@@ -10,7 +10,6 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
-	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
 // requireExecutePhase is the shared answer to `--phase commit` and
@@ -33,113 +32,10 @@ func (p *planner) requireExecutePhase(args map[string]any, verb string) error {
 }
 
 // ---------------------------------------------------------------- handover
-
-func planHandover(_ context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockRegistry, model.LockManifest, model.LockTenant, model.LockGateway)
-	if err := p.requireExecutePhase(args, "handover"); err != nil {
-		return err
-	}
-	t := p.t
-	if t.Owner == p.op.deps.owner() && managedSupervisor(t.Supervisor) {
-		// The account is the PROCESS's (Deps.Owner), not a constant: a --direct
-		// run as wilke owns what it created, and a refusal naming svcbvbrc
-		// would send an operator looking for units under an account that has
-		// none of them.
-		return p.refuse("%s is already owned by %s and supervised by %s; there is nothing to hand over",
-			t.Name, p.op.deps.owner(), t.Supervisor)
-	}
-	if err := p.requireFencedBackup("handover"); err != nil {
-		return err
-	}
-	if t.RollbackDescriptor == nil {
-		return p.refuse("%s has no rollback_descriptor: the pre-handover paths, ports, code and launch arguments were "+
-			"never captured, so there would be no way back. Run `adopt --commit` first", t.Name)
-	}
-	// The units are rendered HERE, at plan time, because their refusals are
-	// about the registry row (a non-loopback bind on an internet-reachable
-	// host, a data dir off the layout) and an operator has to see them before
-	// the tenant is stopped, not after.
-	cfg := render.UnitConfig{RagRoot: p.oc.Roots.RagRoot, CtlStateDir: p.oc.Roots.CtlStateDir}
-	units, err := render.Units(t, cfg)
-	if err != nil {
-		return p.refuse("%s cannot be handed over as it is recorded: %v", t.Name, err)
-	}
-
-	p.addGatewayReadonly(true)
-	p.addSourceStop()
-	p.addUnitsWrite(units)
-	p.add(step{
-		Kind: "fs", Title: "fix group ownership and modes of the tenant tree for svcbvbrc",
-		Targets: []string{t.DataDir}, Run: p.pendingRun("files", "Chown"),
-	})
-	p.add(step{
-		Kind: "git", Title: "check the worktree out from the artifact at the same SHA",
-		Targets: []string{t.Worktree, string(t.Code.SHA)}, Run: p.pendingRun("git", "Worktree"),
-	})
-	p.addFor("systemd", step{
-		Kind: "systemd", Title: "systemctl --user daemon-reload",
-		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "daemon-reload", sc.Ops.Drivers.Systemd().DaemonReload(ctx)
-		},
-	})
-	// A handover always lands on UNITS: it is the operation that gives a
-	// hand-started tenant the supervision `instance` mode does not need units
-	// for, and switching an existing row between the two supervisors is
-	// `tenant set-supervisor`, which is PR-E.
-	legs, _ := p.legs(nil)
-	for _, c := range legs {
-		if c.Managed {
-			p.addUnitStep("start", c)
-		}
-	}
-	p.addReadyStep(legs)
-	origin := fmt.Sprintf("http://127.0.0.1:%d", t.Ports.API)
-	p.addFor("tenantapi", step{
-		Kind: "probe", Title: "post-checks against the destination API", Targets: []string{origin},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "health ok", sc.Ops.Drivers.TenantAPI().Health(ctx, origin)
-		},
-	})
-	// The publish is the last reversible act, so it is the cutover: after it
-	// the job WAITS for an explicit `continue`, and until then `cancel` puts
-	// the tenant back where it came from.
-	p.add(step{
-		Kind: "nginx", Title: "publish the gateway generation for the handed-over tenant",
-		Targets: []string{t.Name}, Cutover: true,
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			if err := sc.Checkpoint("gateway:apply:pending"); err != nil {
-				return "", err
-			}
-			gen, detail, err := sc.Ops.Drivers.Gateway().Apply(ctx, false)
-			if err != nil {
-				return "", err
-			}
-			if err := sc.Reserve("gateway:gen:"+strconv.Itoa(gen), nil); err != nil {
-				return "", err
-			}
-			return detail, sc.Checkpoint("gateway:gen:" + strconv.Itoa(gen))
-		},
-		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			to := t.RollbackDescriptor.GatewayGeneration
-			return sc.Ops.Drivers.Gateway().Rollback(ctx, int(to))
-		},
-	})
-	p.add(step{
-		Kind: "registry", Title: "commit: release the writes and record owner=svcbvbrc",
-		Targets: []string{t.Name},
-		Warnings: []string{"until this step the job is reversible; after it the source is never restarted, and a " +
-			"return means a resync or an accepted recovery point"},
-		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
-			sc.Logf("owner=svcbvbrc, supervisor=systemd, state=active recorded for %s", t.Name)
-			return "committed", nil
-		},
-	})
-	p.result["owner"] = "svcbvbrc"
-	p.result["supervisor"] = supervisorSystemd
-	p.warn("the shared stores and neo4j-dev stay wilke-run: a handover moves the TENANT, not the host's shared services")
-	return nil
-}
+//
+// planHandover and its four phases live in ops/handover.go: it is a
+// two-account protocol rather than one job, and it is long enough that
+// sharing a file with `migrate-local` hid both.
 
 // addSourceStop stops the hand-started processes of the source owner through
 // the pidfile, after proving the pid is this tenant's.

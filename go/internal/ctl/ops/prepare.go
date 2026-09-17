@@ -38,6 +38,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
 // stagingDist is where `vite build` writes before the swap. A FIXED name
@@ -595,4 +596,141 @@ func orNone(s string) string {
 		return "(unrecorded)"
 	}
 	return s
+}
+
+// ---------------------------------------------------------------- set-supervisor
+
+// planSetSupervisor corrects the registry's `supervisor` and touches nothing
+// else.
+//
+// It exists for the row that disagrees with the host: a take that wrote
+// `instance` and then failed before it started anything, an abandon that could
+// not be run because the operator had already gone home, a tenant somebody
+// restarted by hand under a row the ctl still thinks it owns. The repair for
+// those is one field, and before this op the only way to write it was an
+// editor and a lock file.
+//
+// What it refuses is the mistake it would otherwise make permanent: recording
+// a supervisor for processes THIS account cannot act on. `instance` means "the
+// ctl starts and stops this tenant", and an API port held by a pid this
+// account cannot even attribute is an API the ctl can neither signal nor
+// restart — a row that claimed otherwise would make `fleet stop --all` a
+// no-op that reports success. `manual` means "somebody else started it", and
+// writing that while this account's own apptainer instances are running for
+// the tenant would orphan them: nothing would ever stop them again.
+func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error {
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
+	want := argStringOf(args, "supervisor")
+	prev := p.t.Supervisor
+	if p.t.Handover != nil {
+		return p.refuse("%s has a handover in flight (phase %s): its supervisor is being moved by that protocol, "+
+			"and a row edited underneath it would strand the tenant between two accounts. Take it, commit it, or "+
+			"abandon it first (`ragstack-ctl tenant handover %s --abandon`)", p.t.Name, p.t.Handover.Phase, p.t.Name)
+	}
+	if prev == want {
+		p.warn("supervisor is already `" + want + "`: this op writes the registry anyway, so the job record says " +
+			"when the value was last confirmed")
+	}
+
+	name := p.tenant
+	port := p.t.Ports.API
+	instances := tenantInstanceNames(p.t)
+	p.addFor("proc", step{
+		Kind: "probe", Title: "check that this account can act on what the row will claim",
+		Targets: []string{strconv.Itoa(port)},
+		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			proc := sc.Ops.Drivers.Proc()
+			listening, err := proc.Listening(ctx, port)
+			if err != nil {
+				return "", err
+			}
+			pid := 0
+			if listening {
+				if pid, _, err = proc.Owner(ctx, port); err != nil {
+					return "", err
+				}
+			}
+			if want == supervisorInstance && listening && pid == 0 {
+				return "", fmt.Errorf("%w: %d is held by a process this account cannot attribute, so it belongs to "+
+					"another account. Recording `instance` would claim the ctl supervises an API it can neither "+
+					"signal nor restart — hand the tenant over instead (`ragstack-ctl tenant handover %s "+
+					"--release`, as its owner)", jobs.ErrRefused, port, name)
+			}
+			if want == supervisorManual {
+				var running []string
+				for _, in := range instances {
+					up, err := instanceRunning(ctx, sc, in)
+					if err != nil {
+						return "", err
+					}
+					if up {
+						running = append(running, in)
+					}
+				}
+				if len(running) > 0 {
+					return "", fmt.Errorf("%w: this account is running %s for %s. Recording `manual` would say "+
+						"somebody else started them, and nothing would ever stop them again: "+
+						"`ragstack-ctl tenant stop %s` first", jobs.ErrRefused, strings.Join(running, ", "),
+						name, name)
+				}
+			}
+			if !listening {
+				return fmt.Sprintf("nothing listens on %d", port), nil
+			}
+			return fmt.Sprintf("pid %d holds %d and this account can see it", pid, port), nil
+		},
+	})
+
+	p.add(step{
+		Kind: "registry", Title: fmt.Sprintf("record supervisor = %s (was %s)", want, orNone(prev)),
+		Targets:    []string{name},
+		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
+		Warnings: []string{"the REGISTRY only: no process is started, stopped or signalled by this op. It says " +
+			"what the ctl believes about this tenant, and believing it is what makes the lifecycle verbs act"},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			err := p.saveTenant(sc, "set-supervisor", func(t *registry.Tenant) error {
+				t.Supervisor = want
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s supervisor = %s", name, want), nil
+		},
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			if err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
+				t.Supervisor = prev
+				return nil
+			}); err != nil {
+				return "", err
+			}
+			return name + " supervisor = " + prev + " again", nil
+		},
+	})
+	p.result["supervisor"] = want
+	p.result["previous_supervisor"] = prev
+	if want == supervisorManual {
+		p.warn("`manual` means the ctl will not START this tenant: `ragstack-ctl tenant start " + name +
+			"` refuses, and `ops/coconut/restore.sh --tenant " + name + "` is what brings it up")
+	} else {
+		p.warn("`instance` means `ragstack-ctl fleet start --all` will start this tenant at boot when " +
+			"desired_boot is `enabled`; it is `" + p.t.DesiredBoot + "` today")
+	}
+	return nil
+}
+
+// tenantInstanceNames are the apptainer instances this tenant's own stores run
+// under, in the order they are started.
+func tenantInstanceNames(t *registry.Tenant) []string {
+	var out []string
+	if t.Stores.Qdrant.Ownership == registry.OwnershipExclusive {
+		out = append(out, instanceNameFor(render.LegQdrant, t.ManifestName))
+	}
+	if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive {
+		out = append(out, instanceNameFor(render.LegES, t.ManifestName))
+	}
+	if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
+		out = append(out, instanceNameFor(render.LegPostgres, t.ManifestName))
+	}
+	return out
 }
