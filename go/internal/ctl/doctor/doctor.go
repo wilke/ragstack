@@ -61,6 +61,17 @@ type Options struct {
 	Tenant string
 	// Op scopes the run to one operation's preconditions.
 	Op string
+	// Destination is the supervisor a `handover` would move the tenant ONTO:
+	// `instance` or `systemd`. It selects which of handover's two precondition
+	// lists applies — the systemd one demands a user manager that will exist at
+	// boot (linger, the root drop-in, a runtime dir), the instance one demands
+	// the service account's @reboot line and its ACL access instead.
+	//
+	// Empty means doctor.DefaultHandoverDestination, which on this deployment
+	// is `instance`: PR-D2 postponed systemd until the machine is dedicated, so
+	// gating a handover on three facts no host here has would refuse every
+	// handover this control plane can perform. Every other op ignores it.
+	Destination string
 
 	Host         hostfacts.Host
 	Now          func() time.Time
@@ -129,7 +140,7 @@ func Run(ctx context.Context, roots paths.Roots, fleet *registry.Fleet, opts Opt
 		d.tenantChecks(ctx, t)
 	}
 
-	findings := applyPreconditions(d.findings, d.opts.Op, d.instanceTenants())
+	findings := applyPreconditions(d.findings, d.opts.Op, d.opts.Destination, d.instanceTenants())
 	sortFindings(findings)
 	return &model.DoctorResponse{
 		Status:      model.StatusFor(findings),
@@ -396,10 +407,8 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 //     clears it.
 func (d *run) capabilityChecks(t *registry.Tenant) {
 	var unconfirmed []string
-	confirmed := 0
 	for _, leg := range exclusiveLegs(t) {
 		if leg.caps.Stop {
-			confirmed++
 			continue
 		}
 		unconfirmed = append(unconfirmed, leg.name)
@@ -417,7 +426,6 @@ func (d *run) capabilityChecks(t *registry.Tenant) {
 			strings.Join(unconfirmed, ", "), plural(len(unconfirmed), "it", "them"), t.Name,
 			strings.Join(unconfirmed, ",")))
 	}
-	_ = confirmed
 }
 
 // exclusiveLeg is one store leg of a tenant, for the two questions this file

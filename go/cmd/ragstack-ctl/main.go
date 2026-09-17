@@ -700,6 +700,11 @@ type adoptSpec struct {
 	// (adopt.ConfirmableLegs). Empty leaves every capability false, which is
 	// what adoption has always done.
 	ConfirmStores []string `json:"confirm_stores,omitempty"`
+	// APIBind, when set, REPLACES the recorded api.bind on a --readopt.
+	// Absent, the recorded one is kept: `tenant set-bind` takes effect at the
+	// tenant's next restart, so between the two the live process still shows
+	// the old bind and re-deriving it would write the decision away.
+	APIBind string `json:"api_bind,omitempty"`
 }
 
 // validateSpecs judges the arguments that can be judged without reading the
@@ -720,6 +725,9 @@ func validateSpecs(specs []adoptSpec) error {
 			if err := adopt.ValidateLegs(s.ConfirmStores); err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
+		}
+		if b := s.APIBind; b != "" && b != "127.0.0.1" && b != "0.0.0.0" {
+			return fmt.Errorf("%s: --api-bind %q is not 127.0.0.1 or 0.0.0.0", name, b)
 		}
 	}
 	return nil
@@ -763,6 +771,9 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	fs.Var(&confirmStores, "confirm-stores",
 		"re-verify these EXCLUSIVE store legs from /proc and set capabilities.{stop,snapshot,restore} on them: "+
 			"qdrant, elasticsearch, postgres (repeatable or a comma list)")
+	apiBind := fs.String("api-bind", "",
+		"replace the recorded api.bind on a --readopt (127.0.0.1|0.0.0.0). Absent: the recorded one is KEPT, "+
+			"because `tenant set-bind` takes effect at the next restart")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 
@@ -782,7 +793,7 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return exitUsage
 	}
 	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName,
-		UIPort: *uiPort, UIMode: *uiMode, ConfirmStores: []string(confirmStores)}
+		UIPort: *uiPort, UIMode: *uiMode, ConfirmStores: []string(confirmStores), APIBind: *apiBind}
 	if err := validateSpecs([]adoptSpec{spec}); err != nil {
 		fmt.Fprintf(stderr, "adopt: %v\n", err)
 		return exitUsage
@@ -890,6 +901,14 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 		if err != nil {
 			return fail(fmt.Errorf("adopt %s: %w", s.Name, err))
 		}
+		// An explicit bind REPLACES the observed one on the preview row, so
+		// `--preview` shows what `--commit` would write. Without the flag the
+		// observed value stands here and carryOver puts the recorded one back
+		// at commit time (with a drift row), which is the only place that
+		// knows what the row said before.
+		if spec := s.APIBind; spec != "" {
+			t.API.Bind = spec
+		}
 		// The confirmation runs against the PREVIEW row, before it is printed
 		// or committed, so `--preview` shows exactly the capabilities
 		// `--commit` would write — the invariant the whole adopt flow rests on.
@@ -945,12 +964,38 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	if err := adopt.CommitAll(registryPath, rows, adopt.CommitOptions{
 		Roots: roots, UpdatedBy: fmt.Sprintf("local:%d", os.Getuid()),
 		RepairProjection: repairProjection, Readopt: readopt,
+		// What this invocation is DECIDING, as opposed to re-deriving. A field
+		// nobody named is carried over from the existing row on a --readopt,
+		// so an A5 re-adoption cannot revert what A2 and A4 wrote.
+		Overrides: overridesOf(specs),
 	}); err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
 		return exitRefused
 	}
 	fmt.Fprintf(stdout, "\ncommitted %d tenant(s) to %s (+ manifest.tsv beside it)\n", len(rows), registryPath)
 	return exitOK
+}
+
+// overridesOf is what the batch decided explicitly.
+//
+// Batch-wide rather than per-row because CommitAll writes one generation from
+// one set of options; every verb that can name these flags (`adopt`,
+// `adopt-all`) applies them to the whole batch, so a per-row distinction would
+// be a shape no caller can produce.
+func overridesOf(specs []adoptSpec) adopt.Overrides {
+	var o adopt.Overrides
+	for _, s := range specs {
+		if s.UIMode != "" || s.UIPort != 0 {
+			o.UI = true
+		}
+		if s.APIBind != "" {
+			o.Bind = true
+		}
+		// Per leg, not per call: a confirmation names the legs it verified, and
+		// a leg nobody named keeps whatever the row already said about it.
+		o.ConfirmedLegs = append(o.ConfirmedLegs, s.ConfirmStores...)
+	}
+	return o
 }
 
 // wantsConfirmation reports whether any spec asked for a store confirmation.

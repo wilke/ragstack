@@ -199,6 +199,12 @@ const (
 // where the tenant is going. Only `handover` has such a row today; every other
 // op ignores dest.
 //
+// It is what applyPreconditions calls — the per-destination table is on the
+// live path, not a seam waiting for a caller — and doctor.Options.Destination
+// is how a caller chooses. An empty destination means
+// DefaultHandoverDestination, which is the supervisor this deployment can
+// actually hand a tenant over to.
+//
 // An unknown destination falls back to the default rather than to no gate at
 // all: a typo in a destination must never be the thing that turns the
 // precondition table off.
@@ -272,14 +278,19 @@ func KnownOp(op string) bool {
 // can be presented to several ops.
 // instanceTenants names the rows whose supervisor is `instance`; for those,
 // env_not_systemd_parsable is never raised (see run.instanceTenants).
-func applyPreconditions(findings []model.Finding, op string, instanceTenants map[string]bool) []model.Finding {
+func applyPreconditions(findings []model.Finding, op, destination string,
+	instanceTenants map[string]bool) []model.Finding {
 	out := make([]model.Finding, len(findings))
 	copy(out, findings)
 	if op == "" {
 		return out
 	}
 	red := map[string]bool{}
-	for _, c := range RedCodes(op) {
+	// RedCodesForDestination, not RedCodes: `handover`'s row depends on the
+	// runtime the tenant is moving ONTO, and the two lists differ by five
+	// findings. Every other op ignores the destination, so this is the same
+	// call for all of them.
+	for _, c := range RedCodesForDestination(op, destination) {
 		red[c] = true
 	}
 	ok := map[string]bool{}

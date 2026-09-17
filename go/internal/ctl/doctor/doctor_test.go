@@ -145,6 +145,15 @@ func (w *world) run(t *testing.T) *model.DoctorResponse {
 	return Run(context.Background(), w.roots, w.fleet, w.opts)
 }
 
+// runOpts is run() with the world's seams and a caller's scope: the same host,
+// the same fleet, a different question asked of them.
+func (w *world) runOpts(t *testing.T, opts Options) *model.DoctorResponse {
+	t.Helper()
+	merged := w.opts
+	merged.Op, merged.Destination, merged.Tenant = opts.Op, opts.Destination, opts.Tenant
+	return Run(context.Background(), w.roots, w.fleet, merged)
+}
+
 // byCode indexes a response's findings.
 func byCode(resp *model.DoctorResponse) map[string]model.Finding {
 	out := map[string]model.Finding{}
@@ -1405,4 +1414,76 @@ func unitPath(w *world) string {
 func withPath(g hostfacts.ACLGrant, path string) hostfacts.ACLGrant {
 	g.Path = path
 	return g
+}
+
+// handover's preconditions depend on the runtime the tenant is moving ONTO,
+// and the selection is on the live path: Options.Destination reaches
+// applyPreconditions, which is what decides whether a finding is red.
+//
+// The two lists differ by five findings, and the difference is the point:
+// gating this deployment's handover on linger/drop-in/runtime-dir — three root
+// items no host here has — would refuse every handover the control plane can
+// actually perform, while dropping boot_cron_missing would let one through onto
+// a host where nothing restarts the tenant after a reboot.
+func TestHandoverPreconditionsFollowTheDestination(t *testing.T) {
+	instance := map[string]bool{}
+	for _, c := range RedCodesForDestination("handover", SupervisorInstance) {
+		instance[c] = true
+	}
+	systemd := map[string]bool{}
+	for _, c := range RedCodesForDestination("handover", SupervisorSystemd) {
+		systemd[c] = true
+	}
+	for _, c := range []string{LingerMissing, UserDropInMissing, RuntimeDirMissing} {
+		if instance[c] {
+			t.Errorf("%s gates an INSTANCE handover: PR-D2 postponed systemd, and no host here has it", c)
+		}
+		if !systemd[c] {
+			t.Errorf("%s does not gate a SYSTEMD handover, which is the runtime that needs it", c)
+		}
+	}
+	for _, c := range []string{BootCronMissing, CtlAccountNoAccess} {
+		if !instance[c] {
+			t.Errorf("%s does not gate an instance handover: nothing would bring the tenant back at boot", c)
+		}
+	}
+	// Shared by both: these are facts about the TENANT, not about the runtime.
+	for _, c := range []string{
+		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
+		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening, StoresUnconfirmed,
+	} {
+		if !instance[c] || !systemd[c] {
+			t.Errorf("%s should gate a handover onto either supervisor", c)
+		}
+	}
+	// The default is what RedCodes (and therefore the engine) gates on.
+	if got, want := RedCodes("handover"), RedCodesForDestination("handover", DefaultHandoverDestination); len(got) != len(want) {
+		t.Errorf("RedCodes(handover) = %v, want the default destination's %v", got, want)
+	}
+	// An unknown destination falls back to the default rather than to NO gate.
+	if got := RedCodesForDestination("handover", "kubernetes"); len(got) == 0 {
+		t.Error("an unknown destination turned the precondition table off")
+	}
+	// Every other op ignores the destination entirely.
+	if a, b := RedCodesForDestination("backup", SupervisorSystemd), RedCodes("backup"); len(a) != len(b) {
+		t.Errorf("backup's preconditions changed with the destination: %v vs %v", a, b)
+	}
+}
+
+// And the wiring itself: a doctor run scoped to `handover` raises what the
+// DESTINATION says it should. The systemd trio is the visible difference, so
+// that is what this drives through Run.
+func TestTheDestinationReachesTheDoctorRun(t *testing.T) {
+	w := newWorld(t)
+	w.confirmStores()
+	w.host.Lingering = map[string]bool{} // no linger for anyone: the systemd gate
+
+	instance := byCode(w.runOpts(t, Options{Op: "handover", Destination: SupervisorInstance}))
+	if f, ok := instance[LingerMissing]; ok && f.Level == model.LevelError {
+		t.Errorf("an instance handover was refused for want of linger: %+v", f)
+	}
+	systemd := byCode(w.runOpts(t, Options{Op: "handover", Destination: SupervisorSystemd}))
+	if f, ok := systemd[LingerMissing]; !ok || f.Level != model.LevelError {
+		t.Errorf("a systemd handover was NOT refused for want of linger: %+v", f)
+	}
 }

@@ -221,6 +221,15 @@ const (
 	// see preconditions.go.
 	ESSnapshotsDirMissing = "es_snapshots_dir_missing"
 
+	// APIBindDrift: the registry's api.bind differs from the bind the live API
+	// process is actually using. That is the NORMAL state between `tenant
+	// set-bind` and the tenant's next restart — the bind reaches uvicorn as a
+	// command-line argument at start-up — so it is a drift row rather than a
+	// finding doctor raises: the decision is recorded, the process has not
+	// caught up, and a re-adoption keeps the decision and writes this down.
+	// Warn, recorded by adopt on the row.
+	APIBindDrift = "api_bind_drift"
+
 	// ESHeapDrift: the live ES heap differs from what provision.env records.
 	// Warn; recorded as a registry drift row by adopt.
 	ESHeapDrift = "es_heap_drift"
