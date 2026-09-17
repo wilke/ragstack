@@ -245,6 +245,7 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
 | `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)`. With `collections` each leg fetches this many and the fused union is cut to it before the single rerank — per-collection recall into the pool is ~`rerank_candidates / N` under RRF interleaving; raise it for more |
 | `context_window` | int (0–3) | 0 | server-side [context expansion](#context-expansion-context_window): walk each returned source's `prev_chunk_id` / `next_chunk_id` this many hops each way and attach the neighbours as the source's `context`. `0` = off (response unchanged); above `3` → `422` |
+| `exclude_boilerplate` | bool | false | drop chunks the ingester stamped `metadata.is_boilerplate` — reference lists, licence footers, acknowledgements — from retrieval (#597). See [Excluding boilerplate](#excluding-boilerplate-exclude_boilerplate) |
 | `llm` | string \| null | null | registered model id to generate with, this request only (`GET /v1/models/available`); unknown → 404, wrong task → 400 |
 | `reranker` | string \| null | null | registered model id to rerank with, this request only |
 
@@ -269,7 +270,7 @@ Same retrieval (hybrid + optional rerank) but no answer generation.
 
 **Request** (`RetrieveRequest`): `query` (required), `top_k` (5), `filters` (`{}`),
 `use_graph` (true), plus the same `collection`, `collections`, `retrieval_mode`, `rerank`,
-`rerank_candidates`, `context_window` and `reranker` fields as `/v1/query`. **Response**
+`rerank_candidates`, `context_window`, `exclude_boilerplate` and `reranker` fields as `/v1/query`. **Response**
 (`RetrieveResponse`): `{ sources[] }`.
 
 ```bash
@@ -320,6 +321,54 @@ curl -s "$BASE"/v1/retrieve \
 # {"sources":[{"doc_id":"…","chunk_id":"…","content":"…","score":0.0328,
 #              "metadata":{…},"collection":"open-access"}, …]}
 ```
+
+### Excluding boilerplate (`exclude_boilerplate`)
+
+A third of a real collection can be the paper's own bibliography. Those passages
+are lexically *about* everything (a reference list names every topic in the
+field) and substantively about nothing, and they carry the **source paper's own
+numbered citations** — which is how an extraction run came back citing `[70]`
+when the prompt declared sources `1..50`. The model was not hallucinating; it
+read `70.` out of a retrieved bibliography. No prompt can win that, because the
+reference list *is* the source (issue #597).
+
+`exclude_boilerplate: true` keeps those chunks out of retrieval:
+
+```bash
+curl -s "$BASE"/v1/retrieve \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"query": "NS1 and endothelial permeability", "top_k": 10, "exclude_boilerplate": true}'
+```
+
+What it does, precisely:
+
+* It reads `metadata.is_boilerplate`, stamped at ingest by
+  `ingestion/boilerplate.py` for reference / licence / acknowledgement chunks.
+* **The stamp is a presence flag, not a boolean.** It is written only when the
+  answer is *true*. Measured: `oa-dev` 67 stamped of 24,263, `Dengue` 133 of
+  382, `asm-semantic` 0 of 6,718,269 — and **not one chunk anywhere is stamped
+  `false`**. So the condition is "not stamped true". Do not try to express this
+  yourself as `filters: {"is_boilerplate": false}`: that matches **nothing** and
+  returns an empty result set for the whole corpus.
+* A chunk with **no stamp is kept**, so a collection whose chunks were never
+  flagged is completely unaffected.
+* It is applied as a native store condition (Qdrant `must_not` / Elasticsearch
+  `bool.must_not`) on every leg, so the store prunes before scoring and `top_k`
+  is honoured **exactly** — the slots a reference-list chunk would have taken are
+  refilled from further down the same pool, not left short.
+* It also applies to the neighbours attached by `context_window`, so a body chunk
+  cannot smuggle the bibliography in as `context`.
+* Graph-leg pseudo-chunks carry no stamp and are unaffected.
+
+**Default is `false`** — retrieval is unchanged for every caller that does not
+ask. To reach reference-list chunks deliberately, leave it off (and, if you want
+only them, `filters: {"section": "references"}`).
+
+Note that this does **not** make an extraction's citation column trustworthy on
+its own: markers like `(55)` or `(3, 5)` also appear in ordinary **body** text as
+the source paper's in-text citations, and nothing pattern-based separates them
+from list enumerators. That is a separate defect; this flag only removes the
+bibliography passages themselves.
 
 ### Context expansion (`context_window`)
 

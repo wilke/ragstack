@@ -40,6 +40,7 @@ from ragstack.stores.errors import (
 )
 from ragstack.stores.filters import PAYLOAD_RESERVED as _PAYLOAD_RESERVED
 from ragstack.stores.filters import (
+    Not,
     payload_matches,
     validate_filter_values,
     validate_filters,
@@ -782,11 +783,24 @@ def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     # doesn't depend on which leg ran. Keep in sync with stores/filters.py.
     validate_filter_values(filters)
     conditions: list[Condition] = []
+    excluded: list[Condition] = []
     for key, value in filters.items():
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, Not):
+            # Server-constructed negation (#597) — into ``must_not``, never
+            # ``must``. ``validate_filter_values`` has already refused a ``Not``
+            # on the tenant field (NEGATION_FORBIDDEN_KEYS), so this cannot
+            # invert the isolation scope. A point WITHOUT the key satisfies a
+            # Qdrant ``must_not`` and is kept: measured 24,196 of 24,263 on
+            # dev's oa-dev for ``must_not is_boilerplate=true`` (67 stamped),
+            # agreeing exactly with the Elasticsearch leg.
+            excluded.append(FieldCondition(key=key, match=MatchValue(value=value.value)))
+        elif isinstance(value, (list, tuple, set)):
             conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value))))
         else:
             conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
     # Every key contributes a condition, so a non-empty ``filters`` can never
-    # collapse to ``None`` (an unfiltered read).
-    return Filter(must=conditions)
+    # collapse to ``None`` (an unfiltered read) — a negation-only dict yields a
+    # ``must_not``-only Filter, which is still a real constraint, not ``None``.
+    # ``or None`` on both arms so an empty side is OMITTED from the wire rather
+    # than sent as ``[]``, whose reading is the server's business, not ours.
+    return Filter(must=conditions or None, must_not=excluded or None)

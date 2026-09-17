@@ -29,7 +29,7 @@ from ragstack.stores.errors import (
     KIND_UNREACHABLE,
     StoreUnavailable,
 )
-from ragstack.stores.filters import validate_filter_values
+from ragstack.stores.filters import Not, validate_filter_values
 from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
@@ -156,15 +156,34 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
     # vector leg. Keep in sync with stores/filters.py.
     validate_filter_values(filters)
     filter_clauses: list[dict[str, Any]] = []
+    must_not_clauses: list[dict[str, Any]] = []
     for key, value in filters.items():
         field = f"metadata.{key}"
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, Not):
+            # Server-constructed negation (#597) — into ``bool.must_not``, never
+            # into ``filter``. ``validate_filter_values`` has already refused a
+            # ``Not`` on the tenant field (NEGATION_FORBIDDEN_KEYS), so the
+            # tenant clause above cannot be inverted; and because this appends
+            # to a SEPARATE list, a negation can never displace the ``filter``
+            # clause a scope key contributed. A document that does not carry the
+            # field is kept (a ``term`` simply does not match it), including one
+            # in an index whose mapping has no such field at all — which is what
+            # leaves a collection with no stamps unaffected. Measured on dev's
+            # oa-dev: 24,196 of 24,263, the same count Qdrant's leg returns.
+            must_not_clauses.append({"term": {field: value.value}})
+        elif isinstance(value, (list, tuple, set)):
             # An empty ``terms`` array matches no documents — the fail-closed
             # reading of "value in []" — so it needs no special-casing.
             filter_clauses.append({"terms": {field: list(value)}})
         else:
             filter_clauses.append({"term": {field: value}})
-    return {"bool": {"must": [{"match": {"content": query}}], "filter": filter_clauses}}
+    bool_query: dict[str, Any] = {
+        "must": [{"match": {"content": query}}],
+        "filter": filter_clauses,
+    }
+    if must_not_clauses:
+        bool_query["must_not"] = must_not_clauses
+    return {"bool": bool_query}
 
 
 def _failure_kind(e: BaseException) -> str | None:
