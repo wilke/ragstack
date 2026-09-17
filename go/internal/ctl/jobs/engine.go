@@ -61,9 +61,20 @@ type EngineOptions struct {
 	// both, and doctor is below jobs in every other direction).
 	//
 	// It is what makes a yellow doctor an op-scoped question rather than a
-	// host-wide one: see gateOnDoctor. NIL means "every warning is this op's",
-	// which is the conservative reading and the behaviour before PR-E2.
-	PreconditionCodes func(op string) []string
+	// host-wide one: see gateOnDoctor.
+	//
+	// It answers TWO things, because there are two facts here and only one of
+	// them is a reason to be conservative: the codes, and whether the table
+	// knows the op at all. An op that gates on NOTHING (`env-pg-password`,
+	// whose row is deliberately empty) returns an empty set and known=true —
+	// it is a decision, and the gate honours it. An op nobody wrote a row for
+	// returns known=false, and every warning is taken to be its own.
+	//
+	// Reading those two as one nil slice is the bug this signature exists to
+	// prevent: it made the op that gates on nothing the most gated op on the
+	// host. A nil PreconditionCodes — an engine built without the doctor
+	// package wired — is the unknown case for every op.
+	PreconditionCodes func(op string) (codes []string, known bool)
 	Now               func() time.Time
 	Host              string
 	Mode              model.WorkerMode
@@ -236,7 +247,8 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 		// needs to see exactly what it is confirming.
 		return plan, nil, err
 	}
-	if err := gateOnDoctor(plan.Doctor, req.ForceWithDoctorDiff, e.gateCodes(req.Op)); err != nil {
+	gateCodes, gateKnown := e.gateCodes(req.Op)
+	if err := gateOnDoctor(plan.Doctor, req.ForceWithDoctorDiff, gateCodes, gateKnown); err != nil {
 		e.auditRefusal(ctx, req, argsRedacted, plan.PlanHash, err)
 		return plan, nil, err
 	}
@@ -447,10 +459,18 @@ func (e *engine) plan(ctx context.Context, op Op, req Request) (*model.Plan, *Pl
 // (runSteps puts the codes in `result.doctor_warnings`) and does not block.
 // Red is untouched: a red finding is never forced, whoever it is about.
 //
-// `codes` is doctor.RedCodesForDestination for this op. NIL is the
-// conservative reading — every warning counts — which is what an engine built
-// without the doctor package wired gets.
-func gateOnDoctor(d model.DoctorResponse, force string, codes []string) error {
+// `codes` is doctor.GateCodes for this op and `known` says whether the table
+// has a row for it at all. An EMPTY set with known=true is an op that gates on
+// no warning — a decision the table made on purpose, and the gate honours it.
+// Only known=false is the conservative reading (every warning counts), which
+// is what an engine built without the doctor package wired gets; for a real
+// verb it is unreachable, and ops.TestEveryVerbHasAPreconditionRow keeps it so.
+//
+// Collapsing "no codes" into "no row" is exactly how this went wrong once:
+// `env-pg-password`'s empty row came back as nil, the gate read it as an
+// unknown op, and the op that deliberately gates on nothing was refused for
+// the three systemd findings it cannot repair.
+func gateOnDoctor(d model.DoctorResponse, force string, codes []string, known bool) error {
 	if d.Status == model.StatusRed {
 		return refuse(fmt.Errorf("%w: the op-scoped doctor is red (%s); a red finding is never forced",
 			ErrDoctorRed, d.Hash), map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusRed)})
@@ -458,9 +478,10 @@ func gateOnDoctor(d model.DoctorResponse, force string, codes []string) error {
 	if d.Status != model.StatusYellow || force == d.Hash {
 		return nil
 	}
-	if codes == nil {
-		// No precondition table wired: every warning is taken to be this op's,
-		// which is the behaviour before PR-E2 and the conservative reading.
+	if !known {
+		// No precondition row for this op: every warning is taken to be its
+		// own, which is the behaviour before PR-E2 and the conservative
+		// reading.
 		return refuse(fmt.Errorf("%w: yellow; pass force_with_doctor_diff=%s", ErrDoctorRed, d.Hash),
 			map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusYellow)})
 	}
@@ -474,22 +495,19 @@ func gateOnDoctor(d model.DoctorResponse, force string, codes []string) error {
 }
 
 // relevantWarnings are the warn-level findings whose code is in codes, sorted
-// and deduplicated. A nil codes slice means "all of them".
+// and deduplicated. `codes` is a plain membership set: an empty (or nil) one
+// selects nothing, because "this op depends on no warning" is a real answer.
+// Whether the op is known at all is the CALLER's question — both callers ask
+// it first — so there is no second meaning hiding in the slice here.
 func relevantWarnings(d model.DoctorResponse, codes []string) []string {
-	var want map[string]bool
-	if codes != nil {
-		want = make(map[string]bool, len(codes))
-		for _, c := range codes {
-			want[c] = true
-		}
+	want := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		want[c] = true
 	}
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range d.Findings {
-		if f.Level != model.LevelWarn || seen[f.Code] {
-			continue
-		}
-		if want != nil && !want[f.Code] {
+		if f.Level != model.LevelWarn || seen[f.Code] || !want[f.Code] {
 			continue
 		}
 		seen[f.Code] = true
@@ -507,10 +525,11 @@ func scopeOp(d model.DoctorResponse) string {
 	return "this operation"
 }
 
-// gateCodes is EngineOptions.PreconditionCodes, with the conservative default.
-func (e *engine) gateCodes(op string) []string {
+// gateCodes is EngineOptions.PreconditionCodes, with the conservative default:
+// an engine built without the table knows no op, so every warning is relevant.
+func (e *engine) gateCodes(op string) (codes []string, known bool) {
 	if e.o.PreconditionCodes == nil {
-		return nil
+		return nil, false
 	}
 	return e.o.PreconditionCodes(op)
 }
@@ -691,7 +710,8 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	// gateOnDoctor), and not a reason to forget either. They go on the job, so
 	// "what did the host look like when this ran" is answerable afterwards
 	// from the job alone.
-	if warnings := unrelatedWarnings(r.oc.Doctor, e.gateCodes(job.Op)); len(warnings) > 0 {
+	codes, known := e.gateCodes(job.Op)
+	if warnings := unrelatedWarnings(r.oc.Doctor, codes, known); len(warnings) > 0 {
 		if job.Result == nil {
 			job.Result = map[string]any{}
 		}
@@ -721,11 +741,11 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 }
 
 // unrelatedWarnings are the warn-level findings this op does NOT depend on:
-// everything gateOnDoctor let through. With no precondition table they are
-// none — every warning was relevant, and the gate already made the operator
-// acknowledge them.
-func unrelatedWarnings(d model.DoctorResponse, codes []string) []string {
-	if codes == nil {
+// everything gateOnDoctor let through. For an op the table does not know they
+// are none — every warning was relevant, and the gate already made the
+// operator acknowledge them.
+func unrelatedWarnings(d model.DoctorResponse, codes []string, known bool) []string {
+	if !known {
 		return nil
 	}
 	relevant := map[string]bool{}

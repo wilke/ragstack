@@ -1574,3 +1574,41 @@ func TestTheBootRecordIsADeploymentFactNotAStateDirFact(t *testing.T) {
 		})
 	}
 }
+
+// TestAnEmptyPreconditionRowIsNotTheSameAsAnUnknownOp is the doctor half of
+// the gate bug that refused `ragstack-ctl env pg-password hackathon` on a host
+// whose only warnings were the systemd trio PR-D2 abandoned.
+//
+// `env-pg-password` has a row — an EMPTY one, deliberately: it rewrites
+// secrets.env, touches no process, and is run on a tenant whose findings are
+// often exactly what the preparation exists to clear. But GateCodes built its
+// answer with `var out []string` and appended nothing, so an empty row came
+// back as NIL — indistinguishable from the nil an unknown op returns, which
+// the engine's gate reads as "unknown op, take every warning to be this op's".
+// An op that deliberately gates on nothing was gated on everything.
+func TestAnEmptyPreconditionRowIsNotTheSameAsAnUnknownOp(t *testing.T) {
+	// A row that raises nothing, and a row whose every entry is tolerated,
+	// both mean "this op gates on no warning" — and both must SAY so.
+	for _, op := range []string{"env-pg-password", "env-normalize"} {
+		got := GateCodes(op, "")
+		if len(got) != 0 {
+			t.Errorf("GateCodes(%s) = %v, want an empty set", op, got)
+		}
+		if got == nil {
+			t.Errorf("GateCodes(%s) is nil: an empty precondition row is reported as an UNKNOWN op, and the "+
+				"engine's yellow gate then demands force_with_doctor_diff for warnings %s does not depend on", op, op)
+		}
+		if !KnownOp(op) {
+			t.Errorf("KnownOp(%s) = false; the row exists", op)
+		}
+	}
+	// A verb nobody wrote a row for is the one case that stays nil: the gate
+	// has nothing to scope itself by, and TestEveryVerbHasAPreconditionRow
+	// is what keeps that case from being reachable through a real op.
+	if got := GateCodes("no-such-verb", ""); got != nil {
+		t.Errorf("GateCodes(no-such-verb) = %v, want nil for an op the table does not know", got)
+	}
+	if KnownOp("no-such-verb") {
+		t.Error("KnownOp(no-such-verb) = true")
+	}
+}

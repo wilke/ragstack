@@ -139,6 +139,33 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 // jobs.Engine that could hand out its drivers would be an engine any caller
 // could reach around; here the drivers are available only to whoever built the
 // engine in the first place.
+// PreconditionCodes is the op × finding table the engine's yellow gate asks
+// which of a run's warnings THIS op depends on — so that the three findings
+// this deployment is permanently yellow on (the systemd trio PR-D2 abandoned)
+// stop demanding an acknowledgement from every mutation. The destination is
+// the default one — `instance`, the only supervisor a handover on this host
+// can reach.
+//
+// TOLERATED codes come out, exactly as doctor's own applyPreconditions removes
+// them ("tolerating wins: a row cannot both raise and lower"). Without that the
+// gate demanded an acknowledgement for the very finding an op exists to CLEAR
+// — `env-normalize` over `env_not_systemd_parsable`, `adopt` over
+// `stores_unconfirmed`, `start` over `port_not_listening` — which is the lesson
+// the tolerates table was written for in the first place, arriving by a second
+// door.
+//
+// `known` is the second half of the answer and not a detail: an op whose row is
+// EMPTY (`env-pg-password` gates on nothing, deliberately) is known and gates
+// on nothing; an op with no row at all is unknown, and the gate is then
+// conservative. Collapsing those two into one nil slice is what refused
+// `ragstack-ctl env pg-password hackathon` for warnings it cannot repair.
+//
+// It is a named function, not a closure inside BuildEngineAndDrivers, so that
+// the answer the daemon and `--direct` both run on is a thing a test can hold.
+func PreconditionCodes(op string) (codes []string, known bool) {
+	return doctor.GateCodes(op, ""), doctor.KnownOp(op)
+}
+
 func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -284,28 +311,14 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Drivers:      drv,
 		Redactor:     redactor,
 		Doctor:       doctorFn,
-		// The op × finding table, as a function: the engine's yellow gate asks
-		// it which of a run's warnings THIS op depends on, so that the three
-		// findings this deployment is permanently yellow on (the systemd trio
-		// PR-D2 abandoned) stop demanding an acknowledgement from every
-		// mutation. The destination is the default one — `instance`, the only
-		// supervisor a handover on this host can reach.
-		PreconditionCodes: func(op string) []string {
-			// TOLERATED codes come out, exactly as doctor's own
-			// applyPreconditions removes them ("tolerating wins: a row cannot
-			// both raise and lower"). Without this the gate demanded an
-			// acknowledgement for the very finding an op exists to CLEAR —
-			// `env-normalize` over `env_not_systemd_parsable`, `adopt` over
-			// `stores_unconfirmed`, `start` over `port_not_listening` — which
-			// is the lesson the tolerates table was written for in the first
-			// place, arriving by a second door.
-			return doctor.GateCodes(op, "")
-		},
-		Now:        cfg.Now,
-		Host:       cfg.Host,
-		Mode:       cfg.Mode,
-		SecretsTTL: cfg.SecretsTTL,
-		Logger:     cfg.Logger,
+		// The op × finding table, as a function. `serve` and `--direct` both
+		// arrive here, so there is one answer for the daemon and the CLI.
+		PreconditionCodes: PreconditionCodes,
+		Now:               cfg.Now,
+		Host:              cfg.Host,
+		Mode:              cfg.Mode,
+		SecretsTTL:        cfg.SecretsTTL,
+		Logger:            cfg.Logger,
 	})
 	return eng, drv, nil
 }
