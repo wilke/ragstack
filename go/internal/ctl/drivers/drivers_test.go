@@ -1129,3 +1129,190 @@ func TestRealCopyFileRefusesASymlinkedSource(t *testing.T) {
 		t.Errorf("the copy happened anyway: %v", err)
 	}
 }
+
+// ------------------------------------------------- copying a tree the account does not own
+
+// CopyTree is the driver half of the handover's postgres migration: it exists
+// so that an account which cannot chown — nobody on this host can — can still
+// produce a data directory postgres will start on, by making one it owns.
+//
+// So the properties under test are the ones that decide whether a tenant comes
+// back: every file and directory is reproduced, the modes come across (a 0700
+// pgdata that arrived 0755 is a postgres that refuses for the OTHER reason it
+// refuses), the copy is owned by whoever ran it, and nothing lands on top of a
+// path that is already there.
+func TestRealFilesCopyTreeReproducesTheTreeAsThisAccount(t *testing.T) {
+	f, root := realFiles(t)
+	src := filepath.Join(root, "data")
+	pgdata := filepath.Join(src, "pgdata")
+	if err := os.MkdirAll(filepath.Join(pgdata, "base", "1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pgdata, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pgdata, "PG_VERSION"), []byte("16\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pgdata, "base", "1", "1259"), make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(root, "data.svcbvbrc-20260917T083000Z")
+	bytes, entries, err := f.CopyTree(context.Background(), src, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes != 4096+3 {
+		t.Errorf("copied %d bytes, want the 4099 the tree holds", bytes)
+	}
+	if entries < 6 {
+		t.Errorf("copied %d entries, want every file and directory of the tree", entries)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "pgdata", "PG_VERSION")); err != nil || string(got) != "16\n" {
+		t.Errorf("PG_VERSION = %q (err %v)", got, err)
+	}
+	// The mode of the directory postgres inspects, and of the files under it.
+	st, err := os.Stat(filepath.Join(dst, "pgdata"))
+	if err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("the copy's pgdata is %v (err %v), want 0700", st.Mode().Perm(), err)
+	}
+	fst, err := os.Stat(filepath.Join(dst, "pgdata", "PG_VERSION"))
+	if err != nil || fst.Mode().Perm() != 0o600 {
+		t.Errorf("the copy's PG_VERSION is %v (err %v), want 0600", fst.Mode().Perm(), err)
+	}
+	// And the whole point: the copy is THIS account's.
+	who, err := f.Stat(context.Background(), filepath.Join(dst, "pgdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if who.UID != os.Geteuid() {
+		t.Errorf("the copy is owned by uid %d, want this process's %d", who.UID, os.Geteuid())
+	}
+}
+
+// A destination that is already there is refused rather than merged: two
+// postgres data directories mixed together is not a failure mode anybody can
+// recover from, and it is exactly what a retried step would produce.
+func TestRealFilesCopyTreeRefusesAnExistingDestination(t *testing.T) {
+	f, root := realFiles(t)
+	src, dst := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, d := range []string{src, dst} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, err := f.CopyTree(context.Background(), src, dst)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("CopyTree over an existing destination = %v, want a refusal", err)
+	}
+}
+
+// A symlink in the tree is refused BY NAME rather than followed. Following one
+// would copy whatever it points at into the tenant's directory and silently
+// drop the indirection the original depended on — `pg_wal` moved to another
+// filesystem is the usual one, and it is the case where that matters most.
+func TestRealFilesCopyTreeRefusesASymlinkInTheTree(t *testing.T) {
+	f, root := realFiles(t)
+	src := filepath.Join(root, "data")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/var/lib/postgresql/wal", filepath.Join(src, "pg_wal")); err != nil {
+		t.Skipf("this filesystem cannot make a symlink: %v", err)
+	}
+	_, _, err := f.CopyTree(context.Background(), src, filepath.Join(root, "copy"))
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "pg_wal") {
+		t.Errorf("CopyTree over a tree holding a symlink = %v, want a refusal naming it", err)
+	}
+}
+
+// The containment rule is the same one every other write in this driver obeys.
+func TestRealFilesCopyTreeRefusesOutsideTheApprovedRoots(t *testing.T) {
+	f, root := realFiles(t)
+	src := filepath.Join(root, "data")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := f.CopyTree(context.Background(), src, filepath.Join(t.TempDir(), "elsewhere"))
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("CopyTree outside the roots = %v, want a refusal", err)
+	}
+}
+
+// Stat is the question postgres asks and the mode the drivers write in: the
+// POSIX spelling (setgid is the 0o2000 bit), not Go's flag bits, so that a
+// mode read here can be handed straight back to MkdirAll.
+func TestRealFilesStatAnswersTheOwnerAndThePOSIXMode(t *testing.T) {
+	f, root := realFiles(t)
+	dir := filepath.Join(root, "tree")
+	if err := f.MkdirAll(context.Background(), dir, 0o2770); err != nil {
+		t.Fatal(err)
+	}
+	st, err := f.Stat(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsDir || st.IsSymlink {
+		t.Errorf("Stat of a directory = %+v", st)
+	}
+	if st.Mode != 0o2770 {
+		t.Errorf("mode = %04o, want 2770 — the setgid bit is what makes a tenant tree inherit its group", st.Mode)
+	}
+	if st.UID != os.Geteuid() {
+		t.Errorf("uid = %d, want this process's %d", st.UID, os.Geteuid())
+	}
+	if _, err := f.Stat(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat of an absent path = %v, want fs.ErrNotExist so a caller can tell absence from failure", err)
+	}
+}
+
+// Stat does not FOLLOW a link, because a symlink where a data directory should
+// be is a fact the caller has to see rather than a thing to resolve.
+func TestRealFilesStatDoesNotFollowASymlink(t *testing.T) {
+	f, root := realFiles(t)
+	target := filepath.Join(root, "real")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("this filesystem cannot make a symlink: %v", err)
+	}
+	st, err := f.Stat(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsSymlink || st.IsDir {
+		t.Errorf("Stat of a symlink to a directory = %+v, want a symlink and not a directory", st)
+	}
+}
+
+// TreeSize is the free-space precheck's other half: what a COPY of this tree
+// would occupy.
+func TestRealFilesTreeSizeAddsUpTheRegularFiles(t *testing.T) {
+	f, root := realFiles(t)
+	dir := filepath.Join(root, "data")
+	if err := os.MkdirAll(filepath.Join(dir, "base"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "base", "big"), make([]byte, 5000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "small"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bytes, entries, err := f.TreeSize(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes != 5001 {
+		t.Errorf("TreeSize = %d bytes, want 5001", bytes)
+	}
+	if entries != 4 {
+		t.Errorf("TreeSize counted %d entries, want the directory, its subdirectory and the two files", entries)
+	}
+	if _, _, err := f.TreeSize(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("TreeSize of an absent directory = %v, want fs.ErrNotExist", err)
+	}
+}

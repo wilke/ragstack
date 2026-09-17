@@ -655,7 +655,12 @@ func (p *planner) apiLaunch(port int) (apiLaunch, error) {
 		Dir: filepath.Join(p.t.Worktree, "python"), Worktree: p.t.Worktree,
 		PidFile: p.apiPidFile(), LogPath: tp.APILog,
 		TenantEnv: tp.TenantEnv, SecretsEnv: tp.SecretsEnv, Port: port,
-		OwnStores: ownStoreProbes(p.t, tp), SharedStores: sharedStoreProbes(p.t, tp),
+		// The supervisor this plan is being made AGAINST, not the one the row
+		// happens to say: a take plans every leg against instanceSupervisor
+		// before the registry step has written it (handover.go), and the
+		// readiness wait of that very job is the one that needs the fast-fail.
+		OwnStores:    ownStoreProbes(p.t, tp, p.sup != nil && p.sup.kind() == supervisorInstance),
+		SharedStores: sharedStoreProbes(p.t, tp),
 	}, nil
 }
 
@@ -1033,33 +1038,137 @@ func KnownSupervisor(s string) bool { return s == supervisorSystemd || s == supe
 type storeProbe struct {
 	what  string
 	probe func(context.Context, *jobs.StepContext) error
+	// gone, when set, answers "the thing I am waiting for is not coming": a
+	// reason string and true when the process behind this probe has already
+	// exited. awaitStores calls it between polls and STOPS, with that reason,
+	// rather than serving out the bound.
+	//
+	// It exists because of what a timeout costs and what it hides. The second
+	// live handover take waited the full three minutes for a postgres that had
+	// died in the first second, and then reported `pg_isready … no response` —
+	// a sentence that names the symptom, says nothing about the cause, and
+	// arrives after the rollback has become the longest part of the outage.
+	// The cause was in the instance's own .err file the whole time.
+	gone func(context.Context, *jobs.StepContext) (reason string, dead bool, err error)
 }
 
 // ownStoreProbes are the stores the tenant runs itself — an exclusive qdrant,
 // an exclusive elasticsearch, a local postgres — which is what `wait-ready`
 // gates the api unit on. A shared or external store is somebody else's to
 // keep up and is not waited for.
-func ownStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
+//
+// instanceMode says whether this tenant's stores are apptainer instances the
+// ctl started (`supervisor: instance`). It is what lets the postgres probe ask
+// the second question a readiness wait should always have asked: not only "is
+// it answering yet", but "is it still there at all".
+func ownStoreProbes(t *registry.Tenant, tp paths.Tenant, instanceMode bool) []storeProbe {
 	var out []storeProbe
 	if q := t.Stores.Qdrant; q.Ownership == registry.OwnershipExclusive && q.URL != "" {
 		url := q.URL
 		out = append(out, storeProbe{"qdrant", func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Qdrant().Ready(c, url)
-		}})
+		}, nil})
 	}
 	if e := t.Stores.Elasticsearch; e.Ownership == registry.OwnershipExclusive && e.URL != "" {
 		url := e.URL
 		out = append(out, storeProbe{"elasticsearch", func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Elasticsearch().Ready(c, url)
-		}})
+		}, nil})
 	}
 	if pg := t.Stores.Postgres; pg.Kind == registry.PostgresKindLocal {
 		spec := jobs.PostgresSpec{SIF: string(pg.SIF), RunDir: tp.PostgresRun, DB: t.Name, User: t.Name, Port: pgPortOf(t)}
-		out = append(out, storeProbe{"postgres", func(c context.Context, sc *jobs.StepContext) error {
+		p := storeProbe{"postgres", func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Postgres().Ready(c, spec)
-		}})
+		}, nil}
+		if instanceMode {
+			instance := instanceNameFor(render.LegPostgres, t.ManifestName)
+			p.gone = func(c context.Context, sc *jobs.StepContext) (string, bool, error) {
+				return instanceGoneReason(c, sc, instance)
+			}
+		}
+		out = append(out, p)
 	}
 	return out
+}
+
+// instanceGoneReason answers "this instance is not coming back, and here is
+// what it said on the way out".
+//
+// An instance that is in the ctl's table is alive as far as anything here can
+// tell, and the answer is (–, false). One that is NOT is a container apptainer
+// started successfully and that then exited: there is no exit status to read
+// (the instance file is gone with it) and no signal anywhere — only the .err
+// file apptainer has been appending its stderr to. That file is where postgres
+// writes
+//
+//	FATAL:  data directory "…/pgdata" has wrong ownership
+//
+// which is the entire answer to the outage this function was written for.
+//
+// It never fails the caller on its own account: a log that cannot be read is
+// still an instance that is gone, and the reason then says so instead of
+// quoting. The one thing it must not do is claim an instance is dead when the
+// instance table could not be read at all — that is a host problem, not a dead
+// store, and it answers (–, false, err).
+func instanceGoneReason(ctx context.Context, sc *jobs.StepContext, instance string) (string, bool, error) {
+	up, err := instanceRunning(ctx, sc, instance, jobs.NamespaceCtl)
+	if err != nil {
+		return "", false, err
+	}
+	if up {
+		return "", false, nil
+	}
+	_, errLog, lerr := sc.Ops.Drivers.Instances().LogPaths(ctx, instance, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
+	if lerr != nil || errLog == "" {
+		return fmt.Sprintf("the instance %s is not running and this account cannot say where apptainer put its log",
+			instance), true, nil
+	}
+	body, rerr := sc.Ops.Drivers.Files().ReadFile(ctx, errLog)
+	if rerr != nil {
+		return fmt.Sprintf("the instance %s is not running; its log %s could not be read (%v)",
+			instance, errLog, rerr), true, nil
+	}
+	return fmt.Sprintf("the instance %s exited; %s says: %s", instance, errLog, logTail(body)), true, nil
+}
+
+// logTailLines and logTailBytes bound what a failure message quotes. A store's
+// .err file is small (kilobytes), but "small" is not a guarantee, and a job
+// result is read in a terminal.
+const (
+	logTailLines = 12
+	logTailBytes = 2000
+)
+
+// logTail is the last few lines of a log, joined with " / " so that the whole
+// thing is one line of a job error — and with the OWNERSHIP line hoisted to the
+// front when there is one, because that is the sentence the reader needs and
+// postgres prints it several lines before it stops.
+func logTail(body []byte) string {
+	if len(body) > logTailBytes {
+		body = body[len(body)-logTailBytes:]
+	}
+	var lines []string
+	for _, l := range strings.Split(string(body), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > logTailLines {
+		lines = lines[len(lines)-logTailLines:]
+	}
+	// The one phrase this whole path exists for. postgres prints it as a FATAL
+	// and then prints a HINT and an exit line after it, so a plain tail buries
+	// the cause under two lines of consequence.
+	for i, l := range lines {
+		if strings.Contains(strings.ToLower(l), "wrong ownership") && i != 0 {
+			lines = append([]string{l}, append(lines[:i:i], lines[i+1:]...)...)
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return "(the log is empty)"
+	}
+	return strings.Join(lines, " / ")
 }
 
 // sharedStoreProbes are the stores this tenant uses and does NOT own: a shared
@@ -1076,13 +1185,13 @@ func sharedStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 		url := q.URL
 		out = append(out, storeProbe{"the shared qdrant at " + url, func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Qdrant().Ready(c, url)
-		}})
+		}, nil})
 	}
 	if e := t.Stores.Elasticsearch; e.Ownership != registry.OwnershipExclusive && e.URL != "" {
 		url := e.URL
 		out = append(out, storeProbe{"the shared elasticsearch at " + url, func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Elasticsearch().Ready(c, url)
-		}})
+		}, nil})
 	}
 	// An EXTERNAL postgres — a database inside a server somebody else runs —
 	// is exactly the same case as a shared qdrant, and was the one leg this
@@ -1094,7 +1203,7 @@ func sharedStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 		out = append(out, storeProbe{"the external postgres on " + strconv.Itoa(spec.Port),
 			func(c context.Context, sc *jobs.StepContext) error {
 				return sc.Ops.Drivers.Postgres().Ready(c, spec)
-			}})
+			}, nil})
 	}
 	return out
 }
@@ -1105,11 +1214,34 @@ func sharedStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 func awaitStores(ctx context.Context, sc *jobs.StepContext, probes []storeProbe, bound time.Duration) error {
 	deadline := time.Now().Add(bound)
 	for _, pr := range probes {
+		attempt := 0
 		for {
 			err := pr.probe(ctx, sc)
 			if err == nil {
 				sc.Logf("%s answers", pr.what)
 				break
+			}
+			attempt++
+			// Is it even still there? A store that has ALREADY EXITED is not
+			// going to answer, and waiting out the bound for it costs the
+			// three minutes the failed take spent and then reports the symptom
+			// instead of the cause.
+			//
+			// Not on the first attempt: a store is briefly neither answering
+			// nor yet in the instance table, and a fast-fail on that race
+			// would be worse than the wait it replaces.
+			if pr.gone != nil && attempt > 1 {
+				reason, dead, gerr := pr.gone(ctx, sc)
+				switch {
+				case gerr != nil:
+					// A host that cannot be asked is not a dead store. Log it
+					// and go on waiting.
+					sc.Logf("could not check whether %s is still running: %v", pr.what, gerr)
+				case dead:
+					return fmt.Errorf("%s is not coming up: %s (the wait was %s and %s of it had passed; it was cut "+
+						"short because the process is already gone) — the readiness probe's own answer was: %w",
+						pr.what, reason, bound, time.Since(deadline.Add(-bound)).Truncate(time.Second), err)
+				}
 			}
 			if time.Now().After(deadline) {
 				return fmt.Errorf("%s did not become ready within %s: %w", pr.what, bound, err)

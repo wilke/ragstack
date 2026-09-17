@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -63,6 +64,13 @@ type RealInstances struct {
 	// own shell exports one cannot redirect this call either: "the account's
 	// default" means the account's default.
 	AccountEnv []string
+	// ConfigDir is the SAME directory Env's APPTAINER_CONFIGDIR names, as a
+	// path. LogPaths needs it: apptainer keeps an instance's stdout and stderr
+	// under `<configdir>/instances/logs/<host>/<user>/`, and the whole reason
+	// to compose that path rather than read it out of the instance table is
+	// that the instance a caller wants the log of is the one that is no longer
+	// in the table.
+	ConfigDir string
 }
 
 var _ jobs.Instances = (*RealInstances)(nil)
@@ -134,6 +142,11 @@ type instanceListJSON struct {
 		Instance string `json:"instance"`
 		PID      int    `json:"pid"`
 		Img      string `json:"img"`
+		// The two log files apptainer appends the instance's output to. They
+		// are the container's own account of why it died, and an instance that
+		// exits leaves nothing else behind.
+		LogErrPath string `json:"logErrPath"`
+		LogOutPath string `json:"logOutPath"`
 	} `json:"instances"`
 }
 
@@ -151,7 +164,10 @@ func parseInstanceList(stdout []byte) ([]jobs.Instance, error) {
 	}
 	out := make([]jobs.Instance, 0, len(doc.Instances))
 	for _, in := range doc.Instances {
-		out = append(out, jobs.Instance{Name: in.Instance, PID: in.PID, Image: in.Img})
+		out = append(out, jobs.Instance{
+			Name: in.Instance, PID: in.PID, Image: in.Img,
+			LogOut: in.LogOutPath, LogErr: in.LogErrPath,
+		})
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out, nil
@@ -242,6 +258,82 @@ func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, ho
 	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv,
 		ExtraEnv: i.env(jobs.NamespaceCtl, nil), Timeout: instanceRunTimeout})
 	return err
+}
+
+// LogPaths is where apptainer writes <name>'s stdout and stderr in
+// opts.Namespace.
+//
+// A RUNNING instance answers for itself: the instance table carries
+// logOutPath and logErrPath, and taking them from there means this driver
+// cannot disagree with apptainer about where a live instance's output is
+// going.
+//
+// An instance that is NOT in the table is the case this method exists for. A
+// store that started and died — a postgres refusing a data directory it does
+// not own — is out of the table within seconds, has no exit status anything
+// here can read, and has exactly one artefact: a file under
+// `<configdir>/instances/logs/<hostname>/<user>/<name>.err`. That layout is
+// apptainer's (verified on 1.5.3 on coconut: wilke's hand-started instances
+// are under `$HOME/.apptainer/instances/logs/coconut/wilke/`), and composing
+// it is the only way to answer at all.
+//
+// It answers PATHS, not content, and never fails because a path does not
+// exist: "there is no log" is the caller's to report, and the caller is the
+// one holding the redactor.
+func (i *RealInstances) LogPaths(ctx context.Context, name string, opts jobs.ListOptions) (string, string, error) {
+	if err := checkInstanceName(name); err != nil {
+		return "", "", err
+	}
+	// The table first — but a List that FAILS must not lose the composed
+	// answer: the reason a caller is here is usually that something is wrong.
+	if list, err := i.List(ctx, opts); err == nil {
+		for _, in := range list {
+			if in.Name == name && (in.LogOut != "" || in.LogErr != "") {
+				return in.LogOut, in.LogErr, nil
+			}
+		}
+	}
+	base, err := i.logDir(opts.Namespace)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(base, name+".out"), filepath.Join(base, name+".err"), nil
+}
+
+// logDir composes `<configdir>/instances/logs/<hostname>/<user>` for a
+// namespace. The account-default namespace has no configured directory by
+// construction (that IS the namespace: apptainer with no APPTAINER_CONFIGDIR),
+// so it resolves $HOME/.apptainer the way apptainer itself would.
+func (i *RealInstances) logDir(ns jobs.InstanceNamespace) (string, error) {
+	root := i.ConfigDir
+	if ns == jobs.NamespaceAccountDefault {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("%w: this account has no home directory, so apptainer's default instance log "+
+				"directory cannot be named: %v", jobs.ErrRefused, err)
+		}
+		root = filepath.Join(home, ".apptainer")
+	}
+	if root == "" {
+		return "", fmt.Errorf("%w: this instance driver was built without an apptainer config directory, so it "+
+			"cannot say where the instance logs are", jobs.ErrRefused)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("%w: this host has no name, and apptainer files its instance logs under one: %v",
+			jobs.ErrRefused, err)
+	}
+	// apptainer uses the SHORT hostname, which is what os.Hostname answers on
+	// coconut; a fully-qualified one is cut to its first label so a host whose
+	// /etc/hostname carries a domain does not send this to a path apptainer
+	// never writes.
+	host, _, _ = strings.Cut(host, ".")
+	u, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("%w: this account cannot be named, and apptainer files its instance logs under one: %v",
+			jobs.ErrRefused, err)
+	}
+	return filepath.Join(root, "instances", "logs", host, u.Username), nil
 }
 
 // Stop is `apptainer instance stop <name>` in opts.Namespace, and an instance

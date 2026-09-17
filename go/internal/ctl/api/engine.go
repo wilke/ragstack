@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -164,6 +166,84 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 // the answer the daemon and `--direct` both run on is a thing a test can hold.
 func PreconditionCodes(op string) (codes []string, known bool) {
 	return doctor.GateCodes(op, ""), doctor.KnownOp(op)
+}
+
+// SelftestStateDir and SelftestConfigDir are the convention the ops scripts on
+// coconut already follow for a wilke-side `--direct` run, and the one
+// CheckStateDirOwnership names in its refusal.
+//
+// They are constants rather than a policy this package enforces: WHICH
+// directory an account should use is a deployment decision
+// (`/rag/config/ctl-selftest` exists because the selftest needed one first),
+// but a refusal that does not tell the operator what to type is a refusal they
+// will work around.
+const (
+	SelftestStateDir  = "/rag/data/ctl-selftest"
+	SelftestConfigDir = "/rag/config/ctl-selftest"
+)
+
+// CheckStateDirOwnership refuses a state directory that belongs to another
+// account, BEFORE anything opens a job store in it.
+//
+// This is the second half of 2026-09-17, and it cost the daemon its mutation
+// surface for a day. A wilke `--direct` run pointed at the daemon's real state
+// dir (`/rag/data/ctl`, svcbvbrc's) opened svcbvbrc's `jobs.db` — readable, and
+// group-writable enough to get as far as SQLite — and created `jobs.db-wal` and
+// `jobs.db-shm` beside it, owned by wilke. From that moment the DAEMON could
+// not open its own store: SQLite has to write the WAL and the shm, and those
+// were another account's. Every daemon start after it logged
+//
+//	job engine unavailable; the mutation surface will refuse
+//	… attempt to write a readonly database (8)
+//
+// and a later svcbvbrc `--direct` run failed the same way. Nothing in the
+// control plane noticed; a human did, the next day, with chmod.
+//
+// So: an account may run a job engine only out of a state directory it owns.
+// The refusal names the convention rather than only the problem, because the
+// operator reading it is mid-handover and needs the next command.
+//
+// It checks the DIRECTORY and the `jobs.db` in it, and is deliberately quiet
+// about everything else: a state dir that does not exist yet is fine (this
+// account is about to create it), and the sidecars are not checked separately
+// because a `jobs.db` this account owns in a directory it owns is a store
+// whose sidecars it can always rewrite.
+func CheckStateDirOwnership(stateDir string) error {
+	if strings.TrimSpace(stateDir) == "" {
+		return nil
+	}
+	self := os.Geteuid()
+	check := func(path, what string) error {
+		st, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %s (%s) cannot be examined, so this run cannot tell whether it belongs to "+
+				"another account: %v", jobs.ErrRefused, path, what, err)
+		}
+		sys, ok := st.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		if int(sys.Uid) == self {
+			return nil
+		}
+		owner := "uid " + strconv.Itoa(int(sys.Uid))
+		if u, uerr := user.LookupId(strconv.Itoa(int(sys.Uid))); uerr == nil {
+			owner = u.Username + " (uid " + strconv.Itoa(int(sys.Uid)) + ")"
+		}
+		return fmt.Errorf("%w: %s (%s) belongs to %s and this process is uid %d: a job engine opened here writes "+
+			"SQLite's sidecars (jobs.db-wal, jobs.db-shm) as THIS account, and that account's own daemon then "+
+			"fails to open its own store — \"attempt to write a readonly database\" — for the rest of its life. "+
+			"That happened on 2026-09-17. Point this run at a state directory this account owns:\n"+
+			"    CTL_STATE_DIR=%s CTL_CONFIG_DIR=%s ragstack-ctl …",
+			jobs.ErrRefused, path, what, owner, self, SelftestStateDir, SelftestConfigDir)
+	}
+	if err := check(stateDir, "the ctl state directory"); err != nil {
+		return err
+	}
+	return check(jobs.DefaultStorePath(stateDir), "the job store")
 }
 
 func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) {

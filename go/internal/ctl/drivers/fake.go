@@ -147,6 +147,23 @@ type FakeOptions struct {
 	// has never had one — which List reports as an empty body and no error,
 	// as the real crontab(1) wrapper does.
 	Crontab []byte
+	// FileUID is the uid this fake host runs as: the owner of everything it
+	// creates and Stat's answer for anything FileOwners does not name. Zero is
+	// a perfectly good uid, so it needs no sentinel.
+	FileUID int
+	// FileOwners are the paths owned by ANOTHER account: path → uid, a
+	// directory's entry covering its tree. It is how a fixture says "this
+	// tenant's pgdata is wilke's and this ctl is svcbvbrc's", which is the
+	// only fact that makes a postgres refuse to start.
+	FileOwners map[string]int
+	// InstanceExitOnRun names instances that START AND DIE, mapped to what
+	// they write to their .err log on the way out. It models the container
+	// apptainer starts successfully and that then exits — the shape of every
+	// store failure the readiness wait used to discover three minutes later.
+	InstanceExitOnRun map[string]string
+	// InstanceLogRoot is where this fake files its instance logs. Empty takes
+	// the fixture default.
+	InstanceLogRoot string
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -206,6 +223,7 @@ func NewFake(opts FakeOptions) *Fake {
 	f.files = &FakeFiles{
 		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
 		Roots: append([]string(nil), opts.Roots...), Free: opts.DiskFree,
+		UID: opts.FileUID, Owners: copyMapInt(opts.FileOwners),
 	}
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
@@ -245,6 +263,7 @@ func NewFake(opts FakeOptions) *Fake {
 	f.instances = &FakeInstances{
 		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, AccountRunning: map[string]jobs.Instance{}, nextPID: 21001,
+		LogRoot: opts.InstanceLogRoot, ExitOnRun: copyMapString(opts.InstanceExitOnRun),
 	}
 	// In this order, and not over a map of the two: the pids this fake hands
 	// out are part of what a test asserts, and a map would shuffle them.
@@ -903,6 +922,35 @@ type FakeInstances struct {
 	// in order: what a test reads to see that the ES config bind was filled
 	// from the image BEFORE the instance started.
 	Seeded []string
+	// LogRoot is where this fake host files its instance logs — the fixture's
+	// spelling of `<configdir>/instances/logs/<host>/<user>`. Empty takes
+	// fakeInstanceLogRoot.
+	LogRoot string
+	// ExitOnRun makes a named instance START AND DIE: Run succeeds, nothing
+	// enters the table, and the text is written to the instance's .err file on
+	// the in-memory filesystem.
+	//
+	// It is the only way to model the failure this fixture now has to produce.
+	// A postgres handed a data directory it does not own is not a Run that
+	// fails — apptainer starts it happily — it is a container that writes one
+	// line ("data directory has wrong ownership") and exits, leaving no row in
+	// the instance table and no exit status any caller can read. A fake whose
+	// instances either start or fail to start cannot produce the three minutes
+	// of waiting that followed on coconut.
+	ExitOnRun map[string]string
+}
+
+// fakeInstanceLogRoot is the fixture's instance-log directory. It mirrors the
+// real layout (`<configdir>/instances/logs/<host>/<user>`) closely enough that
+// a path read out of the fake is recognisably the one the host would give.
+const fakeInstanceLogRoot = "/rag/data/ctl/apptainer/config/instances/logs/coconut/svcbvbrc"
+
+// logRoot is LogRoot or the default.
+func (i *FakeInstances) logRoot() string {
+	if i.LogRoot != "" {
+		return i.LogRoot
+	}
+	return fakeInstanceLogRoot
 }
 
 var _ jobs.Instances = (*FakeInstances)(nil)
@@ -938,7 +986,9 @@ func (i *FakeInstances) start(ns jobs.InstanceNamespace, name, sif string) jobs.
 	// the port's owner to the instance's pid is the bug this models.
 	servicePID := pid + 1
 	i.nextPID += 2
-	in := jobs.Instance{Name: name, PID: pid, Image: sif}
+	in := jobs.Instance{Name: name, PID: pid, Image: sif,
+		LogOut: filepath.Join(i.logRoot(), name+".out"),
+		LogErr: filepath.Join(i.logRoot(), name+".err")}
 	i.table(ns)[name] = in
 	if port, ok := i.ports[name]; ok {
 		i.proc.mu.Lock()
@@ -1027,8 +1077,35 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	if _, ok := i.table(spec.Namespace)[spec.Name]; ok {
 		return fmt.Errorf("%w: instance %s is already running", jobs.ErrRefused, spec.Name)
 	}
+	// The instance that starts and dies. apptainer RETURNS SUCCESS here — it
+	// started a container, and what the container then did is between the
+	// container and its log — so this writes the log and leaves the table
+	// untouched, exactly as the host does.
+	if text, dies := i.ExitOnRun[spec.Name]; dies {
+		i.files.Put(filepath.Join(i.logRoot(), spec.Name+".err"), []byte(text), 0o644)
+		return nil
+	}
 	i.start(spec.Namespace, spec.Name, spec.SIF)
 	return nil
+}
+
+// LogPaths answers from the table when the instance is running and composes
+// the fixture's paths when it is not — the same order the real driver uses,
+// and for the same reason: the instance a caller wants the log of is usually
+// the one that is no longer there.
+func (i *FakeInstances) LogPaths(_ context.Context, name string, opts jobs.ListOptions) (string, string, error) {
+	if err := i.r.record("instances", "LogPaths", name, nsLabel(opts.Namespace)); err != nil {
+		return "", "", err
+	}
+	if err := checkInstanceName(name); err != nil {
+		return "", "", err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if in, ok := i.table(opts.Namespace)[name]; ok && (in.LogOut != "" || in.LogErr != "") {
+		return in.LogOut, in.LogErr, nil
+	}
+	return filepath.Join(i.logRoot(), name+".out"), filepath.Join(i.logRoot(), name+".err"), nil
 }
 
 // Stop stops an instance IN ONE REGISTRY, and an instance that is not running
@@ -1301,6 +1378,35 @@ type FakeFiles struct {
 	Roots []string
 	// Free is what DiskFree answers; zero means the default terabyte.
 	Free int64
+	// UID is the account this fake host runs as — the owner of everything it
+	// creates, and the answer Stat gives for a path nothing in Owners names.
+	UID int
+	// Owners are the paths owned by SOMEBODY ELSE: path → uid, and a
+	// directory's entry covers everything under it unless a deeper entry says
+	// otherwise.
+	//
+	// It exists for exactly one fact, and it is the fact the second failed
+	// handover turned on: postgres compares its data directory's st_uid with
+	// its own euid and refuses when they differ, whatever the mode is and
+	// whatever the ACL grants. A fake filesystem with no owners at all cannot
+	// express "wilke's pgdata, svcbvbrc's postgres", so it cannot test the
+	// step that exists to fix it.
+	Owners map[string]int
+}
+
+// ownerOf is the uid of path on this fake host: the deepest Owners entry that
+// covers it, else f.UID. Caller holds the lock.
+func (f *FakeFiles) ownerOf(path string) int {
+	best, bestLen := f.UID, -1
+	for p, uid := range f.Owners {
+		if p != path && !strings.HasPrefix(path, strings.TrimSuffix(p, "/")+"/") {
+			continue
+		}
+		if len(p) > bestLen {
+			best, bestLen = uid, len(p)
+		}
+	}
+	return best
 }
 
 // ErrOutsideRoots is the containment refusal of both Files drivers.
@@ -1414,6 +1520,12 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 	if _, taken := f.Dirs[to]; taken {
 		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, to)
 	}
+	// OWNERSHIP follows the inode, here as on the host: a rename changes a
+	// path, never a uid. Without this the handover's postgres migration would
+	// rename the other account's directory aside and the fake would go on
+	// answering "that path is the other account's" about the copy that
+	// replaced it — which is the one fact the whole step turns on.
+	f.renameOwner(from, to)
 	if v, ok := f.Files[from]; ok {
 		f.Files[to] = v
 		delete(f.Files, from)
@@ -1447,6 +1559,29 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 		return fmt.Errorf("rename %s: no such file or directory", from)
 	}
 	return nil
+}
+
+// renameOwner moves every Owners entry at or under `from` to `to`. Caller
+// holds the lock.
+func (f *FakeFiles) renameOwner(from, to string) {
+	if f.Owners == nil {
+		return
+	}
+	prefix := strings.TrimSuffix(from, "/") + "/"
+	moved := map[string]int{}
+	for p, uid := range f.Owners {
+		switch {
+		case p == from:
+			moved[to] = uid
+			delete(f.Owners, p)
+		case strings.HasPrefix(p, prefix):
+			moved[filepath.Join(to, strings.TrimPrefix(p, prefix))] = uid
+			delete(f.Owners, p)
+		}
+	}
+	for p, uid := range moved {
+		f.Owners[p] = uid
+	}
 }
 
 // Remove deletes one file or one EMPTY directory.
@@ -1486,6 +1621,11 @@ func (f *FakeFiles) Remove(_ context.Context, path string) error {
 func (f *FakeFiles) hasDir(dir string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.hasDirLocked(dir)
+}
+
+// hasDirLocked is hasDir for a caller that already holds the lock.
+func (f *FakeFiles) hasDirLocked(dir string) bool {
 	if _, ok := f.Dirs[dir]; ok {
 		return true
 	}
@@ -1608,6 +1748,125 @@ func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
 		return f.Free, nil
 	}
 	return 1 << 40, nil
+}
+
+// Stat is the fake host's lstat: the owner, the mode, the size and whether
+// the path is a directory.
+//
+// A path that is neither a recorded file nor a recorded (or implied) directory
+// is fs.ErrNotExist, so a caller telling "not there" from "cannot be read"
+// behaves here as it does on the host. The fake has no symlinks, so IsSymlink
+// is always false — a fake that claimed one would be claiming a case CopyTree
+// refuses and nothing here can create.
+func (f *FakeFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
+	if err := f.r.record("files", "Stat", path); err != nil {
+		return jobs.FileStat{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.Files[path]; ok {
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: v.Mode, Size: int64(len(v.Data))}, nil
+	}
+	if mode, ok := f.Dirs[path]; ok {
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: mode, IsDir: true}, nil
+	}
+	if f.hasDirLocked(path) {
+		// A directory nothing recorded but a file under it implies. 0700 is
+		// the conservative answer: it is what a postgres data directory
+		// carries, and CopyTree preserving it is what the caller asserts.
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: 0o700, IsDir: true}, nil
+	}
+	return jobs.FileStat{}, fmt.Errorf("lstat %s: %w", path, fs.ErrNotExist)
+}
+
+// SelfUID is the uid this fake host creates files as.
+func (f *FakeFiles) SelfUID(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.UID, nil
+}
+
+// TreeSize adds up the in-memory files under dir and counts the entries.
+func (f *FakeFiles) TreeSize(_ context.Context, dir string) (int64, int, error) {
+	if err := f.r.record("files", "TreeSize", dir); err != nil {
+		return 0, 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Dirs[dir]; !ok && !f.hasDirLocked(dir) {
+		return 0, 0, fmt.Errorf("open %s: %w", dir, fs.ErrNotExist)
+	}
+	prefix := strings.TrimSuffix(dir, "/") + "/"
+	var bytes int64
+	entries := 1 // dir itself, as filepath.WalkDir counts it
+	for p, v := range f.Files {
+		if strings.HasPrefix(p, prefix) {
+			bytes += int64(len(v.Data))
+			entries++
+		}
+	}
+	for d := range f.Dirs {
+		if strings.HasPrefix(d, prefix) {
+			entries++
+		}
+	}
+	return bytes, entries, nil
+}
+
+// CopyTree copies every path under src to dst, AS THIS ACCOUNT: the copy gets
+// no Owners entry, so Stat answers f.UID for all of it. That is the property
+// the handover's migration step exists to produce, and a fake that carried the
+// source's owner across would let the step pass its tests and fail on the
+// host.
+//
+// Modes are preserved, dst must not exist, and both halves of the refusal the
+// real driver makes are made here: a destination outside the approved roots,
+// and a destination that is already there.
+func (f *FakeFiles) CopyTree(_ context.Context, src, dst string) (int64, int, error) {
+	if err := f.r.record("files", "CopyTree", src, dst); err != nil {
+		return 0, 0, err
+	}
+	if !contained(dst, f.Roots) {
+		return 0, 0, outsideRoots(dst, f.Roots)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Files[dst]; ok {
+		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
+			jobs.ErrRefused, dst)
+	}
+	if _, ok := f.Dirs[dst]; ok || f.hasDirLocked(dst) {
+		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
+			jobs.ErrRefused, dst)
+	}
+	if _, ok := f.Dirs[src]; !ok && !f.hasDirLocked(src) {
+		return 0, 0, fmt.Errorf("%w: %s is not a directory, so there is no tree to copy", jobs.ErrRefused, src)
+	}
+	prefix := strings.TrimSuffix(src, "/") + "/"
+	var bytes int64
+	entries := 1
+	if mode, ok := f.Dirs[src]; ok {
+		f.Dirs[dst] = mode
+	} else {
+		f.Dirs[dst] = 0o700
+	}
+	for p, v := range f.Files {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		f.Files[filepath.Join(dst, strings.TrimPrefix(p, prefix))] = FakeFile{
+			Data: append([]byte(nil), v.Data...), Mode: v.Mode,
+		}
+		bytes += int64(len(v.Data))
+		entries++
+	}
+	for d, mode := range f.Dirs {
+		if strings.HasPrefix(d, prefix) {
+			f.Dirs[filepath.Join(dst, strings.TrimPrefix(d, prefix))] = mode
+			entries++
+		}
+	}
+	return bytes, entries, nil
 }
 
 // has reports whether path is in the in-memory filesystem. It is not a driver

@@ -446,6 +446,14 @@ type Instance struct {
 	// tells "this instance is the tenant's qdrant" from "something else is
 	// using that name".
 	Image string
+	// LogOut and LogErr are where apptainer appends the instance's stdout and
+	// stderr (`logOutPath`/`logErrPath` in `instance list --json`). They are
+	// the only place a container's own account of why it exited exists: an
+	// instance that died left no row in the table and no exit status anywhere
+	// the ctl can read, and its .err file is what says "data directory has
+	// wrong ownership".
+	LogOut string
+	LogErr string
 }
 
 // InstanceSpec is one `apptainer instance run`.
@@ -542,6 +550,21 @@ type Instances interface {
 	// an Elasticsearch that exits before it logs anything useful, and an
 	// instance supervisor has no ExecStartPre to hang the seed off.
 	SeedConfigDir(ctx context.Context, sif, containerDir, hostDir string) error
+	// LogPaths is where apptainer writes <name>'s stdout and stderr in
+	// opts.Namespace — whether or not the instance is running.
+	//
+	// "Whether or not" is the reason it exists. `instance list --json` carries
+	// logOutPath/logErrPath, but an instance whose process exited is not in
+	// that table any more, and THAT is precisely the case a caller needs the
+	// log for: a store that came up and died leaves no row, no exit status the
+	// ctl can read, and one file saying why. So a running instance's paths are
+	// read from the table and an absent one's are composed the way apptainer
+	// composes them (`<configdir>/instances/logs/<host>/<user>/<name>.<ext>`,
+	// and `$HOME/.apptainer` for the account-default namespace).
+	//
+	// It returns PATHS and reads nothing: a caller that wants the content asks
+	// Files, which is the surface that redacts and that a fake can seed.
+	LogPaths(ctx context.Context, name string, opts ListOptions) (out, err string, e error)
 }
 
 // Crontab is the CURRENT user's crontab, which on this host is the only boot
@@ -646,6 +669,78 @@ type Files interface {
 	// one failure mode that leaves a half-written bundle AND a full disk for
 	// every other tenant on the host.
 	DiskFree(ctx context.Context, path string) (int64, error)
+	// Stat is lstat of ONE path: who owns it, what mode it carries, how big it
+	// is, and whether it is a directory or a symlink.
+	//
+	// It exists because of a fact about postgres that no permission bit works
+	// around: postgres compares its data directory's `st_uid` against its own
+	// `geteuid()` and refuses to start when they differ ("data directory has
+	// wrong ownership"), whatever the mode is and whatever the ACL grants. A
+	// handover's take therefore has to ASK who owns a directory before it
+	// starts a server on it — qdrant and elasticsearch never ask, which is
+	// exactly why the first take got two stores up and died on the third.
+	//
+	// lstat rather than stat: a symlink where a data directory should be is a
+	// fact the caller must see, not a thing to follow. An absent path is
+	// fs.ErrNotExist, as ReadFile's is.
+	Stat(ctx context.Context, path string) (FileStat, error)
+	// TreeSize is the total size in bytes of the regular files under dir, and
+	// how many entries (files plus directories) the tree holds.
+	//
+	// It is the free-space question's other half: a copy of a tree needs room
+	// for the tree, and a precheck that guessed would be the difference
+	// between a take that refuses and a take that fills /rag for every other
+	// tenant on the host. Symlinks and special files count as entries and
+	// contribute no bytes — CopyTree refuses them, so a tree holding one fails
+	// at the copy, with a name, rather than silently coming up short.
+	TreeSize(ctx context.Context, dir string) (bytes int64, entries int, err error)
+	// CopyTree copies the tree at src to dst as THIS account, so that every
+	// file and directory in the copy is owned by the account that ran it. dst
+	// must not exist and must be under the approved roots; src is a read and
+	// is not root-checked.
+	//
+	// That ownership is the whole point of the method, and it is why this is
+	// not ReadDir plus CopyFile in a loop: an account that cannot chown —
+	// nobody on this host can — can still make a copy it owns, and for a
+	// postgres data directory that copy is the only way the other account's
+	// server will ever start.
+	//
+	// Modes are preserved from the source. Every file is fsynced and so is
+	// every directory, because the next thing that happens to this copy is a
+	// rename into the place the original was: a copy that is not on the disk
+	// when the machine dies is a tenant whose data directory is a half-written
+	// tree with the original already renamed aside.
+	//
+	// It refuses symlinks, device nodes and anything that is not a regular
+	// file or a directory, and it refuses a src that is not a directory. It
+	// answers the bytes and the entries it wrote, so a caller states what it
+	// did rather than what it intended.
+	CopyTree(ctx context.Context, src, dst string) (bytes int64, entries int, err error)
+	// SelfUID is the uid this driver creates files as — the account the ctl is
+	// running as, asked of the same seam that answers Stat.
+	//
+	// It is here rather than read from the process because the two answers
+	// have to come from ONE place: a step that compared a path's owner (a
+	// driver answer) against os.Geteuid() (a process answer) would be right on
+	// the host and meaningless against a fixture, and the fixture is where
+	// every test of the ownership migration runs.
+	SelfUID(ctx context.Context) (int, error)
+}
+
+// FileStat is Files.Stat's answer: the four facts a step may decide on. Not an
+// os.FileInfo — that carries an mtime and a Sys() any, and a step reaching for
+// either would be deciding out of something the registry does not record.
+type FileStat struct {
+	// UID is the owning uid. It is the field postgres cares about.
+	UID int
+	// Mode is the POSIX mode as the drivers write it (0o2770 style: setgid is
+	// the 0o2000 bit, not a Go flag bit).
+	Mode uint32
+	Size int64
+	// IsDir and IsSymlink are exclusive; a symlink is never reported as a
+	// directory, whatever it points at.
+	IsDir     bool
+	IsSymlink bool
 }
 
 // DirEntry is one entry of Files.ReadDir: the base name and whether it is a

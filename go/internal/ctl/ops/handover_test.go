@@ -160,6 +160,11 @@ func TestHandoverReleaseCountsAndRecordsBeforeItStopsAnything(t *testing.T) {
 	// stop.
 	want := []string{
 		"envfile: check that the take can obtain the postgres password",
+		// Beside it, the other postgres question a release is the last cheap
+		// moment to ask: can the taking account OWN the data directory, and is
+		// there room for the copy if it cannot. `dev` runs no postgres of its
+		// own, so this one is a skip with the reason on it.
+		"files: check what the take will have to do with the postgres data directory",
 		"probe: check that no ingest job is still running",
 		"probe: census: count every collection in the tenant's own qdrant",
 		"probe: census: count every index in the tenant's own elasticsearch",

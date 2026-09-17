@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -163,7 +164,8 @@ func NewReal(o RealOptions) *Real {
 		// The instance driver binds host paths into a container, so it gets
 		// the same approved roots the drivers that write under them do.
 		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
-			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir)},
+			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
+			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir)},
 		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
@@ -816,13 +818,247 @@ func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
 	}
 }
 
+// Stat is lstat of one path (a read, so not root-checked, like ReadFile).
+//
+// The UID is what the caller is usually here for, and on this host it is the
+// only thing that decides whether a postgres will start: postgres compares its
+// data directory's st_uid with its own geteuid() and refuses when they differ,
+// which no mode and no ACL entry changes.
+func (f *RealFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return jobs.FileStat{}, err
+	}
+	return fileStatOf(st)
+}
+
+// fileStatOf turns an os.FileInfo into the contract's four facts. The mode
+// goes back out in the spelling the drivers take it in (0o2770, setgid as the
+// 0o2000 bit) rather than in Go's flag-bit spelling, so that a mode read here
+// can be handed straight back to WriteAtomic or MkdirAll.
+func fileStatOf(st os.FileInfo) (jobs.FileStat, error) {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return jobs.FileStat{}, fmt.Errorf("%w: this platform does not report the owner of %s", jobs.ErrRefused, st.Name())
+	}
+	mode := uint32(st.Mode().Perm())
+	if st.Mode()&os.ModeSetuid != 0 {
+		mode |= syscall.S_ISUID
+	}
+	if st.Mode()&os.ModeSetgid != 0 {
+		mode |= syscall.S_ISGID
+	}
+	if st.Mode()&os.ModeSticky != 0 {
+		mode |= syscall.S_ISVTX
+	}
+	return jobs.FileStat{
+		UID: int(sys.Uid), Mode: mode, Size: st.Size(),
+		IsDir:     st.IsDir(),
+		IsSymlink: st.Mode()&os.ModeSymlink != 0,
+	}, nil
+}
+
+// SelfUID is this process's effective uid: the owner of everything this driver
+// creates, and the number postgres compares its data directory against.
+func (f *RealFiles) SelfUID(context.Context) (int, error) { return os.Geteuid(), nil }
+
+// TreeSize walks dir and adds up the regular files. A read, so not
+// root-checked; an absent dir is fs.ErrNotExist.
+//
+// It does NOT follow symlinks (filepath.WalkDir does not), and it does not
+// resolve hard links to a single copy: the number it answers is what a COPY of
+// this tree would occupy, which is the question its one caller asks.
+func (f *RealFiles) TreeSize(_ context.Context, dir string) (int64, int, error) {
+	var bytes int64
+	entries := 0
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		entries++
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		bytes += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return bytes, entries, nil
+}
+
+// CopyTree copies src to dst as this account: every file and directory it
+// creates is owned by whoever runs it, which is the only way an account that
+// cannot chown gives another account's postgres a data directory it will
+// accept.
+//
+// The rules, all of which have a failure behind them:
+//
+//   - dst must not exist. This is the same rule Rename has, and for the same
+//     reason: a copy that landed inside a tree already there would mix two
+//     data directories together.
+//   - every entry is lstat'ed and only a regular file or a directory is
+//     copied. A symlink in a postgres data directory (pg_wal moved to another
+//     filesystem is the usual one) is refused by NAME rather than followed,
+//     because following it would copy somebody else's tree into this one and
+//     silently drop the indirection the original depended on.
+//   - modes are preserved, and set before anything is written into the
+//     directory (the walk is top-down, so a 0700 directory is 0700 before its
+//     files land in it).
+//   - every file and every directory is fsynced. The next thing that happens
+//     to this copy is a rename into the original's place; a crash with the
+//     original renamed aside and this tree not yet on disk is the one outcome
+//     this whole operation exists to avoid.
+func (f *RealFiles) CopyTree(ctx context.Context, src, dst string) (int64, int, error) {
+	rdst, err := resolvedContainedNoLeafLink(dst, f.roots())
+	if err != nil {
+		return 0, 0, err
+	}
+	if _, lerr := os.Lstat(rdst); lerr == nil {
+		return 0, 0, fmt.Errorf("%w: %s already exists; the ctl never copies a tree over an existing path",
+			jobs.ErrRefused, rdst)
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return 0, 0, lerr
+	}
+	srcStat, err := os.Lstat(src)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !srcStat.IsDir() {
+		return 0, 0, fmt.Errorf("%w: %s is not a directory, so there is no tree to copy", jobs.ErrRefused, src)
+	}
+
+	var bytes int64
+	entries := 0
+	// The directories this call created, deepest last: they are fsynced on the
+	// way back out, after everything inside them has been written and renamed.
+	var dirs []string
+	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		target := filepath.Join(rdst, rel)
+		info, ierr := d.Info() // lstat: WalkDir does not follow links
+		if ierr != nil {
+			return ierr
+		}
+		st, serr := fileStatOf(info)
+		if serr != nil {
+			return serr
+		}
+		entries++
+		switch {
+		case st.IsSymlink:
+			return fmt.Errorf("%w: %s is a symlink; the ctl copies no tree that holds one — following it would copy "+
+				"what it points at into the tenant's tree and drop the indirection the original depended on",
+				jobs.ErrRefused, path)
+		case st.IsDir:
+			if err := os.Mkdir(target, fileMode(st.Mode)); err != nil && !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			// Explicit chmod: mkdir(2) masks the mode with the umask and does
+			// not reliably keep setgid, and a 0700 pgdata that arrived 0755 is
+			// a postgres that refuses for the OTHER reason it refuses.
+			if err := os.Chmod(target, fileMode(st.Mode)); err != nil {
+				return err
+			}
+			dirs = append(dirs, target)
+			return nil
+		case info.Mode().IsRegular():
+			n, cerr := copyRegular(path, target, st.Mode)
+			if cerr != nil {
+				return cerr
+			}
+			bytes += n
+			return nil
+		default:
+			return fmt.Errorf("%w: %s is neither a regular file nor a directory (%s); the ctl copies no tree that "+
+				"holds one", jobs.ErrRefused, path, info.Mode().Type())
+		}
+	})
+	if walkErr != nil {
+		return bytes, entries, walkErr
+	}
+	// The directories, deepest FIRST: a directory's fsync records the names in
+	// it, so a parent synced before its child's entries were durable would say
+	// the child exists over a child that does not.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		d, oerr := os.Open(dirs[i])
+		if oerr != nil {
+			return bytes, entries, oerr
+		}
+		serr := d.Sync()
+		_ = d.Close()
+		if serr != nil {
+			return bytes, entries, serr
+		}
+	}
+	return bytes, entries, nil
+}
+
+// copyRegular streams one file to a path that does not exist yet, at mode, and
+// fsyncs it. Unlike CopyFile it writes the destination DIRECTLY rather than
+// through a temporary: the whole tree is new, nothing reads it until the
+// rename that publishes it, and a temporary file per entry would double the
+// inode churn of copying a postgres data directory.
+func copyRegular(src, dst string, mode uint32) (n int64, err error) {
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(mode))
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(dst)
+		}
+	}()
+	// O_CREATE applies the umask; the mode is therefore set explicitly, before
+	// a byte is written, exactly as WriteAtomic sets it before its rename.
+	if err = out.Chmod(fileMode(mode)); err != nil {
+		out.Close()
+		return 0, err
+	}
+	if n, err = io.Copy(out, in); err != nil {
+		out.Close()
+		return n, err
+	}
+	if err = out.Sync(); err != nil {
+		out.Close()
+		return n, err
+	}
+	return n, out.Close()
+}
+
+// apptainerConfigDir is the ctl's own APPTAINER_CONFIGDIR. The instance table
+// AND the instance logs hang off it, so it is a path two callers need and not
+// just a string inside apptainerEnv's slice.
+func apptainerConfigDir(ctlStateDir string) string {
+	return filepath.Join(ctlStateDir, "apptainer", "config")
+}
+
 // apptainerEnv is the apptainer state the ctl owns — the same two directories
 // the rendered units set — so every apptainer call, from any account the ctl
 // runs as, reads and writes one instance registry.
 func apptainerEnv(ctlStateDir string) []string {
 	return []string{
 		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
-		"APPTAINER_CONFIGDIR=" + filepath.Join(ctlStateDir, "apptainer", "config"),
+		"APPTAINER_CONFIGDIR=" + apptainerConfigDir(ctlStateDir),
 	}
 }
 

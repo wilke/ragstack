@@ -21,6 +21,28 @@ async def test_health_is_anonymous_and_conforms(
     assert_request_id(resp)
 
 
+async def test_health_says_whether_the_job_engine_is_available(
+    anon_client: httpx.AsyncClient,
+) -> None:
+    """``engine`` is the half of a daemon's health a liveness check cannot see.
+
+    ``status`` is pinned to ``ok`` by the schema and says only that the process
+    is answering. A daemon whose job store cannot be opened answers every read
+    perfectly and refuses every mutation with 409 ``refused`` — and on
+    2026-09-17 one did exactly that for a day, because the only place it said so
+    was a WARN line at start-up. This field is that fact, on the one endpoint
+    that needs no credential, so a probe can raise it.
+
+    A daemon this harness booted has a store of its own, so the answer here is
+    ``available``; ``unavailable`` from this fixture would mean the harness's own
+    scratch state directory is unwritable.
+    """
+    body = (await anon_client.get("/health")).json()
+    assert body["engine"] == "available", (
+        f"the fixture daemon reports engine={body['engine']!r}: its job store could not be opened"
+    )
+
+
 async def test_request_id_differs_between_requests(anon_client: httpx.AsyncClient) -> None:
     first = assert_request_id(await anon_client.get("/health"))
     second = assert_request_id(await anon_client.get("/health"))

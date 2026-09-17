@@ -258,6 +258,12 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 	// ---- everything that can refuse runs BEFORE anything is stopped.
 
 	p.addHandoverPGPasswordCheck(legs)
+	// …and, beside it, the OTHER thing about postgres that can only be
+	// discovered cheaply now: whether the take will be able to own the data
+	// directory, and whether this filesystem has room for the copy that takes.
+	// Both questions are the same shape — a take that fails on either fails
+	// with the tenant already stopped.
+	p.addPGDataOwnershipCheck(legs)
 	p.addNoRunningIngest(origin, secretsEnv)
 	p.addCensus(legs, origin, secretsEnv, census)
 	// The LAST thing that can refuse, and the one that has to run before the
@@ -1258,6 +1264,13 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 		}
 	}
 
+	// The data directory, before ANY store is started and after the ports are
+	// proved free. Both halves of that placement are load-bearing: a directory
+	// moved under processes the release did not manage to stop is the worst
+	// thing this job could do, and a postgres started before the move is the
+	// failure the whole step exists to prevent (ops/pgdata.go).
+	p.addPGDataMigration(legs, account)
+
 	p.addTakeSupervisorStep()
 	for _, c := range legs {
 		if !c.Managed {
@@ -1653,6 +1666,18 @@ func planHandoverCommit(p *planner) error {
 	p.result["phase"] = "committed"
 	p.result["owner"] = account
 	p.result["desired_boot"] = "enabled"
+	// The one thing a commit leaves on the disk. The block is about to be
+	// cleared, so this is the LAST moment at which the registry can say where
+	// the tenant's pre-handover postgres directory is; from here on doctor's
+	// `pre_handover_copy_present` is what remembers, because it reads the disk.
+	if pd := h.PostgresData; pd != nil {
+		p.result["pre_handover_postgres_data"] = pd.PreHandover
+		p.warn("the take copied this tenant's postgres data directory (it could not start on one it did not own) "+
+			"and the ORIGINAL is still at %s. This commit does not delete it: it is the last copy of the tenant's "+
+			"postgres as %s had it, and removing it is a decision for after the soak. `doctor` reports "+
+			"`pre_handover_copy_present` until it is gone; delete it as %s (`rm -rf %s`)",
+			pd.PreHandover, h.ReleasedBy, h.ReleasedBy, pd.PreHandover)
+	}
 	p.warn("`ops/coconut/restore.sh` skips this tenant from now on (\"handed over to the control plane\") and " +
 		"`ragstack-ctl fleet start --all` — the service account's @reboot line — is what brings it back")
 	return nil
@@ -1772,6 +1797,13 @@ func planHandoverAbandon(p *planner) error {
 			},
 		})
 	}
+	// The data directory goes back BEFORE the row does. An abandon that
+	// recorded `manual` and handed the tenant to `restore.sh` while its
+	// postgres directory was still the take's copy would start the releasing
+	// account's postgres on a directory it does not own — the same refusal in
+	// the other direction.
+	p.addPGDataSwapBack(h)
+
 	name := p.tenant
 	phase := h.Phase
 	p.add(step{

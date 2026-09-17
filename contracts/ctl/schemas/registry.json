@@ -468,7 +468,7 @@
     "Handover": {
       "description": "The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`.",
       "type": "object",
-      "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census"],
+      "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census", "postgres_data"],
       "properties": {
         "phase": {
           "description": "`released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.",
@@ -502,6 +502,22 @@
             },
             "additionalProperties": false
           }
+        },
+        "postgres_data": {
+          "description": "Where the TAKE put a postgres data directory it did not own, and null for every tenant that does not run a postgres of its own (and for one whose directory the taking account already owned).\n\nA handover moves no data — except here. postgres compares its data directory's `st_uid` against its own `geteuid()` and refuses to start when they differ (\"data directory has wrong ownership\"), which no mode and no ACL entry changes, and no account on this host may chown to another. So the take COPIES `<data_dir>/postgres/data` as itself, renames the original to `pre_handover` and renames the copy into place. `--abandon` swaps the two names back; `--commit` leaves the original where it is and doctor raises `pre_handover_copy_present` until an operator deletes it.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["pre_handover", "copy", "migrated_at"],
+              "properties": {
+                "pre_handover": { "description": "Where the ORIGINAL directory was renamed to: `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing writes to it again.", "$ref": "#/$defs/AbsPath" },
+                "copy": { "description": "The name the take's copy was made under before it was renamed into place: `<data_dir>/postgres/data.<account>-<ts>`. The abandon renames the live directory back to it.", "$ref": "#/$defs/AbsPath" },
+                "migrated_at": { "$ref": "#/$defs/Timestamp" }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
         }
       },
       "additionalProperties": false

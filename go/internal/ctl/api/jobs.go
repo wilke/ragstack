@@ -83,12 +83,14 @@ type errorExtra interface{ ErrorExtra() map[string]any }
 // cannot run yet is `refused` "with `detail` saying so".
 func (s *Server) engineNotWired(w http.ResponseWriter, r *http.Request) {
 	why := ErrEngineNotWired
-	if s.EngineErr != nil {
-		why = s.EngineErr
+	if _, err := s.engine(); err != nil {
+		why = err
 	}
 	writeError(w, r, model.CodeRefused,
 		"the job engine is unavailable on this daemon: "+why.Error()+
-			" — reads still answer; fix the cause and restart the daemon", nil)
+			" — reads still answer, and the daemon retries opening its job store in the background; fix the cause "+
+			"(GET /health says `engine`, and `doctor` says `job_engine_unavailable`) and it recovers without a "+
+			"restart", nil)
 }
 
 // jobsError maps an engine error onto the contract. One code per error, one
@@ -257,7 +259,8 @@ func decodeArgs(raw json.RawMessage) (map[string]any, error) {
 
 // submit is the one path every mutation takes.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, req jobs.Request) {
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		s.engineNotWired(w, r)
 		return
 	}
@@ -269,7 +272,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, req jobs.Request
 		"op", req.Op, "tenant", req.Tenant,
 		"principal", req.Principal.Subject, "dry_run", req.DryRun)
 
-	plan, job, err := s.Engine.Submit(r.Context(), req)
+	plan, job, err := eng.Submit(r.Context(), req)
 	if err != nil {
 		s.jobsError(w, r, plan, err)
 		return
@@ -421,7 +424,8 @@ func (s *Server) handleJobContinuation(op string) http.HandlerFunc {
 					", whose plan is already recorded — read it with GET /v1/jobs/"+id, nil)
 			return
 		}
-		if s.Engine == nil {
+		eng, _ := s.engine()
+		if eng == nil {
 			s.engineNotWired(w, r)
 			return
 		}
@@ -434,15 +438,15 @@ func (s *Server) handleJobContinuation(op string) http.HandlerFunc {
 		)
 		switch op {
 		case opJobResume:
-			job, err = s.Engine.Resume(r.Context(), id, p)
+			job, err = eng.Resume(r.Context(), id, p)
 		case opJobContinue:
-			job, err = s.Engine.Continue(r.Context(), id, p)
+			job, err = eng.Continue(r.Context(), id, p)
 		case opJobCancel:
 			// The envelope's `confirm` is not decoration on this route:
 			// openapi.yaml requires it when the cancel would roll back
 			// succeeded steps, and the engine is what decides whether it
 			// would. Dropping it here made every such cancel unconfirmable.
-			job, err = s.Engine.Cancel(r.Context(), id, p, req.Confirm)
+			job, err = eng.Cancel(r.Context(), id, p, req.Confirm)
 		default:
 			writeError(w, r, model.CodeInternal, "unknown job continuation", nil)
 			return
@@ -533,7 +537,8 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"fields": []string{"tenant"}})
 		return
 	}
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		// A read, not a mutation: the honest answer on a daemon with no
 		// engine is that it has run no jobs. The mutation routes are where
 		// "not wired" is reported, because that is where it changes an
@@ -541,7 +546,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, model.JobsResponse{Jobs: []model.Job{}, Limit: limit, Truncated: false})
 		return
 	}
-	list, truncated, err := s.Engine.List(r.Context(), jobs.ListFilter{
+	list, truncated, err := eng.List(r.Context(), jobs.ListFilter{
 		Tenant: tenant, State: model.JobState(state), Limit: limit,
 	})
 	if err != nil {
@@ -561,11 +566,12 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		writeError(w, r, model.CodeNotFound, "no job "+id, nil)
 		return
 	}
-	job, err := s.Engine.Get(r.Context(), id)
+	job, err := eng.Get(r.Context(), id)
 	if err != nil {
 		s.jobsError(w, r, nil, err)
 		return
@@ -580,7 +586,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		// steps/{n}/log endpoint serves (redacted), null when the step wrote
 		// nothing; the viewer reduction nulls it always.
 		for i := range job.Steps {
-			if text, err := s.Engine.StepLog(r.Context(), id, job.Steps[i].N); err == nil && text != "" {
+			if text, err := eng.StepLog(r.Context(), id, job.Steps[i].N); err == nil && text != "" {
 				job.Steps[i].Log = model.NullString(fmt.Sprintf("steps/%d.log", job.Steps[i].N))
 			}
 		}
@@ -603,11 +609,12 @@ func (s *Server) handleJobStepLog(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		writeError(w, r, model.CodeNotFound, "no job "+id, nil)
 		return
 	}
-	text, err := s.Engine.StepLog(r.Context(), id, n)
+	text, err := eng.StepLog(r.Context(), id, n)
 	if err != nil {
 		s.jobsError(w, r, nil, err)
 		return
@@ -655,11 +662,12 @@ func (s *Server) handleJobSecrets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		writeError(w, r, model.CodeNotFound, "no job "+id, nil)
 		return
 	}
-	resp, err := s.Engine.Secrets(r.Context(), id, jobPrincipal(r))
+	resp, err := eng.Secrets(r.Context(), id, jobPrincipal(r))
 	if err != nil {
 		s.jobsError(w, r, nil, err)
 		return
@@ -683,11 +691,12 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"fields": []string{"tenant"}})
 		return
 	}
-	if s.Engine == nil {
+	eng, _ := s.engine()
+	if eng == nil {
 		writeJSON(w, http.StatusOK, model.AuditResponse{Rows: []model.AuditRow{}, Limit: limit, Truncated: false})
 		return
 	}
-	rows, truncated, err := s.Engine.Audit(r.Context(), limit)
+	rows, truncated, err := eng.Audit(r.Context(), limit)
 	if err != nil {
 		s.jobsError(w, r, nil, err)
 		return

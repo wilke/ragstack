@@ -1612,3 +1612,173 @@ func TestAnEmptyPreconditionRowIsNotTheSameAsAnUnknownOp(t *testing.T) {
 		t.Error("KnownOp(no-such-verb) = true")
 	}
 }
+
+// --------------------------------------------------------------------------
+// What a handover leaves behind, and who owns the job store
+// --------------------------------------------------------------------------
+
+// localPostgres turns the world's dev tenant into one with a dedicated
+// postgres on the block's +5 port, the only kind whose data directory this
+// deployment owns — and therefore the only kind a handover has to copy.
+func (w *world) localPostgres() {
+	w.tenant.Stores.Postgres = registry.Postgres{
+		Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive,
+		URL:      registry.NullString(fmt.Sprintf("postgresql://localhost:%d", w.tenant.Ports.PG)),
+		Port:     registry.NullPort(w.tenant.Ports.PG),
+		Instance: registry.NullString("postgres-dev"),
+		DataDir:  registry.NullString(filepath.Join(w.tenant.DataDir, "postgres")),
+	}
+}
+
+// TestAPreHandoverCopyIsNamedUntilSomebodyRemovesIt. A handover's take cannot
+// start postgres on a data directory it does not own — postgres compares
+// st_uid with geteuid() and refuses — so it copies, and renames the original
+// out of the way rather than deleting it. Keeping it is CORRECT: it is the
+// last copy of the tenant's database as the releasing account had it, and
+// `--abandon` renames it back. But the commit clears the handover block, and
+// from that moment the registry no longer remembers the directory at all: the
+// only place the fact still lives is the disk, and a second copy of a
+// production database on a filesystem every tenant shares is not a thing to
+// leave unnamed.
+func TestAPreHandoverCopyIsNamedUntilSomebodyRemovesIt(t *testing.T) {
+	w := newWorld(t)
+	w.localPostgres()
+	left := filepath.Join(w.tenant.DataDir, "postgres", PreHandoverDirPrefix+"20260917T083000Z")
+	if err := os.MkdirAll(left, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	found := findingsForCode(w.run(t), PreHandoverCopyPresent)
+	if len(found) != 1 {
+		t.Fatalf("got %d %s findings, want exactly 1: %+v", len(found), PreHandoverCopyPresent, found)
+	}
+	f := found[0]
+	// Info, not a warning. Nothing is broken and no op should be gated on it;
+	// what it needs is to stay visible.
+	if f.Level != model.LevelInfo {
+		t.Errorf("level = %s, want info: leaving the copy is correct until the handover has soaked", f.Level)
+	}
+	if f.Tenant != "dev" {
+		t.Errorf("tenant = %q, want dev: this is a tenant finding, not a host one", f.Tenant)
+	}
+	// The PATH is the finding — the size deliberately is not, because `du`
+	// over a postgres data directory on every doctor poll is IO nobody asked
+	// for, and the operator about to delete it will run `du` once themselves.
+	if !strings.Contains(f.Detail, left) {
+		t.Errorf("the finding does not name the directory: %q", f.Detail)
+	}
+	if !strings.Contains(f.Repair, "rm -rf "+left) {
+		t.Errorf("the repair is not the command that clears it: %q", f.Repair)
+	}
+}
+
+// TestNoPreHandoverCopyIsNoFinding covers the two silences. A doctor that
+// raised this row on every tenant with a postgres would put a permanent info
+// line on a fleet where no handover has ever run, and the operator who learns
+// to scroll past it is the operator who scrolls past the real one.
+func TestNoPreHandoverCopyIsNoFinding(t *testing.T) {
+	t.Run("a local postgres with nothing left behind", func(t *testing.T) {
+		w := newWorld(t)
+		w.localPostgres()
+		// The live data directory exists; only the pre-handover sibling does not.
+		if err := os.MkdirAll(filepath.Join(w.tenant.DataDir, "postgres", "data"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if found := findingsForCode(w.run(t), PreHandoverCopyPresent); len(found) != 0 {
+			t.Fatalf("a tenant with no pre-handover copy raised %+v", found)
+		}
+	})
+
+	// A directory with the right NAME under a tenant whose postgres this
+	// deployment does not own says nothing about a handover: the check exists
+	// because the take copies a local data directory, and there is nothing to
+	// copy on a sqlite or external leg. The baseline tenant is `sqlite`.
+	t.Run("a postgres leg that is not local", func(t *testing.T) {
+		w := newWorld(t)
+		if w.tenant.Stores.Postgres.Kind == registry.PostgresKindLocal {
+			t.Fatal("the baseline tenant is local; this case asserts nothing")
+		}
+		if err := os.MkdirAll(
+			filepath.Join(w.tenant.DataDir, "postgres", PreHandoverDirPrefix+"20260917T083000Z"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if found := findingsForCode(w.run(t), PreHandoverCopyPresent); len(found) != 0 {
+			t.Fatalf("a %s postgres raised %+v", w.tenant.Stores.Postgres.Kind, found)
+		}
+	})
+}
+
+// TestAForeignJobStoreIsRed is 2026-09-17 as a finding. A wilke `--direct` run
+// against CTL_STATE_DIR=/rag/data/ctl left wilke-owned `jobs.db-wal` and
+// `jobs.db-shm` beside svcbvbrc's `jobs.db`, and SQLite opens a WAL database
+// read-write only when it can write all three files — so the daemon's whole
+// mutation surface answered 409 refused for a day while reads, doctor and the
+// dashboard all worked perfectly. Nothing was visibly wrong, which is why this
+// has to be a finding and not only a log line.
+//
+// The check compares OWNERS rather than trying to open the database: doctor
+// often runs as an operator who is not the daemon's account at all, and "can I
+// write it" would then answer a question nobody asked.
+func TestAForeignJobStoreIsRed(t *testing.T) {
+	w := newWorld(t)
+	store := filepath.Join(w.roots.CtlStateDir, "jobs.db")
+	if err := os.MkdirAll(w.roots.CtlStateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, store, "sqlite")
+	w.opts.CtlUser = DefaultCtlUser
+
+	// The store belongs to whoever ran this test, so a daemon account that IS
+	// this process owns its own store and there is nothing to say.
+	w.opts.CtlUID = os.Geteuid()
+	if found := findingsForCode(w.run(t), JobEngineUnavailable); len(found) != 0 {
+		t.Fatalf("a store owned by the daemon's own account raised %+v", found)
+	}
+
+	// …and a daemon account that is anybody else cannot write it.
+	w.opts.CtlUID = os.Geteuid() + 1
+	found := findingsForCode(w.run(t), JobEngineUnavailable)
+	if len(found) != 1 {
+		t.Fatalf("got %d %s findings, want exactly 1: %+v", len(found), JobEngineUnavailable, found)
+	}
+	f := found[0]
+	if f.Level != model.LevelError {
+		t.Errorf("level = %s, want error: every mutation on this daemon is refused", f.Level)
+	}
+	if f.Tenant != "" {
+		t.Errorf("tenant = %q; the job store is a host fact, not a tenant's", f.Tenant)
+	}
+	if !strings.Contains(f.Detail, store) {
+		t.Errorf("the finding does not name the store: %q", f.Detail)
+	}
+	// The SIDECARS are the mechanism and the reason the finding is not
+	// obvious: an operator looking at a jobs.db they can read has no reason to
+	// suspect the two files beside it.
+	if !strings.Contains(f.Repair, "jobs.db-wal") || !strings.Contains(f.Repair, "jobs.db-shm") {
+		t.Errorf("the repair does not name the sidecars to remove: %q", f.Repair)
+	}
+	// And the repair must not say "restart the daemon": it retries the store
+	// in the background and recovers on its own.
+	if !strings.Contains(f.Repair, "background") {
+		t.Errorf("the repair does not say the daemon recovers by itself: %q", f.Repair)
+	}
+}
+
+// TestNoCtlUIDIsNoJobStoreGuess. On a developer checkout, or a host where the
+// service account does not exist, there is no reference account to compare
+// against — and a check that guessed would raise a red finding on every laptop
+// that ever ran the test suite. Silence beats a guess.
+func TestNoCtlUIDIsNoJobStoreGuess(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(w.roots.CtlStateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(w.roots.CtlStateDir, "jobs.db"), "sqlite")
+	write(t, filepath.Join(w.roots.CtlStateDir, "jobs.db-wal"), "wal")
+	for _, uid := range []int{0, -1} {
+		w.opts.CtlUID = uid
+		if found := findingsForCode(w.run(t), JobEngineUnavailable); len(found) != 0 {
+			t.Errorf("CtlUID %d raised %+v; there is no account to compare against", uid, found)
+		}
+	}
+}

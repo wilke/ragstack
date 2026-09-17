@@ -452,6 +452,37 @@ type Handover struct {
 	// its own reading against it. A count of -1 is "this store could not be
 	// counted", which the take reports and does not treat as agreement.
 	Census []CensusEntry `json:"census"`
+	// PostgresData records the ONE thing a handover moves, and it is null for
+	// every tenant that does not run a postgres of its own.
+	//
+	// A handover moves no data — except here. postgres compares its data
+	// directory's st_uid against its own geteuid() and refuses to start when
+	// they differ, which no mode and no ACL entry changes, and nobody on this
+	// host can chown to another account. So the take COPIES the directory as
+	// itself and renames the original aside; this block says where the
+	// original went. It is what an abandon swaps back and what the operator
+	// eventually deletes.
+	PostgresData *PostgresDataMigration `json:"postgres_data"`
+}
+
+// PostgresDataMigration is where the take put a postgres data directory it did
+// not own.
+//
+// BOTH paths are recorded, not just the original. The abandon has to put the
+// two names back the way they were, and a block naming only the original would
+// leave it guessing at the name of the copy it is renaming away — a guess,
+// over a live data directory, in the one verb whose whole job is to be exactly
+// reversible.
+type PostgresDataMigration struct {
+	// PreHandover is where the ORIGINAL (the releasing account's) directory
+	// was renamed to: `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing
+	// writes to it again; a commit leaves it, an operator deletes it.
+	PreHandover string `json:"pre_handover"`
+	// Copy is the name the take's copy was made under before it was renamed
+	// into place: `<data_dir>/postgres/data.<account>-<ts>`.
+	Copy string `json:"copy"`
+	// MigratedAt is when the two renames happened.
+	MigratedAt string `json:"migrated_at"`
 }
 
 // CensusEntry is one collection or index and how many rows it held at the

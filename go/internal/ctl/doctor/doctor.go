@@ -258,6 +258,7 @@ func (d *run) hostChecks() {
 	}
 	d.heapSum()
 	d.bootHook()
+	d.jobStoreCheck()
 	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
@@ -377,6 +378,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	}
 	d.unexpectedListeners(t)
 	d.postgresCheck(t)
+	d.preHandoverCopyCheck(t)
 	d.uiCheck(t)
 	d.envCheck(t)
 	d.codeChecks(t)
@@ -505,6 +507,123 @@ func (d *run) postgresCheck(t *registry.Tenant) {
 	d.add(model.LevelWarn, PostgresNotListening, t.Name, fmt.Sprintf(
 		"state is active but nothing listens on :%d, the dedicated relational store (%s); the tenant's user, job and collection stores are all unreachable",
 		port, instance))
+}
+
+// preHandoverCopyCheck names the original postgres data directory a handover's
+// take left behind.
+//
+// The take has to copy a data directory it does not own — postgres compares
+// st_uid with geteuid() and refuses when they differ — and it renames the
+// original to `data.pre-handover-<ts>` rather than deleting it. A commit
+// deliberately leaves it: it is the last copy of this tenant's postgres as the
+// releasing account had it, and `--abandon` renames it back. But the commit
+// also CLEARS the handover block, so after it the registry no longer remembers
+// the directory at all, and the only place the fact still lives is the disk.
+//
+// Hence a disk check, at INFO, that keeps saying so until somebody removes it.
+// A second copy of a production database on a filesystem shared by every
+// tenant on the host is not a thing to leave unnamed.
+//
+// The SIZE is not measured: `du` over a postgres data directory is IO doctor
+// runs on every poll, and the operator who is about to delete it will run `du`
+// once themselves. The path is the finding.
+func (d *run) preHandoverCopyCheck(t *registry.Tenant) {
+	if t.Stores.Postgres.Kind != registry.PostgresKindLocal || t.DataDir == "" {
+		return
+	}
+	dir := filepath.Join(t.DataDir, "postgres")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Absent or unreadable is another check's problem: this one only
+		// reports what it can see.
+		return
+	}
+	var found []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), PreHandoverDirPrefix) {
+			found = append(found, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	sort.Strings(found)
+	d.addRepair(model.LevelInfo, PreHandoverCopyPresent, t.Name, fmt.Sprintf(
+		"%s %s beside %s: the postgres data %s the handover take copied because it could not start on a directory "+
+			"it did not own. Keeping it is correct until the handover has soaked — `--abandon` renames it back — "+
+			"but it is a second copy of this tenant's database on a shared filesystem",
+		plural(len(found), "a pre-handover directory", fmt.Sprintf("%d pre-handover directories", len(found))),
+		strings.Join(found, ", "), filepath.Join(dir, "data"),
+		plural(len(found), "directory", "directories")),
+		"rm -rf "+strings.Join(found, " ")+"  # as the account that owns it, and only after `handover --commit`")
+}
+
+// PreHandoverDirPrefix is the name ops/pgdata.go renames an original postgres
+// data directory to. The two packages cannot import each other (ops imports
+// doctor through the engine), so the string is declared here and the ops
+// package's own constant is asserted equal to it by a test.
+const PreHandoverDirPrefix = "data.pre-handover-"
+
+// jobStoreCheck reports a job store this deployment's daemon cannot write.
+//
+// SQLite in WAL mode needs to write three files, not one: the database and the
+// `-wal` and `-shm` sidecars it creates beside it. An account that opens
+// another account's store leaves ITS OWN sidecars there, and from that moment
+// the owner's daemon cannot open its own database read-write — "attempt to
+// write a readonly database (8)" — for the rest of its life. Reads, doctor and
+// the dashboard all go on working, so nothing looks wrong.
+//
+// That is 2026-09-17, exactly: a wilke `--direct` run against
+// CTL_STATE_DIR=/rag/data/ctl left `jobs.db-wal` and `jobs.db-shm` owned by
+// wilke beside svcbvbrc's `jobs.db`, and the daemon refused every mutation for
+// a day. `--direct` now refuses another account's state dir before it opens
+// anything, and the daemon retries its store in the background — this finding
+// is what makes the situation VISIBLE while either of those is happening.
+//
+// It compares owners rather than trying to open the database: doctor may run
+// as an operator who is not the daemon's account at all, and "can I write it"
+// would then answer the wrong question. The daemon's account is the reference.
+func (d *run) jobStoreCheck() {
+	if d.opts.CtlUID <= 0 {
+		// No reference account to compare against (a developer checkout, or a
+		// host where the ctl user does not exist). Silence beats a guess.
+		return
+	}
+	store := filepath.Join(d.roots.CtlStateDir, "jobs.db")
+	if _, err := os.Stat(store); err != nil {
+		return // no store yet: nothing has run here
+	}
+	var foreign []string
+	for _, p := range []string{store, store + "-wal", store + "-shm"} {
+		uid, ok := fileUID(p)
+		if !ok || uid == d.opts.CtlUID {
+			continue
+		}
+		foreign = append(foreign, fmt.Sprintf("%s (uid %d)", p, uid))
+	}
+	if len(foreign) == 0 {
+		return
+	}
+	d.addRepair(model.LevelError, JobEngineUnavailable, "", fmt.Sprintf(
+		"%s not owned by %s (uid %d), the account this daemon runs as: SQLite opens a WAL database read-write only "+
+			"when it can write the database AND both sidecars, so the daemon's whole mutation surface answers 409 "+
+			"refused while reads keep working. GET /health reports `engine: unavailable` for the same fact",
+		strings.Join(foreign, ", "), d.opts.CtlUser, d.opts.CtlUID),
+		"as the owner of those files: rm -f "+store+"-wal "+store+"-shm  # the daemon retries its store in the "+
+			"background and recovers without a restart")
+}
+
+// fileUID is the owning uid of path, and whether it could be read at all.
+func fileUID(path string) (int, bool) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return 0, false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(sys.Uid), true
 }
 
 // uiCheck re-runs adoption's static-UI precondition on EVERY pass.
