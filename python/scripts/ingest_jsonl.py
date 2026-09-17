@@ -79,6 +79,7 @@ from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
+from ragstack.metadata_schema import validate_chunks
 from ragstack.models import Chunk, Document
 from ragstack.ops import ingest_target
 from ragstack.provenance import make_ingest_manifest, write_manifest
@@ -740,6 +741,15 @@ async def run(
             # delete-before-upsert ordering lost data when a filtered delete on a
             # large collection timed out mid-batch: the delete landed, upsert didn't).
             if kept:
+                # THE INGEST BOUNDARY (#603), for the path that does NOT go
+                # through IngestionPipeline.index_chunks. This is the loader the
+                # 47.6M-chunk corpora came through, so it is exactly where a
+                # wrong-typed field becomes an Elasticsearch mapping nobody can
+                # change in place. Raises on the first offending chunk — the
+                # batch retry wrapper treats it as non-transient and stops the
+                # run, which is the right answer for a type error: it will not
+                # fix itself on the next attempt.
+                validate_chunks(kept, where="ingest_jsonl")
                 await store.upsert(kept)
                 if text_index is not None:
                     await text_index.index(kept)

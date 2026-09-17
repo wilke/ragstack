@@ -22,6 +22,10 @@ from ragstack.documents import (
     document_from_chunk_metadata,
     encode_cursor,
 )
+from ragstack.metadata_schema import (
+    KEYWORD_IGNORE_ABOVE,
+    elasticsearch_metadata_properties,
+)
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import (
     KIND_ERROR,
@@ -85,7 +89,11 @@ def _client_default_timeout_s() -> float:
 # ignore_above set, an over-long value is simply not indexed for exact match — it is
 # still stored in _source and still returned. 8191 chars is the largest bound that
 # stays under Lucene's 32766-BYTE limit even for 4-byte UTF-8.
-_METADATA_KEYWORD_IGNORE_ABOVE = 8191
+#
+# The bound now lives in ``ragstack.metadata_schema`` (the same table the derived
+# metadata properties below come from) and is re-exported here under its historical
+# name so nothing that imports it has to move.
+_METADATA_KEYWORD_IGNORE_ABOVE = KEYWORD_IGNORE_ABOVE
 
 # Bulk-request sizing. ES rejects a body over `http.max_content_length` (100 MB by
 # default) with a bare HTTP 413 — no per-item errors, nothing indexed. Cap well
@@ -99,28 +107,49 @@ _BULK_BATCH_SIZE = 500
 # free and letting the count cap alone drive an oversized body.
 _METADATA_BYTES_ESTIMATE = 2048
 
-_MAPPINGS: dict[str, Any] = {
-    "dynamic_templates": [
-        {
-            "metadata_strings_as_keyword": {
-                "path_match": "metadata.*",
-                "match_mapping_type": "string",
-                "mapping": {
-                    "type": "keyword",
-                    "ignore_above": _METADATA_KEYWORD_IGNORE_ABOVE,
-                },
-            }
+# The dynamic template alone, which is all that can be pushed at an index that
+# already exists. A template governs fields it maps for the FIRST time, so it is
+# always safe to (re)apply; explicit ``properties`` are not — see ``ensure_index``.
+_DYNAMIC_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "metadata_strings_as_keyword": {
+            "path_match": "metadata.*",
+            "match_mapping_type": "string",
+            "mapping": {
+                "type": "keyword",
+                "ignore_above": _METADATA_KEYWORD_IGNORE_ABOVE,
+            },
         }
-    ],
+    }
+]
+
+# The mapping a NEW index is created with. ``metadata``'s sub-properties are
+# DERIVED from the declared schema (``contracts/schemas/chunk_metadata.json`` via
+# ``ragstack.metadata_schema``) rather than inferred from whichever document lands
+# first — which is the whole point of #603. An ES mapping cannot be changed in
+# place, so "inferred from the first write" is not a default that can be corrected
+# later; it is a decision made by whichever writer happened to run first, and it
+# is how ``metadata.pmid`` became a ``long`` on one collection and a ``keyword`` on
+# its peers. The dynamic template still covers every UNDECLARED string field, so
+# this types the fields we have an opinion about without closing the namespace.
+_MAPPINGS: dict[str, Any] = {
+    "dynamic_templates": _DYNAMIC_TEMPLATES,
     "properties": {
         "content": {"type": "text"},  # analyzed → BM25
         "doc_id": {"type": "keyword"},
         "chunk_id": {"type": "keyword"},
         "start_char": {"type": "integer"},
         "end_char": {"type": "integer"},
-        "metadata": {"type": "object"},
+        "metadata": {
+            "type": "object",
+            "properties": elasticsearch_metadata_properties(),
+        },
     },
 }
+
+# What ``ensure_index`` falls back to when the full mapping cannot be applied to an
+# index that already exists: exactly what this module pushed before #603.
+_TEMPLATE_ONLY_MAPPINGS: dict[str, Any] = {"dynamic_templates": _DYNAMIC_TEMPLATES}
 
 
 def _es_id(tenant: str, chunk_id: str) -> str:
@@ -395,7 +424,9 @@ class ElasticsearchTextIndex:
 
         # The index already existed, so `create` never applied _MAPPINGS to it.
         # Push them so a NEWLY-ENCOUNTERED metadata field on an existing index
-        # picks up the bounded template instead of a bare keyword.
+        # picks up the bounded template instead of a bare keyword, and so a
+        # declared field the index has not seen yet is typed by decision rather
+        # than inferred from the next document to carry it.
         #
         # SCOPE, precisely: a dynamic template governs fields it maps for the
         # FIRST time. Fields already concretely mapped as bare `keyword` keep that
@@ -405,12 +436,51 @@ class ElasticsearchTextIndex:
         # existing fields needs an explicit per-field `properties` update (it IS a
         # legal, updatable parameter) — tracked in #270, not done here.
         #
+        # TWO ATTEMPTS, because put_mapping is all-or-nothing. An existing index
+        # whose `metadata.year` is a `keyword` where the schema declares `long`
+        # (measured on a live 1.55M-chunk index, 2026-09-17) rejects the WHOLE
+        # request — and a mapping cannot be changed in place, so there is nothing
+        # to do about that here except not let it cost the index its template too.
+        # So: try the full derived mapping; on any failure fall back to the
+        # dynamic template alone, which is what this module pushed before #603 and
+        # is always safe. Divergence is REPORTED, not repaired: the collection
+        # keeps serving, and `ragstack.ops.metadata_conformance` is what turns the
+        # warning into a fleet-wide list with a migration plan attached.
+        #
         # Catches Exception, not ApiError: elasticsearch.ConnectionError is a
         # TransportError, NOT an ApiError, so a narrow catch would let a transient
         # connection blip escape ensure_index() where it previously returned
         # cleanly — and abort startup under require_durable_backends.
         try:
             await self._es.indices.put_mapping(index=self._index, body=_MAPPINGS)
+            return
+        except ApiError as e:
+            # A mapping conflict is an ApiError and is the case worth retrying
+            # narrower. INFO, not WARNING: on a divergent index this fires on
+            # every construction and the divergence is already known — the
+            # conformance report is where it is actionable, not this log line.
+            log.info(
+                "index %r does not accept the declared metadata mapping (%s); "
+                "falling back to the dynamic template. Its existing fields keep "
+                "whatever types they were inferred with — run "
+                "scripts/metadata_conformance.py to see which ones diverge.",
+                self._index,
+                e,
+            )
+        except Exception:  # noqa: BLE001 — see above; never block store construction
+            # A transport error says nothing about the mapping, so retrying with
+            # a smaller body would only spend a second round trip to fail again.
+            log.warning(
+                "could not update mappings on existing index %r; it keeps its "
+                "current template (see stores/elasticsearch.py)",
+                self._index,
+                exc_info=True,
+            )
+            return
+        try:
+            await self._es.indices.put_mapping(
+                index=self._index, body=_TEMPLATE_ONLY_MAPPINGS
+            )
         except Exception:  # noqa: BLE001 — see above; never block store construction
             log.warning(
                 "could not update mappings on existing index %r; it keeps its "

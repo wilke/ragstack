@@ -10,6 +10,7 @@
       "type": "string"
     },
     "metadata": {
+      "description": "Caller-supplied document metadata. NOT READ BY ANY HANDLER TODAY (#575): it is accepted and discarded, and nothing in the chunk payload, Qdrant or Elasticsearch reflects it. Wiring it up requires typing the known fields here FIRST — contracts/schemas/chunk_metadata.json declares them (names, types, and which are optional-and-meaningful-when-absent) and the ingest boundary enforces that declaration — because a free object lets a caller send {\"year\": \"2025\"}, which Elasticsearch would coerce to a long while Qdrant stored a string, leaving a document the filter grammar (which declares year an integer field and never coerces, #471) can address on neither leg.",
       "type": "object",
       "default": {}
     },
