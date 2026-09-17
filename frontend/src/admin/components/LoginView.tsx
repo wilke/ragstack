@@ -61,11 +61,16 @@ export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void
     setError(null);
     try {
       const session = await fn();
-      // Drop every credential from component state the moment it has been
-      // spent. Nothing below this line may be able to replay a sign-in.
+      // Hand off FIRST, then wipe. The wipe is unchanged in intent — nothing
+      // below this line may replay a sign-in — but doing it before the handoff
+      // emptied the password input while the browser's save prompt was still
+      // reading the form, and a password manager that finds a blank password
+      // next to a filled username fills the blank from the field it can see.
+      // That is the reported bug: accepting "update password" wrote the LOGIN
+      // NAME into the stored password.
+      onSignedIn?.(session);
       setApiKey("");
       setPassword("");
-      onSignedIn?.(session);
     } catch (err) {
       setError(failureMessage(err));
     } finally {
@@ -144,6 +149,7 @@ export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void
           </label>
           <input
             id="ctl-api-key"
+            name="ctl-api-key"
             type="password"
             autoComplete="off"
             spellCheck={false}
@@ -171,6 +177,7 @@ export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void
           </label>
           <input
             id="ctl-username"
+            name="username"
             className={INPUT}
             autoComplete="username"
             value={username}
@@ -184,6 +191,7 @@ export function LoginView({ onSignedIn }: { onSignedIn?: (s: CtlSession) => void
           </label>
           <input
             id="ctl-password"
+            name="password"
             type="password"
             className={INPUT}
             autoComplete="current-password"

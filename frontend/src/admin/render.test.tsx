@@ -113,6 +113,24 @@ describe("admin login", () => {
     expect(html).toContain("read-only session");
   });
 
+  // Regression: the sign-in fields carried no `name`, so a password manager had
+  // nothing to key on. Reported symptoms, all one cause: autofill never found a
+  // saved credential, the browser then offered to "update" one, and accepting it
+  // wrote the LOGIN NAME into the stored password — a blank password field next
+  // to a filled username gets filled from the field the manager can see.
+  //
+  // Only the key tab is reachable here: these are static renders, the BV-BRC
+  // pair is behind a tab this harness cannot click, and a test that asserted it
+  // anyway would be asserting nothing. Its names are covered by the type-checked
+  // source and by the manual re-test noted on the issue.
+  it("does not autocomplete the control-plane key as a saved website password", () => {
+    const html = render(createElement(LoginView));
+    // The key tab is the default. It is a secret, not a site password: it must
+    // carry its own name so it can never be stored as the BV-BRC password.
+    expect(html).toContain('name="ctl-api-key"');
+    expect(html).toMatch(/name="ctl-api-key"[^>]*autocomplete="off"|autocomplete="off"[^>]*name="ctl-api-key"/i);
+  });
+
   it("mounts AdminApp on the login screen when there is no session", () => {
     // `getServerSession()` is null during a string render — which IS the
     // signed-out state: no session, no fleet.
