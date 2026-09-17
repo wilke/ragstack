@@ -255,6 +255,19 @@ DECLARED_FIELDS: dict[str, DeclaredField] = {
         _f("publisher", "string"),
         _f("publication_type", "string"),
         _f("year", "integer"),
+        # Publication date as a packed yyyymmdd integer, unknown components 0:
+        # 19860000 is "1986, month and day unknown", 19820300 is "March 1982".
+        # The packing is deliberate and is NOT a poor substitute for a date type
+        # (docs/plans/date-filtering.md, decided 2026-09-17): the filter grammar
+        # ANDs its terms and has no OR, so a split y/m/d needs a disjunction that
+        # does not exist, while `date >= 20200315` needs only `gte`. The zeros are
+        # self-describing — `% 10000 == 0` is year-only, `% 100 == 0` has no day —
+        # so no separate precision field is needed, and unlike a real date type it
+        # never has to invent 1986-01-01 and then fail to record that it did.
+        # INVARIANT: where both exist, `year == date // 10000`. `year` is derived,
+        # never captured separately. Verified 0 violations across open-access,
+        # asm-semantic and ragstack_sfr_semantic_full (61M chunks) on 2026-09-17.
+        _f("date", "integer"),
         # Classification. `section`/`is_boilerplate` are stamped only on a
         # non-body verdict, so absence is "body, or never classified".
         _f("doc_type", "string"),
