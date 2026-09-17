@@ -571,7 +571,15 @@ async def test_transfer_itself_failing_is_503_and_changes_nothing(client, monkey
 
 
 async def test_share_endpoint_points_at_this_endpoint_for_owner(client):
-    """The 400 that motivated #280 now names a route that exists."""
+    """The 400 that motivated #280 now names a route that exists.
+
+    The existence check reads the generated OpenAPI schema, not ``app.routes``.
+    FastAPI 0.138 made ``include_router`` lazy: ``app.routes`` now holds opaque
+    ``_IncludedRouter`` placeholders (no ``.path``) that are resolved only when
+    a request is matched or the schema is generated, so a ``.path`` scan of it
+    sees just the four built-in docs routes. ``app.openapi()["paths"]`` is the
+    surface actually served, and is what this assertion was always about.
+    """
     _register(_entry("priv"))
     await _own("priv", "owner")
     r = await client.post(
@@ -581,8 +589,9 @@ async def test_share_endpoint_points_at_this_endpoint_for_owner(client):
     )
     assert r.status_code == 400, r.text
     assert "/v1/collections/priv/owner" in r.text
-    routes = {getattr(rt, "path", "") for rt in app.routes}
-    assert "/v1/collections/{collection_id}/owner" in routes
+    paths = app.openapi()["paths"]
+    assert "/v1/collections/{collection_id}/owner" in paths
+    assert "post" in paths["/v1/collections/{collection_id}/owner"]
 
 
 # --------------------------------------------------------------------------- #
