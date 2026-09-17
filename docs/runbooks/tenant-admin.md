@@ -292,6 +292,128 @@ bare `service:x` is instead read as the federated subject with issuer `service`.
 
 ---
 
+## 2a. Many keys, one subject — giving each key holder their own identity
+
+**Symptom.** A batch of API keys was handed out, and `API_KEY_TENANTS` maps them
+all onto one subject. Everyone who holds a key is then the same principal:
+
+- **The per-owner quota is shared.** `MAX_COLLECTIONS_PER_OWNER` is per subject,
+  so thirty people share ten collections. The refusal tells someone who owns
+  nothing that they already own ten.
+- **They co-own each other's work**, including `DELETE /v1/collections/{id}`.
+- **Nothing is attributable.**
+
+**The fix does not reissue anything.** The mapping is key → subject, so
+re-pointing the keys at distinct subjects changes no key value and nobody needs
+a new credential. One edit, one restart.
+
+```bash
+# 1. look at the distribution FIRST — it picks the largest role-matching group
+python3 python/scripts/split_key_subjects.py <tenant>/config/secrets.env \
+    --tenant-env <tenant>/config/tenant.env
+```
+
+Measure which subject the keys are actually on; do not assume. "Which subjects
+exist" and "how the keys divide between them" are different questions, and only
+the second decides what to split. A tenant can easily have two subjects where
+one carries a single operator key and the other carries all thirty.
+
+```bash
+# 2. register each new subject as a service account, while the OLD mapping is
+#    still live, so the records exist before anyone authenticates as them
+curl -s -X POST "$BASE/v1/admin/service-accounts" -H "$ADMIN" \
+     -H 'Content-Type: application/json' \
+     -d '{"subject":"attendee-01","label":"attendee 01"}'
+
+# 3. apply (takes a timestamped backup), then restart — see below for HOW
+python3 python/scripts/split_key_subjects.py <tenant>/config/secrets.env --apply
+```
+
+**How you restart depends on the tenant's supervisor**, and getting it wrong on a
+handed-over tenant is worse than doing nothing — the supervisor will restart what
+you killed, and you will be fighting it rather than the tenant:
+
+```bash
+ragstack-ctl --json fleet status | jq -r '.tenants[] | "\(.name) \(.supervisor)"'
+```
+
+| `supervisor` | restart with |
+|---|---|
+| `manual` | stop by the **recorded pid** (never a process-name pattern), then relaunch by the recipe in [`tenant-upgrade.md`](tenant-upgrade.md) |
+| `instance` (handed over) | the control plane only — `ragstack-ctl key mint\|revoke … --restart --prove` for key changes, or `tenant restart <name>`. See [`ctl-handover.md`](ctl-handover.md) |
+
+For a handed-over tenant the key edit and its restart should ride along with a
+ctl operation that already restarts it, so the tenant stops once rather than
+twice.
+
+### Worked example — hackathon, 2026-09-17
+
+Thirty attendee keys on one confined subject, split in a single ctl-supervised
+restart:
+
+```bash
+# 1. plan
+python3 python/scripts/split_key_subjects.py \
+    /rag/data/tenants/hackathon/config/secrets.env \
+    --tenant-env /rag/data/tenants/hackathon/config/tenant.env \
+    --from hackathon-ro --prefix hackathon-a
+
+# 2. register the 30 subjects as service accounts (old mapping still live)
+
+# 3. apply, and in the SAME tenant.env edit:
+#      MAX_COLLECTIONS_PER_OWNER=5      (n subjects x cap must stay under MAX_COLLECTIONS)
+#      TENANT_COLLECTIONS='{}'          (drop the stale confinement — see below)
+python3 python/scripts/split_key_subjects.py … --apply
+
+# 4. restart through the control plane, because this tenant is handed over
+/rag/bin/ctl-as-svc.sh tenant restart hackathon --yes --wait --direct
+```
+
+Proof it worked, and the check worth copying: with two different attendee keys,
+one creates a collection and is listed as its owner; the **other cannot see or
+delete it**. Shared-subject symptoms are invisible from a single key, so test
+with two.
+
+Keep a line→subject map for the distribution record — the split makes
+collections attributable to `hackathon-a-20`, but mapping that to a person still
+needs the record of who received which key.
+
+> **Re-adopt afterwards** so the ctl ledger's `tenant_string` per key follows
+> the new subjects. Until **`5a05168`** (#589) a plain `--readopt` reset a
+> ctl-supervised row's owner and supervisor and dropped its handover block —
+> which happened for real, minutes after hackathon's first handover, from a
+> re-adopt run to refresh the key ledger after exactly this kind of
+> `secrets.env` edit. On anything carrying that fix, re-adopt is safe.
+
+### ⚠️ Confinement makes a created collection vanish
+
+If the old subject appears in `TENANT_COLLECTIONS`, it is **confined** to those
+collections — and confinement applies to **reads**. A collection created under a
+confined subject is invisible *even to its creator*: the create succeeds, then
+the collection is absent from `GET /v1/collections`.
+
+Drop the stale entry in the same edit as the split. An unlisted subject is
+unrestricted, which is what an attendee wants — their own collections plus
+everything public. The script warns when it sees this if you pass `--tenant-env`.
+
+### What does not move
+
+Collections created before the split stay owned by the **old** subject, which
+nobody authenticates as afterwards. Transferring them out is
+[#558](https://github.com/wilke/ragstack/issues/558) and hands over a collection
+the new owner cannot read, so in practice they become admin-only or are
+re-created. **Split early**: one orphan is cheap, twenty is not.
+
+Check the arithmetic before choosing a per-owner cap — *n* subjects at the cap
+must stay under `MAX_COLLECTIONS`, or the tenant bound evicts somebody's work.
+
+### Later, to give people their real identity: share, do not transfer
+
+Grant the person's `bvbrc:` subject **read** on their key-owned collection.
+`shared_scope` widens a grantee to the owner's chunks, so they can search their
+own library signed in as themselves, with no CLI. Writes stay with the key. That
+is attribution plus real-identity access without waiting on #558.
+
 ## 3. Sharing a collection on a user's behalf
 
 All four routes are on the collections router under `/v1`, open to any
@@ -724,6 +846,43 @@ Qdrant and ES resources.
   investigating capacity.
 
 ---
+
+## 6a. Which ingest backend a tenant runs, and what it costs you
+
+`INGEST_BACKEND` takes exactly two values, and the router **501s anything else**
+(`api/routers/documents.py::_refuse_unknown_backend`). It decides where an upload
+is staged, and therefore what credential a caller needs:
+
+| `INGEST_BACKEND` | Uploads staged to | Caller needs |
+|---|---|---|
+| `local` (the default, when the key is unset) | `INGEST_ROOT` on the API host | any authenticated principal — an API key is fine |
+| `gowe` | the **caller's own BV-BRC Workspace**, `ws://…`, and a workflow submitted as them | a **BV-BRC bearer token**; an API key or keyless caller gets 401 |
+
+The `gowe` rule has one implementation, `api/security.py::gowe_caller`, and its
+docstring is explicit that there is no fallback identity and none may be added:
+writing into somebody's Workspace requires that somebody's credential.
+
+Read the fleet before assuming:
+
+```bash
+for t in /rag/data/tenants/*/config/tenant.env; do
+  printf '%-14s ' "$(basename "$(dirname "$(dirname "$t")")")"
+  grep -hE '^INGEST_BACKEND=' "$t" || echo 'INGEST_BACKEND=local (unset)'
+done
+```
+
+**Why an operator cares.** A test rig, a scripted bulk load, or any automation
+holding an API key can exercise the upload path only on a `local` tenant. On a
+`gowe` tenant the same automation needs a real user's token, which is a different
+kind of secret with a different lifetime. Put automation that must upload on a
+`local`-backend tenant, and keep the token-based path for testing the Workspace
+behaviour itself.
+
+**Other object stores are not a configuration away.** There is no Shock or S3
+backend: `_refuse_unknown_backend` rejects any value that is not `local` or
+`gowe` with a 501, so adding one is an implementation task (a backend in
+`ingestion/`, its staging and reference-resolution rules, and the guard widened),
+not a `tenant.env` edit.
 
 ## 6b. Exposing a shared corpus without copying it
 

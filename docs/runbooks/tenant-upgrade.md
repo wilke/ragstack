@@ -262,6 +262,11 @@ fails fast on some classes of stale config rather than starting wrong — see
 
 ## 5. Restart the API by the recipe in `ops/coconut/restore.sh`
 
+**First check who supervises the tenant** —
+`ragstack-ctl --json fleet status`. A `supervisor: instance` tenant is restarted
+through the control plane only (`ctl-handover.md`); stopping it by pid means
+fighting its supervisor. Everything below is the `manual` path.
+
 The canonical launch is `restore.sh`'s `apis` group. Since **`eb9803f`**
 (PR #559) that group covers every registry tenant including `hackathon`, and
 exports `RAGSTACK_GIT_TAG` / `RAGSTACK_GIT_SHA` from each tenant's own worktree
@@ -491,8 +496,17 @@ current?" question:
 
 ## Reboot recovery
 
-The host reboot scripts cover every registry tenant, including `hackathon`, as of
-**`eb9803f`** (PR #559, installed to `/rag/bin` with `make install-ops`).
+The host reboot scripts cover every registry tenant **that is still
+operator-supervised**, as of **`eb9803f`** (PR #559, installed to `/rag/bin` with
+`make install-ops`).
+
+> **A handed-over tenant is deliberately skipped.** Once a tenant belongs to the
+> control plane (`supervisor: instance`), `restore.sh` leaves it alone — the
+> service account's own `@reboot` crontab line starts it. `reg_rows` is the one
+> place that skip lives. So "it is not in restore.sh" means *handed over*, not
+> *forgotten*; check `ragstack-ctl --json fleet status` before concluding a
+> tenant was missed. `hackathon` moved into this category on 2026-09-17.
+> Procedure: [`ctl-handover.md`](ctl-handover.md).
 
 Before that commit they did not, and a reboot would have returned every tenant
 *except* the one the hackathon runs on — with nothing to indicate why. What the fix
