@@ -346,6 +346,43 @@ For a handed-over tenant the key edit and its restart should ride along with a
 ctl operation that already restarts it, so the tenant stops once rather than
 twice.
 
+### Worked example — hackathon, 2026-09-17
+
+Thirty attendee keys on one confined subject, split in a single ctl-supervised
+restart:
+
+```bash
+# 1. plan
+python3 python/scripts/split_key_subjects.py \
+    /rag/data/tenants/hackathon/config/secrets.env \
+    --tenant-env /rag/data/tenants/hackathon/config/tenant.env \
+    --from hackathon-ro --prefix hackathon-a
+
+# 2. register the 30 subjects as service accounts (old mapping still live)
+
+# 3. apply, and in the SAME tenant.env edit:
+#      MAX_COLLECTIONS_PER_OWNER=5      (n subjects x cap must stay under MAX_COLLECTIONS)
+#      TENANT_COLLECTIONS='{}'          (drop the stale confinement — see below)
+python3 python/scripts/split_key_subjects.py … --apply
+
+# 4. restart through the control plane, because this tenant is handed over
+/rag/bin/ctl-as-svc.sh tenant restart hackathon --yes --wait --direct
+```
+
+Proof it worked, and the check worth copying: with two different attendee keys,
+one creates a collection and is listed as its owner; the **other cannot see or
+delete it**. Shared-subject symptoms are invisible from a single key, so test
+with two.
+
+Keep a line→subject map for the distribution record — the split makes
+collections attributable to `hackathon-a-20`, but mapping that to a person still
+needs the record of who received which key.
+
+> **Re-adopt afterwards**, as the service account, so the ctl ledger's
+> `tenant_string` per key follows the new subjects. As of 2026-09-17 a plain
+> re-adopt resets a ctl-supervised row's owner and supervisor; a fix is in
+> flight, so re-adopt **after** it lands rather than immediately.
+
 ### ⚠️ Confinement makes a created collection vanish
 
 If the old subject appears in `TENANT_COLLECTIONS`, it is **confined** to those

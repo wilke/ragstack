@@ -86,7 +86,7 @@ numbers; where they disagree, the table below is what this server enforces.
 
 | Limit | Here | Product default |
 |---|---|---|
-| Collections you may own at once | **10** | 5 |
+| Collections you may own at once | 5 | 5 |
 | Collections on the whole tenant | **300** | 100 |
 | Can ordinary users create collections? | **yes** | yes |
 | New collections per hour | **30** | 5 |
