@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
+from ragstack.metadata_schema import validate_chunks
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
     Chunker,
@@ -428,6 +429,22 @@ class IngestionPipeline:
         (there is no other ``Chunk(...)`` construction), so the set of doc_ids to
         replace is exactly the doc_ids present on the surviving chunks.
         """
+        # THE INGEST BOUNDARY (#603). Refuse a chunk whose declared metadata
+        # carries the wrong type, BEFORE the delete-prior below and before either
+        # store is written. Here because an Elasticsearch mapping is inferred from
+        # the first document to arrive and then cannot be changed in place: a
+        # `pmid` that arrives as an int does not produce a bad row, it produces a
+        # collection permanently incompatible with its peers for cross-collection
+        # filtering, fixable only by reindexing (#594/#600). This is the cheap
+        # place to say no.
+        #
+        # Before the delete, deliberately: a refused batch must not have destroyed
+        # the prior version of the documents it was meant to replace — the same
+        # rule EmptyIngestError exists to enforce one layer up.
+        #
+        # Undeclared keys pass through untouched; the namespace is open by design.
+        validate_chunks(chunks, where="index_chunks")
+
         # Delete-prior, bound-concurrent across the replaced doc_ids (deletes are
         # independent + idempotent per doc_id, so order doesn't matter). Serial,
         # this was the load's dominant cost for a many-doc shard.

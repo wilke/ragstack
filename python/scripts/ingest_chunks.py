@@ -75,7 +75,11 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.metadata_schema import KNOWN_INT_FIELDS, coerce_declared
+from ragstack.metadata_schema import (
+    KNOWN_INT_FIELDS,
+    coerce_declared,
+    validate_chunks,
+)
 from ragstack.models import Chunk
 from ragstack.ops import ingest_target
 from ragstack.stores.qdrant import QdrantVectorStore
@@ -144,6 +148,15 @@ async def run(args: argparse.Namespace, target: ingest_target.IngestTarget) -> N
     chunks = flatten(docs)
     for c in chunks:
         c.metadata["tenant_id"] = args.tenant
+    # THE INGEST BOUNDARY (#603), and this tool needs it most: its metadata is
+    # whatever the caller's JSON said, and the module docstring above already
+    # records that it is the one tool in the repo that has written an
+    # UNFILTERABLE document by hand — a live collection carries `year` and
+    # `chunk_index` as strings because nothing here said what they are. Checked
+    # after the tenant stamp (which the schema requires) and before the first
+    # embedding call, so a bad file costs a parse rather than a GPU pass and a
+    # permanent Elasticsearch mapping.
+    validate_chunks(chunks, where="ingest_chunks")
     if not chunks:
         print("no chunks to ingest", file=sys.stderr)
         return

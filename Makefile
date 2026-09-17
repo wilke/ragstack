@@ -2,7 +2,7 @@
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
        test-conformance-authz test-conformance-identity-google \
-       test-conformance-ctl validate-contracts \
+       test-conformance-ctl validate-contracts metadata-conformance \
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
@@ -288,6 +288,27 @@ test-conformance-ctl: build-ctl ## Boot a --fake-drivers ragstack-ctl on :23999 
 # one file even when it skips the rest of the ctl suite).
 validate-contracts: ## Static checks on the control-plane contract (contracts/ctl/openapi.yaml + schemas)
 	$(PYTHON) contracts/ctl/validate.py
+
+# Deliberately NOT in test-all, and deliberately exits 0 on divergence.
+#
+# It needs a live cluster, which test-all does not; and the deployed fleet does
+# not conform. An Elasticsearch mapping cannot be changed in place, so every
+# finding is a reindex — 382 chunks for `Dengue`, 47.6M for `open-access` — not
+# something a build failure can make anyone fix today. A check that failed CI
+# would be switched off within a day; a check that prints the list is what a
+# migration gets planned from. `--fail-on-divergence` is there for a tenant whose
+# collections are already clean.
+#
+# Read-only: GET /_cat/indices and GET /<index>/_mapping, nothing else.
+#
+#   make metadata-conformance ES_URL=http://127.0.0.1:9200
+#   make metadata-conformance ES_URL=http://127.0.0.1:24083 INDEX='ragstack_lib_*'
+ES_URL ?=
+INDEX ?=
+metadata-conformance: ## Report chunk-metadata mapping divergence on a live ES (needs ES_URL=; read-only, never fails)
+	@test -n "$(ES_URL)" || { echo "ES_URL is required, e.g. make metadata-conformance ES_URL=http://127.0.0.1:9200"; exit 2; }
+	cd python && $(PYTHON) scripts/metadata_conformance.py --es-url "$(ES_URL)" \
+		$(if $(INDEX),--index '$(INDEX)',)
 
 # ---------------------------------------------------------------------------
 # Docker

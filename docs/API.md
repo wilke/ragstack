@@ -1760,6 +1760,42 @@ interpreters (`_build_filter` / Qdrant, `_build_query` / Elasticsearch,
 `_matches` / in-memory, `payload_matches` / `get_chunks`), so a CLI or a direct
 store caller gets the same refusal rather than a 500 or a silent zero-hit read.
 
+### The declared chunk-metadata schema (#603)
+
+`contracts/schemas/chunk_metadata.json` declares which metadata fields exist,
+what type each one is, and — in ONE place rather than in each writer's head —
+that **Elasticsearch nests them under `metadata.*` while Qdrant keeps them flat
+at the payload top level**. The caller-facing filter key is bare in both cases
+(`{"journal": "mBio"}`); it is the ES leg that applies its own prefix.
+
+Three things follow from the declaration:
+
+- **The ES mapping is derived from it**, and a new index is *created* with those
+  types instead of inferring them from whichever document lands first. An ES
+  mapping cannot be changed in place, so "inferred" is not a default that can be
+  corrected later — it is how `metadata.pmid` came to be a `long` on one
+  collection and a `keyword` on its peers (#594/#600).
+- **The ingest boundary enforces it.** A chunk whose `pmid` is an int or whose
+  `year` is a string is refused at `index_chunks` (and in the two bulk loaders
+  that write to the stores without it), before either store is written and before
+  the delete-prior step — so a refused batch has not destroyed what it was meant
+  to replace.
+- **The namespace stays open.** An undeclared key passes through and falls to the
+  `metadata_strings_as_keyword` dynamic template; `additionalProperties` is
+  deliberately `true`.
+
+**Optional means optional, and absence is a state.** No producer may default a
+declared field. `is_boilerplate` is the worked example: it is stamped only on a
+chunk classified as non-body, so `{"is_boilerplate": false}` matches nothing and
+`exclude_boilerplate` is built as a *negation of true*. A JSON `null` is accepted
+wherever a value is and means what absence means — `prev_chunk_id`/`next_chunk_id`
+are written as null at a document's edges on purpose.
+
+`python/scripts/metadata_conformance.py` reports where a live collection's
+mapping diverges from the declaration. It is **read-only and report-only** (exit
+0 on divergence): the deployed fleet does not conform, and each divergence is a
+reindex, not a fix.
+
 Metadata carried on each chunk depends on the loader. The bulk scholarly-corpus
 loader (`ingest_jsonl.py`) stamps:
 

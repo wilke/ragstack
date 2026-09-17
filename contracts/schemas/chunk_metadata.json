@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chunk_metadata.json",
+  "title": "ChunkMetadata",
+  "description": "The declared shape of a chunk's metadata: which fields exist, what type each one is, and how each store lays them out. This is the source of truth the Elasticsearch mapping is DERIVED from (so an index is created with these types instead of inferring them from whichever document lands first), the ingest boundary VALIDATES against (so a wrong type is refused where it is cheap, not discovered months later in a mapping that cannot be changed), and the conformance check COMPARES a live collection against. Mirrored in python/ragstack/metadata_schema.py, which a test pins field-for-field against this file — the Python table is what runtime code reads, because `contracts/` is not packaged into the wheel and `metadata_schema` is a stdlib-only leaf a CPU-only CWL worker imports once per document across a 1.44M-document corpus.",
+  "type": "object",
+  "required": ["tenant_id"],
+
+  "x-ragstack-store-shape": {
+    "description": "The SAME metadata lands in two different layouts, and this is the one place that says so. Elasticsearch nests it under a `metadata` object, so a field is addressed as `metadata.pmid` and the derived mapping below goes into `mappings.properties.metadata.properties`. Qdrant keeps it FLAT at the payload top level, so the same field is addressed as `pmid`, sharing the namespace with the five reserved point fields. Both #594 and #601 had to special-case each store because this difference lived only in each writer's head; a writer that updates one store and not the other leaves the two retrieval legs disagreeing about the same chunk with no count-based check able to notice. The caller-facing filter key is BARE in both cases (`{\"journal\": \"mBio\"}`) — stores/filters.py owns that grammar and elasticsearch.py's _build_query is what prefixes it.",
+    "elasticsearch": {
+      "container": "metadata",
+      "field_path": "metadata.{field}",
+      "mapping_path": "mappings.properties.metadata.properties.{field}"
+    },
+    "qdrant": {
+      "container": null,
+      "field_path": "{field}",
+      "reserved_top_level_keys": ["chunk_id", "doc_id", "content", "start_char", "end_char"]
+    },
+    "filter_key": "{field}"
+  },
+
+  "x-ragstack-absence": {
+    "description": "ABSENT IS A STATE, and it is not the same state as a declared default. Every field here except `tenant_id` is optional, and no producer may invent a value to fill a gap — `is_boilerplate` is the worked example: it is stamped only on a chunk a boilerplate filter classified as non-body, so `{\"is_boilerplate\": false}` matches nothing and the server expresses \"exclude boilerplate\" as a NEGATION of true (stores/filters.py's `Not`), not as an equality on false. Coercing absence to a default here would silently reclassify every unstamped chunk in every collection ingested before #597. A JSON `null` is accepted anywhere a value is, and means exactly what absence means: Elasticsearch does not index a null, and chunkers.py deliberately writes `prev_chunk_id`/`next_chunk_id` as null at a document's edges."
+  },
+
+  "x-ragstack-openness": {
+    "description": "`additionalProperties` is TRUE here, which is the one place this directory departs from its closed-schema convention, and it is deliberate rather than an omission. Chunk metadata is an open namespace that loaders, enrichers and passthrough keys all write into; closing it would refuse every corpus carrying a field this table has not caught up with yet, at ingest, in bulk. The bargain is: a DECLARED field is typed and enforced, an UNDECLARED field is allowed through and left to Elasticsearch's `metadata_strings_as_keyword` dynamic template (strings) or to dynamic inference (everything else — which is precisely how `metadata.pmid` became a `long` on one collection). The conformance check reports undeclared fields it finds on live collections as the backlog of things to either declare here or stop writing."
+  },
+
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "description": "Owner provenance and the row-level isolation boundary (ADR-0003; the key name is historical — see tenancy.OWNER_FIELD). The one REQUIRED field: every store write is scoped by it, `scope_filters` pins it to the tenants a caller may read, and stores/filters.py refuses to negate it. A chunk without it is not a chunk that can be safely retrieved.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+
+    "pmid": {
+      "type": ["string", "null"],
+      "description": "PubMed identifier, A STRING. It is an opaque identifier, nothing range-filters it, and ingestion/jats.py has always kept it as one. The NCBI ID Converter returns it as a JSON int; a repair tool (#594) wrote that through unchanged, Elasticsearch inferred `long` from that first write, and because an ES mapping cannot be changed in place the collection stayed incompatible with its peers until it was reindexed. Declaring the type here is what makes the next such writer a refused ingest instead of an irreversible mapping.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "pmcid": {
+      "type": ["string", "null"],
+      "description": "PubMed Central identifier (`PMC1234567`), a string for the same reason as `pmid`.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "doi": {
+      "type": ["string", "null"],
+      "description": "Digital Object Identifier, normalized to the bare `10.x/y` form.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "doi_source": {
+      "type": ["string", "null"],
+      "description": "Where the DOI came from — `metadata` / `filename` / `text` / `pdf-metadata`. Provenance, not a fact about the document.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "doi_enriched_from": {
+      "type": ["string", "null"],
+      "description": "Which resolver service filled the bibliographic gaps (e.g. `crossref+idconv`). Present only on a document enrichment actually changed, so its absence is meaningful.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "metadata_source": {
+      "type": ["string", "null"],
+      "description": "The operator-facing twin of `doi_enriched_from`, carrying the same service list, so a collection repaired after the fact and a collection born enriched answer the same query about where their titles came from.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+
+    "title": {
+      "type": ["string", "null"],
+      "description": "Document title. Real corpora contain a paper's entire reference list mis-extracted into this field (~38 KB observed in production), which is why the derived mapping carries `ignore_above` — an over-long value is stored and returned but not indexed for exact match, instead of aborting the whole bulk request with a document_parsing_exception.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "authors": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "Author display names, a LIST of strings. ingestion/jats.py emits a `; `-joined string at the extract stage; ingestion/enrich.parse_authors is what splits it, so a corpus that skips enrichment can present a bare string here and will be refused at the ingest boundary rather than producing a collection whose `authors` filter means something different from its peers'.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "keywords": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "Author/publisher keywords, a list of strings — same extract-stage string/list split as `authors`.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "journal": {
+      "type": ["string", "null"],
+      "description": "Journal or container title. Crossref calls the same thing `container-title`; this is the key the codebase and the frontend read.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "publisher": {
+      "type": ["string", "null"],
+      "description": "Publisher name.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "publication_type": {
+      "type": ["string", "null"],
+      "description": "Crossref's work type (`journal-article`). Deliberately NOT `doc_type`, which already means something else here — reusing it would silently change how existing filters behave.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "year": {
+      "type": ["integer", "null"],
+      "description": "Publication year, AN INTEGER, bounded by metadata_schema.plausible_year_range(). This is the field the repo has already measured diverging in production: the `lucid` collection stores it as a string, so `{\"year\": 2021}` — the only form the API accepts, because the filter grammar matches by type and never coerces (#471) — matched 129,248 chunks on the Elasticsearch leg (ES coerces at query time) and 0 on the Qdrant leg (Qdrant compares payload types exactly).",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+
+    "doc_type": {
+      "type": ["string", "null"],
+      "description": "This codebase's own document classification — `article` / `supplement` / `front-matter` / `short` / `empty` (ingestion/enrich.classify).",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "content_type": {
+      "type": ["string", "null"],
+      "description": "Which part of a JATS article a record came from — `article` / `table` / `figure`.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section": {
+      "type": ["string", "null"],
+      "description": "The non-body section a boilerplate filter classified this chunk into — `references` / `license` / `acknowledgements`. Never `body`: like `is_boilerplate`, it is stamped only when the verdict is not body, so absence means 'body, or never classified'.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section_title": {
+      "type": ["string", "null"],
+      "description": "The source document's own heading for the section this chunk came from — unrelated to `section`, which is a filter verdict.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "is_boilerplate": {
+      "type": ["boolean", "null"],
+      "description": "OPTIONAL, AND ABSENT IS MEANINGFUL — the worked example for x-ragstack-absence above. Stamped only on a chunk classified as non-body, and in the default configuration only ever with the value true. `{\"is_boilerplate\": false}` therefore matches nothing, and /v1/query's `exclude_boilerplate` is built as a negation of true rather than the equality anyone would expect (#601). Nothing may backfill a false here: doing so would reclassify every chunk ingested before #597 from 'unknown' to 'asserted not boilerplate'.",
+      "x-ragstack-elasticsearch": {"type": "boolean"}
+    },
+
+    "source_path": {
+      "type": ["string", "null"],
+      "description": "Path of the artifact this chunk was extracted from, as the ingesting process saw it.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "filename": {
+      "type": ["string", "null"],
+      "description": "Basename of the source artifact.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "source": {
+      "type": ["string", "null"],
+      "description": "Caller-supplied document source string (scripts/ingest_chunks.py). Distinct from `source_path`, which a loader derives.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "source_url": {
+      "type": ["string", "null"],
+      "description": "Canonical URL of the source artifact.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "url": {
+      "type": ["string", "null"],
+      "description": "Resolver-supplied landing-page URL (Crossref/DataCite `url`).",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "sha256": {
+      "type": ["string", "null"],
+      "description": "Hex digest of the source artifact.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "licence": {
+      "type": ["string", "null"],
+      "description": "Licence statement as it appears in the source. Frequently a full paragraph, which is what `ignore_above` on the derived mapping is for.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "graphic": {
+      "type": ["string", "null"],
+      "description": "Referenced graphic href, on a figure record.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+
+    "chunk_index": {
+      "type": ["integer", "null"],
+      "description": "Position of this chunk within its document, an integer, stamped by chunkers.link_neighbors. scripts/ingest_chunks.py accepts a caller-supplied value verbatim and has already written it as a STRING to a live collection — exactly the class of defect the ingest-boundary check exists to refuse.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+    "prev_chunk_id": {
+      "type": ["string", "null"],
+      "description": "Id of the preceding chunk in the same document, or null at the document's start. The null here is written deliberately, not an accident — see x-ragstack-absence.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "next_chunk_id": {
+      "type": ["string", "null"],
+      "description": "Id of the following chunk in the same document, or null at the document's end.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+
+    "n_citations": {
+      "type": ["integer", "null"],
+      "description": "Number of references the source document carried. The citation list itself lives in the doc-level catalog, not per chunk.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+    "n_tables": {
+      "type": ["integer", "null"],
+      "description": "Number of tables in the source document.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+    "n_figures": {
+      "type": ["integer", "null"],
+      "description": "Number of figures in the source document.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+    "pages": {
+      "type": ["integer", "null"],
+      "description": "Page count of the source PDF.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    }
+  },
+
+  "additionalProperties": true
+}

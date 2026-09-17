@@ -42,6 +42,18 @@ class _AlreadyExists(ApiError):
         return "resource_already_exists_exception"
 
 
+class _MapperConflict(ApiError):
+    """A mapping conflict, as ES answers one: `metadata.year` is already a
+    keyword and the declared mapping says long. Subclassed like _AlreadyExists so
+    it stringifies without a transport meta object."""
+
+    def __init__(self) -> None:  # noqa: D107 — deliberately skips ApiError.__init__
+        pass
+
+    def __str__(self) -> str:
+        return "illegal_argument_exception: mapper [metadata.year] cannot be changed"
+
+
 class _FakeIndices:
     def __init__(self, exists: bool):
         self._exists = exists
@@ -108,3 +120,70 @@ async def test_a_transport_error_during_the_mapping_update_does_not_escape():
 
     es.indices.put_mapping = boom  # type: ignore[assignment]
     await idx.ensure_index()  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+# Derived metadata properties, and the two-attempt update path (#603)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_new_index_is_created_with_the_declared_metadata_types():
+    """The point of #603: a new index's declared fields are typed by decision,
+    not inferred from whichever document arrives first — and an ES mapping cannot
+    be changed in place, so there is no second chance."""
+    from ragstack.metadata_schema import elasticsearch_metadata_properties
+
+    idx, es = _store(exists=False)
+    captured: dict = {}
+
+    async def create(index, mappings):  # noqa: ARG001
+        captured.update(mappings)
+
+    es.indices.create = create  # type: ignore[assignment]
+    await idx.ensure_index()
+    assert (
+        captured["properties"]["metadata"]["properties"]
+        == elasticsearch_metadata_properties()
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_existing_index_that_rejects_the_declared_mapping_keeps_its_template():
+    """put_mapping is all-or-nothing, and a live 1.55M-chunk index maps
+    ``metadata.year`` as a keyword where the schema declares a long (measured
+    2026-09-17). That index must still receive the bounded dynamic template —
+    losing it would leave every NEWLY-seen string field mapped as an unbounded
+    keyword, where one >32 KB value aborts the whole bulk request."""
+    idx, es = _store(exists=True)
+    calls: list[dict] = []
+
+    async def put_mapping(index, body):  # noqa: ARG001
+        calls.append(body)
+        if "properties" in body:
+            raise _MapperConflict()
+
+    es.indices.put_mapping = put_mapping  # type: ignore[assignment]
+    await idx.ensure_index()  # must not raise
+
+    assert len(calls) == 2
+    assert "properties" in calls[0]  # the full derived mapping, attempted first
+    assert set(calls[1]) == {"dynamic_templates"}  # the safe fallback
+    tmpl = calls[1]["dynamic_templates"][0]["metadata_strings_as_keyword"]
+    assert tmpl["mapping"]["ignore_above"] == _METADATA_KEYWORD_IGNORE_ABOVE
+
+
+@pytest.mark.asyncio
+async def test_a_transport_error_does_not_trigger_the_fallback_attempt():
+    """A connection blip says nothing about the mapping, so a second round trip
+    with a smaller body would only fail again."""
+    idx, es = _store(exists=True)
+    calls: list[dict] = []
+
+    async def put_mapping(index, body):  # noqa: ARG001
+        calls.append(body)
+        raise ConnectionError("connection refused")
+
+    es.indices.put_mapping = put_mapping  # type: ignore[assignment]
+    await idx.ensure_index()  # must not raise
+    assert len(calls) == 1
