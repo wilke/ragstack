@@ -37,6 +37,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -54,8 +55,14 @@ def _get(url, timeout=30):
 def _post(url, body, timeout=120):
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # A bare "HTTP Error 400: Bad Request" tells the operator nothing about
+        # WHICH store refused and why; both of these speak JSON on the error path.
+        detail = e.read().decode("utf-8", "replace")[:800]
+        raise SystemExit(f"\n{e.code} from {url}\n{detail}") from None
 
 
 def distinct_dois(es, index):
@@ -142,7 +149,9 @@ def main():
             print(f"  skip {doi}: nothing resolved")
             continue
         # Elasticsearch: nested under metadata.*, only filling what is absent.
-        src = "; ".join(f"if (ctx._source.metadata.{k} == null) ctx._source.metadata.{k} = params.{k};" for k in r)
+        # Each fragment already ends in ";" — joining on "; " produces ";;", which
+        # painless rejects as an empty statement.
+        src = " ".join(f"if (ctx._source.metadata.{k} == null) ctx._source.metadata.{k} = params.{k};" for k in r)
         es_body = {"query": {"term": {"metadata.doi": doi}},
                    "script": {"source": src + " ctx._source.metadata.metadata_source = 'crossref+idconv';",
                               "params": r, "lang": "painless"}}
