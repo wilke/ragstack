@@ -629,3 +629,20 @@ async def test_backend_name_is_normalised_before_the_guard(client, monkeypatch):
     monkeypatch.setattr(settings, "ingest_backend", "  GoWe  ")
     r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
     assert r.status_code == 422, r.text
+
+
+async def test_nonadmin_still_gets_403_before_the_422(client, monkeypatch):
+    """Ordering: the build-spec override is admin-only, and that check comes first.
+
+    A non-admin supplying `chunk` at all is a 403 regardless of the method, so the
+    new guard must not intercept it and report a capability problem to someone who
+    has an authorization one. The commit claimed this ordering; nothing asserted
+    it until now.
+    """
+    from ragstack.api.security import ROLE_USER
+
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert r.status_code == 403, r.text

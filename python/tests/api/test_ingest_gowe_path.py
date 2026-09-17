@@ -1086,12 +1086,14 @@ async def test_entry_without_a_chunk_method_falls_back_to_the_server_default(
     """An entry that records no method is read as `CHUNK_METHOD` by the guard.
 
     Reading only `entry.chunk_method` would wave such a collection through. The
-    fallback is conservative rather than exact — see the helper's docstring: the
-    shard tool would actually use its OWN argparse default here, because
-    `_gowe_inputs` sends no `chunk_method` when the entry has none. Refusing is
-    still the right answer, since the alternative is a run chunked by a method
-    nobody chose and no store records. API-created collections never hit this:
-    `create_collection` persists the resolved method.
+    The fallback is a guess about another process, not an exact test — see the
+    helper's docstring. `_gowe_inputs` sends no `chunk_method` for such an entry,
+    so the CWL's own default (`fixed_token/256/32`) decides, and this guard fires
+    only when the SERVER default happens to be a refused method. What is pinned
+    here is just that the fallback is consulted at all: reading
+    `entry.chunk_method` alone would wave the collection straight through.
+    API-created collections never reach this branch — `create_collection`
+    persists the resolved method.
     """
     from ragstack.config import settings
 

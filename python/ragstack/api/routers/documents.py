@@ -510,21 +510,29 @@ def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
     .. rubric:: The fallback is conservative, and deliberately so
 
     An entry that records no ``chunk_method`` is read as ``settings.chunk_method``
-    here. That is what the API *reports* for such a collection — but it is NOT
-    what the shard step would do: ``_gowe_inputs`` only sends ``chunk_method``
-    when the entry has one, so the tool falls back to its own argparse default
-    (``fixed_token/256/32``) while this process believes the server default
-    (``fixed/512/64``). Two builders, two defaults — the same defect #609 names,
-    visible here even when nothing semantic is involved.
+    here, and that is a **guess about a different process**. ``_gowe_inputs``
+    sends ``chunk_method`` only when the entry has one, so for a method-less
+    entry the scatter supplies nothing and ``pdf-ingest-scatter.cwl``'s own
+    default decides — ``fixed_token/256/32``, where this process would have said
+    ``fixed/512/64``. Two builders, two defaults, no agreement; the same defect
+    #609 names, visible with nothing semantic involved. (``chunk_params`` is not
+    sent either, so semantic tunables would not survive the trip regardless.)
 
-    So for a method-less entry the choice is between refusing and submitting a
-    run whose chunking we cannot characterise. Refusing is right: the alternative
-    is not success, it is a corpus silently chunked by a method nobody selected,
-    with nothing in either store recording which one won. #609 step 2 removes the
-    ambiguity by having the tool read the registry entry, at which point this
-    fallback describes the tool exactly. API-created collections are unaffected
-    either way — ``create_collection`` persists the RESOLVED method, so their
-    ``chunk_method`` is never ``None``.
+    Be clear about what this guard therefore does and does not do for such an
+    entry. It refuses only when ``settings.chunk_method`` is itself a refused
+    method — which on a deployment whose default is supported (hackathon's, where
+    ``CHUNK_METHOD`` is unset and the default is ``fixed``) means it does NOT
+    fire, and the run proceeds chunked by the CWL default with nothing in either
+    store recording which method won. That silent divergence is real and this
+    guard does not close it; #609 step 2 does, by having the tool read the
+    registry entry. The one case where the fallback does fire, it refuses a run
+    the tool would in fact have completed — using a method the caller never
+    chose. Refusing is still the better error there, but it is a judgement call
+    on an already-ambiguous state, not a precise test.
+
+    API-created collections are unaffected either way: ``create_collection``
+    persists the RESOLVED method, so their ``chunk_method`` is never ``None``.
+    The method-less entries are the ones registered by the bulk CLI or by hand.
     """
     method = entry.chunk_method or settings.chunk_method
     refusal = shard_refusal(method)

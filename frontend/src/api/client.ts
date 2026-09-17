@@ -91,6 +91,15 @@ export class ApiError extends Error {
     // rather than a union: an unrecognised value from a newer server must
     // degrade to the conservative message, not fail to type-check.
     public reason?: string,
+    // The server's human-readable reason, from the error body's `detail`. NOT
+    // the same as `message`: that is the RAW body (`{"detail":"..."}` for a
+    // FastAPI refusal), which is not a sentence to put in front of a user. A
+    // component that wants to show the server's own words — rather than a
+    // status-code paraphrase it has to keep in sync — reads this. #609 is the
+    // case that forced it: a 422 whose detail names the chunk methods that
+    // would work rendered as "Upload failed (error 422)." and left the user
+    // with no path forward.
+    public detail?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -122,12 +131,17 @@ async function throwForResponse(res: Response): Promise<never> {
 
   let bodyRequestId: string | undefined;
   let reason: string | undefined;
+  let bodyDetail: string | undefined;
   try {
     const parsed = JSON.parse(detail) as unknown;
     if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
       if (typeof obj.request_id === "string") bodyRequestId = obj.request_id;
       if (typeof obj.reason === "string") reason = obj.reason;
+      // FastAPI's refusals put the message here. A validation 422 instead makes
+      // `detail` an ARRAY of error objects, which is not a sentence — take it
+      // only when it is a string, so a component can render it unconditionally.
+      if (typeof obj.detail === "string") bodyDetail = obj.detail;
     }
   } catch {
     // Not JSON. Expected — see above.
@@ -138,7 +152,7 @@ async function throwForResponse(res: Response): Promise<never> {
   // same id, carried redundantly for copy-paste, so it is a pure fallback.
   const requestId = res.headers.get("x-request-id") || bodyRequestId || undefined;
 
-  throw new ApiError(res.status, detail || res.statusText, requestId, reason);
+  throw new ApiError(res.status, detail || res.statusText, requestId, reason, bodyDetail);
 }
 
 /**

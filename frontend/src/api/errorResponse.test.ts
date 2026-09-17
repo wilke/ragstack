@@ -159,3 +159,44 @@ describe("throwForResponse", () => {
     expect(error.reason).toBe("error");
   });
 });
+
+describe("the server's own reason reaches the UI (#609)", () => {
+  it("extracts a string `detail` without changing `message`", async () => {
+    // A 422 that says WHY, and names what would work instead. Before this the
+    // only thing a component could read was the status, so CollectionView
+    // rendered "Upload failed (error 422)." and the sentence the server took
+    // care to write was discarded.
+    const body =
+      '{"detail":"chunk_method=\'semantic\' is not yet wired for out-of-process ' +
+      'bulk ingest: it embeds sentence buffers while chunking and the shard step ' +
+      'builds no embedding bridge (issue #609). Supported on this path: fixed, ' +
+      'fixed_token, sentence, words."}';
+    stubFetch(failure(422, body));
+
+    const error = await caught(() => queryRag({ query: "x" }));
+
+    expect(error.status).toBe(422);
+    expect(error.detail).toContain("Supported on this path: fixed, fixed_token");
+    // `message` is still the RAW body — lib/auth.ts renders sign-in sentences
+    // from it and ErrorBanner deliberately never shows it. Adding `detail` must
+    // not quietly redefine what `message` is.
+    expect(error.message).toBe(body);
+  });
+
+  it("leaves `detail` undefined when the body's detail is not a string", async () => {
+    // FastAPI's *validation* 422 makes `detail` an array of error objects. That
+    // is not a sentence; rendering it would put `[object Object]` on screen.
+    stubFetch(failure(422, '{"detail":[{"loc":["body","chunk"],"msg":"field required"}]}'));
+
+    const error = await caught(() => queryRag({ query: "x" }));
+
+    expect(error.status).toBe(422);
+    expect(error.detail).toBeUndefined();
+  });
+
+  it("leaves `detail` undefined for a non-JSON body", async () => {
+    stubFetch(failure(502, "<html><body>502 Bad Gateway</body></html>"));
+
+    expect((await caught(() => queryRag({ query: "x" }))).detail).toBeUndefined();
+  });
+});
