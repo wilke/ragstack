@@ -87,7 +87,8 @@ func cmdTenantHandover(args []string, registryPath, ragRoot string, jsonOut bool
 	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
 	release := fs.Bool("release", false, "stop the tenant and hand it over (run as its owner)")
 	take := fs.Bool("take", false, "start it again under the ctl (run as the service account)")
-	commit := fs.Bool("commit", false, "continue the parked take: the tenant becomes the ctl's")
+	commit := fs.Bool("commit", false, "after the soak: desired_boot enabled and the handover block cleared "+
+		"(run as the account that took it)")
 	abandon := fs.Bool("abandon", false, "give the tenant back to its owner (run as the owner)")
 	token := fs.String("token", "", "the token the release printed (--take)")
 	acceptNoBackup := fs.Bool("accept-no-backup", false, "release although last_backup is null")

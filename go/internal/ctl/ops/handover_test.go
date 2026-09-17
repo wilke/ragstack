@@ -152,9 +152,14 @@ func TestHandoverReleaseCountsAndRecordsBeforeItStopsAnything(t *testing.T) {
 		"proc: stop the hand-started API through its pidfile (TERM, then KILL)",
 		"probe: verify nothing listens on 24040 (the API)",
 		"instance: stop the instance elasticsearch-dev",
+		// BOTH of a leg's ports: elasticsearch binds HTTP and transport,
+		// qdrant HTTP and gRPC. A release that proved only the first free
+		// leaves the second held, and the take then dies binding it.
 		"probe: verify nothing listens on 24043 (es)",
+		"probe: verify nothing listens on 24044 (es)",
 		"instance: stop the instance qdrant-dev",
 		"probe: verify nothing listens on 24041 (qdrant)",
+		"probe: verify nothing listens on 24042 (qdrant)",
 	}
 	got := titles(p)
 	if len(got) != len(want) {
@@ -226,33 +231,10 @@ func TestHandoverReleaseWritesTheRowAndTheTokenBeforeTheStops(t *testing.T) {
 	}
 }
 
-func TestHandoverReleaseRollsTheRowBackWhenAStopFails(t *testing.T) {
-	oc, fake := fixture(t, "dev", prepared)
-	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
-	r := newRunner(oc, fake)
-	// Only the registry step, then its rollback: the case is "the job died
-	// after recording the handover", and what must not survive it is a row
-	// claiming a move that never happened.
-	var reg jobs.Step
-	for _, s := range p.Steps {
-		if s.Plan.Kind == "registry" {
-			reg = s
-		}
-	}
-	if _, err := r.run(reg); err != nil {
-		t.Fatalf("the registry step: %v", err)
-	}
-	if _, err := r.rollback(reg); err != nil {
-		t.Fatalf("its rollback: %v", err)
-	}
-	tn := oc.Fleet.Tenants["dev"]
-	if tn.State != "active" || tn.Handover != nil {
-		t.Errorf("after the rollback: state %q, handover %+v", tn.State, tn.Handover)
-	}
-	if _, ok := p.Result()["token"]; ok {
-		t.Error("the rolled-back job still advertises a token")
-	}
-}
+// The release's ROLLBACKS — both directions of them — are in
+// handover_rollback_test.go: what a rollback may say about a tenant whose API
+// it has already stopped is the one thing about this plan that was wrong, and
+// it earns a file with the reasoning in it.
 
 // ---------------------------------------------------------------- take
 

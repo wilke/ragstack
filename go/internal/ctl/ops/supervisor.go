@@ -600,7 +600,7 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 	worktree, port := p.t.Worktree, c.Port
 	tenantEnv, secretsEnv := tp.TenantEnv, tp.SecretsEnv
 	ownStores := ownStoreProbes(p.t, tp)
-	sharedStores := sharedStoreProbes(p.t)
+	sharedStores := sharedStoreProbes(p.t, tp)
 
 	p.addFor("proc", step{
 		Kind: "proc", Title: fmt.Sprintf("start the API detached once its stores answer (pidfile %s)", filepath.Base(pidfile)),
@@ -1001,7 +1001,7 @@ func ownStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 // without them, so the one thing it CAN do is wait. That is the difference
 // between this list and ownStoreProbes: the same probe, a longer bound, and no
 // claim of ownership anywhere.
-func sharedStoreProbes(t *registry.Tenant) []storeProbe {
+func sharedStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 	var out []storeProbe
 	if q := t.Stores.Qdrant; q.Ownership != registry.OwnershipExclusive && q.URL != "" {
 		url := q.URL
@@ -1014,6 +1014,18 @@ func sharedStoreProbes(t *registry.Tenant) []storeProbe {
 		out = append(out, storeProbe{"the shared elasticsearch at " + url, func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Elasticsearch().Ready(c, url)
 		}})
+	}
+	// An EXTERNAL postgres — a database inside a server somebody else runs —
+	// is exactly the same case as a shared qdrant, and was the one leg this
+	// list forgot: a tenant whose ACL and job state live in another account's
+	// server cannot serve a single request until that server answers, and at
+	// boot the ctl has no idea when that will be.
+	if pg := t.Stores.Postgres; pg.Kind == registry.PostgresKindExternal {
+		spec := jobs.PostgresSpec{SIF: string(pg.SIF), RunDir: tp.PostgresRun, DB: t.Name, User: t.Name, Port: pgPortOf(t)}
+		out = append(out, storeProbe{"the external postgres on " + strconv.Itoa(spec.Port),
+			func(c context.Context, sc *jobs.StepContext) error {
+				return sc.Ops.Drivers.Postgres().Ready(c, spec)
+			}})
 	}
 	return out
 }

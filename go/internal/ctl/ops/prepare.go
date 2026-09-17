@@ -667,6 +667,14 @@ func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error
 						running = append(running, in)
 					}
 				}
+				// The API counts too, and it was the leg this check forgot:
+				// `manual` says "somebody else started it", and a uvicorn THIS
+				// account is running under a row that says that is a process
+				// `tenant stop` will refuse to touch. A port whose owner this
+				// account can read is, by definition, this account's.
+				if listening && pid != 0 {
+					running = append(running, fmt.Sprintf("the API on %d (pid %d)", port, pid))
+				}
 				if len(running) > 0 {
 					return "", fmt.Errorf("%w: this account is running %s for %s. Recording `manual` would say "+
 						"somebody else started them, and nothing would ever stop them again: "+

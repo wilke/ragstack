@@ -63,10 +63,19 @@ package ops
 // under another account, through the ACLs PR-D2 installed — so the risk this
 // file is written against is not data loss, it is a tenant that neither
 // account can start.
+//
+// "No ctl job holds the tenant" is not a check in this file: every phase takes
+// LockTenant (plus registry and manifest), and those three live in a directory
+// BOTH accounts write (jobs.SharedLockDir). A phase that runs while another
+// job holds the tenant is refused by the engine with the holder's job id, pid
+// and start time read out of the lock file — which is a better answer than
+// anything a plan-time probe could give, because it cannot go stale between
+// the check and the act.
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -225,9 +234,14 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 	p.result["released_by"] = account
 	p.warn("after this job the tenant is DOWN and the gateway answers 502 for it. The next step is the take, as the " +
 		"service account: `ragstack-ctl tenant handover " + t.Name + " --take --token <the token this job prints>`")
-	p.warn("if the take cannot be made to work, `ops/coconut/restore.sh --tenant " + t.Name + "` starts the tenant " +
-		"again exactly as it was started before, and `ragstack-ctl tenant handover " + t.Name + " --abandon` puts " +
-		"the row back")
+	// The ORDER matters and is the one an operator gets wrong: `--abandon`
+	// refuses while any of the tenant's ports is still held, so the restore
+	// cannot come first. Stop what the service account started (if the take
+	// ran at all), clear the row, and only then start the tenant again.
+	p.warn("if the take cannot be made to work, the way back is, in this order: `ragstack-ctl tenant stop " +
+		t.Name + "` as the service account (skip it if the take never ran), then `ragstack-ctl tenant handover " +
+		t.Name + " --abandon` here, then `ops/coconut/restore.sh --tenant " + t.Name + "`, which starts the " +
+		"tenant exactly as it was started before")
 	return nil
 }
 
@@ -496,6 +510,7 @@ func sortedCountKeys(m map[string]int64) []string {
 func (p *planner) addReleaseRegistryStep(census *[]registry.CensusEntry) {
 	name := p.tenant
 	account := p.op.deps.owner()
+	apiPort := p.t.Ports.API
 	p.add(step{
 		Kind: "registry", Title: "record state: handover and the hand-off token", Targets: []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
@@ -527,7 +542,47 @@ func (p *planner) addReleaseRegistryStep(census *[]registry.CensusEntry) {
 			p.result["census_rows"] = len(*census)
 			return fmt.Sprintf("%s is `%s` with %d census row(s)", name, registry.StateHandover, len(*census)), nil
 		},
-		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+		// The rollback writes what is TRUE, which is not always `active`.
+		//
+		// The engine rolls back newest-first, so by the time this runs the
+		// steps after it have already undone what they could — and the API
+		// stop is not one of them: the ctl cannot start a hand-started uvicorn
+		// again (its command line is the operator's). So this step ASKS the
+		// host. Nothing on the API port means the release got as far as
+		// stopping the tenant, and a row saying `active` over that would be
+		// the exact lie the ordering of this plan exists to prevent — it would
+		// also make `--abandon` refuse ("there is nothing to abandon") and
+		// leave the operator with no verb at all.
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			listening, perr := sc.Ops.Drivers.Proc().Listening(ctx, apiPort)
+			if perr != nil {
+				// An unreadable LISTEN table is not evidence that the tenant
+				// is up. Keep the honest, recoverable shape.
+				sc.Logf("the API port could not be probed (%v): the row keeps its handover block", perr)
+				listening = false
+			}
+			if !listening {
+				// The tenant is DOWN, so the row this step wrote is still the
+				// true one: `state: handover`, phase `released`, the block and
+				// its token intact. It is LEFT ALONE — that is what a
+				// truthful rollback of a step whose successors could not be
+				// undone looks like — and the operator is told the two
+				// commands that finish the job.
+				//
+				// It also keeps every other reader right: a fleet-wide
+				// restore.sh skips a `handover` row, `restore.sh --tenant <n>`
+				// starts it, and `--abandon` has a block to act on. Writing
+				// `active` here (which this step used to do unconditionally)
+				// broke all three at once.
+				sc.Logf("%s is DOWN: the row keeps `%s` with its handover block, which is what it is. Start it "+
+					"with `ops/coconut/restore.sh --tenant %s`, then clear the row with "+
+					"`ragstack-ctl tenant handover %s --abandon`", name, registry.StateHandover, name, name)
+				return name + " is still `" + registry.StateHandover + "` (it is down): run " +
+					"`ops/coconut/restore.sh --tenant " + name + "` then `ragstack-ctl tenant handover " +
+					name + " --abandon`", nil
+			}
+			// Nothing was stopped: the row goes all the way back and the
+			// handover never happened.
 			err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
 				t.State, t.Handover = "active", nil
 				return nil
@@ -604,12 +659,25 @@ func (p *planner) addReleaseStoreStop(c component) {
 	}
 	st, err := render.StoreArgv(p.t, c.Leg, p.unitConfig())
 	restartable := err == nil
+	port := c.Port
 	p.addFor("instance", step{
 		Kind: "instance", Title: "stop the instance " + instance, Destructive: true, Targets: []string{instance},
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/apptainer", "instance", "stop", instance}}},
 		Warnings: []string{"SIGTERM to the instance, which is the graceful shutdown elasticsearch needs; an " +
-			"instance that is not running is success, so this step is safe to re-run"},
+			"instance that is not running is success, so this step is safe to re-run",
+			"the instance is checked against the row's port before it is stopped: a NAME is not identity, and " +
+				instance + " must be the process holding " + strconv.Itoa(port) + " for this step to signal it"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// A name is not an identity. `apptainer instance stop qdrant-dev`
+			// stops whatever this account happens to have called that — which,
+			// on a host where a tenant has been re-provisioned or a name
+			// reused, is not necessarily the process serving the port the row
+			// names. The check is the same one every signal in this control
+			// plane makes, in the only form available for a container: the pid
+			// behind the LISTEN socket has to be the instance's.
+			if err := instanceHoldsPort(ctx, sc, instance, port); err != nil {
+				return "", err
+			}
 			if err := sc.Checkpoint("instance:" + instance); err != nil {
 				return "", err
 			}
@@ -661,9 +729,85 @@ func (p *planner) addReleaseStoreStop(c component) {
 			return jobs.ReconcileDone, nil
 		},
 	})
-	if c.Port != 0 {
-		p.addPortFreeStep(c.Port, c.Name)
+	for _, port := range legPorts(p.t, c) {
+		p.addPortFreeStep(port, c.Name)
 	}
+}
+
+// legPorts are EVERY port a leg binds, not just the one the row calls its own.
+//
+// qdrant listens on an HTTP port and a gRPC port; elasticsearch on HTTP and
+// transport. A release that proved only the first free left the second one
+// held — and apptainer's `instance run` on the other account then fails to
+// bind it, which is a take that dies on a port nobody checked.
+func legPorts(t *registry.Tenant, c component) []int {
+	switch c.Leg {
+	case render.LegQdrant:
+		return nonZeroPorts(t.Ports.QdrantHTTP, t.Ports.QdrantGRPC)
+	case render.LegES:
+		return nonZeroPorts(t.Ports.ESHTTP, t.Ports.ESTransport)
+	case render.LegPostgres:
+		return nonZeroPorts(c.Port)
+	}
+	return nonZeroPorts(c.Port)
+}
+
+func nonZeroPorts(ports ...int) []int {
+	out := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p != 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// instanceHoldsPort refuses to stop an instance that is not the process
+// serving this tenant's port.
+//
+// Three answers are fine and only one is not. An instance that is not running
+// is nothing to stop; a port with no readable owner is a port this account
+// cannot attribute, and since these instances ARE this account's, that means
+// the port is somebody else's and the instance is not on it; a port held by a
+// pid that is not the instance's is the dangerous one — the instance name was
+// reused, and stopping it would take down a store this tenant does not own.
+func instanceHoldsPort(ctx context.Context, sc *jobs.StepContext, instance string, port int) error {
+	if port == 0 {
+		return nil
+	}
+	list, err := sc.Ops.Drivers.Instances().List(ctx)
+	if err != nil {
+		return err
+	}
+	var pid int
+	found := false
+	for _, in := range list {
+		if in.Name == instance {
+			pid, found = in.PID, true
+		}
+	}
+	if !found {
+		sc.Logf("instance %s is not running; there is nothing to check or to stop", instance)
+		return nil
+	}
+	owner, _, err := sc.Ops.Drivers.Proc().Owner(ctx, port)
+	if err != nil {
+		return err
+	}
+	switch {
+	case owner == 0:
+		sc.Logf("%d has no owner this account can read, so it is not %s's; stopping the instance by name", port, instance)
+		return nil
+	case pid == 0:
+		sc.Logf("the instance table gives %s no pid; stopping it by name", instance)
+		return nil
+	case owner == pid:
+		return nil
+	}
+	return fmt.Errorf("%w: %d is held by pid %d, and the instance %s is pid %d — the name and the port do not "+
+		"describe the same process. Stopping it would take down something this tenant does not own; look at "+
+		"`apptainer instance list` and at the row's stores.* ports before going on",
+		jobs.ErrRefused, port, owner, instance, pid)
 }
 
 // addPortFreeStep is the proof: nothing listens there any more, so the other
@@ -702,7 +846,7 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 		return p.refuse("%s's handover is in phase `%s`, not `%s`: it has already been taken. Commit it "+
 			"(`ragstack-ctl tenant handover %s --commit`) or abandon it", t.Name, h.Phase,
 			registry.HandoverReleased, t.Name)
-	case token != h.Token:
+	case subtle.ConstantTimeCompare([]byte(token), []byte(h.Token)) != 1:
 		// The expected value is NOT echoed. It is a nonce rather than a
 		// credential, but a refusal that prints the answer is a refusal that
 		// teaches nothing, and the operator who ran the release has it.
@@ -716,6 +860,17 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 	if t.Supervisor != supervisorManual {
 		return p.refuse("%s is already supervised by `%s`; a take gives a tenant instance supervision and this row "+
 			"already claims some", t.Name, t.Supervisor)
+	}
+	// The take is the OTHER account's half. Run by the one that released it,
+	// every process it starts is still that account's, every port proof still
+	// passes, and the row ends up claiming a handover that moved nothing —
+	// which is the one way to reach `owner: wilke, supervisor: instance`, a
+	// combination the daemon can neither supervise nor undo.
+	if account == h.ReleasedBy {
+		return p.refuse("%s was released by %s and this job is running as %s too: a take is the OTHER account "+
+			"starting the tenant. Run it as the service account (`/rag/bin/ctl-as-svc.sh tenant handover %s "+
+			"--take --token <token>`), or abandon the handover if you meant to put the tenant back",
+			t.Name, h.ReleasedBy, account, t.Name)
 	}
 
 	// The supervisor this tenant is MOVING ONTO, not the one the row records.
@@ -732,10 +887,16 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 	// process the release did not manage to stop is the worst outcome here,
 	// and it is one probe away.
 	for _, c := range legs {
-		if !c.Managed || c.Port == 0 {
+		if !c.Managed {
 			continue
 		}
-		p.addPortFreeStep(c.Port, c.Name)
+		if c.Name == "api" {
+			p.addPortFreeStep(c.Port, c.Name)
+			continue
+		}
+		for _, port := range legPorts(t, c) {
+			p.addPortFreeStep(port, c.Name)
+		}
 	}
 
 	p.addTakeSupervisorStep()
