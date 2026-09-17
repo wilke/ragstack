@@ -30,6 +30,9 @@ import pytest
 
 BASE = os.environ.get("RAGSTACK_LIVE_BASE_URL")
 TOKEN = os.environ.get("RAGSTACK_LIVE_TOKEN")
+# Set on a tenant that is ADVERTISED as having a corpus. Without it the
+# non-empty assertions skip, so the suite stays honest on a bare dev tenant.
+EXPECT_CORPUS = os.environ.get("RAGSTACK_LIVE_EXPECT_CORPUS")
 
 pytestmark = pytest.mark.skipif(
     not BASE, reason="set RAGSTACK_LIVE_BASE_URL to run live smoke checks"
@@ -103,3 +106,75 @@ def test_collections_listing_is_a_list_for_an_authenticated_caller():
     r = _get("/v1/collections", auth=True)
     assert r.status_code == 200, r.text
     assert isinstance(r.json().get("collections"), list), r.text
+
+
+def _collections() -> list[dict]:
+    r = _get("/v1/collections", auth=True)
+    assert r.status_code == 200, r.text
+    return r.json()["collections"]
+
+
+def test_the_default_pointer_resolves_to_exactly_one_collection():
+    """`default` is a pointer, never a collection. Exactly one entry claims it.
+
+    If none does, a query that omits `collection` has nowhere to go — which is
+    the shape of the failure an attendee hits first: no error, no sources.
+    """
+    if not TOKEN:
+        pytest.skip("set RAGSTACK_LIVE_TOKEN")
+    flagged = [c for c in _collections() if c.get("is_default")]
+    assert len(flagged) == 1, [c.get("id") for c in flagged]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("RAGSTACK_LIVE_EXPECT_CORPUS"),
+    reason="set RAGSTACK_LIVE_EXPECT_CORPUS on a tenant that should have one",
+)
+def test_the_default_collection_is_not_empty():
+    """An unqualified question must find something to search.
+
+    Deliberately not a count and not an id: those change whenever anyone
+    ingests, and a test that fails because someone added documents is one
+    people learn to ignore. Only 'not zero'.
+    """
+    if not TOKEN:
+        pytest.skip("set RAGSTACK_LIVE_TOKEN")
+    default = next((c for c in _collections() if c.get("is_default")), None)
+    assert default is not None, "no collection claims the default pointer"
+    count = default.get("count")
+    if count is None:
+        pytest.skip(f"{default['id']}: vector count unavailable from this store")
+    assert count > 0, f"default collection {default['id']} is empty"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("RAGSTACK_LIVE_EXPECT_CORPUS"),
+    reason="set RAGSTACK_LIVE_EXPECT_CORPUS on a tenant that should have one",
+)
+def test_vector_and_text_legs_agree_on_every_readable_collection():
+    """Both retrieval legs must see the same collection.
+
+    `count` is the vector store, `text_count` the BM25 index. A collection whose
+    stores are ROUTED to another instance (ES_COLLECTION_ROUTES /
+    QDRANT_COLLECTION_ROUTES, v1.6.2) needs BOTH routed; route one and retrieval
+    silently reads half the corpus. That failure is invisible to a smoke query,
+    which still returns plausible hits — so it is worth an explicit check.
+
+    Tolerant by design: skips a collection where either side is unavailable, and
+    allows small drift while an ingest is in flight.
+    """
+    if not TOKEN:
+        pytest.skip("set RAGSTACK_LIVE_TOKEN")
+    checked = 0
+    for c in _collections():
+        vec, txt = c.get("count"), c.get("text_count")
+        if vec is None or txt is None or vec == 0:
+            continue
+        checked += 1
+        drift = abs(vec - txt) / max(vec, 1)
+        assert drift < 0.01, (
+            f"{c['id']}: vector {vec} vs text {txt} — one leg is missing or "
+            f"only one store is routed"
+        )
+    if not checked:
+        pytest.skip("no collection reported both counts")
