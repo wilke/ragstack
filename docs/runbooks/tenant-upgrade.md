@@ -343,8 +343,8 @@ Flags that matter (`go/cmd/ragstack-ctl/main.go:714-750`):
 | `--manifest-name M` | the `manifest.tsv` row / data-dir basename, when it differs from the name (`asm-next` → `asm`, `lucid-next` → `lucid`) |
 | `--ui-mode static\|dev\|external` | defaults to `dev` when `--ui-port` is given, `external` when it is not. `static` takes **no** `--ui-port` — the pair is a usage error, and the preview raises `ui_dist_missing` if `<data-dir>/ui/dist` is not there |
 | `--ui-port P` | the Vite dev server's port — dev-UI tenants only |
-| `--readopt` | **required for an upgrade.** Replaces the row of a tenant already in the registry, keeping `adopted_at`, `desired_boot`, the rollback descriptor and the last ops/backup. Without it, adopting an already-adopted tenant is an error |
-| `--force` | commit despite error-level findings — read every finding before reaching for this |
+| `--readopt` | **required for an upgrade.** Replaces the row of a tenant already in the registry, keeping `adopted_at`, `desired_boot`, the rollback descriptor and the last ops/backup — and, on a **ctl-supervised** row (`supervisor` not `manual`), its `owner`, `supervisor`, `state`, `handover` block, `api.pidfile` and confirmed store capabilities as well, whoever runs the command. Without it, adopting an already-adopted tenant is an error |
+| `--force` | commit despite error-level findings — read every finding before reaching for this. It does **not** get past the refusal for a tenant the control plane already runs (`this tenant is already run by the control plane; use --readopt`) |
 
 Build the UI **before** you re-adopt a static tenant: the preview checks that
 the dist exists.

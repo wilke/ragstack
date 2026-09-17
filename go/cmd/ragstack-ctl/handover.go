@@ -246,12 +246,14 @@ Set both, or point them at any directory this account owns.
 // ---------------------------------------------------------------- set-supervisor
 
 func setSupervisorUsage() int {
-	fmt.Fprintf(stderr, `usage: ragstack-ctl tenant set-supervisor <name> manual|instance %s
+	fmt.Fprintf(stderr, `usage: ragstack-ctl tenant set-supervisor <name> manual|instance [--desired-boot enabled|disabled] %s
 
-Corrects the registry's `+"`supervisor`"+` and NOTHING else: no process is started,
-stopped or signalled. It is the repair for a row that disagrees with the host
-— a take that wrote `+"`instance`"+` and then failed, an abandon nobody got to run —
-and it refuses the two ways of making such a disagreement permanent:
+Corrects the registry's `+"`supervisor`"+` (and, with --desired-boot, the tenant's
+boot intent) and NOTHING else: no process is started, stopped or signalled. It
+is the repair for a row that disagrees with the host — a take that wrote
+`+"`instance`"+` and then failed, an abandon nobody got to run, a `+"`--readopt`"+` that
+dropped a handover block and the boot intent inside it — and it refuses the two
+ways of making such a disagreement permanent:
 
   * moving a row to `+"`instance`"+` while the API port is held by a process this
     account cannot attribute (another account's): the ctl would be claiming it
@@ -265,6 +267,10 @@ accounts. Abandon or commit the handover first.
 
 `+"`systemd`"+` is not offered: PR-D2 postponed that path, and a row pointing at it
 would name units no manager on this host can be made to load.
+
+--desired-boot writes `+"`desired_boot`"+`, which is what the @reboot hook
+(`+"`fleet start --all`"+`) reads to decide whether to start this tenant at all.
+Absent, the recorded value is left alone.
 `, opFlagSummary)
 	return exitUsage
 }
@@ -273,6 +279,9 @@ would name units no manager on this host can be made to load.
 func cmdTenantSetSupervisor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tenant set-supervisor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	boot := fs.String("desired-boot", "",
+		"also record the tenant's boot intent (enabled|disabled): whether the @reboot hook `fleet start --all` "+
+			"starts it. Absent leaves the recorded value alone")
 	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
 
 	pos, rest := takePositionals(args, 2)
@@ -291,10 +300,20 @@ func cmdTenantSetSupervisor(args []string, registryPath, ragRoot string, jsonOut
 		}
 		return usageErr("set-supervisor: %q is not manual or instance", kind)
 	}
+	if *boot != "" && *boot != "enabled" && *boot != "disabled" {
+		return usageErr("set-supervisor: --desired-boot %q is not enabled or disabled", *boot)
+	}
 	if code := refuseServerFlag(fs, "tenant set-supervisor", "it is the repair for a row that disagrees with the "+
 		"host, and the account that can see which of the two is wrong is the one sitting in front of it"); code != exitOK {
 		return code
 	}
 	*o.direct = true
-	return submitOp(o, tenantOpTarget(name, "set-supervisor"), map[string]any{"supervisor": kind})
+	opArgs := map[string]any{"supervisor": kind}
+	// Absent means "no opinion", so the key is omitted rather than sent empty:
+	// the arg schema's enum would reject "" and, more to the point, a row's
+	// boot intent must not be rewritten by a command that never named it.
+	if *boot != "" {
+		opArgs["desired_boot"] = *boot
+	}
+	return submitOp(o, tenantOpTarget(name, "set-supervisor"), opArgs)
 }

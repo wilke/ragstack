@@ -618,16 +618,26 @@ func orNone(s string) string {
 // no-op that reports success. `manual` means "somebody else started it", and
 // writing that while this account's own apptainer instances are running for
 // the tenant would orphan them: nothing would ever stop them again.
+//
+// `desired_boot` is the optional second field, and it is here because it is
+// the other half of the same sentence: `supervisor` says who starts the
+// tenant, `desired_boot` says whether anybody does at boot. A row can lose
+// them together — a `--readopt` that dropped the handover block dropped the
+// boot intent with it — and until this field there was no command that could
+// write the second one back. Absent means "no opinion", so the common repair
+// still touches exactly one field.
 func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error {
 	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
 	want := argStringOf(args, "supervisor")
 	prev := p.t.Supervisor
+	wantBoot := argStringOf(args, "desired_boot")
+	prevBoot := p.t.DesiredBoot
 	if p.t.Handover != nil {
 		return p.refuse("%s has a handover in flight (phase %s): its supervisor is being moved by that protocol, "+
 			"and a row edited underneath it would strand the tenant between two accounts. Take it, commit it, or "+
 			"abandon it first (`ragstack-ctl tenant handover %s --abandon`)", p.t.Name, p.t.Handover.Phase, p.t.Name)
 	}
-	if prev == want {
+	if prev == want && (wantBoot == "" || wantBoot == prevBoot) {
 		p.warn("supervisor is already `" + want + "`: this op writes the registry anyway, so the job record says " +
 			"when the value was last confirmed")
 	}
@@ -698,8 +708,12 @@ func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error
 		},
 	})
 
+	title := fmt.Sprintf("record supervisor = %s (was %s)", want, orNone(prev))
+	if wantBoot != "" {
+		title += fmt.Sprintf(" and desired_boot = %s (was %s)", wantBoot, orNone(prevBoot))
+	}
 	p.add(step{
-		Kind: "registry", Title: fmt.Sprintf("record supervisor = %s (was %s)", want, orNone(prev)),
+		Kind: "registry", Title: title,
 		Targets:    []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
 		Warnings: []string{"the REGISTRY only: no process is started, stopped or signalled by this op. It says " +
@@ -707,16 +721,25 @@ func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			err := p.saveTenant(sc, "set-supervisor", func(t *registry.Tenant) error {
 				t.Supervisor = want
+				if wantBoot != "" {
+					t.DesiredBoot = wantBoot
+				}
 				return nil
 			})
 			if err != nil {
 				return "", err
+			}
+			if wantBoot != "" {
+				return fmt.Sprintf("%s supervisor = %s, desired_boot = %s", name, want, wantBoot), nil
 			}
 			return fmt.Sprintf("%s supervisor = %s", name, want), nil
 		},
 		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			if err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
 				t.Supervisor = prev
+				if wantBoot != "" {
+					t.DesiredBoot = prevBoot
+				}
 				return nil
 			}); err != nil {
 				return "", err
@@ -726,14 +749,32 @@ func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error
 	})
 	p.result["supervisor"] = want
 	p.result["previous_supervisor"] = prev
+	// The boot fields are reported only when this call had an opinion about
+	// them: a result carrying `desired_boot` for a run that never named it
+	// would read as a write that did not happen.
+	boot := p.t.DesiredBoot
+	if wantBoot != "" {
+		boot = wantBoot
+		p.result["desired_boot"] = wantBoot
+		p.result["previous_desired_boot"] = prevBoot
+	}
 	if want == supervisorManual {
 		p.warn("`manual` means the ctl will not START this tenant: `ragstack-ctl tenant start " + name +
 			"` refuses, and `ops/coconut/restore.sh --tenant " + name + "` is what brings it up")
 	} else {
 		p.warn("`instance` means `ragstack-ctl fleet start --all` will start this tenant at boot when " +
-			"desired_boot is `enabled`; it is `" + p.t.DesiredBoot + "` today")
+			"desired_boot is `enabled`; it is `" + boot + "` " + bootTense(wantBoot))
 	}
 	return nil
+}
+
+// bootTense keeps the supervisor warning honest about WHICH desired_boot it
+// just quoted: the one on the row, or the one this same op is about to write.
+func bootTense(wantBoot string) string {
+	if wantBoot != "" {
+		return "after this op"
+	}
+	return "today"
 }
 
 // tenantInstanceNames are the apptainer instances this tenant's own stores run

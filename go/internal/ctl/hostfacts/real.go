@@ -402,6 +402,26 @@ func SafeEnvAllowed(key string) bool {
 	return !secretHintPattern.MatchString(strings.ReplaceAll(key, "VISIBLE_DEVICES", ""))
 }
 
+// ProcessOwner resolves the account behind pid. It is procOwner with the
+// "unreadable" case promoted to an error, because the callers that reach for
+// it (adopt attributing an API port through the tenant's pidfile) must be able
+// to tell "svcbvbrc runs this" from "there is nothing there to read".
+//
+// Cross-account by construction: /proc/<pid> is owned by the process's own
+// account and its st_uid is readable by everyone, and /proc/<pid>/status is
+// world-readable behind it. Neither needs the /proc/<pid>/fd access that makes
+// the listen table blind to other accounts' sockets.
+func (r *Real) ProcessOwner(pid int) (int, string, error) {
+	if pid <= 0 {
+		return -1, "", fmt.Errorf("hostfacts: %d is not a pid", pid)
+	}
+	uid, name := r.procOwner(pid)
+	if uid < 0 {
+		return -1, "", fmt.Errorf("hostfacts: no process %d on this host", pid)
+	}
+	return uid, name, nil
+}
+
 // ProcEnv reads /proc/<pid>/environ and keeps the keys allow accepts. A nil
 // allow means SafeEnvAllowed.
 func (r *Real) ProcEnv(pid int, allow func(string) bool) (map[string]string, error) {
