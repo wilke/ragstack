@@ -56,13 +56,26 @@ export function SourceCard({ source, rank }: { source: Source; rank: number }) {
   const year = asText(metadata.year);
   const docType = asText(metadata.doc_type);
   const nCitations = typeof metadata.n_citations === "number" ? metadata.n_citations : undefined;
+  // A third of some collections is the paper's own bibliography, correctly
+  // flagged at ingest and retrieved anyway. A reference-list passage names a
+  // gene and a finding in one line with no substance behind it, and it carries
+  // the paper's OWN citation numbers — which is how an extractor ends up citing
+  // a source number that was never in its context. Say so on the card.
+  const isReferences =
+    metadata.is_boilerplate === true || asText(metadata.section) === "references";
+  // PMCID is not stamped as its own field, but the staged filename carries it
+  // (Dengue_PMC5925603.pdf). Recovering it here costs nothing and is the id
+  // people actually paste into PubMed.
+  const pmcid = asText(metadata.pmcid) ?? (asText(metadata.filename) ?? "").match(/PMC\d+/)?.[0];
 
   const tier = scoreTier(source.score);
   const content = source.content ?? "";
   const isLong = content.length > PREVIEW_LIMIT;
   const shown = expanded || !isLong ? content : `${content.slice(0, PREVIEW_LIMIT)}…`;
 
-  const hasTags = Boolean(year || docType || nCitations !== undefined || doi);
+  const hasTags = Boolean(
+    year || docType || nCitations !== undefined || doi || pmcid || isReferences,
+  );
 
   return (
     <li className="rounded-panel border border-line px-4 py-3.5">
@@ -93,6 +106,14 @@ export function SourceCard({ source, rank }: { source: Source; rank: number }) {
 
       {hasTags && (
         <div className="mb-2.5 flex flex-wrap gap-1.5">
+          {isReferences && (
+            <span
+              className="rounded-chip bg-amber/10 px-2 py-0.5 font-mono text-[10.5px] text-amber"
+              title="This passage is from the paper's reference list, not its body text. Numbers in it are that paper's own citations."
+            >
+              reference list
+            </span>
+          )}
           {year && <Tag>{year}</Tag>}
           {docType && <Tag>{docType}</Tag>}
           {nCitations !== undefined && (
@@ -100,6 +121,7 @@ export function SourceCard({ source, rank }: { source: Source; rank: number }) {
               {nCitations} citation{nCitations === 1 ? "" : "s"}
             </Tag>
           )}
+          {pmcid && <Tag>{pmcid}</Tag>}
           {doi && <Tag>{doi}</Tag>}
         </div>
       )}
