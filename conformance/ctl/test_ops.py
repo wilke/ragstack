@@ -1591,18 +1591,30 @@ async def test_create_refuses_a_name_that_is_taken(
     assert some_tenant in err["detail"], err["detail"]
 
 
-@pytest.mark.parametrize("verb", ["artifact-prepare", "create-sandbox"])
+@pytest.mark.parametrize(
+    "verb", ["artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind"]
+)
 async def test_a_cli_only_op_has_no_http_route(
     client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str, verb: str
 ) -> None:
-    """``fleet artifact prepare`` and ``create-sandbox`` are jobs like any
-    other — planned, locked, audited — and they have NO route. The first runs
-    ``npm ci`` (the one step in the control plane that reaches the network) and
-    takes a repository path; the second allocates out of the selftest port range
-    and is how ``ragstack-ctl selftest`` creates and destroys tenants in a loop.
-    Both are trusted-operator, ``--direct`` operations. The router refuses them
-    as verbs outside the enum, which is the same answer a name nobody defined
-    gets: a CLI-only op must not be half-reachable.
+    """The four verbs in ``x-ctl-cli-op-args`` are jobs like any other —
+    planned, locked, audited — and they have NO route.
+
+    ``fleet artifact prepare`` runs ``npm ci`` (the one step in the control
+    plane that reaches the network) and takes a repository path;
+    ``create-sandbox`` allocates out of the selftest port range and is how
+    ``ragstack-ctl selftest`` creates and destroys tenants in a loop;
+    ``set-ui-mode`` may run ``npm ci`` too and renames directories inside a
+    tenant's data tree; ``set-bind`` edits a row whose tenant the daemon cannot
+    supervise at all until its handover. All four are trusted-operator,
+    ``--direct`` operations. The router refuses them as verbs outside the enum,
+    which is the same answer a name nobody defined gets: a CLI-only op must not
+    be half-reachable.
+
+    The list is parametrised rather than derived so that PUBLISHING one of them
+    is a deliberate edit here: adding a route is adding the name to the verb
+    enum, and this test is what makes that a decision rather than a side
+    effect.
 
     Not gated on the engine: the verb enum is the router's own, so this holds on
     any daemon that answers."""

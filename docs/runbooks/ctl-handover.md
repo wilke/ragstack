@@ -84,14 +84,21 @@ ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --yes
 
 `static` does seven things, in this order, and rolls every one of them back:
 
-1. `npm ci` in `<worktree>/frontend` — **only** when `node_modules` is absent.
-   It is the one step in the whole control plane that reaches the network.
+1. `npm ci` in `<worktree>/frontend` — **only** when
+   `node_modules/.bin/vite` is absent. It is the one step in the whole control
+   plane that reaches the network. The check is the binary rather than the
+   directory on purpose: an interrupted install leaves a directory with some of
+   a thousand packages in it, and that has to be repaired, not skipped.
 2. `vite build --base /ragstack/<t>/ui/` into `<data_dir>/ui/dist.building`.
 3. stops that tenant's Vite dev server, found by the port its row records AND
    by identity (cwd under `<worktree>/frontend`, `vite` in the argv). Never by
    process name.
-4. one rename: `dist` → `dist.prev-<ts>`, `dist.building` → `dist`. nginx
-   serves the old directory until that instant and the new one after it.
+4. two renames on the same filesystem: `dist` → `dist.prev-<ts>`, then
+   `dist.building` → `dist`. nginx serves the old directory until the first and
+   the new one after the second; between them — microseconds — the alias has no
+   directory and answers 404. The dev server is stopped in step 3, BEFORE this,
+   so the gateway is still routing the UI to its port throughout the window and
+   nobody is served a half-swapped build.
 5. registry `ui.mode: static`, port cleared.
 6. a gateway generation in which the static alias replaces this tenant's
    `$tenant_ui` row.
@@ -104,10 +111,22 @@ for a dev server somebody else runs and goes on running (plan decision D2 —
 
 **Clears:** the "instance mode refuses a dev-mode UI" refusal.
 
-**Undo:** the job's rollback restores `dist.prev-<ts>`, puts the mode back and
-republishes. By hand afterwards:
+**Undo.** The job's rollback runs last-step-first and leaves you with: the row
+back as it was, a gateway generation republished FROM that restored row, and
+`dist.prev-<ts>` back in place as `dist`. The staged build is kept at
+`<data_dir>/ui/dist.building` for inspection; the next run's
+`vite build --emptyOutDir` clears it.
+
+**One thing a rollback does not put back: the Vite dev server.** The ctl
+stopped it by pid and does not know the command line to start it with — that
+was yours. After a rollback the row says `dev`/`external` again and the gateway
+routes to the port again, so the repair is to start the server the way you
+started it before. The plan warns about this before you approve it.
+
+By hand, if you are undoing a job that already finished:
 `mv <data_dir>/ui/dist{,.bad} && mv <data_dir>/ui/dist.prev-<ts> <data_dir>/ui/dist`,
-then `ragstack-ctl tenant set-ui-mode <t> external --ui-port <P>`.
+then `ragstack-ctl tenant set-ui-mode <t> external --ui-port <P>`, then start
+the dev server.
 
 **Watch for:** a tenant the live gateway does not route yet — the publish step
 refuses rather than advancing a generation for a document nobody reads. Run
@@ -167,15 +186,32 @@ ragstack-ctl adopt <t> --data-dir <D> --worktree <W> --readopt \
     --confirm-stores qdrant,elasticsearch[,postgres] --commit
 ```
 
+**A re-adoption does not undo A2 or A4.** `--readopt` re-reads the host, and
+the host has not caught up with either decision: a fresh preview of a `static`
+UI infers `external` (the tenant has no dev-server port), and the running API
+still binds `0.0.0.0` until its next restart. Those three fields — `ui.mode` /
+`ui.port`, `api.bind` and the store capabilities — are carried over from the
+existing row unless you name them: `--ui-mode`/`--ui-port` for the UI,
+`--api-bind` for the bind, `--confirm-stores` for the capabilities. A bind that
+differs from the live process is recorded as an `api_bind_drift` row, so the
+disagreement is written down rather than resolved behind your back.
+
 Re-verifies each named **exclusive** leg from `/proc` and the listen table
 before it writes anything:
 
 * exactly one process serves the leg's port (two pids is two servers; a pid
   this account cannot read is somebody else's);
-* that process's argv binds a path under this tenant's own data dir — the
-  apptainer `--bind`, because a URL says what the tenant was configured to
-  dial and the argv says where the files actually are;
-* no other registry row names the same port.
+* that process has a directory under this tenant's own data dir MOUNTED where a
+  store of its kind keeps its data — `<data_dir>/qdrant/storage` at
+  `/qdrant/storage`, the ES data dir, the postgres PGDATA. The evidence is
+  `/proc/<pid>/mountinfo`, not the command line: the process holding the port is
+  the one inside the container (`./qdrant`, the elasticsearch JVM, `postgres`)
+  and carries no `--bind` at all, because the `apptainer instance run` that set
+  the mounts up exited long ago. Only that process's own account may read its
+  mountinfo — which is the account you are running this as;
+* no other registry row names the same port (resolved the same way for both
+  sides: the store URL when there is one, the row's port block when there is
+  not).
 
 Then it sets `capabilities {stop, snapshot, restore}` on every named leg.
 `purge` is never set. A **shared** leg is refused outright ("not exclusive"):
@@ -249,6 +285,10 @@ the preparation days ahead.
 | `set-ui-mode` refuses: "cannot attribute" on the UI port | the dev server belongs to another account | run it as that account, or stop the server by hand first |
 | `--confirm-stores` refuses: "not exclusive" | the leg is a shared store | leave it; the tenant is handed over without that capability |
 | `--confirm-stores` refuses: "2 different processes" | two servers on one port, or a restart in flight | look at the port, then run it again |
+| `--confirm-stores` refuses: "mounts nothing under this tenant's data dir" | the process on that port keeps its files somewhere else | it is not this tenant's store; check `stores.*.url` against what is really running |
+| `--confirm-stores` refuses: "its storage is somewhere else" | something of the tenant's is mounted, but not its data directory | look at the instance's binds before confirming anything |
+| `--confirm-stores` refuses: "reading the mounts of pid N" | the store belongs to another account | run the confirmation as the account that started it |
+| after a rollback the UI route 502s | the dev server this op stopped is not restarted by a rollback | start it again the way you started it before |
 | `backup --scope` refuses: "outage for nothing" | `--fence` with a light scope | drop `--fence`; a light bundle does not need one |
 | `doctor --op handover` red on `boot_cron_missing` | nothing would start the tenant after a reboot | `ragstack-ctl fleet enable-boot --cron` as the service account |
 | `doctor --op handover` red on `ctl_account_no_access` | svcbvbrc cannot write a managed root | `ragstack-ctl fleet grant --user svcbvbrc` as the path owner |

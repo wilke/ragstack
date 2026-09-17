@@ -197,11 +197,42 @@ def test_the_store_instances_come_from_the_row(restore, pre_reboot):
             assert field in code, f"{script} does not read {field}"
         assert "exclusive" in code, \
             f"{script} does not distinguish an exclusive leg from a shared one"
-    # restore.sh prefers the tenant's own launcher, which owns the binds, the ES
-    # -E arguments and the generated postgres password.
     code = _code(restore)
-    assert "bin/up.sh" in code and "bin/up-es.sh" in code, \
-        "restore.sh no longer prefers the tenant's own store launcher"
+    # The heap, the image and the ports come from the ROW, not from the
+    # tenant's own up.sh — see test_qdrant_and_es_are_rebuilt_from_the_row.
+    for field in ("'.stores.elasticsearch.heap'", "'.stores.elasticsearch.sif'",
+                  "'.stores.qdrant.sif'", "'.ports.es_transport'",
+                  # read inside the jq expression that builds the env object
+                  "$t.ports.qdrant_grpc"):
+        assert field in code, f"restore.sh does not read {field} from the registry row"
+    assert "extra_env" in code, \
+        "restore.sh ignores stores.*.extra_env, which is the environment the store is really running with"
+
+
+def test_qdrant_and_es_are_rebuilt_from_the_row_not_from_up_sh(restore):
+    """``up.sh`` is a PROVISION-TIME artefact and its values drift.
+
+    dev's says ``ES_JAVA_OPTS=-Xms512m -Xmx512m``; the elasticsearch that has
+    been serving dev for months runs with 1g, the registry records that
+    (``stores.elasticsearch.heap``, ``extra_env``) and carries an
+    ``es_heap_drift`` row saying the two disagree. A restore that ran up.sh
+    would quietly halve the heap of a store that came back after a reboot.
+
+    So up.sh is used for exactly one thing — the postgres leg, whose generated
+    password must not appear in this repo — and qdrant and elasticsearch are
+    rebuilt from the row.
+    """
+    code = _code(restore)
+    assert "tenant_qdrant_up" in code and "tenant_es_up" in code, \
+        "restore.sh has no per-kind reconstruction"
+    # The launcher is reached from the postgres branch and nowhere else.
+    up_uses = [l.strip() for l in code.splitlines() if "tenant_up_script" in l and "()" not in l]
+    assert up_uses, "restore.sh never calls tenant_up_script"
+    for line in up_uses:
+        assert "postgres" in line or "up=$(tenant_up_script" in line, \
+            f"up.sh is reached outside the postgres branch: {line}"
+    assert "it holds the generated password" in code, \
+        "restore.sh does not say WHY the postgres leg goes through the tenant's launcher"
 
 
 @pytest.mark.parametrize("script", ["restore.sh", "pre-reboot.sh", "snapshot.sh"])
@@ -327,7 +358,103 @@ def test_a_tenant_scoped_dry_run_touches_one_tenant(tmp_path):
 
 
 @requires_shell
+def test_the_dev_dry_run_plans_the_live_heap_not_up_shs(tmp_path):
+    """The regression this PR's review found, against the LIVE registry.
+
+    dev's ``bin/up.sh`` says 512m and its row says 1g. The dry run must plan the
+    row's value — and must not plan up.sh's, which would be the silent halving.
+
+    The instance names are renamed in a scratch copy of the registry so that
+    ``start_instance`` does not short-circuit on the instances that are actually
+    running: a dry run of a live host prints "already running — skipping" and
+    shows no command at all.
+    """
+    live = Path("/rag/data/tenants/registry.json")
+    if not live.exists():
+        pytest.skip("no live registry on this host")
+    doc = json.loads(live.read_text())
+    row = (doc.get("tenants") or {}).get("dev")
+    if row is None:
+        pytest.skip("no dev row on this host")
+    heap = ((row.get("stores") or {}).get("elasticsearch") or {}).get("heap")
+    if not heap:
+        pytest.skip("the dev row records no elasticsearch heap")
+    row["stores"]["qdrant"]["instance"] = "qdrant-conftest"
+    row["stores"]["elasticsearch"]["instance"] = "elasticsearch-conftest"
+    scratch = tmp_path / "registry.json"
+    scratch.write_text(json.dumps({"schema_version": doc.get("schema_version", 1),
+                                   "display_order": ["dev"], "tenants": {"dev": row}}))
+
+    env = dict(os.environ, REGISTRY=str(scratch), RUN=str(tmp_path / "run"))
+    out = subprocess.run(
+        ["bash", str(OPS / "restore.sh"), "--dry-run", "--tenant", "dev", "--only", "stores"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    # The dry run prints the argv through printf %q, so a value with a space in
+    # it comes out escaped (`-Xms1g\ -Xmx1g`). Unescape before matching: the
+    # assertion is about the VALUE, not about how the preview quotes it.
+    text = (out.stdout + out.stderr).replace("\\ ", " ")
+    assert f"-Xms{heap} -Xmx{heap}" in text, (
+        f"the dry run does not plan the row's heap ({heap}):\n{text}"
+    )
+    # And the provision-time value is nowhere near it.
+    up_sh = Path(row["data_dir"]) / "bin" / "up.sh"
+    if up_sh.exists():
+        stale = re.findall(r"-Xmx(\d+[mg])", up_sh.read_text())
+        for value in stale:
+            if value != heap:
+                assert f"-Xmx{value}" not in text, (
+                    f"the dry run planned up.sh's stale heap {value} instead of the row's {heap}:\n{text}"
+                )
+    # The ports and the image come from the row too.
+    assert str(row["ports"]["es_http"]) in text and str(row["ports"]["es_transport"]) in text
+
+
+@requires_shell
+def test_a_handed_over_tenant_is_not_a_failure(tmp_path):
+    """``--tenant`` naming a row the control plane owns is the system working:
+    the script says so and exits 0. Only a name nobody knows is a failure."""
+    registry = _synthetic_registry(tmp_path)
+    env = dict(os.environ, REGISTRY=str(registry), RUN=str(tmp_path / "run"))
+    out = subprocess.run(
+        ["bash", str(OPS / "restore.sh"), "--dry-run", "--tenant", "beta"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    text = out.stdout + out.stderr
+    assert "handed over" in text, text
+    assert out.returncode == 0, f"a handed-over tenant failed the run:\n{text}"
+
+    stop = subprocess.run(
+        ["bash", str(OPS / "pre-reboot.sh"), "--dry-run", "--tenant", "beta"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert stop.returncode == 0, stop.stdout + stop.stderr
+    assert "nothing for this script to stop" in stop.stdout + stop.stderr
+
+
+@requires_shell
+def test_pre_reboot_reports_a_refusal_as_a_failure(tmp_path):
+    """A pre-reboot that reported success over a REFUSAL would be a reboot taken
+    with a tenant still writing. An unknown --tenant is the cheapest way to
+    reach a non-zero exit without signalling anything."""
+    registry = _synthetic_registry(tmp_path)
+    env = dict(os.environ, REGISTRY=str(registry), RUN=str(tmp_path / "run"))
+    out = subprocess.run(
+        ["bash", str(OPS / "pre-reboot.sh"), "--dry-run", "--tenant", "nosuch"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert "no registry row for 'nosuch'" in out.stdout + out.stderr
+    # And the refusal path itself is wired: the API stop returns non-zero and
+    # the tenant-scoped run propagates it.
+    code = _code((OPS / "pre-reboot.sh").read_text())
+    assert "stop_tenant_api \"$TENANT\" || trc=1" in code, \
+        "a refused API stop does not reach the exit status"
+    assert "exit $trc" in code, "the tenant-scoped path does not propagate its failures"
+
+
+@requires_shell
 def test_an_unknown_tenant_is_a_refusal_not_a_silent_no_op(tmp_path):
     out = _dry_run(tmp_path, "--tenant", "nosuch")
-    assert "no usable registry row for 'nosuch'" in out.stdout + out.stderr
+    assert "no registry row for 'nosuch'" in out.stdout + out.stderr
     assert out.returncode != 0, "a --tenant that matched nothing exited 0"

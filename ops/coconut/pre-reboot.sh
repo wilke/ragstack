@@ -83,6 +83,10 @@ stop_port() {                 # stop_port PORT label expected-cmd-substring [exp
 #
 # Which tenants have one is the registry's answer: ui.mode `dev` or `external`
 # is a Vite server this account runs, `static` is a directory nginx serves.
+# Both stop_tenant_* return NON-ZERO when they refuse to signal something, so a
+# caller can tell "stopped, or was not running" from "still running and I would
+# not touch it". A pre-reboot that reported success over a refusal would be a
+# reboot taken with a tenant still writing.
 stop_tenant_ui() {
   local name=$1 mode port wt
   mode=$(reg_get "$name" '.ui.mode'); port=$(reg_get "$name" '.ui.port'); wt=$(reg_get "$name" '.worktree')
@@ -110,6 +114,7 @@ stop_tenant_api() {
     sig "$p" "api $name :$port"; wait_gone "$p" 30
   else
     say "  [api $name] REFUSING pid $p: cwd=$d cmd=$(echo "$c" | cut -c1-60)"
+    return 1
   fi
 }
 
@@ -171,18 +176,30 @@ tenant_store_instances() {
 reg_announce
 if [[ -n $TENANT ]]; then
   # One tenant: its UI, its API, its own stores. Nothing shared, nothing else's.
-  rows=$(reg_ready && reg_rows)
-  [[ -n $rows ]] || { say "no usable registry row for '$TENANT' in $REGISTRY"; exit 1; }
+  reg_ready || exit 1
+  if ! "$JQ" -e --arg n "$TENANT" '.tenants[$n]' "$REGISTRY" >/dev/null 2>&1; then
+    say "no registry row for '$TENANT' in $REGISTRY"; exit 1
+  fi
+  if [[ $(reg_get "$TENANT" '.owner') == svcbvbrc ]]; then
+    # Not a failure: the control plane owns it, and this account cannot signal
+    # its processes anyway. reg_announce has already said how to stop it.
+    say "== $TENANT is handed over: nothing for this script to stop"
+    exit 0
+  fi
+  trc=0
   say "== $TENANT UI"
-  stop_tenant_ui "$TENANT"
+  stop_tenant_ui "$TENANT" || trc=1
   say "== $TENANT API"
-  stop_tenant_api "$TENANT"
+  stop_tenant_api "$TENANT" || trc=1
   say "== $TENANT stores (its own instances only)"
   while read -r kind inst; do
     [[ -n $inst ]] && stop_instance "$inst"
   done <<< "$(tenant_store_instances "$TENANT")"
   say "== done ($TENANT). The shared stores, the sidecars, GoWe and every other tenant are untouched."
-  exit 0
+  # A refusal is a failure: something this script would not touch is still
+  # running, and a reboot taken over it loses whatever it was writing.
+  (( trc )) && say "   x something was REFUSED above and is still running - look before rebooting"
+  exit $trc
 fi
 
 say "== 1. labelers"
@@ -198,10 +215,11 @@ say "== 2. tenant UIs"
 # ui.mode `static` is a build nginx serves from a directory: there is no process
 # of ours to stop, and hunting for a vite that does not exist would report a
 # failure where there is none.
-if reg_ready; then for t in $(reg_rows); do stop_tenant_ui "$t"; done; else say "  ✗ no registry: no tenant UI was stopped"; fi
+rc=0
+if reg_ready; then for t in $(reg_rows); do stop_tenant_ui "$t" || rc=1; done; else say "  ✗ no registry: no tenant UI was stopped"; rc=1; fi
 
 say "== 3. tenant APIs (pid files, cwd verified)"
-if reg_ready; then for t in $(reg_rows); do stop_tenant_api "$t"; done; else say "  ✗ no registry: no tenant API was stopped"; fi
+if reg_ready; then for t in $(reg_rows); do stop_tenant_api "$t" || rc=1; done; else say "  ✗ no registry: no tenant API was stopped"; rc=1; fi
 
 say "== 4. GoWe workers → server → monitoring"
 G=/scout/Experiments/GoWe
@@ -265,3 +283,7 @@ if (( ALL )); then
 fi
 say "== done. remaining listeners owned by $(id -un):"
 ss -ltnpH 2>/dev/null | grep -c "users:" | sed 's/^/  /'
+# Same rule as the tenant-scoped path above: a REFUSAL is a tenant still
+# running, and the operator about to reboot has to know before they do.
+(( rc )) && { say "   ✗ one or more tenants were REFUSED above and are still running"; exit 1; }
+exit 0

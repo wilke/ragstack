@@ -200,9 +200,32 @@ reg_announce() {
 reg_get() {                   # reg_get NAME '.json.path' → the value, "" for null/absent
   "$JQ" -r --arg n "$1" ".tenants[\$n]$2 // empty" "$REGISTRY" 2>/dev/null
 }
-reg_missing() {               # reg_missing NAME — say why --tenant found nothing
-  say "  ✗ no usable registry row for '$1' in $REGISTRY"
-  say "    (a row whose owner is svcbvbrc is started by the ctl, not by this script)"
+# reg_absent NAME — "there is no such row", as opposed to "there is one and it
+# is not ours to start". The two are different outcomes: a name nobody knows is
+# an operator's typo and fails the run; a handed-over tenant is the system
+# working as designed and must not.
+reg_absent() {
+  "$JQ" -e --arg n "$1" '.tenants[$n]' "$REGISTRY" >/dev/null 2>&1 && return 1 || return 0
+}
+reg_handed_over() {           # reg_handed_over NAME → 0 when the ctl owns it
+  [[ $(reg_get "$1" '.owner') == svcbvbrc ]]
+}
+# tenant_rows_or_note NAME-LIST-VAR — the rows a group should act on, with the
+# right thing said and the right exit status when --tenant produced none.
+#
+# Returns 0 when the group should carry on (even with nothing to do) and 1 when
+# the run should fail.
+reg_tenant_scope_ok() {
+  [[ -n $TENANT ]] || return 0
+  if reg_absent "$TENANT"; then
+    say "  ✗ no registry row for '$TENANT' in $REGISTRY"
+    return 1
+  fi
+  if reg_handed_over "$TENANT"; then
+    say "  [$TENANT] handed over: nothing for this script to do here (the ctl starts and stops it)"
+    return 0
+  fi
+  return 0
 }
 # reg_ready's messages are the same case: it is called inside `if`, not inside
 # a capture, so its `say` lines stay on stdout with the rest of the log.
@@ -229,11 +252,21 @@ tenant_store_specs() {
 
 # tenant_up_script NAME → the tenant's own store launcher, or "".
 #
-# Preferred over anything reconstructed here, always: apptainer/new-tenant.sh
-# generated it FOR this tenant, it owns the binds, the ES `-E` arguments and the
-# randomly generated postgres password (which must never appear in this file),
-# and it is idempotent — an instance already listed is skipped. `up-es.sh` is
-# the older one-store spelling (lucid has one and no up.sh).
+# It is used for ONE thing: the postgres leg. That instance needs the role
+# password new-tenant.sh generated, which lives in the tenant's secrets.env and
+# must not be read into this script's environment or onto its argv — so the
+# script that already holds it starts it.
+#
+# It is deliberately NOT used for qdrant or elasticsearch. up.sh is a
+# PROVISION-TIME artefact: it carries the values the tenant was created with,
+# and those drift. dev's says `ES_JAVA_OPTS=-Xms512m -Xmx512m` while the
+# elasticsearch that has been serving dev for months runs with 1g — the
+# registry records the live value (stores.elasticsearch.heap, extra_env) and
+# carries an `es_heap_drift` row saying the two disagree. A restore that ran
+# up.sh would quietly halve the heap of a store that came back after a reboot,
+# which is the class of change nobody notices until a query times out.
+#
+# `up-es.sh` is the older one-store spelling (lucid has one and no up.sh).
 tenant_up_script() {
   local data=$1 cand
   for cand in "$data/bin/up.sh" "$data/bin/up-es.sh"; do
@@ -242,64 +275,108 @@ tenant_up_script() {
   return 1
 }
 
+# reg_env NAME '<jq expression yielding an object>' → "K=V" lines.
+#
+# The env a store runs with, straight out of the row. jq builds the object so
+# that a value with a space in it (ES_JAVA_OPTS is two words) survives as one
+# line, and the caller turns each line into one `--env` argv element — no shell
+# ever sees it.
+reg_env() {
+  "$JQ" -r --arg n "$1" ".tenants[\$n] as \$t | ($2) | to_entries[] | \"\(.key)=\(.value)\"" "$REGISTRY" 2>/dev/null
+}
+
 # tenant_stores_up NAME — bring up one tenant's exclusive store instances.
+#
+# qdrant and elasticsearch are rebuilt FROM THE ROW: the instance name, the
+# image, the ports, the binds and the environment the store is actually running
+# with. postgres is started through the tenant's own launcher, for the password.
 tenant_stores_up() {
-  local name=$1 data up kind inst port sif heap specs
+  local name=$1 data up kind inst port sif specs rc=0
   data=$(reg_get "$name" '.data_dir')
   [[ -n $data ]] || { say "  [$name] the registry row has no data_dir — stores NOT started"; return 1; }
   specs=$(tenant_store_specs "$name")
   [[ -n $specs ]] || { say "  [$name] no exclusively-owned stores (it runs on the shared ones)"; return 0; }
-  # A launcher starts every leg itself, so start_instance never runs and
-  # STARTED[] would stay empty; mark the legs whose port is not answering YET so
-  # the waits below are full waits for those and a glance for the rest.
+  # Mark the legs whose port is not answering YET, so the waits below are full
+  # waits for those and a glance for the rest. (A leg started by the tenant's
+  # own launcher never goes through start_instance, which is what would
+  # otherwise set this.)
   while read -r kind inst port; do
     [[ -n $inst ]] || continue
     port_up "$port" || STARTED[$inst]=1
   done <<< "$specs"
 
-  if up=$(tenant_up_script "$data"); then
-    run "[$name stores] $up" "$up"
-    return 0
-  fi
-
-  # No launcher: rebuild each instance from the registry row and the standard
-  # layout — the same binds, ports and entrypoints the hand-written blocks used
-  # to carry, now derived from the row instead of retyped per tenant.
   while read -r kind inst port; do
     [[ -n $inst ]] || continue
     case $kind in
-      qdrant)
-        sif=$(reg_get "$name" '.stores.qdrant.sif'); [[ -n $sif ]] || sif=$IMG/qdrant.sif
-        start_instance "$inst" "$sif" \
-          --bind "$data/qdrant/storage:/qdrant/storage" --bind "$data/qdrant/snapshots:/qdrant/snapshots" \
-          --env QDRANT__SERVICE__HTTP_PORT="$port" \
-          --env QDRANT__SERVICE__GRPC_PORT="$(reg_get "$name" '.ports.qdrant_grpc')" \
-          -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh' ;;
-      elasticsearch)
-        sif=$(reg_get "$name" '.stores.elasticsearch.sif'); [[ -n $sif ]] || sif=$IMG/elasticsearch.sif
-        heap=$(reg_get "$name" '.stores.elasticsearch.heap'); [[ -n $heap ]] || heap=1g
-        # The config bind SHADOWS the image's own config directory, so an empty
-        # host directory is an Elasticsearch that exits before it logs anything.
-        seed_if_empty "$sif" /usr/share/elasticsearch/config "$data/elasticsearch/config"
-        start_instance "$inst" "$sif" \
-          --bind "$data/elasticsearch/data:/usr/share/elasticsearch/data" \
-          --bind "$data/elasticsearch/logs:/usr/share/elasticsearch/logs" \
-          --bind "$data/elasticsearch/config:/usr/share/elasticsearch/config" \
-          --bind "$data/elasticsearch/snapshots:/usr/share/elasticsearch/snapshots" \
-          --env ES_JAVA_OPTS="-Xms$heap -Xmx$heap" \
-          -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node \
-             -Expack.security.enabled=false -Ehttp.port="$port" \
-             -Etransport.port="$(reg_get "$name" '.ports.es_transport')" ;;
+      qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || rc=1 ;;
+      elasticsearch) tenant_es_up "$name" "$data" "$inst" "$port" || rc=1 ;;
       postgres)
-        # Deliberately NOT reconstructed: a dedicated postgres needs the role
-        # password new-tenant.sh generated, which lives in the tenant's
-        # secrets.env and must not be read into this script's environment or
-        # its argv. A tenant with a local postgres and no launcher is a gap an
-        # operator has to see, not one to paper over with a default password.
-        say "  ✗ [$name] postgres $inst (:$port) needs $data/bin/up.sh, which is missing — NOT started"
-        return 1 ;;
+        if up=$(tenant_up_script "$data"); then
+          # up.sh starts every leg it knows; the two above are already running
+          # by now and its own idempotency check skips them.
+          run "[$name postgres $inst :$port] via $up (it holds the generated password)" "$up" || rc=1
+        else
+          say "  ✗ [$name] postgres $inst (:$port) needs $data/bin/up.sh, which is missing — NOT started."
+          say "    Its password is in the tenant's secrets.env and is never reconstructed here."
+          rc=1
+        fi ;;
     esac
   done <<< "$specs"
+  return $rc
+}
+
+# tenant_qdrant_up — one tenant's own qdrant, from its row.
+tenant_qdrant_up() {
+  local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv
+  sif=$(reg_get "$name" '.stores.qdrant.sif'); [[ -n $sif ]] || sif=$IMG/qdrant.sif
+  # extra_env is what the running store's environment actually holds; the port
+  # keys are overridden from the block, which is what every other reader of
+  # this registry computes and therefore the one authority on a tenant's ports.
+  while read -r kv; do
+    [[ -n $kv ]] && opts+=(--env "$kv")
+  done <<< "$(reg_env "$name" '($t.stores.qdrant.extra_env // {})
+                + {QDRANT__SERVICE__HTTP_PORT: ($t.ports.qdrant_http|tostring),
+                   QDRANT__SERVICE__GRPC_PORT: ($t.ports.qdrant_grpc|tostring)}')"
+  start_instance "$inst" "$sif" \
+    --bind "$data/qdrant/storage:/qdrant/storage" \
+    --bind "$data/qdrant/snapshots:/qdrant/snapshots" \
+    "${opts[@]}" \
+    -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
+}
+
+# tenant_es_up — one tenant's own elasticsearch, from its row.
+#
+# Dotted settings go as native `-E` arguments, never through `--env`: apptainer
+# shell-sources its environment and mangles them. docker-entrypoint.sh is called
+# directly because /bin/tini parses `-E` as its own option.
+tenant_es_up() {
+  local name=$1 data=$2 inst=$3 port=$4 sif heap repo transport opts=() kv
+  sif=$(reg_get "$name" '.stores.elasticsearch.sif'); [[ -n $sif ]] || sif=$IMG/elasticsearch.sif
+  heap=$(reg_get "$name" '.stores.elasticsearch.heap'); [[ -n $heap ]] || heap=1g
+  transport=$(reg_get "$name" '.ports.es_transport')
+  # The LIVE environment first (extra_env carries ES_JAVA_OPTS as the store is
+  # really running), with the recorded heap as the fallback for a row that has
+  # no extra_env at all.
+  while read -r kv; do
+    [[ -n $kv ]] && opts+=(--env "$kv")
+  done <<< "$(reg_env "$name" '($t.stores.elasticsearch.extra_env // {})
+                | if has("ES_JAVA_OPTS") then . else . + {ES_JAVA_OPTS: "-Xms'"$heap"' -Xmx'"$heap"'"} end')"
+  # The config bind SHADOWS the image's own config directory: an empty host
+  # directory is an Elasticsearch that exits before it logs anything useful.
+  seed_if_empty "$sif" /usr/share/elasticsearch/config "$data/elasticsearch/config"
+  # path.repo only when the directory is really there — apptainer refuses a bind
+  # whose source is missing, and not every adopted tenant has one yet (doctor's
+  # es_snapshots_dir_missing).
+  repo=()
+  [[ -d $data/elasticsearch/snapshots ]] && repo=(--bind "$data/elasticsearch/snapshots:/usr/share/elasticsearch/snapshots")
+  start_instance "$inst" "$sif" \
+    --bind "$data/elasticsearch/data:/usr/share/elasticsearch/data" \
+    --bind "$data/elasticsearch/logs:/usr/share/elasticsearch/logs" \
+    --bind "$data/elasticsearch/config:/usr/share/elasticsearch/config" \
+    "${repo[@]}" "${opts[@]}" \
+    -- /usr/local/bin/docker-entrypoint.sh eswrapper \
+       -Ediscovery.type=single-node -Expack.security.enabled=false \
+       -Ehttp.port="$port" -Etransport.port="$transport"
 }
 
 # tenant_stores_wait NAME — readiness for the legs tenant_stores_up started.
@@ -451,8 +528,8 @@ if want stores; then
   # further down. A tenant added to the registry is covered by both halves at
   # once, which is the whole point.
   if reg_ready; then
+    reg_tenant_scope_ok || fail=1
     rows=$(reg_rows)
-    if [[ -n $TENANT && -z $rows ]]; then reg_missing "$TENANT"; fail=1; fi
     for t in $rows; do
       tenant_stores_up "$t" || fail=1
     done
@@ -503,8 +580,8 @@ if want apis; then
   if ! reg_ready; then
     say "  ✗ no readable registry: no tenant API was started"; fail=1
   else
+  reg_tenant_scope_ok || fail=1
   rows=$(reg_rows)
-  if [[ -n $TENANT && -z $rows ]]; then reg_missing "$TENANT"; fail=1; fi
   for name in $rows; do
     tdir=$(reg_get "$name" '.data_dir'); port=$(reg_get "$name" '.ports.api')
     code=$(reg_get "$name" '.worktree')/python
