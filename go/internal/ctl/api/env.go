@@ -108,6 +108,10 @@ const (
 	// can actually start a tenant at boot today is `instance`. A host says so
 	// once, here, instead of every caller remembering to pass the argument.
 	EnvDefaultSupervisor = "CTL_DEFAULT_SUPERVISOR"
+	// EnvGatewayBaseURL is the LIVE gateway every op probes through
+	// (`GET /ragstack/<t>/api/health`, `GET /ragstack/<t>/ui/`). Empty means
+	// gateway.DefaultBaseURL — the coconut proxy on 127.0.0.1:9000.
+	EnvGatewayBaseURL = "CTL_GATEWAY_BASE_URL"
 
 	// The host programs the real drivers run and the two directories they work
 	// from (PR-D). Each is an ABSOLUTE path; the drivers never search PATH, so

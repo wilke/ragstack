@@ -252,10 +252,17 @@ func (g *RealGateway) Probe(ctx context.Context, path string) (int, error) {
 	if !strings.HasPrefix(path, "/") || strings.Contains(path, "//") {
 		return 0, fmt.Errorf("%w: %q is not an absolute gateway path", jobs.ErrRefused, path)
 	}
+	// The PACKAGE default when nobody configured one, exactly as the publish
+	// path does (gateway.Options fills it in at publish.go:103). Refusing here
+	// instead made this driver disagree with its own option's documentation
+	// ("Empty values take the gateway package's defaults") and, worse, made
+	// every gateway probe fail through the ENGINE's driver set — which builds
+	// NewReal without a BaseURL. The take's last post-check and set-ui-mode's
+	// proof both run through it, so on the host they failed after the tenant
+	// had been started and before the row was written, and rolled the job back.
 	base := g.opts.BaseURL
 	if base == "" {
-		return 0, fmt.Errorf("%w: no gateway base URL is configured, so nothing can be probed through it",
-			jobs.ErrRefused)
+		base = gateway.DefaultBaseURL
 	}
 	status, _, err := gateway.NewRealProber().Get(ctx, strings.TrimSuffix(base, "/")+path)
 	return status, err

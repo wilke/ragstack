@@ -178,11 +178,17 @@ type Tenant struct {
 
 	ReleaseGeneration  *ReleaseGeneration  `json:"release_generation"`  // null until a release is pinned
 	RollbackDescriptor *RollbackDescriptor `json:"rollback_descriptor"` // null until handover captures it
-	// Handover is the in-flight two-account handover, null at every other
-	// moment. It is the one field in this struct whose ABSENCE from a document
-	// is legal — the contract leaves it out of `required` because rows the
-	// deployed binary wrote predate it — and absent means exactly null.
-	Handover   *Handover           `json:"handover"`
+	// Handover is the in-flight two-account handover, ABSENT at every other
+	// moment — the second `omitempty` in this file, and it is load-bearing.
+	//
+	// registry.Load decodes with DisallowUnknownFields, so a registry carrying
+	// `"handover": null` is a registry the DEPLOYED binary cannot read at all:
+	// every tenant of the fleet becomes unreadable to the daemon that is
+	// running, which is a fleet-wide outage bought for a field that says
+	// nothing. Omitted, a row written by this binary still loads under the
+	// previous one, and absent means exactly null (the contract leaves it out
+	// of `required` for the same reason `last_backup.scope` is out).
+	Handover   *Handover           `json:"handover,omitempty"`
 	LastOps    map[string]OpRecord `json:"last_ops"`
 	LastBackup *BackupRecord       `json:"last_backup"` // null until the first backup
 	AdoptedAt  NullString          `json:"adopted_at"`

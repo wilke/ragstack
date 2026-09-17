@@ -41,9 +41,33 @@ func tenantView(ctx context.Context, t *registry.Tenant, p Probes, includeRegist
 		Drift:   LiveDrift(t, p, listeners, now),
 	}
 	if includeRegistry {
-		view.Registry = t
+		view.Registry = WithoutHandoverBlock(t)
 	}
 	return view
+}
+
+// WithoutHandoverBlock is the row as a READ surface may show it: everything,
+// minus the in-flight handover.
+//
+// The block carries the hand-off token. It is a nonce and grants nothing an
+// operator cannot already do — but it is a field literally named `token` in a
+// response body, and the rule this control plane keeps is that no read surface
+// carries one, full stop. Weakening that rule for a value that happens to be
+// harmless is how the next one gets through.
+//
+// Nothing is lost. `summary.state` reads `handover` for the whole released
+// window, `summary.handover_phase` says which half of the protocol the tenant
+// is in, and the token itself lives where it belongs: in the result of the
+// release job that minted it, delivered once to the operator who ran it.
+func WithoutHandoverBlock(t *registry.Tenant) *registry.Tenant {
+	if t == nil || t.Handover == nil {
+		return t
+	}
+	// A SHALLOW copy: the one field being changed is a pointer this function
+	// clears, and nothing below it is written by any reader.
+	clone := *t
+	clone.Handover = nil
+	return &clone
 }
 
 // TenantsView builds the list body in display order.

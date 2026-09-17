@@ -176,6 +176,16 @@ func listenerPorts(h hostfacts.Host) map[int]hostfacts.Listener {
 	return out
 }
 
+// HandoverPhase is the row's handover phase, or "" (null) when none is in
+// flight. The BLOCK is never returned by a read surface — it carries the
+// hand-off token — so this is how an operator sees the protocol's state.
+func HandoverPhase(t *registry.Tenant) model.NullString {
+	if t.Handover == nil {
+		return ""
+	}
+	return model.NullString(t.Handover.Phase)
+}
+
 func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]hostfacts.Listener) model.FleetRow {
 	r := model.FleetRow{
 		Name:         t.Name,
@@ -184,8 +194,14 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 		Owner:        model.Owner(t.Owner),
 		Supervisor:   model.Supervisor(t.Supervisor),
 		StoresMode:   StoresMode(t.Stores),
-		CodeTag:      orDefault(t.Code.Tag, "unknown"),
-		DriftCount:   len(t.Drift),
+		// Which half of a two-account handover this tenant is in, or null.
+		// `state` alone cannot say: a RELEASED tenant reads `handover`, but a
+		// TAKEN one reads `active` — it is up, under the ctl, and still owes a
+		// commit or an abandon — and an operator looking at a fleet has to be
+		// able to see that.
+		HandoverPhase: HandoverPhase(t),
+		CodeTag:       orDefault(t.Code.Tag, "unknown"),
+		DriftCount:    len(t.Drift),
 		Ports: model.FleetPorts{
 			// The port the tenant actually talks to, which for a shared
 			// store is outside its own block (6333/6343/9200).

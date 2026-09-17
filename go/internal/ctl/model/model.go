@@ -76,10 +76,15 @@ type State string
 
 // Tenant states.
 const (
-	StateProvisioned    State = "provisioned"
-	StateActive         State = "active"
-	StateStopped        State = "stopped"
-	StateMigrating      State = "migrating"
+	StateProvisioned State = "provisioned"
+	StateActive      State = "active"
+	StateStopped     State = "stopped"
+	StateMigrating   State = "migrating"
+	// StateHandover is the transitional state of the two-account handover:
+	// between the release and the take nothing of the tenant is running and
+	// neither account owns it. The gateway probe accepts BOTH 200 and 502 for
+	// it, because a tenant crosses that window in both directions.
+	StateHandover       State = "handover"
 	StateQuarantined    State = "quarantined"
 	StateDecommissioned State = "decommissioned"
 )
@@ -296,6 +301,20 @@ type FleetRow struct {
 	Units        RowUnits    `json:"units"`
 	DiskBytes    int64       `json:"disk_bytes"`
 	LastBackup   *LastBackup `json:"last_backup"`
+	// HandoverPhase is which half of a two-account handover this tenant is
+	// in (`released` | `taken`), or null when none is in flight.
+	//
+	// `state` alone cannot say it: a RELEASED tenant reads `handover`, but a
+	// TAKEN one reads `active` — it is up, supervised by the ctl, and still
+	// owes a commit or an abandon. An operator looking at a fleet has to be
+	// able to see that, and this is the only field that says so on a read
+	// surface (the block itself is not returned: it carries the hand-off
+	// token, and no read surface of this control plane carries a token).
+	//
+	// `omitempty`, like every other field this deployment added after the
+	// fact: a response this binary writes must stay readable by a client that
+	// predates the field.
+	HandoverPhase NullString `json:"handover_phase,omitempty"`
 }
 
 // Listening reports which of a tenant's allocated ports have a listener.

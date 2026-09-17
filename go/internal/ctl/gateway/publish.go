@@ -1364,6 +1364,25 @@ func probeOnce(ctx context.Context, opts Options, f *registry.Fleet, want []stri
 			}
 			continue
 		}
+		// `handover` is the one state in which BOTH answers are honest, and
+		// the probe says so rather than picking one.
+		//
+		// It is the window between the release and the take, and a tenant
+		// crosses it in both directions: down for the length of the release
+		// (502), up again the moment the take spawns the API and before the
+		// take's own registry write lands (200). An `ops/coconut/restore.sh
+		// --tenant <n>` after an abandoned take leaves exactly the second
+		// shape too. Demanding 502 there made any publish during that window —
+		// by any operator, for any other tenant — revert the whole generation
+		// over a tenant that is behaving correctly.
+		if t.State == registry.StateHandover {
+			if status != 200 && status != 502 && status != 404 {
+				return fmt.Errorf("GET /ragstack/%s/api/health: %d, want 200, 502 or 404 (registry state %s: a "+
+					"handover is in flight, so the tenant is legitimately either up or down)",
+					name, status, t.State)
+			}
+			continue
+		}
 		// A tenant the registry does not call active must be answered as
 		// down. 502 is "routed, nothing listening"; 404 is "no such route".
 		// Anything else means the gateway is sending its traffic somewhere.

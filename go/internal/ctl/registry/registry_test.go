@@ -1161,3 +1161,73 @@ func TestHandoverBlockRoundTripsAndIsChecked(t *testing.T) {
 		t.Errorf("a tenant with no handover was refused: %v", err)
 	}
 }
+
+// TestAnAbsentHandoverBlockIsNotEvenSerialised is the regression for a
+// fleet-wide outage this PR came within one struct tag of causing.
+//
+// registry.Load decodes with DisallowUnknownFields, so a registry carrying
+// `"handover": null` is a registry the PREVIOUSLY DEPLOYED binary cannot read
+// AT ALL — not the one tenant, the whole file. Upgrading the ctl would then
+// have been a one-way door: the new binary writes the key on its first
+// registry write, and every older `ragstack-ctl` on the host (the daemon that
+// is running, the `@reboot` line, `fleet status` in somebody's terminal) fails
+// with "json: unknown field handover".
+//
+// So the field is `omitempty`, exactly as `last_backup.scope` is, and this
+// test is what keeps it that way.
+func TestAnAbsentHandoverBlockIsNotEvenSerialised(t *testing.T) {
+	f := LiveFixture()
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(`"handover"`)) {
+		t.Fatalf("a fleet with no handover in flight serialises the key anyway; an older ragstack-ctl would "+
+			"refuse the whole registry:\n%s", firstTenantSnippet(b))
+	}
+
+	// And a registry that DOES carry one round-trips, so the field works when
+	// it is meant to.
+	f.Tenants["dev"].State = StateHandover
+	f.Tenants["dev"].Handover = &Handover{
+		Phase: HandoverReleased, Token: strings.Repeat("0f", 16),
+		StartedAt: "2026-09-17T10:00:00Z", ReleasedBy: "wilke", Census: []CensusEntry{},
+	}
+	b, err = json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"handover"`)) {
+		t.Fatal("a fleet WITH a handover did not serialise it")
+	}
+	var back Fleet
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&back); err != nil {
+		t.Fatalf("the registry this binary writes cannot be read back strictly: %v", err)
+	}
+	if back.Tenants["dev"].Handover == nil {
+		t.Fatal("the block did not survive the round trip")
+	}
+	// The other rows must still carry nothing.
+	for name, tn := range back.Tenants {
+		if name != "dev" && tn.Handover != nil {
+			t.Errorf("%s grew a handover block", name)
+		}
+	}
+}
+
+// firstTenantSnippet is the part of a marshalled registry worth printing in a
+// failure: the whole file is a page of JSON.
+func firstTenantSnippet(b []byte) string {
+	i := bytes.Index(b, []byte(`"handover"`))
+	from := i - 200
+	if from < 0 {
+		from = 0
+	}
+	to := i + 100
+	if to > len(b) {
+		to = len(b)
+	}
+	return string(b[from:to])
+}
