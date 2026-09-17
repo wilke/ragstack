@@ -446,6 +446,14 @@ type Instance struct {
 	// tells "this instance is the tenant's qdrant" from "something else is
 	// using that name".
 	Image string
+	// LogOut and LogErr are where apptainer appends the instance's stdout and
+	// stderr (`logOutPath`/`logErrPath` in `instance list --json`). They are
+	// the only place a container's own account of why it exited exists: an
+	// instance that died left no row in the table and no exit status anywhere
+	// the ctl can read, and its .err file is what says "data directory has
+	// wrong ownership".
+	LogOut string
+	LogErr string
 }
 
 // InstanceSpec is one `apptainer instance run`.
@@ -542,6 +550,21 @@ type Instances interface {
 	// an Elasticsearch that exits before it logs anything useful, and an
 	// instance supervisor has no ExecStartPre to hang the seed off.
 	SeedConfigDir(ctx context.Context, sif, containerDir, hostDir string) error
+	// LogPaths is where apptainer writes <name>'s stdout and stderr in
+	// opts.Namespace — whether or not the instance is running.
+	//
+	// "Whether or not" is the reason it exists. `instance list --json` carries
+	// logOutPath/logErrPath, but an instance whose process exited is not in
+	// that table any more, and THAT is precisely the case a caller needs the
+	// log for: a store that came up and died leaves no row, no exit status the
+	// ctl can read, and one file saying why. So a running instance's paths are
+	// read from the table and an absent one's are composed the way apptainer
+	// composes them (`<configdir>/instances/logs/<host>/<user>/<name>.<ext>`,
+	// and `$HOME/.apptainer` for the account-default namespace).
+	//
+	// It returns PATHS and reads nothing: a caller that wants the content asks
+	// Files, which is the surface that redacts and that a fake can seed.
+	LogPaths(ctx context.Context, name string, opts ListOptions) (out, err string, e error)
 }
 
 // Crontab is the CURRENT user's crontab, which on this host is the only boot
@@ -646,6 +669,52 @@ type Files interface {
 	// one failure mode that leaves a half-written bundle AND a full disk for
 	// every other tenant on the host.
 	DiskFree(ctx context.Context, path string) (int64, error)
+	// Stat is lstat of ONE path: who owns it, what mode it carries, how big it
+	// is, and whether it is a directory or a symlink.
+	//
+	// It exists because of a fact about postgres that no permission bit works
+	// around: postgres compares its data directory's `st_uid` against its own
+	// `geteuid()` and refuses to start when they differ ("data directory has
+	// wrong ownership"), whatever the mode is and whatever the ACL grants. A
+	// handover's take therefore has to ASK who owns a directory before it
+	// starts a server on it — qdrant and elasticsearch never ask, which is
+	// exactly why the first take got two stores up and died on the third.
+	//
+	// lstat rather than stat: a symlink where a data directory should be is a
+	// fact the caller must see, not a thing to follow. An absent path is
+	// fs.ErrNotExist, as ReadFile's is.
+	Stat(ctx context.Context, path string) (FileStat, error)
+	// Sync flushes a path to the disk: fsync of a file, or of a directory,
+	// whichever the path names.
+	//
+	// It exists because two things this control plane writes are not written
+	// by it. pg_dump creates the handover dump INSIDE the container and
+	// returns; the bytes are in the page cache and the name is in an unsynced
+	// directory, and a machine that dies there leaves a handover whose only
+	// copy of a tenant's database is a file that is not all there. The same
+	// goes for a rename: the entry is durable only once its directory is.
+	//
+	// A directory sync makes the NAMES in it durable; a file sync makes its
+	// contents durable. A caller that needs both says both, which is what the
+	// dump step does.
+	Sync(ctx context.Context, path string) error
+	SelfUID(ctx context.Context) (int, error)
+}
+
+// FileStat is Files.Stat's answer: the four facts a step may decide on. Not an
+// os.FileInfo — that carries an mtime and a Sys() any, and a step reaching for
+// either would be deciding out of something the registry does not record.
+type FileStat struct {
+	// UID is the owning uid. It is the field postgres cares about.
+	UID int
+	// Mode is the POSIX mode as the drivers write it (0o2770 style: setgid is
+	// the 0o2000 bit, not a Go flag bit).
+	Mode uint32
+	Size int64
+	// IsDir and IsSymlink are exclusive; a symlink is never reported as a
+	// directory, whatever it points at.
+	IsDir     bool
+	IsSymlink bool
 }
 
 // DirEntry is one entry of Files.ReadDir: the base name and whether it is a
@@ -860,6 +929,76 @@ type Postgres interface {
 	// bundle's dump belongs to whichever role wrote it, and a restore --as
 	// creates a tenant with a different one.
 	Restore(ctx context.Context, spec PostgresSpec, in string) error
+	// Census is the database's LOGICAL content: its size on disk, and the
+	// exact row count of every ordinary table in it.
+	//
+	// It is what makes a handover's postgres migration provable. That
+	// migration is a dump and a restore into a cluster the other account
+	// initialised — the only kind of copy that works, because a POSIX ACL's
+	// named-user entry is filtered by the mask, the mask IS the group mode
+	// bits, and a PGDATA postgres accepts has none (so no ACL can let another
+	// account read one byte of it). A dump and a restore is therefore not
+	// comparable byte for byte; the only honest proof that it moved everything
+	// is that every table came back with the same number of rows.
+	//
+	// The counts are EXACT (`count(*)` per table), not `n_live_tup`: that
+	// column is an estimate maintained by the statistics collector, it is
+	// reset by the restore, and a proof built on an estimate proves nothing.
+	// The cost is one sequential scan per table at the two quietest moments a
+	// handover has — the API is already stopped.
+	//
+	// SizeBytes is `pg_database_size`, which the release reports before it
+	// dumps: it is the free-space question's input, and an upper bound on the
+	// compressed dump.
+	Census(ctx context.Context, spec PostgresSpec) (PostgresCensus, error)
+	// ToolVersions proves the IMAGE can perform a handover's postgres
+	// migration, by asking each tool the migration needs for its version:
+	// pg_dump (the release), pg_restore and initdb (the take).
+	//
+	// initdb is the one that could not be discovered any other way. The ctl
+	// never runs it — the image's entrypoint does, when it finds an empty
+	// PGDATA — so the first moment an absent or broken initdb would show up is
+	// a take that has already renamed the tenant's cluster aside. Asking the
+	// image while the tenant is still serving costs one `apptainer exec`.
+	ToolVersions(ctx context.Context, spec PostgresSpec) (map[string]string, error)
+}
+
+// PostgresCensus is Postgres.Census's answer: what the database holds and how
+// it is encoded, in the only terms that survive a dump and a restore.
+type PostgresCensus struct {
+	// SizeBytes is pg_database_size(<DB>).
+	SizeBytes int64
+	// Tables maps "<schema>.<table>" to its exact row count. An empty database
+	// is an empty map and no error — a tenant that has never been written to
+	// is a normal tenant, and a handover must not refuse over one.
+	Tables map[string]int64
+
+	// Encoding, Collate and Ctype are the database's character encoding and
+	// its two locales (`pg_encoding_to_char(encoding)`, `datcollate`,
+	// `datctype`).
+	//
+	// They are here because a dump and a restore do NOT carry them: the
+	// encoding of the target is whatever the cluster was initdb'd with, and
+	// the take's cluster is initdb'd by the image's entrypoint out of its
+	// environment. Restoring a UTF8 dump into an SQL_ASCII/C cluster exits 0
+	// and comes back with every row — and with different `length()`, different
+	// `upper()`, different `LIKE`, and a different sort order in every index.
+	// The row counts cannot see it, so these are recorded and compared
+	// separately.
+	Encoding string
+	Collate  string
+	Ctype    string
+
+	// Databases are the non-template databases in the CLUSTER, and Roles the
+	// login roles in it.
+	//
+	// They are the boundary of what a handover moves: `pg_dump -d <tenant>`
+	// carries one database and no roles, so anything else here stays in the
+	// pre-handover cluster — which the operator is invited to delete once the
+	// handover is committed. The release refuses over a cluster holding more
+	// than the tenant's own unless it is told to accept it.
+	Databases []string
+	Roles     []string
 }
 
 // SQLite backs the ctl's own state files and the tenant's.

@@ -83,6 +83,24 @@ func fixture(t *testing.T, name string, mutate func(*registry.Tenant)) (jobs.Con
 // fixtureEnv is fixture with a chosen tenant.env.
 func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []byte) (jobs.Context, *drivers.Fake) {
 	t.Helper()
+	return fixtureFull(t, name, mutate, env, nil)
+}
+
+// fixtureOpts is fixture with a say in the HOST the drivers model.
+//
+// It exists for the handover's postgres migration, which turns on two facts a
+// fixture could not express before: who owns a directory, and what a database
+// holds. Both are seeded through drivers.FakeOptions, and both decide whether
+// the operation under test is even possible on the real host.
+func fixtureOpts(t *testing.T, name string, mutate func(*registry.Tenant),
+	opts func(*drivers.FakeOptions)) (jobs.Context, *drivers.Fake) {
+	t.Helper()
+	return fixtureFull(t, name, mutate, tenantEnv(), opts)
+}
+
+func fixtureFull(t *testing.T, name string, mutate func(*registry.Tenant), env []byte,
+	tweak func(*drivers.FakeOptions)) (jobs.Context, *drivers.Fake) {
+	t.Helper()
 	roots := paths.NewRoots("/rag", paths.Overrides{})
 	f := registry.LiveFixture()
 	tenant := f.Tenants[name]
@@ -105,7 +123,7 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 		SchemaCompatible: true,
 	}
 	tp := paths.TenantPaths(roots, tenant.Name, tenant.ManifestName)
-	fake := drivers.NewFake(drivers.FakeOptions{
+	fopts := drivers.FakeOptions{
 		Roots: []string{"/rag"},
 		// The fixture tenant is routed by the live gateway, so the fence and
 		// the quarantine have a route to publish over.
@@ -129,7 +147,11 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 		},
 		ESCounts: map[string]int64{tenant.Stores.Elasticsearch.URL + "/dev-chunks": 88_000},
 		Now:      func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },
-	})
+	}
+	if tweak != nil {
+		tweak(&fopts)
+	}
+	fake := drivers.NewFake(fopts)
 	return jobs.Context{
 		Roots: roots, Fleet: f, Tenant: tenant, Drivers: fake,
 		Now:      func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },

@@ -496,10 +496,27 @@ func StatusFor(findings []Finding) Status {
 type HealthResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
+	// Engine is whether a mutation submitted right now would reach a job
+	// engine at all: `available` or `unavailable`.
+	//
+	// It is on the one ANONYMOUS endpoint deliberately. A daemon whose job
+	// store cannot be opened serves every read perfectly and refuses every
+	// mutation, and on 2026-09-17 it did exactly that for a day before a human
+	// read the log file and noticed. `status` cannot carry it — the schema
+	// pins that to "ok", and the daemon IS up — so the fact gets a field of
+	// its own, where a probe, a dashboard and `curl … | jq .engine` can all
+	// see it without a credential.
+	Engine string `json:"engine"`
 }
 
 // HealthOKStatus is the only `status` health_response.json permits.
 const HealthOKStatus = "ok"
+
+// The two values of HealthResponse.Engine.
+const (
+	EngineAvailable   = "available"
+	EngineUnavailable = "unavailable"
+)
 
 // VersionResponse is GET /v1/version (version_response.json). It mirrors
 // version.BuildInfo, which the version package keeps so that

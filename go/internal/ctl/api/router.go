@@ -41,6 +41,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -110,6 +111,58 @@ type Server struct {
 	Resolver  *auth.Resolver
 	Sessions  session.Store
 	Logger    *slog.Logger
+
+	// swapped is the engine a LATER build produced, once one has.
+	//
+	// It exists because "the engine failed to build" used to be a life
+	// sentence: the daemon logged it once at start and refused every mutation
+	// until somebody restarted it, and the cause is usually something an
+	// operator fixes on the filesystem seconds later (on 2026-09-17 it was a
+	// chmod on two SQLite sidecars another account had created). `serve`
+	// retries in the background and calls SetEngine when a store opens.
+	//
+	// An atomic pointer rather than a mutex around the two fields: every
+	// handler reads it on the request path and exactly one goroutine ever
+	// writes it. A nil pointer means nothing has been swapped in and the
+	// FIELDS are the answer — which is what keeps every test that builds a
+	// Server literal working unchanged.
+	swapped atomic.Pointer[engineState]
+}
+
+// engineState is an engine, or the reason there is none. Exactly one is set.
+type engineState struct {
+	engine jobs.Engine
+	err    error
+}
+
+// engine is what every handler asks instead of reading the field: the swapped
+// engine when the daemon has built one since it started, else what the server
+// was constructed with.
+func (s *Server) engine() (jobs.Engine, error) {
+	if st := s.swapped.Load(); st != nil {
+		return st.engine, st.err
+	}
+	return s.Engine, s.EngineErr
+}
+
+// SetEngine publishes an engine built after the server was constructed, or the
+// latest reason there still is none. It is safe to call while the server is
+// serving, which is the entire point: the retry loop runs alongside the
+// listener.
+func (s *Server) SetEngine(e jobs.Engine, err error) {
+	s.swapped.Store(&engineState{engine: e, err: err})
+}
+
+// EngineAvailable is `engine` in GET /health: whether a mutation submitted
+// right now would reach an engine at all.
+//
+// It is on /health rather than only in the logs because of how the last
+// outage was found — by a person reading the daemon's log file the next day.
+// A field on the one anonymous, always-polled endpoint is a fact a dashboard,
+// a probe and an operator can all see without a credential.
+func (s *Server) EngineAvailable() bool {
+	eng, _ := s.engine()
+	return eng != nil
 }
 
 // log returns the server's logger, which is the REDACTING one built by
@@ -344,7 +397,17 @@ func isViewer(r *http.Request) bool {
 // --------------------------------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, model.HealthResponse{Status: model.HealthOKStatus, Version: version.Version})
+	// `status` stays "ok" whatever the engine says, and the schema pins it
+	// there: this daemon IS up, it is answering, and its read surface is
+	// complete. What `engine` adds is the half a liveness check cannot see —
+	// whether a mutation submitted right now would reach an engine at all.
+	engine := model.EngineUnavailable
+	if s.EngineAvailable() {
+		engine = model.EngineAvailable
+	}
+	writeJSON(w, http.StatusOK, model.HealthResponse{
+		Status: model.HealthOKStatus, Version: version.Version, Engine: engine,
+	})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {

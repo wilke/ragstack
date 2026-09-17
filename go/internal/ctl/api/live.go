@@ -131,6 +131,7 @@ func newLiveBackendWithLogger(ragRoot, registryPath string, logger *slog.Logger)
 			// hashes for the same host, and a plan pinned by one could not be
 			// confirmed against the other.
 			CtlUID: ctlUID(ctlUser),
+			CtlGID: hostfacts.PrimaryGIDOf(ctlUser),
 		},
 	}, nil
 }

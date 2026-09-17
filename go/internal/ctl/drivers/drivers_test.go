@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,6 +345,13 @@ func seededFake(t *testing.T) *Fake {
 		if err := f.Files().MkdirAll(ctx, dir, 0o2770); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// …and an ARCHIVE for the restore to read. The fake's Restore reads the
+	// census out of the file the fake's Dump wrote, the way a real pg_restore
+	// reads the rows out of a real one — so a restore with no archive is an
+	// error here exactly as it is on the host.
+	if err := f.Postgres().Dump(ctx, pgSpec(), "/rag/backups/dev/b1/postgres/dev.dump"); err != nil {
+		t.Fatal(err)
 	}
 	f.Clear()
 	return f
@@ -1127,5 +1135,185 @@ func TestRealCopyFileRefusesASymlinkedSource(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the copy happened anyway: %v", err)
+	}
+}
+
+// ------------------------------------------------- what a handover reads and writes
+
+// Stat is the question postgres asks and the mode the drivers write in: the
+// POSIX spelling (setgid is the 0o2000 bit), not Go's flag bits, so that a
+// mode read here can be handed straight back to MkdirAll.
+func TestRealFilesStatAnswersTheOwnerAndThePOSIXMode(t *testing.T) {
+	f, root := realFiles(t)
+	dir := filepath.Join(root, "tree")
+	if err := f.MkdirAll(context.Background(), dir, 0o2770); err != nil {
+		t.Fatal(err)
+	}
+	st, err := f.Stat(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsDir || st.IsSymlink {
+		t.Errorf("Stat of a directory = %+v", st)
+	}
+	if st.Mode != 0o2770 {
+		t.Errorf("mode = %04o, want 2770 — the setgid bit is what makes a tenant tree inherit its group", st.Mode)
+	}
+	if st.UID != os.Geteuid() {
+		t.Errorf("uid = %d, want this process's %d", st.UID, os.Geteuid())
+	}
+	if _, err := f.Stat(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat of an absent path = %v, want fs.ErrNotExist so a caller can tell absence from failure", err)
+	}
+}
+
+// Stat does not FOLLOW a link, because a symlink where a data directory should
+// be is a fact the caller has to see rather than a thing to resolve.
+func TestRealFilesStatDoesNotFollowASymlink(t *testing.T) {
+	f, root := realFiles(t)
+	target := filepath.Join(root, "real")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("this filesystem cannot make a symlink: %v", err)
+	}
+	st, err := f.Stat(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsSymlink || st.IsDir {
+		t.Errorf("Stat of a symlink to a directory = %+v, want a symlink and not a directory", st)
+	}
+}
+
+// Stat is the ONE read the handover's take makes of the original cluster, and
+// it has to keep working when everything under that directory is unreadable —
+// which on the live host it is, because a PGDATA's ACL mask is its group mode
+// bits and postgres requires those to be empty.
+//
+// This is the test the physical-copy design would have failed. `data` itself
+// is traversable (its own mask is rwx); `pgdata` inside it is not, to anybody
+// but its owner. Asking who owns the parent must not depend on being able to
+// read the child.
+func TestRealFilesStatOfADirectoryWhoseContentsAreUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything; this asserts the unprivileged case")
+	}
+	f, root := realFiles(t)
+	data := filepath.Join(root, "data")
+	pgdata := filepath.Join(data, "pgdata")
+	if err := os.MkdirAll(pgdata, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pgdata, "PG_VERSION"), []byte("16\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 000: the effective permission the live tenant's ACL mask produces for
+	// every account but the owner.
+	if err := os.Chmod(pgdata, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(pgdata, 0o700) })
+
+	st, err := f.Stat(context.Background(), data)
+	if err != nil {
+		t.Fatalf("Stat of the bind source failed because its contents are unreadable: %v", err)
+	}
+	if st.UID != os.Geteuid() || !st.IsDir {
+		t.Errorf("Stat = %+v, want this account's directory", st)
+	}
+	// And the cluster inside it stays shut, which is the point: the take never
+	// opens it, so it never needs to.
+	if _, err := os.ReadDir(pgdata); err == nil {
+		t.Error("the fixture's pgdata is readable; this test asserts nothing")
+	}
+}
+
+// Sync makes the handover's dump durable. The archive is written INSIDE the
+// container by pg_dump and the ctl never holds its descriptor, so without this
+// the only copy of a tenant's database is bytes in a page cache.
+func TestRealFilesSyncsAFileAndADirectory(t *testing.T) {
+	f, root := realFiles(t)
+	dump := filepath.Join(root, "handover-20260917T083000Z.dump")
+	if err := os.WriteFile(dump, []byte("PGDMP"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(context.Background(), dump); err != nil {
+		t.Errorf("syncing the dump: %v", err)
+	}
+	// The DIRECTORY too: the file's contents are durable after the first, its
+	// NAME only after the second.
+	if err := f.Sync(context.Background(), root); err != nil {
+		t.Errorf("syncing the directory: %v", err)
+	}
+	if err := f.Sync(context.Background(), filepath.Join(root, "nothing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("syncing an absent path = %v, want fs.ErrNotExist", err)
+	}
+}
+
+// A rename makes the entry durable in BOTH directories it touches. The
+// handover's two renames are the moment a tenant's data directory changes
+// identity, and the crash-between-them state has to survive the crash.
+func TestRealFilesRenameSyncsTheDirectoriesItChanged(t *testing.T) {
+	f, root := realFiles(t)
+	from := filepath.Join(root, "data")
+	if err := os.MkdirAll(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	to := filepath.Join(root, "data.pre-handover-20260917T083000Z")
+	if err := f.Rename(context.Background(), from, to); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(to); err != nil {
+		t.Errorf("the rename did not happen: %v", err)
+	}
+	if _, err := os.Lstat(from); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the source is still there: %v", err)
+	}
+	// An existing destination is still refused: the handover's renames must
+	// never land on top of a cluster that is already there.
+	if err := os.MkdirAll(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename(context.Background(), from, to); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a rename over an existing path = %v, want a refusal", err)
+	}
+}
+
+// A postgres SOCKET is one of the things the handover's release removes — the
+// stale `.s.PGSQL.<port>` its own server left behind, which only that account
+// can unlink because the run directory is sticky.
+//
+// It is here because an earlier Remove could not do it. That version proved
+// "this is not a symlink" with an O_NOFOLLOW open, and `open()` on a unix
+// socket fails with ENXIO; the step would have worked against every fixture and
+// failed on coconut. A FIFO is the same shape and worse — `open()` on one
+// blocks until a writer appears — so both are pinned.
+func TestRealFilesRemovesASocketAndAFifo(t *testing.T) {
+	f, root := realFiles(t)
+
+	sock := filepath.Join(root, ".s.PGSQL.24085")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("this filesystem cannot hold a unix socket: %v", err)
+	}
+	defer l.Close()
+	if err := f.Remove(context.Background(), sock); err != nil {
+		t.Errorf("removing a unix socket: %v", err)
+	}
+	if _, err := os.Lstat(sock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket is still there: %v", err)
+	}
+
+	fifo := filepath.Join(root, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("this filesystem cannot hold a fifo: %v", err)
+	}
+	// No timeout dance: if Remove ever opens this, the test hangs and the
+	// package's own timeout reports it — which is the failure to see.
+	if err := f.Remove(context.Background(), fifo); err != nil {
+		t.Errorf("removing a fifo: %v", err)
 	}
 }

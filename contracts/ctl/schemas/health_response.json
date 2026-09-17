@@ -4,12 +4,17 @@
   "title": "CtlHealthResponse",
   "description": "Liveness of the control-plane daemon itself — NOT of any tenant (that is `GET /v1/fleet`). Anonymous on purpose: the gateway and `doctor` probe it before any credential exists, and nothing in it is sensitive.",
   "type": "object",
-  "required": ["status", "version"],
+  "required": ["status", "version", "engine"],
   "properties": {
     "status": { "type": "string", "enum": ["ok"] },
     "version": {
       "description": "The build version (`git describe --tags --always --dirty` at build time), the same value `GET /v1/version` reports as `version`.",
       "type": "string"
+    },
+    "engine": {
+      "description": "Whether a mutation submitted right now would reach a job engine at all.\n\n`status` cannot carry this: the schema pins it to `ok`, and an engineless daemon IS up — it serves every read and refuses every mutation with 409 `refused`. On 2026-09-17 a daemon ran in exactly that state for a day, because the only place it said so was one WARN line at start-up (a `--direct` run by another account had left wilke-owned `jobs.db-wal`/`jobs.db-shm` beside svcbvbrc's store, and SQLite could not write them). The daemon now retries opening the store in the background, and this field is where the answer is visible without a credential; `doctor` raises `job_engine_unavailable` for the same fact.",
+      "type": "string",
+      "enum": ["available", "unavailable"]
     }
   },
   "additionalProperties": false

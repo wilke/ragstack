@@ -78,6 +78,16 @@ type Options struct {
 	RegistryPath string // default <roots>/data/tenants/registry.json
 	CtlUser      string
 	CtlUID       int
+	// CtlGID is the daemon account's PRIMARY group — `cels` on this host, the
+	// group both accounts are in.
+	//
+	// It exists for one question and it is the question the job-store check
+	// turns on: whether the daemon can WRITE a file another account created. On
+	// coconut that is true of the `jobs.db-wal` left there on 2026-09-17, and
+	// only the group bits say so. Zero means "unknown", and the check then
+	// consults only the owner and other bits — conservative in the direction of
+	// saying nothing rather than of raising a finding nobody can clear.
+	CtlGID       int
 	CtlBinary    string
 	SudoersGroup string
 	MinFreeGB    int
@@ -258,6 +268,7 @@ func (d *run) hostChecks() {
 	}
 	d.heapSum()
 	d.bootHook()
+	d.jobStoreCheck()
 	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
@@ -377,6 +388,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	}
 	d.unexpectedListeners(t)
 	d.postgresCheck(t)
+	d.preHandoverCopyCheck(t)
 	d.uiCheck(t)
 	d.envCheck(t)
 	d.codeChecks(t)
@@ -505,6 +517,179 @@ func (d *run) postgresCheck(t *registry.Tenant) {
 	d.add(model.LevelWarn, PostgresNotListening, t.Name, fmt.Sprintf(
 		"state is active but nothing listens on :%d, the dedicated relational store (%s); the tenant's user, job and collection stores are all unreachable",
 		port, instance))
+}
+
+// preHandoverCopyCheck names what a handover's postgres migration left behind:
+// the original cluster, and the dump the take restored.
+//
+// The take cannot copy a cluster (postgres refuses one it does not own, and no
+// ACL can make one readable to another account), so it dumps, initialises a
+// cluster of its own and restores. Both artefacts are deliberately KEPT: the
+// renamed-aside original is the releasing account's last copy of the database
+// and is what `--abandon` renames back, and the dump is the only file in the
+// whole handover that both accounts can read. A commit clears the handover
+// block, so after it the registry no longer remembers either, and the only
+// place the fact still lives is the disk.
+//
+// Hence a disk check, at INFO, that keeps saying so until somebody removes
+// them. Two copies of a production database on a filesystem shared by every
+// tenant on the host is not a thing to leave unnamed.
+//
+// The SIZE is not measured: `du` over a postgres data directory is IO doctor
+// would pay on every poll, and the operator who is about to delete it will run
+// `du` once themselves. The paths are the finding.
+func (d *run) preHandoverCopyCheck(t *registry.Tenant) {
+	if t.Stores.Postgres.Kind != registry.PostgresKindLocal || t.DataDir == "" {
+		return
+	}
+	dir := filepath.Join(t.DataDir, "postgres")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Absent or unreadable is another check's problem: this one reports
+		// only what it can see.
+		return
+	}
+	var found []string
+	for _, e := range entries {
+		switch {
+		case e.IsDir() && strings.HasPrefix(e.Name(), PreHandoverDirPrefix):
+			found = append(found, filepath.Join(dir, e.Name()))
+		case !e.IsDir() && strings.HasPrefix(e.Name(), HandoverDumpPrefix) && strings.HasSuffix(e.Name(), ".dump"):
+			found = append(found, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	sort.Strings(found)
+	d.addRepair(model.LevelInfo, PreHandoverCopyPresent, t.Name, fmt.Sprintf(
+		"a handover left %s beside %s: the postgres cluster this tenant ran on before the take, and/or the dump "+
+			"the take restored from. Keeping them is correct until the handover has soaked — `--abandon` renames "+
+			"the cluster back — but they are a second copy of this tenant's database on a shared filesystem",
+		strings.Join(found, ", "), filepath.Join(dir, "data")),
+		"rm -rf "+strings.Join(found, " ")+"  # as the account that owns them, and only after `handover --commit`")
+}
+
+// jobStoreCheck reports a job store this deployment's daemon may not be able
+// to write.
+//
+// SQLite in WAL mode writes three files, not one: the database and the `-wal`
+// and `-shm` sidecars beside it. An account that opens another account's store
+// leaves ITS OWN sidecars there, and if the owner cannot then write them, the
+// owner's daemon cannot open its own database read-write — "attempt to write a
+// readonly database (8)" — while its reads, its doctor and its dashboard all go
+// on working. That is 2026-09-17 exactly, and it cost a day.
+//
+// The question is WRITABILITY, not ownership, and the difference is the whole
+// of this check's history. The sidecars a human repaired that day are STILL
+// another account's:
+//
+//	-rw-r--r-- 1 svcbvbrc cels  jobs.db
+//	-rw-rw-r-- 1 wilke    cels  jobs.db-wal
+//	-rw-rw-r-- 1 wilke    cels  jobs.db-shm
+//
+// — foreign-owned, group-writable, and perfectly usable by a daemon whose
+// primary group is `cels`. An ownership check calls that broken; an ownership
+// check at ERROR level calls it broken in the one way that refuses every
+// mutation this control plane has, with no op able to repair it and
+// `--force-with-doctor-diff` unable to lift it (that only lifts yellow). So
+// this asks whether the daemon's account can WRITE each file, and says so at
+// WARN: the daemon itself is the only thing that can answer "the store did not
+// open", it reports that on `GET /health` as `engine: unavailable`, and a
+// finding on the filesystem is a warning about a risk rather than a verdict on
+// a process it cannot see.
+func (d *run) jobStoreCheck() {
+	if d.opts.CtlUID <= 0 {
+		// No reference account to ask about (a developer checkout, or a host
+		// where the ctl user does not exist). Silence beats a guess.
+		return
+	}
+	store := filepath.Join(d.roots.CtlStateDir, "jobs.db")
+	if _, err := os.Stat(store); err != nil {
+		return // no store yet: nothing has run here
+	}
+	var blocked []string
+	for _, p := range []string{store, store + "-wal", store + "-shm"} {
+		if writableByUID(p, d.opts.CtlUID, d.opts.CtlGID) {
+			continue
+		}
+		owner := "uid ?"
+		if uid, ok := fileUID(p); ok {
+			owner = fmt.Sprintf("uid %d", uid)
+		}
+		blocked = append(blocked, fmt.Sprintf("%s (%s)", p, owner))
+	}
+	if len(blocked) == 0 {
+		return
+	}
+	d.addRepair(model.LevelWarn, JobEngineUnavailable, "", fmt.Sprintf(
+		"%s cannot be written by %s (uid %d), the account this daemon runs as: SQLite opens a WAL database "+
+			"read-write only when it can write the database AND both sidecars, so the daemon's whole mutation "+
+			"surface would answer 409 refused while its reads keep working. `GET /health` reports the daemon's "+
+			"own verdict as `engine`",
+		strings.Join(blocked, ", "), d.opts.CtlUser, d.opts.CtlUID),
+		"as the owner of those files: chmod g+w "+store+"*  # (or chown them to "+d.opts.CtlUser+
+			"). NEVER delete a -wal: SQLite recovers it into the database on the next open, and removing one "+
+			"from under a live connection loses every committed transaction it still holds")
+}
+
+// writableByUID answers whether the account with this uid (and primary gid)
+// could open path for writing, by the ordinary POSIX rules: owner bits if it
+// owns the file, group bits if it is in the file's group, else other bits.
+//
+// It is an approximation in exactly one direction — it does not read POSIX
+// ACLs, so a file made writable by a named-user ACL entry reads as unwritable
+// here — and that is acceptable for a WARN whose repair is "chmod g+w". It is
+// deliberately NOT `unix.Access`: doctor is usually run by an operator who is
+// not the daemon's account at all, and access(2) would answer about the wrong
+// account.
+//
+// gid 0 means "the primary group is unknown", and then only the owner and
+// other bits are consulted.
+func writableByUID(path string, uid, gid int) bool {
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// An absent sidecar is not a problem: SQLite creates it, in a
+		// directory whose own permissions the writable() check covers.
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return true
+	}
+	mode := st.Mode().Perm()
+	switch {
+	case int(sys.Uid) == uid:
+		return mode&0o200 != 0
+	case gid > 0 && int(sys.Gid) == gid:
+		return mode&0o020 != 0
+	case gid <= 0 && mode&0o020 != 0:
+		// The primary group could not be resolved and the file IS
+		// group-writable. This check cannot tell whether the daemon is in that
+		// group, and the consequence of guessing wrong is a finding an
+		// operator cannot clear on a deployment that works — which is how the
+		// first version of this check refused every mutation on coconut. Fail
+		// open: say nothing rather than raise what cannot be verified.
+		return true
+	default:
+		return mode&0o002 != 0
+	}
+}
+
+// fileUID is the owning uid of path, and whether it could be read at all.
+func fileUID(path string) (int, bool) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return 0, false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(sys.Uid), true
 }
 
 // uiCheck re-runs adoption's static-UI precondition on EVERY pass.

@@ -163,7 +163,8 @@ func NewReal(o RealOptions) *Real {
 		// The instance driver binds host paths into a container, so it gets
 		// the same approved roots the drivers that write under them do.
 		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
-			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir)},
+			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
+			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir)},
 		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
@@ -714,32 +715,63 @@ func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(rfrom, rto)
+	if err := os.Rename(rfrom, rto); err != nil {
+		return err
+	}
+	// Both parents, because rename(2) is atomic but not DURABLE: the entry is
+	// on the disk only once the directory holding it is. The handover's two
+	// renames are the moment a tenant's data directory changes identity, and a
+	// crash between them is a state the step has to be able to name — which it
+	// cannot if the rename that happened is not there any more after a power
+	// cut. A sync that fails is not the rename's failure (it already
+	// happened), so it is best-effort, exactly as writeAtomic's is.
+	syncDir(filepath.Dir(rfrom))
+	if d := filepath.Dir(rto); d != filepath.Dir(rfrom) {
+		syncDir(d)
+	}
+	return nil
 }
 
-// Remove deletes path, refusing to follow a symlink to get there.
+// syncDir fsyncs a directory, best-effort: it makes the names in it durable.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+}
+
+// Remove deletes path, refusing to delete a symlink.
+//
+// The check is LSTAT, and that is a correction. It used to be an O_NOFOLLOW
+// open, on the reasoning that an lstat+unlink pair can be raced where an open
+// cannot — but the race it was guarding against does not exist: unlink(2) and
+// rmdir(2) never follow a final symlink, so the worst a swapped path can
+// produce is the removal of the link itself, never of what it points at. What
+// the open bought was the refusal, and lstat buys that too.
+//
+// What the open COST was everything that is not a regular file or a directory.
+// `open()` on a unix socket fails with ENXIO — verified, and it is the reason
+// this comment exists: the handover's release removes the stale
+// `.s.PGSQL.<port>` socket its postgres left behind, and with the open in place
+// that step failed on the host and on no fixture anywhere. A FIFO would have
+// been worse: `open()` on one BLOCKS until a writer appears.
+//
+// So: absent is success (Remove is idempotent), a symlink is a refusal, and
+// anything else is unlinked. A non-empty directory is refused by os.Remove
+// itself, which is what a caller naming a directory asked for.
 func (f *RealFiles) Remove(_ context.Context, path string) error {
 	path, err := f.check(path)
 	if err != nil {
 		return err
 	}
-	// O_NOFOLLOW is the check, and opening is how it is made: a lstat+unlink
-	// pair can be raced, an open that refuses to follow cannot. ELOOP means
-	// the path ITSELF is a symlink, which is exactly the case to refuse (the
-	// DIRECTORY components are already resolved by check). A directory opens
-	// fine read-only, so it falls through to os.Remove, which removes it when
-	// it is empty and refuses when it is not — what a caller naming a
-	// directory asked for either way.
-	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	st, err := os.Lstat(path)
 	switch {
-	case err == nil:
-		_ = fd.Close()
 	case errors.Is(err, os.ErrNotExist):
-		return nil // already gone; Remove is idempotent
-	case errors.Is(err, syscall.ELOOP):
-		return fmt.Errorf("%w: %s is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
-	default:
+		return nil // already gone
+	case err != nil:
 		return err
+	case st.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("%w: %s is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
 	}
 	return os.Remove(path)
 }
@@ -816,13 +848,88 @@ func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
 	}
 }
 
+// Stat is lstat of one path (a read, so not root-checked, like ReadFile).
+//
+// The UID is what the caller is usually here for, and on this host it is the
+// only thing that decides whether a postgres will start: postgres compares its
+// data directory's st_uid with its own geteuid() and refuses when they differ,
+// which no mode and no ACL entry changes.
+func (f *RealFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return jobs.FileStat{}, err
+	}
+	return fileStatOf(st)
+}
+
+// fileStatOf turns an os.FileInfo into the contract's four facts. The mode
+// goes back out in the spelling the drivers take it in (0o2770, setgid as the
+// 0o2000 bit) rather than in Go's flag-bit spelling, so that a mode read here
+// can be handed straight back to WriteAtomic or MkdirAll.
+func fileStatOf(st os.FileInfo) (jobs.FileStat, error) {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return jobs.FileStat{}, fmt.Errorf("%w: this platform does not report the owner of %s", jobs.ErrRefused, st.Name())
+	}
+	mode := uint32(st.Mode().Perm())
+	if st.Mode()&os.ModeSetuid != 0 {
+		mode |= syscall.S_ISUID
+	}
+	if st.Mode()&os.ModeSetgid != 0 {
+		mode |= syscall.S_ISGID
+	}
+	if st.Mode()&os.ModeSticky != 0 {
+		mode |= syscall.S_ISVTX
+	}
+	return jobs.FileStat{
+		UID: int(sys.Uid), Mode: mode, Size: st.Size(),
+		IsDir:     st.IsDir(),
+		IsSymlink: st.Mode()&os.ModeSymlink != 0,
+	}, nil
+}
+
+// SelfUID is this process's effective uid: the owner of everything this driver
+// creates, and the number postgres compares its data directory against.
+func (f *RealFiles) SelfUID(context.Context) (int, error) { return os.Geteuid(), nil }
+
+// Sync fsyncs one path, file or directory.
+//
+// A read, so it is not root-checked — it changes no content, it only makes
+// content that is already there durable. O_NOFOLLOW for the same reason Remove
+// uses it: nothing the ctl creates is a symlink, and a link where a dump
+// should be is not a thing to follow.
+//
+// It exists because the handover's postgres dump is written INSIDE the
+// container by pg_dump and the ctl never holds its file descriptor: without
+// this the bytes sit in the page cache, and a machine that dies between the
+// dump and the take leaves a handover whose only copy of a tenant's database
+// is a file that is not all there.
+func (f *RealFiles) Sync(_ context.Context, path string) error {
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("%w: %s is a symlink; the ctl never syncs through one", jobs.ErrRefused, path)
+		}
+		return err
+	}
+	defer fd.Close()
+	return fd.Sync()
+}
+
+// apptainerConfigDir is the ctl's own APPTAINER_CONFIGDIR. The instance table
+// AND the instance logs hang off it, so it is a path two callers need and not
+// just a string inside apptainerEnv's slice.
+func apptainerConfigDir(ctlStateDir string) string {
+	return filepath.Join(ctlStateDir, "apptainer", "config")
+}
+
 // apptainerEnv is the apptainer state the ctl owns — the same two directories
 // the rendered units set — so every apptainer call, from any account the ctl
 // runs as, reads and writes one instance registry.
 func apptainerEnv(ctlStateDir string) []string {
 	return []string{
 		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
-		"APPTAINER_CONFIGDIR=" + filepath.Join(ctlStateDir, "apptainer", "config"),
+		"APPTAINER_CONFIGDIR=" + apptainerConfigDir(ctlStateDir),
 	}
 }
 

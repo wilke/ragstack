@@ -147,6 +147,40 @@ type FakeOptions struct {
 	// has never had one — which List reports as an empty body and no error,
 	// as the real crontab(1) wrapper does.
 	Crontab []byte
+	// FileUID is the uid this fake host runs as: the owner of everything it
+	// creates and Stat's answer for anything FileOwners does not name. Zero is
+	// a perfectly good uid, so it needs no sentinel.
+	FileUID int
+	// FileOwners are the paths owned by ANOTHER account: path → uid, a
+	// directory's entry covering its tree. It is how a fixture says "this
+	// tenant's pgdata is wilke's and this ctl is svcbvbrc's", which is the
+	// only fact that makes a postgres refuse to start.
+	FileOwners map[string]int
+	// InstanceExitOnRun names instances that START AND DIE, mapped to what
+	// they write to their .err log on the way out. It models the container
+	// apptainer starts successfully and that then exits — the shape of every
+	// store failure the readiness wait used to discover three minutes later.
+	InstanceExitOnRun map[string]string
+	// InstanceLogRoot is where this fake files its instance logs. Empty takes
+	// the fixture default.
+	InstanceLogRoot string
+	// InstanceIgnoreInitdbArgs makes a postgres instance initialise its cluster
+	// as if POSTGRES_INITDB_ARGS had not been passed — the SQL_ASCII/C an
+	// `LC_ALL=C` in the caller's environment produces on the real host.
+	//
+	// It models the failure the handover's encoding check exists to catch: an
+	// image, an entrypoint or an environment that does not honour what the take
+	// asked for. Without it a test cannot tell a take that pins the encoding
+	// from one that is merely lucky.
+	InstanceIgnoreInitdbArgs bool
+	// PostgresContents is what each tenant's postgres holds, by RUN
+	// DIRECTORY: the size and the exact per-table row counts a dump carries
+	// and a restore replays. A cluster with no entry is EMPTY, which is what a
+	// freshly initdb'd one is.
+	PostgresContents map[string]jobs.PostgresCensus
+	// PostgresRestoreDrops makes a restore lose rows (table name → how many),
+	// which is the one failure the handover's row counts exist to catch.
+	PostgresRestoreDrops map[string]int64
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -206,6 +240,7 @@ func NewFake(opts FakeOptions) *Fake {
 	f.files = &FakeFiles{
 		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
 		Roots: append([]string(nil), opts.Roots...), Free: opts.DiskFree,
+		UID: opts.FileUID, Owners: copyMapInt(opts.FileOwners),
 	}
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
@@ -236,15 +271,18 @@ func NewFake(opts FakeOptions) *Fake {
 	}
 	f.git = &FakeGit{r: &f.recorder, Refs: copyMapString(opts.Refs), Worktrees: copyMapString(opts.Worktrees)}
 	f.build = &FakeBuild{r: &f.recorder, files: f.files, Installed: setOf(opts.Installed)}
-	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady)}
+	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady),
+		Contents: copyMapCensus(opts.PostgresContents), RestoreDrops: copyMapInt64(opts.PostgresRestoreDrops)}
 	f.sqlite = &FakeSQLite{r: &f.recorder, files: f.files}
 	f.archive = &FakeArchive{r: &f.recorder, files: f.files}
 	// The instances and the LISTEN set are the SAME fixture, for the reason
 	// the units and the LISTEN set are: a store this host started has to be a
 	// store a readiness probe can find.
 	f.instances = &FakeInstances{
-		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
+		r: &f.recorder, proc: f.proc, files: f.files, pg: f.pg, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, AccountRunning: map[string]jobs.Instance{}, nextPID: 21001,
+		LogRoot: opts.InstanceLogRoot, ExitOnRun: copyMapString(opts.InstanceExitOnRun),
+		IgnoreInitdbArgs: opts.InstanceIgnoreInitdbArgs,
 	}
 	// In this order, and not over a map of the two: the pids this fake hands
 	// out are part of what a test asserts, and a map would shuffle them.
@@ -891,6 +929,11 @@ type FakeInstances struct {
 	proc *FakeProc
 	// files is the in-memory filesystem SeedConfigDir copies into.
 	files *FakeFiles
+	// pg is the postgres driver, so that starting a postgres instance on an
+	// EMPTY data directory initialises an empty cluster — which is what the
+	// image's entrypoint does, and the fact the handover's whole migration
+	// turns on.
+	pg *FakePostgres
 	// ports links an instance name to the port running it binds.
 	ports   map[string]int
 	nextPID int
@@ -903,6 +946,38 @@ type FakeInstances struct {
 	// in order: what a test reads to see that the ES config bind was filled
 	// from the image BEFORE the instance started.
 	Seeded []string
+	// LogRoot is where this fake host files its instance logs — the fixture's
+	// spelling of `<configdir>/instances/logs/<host>/<user>`. Empty takes
+	// fakeInstanceLogRoot.
+	LogRoot string
+	// IgnoreInitdbArgs makes this fake's initdb behave as if it had been given
+	// no POSTGRES_INITDB_ARGS: see FakeOptions.InstanceIgnoreInitdbArgs.
+	IgnoreInitdbArgs bool
+	// ExitOnRun makes a named instance START AND DIE: Run succeeds, nothing
+	// enters the table, and the text is written to the instance's .err file on
+	// the in-memory filesystem.
+	//
+	// It is the only way to model the failure this fixture now has to produce.
+	// A postgres handed a data directory it does not own is not a Run that
+	// fails — apptainer starts it happily — it is a container that writes one
+	// line ("data directory has wrong ownership") and exits, leaving no row in
+	// the instance table and no exit status any caller can read. A fake whose
+	// instances either start or fail to start cannot produce the three minutes
+	// of waiting that followed on coconut.
+	ExitOnRun map[string]string
+}
+
+// fakeInstanceLogRoot is the fixture's instance-log directory. It mirrors the
+// real layout (`<configdir>/instances/logs/<host>/<user>`) closely enough that
+// a path read out of the fake is recognisably the one the host would give.
+const fakeInstanceLogRoot = "/rag/data/ctl/apptainer/config/instances/logs/coconut/svcbvbrc"
+
+// logRoot is LogRoot or the default.
+func (i *FakeInstances) logRoot() string {
+	if i.LogRoot != "" {
+		return i.LogRoot
+	}
+	return fakeInstanceLogRoot
 }
 
 var _ jobs.Instances = (*FakeInstances)(nil)
@@ -938,7 +1013,9 @@ func (i *FakeInstances) start(ns jobs.InstanceNamespace, name, sif string) jobs.
 	// the port's owner to the instance's pid is the bug this models.
 	servicePID := pid + 1
 	i.nextPID += 2
-	in := jobs.Instance{Name: name, PID: pid, Image: sif}
+	in := jobs.Instance{Name: name, PID: pid, Image: sif,
+		LogOut: filepath.Join(i.logRoot(), name+".out"),
+		LogErr: filepath.Join(i.logRoot(), name+".err")}
 	i.table(ns)[name] = in
 	if port, ok := i.ports[name]; ok {
 		i.proc.mu.Lock()
@@ -1027,8 +1104,145 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	if _, ok := i.table(spec.Namespace)[spec.Name]; ok {
 		return fmt.Errorf("%w: instance %s is already running", jobs.ErrRefused, spec.Name)
 	}
+	// The instance that starts and dies. apptainer RETURNS SUCCESS here — it
+	// started a container, and what the container then did is between the
+	// container and its log — so this writes the log and leaves the table
+	// untouched, exactly as the host does.
+	if text, dies := i.ExitOnRun[spec.Name]; dies {
+		// APPENDED, as apptainer appends: the log holds every previous run of
+		// this instance, which is exactly why a caller has to know where this
+		// attempt's output starts before it quotes any of it.
+		path := filepath.Join(i.logRoot(), spec.Name+".err")
+		body := append([]byte(nil), i.files.Content(path)...)
+		if text != "" {
+			body = append(body, []byte(text+"\n")...)
+		}
+		i.files.Put(path, body, 0o644)
+		return nil
+	}
 	i.start(spec.Namespace, spec.Name, spec.SIF)
+	i.maybeInitdb(spec)
 	return nil
+}
+
+// maybeInitdb models the one thing the postgres image's entrypoint does that a
+// handover depends on: an EMPTY PGDATA is initialised into an empty cluster.
+//
+// It reads the instance's own binds — `<data>:/var/lib/postgresql/data` and
+// `<run>:/var/run/postgresql` — because that is where the two paths are, and
+// because a fake that took them from anywhere else could disagree with the
+// argv the renderer actually produces. A data directory with anything in it is
+// an EXISTING cluster and is left alone, exactly as the entrypoint leaves one.
+func (i *FakeInstances) maybeInitdb(spec jobs.InstanceSpec) {
+	if i.pg == nil || !strings.HasPrefix(spec.Name, "postgres-") {
+		return
+	}
+	var data, run string
+	for _, b := range spec.Binds {
+		host, container, ok := strings.Cut(b, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSuffix(container, ":ro") {
+		case "/var/lib/postgresql/data":
+			data = host
+		case "/var/run/postgresql":
+			run = host
+		}
+	}
+	if data == "" || run == "" {
+		return
+	}
+	i.files.mu.Lock()
+	empty := true
+	prefix := strings.TrimSuffix(data, "/") + "/"
+	for p := range i.files.Files {
+		if strings.HasPrefix(p, prefix) {
+			empty = false
+			break
+		}
+	}
+	i.files.mu.Unlock()
+	if !empty {
+		return
+	}
+	// initdb: a cluster with the tenant's database in it and not one row —
+	// and with the ENCODING and LOCALES initdb chose.
+	//
+	// Which is the point. initdb takes them from POSTGRES_INITDB_ARGS when the
+	// entrypoint is given any, and from its own environment when it is not, and
+	// the two are not the same: a cluster made without them is modelled here as
+	// SQL_ASCII/C, which is what an `LC_ALL=C` in whatever ran the take
+	// actually produces on this host. A dump restored into that cluster exits
+	// 0, keeps every row, and is a different database — so a fake that always
+	// initialised a UTF8 cluster would make the one failure this models
+	// impossible to write a test for.
+	c := jobs.PostgresCensus{
+		Tables:   map[string]int64{},
+		Encoding: "SQL_ASCII", Collate: "C", Ctype: "C",
+		Databases: []string{fakeInitdbDB(spec)}, Roles: []string{fakeInitdbDB(spec)},
+	}
+	if enc, loc, ok := initdbArgs(spec); ok && !i.IgnoreInitdbArgs {
+		c.Encoding, c.Collate, c.Ctype = enc, loc, loc
+	}
+	i.pg.mu.Lock()
+	if i.pg.Contents == nil {
+		i.pg.Contents = map[string]jobs.PostgresCensus{}
+	}
+	i.pg.Contents[run] = c
+	i.pg.mu.Unlock()
+}
+
+// fakeInitdbDB is the database (and role) the image's entrypoint creates:
+// POSTGRES_DB, which the renderer sets to the tenant name.
+func fakeInitdbDB(spec jobs.InstanceSpec) string {
+	if db := spec.Env["POSTGRES_DB"]; db != "" {
+		return db
+	}
+	return strings.TrimPrefix(spec.Name, "postgres-")
+}
+
+// initdbArgs reads `--encoding=` and `--locale=` out of POSTGRES_INITDB_ARGS,
+// wherever the caller put it: the container environment, or apptainer's own
+// (`APPTAINERENV_POSTGRES_INITDB_ARGS`, which apptainer forwards under the
+// bare name). Both spellings reach the entrypoint identically on the host, so
+// a fake that understood only one would pass a take that the host fails.
+func initdbArgs(spec jobs.InstanceSpec) (encoding, locale string, ok bool) {
+	raw := spec.Env["POSTGRES_INITDB_ARGS"]
+	if raw == "" {
+		raw = spec.ExtraEnv["APPTAINERENV_POSTGRES_INITDB_ARGS"]
+	}
+	if raw == "" {
+		return "", "", false
+	}
+	for _, f := range strings.Fields(raw) {
+		if v, found := strings.CutPrefix(f, "--encoding="); found {
+			encoding = v
+		}
+		if v, found := strings.CutPrefix(f, "--locale="); found {
+			locale = v
+		}
+	}
+	return encoding, locale, encoding != "" && locale != ""
+}
+
+// LogPaths answers from the table when the instance is running and composes
+// the fixture's paths when it is not — the same order the real driver uses,
+// and for the same reason: the instance a caller wants the log of is usually
+// the one that is no longer there.
+func (i *FakeInstances) LogPaths(_ context.Context, name string, opts jobs.ListOptions) (string, string, error) {
+	if err := i.r.record("instances", "LogPaths", name, nsLabel(opts.Namespace)); err != nil {
+		return "", "", err
+	}
+	if err := checkInstanceName(name); err != nil {
+		return "", "", err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if in, ok := i.table(opts.Namespace)[name]; ok && (in.LogOut != "" || in.LogErr != "") {
+		return in.LogOut, in.LogErr, nil
+	}
+	return filepath.Join(i.logRoot(), name+".out"), filepath.Join(i.logRoot(), name+".err"), nil
 }
 
 // Stop stops an instance IN ONE REGISTRY, and an instance that is not running
@@ -1301,6 +1515,35 @@ type FakeFiles struct {
 	Roots []string
 	// Free is what DiskFree answers; zero means the default terabyte.
 	Free int64
+	// UID is the account this fake host runs as — the owner of everything it
+	// creates, and the answer Stat gives for a path nothing in Owners names.
+	UID int
+	// Owners are the paths owned by SOMEBODY ELSE: path → uid, and a
+	// directory's entry covers everything under it unless a deeper entry says
+	// otherwise.
+	//
+	// It exists for exactly one fact, and it is the fact the second failed
+	// handover turned on: postgres compares its data directory's st_uid with
+	// its own euid and refuses when they differ, whatever the mode is and
+	// whatever the ACL grants. A fake filesystem with no owners at all cannot
+	// express "wilke's pgdata, svcbvbrc's postgres", so it cannot test the
+	// step that exists to fix it.
+	Owners map[string]int
+}
+
+// ownerOf is the uid of path on this fake host: the deepest Owners entry that
+// covers it, else f.UID. Caller holds the lock.
+func (f *FakeFiles) ownerOf(path string) int {
+	best, bestLen := f.UID, -1
+	for p, uid := range f.Owners {
+		if p != path && !strings.HasPrefix(path, strings.TrimSuffix(p, "/")+"/") {
+			continue
+		}
+		if len(p) > bestLen {
+			best, bestLen = uid, len(p)
+		}
+	}
+	return best
 }
 
 // ErrOutsideRoots is the containment refusal of both Files drivers.
@@ -1414,6 +1657,12 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 	if _, taken := f.Dirs[to]; taken {
 		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, to)
 	}
+	// OWNERSHIP follows the inode, here as on the host: a rename changes a
+	// path, never a uid. Without this the handover's postgres migration would
+	// rename the other account's directory aside and the fake would go on
+	// answering "that path is the other account's" about the copy that
+	// replaced it — which is the one fact the whole step turns on.
+	f.renameOwner(from, to)
 	if v, ok := f.Files[from]; ok {
 		f.Files[to] = v
 		delete(f.Files, from)
@@ -1447,6 +1696,29 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 		return fmt.Errorf("rename %s: no such file or directory", from)
 	}
 	return nil
+}
+
+// renameOwner moves every Owners entry at or under `from` to `to`. Caller
+// holds the lock.
+func (f *FakeFiles) renameOwner(from, to string) {
+	if f.Owners == nil {
+		return
+	}
+	prefix := strings.TrimSuffix(from, "/") + "/"
+	moved := map[string]int{}
+	for p, uid := range f.Owners {
+		switch {
+		case p == from:
+			moved[to] = uid
+			delete(f.Owners, p)
+		case strings.HasPrefix(p, prefix):
+			moved[filepath.Join(to, strings.TrimPrefix(p, prefix))] = uid
+			delete(f.Owners, p)
+		}
+	}
+	for p, uid := range moved {
+		f.Owners[p] = uid
+	}
 }
 
 // Remove deletes one file or one EMPTY directory.
@@ -1486,6 +1758,11 @@ func (f *FakeFiles) Remove(_ context.Context, path string) error {
 func (f *FakeFiles) hasDir(dir string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.hasDirLocked(dir)
+}
+
+// hasDirLocked is hasDir for a caller that already holds the lock.
+func (f *FakeFiles) hasDirLocked(dir string) bool {
 	if _, ok := f.Dirs[dir]; ok {
 		return true
 	}
@@ -1608,6 +1885,63 @@ func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
 		return f.Free, nil
 	}
 	return 1 << 40, nil
+}
+
+// Stat is the fake host's lstat: the owner, the mode, the size and whether
+// the path is a directory.
+//
+// A path that is neither a recorded file nor a recorded (or implied) directory
+// is fs.ErrNotExist, so a caller telling "not there" from "cannot be read"
+// behaves here as it does on the host. The fake has no symlinks, so IsSymlink
+// is always false — a fake that claimed one would be claiming a case nothing
+// here can create.
+func (f *FakeFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
+	if err := f.r.record("files", "Stat", path); err != nil {
+		return jobs.FileStat{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.Files[path]; ok {
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: v.Mode, Size: int64(len(v.Data))}, nil
+	}
+	if mode, ok := f.Dirs[path]; ok {
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: mode, IsDir: true}, nil
+	}
+	if f.hasDirLocked(path) {
+		// A directory nothing recorded but a file under it implies. 0700 is
+		// the conservative answer: it is what a postgres data directory
+		// carries, and what the handover's ownership questions are asked of.
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: 0o700, IsDir: true}, nil
+	}
+	return jobs.FileStat{}, fmt.Errorf("lstat %s: %w", path, fs.ErrNotExist)
+}
+
+// SelfUID is the uid this fake host creates files as.
+func (f *FakeFiles) SelfUID(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.UID, nil
+}
+
+// Sync records the fsync and checks that there is something there to sync.
+//
+// The in-memory filesystem has no durability to model, so what this pins is
+// the CALL: the handover's dump step has to sync the dump and its directory,
+// and a fake that accepted any path would let a step that synced the wrong one
+// pass. An absent path is fs.ErrNotExist, as the real driver's open would give.
+func (f *FakeFiles) Sync(_ context.Context, path string) error {
+	if err := f.r.record("files", "Sync", path); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Files[path]; ok {
+		return nil
+	}
+	if _, ok := f.Dirs[path]; ok || f.hasDirLocked(path) {
+		return nil
+	}
+	return fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
 }
 
 // has reports whether path is in the in-memory filesystem. It is not a driver
@@ -2435,6 +2769,28 @@ type FakePostgres struct {
 	// Dumps records every dump as "<runDir> <db> <out>", Restores likewise.
 	Dumps    []string
 	Restores []string
+	// Contents is what each cluster holds, by RUN DIRECTORY — the one thing
+	// that identifies a cluster across this driver's calls. It is not called
+	// `Census` because the driver's METHOD is, and Go lets a type have one or
+	// the other (the same reason `Readiness` is not `Ready`).
+	//
+	// It is a model rather than a seed, and the modelling is the point: Dump
+	// WRITES the current census into the archive it creates, and Restore READS
+	// it back into the target cluster. That is what a dump and a restore
+	// actually are, and it is the only way a test of the handover's postgres
+	// migration can assert that the tenant came back with what it went down
+	// with — the fresh cluster the take initialises starts EMPTY here, exactly
+	// as initdb leaves one.
+	Contents map[string]jobs.PostgresCensus
+	// MissingTools names programs this image does NOT carry, so that a test
+	// can produce the one failure a handover cannot discover any later than
+	// its release: an image with no initdb, which nothing would notice until
+	// a take had already renamed a tenant's cluster aside.
+	MissingTools map[string]bool
+	// RestoreDrops makes a restore lose rows: table name → how many. It is how
+	// a test produces the one failure the row counts exist to catch, a restore
+	// that succeeded and moved less than everything.
+	RestoreDrops map[string]int64
 }
 
 func (p *FakePostgres) pgReady(runDir string) bool {
@@ -2471,9 +2827,33 @@ func (p *FakePostgres) Dump(_ context.Context, spec jobs.PostgresSpec, out strin
 		return fmt.Errorf("%w: %s is not an existing directory to write the dump into",
 			jobs.ErrRefused, filepath.Dir(out))
 	}
+	if !p.pgReady(spec.RunDir) {
+		return fmt.Errorf("pg_dump of %s: no response on the socket in %s", spec.DB, spec.RunDir)
+	}
 	p.Dumps = append(p.Dumps, spec.RunDir+" "+spec.DB+" "+out)
-	p.files.Put(out, []byte("fake pg_dump -Fc of "+spec.DB+"\n"), 0o640)
+	// The archive CARRIES the census, so that a later Restore can put it into
+	// another cluster. A real custom-format dump carries the rows themselves;
+	// this is the smallest model of that which lets a test prove a handover
+	// moved everything.
+	body := "fake pg_dump -Fc of " + spec.DB + "\n"
+	c := p.Contents[spec.RunDir]
+	body += dumpCensusPrefix + "=size==" + strconv.FormatInt(c.SizeBytes, 10) + "\n"
+	for _, name := range sortedKeys(c.Tables) {
+		body += dumpCensusPrefix + name + "=" + strconv.FormatInt(c.Tables[name], 10) + "\n"
+	}
+	p.files.Put(out, []byte(body), 0o640)
 	return nil
+}
+
+// sortedKeys keeps a fake archive byte-identical between two runs of the same
+// dump: a map has no order, and a test that checksums one needs it to.
+func sortedKeys(m map[string]int64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in string) error {
@@ -2482,8 +2862,108 @@ func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in str
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.pgReady(spec.RunDir) {
+		return fmt.Errorf("pg_restore into %s: no response on the socket in %s", spec.DB, spec.RunDir)
+	}
+	body := p.files.Content(in)
+	if body == nil {
+		return fmt.Errorf("the dump to restore is not readable: open %s: %w", in, fs.ErrNotExist)
+	}
+	// The archive carries the census the dump captured; restoring it is what
+	// puts those rows into THIS cluster. A dump this fake did not write has no
+	// census in it, which restores as an empty database — the honest model of
+	// an archive whose contents are unknown.
+	c := dumpCensus(body)
+	for name, drop := range p.RestoreDrops {
+		if n, ok := c.Tables[name]; ok {
+			c.Tables[name] = n - drop
+		}
+	}
+	if p.Contents == nil {
+		p.Contents = map[string]jobs.PostgresCensus{}
+	}
+	// The ROWS come from the archive; the ENCODING and the locales do not. They
+	// belong to the cluster initdb made, and a restore leaves them exactly as
+	// they are — which is the whole reason a handover has to pin them at initdb
+	// time and check them afterwards.
+	target := p.Contents[spec.RunDir]
+	c.Encoding, c.Collate, c.Ctype = target.Encoding, target.Collate, target.Ctype
+	c.Databases, c.Roles = target.Databases, target.Roles
+	p.Contents[spec.RunDir] = c
 	p.Restores = append(p.Restores, spec.RunDir+" "+spec.DB+" "+in)
 	return nil
+}
+
+// ToolVersions answers for an image that carries the three tools, unless a
+// test says otherwise with MissingTools — which is how the one failure that
+// cannot be discovered later (an image with no initdb) is reproduced here.
+func (p *FakePostgres) ToolVersions(_ context.Context, spec jobs.PostgresSpec) (map[string]string, error) {
+	if err := p.r.record("postgres", "ToolVersions", spec.SIF); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[string]string{}
+	for _, tool := range handoverTools {
+		if p.MissingTools[tool] {
+			return nil, fmt.Errorf("%w: %s cannot run %s, which a handover needs", jobs.ErrRefused, spec.SIF, tool)
+		}
+		out[tool] = tool + " (PostgreSQL) 16.13"
+	}
+	return out, nil
+}
+
+// Census is what the cluster on this run directory holds. An unseeded cluster
+// is EMPTY, which is what a freshly initdb'd one is.
+func (p *FakePostgres) Census(_ context.Context, spec jobs.PostgresSpec) (jobs.PostgresCensus, error) {
+	if err := p.r.record("postgres", "Census", spec.RunDir, spec.DB); err != nil {
+		return jobs.PostgresCensus{}, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.pgReady(spec.RunDir) {
+		return jobs.PostgresCensus{}, fmt.Errorf("counting the rows of %s: no response on the socket in %s",
+			spec.DB, spec.RunDir)
+	}
+	c, ok := p.Contents[spec.RunDir]
+	if !ok {
+		return jobs.PostgresCensus{Tables: map[string]int64{}}, nil
+	}
+	return jobs.PostgresCensus{
+		SizeBytes: c.SizeBytes, Tables: copyMapInt64(c.Tables),
+		Encoding: c.Encoding, Collate: c.Collate, Ctype: c.Ctype,
+		Databases: append([]string(nil), c.Databases...),
+		Roles:     append([]string(nil), c.Roles...),
+	}, nil
+}
+
+// dumpCensusPrefix marks the census this fake writes into an archive.
+const dumpCensusPrefix = "census:"
+
+// dumpCensus reads the census back out of a fake archive. An archive without
+// one is an empty database.
+func dumpCensus(body []byte) jobs.PostgresCensus {
+	c := jobs.PostgresCensus{Tables: map[string]int64{}}
+	for _, line := range strings.Split(string(body), "\n") {
+		rest, ok := strings.CutPrefix(line, dumpCensusPrefix)
+		if !ok {
+			continue
+		}
+		name, count, ok := strings.Cut(rest, "=")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(count, 10, 64)
+		if err != nil {
+			continue
+		}
+		if name == "=size=" {
+			c.SizeBytes = n
+			continue
+		}
+		c.Tables[name] = n
+	}
+	return c
 }
 
 // ---------------------------------------------------------------- sqlite
@@ -2674,4 +3154,19 @@ func containsString(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// copyMapCensus deep-copies the seeded cluster contents, so that a fixture's
+// map is not mutated by the restore this fake models.
+func copyMapCensus(m map[string]jobs.PostgresCensus) map[string]jobs.PostgresCensus {
+	out := make(map[string]jobs.PostgresCensus, len(m))
+	for k, v := range m {
+		out[k] = jobs.PostgresCensus{
+			SizeBytes: v.SizeBytes, Tables: copyMapInt64(v.Tables),
+			Encoding: v.Encoding, Collate: v.Collate, Ctype: v.Ctype,
+			Databases: append([]string(nil), v.Databases...),
+			Roles:     append([]string(nil), v.Roles...),
+		}
+	}
+	return out
 }

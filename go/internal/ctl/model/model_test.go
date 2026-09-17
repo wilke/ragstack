@@ -207,7 +207,7 @@ func TestResponsesValidateAgainstContract(t *testing.T) {
 	// were never seen by this test — which nonetheless claimed to cover "every
 	// response type". Half of them were unchecked, and the unchecked half is
 	// the half a handler builds by hand.
-	validate(t, py, "health_response", HealthResponse{Status: HealthOKStatus, Version: "v1.5.1"})
+	validate(t, py, "health_response", HealthResponse{Status: HealthOKStatus, Version: "v1.5.1", Engine: EngineAvailable})
 
 	validate(t, py, "version_response", VersionResponse{
 		Version:       "v1.5.1",

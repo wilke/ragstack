@@ -160,6 +160,11 @@ func TestHandoverReleaseCountsAndRecordsBeforeItStopsAnything(t *testing.T) {
 	// stop.
 	want := []string{
 		"envfile: check that the take can obtain the postgres password",
+		// Beside it, the other postgres question a release is the last cheap
+		// moment to ask: is there room to dump this database and re-create it
+		// as a cluster the other account owns. `dev` runs no postgres of its
+		// own, so this one is a skip with the reason on it.
+		"postgres: check that this tenant's postgres can be handed over",
 		"probe: check that no ingest job is still running",
 		"probe: census: count every collection in the tenant's own qdrant",
 		"probe: census: count every index in the tenant's own elasticsearch",
@@ -173,6 +178,10 @@ func TestHandoverReleaseCountsAndRecordsBeforeItStopsAnything(t *testing.T) {
 		"registry: record state: handover and the hand-off token",
 		"proc: stop the hand-started API through its pidfile (TERM, then KILL)",
 		"probe: verify nothing listens on 24040 (the API)",
+		// The DUMP's window is here — after the API stop, before the store
+		// stops — and for `dev`, which has no postgres of its own, it is a
+		// skip that says so.
+		"postgres: skip the postgres dump",
 		"instance: stop the instance elasticsearch-dev",
 		// BOTH of a leg's ports: elasticsearch binds HTTP and transport,
 		// qdrant HTTP and gRPC. A release that proved only the first free

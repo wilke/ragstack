@@ -54,6 +54,22 @@ before it stops anything and refuses by name if the two disagree.
                        and free its ports. Prints the token. --direct is
                        implied.
 
+                       A tenant with its own postgres is also DUMPED here, in
+                       the one window there is for it — the API already
+                       stopped, postgres not yet — because the taking account
+                       can neither own nor read a cluster directory (postgres
+                       compares st_uid with its own uid, and a POSIX ACL's
+                       named-user entry is filtered by the mask, which IS the
+                       group mode bits a PGDATA must not have). The dump, its
+                       sha256, every table's exact row count and the cluster's
+                       encoding and locales go into the row.
+
+                       --accept-extra-databases releases a tenant whose cluster
+                       holds a database or a login role BESIDE its own. A
+                       single-database dump does not carry them; they stay in
+                       the pre-handover cluster, and the row records what was
+                       left behind.
+
                        RE-ENTRANT: run it again over a row left at
                        `+"`handover.phase: released`"+` — it re-censuses, re-verifies
                        and keeps the token the first release minted. If a step
@@ -112,6 +128,8 @@ func cmdTenantHandover(args []string, registryPath, ragRoot string, jsonOut bool
 	abandon := fs.Bool("abandon", false, "give the tenant back to its owner (run as the owner)")
 	token := fs.String("token", "", "the token the release printed (--take)")
 	acceptNoBackup := fs.Bool("accept-no-backup", false, "release although last_backup is null")
+	acceptExtraDBs := fs.Bool("accept-extra-databases", false, "release although this tenant's postgres cluster "+
+		"holds a database or a login role beside the tenant's own (they stay in the pre-handover cluster)")
 
 	pos, rest := takePositionals(args, 1)
 	if err := fs.Parse(rest); err != nil {
@@ -166,8 +184,12 @@ func cmdTenantHandover(args []string, registryPath, ragRoot string, jsonOut bool
 	if *token != "" {
 		opArgs["token"] = *token
 	}
-	if setFlags(fs)["accept-no-backup"] {
+	set := setFlags(fs)
+	if set["accept-no-backup"] {
 		opArgs["accept_no_backup"] = *acceptNoBackup
+	}
+	if set["accept-extra-databases"] {
+		opArgs["accept_extra_databases"] = *acceptExtraDBs
 	}
 	// A release mints the hand-off token into its job RESULT, and the operator
 	// needs it in front of them: follow the job, exactly as `tenant restore`

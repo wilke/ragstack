@@ -110,9 +110,18 @@ func TestInstancesListParsesWhatApptainerPrints(t *testing.T) {
 		t.Fatalf("List ran %v", s.argv())
 	}
 	// Sorted by name, which is not the order the document holds.
+	// The LOG PATHS are part of what this golden pins. They are the only
+	// account an instance that started and DIED leaves behind — the readiness
+	// wait reads the .err file to say "data directory has wrong ownership"
+	// instead of timing out — so a build of apptainer that stopped printing
+	// them has to fail here rather than in a handover.
 	want := []jobs.Instance{
-		{Name: "elasticsearch-hackathon", PID: 580508, Image: "/rag/apptainer/images/elasticsearch.sif"},
-		{Name: "qdrant-dev", PID: 189637, Image: "/rag/apptainer/images/qdrant.sif"},
+		{Name: "elasticsearch-hackathon", PID: 580508, Image: "/rag/apptainer/images/elasticsearch.sif",
+			LogOut: "/home/wilke/.apptainer/instances/logs/coconut/wilke/elasticsearch-hackathon.out",
+			LogErr: "/home/wilke/.apptainer/instances/logs/coconut/wilke/elasticsearch-hackathon.err"},
+		{Name: "qdrant-dev", PID: 189637, Image: "/rag/apptainer/images/qdrant.sif",
+			LogOut: "/home/wilke/.apptainer/instances/logs/coconut/wilke/qdrant-dev.out",
+			LogErr: "/home/wilke/.apptainer/instances/logs/coconut/wilke/qdrant-dev.err"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("List = %+v, want %+v", got, want)

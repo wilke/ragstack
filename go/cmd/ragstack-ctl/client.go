@@ -884,6 +884,16 @@ func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) 
 	// run that ignored them would open the daemon's jobs.db and write units
 	// into the daemon's tree even when the operator pointed it elsewhere.
 	roots := api.RootsFromEnv(*o.ragRoot)
+	// …and honouring them is not enough on its own. A --direct run whose state
+	// dir belongs to ANOTHER account opens that account's jobs.db and leaves
+	// its own WAL and shm beside it, after which that account's daemon cannot
+	// open its own store for the rest of its life. That is not hypothetical: it
+	// is what a wilke --direct run did to svcbvbrc's daemon on 2026-09-17, and
+	// a human found it a day later. Refuse before the store is opened, and name
+	// the directory this account should use instead.
+	if err := api.CheckStateDirOwnership(roots.CtlStateDir); err != nil {
+		return nil, nil, err
+	}
 	cfg := api.EngineConfig{
 		Roots:        roots,
 		RegistryPath: resolveRegistry(*o.registry, *o.ragRoot),

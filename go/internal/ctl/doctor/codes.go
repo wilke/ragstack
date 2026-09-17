@@ -326,4 +326,48 @@ const (
 	// secrets_unreadable_by_ctl do for the specific things a home-directory
 	// checkout breaks.
 	HomePathInProduction = "home_path_in_production"
+
+	// JobEngineUnavailable: the job store this deployment's daemon opens is
+	// one it cannot write — its `jobs.db`, or one of the SQLite sidecars
+	// (`jobs.db-wal`, `jobs.db-shm`) beside it, belongs to another account.
+	//
+	// That is not a theory about the file: it is what SQLite needs. A WAL
+	// database is opened read-WRITE only if the engine can write all three
+	// files, so one sidecar with the wrong owner is a daemon whose entire
+	// mutation surface answers 409 `refused` — reads, `doctor` and the
+	// dashboard all working perfectly — until somebody notices.
+	//
+	// It happened on 2026-09-17: a `--direct` run by wilke against the
+	// daemon's own CTL_STATE_DIR created wilke-owned sidecars beside
+	// svcbvbrc's store. Error, and the detail names the files and the repair.
+	// `--direct` now refuses another account's state dir outright, so this
+	// finding is the second net rather than the first.
+	JobEngineUnavailable = "job_engine_unavailable"
+
+	// PreHandoverCopyPresent: a `data.pre-handover-<ts>` directory is sitting
+	// beside a tenant's postgres data directory — the ORIGINAL, from the
+	// handover take that had to copy it because postgres refuses a data
+	// directory it does not own.
+	//
+	// Info, not a warning: leaving it is correct. It is the only copy of the
+	// tenant's postgres as the releasing account had it, `--abandon` renames
+	// it back, and a commit deliberately does not delete it. What it must not
+	// do is be forgotten — it is a second copy of a database on a shared
+	// filesystem — so doctor names it until somebody removes it.
+	PreHandoverCopyPresent = "pre_handover_copy_present"
+)
+
+// The two names a handover's postgres migration leaves in
+// `<data_dir>/postgres`, and the reason both are constants HERE: doctor scans
+// the disk for them long after the commit has cleared the registry row that
+// named them, and ops/pgdata.go — which creates them — takes its spelling from
+// these, so the two halves cannot drift.
+const (
+	// PreHandoverDirPrefix names the ORIGINAL cluster after the take renamed
+	// it aside: `data.pre-handover-<ts>`.
+	PreHandoverDirPrefix = "data.pre-handover-"
+	// HandoverDumpPrefix names the release's `pg_dump -Fc` archive:
+	// `handover-<ts>.dump`. It is what the take restores, and the only form in
+	// which one account can hand another a postgres on this host.
+	HandoverDumpPrefix = "handover-"
 )

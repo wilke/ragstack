@@ -468,7 +468,7 @@
     "Handover": {
       "description": "The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`.",
       "type": "object",
-      "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census"],
+      "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census", "postgres_data"],
       "properties": {
         "phase": {
           "description": "`released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.",
@@ -502,7 +502,50 @@
             },
             "additionalProperties": false
           }
-        }
+        },
+        "postgres_data": {
+          "description": "How this handover is moving the tenant's postgres, and null for a tenant that runs none of its own.\n\nA handover moves no data — except here, and it cannot move it the obvious way. postgres refuses a data directory whose `st_uid` is not its own uid (\"data directory has wrong ownership\"), and the taking account cannot COPY one either: a POSIX ACL's named-user entry is filtered by the mask, the mask is the directory's group mode bits, and a PGDATA postgres accepts has none — so `user:svcbvbrc:rwx` on a 0700 pgdata has an effective permission of `---` and no ACL can change that.\n\nSo the migration is LOGICAL. The RELEASE — API already stopped, postgres still running — writes `pg_dump -Fc` to `handover-<ts>.dump` at 0640 (a plain file has no ownership check, and the group both accounts are in can read it) and records its sha256 and the exact row count of every table. The TAKE verifies the checksum, puts an EMPTY directory where the cluster was (the original is renamed to `pre_handover`, which nothing opens again), lets the postgres instance initialise a cluster of its own in it, restores the dump and checks every table's count back.\n\nThe release fills `dump`, `dump_sha256`, `dumped_at` and `tables`; the take fills `pre_handover`, `copy` and `migrated_at`, which are empty strings until it does. `--abandon` renames the two directories back; `--commit` leaves the original cluster and the dump on disk and doctor reports `pre_handover_copy_present` until an operator removes them.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["dump", "dump_sha256", "dumped_at", "tables", "encoding", "collate", "ctype", "extra_databases", "extra_roles", "pre_handover", "copy", "migrated_at"],
+              "properties": {
+                "dump": { "description": "The release's `pg_dump -Fc` archive, `<data_dir>/postgres/handover-<ts>.dump`, mode 0640.", "$ref": "#/$defs/AbsPath" },
+                "dump_sha256": { "description": "That file's digest. The take checks it before it moves anything: the archive crosses a job boundary, an account boundary and an unbounded amount of wall-clock time.", "$ref": "#/$defs/Sha256Hex" },
+                "dumped_at": { "$ref": "#/$defs/Timestamp" },
+                "tables": {
+                  "description": "The exact row count of every ordinary table at the moment of the dump (`count(*)`, never `n_live_tup` — an estimate is reset by the restore and proves nothing). A dump and a restore cannot be compared byte for byte; this is what the take proves the migration against, and it refuses on ANY difference.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "rows"],
+                    "properties": {
+                      "name": { "description": "`<schema>.<table>`.", "type": "string", "minLength": 1 },
+                      "rows": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "encoding": { "description": "The SOURCE database's character encoding (`pg_encoding_to_char(encoding)`), and `collate`/`ctype` its two locales (`datcollate`, `datctype`).\n\nThey are recorded because a dump and a restore do NOT carry them: the take's cluster is initialised by the image's entrypoint, and initdb takes its encoding from its environment unless told otherwise — so without these the encoding of a tenant's database after a handover is decided by whichever shell, cron job or unit ran the take. A UTF8 dump restored into an SQL_ASCII/C cluster exits 0 and keeps every row; `length()`, `upper()`, `LIKE` and every index's sort order are different, and the row counts cannot see it. The take passes them to initdb (POSTGRES_INITDB_ARGS) and refuses the restore if the new cluster came out any other way.", "type": "string", "minLength": 1 },
+                "collate": { "type": "string", "minLength": 1 },
+                "ctype": { "type": "string", "minLength": 1 },
+                "extra_databases": {
+                  "description": "Databases in the tenant's cluster BESIDE its own (and initdb's `postgres`), as the release found them — non-empty only when an operator passed `accept_extra_databases`. A single-database dump does not carry them: they stay in the pre-handover cluster, which is the copy a commit invites the operator to delete.",
+                  "type": "array", "items": { "type": "string", "minLength": 1 }
+                },
+                "extra_roles": {
+                  "description": "Login roles in that cluster beside the tenant's own, on the same terms as `extra_databases`.",
+                  "type": "array", "items": { "type": "string", "minLength": 1 }
+                },
+                "pre_handover": { "description": "Where the take renamed the ORIGINAL cluster: `<data_dir>/postgres/data.pre-handover-<ts>`. Empty until the take has run; nothing opens it again once it has.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },
+                "copy": { "description": "The name the take's own cluster directory was created under, `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into place. An abandon renames the live directory back to it. Empty until the take has run.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },
+                "migrated_at": { "description": "When the two renames happened; empty until the take has run.", "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "string", "maxLength": 0 } ] }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
+                }
       },
       "additionalProperties": false
     },

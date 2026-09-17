@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
@@ -175,24 +176,15 @@ func RunServe(args []string) int {
 		// create a refusal about the harness rather than about the op.
 		cfg.Mirror = ConformanceMirror
 	}
+	storePath := filepath.Join(roots.CtlStateDir, "jobs.db")
 	engine, err := BuildEngine(cfg)
 	var engineErr error
 	if err != nil {
-		logger.Warn("job engine unavailable; the mutation surface will refuse",
-			"store", filepath.Join(roots.CtlStateDir, "jobs.db"), "err", err.Error())
+		logger.Warn("job engine unavailable; the mutation surface will refuse, and this daemon keeps trying",
+			"store", storePath, "err", err.Error(), "retries", engineRetryAttempts)
 		engine, engineErr = nil, err
 	} else {
-		// Reconcile-on-start, before the listener opens: a job whose worker
-		// died becomes `interrupted` and KEEPS its reservations, and nothing
-		// is resumed. Doing it after the bind would let a caller resume a job
-		// the daemon had not yet decided the state of.
-		interrupted, rerr := engine.Reconcile(context.Background())
-		if rerr != nil {
-			logger.Error("reconcile", "err", rerr.Error())
-		} else if len(interrupted) > 0 {
-			logger.Warn("jobs interrupted by a previous exit; resume or cancel them",
-				"count", len(interrupted), "jobs", strings.Join(interrupted, ","))
-		}
+		reconcileJobs(engine, logger)
 	}
 
 	sessions := session.NewMemoryStore()
@@ -217,6 +209,13 @@ func RunServe(args []string) int {
 	// context would outlive the grace and turn `systemctl stop` into exit 1.
 	requestCtx, endRequests := context.WithCancel(context.Background())
 	defer endRequests()
+
+	// An engine that could not be built is RETRIED in the background while the
+	// daemon serves, under the same context the requests run under: a
+	// shutdown ends the retries with everything else. See retryEngine.
+	if engineErr != nil {
+		go retryEngine(requestCtx, srv, cfg, storePath, logger, engineRetryBackoff)
+	}
 
 	handler := NewRouter(srv)
 	httpServer := newHTTPServer(*listen, handler, requestCtx)
@@ -283,6 +282,102 @@ func RunServe(args []string) int {
 			return exitError
 		}
 		return exitOK
+	}
+}
+
+// ---------------------------------------------------------------- the engine retry
+
+// engineRetryAttempts and engineRetryBackoff are how hard, and for how long,
+// the daemon tries to open a job store it could not open at start.
+//
+// Bounded rather than forever, and the bound is the point: this is a repair for
+// a transient cause — a permission fixed by hand, a filesystem that came back,
+// the `jobs.db-wal` another account left behind and somebody chmods — and a
+// daemon retrying a genuinely broken store every thirty seconds until the heat
+// death of the host is a log nobody reads. Roughly ten minutes of increasing
+// backoff, then it stops and says so, and the operator restarts it.
+const engineRetryAttempts = 9
+
+// engineRetryBackoff is the delay BEFORE attempt n (1-based), capped.
+func engineRetryBackoff(n int) time.Duration {
+	d := time.Duration(1<<uint(min(n, 6))) * 5 * time.Second
+	if d > 2*time.Minute {
+		d = 2 * time.Minute
+	}
+	return d
+}
+
+// retryEngine keeps trying to build the engine, and publishes it on the
+// serving Server the moment one opens.
+//
+// It exists because of what "unavailable" used to mean. A daemon whose store
+// could not be opened logged one WARN at start and then refused every mutation
+// for the rest of its life, however quickly the cause was fixed — and on
+// 2026-09-17 the cause was two SQLite sidecar files with the wrong owner, which
+// a `chmod` corrected in seconds while the daemon went on refusing. A control
+// plane whose only recovery from a transient filesystem fault is "an operator
+// notices and restarts it" is a control plane that is down whenever nobody is
+// looking.
+//
+// Every attempt is logged — at INFO on success, at WARN with the attempt number
+// otherwise — because a silent retry loop is a worse answer than the original
+// warning: the operator has to be able to see that it is still trying, and to
+// see it give up.
+//
+// The reconcile-on-start a successful build owes is run here too, before the
+// engine is published: a mutation must not reach an engine whose interrupted
+// jobs have not been decided yet.
+//
+// `backoff` is a parameter rather than a direct call to engineRetryBackoff so
+// that a test can run the whole loop without waiting out the real schedule —
+// nine attempts of production backoff is over ten minutes, and a retry loop
+// nothing exercises is a retry loop that quietly stops retrying. `serve`
+// passes engineRetryBackoff, which is still where the real schedule lives; a
+// package-level variable would have been the same size of change and a data
+// race between the test that rewrites it and the goroutine that reads it.
+func retryEngine(ctx context.Context, srv *Server, cfg EngineConfig, storePath string, logger *slog.Logger, backoff func(attempt int) time.Duration) {
+	for attempt := 1; attempt <= engineRetryAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff(attempt)):
+		}
+		engine, err := BuildEngine(cfg)
+		if err != nil {
+			// The LATEST reason, published as it is learned: a mutation
+			// refused an hour in should quote the error the daemon is actually
+			// seeing now, not the one it saw at start-up.
+			srv.SetEngine(nil, err)
+			logger.Warn("job engine still unavailable",
+				"store", storePath, "attempt", attempt, "of", engineRetryAttempts, "err", err.Error())
+			continue
+		}
+		reconcileJobs(engine, logger)
+		srv.SetEngine(engine, nil)
+		logger.Info("job engine recovered; the mutation surface is open",
+			"store", storePath, "attempt", attempt)
+		return
+	}
+	logger.Error("job engine could not be opened after every retry; mutations stay refused until this daemon is "+
+		"restarted", "store", storePath, "attempts", engineRetryAttempts)
+}
+
+// reconcileJobs is reconcile-on-start: a job whose worker died becomes
+// `interrupted` and KEEPS its reservations, and nothing is resumed.
+//
+// It runs before the engine is reachable — before the listener opens on the
+// first build, before SetEngine on a retried one — because a caller that could
+// resume a job the daemon had not yet decided the state of would be resuming a
+// job whose steps might still be running somewhere.
+func reconcileJobs(engine jobs.Engine, logger *slog.Logger) {
+	interrupted, err := engine.Reconcile(context.Background())
+	if err != nil {
+		logger.Error("reconcile", "err", err.Error())
+		return
+	}
+	if len(interrupted) > 0 {
+		logger.Warn("jobs interrupted by a previous exit; resume or cancel them",
+			"count", len(interrupted), "jobs", strings.Join(interrupted, ","))
 	}
 }
 
