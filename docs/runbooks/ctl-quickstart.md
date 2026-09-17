@@ -399,6 +399,17 @@ Preparing an adopted tenant for handover — `env normalize`, `set-ui-mode`,
 of those six changes what a user sees; together they are what makes
 `doctor --op handover` green.
 
+The handover ITSELF is in the same runbook, "The handover itself — release,
+take, soak, commit". It is a two-account protocol, because nothing on this host
+can perform it in one process: the daemon cannot signal the owner's uvicorn and
+cannot see the owner's apptainer instances. The owner releases
+(`tenant handover <t> --release`, `--direct`, in a state directory the owner
+owns), the service account takes (`--take --token <T>`) and parks at its
+cutover, and `--commit` continues that parked job after the soak. The way back
+at any point before the commit is `tenant stop <t>` as the service account,
+`tenant handover <t> --abandon` as the owner, and
+`ops/coconut/restore.sh --tenant <t>`.
+
 The reboot runbook (`restore.sh`, `pre-reboot.sh`, `snapshot.sh`) reads the
 registry now: there is no tenant list in those scripts to keep in step, a row
 whose `owner` is `svcbvbrc` is skipped because the ctl's own `@reboot` line

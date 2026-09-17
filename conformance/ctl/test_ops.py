@@ -1592,13 +1592,17 @@ async def test_create_refuses_a_name_that_is_taken(
 
 
 @pytest.mark.parametrize(
-    "verb", ["artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind"]
+    "verb",
+    [
+        "artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind",
+        "set-supervisor", "env-pg-password",
+    ],
 )
 async def test_a_cli_only_op_has_no_http_route(
     client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str, verb: str
 ) -> None:
-    """The four verbs in ``x-ctl-cli-op-args`` are jobs like any other —
-    planned, locked, audited — and they have NO route.
+    """The verbs in ``x-ctl-cli-op-args`` are jobs like any other — planned,
+    locked, audited — and they have NO route.
 
     ``fleet artifact prepare`` runs ``npm ci`` (the one step in the control
     plane that reaches the network) and takes a repository path;
@@ -1606,8 +1610,10 @@ async def test_a_cli_only_op_has_no_http_route(
     ``ragstack-ctl selftest`` creates and destroys tenants in a loop;
     ``set-ui-mode`` may run ``npm ci`` too and renames directories inside a
     tenant's data tree; ``set-bind`` edits a row whose tenant the daemon cannot
-    supervise at all until its handover. All four are trusted-operator,
-    ``--direct`` operations. The router refuses them as verbs outside the enum,
+    supervise at all until its handover; ``set-supervisor`` is the repair for a
+    row that disagrees with the host, which only the account in front of it can
+    judge; ``env-pg-password`` rewrites a ``secrets.env`` the daemon may only
+    READ. All of them are trusted-operator, ``--direct`` operations. The router refuses them as verbs outside the enum,
     which is the same answer a name nobody defined gets: a CLI-only op must not
     be half-reachable.
 
@@ -1848,3 +1854,125 @@ async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
     after = await client.get(f"/v1/tenants/{tenant}")
     assert after.status_code == 200, after.text
     assert after.json()["summary"]["state"] == "quarantined", after.json()["summary"]
+
+
+# =========================================================================== #
+# The handover — a TWO-ACCOUNT protocol over one HTTP verb (PR-E2)
+#
+# Only one of its four phases is something a daemon can do. `release` and
+# `abandon` act on processes the service account can neither see nor signal, so
+# they are `--direct` runs by the tenant's owner; `take` is the daemon's; and
+# `commit` is a CONTINUATION of the parked take rather than a new job.
+#
+# What the HTTP surface therefore owes is the argument grammar and the
+# refusals — and those are what a daemon with no engine can still be held to,
+# so most of this section is ungated.
+# =========================================================================== #
+async def test_handover_phases_are_the_two_account_ones(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``execute`` is gone. It named the single job this host cannot run: the
+    daemon cannot read another account's ``/proc/<pid>/cwd`` and cannot see that
+    account's apptainer instances, so a handover is a release by the owner and a
+    take by the service account."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args={"phase": "execute"})
+    )
+    body = assert_error(resp, 422, "validation", schemas)
+    detail = body["detail"]
+    for phase in ("release", "take", "commit", "abandon"):
+        assert phase in detail, detail
+
+
+@pytest.mark.parametrize(
+    ("args", "why"),
+    [
+        ({"phase": "take"}, "a take with no token"),
+        ({"phase": "take", "token": "not-a-token"}, "a token outside the grammar"),
+        ({"phase": "take", "token": "AB" * 16}, "an upper-case token"),
+        ({"phase": "release", "token": "ab" * 16}, "a token on the phase that mints one"),
+        ({"phase": "abandon", "token": "ab" * 16}, "a token on abandon"),
+        ({"phase": "commit", "accept_no_backup": True}, "a release-only flag on the commit"),
+        ({"phase": "release", "force": True}, "an argument no phase takes"),
+    ],
+)
+async def test_handover_arguments_are_checked_before_anything_is_touched(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str,
+    args: dict[str, Any], why: str,
+) -> None:
+    """Every one of these is 422 ``validation``: the arguments are wrong, and
+    nothing about the host has been consulted to say so. A handover that
+    discovered a malformed token AFTER stopping a tenant would be a handover
+    whose first phase is irreversible for no reason."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args=args))
+    assert_error(resp, 422, "validation", schemas)
+
+
+async def test_handover_take_needs_a_token_shaped_like_a_release_minted_it(
+    client: httpx.AsyncClient, some_tenant: str
+) -> None:
+    """A well-formed token is accepted by the ARGUMENT layer and then judged by
+    the plan: what comes back is a plan or a refusal, never a validation error.
+
+    The distinction is the contract's: 422 means "your request is malformed",
+    409 means "the request is fine and the fleet says no", and an operator
+    reading a handover's answer has to be able to tell those apart."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/handover",
+        json=op_body(args={"phase": "take", "token": "0f" * 16}),
+    )
+    assert resp.status_code in (200, 409), resp.text
+    if resp.status_code == 409:
+        assert resp.json().get("code") in ("refused", "doctor_red", "locked"), resp.text
+
+
+async def test_handover_commit_is_refused_as_a_new_job(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """The commit belongs to the take, which is parked at its cutover holding
+    that tenant's locks, its reservations and its recorded plan. Accepting it as
+    a NEW job would start a second one holding none of them — which is how a
+    "commit" comes to commit nothing.
+
+    So the refusal names the continuation route rather than being a bare no."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args={"phase": "commit"})
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    detail = err["detail"]
+    assert "continue" in detail.lower(), detail
+    assert "awaiting_cutover" in detail or "job continue" in detail, detail
+
+
+async def test_handover_abandon_plans_or_refuses_with_a_reason(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``abandon`` is the owner's, and on a fixture tenant with no handover in
+    flight there is nothing to abandon — which is a refusal that says so, not a
+    500 and not a silent success."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args={"phase": "abandon"})
+    )
+    assert resp.status_code in (200, 409), resp.text
+    if resp.status_code == 409:
+        err = assert_error(resp, 409, "refused", schemas)
+        assert err["detail"], "a refusal with no reason"
+
+
+async def test_a_handover_plan_is_a_plan(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """Whatever the fixture's rows look like, a 200 from any handover phase is a
+    ``plan.json`` with the verb on it and the tenant name as its confirm value:
+    a handover is destructive, so typing "yes" is never enough."""
+    for args in ({"phase": "release"}, {"phase": "take", "token": "0f" * 16}):
+        resp = await client.post(
+            f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args=args)
+        )
+        if resp.status_code != 200:
+            continue
+        plan = resp.json()
+        validate(plan, schemas["plan"])
+        assert plan["op"] == "handover", plan
+        assert plan["requires_confirm"] is True, plan
+        assert plan["confirm_value"] == some_tenant, plan

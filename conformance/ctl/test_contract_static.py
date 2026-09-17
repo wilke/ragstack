@@ -20,7 +20,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from ctl.helpers import SCHEMA_ALLOWLIST, SECRET_NAME_RE
+from ctl.helpers import SCHEMA_ALLOWLIST, SCHEMA_PATH_ALLOWLIST, SECRET_NAME_RE
 
 CONTRACT_DIR = Path(__file__).resolve().parents[2] / "contracts" / "ctl"
 
@@ -111,13 +111,18 @@ def test_no_schema_property_name_looks_like_a_secret(validator) -> None:
     """A contract that names a field ``api_key`` would pass every runtime check
     that reads an empty fleet. Pin it at the schema level: every property name
     in every schema either does not match the secret-name regex or is on the
-    documented allowlist (``helpers.SCHEMA_ALLOWLIST``, each with its reason)."""
+    documented allowlist — by NAME (``helpers.SCHEMA_ALLOWLIST``) for a
+    spelling that is never a secret anywhere, or by exact LOCATION
+    (``helpers.SCHEMA_PATH_ALLOWLIST``) for one field that is not, each with its
+    reason."""
     schemas = validator.load_schemas()
     offenders = [
         f"{fname} {where}"
         for fname, schema in schemas.items()
         for where, name in _property_names(schema)
-        if SECRET_NAME_RE.search(name) and name not in SCHEMA_ALLOWLIST
+        if SECRET_NAME_RE.search(name)
+        and name not in SCHEMA_ALLOWLIST
+        and f"{fname} {where}" not in SCHEMA_PATH_ALLOWLIST
     ]
     assert offenders == [], offenders
 
