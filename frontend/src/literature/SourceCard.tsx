@@ -108,7 +108,7 @@ export function SourceCard({ source, rank }: { source: Source; rank: number }) {
         <div className="mb-2.5 flex flex-wrap gap-1.5">
           {isReferences && (
             <span
-              className="rounded-pill bg-amber-100 px-2 py-0.5 font-mono text-[11px] font-medium text-amber-900"
+              className="rounded-chip bg-amber/10 px-2 py-0.5 font-mono text-[10.5px] text-amber"
               title="This passage is from the paper's reference list, not its body text. Numbers in it are that paper's own citations."
             >
               reference list
