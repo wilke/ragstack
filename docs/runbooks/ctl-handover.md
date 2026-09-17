@@ -222,7 +222,11 @@ before it writes anything:
   `/proc/<pid>/mountinfo`, not the command line: the process holding the port is
   the one inside the container (`./qdrant`, the elasticsearch JVM, `postgres`)
   and carries no `--bind` at all, because the `apptainer instance run` that set
-  the mounts up exited long ago. Only that process's own account may read its
+  the mounts up exited long ago. (After a handover, a postgres leg's PGDATA is
+  the cluster the TAKE built — same path, `<data_dir>/postgres/data`, different
+  directory; re-running `--confirm-stores` on a handed-over tenant checks that
+  one, which is the right answer and not the one the wording suggests.) Only
+  that process's own account may read its
   mountinfo — which is the account you are running this as;
 * no other registry row names the same port (resolved the same way for both
   sides: the store URL when there is one, the row's port block when there is
@@ -269,6 +273,15 @@ data moves during a handover — the same directories serve the same processes
 under another account, and a tenant's own postgres is carried across as a dump
 the release itself takes — so what has to be recoverable is the tenant's
 identity and configuration, and that is exactly what this holds.
+
+The postgres exception does not weaken that, and is worth being explicit about,
+because it is the one leg a handover rewrites. The release's own `pg_dump -Fc`
+is a complete logical copy of that database taken with the API already stopped —
+a better recovery point for it than the light bundle was ever going to be — and
+the ORIGINAL cluster is renamed aside rather than deleted, so after a take there
+are two independent copies of a tenant's relational state on disk. A qdrant or
+an elasticsearch is not touched at all. If you want a fenced bundle before a
+handover anyway, take one; nothing here refuses it.
 
 For a real recovery point, take a full fenced bundle at a maintenance window:
 `ragstack-ctl tenant backup <t> --fence --yes-destructive <t>`.
@@ -525,9 +538,10 @@ so its instances are in *your* registry, and a `stop` aimed at the ctl's looks
 in a table that does not contain them — and "not running" is the one answer
 `apptainer instance stop` treats as success.
 
-That is exactly what happened on the first real release (2026-09-17): step 9
-reported `stopped postgres-hackathon` while the instance (pid 630746) and its
-postgres (pid 631059, on 24085) went on running, step 10's port check failed,
+That is exactly what happened on the first real release (2026-09-17): the job's
+postgres stop reported `stopped postgres-hackathon` while the instance (pid
+630746) and its postgres (pid 631059, on 24085) went on running, the port proof
+after it failed,
 and the job rolled back with the tenant's API already down. Compare the two for
 yourself:
 
@@ -591,9 +605,10 @@ and spawns the API with a pidfile. Then it proves it:
 * `GET /health` on the tenant's own port;
 * `GET /v1/health/deep` with the tenant's own admin key, read from its
   `secrets.env` at run time;
-* **the census, checked back**. Fewer rows than the release recorded is a
-  refusal: the store is up, but not on the data it was on. More is reported and
-  allowed (something wrote to the tenant between the two readings);
+* **the census, checked back** — qdrant and elasticsearch; postgres is the
+  stricter comparison above. Fewer rows than the release recorded is a refusal:
+  the store is up, but not on the data it was on. More is reported and allowed
+  (something wrote to the tenant between the two readings);
 * `GET /ragstack/<t>/api/health` through the live gateway — the route users
   use.
 
@@ -698,16 +713,35 @@ one window there is for it: **after the API is stopped**, so nothing is writing,
 and **before postgres is stopped**, so there is still a server to dump. A plain
 file has no ownership check of any kind, and 0640 in `<data_dir>/postgres` —
 whose ACL mask IS `rwx`, above — is readable through the group both accounts
-share. That is the whole trick. The file is fsynced, and so is its directory.
+share; that is the whole trick. The file is fsynced, and so is its directory.
 Its sha256 and the **exact row count of every table** go into the row at
 `handover.postgres_data` — `count(*)`, never `n_live_tup`, because the take
-compares for equality and a planner estimate would fail every take.
+compares for equality and an estimate would fail every take.
 
-The release refuses, with everything else that can refuse and before anything is
-stopped, unless the image can run `pg_dump`, `pg_restore` and `initdb` and the
-filesystem has the database's size **plus 64 MB** free. `initdb` is probed
-because the image's own entrypoint runs it — nothing else would notice it
-missing until the take had already renamed the cluster aside:
+That block fills in over the two jobs, and reading it mid-handover tells you
+which half has run. The RELEASE writes `dump`, `dump_sha256`, `dumped_at` and
+`tables[]`; the TAKE adds `pre_handover` (where it put the original cluster),
+`copy` (the name it created its own under, and the name an abandon puts it back
+to) and `migrated_at`. The last three are empty strings until the take's swap
+step has run — so a block with a `dump` and no `pre_handover` is a release that
+is waiting for its take:
+
+```bash
+ragstack-ctl tenant show hackathon --json | jq .registry.handover.postgres_data
+```
+
+**One database is moved** — this tenant's, which is the only one
+`new-tenant.sh` creates in a local cluster (`POSTGRES_DB=<tenant>`). A second
+database somebody made by hand, or a role created outside the tenant's own, is
+in the pre-handover cluster and not in the dump. If this tenant's postgres was
+ever touched by hand, look before you commit: after the commit the pre-handover
+cluster is the only copy of it, and it is yours to delete.
+
+It refuses, with everything else that can refuse and before anything is stopped,
+unless the image can run `pg_dump`, `pg_restore` and `initdb` and the filesystem
+has the database's size **plus 64 MB** free. `initdb` is probed because the
+image's own entrypoint runs it — nothing else would notice it missing until the
+take had already renamed the cluster aside:
 
 ```
 handing this postgres over writes a dump (at most 48 MB (apparent), the
@@ -718,14 +752,13 @@ the only way back up
 ```
 
 `hackathon` today — postgres on 24085, data dir
-`/rag/data/tenants/hackathon/postgres`, 47 MB of database, so ~47 MB + 64 MB:
+`/rag/data/tenants/hackathon/postgres`, 47 MB of database, so ~47 MB + 64 MB.
+Seconds, at that size; a postgres grown to tens of gigabytes is a different
+conversation, so read the number before you release, not after.
 
 ```bash
 df -h /rag/data/tenants/hackathon/postgres     # Avail 1.2T of 3.9T on /rag
 ```
-
-47 MB is seconds; a postgres grown to tens of gigabytes is a different
-conversation, so read that number before you release, not after.
 
 ### What the take builds
 
@@ -734,20 +767,18 @@ sha256, create `<data_dir>/postgres/data.<account>-<ts>` as an **empty**
 directory, rename `data` → `data.pre-handover-<ts>`, rename the empty one →
 `data`. Two renames, neither of which may clobber, both names checkpointed as
 external ids BEFORE the first — so a crash between them is finished by a re-run,
-and a state the job cannot decide is reported `stuck`, naming all three paths,
-rather than guessed at.
+and a state the job cannot decide is reported `stuck`, naming all three paths.
 
 The postgres instance then starts on that empty directory and the image's
 entrypoint initialises a cluster in it, exactly as it did when the tenant was
 provisioned; the new cluster is the taking account's because that account made
-it. Between the store starts and the API start, `pg_restore` puts the dump into
-it and **every table's row count is compared** against what the release
-recorded: fewer rows, more rows, a missing table or a table the release never
-recorded all fail the take. Stricter than the qdrant/elasticsearch census, which
-tolerates a surplus — this cluster was empty four steps ago, so nothing a
-surplus could be is honest. The original is never opened, never written and
-never listed by the taking account; which is just as well, because it could not
-be.
+it. Between the store starts and the API start, `pg_restore` puts the dump in
+and **every table's row count is compared** against what the release recorded:
+fewer rows, more rows, a missing table or a table the release never recorded all
+fail the take — stricter than the qdrant/elasticsearch census, which tolerates a
+surplus, because this cluster was empty four steps ago. The original is never
+opened, never written and never listed by the taking account; which is just as
+well, because it could not be.
 
 ### The pre-handover cluster, and the dump
 
@@ -756,16 +787,15 @@ plane's, not the moment you are sure of it. `doctor` raises the INFO finding
 `pre_handover_copy_present` naming both until they are gone, and does NOT
 measure them — `du` over a postgres cluster is IO doctor would pay on every poll
 — so run `du -sh` yourself. Delete them by hand, as the account that owns them
-(`wilke`; svcbvbrc cannot), once the tenant has soaked and been committed:
+(`wilke`; svcbvbrc cannot), and only once the tenant has soaked and committed:
 
 ```bash
-du -sh /rag/data/tenants/hackathon/postgres/data.pre-handover-<ts>
 rm -rf /rag/data/tenants/hackathon/postgres/data.pre-handover-<ts>
 rm -f  /rag/data/tenants/hackathon/postgres/handover-<ts>.dump
 ```
 
-Only after the commit. Until then that directory IS the way back — `--abandon`
-renames the two back — and an abandon that finds it gone REFUSES.
+Until then that directory IS the way back — `--abandon` renames the two back —
+and an abandon that finds it gone REFUSES.
 
 ### The readiness wait fails fast
 
