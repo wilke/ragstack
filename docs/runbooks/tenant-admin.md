@@ -924,6 +924,45 @@ A routed collection still needs its own share and, on a keyed deployment, an
 entry in the read-only keys' allowlist — routing makes the data reachable, not
 readable.
 
+## 6c. A user's uploaded collection has no title, authors or PubMed ids
+
+Expected, not a fault. A PDF uploaded through the API arrives with whatever the
+loader could scrape from the file — in practice a DOI from the text, a year and
+a document class. `ingestion/enrich.py` is deliberately pure (no I/O, no
+network), so it can find a DOI but can never turn one into a title.
+
+Measured on `Dengue` before repair: `doi` 382/382, and `title`, `authors`,
+`pmcid`, `journal` all **0/382**.
+
+```bash
+python3 python/scripts/backfill_collection_metadata.py \
+    --es http://127.0.0.1:<tenant_es> --qdrant http://127.0.0.1:<tenant_qdrant> \
+    --index <physical store name>            # dry run; --apply to write
+```
+
+It resolves each **distinct DOI** once — two lookups for a two-paper
+collection, not one per chunk — against Crossref (title, authors, journal) and
+the NCBI ID Converter (pmid, pmcid), fills only absent fields, and stamps
+`metadata_source: crossref+idconv` so derived values stay distinguishable from
+extracted ones.
+
+Three things to know before running it:
+
+- **It writes both stores, in different shapes.** Elasticsearch nests these
+  under `metadata.*`; Qdrant keeps them flat at the payload top level. A
+  backfill that writes one shape to both leaves the retrieval legs disagreeing
+  about the same chunk, and a count-based parity check will not notice.
+- **It refuses a collection that already has titles.** The PMC open-access
+  build is at 99% and `asm-semantic` at 95-99%; this tool is for upload-built
+  collections. `--force` exists but wants a reason.
+- **Never run it against a routed collection.** Those stores are shared with
+  other tenants (see 6b), so a write from one tenant changes what every tenant
+  reads.
+
+DOI coverage is the ceiling: a scanned PDF with no DOI in its text gets nothing.
+Caller-supplied metadata — the "can we upload a CSV" question — is
+[#575](https://github.com/wilke/ragstack/issues/575) and not implemented.
+
 ## 7. Diagnosing a user report
 
 ### "My ingest failed and it won't tell me why"
