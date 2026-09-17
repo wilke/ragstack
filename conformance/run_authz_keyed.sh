@@ -32,6 +32,7 @@
 #                          credentials, and this server is not it. See
 #                          conformance/run_ctl_local.sh.
 #   AUTHZ_CONF_CREATE_GATE 1 → also run the A3 create-gate phase (second boot)
+#   AUTHZ_CONF_GOWE_GUARD  1 → also run the #609 chunk-capability phase (third boot)
 #   PYTHON                 interpreter (default `python`)
 # Extra args are forwarded to pytest: `conformance/run_authz_keyed.sh -v -k admin`.
 set -euo pipefail
@@ -49,11 +50,12 @@ PYTEST_OUT="$WORK/pytest.out"
 SERVER_PID=
 STUB_PID=
 GATE_PID=
+GOWE_PID=
 cleanup() {
   # Stop by the pid recorded AT LAUNCH. Never by process-name pattern: every
   # scratch server on this host shares a command line with production, and one
   # `pkill -f uvicorn` took the whole fleet down for 17 hours (#402).
-  for pid in "$SERVER_PID" "$GATE_PID" "$STUB_PID"; do
+  for pid in "$SERVER_PID" "$GATE_PID" "$GOWE_PID" "$STUB_PID"; do
     [[ -n "$pid" ]] || continue
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -280,6 +282,48 @@ if [[ "${AUTHZ_CONF_CREATE_GATE:-0}" == "1" ]]; then
   set -e
   redact < "$WORK/gate.out"
   [[ "$gate_status" -eq 0 ]] || status="$gate_status"
+fi
+
+# ---------------------------------------------------------------------------- #
+# Phase 3 — #609: an out-of-process ingest backend refuses a chunk method it
+# cannot run
+# ---------------------------------------------------------------------------- #
+# INGEST_BACKEND is deployment-wide, and the whole suite above assumes the local
+# backend (every ingest test submits in-process), so this needs its own boot.
+#
+# It is worth the third server because gowe is the configuration the guard
+# exists FOR, and the one hackathon runs. Without this phase the 422 branch of
+# test_chunk_method_capability.py is skipped by every Make target and only the
+# 201 branch is ever exercised — a guard nothing in CI can see rot.
+#
+# The engine is deliberately DEAD (port 1). The refusal is asserted to happen
+# before any submission, so a reachable engine would prove less, not more: if
+# the guard ever stopped firing, this phase must fail rather than quietly submit
+# to something. GOWE_WORKFLOW_CWL is the repo's own scatter workflow — read at
+# boot only, so it does not need a runtime.
+if [[ "${AUTHZ_CONF_GOWE_GUARD:-0}" == "1" ]]; then
+  GOWE_PORT=$((PORT + 2))
+  GOWE_LOG="$WORK/gowe.log"
+  echo "[authz-conf] booting a third API on $HOST:$GOWE_PORT with" \
+       "INGEST_BACKEND=gowe (#609) ..."
+  INGEST_BACKEND=gowe \
+  GOWE_URL="http://127.0.0.1:1" \
+  GOWE_WORKFLOW_CWL="$HERE/../cwl/pdf-ingest-scatter.cwl" \
+    "$PYTHON" -m uvicorn ragstack.api.main:app --host "$HOST" --port "$GOWE_PORT" \
+    >"$GOWE_LOG" 2>&1 &
+  GOWE_PID=$!
+  wait_for_health "$GOWE_PORT" "$GOWE_LOG" authz-conf-gowe "$GOWE_PID"
+  set +e
+  RAGSTACK_BASE_URL="http://$HOST:$GOWE_PORT" RAGSTACK_IMPL=python \
+  RAGSTACK_CONFORMANCE_INGEST_BACKEND=gowe \
+  RAGSTACK_API_KEY="$ADMIN_KEY" \
+  RAGSTACK_API_KEY_ADMIN="$ADMIN_KEY" \
+  RAGSTACK_API_KEY_NONADMIN="$NONADMIN_KEY" \
+    "$PYTHON" -m pytest test_chunk_method_capability.py -rs > "$WORK/gowe.out" 2>&1
+  gowe_status=$?
+  set -e
+  redact < "$WORK/gowe.out"
+  [[ "$gowe_status" -eq 0 ]] || status="$gowe_status"
 fi
 
 exit "$status"

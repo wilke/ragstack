@@ -48,7 +48,7 @@ import httpx
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
-from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.chunker_config import build_chunker, shard_refusal
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -72,16 +72,18 @@ def _build_embedder(args, http: httpx.AsyncClient):
 def _build_chunker(args):
     """Chunker via the shared factory (fixed_token token-window included).
 
-    Semantic methods need the breakpoint embed-bridge (not wired here), so reject
-    them with a clear message rather than the raw make_chunker error — the bulk
-    corpus uses fixed_token; semantic bulk stays on ingest_jsonl.py for now.
+    Semantic methods are **not yet wired** here: they need the breakpoint embed
+    bridge, which this tool does not build. The refusal text and the set of
+    methods it covers come from
+    :data:`~ragstack.ingestion.chunker_config.SHARD_UNSUPPORTED_METHODS`, NOT from
+    a local ``startswith("semantic")`` — the API guards a create and a submit on
+    that same constant, and #609 is what a disagreement between them costs. When
+    step 3 builds the bridge, emptying the constant re-opens the tool and both API
+    guards together.
     """
-    if args.chunk_method.startswith("semantic"):
-        raise SystemExit(
-            f"--chunk-method {args.chunk_method} is not yet wired in ingest_shard "
-            "(it needs the breakpoint embed bridge); use fixed/fixed_token/sentence/"
-            "words here, or ingest_jsonl.py for semantic."
-        )
+    refusal = shard_refusal(args.chunk_method)
+    if refusal is not None:
+        raise SystemExit(refusal)
     chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,

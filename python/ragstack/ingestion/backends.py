@@ -81,6 +81,17 @@ class LocalAsyncIORunner:
         return out
 
 
+def ingest_backend_name(settings: Settings) -> str:
+    """The configured ingest backend, normalised — ``"local"`` when unset.
+
+    The one normalisation. It was inlined here and again in the documents router,
+    and #609 needed a third caller (the collections router's create-time guard);
+    three copies of ``or "local"`` / ``strip().lower()`` is how a deployment with
+    ``INGEST_BACKEND=" GoWe "`` ends up guarded on one path and not the others.
+    """
+    return (getattr(settings, "ingest_backend", None) or "local").strip().lower()
+
+
 def make_ingest_backend(
     settings: Settings, *, http: httpx.AsyncClient | None = None
 ) -> IngestBackend:
@@ -94,7 +105,7 @@ def make_ingest_backend(
     or missing/invalid GoWe config, so a misconfiguration fails fast at startup
     rather than on the first ingest.
     """
-    backend = (settings.ingest_backend or "local").strip().lower()
+    backend = ingest_backend_name(settings)
     if backend == "local":
         return LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency)
     if backend == "gowe":

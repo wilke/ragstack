@@ -33,7 +33,7 @@ import httpx
 
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.chunker_config import build_chunker, shard_refusal
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
@@ -43,12 +43,14 @@ from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
 
 def _build_chunker(args):
-    if args.chunk_method.startswith("semantic"):
-        raise SystemExit(
-            f"--chunk-method {args.chunk_method} is not yet wired in embed_shard "
-            "(it needs the breakpoint embed bridge); use fixed/fixed_token/sentence/"
-            "words here."
-        )
+    # Same constant as ingest_shard and the API guards (#609). This was a fourth
+    # independent decider — a `startswith("semantic")` prefix test, which would
+    # also refuse a future method merely NAMED that way. Not on the API's ingest
+    # path (embed-bulk.cwl is operator-run), so it was never part of the reported
+    # failure; it is here so "one constant" is true rather than nearly true.
+    refusal = shard_refusal(args.chunk_method)
+    if refusal is not None:
+        raise SystemExit(refusal)
     chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,

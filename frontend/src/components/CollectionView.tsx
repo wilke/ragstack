@@ -81,7 +81,10 @@ function stageBadge(n: number, label: string, active: boolean, done: boolean) {
   );
 }
 
-function uploadErrorMessage(error: Error): string {
+// Exported for test: the 422 branch is the #609 fix and asserting it through a
+// full CollectionView render would need a mocked upload mutation to reject with
+// a specific ApiError — far more machinery than the mapping it is checking.
+export function uploadErrorMessage(error: Error): string {
   if (error instanceof ApiError) {
     if (error.status === 415) return "Rejected: one or more files are not PDFs (415).";
     if (error.status === 413) return `Rejected: a file is too large or too many files (413).`;
@@ -89,6 +92,13 @@ function uploadErrorMessage(error: Error): string {
     if (error.status === 401) return "Check your API key.";
     if (error.status === 403)
       return "Only the collection's owner (or an admin) can upload into it.";
+    // 422 is the server saying THIS DEPLOYMENT cannot ingest the collection as
+    // built (#609: a semantic collection on an out-of-process ingest backend).
+    // The detail names the methods that would work, and there is nothing in the
+    // status code a user can act on — chunk config is build-time identity, so
+    // the only remedy is a new collection. Swallowing it left the reported user
+    // with "Upload failed (error 422)." and no path forward.
+    if (error.status === 422 && error.detail) return error.detail;
     return `Upload failed (error ${error.status}).`;
   }
   return "Upload failed — could not reach the API.";
