@@ -49,12 +49,15 @@ from ragstack.models import Chunk
 from ragstack.stores.elasticsearch import _build_query
 from ragstack.stores.filters import (
     KNOWN_INT_FIELDS,
+    NEGATION_FORBIDDEN_KEYS,
     InvalidFilterValue,
+    Not,
     payload_matches,
     validate_filter_values,
 )
 from ragstack.stores.memory import _matches
 from ragstack.stores.qdrant import _build_filter
+from ragstack.tenancy import OWNER_FIELD
 
 # The synthetic record every predicate leg is evaluated against. `year` is an
 # int here on purpose: it is the field whose ES dynamic mapping (`long`) made a
@@ -509,3 +512,110 @@ def test_the_grammar_is_qdrants_measured_bound_not_a_guess() -> None:
     for bad_list in ([True], [2025, "a"], [1.5], [None]):
         with pytest.raises(ValidationError):
             MatchAny(any=bad_list)
+
+
+# --------------------------------------------------------------------------- #
+# Negation (#597) — the fifth value shape, and the one that must never be
+# reachable from the wire
+# --------------------------------------------------------------------------- #
+#: Records for the negation rows. ``stamped`` carries the flag as the ingester
+#: writes it; ``unstamped`` is the overwhelming majority of every real
+#: collection and is the record whose treatment decides whether a corpus that
+#: was never flagged still answers at all.
+STAMPED = Chunk(
+    id="c2", doc_id="d1", content="a reference list",
+    metadata={"tenant_id": "acme", "is_boilerplate": True},
+)
+UNSTAMPED = Chunk(
+    id="c3", doc_id="d1", content="body text",
+    metadata={"tenant_id": "acme"},
+)
+STAMPED_FALSE = Chunk(
+    id="c4", doc_id="d1", content="body text the classifier looked at",
+    metadata={"tenant_id": "acme", "is_boilerplate": False},
+)
+
+NEGATION = {**TENANT, "is_boilerplate": Not(True)}
+
+
+def test_every_interpreter_accepts_a_server_built_negation() -> None:
+    """``Not`` is the one value outside the scalar/list grammar, so it has to be
+    driven through the same five interpreters as everything else — a builder
+    that has not learned it would either raise or, far worse, drop the
+    constraint and answer as if no exclusion had been asked for."""
+    for name, run in INTERPRETERS:
+        try:
+            run(NEGATION)
+        except Exception as e:  # noqa: BLE001 - any raise is the failure
+            pytest.fail(f"{name} refused a server-built negation {NEGATION!r}: {e!r}")
+
+
+@pytest.mark.parametrize(
+    ("record", "kept"),
+    [(STAMPED, False), (UNSTAMPED, True), (STAMPED_FALSE, True)],
+    ids=["stamped-true-dropped", "unstamped-kept", "stamped-false-kept"],
+)
+def test_both_predicates_read_the_negation_the_same_way(record: Chunk, kept: bool) -> None:
+    """The presence-flag semantics, in the two Python interpreters.
+
+    An ABSENT key is KEPT — which is what Qdrant's ``must_not`` and ES's
+    ``bool.must_not`` do, measured on dev's oa-dev: 24,196 of 24,263 for
+    ``must_not is_boilerplate=true`` with 67 stamped, identical on both stores.
+    If these two disagreed with that, the in-memory leg would answer a different
+    question from the one production answers."""
+    assert _matches(record, NEGATION) is kept
+    assert payload_matches(record.metadata, NEGATION) is kept
+
+
+def test_qdrant_puts_the_negation_in_must_not_and_leaves_the_scope_in_must() -> None:
+    built = _build_filter(NEGATION)
+    assert built is not None
+    assert [c.key for c in built.must or []] == ["tenant_id"]
+    assert [c.key for c in built.must_not or []] == ["is_boilerplate"]
+    assert built.must_not[0].match.value is True
+
+
+def test_elasticsearch_puts_the_negation_in_must_not_and_leaves_the_scope_in_filter() -> None:
+    body = _build_query("a query", NEGATION)["bool"]
+    assert body["filter"] == [{"terms": {"metadata.tenant_id": ["acme", "public"]}}]
+    assert body["must_not"] == [{"term": {"metadata.is_boilerplate": True}}]
+
+
+def test_a_dict_is_still_refused_so_there_is_no_wire_syntax_for_a_negation() -> None:
+    """The reason adding ``Not`` does not widen the REQUEST grammar: every JSON
+    shape a caller might reach for is still a 400, on every interpreter. A
+    ``Not`` can only be constructed in Python, server-side."""
+    for shape in ({"not": True}, {"$ne": True}, {"gte": 1}):
+        for name, run in INTERPRETERS:
+            with pytest.raises(InvalidFilterValue):
+                run({**TENANT, "is_boilerplate": shape})
+                pytest.fail(f"{name} accepted {shape!r} as a negation")
+
+
+def test_the_tenant_field_can_never_be_negated() -> None:
+    """The one filter bug in this module that would be a data-isolation breach
+    rather than a wrong result: ``Not`` on ``tenant_id`` turns "the tenants I
+    may read" into "every tenant but those".
+
+    There is no wire syntax that builds a ``Not`` at all, and the router only
+    ever attaches one to ``is_boilerplate`` — this is the third line of
+    defence, asserted on EVERY interpreter so a future server-side caller that
+    builds a filter dict by hand is refused at the store boundary too."""
+    hostile = {"tenant_id": Not("acme")}
+    for name, run in INTERPRETERS:
+        with pytest.raises(InvalidFilterValue) as exc:
+            run(hostile)
+            pytest.fail(f"{name} accepted a negated tenant scope")
+        assert exc.value.key == "tenant_id"
+        assert "isolation" in str(exc.value)
+
+    assert OWNER_FIELD in NEGATION_FORBIDDEN_KEYS
+
+
+def test_a_negation_cannot_smuggle_a_value_past_the_scalar_bound() -> None:
+    """``Not`` carries one scalar, checked by the same ``_check_value`` every
+    other scalar goes through — otherwise it would be a hole in the very bound
+    (#471) that the rest of this file exists to hold."""
+    for bad in (1.5, None, {"gte": 1}, ["a"]):
+        with pytest.raises(InvalidFilterValue):
+            validate_filter_values({**TENANT, "doc_type": Not(bad)})  # type: ignore[arg-type]

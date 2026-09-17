@@ -14,6 +14,7 @@ from ragstack.documents import (
 )
 from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.stores.filters import (
+    Not,
     payload_matches,
     validate_filter_values,
     validate_filters,
@@ -41,11 +42,20 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     predicate cannot represent would be indistinguishable from an honest miss,
     and that is what made the in-memory store disagree with Qdrant (a 500) and
     with Elasticsearch (an error) on the very same filter. Raises the same
-    typed ``InvalidFilterValue``. Keep in sync with stores/filters.py."""
+    typed ``InvalidFilterValue``. Keep in sync with stores/filters.py.
+
+    A :class:`Not` value is a server-constructed negation (#597) and excludes
+    only records that actually carry the value: an ABSENT key is KEPT, which is
+    what ``must_not`` does in both real stores (measured — see
+    stores/filters.py) and is the whole point for ``is_boilerplate``, a flag
+    stamped only when true."""
     validate_filter_values(filters)
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, Not):
+            if actual == value.value:
+                return False
+        elif isinstance(value, (list, tuple, set)):
             if actual not in value:
                 return False
         elif actual != value:

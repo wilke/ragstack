@@ -40,6 +40,7 @@ from ragstack.api.model_registry import ModelRegistry, RegistryError
 from ragstack.api.scope import shared_scope
 from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
+from ragstack.ingestion.boilerplate import BOILERPLATE_KEY
 from ragstack.models import ContextChunk, ScoredChunk, Source
 from ragstack.observability.context import current_context
 from ragstack.observability.stages import note_query_sha, stage
@@ -54,6 +55,7 @@ from ragstack.retrieval.retriever import (
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.stores.filters import (
     InvalidFilterValue,
+    Not,
     UnknownFilterKey,
     validate_filter_values,
 )
@@ -75,6 +77,38 @@ MAX_CONTEXT_WINDOW = 3
 # the per-owner collection quota (#290) — what one user can own. Part of the
 # contract (``maxItems`` in contracts/schemas/*_request.json).
 MAX_QUERY_COLLECTIONS = 5
+
+
+def _exclude_boilerplate(filters: dict[str, Any]) -> dict[str, Any]:
+    """``filters`` plus the store-side condition for ``exclude_boilerplate`` (#597).
+
+    **Why a store filter and not a Python post-filter.** Both stores support
+    negation natively and agree on it exactly — measured on dev's ``oa-dev``
+    (24,263 chunks, 67 stamped): Qdrant ``must_not [is_boilerplate=true]`` and
+    Elasticsearch ``bool.must_not [term metadata.is_boilerplate=true]`` each
+    return 24,196. So the store prunes before scoring, ``top_k`` is honoured
+    exactly with no over-fetch guesswork, and the dense and BM25 legs behave
+    identically because each store does the work itself.
+
+    **Why ``Not(True)`` and not ``{"is_boilerplate": False}``.** The stamp is a
+    PRESENCE flag: ``BoilerplateFilter.apply`` writes the key only for a chunk
+    it classified as non-body, and across three live collections every stamp
+    present was ``True`` (oa-dev 67/67, Dengue 133/133, asm-semantic 0 of
+    6.7M). An equality term on ``False`` therefore matches NOTHING — verified,
+    not assumed: ``is_boilerplate=false`` counts 0 on both dev stores — and
+    would exclude the whole corpus. Only "not stamped true" is correct, and a
+    chunk with no stamp is kept, so a collection carrying no flags at all is
+    untouched.
+
+    **Why this cannot widen tenant scope.** ``Not`` has no wire syntax (see its
+    docstring): a client's ``filters`` is JSON and every value outside the
+    scalar/list grammar is already a 400, so the caller supplies a BOOLEAN here
+    and the server builds the condition. This adds one key to an
+    already-scoped dict and can only ever add ``is_boilerplate``; ``tenant_id``
+    is not reachable from it. Below that, ``NEGATION_FORBIDDEN_KEYS`` refuses a
+    ``Not`` on ``tenant_id`` inside every interpreter.
+    """
+    return {**filters, BOILERPLATE_KEY: Not(True)}
 
 
 async def _expand_query(
@@ -172,6 +206,14 @@ class QueryRequest(BaseModel):
     # way and attach the neighbours as ``Source.context`` (ranking unchanged).
     # 0 (default) leaves the response exactly as before; the cap is a 422.
     context_window: int = Field(default=0, ge=0, le=MAX_CONTEXT_WINDOW)
+    # Exclude reference-list / licence / acknowledgement chunks from retrieval
+    # (issue #597) — a store-side negation, see _exclude_boilerplate. A plain
+    # BOOLEAN, deliberately: the caller does not get to write the condition, so
+    # the request grammar is unchanged and no client expression can reach the
+    # tenant scope. Defaults OFF — flipping it is a one-line change here and in
+    # RetrieveRequest, but it changes what every existing caller gets back and
+    # is a product decision, not this issue's.
+    exclude_boilerplate: bool = False
     # Per-request model overrides (Phase 2): a registered model id to use for THIS
     # request only, without touching the global assignment. ``llm`` overrides the
     # answer generator (retrieval, incl. rewriting, is unchanged — a clean A/B of
@@ -264,6 +306,8 @@ class RetrieveRequest(BaseModel):
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
     # See QueryRequest — same server-side context expansion.
     context_window: int = Field(default=0, ge=0, le=MAX_CONTEXT_WINDOW)
+    # See QueryRequest — exclude ingest-flagged boilerplate from retrieval (#597).
+    exclude_boilerplate: bool = False
     # See QueryRequest — per-request cross-encoder override (no generation here).
     reranker: str | None = None
 
@@ -634,6 +678,7 @@ async def _resolve_retrieval(
     principal: Principal,
     tenant: str,
     filters: dict[str, Any],
+    exclude_boilerplate: bool = False,
 ) -> tuple[Any, dict[str, Any], dict[str | None, tuple[Any, dict[str, Any]]]]:
     """What a retrieve/query request runs over: ``(retriever, filters,
     expansion targets)``.
@@ -668,6 +713,15 @@ async def _resolve_retrieval(
         validate_filter_values(filters)
     except InvalidFilterValue as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # ONLY after the caller's own dict has been validated (#597): the negation
+    # is server-constructed, so validating it here would validate our own work
+    # and blur the boundary the check above exists to police. Added once, at the
+    # single seam both endpoints pass through, so it reaches every leg — dense,
+    # BM25, each member of a multi-collection fan-out — AND the per-collection
+    # filters that scope context expansion, so a `context_window` neighbour that
+    # is itself a reference list is not attached either.
+    if exclude_boilerplate:
+        filters = _exclude_boilerplate(filters)
     if collections is None:
         entry = await _resolve_entry(registry, collection, principal)
         scoped = scope_filters(filters, tenant, await shared_scope(entry, registry, principal))
@@ -749,7 +803,8 @@ async def retrieve(
     # inflate the Python layer's apparent cost (#427 W3).
     with stage("authz"):
         retriever, filters, targets = await _resolve_retrieval(
-            registry, request.collection, request.collections, principal, tenant, request.filters
+            registry, request.collection, request.collections, principal, tenant,
+            request.filters, request.exclude_boilerplate,
         )
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
@@ -942,7 +997,8 @@ async def query(
     # inflate the Python layer's apparent cost (#427 W3).
     with stage("authz"):
         retriever, filters, targets = await _resolve_retrieval(
-            registry, request.collection, request.collections, principal, tenant, request.filters
+            registry, request.collection, request.collections, principal, tenant,
+            request.filters, request.exclude_boilerplate,
         )
     with stage("rewrite"):
         variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)

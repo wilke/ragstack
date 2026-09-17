@@ -3706,6 +3706,27 @@ components:
           minimum: 0
           maximum: 3
           default: 0
+        exclude_boilerplate:
+          description: >-
+            Exclude chunks the ingester stamped as boilerplate — reference
+            lists, licence footers, acknowledgements (`metadata.is_boilerplate`,
+            written by ingestion/boilerplate.py) — from retrieval (issue #597).
+            A boolean, not a filter expression: the SERVER builds the store
+            condition, so `filters` itself is unchanged and stays equality-only.
+            Applied as a native store negation (Qdrant `must_not` /
+            Elasticsearch `bool.must_not`) on every leg, so the store prunes
+            before scoring and `top_k` is honoured exactly — no over-fetch, and
+            the dense and BM25 legs return the same set. Semantics: the stamp is
+            a PRESENCE flag, written ONLY when true, so the condition is "not
+            stamped true", never `is_boilerplate == false` (which matches
+            nothing and would exclude the whole corpus). A chunk carrying no
+            stamp is KEPT, so a collection whose chunks were never flagged is
+            completely unaffected; an explicit false is kept too. Also applies
+            to the neighbours attached by `context_window`. Graph-leg
+            pseudo-chunks carry no stamp and are unaffected. false (default)
+            leaves retrieval exactly as before.
+          type: boolean
+          default: false
         llm:
           description: >-
             Registered model id to generate the answer with for THIS request only
@@ -3893,6 +3914,27 @@ components:
           minimum: 0
           maximum: 3
           default: 0
+        exclude_boilerplate:
+          description: >-
+            Exclude chunks the ingester stamped as boilerplate — reference
+            lists, licence footers, acknowledgements (`metadata.is_boilerplate`,
+            written by ingestion/boilerplate.py) — from retrieval (issue #597).
+            A boolean, not a filter expression: the SERVER builds the store
+            condition, so `filters` itself is unchanged and stays equality-only.
+            Applied as a native store negation (Qdrant `must_not` /
+            Elasticsearch `bool.must_not`) on every leg, so the store prunes
+            before scoring and `top_k` is honoured exactly — no over-fetch, and
+            the dense and BM25 legs return the same set. Semantics: the stamp is
+            a PRESENCE flag, written ONLY when true, so the condition is "not
+            stamped true", never `is_boilerplate == false` (which matches
+            nothing and would exclude the whole corpus). A chunk carrying no
+            stamp is KEPT, so a collection whose chunks were never flagged is
+            completely unaffected; an explicit false is kept too. Also applies
+            to the neighbours attached by `context_window`. Graph-leg
+            pseudo-chunks carry no stamp and are unaffected. false (default)
+            leaves retrieval exactly as before.
+          type: boolean
+          default: false
         reranker:
           description: >-
             Registered model id to rerank with for THIS request only. Unknown id

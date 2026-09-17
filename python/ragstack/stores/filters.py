@@ -103,13 +103,44 @@ a 400) AND defensively inside every interpreter, so a CLI or a direct store
 caller cannot 500 either — and so no single interpreter can quietly drift back
 to its own reading. ``tests/unit/test_filter_grammar_contract.py`` drives one
 shared table through all four and asserts they agree case by case.
+
+Negation (#597)
+---------------
+
+:class:`Not` is the one value outside the scalar/list grammar above, and it is
+**server-constructed only** — see its docstring. It exists because the wire
+grammar cannot express "not this", and the thing #597 needs to exclude
+(``is_boilerplate``) is stamped ONLY when true: an ``{"is_boilerplate": false}``
+equality term matches nothing, so "not stamped true" is the only correct
+reading and no equality filter can express it.
+
+That both stores can do this natively was **measured, not assumed** — the same
+discipline the value grammar above was written under. Against the live dev
+``oa-dev`` corpus (24,263 chunks, 67 stamped ``is_boilerplate=true``, 0 stamped
+false):
+
+=========  ============================================================  ======
+store      condition                                                      count
+=========  ============================================================  ======
+Qdrant     ``must_not [is_boilerplate match true]``                       24,196
+ES         ``bool.must_not [term metadata.is_boilerplate=true]``          24,196
+Qdrant     ``must [tenant_id MatchAny] + must_not [is_boilerplate]``      24,196
+=========  ============================================================  ======
+
+The two stores agree exactly, and a record with the key ABSENT is kept by both
+— which is what makes a collection carrying no stamps at all unaffected. The
+in-memory predicate below and :func:`payload_matches` reproduce that reading
+(``metadata.get(key)`` is ``None``, which is not ``True``, so the record is
+kept), so all four interpreters still agree.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from ragstack.metadata_schema import KNOWN_INT_FIELDS as _KNOWN_INT_FIELDS
+from ragstack.tenancy import OWNER_FIELD
 
 #: Reserved ``Chunk`` fields that ``_chunk_from_payload`` (stores/qdrant.py)
 #: pops OUT of a record's payload before it becomes ``Chunk.metadata`` — so a
@@ -123,6 +154,47 @@ PAYLOAD_RESERVED = frozenset({"chunk_id", "doc_id", "content", "start_char", "en
 #: filterable field yet, and docs/libraries-spec.md already mandates a 400 for
 #: it ahead of the libraries feature landing.
 _REFUSED_KEYS = PAYLOAD_RESERVED | {"library_id"}
+
+#: Keys a :class:`Not` may never be attached to, at ANY layer. ``tenant_id``
+#: (:data:`ragstack.tenancy.OWNER_FIELD`) is the row-level isolation boundary:
+#: ``scope_filters`` pins it to the tenants a caller may read, and negating it
+#: would invert that constraint into "every tenant EXCEPT mine". Nothing in the
+#: tree constructs such a value and the wire cannot express one — this is the
+#: third, lowest line of defence, enforced inside the interpreters themselves so
+#: a future caller that builds a filter dict by hand cannot get it wrong either.
+NEGATION_FORBIDDEN_KEYS = frozenset({OWNER_FIELD})
+
+
+@dataclass(frozen=True)
+class Not:
+    """A negated equality condition — "not this value" (#597).
+
+    **Server-constructed only. This can never arrive from a client.** A request's
+    ``filters`` is JSON, and JSON has no way to spell a Python object: every wire
+    value reaches :func:`validate_filter_values` as a ``str``/``int``/``bool``,
+    a list, a ``dict`` or a ``None``, and everything outside the scalar/list
+    grammar is already refused with a 400 (``{"is_boilerplate": {"not": true}}``
+    is an object — "range operators are not supported"). So adding this type
+    does NOT widen the request grammar, and there is deliberately no wire syntax
+    that produces one. The server builds it, for exactly one key today
+    (``is_boilerplate``, for ``exclude_boilerplate`` on /v1/query and
+    /v1/retrieve), and merges it into the ALREADY-scoped filter dict.
+
+    That is what keeps tenant scoping intact by construction rather than by a
+    guard: there is no client expression to contain. :data:`NEGATION_FORBIDDEN_KEYS`
+    is the belt-and-braces on top — a ``Not`` on ``tenant_id`` is refused by
+    every interpreter, so even a direct store caller or a future server-side
+    builder cannot invert the isolation filter.
+
+    ``value`` obeys the scalar grammar (``str``/``int``/``bool``); a negated
+    LIST is not supported because nothing needs it, and "not any of these" is a
+    genuinely different condition worth designing deliberately if it is ever
+    wanted. A record whose key is ABSENT satisfies the negation (it is kept) —
+    measured identical in Qdrant and Elasticsearch, see the module docstring.
+    """
+
+    value: str | int | bool
+
 
 #: Metadata fields whose values are integers, so a string is a type error
 #: rather than something to coerce (module docstring, #471). ``year`` is
@@ -225,6 +297,38 @@ def _check_value(key: str, value: Any, *, in_list: bool) -> None:
         )
 
 
+def _check_negation(key: str, value: Not) -> None:
+    """Raise :class:`InvalidFilterValue` unless ``value`` is a negation the
+    stores can carry AND is attached to a key it is allowed on (#597).
+
+    Two rules, in this order:
+
+    * the key is not in :data:`NEGATION_FORBIDDEN_KEYS` — negating ``tenant_id``
+      would turn "the tenants I may read" into "every tenant but those", which
+      is the one filter bug in this module that would be a data-isolation
+      breach rather than a wrong result. Refused at the lowest layer, in every
+      interpreter, so no caller at any layer can construct it;
+    * the negated value obeys the scalar grammar — the same ``_check_value``
+      every non-negated scalar goes through, so ``Not`` cannot smuggle a float,
+      a ``None`` or a dict past the bound that exists because ``MatchValue``
+      refuses them.
+
+    A negated LIST is not accepted: ``Not`` carries one scalar by construction,
+    and ``_check_value`` refuses a list element-wise reading of it here rather
+    than letting a builder guess."""
+    if key in NEGATION_FORBIDDEN_KEYS:
+        raise InvalidFilterValue(
+            key,
+            f"{key!r} may not be negated — it is the tenant isolation "
+            f"boundary, and 'not my tenants' is not a scope a caller may ask for",
+        )
+    if isinstance(value.value, (list, tuple, set, dict)):
+        raise InvalidFilterValue(
+            key, f"negated value {value.value!r} must be a single scalar, not a collection"
+        )
+    _check_value(key, value.value, in_list=False)
+
+
 def _kind(value: Any) -> str:
     """The list-element type for the homogeneity rule. ``bool`` is its own kind
     even though ``isinstance(True, int)`` is True in Python — Qdrant's
@@ -274,7 +378,9 @@ def validate_filter_values(filters: Mapping[str, Any] | None) -> None:
     if not filters:
         return
     for key, value in filters.items():
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, Not):
+            _check_negation(key, value)
+        elif isinstance(value, (list, tuple, set)):
             _check_list(key, value)
         else:
             _check_value(key, value, in_list=False)
@@ -298,7 +404,14 @@ def payload_matches(metadata: Mapping[str, Any], filters: Mapping[str, Any] | No
     for key, value in filters.items():
         field = _resolve_key(key)
         actual = metadata.get(field)
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, Not):
+            # An ABSENT key satisfies the negation, matching what Qdrant's
+            # ``must_not`` and ES's ``bool.must_not`` do (module docstring):
+            # ``actual`` is then ``None``, which is never == a valid scalar.
+            _check_negation(key, value)
+            if actual == value.value:
+                return False
+        elif isinstance(value, (list, tuple, set)):
             _check_list(key, value)
             if actual not in value:
                 return False

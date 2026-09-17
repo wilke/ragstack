@@ -29,6 +29,14 @@ type QueryRequest struct {
 	// Source as `context` after rerank; 0 (default) = none, max 3. Schema
 	// mirror only — the handler is a stub per ADR-0006.
 	ContextWindow int `json:"context_window,omitempty"`
+	// ExcludeBoilerplate (issue #597): drop chunks stamped
+	// `metadata.is_boilerplate` (reference lists, licence footers,
+	// acknowledgements) from retrieval; false (default) = unchanged. Python
+	// applies it as a native store negation (Qdrant must_not / Elasticsearch
+	// bool.must_not) built server-side from this boolean — the `filters`
+	// grammar stays equality-only. Schema mirror only — the handler is a stub
+	// per ADR-0006.
+	ExcludeBoilerplate bool `json:"exclude_boilerplate,omitempty"`
 	// LLM / Reranker are per-request model overrides (registered model ids); nil = default.
 	LLM      *string `json:"llm,omitempty"`
 	Reranker *string `json:"reranker,omitempty"`
@@ -51,6 +59,8 @@ type RetrieveRequest struct {
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
 	// ContextWindow mirrors QueryRequest.ContextWindow (issue #322); 0 = none, max 3.
 	ContextWindow int `json:"context_window,omitempty"`
+	// ExcludeBoilerplate mirrors QueryRequest.ExcludeBoilerplate (issue #597).
+	ExcludeBoilerplate bool `json:"exclude_boilerplate,omitempty"`
 	// Reranker is a per-request reranker model override (registered id); nil = default.
 	Reranker *string `json:"reranker,omitempty"`
 }
