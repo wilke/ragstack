@@ -1106,3 +1106,58 @@ func TestARegistryWrittenBeforeScopeExistedStillLoads(t *testing.T) {
 		t.Errorf("an empty scope must be ABSENT, not null: %s", bare)
 	}
 }
+
+// TestHandoverBlockRoundTripsAndIsChecked covers the row PR-E2 added: the
+// transitional state of a tenant between the two accounts.
+func TestHandoverBlockRoundTripsAndIsChecked(t *testing.T) {
+	f := LiveFixture()
+	dev := f.Tenants["dev"]
+	dev.State = StateHandover
+	dev.Handover = &Handover{
+		Phase: HandoverReleased, Token: strings.Repeat("0f", 16),
+		StartedAt: "2026-09-16T10:00:00Z", ReleasedBy: "wilke",
+		ReleasedAt: "2026-09-16T10:00:04Z", DescriptorRef: "2026-09-16T09:00:00Z",
+		Census: []CensusEntry{
+			{Store: "qdrant", Name: "docs", Count: 1200},
+			{Store: "api", Name: "docs", Count: -1},
+		},
+	}
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	if err := Save(reg, f, "local:1000"); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := back.Tenants["dev"].Handover
+	if h == nil || h.Phase != HandoverReleased || len(h.Census) != 2 || h.Census[1].Count != -1 {
+		t.Fatalf("the handover block did not round-trip: %+v", h)
+	}
+
+	// A row in `handover` whose state does not say so is the disagreement the
+	// mirror exists to catch: every reader of the registry decides from
+	// `state`, and a tenant mid-move that still reads `active` is one the
+	// gateway probe, the reboot scripts and the operator all read as healthy.
+	back.Tenants["dev"].State = "active"
+	err = back.ValidateContract()
+	if err == nil || !strings.Contains(err.Error(), "released") {
+		t.Errorf("a released tenant recorded as `active` was accepted: %v", err)
+	}
+
+	// And the token's grammar: it is compared, printed and typed back.
+	back.Tenants["dev"].State = StateHandover
+	back.Tenants["dev"].Handover.Token = "not-a-token"
+	if err := back.ValidateContract(); err == nil {
+		t.Error("a malformed handover token was accepted")
+	}
+
+	// An ABSENT block is the ordinary shape and must stay legal: rows written
+	// before PR-E2 carry no such key at all.
+	back.Tenants["dev"].Handover = nil
+	back.Tenants["dev"].State = "active"
+	if err := back.ValidateContract(); err != nil {
+		t.Errorf("a tenant with no handover was refused: %v", err)
+	}
+}

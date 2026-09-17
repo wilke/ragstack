@@ -47,34 +47,41 @@ var (
 	reJobID         = regexp.MustCompile(`^[0-7][0-9A-HJKMNP-TV-Z]{25}$`)
 	reAPIBind       = regexp.MustCompile(`^(127\.0\.0\.1|0\.0\.0\.0|localhost)$`)
 	reUnmanagedFile = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
+	// The handover nonce: 16 random bytes as hex. Narrow on purpose — it is
+	// compared, printed and typed back by an operator, so a grammar that
+	// admitted anything else would be a grammar in which a value from
+	// somewhere else could be mistaken for one of these.
+	reHandoverToken = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
 // Enums, byte-identical to the schema's.
 var (
-	enumOwnership   = []string{"exclusive", "shared", "unknown"}
-	enumPGKind      = []string{PostgresKindSQLite, PostgresKindLocal, PostgresKindExternal}
-	enumPGOwnership = []string{OwnershipExclusive, OwnershipExternal}
-	enumUIMode      = []string{UIModeStatic, UIModeDev, UIModeExternal}
-	enumSupervisor  = []string{"systemd", "manual", "instance"}
-	enumOwner       = []string{"svcbvbrc", "wilke"}
-	enumState       = []string{"provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"}
-	enumDesiredBoot = []string{"enabled", "disabled"}
-	enumEnvLayout   = []string{"legacy", "managed"}
-	enumRole        = []string{"admin", "user"}
-	enumSecretFile  = []string{"tenant.env", "secrets.env", "provision.env"}
-	enumDriftLevel  = []string{"info", "warn", "error"}
-	enumOutcome     = []string{"succeeded", "failed", "rolled_back", "interrupted", "cancelled"}
-	enumBackupKind  = []string{"backup", "pre-update", "recovery"}
-	enumBackupScope = []string{"config", "state", "stores"}
-	enumSAStatus    = []string{"active", "disabled"}
-	enumIdentity    = []string{"bvbrc", "oidc", "none"}
-	enumRouteStatus = []string{"active", "retired"}
-	enumLaunchKind  = []string{"api", "ui", "qdrant", "es"}
-	enumOpVerb      = []string{
+	enumOwnership     = []string{"exclusive", "shared", "unknown"}
+	enumPGKind        = []string{PostgresKindSQLite, PostgresKindLocal, PostgresKindExternal}
+	enumPGOwnership   = []string{OwnershipExclusive, OwnershipExternal}
+	enumUIMode        = []string{UIModeStatic, UIModeDev, UIModeExternal}
+	enumSupervisor    = []string{"systemd", "manual", "instance"}
+	enumOwner         = []string{"svcbvbrc", "wilke"}
+	enumState         = []string{"provisioned", "active", "stopped", "migrating", StateHandover, "quarantined", "decommissioned"}
+	enumDesiredBoot   = []string{"enabled", "disabled"}
+	enumEnvLayout     = []string{"legacy", "managed"}
+	enumRole          = []string{"admin", "user"}
+	enumSecretFile    = []string{"tenant.env", "secrets.env", "provision.env"}
+	enumDriftLevel    = []string{"info", "warn", "error"}
+	enumOutcome       = []string{"succeeded", "failed", "rolled_back", "interrupted", "cancelled"}
+	enumBackupKind    = []string{"backup", "pre-update", "recovery"}
+	enumBackupScope   = []string{"config", "state", "stores"}
+	enumSAStatus      = []string{"active", "disabled"}
+	enumIdentity      = []string{"bvbrc", "oidc", "none"}
+	enumRouteStatus   = []string{"active", "retired"}
+	enumLaunchKind    = []string{"api", "ui", "qdrant", "es"}
+	enumHandoverPhase = []string{HandoverReleased, HandoverTaken}
+	enumCensusStore   = []string{"qdrant", "elasticsearch", "api"}
+	enumOpVerb        = []string{
 		"adopt", "create", "start", "stop", "restart", "backup", "restore", "handover",
 		"migrate-local", "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
 		"sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
-		"render-units", "update-code", "set-ui-mode", "set-bind",
+		"render-units", "update-code", "set-ui-mode", "set-bind", "set-supervisor",
 	}
 )
 
@@ -449,6 +456,32 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 			c.pattern(lp+"/cwd", la.Cwd, reAbsPath)
 		}
 		c.nonNegative(rp+"/gateway_generation", rd.GatewayGeneration)
+	}
+	if h := t.Handover; h != nil {
+		hp := ptr + "/handover"
+		c.enum(hp+"/phase", h.Phase, enumHandoverPhase)
+		c.pattern(hp+"/token", h.Token, reHandoverToken)
+		c.minLen1(hp+"/started_at", h.StartedAt)
+		c.minLen1(hp+"/released_by", h.ReleasedBy)
+		for i, e := range h.Census {
+			cp := fmt.Sprintf("%s/census/%d", hp, i)
+			c.enum(cp+"/store", e.Store, enumCensusStore)
+			c.minLen1(cp+"/name", e.Name)
+			// -1 is the contract's "could not be counted"; below that is a
+			// number no store ever held.
+			if e.Count < -1 {
+				c.failf(cp+"/count", "%d is below the minimum -1", e.Count)
+			}
+		}
+		// A `handover` block whose `state` does not say so is the
+		// disagreement this check exists for: every reader of the registry
+		// decides from `state`, and a tenant mid-move that still reads
+		// `active` is one the gateway probe, the reboot scripts and the
+		// operator all read as healthy.
+		if h.Phase == HandoverReleased && t.State != StateHandover {
+			c.failf(ptr+"/state", "handover.phase is %q but state is %q; a released tenant is %q until it is taken",
+				h.Phase, t.State, StateHandover)
+		}
 	}
 	for _, verb := range sortedOpKeys(t.LastOps) {
 		op := t.LastOps[verb]

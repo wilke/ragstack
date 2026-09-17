@@ -160,7 +160,7 @@ type Tenant struct {
 
 	Supervisor  string `json:"supervisor"`   // systemd|manual|instance
 	Owner       string `json:"owner"`        // svcbvbrc|wilke
-	State       string `json:"state"`        // provisioned|active|stopped|migrating|quarantined|decommissioned
+	State       string `json:"state"`        // provisioned|active|stopped|migrating|handover|quarantined|decommissioned
 	DesiredBoot string `json:"desired_boot"` // enabled|disabled
 	EnvLayout   string `json:"env_layout"`   // legacy|managed
 
@@ -178,9 +178,14 @@ type Tenant struct {
 
 	ReleaseGeneration  *ReleaseGeneration  `json:"release_generation"`  // null until a release is pinned
 	RollbackDescriptor *RollbackDescriptor `json:"rollback_descriptor"` // null until handover captures it
-	LastOps            map[string]OpRecord `json:"last_ops"`
-	LastBackup         *BackupRecord       `json:"last_backup"` // null until the first backup
-	AdoptedAt          NullString          `json:"adopted_at"`
+	// Handover is the in-flight two-account handover, null at every other
+	// moment. It is the one field in this struct whose ABSENCE from a document
+	// is legal — the contract leaves it out of `required` because rows the
+	// deployed binary wrote predate it — and absent means exactly null.
+	Handover   *Handover           `json:"handover"`
+	LastOps    map[string]OpRecord `json:"last_ops"`
+	LastBackup *BackupRecord       `json:"last_backup"` // null until the first backup
+	AdoptedAt  NullString          `json:"adopted_at"`
 }
 
 // Code pins the running checkout.
@@ -401,6 +406,54 @@ type RollbackDescriptor struct {
 	Images            RollbackImages `json:"images"`
 	LaunchArgs        []LaunchArg    `json:"launch_args"`
 	GatewayGeneration int64          `json:"gateway_generation"`
+}
+
+// Handover phases (Handover.Phase).
+const (
+	// HandoverReleased: the owner has stopped the tenant and nothing of it is
+	// running. The token in the row is what the take must quote.
+	HandoverReleased = "released"
+	// HandoverTaken: the service account has started it again under
+	// `supervisor: instance` and the operator is soaking before the commit.
+	HandoverTaken = "taken"
+)
+
+// StateHandover is the transitional `state` of a tenant between the release
+// and the take. Probes expect a 502 for it, so a gateway generation published
+// during the window stays honest.
+const StateHandover = "handover"
+
+// Handover is the in-flight two-account handover.
+//
+// It exists because handover CANNOT be one job on this host: the daemon
+// (svcbvbrc) can neither signal the hand-started API — `/proc/<pid>/cwd` of
+// another account's process is unreadable — nor see the owner's apptainer
+// instances, which live in that account's own instance registry. So the row
+// carries the state between two jobs run by two accounts, and the token is
+// what ties the second to the first.
+type Handover struct {
+	Phase      string     `json:"phase"` // released|taken
+	Token      string     `json:"token"` // 32 hex characters; a nonce, not a credential
+	StartedAt  string     `json:"started_at"`
+	ReleasedBy string     `json:"released_by"`
+	ReleasedAt NullString `json:"released_at"`
+	TakenAt    NullString `json:"taken_at"`
+	TakenBy    NullString `json:"taken_by"`
+	// DescriptorRef is the rollback descriptor's captured_at, so a descriptor
+	// rewritten under a parked handover shows up as a disagreement.
+	DescriptorRef NullString `json:"descriptor_ref"`
+	// Census is what the tenant held when it was released: the take compares
+	// its own reading against it. A count of -1 is "this store could not be
+	// counted", which the take reports and does not treat as agreement.
+	Census []CensusEntry `json:"census"`
+}
+
+// CensusEntry is one collection or index and how many rows it held at the
+// release.
+type CensusEntry struct {
+	Store string `json:"store"` // qdrant|elasticsearch|api
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
 }
 
 // OpRecord is the last outcome of one op (keyed by OpVerb in Tenant.LastOps).
