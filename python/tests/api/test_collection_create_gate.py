@@ -201,8 +201,10 @@ async def test_config_reports_whether_ingest_resolves_scholarly_metadata(
     whether ingest reaches the public internet, which is its own reason to be
     visible."""
     body = (await client.get("/v1/config", headers=_h("admin"))).json()
-    assert body["doi_enrichment_enabled"] is True  # on by default since #596
-
-    monkeypatch.setattr(settings, "doi_enrichment_enabled", False)
-    body = (await client.get("/v1/config", headers=_h("admin"))).json()
+    # Ships OFF: the gowe worker image is shared fleet-wide and an API ahead of
+    # its image fails every ingest, so this is opted into per tenant.
     assert body["doi_enrichment_enabled"] is False
+
+    monkeypatch.setattr(settings, "doi_enrichment_enabled", True)
+    body = (await client.get("/v1/config", headers=_h("admin"))).json()
+    assert body["doi_enrichment_enabled"] is True

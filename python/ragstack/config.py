@@ -346,7 +346,17 @@ class Settings(BaseSettings):
     # (``doi_metadata.BREAKER_THRESHOLD``) after a handful of attempts instead of
     # paying a timeout per document. An air-gapped deployment sets
     # DOI_ENRICHMENT_ENABLED=false and gets exactly the pre-#596 behaviour.
-    doi_enrichment_enabled: bool = True
+    #
+    # WHY IT SHIPS OFF ANYWAY. The gowe ingest runs inside a prebuilt worker
+    # image, and that image is SHARED across worker groups on this host. An API
+    # rolled out ahead of its image sends --doi-enrichment to an argparse that
+    # does not know the flag, and every gowe ingest exits 2. Default-on would
+    # therefore impose a fleet-wide deploy ORDER (rebuild the image, then roll
+    # the APIs) on a change whose whole point is that it is optional. Off, this
+    # merges inert: an operator rebuilds the image when convenient and then sets
+    # DOI_ENRICHMENT_ENABLED=true per tenant. Flip this line once every worker
+    # image in the fleet carries the flag.
+    doi_enrichment_enabled: bool = False
     # Resolve pmid/pmcid from the NCBI ID Converter as well. Batched — one
     # request per 200 distinct DOIs — so it is close to free; turn it off for a
     # corpus PMC will never have a record for.
