@@ -70,6 +70,19 @@ var preconditions = map[string][]string{
 	// thing that can make it wrong is a registry whose projection is already
 	// incoherent — the same gate `create` has, for the same reason.
 	"set-bind": {RegistryManifestMismatch, ManifestUnknownRow},
+	// set-supervisor writes ONE registry field too, and the same reasoning
+	// applies. What it must NOT gate on is anything about the processes: it
+	// is the repair for a row that disagrees with them, and its own step asks
+	// the host the question that matters (can this account act on what the row
+	// will claim).
+	"set-supervisor": {RegistryManifestMismatch, ManifestUnknownRow},
+	// env-pg-password rewrites secrets.env and touches no process. It is run
+	// on a tenant that is being prepared for a handover — often one whose
+	// findings are exactly what the preparation exists to clear — so nothing
+	// blocks it. The empty row is deliberate and is what makes `doctor --op
+	// env-pg-password` a known op rather than a typo that silently disables
+	// the gate.
+	"env-pg-password": {},
 	// A local migration is a handover's barrier plus disk for the copy, and
 	// it copies a tree the tenant is supposed to be serving from.
 	"migrate-local": {DiskLow, PortOwnerMismatch, EnvNotSystemdParsable, PortNotListening},
@@ -144,6 +157,19 @@ var tolerates = map[string][]string{
 	"restart":      {PortNotListening},
 	"stop":         {PortNotListening},
 	"decommission": {PortNotListening},
+	// `handover` is two jobs run by two accounts, and the SECOND of them acts
+	// on a tenant the first one stopped: between the release and the take
+	// nothing of the tenant is listening, by construction. Raising
+	// port_not_listening for this op therefore refused every take there will
+	// ever be. The question it was standing in for — "is there a running
+	// tenant to hand over" — is the release planner's, which refuses a row
+	// whose `state` is not `active`, and that check does not misfire on the
+	// phase whose whole precondition is that the tenant is down.
+	"handover": {PortNotListening},
+	// `set-supervisor` corrects a ROW. Every state it is used to repair is a
+	// state in which something is not listening — that is usually why the row
+	// needs correcting.
+	"set-supervisor": {PortNotListening},
 }
 
 // handoverPreconditions is the handover row, per DESTINATION supervisor.
@@ -158,22 +184,24 @@ var tolerates = map[string][]string{
 // the managed roots (ctl_account_no_access), which are the negatives of the
 // brief's `boot_cron_present` and `acl_grant_present`.
 //
-// Five conditions are in BOTH lists because they are about the tenant rather
+// Four conditions are in BOTH lists because they are about the tenant rather
 // than about the supervisor: an env file the ctl will parse, a port whose
-// owner is the account the registry names, code traceable to the mirror, paths
-// nobody outside ragops can rewrite, and an API that is actually up to be
-// handed over. stores_unconfirmed joins them at PR-E: a handover that moves
-// the API and leaves the tenant's own stores running as another account splits
-// the tenant between two accounts, and neither can then restart it.
+// owner is the account the registry names, code traceable to the mirror, and
+// paths nobody outside ragops can rewrite. stores_unconfirmed joins them at
+// PR-E: a handover that moves the API and leaves the tenant's own stores
+// running as another account splits the tenant between two accounts, and
+// neither can then restart it. port_not_listening is deliberately NOT among
+// them — see `tolerates` — because the take acts on a tenant the release has
+// already stopped.
 var (
 	handoverSystemd = []string{
 		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
 		WorktreeGitdirUnreadable, LingerMissing, UserDropInMissing,
-		RuntimeDirMissing, WritableByOthers, PortNotListening, StoresUnconfirmed,
+		RuntimeDirMissing, WritableByOthers, StoresUnconfirmed,
 	}
 	handoverInstance = []string{
 		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
-		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening,
+		WorktreeGitdirUnreadable, WritableByOthers,
 		StoresUnconfirmed, BootCronMissing, CtlAccountNoAccess,
 	}
 	handoverPreconditions = map[string][]string{

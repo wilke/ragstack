@@ -267,11 +267,20 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Drivers:      drv,
 		Redactor:     redactor,
 		Doctor:       doctorFn,
-		Now:          cfg.Now,
-		Host:         cfg.Host,
-		Mode:         cfg.Mode,
-		SecretsTTL:   cfg.SecretsTTL,
-		Logger:       cfg.Logger,
+		// The op × finding table, as a function: the engine's yellow gate asks
+		// it which of a run's warnings THIS op depends on, so that the three
+		// findings this deployment is permanently yellow on (the systemd trio
+		// PR-D2 abandoned) stop demanding an acknowledgement from every
+		// mutation. The destination is the default one — `instance`, the only
+		// supervisor a handover on this host can reach.
+		PreconditionCodes: func(op string) []string {
+			return doctor.RedCodesForDestination(op, "")
+		},
+		Now:        cfg.Now,
+		Host:       cfg.Host,
+		Mode:       cfg.Mode,
+		SecretsTTL: cfg.SecretsTTL,
+		Logger:     cfg.Logger,
 	})
 	return eng, drv, nil
 }

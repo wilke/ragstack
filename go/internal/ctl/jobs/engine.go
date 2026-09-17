@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,9 +55,18 @@ type EngineOptions struct {
 	Redactor  Redactor
 	// Doctor runs the op-scoped preconditions.
 	Doctor func(ctx context.Context, tenant, op string) (model.DoctorResponse, error)
-	Now    func() time.Time
-	Host   string
-	Mode   model.WorkerMode
+	// PreconditionCodes are the doctor findings THIS op cannot proceed over —
+	// doctor/preconditions.go's table, passed in as a function so that the
+	// jobs package does not import the doctor package (the API layer imports
+	// both, and doctor is below jobs in every other direction).
+	//
+	// It is what makes a yellow doctor an op-scoped question rather than a
+	// host-wide one: see gateOnDoctor. NIL means "every warning is this op's",
+	// which is the conservative reading and the behaviour before PR-E2.
+	PreconditionCodes func(op string) []string
+	Now               func() time.Time
+	Host              string
+	Mode              model.WorkerMode
 	// SecretsTTL is the delivery envelope's lifetime (contract: 15 minutes).
 	SecretsTTL time.Duration
 	// Sealer encrypts a minted secret payload for rest (age, PR-D). When it
@@ -226,7 +236,7 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 		// needs to see exactly what it is confirming.
 		return plan, nil, err
 	}
-	if err := gateOnDoctor(plan.Doctor, req.ForceWithDoctorDiff); err != nil {
+	if err := gateOnDoctor(plan.Doctor, req.ForceWithDoctorDiff, e.gateCodes(req.Op)); err != nil {
 		e.auditRefusal(ctx, req, argsRedacted, plan.PlanHash, err)
 		return plan, nil, err
 	}
@@ -418,20 +428,91 @@ func (e *engine) plan(ctx context.Context, op Op, req Request) (*model.Plan, *Pl
 }
 
 // gateOnDoctor is the doctor precondition: red never runs; yellow runs only
-// when the caller quotes the hash of the findings they saw, which is what
-// makes "I accepted these warnings" a checkable statement rather than a flag.
-func gateOnDoctor(d model.DoctorResponse, force string) error {
-	switch d.Status {
-	case model.StatusRed:
+// when the caller quotes the hash of the findings they saw — and only when one
+// of those warnings is about something THIS op depends on.
+//
+// The op-scoping is the part PR-E2 added, and it was not a refinement: this
+// host is permanently yellow. Three of its findings (`linger_missing`,
+// `user_dropin_missing`, `runtime_dir_missing`) are facts about a systemd user
+// manager that PR-D2 deliberately abandoned — no operation can clear them,
+// because no operation is supposed to. With a host-wide yellow gate, EVERY
+// mutation on this deployment demanded `--force-with-doctor-diff <hash>`, and
+// a flag that is required for everything is a flag nobody reads: the one
+// question it exists to ask ("did you look at these warnings?") had already
+// stopped being asked before this change made it askable again.
+//
+// So: a warning whose code is in this op's own precondition set still demands
+// the acknowledgement — those are the warnings the op depends on and the
+// operator has to have seen. Every other warning is recorded on the job
+// (runSteps puts the codes in `result.doctor_warnings`) and does not block.
+// Red is untouched: a red finding is never forced, whoever it is about.
+//
+// `codes` is doctor.RedCodesForDestination for this op. NIL is the
+// conservative reading — every warning counts — which is what an engine built
+// without the doctor package wired gets.
+func gateOnDoctor(d model.DoctorResponse, force string, codes []string) error {
+	if d.Status == model.StatusRed {
 		return refuse(fmt.Errorf("%w: the op-scoped doctor is red (%s); a red finding is never forced",
 			ErrDoctorRed, d.Hash), map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusRed)})
-	case model.StatusYellow:
-		if force != d.Hash {
-			return refuse(fmt.Errorf("%w: yellow; pass force_with_doctor_diff=%s", ErrDoctorRed, d.Hash),
-				map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusYellow)})
+	}
+	if d.Status != model.StatusYellow || force == d.Hash {
+		return nil
+	}
+	if codes == nil {
+		// No precondition table wired: every warning is taken to be this op's,
+		// which is the behaviour before PR-E2 and the conservative reading.
+		return refuse(fmt.Errorf("%w: yellow; pass force_with_doctor_diff=%s", ErrDoctorRed, d.Hash),
+			map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusYellow)})
+	}
+	relevant := relevantWarnings(d, codes)
+	if len(relevant) == 0 {
+		return nil
+	}
+	return refuse(fmt.Errorf("%w: yellow on %s, which %s depends on; pass force_with_doctor_diff=%s",
+		ErrDoctorRed, strings.Join(relevant, ", "), scopeOp(d), d.Hash),
+		map[string]any{"doctor_hash": d.Hash, "status": string(model.StatusYellow), "codes": relevant})
+}
+
+// relevantWarnings are the warn-level findings whose code is in codes, sorted
+// and deduplicated. A nil codes slice means "all of them".
+func relevantWarnings(d model.DoctorResponse, codes []string) []string {
+	var want map[string]bool
+	if codes != nil {
+		want = make(map[string]bool, len(codes))
+		for _, c := range codes {
+			want[c] = true
 		}
 	}
-	return nil
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range d.Findings {
+		if f.Level != model.LevelWarn || seen[f.Code] {
+			continue
+		}
+		if want != nil && !want[f.Code] {
+			continue
+		}
+		seen[f.Code] = true
+		out = append(out, f.Code)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// scopeOp names the operation the doctor run was scoped to, for the refusal.
+func scopeOp(d model.DoctorResponse) string {
+	if op := string(d.Scope.Op); op != "" {
+		return "`" + op + "`"
+	}
+	return "this operation"
+}
+
+// gateCodes is EngineOptions.PreconditionCodes, with the conservative default.
+func (e *engine) gateCodes(op string) []string {
+	if e.o.PreconditionCodes == nil {
+		return nil
+	}
+	return e.o.PreconditionCodes(op)
 }
 
 func (e *engine) newJob(req Request, plan *model.Plan, now time.Time) *model.Job {
@@ -602,6 +683,16 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	if r.planned.Result != nil {
 		job.Result = r.planned.Result()
 	}
+	// The warnings this op did NOT depend on: not a reason to refuse (see
+	// gateOnDoctor), and not a reason to forget either. They go on the job, so
+	// "what did the host look like when this ran" is answerable afterwards
+	// from the job alone.
+	if warnings := unrelatedWarnings(r.oc.Doctor, e.gateCodes(job.Op)); len(warnings) > 0 {
+		if job.Result == nil {
+			job.Result = map[string]any{}
+		}
+		job.Result["doctor_warnings"] = warnings
+	}
 	if r.planned.Secrets != nil {
 		if secrets := r.planned.Secrets(); len(secrets) > 0 {
 			if err := e.putEnvelope(pctx, job, secrets); err != nil {
@@ -623,6 +714,31 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 		}
 	}
 	e.finish(pctx, r, model.JobSucceeded, nil, argsRedacted, req, started)
+}
+
+// unrelatedWarnings are the warn-level findings this op does NOT depend on:
+// everything gateOnDoctor let through. With no precondition table they are
+// none — every warning was relevant, and the gate already made the operator
+// acknowledge them.
+func unrelatedWarnings(d model.DoctorResponse, codes []string) []string {
+	if codes == nil {
+		return nil
+	}
+	relevant := map[string]bool{}
+	for _, c := range relevantWarnings(d, codes) {
+		relevant[c] = true
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range d.Findings {
+		if f.Level != model.LevelWarn || relevant[f.Code] || seen[f.Code] {
+			continue
+		}
+		seen[f.Code] = true
+		out = append(out, f.Code)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // stepContext builds the per-step view, including the two durability hooks a

@@ -1038,9 +1038,13 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		// before running it — so they are in the doctor `op` enum and must
 		// have precondition rows like every other.
 		"set-ui-mode", "set-bind",
+		// PR-E2's two: the row repair a failed handover needs, and the
+		// preparation step that makes a `new-tenant.sh` postgres startable by
+		// the instance supervisor at all.
+		"set-supervisor", "env-pg-password",
 	}
-	if len(contract) != 26 {
-		t.Fatalf("the contract enum has 26 ops, this copy has %d", len(contract))
+	if len(contract) != 28 {
+		t.Fatalf("the contract enum has 28 ops, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {
@@ -1450,11 +1454,24 @@ func TestHandoverPreconditionsFollowTheDestination(t *testing.T) {
 	// Shared by both: these are facts about the TENANT, not about the runtime.
 	for _, c := range []string{
 		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
-		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening, StoresUnconfirmed,
+		WorktreeGitdirUnreadable, WritableByOthers, StoresUnconfirmed,
 	} {
 		if !instance[c] || !systemd[c] {
 			t.Errorf("%s should gate a handover onto either supervisor", c)
 		}
+	}
+	// port_not_listening gates NEITHER, and is tolerated by both. A handover
+	// is two jobs run by two accounts and the second acts on a tenant the
+	// first stopped: between the release and the take nothing is listening, by
+	// construction, so raising this code refused every take there will ever
+	// be. "Is there a running tenant to hand over" is the release planner's
+	// question, asked of `state`, which does not misfire on the phase whose
+	// whole precondition is that the tenant is down.
+	if instance[PortNotListening] || systemd[PortNotListening] {
+		t.Error("port_not_listening gates a handover: the take acts on a tenant the release has already stopped")
+	}
+	if got := Tolerated("handover"); len(got) != 1 || got[0] != PortNotListening {
+		t.Errorf("Tolerated(handover) = %v, want [%s]", got, PortNotListening)
 	}
 	// The default is what RedCodes (and therefore the engine) gates on.
 	if got, want := RedCodes("handover"), RedCodesForDestination("handover", DefaultHandoverDestination); len(got) != len(want) {
@@ -1485,5 +1502,49 @@ func TestTheDestinationReachesTheDoctorRun(t *testing.T) {
 	systemd := byCode(w.runOpts(t, Options{Op: "handover", Destination: SupervisorSystemd}))
 	if f, ok := systemd[LingerMissing]; !ok || f.Level != model.LevelError {
 		t.Errorf("a systemd handover was NOT refused for want of linger: %+v", f)
+	}
+}
+
+// TestTheBootRecordIsADeploymentFactNotAStateDirFact is the owner-side
+// handover's precondition, and the reason it is written this way.
+//
+// `handover --release` and `handover --abandon` run as the tenant's owner
+// through `--direct`, in a scratch CTL_STATE_DIR — they have to, because the
+// daemon's jobs.db belongs to the service account and no other account can
+// write it. Reading the boot record only out of the CONFIGURED state dir made
+// `boot_cron_missing` (a red precondition for a handover onto `instance`) fire
+// for every one of those runs: a handover refused because the operator was not
+// the daemon.
+func TestTheBootRecordIsADeploymentFactNotAStateDirFact(t *testing.T) {
+	ragRoot := t.TempDir()
+	canonical := filepath.Join(ragRoot, "data", "ctl")
+	if err := os.MkdirAll(canonical, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	rec := `{"cron":true,"line":"@reboot /rag/bin/ragstack-ctl fleet start --all","at":"2026-09-15T11:18:10Z"}`
+	if err := os.WriteFile(filepath.Join(canonical, BootRecordFile), []byte(rec), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+
+	for _, tc := range []struct {
+		name  string
+		state string
+	}{
+		{"the daemon's own state dir", canonical},
+		{"an owner-side scratch state dir", scratch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roots := paths.NewRoots(ragRoot, paths.Overrides{CtlStateDir: tc.state})
+			d := &run{roots: roots, opts: Options{CtlUser: "svcbvbrc", CtlUID: 10078}, host: &hostfacts.Fake{Lingering: map[string]bool{}}}
+			d.bootHook()
+			var codes []string
+			for _, f := range d.findings {
+				codes = append(codes, f.Code)
+			}
+			if len(codes) != 1 || codes[0] != BootCronPresent {
+				t.Fatalf("findings = %v, want just %s", codes, BootCronPresent)
+			}
+		})
 	}
 }

@@ -1052,3 +1052,89 @@ func TestRefusalsCarryTheContractsExtra(t *testing.T) {
 		}
 	})
 }
+
+// TestYellowGateIsScopedToTheOpsOwnPreconditions is the fix for a control
+// plane that had made its own safety flag meaningless.
+//
+// coconut is permanently yellow: three of its findings are facts about a
+// systemd user manager PR-D2 deliberately abandoned, and no operation can
+// clear them because none is supposed to. With a host-wide yellow gate, EVERY
+// mutation demanded `--force-with-doctor-diff <hash>` — so the question that
+// flag exists to ask ("did you read these warnings?") was being answered by
+// muscle memory before anybody read anything.
+func TestYellowGateIsScopedToTheOpsOwnPreconditions(t *testing.T) {
+	tr := newTracker()
+	var st Store
+	hash := sha256Of([]byte("permanently yellow"))
+	findings := []model.Finding{
+		{Level: model.LevelWarn, Code: "linger_missing", Detail: "no linger for svcbvbrc"},
+		{Level: model.LevelWarn, Code: "runtime_dir_missing", Detail: "no XDG_RUNTIME_DIR"},
+	}
+	// The op's own precondition set. `backup` does not depend on either of the
+	// findings above; it does depend on disk_low.
+	e, store, _ := newTestEngine(t, fakeRegistry{"backup": happyOp(tr, func() Store { return st })},
+		func(o *EngineOptions) {
+			o.PreconditionCodes = func(op string) []string {
+				if op == "backup" {
+					return []string{"disk_low", "port_owner_mismatch"}
+				}
+				return nil
+			}
+			o.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
+				return model.DoctorResponse{
+					// The status follows the findings, as a real run's does.
+					Status: model.StatusFor(findings), Hash: hash, GeneratedAt: "2026-09-16T10:00:00Z",
+					Scope:    model.Scope{Tenant: model.NullString(tenant), Op: model.NullString(op)},
+					Findings: findings,
+				}, nil
+			}
+		})
+	st = store
+	ctx := context.Background()
+
+	// Unrelated warnings: the job runs, and the warnings are recorded on it.
+	_, job, err := e.Submit(ctx, req("backup", "dev", "y1"))
+	if err != nil {
+		t.Fatalf("a yellow doctor about something else refused the job: %v", err)
+	}
+	waitFor(t, e, job.ID, model.JobSucceeded)
+	done, err := e.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// The job comes back through the store, so the slice is whatever JSON
+	// made of it.
+	if got := fmt.Sprint(done.Result["doctor_warnings"]); got != "[linger_missing runtime_dir_missing]" {
+		t.Errorf("doctor_warnings = %v, want both unrelated codes recorded on the job", got)
+	}
+
+	// A warning the op DOES depend on still demands the acknowledgement, and
+	// the refusal names the code rather than only the hash.
+	findings = append(findings, model.Finding{Level: model.LevelWarn, Code: "disk_low", Tenant: "dev", Detail: "4%"})
+	_, _, err = e.Submit(ctx, req("backup", "dev", "y2"))
+	if !errors.Is(err, ErrDoctorRed) {
+		t.Fatalf("a yellow finding this op depends on = %v, want ErrDoctorRed", err)
+	}
+	if !strings.Contains(err.Error(), "disk_low") {
+		t.Errorf("the refusal does not name the finding: %v", err)
+	}
+	if strings.Contains(err.Error(), "linger_missing") {
+		t.Errorf("the refusal blames an unrelated finding: %v", err)
+	}
+	if got := fmt.Sprint(ErrorExtra(err)["codes"]); got != "[disk_low]" {
+		t.Errorf("extra codes = %v", got)
+	}
+	forced := req("backup", "dev", "y3")
+	forced.ForceWithDoctorDiff = hash
+	if _, _, err := e.Submit(ctx, forced); err != nil {
+		t.Fatalf("the acknowledged hash was still refused: %v", err)
+	}
+
+	// Red is untouched, whoever it is about.
+	findings = []model.Finding{{Level: model.LevelError, Code: "linger_missing", Detail: "no linger"}}
+	red := req("backup", "dev", "y4")
+	red.ForceWithDoctorDiff = hash
+	if _, _, err := e.Submit(ctx, red); !errors.Is(err, ErrDoctorRed) {
+		t.Fatalf("a red doctor was forced: %v", err)
+	}
+}

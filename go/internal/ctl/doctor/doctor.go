@@ -918,9 +918,8 @@ type BootRecord struct {
 // `systemctl --user` at all). With neither, a reboot is a fleet that stays
 // down until somebody notices.
 func (d *run) bootHook() {
-	path := filepath.Join(d.roots.CtlStateDir, BootRecordFile)
+	path, b, err := d.readBootRecord()
 	var rec BootRecord
-	b, err := os.ReadFile(path)
 	if err == nil {
 		if jerr := json.Unmarshal(b, &rec); jerr != nil {
 			d.add(model.LevelWarn, BootCronMissing, "", fmt.Sprintf(
@@ -949,6 +948,39 @@ func (d *run) bootHook() {
 		"%s has no linger AND the ctl has recorded no @reboot crontab line (%s): nothing on this host starts a "+
 			"tenant after a reboot. `ragstack-ctl fleet enable-boot --cron` installs one. A line added by hand is "+
 			"not visible here — the ctl reports only what it installed itself", d.opts.CtlUser, path))
+}
+
+// readBootRecord finds the boot record, and looks in TWO places.
+//
+// The crontab line is a fact about the DEPLOYMENT — the service account's own
+// boot arrangement — not about the state directory of whichever process is
+// asking. The owner-side phases of a handover run as `--direct` jobs in a
+// scratch `CTL_STATE_DIR` (they have to: the daemon's jobs.db belongs to the
+// service account and they cannot write it), and reading the record only out
+// of the configured directory made `boot_cron_missing` RED for every one of
+// them — a handover refused because the operator was not the daemon.
+//
+// So: the configured state dir first (a daemon, a selftest sandbox and a test
+// all mean that one), then the deployment's canonical `<rag_root>/data/ctl`.
+// The path that was actually read is what the finding names.
+func (d *run) readBootRecord() (string, []byte, error) {
+	primary := filepath.Join(d.roots.CtlStateDir, BootRecordFile)
+	b, err := os.ReadFile(primary)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return primary, b, err
+	}
+	canonical := filepath.Join(paths.NewRoots(d.roots.RagRoot, paths.Overrides{}).CtlStateDir, BootRecordFile)
+	if canonical == primary {
+		return primary, b, err
+	}
+	cb, cerr := os.ReadFile(canonical)
+	if cerr != nil {
+		// Neither is there: report against the CONFIGURED path, which is the
+		// one `fleet enable-boot` would write and the one an operator would
+		// go looking at.
+		return primary, b, err
+	}
+	return canonical, cb, nil
 }
 
 // aclManagedRoots answers the question the interim runtime turns on: can the

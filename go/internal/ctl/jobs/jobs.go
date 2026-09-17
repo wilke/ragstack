@@ -654,6 +654,27 @@ type TenantAPI interface {
 	// Collections is GET /v1/collections?counts=false — the inventory a
 	// restore compares against the bundle manifest.
 	Collections(ctx context.Context, origin, apiKey string) ([]string, error)
+	// CollectionCounts is GET /v1/collections?counts=true: the inventory WITH
+	// each collection's chunk count, which is the census a handover's release
+	// takes and its take checks back.
+	//
+	// It is a separate method rather than a flag on Collections because the
+	// counts cost a query against every store: the restore that compares an
+	// inventory must not start paying for numbers it does not read.
+	CollectionCounts(ctx context.Context, origin, apiKey string) (map[string]int64, error)
+	// RunningIngestJobs is GET /v1/jobs (admin) reduced to the ids of the jobs
+	// that have not finished. A handover's release refuses over one: stopping
+	// the API mid-ingest leaves a collection half-written, and the release is
+	// the last moment at which anybody can decide to wait.
+	RunningIngestJobs(ctx context.Context, origin, apiKey string) ([]string, error)
+	// KeyStatus dials the tenant with ONE credential and returns the status it
+	// answered — 200 for a key the tenant accepts, 401 for one it does not.
+	//
+	// It is the only method here that treats a 401 as an ANSWER rather than as
+	// a failure, and that is its whole purpose: `key revoke --prove` has to be
+	// able to state "the old key now answers 401" as a checked fact rather
+	// than as an assumption about what rewriting a file did.
+	KeyStatus(ctx context.Context, origin, apiKey string) (status int, err error)
 	// Ingest is POST /v1/ingest with a SERVER-SIDE path (the tenant confines
 	// it under INGEST_ROOT), answering the ingest job's id.
 	//
