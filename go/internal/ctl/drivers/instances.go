@@ -42,7 +42,7 @@ type RealInstances struct {
 	// so `--bind /etc:/qdrant/storage` out of a mangled registry row is not a
 	// misconfiguration, it is a store with /etc in it.
 	Roots []string
-	// Env is apptainer's OWN environment for EVERY call this driver makes:
+	// Env is apptainer's OWN environment for a call in jobs.NamespaceCtl:
 	// APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR under the ctl's state dir.
 	// The instance registry lives under the config dir, so a `list` or a
 	// `stop` made without it looks in $HOME/.apptainer and sees NOTHING —
@@ -51,15 +51,31 @@ type RealInstances struct {
 	// List ran without them, reported "absent", and three sandboxes' worth
 	// of qdrant and elasticsearch kept the block's ports for the next run.
 	Env []string
+	// AccountEnv is apptainer's own environment for a call in
+	// jobs.NamespaceAccountDefault: the ctl's CACHEDIR (a cache is a cache,
+	// and the ctl's is the one every account running this binary can write)
+	// and NO CONFIGDIR AT ALL, so apptainer falls back to `$HOME/.apptainer` —
+	// the registry a tenant somebody started BY HAND actually lives in, and
+	// the one the handover's release half has to act in.
+	//
+	// The runner's environment allowlist (exec.go's envKeep) carries HOME and
+	// deliberately does NOT carry APPTAINER_CONFIGDIR, so an operator whose
+	// own shell exports one cannot redirect this call either: "the account's
+	// default" means the account's default.
+	AccountEnv []string
 }
 
 var _ jobs.Instances = (*RealInstances)(nil)
 
-// env is a call's own additions (spec.ExtraEnv) followed by the driver's Env:
-// os/exec keeps the LAST value of a repeated key, so the driver's state
-// directories win and a spec cannot redirect apptainer's instance registry.
-func (i *RealInstances) env(extra []string) []string {
+// env is a call's own additions (spec.ExtraEnv) followed by the driver's
+// environment FOR THAT NAMESPACE: os/exec keeps the LAST value of a repeated
+// key, so the driver's directories win and a spec cannot redirect apptainer's
+// instance registry.
+func (i *RealInstances) env(ns jobs.InstanceNamespace, extra []string) []string {
 	out := append([]string(nil), extra...)
+	if ns == jobs.NamespaceAccountDefault {
+		return append(out, i.AccountEnv...)
+	}
 	return append(out, i.Env...)
 }
 
@@ -82,17 +98,17 @@ const (
 )
 
 // List is `apptainer instance list --json`, every instance of the CURRENT
-// account.
+// account in opts.Namespace.
 //
 // The result is sorted by name. apptainer already sorts, and so does the fake,
 // so sorting here is belt and braces for one reason: a caller that prints the
 // list (`fleet status`, a job log) must not produce output that changes order
 // between runs on a build of apptainer that stops sorting.
-func (i *RealInstances) List(ctx context.Context) ([]jobs.Instance, error) {
+func (i *RealInstances) List(ctx context.Context, opts jobs.ListOptions) ([]jobs.Instance, error) {
 	stdout, _, err := i.run.Run(ctx, Spec{
 		Program:  i.Bin,
 		Args:     []string{"instance", "list", "--json"},
-		ExtraEnv: i.env(nil),
+		ExtraEnv: i.env(opts.Namespace, nil),
 		Timeout:  instanceListTimeout,
 	})
 	if err != nil {
@@ -176,7 +192,7 @@ func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 	// refusal is a jobs.ErrRefused with a sentence, rather than an exit status
 	// and a line of apptainer's stderr, and it means the fake and the host
 	// refuse the same way.
-	running, err := i.List(ctx)
+	running, err := i.List(ctx, jobs.ListOptions{Namespace: spec.Namespace})
 	if err != nil {
 		return err
 	}
@@ -196,7 +212,7 @@ func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 	_, _, err = i.run.Run(ctx, Spec{
 		Program:  i.Bin,
 		Args:     argv,
-		ExtraEnv: i.env(childEnv),
+		ExtraEnv: i.env(spec.Namespace, childEnv),
 		Timeout:  instanceRunTimeout,
 	})
 	return err
@@ -223,12 +239,13 @@ func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, ho
 	}
 	argv := append([]string{"exec"}, binds...)
 	argv = append(argv, sif, "cp", "-R", containerDir+"/.", "/__seed/")
-	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv, ExtraEnv: i.env(nil), Timeout: instanceRunTimeout})
+	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv,
+		ExtraEnv: i.env(jobs.NamespaceCtl, nil), Timeout: instanceRunTimeout})
 	return err
 }
 
-// Stop is `apptainer instance stop <name>`, and an instance that is not
-// running is SUCCESS.
+// Stop is `apptainer instance stop <name>` in opts.Namespace, and an instance
+// that is not running THERE is SUCCESS.
 //
 // Two ways of establishing that, because one message is not a contract.
 // apptainer 1.5.3 answers exit 1 with "no instance found" on stderr; a build
@@ -236,7 +253,11 @@ func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, ho
 // resumed job, `fleet stop --all` over a half-down fleet — into a failed job.
 // So a failure whose text does not say "absent" is checked against List, and a
 // name that is not there is a stop that has nothing left to do.
-func (i *RealInstances) Stop(ctx context.Context, name string) error {
+//
+// "Not there" is a statement about ONE registry, and the namespace decides
+// which. A caller that needs the PORT freed rather than the instance absent
+// must not read this success as that proof (see jobs.Instances.Stop).
+func (i *RealInstances) Stop(ctx context.Context, name string, opts jobs.StopOptions) error {
 	// The allowlist applies to a stop more than to a start: this is the call
 	// that takes something down, and the account runs instances this control
 	// plane did not start.
@@ -246,15 +267,16 @@ func (i *RealInstances) Stop(ctx context.Context, name string) error {
 	_, _, err := i.run.Run(ctx, Spec{
 		Program:  i.Bin,
 		Args:     []string{"instance", "stop", name},
-		ExtraEnv: i.env(nil),
+		ExtraEnv: i.env(opts.Namespace, nil),
 		Timeout:  instanceStopTimeout,
 	})
 	if err == nil || isNoSuchInstance(err) {
 		return nil
 	}
-	// The List fallback answers about THIS account's instances, which is what
-	// the ctl manages and all it can stop.
-	running, lerr := i.List(ctx)
+	// The List fallback answers about THIS account's instances in the SAME
+	// registry the stop acted in — any other one would answer a different
+	// question from the one that just failed.
+	running, lerr := i.List(ctx, jobs.ListOptions{Namespace: opts.Namespace})
 	if lerr != nil {
 		return err
 	}

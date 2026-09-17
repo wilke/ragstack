@@ -355,7 +355,7 @@ func (instanceSupervisor) running(ctx context.Context, sc *jobs.StepContext, c c
 	if c.Name == "api" {
 		return apiRunning(ctx, sc, c)
 	}
-	return instanceRunning(ctx, sc, c.Instance)
+	return instanceRunning(ctx, sc, c.Instance, jobs.NamespaceCtl)
 }
 
 // ---------------------------------------------------------------- stores
@@ -400,7 +400,7 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 			append(append(st.BindArgs(), st.EnvArgs()...), append([]string{sif, name}, st.Args...)...)...)}},
 		Warnings: warnings,
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			up, err := instanceRunning(ctx, sc, name)
+			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
 			if err != nil {
 				return "", err
 			}
@@ -447,10 +447,11 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 			return "started " + name, nil
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "stopped " + name, sc.Ops.Drivers.Instances().Stop(ctx, name)
+			return "stopped " + name, sc.Ops.Drivers.Instances().Stop(ctx, name,
+				jobs.StopOptions{Namespace: jobs.NamespaceCtl})
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
-			up, err := instanceRunning(ctx, sc, name)
+			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
 			if err != nil {
 				return jobs.ReconcileStuck, err
 			}
@@ -477,13 +478,14 @@ func (instanceSupervisor) stopStore(p *planner, c component) error {
 			if err := sc.Checkpoint("instance:" + name); err != nil {
 				return "", err
 			}
-			if err := sc.Ops.Drivers.Instances().Stop(ctx, name); err != nil {
+			if err := sc.Ops.Drivers.Instances().Stop(ctx, name,
+				jobs.StopOptions{Namespace: jobs.NamespaceCtl}); err != nil {
 				return "", err
 			}
 			return "stopped " + name, nil
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
-			up, err := instanceRunning(ctx, sc, name)
+			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
 			if err != nil {
 				return jobs.ReconcileStuck, err
 			}
@@ -525,18 +527,32 @@ func seedESConfig(ctx context.Context, sc *jobs.StepContext, sif, containerDir, 
 	return "seeded " + hostDir + " from " + sif + ":" + containerDir, nil
 }
 
-// instanceRunning asks the instance table, by name.
-func instanceRunning(ctx context.Context, sc *jobs.StepContext, name string) (bool, error) {
-	list, err := sc.Ops.Drivers.Instances().List(ctx)
+// instanceRunning asks ONE instance table, by name.
+//
+// The namespace is a parameter rather than a default because the answer "it is
+// not running" is only ever true OF A REGISTRY: the ctl's own for everything
+// the ctl started, the releasing account's default for a tenant somebody
+// started by hand (jobs.InstanceNamespace).
+func instanceRunning(ctx context.Context, sc *jobs.StepContext, name string,
+	ns jobs.InstanceNamespace) (bool, error) {
+	_, up, err := instanceIn(ctx, sc, name, ns)
+	return up, err
+}
+
+// instanceIn is instanceRunning with the ROW: the pid a caller needs to prove
+// identity against the port.
+func instanceIn(ctx context.Context, sc *jobs.StepContext, name string,
+	ns jobs.InstanceNamespace) (jobs.Instance, bool, error) {
+	list, err := sc.Ops.Drivers.Instances().List(ctx, jobs.ListOptions{Namespace: ns})
 	if err != nil {
-		return false, err
+		return jobs.Instance{}, false, err
 	}
 	for _, in := range list {
 		if in.Name == name {
-			return true, nil
+			return in, true, nil
 		}
 	}
-	return false, nil
+	return jobs.Instance{}, false, nil
 }
 
 // postgresPassword reads the value out of the tenant's secrets.env.
@@ -589,23 +605,127 @@ func readEnvFile(ctx context.Context, sc *jobs.StepContext, path string) (map[st
 
 // ---------------------------------------------------------------- api
 
+// apiLaunch is everything a spawn of this tenant's API needs, resolved from
+// the ROW at plan time: the argv render.APIArgv produces, the two env files
+// the child's environment is read out of, the pidfile, the log, and the store
+// probes the spawn waits on.
+//
+// It exists so that there is exactly ONE launch. `supervisor: instance` starts
+// the API with it, and so does the handover release's ROLLBACK — the rollback
+// that used to do nothing but print `restore.sh`, which is how the first real
+// release left the hackathon tenant's API down for ten minutes while the job
+// it belonged to reported a rollback. A rollback that restarts what the job
+// stopped has to start the SAME process the row describes, and the only way to
+// keep that true under later edits is for both callers to read one struct.
+//
+// The account is whoever runs the job: the release runs as the tenant's owner,
+// which is the account whose uvicorn it stopped.
+type apiLaunch struct {
+	Program string
+	Args    []string
+	// UnitEnv is the api unit's `Environment=` lines — the third and lowest
+	// layer of the child's environment, under tenant.env and secrets.env.
+	UnitEnv []string
+	// Dir is the working directory: <worktree>/python, the same one the unit's
+	// WorkingDirectory names and the one stopAPIProcess's identity check
+	// compares /proc/<pid>/cwd against.
+	Dir      string
+	Worktree string
+	PidFile  string
+	LogPath  string
+	// TenantEnv and SecretsEnv are PATHS. No value read out of either ever
+	// leaves apiEnviron.
+	TenantEnv    string
+	SecretsEnv   string
+	Port         int
+	OwnStores    []storeProbe
+	SharedStores []storeProbe
+}
+
+// apiLaunch resolves the launch from the row. It is a plan-time call: it
+// renders an argv and reads nothing off the host.
+func (p *planner) apiLaunch(port int) (apiLaunch, error) {
+	program, args, unitEnv, err := render.APIArgv(p.t, p.unitConfig())
+	if err != nil {
+		return apiLaunch{}, err
+	}
+	tp := p.tpaths
+	return apiLaunch{
+		Program: program, Args: args, UnitEnv: unitEnv,
+		Dir: filepath.Join(p.t.Worktree, "python"), Worktree: p.t.Worktree,
+		PidFile: p.apiPidFile(), LogPath: tp.APILog,
+		TenantEnv: tp.TenantEnv, SecretsEnv: tp.SecretsEnv, Port: port,
+		OwnStores: ownStoreProbes(p.t, tp), SharedStores: sharedStoreProbes(p.t, tp),
+	}, nil
+}
+
+// startAPIProcess is the whole start: the already-running check, the store
+// waits, the environment read at RUN time, and the pidfile checkpointed before
+// the spawn that writes it.
+func startAPIProcess(ctx context.Context, sc *jobs.StepContext, l apiLaunch) (string, error) {
+	up, pid, err := apiRunningPID(ctx, sc, l.PidFile, l.Port)
+	if err != nil {
+		return "", err
+	}
+	if up {
+		sc.Logf("the API is already running as pid %d", pid)
+		return fmt.Sprintf("already running: pid %d", pid), nil
+	}
+	// The stores first, exactly as the api unit's ExecStartPre `wait-ready`
+	// does: uvicorn's startup creates the qdrant collection and the
+	// elasticsearch index, and an API spawned while Elasticsearch is still
+	// opening its segments dies on a connection timeout — coconut's first
+	// instance-mode selftest did, fifteen seconds after the spawn.
+	if err := awaitStores(ctx, sc, l.OwnStores, createReadyTimeout); err != nil {
+		return "", err
+	}
+	// Then the stores this tenant does NOT own. The ctl did not start them and
+	// never will — they belong to the other account — but it has to WAIT for
+	// them, because at boot the two accounts run independently: wilke's
+	// restore.sh brings the shared qdrant and elasticsearch up, svcbvbrc's
+	// @reboot crontab line runs `fleet start --all`, and nothing orders the
+	// two. Without this wait the API of a shared-store tenant is spawned
+	// first, cannot reach a store that is half a minute away, and dies — the
+	// reboot in which three tenants came back and one did not.
+	if err := awaitStores(ctx, sc, l.SharedStores, sharedStoreWait); err != nil {
+		return "", fmt.Errorf("%w (the ctl does not start this store: it belongs to another account, and "+
+			"this wait is all it can do)", err)
+	}
+	env, err := apiEnviron(ctx, sc, l.TenantEnv, l.SecretsEnv, l.UnitEnv)
+	if err != nil {
+		return "", err
+	}
+	// The PIDFILE is the durable record — it is what `running`, the stop and
+	// every later reconcile read — so its PATH is checkpointed before the
+	// spawn that writes it. The pid follows once there is one.
+	if err := sc.Checkpoint("pidfile:" + l.PidFile); err != nil {
+		return "", err
+	}
+	pid, err = sc.Ops.Drivers.Proc().Spawn(ctx, jobs.SpawnSpec{
+		Program: l.Program, Args: l.Args, Dir: l.Dir,
+		Env: env, LogPath: l.LogPath, PidFile: l.PidFile,
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := sc.Checkpoint("pid:" + strconv.Itoa(pid)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("started pid %d (log %s)", pid, l.LogPath), nil
+}
+
 // startAPI plans the detached uvicorn.
 func (instanceSupervisor) startAPI(p *planner, c component) error {
-	program, args, unitEnv, err := render.APIArgv(p.t, p.unitConfig())
+	l, err := p.apiLaunch(c.Port)
 	if err != nil {
 		return p.refuse("%s's API cannot be started as it is recorded: %v", p.t.Name, err)
 	}
-	tp := p.tpaths
-	pidfile, logPath := p.apiPidFile(), tp.APILog
-	worktree, port := p.t.Worktree, c.Port
-	tenantEnv, secretsEnv := tp.TenantEnv, tp.SecretsEnv
-	ownStores := ownStoreProbes(p.t, tp)
-	sharedStores := sharedStoreProbes(p.t, tp)
+	pidfile, port := l.PidFile, l.Port
 
 	p.addFor("proc", step{
 		Kind: "proc", Title: fmt.Sprintf("start the API detached once its stores answer (pidfile %s)", filepath.Base(pidfile)),
 		Targets:  []string{pidfile},
-		WouldRun: []model.WouldRun{{Argv: append([]string{program}, args...)}},
+		WouldRun: []model.WouldRun{{Argv: append([]string{l.Program}, l.Args...)}},
 		WouldWrite: []model.WouldWrite{
 			{Path: pidfile, Mode: "0644", Preview: model.NullString("")},
 		},
@@ -614,61 +734,10 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 			"there is no restart-on-failure in instance mode: a dead API comes back when `fleet start --all` " +
 				"next runs, which is why the runbook suggests a periodic one"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			up, pid, err := apiRunningPID(ctx, sc, pidfile, port)
-			if err != nil {
-				return "", err
-			}
-			if up {
-				sc.Logf("the API is already running as pid %d", pid)
-				return fmt.Sprintf("already running: pid %d", pid), nil
-			}
-			// The stores first, exactly as the api unit's ExecStartPre
-			// `wait-ready` does: uvicorn's startup creates the qdrant
-			// collection and the elasticsearch index, and an API spawned
-			// while Elasticsearch is still opening its segments dies on a
-			// connection timeout — coconut's first instance-mode selftest
-			// did, fifteen seconds after the spawn.
-			if err := awaitStores(ctx, sc, ownStores, createReadyTimeout); err != nil {
-				return "", err
-			}
-			// Then the stores this tenant does NOT own. The ctl did not start
-			// them and never will — they belong to the other account — but it
-			// has to WAIT for them, because at boot the two accounts run
-			// independently: wilke's restore.sh brings the shared qdrant and
-			// elasticsearch up, svcbvbrc's @reboot crontab line runs `fleet
-			// start --all`, and nothing orders the two. Without this wait the
-			// API of a shared-store tenant is spawned first, cannot reach a
-			// store that is half a minute away, and dies — the reboot in which
-			// three tenants came back and one did not.
-			if err := awaitStores(ctx, sc, sharedStores, sharedStoreWait); err != nil {
-				return "", fmt.Errorf("%w (the ctl does not start this store: it belongs to another account, and "+
-					"this wait is all it can do)", err)
-			}
-			env, err := apiEnviron(ctx, sc, tenantEnv, secretsEnv, unitEnv)
-			if err != nil {
-				return "", err
-			}
-			// The PIDFILE is the durable record — it is what `running`, the
-			// stop and every later reconcile read — so its PATH is
-			// checkpointed before the spawn that writes it. The pid follows
-			// once there is one.
-			if err := sc.Checkpoint("pidfile:" + pidfile); err != nil {
-				return "", err
-			}
-			pid, err = sc.Ops.Drivers.Proc().Spawn(ctx, jobs.SpawnSpec{
-				Program: program, Args: args, Dir: filepath.Join(worktree, "python"),
-				Env: env, LogPath: logPath, PidFile: pidfile,
-			})
-			if err != nil {
-				return "", err
-			}
-			if err := sc.Checkpoint("pid:" + strconv.Itoa(pid)); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("started pid %d (log %s)", pid, logPath), nil
+			return startAPIProcess(ctx, sc, l)
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return stopAPIProcess(ctx, sc, pidfile, worktree, port)
+			return stopAPIProcess(ctx, sc, pidfile, l.Worktree, port)
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
 			up, _, err := apiRunningPID(ctx, sc, pidfile, port)

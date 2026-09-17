@@ -509,3 +509,54 @@ func (p *RealProc) Alive(_ context.Context, pid int) (bool, error) {
 	// fields[0] is field 3, the state.
 	return fields[0] != "Z", nil
 }
+
+// maxProcAncestry bounds the walk upwards. A pid tree deeper than this on a
+// host that runs six tenants is a loop in /proc that nothing else is going to
+// notice, and an unbounded loop inside a step that is about to stop a store is
+// the wrong place to find out.
+const maxProcAncestry = 64
+
+// Descends walks /proc/<pid>/stat's parent field upwards, looking for ancestor.
+//
+// Field 4 of stat is the ppid; procStatFields returns the fields from field 3
+// on, so it is fields[1]. The file is world-readable, which is what lets this
+// answer about an apptainer instance's children across accounts — and an
+// instance's children are the point: `apptainer instance list` names the
+// STARTER process, and the process holding the tenant's port is its child (on
+// coconut, postgres-hackathon is pid 630746 and the postgres listening on
+// 24085 is pid 631059, its direct child).
+//
+// A pid that is gone, or whose ancestry runs into a process that is, is
+// (false, nil): the caller asked whether one process belongs to another, and
+// "it is not running any more" answers that.
+func (p *RealProc) Descends(_ context.Context, pid, ancestor int) (bool, error) {
+	if pid <= 0 || ancestor <= 0 {
+		return false, fmt.Errorf("%w: %d and %d are not both pids the ctl asks about", jobs.ErrRefused, pid, ancestor)
+	}
+	for i := 0; i < maxProcAncestry; i++ {
+		if pid == ancestor {
+			return true, nil
+		}
+		// pid 1 has no parent worth walking to, and neither does a process
+		// whose parent is 0 (a kernel thread, or a stat this driver misread).
+		if pid <= 1 {
+			return false, nil
+		}
+		fields, err := procStatFields(p.dir(pid))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return false, nil
+		case err != nil:
+			return false, err
+		case len(fields) < 2:
+			return false, fmt.Errorf("%w: /proc/%d/stat has no ppid field", jobs.ErrRefused, pid)
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return false, fmt.Errorf("%w: /proc/%d/stat field 4 is %q, not a pid", jobs.ErrRefused, pid, fields[1])
+		}
+		pid = ppid
+	}
+	return false, fmt.Errorf("%w: the ancestry of pid %d is more than %d deep; /proc is not answering a question "+
+		"this driver can use", jobs.ErrRefused, pid, maxProcAncestry)
+}

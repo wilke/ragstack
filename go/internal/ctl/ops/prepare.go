@@ -658,13 +658,22 @@ func planSetSupervisor(_ context.Context, p *planner, args map[string]any) error
 			}
 			if want == supervisorManual {
 				var running []string
+				// BOTH registries. The question this refusal asks is "would
+				// recording `manual` orphan a process", and an instance is
+				// just as orphaned whether the ctl started it in its own
+				// namespace or the operator started it by hand in the
+				// account's default one (jobs.InstanceNamespace) — which is
+				// the pair a half-finished handover leaves behind.
 				for _, in := range instances {
-					up, err := instanceRunning(ctx, sc, in)
-					if err != nil {
-						return "", err
-					}
-					if up {
-						running = append(running, in)
+					for _, ns := range []jobs.InstanceNamespace{jobs.NamespaceCtl, jobs.NamespaceAccountDefault} {
+						up, err := instanceRunning(ctx, sc, in, ns)
+						if err != nil {
+							return "", err
+						}
+						if up {
+							running = append(running, in)
+							break
+						}
 					}
 				}
 				// The API counts too, and it was the leg this check forgot:

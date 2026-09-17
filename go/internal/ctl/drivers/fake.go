@@ -116,12 +116,22 @@ type FakeOptions struct {
 	// answers a fact rather than a fixture. A tenant created AFTER the driver
 	// set was built says so with FakeInstances.BindInstancePort.
 	InstancePorts map[string]int
-	// RunningInstances are the instances already up when the fake is built —
-	// an instance-supervised tenant the fixture says is ACTIVE. Without them
-	// such a tenant looks stopped to `running`, so a fence would find nothing
-	// to stop and a start would run a second copy of a store that is already
-	// there.
+	// RunningInstances are the instances already up IN THE CTL's REGISTRY when
+	// the fake is built — an instance-supervised tenant the fixture says is
+	// ACTIVE. Without them such a tenant looks stopped to `running`, so a
+	// fence would find nothing to stop and a start would run a second copy of
+	// a store that is already there.
 	RunningInstances []string
+	// AccountRunningInstances are the instances up in the running ACCOUNT's
+	// DEFAULT registry ($HOME/.apptainer) — a tenant somebody started by hand,
+	// which is every tenant a handover release acts on.
+	//
+	// The two tables are separate because on the host they are separate
+	// directories, and a fake with one table could not have caught the release
+	// that reported "stopped postgres-hackathon" while postgres-hackathon kept
+	// serving: the ctl looked in its OWN registry, found nothing, and called
+	// that a stop.
+	AccountRunningInstances []string
 	// AlivePIDs are the pids Proc.Alive answers true for without this fake
 	// having spawned them — the pid in an adopted or fixture tenant's pidfile
 	// — mapped to the port each one holds (0 for none). Spawn fills the same
@@ -234,14 +244,15 @@ func NewFake(opts FakeOptions) *Fake {
 	// store a readiness probe can find.
 	f.instances = &FakeInstances{
 		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
-		Running: map[string]jobs.Instance{}, nextPID: 21001,
+		Running: map[string]jobs.Instance{}, AccountRunning: map[string]jobs.Instance{}, nextPID: 21001,
 	}
+	// In this order, and not over a map of the two: the pids this fake hands
+	// out are part of what a test asserts, and a map would shuffle them.
 	for _, name := range opts.RunningInstances {
-		f.instances.Running[name] = jobs.Instance{Name: name, PID: f.instances.nextPID, Image: "fixture.sif"}
-		f.instances.nextPID++
-		if port, ok := f.instances.ports[name]; ok {
-			f.proc.Ports[port] = true
-		}
+		f.instances.start(jobs.NamespaceCtl, name, "fixture.sif")
+	}
+	for _, name := range opts.AccountRunningInstances {
+		f.instances.start(jobs.NamespaceAccountDefault, name, "fixture.sif")
 	}
 	for pid, port := range opts.AlivePIDs {
 		if f.proc.alive == nil {
@@ -629,6 +640,10 @@ type FakeProc struct {
 	// frees the port the way a process that really died does.
 	spawnPorts map[int]int
 	nextSpawn  int
+	// parents maps a pid to its parent, which is what Descends walks. It is
+	// filled by FakeInstances when it starts an instance: the process on the
+	// port is the instance's CHILD, as it is on the host.
+	parents map[int]int
 }
 
 // Owner is the process behind the LISTEN socket on port.
@@ -800,6 +815,43 @@ func (p *FakeProc) Alive(_ context.Context, pid int) (bool, error) {
 	return p.alive[pid], nil
 }
 
+// Descends walks the recorded parent map, as the real driver walks
+// /proc/<pid>/stat. A pid with no recorded parent is its own root: it descends
+// from itself and from nothing else, which is the answer for every pid in a
+// fixture that has not said otherwise.
+func (p *FakeProc) Descends(_ context.Context, pid, ancestor int) (bool, error) {
+	if err := p.r.record("proc", "Descends", strconv.Itoa(pid), strconv.Itoa(ancestor)); err != nil {
+		return false, err
+	}
+	if pid <= 0 || ancestor <= 0 {
+		return false, fmt.Errorf("%w: %d and %d are not both pids the ctl asks about", jobs.ErrRefused, pid, ancestor)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := 0; i < 64; i++ {
+		if pid == ancestor {
+			return true, nil
+		}
+		next, ok := p.parents[pid]
+		if !ok || next == 0 {
+			return false, nil
+		}
+		pid = next
+	}
+	return false, fmt.Errorf("%w: this fixture's process ancestry is a loop", jobs.ErrRefused)
+}
+
+// SetParent records that pid's parent is ppid — the fixture form of a process
+// tree, for a test that needs one the instances fake did not build.
+func (p *FakeProc) SetParent(pid, ppid int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.parents == nil {
+		p.parents = map[int]int{}
+	}
+	p.parents[pid] = ppid
+}
+
 // portFromArgs reads the `--port <n>` an api command line carries.
 func portFromArgs(args []string) (int, bool) {
 	for i, a := range args {
@@ -815,13 +867,24 @@ func portFromArgs(args []string) (int, bool) {
 
 // ---------------------------------------------------------------- instances
 
-// FakeInstances is `apptainer instance` as a map of running instances.
+// FakeInstances is `apptainer instance` as TWO maps of running instances.
 //
-// It models the two facts an instance supervisor depends on and a stub could
-// not give it: a name is UNIQUE (apptainer refuses a second instance under a
-// name that is taken, which is what makes a start idempotency check possible
-// at all), and a running store OWNS A PORT (so a readiness gate answers a fact
-// rather than a fixture).
+// It models the facts an instance supervisor depends on and a stub could not
+// give it:
+//
+//   - a name is UNIQUE WITHIN A REGISTRY (apptainer refuses a second instance
+//     under a name that is taken, which is what makes a start idempotency
+//     check possible at all);
+//   - there is MORE THAN ONE REGISTRY. The ctl forces its own
+//     APPTAINER_CONFIGDIR on its calls; a tenant somebody started by hand is
+//     in the account's default one. A fake with a single table said "stopped"
+//     to a release that had looked in the empty one, which is precisely the
+//     outage this fixture now reproduces;
+//   - a running store OWNS A PORT, and the process on that port is the
+//     instance's CHILD, not the instance's own pid (coconut: instance
+//     postgres-hackathon 630746, postgres 631059 on 24085). An identity check
+//     written against pid equality passes here and refuses there, so the fake
+//     models the child.
 type FakeInstances struct {
 	r    *recorder
 	mu   sync.Mutex
@@ -831,8 +894,11 @@ type FakeInstances struct {
 	// ports links an instance name to the port running it binds.
 	ports   map[string]int
 	nextPID int
-	// Running is the instance table, by name.
+	// Running is the CTL's instance table (jobs.NamespaceCtl), by name.
 	Running map[string]jobs.Instance
+	// AccountRunning is the running account's DEFAULT instance table
+	// (jobs.NamespaceAccountDefault), by name.
+	AccountRunning map[string]jobs.Instance
 	// Seeded records every SeedConfigDir as "<sif>:<containerDir>→<hostDir>",
 	// in order: what a test reads to see that the ES config bind was filled
 	// from the image BEFORE the instance started.
@@ -841,23 +907,93 @@ type FakeInstances struct {
 
 var _ jobs.Instances = (*FakeInstances)(nil)
 
-// List is the running instances, sorted by name — `apptainer instance list`
-// sorts too, and a driver whose order came out of a Go map would make every
-// test that prints it flaky.
-func (i *FakeInstances) List(context.Context) ([]jobs.Instance, error) {
-	if err := i.r.record("instances", "List"); err != nil {
+// table is the registry a namespace names. Caller holds the lock.
+func (i *FakeInstances) table(ns jobs.InstanceNamespace) map[string]jobs.Instance {
+	if ns == jobs.NamespaceAccountDefault {
+		return i.AccountRunning
+	}
+	return i.Running
+}
+
+// nsLabel is what a call record says about the namespace, so a test reading
+// the trace sees WHICH registry a step asked about — the fact the outage
+// turned on.
+func nsLabel(ns jobs.InstanceNamespace) string {
+	if ns == jobs.NamespaceAccountDefault {
+		return "account-default"
+	}
+	return "ctl"
+}
+
+// start puts an instance in one registry and makes it hold its port, through a
+// CHILD process the way apptainer does. Caller holds the lock (or is the
+// constructor, which is not shared yet).
+func (i *FakeInstances) start(ns jobs.InstanceNamespace, name, sif string) jobs.Instance {
+	if i.nextPID == 0 {
+		i.nextPID = 21001
+	}
+	pid := i.nextPID
+	// Two pids: the instance's starter and the service inside it. They are
+	// consecutive rather than equal because an identity check that compares
+	// the port's owner to the instance's pid is the bug this models.
+	servicePID := pid + 1
+	i.nextPID += 2
+	in := jobs.Instance{Name: name, PID: pid, Image: sif}
+	i.table(ns)[name] = in
+	if port, ok := i.ports[name]; ok {
+		i.proc.mu.Lock()
+		if i.proc.Ports == nil {
+			i.proc.Ports = map[int]bool{}
+		}
+		if i.proc.Owners == nil {
+			i.proc.Owners = map[int]PortOwner{}
+		}
+		if i.proc.parents == nil {
+			i.proc.parents = map[int]int{}
+		}
+		i.proc.Ports[port] = true
+		i.proc.Owners[port] = PortOwner{PID: servicePID, UID: os.Getuid()}
+		i.proc.parents[servicePID] = pid
+		i.proc.mu.Unlock()
+	}
+	return in
+}
+
+// stop removes an instance from one registry and frees its port. Caller holds
+// the lock.
+func (i *FakeInstances) stop(ns jobs.InstanceNamespace, name string) {
+	delete(i.table(ns), name)
+	port, ok := i.ports[name]
+	if !ok {
+		return
+	}
+	i.proc.mu.Lock()
+	delete(i.proc.Ports, port)
+	if o, had := i.proc.Owners[port]; had {
+		delete(i.proc.parents, o.PID)
+	}
+	delete(i.proc.Owners, port)
+	i.proc.mu.Unlock()
+}
+
+// List is the running instances of ONE registry, sorted by name — `apptainer
+// instance list` sorts too, and a driver whose order came out of a Go map
+// would make every test that prints it flaky.
+func (i *FakeInstances) List(_ context.Context, opts jobs.ListOptions) ([]jobs.Instance, error) {
+	if err := i.r.record("instances", "List", nsLabel(opts.Namespace)); err != nil {
 		return nil, err
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	names := make([]string, 0, len(i.Running))
-	for n := range i.Running {
+	tbl := i.table(opts.Namespace)
+	names := make([]string, 0, len(tbl))
+	for n := range tbl {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	out := make([]jobs.Instance, 0, len(names))
 	for _, n := range names {
-		out = append(out, i.Running[n])
+		out = append(out, tbl[n])
 	}
 	return out, nil
 }
@@ -869,7 +1005,7 @@ func (i *FakeInstances) List(context.Context) ([]jobs.Instance, error) {
 // either, which is public but long enough to bury the two facts a reader of
 // the call log wants.
 func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
-	if err := i.r.record("instances", "Run", spec.Name, spec.SIF); err != nil {
+	if err := i.r.record("instances", "Run", spec.Name, spec.SIF, nsLabel(spec.Namespace)); err != nil {
 		return err
 	}
 	if err := checkInstanceName(spec.Name); err != nil {
@@ -884,28 +1020,26 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	// error, not a no-op. An instance-mode `start` that treated it as success
 	// would report a tenant started from the artifact it just checked out
 	// while the OLD process kept serving.
-	if _, ok := i.Running[spec.Name]; ok {
+	//
+	// "Taken" is per REGISTRY, as it is on the host: the same name can be
+	// running in the account's default registry and free in the ctl's, which
+	// is the situation every handed-over tenant passes through.
+	if _, ok := i.table(spec.Namespace)[spec.Name]; ok {
 		return fmt.Errorf("%w: instance %s is already running", jobs.ErrRefused, spec.Name)
 	}
-	if i.nextPID == 0 {
-		i.nextPID = 21001
-	}
-	pid := i.nextPID
-	i.nextPID++
-	i.Running[spec.Name] = jobs.Instance{Name: spec.Name, PID: pid, Image: spec.SIF}
-	if port, ok := i.ports[spec.Name]; ok {
-		i.proc.mu.Lock()
-		i.proc.Ports[port] = true
-		i.proc.mu.Unlock()
-	}
+	i.start(spec.Namespace, spec.Name, spec.SIF)
 	return nil
 }
 
-// Stop stops an instance, and an instance that is not running is SUCCESS —
-// the interface's rule, because every caller of Stop is a step that gets
-// re-run.
-func (i *FakeInstances) Stop(_ context.Context, name string) error {
-	if err := i.r.record("instances", "Stop", name); err != nil {
+// Stop stops an instance IN ONE REGISTRY, and an instance that is not running
+// there is SUCCESS — the interface's rule, because every caller of Stop is a
+// step that gets re-run.
+//
+// It is also exactly how a stop in the WRONG registry looks, which is why the
+// handover release no longer treats this success as proof of anything: it
+// checks the namespace first and the port afterwards.
+func (i *FakeInstances) Stop(_ context.Context, name string, opts jobs.StopOptions) error {
+	if err := i.r.record("instances", "Stop", name, nsLabel(opts.Namespace)); err != nil {
 		return err
 	}
 	// The allowlist applies to a stop too, and more than to a start: this is
@@ -915,15 +1049,10 @@ func (i *FakeInstances) Stop(_ context.Context, name string) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if _, ok := i.Running[name]; !ok {
+	if _, ok := i.table(opts.Namespace)[name]; !ok {
 		return nil
 	}
-	delete(i.Running, name)
-	if port, ok := i.ports[name]; ok {
-		i.proc.mu.Lock()
-		delete(i.proc.Ports, port)
-		i.proc.mu.Unlock()
-	}
+	i.stop(opts.Namespace, name)
 	return nil
 }
 
@@ -969,33 +1098,47 @@ func (i *FakeInstances) BindInstancePort(name string, port int) {
 	i.ports[name] = port
 }
 
-// Names lists the running instances, sorted — the assertion a test usually
-// wants, without walking the table.
-func (i *FakeInstances) Names() []string {
+// Names lists the CTL registry's running instances, sorted — the assertion a
+// test usually wants, without walking the table.
+func (i *FakeInstances) Names() []string { return i.namesOf(jobs.NamespaceCtl) }
+
+// AccountNames is Names for the ACCOUNT's default registry: what `apptainer
+// instance list` prints for the operator who started the tenant by hand.
+func (i *FakeInstances) AccountNames() []string { return i.namesOf(jobs.NamespaceAccountDefault) }
+
+func (i *FakeInstances) namesOf(ns jobs.InstanceNamespace) []string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	out := make([]string, 0, len(i.Running))
-	for n := range i.Running {
+	tbl := i.table(ns)
+	out := make([]string, 0, len(tbl))
+	for n := range tbl {
 		out = append(out, n)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// StopAll clears the instance table without recording a call: it is a
+// StartInAccount puts an instance in the ACCOUNT's default registry as a
+// FIXTURE adjustment — a hand-started store, for a tenant the driver set did
+// not know about when it was built. It is FakeInstances.BindInstancePort's
+// companion and records no call, for the same reason StopAll does not.
+func (i *FakeInstances) StartInAccount(name string) jobs.Instance {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.start(jobs.NamespaceAccountDefault, name, "fixture.sif")
+}
+
+// StopAll clears BOTH instance tables without recording a call: it is a
 // FIXTURE adjustment ("this tenant has been stopped"), not something a step
 // did, and a test that had to call Stop() for each name would put those calls
 // in the trace it is about to assert.
 func (i *FakeInstances) StopAll() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	for name := range i.Running {
-		if port, ok := i.ports[name]; ok {
-			i.proc.mu.Lock()
-			delete(i.proc.Ports, port)
-			i.proc.mu.Unlock()
+	for _, ns := range []jobs.InstanceNamespace{jobs.NamespaceCtl, jobs.NamespaceAccountDefault} {
+		for name := range i.table(ns) {
+			i.stop(ns, name)
 		}
-		delete(i.Running, name)
 	}
 }
 

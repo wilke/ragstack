@@ -12,9 +12,13 @@ package ops
 // is visible in a test that only asserts the set of steps.
 
 import (
+	"context"
 	"errors"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -109,7 +113,19 @@ func TestHandoverReleaseRefusesUntilTheTenantIsPrepared(t *testing.T) {
 			tn.Stores.Elasticsearch.Capabilities.Stop = false
 		}, "--confirm-stores"},
 		{"a tenant that is not running", func(tn *registry.Tenant) { prepared(tn); tn.State = "stopped" }, "not active"},
-		{"a handover already in flight", released, "already has a handover in flight"},
+		// A handover already TAKEN is still a refusal — `--release` is
+		// re-entrant only over a row that is still at `released`. The row is
+		// built by hand rather than with `taken`, which also moves `owner` and
+		// `supervisor`: those two are checked earlier and would answer first,
+		// and what this case is about is the PHASE gate.
+		{"a handover somebody has already TAKEN", func(tn *registry.Tenant) {
+			released(tn)
+			tn.Handover.Phase = registry.HandoverTaken
+		}, "already has a handover in flight"},
+		{"a release somebody ELSE ran", func(tn *registry.Tenant) {
+			released(tn)
+			tn.Handover.ReleasedBy = "svcbvbrc"
+		}, "is the RELEASING account's to do"},
 		{"a row the ctl already supervises", func(tn *registry.Tenant) {
 			prepared(tn)
 			tn.Supervisor = supervisorInstance
@@ -148,6 +164,12 @@ func TestHandoverReleaseCountsAndRecordsBeforeItStopsAnything(t *testing.T) {
 		"probe: census: count every collection in the tenant's own qdrant",
 		"probe: census: count every index in the tenant's own elasticsearch",
 		"probe: census: the tenant API's own collection listing, with counts",
+		// The LAST read, and the one that decides whether this release can
+		// stop anything at all: both instances have to be in the RELEASING
+		// account's own apptainer registry and to hold the row's ports. It is
+		// here, before the registry write, so that a namespace mismatch is
+		// refused with the tenant entirely up (#585).
+		"instance: check that qdrant-dev, elasticsearch-dev are this account's and hold their ports",
 		"registry: record state: handover and the hand-off token",
 		"proc: stop the hand-started API through its pidfile (TERM, then KILL)",
 		"probe: verify nothing listens on 24040 (the API)",
@@ -655,6 +677,374 @@ func stepWarns(p *jobs.Planned, titleSubstr, warnSubstr string) bool {
 			if strings.Contains(w, warnSubstr) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------- PR-E3: the namespace
+
+// handStarted makes the fixture host look like a tenant somebody really
+// started by hand: its own qdrant and elasticsearch running as APPTAINER
+// INSTANCES IN THE RELEASING ACCOUNT'S DEFAULT REGISTRY, each holding the
+// row's ports through a child process — which is how coconut's hackathon
+// tenant was, and what the ctl's own registry did NOT hold.
+func handStarted(t *testing.T, oc jobs.Context, fake *drivers.Fake) {
+	t.Helper()
+	tn := oc.Tenant
+	fi := fake.FakeInstances()
+	for name, port := range map[string]int{
+		"qdrant-" + tn.ManifestName:        tn.Ports.QdrantHTTP,
+		"elasticsearch-" + tn.ManifestName: tn.Ports.ESHTTP,
+	} {
+		fi.BindInstancePort(name, port)
+		fi.StartInAccount(name)
+	}
+	fake.FakeProc().MarkAlive(4242, tn.Ports.API)
+}
+
+// The release acts in the RELEASING ACCOUNT'S apptainer namespace, and in no
+// other.
+//
+// This is the regression for the outage itself. Every apptainer call the ctl
+// makes is namespaced under `<CtlStateDir>/apptainer/config` (PR-D2), so that
+// the daemon's instances are findable from any session. A release acts on
+// instances the OWNER started by hand, which are in `$HOME/.apptainer`. With
+// the ctl's namespace forced on it, `apptainer instance stop postgres-hackathon`
+// looked in an empty registry, found nothing, and Stop's "not running is
+// success" rule reported a stop — over a postgres that held 24085 for another
+// ten minutes, with the tenant's API already down.
+func TestHandoverReleaseStopsInstancesInTheReleasingAccountsOwnNamespace(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	// And a DIFFERENT instance of the same name in the ctl's own registry, to
+	// prove the release does not reach for it: on a host mid-migration both
+	// exist, and stopping the wrong one takes down the wrong tenant.
+	fake.FakeInstances().Running["qdrant-"+oc.Tenant.ManifestName] =
+		jobs.Instance{Name: "qdrant-" + oc.Tenant.ManifestName, PID: 999001, Image: "other.sif"}
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	for _, want := range []string{
+		"instances.Stop(qdrant-dev,account-default)",
+		"instances.Stop(elasticsearch-dev,account-default)",
+	} {
+		if !hasCall(fake, want) {
+			t.Errorf("no %q in the call log:\n  %s", want, strings.Join(fake.CallKeys(), "\n  "))
+		}
+	}
+	for _, unwanted := range []string{
+		"instances.Stop(qdrant-dev,ctl)",
+		"instances.Stop(elasticsearch-dev,ctl)",
+	} {
+		if hasCall(fake, unwanted) {
+			t.Errorf("the release stopped an instance in the CONTROL PLANE's registry (%q): those are not the "+
+				"processes it released", unwanted)
+		}
+	}
+	if got := fake.FakeInstances().AccountNames(); len(got) != 0 {
+		t.Errorf("the account's registry still holds %v after the release", got)
+	}
+	if got := fake.FakeInstances().Names(); len(got) != 1 {
+		t.Errorf("the ctl's registry = %v; the release must not have touched it", got)
+	}
+}
+
+// A release whose instances are NOT in the namespace it would stop them in
+// refuses BEFORE the row is written and before the API is stopped.
+//
+// This is the coconut arrangement exactly: postgres-hackathon in the ctl's
+// scratch registry and nowhere the release looks, its port held. The old code
+// reached this state at step 9 of 10, with the API already down, and called
+// the stop a success. The new pre-step refuses at step 6 with the whole tenant
+// still up — and the refusal names the registry it looked in, because "not
+// running" from the wrong table is the fact an operator cannot otherwise see.
+func TestHandoverReleaseRefusesWhenTheInstanceIsInTheWrongNamespace(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	// The qdrant instance is in the CTL's registry instead — the state a
+	// release run with CTL_STATE_DIR pointing at a scratch directory sees.
+	fi := fake.FakeInstances()
+	name := "qdrant-" + oc.Tenant.ManifestName
+	delete(fi.AccountRunning, name)
+	fi.Running[name] = jobs.Instance{Name: name, PID: 630746, Image: "qdrant.sif"}
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+		if s.Plan.Kind == "registry" {
+			t.Fatal("the release wrote the row before it had checked the instances: a refusal after this point " +
+				"leaves the tenant mid-move for no reason")
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("the release = %v, want a refusal", err)
+	}
+	for _, want := range []string{"$HOME/.apptainer", "REPORT SUCCESS", name} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+	// Nothing was touched: the whole tenant is still up.
+	if listening, _ := fake.Proc().Listening(context.Background(), oc.Tenant.Ports.API); !listening {
+		t.Error("the API was stopped by a release that refused")
+	}
+	if oc.Fleet.Tenants["dev"].State != "active" {
+		t.Errorf("the row is %q after a refusal", oc.Fleet.Tenants["dev"].State)
+	}
+}
+
+// A stop that finds NO instance is a REFUSAL when the port is still held — not
+// the idempotent success the driver would otherwise report.
+//
+// The pre-step above catches this at plan-run time. This is the second reader,
+// for the window between the two: an instance that disappears from the
+// registry while the release is running, with its port still held, is the same
+// outage arriving a few seconds later.
+func TestHandoverReleaseStopRefusesWhenTheInstanceVanishedButThePortIsHeld(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+
+	name := "elasticsearch-" + oc.Tenant.ManifestName
+	var err error
+	for _, s := range p.Steps {
+		// Between the check and the stop: the instance leaves the registry
+		// (apptainer reaped it, or somebody's scratch CONFIGDIR moved) and the
+		// port stays held.
+		if s.Plan.Kind == "instance" && strings.Contains(s.Plan.Title, "stop the instance "+name) {
+			delete(fake.FakeInstances().AccountRunning, name)
+		}
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("the stop = %v, want a refusal rather than a reported stop", err)
+	}
+	if !strings.Contains(err.Error(), "will not report a stop it did not make") {
+		t.Errorf("the refusal reads %v", err)
+	}
+}
+
+// After the stop, the release WAITS for the instance to be gone and for every
+// port of the leg to free. `apptainer instance stop` returning is not that
+// proof: the take binds those ports as another account.
+func TestHandoverReleaseStopWaitsForTheInstanceAndItsPortsToGo(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	// A second port on the qdrant leg that the stop does not free — the gRPC
+	// port, held by something the instance stop did not take with it.
+	fake.FakeProc().SetOwner(oc.Tenant.Ports.QdrantGRPC, 777001, os.Getuid())
+
+	shortenInstanceWait(t)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("the stop = %v, want a refusal over the port it did not free", err)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(oc.Tenant.Ports.QdrantGRPC)) {
+		t.Errorf("the refusal does not name the port that is still held: %v", err)
+	}
+	if !strings.Contains(err.Error(), "the take would fail") {
+		t.Errorf("the refusal does not say why it matters: %v", err)
+	}
+}
+
+// shortenInstanceWait makes the post-stop poll finish inside a test.
+func shortenInstanceWait(t *testing.T) {
+	t.Helper()
+	timeout, poll := instanceGoneTimeout, instanceGonePoll
+	instanceGoneTimeout, instanceGonePoll = 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { instanceGoneTimeout, instanceGonePoll = timeout, poll })
+}
+
+// The identity check is ANCESTRY, not pid equality.
+//
+// `apptainer instance list` names the instance's starter process and the
+// server runs as its child (coconut: instance postgres-hackathon 630746, its
+// postgres 631059 on 24085). The check PR-E2 added compared the port's owner
+// to the instance's pid, which is false of every real instance on the host —
+// it passed only because the lookup above it, in the wrong registry, never
+// found one. So: a child of the instance is fine, and a stranger is refused.
+func TestHandoverReleaseAcceptsTheInstancesChildOnThePortAndRefusesAStranger(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	name := "qdrant-" + oc.Tenant.ManifestName
+	owner, _, err := fake.Proc().Owner(context.Background(), oc.Tenant.Ports.QdrantHTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == fake.FakeInstances().AccountRunning[name].PID {
+		t.Fatal("the fixture gives the instance and its listener one pid; the host does not")
+	}
+	// The child holds the port: the release plans and runs.
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	newRunner(oc, fake).runAll(t, p)
+
+	// And now a stranger on the port instead — a reused instance name, which
+	// is what this check exists for.
+	oc, fake = fixture(t, "dev", prepared)
+	handStarted(t, oc, fake)
+	fake.FakeProc().SetOwner(oc.Tenant.Ports.QdrantHTTP, 888001, os.Getuid())
+	p = planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	r := newRunner(oc, fake)
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("a port held by a stranger = %v, want a refusal", err)
+	}
+	if !strings.Contains(err.Error(), "does not descend from the instance") {
+		t.Errorf("the refusal reads %v", err)
+	}
+}
+
+// ---------------------------------------------------------------- PR-E3: re-entrancy
+
+// A row left at `handover.phase: released` with the tenant still running is
+// RE-RUNNABLE.
+//
+// That is the state coconut was left in: the release failed at its port check,
+// the API was restored by hand, and the row still said `handover`/`released`.
+// `--release` then refused "a handover is already in flight" and `--abandon`
+// refused "a port is still held" — two verbs, neither usable, and the way out
+// was editing the registry.
+//
+// The re-run keeps the token: a `--take` command the operator is holding must
+// not be silently invalidated by a retry, and the refusal they would get ("the
+// token does not match") names neither cause nor cure.
+func TestHandoverReleaseIsReEntrantOverAReleasedRow(t *testing.T) {
+	oc, fake := fixture(t, "dev", released)
+	handStarted(t, oc, fake)
+	was := oc.Tenant.Handover.Token
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	if !warnsAbout(p, "RE-RUNS that release") {
+		t.Errorf("the plan does not say it is a re-run: %v", p.Plan.Warnings)
+	}
+	if !warnsAbout(p, "NOT rotated") {
+		t.Errorf("the plan does not say what happens to the token: %v", p.Plan.Warnings)
+	}
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	tn := oc.Fleet.Tenants["dev"]
+	if tn.Handover == nil || tn.Handover.Token != was {
+		t.Fatalf("the re-run changed the token (%+v): the `--take` the operator already has would now be refused",
+			tn.Handover)
+	}
+	if tn.Handover.Phase != registry.HandoverReleased || tn.State != registry.StateHandover {
+		t.Errorf("the re-run left state %q phase %q", tn.State, tn.Handover.Phase)
+	}
+	if string(tn.Handover.StartedAt) != "2026-09-14T09:29:00Z" {
+		t.Errorf("started_at = %q, want the FIRST release's: the handover is one handover", tn.Handover.StartedAt)
+	}
+	if got := p.Result()["token"]; got != was {
+		t.Errorf("the job result advertises %v, want the token in the row", got)
+	}
+	if got := p.Result()["reentrant"]; got != true {
+		t.Errorf("the result does not say this was a re-run: %v", p.Result())
+	}
+	// And it really did the work again: the stores are down in the account's
+	// own registry.
+	if got := fake.FakeInstances().AccountNames(); len(got) != 0 {
+		t.Errorf("the re-run left %v running", got)
+	}
+}
+
+// A re-entrant release over a tenant whose stores are ALREADY stopped is not a
+// refusal either: the legs it has nothing to do for say so and it goes on.
+func TestHandoverReleaseReRunOverAnAlreadyStoppedTenantIsAllowed(t *testing.T) {
+	oc, fake := fixture(t, "dev", released)
+	// Nothing of this tenant is running: the first release got all the way
+	// through its stops and failed on something after them.
+	fake.FakeProc().FreePort(oc.Tenant.Ports.API)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	newRunner(oc, fake).runAll(t, p)
+	if oc.Fleet.Tenants["dev"].Handover == nil {
+		t.Fatal("the re-run cleared the block")
+	}
+}
+
+// `--abandon` over a row still at `released` is allowed while the RELEASING
+// account's own processes hold the ports: they are the originals, there is
+// nothing to stop, and `supervisor: manual` is exactly what is true of them.
+//
+// After a TAKE the refusal stands: those processes are the service account's.
+func TestHandoverAbandonAllowsTheReleasingAccountsOwnProcesses(t *testing.T) {
+	oc, fake := fixture(t, "dev", released)
+	handStarted(t, oc, fake)
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
+	if !warnsAbout(p, "STILL RUNNING") {
+		t.Errorf("the plan does not say the tenant is up: %v", p.Plan.Warnings)
+	}
+	newRunner(oc, fake).runAll(t, p)
+
+	tn := oc.Fleet.Tenants["dev"]
+	if tn.State != "active" || tn.Handover != nil || tn.Supervisor != supervisorManual || tn.Owner != "wilke" {
+		t.Errorf("the abandon left state %q handover %+v supervisor %q owner %q",
+			tn.State, tn.Handover, tn.Supervisor, tn.Owner)
+	}
+	// It stopped nothing.
+	if listening, _ := fake.Proc().Listening(context.Background(), tn.Ports.API); !listening {
+		t.Error("the abandon stopped the API; it writes the registry only")
+	}
+	if got := fake.FakeInstances().AccountNames(); len(got) != 2 {
+		t.Errorf("the abandon stopped instances: %v", got)
+	}
+}
+
+// The other direction: a port held by a process this account CANNOT attribute
+// is the take's, and an abandon over it would orphan the service account's
+// processes.
+func TestHandoverAbandonStillRefusesTheTakesProcesses(t *testing.T) {
+	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
+		released(tn)
+		// The take ran: the row is `taken` and the processes are the other
+		// account's, which is what pid 0 means to this one.
+		tn.Handover.Phase = registry.HandoverTaken
+		tn.Handover.TakenBy = "svcbvbrc"
+		tn.State = "active"
+	})
+	fake.FakeProc().SetOwner(oc.Tenant.Ports.API, 0, 0)
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
+	r := newRunner(oc, fake)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("an abandon over the take's processes = %v, want a refusal", err)
+	}
+	if !strings.Contains(err.Error(), "tenant stop") {
+		t.Errorf("the refusal does not say what to run first: %v", err)
+	}
+}
+
+// hasCall reports whether the fake recorded this exact call.
+func hasCall(fake *drivers.Fake, want string) bool {
+	for _, c := range fake.CallKeys() {
+		if c == want {
+			return true
 		}
 	}
 	return false

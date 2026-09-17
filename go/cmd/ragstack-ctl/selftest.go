@@ -1159,7 +1159,9 @@ func (s *selftest) instanceMode() bool { return s.supervisorKind() == "instance"
 // the next reader a pid to signal, and pids are reused.
 func (s *selftest) instancesGoneCheck(ctx context.Context, name string, t *registry.Tenant) checkResult {
 	check := checkResult{Name: name + ": no instance, no pidfile"}
-	list, err := s.drv.Instances().List(ctx)
+	// The ctl's own namespace: the selftest's sandbox tenants are started by
+	// the ctl, so that is the registry they are in (jobs.InstanceNamespace).
+	list, err := s.drv.Instances().List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
 	if err != nil {
 		return checkResult{Name: check.Name, Verdict: checkNA, Detail: err.Error()}
 	}

@@ -163,7 +163,7 @@ func NewReal(o RealOptions) *Real {
 		// The instance driver binds host paths into a container, so it gets
 		// the same approved roots the drivers that write under them do.
 		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
-			Env: apptainerEnv(o.Roots.CtlStateDir)},
+			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir)},
 		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
@@ -823,5 +823,21 @@ func apptainerEnv(ctlStateDir string) []string {
 	return []string{
 		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
 		"APPTAINER_CONFIGDIR=" + filepath.Join(ctlStateDir, "apptainer", "config"),
+	}
+}
+
+// apptainerAccountEnv is the environment of a call in
+// jobs.NamespaceAccountDefault: the ctl's cache, and NO CONFIGDIR.
+//
+// The absence is the whole point and is why this is a function of its own
+// rather than a slice literal at one call site. apptainer's instance registry
+// lives under the config dir; leaving the variable unset is the only way to
+// say "the account's own registry, $HOME/.apptainer" — which is where a tenant
+// somebody started by hand keeps its instances, and therefore the only place a
+// handover RELEASE can find, verify and stop them. Setting it to an empty
+// string would not do: apptainer would take that as a config dir named "".
+func apptainerAccountEnv(ctlStateDir string) []string {
+	return []string{
+		"APPTAINER_CACHEDIR=" + filepath.Join(ctlStateDir, "apptainer", "cache"),
 	}
 }

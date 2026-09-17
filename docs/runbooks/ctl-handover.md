@@ -337,8 +337,12 @@ rather than a design preference:
   account cannot signal another's here — reading `/proc/<pid>/cwd` across
   accounts is denied, so the identity check every signal in this control plane
   makes cannot even be attempted;
-* apptainer keeps a **per-account instance registry**. `apptainer instance
-  list` as svcbvbrc does not show `qdrant-hackathon` at all, let alone stop it.
+* apptainer keeps a **per-account, per-`APPTAINER_CONFIGDIR` instance
+  registry**. `apptainer instance list` as svcbvbrc does not show
+  `qdrant-hackathon` at all, let alone stop it — and neither does a list made
+  as wilke with the control plane's `APPTAINER_CONFIGDIR` exported. The release
+  and the abandon act in the releasing account's DEFAULT registry
+  (`$HOME/.apptainer`); every other phase acts in the ctl's.
 
 So the owner **releases** and the service account **takes**:
 
@@ -349,6 +353,7 @@ So the owner **releases** and the service account **takes**:
 | soak | — | watch it | — |
 | commit | `svcbvbrc` | `tenant handover <t> --commit --yes-destructive <t>` | `desired_boot: enabled`, the handover block cleared |
 | abandon | `svcbvbrc` then `wilke` | `tenant stop <t>`, then `tenant handover <t> --abandon`, then `restore.sh --tenant <t>` | the tenant back the way it was |
+| abandon, after a release that never got taken | `wilke` | `tenant handover <t> --abandon` | the row back to `active` / `manual`; your own processes are left running and nothing needs restarting |
 
 **Four ordinary jobs, and not one of them parks.** An earlier draft had the take
 stop at a cutover and the commit continue it — which would have held this
@@ -459,26 +464,77 @@ The plan, in the order it runs — and the order IS the operation:
 3. **census**: every collection in the tenant's own qdrant with its exact point
    count, every index in its own elasticsearch with its document count, and the
    API's own `/v1/collections?counts=true`. Taken while the tenant is UP;
-4. **the registry**: `state: handover`, and a `handover` block holding the
+4. **the instances this release will stop are findable and are the right ones**
+   — the last thing that can refuse, and the reason it comes before the row is
+   written: each store leg's instance must be in **your own apptainer instance
+   registry** (`$HOME/.apptainer` — `apptainer instance list` with no
+   `APPTAINER_CONFIGDIR` exported), and the process holding the row's port must
+   be that instance or one of its children. A leg whose instance is absent and
+   whose port is free is already released and is skipped; a leg whose instance
+   is absent while its port is HELD is refused, with the whole tenant still up;
+5. **the registry**: `state: handover`, and a `handover` block holding the
    census, the descriptor reference and a one-shot token;
-5. **stop the API** by pidfile, after checking cwd and cmdline (never `pkill`),
+6. **stop the API** by pidfile, after checking cwd and cmdline (never `pkill`),
    TERM then KILL, and **prove the port free**;
-6. **stop each of the tenant's own apptainer instances** in reverse start order
-   — postgres, elasticsearch, qdrant — each followed by a port proof.
+7. **stop each of the tenant's own apptainer instances** in reverse start order
+   — postgres, elasticsearch, qdrant — in *your* registry, each one waited on
+   (up to 120 s) until it has left the instance table AND every port of that
+   leg is free, and each followed by its own port proof.
 
 It prints the token. Keep it: the take needs it, and `ragstack-ctl job show
 <id>` has it in the job's result if the terminal is gone.
 
 From here the tenant is down and the gateway answers 502 for it.
 
-**If the release fails partway** it rolls back what it can: the registry step
-puts `state: active` back and clears the block, and each instance stop tries to
-start its instance again (it runs as the account that owns them, so it can).
-The API is the one thing it cannot restart — its command line is yours, not the
-registry's — and the rollback says so in as many words. The answer is always
-the same, in this order: `tenant stop <t>` as the service account if the take
-had already run, `tenant handover <t> --abandon` here, then
-`ops/coconut/restore.sh --tenant <t>`.
+#### The two namespaces, and why step 4 exists
+
+Every apptainer call the control plane makes is namespaced:
+`APPTAINER_CONFIGDIR=<CTL_STATE_DIR>/apptainer/config`, so that the daemon's
+instances are findable and stoppable from any session. **A release is the one
+phase that must not use it.** The tenant it is releasing was started by hand,
+so its instances are in *your* registry, and a `stop` aimed at the ctl's looks
+in a table that does not contain them — and "not running" is the one answer
+`apptainer instance stop` treats as success.
+
+That is exactly what happened on the first real release (2026-09-17): step 9
+reported `stopped postgres-hackathon` while the instance (pid 630746) and its
+postgres (pid 631059, on 24085) went on running, step 10's port check failed,
+and the job rolled back with the tenant's API already down. Compare the two for
+yourself:
+
+```bash
+apptainer instance list                        # your registry: the tenant's stores
+APPTAINER_CONFIGDIR=$CTL_STATE_DIR/apptainer/config apptainer instance list   # the ctl's
+```
+
+If step 4 refuses with "the instance … is NOT in the releasing account's own
+apptainer instance registry", run those two commands: the store is in whichever
+one lists it, and a release must not be run with `APPTAINER_CONFIGDIR` exported
+in your shell.
+
+**If the release fails partway** it rolls back what it can, and that now
+includes the API: the API stop's rollback **starts the tenant's API again**, as
+your account, from the row (the same launch `supervisor: instance` uses —
+worktree, `tenant.env` + `secrets.env`, `api.bind`, pidfile). Each instance
+stop likewise starts its instance again, in your registry. The registry step
+then asks the host: with the API back up it puts `state: active` back and
+clears the block, and with the API still down it leaves the honest row
+(`handover` / `released`, token intact) and tells you so.
+
+If the restart cannot be made — a row that does not render, a spawn that fails
+— the rollback says `ops/coconut/restore.sh --tenant <t>` and does not fail the
+job. From a row left at `handover` / `released` you now have two usable verbs:
+
+* **re-run the release.** `--release` over a row still at phase `released` is
+  re-entrant: it takes the census again, re-verifies the instances, and keeps
+  the token the first release minted (so a `--take` you already copied stays
+  valid — the job says so in its warnings and in `result.reentrant`).
+* **abandon it.** `--abandon` over such a row is allowed while the ports are
+  held by *your own* processes — they are the originals, there is nothing to
+  stop — and puts the row back to `state: active`, `supervisor: manual`,
+  `owner: you`, block cleared. It still refuses over a port held by a process
+  you cannot attribute: that is the take's, and `tenant stop <t>` as the
+  service account comes first.
 
 ### Take (svcbvbrc)
 
@@ -694,7 +750,11 @@ because "who held a credential last month" is the question a ledger exists for.
 | `--release` refuses: "`ragstack-ctl env pg-password`" | the take could not read the role password | run that op first; it derives it from the DSNs already in `secrets.env` |
 | `--release` refuses: "ingest job(s) are still running" | an ingest is mid-write | wait for it, or cancel it through the tenant |
 | `--release` refuses: "no backup" | no recovery point | `tenant backup <t> --scope config,state` (seconds, no fence), or `--accept-no-backup` |
-| a release step fails after the registry write | the row keeps `handover` and the tenant is down | read the job's rollback lines, then: `tenant stop <t>` as the service account if the take had already run, `tenant handover <t> --abandon` here, then `restore.sh --tenant <t>`. That order, because `--abandon` refuses while a port is held |
+| `--release` refuses: "is NOT in the releasing account's own apptainer instance registry" | this job is looking in a different apptainer instance registry from the one the tenant's stores are in — almost always `APPTAINER_CONFIGDIR` exported in your shell | compare `apptainer instance list` with `APPTAINER_CONFIGDIR=$CTL_STATE_DIR/apptainer/config apptainer instance list`, `unset APPTAINER_CONFIGDIR`, run it again. **Nothing was stopped**: the check runs before the row is written |
+| `--release` refuses: "does not descend from the instance" | the port the row names is held by a process outside that instance's family — a reused instance name | look at `apptainer instance list` and the row's `stores.*` ports before going on; do not stop anything by hand |
+| `--release` fails: "still in … after its stop" / "still held after" | the instance stop returned but the instance or a port outlived it (an elasticsearch flushing a translog, a wedged container) | wait, look at the port, then **re-run the release** — it is re-entrant |
+| a release step fails after the registry write | the row keeps `handover` and the tenant is down | read the job's rollback lines — the API stop's rollback starts the API again and each instance stop restarts its instance, so the tenant is often back up already. Then either **re-run `--release`** (re-entrant, same token) or: `tenant stop <t>` as the service account if the take had already run, `tenant handover <t> --abandon` here, then `restore.sh --tenant <t>` |
+| the row says `handover` / `released` and the tenant is RUNNING | a release that failed, whose processes are back (by its own rollback or by `restore.sh`) | `tenant handover <t> --release` to try again with the same token, or `tenant handover <t> --abandon` to put the row back — both are allowed over your own running processes now |
 | `--take` refuses: "the token does not match" | a stale token, or a newer release | `ragstack-ctl job show <release job id>`; the refusal never echoes the expected value |
 | `--take` refuses: "still listening on N" | the release did not free a port | look at the port as the owner; the take must never start a second copy |
 | `--take` fails: "came back with FEWER rows" | a store is up but not on its own data | `tenant stop <t>` as the service account, then `--abandon`, then `restore.sh --tenant <t>` — and look at the instance's binds before trying again |
@@ -704,4 +764,5 @@ because "who held a credential last month" is the question a ledger exists for.
 | `--commit` refuses: "owned by X … running as Y" | the commit is the account that TOOK it | run it as that account |
 | `--abandon` refuses: "released by X … running as Y" | it is gated on `handover.released_by`, not on `owner` | run it as the account that released it |
 | `--abandon` refuses: "still running as the other account" | the take's processes are up | `/rag/bin/ctl-as-svc.sh tenant stop <t>` first |
+| `--abandon` refuses: "is not in the releasing account's own apptainer instance registry" | a store's port is held by your account but the instance is not one this account can stop by name | `apptainer instance list`; an abandon hands the tenant back as a hand-started one, so every leg has to be one |
 | every op demands `--force-with-doctor-diff` | a warning this op actually depends on | read it: the refusal names the code. Warnings the op does NOT depend on are recorded on the job and never block |
