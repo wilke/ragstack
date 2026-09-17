@@ -94,7 +94,7 @@ ragstack-ctl tenant set-ui-mode <t> static --yes-destructive <t>
 
 # the documented exception (dev keeps its Vite server)
 ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --dry-run
-ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --yes
+ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --yes-destructive dev
 ```
 
 `static` does seven things, in this order, and rolls every one of them back:
@@ -347,7 +347,7 @@ So the owner **releases** and the service account **takes**:
 | release | `wilke`, `--direct` | `tenant handover <t> --release` | the tenant DOWN, `state: handover`, a token printed |
 | take | `svcbvbrc` | `tenant handover <t> --take --token <T>` | the tenant UP under `supervisor: instance`, `owner: svcbvbrc`, `handover.phase: taken` |
 | soak | — | watch it | — |
-| commit | `svcbvbrc` | `tenant handover <t> --commit` | `desired_boot: enabled`, the handover block cleared |
+| commit | `svcbvbrc` | `tenant handover <t> --commit --yes-destructive <t>` | `desired_boot: enabled`, the handover block cleared |
 | abandon | `svcbvbrc` then `wilke` | `tenant stop <t>`, then `tenant handover <t> --abandon`, then `restore.sh --tenant <t>` | the tenant back the way it was |
 
 **Four ordinary jobs, and not one of them parks.** An earlier draft had the take
@@ -375,14 +375,41 @@ Two things hold at every point between them:
 * **the tenant is restorable.** Before the release: `restore.sh --tenant <t>`.
   After the take: `ragstack-ctl fleet start --all`. In between, and after an
   abandon: `restore.sh --tenant <t>` again, from the rollback descriptor the
-  row has carried since `adopt --commit`.
+  row has carried since `adopt --commit`. (After an abandon, in that order:
+  the abandon refuses while a port is still held, so the restore comes last.)
 
 A handover moves **no data**. The same directories serve the same processes
 under another account, through the ACLs PR-D2 installed. The risk is not data
 loss, it is a tenant neither account can start — which is what the census, the
 port proofs and the commit's own liveness check are all for.
 
-### The two conventions
+#### Before the first release: install the binary
+
+**Do this once, before any tenant is released.** The handover adds a field to
+the registry (`handover`), and a registry the NEW binary has written is one an
+older `ragstack-ctl` refuses to read — not the one tenant, the whole file:
+`registry.Load` decodes strictly, and an unknown key fails the document.
+
+The field is `omitempty`, so a fleet with no handover in flight serialises
+nothing and an older binary keeps working — but the moment a release records a
+block, every reader has to be new enough to know the name.
+
+```bash
+# as the owner, from the checkout
+make install-ctl                       # /rag/bin/ragstack-ctl -> ragstack-ctl-<version>
+ragstack-ctl version                   # the version you expect
+
+# as the service account: the daemon runs the OLD binary until it restarts
+/rag/bin/ctl-as-svc.sh version
+/rag/bin/ctl-daemon.sh restart
+/rag/bin/ctl-as-svc.sh fleet status    # reads the registry through the new binary
+```
+
+`ctl-daemon.sh restart` is safe at any time: it stops no tenant, only the
+control plane. Check `fleet status` afterwards — if it answers, every reader on
+this host can read what a release is about to write.
+
+## The two conventions
 
 **Accounts.** `--release` and `--abandon` are the OWNER's and imply `--direct`
 (`--server` is refused). `--take` and `--commit` are the SERVICE ACCOUNT's —
@@ -404,6 +431,14 @@ export CTL_CONFIG_DIR=/rag/config/ctl-selftest
 directory it would use is not writable by this account, and prints exactly
 those two lines. Everything else — the registry, the gateway, the tenant's
 files — is the real deployment's.
+
+The LOCKS are shared even though the state directories are not. The registry,
+manifest and tenant locks live in `/rag/data/tenants/.ctl-locks`, which both
+accounts can write through the ACL `ragstack-ctl fleet grant` installs — so
+wilke's `--abandon` and svcbvbrc's `tenant restart` really do serialise against
+each other, and whichever loses is told the job id, pid and start time of the
+one holding it. (Locks derived from each account's own state directory would
+be two disjoint sets of files, which serialise nothing.)
 
 ### Release (wilke)
 
@@ -441,14 +476,16 @@ puts `state: active` back and clears the block, and each instance stop tries to
 start its instance again (it runs as the account that owns them, so it can).
 The API is the one thing it cannot restart — its command line is yours, not the
 registry's — and the rollback says so in as many words. The answer is always
-the same: `ops/coconut/restore.sh --tenant <t>`.
+the same, in this order: `tenant stop <t>` as the service account if the take
+had already run, `tenant handover <t> --abandon` here, then
+`ops/coconut/restore.sh --tenant <t>`.
 
 ### Take (svcbvbrc)
 
 ```bash
-sudo -u svcbvbrc ragstack-ctl tenant handover hackathon --take \
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take \
   --token <the token the release printed> --dry-run
-sudo -u svcbvbrc ragstack-ctl tenant handover hackathon --take \
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take \
   --token <token> --yes-destructive hackathon
 ```
 
@@ -489,7 +526,7 @@ work — but `set-supervisor` refuses while a handover is in flight, and a secon
 ```bash
 ragstack-ctl tenant show hackathon
 ragstack-ctl fleet status
-sudo -u svcbvbrc ragstack-ctl tenant logs hackathon --file api --lines 200
+/rag/bin/ctl-as-svc.sh tenant logs hackathon --file api --lines 200
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/ragstack/hackathon/api/health
 ```
 
@@ -503,7 +540,7 @@ as mid-handover.
 ### Commit (svcbvbrc)
 
 ```bash
-sudo -u svcbvbrc ragstack-ctl tenant handover hackathon --commit
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --commit --yes-destructive hackathon
 ```
 
 An ordinary job, gated on the row's `handover.phase: taken` and on this being
@@ -531,7 +568,7 @@ reason the protocol has an abandon.
 # 1. release, take (as above), then decide against it.
 
 # 2. the service account stops what it started. Idempotent.
-sudo -u svcbvbrc ragstack-ctl tenant stop dev --yes-destructive dev
+/rag/bin/ctl-as-svc.sh tenant stop dev --yes-destructive dev
 
 # 3. the owner puts the row back.
 CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest \
@@ -570,9 +607,9 @@ ragstack-ctl doctor hackathon --op handover          # yellow on the systemd tri
 export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest
 ragstack-ctl tenant handover hackathon --release --dry-run
 ragstack-ctl tenant handover hackathon --release --yes-destructive hackathon
-sudo -u svcbvbrc ragstack-ctl tenant handover hackathon --take --token <T> --yes-destructive hackathon
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take --token <T> --yes-destructive hackathon
 # soak, then
-sudo -u svcbvbrc ragstack-ctl tenant handover hackathon --commit
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --commit --yes-destructive hackathon
 ```
 
 **dev** — the full drill, and the one tenant that keeps its Vite dev server
@@ -584,15 +621,30 @@ ctl). Its stores are its own; its relational state is SQLite, so there is no
 ragstack-ctl tenant backup dev --scope config,state --yes
 export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest
 ragstack-ctl tenant handover dev --release --yes-destructive dev
-sudo -u svcbvbrc ragstack-ctl tenant handover dev --take --token <T> --yes-destructive dev
+/rag/bin/ctl-as-svc.sh tenant handover dev --take --token <T> --yes-destructive dev
 # → the rollback drill above, in full →
 # then release and take again, soak 48 h, and
-sudo -u svcbvbrc ragstack-ctl tenant handover dev --commit
+/rag/bin/ctl-as-svc.sh tenant handover dev --commit --yes-destructive dev
 ```
 
 demo, lucid-next and asm-next follow a soak day apart. Their shared stores stay
 wilke-run: only their APIs move (and lucid-next's own elasticsearch). The take's
 shared-store wait is what makes their boot order irrelevant.
+
+### Reading a handover off a fleet
+
+```bash
+ragstack-ctl fleet status
+ragstack-ctl tenant show <t>
+```
+
+A released tenant reads `state: handover`; a taken one reads `state: active`
+with `handover_phase: taken` — it is up, supervised by the ctl, and still owes
+a commit or an abandon. The `handover_phase` column is the only place that
+distinction shows, and the handover BLOCK is deliberately not on any read
+surface: it carries the hand-off token, and no read surface of this control
+plane carries a token. The token lives in the result of the release job that
+minted it (`ragstack-ctl job show <id>`).
 
 ### Correcting a row by hand
 
@@ -615,8 +667,8 @@ field.
 ### Credentials, after the handover
 
 ```bash
-sudo -u svcbvbrc ragstack-ctl key mint <t> gowe --role user --restart --prove
-sudo -u svcbvbrc ragstack-ctl key revoke <t> gowe --restart --prove
+/rag/bin/ctl-as-svc.sh key mint <t> gowe --role user --restart --prove --yes
+/rag/bin/ctl-as-svc.sh key revoke <t> gowe --restart --prove --yes-destructive <t>
 ```
 
 `--restart` restarts the tenant API through its supervisor, so the new ledger
@@ -642,14 +694,14 @@ because "who held a credential last month" is the question a ledger exists for.
 | `--release` refuses: "`ragstack-ctl env pg-password`" | the take could not read the role password | run that op first; it derives it from the DSNs already in `secrets.env` |
 | `--release` refuses: "ingest job(s) are still running" | an ingest is mid-write | wait for it, or cancel it through the tenant |
 | `--release` refuses: "no backup" | no recovery point | `tenant backup <t> --scope config,state` (seconds, no fence), or `--accept-no-backup` |
-| a release step fails after the registry write | the row says `handover` and the tenant may be partly down | read the job's rollback lines; `restore.sh --tenant <t>` starts it, `tenant handover <t> --abandon` clears the row |
+| a release step fails after the registry write | the row keeps `handover` and the tenant is down | read the job's rollback lines, then: `tenant stop <t>` as the service account if the take had already run, `tenant handover <t> --abandon` here, then `restore.sh --tenant <t>`. That order, because `--abandon` refuses while a port is held |
 | `--take` refuses: "the token does not match" | a stale token, or a newer release | `ragstack-ctl job show <release job id>`; the refusal never echoes the expected value |
 | `--take` refuses: "still listening on N" | the release did not free a port | look at the port as the owner; the take must never start a second copy |
-| `--take` fails: "came back with FEWER rows" | a store is up but not on its own data | stop it (`tenant stop <t>`), abandon, `restore.sh --tenant <t>`, and look at the instance's binds |
+| `--take` fails: "came back with FEWER rows" | a store is up but not on its own data | `tenant stop <t>` as the service account, then `--abandon`, then `restore.sh --tenant <t>` — and look at the instance's binds before trying again |
 | `--take` fails on the shared-store wait | a store this tenant does not own is not up | start it as its owner (`restore.sh` brings the shared stores up), then take again |
 | `--commit` refuses: "nothing to commit" / "only a TAKEN handover" | the take has not run, or it has already been committed | `ragstack-ctl tenant show <t>`: no block means it is already the ctl's |
 | `--commit` refuses: "nothing is listening" | the tenant the take started is down | start it (`tenant start <t>`) and commit, or abandon the handover |
 | `--commit` refuses: "owned by X … running as Y" | the commit is the account that TOOK it | run it as that account |
 | `--abandon` refuses: "released by X … running as Y" | it is gated on `handover.released_by`, not on `owner` | run it as the account that released it |
-| `--abandon` refuses: "still running as the other account" | the take's processes are up | `sudo -u svcbvbrc ragstack-ctl tenant stop <t>` first |
+| `--abandon` refuses: "still running as the other account" | the take's processes are up | `/rag/bin/ctl-as-svc.sh tenant stop <t>` first |
 | every op demands `--force-with-doctor-diff` | a warning this op actually depends on | read it: the refusal names the code. Warnings the op does NOT depend on are recorded on the job and never block |
