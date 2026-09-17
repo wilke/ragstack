@@ -78,7 +78,29 @@ type Options struct {
 	// PythonEnv overrides the interpreter root when no API process is
 	// running to observe it.
 	PythonEnv string
+
+	// Existing is the registry row this preview would REPLACE, nil for a
+	// first adoption. It is not a fallback for facts the host can be asked
+	// for: it is how the preview knows whether the tenant is one the CONTROL
+	// PLANE runs, and a row that is keeps its ownership, its supervision, its
+	// state and its handover instead of having them re-derived from probes
+	// that cannot see another account's processes. See keepCtlSupervision.
+	Existing *registry.Tenant
+	// Readopt is `--readopt`: this run REPLACES an existing row rather than
+	// writing a first one. Without it, a tenant whose API the control plane
+	// is running is refused (ErrCtlRunsTenant) rather than adopted as a
+	// hand-started one.
+	Readopt bool
+	// CtlUser is the account the control plane runs as; "" ⇒
+	// doctor.DefaultCtlUser (svcbvbrc).
+	CtlUser string
 }
+
+// ErrCtlRunsTenant refuses a FIRST adoption of a tenant whose API is run by
+// the control plane's own account. Adoption exists for a hand-started tenant;
+// a fresh row over a ctl-run one records `supervisor: manual` and `owner` from
+// a probe, which is how a supervised tenant becomes one nothing will start.
+var ErrCtlRunsTenant = errors.New("this tenant is already run by the control plane; use --readopt")
 
 // DefaultPythonEnv is the shared conda env every tenant API runs from today.
 const DefaultPythonEnv = "/rag/envs/ragstack"
@@ -238,10 +260,22 @@ func (p *previewer) build() (*registry.Tenant, error) {
 
 	api := p.listeners[p.ports.API]
 	t.State = string(model.StateStopped)
-	t.Owner = string(model.OwnerWilke)
+	owner, attributed := p.ownerOf(api)
+	t.Owner = owner
 	if api.Port != 0 {
 		t.State = string(model.StateActive)
-		if api.User != "" {
+		switch {
+		case !attributed:
+			// The port is held by somebody this run cannot name: no readable
+			// /proc/<pid>/fd join, and no pidfile pointing at a live process
+			// either. That is a FACT about the read, not about the tenant, so
+			// it is written down rather than papered over — and on a
+			// ctl-supervised row it also becomes a drift row below, because
+			// the row's recorded owner is the thing that stands.
+			p.info(doctor.PortOwnerUnverifiable, fmt.Sprintf(
+				"the process on API port %d cannot be attributed by this account (the listen table only joins THIS account's sockets to pids, and %s names no live process); owner records the default %q",
+				p.ports.API, p.pidFilePath(), owner))
+		case !registry.KnownOwner(owner):
 			// The observed account is recorded VERBATIM, including when it is
 			// outside the contract's owner enum — adopt's whole job is to
 			// write down what is true, and substituting a legal-looking value
@@ -255,18 +289,22 @@ func (p *previewer) build() (*registry.Tenant, error) {
 			// read back). The fix is a real one — hand the tenant over to an
 			// account the contract knows, or extend the enum in
 			// contracts/ctl/schemas/registry.json first.
-			t.Owner = api.User
-			if !registry.KnownOwner(api.User) {
-				p.err(doctor.OwnerNotInEnum, fmt.Sprintf(
-					"the process on API port %d runs as %q, which is not one of the contract's owners (%s); a row recording it cannot be loaded back — hand the tenant over to a known account, or extend the enum in contracts/ctl/schemas/registry.json",
-					p.ports.API, api.User, strings.Join(registry.Owners(), "|")))
-			}
+			p.err(doctor.OwnerNotInEnum, fmt.Sprintf(
+				"the process on API port %d runs as %q, which is not one of the contract's owners (%s); a row recording it cannot be loaded back — hand the tenant over to a known account, or extend the enum in contracts/ctl/schemas/registry.json",
+				p.ports.API, owner, strings.Join(registry.Owners(), "|")))
 		}
 	} else {
 		p.warn(doctor.PortNotListening, fmt.Sprintf("no listener on the API port %d", p.ports.API))
 	}
-	t.API = registry.API{Bind: p.apiBind(api), PidFile: p.tp.PidFile, Log: p.tp.APILog}
+	t.API = registry.API{Bind: p.apiBind(api), PidFile: p.pidFilePath(), Log: p.tp.APILog}
 	t.PythonEnv = p.pythonEnv(api)
+
+	// A first adoption of a tenant the CONTROL PLANE runs is refused outright:
+	// the row it would write says `supervisor: manual` over processes the ctl
+	// supervises, which is the same lie from the other direction.
+	if err := p.refuseIfCtlRuns(api); err != nil {
+		return nil, err
+	}
 
 	t.Code = p.code()
 	t.UI = p.ui()
@@ -276,6 +314,10 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	t.ExternalRefs = p.externalRefs()
 	t.UnmanagedFiles = p.unmanagedFiles()
 	t.Stores = p.stores(&t.Drift)
+	// A re-adoption of a row the control plane RUNS keeps what the handover
+	// decided. It comes after the stores so the capabilities are on the row to
+	// keep, and before the rollback descriptor, which records the owner.
+	p.keepCtlSupervision(t, owner, attributed)
 	rb, err := p.rollback(t)
 	if err != nil {
 		return nil, err
@@ -288,6 +330,203 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	}
 	p.info(doctor.CapabilitiesUnconfirmed, "store capabilities stay false until an operator confirms process identity, backing path and exclusive ownership")
 	return t, nil
+}
+
+// --------------------------------------------------------------- ownership
+
+// DefaultOwner is the account a row records when NOTHING about the tenant's
+// API process could be attributed — no listener, and no pidfile naming a live
+// one. It is a default and is always accompanied by a finding that says so;
+// it is never a substitute for an attribution that failed, which is the
+// distinction ownerOf's second return value carries.
+const DefaultOwner = string(model.OwnerWilke)
+
+// CtlSupervised reports whether a row is one the CONTROL PLANE runs — the
+// registry's `supervisor` is anything but `manual`, which is the one value
+// that means "somebody else started this".
+//
+// It is the predicate the whole ownership carry hangs off, and it is written
+// as "not manual" rather than "instance or systemd" deliberately: a supervisor
+// value this binary has not learned yet is one it must treat as the ctl's, not
+// as an invitation to take the row over.
+func CtlSupervised(t *registry.Tenant) bool {
+	return t != nil && t.Supervisor != "" && t.Supervisor != string(model.SupervisorManual)
+}
+
+// ctlUser is the account the control plane runs as.
+func (p *previewer) ctlUser() string {
+	return orDefault(p.opts.CtlUser, doctor.DefaultCtlUser)
+}
+
+// pidFilePath is what `api.pidfile` records: the row's own path on a
+// re-adoption (the instance supervisor is free to have moved it), else the
+// layout's `<data_dir>/api-<name>.pid`.
+func (p *previewer) pidFilePath() string {
+	if e := p.opts.Existing; e != nil && e.API.PidFile != "" {
+		return e.API.PidFile
+	}
+	return p.tp.PidFile
+}
+
+// pidFilePID reads the pid out of the tenant's api pidfile. Anything that is
+// not a positive integer on its own is "no pid", not an error: a pidfile is
+// evidence, and half a line of one is no evidence at all.
+func (p *previewer) pidFilePID() (int, bool) {
+	b, err := os.ReadFile(p.pidFilePath())
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// ownerOf attributes the tenant's API process to an account, and says whether
+// it managed to.
+//
+// The listen table is the first source and the weakest one: it joins a socket
+// to a pid through /proc/<pid>/fd, and those links are readable only for THIS
+// account's own processes. Every cross-account read — the normal shape on
+// coconut, where the ctl runs as svcbvbrc and most tenants were hand-started
+// by wilke, and the shape of every tenant AFTER a handover when the adopt is
+// run by wilke — therefore arrives with Pid 0 and User "". The old code read
+// that empty string as "wilke", which is how a handed-over row got its
+// ownership rewritten by a command that had only meant to refresh a key
+// ledger (#587's sequel; see doctor.CtlSupervisedRow).
+//
+// So when the port is unattributable the pidfile is asked instead: it names
+// the pid outright, and /proc/<pid> tells anyone on the host which account
+// owns it. Only a pid that is actually a live process counts — a stale pidfile
+// left by a tenant that died is not evidence about anybody.
+func (p *previewer) ownerOf(api hostfacts.Listener) (owner string, attributed bool) {
+	if api.Port == 0 {
+		return DefaultOwner, false
+	}
+	if api.User != "" {
+		return api.User, true
+	}
+	pid, ok := p.pidFilePID()
+	if !ok {
+		return DefaultOwner, false
+	}
+	_, user, err := p.host.ProcessOwner(pid)
+	if err != nil || user == "" {
+		return DefaultOwner, false
+	}
+	return user, true
+}
+
+// refuseIfCtlRuns is the guard on a FIRST adoption. The row `adopt` writes
+// says `supervisor: manual` — "somebody else started this" — and the tenant it
+// is allowed to say that about is a hand-started one. A tenant whose API
+// PIDFILE names a live process belonging to the control plane's own account is
+// not that: the pidfile is the instance supervisor's own record of the uvicorn
+// it started, so the ctl both runs this API and knows it does.
+//
+// The evidence is deliberately the pidfile and not the listen table. "Some
+// process owned by svcbvbrc holds the port" is also true of a tenant svcbvbrc
+// started BY HAND — an honest adoption — while a pidfile the supervisor wrote
+// is not something a hand start produces. It also has to be the pidfile
+// because the listen table cannot attribute another account's socket at all,
+// which is the whole reason this file learned to read /proc/<pid> in the first
+// place. Only a live process counts: a pidfile left behind by a tenant that
+// died names nobody.
+//
+// It is a refusal from Preview rather than an error finding, and that is the
+// point: `--force` exists for a row that is merely awkward to record, not for
+// unlearning that the control plane runs this tenant.
+func (p *previewer) refuseIfCtlRuns(api hostfacts.Listener) error {
+	if p.opts.Readopt || api.Port == 0 {
+		return nil
+	}
+	pid, ok := p.pidFilePID()
+	if !ok {
+		return nil
+	}
+	_, user, err := p.host.ProcessOwner(pid)
+	if err != nil || user != p.ctlUser() {
+		return nil
+	}
+	return fmt.Errorf("%w: %s names pid %d, which runs as %s, and port %d is listening. "+
+		"`ragstack-ctl adopt %s … --readopt` refreshes the row the control plane already has; a first adoption "+
+		"would record `supervisor: manual` over processes the ctl supervises, and nothing would start the tenant "+
+		"again", ErrCtlRunsTenant, p.pidFilePath(), pid, user, p.ports.API, p.name)
+}
+
+// keepCtlSupervision is what `--readopt` does to a row the control plane RUNS:
+// nothing. Owner, supervisor, state, the handover block, the boot intent, the
+// api pidfile and the confirmed store capabilities are all DECISIONS — a
+// handover made them, or an operator did — and adoption's "live facts beat
+// recorded ones" rule has no jurisdiction over a decision. What the run does
+// refresh is what adoption exists to refresh: the settings classification, the
+// secret refs and their checksums, the key ledger, the drift rows, the
+// external refs, the unmanaged files and the worktree's code sha.
+//
+// A probe that CONTRADICTS the row is written down, never acted on. There are
+// two ways it can, and they are different facts:
+//
+//   - the port is held by a readable process belonging to another account: a
+//     real disagreement (port_owner_mismatch), warn.
+//   - the port is held by a process this account cannot attribute at all: the
+//     expected shape when the adopt is run by anyone but the tenant's owner
+//     (port_owner_unverifiable), info.
+//
+// Either way the recorded owner stands, which is the whole correction.
+func (p *previewer) keepCtlSupervision(t *registry.Tenant, observed string, attributed bool) {
+	prev := p.opts.Existing
+	if !CtlSupervised(prev) {
+		return
+	}
+	p.warn(doctor.CtlSupervisedRow, fmt.Sprintf(
+		"row is ctl-supervised: ownership and supervision are not re-derived — owner (%s), supervisor (%s), "+
+			"state (%s), handover (%s), desired_boot (%s), api.pidfile and the confirmed store capabilities are "+
+			"kept as the registry records them. This run refreshes the settings classification, the secret refs "+
+			"and checksums, the keys[] ledger, drift, external refs, unmanaged files and the worktree's code sha, "+
+			"and nothing else",
+		prev.Owner, prev.Supervisor, prev.State, handoverPhaseOf(prev), orDefault(prev.DesiredBoot, "unset")))
+
+	switch {
+	case attributed && observed != prev.Owner:
+		t.Drift = append(t.Drift, registry.Drift{
+			Code: doctor.PortOwnerMismatch, Level: string(model.LevelWarn), Field: "owner",
+			Expected: prev.Owner, Actual: observed, ObservedAt: p.stamp(),
+			Note: "the recorded owner is kept: a re-adoption does not re-derive who owns a ctl-supervised tenant",
+		})
+	case !attributed && t.State == string(model.StateActive):
+		t.Drift = append(t.Drift, registry.Drift{
+			Code: doctor.PortOwnerUnverifiable, Level: string(model.LevelInfo), Field: "owner",
+			Expected: prev.Owner, Actual: "unattributable", ObservedAt: p.stamp(),
+			Note: fmt.Sprintf("API port %d is held by a process this account cannot attribute; the recorded owner is kept", p.ports.API),
+		})
+	}
+
+	t.Owner = prev.Owner
+	t.Supervisor = prev.Supervisor
+	t.State = prev.State
+	t.Handover = prev.Handover
+	if prev.DesiredBoot != "" {
+		t.DesiredBoot = prev.DesiredBoot
+	}
+	if prev.API.PidFile != "" {
+		t.API.PidFile = prev.API.PidFile
+	}
+	// Capabilities are kept HERE as well as in carryOver so that `--preview`
+	// shows the row `--commit` would write. `--confirm-stores` runs on the
+	// preview AFTER this, so an explicit confirmation still wins.
+	t.Stores.Qdrant.Capabilities = prev.Stores.Qdrant.Capabilities
+	t.Stores.Elasticsearch.Capabilities = prev.Stores.Elasticsearch.Capabilities
+	t.Stores.Postgres.Capabilities = prev.Stores.Postgres.Capabilities
+}
+
+// handoverPhaseOf renders a row's handover for a message: the phase, or
+// "none".
+func handoverPhaseOf(t *registry.Tenant) string {
+	if t == nil || t.Handover == nil {
+		return "none"
+	}
+	return t.Handover.Phase
 }
 
 // ------------------------------------------------------------------- env

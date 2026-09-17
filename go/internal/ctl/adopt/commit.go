@@ -33,7 +33,9 @@ type CommitOptions struct {
 	// contract only just learned — #535). The fields adoption cannot observe
 	// on the host are carried over from the existing row: adopted_at,
 	// desired_boot, restart_pending, rollback_descriptor, last_ops,
-	// last_backup. Off by default: adoption happens once, and a silent
+	// last_backup — and, for a row the control plane runs, its owner,
+	// supervisor, state, handover block and api pidfile too (see
+	// keepCtlSupervised). Off by default: adoption happens once, and a silent
 	// re-adoption is how a hand edit gets lost.
 	Readopt bool
 	// Overrides names the DECISIONS this call is making explicitly. Everything
@@ -317,6 +319,10 @@ func driftStamp(t *registry.Tenant) string {
 // The disagreement is not swallowed: a bind that differs from the live process
 // is recorded as a drift row, which is what the registry has for "these two
 // facts do not match and a human should know".
+//
+// A row the CONTROL PLANE runs (adopt.CtlSupervised) carries one more group,
+// and it is the group that has to be carried whatever the probes saw and
+// whoever ran the command — see keepCtlSupervised below.
 func carryOver(next, prev *registry.Tenant, over Overrides) {
 	if prev == nil || next == nil {
 		return
@@ -357,5 +363,35 @@ func carryOver(next, prev *registry.Tenant, over Overrides) {
 	}
 	if !over.confirmed("postgres") {
 		next.Stores.Postgres.Capabilities = prev.Stores.Postgres.Capabilities
+	}
+	keepCtlSupervised(next, prev)
+}
+
+// keepCtlSupervised is the commit-side half of adopt's ownership rule: a row
+// the CONTROL PLANE runs keeps its owner, its supervisor, its state, its
+// handover block and its api pidfile, no matter what the preview derived.
+//
+// Preview does this too (keepCtlSupervision), where it also records the drift
+// row for a probe that contradicts the registry — it is the half with the
+// findings, and the half a `--preview` shows. This one has no findings and no
+// drift: it is the LAST gate before the write, and it exists because
+// CommitAll is reachable with rows built by a caller that never passed
+// Options.Existing at all. Nothing here can be reached by a flag, deliberately
+// — ownership moves through `tenant handover` and supervision through `tenant
+// set-supervisor`, both of which check that the account they are writing about
+// can actually act on the processes. An adopt that could write them from a
+// probe is how hackathon's row came to say wilke/manual over svcbvbrc's
+// processes on 2026-09-17, with `tenant restart` refusing it as hand-started
+// and restore.sh primed to start a second copy at the next reboot.
+func keepCtlSupervised(next, prev *registry.Tenant) {
+	if !CtlSupervised(prev) {
+		return
+	}
+	next.Owner = prev.Owner
+	next.Supervisor = prev.Supervisor
+	next.State = prev.State
+	next.Handover = prev.Handover
+	if prev.API.PidFile != "" {
+		next.API.PidFile = prev.API.PidFile
 	}
 }

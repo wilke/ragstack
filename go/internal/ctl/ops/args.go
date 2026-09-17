@@ -286,6 +286,11 @@ var (
 	// minus `systemd`, which PR-D2 postponed — a row this op moved onto
 	// `systemd` would name units no manager on this host can be made to load.
 	setSupervisors = []string{"manual", "instance"}
+	// desiredBoots is set-supervisor's OPTIONAL second field: the registry's
+	// `desired_boot` enum, unabridged. It is the boot intent the @reboot hook
+	// reads, and an operator needs a way to write it back onto a row that lost
+	// it — which a `--readopt` used to do by dropping the handover block.
+	desiredBoots = []string{"enabled", "disabled"}
 )
 
 // argSchemas is the table. The three entries with no contract row (create,
@@ -440,6 +445,7 @@ var argSchemas = map[string]argSpec{
 	// is wrong is the one sitting in front of it.
 	"set-supervisor": {Verb: "set-supervisor", Fields: []argField{
 		{Name: "supervisor", Kind: argString, Required: true, Enum: setSupervisors},
+		{Name: "desired_boot", Kind: argString, Enum: desiredBoots},
 	}},
 	// env-pg-password takes no arguments: what it writes is derived from what
 	// is already on disk, and a value passed in would be a credential on a

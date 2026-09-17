@@ -644,6 +644,38 @@ func TestSetSupervisorWritesTheRowAndNothingElse(t *testing.T) {
 	if p.Result()["previous_supervisor"] != supervisorManual {
 		t.Errorf("result = %v", p.Result())
 	}
+	// Absent means "no opinion": a run that never named the boot intent must
+	// not write one, and must not report one either.
+	if _, named := p.Result()["desired_boot"]; named {
+		t.Errorf("result names desired_boot for a run that never asked for it: %v", p.Result())
+	}
+}
+
+// TestSetSupervisorRepairsTheBootIntent: `--desired-boot` is how an operator
+// writes back the boot intent of a ctl-supervised row that lost it — the shape
+// a `--readopt` used to leave behind when it dropped the handover block that
+// carried it. Registry-only, like the field beside it.
+func TestSetSupervisorRepairsTheBootIntent(t *testing.T) {
+	oc, fake := fixture(t, "dev", prepared)
+	fake.FakeProc().FreePort(oc.Tenant.Ports.API)
+	oc.Fleet.Tenants["dev"].DesiredBoot = "disabled"
+
+	p := plan(t, oc, "set-supervisor", map[string]any{"supervisor": "instance", "desired_boot": "enabled"})
+	for _, s := range p.Steps {
+		if s.Plan.Destructive {
+			t.Errorf("set-supervisor planned a destructive step: %s", s.Plan.Title)
+		}
+	}
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	row := oc.Fleet.Tenants["dev"]
+	if row.Supervisor != supervisorInstance || row.DesiredBoot != "enabled" {
+		t.Errorf("row = %s/%s, want instance/enabled", row.Supervisor, row.DesiredBoot)
+	}
+	if p.Result()["desired_boot"] != "enabled" || p.Result()["previous_desired_boot"] != "disabled" {
+		t.Errorf("result = %v", p.Result())
+	}
 }
 
 // ---------------------------------------------------------------- helpers

@@ -393,6 +393,7 @@ x-ctl-cli-op-args:
     required: [supervisor]
     properties:
       supervisor: { description: "Correct the registry's `supervisor` and NOTHING else: no process is started, stopped or signalled. It exists for the row a handover left disagreeing with the host — a take that failed after its registry step, an `abandon` that could not be run — and it refuses whenever the tenant's ports are held by a process this account cannot attribute, because recording `instance` for processes the ctl cannot signal is the exact mistake it would otherwise make permanent.", type: string, enum: [manual, instance] }
+      desired_boot: { description: "Also correct the registry's `desired_boot` — the tenant's BOOT INTENT. `enabled` means the boot hook (`ragstack-ctl fleet start --all` from the @reboot crontab) starts this tenant; `disabled` means it is left alone. Absent leaves the recorded value untouched: this op has no opinion it was not given.\n\nIt rides on `set-supervisor` rather than being a verb of its own because the two answer one question between them — who starts this tenant, and whether at boot — and because a row that lost its boot intent lost it the same way it lost its supervisor: a `--readopt` that re-derived what it could not observe, dropping the handover block that carried both. Registry-only, like the field beside it; the hook reads the registry at boot, so there is nothing else to write.", type: string, enum: [enabled, disabled] }
     additionalProperties: false
 
 paths:

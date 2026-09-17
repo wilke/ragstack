@@ -212,6 +212,40 @@ const (
 	// substitute that is not true.
 	OwnerNotInEnum = "owner_not_in_enum"
 
+	// CtlSupervisedRow: the tenant this `adopt --readopt` is re-previewing is
+	// one the CONTROL PLANE runs (`supervisor` is not `manual`), so the run
+	// does not re-derive its ownership or its supervision. Warn, raised by
+	// adopt at preview time so an operator sees it BEFORE the commit.
+	//
+	// It exists because of what happened on 2026-09-17. Minutes after the
+	// first successful handover left hackathon at owner `svcbvbrc`,
+	// supervisor `instance`, state `active` and `handover.phase: taken`, a
+	// `--readopt` run as wilke — to refresh the key ledger after an edit to
+	// secrets.env — rewrote the row as owner `wilke`, supervisor `manual`,
+	// and dropped the handover block. Nothing was wrong with the host: the
+	// re-adoption re-derived from probes that CANNOT see another account's
+	// processes (the listen table joins sockets to pids through
+	// /proc/<pid>/fd, which exposes this account's own sockets and no
+	// others), and then defaulted the fields it could not observe.
+	//
+	// The row that came out described wilke/manual over processes that were
+	// svcbvbrc's: `tenant restart` refused it as hand-started, `fleet start
+	// --all` skipped it, and `ops/coconut/restore.sh` would have started a
+	// SECOND copy of the tenant at the next reboot. Ownership and supervision
+	// are decisions a handover makes, not facts a probe reads, so a
+	// ctl-supervised row keeps them and a contradicting probe becomes a drift
+	// row instead.
+	CtlSupervisedRow = "ctl_supervised_row"
+
+	// CtlRunsTenant: a plain `adopt` (no --readopt) was pointed at a tenant
+	// whose API is run by the control plane's own account. Adoption is for a
+	// HAND-STARTED tenant; a fresh row over a ctl-run one would record
+	// `supervisor: manual` for processes the ctl supervises. Error — and the
+	// refusal is the PREVIEW's rather than the commit's, because `--force` is
+	// for recording a row that is merely awkward, not for unlearning that the
+	// control plane runs this tenant.
+	CtlRunsTenant = "ctl_runs_tenant"
+
 	// ESSnapshotsDirMissing: an exclusively-owned Elasticsearch store has no
 	// <data_dir>/elasticsearch/snapshots directory, which its unit binds as
 	// path.repo. apptainer refuses a bind whose SOURCE does not exist, so the

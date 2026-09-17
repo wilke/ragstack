@@ -767,7 +767,9 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	commit := fs.Bool("commit", false, "write the row to --registry")
 	force := fs.Bool("force", false, "commit even when the preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
-	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
+	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, "+
+		"rollback descriptor, last ops/backup — and, for a row the control plane runs, its owner, supervisor, "+
+		"state and handover)")
 	var confirmStores multiFlag
 	fs.Var(&confirmStores, "confirm-stores",
 		"re-verify these EXCLUSIVE store legs from /proc and set capabilities.{stop,snapshot,restore} on them: "+
@@ -809,7 +811,9 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 	commit := fs.Bool("commit", false, "write the rows to --registry as one generation")
 	force := fs.Bool("force", false, "commit even when a preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
-	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
+	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, "+
+		"rollback descriptor, last ops/backup — and, for a row the control plane runs, its owner, supervisor, "+
+		"state and handover)")
 	var confirmStores multiFlag
 	fs.Var(&confirmStores, "confirm-stores",
 		"re-verify these EXCLUSIVE store legs from /proc on EVERY tenant in the batch and set "+
@@ -886,20 +890,34 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	roots := paths.NewRoots(ragRoot, paths.Overrides{})
 	results := make([]previewResult, 0, len(specs))
 	rows := make([]*registry.Tenant, 0, len(specs))
-	// The registry as it stands, for --confirm-stores' "no other row names
-	// this store" check. A registry that is not there yet is not an error —
-	// the first adoption creates one — so this is best effort, and a load
-	// failure that matters will be raised again by the commit itself.
-	var current *registry.Fleet
-	if wantsConfirmation(specs) {
-		current, _ = registry.LoadNoRepair(registryPath)
-	}
+	// The registry as it stands. It is what --confirm-stores' "no other row
+	// names this store" check reads, and — since 2026-09-17 — what tells each
+	// preview whether the tenant is one the CONTROL PLANE runs, so that a
+	// `--readopt` of such a row keeps the ownership and supervision a handover
+	// decided instead of re-deriving them from probes that cannot see another
+	// account's processes.
+	//
+	// It is loaded UNCONDITIONALLY for that reason: making it conditional on
+	// --confirm-stores was fine while the row was only used for a cross-check,
+	// and would now mean the protection depended on an unrelated flag. A
+	// registry that is not there yet is not an error — the first adoption
+	// creates one — so this stays best effort, and a load failure that matters
+	// will be raised again by the commit itself.
+	current, _ := registry.LoadNoRepair(registryPath)
 	for _, s := range specs {
 		t, findings, err := adopt.Preview(roots, s.Name, adopt.Options{
 			DataDir: s.DataDir, Worktree: s.Worktree,
 			ManifestName: s.ManifestName, UIPort: s.UIPort, UIMode: s.UIMode,
+			Existing: existingRow(current, s.Name), Readopt: readopt,
 		})
 		if err != nil {
+			// A refusal is a refusal, not a crash: `adopt` on a tenant the ctl
+			// already runs exits 3 with the one-line repair, the way every
+			// other refused command does.
+			if errors.Is(err, adopt.ErrCtlRunsTenant) {
+				fmt.Fprintf(stderr, "ragstack-ctl: adopt %s: %v\n", s.Name, err)
+				return exitRefused
+			}
 			return fail(fmt.Errorf("adopt %s: %w", s.Name, err))
 		}
 		// An explicit bind REPLACES the observed one on the preview row, so
@@ -999,14 +1017,16 @@ func overridesOf(specs []adoptSpec) adopt.Overrides {
 	return o
 }
 
-// wantsConfirmation reports whether any spec asked for a store confirmation.
-func wantsConfirmation(specs []adoptSpec) bool {
-	for _, s := range specs {
-		if len(s.ConfirmStores) > 0 {
-			return true
-		}
+// existingRow is the registry row a preview would replace, or nil. A registry
+// that could not be loaded is not the same as one that has no such row, but
+// both leave the preview with nothing to carry, so both answer nil — and the
+// commit, which loads the file again under the locks, is where a load failure
+// becomes a refusal.
+func existingRow(f *registry.Fleet, name string) *registry.Tenant {
+	if f == nil {
+		return nil
 	}
-	return false
+	return f.Tenants[name]
 }
 
 // errorFindings collects every error-level finding across a batch preview.
@@ -1240,7 +1260,7 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")
-		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-supervisor <name> manual|instance")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-supervisor <name> manual|instance [--desired-boot enabled|disabled]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant handover <name> --release|--take --token T|--commit|--abandon")
 		return exitUsage
 	}

@@ -54,6 +54,29 @@ func TestSetBindRefusesAnAddressTheRegistryCannotHold(t *testing.T) {
 	}
 }
 
+// TestSetSupervisorDesiredBootIsValidatedBeforeSubmission: `--desired-boot` is
+// registry-only and enum-valued, so a bad value is a usage error from the CLI
+// rather than a job that plans and then refuses.
+func TestSetSupervisorDesiredBootIsValidatedBeforeSubmission(t *testing.T) {
+	for _, boot := range []string{"on", "true", "yes", "ENABLED"} {
+		rc, _, errb := capture(t, "tenant", "set-supervisor", "dev", "instance", "--desired-boot", boot)
+		if rc != exitUsage {
+			t.Errorf("--desired-boot %s: rc = %d, want %d (%s)", boot, rc, exitUsage, errb)
+		}
+		if !strings.Contains(errb, "enabled or disabled") {
+			t.Errorf("--desired-boot %s: stderr %q does not name the enum", boot, errb)
+		}
+	}
+	// The usage text has to say what the field is for: an operator reaches for
+	// it to repair a row whose boot intent went missing with its handover block.
+	_, _, help := capture(t, "tenant", "set-supervisor")
+	for _, want := range []string{"--desired-boot", "desired_boot", "@reboot", "left alone"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("set-supervisor usage does not mention %q:\n%s", want, help)
+		}
+	}
+}
+
 // Both verbs are CLI-only. --server is REFUSED rather than ignored: the daemon
 // has no route for either, so a request would come back 422 "not a verb",
 // which reads as a bug in the CLI rather than as a deliberate design.

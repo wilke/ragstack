@@ -23,6 +23,7 @@ type Fake struct {
 	Self        string // Username(); "" ⇒ "wilke"
 	Ports       []Listener
 	Env         map[int]map[string]string // pid → already SAFE_ENV-filtered env
+	Procs       map[int]ProcOwnership     // pid → what /proc/<pid> says about its account
 	Binds       map[int][]StorageBind     // pid → the host dirs it has mounted
 	Lingering   map[string]bool
 	RuntimeDirs map[int]bool
@@ -42,6 +43,34 @@ type Fake struct {
 	ProbeStatus map[string]int          // url → status code
 	Collections map[string]StoreListing // qdrant base url → listing
 	Indices     map[string]StoreListing // es base url → listing
+}
+
+// ProcOwnership is one recorded /proc/<pid> owner: the fact ProcessOwner
+// reads, stated on its own so a test can express "the pid in the pidfile
+// belongs to svcbvbrc" without inventing a socket for it.
+type ProcOwnership struct {
+	UID  int
+	User string
+}
+
+// ProcessOwner answers from Procs first, and falls back to the recorded
+// listener carrying that pid — so a fixture that already states "pid 4242
+// runs as wilke and holds 24040" does not have to state it twice. An
+// unrecorded pid is an ERROR, which is what the live host answers for a pid
+// that does not exist.
+func (f *Fake) ProcessOwner(pid int) (int, string, error) {
+	if pid <= 0 {
+		return -1, "", fmt.Errorf("hostfacts: %d is not a pid", pid)
+	}
+	if o, ok := f.Procs[pid]; ok {
+		return o.UID, o.User, nil
+	}
+	for _, l := range f.Ports {
+		if l.Pid == pid && l.User != "" {
+			return l.UID, l.User, nil
+		}
+	}
+	return -1, "", fmt.Errorf("hostfacts: no recorded process %d", pid)
 }
 
 // StorageBinds is the recorded mount table of pid. An unknown pid has no

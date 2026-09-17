@@ -151,6 +151,22 @@ type Host interface {
 	// ProcEnv returns the environment of pid, keeping only keys allow
 	// accepts. Pass SafeEnvAllowed for the snapshot.sh allowlist.
 	ProcEnv(pid int, allow func(key string) bool) (map[string]string, error)
+	// ProcessOwner resolves the account a pid runs as, from /proc/<pid>.
+	//
+	// It is the ONE attribution that works across accounts. Listeners joins
+	// sockets to processes through /proc/<pid>/fd, which only THIS account's
+	// own processes expose, so a port held by anybody else arrives with Pid 0
+	// and User "" — while a process's uid is readable by everyone (the
+	// directory's st_uid, and `status`'s `Uid:` line behind it). Given a pid
+	// from somewhere else — a tenant's `api.pidfile` — this answers who runs
+	// it, which is how a row's owner is attributed when the listen table
+	// cannot.
+	//
+	// An error means there is no such process (or no /proc entry for it), and
+	// it is deliberately not the same as "unknown": a caller that cannot read
+	// an owner must record that it could not, never a default dressed up as
+	// an observation.
+	ProcessOwner(pid int) (uid int, user string, err error)
 	// StorageBinds reads /proc/<pid>/mountinfo and returns the mounts whose
 	// source this account can locate in its OWN namespace, translated to host
 	// paths. Pseudo filesystems (proc, sysfs, tmpfs, cgroup, the container's

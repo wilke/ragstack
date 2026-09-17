@@ -211,6 +211,33 @@ existing row unless you name them: `--ui-mode`/`--ui-port` for the UI,
 differs from the live process is recorded as an `api_bind_drift` row, so the
 disagreement is written down rather than resolved behind your back.
 
+**A re-adoption does not undo the handover either.** Once a tenant is
+ctl-supervised — `supervisor` anything but `manual` — a `--readopt` keeps its
+`owner`, `supervisor`, `state`, `handover` block, `desired_boot`, `api.pidfile`
+and confirmed store capabilities **whoever runs it and whatever the probes
+see**, and says so in a `ctl_supervised_row` note at preview time. What it
+still refreshes is what adoption is for: the settings classification, the
+secret refs and their checksums, the `keys[]` ledger, drift, external refs,
+unmanaged files and the worktree's code sha. A probe that contradicts the row
+becomes a drift row on `owner` — `port_owner_mismatch` when another account's
+process is readable, `port_owner_unverifiable` when the port cannot be
+attributed at all — never a rewrite.
+
+> This is the repair for 2026-09-17. Minutes after the first successful
+> handover, a `--readopt` run as `wilke` to refresh a key ledger wrote
+> `owner: wilke`, `supervisor: manual` and dropped the handover block of a
+> tenant `svcbvbrc` was running: `tenant restart` then refused it as
+> hand-started, `fleet start --all` skipped it, and `restore.sh` would have
+> started a second copy at the next reboot. Ownership moves through `tenant
+> handover` and supervision through `tenant set-supervisor`; neither is a
+> thing a probe may decide.
+
+For the same reason, a **first** adoption (no `--readopt`) of a tenant whose
+`api.pidfile` names a live process owned by the ctl account is refused outright
+— *"this tenant is already run by the control plane; use `--readopt`"* — and
+`--force` does not get past it, because `--force` is for recording a row that
+is awkward, not for unlearning who runs the tenant.
+
 Re-verifies each named **exclusive** leg from `/proc` and the listen table
 before it writes anything:
 
@@ -986,12 +1013,13 @@ minted it (`ragstack-ctl job show <id>`).
 ### Correcting a row by hand
 
 ```bash
-ragstack-ctl tenant set-supervisor <t> manual|instance
+ragstack-ctl tenant set-supervisor <t> manual|instance [--desired-boot enabled|disabled]
 ```
 
-Writes the registry's `supervisor` and nothing else — no process is started,
-stopped or signalled. It is the repair for a row that disagrees with the host:
-a take that wrote `instance` and then failed, an abandon nobody got to run.
+Writes the registry's `supervisor` (and, with `--desired-boot`, the tenant's
+boot intent) and nothing else — no process is started, stopped or signalled. It
+is the repair for a row that disagrees with the host: a take that wrote
+`instance` and then failed, an abandon nobody got to run.
 
 It refuses the two ways of making such a disagreement permanent: moving a row
 to `instance` while the API port is held by a process this account cannot
@@ -1000,6 +1028,13 @@ nor restart), and moving a row to `manual` while this account's own apptainer
 instances are running for the tenant (nothing would ever stop them again). It
 also refuses while a handover is in flight — that protocol is moving the same
 field.
+
+`--desired-boot` writes `desired_boot`, which is what the `@reboot` hook
+(`fleet start --all`) reads to decide whether to start the tenant at all.
+Absent, the recorded value is left alone. It is here because a row that lost
+its supervisor generally lost its boot intent with it — both lived in, or
+beside, the handover block a `--readopt` used to drop — and until this flag
+there was no command that could write the second one back.
 
 ### Credentials, after the handover
 
