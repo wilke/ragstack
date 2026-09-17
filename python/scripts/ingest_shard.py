@@ -49,6 +49,7 @@ from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
 from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
@@ -129,6 +130,14 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=chunker, embedder=embedder,
                              vector_store=vstore, text_index=tindex,
+                             # #596: the USER-UPLOAD path runs here, not in the
+                             # API process — cwl/pdf-ingest-scatter.cwl is
+                             # pdf_extract -> ingest_shard, so the enricher the
+                             # API builds from its own settings never reaches
+                             # this document. Without this argument every
+                             # gowe-backend upload was born with a DOI and
+                             # nothing else. None when --doi-enrichment is off.
+                             doi_enricher=enricher_from_args(args, http),
                              boilerplate_filter=filter_from_mode(
                                  args.boilerplate, args.boilerplate_config))
 
@@ -242,6 +251,7 @@ def parse_args(argv=None):
                    help="write a provenance manifest here (defaults to "
                         "$COLLECTION_MANIFEST_DIR). Arms ADR-0002's build-spec "
                         "guard for this store; skipped if neither is set")
+    add_doi_enrichment_args(p)
     ingest_target.add_arguments(p)
     return p.parse_args(argv)
 

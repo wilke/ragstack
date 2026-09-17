@@ -92,6 +92,8 @@ class ConfigResponse(BaseModel):
     max_upload_files: int
     max_upload_bytes_per_request: int
     upload_content_types: list[str]
+    # ingest enrichment: whether ingest reaches the public internet at all (#596)
+    doi_enrichment_enabled: bool
     # authorization capability switches
     allow_user_collection_create: bool
     max_collections_per_owner: int

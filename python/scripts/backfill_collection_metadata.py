@@ -1,6 +1,29 @@
 #!/usr/bin/env python3
 """Backfill scholarly metadata onto a user-uploaded collection, keyed on DOI.
 
+**REPAIR ONLY since #596.** Ingest now does this itself, at upload time, on both
+backends — ``ragstack.ingestion.doi_metadata`` resolves each distinct DOI between
+load and chunk, so the fields ride on every chunk from the start. What is left
+for this script is collections built BEFORE that landed, and the rare collection
+whose lookups all failed during an outage. A collection ingested after #596 that
+is still bare has a cause worth finding first; see
+``docs/runbooks/tenant-admin.md`` § 6c.
+
+Two things this script gets subtly wrong that the ingest-path implementation does
+not — both found while porting the logic across. They are left here because this
+is now a rarely-run repair whose output an operator reads directly, but do not
+copy them:
+
+* it keys ID-Converter records on ``rec["doi"]``, which is the DOI in the
+  PUBLISHER's case — so the record for ``10.1128/JVI.02415-06`` never matches the
+  lowercase DOI it was asked about, and pmid/pmcid are silently dropped for every
+  uppercase-suffix publisher (most of ASM). ``rec["requested-id"]`` is the key
+  that echoes what was sent.
+* it writes the ID Converter's ``pmid`` through unchanged, and that field is a
+  JSON *integer* — while ``ingestion.jats`` keeps pmid/pmcid as strings on
+  purpose, so a corpus repaired here and a corpus ingested from JATS disagree
+  about the field's type.
+
 A PDF uploaded through the API arrives with whatever the loader could scrape
 out of the file — in practice a DOI lifted from the text, plus year and
 document class. Title, authors, journal and the PubMed ids are simply absent,
