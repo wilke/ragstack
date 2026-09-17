@@ -184,7 +184,9 @@ x-ctl-op-args:
     type: object
     required: [phase]
     properties:
-      phase: { description: "`execute` runs to `awaiting_cutover`; `commit` and `rollback` are continuations of that job.", type: string, enum: [execute, commit, rollback] }
+      phase: { description: "Handover is a TWO-ACCOUNT protocol: the daemon can neither signal the hand-started API (another account's /proc/<pid>/cwd is unreadable) nor see that account's apptainer instances. It is FOUR ordinary jobs, and not one of them parks — a phase that waited at a cutover would hold this tenant's registry lock for the length of the soak, and that lock is the fleet's. The ROW carries the state between them (`handover.phase`, and the token, until a commit or an abandon clears them).\n\n`release` runs as the tenant's current OWNER: it takes a census, stops the hand-started API and the tenant's own apptainer instances, writes `state: handover` with a one-shot token, and prints that token.\n\n`take`, with that token, runs as the SERVICE ACCOUNT: it starts the tenant under `supervisor: instance`, waits for any shared store, checks the census back, and records `owner` (the processes are that account's from the moment it spawns them) and `handover.phase: taken`. `desired_boot` is NOT touched: an uncommitted handover must not be something `fleet start --all` adopts at the next boot.\n\n`commit` runs as the account that took it, after the soak, and is gated on `handover.phase: taken`: it checks the tenant is still up and still that account's, then sets `desired_boot: enabled` and clears the block. That is the boot commitment.\n\n`abandon` runs as the account named in `handover.released_by`, refuses while ANY of the tenant's ports is still held, and puts the row back to `supervisor: manual`, `state: active`, `owner: <released_by>` — after which `ops/coconut/restore.sh --tenant <n>` starts the tenant the way it was started before.", type: string, enum: [release, take, commit, abandon] }
+      token: { description: "The nonce `release` printed. Required by `take`, refused for every other phase: it proves the take is acting on THIS release rather than on a row an abandoned one left behind.", type: string, pattern: "^[0-9a-f]{32}$" }
+      accept_no_backup: { description: "Release although `last_backup` is null. The gate is a LIGHT bundle (`tenant backup <t> --scope config,state`), which takes seconds and does not fence — a handover moves no data, so the bundle is the config/state recovery point rather than a copy of the corpus.", type: boolean, default: false }
     additionalProperties: false
   migrate-local:
     type: object
@@ -202,14 +204,17 @@ x-ctl-op-args:
     properties:
       label: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" }
       role: { type: string, enum: [admin, user] }
-      restart: { type: boolean, default: false }
+      restart: { description: "Restart the tenant API through its supervisor so the new ledger is live. Refused for a `manual` row — the ctl cannot restart a tenant somebody else started — where the change stays `pending_until_restart`.", type: boolean, default: false }
+      prove: { description: "After the restart, DIAL the tenant API and record the verdict on the job: the minted key answers 200, a surviving admin key answers 200, and the minted key can SEE the tenant's collections (a key whose tenant string is wrong authenticates and then sees nothing, which is the failure this catches). It needs `restart` — an unrestarted API is still serving the old ledger, so the proof would be of nothing — and it reads the credentials from the tenant's own `secrets.env`, never from a request.", type: boolean, default: false }
+      tenant_string: { description: "The principal `API_KEY_TENANTS` maps this key to: what the tenant API stamps on everything the key writes, and what it filters reads by. NOT the tenant's name — the adopted ledgers use values like `asm-ops`, `svc-asm-web`, `asm-ro`. Absent, the op takes the convention the tenant's OWN ledger already follows, and refuses when that ledger uses more than one (a key stamped with the wrong one authenticates and then sees none of the tenant's documents).", type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
     additionalProperties: false
   key-revoke:
     type: object
     required: [id]
     properties:
       id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" }
-      restart: { type: boolean, default: false }
+      restart: { description: "Restart the tenant API so the revocation is live. Refused for a `manual` row.", type: boolean, default: false }
+      prove: { description: "After the restart, DIAL the tenant API and record the verdict on the job: the revoked key answers 401 and a surviving admin key answers 200. Needs `restart`.", type: boolean, default: false }
     additionalProperties: false
   admin-add:
     type: object
@@ -295,8 +300,10 @@ x-ctl-op-args:
 # `create-sandbox` refuses every other one, so neither allocator can be reached
 # by the wrong request.
 #
-# `set-ui-mode` and `set-bind` are the PR-E preparation ops: the steps an
-# operator takes on a tenant that is still hand-started, BEFORE its handover.
+# `set-ui-mode`, `set-bind` and `env-pg-password` are the PR-E preparation ops,
+# and `set-supervisor` is the repair for a row a handover left disagreeing with
+# the host: the steps an operator takes on a tenant that is still hand-started,
+# BEFORE its handover or after one that did not convince.
 # They are here rather than in `x-ctl-op-args` for two reasons that hold today
 # and stop holding the day a tenant is handed over:
 #
@@ -310,9 +317,15 @@ x-ctl-op-args:
 #     tenant is served would be the daemon acting on a tenant it cannot then
 #     operate.
 #
+#   * `env-pg-password` rewrites the tenant's `secrets.env`, which is 0640 and
+#     owned by the tenant's own account — the daemon holds a READ ACL on it and
+#     nothing more — and `set-supervisor` decides what the ctl believes about
+#     processes it may not be able to see, which is a judgement only the account
+#     in front of the host can make.
+#
 # They are otherwise ordinary jobs — planned, locked, checkpointed, audited,
-# rollback-able — so publishing an HTTP route for either is adding its name to
-# the `verb` enum and to the router's `opVerbs`, and nothing else.
+# rollback-able — so publishing an HTTP route for one of them is adding its
+# name to the `verb` enum and to the router's `opVerbs`, and nothing else.
 # ---------------------------------------------------------------------------
 x-ctl-cli-op-args:
   artifact-prepare:
@@ -355,6 +368,30 @@ x-ctl-cli-op-args:
     required: [bind]
     properties:
       bind: { description: "The address the tenant API binds. It is the registry's `api.bind`, which is where BOTH launch paths read it from — `render.APIArgv`'s `--host` for a ctl-supervised start, and `ops/coconut/restore.sh`'s for a hand start — so this op writes the registry and nothing else.\n\nThere is deliberately no env key: the tenant API has never read one (nothing in `python/ragstack/` looks at `API_HOST` or any sibling), the bind reaches uvicorn only as an argv element, and a key written into `tenant.env` for symmetry would be configuration nothing reads. Effective at the tenant's next restart; the plan says so.", type: string, enum: ["127.0.0.1", "0.0.0.0"] }
+    additionalProperties: false
+  # env-pg-password derives the tenant's postgres role password into
+  # `secrets.env` as `APPTAINERENV_POSTGRES_PASSWORD`, the ONLY name the
+  # instance supervisor looks for when it starts `postgres-<manifest>`. A
+  # tenant provisioned by `apptainer/new-tenant.sh` carries that password under
+  # no such name — the literal is inside the generated `bin/up.sh` and inside
+  # the connection strings in `secrets.env`, and `provision.env` has the host
+  # and the port but not the password — so a handover of such a tenant stops
+  # everything and then cannot start its own postgres. The value is read out of
+  # POSTGRES_DSN / USER_STORE_DSN / COLLECTION_STORE_DSN (refused when the
+  # three disagree), falling back to the literal in `bin/up.sh`; it is never
+  # printed, logged, previewed or checkpointed, the previous `secrets.env` is
+  # kept as `.bak-pg-password-<ts>`, and a file that already carries the key is
+  # not rewritten at all. No arguments: a password passed in would be a
+  # credential on a command line.
+  env-pg-password:
+    type: object
+    properties: {}
+    additionalProperties: false
+  set-supervisor:
+    type: object
+    required: [supervisor]
+    properties:
+      supervisor: { description: "Correct the registry's `supervisor` and NOTHING else: no process is started, stopped or signalled. It exists for the row a handover left disagreeing with the host — a take that failed after its registry step, an `abandon` that could not be run — and it refuses whenever the tenant's ports are held by a process this account cannot attribute, because recording `instance` for processes the ctl cannot signal is the exact mistake it would otherwise make permanent.", type: string, enum: [manual, instance] }
     additionalProperties: false
 
 paths:

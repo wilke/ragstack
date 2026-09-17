@@ -39,6 +39,9 @@
 #
 # Two consequences worth knowing before you read on:
 #
+#   * a row whose `state` is `handover` is skipped by a FLEET-WIDE run and
+#     started by an explicit `--tenant <n>`: the first would race the service
+#     account's take, the second is the documented way back from one.
 #   * a row whose `owner` is `svcbvbrc` is SKIPPED, with a line saying so. That
 #     tenant has been handed over to the control plane and is started by
 #     `ragstack-ctl fleet start --all` from the service account's @reboot
@@ -177,6 +180,12 @@ reg_rows() {
     "$JQ" -e --arg n "$name" '.tenants[$n]' "$REGISTRY" >/dev/null 2>&1 || continue
     [[ $(reg_get "$name" '.owner') == svcbvbrc ]] && continue
     [[ $(reg_get "$name" '.state') == decommissioned ]] && continue
+    # A tenant MID-HANDOVER is skipped by a fleet-wide run and acted on by an
+    # explicit `--tenant`. Those are different situations: a boot that started
+    # a tenant the service account is halfway through taking would put two
+    # copies of it on one port, while `restore.sh --tenant <n>` is precisely
+    # the documented way back from a handover that did not convince.
+    if [[ $(reg_get "$name" '.state') == handover && -z $TENANT ]]; then continue; fi
     echo "$name"
   done
 }
@@ -194,6 +203,12 @@ reg_announce() {
       say "  [$name] handed over to the control plane: svcbvbrc's @reboot line starts it (ragstack-ctl fleet start --all). This script leaves it alone."
     elif [[ $state == decommissioned ]]; then
       say "  [$name] decommissioned: nothing of it is started"
+    elif [[ $state == handover ]]; then
+      if [[ -n $TENANT ]]; then
+        say "  [$name] mid-handover: starting it anyway because you named it — this is the documented way back (afterwards run 'ragstack-ctl tenant handover $name --abandon' so the row agrees)"
+      else
+        say "  [$name] mid-handover: NOT started by a fleet-wide run (svcbvbrc may be taking it). Name it explicitly to bring it back: $0 --tenant $name"
+      fi
     fi
   done
 }

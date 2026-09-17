@@ -161,8 +161,21 @@ func tenantOpTarget(name, verb string) opTarget {
 func keyUsage() int {
 	fmt.Fprintf(stderr, `usage: ragstack-ctl key <verb> <tenant> … %s
 
-  mint   <tenant> <label> --role admin|user [--restart]
-  revoke <tenant> <id> [--restart]
+  mint   <tenant> <label> --role admin|user [--restart] [--prove] [--tenant-string S]
+  revoke <tenant> <id> [--restart] [--prove]
+
+--tenant-string is the principal the tenant API stamps on everything the key
+writes — NOT the tenant's name: the adopted ledgers use values like asm-ops,
+svc-asm-web and asm-ro. Left out, the mint follows whatever convention the
+tenant's own ledger already uses, and refuses when that ledger uses more than
+one. A key with the wrong one authenticates and then sees none of the tenant's
+documents, which is what --prove now checks for.
+
+--prove dials the tenant API after the restart and records the verdict on the
+job: a surviving admin key answers 200 (so the API is up and authenticating),
+the minted key answers 200 AND can see the tenant's collections, the revoked
+key answers 401. The credentials are read from the tenant's own env files; the
+job records fingerprints and status codes, never a value.
 
 The minted value is NEVER printed by the mint itself: collect it once with
 `+"`ragstack-ctl job show <id>`"+` and the daemon's secrets envelope.
@@ -180,6 +193,10 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
 	role := fs.String("role", "", "admin|user (required for mint)")
 	restart := fs.Bool("restart", false, "restart the tenant API so the new key set is live")
+	prove := fs.Bool("prove", false, "after the restart, dial the tenant: 200 for what should work, 401 for what "+
+		"should not, and the minted key must SEE the tenant's collections (needs --restart)")
+	tenantString := fs.String("tenant-string", "", "the principal API_KEY_TENANTS maps the minted key to "+
+		"(default: the convention the tenant's own ledger already uses)")
 
 	want := 2 // <tenant> <label|id>
 	pos, rest := takePositionals(args, want)
@@ -198,6 +215,12 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		if set["restart"] {
 			opArgs["restart"] = *restart
 		}
+		if set["prove"] {
+			opArgs["prove"] = *prove
+		}
+		if *tenantString != "" {
+			opArgs["tenant_string"] = *tenantString
+		}
 		return submitOp(o, tenantOpTarget(pos[0], "key-mint"), opArgs)
 	case "revoke":
 		if len(pos) != 2 {
@@ -206,6 +229,9 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		opArgs := map[string]any{"id": pos[1]}
 		if set["restart"] {
 			opArgs["restart"] = *restart
+		}
+		if set["prove"] {
+			opArgs["prove"] = *prove
 		}
 		return submitOp(o, tenantOpTarget(pos[0], "key-revoke"), opArgs)
 	case "help", "-h", "--help":
@@ -322,7 +348,18 @@ func envUsage() int {
   set       <tenant> KEY VALUE   a PUBLIC-class key only; secret and
                                  executable-surface keys are refused (409)
   unset     <tenant> KEY
-  normalize <tenant>             rewrite the env files into canonical form
+  normalize <tenant>             rewrite the env files into canonical form,
+                                 split the secrets into secrets.env, and record
+                                 env_layout + the new checksums in the registry
+  pg-password <tenant>           derive APPTAINERENV_POSTGRES_PASSWORD into
+                                 secrets.env from the connection strings already
+                                 there (falling back to the literal in
+                                 <data_dir>/bin/up.sh). It is the ONE name the
+                                 instance supervisor looks for, and a tenant
+                                 provisioned by new-tenant.sh has it under no
+                                 such name — so without this its handover stops
+                                 everything and then cannot start its postgres.
+                                 Idempotent, backed up, never printed. CLI-only.
 `, opFlagSummary)
 	return exitUsage
 }
@@ -343,11 +380,13 @@ func cmdEnv(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		op, want = "env-unset", 2
 	case "normalize":
 		op, want = "env-normalize", 1
+	case "pg-password":
+		op, want = "env-pg-password", 1
 	case "help", "-h", "--help":
 		envUsage()
 		return exitOK
 	default:
-		return usageErr("env: unknown verb %q (set|unset|normalize)", verb)
+		return usageErr("env: unknown verb %q (set|unset|normalize|pg-password)", verb)
 	}
 	fs := flag.NewFlagSet("env "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -366,6 +405,14 @@ func cmdEnv(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		opArgs["key"], opArgs["value"] = pos[1], pos[2]
 	case "env-unset":
 		opArgs["key"] = pos[1]
+	case "env-pg-password":
+		// CLI-only: it rewrites a 0640 file the daemon's account may only
+		// READ, on a tenant the daemon cannot supervise yet.
+		if code := refuseServerFlag(fs, "env pg-password", "it rewrites the tenant's secrets.env, which belongs to "+
+			"the tenant's own account — the daemon has read access through an ACL and nothing more"); code != exitOK {
+			return code
+		}
+		*o.direct = true
 	}
 	return submitOp(o, tenantOpTarget(pos[0], op), opArgs)
 }

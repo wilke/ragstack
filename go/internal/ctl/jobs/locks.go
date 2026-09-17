@@ -64,8 +64,34 @@ func (e *LockedError) Error() string {
 // Unwrap makes errors.Is(err, ErrLocked) true.
 func (e *LockedError) Unwrap() error { return ErrLocked }
 
+// SharedLockDir is the directory the FLEET-WIDE locks live in:
+// `<DataDir>/.ctl-locks`, which on this deployment is
+// `/rag/data/tenants/.ctl-locks`.
+//
+// It is not under `CtlStateDir`, and that is the whole point. The two accounts
+// a handover involves run with DIFFERENT state directories — they have to: the
+// daemon's `jobs.db` belongs to the service account, so an owner-side
+// `--direct` job runs against a scratch `CTL_STATE_DIR` of its own. Locks
+// derived from that directory are two disjoint sets of files, and two disjoint
+// sets of files serialise nothing: wilke's `handover --abandon` and svcbvbrc's
+// `tenant restart` could both hold "the tenant lock" at the same instant, on
+// the same tenant, and the loser of that race is the registry (the restart
+// frees the ports, the abandon flips the row to `manual`, the restart's own
+// registry write lands on a row that no longer describes what it started).
+//
+// `<DataDir>` is the right shared root because it is one of the three the ACL
+// grant covers (`ragstack-ctl fleet grant`): the service account holds rwx on
+// it, the owner owns it, and both can therefore create and flock a file there.
+// The directory is dot-prefixed so nothing that lists tenants reads it as one,
+// and 2770 so the group is inherited by whichever account creates it first.
+const SharedLockDir = paths.SharedLockDirName
+
 // Locks locates one deployment's lock files.
 type Locks struct {
+	// shared holds the locks BOTH accounts must contend for: registry,
+	// manifest and tenant.
+	shared string // <DataDir>/.ctl-locks
+	// dir holds the locks that are one installation's own (images).
 	dir        string // <CtlStateDir>/locks
 	gatewayDir string // <CtlStateDir>/gateway — the gateway package's own dir
 }
@@ -73,6 +99,7 @@ type Locks struct {
 // NewLocks derives the lock file locations from the roots.
 func NewLocks(roots paths.Roots) Locks {
 	return Locks{
+		shared:     roots.SharedLockDir,
 		dir:        filepath.Join(roots.CtlStateDir, "locks"),
 		gatewayDir: gateway.NewState(roots).Dir,
 	}
@@ -80,6 +107,13 @@ func NewLocks(roots paths.Roots) Locks {
 
 // Path is the file backing one lock. The tenant lock is per tenant, so a job
 // on `dev` and a job on `demo` do not serialize against each other.
+//
+// Three of the five live in the SHARED directory (see SharedLockDir): the
+// registry, the manifest and the tenant are what two accounts operating the
+// same fleet have to contend for. The gateway keeps its own file in the
+// gateway state (the gateway package owns that name), and `images` stays in
+// the installation's own directory: it guards this ctl's image staging, not a
+// fact about the deployment two accounts share.
 func (l Locks) Path(name model.LockName, tenant string) string {
 	if name == model.LockGateway {
 		return filepath.Join(l.gatewayDir, gateway.LockName)
@@ -92,7 +126,19 @@ func (l Locks) Path(name model.LockName, tenant string) string {
 			base = tenant + ".lock"
 		}
 	}
+	if l.sharedLock(name) {
+		return filepath.Join(l.shared, base)
+	}
 	return filepath.Join(l.dir, base)
+}
+
+// sharedLock reports whether name is one of the fleet-wide locks.
+func (l Locks) sharedLock(name model.LockName) bool {
+	switch name {
+	case model.LockRegistry, model.LockManifest, model.LockTenant:
+		return l.shared != ""
+	}
+	return false
 }
 
 // LockSet is a set of held locks. Always `defer s.Release()`.
@@ -124,6 +170,23 @@ func (l Locks) Take(want []model.LockName, tenant string, holder LockHolder, now
 	if err := os.MkdirAll(l.dir, 0o2770); err != nil {
 		return nil, fmt.Errorf("creating the lock dir: %w", err)
 	}
+	// Created by whichever account gets there first, and then made writable by
+	// the other one EXPLICITLY.
+	//
+	// Two things make that necessary. Go's FileMode does not carry the Unix
+	// setgid bit in its low octal digits — `0o2770` there is plain `0770` —
+	// and the process umask (0027 on coconut) then takes the group-write bit
+	// off whatever is left. A directory created as `drwxr-x---` is one the
+	// second account cannot create a lock file in, so the locks would be
+	// "shared" in name and unusable in fact. The chmod is best effort: the
+	// account that did NOT create it cannot chmod it, and does not need to.
+	if l.shared != "" {
+		if err := os.MkdirAll(l.shared, 0o770); err != nil {
+			return nil, fmt.Errorf("creating the shared lock dir %s (both accounts must be able to write it, "+
+				"which is what `ragstack-ctl fleet grant` arranges): %w", l.shared, err)
+		}
+		_ = os.Chmod(l.shared, 0o770|os.ModeSetgid)
+	}
 	set := &LockSet{since: now}
 	for _, name := range ordered {
 		p := l.Path(name, tenant)
@@ -134,7 +197,19 @@ func (l Locks) Take(want []model.LockName, tenant string, holder LockHolder, now
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o660)
 		if err != nil {
 			set.Release()
+			if l.sharedLock(name) && errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("opening the shared %s lock %s: %w — both accounts must be able to write "+
+					"it. `chmod 660` that file and `chmod 2770` its directory as its owner, or run "+
+					"`ragstack-ctl fleet grant` to put the ACL back", name, p, err)
+			}
 			return nil, fmt.Errorf("opening %s: %w", p, err)
+		}
+		// Group-writable, explicitly: the umask takes that bit off the mode
+		// above, and a lock file the other account cannot open O_RDWR is a
+		// lock that refuses with EACCES instead of serialising. It fails
+		// harmlessly for the account that did not create the file.
+		if l.sharedLock(name) {
+			_ = f.Chmod(0o660)
 		}
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 			_ = f.Close()

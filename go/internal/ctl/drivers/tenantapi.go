@@ -87,6 +87,9 @@ var routes = map[string]route{
 		ok: []int{http.StatusOK, http.StatusAccepted},
 	},
 	"ingest-status": {method: http.MethodGet, path: "/v1/ingest/%s", key: true},
+	// The admin ingest-job listing. A handover's release reads it to refuse
+	// over an ingest that is still writing; nothing else calls it.
+	"jobs": {method: http.MethodGet, path: "/v1/jobs", key: true},
 }
 
 // tenantJobIDRe is the ingest job id rule. Same reason as tenantSubjectRe: the
@@ -137,8 +140,30 @@ func scrub(err error, apiKey string) error {
 	if !strings.Contains(msg, apiKey) {
 		return err
 	}
-	return fmt.Errorf("%s", strings.ReplaceAll(msg, apiKey, "<redacted api key>"))
+	// `%w`, wrapping the ORIGINAL: flattening it to a string dropped whatever
+	// sentinel it carried, and those sentinels are what the API layer maps to
+	// statuses (a jobs.ErrRefused became a 500). The message is the redacted
+	// one; the chain is the real one, and errors.Is keeps working.
+	return fmt.Errorf("%s (%w)", strings.ReplaceAll(msg, apiKey, "<redacted api key>"), redactedCause{err, apiKey})
 }
+
+// redactedCause carries the original error's CHAIN without its text.
+//
+// It exists because `scrub` has two jobs that pull in opposite directions: the
+// message must not contain the credential, and `errors.Is` must still find
+// whatever sentinel the original wrapped. Wrapping the original directly would
+// reprint the un-redacted message; this wrapper prints the redaction and
+// unwraps to the original.
+type redactedCause struct {
+	err    error
+	apiKey string
+}
+
+func (r redactedCause) Error() string {
+	return strings.ReplaceAll(r.err.Error(), r.apiKey, "<redacted api key>")
+}
+
+func (r redactedCause) Unwrap() error { return r.err }
 
 // Health is the unauthenticated liveness probe.
 func (a *RealTenantAPI) Health(ctx context.Context, origin string) error {
@@ -415,4 +440,121 @@ func (a *RealTenantAPI) IngestStatus(ctx context.Context, origin, apiKey, jobID 
 		return "", err
 	}
 	return body.Status, nil
+}
+
+// ---------------------------------------------------------------- census and proof
+
+// CollectionCounts is the census: every collection the tenant lists, with the
+// chunk count it reports for it.
+//
+// `counts=true`, which is the one place the ctl asks a tenant to pay for the
+// per-store queries — a handover's release has to record what the tenant held
+// before it is stopped, and "the same collections came back" is a weaker claim
+// than "the same collections with the same number of chunks came back".
+//
+// A collection the tenant lists WITHOUT a count is recorded as -1 rather than
+// as 0: an older tenant build that does not answer the field, or a store that
+// could not be queried, must not read back as an empty collection.
+func (a *RealTenantAPI) CollectionCounts(ctx context.Context, origin, apiKey string) (map[string]int64, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("%w: /v1/collections needs an API key and none was supplied", jobs.ErrRefused)
+	}
+	var body struct {
+		Collections []struct {
+			ID    string `json:"id"`
+			Count *int64 `json:"count"`
+		} `json:"collections"`
+	}
+	req := request{
+		method: http.MethodGet, path: routes["collections"].path,
+		query:   url.Values{"counts": []string{"true"}},
+		headers: map[string]string{"X-API-Key": apiKey},
+		timeout: listTimeout,
+	}
+	if err := a.h.doJSON(ctx, origin, tenantOrigin, req, &body); err != nil {
+		return nil, scrub(err, apiKey)
+	}
+	out := make(map[string]int64, len(body.Collections))
+	for _, c := range body.Collections {
+		if c.ID == "" {
+			continue
+		}
+		if c.Count == nil {
+			out[c.ID] = -1
+			continue
+		}
+		out[c.ID] = *c.Count
+	}
+	return out, nil
+}
+
+// RunningIngestJobs is the ids of the tenant's ingest jobs that have not
+// finished.
+//
+// The tenant's own vocabulary decides: anything that is not one of the
+// terminal words is taken to be in flight. That direction is deliberate — an
+// unknown status on the "still running" side delays a handover, and on the
+// other side it stops an API in the middle of writing a collection.
+func (a *RealTenantAPI) RunningIngestJobs(ctx context.Context, origin, apiKey string) ([]string, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("%w: /v1/jobs needs an admin API key and none was supplied", jobs.ErrRefused)
+	}
+	var body struct {
+		Jobs []struct {
+			JobID  string `json:"job_id"`
+			Status string `json:"status"`
+		} `json:"jobs"`
+	}
+	req := request{
+		method: http.MethodGet, path: routes["jobs"].path,
+		headers: map[string]string{"X-API-Key": apiKey},
+		timeout: listTimeout,
+	}
+	if err := a.h.doJSON(ctx, origin, tenantOrigin, req, &body); err != nil {
+		return nil, scrub(err, apiKey)
+	}
+	var out []string
+	for _, j := range body.Jobs {
+		if terminalIngestStatus(strings.ToLower(strings.TrimSpace(j.Status))) || j.JobID == "" {
+			continue
+		}
+		out = append(out, j.JobID)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// terminalIngestStatus is the tenant's finished vocabulary. Everything else
+// counts as in flight.
+func terminalIngestStatus(s string) bool {
+	switch s {
+	case "completed", "succeeded", "success", "failed", "error", "cancelled", "canceled", "unknown":
+		return true
+	}
+	return false
+}
+
+// KeyStatus dials the tenant with one credential and answers the STATUS.
+//
+// /v1/collections is the route: it needs a key, it is cheap, and both roles
+// may call it — so a 200 means "this credential authenticates", which is
+// exactly and only what a credential proof asks. A transport failure is still
+// an error; an HTTP answer, whatever it is, is the result.
+func (a *RealTenantAPI) KeyStatus(ctx context.Context, origin, apiKey string) (int, error) {
+	if apiKey == "" {
+		return 0, fmt.Errorf("%w: a key proof needs a credential to present", jobs.ErrRefused)
+	}
+	_, err := a.h.do(ctx, origin, tenantOrigin, request{
+		method: http.MethodGet, path: routes["collections"].path,
+		query:   url.Values{"counts": []string{"false"}},
+		headers: map[string]string{"X-API-Key": apiKey},
+		timeout: listTimeout,
+	})
+	if err == nil {
+		return http.StatusOK, nil
+	}
+	if status := statusOf(err); status != 0 {
+		return status, nil
+	}
+	return 0, scrub(err, apiKey)
 }

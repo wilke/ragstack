@@ -112,7 +112,7 @@
         "adopt", "create", "start", "stop", "restart", "backup", "restore", "handover",
         "migrate-local", "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
         "sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
-        "render-units", "update-code", "set-ui-mode", "set-bind"
+        "render-units", "update-code", "set-ui-mode", "set-bind", "set-supervisor"
       ]
     },
     "PublicSettingKey": {
@@ -465,6 +465,47 @@
       },
       "additionalProperties": false
     },
+    "Handover": {
+      "description": "The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`.",
+      "type": "object",
+      "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census"],
+      "properties": {
+        "phase": {
+          "description": "`released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.",
+          "type": "string",
+          "enum": ["released", "taken"]
+        },
+        "token": {
+          "description": "A one-shot nonce the release prints and the take must quote. It is not a credential — it grants nothing — it is the proof that the take is acting on THIS release rather than on a row left behind by an older, abandoned one.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "started_at": { "$ref": "#/$defs/Timestamp" },
+        "released_by": { "description": "The account that ran the release (the tenant's pre-handover owner).", "type": "string", "minLength": 1 },
+        "released_at": { "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "null" } ] },
+        "taken_at": { "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "null" } ] },
+        "taken_by": { "oneOf": [ { "type": "string", "minLength": 1 }, { "type": "null" } ] },
+        "descriptor_ref": {
+          "description": "`captured_at` of the `rollback_descriptor` this handover is reversible against, so a descriptor rewritten under a parked handover is visible as a disagreement rather than silently trusted.",
+          "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "null" } ]
+        },
+        "census": {
+          "description": "What the tenant held at the moment of the release: one row per collection/index of each EXCLUSIVE store, plus the API's own `/v1/collections?counts=true`. The take compares its own reading against it and refuses a store that came back with fewer rows than it went down with.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["store", "name", "count"],
+            "properties": {
+              "store": { "type": "string", "enum": ["qdrant", "elasticsearch", "api"] },
+              "name": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": -1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Code": {
       "type": "object",
       "required": ["tag", "sha", "previous_artifact_id"],
@@ -561,8 +602,9 @@
         },
         "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
         "state": {
+          "description": "`handover` is the TRANSITIONAL value of the two-account handover: between `handover --release` (the owner stopped the tenant) and `handover --take` (the service account started it again) nothing of this tenant is running and neither account owns it. It is a state rather than a flag so that every reader — the gateway probe, `fleet status`, the reboot scripts — sees one value meaning \"down on purpose, mid-move\" instead of inferring it from a row that still claims `active`.",
           "type": "string",
-          "enum": ["provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"]
+          "enum": ["provisioned", "active", "stopped", "migrating", "handover", "quarantined", "decommissioned"]
         },
         "desired_boot": {
           "description": "`enabled` ⇔ the target is `WantedBy=default.target`. `stop` flips it to `disabled` unless `--keep-enabled`, so a deliberately stopped tenant stays down across a reboot.",
@@ -587,7 +629,11 @@
           },
           "additionalProperties": false
         },
-        "keys": { "type": "array", "items": { "$ref": "#/$defs/KeyRecord" } },
+        "keys": {
+          "description": "The API-key ledger: fingerprints, never values. At most ONE entry per `id` may have `revoked_at: null` — the id is what `key revoke` withdraws by, so two effective rows sharing one would make \"the key called ops\" ambiguous. Revoked rows may repeat an id freely: mint → revoke → mint is the ordinary rotation and the history is why the rows are kept. (JSON Schema cannot express \"unique among the entries that satisfy a predicate\"; `ragstack-ctl`'s Go mirror enforces it on every load, and registry_test.go proves the two agree.)",
+          "type": "array",
+          "items": { "$ref": "#/$defs/KeyRecord" }
+        },
         "service_accounts": { "type": "array", "items": { "$ref": "#/$defs/ServiceAccountRecord" } },
         "external_refs": { "type": "array", "items": { "$ref": "#/$defs/ExternalRef" } },
         "unmanaged_files": {
@@ -602,6 +648,10 @@
         },
         "release_generation": { "oneOf": [ { "$ref": "#/$defs/ReleaseGeneration" }, { "type": "null" } ] },
         "rollback_descriptor": { "oneOf": [ { "$ref": "#/$defs/RollbackDescriptor" }, { "type": "null" } ] },
+        "handover": {
+          "description": "The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight.",
+          "oneOf": [ { "$ref": "#/$defs/Handover" }, { "type": "null" } ]
+        },
         "last_ops": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/OpVerb" },

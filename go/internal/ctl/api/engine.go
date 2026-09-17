@@ -83,8 +83,12 @@ type EngineConfig struct {
 	Npm       string
 	Apptainer string
 	Crontab   string
-	Mirror    string
-	NpmCache  string
+	// GatewayBaseURL is the live gateway the ops probe through
+	// (CTL_GATEWAY_BASE_URL). Empty means gateway.DefaultBaseURL, which is
+	// this deployment's coconut proxy on 127.0.0.1:9000.
+	GatewayBaseURL string
+	Mirror         string
+	NpmCache       string
 	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
 	// Empty means Roots.RagRoot. Only a run against a SANDBOX root sets it —
 	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
@@ -215,9 +219,14 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			NpmBin:       cfg.Npm,
 			Apptainer:    cfg.Apptainer,
 			CrontabBin:   cfg.Crontab,
-			Mirror:       cfg.Mirror,
-			NpmCache:     cfg.NpmCache,
-			Logger:       cfg.Logger,
+			// The gateway the ops PROBE through. Empty would take the driver's
+			// own fallback; passing it explicitly means `fleet status`, a
+			// publish and a post-check all name the same server, and that one
+			// server is overridable on a host whose gateway is not on :9000.
+			BaseURL:  cfg.GatewayBaseURL,
+			Mirror:   cfg.Mirror,
+			NpmCache: cfg.NpmCache,
+			Logger:   cfg.Logger,
 			// The drivers redact captured stderr with the same redactor the
 			// engine logs through: a `git` that quotes a URL with a token in
 			// it, or a `psql` that echoes a DSN, must not reach a job log
@@ -230,6 +239,13 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	// The doctor a plan pins is the same doctor the dashboard shows: same
 	// host facts, same ctl account, same external store ports.
 	host := hostfacts.NewReal(cfg.Roots)
+	// Resolved ONCE, and passed explicitly: three of doctor's checks
+	// (`runtime_dir_missing`, `user_dropin_missing`, and the ACL grant) are
+	// about a numeric uid, and a doctor left to resolve it itself answers a
+	// different finding set from the CLI's — which is how an operator comes to
+	// read a green run on the command line and be refused by a red one from
+	// the daemon, with no way to see which finding did it.
+	ctlUID := hostfacts.LookupUID(fleet.DefaultCtlUser)
 	doctorFn := func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		f, err := loadFleet()
 		if err != nil {
@@ -242,6 +258,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			Now:                cfg.Now,
 			RegistryPath:       cfg.RegistryPath,
 			CtlUser:            fleet.DefaultCtlUser,
+			CtlUID:             ctlUID,
 			SudoersGroup:       fleet.DefaultSudoersGroup,
 			ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
 		})
@@ -267,11 +284,28 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Drivers:      drv,
 		Redactor:     redactor,
 		Doctor:       doctorFn,
-		Now:          cfg.Now,
-		Host:         cfg.Host,
-		Mode:         cfg.Mode,
-		SecretsTTL:   cfg.SecretsTTL,
-		Logger:       cfg.Logger,
+		// The op × finding table, as a function: the engine's yellow gate asks
+		// it which of a run's warnings THIS op depends on, so that the three
+		// findings this deployment is permanently yellow on (the systemd trio
+		// PR-D2 abandoned) stop demanding an acknowledgement from every
+		// mutation. The destination is the default one — `instance`, the only
+		// supervisor a handover on this host can reach.
+		PreconditionCodes: func(op string) []string {
+			// TOLERATED codes come out, exactly as doctor's own
+			// applyPreconditions removes them ("tolerating wins: a row cannot
+			// both raise and lower"). Without this the gate demanded an
+			// acknowledgement for the very finding an op exists to CLEAR —
+			// `env-normalize` over `env_not_systemd_parsable`, `adopt` over
+			// `stores_unconfirmed`, `start` over `port_not_listening` — which
+			// is the lesson the tolerates table was written for in the first
+			// place, arriving by a second door.
+			return doctor.GateCodes(op, "")
+		},
+		Now:        cfg.Now,
+		Host:       cfg.Host,
+		Mode:       cfg.Mode,
+		SecretsTTL: cfg.SecretsTTL,
+		Logger:     cfg.Logger,
 	})
 	return eng, drv, nil
 }
@@ -548,6 +582,10 @@ func SetHostToolsFromEnv(cfg *EngineConfig) {
 		// supervisor, or an operator would be creating two kinds of tenant
 		// depending on which way the request arrived.
 		{EnvDefaultSupervisor, &cfg.DefaultSupervisor},
+		// Not a host tool either, and the same rule: the gateway a --direct
+		// run probes must be the gateway the daemon probes, or a post-check
+		// would be checking a different server from the one that published.
+		{EnvGatewayBaseURL, &cfg.GatewayBaseURL},
 	} {
 		if v := strings.TrimSpace(os.Getenv(f.env)); v != "" {
 			*f.field = v

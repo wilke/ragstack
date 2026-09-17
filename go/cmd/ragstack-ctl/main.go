@@ -7,7 +7,7 @@
 // add 4, 5, 6 and 7 under --wait, where the exit code IS the job's outcome.
 //
 // 6 and 7 are distinct on purpose. `awaiting_cutover` is not success: the job
-// did exactly what handover and migrate-local plan, and it is now WAITING for
+// did exactly what `migrate-local` plans, and it is now WAITING for
 // `job continue` — a script that read it as 0 would report a half-migrated
 // tenant as a finished migration. And a --wait that ran out of time is not the
 // same event as a control plane that could not be reached (1): the job is
@@ -55,8 +55,9 @@ const (
 	exitJobFailed      = 4
 	exitJobInterrupted = 5
 	// exitJobAwaitingCutover is a job that reached its cutover and parked.
-	// It used to be 0, which told a script that a handover waiting for
-	// `job continue` had finished.
+	// It used to be 0, which told a script that a migration waiting for
+	// `job continue` had finished. (No handover phase parks: see
+	// ops/handover.go — a soak must not hold the fleet's registry lock.)
 	exitJobAwaitingCutover = 6
 	// exitWaitTimeout is --wait giving up. The JOB is fine — this is the
 	// client's clock, not the control plane's answer — so it is not 1, which
@@ -1062,6 +1063,8 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	op := fs.String("op", "", "scope the run to one operation's preconditions")
+	dest := fs.String("destination", "", "for --op handover: the supervisor the tenant would move ONTO "+
+		"(instance|systemd; default: the row's own when it is not `manual`, else $CTL_DEFAULT_SUPERVISOR)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 	asJSON := fs.Bool("json", jsonOut, "machine-readable output")
@@ -1091,9 +1094,33 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 			return fail(fmt.Errorf("tenant %q is not in %s", tenant, registryPath))
 		}
 	}
+	// A handover's preconditions depend on WHERE the tenant is going, and the
+	// two lists differ by five findings (doctor/preconditions.go). PR-E1 added
+	// the option and no way to reach it, so `doctor --op handover` always
+	// answered for the default destination — which is right on this host and
+	// silently wrong on one where somebody had installed the systemd path.
+	destination, code := handoverDestination(*dest, *op, tenant, f)
+	if code != exitOK {
+		return code
+	}
+	// The SAME options the daemon builds its doctor with (api/engine.go), so
+	// that `ragstack-ctl doctor --op X` answers what the engine's own gate
+	// will answer. They were not the same before: the CLI passed no host
+	// facts, no ctl user, no sudoers group and no external store ports, so an
+	// operator could read a green run here and be refused by a red one there,
+	// with no way to see which finding had done it.
 	resp := doctor.Run(context.Background(), roots, f, doctor.Options{
-		Tenant: tenant, Op: *op, RegistryPath: registryPath, CtlUID: ctlUID(doctor.DefaultCtlUser),
+		Tenant: tenant, Op: *op, Destination: destination,
+		Host:               hostfacts.NewReal(roots),
+		RegistryPath:       registryPath,
+		CtlUser:            fleet.DefaultCtlUser,
+		CtlUID:             ctlUID(doctor.DefaultCtlUser),
+		SudoersGroup:       fleet.DefaultSudoersGroup,
+		ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
 	})
+	if destination != "" {
+		fmt.Fprintf(stderr, "ragstack-ctl doctor: handover preconditions for destination %q\n", destination)
+	}
 	if *asJSON {
 		if code := encode(resp); code != exitOK {
 			return code
@@ -1112,6 +1139,44 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return exitRefused
 	}
 	return exitOK
+}
+
+// handoverDestination resolves `doctor --destination`.
+//
+// Explicit wins. Otherwise the TENANT'S OWN supervisor, when it names one the
+// ctl can hand over to — a row that already says `instance` is a row whose
+// handover lands on `instance` — and otherwise CTL_DEFAULT_SUPERVISOR, which
+// is the deployment's answer to "where does a tenant go". `manual` is never a
+// destination: it is where a tenant comes FROM.
+//
+// It answers "" for every op but `handover`, which is what doctor.Options
+// takes as "not applicable"; the option is ignored there anyway, and passing a
+// value would put a meaningless word in the run's scope.
+func handoverDestination(flagValue, op, tenant string, f *registry.Fleet) (string, int) {
+	if flagValue != "" && flagValue != doctor.SupervisorInstance && flagValue != doctor.SupervisorSystemd {
+		fmt.Fprintf(stderr, "ragstack-ctl doctor: --destination %q is not %s or %s (a handover moves a tenant ONTO "+
+			"one of those; `manual` is where it comes from)\n", flagValue, doctor.SupervisorInstance,
+			doctor.SupervisorSystemd)
+		return "", exitUsage
+	}
+	if op != "handover" {
+		if flagValue != "" {
+			fmt.Fprintf(stderr, "ragstack-ctl doctor: --destination only means something with --op handover; "+
+				"it is ignored for --op %q\n", op)
+		}
+		return "", exitOK
+	}
+	if flagValue != "" {
+		return flagValue, exitOK
+	}
+	if t, ok := f.Tenants[tenant]; ok && t != nil && t.Supervisor != "manual" && t.Supervisor != "" {
+		return t.Supervisor, exitOK
+	}
+	if d := strings.TrimSpace(os.Getenv("CTL_DEFAULT_SUPERVISOR")); d == doctor.SupervisorSystemd ||
+		d == doctor.SupervisorInstance {
+		return d, exitOK
+	}
+	return doctor.DefaultHandoverDestination, exitOK
 }
 
 func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
@@ -1174,6 +1239,8 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-supervisor <name> manual|instance")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant handover <name> --release|--take --token T|--commit|--abandon")
 		return exitUsage
 	}
 	// The operation verbs take the op envelope (--dry-run/--yes/--wait/…) and
@@ -1201,6 +1268,12 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return cmdTenantSetUIMode(args[1:], registryPath, ragRoot, jsonOut)
 	case "set-bind":
 		return cmdTenantSetBind(args[1:], registryPath, ragRoot, jsonOut)
+	case "set-supervisor":
+		return cmdTenantSetSupervisor(args[1:], registryPath, ragRoot, jsonOut)
+	case "handover":
+		// A handover is the one verb whose phases run as two different
+		// accounts; the command is in handover.go with the protocol it drives.
+		return cmdTenantHandover(args[1:], registryPath, ragRoot, jsonOut)
 	}
 	if tenantOpVerbs[args[0]] {
 		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)

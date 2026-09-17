@@ -131,6 +131,16 @@ func RunServe(args []string) int {
 			"default", roots.CtlStateDir)
 		return exitUsage
 	}
+	if *fakeDrivers {
+		// The SHARED locks follow the scratch state dir too. They are under
+		// the deployment's tenants directory by design — that is what makes
+		// two accounts contend for one tenant — but a fixture daemon serves a
+		// fleet that does not exist and must not create a file in the real
+		// tree for a tenant nobody has. The conformance suite found this the
+		// obvious way: a run against the fixture left fifteen lock files in
+		// /rag/data/tenants, named after tenants the host has never had.
+		roots.SharedLockDir = filepath.Join(roots.CtlStateDir, "locks")
+	}
 	cfg := EngineConfig{
 		Roots:        roots,
 		RegistryPath: *registryPath,

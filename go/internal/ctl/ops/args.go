@@ -248,6 +248,13 @@ const (
 	// argument validator, before a plan exists at all. (The 23-character tail
 	// keeps the whole name inside patTenantName's 32.)
 	patSandboxName = `^ctltest-[a-z0-9-]{1,23}$`
+	// patHandoverToken is the release's nonce: 16 random bytes as hex.
+	patHandoverToken = `^[0-9a-f]{32}$`
+	// patTenantString is the value API_KEY_TENANTS maps a key to — the
+	// principal the tenant API stamps on everything that key writes. It is NOT
+	// patTenantName: the adopted ledgers use `asm-ops`, `svc-asm-web`,
+	// `asm-ro`, which are the tenant's own vocabulary rather than the fleet's.
+	patTenantString = `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`
 )
 
 var (
@@ -256,7 +263,11 @@ var (
 	// ctl starts and stops is a leg `--only` has to be able to name.
 	components = []string{"api", "ui", "qdrant", "es", "postgres"}
 	phases     = []string{"execute", "commit", "rollback"}
-	roles      = []string{"admin", "user"}
+	// handoverPhases is NOT `phases`: a handover is two jobs run by two
+	// accounts plus a continuation, and naming its phases `execute` would
+	// promise the single job this host cannot run (ops/handover.go).
+	handoverPhases = []string{"release", "take", "commit", "abandon"}
+	roles          = []string{"admin", "user"}
 	// backupScopes is `backup.scope`'s item enum: the three legs a bundle can
 	// be asked for. `secrets` is NOT one of them — the sealed payload follows
 	// `config`, because a bundle carrying a tenant's configuration and not its
@@ -271,6 +282,10 @@ var (
 	// `localhost`, which is a name rather than an address and resolves
 	// differently depending on /etc/hosts.
 	apiBinds = []string{"127.0.0.1", "0.0.0.0"}
+	// setSupervisors is set-supervisor's enum: the registry's three values
+	// minus `systemd`, which PR-D2 postponed — a row this op moved onto
+	// `systemd` would name units no manager on this host can be made to load.
+	setSupervisors = []string{"manual", "instance"}
 )
 
 // argSchemas is the table. The three entries with no contract row (create,
@@ -300,7 +315,9 @@ var argSchemas = map[string]argSpec{
 		{Name: "as", Kind: argString, Required: true, Pattern: patTenantName},
 	}},
 	"handover": {Verb: "handover", Fields: []argField{
-		{Name: "phase", Kind: argString, Required: true, Enum: phases},
+		{Name: "phase", Kind: argString, Required: true, Enum: handoverPhases},
+		{Name: "token", Kind: argString, Pattern: patHandoverToken},
+		{Name: "accept_no_backup", Kind: argBool},
 	}},
 	"migrate-local": {Verb: "migrate-local", Fields: []argField{
 		{Name: "phase", Kind: argString, Required: true, Enum: phases},
@@ -310,10 +327,13 @@ var argSchemas = map[string]argSpec{
 		{Name: "label", Kind: argString, Required: true, Pattern: patLabel},
 		{Name: "role", Kind: argString, Required: true, Enum: roles},
 		{Name: "restart", Kind: argBool},
+		{Name: "prove", Kind: argBool},
+		{Name: "tenant_string", Kind: argString, Pattern: patTenantString},
 	}},
 	"key-revoke": {Verb: "key-revoke", Fields: []argField{
 		{Name: "id", Kind: argString, Required: true, Pattern: patLabel},
 		{Name: "restart", Kind: argBool},
+		{Name: "prove", Kind: argBool},
 	}},
 	"admin-add": {Verb: "admin-add", Fields: []argField{
 		{Name: "subject", Kind: argString, Required: true, Pattern: patSubjectIss},
@@ -413,6 +433,17 @@ var argSchemas = map[string]argSpec{
 	"set-bind": {Verb: "set-bind", Fields: []argField{
 		{Name: "bind", Kind: argString, Required: true, Enum: apiBinds},
 	}},
+	// set-supervisor corrects the ROW and touches no process. CLI-only for
+	// the reason the contract gives: it is the repair for a row that
+	// disagrees with the host, and the account that can see which of the two
+	// is wrong is the one sitting in front of it.
+	"set-supervisor": {Verb: "set-supervisor", Fields: []argField{
+		{Name: "supervisor", Kind: argString, Required: true, Enum: setSupervisors},
+	}},
+	// env-pg-password takes no arguments: what it writes is derived from what
+	// is already on disk, and a value passed in would be a credential on a
+	// command line.
+	"env-pg-password": {Verb: "env-pg-password"},
 	"artifact-prepare": {Verb: "artifact-prepare", Fields: []argField{
 		{Name: "tag", Kind: argString, Required: true, Pattern: patGitRef},
 		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
@@ -444,7 +475,8 @@ var ContractVerbs = []string{
 // CLIVerbs are the operations that are jobs like any other but have NO HTTP
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
-var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind"}
+var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind", "set-supervisor",
+	"env-pg-password"}
 
 // ---------------------------------------------------------------- helpers
 

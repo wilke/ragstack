@@ -94,12 +94,29 @@ type Roots struct {
 	CtlStateDir  string // /rag/data/ctl — jobs.db, gateway generations, artifacts
 	ImagesDir    string // /rag/apptainer/images — shared SIFs
 	ProxyDir     string // /rag/config/proxy — nginx tree (owned by coconut-proxy)
+	// SharedLockDir is where the FLEET-WIDE locks live: /rag/data/tenants/
+	// .ctl-locks, under DataDir rather than under CtlStateDir.
+	//
+	// It is separate from both because the two accounts a handover involves
+	// run with DIFFERENT state directories (the daemon's jobs.db belongs to
+	// the service account, so an owner-side --direct job needs a scratch one
+	// of its own) and must still contend for the same registry, manifest and
+	// tenant locks. DataDir is the right shared root: it is one of the three
+	// the ACL grant covers, so both accounts can write it.
+	//
+	// It is OVERRIDABLE for one reason: a `--fake-drivers` daemon serves a
+	// fixture fleet and must touch nothing real, and without an override its
+	// locks would land in the deployment's own tenants directory.
+	SharedLockDir string
 }
 
 // Overrides replaces individual Roots fields; empty fields keep the default
 // derived from RagRoot.
 type Overrides struct {
 	DataDir, ReposDir, BackupsDir, CtlConfigDir, CtlStateDir, ImagesDir, ProxyDir string
+	// SharedLockDir overrides <DataDir>/.ctl-locks. Set it only for a process
+	// that must not touch the deployment's tenants directory at all.
+	SharedLockDir string
 }
 
 // NewRoots derives the standard layout under ragRoot and applies ov.
@@ -127,8 +144,18 @@ func NewRoots(ragRoot string, ov Overrides) Roots {
 	pick(&r.CtlStateDir, ov.CtlStateDir)
 	pick(&r.ImagesDir, ov.ImagesDir)
 	pick(&r.ProxyDir, ov.ProxyDir)
+	// After DataDir has been resolved: the default follows whatever DataDir
+	// ended up being, so a test or a sandbox with its own data dir gets its
+	// own locks without saying so twice.
+	r.SharedLockDir = filepath.Join(r.DataDir, SharedLockDirName)
+	pick(&r.SharedLockDir, ov.SharedLockDir)
 	return r
 }
+
+// SharedLockDirName is the directory, under DataDir, that holds the locks both
+// accounts contend for. Dot-prefixed so nothing that lists tenants reads it as
+// one.
+const SharedLockDirName = ".ctl-locks"
 
 // Registry is the fleet registry file (source of truth).
 func (r Roots) Registry() string { return filepath.Join(r.DataDir, "registry.json") }

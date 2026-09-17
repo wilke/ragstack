@@ -180,7 +180,12 @@ func TestSelftestRunsTheWholeSequenceAgainstTheFixtureHost(t *testing.T) {
 		t.Fatalf("selftest.execute: %v\n%s", err, out.String())
 	}
 
-	want := []string{"create-sandbox", "ingest", "backup --fence", "stop", "restore --as",
+	want := []string{"create-sandbox", "ingest",
+		// The creds phase: a key minted into the sandbox's ledger, the API
+		// restarted so the ledger is live, the tenant dialled to prove it —
+		// then the same key withdrawn and dialled again for the 401.
+		"key mint --restart --prove", "key revoke --restart --prove",
+		"backup --fence", "stop", "restore --as",
 		"decommission " + fixturePrimary}
 	if !restorePending {
 		want = append(want, "decommission "+fixtureRestored)

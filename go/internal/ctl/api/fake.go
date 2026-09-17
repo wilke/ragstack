@@ -142,6 +142,7 @@ func FixtureFleet() *registry.Fleet {
 	f := registry.LiveFixture()
 	addManagedFixture(f)
 	addInstanceFixture(f)
+	addHandoverFixture(f)
 	// One prepared artifact, so `tenant create` has something to create from.
 	f.Artifacts[ConformanceArtifactID] = &registry.Artifact{
 		SHA: conformanceSHA, Tag: "conformance",
@@ -214,6 +215,79 @@ func addManagedFixture(f *registry.Fleet) {
 	}
 	f.Tenants[managedFixtureName] = t
 	f.DisplayOrder = append(f.DisplayOrder, managedFixtureName)
+}
+
+// handoverFixtureName is a tenant MID-HANDOVER: released by its owner and not
+// yet taken by the service account.
+//
+// It exists because every handover phase is gated on the registry row, so a
+// fleet in which no row is mid-handover is a fleet on which the conformance
+// suite can assert refusals and nothing else — which is what it did: all four
+// phases answered "there is nothing to do" and the tests that were supposed to
+// check a PLAN (its confirm value, and that no phase parks at a cutover)
+// silently checked nothing.
+//
+// Released BY WILKE, so that the fake daemon — which acts as `svcbvbrc` — is
+// the other account and `--take` is something it may actually do.
+const handoverFixtureName = "ctlfixture-hand"
+
+// HandoverFixtureToken is the token `ctlfixture-hand`'s release recorded. It
+// is a fixture nonce and grants nothing; the conformance suite quotes it to
+// reach a plannable `--take`.
+const HandoverFixtureToken = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+
+func addHandoverFixture(f *registry.Fleet) {
+	r := paths.NewRoots(f.RagRoot, paths.Overrides{})
+	tp := paths.TenantPaths(r, handoverFixtureName, handoverFixtureName)
+	t := registry.NewTenant(handoverFixtureName, handoverFixtureName)
+	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
+	t.Code = registry.Code{Tag: "v1.5.3", SHA: registry.NullString(strings.Repeat("ab", 20))}
+	t.ArtifactID = managedFixtureArtifactID
+	t.Ports = paths.Block(11)
+	t.API = registry.API{Bind: "127.0.0.1", PidFile: tp.PidFile, Log: tp.APILog}
+	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + handoverFixtureName + "/ui/"}
+	// The shape a release leaves behind: still `manual` (the take is what
+	// records `instance`), still the owner's, and DOWN.
+	t.Supervisor, t.Owner, t.State = "manual", "wilke", string(model.StateHandover)
+	t.DesiredBoot, t.EnvLayout = "disabled", "managed"
+	t.EnvFileSHA256, t.SecretsFileSHA256 = emptySHA256Hex, emptySHA256Hex
+	t.Identity = registry.Identity{Provider: "bvbrc", AdminSubjectsCount: 1}
+	t.SecretRefs = []registry.SecretRef{
+		{Key: "API_KEYS", File: "secrets.env"},
+		{Key: "API_KEY_TENANTS", File: "secrets.env"},
+		{Key: "API_KEY_ROLES", File: "secrets.env"},
+	}
+	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}
+	t.Stores.Qdrant = registry.Qdrant{
+		URL:      fmt.Sprintf("http://localhost:%d", t.Ports.QdrantHTTP),
+		Instance: registry.NullString("qdrant-" + handoverFixtureName),
+		SIF:      "/rag/apptainer/images/qdrant.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		ExtraEnv: map[string]string{},
+	}
+	t.Stores.Elasticsearch = registry.Elasticsearch{
+		URL:      fmt.Sprintf("http://localhost:%d", t.Ports.ESHTTP),
+		Instance: registry.NullString("elasticsearch-" + handoverFixtureName),
+		SIF:      "/rag/apptainer/images/elasticsearch.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		Heap: "1g", ProvisionHeap: "1g", PathRepo: "/usr/share/elasticsearch/snapshots", ExtraEnv: map[string]string{},
+	}
+	t.RollbackDescriptor = &registry.RollbackDescriptor{
+		CapturedAt: "2026-09-16T08:00:00Z", Owner: "wilke",
+		Paths: registry.RollbackPaths{DataDir: t.DataDir, Worktree: t.Worktree, PythonEnv: t.PythonEnv},
+		Ports: t.Ports, Code: t.Code, EnvFileSHA256: emptySHA256Hex,
+		LaunchArgs: []registry.LaunchArg{}, GatewayGeneration: 0,
+	}
+	t.LastBackup = &registry.BackupRecord{
+		Bundle: "/rag/backups/tenants/" + handoverFixtureName + "/20260916T080000Z-backup",
+		At:     "2026-09-16T08:00:00Z", Kind: "backup", Scope: []string{"config", "state"},
+	}
+	t.Handover = &registry.Handover{
+		Phase: registry.HandoverReleased, Token: HandoverFixtureToken,
+		StartedAt: "2026-09-16T08:05:00Z", ReleasedBy: "wilke",
+		ReleasedAt: "2026-09-16T08:05:10Z", DescriptorRef: "2026-09-16T08:00:00Z",
+		Census: []registry.CensusEntry{{Store: "qdrant", Name: "docs", Count: 12}},
+	}
+	f.Tenants[handoverFixtureName] = t
+	f.DisplayOrder = append(f.DisplayOrder, handoverFixtureName)
 }
 
 // fixtureAPIPid is the pid an active instance-supervised fixture tenant's
@@ -487,8 +561,12 @@ func (b *FakeBackend) row(t *registry.Tenant) model.FleetRow {
 			// none, so the honest answer is "not probed", not "ok".
 			Deep: model.HealthNA,
 		},
-		Units:     rowUnits(t),
-		DiskBytes: fakeDisk(t.Name),
+		// Which half of a two-account handover this row is in, or null. It is
+		// fleet.Row's projection, so the dashboard shows the same thing with
+		// fake drivers as it does on a host.
+		HandoverPhase: fleet.HandoverPhase(t),
+		Units:         rowUnits(t),
+		DiskBytes:     fakeDisk(t.Name),
 		// The bundle the backup verb recorded, if one has run against this
 		// fixture: the projection is fleet.Row's, so what the dashboard shows
 		// with fake drivers is what it shows on a host.
@@ -589,7 +667,11 @@ func (b *FakeBackend) Tenant(_ context.Context, name string, viewer bool) (*mode
 		Drift: append([]registry.Drift{}, t.Drift...),
 	}
 	if !viewer {
-		resp.Registry = t
+		// Minus the in-flight handover, exactly as the live backend does: the
+		// block carries the hand-off token, and no read surface of this
+		// control plane carries a token. `summary.handover_phase` is what an
+		// operator reads instead.
+		resp.Registry = fleet.WithoutHandoverBlock(t)
 	}
 	return resp, nil
 }

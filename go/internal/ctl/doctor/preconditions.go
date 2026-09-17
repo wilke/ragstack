@@ -70,6 +70,19 @@ var preconditions = map[string][]string{
 	// thing that can make it wrong is a registry whose projection is already
 	// incoherent — the same gate `create` has, for the same reason.
 	"set-bind": {RegistryManifestMismatch, ManifestUnknownRow},
+	// set-supervisor writes ONE registry field too, and the same reasoning
+	// applies. What it must NOT gate on is anything about the processes: it
+	// is the repair for a row that disagrees with them, and its own step asks
+	// the host the question that matters (can this account act on what the row
+	// will claim).
+	"set-supervisor": {RegistryManifestMismatch, ManifestUnknownRow},
+	// env-pg-password rewrites secrets.env and touches no process. It is run
+	// on a tenant that is being prepared for a handover — often one whose
+	// findings are exactly what the preparation exists to clear — so nothing
+	// blocks it. The empty row is deliberate and is what makes `doctor --op
+	// env-pg-password` a known op rather than a typo that silently disables
+	// the gate.
+	"env-pg-password": {},
 	// A local migration is a handover's barrier plus disk for the copy, and
 	// it copies a tree the tenant is supposed to be serving from.
 	"migrate-local": {DiskLow, PortOwnerMismatch, EnvNotSystemdParsable, PortNotListening},
@@ -108,6 +121,22 @@ var preconditions = map[string][]string{
 	// allocator's record and the registry are supposed to converge, and a
 	// stray row means two allocators).
 	"adopt": {StoreURLDisallowed, ManifestUnknownRow},
+	// artifact-prepare runs `npm ci` and a `git` checkout into the ctl's own
+	// artifact tree. Nothing about a TENANT can make that wrong — it names
+	// none — but a host with no room produces a half-checked-out artifact that
+	// a later `create` would build from, and the ctl account has to be able to
+	// write the tree it is checking out into.
+	"artifact-prepare": {DiskLow, CtlAccountNoAccess},
+	// create-sandbox is `create` onto the selftest port block, so it is
+	// `create`'s row: the same allocator, the same stores, the same host.
+	// vm_max_map_count_low is the one that bites — a sandbox Elasticsearch
+	// dies on it exactly as a tenant's does.
+	"create-sandbox": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow, CtlAccountNoAccess},
+	// gateway-reload re-tests and HUPs the LIVE tree without publishing a new
+	// generation, so unlike gateway-apply it does not need the routing table
+	// to already agree with the registry — that is often WHY it is being run.
+	// It needs the live tree to be one this account owns.
+	"gateway-reload": {CtlAccountNoAccess},
 	// settings-put rewrites the ctl's own configuration, not a tenant's, so
 	// no tenant finding is a reason to refuse it — and an empty row is the
 	// point: an op absent from this table has NO gate at all (RedCodes
@@ -144,6 +173,19 @@ var tolerates = map[string][]string{
 	"restart":      {PortNotListening},
 	"stop":         {PortNotListening},
 	"decommission": {PortNotListening},
+	// `handover` is two jobs run by two accounts, and the SECOND of them acts
+	// on a tenant the first one stopped: between the release and the take
+	// nothing of the tenant is listening, by construction. Raising
+	// port_not_listening for this op therefore refused every take there will
+	// ever be. The question it was standing in for — "is there a running
+	// tenant to hand over" — is the release planner's, which refuses a row
+	// whose `state` is not `active`, and that check does not misfire on the
+	// phase whose whole precondition is that the tenant is down.
+	"handover": {PortNotListening},
+	// `set-supervisor` corrects a ROW. Every state it is used to repair is a
+	// state in which something is not listening — that is usually why the row
+	// needs correcting.
+	"set-supervisor": {PortNotListening},
 }
 
 // handoverPreconditions is the handover row, per DESTINATION supervisor.
@@ -158,22 +200,24 @@ var tolerates = map[string][]string{
 // the managed roots (ctl_account_no_access), which are the negatives of the
 // brief's `boot_cron_present` and `acl_grant_present`.
 //
-// Five conditions are in BOTH lists because they are about the tenant rather
+// Four conditions are in BOTH lists because they are about the tenant rather
 // than about the supervisor: an env file the ctl will parse, a port whose
-// owner is the account the registry names, code traceable to the mirror, paths
-// nobody outside ragops can rewrite, and an API that is actually up to be
-// handed over. stores_unconfirmed joins them at PR-E: a handover that moves
-// the API and leaves the tenant's own stores running as another account splits
-// the tenant between two accounts, and neither can then restart it.
+// owner is the account the registry names, code traceable to the mirror, and
+// paths nobody outside ragops can rewrite. stores_unconfirmed joins them at
+// PR-E: a handover that moves the API and leaves the tenant's own stores
+// running as another account splits the tenant between two accounts, and
+// neither can then restart it. port_not_listening is deliberately NOT among
+// them — see `tolerates` — because the take acts on a tenant the release has
+// already stopped.
 var (
 	handoverSystemd = []string{
 		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
 		WorktreeGitdirUnreadable, LingerMissing, UserDropInMissing,
-		RuntimeDirMissing, WritableByOthers, PortNotListening, StoresUnconfirmed,
+		RuntimeDirMissing, WritableByOthers, StoresUnconfirmed,
 	}
 	handoverInstance = []string{
 		EnvNotSystemdParsable, PortOwnerMismatch, WorktreeOutsideMirror,
-		WorktreeGitdirUnreadable, WritableByOthers, PortNotListening,
+		WorktreeGitdirUnreadable, WritableByOthers,
 		StoresUnconfirmed, BootCronMissing, CtlAccountNoAccess,
 	}
 	handoverPreconditions = map[string][]string{
@@ -218,6 +262,28 @@ func RedCodesForDestination(op, dest string) []string {
 	}
 	out := make([]string, len(codes))
 	copy(out, codes)
+	return out
+}
+
+// GateCodes are the findings whose presence as a WARNING means op needs the
+// operator's acknowledgement: its precondition set MINUS what it tolerates.
+//
+// It is the same subtraction applyPreconditions makes ("tolerating wins: a row
+// cannot both raise and lower"), and it has to be, because the engine's yellow
+// gate and the doctor's own levels are two readings of one table. Without it
+// the gate demanded a `--force-with-doctor-diff` for exactly the finding an op
+// exists to clear.
+func GateCodes(op, dest string) []string {
+	tolerated := map[string]bool{}
+	for _, c := range Tolerated(op) {
+		tolerated[c] = true
+	}
+	var out []string
+	for _, c := range RedCodesForDestination(op, dest) {
+		if !tolerated[c] {
+			out = append(out, c)
+		}
+	}
 	return out
 }
 

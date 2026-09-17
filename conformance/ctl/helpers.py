@@ -31,6 +31,21 @@ READ_ALLOWLIST = frozenset({"secret_refs", "secrets_file_sha256"})
 #: ``ctl_api_key``          the request-body member a browser re-presents.
 SCHEMA_ALLOWLIST = READ_ALLOWLIST | frozenset({"secrets", "ctl_api_key"})
 
+#: Exact SCHEMA LOCATIONS whose property name matches the regex and is not a
+#: secret. A location rather than a name, so that allowing one of them does not
+#: allow every future property that happens to share its spelling — the
+#: name-level allowlist above is deliberately not widened for these.
+#:
+#: ``registry.json $.$defs.Handover.properties.token``
+#:     The handover nonce. It grants NOTHING: it is compared against the value
+#:     the release wrote into the same row, and its whole purpose is to prove
+#:     that a take is acting on this release rather than on one an abandoned
+#:     handover left behind. Both halves are already operator-only, the release
+#:     prints it on purpose, and an operator types it into the take by hand.
+SCHEMA_PATH_ALLOWLIST = frozenset({
+    "registry.json $.$defs.Handover.properties.token",
+})
+
 #: String VALUES that look like credentials: a ``token_hex(32)`` (what every
 #: tenant key and ctl key is), a BV-BRC signature tail, a PEM private key.
 SECRET_VALUE_RES = (

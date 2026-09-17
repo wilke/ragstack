@@ -97,7 +97,7 @@ func TestCancelOfAQueuedJobStillSaysItNeverStarted(t *testing.T) {
 // each step so a cancel has something to undo.
 func parkedOp(tr *tracker) *fakeOp {
 	return &fakeOp{
-		verb:  "handover",
+		verb:  "migrate-local",
 		locks: []model.LockName{model.LockTenant},
 		planFn: func(oc Context, args map[string]any) *Planned {
 			return buildPlanned([]Step{{
@@ -169,10 +169,10 @@ func TestCancellingAParkedJobTwiceSettlesItOnce(t *testing.T) {
 		}
 		return p
 	}
-	e, _, _ := newTestEngine(t, fakeRegistry{"handover": op}, nil)
+	e, _, _ := newTestEngine(t, fakeRegistry{"migrate-local": op}, nil)
 	ctx := context.Background()
 
-	_, job, err := e.Submit(ctx, req("handover", "dev", "h1"))
+	_, job, err := e.Submit(ctx, req("migrate-local", "dev", "h1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,10 +222,10 @@ func TestCancellingAParkedJobTwiceSettlesItOnce(t *testing.T) {
 // and the job has exactly one terminal write.
 func TestContinueRacingCancelSettlesOnce(t *testing.T) {
 	tr := newTracker()
-	e, _, _ := newTestEngine(t, fakeRegistry{"handover": parkedOp(tr)}, nil)
+	e, _, _ := newTestEngine(t, fakeRegistry{"migrate-local": parkedOp(tr)}, nil)
 	ctx := context.Background()
 
-	_, job, err := e.Submit(ctx, req("handover", "dev", "h1"))
+	_, job, err := e.Submit(ctx, req("migrate-local", "dev", "h1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,10 +534,10 @@ func TestAPanickingStepFailsOnlyItsOwnJob(t *testing.T) {
 // back is a mutation of the fleet; it gets the same gate every other one has.
 func TestCancelNeedsConfirmWhenItWouldRollBack(t *testing.T) {
 	tr := newTracker()
-	e, _, _ := newTestEngine(t, fakeRegistry{"handover": parkedOp(tr)}, nil)
+	e, _, _ := newTestEngine(t, fakeRegistry{"migrate-local": parkedOp(tr)}, nil)
 	ctx := context.Background()
 
-	_, job, err := e.Submit(ctx, req("handover", "dev", "h1"))
+	_, job, err := e.Submit(ctx, req("migrate-local", "dev", "h1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,10 +611,10 @@ func TestCancelNeedsNoConfirmWhenNothingWouldBeUndone(t *testing.T) {
 		}})
 		return p
 	}
-	e, _, _ := newTestEngine(t, fakeRegistry{"handover": op}, nil)
+	e, _, _ := newTestEngine(t, fakeRegistry{"migrate-local": op}, nil)
 	ctx := context.Background()
 
-	_, job, err := e.Submit(ctx, req("handover", "dev", "h1"))
+	_, job, err := e.Submit(ctx, req("migrate-local", "dev", "h1"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,16 @@
-# Preparing a tenant for handover — A1…A6
+# Handing a tenant over
+
+Two halves, in the order an operator runs them:
+
+1. **[Preparing a tenant](#preparing-a-tenant-for-handover--a1a6)** — the A1…A6
+   ops, run days ahead, after which nothing has changed for a user.
+2. **[The handover itself](#handing-a-tenant-over--release-take-soak-commit)** —
+   release (owner), take (service account), soak, commit; and the rollback
+   drill that is the reason it is safe to try.
+
+---
+
+## Preparing a tenant for handover — A1…A6
 
 The six ops an operator runs on a hand-started tenant, days before its
 handover, to move it into a shape the control plane can operate. They are the
@@ -38,8 +50,11 @@ ragstack-ctl doctor <t> --op handover
 `doctor --op handover` is the checklist: it raises to **error** exactly the
 findings that stop a handover onto the `instance` supervisor —
 `env_not_systemd_parsable`, `port_owner_mismatch`, `worktree_outside_mirror`,
-`worktree_gitdir_unreadable`, `writable_by_others`, `port_not_listening`,
-`stores_unconfirmed`, `boot_cron_missing`, `ctl_account_no_access`. The three
+`worktree_gitdir_unreadable`, `writable_by_others`, `stores_unconfirmed`, `boot_cron_missing`, `ctl_account_no_access`.
+(`port_not_listening` is deliberately NOT among them: the handover's second
+phase acts on a tenant its first phase has already stopped, so raising that
+finding would refuse every take there will ever be. "Is there a running tenant
+to hand over" is the release's own check, asked of the row's `state`.) The three
 systemd facts (`linger_missing`, `user_dropin_missing`, `runtime_dir_missing`)
 are NOT in that list: PR-D2 postponed systemd until the machine is dedicated,
 and this deployment hands tenants over to the instance supervisor, whose boot
@@ -79,7 +94,7 @@ ragstack-ctl tenant set-ui-mode <t> static --yes-destructive <t>
 
 # the documented exception (dev keeps its Vite server)
 ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --dry-run
-ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --yes
+ragstack-ctl tenant set-ui-mode dev external --ui-port 8090 --yes-destructive dev
 ```
 
 `static` does seven things, in this order, and rolls every one of them back:
@@ -271,12 +286,30 @@ The row is **handover-ready** when `doctor --op handover` is green apart from
 the root items, and nothing has changed for a user except that the UI is now a
 static build.
 
-The handover itself — `tenant handover --release` as wilke, `--take` and
-`--commit` as svcbvbrc — is PR-E2. Until it lands, a prepared tenant goes on
-being started by `restore.sh` exactly as before; that is the point of doing
-the preparation days ahead.
+One more preparation step applies to a tenant with its own postgres —
+hackathon today, and any tenant `new-tenant.sh` provisioned with
+`--postgres local`:
 
-## If something goes wrong
+```bash
+ragstack-ctl env pg-password <t> --dry-run
+ragstack-ctl env pg-password <t> --yes
+```
+
+The instance supervisor starts `postgres-<manifest>` with the role password in
+`APPTAINERENV_POSTGRES_PASSWORD`, read out of `secrets.env` at run time — and a
+`new-tenant.sh` tenant carries that password under no such name: the literal is
+inside the generated `bin/up.sh` and inside the `POSTGRES_DSN` /
+`USER_STORE_DSN` / `COLLECTION_STORE_DSN` connection strings, while
+`provision.env` has the host and the port but not the password. Without this
+step the handover stops everything and then cannot start the tenant's own
+postgres. The op derives the value from those connection strings (refusing when
+the three disagree), keeps the previous `secrets.env` as
+`.bak-pg-password-<ts>`, never prints it, and does nothing at all when the key
+is already there. The release checks its result BEFORE it stops anything.
+
+Then the handover itself, below.
+
+### If something goes wrong (the preparation)
 
 | Symptom | What it means | What to do |
 |---|---|---|
@@ -292,3 +325,383 @@ the preparation days ahead.
 | `backup --scope` refuses: "outage for nothing" | `--fence` with a light scope | drop `--fence`; a light bundle does not need one |
 | `doctor --op handover` red on `boot_cron_missing` | nothing would start the tenant after a reboot | `ragstack-ctl fleet enable-boot --cron` as the service account |
 | `doctor --op handover` red on `ctl_account_no_access` | svcbvbrc cannot write a managed root | `ragstack-ctl fleet grant --user svcbvbrc` as the path owner |
+
+---
+
+## The handover itself — release, take, soak, commit
+
+The handover is a **two-account protocol**, and that is a fact about this host
+rather than a design preference:
+
+* the daemon runs as `svcbvbrc` and the tenant's processes are `wilke`'s. One
+  account cannot signal another's here — reading `/proc/<pid>/cwd` across
+  accounts is denied, so the identity check every signal in this control plane
+  makes cannot even be attempted;
+* apptainer keeps a **per-account instance registry**. `apptainer instance
+  list` as svcbvbrc does not show `qdrant-hackathon` at all, let alone stop it.
+
+So the owner **releases** and the service account **takes**:
+
+| Phase | Account | Command | What it leaves behind |
+|---|---|---|---|
+| release | `wilke`, `--direct` | `tenant handover <t> --release` | the tenant DOWN, `state: handover`, a token printed |
+| take | `svcbvbrc` | `tenant handover <t> --take --token <T>` | the tenant UP under `supervisor: instance`, `owner: svcbvbrc`, `handover.phase: taken` |
+| soak | — | watch it | — |
+| commit | `svcbvbrc` | `tenant handover <t> --commit --yes-destructive <t>` | `desired_boot: enabled`, the handover block cleared |
+| abandon | `svcbvbrc` then `wilke` | `tenant stop <t>`, then `tenant handover <t> --abandon`, then `restore.sh --tenant <t>` | the tenant back the way it was |
+
+**Four ordinary jobs, and not one of them parks.** An earlier draft had the take
+stop at a cutover and the commit continue it — which would have held this
+tenant's locks for the length of the soak, and one of those is the REGISTRY
+lock, which is the whole fleet's: a 48-hour drill on `dev` would have blocked
+every backup of every other tenant behind one operator's coffee. So each phase
+finishes, and the ROW carries the state between them: `handover.phase`, and the
+token, until a commit or an abandon clears them.
+
+**`owner` moves at the TAKE, `desired_boot` at the commit.** From the moment
+the take spawns the API, the pid on the tenant's port is the service account's,
+and a row that went on naming the previous owner through a soak would make
+doctor's `port_owner_mismatch` fire against the truth — and would make
+`tenant stop <t>`, the first half of the way back, refuse for the wrong reason.
+What the commit adds is the BOOT commitment: until it runs, `desired_boot`
+stays as it was and `fleet start --all` does not adopt the tenant.
+
+Two things hold at every point between them:
+
+* **the row says what is true.** `state: handover` is written BEFORE the first
+  process is stopped, so a job that dies halfway leaves a row that tells the
+  next operator where they are. Nothing in this protocol leaves the registry
+  claiming `active` over a tenant that is not.
+* **the tenant is restorable.** Before the release: `restore.sh --tenant <t>`.
+  After the take: `ragstack-ctl fleet start --all`. In between, and after an
+  abandon: `restore.sh --tenant <t>` again, from the rollback descriptor the
+  row has carried since `adopt --commit`. (After an abandon, in that order:
+  the abandon refuses while a port is still held, so the restore comes last.)
+
+A handover moves **no data**. The same directories serve the same processes
+under another account, through the ACLs PR-D2 installed. The risk is not data
+loss, it is a tenant neither account can start — which is what the census, the
+port proofs and the commit's own liveness check are all for.
+
+#### Before the first release: install the binary
+
+**Do this once, before any tenant is released.** The handover adds a field to
+the registry (`handover`), and a registry the NEW binary has written is one an
+older `ragstack-ctl` refuses to read — not the one tenant, the whole file:
+`registry.Load` decodes strictly, and an unknown key fails the document.
+
+The field is `omitempty`, so a fleet with no handover in flight serialises
+nothing and an older binary keeps working — but the moment a release records a
+block, every reader has to be new enough to know the name.
+
+```bash
+# as the owner, from the checkout
+make install-ctl                       # /rag/bin/ragstack-ctl -> ragstack-ctl-<version>
+ragstack-ctl version                   # the version you expect
+
+# as the service account: the daemon runs the OLD binary until it restarts
+/rag/bin/ctl-as-svc.sh version
+/rag/bin/ctl-daemon.sh restart
+/rag/bin/ctl-as-svc.sh fleet status    # reads the registry through the new binary
+```
+
+`ctl-daemon.sh restart` is safe at any time: it stops no tenant, only the
+control plane. Check `fleet status` afterwards — if it answers, every reader on
+this host can read what a release is about to write.
+
+## The two conventions
+
+**Accounts.** `--release` and `--abandon` are the OWNER's and imply `--direct`
+(`--server` is refused). `--take` and `--commit` are the SERVICE ACCOUNT's —
+either through the daemon or as `ops/coconut/ctl-as-svc.sh`. `--abandon` is
+gated on `handover.released_by` rather than on the row's `owner`, because after
+a take the owner IS the service account: gating on it would be that account
+handing the tenant back to itself.
+
+**State directory.** A wilke `--direct` job cannot write the daemon's
+`/rag/data/ctl/jobs.db`: that file belongs to `svcbvbrc`. The owner-side phases
+therefore run in a state directory wilke owns, against the same real registry:
+
+```bash
+export CTL_STATE_DIR=/rag/data/ctl-selftest
+export CTL_CONFIG_DIR=/rag/config/ctl-selftest
+```
+
+`tenant handover --release` **refuses before it starts** when the state
+directory it would use is not writable by this account, and prints exactly
+those two lines. Everything else — the registry, the gateway, the tenant's
+files — is the real deployment's.
+
+The LOCKS are shared even though the state directories are not. The registry,
+manifest and tenant locks live in `/rag/data/tenants/.ctl-locks`, which both
+accounts can write through the ACL `ragstack-ctl fleet grant` installs — so
+wilke's `--abandon` and svcbvbrc's `tenant restart` really do serialise against
+each other, and whichever loses is told the job id, pid and start time of the
+one holding it. (Locks derived from each account's own state directory would
+be two disjoint sets of files, which serialise nothing.)
+
+### Release (wilke)
+
+```bash
+export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest
+
+ragstack-ctl tenant handover hackathon --release --dry-run
+ragstack-ctl tenant handover hackathon --release --yes-destructive hackathon
+```
+
+The plan, in the order it runs — and the order IS the operation:
+
+1. **can the take read the postgres password** out of `secrets.env` (skipped
+   for a tenant with no postgres server of its own). Asked first, because
+   discovering it afterwards means discovering it with the tenant down;
+2. **no ingest job is still running** — the last moment anybody can decide to
+   wait;
+3. **census**: every collection in the tenant's own qdrant with its exact point
+   count, every index in its own elasticsearch with its document count, and the
+   API's own `/v1/collections?counts=true`. Taken while the tenant is UP;
+4. **the registry**: `state: handover`, and a `handover` block holding the
+   census, the descriptor reference and a one-shot token;
+5. **stop the API** by pidfile, after checking cwd and cmdline (never `pkill`),
+   TERM then KILL, and **prove the port free**;
+6. **stop each of the tenant's own apptainer instances** in reverse start order
+   — postgres, elasticsearch, qdrant — each followed by a port proof.
+
+It prints the token. Keep it: the take needs it, and `ragstack-ctl job show
+<id>` has it in the job's result if the terminal is gone.
+
+From here the tenant is down and the gateway answers 502 for it.
+
+**If the release fails partway** it rolls back what it can: the registry step
+puts `state: active` back and clears the block, and each instance stop tries to
+start its instance again (it runs as the account that owns them, so it can).
+The API is the one thing it cannot restart — its command line is yours, not the
+registry's — and the rollback says so in as many words. The answer is always
+the same, in this order: `tenant stop <t>` as the service account if the take
+had already run, `tenant handover <t> --abandon` here, then
+`ops/coconut/restore.sh --tenant <t>`.
+
+### Take (svcbvbrc)
+
+```bash
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take \
+  --token <the token the release printed> --dry-run
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take \
+  --token <token> --yes-destructive hackathon
+```
+
+(or through the daemon: `POST /v1/tenants/hackathon/ops/handover` with
+`{"phase":"take","token":"…"}`.)
+
+It checks the token against the row, proves every port free, records
+`supervisor: instance`, then starts the tenant's own stores, waits for any
+**shared** store the tenant uses but does not own (bounded, 180 s — the two
+accounts' boot orders are not coordinated, so this wait is what makes the order
+irrelevant), and spawns the API with a pidfile. Then it proves it:
+
+* `GET /health` on the tenant's own port;
+* `GET /v1/health/deep` with the tenant's own admin key, read from its
+  `secrets.env` at run time;
+* **the census, checked back**. Fewer rows than the release recorded is a
+  refusal: the store is up, but not on the data it was on. More is reported and
+  allowed (something wrote to the tenant between the two readings);
+* `GET /ragstack/<t>/api/health` through the live gateway — the route users
+  use.
+
+Then it records `state: active`, `owner: svcbvbrc` and `handover.phase: taken`
+— and **finishes**. `desired_boot` is untouched, so nothing brings this tenant
+back at a reboot until the commit; the block and its token stay in the row,
+because that is what the commit and the abandon are gated on.
+
+### Soak
+
+The row says `state: active`, `supervisor: instance`, `owner: svcbvbrc` and
+`handover.phase: taken`, with `desired_boot` still where it was. That
+combination is exactly "running under the control plane, not yet the control
+plane's tenant", and it is what says the way back is still open.
+
+Nothing holds this tenant's locks during the soak, so ordinary reads and ops
+work — but `set-supervisor` refuses while a handover is in flight, and a second
+`--release` or `--take` refuses too.
+
+```bash
+ragstack-ctl tenant show hackathon
+ragstack-ctl fleet status
+/rag/bin/ctl-as-svc.sh tenant logs hackathon --file api --lines 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/ragstack/hackathon/api/health
+```
+
+The acceptance checks, per tenant: the API pid is `svcbvbrc`'s in `/proc`; the
+tenant's own instances are listed by the svcbvbrc daemon and by nobody else;
+the collection counts match the census; `restore.sh --dry-run` shows the tenant
+as mid-handover.
+
+48 hours for `dev` (the drill); a day for the others.
+
+### Commit (svcbvbrc)
+
+```bash
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --commit --yes-destructive hackathon
+```
+
+An ordinary job, gated on the row's `handover.phase: taken` and on this being
+the account that took it. Before it promises anything about boot it **checks
+the tenant is still up** — something is listening on the API port, that process
+is attributable to this account, and `/health` answers — because a commit over
+a tenant that is down would enable a boot for something that is not running,
+and the soak it concludes would have concluded nothing.
+
+Then it writes `desired_boot: enabled`, `restart_pending: false`, and clears
+the `handover` block. The `rollback_descriptor` is deliberately left untouched:
+it is the immutable record of how the tenant ran before the ctl had it, and
+`restore.sh --tenant` still reads it.
+
+After the commit `ops/coconut/restore.sh` skips the tenant ("handed over to the
+control plane") and `ragstack-ctl fleet start --all` — the `@reboot` crontab
+line — is what brings it back.
+
+### The rollback drill
+
+Run it once, on `dev`, before trusting it on anything else. It is the whole
+reason the protocol has an abandon.
+
+```bash
+# 1. release, take (as above), then decide against it.
+
+# 2. the service account stops what it started. Idempotent.
+/rag/bin/ctl-as-svc.sh tenant stop dev --yes-destructive dev
+
+# 3. the owner puts the row back.
+CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest \
+  ragstack-ctl tenant handover dev --abandon --yes-destructive dev
+
+# 4. and starts the tenant the way it was started before.
+ops/coconut/restore.sh --tenant dev
+```
+
+`--abandon` refuses while **any** of the tenant's ports is still held — the API
+and each store it owns exclusively — so step 2 is not optional. A port this
+account cannot attribute is the take's, still running as the other account; one
+it can is something it started itself; and a row recording `supervisor: manual`
+over either would leave those processes with nothing that ever stops them.
+
+It writes the REGISTRY only: `supervisor: manual`, `state: active`,
+`owner` back to the account that released it, the handover block cleared.
+Nothing is running until step 4.
+
+A tenant in `state: handover` is skipped by a fleet-wide `restore.sh` (it would
+race the take) and started by an explicit `--tenant <n>` (which is this drill).
+The script says which of the two it is doing.
+
+### Exact commands, per tenant
+
+**hackathon** — the mechanics: already on the mirror, static UI, clean env,
+dedicated qdrant + elasticsearch + postgres.
+
+```bash
+# preparation (once)
+ragstack-ctl env pg-password hackathon --yes
+ragstack-ctl tenant backup hackathon --scope config,state --yes
+ragstack-ctl doctor hackathon --op handover          # yellow on the systemd trio only
+
+# the handover
+export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest
+ragstack-ctl tenant handover hackathon --release --dry-run
+ragstack-ctl tenant handover hackathon --release --yes-destructive hackathon
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --take --token <T> --yes-destructive hackathon
+# soak, then
+/rag/bin/ctl-as-svc.sh tenant handover hackathon --commit --yes-destructive hackathon
+```
+
+**dev** — the full drill, and the one tenant that keeps its Vite dev server
+(plan decision D2: `ui.mode: external` on 8090, run by wilke, untouched by the
+ctl). Its stores are its own; its relational state is SQLite, so there is no
+`env pg-password` step.
+
+```bash
+ragstack-ctl tenant backup dev --scope config,state --yes
+export CTL_STATE_DIR=/rag/data/ctl-selftest CTL_CONFIG_DIR=/rag/config/ctl-selftest
+ragstack-ctl tenant handover dev --release --yes-destructive dev
+/rag/bin/ctl-as-svc.sh tenant handover dev --take --token <T> --yes-destructive dev
+# → the rollback drill above, in full →
+# then release and take again, soak 48 h, and
+/rag/bin/ctl-as-svc.sh tenant handover dev --commit --yes-destructive dev
+```
+
+demo, lucid-next and asm-next follow a soak day apart. Their shared stores stay
+wilke-run: only their APIs move (and lucid-next's own elasticsearch). The take's
+shared-store wait is what makes their boot order irrelevant.
+
+### Reading a handover off a fleet
+
+```bash
+ragstack-ctl fleet status
+ragstack-ctl tenant show <t>
+```
+
+A released tenant reads `state: handover`; a taken one reads `state: active`
+with `handover_phase: taken` — it is up, supervised by the ctl, and still owes
+a commit or an abandon. The `handover_phase` column is the only place that
+distinction shows, and the handover BLOCK is deliberately not on any read
+surface: it carries the hand-off token, and no read surface of this control
+plane carries a token. The token lives in the result of the release job that
+minted it (`ragstack-ctl job show <id>`).
+
+### Correcting a row by hand
+
+```bash
+ragstack-ctl tenant set-supervisor <t> manual|instance
+```
+
+Writes the registry's `supervisor` and nothing else — no process is started,
+stopped or signalled. It is the repair for a row that disagrees with the host:
+a take that wrote `instance` and then failed, an abandon nobody got to run.
+
+It refuses the two ways of making such a disagreement permanent: moving a row
+to `instance` while the API port is held by a process this account cannot
+attribute (the ctl would be claiming it supervises an API it can neither signal
+nor restart), and moving a row to `manual` while this account's own apptainer
+instances are running for the tenant (nothing would ever stop them again). It
+also refuses while a handover is in flight — that protocol is moving the same
+field.
+
+### Credentials, after the handover
+
+```bash
+/rag/bin/ctl-as-svc.sh key mint <t> gowe --role user --restart --prove --yes
+/rag/bin/ctl-as-svc.sh key revoke <t> gowe --restart --prove --yes-destructive <t>
+```
+
+`--restart` restarts the tenant API through its supervisor, so the new ledger
+is live; on a `manual` row it is **refused** rather than quietly skipped.
+`--prove` then dials the tenant and records the verdict on the job: a surviving
+admin key answers 200 (so the API is up and authenticating), a minted key
+answers 200, a revoked key answers 401. The credentials are read from the
+tenant's own `secrets.env`; the job records fingerprints and status codes,
+never a value. `--prove` without `--restart` is refused: an unrestarted API is
+still serving the previous ledger, so the proof would say the opposite of what
+it claims.
+
+Both ops now write `tenant.keys[]` as well as the file, so a key the ctl minted
+is a key the ctl can revoke — and a revoked row is KEPT with `revoked_at` set,
+because "who held a credential last month" is the question a ledger exists for.
+
+### If something goes wrong (the handover)
+
+| Symptom | What it means | What to do |
+|---|---|---|
+| `--release` refuses: "cannot write its job database" | the state dir is the daemon's | export the two `CTL_*` variables above |
+| `--release` refuses: "belong to wilke … running as svcbvbrc" | wrong account | run it as the tenant's owner, with `--direct` |
+| `--release` refuses: "`ragstack-ctl env pg-password`" | the take could not read the role password | run that op first; it derives it from the DSNs already in `secrets.env` |
+| `--release` refuses: "ingest job(s) are still running" | an ingest is mid-write | wait for it, or cancel it through the tenant |
+| `--release` refuses: "no backup" | no recovery point | `tenant backup <t> --scope config,state` (seconds, no fence), or `--accept-no-backup` |
+| a release step fails after the registry write | the row keeps `handover` and the tenant is down | read the job's rollback lines, then: `tenant stop <t>` as the service account if the take had already run, `tenant handover <t> --abandon` here, then `restore.sh --tenant <t>`. That order, because `--abandon` refuses while a port is held |
+| `--take` refuses: "the token does not match" | a stale token, or a newer release | `ragstack-ctl job show <release job id>`; the refusal never echoes the expected value |
+| `--take` refuses: "still listening on N" | the release did not free a port | look at the port as the owner; the take must never start a second copy |
+| `--take` fails: "came back with FEWER rows" | a store is up but not on its own data | `tenant stop <t>` as the service account, then `--abandon`, then `restore.sh --tenant <t>` — and look at the instance's binds before trying again |
+| `--take` fails on the shared-store wait | a store this tenant does not own is not up | start it as its owner (`restore.sh` brings the shared stores up), then take again |
+| `--commit` refuses: "nothing to commit" / "only a TAKEN handover" | the take has not run, or it has already been committed | `ragstack-ctl tenant show <t>`: no block means it is already the ctl's |
+| `--commit` refuses: "nothing is listening" | the tenant the take started is down | start it (`tenant start <t>`) and commit, or abandon the handover |
+| `--commit` refuses: "owned by X … running as Y" | the commit is the account that TOOK it | run it as that account |
+| `--abandon` refuses: "released by X … running as Y" | it is gated on `handover.released_by`, not on `owner` | run it as the account that released it |
+| `--abandon` refuses: "still running as the other account" | the take's processes are up | `/rag/bin/ctl-as-svc.sh tenant stop <t>` first |
+| every op demands `--force-with-doctor-diff` | a warning this op actually depends on | read it: the refusal names the code. Warnings the op does NOT depend on are recorded on the job and never block |

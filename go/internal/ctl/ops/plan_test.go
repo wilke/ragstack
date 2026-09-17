@@ -196,6 +196,42 @@ func plan(t *testing.T, oc jobs.Context, verb string, args map[string]any) *jobs
 	return planned
 }
 
+// planAs is plan() for a job running as a named ACCOUNT.
+//
+// The handover phases refuse unless the process's identity is the one the row
+// names — that is the whole two-account protocol — so a test of them has to be
+// able to say who is typing.
+func planAs(t *testing.T, oc jobs.Context, owner, verb string, args map[string]any) *jobs.Planned {
+	t.Helper()
+	d := testDeps(oc)
+	d.Owner = owner
+	op, ok := NewRegistry(d).Lookup(verb)
+	if !ok {
+		t.Fatalf("no op %q", verb)
+	}
+	planned, err := op.Plan(context.Background(), oc, args)
+	if err != nil {
+		t.Fatalf("%s as %s: %v", verb, owner, err)
+	}
+	return planned
+}
+
+// planErrAs is planErr() for a job running as a named account.
+func planErrAs(t *testing.T, oc jobs.Context, owner, verb string, args map[string]any) error {
+	t.Helper()
+	d := testDeps(oc)
+	d.Owner = owner
+	op, ok := NewRegistry(d).Lookup(verb)
+	if !ok {
+		t.Fatalf("no op %q", verb)
+	}
+	_, err := op.Plan(context.Background(), oc, args)
+	if err == nil {
+		t.Fatalf("%s as %s: expected a refusal, got a plan", verb, owner)
+	}
+	return err
+}
+
 // planErr runs one verb expecting a refusal.
 func planErr(t *testing.T, oc jobs.Context, verb string, args map[string]any) error {
 	t.Helper()
@@ -482,66 +518,9 @@ func TestPlanRestoreOnlyEverIntoAFreshTenant(t *testing.T) {
 
 // ---------------------------------------------------------------- handover, decommission
 
-func TestPlanHandoverNeedsAFencedVerifiedBundleAndADescriptor(t *testing.T) {
-	oc, _ := fixture(t, "dev", nil)
-	err := planErr(t, oc, "handover", map[string]any{"phase": "execute"})
-	if !strings.Contains(err.Error(), "fenced") {
-		t.Errorf("without a bundle = %v, want the fenced-backup prerequisite", err)
-	}
-	oc.Tenant.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: false, Scope: fullScope}
-	if err := planErr(t, oc, "handover", map[string]any{"phase": "execute"}); !strings.Contains(err.Error(), "verified") {
-		t.Errorf("with an unverified bundle = %v", err)
-	}
-	oc.Tenant.LastBackup.Verified = true
-	if err := planErr(t, oc, "handover", map[string]any{"phase": "execute"}); !strings.Contains(err.Error(), "rollback_descriptor") {
-		t.Errorf("without a descriptor = %v", err)
-	}
-}
-
-func TestPlanHandoverStopsTheSourceAndWaitsAtTheCutover(t *testing.T) {
-	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
-		tn.LastBackup = &registry.BackupRecord{Bundle: "20260914T093000Z-backup", Fenced: true, Verified: true, Scope: fullScope}
-		tn.RollbackDescriptor = &registry.RollbackDescriptor{CapturedAt: "2026-09-14T00:00:00Z", GatewayGeneration: 7}
-		tn.API.Bind = "127.0.0.1" // the managed unit binds loopback; see render.UnitConfig
-		tn.Stores.Qdrant.Ownership = registry.OwnershipExclusive
-		tn.Stores.Qdrant.Capabilities.Stop = true
-		tn.Stores.Elasticsearch.Ownership = registry.OwnershipExclusive
-		tn.Stores.Elasticsearch.Capabilities.Stop = true
-	})
-	p := plan(t, oc, "handover", map[string]any{"phase": "execute"})
-	if !hasStep(p, "proc", "stop the source processes") || !hasStep(p, "probe", "verify the source is gone") {
-		t.Fatalf("a handover that does not prove the source is gone: %v", titles(p))
-	}
-	cutovers := 0
-	var after []string
-	for _, s := range p.Steps {
-		if s.Cutover {
-			cutovers++
-		}
-		if cutovers == 1 && s.Plan.Kind == "registry" {
-			after = append(after, s.Plan.Title)
-		}
-	}
-	if cutovers != 1 {
-		t.Errorf("cutover steps = %d, want exactly one", cutovers)
-	}
-	if len(after) != 1 || !strings.Contains(after[0], "commit") {
-		t.Errorf("the step after the cutover = %v, want the commit", after)
-	}
-	if string(p.Plan.ConfirmValue) != "dev" {
-		t.Errorf("confirm value = %q", p.Plan.ConfirmValue)
-	}
-}
-
-func TestPlanHandoverCommitAndRollbackAreContinuations(t *testing.T) {
-	oc, _ := fixture(t, "dev", nil)
-	for _, phase := range []string{"commit", "rollback"} {
-		err := planErr(t, oc, "handover", map[string]any{"phase": phase})
-		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "CONTINUATION") {
-			t.Errorf("phase %s = %v, want the continuation refusal", phase, err)
-		}
-	}
-}
+// The handover's own plan and run tests are in handover_test.go: it is a
+// two-account protocol with four phases, and they do not belong in the file
+// that covers one verb per function.
 
 func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 	oc, _ := fixture(t, "dev", nil)
@@ -650,7 +629,11 @@ func TestNoPlanEverCarriesASecretValue(t *testing.T) {
 func TestPlanEnvNormalizeShowsTheNormalizedFileAndHidesTheSecretsOne(t *testing.T) {
 	oc, _ := fixtureEnv(t, "dev", managed, messyEnv())
 	p := plan(t, oc, "env-normalize", nil)
-	if len(p.Steps) != 1 {
+	// Two steps: the rewrite, and the registry write that records what the
+	// rewrite did (env_layout, the two checksums, the secret_refs that moved).
+	// Before PR-E2 there was only the first, which is why hackathon's row still
+	// read `legacy` days after its secrets had been split.
+	if len(p.Steps) != 2 || p.Steps[1].Plan.Kind != "registry" {
 		t.Fatalf("steps = %v", titles(p))
 	}
 	w := p.Steps[0].Plan.WouldWrite
@@ -1031,7 +1014,8 @@ func TestValidateEnforcesTheArgsSchema(t *testing.T) {
 		{"start", map[string]any{"force": "yes"}, "must be a boolean"},
 		{"restore", map[string]any{"as": "x"}, "missing required argument from"},
 		{"restore", map[string]any{"from": "yesterday", "as": "x"}, "does not match"},
-		{"handover", map[string]any{"phase": "later"}, "is not one of execute, commit, rollback"},
+		{"handover", map[string]any{"phase": "later"}, "is not one of release, take, commit, abandon"},
+		{"handover", map[string]any{"phase": "take", "token": "nope"}, "does not match"},
 		{"key-mint", map[string]any{"label": "Ops", "role": "admin"}, "does not match"},
 		{"sa-create", map[string]any{"subject": "gowe", "role": "user", "purpose": strings.Repeat("x", 257)}, "over the 256-byte limit"},
 		{"env-set", map[string]any{"key": "lowercase", "value": "x"}, "does not match"},
@@ -1055,7 +1039,7 @@ func TestValidateEnforcesTheArgsSchema(t *testing.T) {
 	for verb, args := range map[string]map[string]any{
 		"start": nil, "stop": {"force": true}, "backup": {"fence": true},
 		"restore":  {"from": "20260914T093000Z-backup", "as": "copy"},
-		"handover": {"phase": "execute"}, "decommission": {}, "env-normalize": nil,
+		"handover": {"phase": "release"}, "decommission": {}, "env-normalize": nil,
 		"key-mint": {"label": "ops", "role": "user"}, "admin-add": {"subject": "bvbrc:alice"},
 		"sa-create": {"subject": "gowe", "role": "user"}, "render-units": {"apply": true},
 		"update-code": {"artifact_id": "v1.5.3"},

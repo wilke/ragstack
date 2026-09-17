@@ -458,3 +458,41 @@ def test_an_unknown_tenant_is_a_refusal_not_a_silent_no_op(tmp_path):
     out = _dry_run(tmp_path, "--tenant", "nosuch")
     assert "no registry row for 'nosuch'" in out.stdout + out.stderr
     assert out.returncode != 0, "a --tenant that matched nothing exited 0"
+
+
+@requires_shell
+def test_a_tenant_mid_handover_is_skipped_by_a_fleet_run_and_started_by_name(tmp_path):
+    """``state: handover`` is the window between the release and the take: the
+    owner has stopped the tenant and the service account has not yet started it.
+
+    A fleet-wide boot must not start it — that would put a second copy on the
+    port the take is about to bind — and an operator who NAMES it must get it
+    back, because ``restore.sh --tenant <n>`` is the documented way out of a
+    handover that did not convince.
+    """
+    registry = _synthetic_registry(tmp_path)
+    doc = json.loads(registry.read_text())
+    doc["tenants"]["alpha"]["state"] = "handover"
+    registry.write_text(json.dumps(doc))
+    env = dict(os.environ, REGISTRY=str(registry), RUN=str(tmp_path / "run"))
+
+    fleet = subprocess.run(
+        ["bash", str(OPS / "restore.sh"), "--dry-run"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    text = fleet.stdout + fleet.stderr
+    assert fleet.returncode == 0, text
+    assert "mid-handover" in text, text
+    assert "NOT started by a fleet-wide run" in text, text
+    assert "uvicorn" not in text.split("mid-handover")[-1].split("alpha")[0], text
+
+    named = subprocess.run(
+        ["bash", str(OPS / "restore.sh"), "--dry-run", "--tenant", "alpha"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    named_text = named.stdout + named.stderr
+    assert named.returncode == 0, named_text
+    assert "starting it anyway because you named it" in named_text, named_text
+    # And it really does plan the tenant rather than only talking about it.
+    assert "25800" in named_text, named_text
+    assert "--abandon" in named_text, "the way back does not say how to make the row agree"
