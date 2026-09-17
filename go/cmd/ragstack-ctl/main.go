@@ -7,7 +7,7 @@
 // add 4, 5, 6 and 7 under --wait, where the exit code IS the job's outcome.
 //
 // 6 and 7 are distinct on purpose. `awaiting_cutover` is not success: the job
-// did exactly what handover and migrate-local plan, and it is now WAITING for
+// did exactly what `migrate-local` plans, and it is now WAITING for
 // `job continue` — a script that read it as 0 would report a half-migrated
 // tenant as a finished migration. And a --wait that ran out of time is not the
 // same event as a control plane that could not be reached (1): the job is
@@ -55,8 +55,9 @@ const (
 	exitJobFailed      = 4
 	exitJobInterrupted = 5
 	// exitJobAwaitingCutover is a job that reached its cutover and parked.
-	// It used to be 0, which told a script that a handover waiting for
-	// `job continue` had finished.
+	// It used to be 0, which told a script that a migration waiting for
+	// `job continue` had finished. (No handover phase parks: see
+	// ops/handover.go — a soak must not hold the fleet's registry lock.)
 	exitJobAwaitingCutover = 6
 	// exitWaitTimeout is --wait giving up. The JOB is fine — this is the
 	// client's clock, not the control plane's answer — so it is not 1, which

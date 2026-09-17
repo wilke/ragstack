@@ -230,6 +230,13 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	// The doctor a plan pins is the same doctor the dashboard shows: same
 	// host facts, same ctl account, same external store ports.
 	host := hostfacts.NewReal(cfg.Roots)
+	// Resolved ONCE, and passed explicitly: three of doctor's checks
+	// (`runtime_dir_missing`, `user_dropin_missing`, and the ACL grant) are
+	// about a numeric uid, and a doctor left to resolve it itself answers a
+	// different finding set from the CLI's — which is how an operator comes to
+	// read a green run on the command line and be refused by a red one from
+	// the daemon, with no way to see which finding did it.
+	ctlUID := hostfacts.LookupUID(fleet.DefaultCtlUser)
 	doctorFn := func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		f, err := loadFleet()
 		if err != nil {
@@ -242,6 +249,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			Now:                cfg.Now,
 			RegistryPath:       cfg.RegistryPath,
 			CtlUser:            fleet.DefaultCtlUser,
+			CtlUID:             ctlUID,
 			SudoersGroup:       fleet.DefaultSudoersGroup,
 			ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
 		})

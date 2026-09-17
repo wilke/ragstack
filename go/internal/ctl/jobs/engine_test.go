@@ -499,18 +499,18 @@ func TestCutoverParksTheJobAndContinueCompletesIt(t *testing.T) {
 	tr := newTracker()
 	var st Store
 	op := happyOp(tr, func() Store { return st })
-	op.verb = "handover"
+	op.verb = "migrate-local"
 	inner := op.planFn
 	op.planFn = func(oc Context, args map[string]any) *Planned {
 		p := inner(oc, args)
 		p.Steps[1].Cutover = true
 		return p
 	}
-	e, store, roots := newTestEngine(t, fakeRegistry{"handover": op}, nil)
+	e, store, roots := newTestEngine(t, fakeRegistry{"migrate-local": op}, nil)
 	st = store
 	ctx := context.Background()
 
-	_, job, err := e.Submit(ctx, req("handover", "dev", "h1"))
+	_, job, err := e.Submit(ctx, req("migrate-local", "dev", "h1"))
 	if err != nil {
 		t.Fatal(err)
 	}

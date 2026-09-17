@@ -670,8 +670,12 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 
 		if steps[i].Cutover && i < len(steps)-1 {
 			// The parked state. The locks stay HELD and the run stays
-			// registered: a handover that has cut traffic over but not yet
+			// registered: a migration that has cut traffic over but not yet
 			// committed must not let anything else touch this tenant.
+			//
+			// That is also why an op whose "soak" is measured in DAYS must not
+			// park — the registry lock is the fleet's, and `handover` gates its
+			// phases on the registry row for exactly this reason.
 			job.State = model.JobAwaitingCutover
 			e.save(pctx, job)
 			e.o.Logger.Info("job parked awaiting cutover", "job", job.ID, "step", st.N)
@@ -1349,7 +1353,7 @@ func (e *engine) markCancelled(r *run) {
 // gateCancelConfirm is openapi.yaml's "cancel requires confirm when a
 // rollback would run". The confirm VALUE is the plan's: a destructive op is
 // confirmed by typing the tenant's name, everything else by "yes" — typing
-// "yes" to "undo the handover of prod" is not evidence you read which tenant
+// "yes" to "undo the migration of prod" is not evidence you read which tenant
 // it said.
 func (e *engine) gateCancelConfirm(job *model.Job, planned *Planned, confirm string) error {
 	if !wouldRollBack(job, planned) {

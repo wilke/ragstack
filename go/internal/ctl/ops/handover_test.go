@@ -65,6 +65,19 @@ func released(t *registry.Tenant) {
 	}
 }
 
+// taken is the row after a successful take: the tenant is running as the
+// service account, the block is still there, and a commit or an abandon is
+// owed.
+func taken(t *registry.Tenant) {
+	released(t)
+	t.State = "active"
+	t.Owner = "svcbvbrc"
+	t.Supervisor = supervisorInstance
+	t.Handover.Phase = registry.HandoverTaken
+	t.Handover.TakenAt = "2026-09-14T09:31:00Z"
+	t.Handover.TakenBy = "svcbvbrc"
+}
+
 const testToken = "abababababababababababababababab"
 
 // ---------------------------------------------------------------- release
@@ -273,7 +286,7 @@ func TestHandoverTakeChecksTheTokenAndTheRow(t *testing.T) {
 	}
 }
 
-func TestHandoverTakeStartsTheStoresThenTheAPIAndParksAtItsCutover(t *testing.T) {
+func TestHandoverTakeStartsTheStoresThenTheAPIAndFinishes(t *testing.T) {
 	oc, _ := fixture(t, "dev", released)
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
 	got := titles(p)
@@ -298,29 +311,31 @@ func TestHandoverTakeStartsTheStoresThenTheAPIAndParksAtItsCutover(t *testing.T)
 			supIdx, qdrantIdx, apiIdx, censusIdx, gatewayIdx, strings.Join(got, "\n  "))
 	}
 
-	// Exactly one cutover, and exactly one step after it: the commit.
-	cutover, after := -1, []string{}
-	for i, s := range p.Steps {
-		if s.Cutover {
-			if cutover >= 0 {
-				t.Fatalf("more than one cutover step: %v", got)
-			}
-			cutover = i
-			continue
-		}
-		if cutover >= 0 {
-			after = append(after, s.Plan.Title)
+	// NO cutover step, and the last thing it does is the registry write. A
+	// take that parked would hold this tenant's registry lock for the length
+	// of the soak, and that lock is the FLEET's: every backup of every other
+	// tenant would queue behind one operator's 48 hours.
+	for _, st := range p.Steps {
+		if st.Cutover {
+			t.Errorf("the take parks at %q: a soak must not hold the registry lock", st.Plan.Title)
 		}
 	}
-	if cutover < 0 {
-		t.Fatalf("no cutover step: %v", got)
+	last := got[len(got)-1]
+	if !strings.Contains(last, "registry") || !strings.Contains(last, "handover.phase: taken") {
+		t.Errorf("the last step is %q, want the registry write that records the take", last)
 	}
-	if len(after) != 1 || !strings.Contains(after[0], "commit") {
-		t.Errorf("after the cutover = %v, want exactly the commit", after)
+	// And `desired_boot` is not among the things it touches: an uncommitted
+	// handover must not be something `fleet start --all` adopts at boot.
+	if !warnsAbout(p, "`desired_boot` stays") {
+		t.Errorf("the plan does not say that desired_boot waits for the commit: %v", p.Plan.Warnings)
 	}
 }
 
-func TestHandoverTakeThenCommitMakesTheTenantTheControlPlanes(t *testing.T) {
+// The take moves `owner` and nothing else about the tenant's FUTURE: the
+// processes are the service account's from the moment it spawns them, so the
+// row has to say so, but `desired_boot` — the boot commitment — waits for a
+// commit that the operator has to come back and make.
+func TestHandoverTakeMovesTheOwnerAndLeavesTheRestToTheCommit(t *testing.T) {
 	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
 		released(tn)
 		// The release stopped these; the take starts them again.
@@ -335,14 +350,62 @@ func TestHandoverTakeThenCommitMakesTheTenantTheControlPlanes(t *testing.T) {
 	if tn.Owner != "svcbvbrc" || tn.Supervisor != supervisorInstance {
 		t.Errorf("owner %q supervisor %q, want svcbvbrc/instance", tn.Owner, tn.Supervisor)
 	}
-	if tn.State != "active" || tn.DesiredBoot != "enabled" {
-		t.Errorf("state %q desired_boot %q", tn.State, tn.DesiredBoot)
+	if tn.State != "active" {
+		t.Errorf("state %q, want active", tn.State)
+	}
+	if tn.DesiredBoot != "disabled" {
+		t.Errorf("desired_boot %q: an UNCOMMITTED handover must not be something `fleet start --all` adopts",
+			tn.DesiredBoot)
+	}
+	h := tn.Handover
+	if h == nil || h.Phase != registry.HandoverTaken {
+		t.Fatalf("handover = %+v, want phase %s", h, registry.HandoverTaken)
+	}
+	if h.Token != testToken {
+		t.Errorf("the token was cleared at the take: it is what the commit and the abandon are gated on")
+	}
+	if string(h.TakenBy) != "svcbvbrc" || h.TakenAt == "" {
+		t.Errorf("handover = %+v", h)
+	}
+	if p.Result()["owner"] != "svcbvbrc" {
+		t.Errorf("result = %v", p.Result())
+	}
+}
+
+// And the commit, which is an ordinary job gated on that row.
+func TestHandoverCommitIsTheBootCommitment(t *testing.T) {
+	oc, fake := fixture(t, "dev", func(tn *registry.Tenant) {
+		taken(tn)
+		tn.RestartPending = true
+	})
+	// The API the take started, still up and attributable to this account.
+	fake.FakeProc().MarkAlive(30001, oc.Tenant.Ports.API)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "commit"})
+	got := titles(p)
+	// It PROVES the tenant is up before it promises to bring it back at boot.
+	if indexOfStep(got, "still up on 24040") < 0 || indexOfStep(got, "GET /health") < 0 {
+		t.Fatalf("the commit does not check the tenant is running: %v", got)
+	}
+	for _, st := range p.Steps {
+		if st.Cutover {
+			t.Errorf("the commit parks at %q", st.Plan.Title)
+		}
+	}
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	tn := oc.Fleet.Tenants["dev"]
+	if tn.DesiredBoot != "enabled" {
+		t.Errorf("desired_boot %q, want enabled", tn.DesiredBoot)
 	}
 	if tn.Handover != nil {
 		t.Errorf("the handover block survived the commit: %+v", tn.Handover)
 	}
 	if tn.RestartPending {
-		t.Error("restart_pending survived a commit whose own steps started the processes the row describes")
+		t.Error("restart_pending survived a commit whose own take started the processes the row describes")
+	}
+	if tn.Owner != "svcbvbrc" || tn.Supervisor != supervisorInstance {
+		t.Errorf("owner %q supervisor %q", tn.Owner, tn.Supervisor)
 	}
 	// The descriptor is the only way back for `restore.sh --tenant`, so a
 	// commit never touches it.
@@ -351,6 +414,39 @@ func TestHandoverTakeThenCommitMakesTheTenantTheControlPlanes(t *testing.T) {
 	}
 	if tn.LastOps["handover"].Outcome != "succeeded" {
 		t.Errorf("last_ops = %+v", tn.LastOps)
+	}
+}
+
+func TestHandoverCommitRefusesAnythingButATakenRowAndItsOwnAccount(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		mutate func(*registry.Tenant)
+		as     string
+		want   string
+	}{
+		{"no handover", prepared, "svcbvbrc", "nothing to commit"},
+		{"a released row", released, "svcbvbrc", "only a TAKEN handover"},
+		{"the wrong account", taken, "wilke", "Run it as svcbvbrc"},
+		{"a row the ctl does not supervise", func(tn *registry.Tenant) {
+			taken(tn)
+			tn.Supervisor = supervisorManual
+		}, "svcbvbrc", "nothing to commit to"},
+	} {
+		oc, _ := fixture(t, "dev", c.mutate)
+		err := planErrAs(t, oc, c.as, "handover", map[string]any{"phase": "commit"})
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s = %v, want it to mention %q", c.name, err, c.want)
+		}
+	}
+
+	// A commit over a tenant that is DOWN would enable a boot for something
+	// that is not running, and the soak it concludes concluded nothing.
+	oc, fake := fixture(t, "dev", taken)
+	fake.FakeProc().FreePort(oc.Tenant.Ports.API)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "commit"})
+	r := newRunner(oc, fake)
+	if _, err := r.run(p.Steps[0]); err == nil || !strings.Contains(err.Error(), "nothing is listening") {
+		t.Fatalf("a commit over a stopped tenant = %v", err)
 	}
 }
 
@@ -410,17 +506,6 @@ func TestHandoverTakeOfASharedStoreTenantStartsNoStoreAndStillWaits(t *testing.T
 
 // ---------------------------------------------------------------- commit, abandon
 
-func TestHandoverCommitIsRefusedAsANewJob(t *testing.T) {
-	oc, _ := fixture(t, "dev", released)
-	err := planErrAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "commit"})
-	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "CONTINUATION") {
-		t.Fatalf("phase commit = %v, want the continuation refusal", err)
-	}
-	if !strings.Contains(err.Error(), "job continue") {
-		t.Errorf("the refusal does not name the continuation: %v", err)
-	}
-}
-
 func TestHandoverAbandonPutsTheRowBackAndNamesTheRestore(t *testing.T) {
 	oc, _ := fixture(t, "dev", prepared)
 	if err := planErrAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"}); !strings.Contains(
@@ -446,6 +531,60 @@ func TestHandoverAbandonPutsTheRowBackAndNamesTheRestore(t *testing.T) {
 	}
 	if p.Result()["next"] != "ops/coconut/restore.sh --tenant dev" {
 		t.Errorf("result = %v, want the restore command", p.Result())
+	}
+}
+
+// TestHandoverAbandonAfterATakeGoesToTheReleasingAccount is the case the
+// owner check exists for.
+//
+// After a take the ROW's owner is the service account — that is the take's
+// whole point — so an abandon gated on `owner` would be the service account
+// handing the tenant back to itself, and the account that actually has to
+// start it again would be refused. It is gated on `handover.released_by`.
+func TestHandoverAbandonAfterATakeGoesToTheReleasingAccount(t *testing.T) {
+	oc, fake := fixture(t, "dev", taken)
+	if err := planErrAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "abandon"}); !strings.Contains(
+		err.Error(), "released by wilke") {
+		t.Errorf("an abandon by the account that TOOK it = %v", err)
+	}
+
+	// And every port has to be free first, not only the API's: after a take
+	// the service account runs this tenant's stores too, and a row recording
+	// `manual` over them would leave them with nothing that stops them.
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "abandon"})
+	titlesOf := titles(p)
+	for _, want := range []string{"24040 (the API)", "24041 (qdrant)", "24043 (es)"} {
+		if indexOfStep(titlesOf, want) < 0 {
+			t.Errorf("no port check for %s: %v", want, titlesOf)
+		}
+	}
+	fake.FakeProc().SetOwner(oc.Tenant.Ports.QdrantHTTP, 0, 0)
+	r := newRunner(oc, fake)
+	var refused error
+	for _, st := range p.Steps {
+		if _, err := r.run(st); err != nil {
+			refused = err
+			break
+		}
+	}
+	if refused == nil || !strings.Contains(refused.Error(), "still running as the other account") {
+		t.Fatalf("an abandon over the take's running store = %v", refused)
+	}
+
+	// With everything stopped, the row goes back to the releasing account.
+	oc2, fake2 := fixture(t, "dev", taken)
+	for _, port := range []int{oc2.Tenant.Ports.API, oc2.Tenant.Ports.QdrantHTTP, oc2.Tenant.Ports.ESHTTP} {
+		fake2.FakeProc().FreePort(port)
+	}
+	p2 := planAs(t, oc2, "wilke", "handover", map[string]any{"phase": "abandon"})
+	newRunner(oc2, fake2).runAll(t, p2)
+	tn := oc2.Fleet.Tenants["dev"]
+	if tn.Owner != "wilke" || tn.Supervisor != supervisorManual || tn.State != "active" || tn.Handover != nil {
+		t.Errorf("after the abandon: owner %q supervisor %q state %q handover %+v",
+			tn.Owner, tn.Supervisor, tn.State, tn.Handover)
+	}
+	if p2.Result()["owner"] != "wilke" {
+		t.Errorf("result = %v", p2.Result())
 	}
 }
 

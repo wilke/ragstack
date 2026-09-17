@@ -165,7 +165,12 @@ type Step struct {
 	Rollback  StepFunc // nil when the step is not reversible; the plan says so
 	Reconcile func(ctx context.Context, sc *StepContext) (Reconciliation, error)
 	// Cutover marks the step after which the job waits in awaiting_cutover
-	// for an explicit Continue (handover, migrate-local).
+	// for an explicit Continue (`migrate-local` today).
+	//
+	// `handover` deliberately does NOT use it. A parked job keeps its locks,
+	// and one of a handover's is the REGISTRY lock — the whole fleet's — which
+	// it would then hold for the length of an operator's soak. Its phases are
+	// four ordinary jobs gated on the registry row instead (ops/handover.go).
 	Cutover bool
 }
 

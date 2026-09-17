@@ -1859,10 +1859,14 @@ async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
 # =========================================================================== #
 # The handover — a TWO-ACCOUNT protocol over one HTTP verb (PR-E2)
 #
-# Only one of its four phases is something a daemon can do. `release` and
+# Two of its four phases are something a daemon can do. `release` and
 # `abandon` act on processes the service account can neither see nor signal, so
-# they are `--direct` runs by the tenant's owner; `take` is the daemon's; and
-# `commit` is a CONTINUATION of the parked take rather than a new job.
+# they are `--direct` runs by the tenant's owner; `take` and `commit` are the
+# daemon's.
+#
+# All four are ordinary JOBS, and not one of them parks. A take that waited at
+# a cutover would hold the tenant's registry lock — the fleet's lock — for the
+# length of the soak, so the ROW carries the state between the phases instead.
 #
 # What the HTTP surface therefore owes is the argument grammar and the
 # refusals — and those are what a daemon with no engine can still be held to,
@@ -1926,22 +1930,27 @@ async def test_handover_take_needs_a_token_shaped_like_a_release_minted_it(
         assert resp.json().get("code") in ("refused", "doctor_red", "locked"), resp.text
 
 
-async def test_handover_commit_is_refused_as_a_new_job(
+async def test_handover_commit_is_gated_on_the_row_not_on_a_parked_job(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
 ) -> None:
-    """The commit belongs to the take, which is parked at its cutover holding
-    that tenant's locks, its reservations and its recorded plan. Accepting it as
-    a NEW job would start a second one holding none of them — which is how a
-    "commit" comes to commit nothing.
+    """The commit is an ORDINARY job, gated on ``handover.phase: taken``.
 
-    So the refusal names the continuation route rather than being a bare no."""
+    It used to be the continuation of a take parked at its cutover, and that
+    parked job held this tenant's locks — the REGISTRY lock among them, which is
+    the whole fleet's — for as long as the operator soaked. A 48-hour drill
+    would have blocked every backup of every other tenant behind it.
+
+    On a fixture tenant with no handover in flight there is nothing to commit,
+    and the refusal says which of the two it is: no block at all, or a block
+    that is not `taken` yet."""
     resp = await client.post(
         f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args={"phase": "commit"})
     )
     err = assert_error(resp, 409, "refused", schemas)
     detail = err["detail"]
-    assert "continue" in detail.lower(), detail
-    assert "awaiting_cutover" in detail or "job continue" in detail, detail
+    assert "nothing to commit" in detail or "TAKEN handover" in detail, detail
+    # And it must NOT send the operator looking for a parked job.
+    assert "awaiting_cutover" not in detail, detail
 
 
 async def test_handover_abandon_plans_or_refuses_with_a_reason(
@@ -1964,8 +1973,12 @@ async def test_a_handover_plan_is_a_plan(
 ) -> None:
     """Whatever the fixture's rows look like, a 200 from any handover phase is a
     ``plan.json`` with the verb on it and the tenant name as its confirm value:
-    a handover is destructive, so typing "yes" is never enough."""
-    for args in ({"phase": "release"}, {"phase": "take", "token": "0f" * 16}):
+    a handover is destructive, so typing "yes" is never enough.
+
+    And no phase plans a CUTOVER step. That is the load-bearing half: a phase
+    that parked would hold the fleet's registry lock for the length of an
+    operator's soak."""
+    for args in ({"phase": "release"}, {"phase": "take", "token": "0f" * 16}, {"phase": "commit"}):
         resp = await client.post(
             f"/v1/tenants/{some_tenant}/ops/handover", json=op_body(args=args)
         )
@@ -1976,3 +1989,7 @@ async def test_a_handover_plan_is_a_plan(
         assert plan["op"] == "handover", plan
         assert plan["requires_confirm"] is True, plan
         assert plan["confirm_value"] == some_tenant, plan
+        # `plan.json` does not carry a per-step cutover flag, so what is
+        # asserted here is the WORDING no phase may promise any more.
+        for step in plan["steps"]:
+            assert "cutover" not in step["title"].lower(), step

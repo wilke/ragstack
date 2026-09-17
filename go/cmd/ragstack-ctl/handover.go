@@ -12,25 +12,19 @@ package main
 //     three layers down, at the moment an operator is about to stop a tenant;
 //     and its remedy — the scratch state dir the wilke-side convention uses —
 //     is not something anybody guesses.
-//   - `--commit` is not a job at all. The commit belongs to the take, which is
-//     parked at its cutover holding this tenant's locks, so this command finds
-//     that job and continues it. Submitting `handover --phase commit` as a new
-//     job is refused by the planner, with the same instruction spelled out.
+//   - `--commit` and `--abandon` are ordinary jobs gated on the ROW, not
+//     continuations of the take. The take used to park at a cutover, which held
+//     this tenant's locks — the registry lock among them, and that one is the
+//     fleet's — for the length of the soak: a 48-hour drill on `dev` would have
+//     blocked every backup of every other tenant behind it.
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/api"
-	"github.com/ragstack/ragstack/internal/ctl/jobs"
-	"github.com/ragstack/ragstack/internal/ctl/model"
 )
 
 func handoverUsage() int {
@@ -53,18 +47,26 @@ instances (each account has its own instance registry).
   --take --token T     As the SERVICE ACCOUNT. Ports free, supervisor:
                        instance, the tenant's own stores, a bounded wait for
                        any SHARED store, the API; then /health, deep health,
-                       the census checked back and a gateway probe. PARKS at
-                       its cutover, holding this tenant's locks, so that the
-                       soak happens with nothing else able to touch it.
+                       the census checked back and a gateway probe. It records
+                       `+"`owner`"+` (the processes are this account's now) and
+                       `+"`handover.phase: taken`"+`, and FINISHES — it does not park.
+                       A take that waited at a cutover would hold this tenant's
+                       registry lock for the whole soak, and that lock is the
+                       fleet's.
 
-  --commit             Continues that parked job: owner, desired_boot enabled,
-                       the handover block cleared. Run it after the soak.
+  --commit             As the SERVICE ACCOUNT, after the soak. Gated on the
+                       row's `+"`handover.phase: taken`"+`: it checks the tenant is
+                       still up and this account's, then sets desired_boot:
+                       enabled and clears the handover block. That is the boot
+                       commitment — from here `+"`fleet start --all`"+` owns it.
 
-  --abandon            As the OWNER, after the service account has run
-                       `+"`ragstack-ctl tenant stop <name>`"+` (or when the take never
-                       happened): the row goes back to supervisor: manual,
-                       state: active. Then `+"`ops/coconut/restore.sh --tenant <name>`"+`
-                       starts the tenant exactly as it was started before.
+  --abandon            As the account that RELEASED it, after the service
+                       account has run `+"`ragstack-ctl tenant stop <name>`"+` (or when
+                       the take never happened): every one of the tenant's
+                       ports must be free, and the row goes back to supervisor:
+                       manual, state: active, owner: the releasing account.
+                       Then `+"`ops/coconut/restore.sh --tenant <name>`"+` starts the
+                       tenant exactly as it was started before.
 
 The owner-side phases (--release, --abandon) run as jobs in the OWNER's own ctl
 state directory, which is not the daemon's:
@@ -125,11 +127,6 @@ func cmdTenantHandover(args []string, registryPath, ragRoot string, jsonOut bool
 			"`ragstack-ctl job show <release job id>` has it in its result")
 	}
 
-	// `--commit` is a continuation of somebody else's job, not a job.
-	if phase == "commit" {
-		return commitHandover(o, name)
-	}
-
 	// The two OWNER-side phases are local by construction: they act on
 	// processes only that account can signal, so there is no daemon that could
 	// perform them (see contracts/ctl/openapi.yaml's handover.phase).
@@ -153,7 +150,9 @@ func cmdTenantHandover(args []string, registryPath, ragRoot string, jsonOut bool
 	}
 	// A release mints the hand-off token into its job RESULT, and the operator
 	// needs it in front of them: follow the job, exactly as `tenant restore`
-	// follows the one that mints credentials.
+	// follows the one that mints credentials. The other phases are followed
+	// too — every one of them ends in a registry write whose outcome is the
+	// thing the operator is waiting to see.
 	if !*o.dryRun {
 		*o.wait = true
 	}
@@ -199,121 +198,6 @@ registry:
 Set both, or point them at any directory this account owns.
 `, phase, dir, err, phase)
 	return exitRefused
-}
-
-// commitHandover finds the parked take and continues it.
-//
-// The commit is not a new job: the take is sitting in `awaiting_cutover`
-// holding this tenant's locks and its recorded plan, and the last step of that
-// plan is the commit. So this resolves the job id — exactly one parked
-// handover for this tenant, or a refusal that says what it found — and issues
-// the continuation the daemon (or the local engine) already knows how to run.
-func commitHandover(o *opFlags, tenant string) int {
-	id, code := parkedHandoverJob(o, tenant)
-	if code != exitOK {
-		return code
-	}
-	fmt.Fprintf(stderr, "ragstack-ctl: continuing the parked handover job %s for %s\n", id, tenant)
-	return cmdJobContinuation("continue", continuationArgs(o, id), *o.registry, *o.ragRoot, *o.asJSON)
-}
-
-// continuationArgs rebuilds the flags `job continue` needs out of the ones this
-// command was given, so that `--server`, `--direct`, `--api-key-file`, `--yes`
-// and `--json` mean the same thing on both.
-func continuationArgs(o *opFlags, id string) []string {
-	out := []string{id}
-	if *o.direct {
-		out = append(out, "--direct")
-	}
-	if *o.server != "" {
-		out = append(out, "--server", *o.server)
-	}
-	if *o.apiKeyFile != "" {
-		out = append(out, "--api-key-file", *o.apiKeyFile)
-	}
-	if *o.yesDestructive != "" {
-		out = append(out, "--yes-destructive", *o.yesDestructive)
-	} else if *o.yes {
-		out = append(out, "--yes")
-	}
-	if *o.asJSON {
-		out = append(out, "--json")
-	}
-	if *o.ragRoot != "" {
-		out = append(out, "--rag-root", *o.ragRoot)
-	}
-	if *o.registry != "" {
-		out = append(out, "--registry", *o.registry)
-	}
-	return out
-}
-
-// parkedHandoverJob is the ONE handover job of this tenant that is waiting at
-// its cutover.
-//
-// Zero and more-than-one are both refusals with the list in them: continuing
-// "a" parked job when there are two would be picking one of them for the
-// operator, and a control plane does not do that with a cutover.
-func parkedHandoverJob(o *opFlags, tenant string) (string, int) {
-	list, code := listJobs(o, tenant, model.JobAwaitingCutover)
-	if code != exitOK {
-		return "", code
-	}
-	var ids []string
-	for _, j := range list {
-		if j.Op == "handover" {
-			ids = append(ids, j.ID)
-		}
-	}
-	switch len(ids) {
-	case 1:
-		return ids[0], exitOK
-	case 0:
-		fmt.Fprintf(stderr, "ragstack-ctl: refused: %s has no handover job parked at its cutover. A commit "+
-			"continues the job that ran `--take`; if the take has not run yet, run it "+
-			"(`ragstack-ctl tenant handover %s --take --token <token>`), and if it failed, the way back is "+
-			"`ragstack-ctl tenant stop %s` here plus `ragstack-ctl tenant handover %s --abandon` as its owner.\n",
-			tenant, tenant, tenant, tenant)
-		return "", exitRefused
-	default:
-		fmt.Fprintf(stderr, "ragstack-ctl: refused: %s has %d handover jobs parked at a cutover (%s). Continue the "+
-			"one you mean by hand: `ragstack-ctl job show <id>` then `ragstack-ctl job continue <id>`.\n",
-			tenant, len(ids), strings.Join(ids, ", "))
-		return "", exitRefused
-	}
-}
-
-// listJobs reads the job list the same way both transports do.
-func listJobs(o *opFlags, tenant string, state model.JobState) ([]model.Job, int) {
-	if *o.direct {
-		eng, err := buildDirectEngine(o)
-		if err != nil {
-			return nil, failClient(err)
-		}
-		list, _, err := eng.List(context.Background(), jobs.ListFilter{Tenant: tenant, State: state, Limit: 50})
-		if err != nil {
-			return nil, directExit(err)
-		}
-		return list, exitOK
-	}
-	c, err := o.client()
-	if err != nil {
-		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
-		return nil, exitUsage
-	}
-	q := url.Values{"tenant": []string{tenant}, "state": []string{string(state)}}
-	resp, err := c.get(context.Background(), "/v1/jobs", q)
-	if err != nil {
-		return nil, failClient(err)
-	}
-	if resp.Status != http.StatusOK {
-		return nil, reportHTTPError(resp)
-	}
-	var out model.JobsResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		return nil, failClient(fmt.Errorf("the job list is not jobs_response.json: %w", err))
-	}
-	return out.Jobs, exitOK
 }
 
 // ---------------------------------------------------------------- set-supervisor

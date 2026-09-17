@@ -404,10 +404,12 @@ take, soak, commit". It is a two-account protocol, because nothing on this host
 can perform it in one process: the daemon cannot signal the owner's uvicorn and
 cannot see the owner's apptainer instances. The owner releases
 (`tenant handover <t> --release`, `--direct`, in a state directory the owner
-owns), the service account takes (`--take --token <T>`) and parks at its
-cutover, and `--commit` continues that parked job after the soak. The way back
-at any point before the commit is `tenant stop <t>` as the service account,
-`tenant handover <t> --abandon` as the owner, and
+owns), the service account takes (`--take --token <T>`), and `--commit` — an
+ordinary job gated on the row's `handover.phase: taken` — makes the boot
+commitment after the soak. None of the four phases parks at a cutover: one that
+did would hold the fleet's registry lock for the length of a 48-hour soak. The
+way back at any point before the commit is `tenant stop <t>` as the service
+account, `tenant handover <t> --abandon` as the account that released it, and
 `ops/coconut/restore.sh --tenant <t>`.
 
 The reboot runbook (`restore.sh`, `pre-reboot.sh`, `snapshot.sh`) reads the

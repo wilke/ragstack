@@ -466,12 +466,12 @@
       "additionalProperties": false
     },
     "Handover": {
-      "description": "The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and parks at its cutover; the continuation commits. `handover --abandon` (owner) clears the block and hands the tenant back to `restore.sh --tenant <n>`.",
+      "description": "The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`.",
       "type": "object",
       "required": ["phase", "token", "started_at", "released_by", "released_at", "taken_at", "taken_by", "descriptor_ref", "census"],
       "properties": {
         "phase": {
-          "description": "`released`: the owner has stopped everything and nothing of this tenant is running. `taken`: the service account has started it again and is soaking before the commit.",
+          "description": "`released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.",
           "type": "string",
           "enum": ["released", "taken"]
         },

@@ -20,9 +20,17 @@ package ops
 //	           → census, stop, `state: handover`, a token printed
 //	svcbvbrc$  ragstack-ctl tenant handover <t> --take --token <token> …
 //	           → start under `supervisor: instance`, check the census back,
-//	             PARK at the cutover
-//	svcbvbrc$  ragstack-ctl tenant handover <t> --commit     (the continuation)
-//	           → owner, desired_boot, the handover block cleared
+//	             `owner: svcbvbrc`, `handover.phase: taken`. The job FINISHES.
+//	svcbvbrc$  ragstack-ctl tenant handover <t> --commit      (after the soak)
+//	           → desired_boot enabled, the handover block cleared
+//
+// Four jobs, and not one of them parks. A take that stopped at a cutover would
+// hold this tenant's registry lock for the length of the soak — 48 hours for
+// the `dev` drill — and the registry lock is the FLEET's: every backup of every
+// other tenant would queue behind one operator's coffee. So the take completes,
+// the row carries the state between the phases (`handover.phase: taken`, the
+// token kept until a commit or an abandon clears it), and the commit is an
+// ordinary job gated on that row.
 //
 // and, when the take does not convince:
 //
@@ -38,9 +46,18 @@ package ops
 //     that tells the next operator where they are. Nothing here ever leaves
 //     the row claiming `active` over a tenant that is not.
 //   - the tenant is RESTORABLE. Before the release: `restore.sh --tenant <t>`.
-//     After the take: `fleet start --all`. In between, and after an abandon:
-//     `restore.sh --tenant <t>` again, from the rollback descriptor the row
-//     has carried since `adopt --commit`.
+//     After the take: `ragstack-ctl tenant start <t>` as the service account,
+//     and `fleet start --all` once the commit has enabled its boot. In
+//     between, and after an abandon: `restore.sh --tenant <t>` again, from the
+//     rollback descriptor the row has carried since `adopt --commit`.
+//
+// The row's `owner` moves at the TAKE, not at the commit, because that is when
+// it stops being true of the old account: from the moment the take spawns the
+// API, the processes are the service account's, and a row that still named the
+// owner would make doctor's `port_owner_mismatch` a lie in the other
+// direction. What the commit adds is the BOOT commitment — `desired_boot:
+// enabled`, after which `fleet start --all` owns this tenant — and the removal
+// of the block that says a way back is still open.
 //
 // A handover moves no data. The same directories serve the same processes
 // under another account, through the ACLs PR-D2 installed — so the risk this
@@ -113,14 +130,7 @@ func planHandover(ctx context.Context, p *planner, args map[string]any) error {
 	case phaseTake:
 		return planHandoverTake(ctx, p, token)
 	case phaseCommit:
-		// Like `migrate-local --phase commit`: the commit belongs to the job
-		// that is parked at its cutover, with that job's locks, that job's
-		// reservations and that job's recorded plan. Accepting it as a new job
-		// would start a second one holding none of them.
-		return p.refuse("`handover --commit` is the CONTINUATION of the job that ran `--take` and is parked at its "+
-			"cutover, not a new job: `ragstack-ctl job list --tenant %s --state awaiting_cutover` names it and "+
-			"`ragstack-ctl job continue <id>` releases it (POST /v1/jobs/{id}/continue). "+
-			"`ragstack-ctl tenant handover %s --commit` does both for you", p.tenant, p.tenant)
+		return planHandoverCommit(p)
 	case phaseAbandon:
 		return planHandoverAbandon(p)
 	default:
@@ -762,16 +772,22 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 	p.addCensusCheck(h.Census, origin, secretsEnv)
 	p.addGatewayProbe("/ragstack/" + t.Name + "/api/health")
 
-	p.addTakeCutoverStep(account)
-	p.addCommitStep(account)
+	p.addTakeRegistryStep(account)
 
 	p.result["phase"] = registry.HandoverTaken
 	p.result["supervisor"] = supervisorInstance
-	p.warn("this job PARKS after its cutover, holding this tenant's locks: soak the tenant, then " +
-		"`ragstack-ctl tenant handover " + t.Name + " --commit` (which continues this job). Until then " +
-		"`ragstack-ctl tenant stop " + t.Name + "` as this account, plus `ragstack-ctl tenant handover " +
-		t.Name + " --abandon` as " + t.Owner + ", is the way back")
-	p.warn("the shared stores stay " + t.Owner + "-run: a handover moves the TENANT, not the host's shared services")
+	p.result["owner"] = account
+	p.result["next"] = "ragstack-ctl tenant handover " + t.Name + " --commit"
+	p.warn("this job FINISHES rather than parking: a take that waited at a cutover would hold this tenant's " +
+		"registry lock for the length of the soak, and that lock is the FLEET's — every backup of every other " +
+		"tenant would queue behind it. The row carries the state instead (`handover.phase: taken`)")
+	p.warn("soak the tenant, then `ragstack-ctl tenant handover " + t.Name + " --commit` as this account. Until " +
+		"then the way back is `ragstack-ctl tenant stop " + t.Name + "` here, then `ragstack-ctl tenant handover " +
+		t.Name + " --abandon` as " + h.ReleasedBy + ", then `ops/coconut/restore.sh --tenant " + t.Name + "`")
+	p.warn("`desired_boot` stays `" + t.DesiredBoot + "` until the commit: an uncommitted handover must not be " +
+		"something `fleet start --all` brings back at the next boot")
+	p.warn("the shared stores stay " + h.ReleasedBy + "-run: a handover moves the TENANT, not the host's shared " +
+		"services")
 	return nil
 }
 
@@ -943,30 +959,42 @@ func (p *planner) addGatewayProbe(path string) {
 	})
 }
 
-// addTakeCutoverStep is the CUTOVER: the row says the tenant is active again
-// and the handover is `taken`.
+// addTakeRegistryStep is the take's last act: the row now describes the
+// processes this job started.
 //
-// After it the job PARKS (jobs/engine.go: a cutover step that is not the last
-// one parks the run in `awaiting_cutover`, holding its locks). The soak
-// happens there, and `job continue` runs the commit below it.
-func (p *planner) addTakeCutoverStep(account string) {
+// `owner` moves HERE rather than at the commit, and that is the point of the
+// step. From the moment the API was spawned, the pid on the tenant's port is
+// the service account's; a row that went on naming the previous owner through
+// a 48-hour soak would make doctor's `port_owner_mismatch` fire against the
+// truth, and would make `ragstack-ctl tenant stop <t>` — the first half of the
+// way back — refuse for the wrong reason.
+//
+// `desired_boot` is deliberately NOT moved: an uncommitted handover must not be
+// something `fleet start --all` brings back at the next boot. That is the
+// commit's, and it is the whole difference between "running under the ctl" and
+// "the ctl's tenant".
+func (p *planner) addTakeRegistryStep(account string) {
 	name := p.tenant
 	pidfile := p.apiPidFile()
 	p.add(step{
-		Kind: "registry", Title: "cutover: record state: active and handover.phase: taken", Targets: []string{name},
-		Cutover:    true,
+		Kind: "registry", Title: "record state: active, owner " + account + ", handover.phase: taken",
+		Targets:    []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
-		Warnings: []string{"the job PARKS here holding this tenant's locks: nothing else may touch it while a " +
-			"handover is uncommitted. `ragstack-ctl tenant handover " + name + " --commit` releases it"},
+		Warnings: []string{"the handover block and its token STAY in the row until a commit or an abandon clears " +
+			"them: they are what those two are gated on, and what says a way back is still open",
+			"desired_boot is left as it is — `fleet start --all` does not adopt an uncommitted handover"},
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			at := p.stampRFC3339(sc)
-			err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
-				t.State = "active"
-				t.API.PidFile = pidfile
+			previousOwner := ""
+			err := p.saveTenant(sc, "handover", func(t *registry.Tenant) error {
 				if t.Handover == nil {
 					return fmt.Errorf("%w: %s's handover block is gone; something else cleared it while this job "+
 						"was running", jobs.ErrRefused, name)
 				}
+				previousOwner = t.Owner
+				t.State = "active"
+				t.Owner = account
+				t.API.PidFile = pidfile
 				t.Handover.Phase = registry.HandoverTaken
 				t.Handover.TakenAt = registry.NullString(at)
 				t.Handover.TakenBy = registry.NullString(account)
@@ -975,11 +1003,19 @@ func (p *planner) addTakeCutoverStep(account string) {
 			if err != nil {
 				return "", err
 			}
-			return name + " is active again, handover.phase = " + registry.HandoverTaken, nil
+			if err := sc.Checkpoint("owner-prev:" + previousOwner); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s is active, owned by %s, handover.phase = %s",
+				name, account, registry.HandoverTaken), nil
 		},
 		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			was, _ := externalIDValue(sc.Step.ExternalIDs, "owner-prev:")
 			err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
 				t.State = registry.StateHandover
+				if was != "" {
+					t.Owner = was
+				}
 				if t.Handover != nil {
 					t.Handover.Phase = registry.HandoverReleased
 					t.Handover.TakenAt, t.Handover.TakenBy = "", ""
@@ -994,26 +1030,92 @@ func (p *planner) addTakeCutoverStep(account string) {
 	})
 }
 
-// addCommitStep is what `job continue` runs: the tenant becomes the service
-// account's, for good.
+// ---------------------------------------------------------------- commit
+
+// planHandoverCommit is the soak's end: the tenant stops being one the ctl is
+// trying out and becomes one it owns.
 //
-// The rollback descriptor is deliberately NOT touched. It is the immutable
-// record of how the tenant ran before the ctl had it, and it is what
-// `restore.sh --tenant <n>` reads — a commit that cleared it would be a commit
-// after which the only way back was gone.
-func (p *planner) addCommitStep(account string) {
+// It is an ordinary JOB rather than the continuation of a parked take. The
+// take used to park at a cutover, which kept this tenant's locks — including
+// the REGISTRY lock, which is the fleet's — for as long as the operator
+// soaked. A 48-hour drill on `dev` would have blocked every backup of every
+// other tenant behind it. So the take finishes, the ROW carries the state, and
+// this op is gated on that row.
+//
+// What it adds is the boot commitment. `owner` moved at the take (the
+// processes were already the service account's); `desired_boot: enabled` is
+// what makes `fleet start --all` responsible for this tenant at the next boot,
+// and clearing the block is what closes the way back. The rollback descriptor
+// is deliberately kept: it is the immutable record of how the tenant ran before
+// the ctl had it, and `restore.sh --tenant <n>` still reads it.
+func planHandoverCommit(p *planner) error {
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
+	t := p.t
+	account := p.op.deps.owner()
+	h := t.Handover
+	switch {
+	case h == nil:
+		return p.refuse("%s has no handover in flight: there is nothing to commit. A committed handover leaves no "+
+			"block behind — `ragstack-ctl tenant show %s` says who owns it now", t.Name, t.Name)
+	case h.Phase != registry.HandoverTaken:
+		return p.refuse("%s's handover is in phase `%s`: only a TAKEN handover can be committed. Take it first "+
+			"(`ragstack-ctl tenant handover %s --take --token <token>`, as the service account)",
+			t.Name, h.Phase, t.Name)
+	case t.Owner != account:
+		return p.refuse("%s is owned by %s and this job is running as %s: the commit is the account that TOOK the "+
+			"tenant confirming what it is running. Run it as %s", t.Name, t.Owner, account, t.Owner)
+	case t.Supervisor != supervisorInstance:
+		return p.refuse("%s's supervisor is `%s`, not `%s`: the row does not describe a tenant this control plane "+
+			"is supervising, so there is nothing to commit to", t.Name, t.Supervisor, supervisorInstance)
+	}
+
+	// A commit over a tenant that is not actually up would enable a boot for
+	// something that is down — and the soak it concludes would have concluded
+	// nothing.
+	origin := fmt.Sprintf("http://127.0.0.1:%d", t.Ports.API)
+	port := t.Ports.API
+	p.addFor("proc", step{
+		Kind: "probe", Title: fmt.Sprintf("check that the tenant is still up on %d and is this account's", port),
+		Targets: []string{strconv.Itoa(port)},
+		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			proc := sc.Ops.Drivers.Proc()
+			listening, err := proc.Listening(ctx, port)
+			if err != nil {
+				return "", err
+			}
+			if !listening {
+				return "", fmt.Errorf("%w: nothing is listening on %d: the tenant the take started is not running, "+
+					"so a commit would enable a boot for something that is down. Start it "+
+					"(`ragstack-ctl tenant start %s`) or abandon the handover", jobs.ErrRefused, port, p.tenant)
+			}
+			pid, _, err := proc.Owner(ctx, port)
+			if err != nil {
+				return "", err
+			}
+			if pid == 0 {
+				return "", fmt.Errorf("%w: %d is held by a process this account cannot attribute, so it is not the "+
+					"one the take started. Do not commit a tenant this account does not run", jobs.ErrRefused, port)
+			}
+			return fmt.Sprintf("pid %d holds %d and belongs to this account", pid, port), nil
+		},
+	})
+	p.addFor("tenantapi", step{
+		Kind: "probe", Title: "post-check: GET /health before the boot commitment", Targets: []string{origin},
+		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			return "health ok", sc.Ops.Drivers.TenantAPI().Health(ctx, origin)
+		},
+	})
+
 	name := p.tenant
 	p.add(step{
-		Kind: "registry", Title: "commit: owner " + account + ", desired_boot enabled, handover cleared",
-		Targets:    []string{name},
+		Kind: "registry", Title: "commit: desired_boot enabled, the handover block cleared", Targets: []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
 		Warnings: []string{"after this step the tenant is the control plane's: `fleet start --all` brings it back " +
-			"at boot and `ops/coconut/restore.sh` skips it. The rollback_descriptor is kept, untouched"},
+			"at boot and `ops/coconut/restore.sh` skips it. The rollback_descriptor is kept, untouched",
+			"this is the last moment at which `ragstack-ctl tenant handover " + name + " --abandon` was an option"},
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			err := p.saveTenant(sc, "handover", func(t *registry.Tenant) error {
-				t.Owner = account
 				t.DesiredBoot = "enabled"
-				t.Supervisor = supervisorInstance
 				t.State = "active"
 				// The processes running right now ARE the row: the bind, the
 				// pidfile and the env the take started them with are what the
@@ -1025,11 +1127,15 @@ func (p *planner) addCommitStep(account string) {
 			if err != nil {
 				return "", err
 			}
-			p.result["owner"] = account
-			p.result["desired_boot"] = "enabled"
 			return name + " is owned by " + account + " and supervised by " + supervisorInstance, nil
 		},
 	})
+	p.result["phase"] = "committed"
+	p.result["owner"] = account
+	p.result["desired_boot"] = "enabled"
+	p.warn("`ops/coconut/restore.sh` skips this tenant from now on (\"handed over to the control plane\") and " +
+		"`ragstack-ctl fleet start --all` — the service account's @reboot line — is what brings it back")
+	return nil
 }
 
 // ---------------------------------------------------------------- abandon
@@ -1042,41 +1148,70 @@ func planHandoverAbandon(p *planner) error {
 	if h == nil {
 		return p.refuse("%s has no handover in flight: there is nothing to abandon", t.Name)
 	}
-	// The abandon puts the tenant back into the OWNER's hands, and the owner
-	// is who has to start it again. Running it as the other account would
-	// write a row nobody can act on.
-	if t.Owner != account {
-		return p.refuse("%s's rollback_descriptor belongs to %s and this job is running as %s: `--abandon` hands "+
-			"the tenant back to the account that will start it again (`ops/coconut/restore.sh --tenant %s`). "+
-			"Run it as %s", t.Name, t.Owner, account, t.Name, t.Owner)
+	// The abandon hands the tenant back to whoever RELEASED it, and that is
+	// the account that will start it again. It is `handover.released_by`
+	// rather than the row's `owner`, because after a take the row's owner is
+	// the service account — that is the take's whole point — and asking for
+	// the owner here would mean the service account handing the tenant back to
+	// itself.
+	releasedBy := h.ReleasedBy
+	if releasedBy != account {
+		return p.refuse("%s was released by %s and this job is running as %s: `--abandon` hands the tenant back to "+
+			"the account that will start it again (`ops/coconut/restore.sh --tenant %s`). Run it as %s",
+			t.Name, releasedBy, account, t.Name, releasedBy)
 	}
-	port := t.Ports.API
-	p.addFor("proc", step{
-		Kind: "probe", Title: fmt.Sprintf("check that nothing this account cannot see holds %d", port),
-		Targets: []string{strconv.Itoa(port)},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			proc := sc.Ops.Drivers.Proc()
-			listening, err := proc.Listening(ctx, port)
-			if err != nil {
-				return "", err
-			}
-			if !listening {
-				return fmt.Sprintf("port %d is free", port), nil
-			}
-			pid, _, err := proc.Owner(ctx, port)
-			if err != nil {
-				return "", err
-			}
-			if pid == 0 {
-				return "", fmt.Errorf("%w: %d is held by a process this account cannot attribute — the take's API "+
-					"is still running as the other account. Stop it there first (`ragstack-ctl tenant stop %s`), "+
-					"then abandon", jobs.ErrRefused, port, p.tenant)
-			}
-			sc.Logf("pid %d holds %d and belongs to this account: the tenant is already running as %s",
-				pid, port, p.t.Owner)
-			return fmt.Sprintf("pid %d on %d belongs to this account", pid, port), nil
-		},
-	})
+
+	// EVERY port, not just the API's. After a take the service account is
+	// running this tenant's stores as well, and a row that said `manual` over
+	// them would orphan them: nothing would ever stop them again. A port this
+	// account cannot attribute is the take's; one it can is something it
+	// started itself, and neither may survive an abandon.
+	legs, err := p.legs(nil)
+	if err != nil {
+		return err
+	}
+	ports := []struct {
+		port int
+		what string
+	}{{t.Ports.API, "the API"}}
+	for _, c := range legs {
+		if c.Leg != "" && c.Port != 0 && exclusiveLeg(t, c) {
+			ports = append(ports, struct {
+				port int
+				what string
+			}{c.Port, c.Name})
+		}
+	}
+	for _, pr := range ports {
+		port, what := pr.port, pr.what
+		p.addFor("proc", step{
+			Kind: "probe", Title: fmt.Sprintf("check that nothing holds %d (%s) any more", port, what),
+			Targets: []string{strconv.Itoa(port)},
+			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				proc := sc.Ops.Drivers.Proc()
+				listening, err := proc.Listening(ctx, port)
+				if err != nil {
+					return "", err
+				}
+				if !listening {
+					return fmt.Sprintf("port %d is free", port), nil
+				}
+				pid, _, err := proc.Owner(ctx, port)
+				if err != nil {
+					return "", err
+				}
+				if pid == 0 {
+					return "", fmt.Errorf("%w: %d (%s) is held by a process this account cannot attribute — the "+
+						"take's, still running as the other account. Stop it there first "+
+						"(`ragstack-ctl tenant stop %s` as %s), then abandon", jobs.ErrRefused, port, what,
+						p.tenant, orNone(p.t.Owner))
+				}
+				return "", fmt.Errorf("%w: pid %d still holds %d (%s). An abandon records `supervisor: manual`, "+
+					"and a row that said that over running processes would leave them with nothing that stops "+
+					"them. Stop the tenant first", jobs.ErrRefused, pid, port, what)
+			},
+		})
+	}
 	name := p.tenant
 	phase := h.Phase
 	p.add(step{
@@ -1089,17 +1224,24 @@ func planHandoverAbandon(p *planner) error {
 			err := p.saveTenant(sc, "handover", func(t *registry.Tenant) error {
 				t.Supervisor = supervisorManual
 				t.State = "active"
+				// The owner goes back to whoever released it. A take moved it
+				// to the service account because the processes were that
+				// account's; there are none now, and the account about to
+				// start them is this one.
+				t.Owner = releasedBy
 				t.Handover = nil
 				return nil
 			})
 			if err != nil {
 				return "", err
 			}
-			return name + " is hand-started again (the handover in phase " + phase + " is abandoned)", nil
+			return name + " is hand-started again, owned by " + releasedBy +
+				" (the handover in phase " + phase + " is abandoned)", nil
 		},
 	})
 	p.result["phase"] = "abandoned"
 	p.result["supervisor"] = supervisorManual
+	p.result["owner"] = releasedBy
 	p.result["next"] = "ops/coconut/restore.sh --tenant " + name
 	p.warn("nothing is running yet: run `ops/coconut/restore.sh --tenant " + name + "` to start the tenant from " +
 		"its rollback descriptor, exactly as it was started before the release")
