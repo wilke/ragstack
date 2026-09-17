@@ -28,6 +28,7 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
+	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -66,7 +67,18 @@ func pgFixture(t *testing.T, mutate func(*registry.Tenant), owners map[string]in
 	}, func(o *drivers.FakeOptions) {
 		// What this tenant's database holds, as the release will find it.
 		o.PostgresContents = map[string]jobs.PostgresCensus{
-			pp.run: {SizeBytes: 48 << 20, Tables: map[string]int64{"public.chunks": 88_000, "public.jobs": 12}},
+			pp.run: {
+				SizeBytes: 48 << 20,
+				Tables:    map[string]int64{"public.chunks": 88_000, "public.jobs": 12},
+				// What the live hackathon cluster is, and what the take has to
+				// reproduce: a dump and a restore do NOT carry these, and the
+				// fake's initdb produces SQL_ASCII/C unless it is told.
+				Encoding: "UTF8", Collate: "en_US.utf8", Ctype: "en_US.utf8",
+				// The cluster holds the tenant's database and initdb's own
+				// `postgres`, and one login role — which is what the live one
+				// holds, and the boundary a single-database dump moves.
+				Databases: []string{"dev", "postgres"}, Roles: []string{"dev"},
+			},
 		}
 		o.FileOwners = owners
 		if owners == nil {
@@ -841,5 +853,254 @@ func TestTheRestoreDoesNothingWhenTheTakeCreatedNoCluster(t *testing.T) {
 	}
 	if got := fake.FakePostgres().Restores; len(got) != 0 {
 		t.Errorf("a live cluster was restored into: %v", got)
+	}
+}
+
+// ---------------------------------------------------------------- encoding
+
+// The take's cluster has to be encoded like the one it replaces, and the row
+// counts cannot see whether it is: a `pg_restore` into an SQL_ASCII/C cluster
+// exits 0 and puts every row back. What differs is `length()`, `upper()`,
+// `LIKE` and every index's sort order — silently, and for good.
+func TestTheTakeBuildsTheClusterWithTheSourcesEncodingAndLocales(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	// The release recorded them…
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	if pd.Encoding != "UTF8" || pd.Collate != "en_US.utf8" || pd.Ctype != "en_US.utf8" {
+		t.Fatalf("the release recorded %q/%q/%q, want the source cluster's", pd.Encoding, pd.Collate, pd.Ctype)
+	}
+
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+
+	// …and the cluster the instance initialised has them, rather than the
+	// SQL_ASCII/C an unpinned initdb produces under an `LC_ALL=C`.
+	fresh, err := fake.Postgres().Census(context.Background(), pgSpec(pp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Encoding != "UTF8" || fresh.Collate != "en_US.utf8" || fresh.Ctype != "en_US.utf8" {
+		t.Errorf("the new cluster is %q/%q/%q: the take did not pin what the release recorded",
+			fresh.Encoding, fresh.Collate, fresh.Ctype)
+	}
+	if _, err := r.run(mustStep(t, p, "restore the release's dump")); err != nil {
+		t.Fatalf("the restore failed: %v", err)
+	}
+}
+
+// …and when the pinning does not take — an image, an entrypoint or an
+// environment that ignores POSTGRES_INITDB_ARGS — the take REFUSES, before it
+// restores anything. This is the 2026-09-17-shaped failure of the redesign, and
+// the only thing standing between it and a silently re-encoded tenant.
+func TestTheTakeRefusesAClusterThatCameOutWithTheWrongEncoding(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	fake.FakeInstances().IgnoreInitdbArgs = true
+
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+
+	_, err := r.run(mustStep(t, p, "restore the release's dump"))
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("a take whose cluster came out SQL_ASCII = %v, want a refusal", err)
+	}
+	for _, want := range []string{"encoding UTF8 → SQL_ASCII", "lc_collate en_US.utf8 → C", "Nothing has been restored"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+	// …and it really did not restore: the proof is the driver's own record,
+	// because a restore that happened would be a tenant's data in the wrong
+	// cluster.
+	if got := fake.FakePostgres().Restores; len(got) != 0 {
+		t.Errorf("the dump was restored into a mis-encoded cluster anyway: %v", got)
+	}
+	if c, _ := fake.Postgres().Census(context.Background(), pgSpec(pp)); len(c.Tables) != 0 {
+		t.Errorf("the mis-encoded cluster holds %d table(s)", len(c.Tables))
+	}
+}
+
+// A source whose collate and ctype DIFFER cannot be reproduced with one
+// `--locale`, so it is spelled out rather than silently flattened.
+func TestTheInitdbArgsSpellOutASplitCollation(t *testing.T) {
+	tn := &registry.Tenant{Handover: &registry.Handover{PostgresData: &registry.PostgresDataMigration{
+		Encoding: "UTF8", Collate: "en_US.utf8", Ctype: "en_US.utf8",
+	}}}
+	if got := pgInitdbArgs(tn); got != "--encoding=UTF8 --locale=en_US.utf8" {
+		t.Errorf("matching collate/ctype = %q", got)
+	}
+	tn.Handover.PostgresData.Ctype = "C"
+	if got := pgInitdbArgs(tn); got != "--encoding=UTF8 --lc-collate=en_US.utf8 --lc-ctype=C" {
+		t.Errorf("split collate/ctype = %q", got)
+	}
+	// A tenant with no handover, or a release that recorded nothing, pins
+	// nothing — and must not pass a half-built flag.
+	tn.Handover.PostgresData.Encoding = ""
+	if got := pgInitdbArgs(tn); got != "" {
+		t.Errorf("an incomplete record = %q, want no args at all", got)
+	}
+	if got := pgInitdbArgs(&registry.Tenant{}); got != "" {
+		t.Errorf("a tenant with no handover = %q", got)
+	}
+}
+
+// ---------------------------------------------------------------- the cluster's boundary
+
+// `pg_dump -d <tenant>` moves ONE database and no roles. A cluster holding more
+// than the tenant's own is a handover that would leave something behind in the
+// directory the commit invites the operator to delete — so the release refuses
+// rather than move a tenant silently short.
+func TestTheReleaseRefusesAClusterHoldingMoreThanTheTenant(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+	c := fake.FakePostgres().Contents[pp.run]
+	c.Databases = []string{"dev", "postgres", "scratch"}
+	c.Roles = []string{"dev", "analyst"}
+	fake.FakePostgres().Contents[pp.run] = c
+
+	p := planAs(t, oc, "wilke", "handover", map[string]any{"phase": "release"})
+	_, err := newRunner(oc, fake).run(mustStep(t, p, "check that there is room to dump"))
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("a release over a shared cluster = %v, want a refusal", err)
+	}
+	for _, want := range []string{"database(s) scratch", "login role(s) analyst", "accept_extra_databases"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+	// `postgres` is initdb's own and is never "extra": the take's cluster will
+	// have one too. The extras are named exactly, so the list is the assertion.
+	if !strings.Contains(err.Error(), "database(s) scratch and login role(s) analyst") {
+		t.Errorf("the refusal does not name exactly what is extra: %v", err)
+	}
+}
+
+// …and the override says so in the ROW, not only in the flag: what was left
+// behind has to be findable after the handover, because the pre-handover
+// cluster is the only copy of it.
+func TestAcceptingExtraDatabasesRecordsThemInTheRow(t *testing.T) {
+	oc, fake, pp := pgFixture(t, prepared, nil)
+	c := fake.FakePostgres().Contents[pp.run]
+	c.Databases = []string{"dev", "scratch"}
+	c.Roles = []string{"dev", "analyst"}
+	fake.FakePostgres().Contents[pp.run] = c
+
+	p := planAs(t, oc, "wilke", "handover",
+		map[string]any{"phase": "release", "accept_extra_databases": true})
+	r := newRunner(oc, fake)
+	if _, err := r.run(mustStep(t, p, "check that there is room to dump")); err != nil {
+		t.Fatalf("the release refused although the extras were accepted: %v", err)
+	}
+	runUpTo(t, r, p, "dump this tenant's postgres")
+	if _, err := r.run(mustStep(t, p, "dump this tenant's postgres")); err != nil {
+		t.Fatal(err)
+	}
+	pd := oc.Fleet.Tenants["dev"].Handover.PostgresData
+	if len(pd.ExtraDatabases) != 1 || pd.ExtraDatabases[0] != "scratch" {
+		t.Errorf("extra_databases = %v", pd.ExtraDatabases)
+	}
+	if len(pd.ExtraRoles) != 1 || pd.ExtraRoles[0] != "analyst" {
+		t.Errorf("extra_roles = %v", pd.ExtraRoles)
+	}
+}
+
+// The override belongs to the RELEASE: it is the phase that reads the cluster.
+func TestAcceptExtraDatabasesIsAReleaseDecision(t *testing.T) {
+	oc, _, _ := pgFixture(t, released, nil)
+	err := planErrAs(t, oc, "svcbvbrc", "handover",
+		map[string]any{"phase": "take", "token": testToken, "accept_extra_databases": true})
+	if !errors.Is(err, jobs.ErrValidation) {
+		t.Errorf("accept_extra_databases on a take = %v, want a validation error", err)
+	}
+}
+
+// ---------------------------------------------------------------- refusals the plan makes
+
+// A tenant with its own postgres whose row records NO dump is a release that
+// did not finish. Going on would start this account's postgres on a cluster it
+// does not own — the original failure — so the take refuses at PLAN time,
+// before it has taken a single lock on the host.
+func TestTheTakeRefusesAtPlanTimeWhenTheReleaseRecordedNoDump(t *testing.T) {
+	oc, _, _ := pgFixture(t, released, nil) // `released` leaves postgres_data nil
+	err := planErrAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("a take with no dump recorded = %v, want a refusal", err)
+	}
+	for _, want := range []string{"records no dump", "Re-run the release", "wilke"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// The restore runs in ONE transaction, so an interrupted one leaves the
+// database EMPTY. Its reconcile reads that: empty is redo, the release's own
+// counts are done, anything else is a database somebody wrote to and is stuck.
+func TestTheRestoresReconcileTellsEmptyFromDoneFromSomethingElse(t *testing.T) {
+	oc, fake, pp := pgFixture(t, released, nil)
+	seedReleasedDump(t, oc, fake)
+	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
+	r := newRunner(oc, fake)
+	runUpTo(t, r, p, "restore the release's dump")
+	step := mustStep(t, p, "restore the release's dump")
+
+	// Empty: the restore either has not run or rolled itself back.
+	if got, err := step.Reconcile(context.Background(), r.ctx(step)); got != jobs.ReconcileRedo || err != nil {
+		t.Errorf("reconcile over an empty database = %v, %v; want redo", got, err)
+	}
+	// Done: exactly what the release recorded.
+	if _, err := r.run(step); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := step.Reconcile(context.Background(), r.ctx(step)); got != jobs.ReconcileDone || err != nil {
+		t.Errorf("reconcile over a finished restore = %v, %v; want done", got, err)
+	}
+	// Something else: neither empty nor right.
+	c := fake.FakePostgres().Contents[pp.run]
+	c.Tables["public.chunks"] = 1
+	fake.FakePostgres().Contents[pp.run] = c
+	got, err := step.Reconcile(context.Background(), r.ctx(step))
+	if got != jobs.ReconcileStuck || err == nil {
+		t.Fatalf("reconcile over a database somebody wrote to = %v, %v; want stuck", got, err)
+	}
+	if !strings.Contains(err.Error(), "ONE transaction") {
+		t.Errorf("the stuck reason does not say why a half-applied dump is not the explanation: %v", err)
+	}
+}
+
+// mustStep is stepNamed without the number, for the assertions that do not
+// need it.
+func mustStep(t *testing.T, p *jobs.Planned, substr string) jobs.Step {
+	t.Helper()
+	s, _ := stepNamed(t, p, substr)
+	return s
+}
+
+// One job can start the same instance more than once — a resumed step, a
+// `fleet start --all` over a leg that was already up, a retry after a rollback
+// — and each start appends to the same log. The offset a failure quotes from
+// must be the LAST mark, or everything a later attempt wrote is reported as
+// though this one had written it: the bug the offset exists to prevent,
+// arriving by the other door.
+func TestTheLogOffsetIsTheLastMarkThisJobRecorded(t *testing.T) {
+	const path = "/rag/data/ctl/apptainer/config/instances/logs/coconut/svcbvbrc/postgres-dev.err"
+	sc := &jobs.StepContext{Job: &model.Job{Steps: []model.Step{
+		{N: 1, ExternalIDs: []string{"instance:postgres-dev", "errlog:" + path + "@0"}},
+		{N: 2, ExternalIDs: []string{"pidfile:/somewhere"}},
+		{N: 3, ExternalIDs: []string{"instance:postgres-dev", "errlog:" + path + "@4096"}},
+	}}}
+	got, ok := errLogOffset(sc, path)
+	if !ok || got != 4096 {
+		t.Errorf("errLogOffset = %d, %v; want the LAST mark (4096)", got, ok)
+	}
+	// A log no step in this job marked is quoted from nowhere: every byte in
+	// it belongs to some earlier run.
+	if _, ok := errLogOffset(sc, "/rag/data/ctl/…/qdrant-dev.err"); ok {
+		t.Error("an unmarked log reported an offset")
+	}
+	if _, ok := errLogOffset(&jobs.StepContext{}, path); ok {
+		t.Error("a context with no job reported an offset")
 	}
 }

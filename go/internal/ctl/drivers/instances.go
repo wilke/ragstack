@@ -82,10 +82,32 @@ var _ jobs.Instances = (*RealInstances)(nil)
 func (i *RealInstances) env(ns jobs.InstanceNamespace, extra []string) []string {
 	out := append([]string(nil), extra...)
 	if ns == jobs.NamespaceAccountDefault {
-		return append(out, i.AccountEnv...)
+		out = append(out, i.AccountEnv...)
+	} else {
+		out = append(out, i.Env...)
 	}
-	return append(out, i.Env...)
+	return append(out, neutralLocale...)
 }
+
+// neutralLocale is pinned on every instance call, and it exists for one store.
+//
+// apptainer passes the calling process's environment into the container, and
+// the runner forwards LANG and LC_ALL (exec.go's envKeep) because every other
+// program the ctl runs wants them. The postgres image's entrypoint runs `initdb`
+// on an empty PGDATA, and initdb takes its ENCODING and its two locales from
+// exactly those variables — so without this, the on-disk encoding of a tenant's
+// database is decided by the shell, cron job or unit that happened to run the
+// job. A handover that restored a UTF8 dump into the SQL_ASCII cluster an
+// `LC_ALL=C` produces exits 0, comes back with every row, and is a different
+// database.
+//
+// Setting them EMPTY rather than dropping them is deliberate: os/exec keeps the
+// last value of a repeated key, so this overrides whatever the parent had
+// without having to filter a list somebody else owns. An empty LANG/LC_ALL is
+// the POSIX default ("C"), which is a value this control plane chose rather
+// than one it inherited — and the handover pins what it actually wants with
+// POSTGRES_INITDB_ARGS (ops/pgdata.go), which beats the environment anyway.
+var neutralLocale = []string{"LANG=", "LC_ALL="}
 
 // The three timeouts, which differ by what the command actually waits for.
 //

@@ -508,7 +508,7 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["dump", "dump_sha256", "dumped_at", "tables", "pre_handover", "copy", "migrated_at"],
+              "required": ["dump", "dump_sha256", "dumped_at", "tables", "encoding", "collate", "ctype", "extra_databases", "extra_roles", "pre_handover", "copy", "migrated_at"],
               "properties": {
                 "dump": { "description": "The release's `pg_dump -Fc` archive, `<data_dir>/postgres/handover-<ts>.dump`, mode 0640.", "$ref": "#/$defs/AbsPath" },
                 "dump_sha256": { "description": "That file's digest. The take checks it before it moves anything: the archive crosses a job boundary, an account boundary and an unbounded amount of wall-clock time.", "$ref": "#/$defs/Sha256Hex" },
@@ -525,6 +525,17 @@
                     },
                     "additionalProperties": false
                   }
+                },
+                "encoding": { "description": "The SOURCE database's character encoding (`pg_encoding_to_char(encoding)`), and `collate`/`ctype` its two locales (`datcollate`, `datctype`).\n\nThey are recorded because a dump and a restore do NOT carry them: the take's cluster is initialised by the image's entrypoint, and initdb takes its encoding from its environment unless told otherwise — so without these the encoding of a tenant's database after a handover is decided by whichever shell, cron job or unit ran the take. A UTF8 dump restored into an SQL_ASCII/C cluster exits 0 and keeps every row; `length()`, `upper()`, `LIKE` and every index's sort order are different, and the row counts cannot see it. The take passes them to initdb (POSTGRES_INITDB_ARGS) and refuses the restore if the new cluster came out any other way.", "type": "string", "minLength": 1 },
+                "collate": { "type": "string", "minLength": 1 },
+                "ctype": { "type": "string", "minLength": 1 },
+                "extra_databases": {
+                  "description": "Databases in the tenant's cluster BESIDE its own (and initdb's `postgres`), as the release found them — non-empty only when an operator passed `accept_extra_databases`. A single-database dump does not carry them: they stay in the pre-handover cluster, which is the copy a commit invites the operator to delete.",
+                  "type": "array", "items": { "type": "string", "minLength": 1 }
+                },
+                "extra_roles": {
+                  "description": "Login roles in that cluster beside the tenant's own, on the same terms as `extra_databases`.",
+                  "type": "array", "items": { "type": "string", "minLength": 1 }
                 },
                 "pre_handover": { "description": "Where the take renamed the ORIGINAL cluster: `<data_dir>/postgres/data.pre-handover-<ts>`. Empty until the take has run; nothing opens it again once it has.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },
                 "copy": { "description": "The name the take's own cluster directory was created under, `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into place. An abandon renames the live directory back to it. Empty until the take has run.", "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "string", "maxLength": 0 } ] },

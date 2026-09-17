@@ -434,6 +434,32 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 					return "", err
 				}
 				spec.ExtraEnv[render.APPTAINERENVPostgresPassword] = pw
+				// …and, when a handover recorded what the ORIGINAL cluster was
+				// encoded with, the arguments initdb must use for the new one.
+				//
+				// This is the difference between a handover and a re-encoding.
+				// The image's entrypoint runs initdb when it finds an empty
+				// PGDATA, and initdb takes its encoding and locales from its
+				// environment unless told otherwise — so without this, the
+				// encoding of a tenant's database after a handover is decided
+				// by whatever shell, cron job or unit ran the take. A UTF8 dump
+				// restored into an SQL_ASCII/C cluster exits 0 and keeps every
+				// row; only `length()`, `upper()`, `LIKE` and every index's
+				// sort order are different, and the row-count proof cannot see
+				// any of it.
+				//
+				// It goes in apptainer's OWN environment (APPTAINERENV_…, which
+				// apptainer forwards under the bare name) beside the password,
+				// rather than on the argv, only because that is where this step
+				// already builds a per-run environment. The value is public.
+				//
+				// An existing cluster ignores it: the entrypoint runs initdb
+				// only over an empty PGDATA.
+				if args := pgInitdbArgs(p.t); args != "" {
+					spec.ExtraEnv["APPTAINERENV_POSTGRES_INITDB_ARGS"] = args
+					sc.Logf("this cluster is initialised with %q, the encoding and locales the release recorded "+
+						"for the cluster it replaces", args)
+				}
 			}
 			// The instance NAME is the external ID, recorded before the call
 			// that creates it: a crash between the two leaves a record
@@ -1100,6 +1126,28 @@ func ownStoreProbes(t *registry.Tenant, tp paths.Tenant, instanceMode bool) []st
 	return out
 }
 
+// pgInitdbArgs is POSTGRES_INITDB_ARGS for a tenant whose handover recorded the
+// encoding and locales of the cluster being replaced, and "" for every other
+// tenant and every other moment.
+//
+// `--locale` sets both lc-collate and lc-ctype; the two are recorded separately
+// because postgres keeps them separately, and a source whose ctype and collate
+// DIFFER cannot be reproduced with one flag — so that case is spelled out
+// rather than silently flattened.
+func pgInitdbArgs(t *registry.Tenant) string {
+	if t == nil || t.Handover == nil || t.Handover.PostgresData == nil {
+		return ""
+	}
+	pd := t.Handover.PostgresData
+	if pd.Encoding == "" || pd.Collate == "" || pd.Ctype == "" {
+		return ""
+	}
+	if pd.Collate == pd.Ctype {
+		return "--encoding=" + pd.Encoding + " --locale=" + pd.Collate
+	}
+	return "--encoding=" + pd.Encoding + " --lc-collate=" + pd.Collate + " --lc-ctype=" + pd.Ctype
+}
+
 // instanceGoneReason answers "this instance is not coming back, and here is
 // what it said on the way out".
 //
@@ -1191,6 +1239,13 @@ func errLogOffset(sc *jobs.StepContext, errLog string) (int64, bool) {
 		return 0, false
 	}
 	want := "errlog:" + errLog + "@"
+	// The LAST mark, not the first. One job can start the same instance more
+	// than once — a resumed step, a `fleet start --all` over a leg that was
+	// already up, a retry after a rollback — and each start appends to the same
+	// log. Taking the first would quote everything every LATER attempt wrote as
+	// though this one had written it, which is the bug this whole offset exists
+	// to prevent, arriving by the other door.
+	offset, found := int64(0), false
 	for _, st := range sc.Job.Steps {
 		for _, id := range st.ExternalIDs {
 			rest, ok := strings.CutPrefix(id, want)
@@ -1201,10 +1256,10 @@ func errLogOffset(sc *jobs.StepContext, errLog string) (int64, bool) {
 			if err != nil {
 				return 0, false
 			}
-			return n, true
+			offset, found = n, true
 		}
 	}
-	return 0, false
+	return offset, found
 }
 
 // logTailLines and logTailBytes bound what a failure message quotes. A store's

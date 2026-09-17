@@ -963,8 +963,8 @@ type Postgres interface {
 	ToolVersions(ctx context.Context, spec PostgresSpec) (map[string]string, error)
 }
 
-// PostgresCensus is Postgres.Census's answer: what the database holds, in the
-// only terms that survive a dump and a restore.
+// PostgresCensus is Postgres.Census's answer: what the database holds and how
+// it is encoded, in the only terms that survive a dump and a restore.
 type PostgresCensus struct {
 	// SizeBytes is pg_database_size(<DB>).
 	SizeBytes int64
@@ -972,6 +972,33 @@ type PostgresCensus struct {
 	// is an empty map and no error — a tenant that has never been written to
 	// is a normal tenant, and a handover must not refuse over one.
 	Tables map[string]int64
+
+	// Encoding, Collate and Ctype are the database's character encoding and
+	// its two locales (`pg_encoding_to_char(encoding)`, `datcollate`,
+	// `datctype`).
+	//
+	// They are here because a dump and a restore do NOT carry them: the
+	// encoding of the target is whatever the cluster was initdb'd with, and
+	// the take's cluster is initdb'd by the image's entrypoint out of its
+	// environment. Restoring a UTF8 dump into an SQL_ASCII/C cluster exits 0
+	// and comes back with every row — and with different `length()`, different
+	// `upper()`, different `LIKE`, and a different sort order in every index.
+	// The row counts cannot see it, so these are recorded and compared
+	// separately.
+	Encoding string
+	Collate  string
+	Ctype    string
+
+	// Databases are the non-template databases in the CLUSTER, and Roles the
+	// login roles in it.
+	//
+	// They are the boundary of what a handover moves: `pg_dump -d <tenant>`
+	// carries one database and no roles, so anything else here stays in the
+	// pre-handover cluster — which the operator is invited to delete once the
+	// handover is committed. The release refuses over a cluster holding more
+	// than the tenant's own unless it is told to accept it.
+	Databases []string
+	Roles     []string
 }
 
 // SQLite backs the ctl's own state files and the tenant's.

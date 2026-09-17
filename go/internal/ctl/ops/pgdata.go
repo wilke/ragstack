@@ -25,13 +25,17 @@ package ops
 // IS the file's group mode bits. On the live tenant:
 //
 //	$ ls -ld  …/postgres/data/pgdata      drwx------+ wilke cels
-//	  access: user_obj::rwx, user:svcbvbrc:rwx, group_obj::---, mask::---
+//	  access: user_obj::rwx, user:svcbvbrc:rwx, group_obj::---, mask::---, other::---
 //
-// `user:svcbvbrc:rwx` filtered by `mask::---` is an effective `---`. Widening
-// the mask means giving the directory group bits in `st_mode`, and a PGDATA
-// with group or other bits is one postgres refuses on a different line. So
-// there is no configuration in which one account copies another's cluster file
-// by file: a physical copy is not merely awkward here, it is unreachable.
+// The `user:svcbvbrc:rwx` entry is the one the parent's DEFAULT acl handed down
+// when postgres created the directory — the grant is there, in the access list,
+// and it is filtered by `mask::---` to an effective `---`. (`group_obj` is
+// `---` too, and neither of them is what grants anything: the named-user entry
+// is, and the mask is what takes it away.) Widening the mask means giving the
+// directory group bits in `st_mode`, and a PGDATA with group or other bits is
+// one postgres refuses on a different line. So there is no configuration in
+// which one account copies another's cluster file by file: a physical copy is
+// not merely awkward here, it is unreachable.
 //
 // What IS reachable is the LOGICAL copy, and postgres has shipped the tools for
 // it for thirty years. The release — with the tenant's API already stopped and
@@ -159,7 +163,7 @@ func (p *planner) pgMigrationFor(legs []component, account string) (pgMigration,
 // this handover writes is one compressed archive and one newly initialised
 // cluster. `pg_database_size` is the input and is an over-estimate of the
 // archive, which is the direction a refusal should err in.
-func (p *planner) addPGHandoverSpaceCheck(legs []component) {
+func (p *planner) addPGHandoverSpaceCheck(legs []component, acceptExtra bool) {
 	m, ok := p.pgMigrationFor(legs, p.op.deps.owner())
 	if !ok {
 		p.skip("postgres", "check that this tenant's postgres can be handed over",
@@ -192,6 +196,23 @@ func (p *planner) addPGHandoverSpaceCheck(legs []component) {
 			if err != nil {
 				return "", err
 			}
+			// WHAT ELSE is in this cluster. A single-database dump carries the
+			// tenant's database and no roles; anything else stays in the
+			// cluster the commit invites the operator to delete, and a
+			// handover that moved a tenant silently short is one nobody would
+			// notice until that directory was gone.
+			extraDB, extraRoles := extraClusterObjects(census, p.tenant)
+			if len(extraDB)+len(extraRoles) > 0 && !acceptExtra {
+				return "", fmt.Errorf("%w: %s's postgres cluster holds more than this tenant: %s. A handover moves "+
+					"it as `pg_dump -Fc -d %s` — it has to, because the taking account can neither own nor read "+
+					"the cluster directory — so those stay behind in the pre-handover cluster, which is the copy "+
+					"`--commit` then invites you to delete. Move or drop them first, or pass "+
+					"accept_extra_databases to hand the tenant over without them (the release records what it "+
+					"left behind)", jobs.ErrRefused, p.tenant, describeExtras(extraDB, extraRoles), p.tenant)
+			}
+			for _, w := range extraWarnings(extraDB, extraRoles) {
+				sc.Logf("%s", w)
+			}
 			free, err := sc.Ops.Drivers.Files().DiskFree(ctx, m.Dir)
 			if err != nil {
 				return "", err
@@ -205,9 +226,9 @@ func (p *planner) addPGHandoverSpaceCheck(legs []component) {
 					jobs.ErrRefused, megabytes(census.SizeBytes), megabytes(freshClusterBytes),
 					megabytes(need), m.Dir, megabytes(free))
 			}
-			return fmt.Sprintf("%s's postgres holds %s (pg_database_size) in %d table(s); the handover needs %s "+
-				"and statfs says %s is available", p.tenant, megabytes(census.SizeBytes), len(census.Tables),
-				megabytes(need), megabytes(free)), nil
+			return fmt.Sprintf("%s's postgres holds %s (pg_database_size) in %d table(s), encoded %s/%s; the "+
+				"handover needs %s and statfs says %s is available", p.tenant, megabytes(census.SizeBytes),
+				len(census.Tables), census.Encoding, census.Collate, megabytes(need), megabytes(free)), nil
 		},
 	})
 }
@@ -292,15 +313,20 @@ func (p *planner) addPGDump(legs []component) {
 						"was running, and the dump at %s would then be recorded nowhere",
 						jobs.ErrRefused, name, dump)
 				}
+				extraDB, extraRoles := extraClusterObjects(census, name)
 				t.Handover.PostgresData = &registry.PostgresDataMigration{
 					Dump: dump, DumpSHA256: sum, DumpedAt: at, Tables: censusRows(census),
+					// The three a dump does NOT carry. The take pins them on
+					// the cluster it initialises and checks them back.
+					Encoding: census.Encoding, Collate: census.Collate, Ctype: census.Ctype,
+					ExtraDatabases: extraDB, ExtraRoles: extraRoles,
 				}
 				return nil
 			}); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("dumped %s to %s (%s on disk, %d table(s))",
-				name, dump, megabytes(size), len(census.Tables)), nil
+			return fmt.Sprintf("dumped %s to %s (%s on disk, %d table(s), %s/%s)",
+				name, dump, megabytes(size), len(census.Tables), census.Encoding, census.Collate), nil
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			dump, ok := externalIDValue(sc.Step.ExternalIDs, "pgdump:")
@@ -339,6 +365,52 @@ func versionsLine(tools map[string]string) string {
 		out = append(out, tools[n])
 	}
 	return strings.Join(out, "; ")
+}
+
+// extraClusterObjects is everything in the cluster that a single-database dump
+// of THIS tenant does not carry.
+//
+// `postgres` is not extra: initdb creates it in every cluster, the image's
+// entrypoint creates the tenant's database beside it, and the take's cluster
+// will have one too. The tenant's own database and its own role are not extra
+// by definition. Everything else is.
+func extraClusterObjects(c jobs.PostgresCensus, tenant string) (databases, roles []string) {
+	for _, db := range c.Databases {
+		if db != tenant && db != "postgres" {
+			databases = append(databases, db)
+		}
+	}
+	for _, r := range c.Roles {
+		if r != tenant && r != "postgres" {
+			roles = append(roles, r)
+		}
+	}
+	sort.Strings(databases)
+	sort.Strings(roles)
+	return databases, roles
+}
+
+// describeExtras names what a cluster holds beyond the tenant, for a refusal.
+func describeExtras(databases, roles []string) string {
+	var parts []string
+	if len(databases) > 0 {
+		parts = append(parts, fmt.Sprintf("database(s) %s", strings.Join(databases, ", ")))
+	}
+	if len(roles) > 0 {
+		parts = append(parts, fmt.Sprintf("login role(s) %s", strings.Join(roles, ", ")))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// extraWarnings is what an ACCEPTED extra looks like in a job log: named, so
+// that the decision is in the record rather than only in the flag.
+func extraWarnings(databases, roles []string) []string {
+	if len(databases)+len(roles) == 0 {
+		return nil
+	}
+	return []string{"accept_extra_databases was passed: " + describeExtras(databases, roles) +
+		" stay in the pre-handover cluster and are NOT in the dump. They are recorded in the row; do not delete " +
+		"that cluster until they have been moved"}
 }
 
 // censusRows turns the driver's map into the row's ordered list. Sorted,
@@ -423,20 +495,24 @@ func (p *planner) addPGSocketCleanup(m pgMigration) {
 // already own it? A re-take of a tenant this control plane already runs has
 // nothing to migrate, and initialising a fresh cluster over a live one would be
 // the only destructive thing in this file.
-func (p *planner) addPGClusterSwap(legs []component, account string, h *registry.Handover) {
+func (p *planner) addPGClusterSwap(legs []component, account string, h *registry.Handover) error {
 	m, ok := p.pgMigrationFor(legs, account)
 	if !ok {
 		p.skip("files", "skip the postgres cluster",
 			"this tenant runs no postgres server of its own (stores.postgres.kind is "+
 				p.t.Stores.Postgres.Kind+"), so there is nothing to migrate", p.tenant)
-		return
+		return nil
 	}
 	if h.PostgresData == nil || h.PostgresData.Dump == "" {
-		p.skip("files", "skip the postgres cluster",
-			"the release recorded no postgres dump for this tenant (handover.postgres_data is null): there is "+
-				"nothing for a take to restore, and this step will not put an empty directory where a cluster is "+
-				"unless it can account for the data in it", p.tenant)
-		return
+		// A REFUSAL, not a skip. This tenant runs a postgres of its own, so
+		// every release of it takes a dump; a row that has none is a release
+		// that did not finish, or one taken by a binary that predates this.
+		// Going on would start a postgres for the taking account on a cluster
+		// it does not own — the original failure — or, worse, put an empty
+		// directory where a cluster is with nothing to restore into it.
+		return p.refuse("%s runs its own postgres and its handover records no dump (handover.postgres_data is "+
+			"null): a take cannot give this account a cluster it owns without one. Re-run the release as %s — it "+
+			"is re-entrant and takes a fresh dump — or abandon the handover", p.tenant, h.ReleasedBy)
 	}
 	dump, wantSum := h.PostgresData.Dump, h.PostgresData.DumpSHA256
 	name := p.tenant
@@ -521,6 +597,7 @@ func (p *planner) addPGClusterSwap(legs []component, account string, h *registry
 			}
 		},
 	})
+	return nil
 }
 
 // runPGClusterSwap is the step body: a small state machine rather than a
@@ -725,9 +802,9 @@ func (p *planner) addPGRestore(legs []component, account string, h *registry.Han
 			// control plane runs — and in that case the postgres now answering
 			// is the tenant's OWN, live, populated cluster. Restoring the
 			// release's dump into it would be pouring a copy of a database
-			// into itself: pg_restore --exit-on-error would fail on the first
-			// relation that already exists, and any restore that did not fail
-			// would be worse.
+			// into itself: the restore runs in one transaction and would abort
+			// on the first relation that already exists, and any restore that
+			// did NOT abort would be worse.
 			//
 			// The row is the answer, read at RUN time out of the fleet the
 			// engine loaded under the locks — the same object the swap step
@@ -748,6 +825,20 @@ func (p *planner) addPGRestore(legs []component, account string, h *registry.Han
 			if err := verifyDump(ctx, sc, pd.Dump, pd.DumpSHA256); err != nil {
 				return "", err
 			}
+			// The cluster the entrypoint just made has to be the one the dump
+			// belongs in, and that is settled BEFORE anything is restored: a
+			// restore into the wrong encoding succeeds, keeps every row, and is
+			// a different database. Checking afterwards would mean discovering
+			// it with the tenant's data already in the wrong cluster.
+			fresh, err := sc.Ops.Drivers.Postgres().Census(ctx, m.Spec)
+			if err != nil {
+				return "", fmt.Errorf("asking the new cluster how it was initialised: %w", err)
+			}
+			if err := verifyPGEncoding(pd, fresh, p.tenant); err != nil {
+				return "", err
+			}
+			sc.Logf("the new cluster is %s/%s/%s, as the release recorded for the one it replaces",
+				fresh.Encoding, fresh.Collate, fresh.Ctype)
 			if err := sc.Ops.Drivers.Postgres().Restore(ctx, m.Spec, pd.Dump); err != nil {
 				return "", err
 			}
@@ -758,10 +849,66 @@ func (p *planner) addPGRestore(legs []component, account string, h *registry.Han
 			if err := comparePGCensus(want, got, p.tenant); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("restored %s into %s's new cluster; %d table(s) came back with exactly the rows "+
-				"the release recorded", pd.Dump, account, len(want)), nil
+			return fmt.Sprintf("restored %s into %s's new %s/%s cluster; %d table(s) came back with exactly the "+
+				"rows the release recorded", pd.Dump, account, fresh.Encoding, fresh.Collate, len(want)), nil
+		},
+		// A restore is `--single-transaction`, so it either landed whole or
+		// landed nothing — and "nothing" is a database this step can redo from.
+		// Anything else it cannot decide, and says so rather than restoring a
+		// second time into a database that already holds half the dump.
+		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
+			got, err := sc.Ops.Drivers.Postgres().Census(ctx, m.Spec)
+			if err != nil {
+				return jobs.ReconcileStuck, err
+			}
+			if len(got.Tables) == 0 {
+				return jobs.ReconcileRedo, nil
+			}
+			if comparePGCensus(want, got, p.tenant) == nil {
+				return jobs.ReconcileDone, nil
+			}
+			return jobs.ReconcileStuck, fmt.Errorf("%w: %s's new cluster holds %d table(s), which is neither empty "+
+				"nor what the release recorded. The restore runs in ONE transaction, so this is not a half-applied "+
+				"dump — something else wrote to this database. Look at it before resuming; the original cluster is "+
+				"untouched at %s", jobs.ErrRefused, p.tenant, len(got.Tables), pd.PreHandover)
 		},
 	})
+}
+
+// verifyPGEncoding refuses a cluster that is not encoded the way the one it
+// replaces was.
+//
+// It is a separate proof from the row counts because the row counts cannot see
+// it: `pg_restore` into a cluster of the wrong encoding exits 0 and puts every
+// row back. What changes is `length()`, `upper()`, `LIKE`, every index's sort
+// order and every comparison a query makes — silently, and for good.
+func verifyPGEncoding(want *registry.PostgresDataMigration, got jobs.PostgresCensus, tenant string) error {
+	if want.Encoding == "" {
+		// A release that predates this check recorded nothing to compare.
+		// Refusing would strand a handover mid-flight over a field its own
+		// release never wrote; the take says so and goes on.
+		return nil
+	}
+	var bad []string
+	for _, f := range [][3]string{
+		{"encoding", want.Encoding, got.Encoding},
+		{"lc_collate", want.Collate, got.Collate},
+		{"lc_ctype", want.Ctype, got.Ctype},
+	} {
+		if f[1] != f[2] {
+			bad = append(bad, fmt.Sprintf("%s %s → %s", f[0], f[1], f[2]))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: the cluster this take initialised is not encoded like the one it replaces (%s). A "+
+		"restore into it would exit 0 and put every row back, and `length()`, `upper()`, `LIKE` and every index's "+
+		"sort order would be different — the row-count proof cannot see that, which is why this runs first. "+
+		"Nothing has been restored. initdb takes its encoding from POSTGRES_INITDB_ARGS and then from its "+
+		"environment: check that %s's row still records the source encoding, and that nothing in this account's "+
+		"environment (LANG, LC_ALL) is reaching the container. The original cluster is untouched at %s",
+		jobs.ErrRefused, strings.Join(bad, "; "), tenant, want.PreHandover)
 }
 
 // livePGData is the tenant's postgres-migration block as it stands RIGHT NOW,
@@ -907,26 +1054,11 @@ func swapPGClusterBack(ctx context.Context, sc *jobs.StepContext, data, fresh, a
 		return "", err
 	}
 	if !asideThere {
-		if !moved {
-			return fmt.Sprintf("%s is not there and nothing was swapped: %s is left exactly as it is",
-				aside, data), nil
+		msg, err := settleAbsentAside(ctx, sc, data, aside, moved)
+		if err != nil {
+			return "", err
 		}
-		self, serr := files.SelfUID(ctx)
-		if serr != nil {
-			return "", serr
-		}
-		owner := "nothing is there at all"
-		if st, err := files.Stat(ctx, data); err == nil {
-			owner = "owned by uid " + strconv.Itoa(st.UID)
-			if st.UID == self {
-				owner += ", this account's"
-			}
-		}
-		return "", fmt.Errorf("%w: the original postgres cluster %s is GONE, and %s is %s — the cluster the take "+
-			"created. This handover cannot be put back: the account that released this tenant has no cluster to "+
-			"start on, and its postgres refuses one it does not own. Do NOT clear the handover block. Either "+
-			"keep the handover and commit it, or restore this tenant's postgres from a backup as the account "+
-			"that will run it", jobs.ErrRefused, aside, data, owner)
+		return msg, nil
 	}
 	dataThere, err := pathExists(ctx, files, data)
 	if err != nil {
@@ -944,6 +1076,59 @@ func swapPGClusterBack(ctx context.Context, sc *jobs.StepContext, data, fresh, a
 	}
 	return fmt.Sprintf("the original postgres cluster is back at %s (the take's cluster is %s, and has diverged "+
 		"from it: delete it when the tenant is up)", data, fresh), nil
+}
+
+// settleAbsentAside decides what an absent pre-handover path MEANS, and it is
+// the whole of this file's care about not crying wolf.
+//
+// There are two worlds behind it and they want opposite answers:
+//
+//   - NOTHING WAS EVER MOVED. Both names are checkpointed before the directory
+//     is created and before either rename — which is what makes a crash between
+//     the renames recoverable — so a failure anywhere in between (a full
+//     filesystem, a refused mkdir, the first rename itself) leaves the world
+//     untouched and the ids recorded. The rollback the engine then offers must
+//     be a NO-OP. Refusing there turns a clean failure into a job whose
+//     rollback is also recorded failed, which is what an operator has to reason
+//     about with the tenant down.
+//   - THE ORIGINAL IS GONE. The swap did happen and somebody removed the
+//     pre-handover cluster afterwards — doctor prints `rm -rf` as its repair,
+//     and an operator who ran it before committing is the ordinary way here.
+//     Then `data` is the cluster the TAKE built, and putting the row back would
+//     hand the tenant to an account whose postgres refuses that directory, with
+//     the block cleared and no way back.
+//
+// The two are told apart by who owns `data`. If it is still another account's,
+// it is the ORIGINAL and nothing was moved. If it is this account's — or not
+// there at all — the swap ran and the original is missing.
+func settleAbsentAside(ctx context.Context, sc *jobs.StepContext, data, aside string, moved bool) (string, error) {
+	files := sc.Ops.Drivers.Files()
+	self, err := files.SelfUID(ctx)
+	if err != nil {
+		return "", err
+	}
+	st, serr := files.Stat(ctx, data)
+	switch {
+	case errors.Is(serr, fs.ErrNotExist):
+		// No aside and no data: there is no cluster anywhere. Never a no-op.
+		return "", fmt.Errorf("%w: neither %s nor %s is there, so this tenant has no postgres cluster at all. Do "+
+			"NOT clear the handover block; find out what removed them before anything else touches this tenant",
+			jobs.ErrRefused, data, aside)
+	case serr != nil:
+		return "", serr
+	case st.UID != self:
+		// The original, in its own place, under its own account. Whatever the
+		// caller believed, this swap did not happen.
+		return fmt.Sprintf("%s is still uid %d's own cluster and %s was never created: nothing was swapped, and "+
+			"there is nothing to put back", data, st.UID, aside), nil
+	case !moved:
+		return fmt.Sprintf("%s is not there and nothing was swapped: %s is left exactly as it is", aside, data), nil
+	}
+	return "", fmt.Errorf("%w: the original postgres cluster %s is GONE, and %s is this account's own — the "+
+		"cluster the take created. This handover cannot be put back: the account that released this tenant has no "+
+		"cluster to start on, and its postgres refuses one it does not own. Do NOT clear the handover block. "+
+		"Either keep the handover and commit it, or restore this tenant's postgres from a backup as the account "+
+		"that will run it", jobs.ErrRefused, aside, data)
 }
 
 // ---------------------------------------------------------------- shared

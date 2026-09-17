@@ -495,6 +495,31 @@ type PostgresDataMigration struct {
 	// a restore cannot be compared byte for byte; these counts are what the
 	// take proves the migration against.
 	Tables []PostgresTableCount `json:"tables"`
+	// Encoding, Collate and Ctype are the SOURCE database's character encoding
+	// and its two locales, and they are here because a dump and a restore do
+	// not carry them.
+	//
+	// The take's cluster is initialised by the image's entrypoint, and initdb
+	// takes its encoding from its environment unless it is told otherwise — so
+	// without these, the encoding of a tenant's database after a handover is
+	// decided by whatever shell, cron job or unit happened to run the take. A
+	// UTF8 dump restored into an SQL_ASCII/C cluster exits 0 and keeps every
+	// row, and the row counts cannot see the difference; `length()`, `upper()`,
+	// `LIKE` and every index's sort order can. The take pins them
+	// (POSTGRES_INITDB_ARGS) and checks them back.
+	Encoding string `json:"encoding"`
+	Collate  string `json:"collate"`
+	Ctype    string `json:"ctype"`
+	// ExtraDatabases and ExtraRoles are what the release found in the cluster
+	// BESIDE the tenant's own database and role — and, being non-empty, what
+	// an operator explicitly accepted with `--accept-extra-databases`.
+	//
+	// A single-database dump does not carry them. They stay in the
+	// pre-handover cluster, which is the copy the commit invites the operator
+	// to delete, so a handover that moved a tenant and silently left a second
+	// database behind is one nobody would notice until it was gone.
+	ExtraDatabases []string `json:"extra_databases"`
+	ExtraRoles     []string `json:"extra_roles"`
 	// PreHandover is where the take renamed the ORIGINAL cluster:
 	// `<data_dir>/postgres/data.pre-handover-<ts>`. Nothing opens it again; an
 	// abandon renames it back, and a commit leaves it for the operator.

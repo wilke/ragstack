@@ -164,6 +164,15 @@ type FakeOptions struct {
 	// InstanceLogRoot is where this fake files its instance logs. Empty takes
 	// the fixture default.
 	InstanceLogRoot string
+	// InstanceIgnoreInitdbArgs makes a postgres instance initialise its cluster
+	// as if POSTGRES_INITDB_ARGS had not been passed — the SQL_ASCII/C an
+	// `LC_ALL=C` in the caller's environment produces on the real host.
+	//
+	// It models the failure the handover's encoding check exists to catch: an
+	// image, an entrypoint or an environment that does not honour what the take
+	// asked for. Without it a test cannot tell a take that pins the encoding
+	// from one that is merely lucky.
+	InstanceIgnoreInitdbArgs bool
 	// PostgresContents is what each tenant's postgres holds, by RUN
 	// DIRECTORY: the size and the exact per-table row counts a dump carries
 	// and a restore replays. A cluster with no entry is EMPTY, which is what a
@@ -273,6 +282,7 @@ func NewFake(opts FakeOptions) *Fake {
 		r: &f.recorder, proc: f.proc, files: f.files, pg: f.pg, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, AccountRunning: map[string]jobs.Instance{}, nextPID: 21001,
 		LogRoot: opts.InstanceLogRoot, ExitOnRun: copyMapString(opts.InstanceExitOnRun),
+		IgnoreInitdbArgs: opts.InstanceIgnoreInitdbArgs,
 	}
 	// In this order, and not over a map of the two: the pids this fake hands
 	// out are part of what a test asserts, and a map would shuffle them.
@@ -940,6 +950,9 @@ type FakeInstances struct {
 	// spelling of `<configdir>/instances/logs/<host>/<user>`. Empty takes
 	// fakeInstanceLogRoot.
 	LogRoot string
+	// IgnoreInitdbArgs makes this fake's initdb behave as if it had been given
+	// no POSTGRES_INITDB_ARGS: see FakeOptions.InstanceIgnoreInitdbArgs.
+	IgnoreInitdbArgs bool
 	// ExitOnRun makes a named instance START AND DIE: Run succeeds, nothing
 	// enters the table, and the text is written to the instance's .err file on
 	// the in-memory filesystem.
@@ -1153,13 +1166,64 @@ func (i *FakeInstances) maybeInitdb(spec jobs.InstanceSpec) {
 	if !empty {
 		return
 	}
-	// initdb: a cluster with the tenant's database in it and not one row.
+	// initdb: a cluster with the tenant's database in it and not one row —
+	// and with the ENCODING and LOCALES initdb chose.
+	//
+	// Which is the point. initdb takes them from POSTGRES_INITDB_ARGS when the
+	// entrypoint is given any, and from its own environment when it is not, and
+	// the two are not the same: a cluster made without them is modelled here as
+	// SQL_ASCII/C, which is what an `LC_ALL=C` in whatever ran the take
+	// actually produces on this host. A dump restored into that cluster exits
+	// 0, keeps every row, and is a different database — so a fake that always
+	// initialised a UTF8 cluster would make the one failure this models
+	// impossible to write a test for.
+	c := jobs.PostgresCensus{
+		Tables:   map[string]int64{},
+		Encoding: "SQL_ASCII", Collate: "C", Ctype: "C",
+		Databases: []string{fakeInitdbDB(spec)}, Roles: []string{fakeInitdbDB(spec)},
+	}
+	if enc, loc, ok := initdbArgs(spec); ok && !i.IgnoreInitdbArgs {
+		c.Encoding, c.Collate, c.Ctype = enc, loc, loc
+	}
 	i.pg.mu.Lock()
 	if i.pg.Contents == nil {
 		i.pg.Contents = map[string]jobs.PostgresCensus{}
 	}
-	i.pg.Contents[run] = jobs.PostgresCensus{Tables: map[string]int64{}}
+	i.pg.Contents[run] = c
 	i.pg.mu.Unlock()
+}
+
+// fakeInitdbDB is the database (and role) the image's entrypoint creates:
+// POSTGRES_DB, which the renderer sets to the tenant name.
+func fakeInitdbDB(spec jobs.InstanceSpec) string {
+	if db := spec.Env["POSTGRES_DB"]; db != "" {
+		return db
+	}
+	return strings.TrimPrefix(spec.Name, "postgres-")
+}
+
+// initdbArgs reads `--encoding=` and `--locale=` out of POSTGRES_INITDB_ARGS,
+// wherever the caller put it: the container environment, or apptainer's own
+// (`APPTAINERENV_POSTGRES_INITDB_ARGS`, which apptainer forwards under the
+// bare name). Both spellings reach the entrypoint identically on the host, so
+// a fake that understood only one would pass a take that the host fails.
+func initdbArgs(spec jobs.InstanceSpec) (encoding, locale string, ok bool) {
+	raw := spec.Env["POSTGRES_INITDB_ARGS"]
+	if raw == "" {
+		raw = spec.ExtraEnv["APPTAINERENV_POSTGRES_INITDB_ARGS"]
+	}
+	if raw == "" {
+		return "", "", false
+	}
+	for _, f := range strings.Fields(raw) {
+		if v, found := strings.CutPrefix(f, "--encoding="); found {
+			encoding = v
+		}
+		if v, found := strings.CutPrefix(f, "--locale="); found {
+			locale = v
+		}
+	}
+	return encoding, locale, encoding != "" && locale != ""
 }
 
 // LogPaths answers from the table when the instance is running and composes
@@ -2818,6 +2882,13 @@ func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in str
 	if p.Contents == nil {
 		p.Contents = map[string]jobs.PostgresCensus{}
 	}
+	// The ROWS come from the archive; the ENCODING and the locales do not. They
+	// belong to the cluster initdb made, and a restore leaves them exactly as
+	// they are — which is the whole reason a handover has to pin them at initdb
+	// time and check them afterwards.
+	target := p.Contents[spec.RunDir]
+	c.Encoding, c.Collate, c.Ctype = target.Encoding, target.Collate, target.Ctype
+	c.Databases, c.Roles = target.Databases, target.Roles
 	p.Contents[spec.RunDir] = c
 	p.Restores = append(p.Restores, spec.RunDir+" "+spec.DB+" "+in)
 	return nil
@@ -2858,7 +2929,12 @@ func (p *FakePostgres) Census(_ context.Context, spec jobs.PostgresSpec) (jobs.P
 	if !ok {
 		return jobs.PostgresCensus{Tables: map[string]int64{}}, nil
 	}
-	return jobs.PostgresCensus{SizeBytes: c.SizeBytes, Tables: copyMapInt64(c.Tables)}, nil
+	return jobs.PostgresCensus{
+		SizeBytes: c.SizeBytes, Tables: copyMapInt64(c.Tables),
+		Encoding: c.Encoding, Collate: c.Collate, Ctype: c.Ctype,
+		Databases: append([]string(nil), c.Databases...),
+		Roles:     append([]string(nil), c.Roles...),
+	}, nil
 }
 
 // dumpCensusPrefix marks the census this fake writes into an archive.
@@ -3085,7 +3161,12 @@ func containsString(hay []string, needle string) bool {
 func copyMapCensus(m map[string]jobs.PostgresCensus) map[string]jobs.PostgresCensus {
 	out := make(map[string]jobs.PostgresCensus, len(m))
 	for k, v := range m {
-		out[k] = jobs.PostgresCensus{SizeBytes: v.SizeBytes, Tables: copyMapInt64(v.Tables)}
+		out[k] = jobs.PostgresCensus{
+			SizeBytes: v.SizeBytes, Tables: copyMapInt64(v.Tables),
+			Encoding: v.Encoding, Collate: v.Collate, Ctype: v.Ctype,
+			Databases: append([]string(nil), v.Databases...),
+			Roles:     append([]string(nil), v.Roles...),
+		}
 	}
 	return out
 }

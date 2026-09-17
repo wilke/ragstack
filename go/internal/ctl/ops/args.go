@@ -318,6 +318,7 @@ var argSchemas = map[string]argSpec{
 		{Name: "phase", Kind: argString, Required: true, Enum: handoverPhases},
 		{Name: "token", Kind: argString, Pattern: patHandoverToken},
 		{Name: "accept_no_backup", Kind: argBool},
+		{Name: "accept_extra_databases", Kind: argBool},
 	}},
 	"migrate-local": {Verb: "migrate-local", Fields: []argField{
 		{Name: "phase", Kind: argString, Required: true, Enum: phases},

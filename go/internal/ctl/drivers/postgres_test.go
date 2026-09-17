@@ -176,7 +176,7 @@ func TestPostgresRestoreRefusesAnAbsentDumpWithErrNotExist(t *testing.T) {
 	}
 }
 
-func TestPostgresRestorePassesExitOnErrorAndTheRole(t *testing.T) {
+func TestPostgresRestoreIsOneTransactionAndCarriesTheRole(t *testing.T) {
 	bin, log := stubApptainer(t, "exit 0\n")
 	d, spec, root := pgFixture(t, bin)
 	in := filepath.Join(root, "ctltest.dump")
@@ -187,9 +187,14 @@ func TestPostgresRestorePassesExitOnErrorAndTheRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := strings.Join(argvOf(t, log), " ")
-	// Without --exit-on-error pg_restore logs each failure, carries on, and
-	// exits 0 — reporting a half-restored database as a success.
-	for _, want := range []string{"pg_restore", "--no-owner", "--role=ctltest", "--exit-on-error", "/mnt/ctl/ctltest.dump"} {
+	// --single-transaction IMPLIES --exit-on-error, so it buys both halves at
+	// once: without them pg_restore logs each failure, carries on and exits 0,
+	// reporting a half-restored database as a success — and with the
+	// transaction, a restore killed half way leaves the database EMPTY rather
+	// than half full, which is the only state the handover's redo can start
+	// from.
+	for _, want := range []string{"pg_restore", "--no-owner", "--role=ctltest", "--single-transaction",
+		"/mnt/ctl/ctltest.dump"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv %q is missing %q", argv, want)
 		}
@@ -252,7 +257,8 @@ func TestPostgresRefusesAnApptainerThatIsNotInstalled(t *testing.T) {
 // what the release records and the take checks is the exact row count of every
 // table, plus the database's size for the free-space arithmetic.
 func TestPostgresCensusReadsSizeAndExactRowCountsInOneQuery(t *testing.T) {
-	bin, log := stubApptainer(t, "printf '=size=|48234496\\npublic.chunks|88000\\npublic.jobs|12\\n'\nexit 0\n")
+	bin, log := stubApptainer(t, "printf '=size=|48234496\\n=encoding=|UTF8\\n=collate=|en_US.utf8\\n"+
+		"=ctype=|en_US.utf8\\n=database=|dev\\n=role=|dev\\npublic.chunks|88000\\npublic.jobs|12\\n'\nexit 0\n")
 	d, spec, _ := pgFixture(t, bin)
 	got, err := d.Postgres().Census(context.Background(), spec)
 	if err != nil {
@@ -264,8 +270,19 @@ func TestPostgresCensusReadsSizeAndExactRowCountsInOneQuery(t *testing.T) {
 	if got.Tables["public.chunks"] != 88000 || got.Tables["public.jobs"] != 12 || len(got.Tables) != 2 {
 		t.Errorf("tables = %v", got.Tables)
 	}
+	// The three a dump and a restore do NOT carry, read at the same instant as
+	// the counts: the take's cluster is initdb'd by the image and would
+	// otherwise take them from whatever environment ran the job.
+	if got.Encoding != "UTF8" || got.Collate != "en_US.utf8" || got.Ctype != "en_US.utf8" {
+		t.Errorf("encoding/collate/ctype = %q/%q/%q", got.Encoding, got.Collate, got.Ctype)
+	}
+	// …and the BOUNDARY of what a single-database dump moves.
+	if len(got.Databases) != 1 || got.Databases[0] != "dev" || len(got.Roles) != 1 || got.Roles[0] != "dev" {
+		t.Errorf("databases = %v, roles = %v", got.Databases, got.Roles)
+	}
 	argv := strings.Join(argvOf(t, log), " ")
-	for _, want := range []string{"psql", "-XAt", "ON_ERROR_STOP=1", "count(*)", "pg_database_size"} {
+	for _, want := range []string{"psql", "-XAt", "ON_ERROR_STOP=1", "count(*)", "pg_database_size",
+		"pg_encoding_to_char", "datcollate", "datctype", "pg_database", "pg_roles"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv %q is missing %q", argv, want)
 		}
@@ -285,13 +302,13 @@ func TestPostgresCensusReadsSizeAndExactRowCountsInOneQuery(t *testing.T) {
 // An EMPTY database is an empty census and no error: a tenant that has never
 // been written to is a normal tenant, and a handover must not refuse over one.
 func TestPostgresCensusOfAnEmptyDatabaseIsNotAnError(t *testing.T) {
-	bin, _ := stubApptainer(t, "printf '=size=|7000000\\n'\nexit 0\n")
+	bin, _ := stubApptainer(t, "printf '=size=|7000000\\n=encoding=|UTF8\\n=collate=|C\\n=ctype=|C\\n'\nexit 0\n")
 	d, spec, _ := pgFixture(t, bin)
 	got, err := d.Postgres().Census(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Tables) != 0 || got.SizeBytes != 7000000 {
+	if len(got.Tables) != 0 || got.SizeBytes != 7000000 || got.Encoding != "UTF8" {
 		t.Errorf("census of an empty database = %+v", got)
 	}
 }
@@ -305,6 +322,9 @@ func TestPostgresCensusRefusesOutputItCannotParse(t *testing.T) {
 		"public.chunks|not-a-number\n",
 		"WARNING: something\npublic.chunks|1\n",
 		"public.chunks\n",
+		// A census with no ENCODING row proves nothing either: the take would
+		// have nothing to pin its new cluster to.
+		"=size=|1\npublic.chunks|1\n",
 	} {
 		b, _ := stubApptainer(t, "printf '"+strings.ReplaceAll(out, "\n", "\\n")+"'\nexit 0\n")
 		d, spec, _ := pgFixture(t, b)

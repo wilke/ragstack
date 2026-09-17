@@ -150,6 +150,10 @@ func planHandover(ctx context.Context, p *planner, args map[string]any) error {
 		return fmt.Errorf("%w: handover.accept_no_backup is a decision the RELEASE makes (it is the phase with a "+
 			"backup prerequisite); `--%s` does not take it", jobs.ErrValidation, phase)
 	}
+	if argBoolOf(args, "accept_extra_databases") && phase != phaseRelease {
+		return fmt.Errorf("%w: handover.accept_extra_databases is a decision the RELEASE makes (it is the phase "+
+			"that reads the cluster and takes the dump); `--%s` does not take it", jobs.ErrValidation, phase)
+	}
 	switch phase {
 	case phaseRelease:
 		return planHandoverRelease(ctx, p, args)
@@ -262,7 +266,7 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 	// impossible later: is there room to dump this database and re-create it
 	// as a cluster the other account owns. Both are the same shape — a take
 	// that fails on either fails with the tenant already stopped.
-	p.addPGHandoverSpaceCheck(legs)
+	p.addPGHandoverSpaceCheck(legs, argBoolOf(args, "accept_extra_databases"))
 	p.addNoRunningIngest(origin, secretsEnv)
 	p.addCensus(legs, origin, secretsEnv, census)
 	// The LAST thing that can refuse, and the one that has to run before the
@@ -1281,7 +1285,9 @@ func planHandoverTake(_ context.Context, p *planner, token string) error {
 	// directory moved under processes the release did not manage to stop is
 	// the worst thing this job could do, and a postgres started before the
 	// swap is the failure the whole step exists to prevent (ops/pgdata.go).
-	p.addPGClusterSwap(legs, account, h)
+	if err := p.addPGClusterSwap(legs, account, h); err != nil {
+		return err
+	}
 
 	p.addTakeSupervisorStep()
 	for _, c := range legs {

@@ -169,10 +169,15 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 	argv := argvFor(bin, spec, dir, "pg_restore", append(pgConn(spec),
 		// --no-owner + --role: the bundle's dump belongs to whichever role
 		// wrote it, and `restore --as` creates a tenant with a different one.
-		// --exit-on-error because pg_restore's default is to log an error,
-		// carry on, and exit 0 — which would report a half-restored database
-		// as a success.
-		"--no-owner", "--role="+spec.User, "--exit-on-error", pgCtlDir+"/"+base)...)
+		//
+		// --single-transaction, which IMPLIES --exit-on-error: pg_restore's
+		// default is to log an error, carry on, and exit 0 — which would report
+		// a half-restored database as a success — and one transaction turns the
+		// other half of that into a guarantee too. A restore interrupted by a
+		// dead worker, a lost connection or a full disk leaves the database
+		// EMPTY rather than half full, so the step that redoes it starts from
+		// the state it expects instead of from a pile nobody can name.
+		"--no-owner", "--role="+spec.User, "--single-transaction", pgCtlDir+"/"+base)...)
 	if o, err := p.exec(ctx, argv, p.longTimeout()); err != nil {
 		return fmt.Errorf("pg_restore into %s: %w%s", spec.DB, err, detail(o))
 	}
@@ -182,28 +187,42 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 // censusSQL is the ONE query Census runs, and it is a literal: nothing from a
 // registry row, a tenant name or an operator reaches it.
 //
-// It counts every ordinary table EXACTLY. `count(*)` per table rather than
-// `pg_stat_user_tables.n_live_tup`, because that column is an estimate, it is
-// reset by a restore, and a handover that proved its migration with an
-// estimate would have proved nothing. `query_to_xml` is how one statement
-// counts every table without the caller first asking for the table list and
-// then building a second statement out of the answer — which is the pattern
-// that turns a schema into a command line.
+// It answers four questions at ONE instant, which is why they are one query and
+// not four — two statements could straddle a write, or a `CREATE DATABASE`:
 //
-// The `=size=` row carries pg_database_size in the same result, so the two
-// facts are read at ONE instant; two queries could straddle a write. And it is
-// one LINE because the argv runner refuses an argument containing a newline —
-// a rule worth keeping, so the SQL is spelled to fit it.
-const censusSQL = "select '=size=' as n, pg_database_size(current_database()) as c" +
-	" union all " +
-	"select t.table_schema || '.' || t.table_name," +
-	" (xpath('/row/c/text()'," +
-	"        query_to_xml(format('select count(*) as c from %I.%I', t.table_schema, t.table_name)," +
-	"                     false, true, '')))[1]::text::bigint" +
-	" from information_schema.tables t" +
-	" where t.table_type = 'BASE TABLE'" +
-	"   and t.table_schema not in ('pg_catalog', 'information_schema')" +
-	" order by 1"
+//   - `=size=`, pg_database_size, for the free-space arithmetic;
+//   - `=encoding=`, `=collate=`, `=ctype=`, which a dump and a restore do NOT
+//     carry: the take's cluster is initdb'd by the image's entrypoint, and a
+//     UTF8 dump restored into an SQL_ASCII/C cluster exits 0, keeps every row,
+//     and is a different database;
+//   - `=database=` and `=role=`, the boundary of what a single-database dump
+//     moves — everything else stays in the cluster the operator is later
+//     invited to delete;
+//   - one row per ordinary table with its EXACT count. `count(*)`, not
+//     `pg_stat_user_tables.n_live_tup`: that column is an estimate, it is reset
+//     by a restore, and a handover proved with one would have proved nothing.
+//     `query_to_xml` is how a single statement counts every table without the
+//     caller first asking for the table list and then building a second
+//     statement out of the answer — the pattern that turns a schema into a
+//     command line.
+//
+// It is one LINE because the argv runner refuses an argument containing a
+// newline — a rule worth keeping, so the SQL is spelled to fit it.
+const censusSQL = "select '=size=' as n, pg_database_size(current_database())::text as v" +
+	" union all select '=encoding=', pg_encoding_to_char(d.encoding) from pg_database d" +
+	"   where d.datname = current_database()" +
+	" union all select '=collate=', d.datcollate from pg_database d where d.datname = current_database()" +
+	" union all select '=ctype=', d.datctype from pg_database d where d.datname = current_database()" +
+	" union all select '=database=', d.datname from pg_database d where not d.datistemplate" +
+	" union all select '=role=', r.rolname from pg_roles r where r.rolcanlogin" +
+	" union all select t.table_schema || '.' || t.table_name," +
+	"        (xpath('/row/c/text()'," +
+	"               query_to_xml(format('select count(*) as c from %I.%I', t.table_schema, t.table_name)," +
+	"                            false, true, '')))[1]::text" +
+	"   from information_schema.tables t" +
+	"  where t.table_type = 'BASE TABLE'" +
+	"    and t.table_schema not in ('pg_catalog', 'information_schema')" +
+	"  order by 1, 2"
 
 // Census asks the database what it holds, in the terms a dump and a restore
 // preserve: its size, and the exact row count of every table.
@@ -225,9 +244,14 @@ func (p *RealPostgres) Census(ctx context.Context, spec jobs.PostgresSpec) (jobs
 }
 
 // parsePostgresCensus reads psql's unaligned output. A line that is not
-// `<name>|<number>` is a refusal rather than a skip: this answer is a PROOF,
-// and a parser that dropped what it did not understand would prove less than
-// it claims while looking the same.
+// `<name>|<value>` is a refusal rather than a skip: this answer is a PROOF, and
+// a parser that dropped what it did not understand would prove less than it
+// claims while looking exactly the same.
+//
+// The split is on the LAST separator, not the first: the label is on the left
+// and the value on the right, and a table named with a `|` in it is legal
+// postgres. The values are numbers, encodings, locales and identifiers, none of
+// which carry one.
 func parsePostgresCensus(out string) (jobs.PostgresCensus, error) {
 	c := jobs.PostgresCensus{Tables: map[string]int64{}}
 	for _, line := range strings.Split(out, "\n") {
@@ -235,11 +259,31 @@ func parsePostgresCensus(out string) (jobs.PostgresCensus, error) {
 		if line == "" {
 			continue
 		}
-		name, count, ok := strings.Cut(line, "|")
-		n, cerr := strconv.ParseInt(strings.TrimSpace(count), 10, 64)
-		if !ok || cerr != nil {
-			return jobs.PostgresCensus{}, fmt.Errorf("%w: the row census returned a line this driver does not "+
-				"parse (%q); nothing about this database has been proved", jobs.ErrRefused, line)
+		i := strings.LastIndex(line, "|")
+		if i < 0 {
+			return jobs.PostgresCensus{}, censusParseError(line)
+		}
+		name, value := line[:i], line[i+1:]
+		switch name {
+		case "=encoding=":
+			c.Encoding = value
+			continue
+		case "=collate=":
+			c.Collate = value
+			continue
+		case "=ctype=":
+			c.Ctype = value
+			continue
+		case "=database=":
+			c.Databases = append(c.Databases, value)
+			continue
+		case "=role=":
+			c.Roles = append(c.Roles, value)
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return jobs.PostgresCensus{}, censusParseError(line)
 		}
 		if name == "=size=" {
 			c.SizeBytes = n
@@ -247,7 +291,17 @@ func parsePostgresCensus(out string) (jobs.PostgresCensus, error) {
 		}
 		c.Tables[name] = n
 	}
+	if c.Encoding == "" || c.Collate == "" || c.Ctype == "" {
+		return jobs.PostgresCensus{}, fmt.Errorf("%w: the row census did not report this database's encoding and "+
+			"locales, which are what a dump and a restore do NOT carry; nothing about this database has been "+
+			"proved", jobs.ErrRefused)
+	}
 	return c, nil
+}
+
+func censusParseError(line string) error {
+	return fmt.Errorf("%w: the row census returned a line this driver does not parse (%q); nothing about this "+
+		"database has been proved", jobs.ErrRefused, line)
 }
 
 // handoverTools are the three programs a handover's postgres migration runs,
