@@ -292,6 +292,72 @@ bare `service:x` is instead read as the federated subject with issuer `service`.
 
 ---
 
+## 2a. Many keys, one subject — giving each key holder their own identity
+
+**Symptom.** A batch of API keys was handed out, and `API_KEY_TENANTS` maps them
+all onto one subject. Everyone who holds a key is then the same principal:
+
+- **The per-owner quota is shared.** `MAX_COLLECTIONS_PER_OWNER` is per subject,
+  so thirty people share ten collections. The refusal tells someone who owns
+  nothing that they already own ten.
+- **They co-own each other's work**, including `DELETE /v1/collections/{id}`.
+- **Nothing is attributable.**
+
+**The fix does not reissue anything.** The mapping is key → subject, so
+re-pointing the keys at distinct subjects changes no key value and nobody needs
+a new credential. One edit, one restart.
+
+```bash
+# 1. look at the distribution FIRST — it picks the largest role-matching group
+python3 python/scripts/split_key_subjects.py <tenant>/config/secrets.env \
+    --tenant-env <tenant>/config/tenant.env
+```
+
+Measure which subject the keys are actually on; do not assume. "Which subjects
+exist" and "how the keys divide between them" are different questions, and only
+the second decides what to split. A tenant can easily have two subjects where
+one carries a single operator key and the other carries all thirty.
+
+```bash
+# 2. register each new subject as a service account, while the OLD mapping is
+#    still live, so the records exist before anyone authenticates as them
+curl -s -X POST "$BASE/v1/admin/service-accounts" -H "$ADMIN" \
+     -H 'Content-Type: application/json' \
+     -d '{"subject":"attendee-01","label":"attendee 01"}'
+
+# 3. apply (takes a timestamped backup), then restart by the RECORDED PID
+python3 python/scripts/split_key_subjects.py <tenant>/config/secrets.env --apply
+```
+
+### ⚠️ Confinement makes a created collection vanish
+
+If the old subject appears in `TENANT_COLLECTIONS`, it is **confined** to those
+collections — and confinement applies to **reads**. A collection created under a
+confined subject is invisible *even to its creator*: the create succeeds, then
+the collection is absent from `GET /v1/collections`.
+
+Drop the stale entry in the same edit as the split. An unlisted subject is
+unrestricted, which is what an attendee wants — their own collections plus
+everything public. The script warns when it sees this if you pass `--tenant-env`.
+
+### What does not move
+
+Collections created before the split stay owned by the **old** subject, which
+nobody authenticates as afterwards. Transferring them out is
+[#558](https://github.com/wilke/ragstack/issues/558) and hands over a collection
+the new owner cannot read, so in practice they become admin-only or are
+re-created. **Split early**: one orphan is cheap, twenty is not.
+
+Check the arithmetic before choosing a per-owner cap — *n* subjects at the cap
+must stay under `MAX_COLLECTIONS`, or the tenant bound evicts somebody's work.
+
+### Later, to give people their real identity: share, do not transfer
+
+Grant the person's `bvbrc:` subject **read** on their key-owned collection.
+`shared_scope` widens a grantee to the owner's chunks, so they can search their
+own library signed in as themselves, with no CLI. Writes stay with the key. That
+is attribution plus real-identity access without waiting on #558.
+
 ## 3. Sharing a collection on a user's behalf
 
 All four routes are on the collections router under `/v1`, open to any
