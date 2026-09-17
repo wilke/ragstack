@@ -286,6 +286,72 @@ def derive_year(path: str, doi: str, text: str, meta_year: Any = None) -> int | 
     return None
 
 
+def packed_date(year: Any, month: Any = None, day: Any = None) -> int | None:
+    """Pack a publication date into the ``yyyymmdd`` integer the stores hold.
+
+    Unknown components are zero, and that is the point: ``19860000`` says "1986,
+    month and day unknown" and ``19820300`` says "March 1982, day unknown", so
+    the value carries its own precision and no second field is needed. The
+    packing is a decision, not a workaround for lacking a date type
+    (``docs/plans/date-filtering.md`` § The packed form): the filter grammar ANDs its
+    terms and has no OR, so a split year/month/day needs a disjunction that does
+    not exist, while ``date >= 20200315`` needs only a range operator. A real
+    date type would have to invent ``1986-01-01`` and could not then record that
+    it had invented it.
+
+    Until this landed, the only code that knew this rule lived in one-off
+    backfill scripts outside the repository, which is how three collections came
+    to hold a field nothing in the tree could produce or explain.
+
+    Returns ``None`` for an implausible or unparseable year, so a caller can
+    stamp the result unconditionally: an unknown date is an absent field, never
+    a zero. Callers must NOT also capture ``year`` independently — derive it with
+    :func:`year_from_packed_date`, or the two drift.
+    """
+    lo, hi = plausible_year_range()
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(year, bool) or not lo <= y <= hi:
+        return None
+
+    def _part(v: Any, limit: int) -> int:
+        if v is None or isinstance(v, bool):
+            return 0
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return 0
+        return n if 1 <= n <= limit else 0
+
+    m = _part(month, 12)
+    # A day without a month cannot be expressed: 1986-00-15 is not a date, and
+    # emitting it would break the "zeros are a suffix" reading the precision
+    # test (% 100 == 0) depends on.
+    d = _part(day, 31) if m else 0
+    return y * 10000 + m * 100 + d
+
+
+def year_from_packed_date(date: Any) -> int | None:
+    """The year inside a packed ``yyyymmdd``, or ``None`` if it is not one.
+
+    ``year`` is DERIVED from ``date`` wherever both exist — verified as holding
+    across 61M chunks on 2026-09-17. Anything that writes ``year`` directly onto
+    a chunk that also has ``date`` is a bug, because nothing then keeps them
+    consistent.
+    """
+    if date is None or isinstance(date, bool):
+        return None
+    try:
+        n = int(date)
+    except (TypeError, ValueError):
+        return None
+    lo, hi = plausible_year_range()
+    y = n // 10000
+    return y if lo <= y <= hi else None
+
+
 def extract_citations(text: str, cap: int = 250) -> list[str]:
     """Extract reference-list entries from a ``LITERATURE CITED`` / ``REFERENCES``
     section. Numbered entries are coalesced across wrapped lines; returns ``[]``
