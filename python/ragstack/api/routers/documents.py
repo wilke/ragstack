@@ -56,11 +56,13 @@ from ragstack.api.security import (
 )
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
+from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunk_cap import (
     CHUNK_CAP_EXCEEDED,
     effective_chunk_cap,
     is_cap_refusal,
 )
+from ragstack.ingestion.chunker_config import shard_refusal
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
     GoWeBackend,
@@ -453,7 +455,7 @@ _LOCAL = "local"
 
 
 def _ingest_backend_name() -> str:
-    return (settings.ingest_backend or _LOCAL).strip().lower()
+    return ingest_backend_name(settings)
 
 
 def _refuse_unknown_backend() -> None:
@@ -489,6 +491,45 @@ def _gowe_caller(principal: Principal) -> tuple[str, str]:
             ),
         )
     return caller
+
+
+def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
+    """422 when the target collection's chunk method cannot run on this backend.
+
+    The create-time guard in the collections router stops NEW semantic
+    collections on a gowe deployment; this one is for the collections that
+    already exist — the reported case was created before any guard shipped and is
+    still there, so without this its owner's next upload would fail inside the
+    scatter again (20 items, three attempts, a GoWe-level error) instead of being
+    told at submit time why, and before anything is written.
+
+    Placed before the version reservation and before any Workspace write, per the
+    surrounding rule that an up-front refusal must not burn a version number or
+    leave sources uploaded with no version to run under.
+
+    .. rubric:: The fallback is conservative, and deliberately so
+
+    An entry that records no ``chunk_method`` is read as ``settings.chunk_method``
+    here. That is what the API *reports* for such a collection — but it is NOT
+    what the shard step would do: ``_gowe_inputs`` only sends ``chunk_method``
+    when the entry has one, so the tool falls back to its own argparse default
+    (``fixed_token/256/32``) while this process believes the server default
+    (``fixed/512/64``). Two builders, two defaults — the same defect #609 names,
+    visible here even when nothing semantic is involved.
+
+    So for a method-less entry the choice is between refusing and submitting a
+    run whose chunking we cannot characterise. Refusing is right: the alternative
+    is not success, it is a corpus silently chunked by a method nobody selected,
+    with nothing in either store recording which one won. #609 step 2 removes the
+    ambiguity by having the tool read the registry entry, at which point this
+    fallback describes the tool exactly. API-created collections are unaffected
+    either way — ``create_collection`` persists the RESOLVED method, so their
+    ``chunk_method`` is never ``None``.
+    """
+    method = entry.chunk_method or settings.chunk_method
+    refusal = shard_refusal(method)
+    if refusal is not None:
+        raise HTTPException(status_code=422, detail=refusal)
 
 
 def _workspace_reference(source: str) -> str:
@@ -949,6 +990,7 @@ async def ingest(
         token, subject = _gowe_caller(principal)
         uri = _workspace_reference(request.source)
         entry = await _authorize_ingest_target(request.collection, principal, collections)
+        _refuse_unrunnable_chunk_method(entry)
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
@@ -1381,6 +1423,7 @@ async def ingest_upload(
         # reserved: an up-front refusal must not burn a version number.
         kinds, budget = await _admit_uploads(files)
         entry = await _authorize_ingest_target(collection, principal, collections)
+        _refuse_unrunnable_chunk_method(entry)
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)

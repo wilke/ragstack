@@ -540,3 +540,92 @@ async def test_a_cancelled_build_withdraws_the_reservation(client, monkeypatch, 
     assert not any(r["id"] == "cancelled-build" for r in rows), (
         "a cancelled build leaked the durable reservation"
     )
+
+
+# --- #609: refuse a collection this deployment's ingest cannot populate -------
+
+SEMANTIC = {"method": "semantic", "size": 512, "overlap": 0}
+
+
+async def test_semantic_create_is_422_under_gowe(client, monkeypatch):
+    """Creating it would promise a build the deployment cannot deliver.
+
+    Under INGEST_BACKEND=gowe the ingest runs out of process, and the shard step
+    cannot chunk semantically yet (#609). The reported failure was 20 documents
+    refused on all three attempts, with nothing the user could change — the
+    collection was already the wrong shape by the time they uploaded.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "semantic" in detail and "fixed_token" in detail and "609" in detail
+    # Refused, not created: the id must not appear in the registry.
+    listed = (await client.get("/v1/collections")).json()["collections"]
+    assert not any(c["chunk_method"] == "semantic" for c in listed)
+
+
+async def test_semantic_create_is_allowed_on_a_local_backend(client, monkeypatch):
+    """The control. Same body, same server, backend flipped — 201.
+
+    Without this the test above passes just as well against a guard that refuses
+    semantic everywhere, which would break every in-process semantic deployment.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "local")
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert r.status_code == 201, r.text
+    assert r.json()["chunk_method"] == "semantic"
+
+
+async def test_omitted_chunk_is_guarded_on_the_resolved_default(client, monkeypatch):
+    """The case a guard on `body.chunk` alone would miss.
+
+    An omitted `chunk` resolves to CHUNK_METHOD before the collection's identity
+    is derived, so on a deployment whose default is semantic this request — which
+    names no chunk method at all — mints exactly the broken collection. Today's
+    default is `fixed`, which is why guarding only the explicit field would have
+    looked correct in every existing test.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    monkeypatch.setattr(settings, "chunk_method", "semantic")
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr"})
+    assert r.status_code == 422, r.text
+    assert "semantic" in r.json()["detail"]
+
+    # Control: the same omitted-chunk request under a supported default is fine.
+    monkeypatch.setattr(settings, "chunk_method", "fixed_token")
+    assert (await client.post("/v1/collections", json={"embedding": "emb-sfr"})).status_code == 201
+
+
+async def test_unknown_method_is_still_400_not_422_under_gowe(client, monkeypatch):
+    """The new guard must not take over the existing refusal's job.
+
+    An unknown method is a 400 from `_validate_chunk`; reporting it as "this
+    backend cannot run it" would send the caller after a capability problem when
+    they have a typo.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    r = await client.post(
+        "/v1/collections",
+        json={"embedding": "emb-sfr", "chunk": {"method": "semantik", "size": 512, "overlap": 0}},
+    )
+    assert r.status_code == 400, r.text
+    assert "unknown chunk method" in r.json()["detail"]
+
+
+async def test_backend_name_is_normalised_before_the_guard(client, monkeypatch):
+    """`INGEST_BACKEND=" GoWe "` is the same deployment as `gowe`.
+
+    This is why the normalisation moved into one function: it was inlined in the
+    backend factory and in the documents router, and this guard was the third
+    caller. A copy that forgot `.strip().lower()` guards nothing while looking
+    identical in review.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "  GoWe  ")
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert r.status_code == 422, r.text

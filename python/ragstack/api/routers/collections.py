@@ -75,6 +75,8 @@ from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionRecord, CollectionStore, CreateOutcome
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
+from ragstack.ingestion.backends import ingest_backend_name
+from ragstack.ingestion.chunker_config import shard_refusal
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
@@ -379,6 +381,35 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             )
 
 
+def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
+    """422 when this deployment's ingest backend cannot chunk ``method``.
+
+    Under ``INGEST_BACKEND=gowe`` every ingest leaves this process: uploads go to
+    the caller's Workspace and a GoWe scatter runs ``scripts/ingest_shard.py`` per
+    shard. That step cannot do the semantic methods yet (#609), so minting a
+    semantic collection here promises a build the deployment cannot deliver — the
+    reported failure was 20 documents refused on all three attempts, with nothing
+    the user could change to make a retry work.
+
+    Called on the **resolved** method, not on ``body.chunk``. An omitted ``chunk``
+    takes the server default, so a deployment with ``CHUNK_METHOD=semantic`` and
+    ``INGEST_BACKEND=gowe`` would otherwise mint exactly the broken collection
+    this refuses — from a request that names no chunk method at all. (Today's
+    default is ``fixed``, which is why guarding only the explicit field would have
+    looked correct.)
+
+    422 rather than 400: the request is well-formed and the method is a real one
+    this server implements in-process. What is missing is a capability of *this
+    deployment's* ingest path, which is also why the refusal disappears when the
+    bridge is wired rather than needing a contract change.
+    """
+    if ingest_backend_name(settings) != "gowe":
+        return
+    refusal = shard_refusal(method)
+    if refusal is not None:
+        raise HTTPException(422, refusal)
+
+
 class CollectionCreateRequest(BaseModel):
     # Both build-spec fields are OPTIONAL (ADR-0003 decision 3): omitted → the
     # server's default build spec is resolved into concrete values at create
@@ -562,6 +593,10 @@ async def create_collection(
             size=settings.chunk_size,
             overlap=settings.chunk_overlap,
         )
+    # On the RESOLVED method — see the helper: the omitted-chunk branch above
+    # takes the server default, and that default is just as unrunnable under a
+    # gowe backend as an explicitly requested one.
+    _refuse_chunk_this_deployment_cannot_ingest(chunk.method)
 
     # 3. Derive the physical name. With no explicit id this is content-addressed
     # over (model, dim, chunk): the same build spec re-maps to the same store, which

@@ -22,12 +22,57 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 
-from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.tokenization import (
     TokenCounter,
     make_token_counter,
     resolve_max_tokens,
 )
+
+#: Chunk methods the **out-of-process** shard ingest cannot perform.
+#:
+#: ``scripts/ingest_shard.py`` is the step a GoWe scatter runs per shard. The
+#: semantic methods embed sentence buffers *while* chunking, so they need a
+#: synchronous embedding bridge; the shard step builds none, so there is nothing
+#: for them to call. Issue #609 step 3 wires the bridge and empties this set.
+#:
+#: It lives here, beside :func:`build_chunker`, because THREE places have to
+#: agree about it and two of them run in a different process from the third: the
+#: tool's own refusal, the API's create-time guard, and the API's submit-time
+#: guard. A divergence between them is precisely the defect #609 reports — the
+#: API mints a semantic collection, then hands its uploads to a step that refuses
+#: them 20 documents at a time, with retries that cannot help. One constant means
+#: wiring the bridge re-opens all three call sites at once instead of leaving a
+#: guard behind to refuse work the tool can now do.
+SHARD_UNSUPPORTED_METHODS: frozenset[str] = frozenset({"semantic", "semantic_pooled"})
+
+
+def shard_supported_methods() -> tuple[str, ...]:
+    """The chunk methods the shard ingest *can* perform, in ``CHUNK_METHODS`` order.
+
+    Derived by subtraction rather than listed, so a method added to
+    :data:`~ragstack.ingestion.chunkers.CHUNK_METHODS` is offered here without a
+    second edit — the failure mode of a hand-kept list is that it silently stops
+    naming a method the tool actually supports.
+    """
+    return tuple(m for m in CHUNK_METHODS if m not in SHARD_UNSUPPORTED_METHODS)
+
+
+def shard_refusal(method: str | None) -> str | None:
+    """Why the shard ingest cannot chunk ``method``, or ``None`` when it can.
+
+    One message for the tool's ``SystemExit`` and for the API's 422 body, so a
+    user who hits this from the browser and an operator who hits it from the CLI
+    read the same sentence and can find the same issue.
+    """
+    if method is None or method not in SHARD_UNSUPPORTED_METHODS:
+        return None
+    return (
+        f"chunk_method={method!r} is not yet wired for out-of-process bulk ingest: "
+        f"it embeds sentence buffers while chunking and the shard step builds no "
+        f"embedding bridge (issue #609). Supported on this path: "
+        f"{', '.join(shard_supported_methods())}."
+    )
 
 
 def resolve_token_backend(

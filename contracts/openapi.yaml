@@ -315,7 +315,16 @@ paths:
         "413":
           description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "422":
-          description: Validation error
+          description: >-
+            Request validation error; or the target collection's `chunk_method`
+            cannot run on this deployment's ingest backend. With
+            `INGEST_BACKEND=gowe` every ingest leaves the API process and a GoWe
+            scatter runs the shard ingest step, which cannot perform the semantic
+            methods (`semantic`, `semantic_pooled`) yet — issue #609. The
+            `detail` names the methods that are supported on this path. This is a
+            capability of the deployment, not of the request: the same body
+            succeeds on an `INGEST_BACKEND=local` server, and the refusal
+            disappears once the bridge is wired, with no contract change.
         "429":
           description: >-
             Rate limit exceeded (issue #87): more than
@@ -485,7 +494,16 @@ paths:
             allowlist, or a file declared as application/pdf does not start
             with %PDF (#202).
         "422":
-          description: Validation error
+          description: >-
+            Request validation error; or the target collection's `chunk_method`
+            cannot run on this deployment's ingest backend. With
+            `INGEST_BACKEND=gowe` every ingest leaves the API process and a GoWe
+            scatter runs the shard ingest step, which cannot perform the semantic
+            methods (`semantic`, `semantic_pooled`) yet — issue #609. The
+            `detail` names the methods that are supported on this path. This is a
+            capability of the deployment, not of the request: the same body
+            succeeds on an `INGEST_BACKEND=local` server, and the refusal
+            disappears once the bridge is wired, with no contract change.
         "429":
           description: >-
             Either the rate limit was exceeded (issue #87: more than
@@ -1568,6 +1586,16 @@ paths:
             admins too)
         "413":
           description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
+        "422":
+          description: >-
+            The resolved `chunk_method` cannot run on this deployment's ingest
+            backend, so the collection would be created and then be impossible to
+            populate. With `INGEST_BACKEND=gowe` the ingest runs out of process
+            (a GoWe scatter over the shard ingest step) and the semantic methods
+            (`semantic`, `semantic_pooled`) are not wired there yet — issue #609.
+            Checked on the RESOLVED method: an omitted `chunk` takes the server
+            default (`CHUNK_METHOD`), which is refused on the same terms as an
+            explicitly requested one. The `detail` names the supported methods.
         "429":
           description: >-
             Rate limit exceeded (issue #87): more than

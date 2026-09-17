@@ -1017,3 +1017,108 @@ async def test_a_contact_address_is_optional_and_never_invented(
     assert inputs["doi_enrichment"] is True
     assert "doi_mailto" not in inputs
     assert "doi_cache_dir" not in inputs
+
+
+# --- #609: a collection this backend cannot chunk is refused AT SUBMIT --------
+#
+# The create-time guard (test_collections_create.py) stops NEW semantic
+# collections. These cover the ones that already exist — the reported case,
+# `Salmonella_AMR2`, was created before any guard shipped. Without this, its
+# owner's next upload fails inside the scatter: 20 items, three attempts, an
+# error naming the shard tool rather than anything they can act on.
+
+
+def _set_chunk_method(method: str | None) -> None:
+    """Flip the registered `lib1` entry's chunk method in place.
+
+    `CollectionEntry` is a plain dataclass and `app.state.collections` hands back
+    the live object, so this is the same mutation a differently-configured
+    fixture would produce — and it lets one test show the SAME request passing
+    and failing, which is what makes the guard the cause rather than a
+    coincidence of the fixture.
+    """
+    from ragstack.api.main import app
+
+    app.state.collections.resolve("lib1").chunk_method = method
+
+
+@pytest.mark.asyncio
+async def test_semantic_upload_is_422_and_nothing_else_happens(client, gowe):
+    _set_chunk_method("semantic")
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "semantic" in detail and "fixed_token" in detail and "609" in detail
+
+    # Refused BEFORE every side effect: no file in the Workspace, no submission,
+    # and — the one that is not merely wasteful — no version number burned. A
+    # version reserved for a job that never runs leaves a permanent gap.
+    assert gowe["workspace"].uploads == []
+    assert gowe["engine"].submissions == []
+    assert gowe["store"].calls.get("next_version", 0) == 0
+
+    # The control, in the same test and against the same fixture: put the method
+    # back and the identical request is accepted. Without this the assertion
+    # above would still pass if the upload were broken for any other reason.
+    _set_chunk_method("fixed_token")
+    ok = await _upload(client, "a.pdf")
+    assert ok.status_code == 202, ok.text
+    assert gowe["store"].calls.get("next_version", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_ws_ingest_is_422(client, gowe):
+    _set_chunk_method("semantic_pooled")
+    r = await client.post(
+        "/v1/ingest", json={"source": f"ws:///{SUBJECT}/home/x.pdf", "collection": "lib1"},
+        headers=AUTH,
+    )
+    assert r.status_code == 422, r.text
+    assert "semantic_pooled" in r.json()["detail"]
+    assert gowe["engine"].submissions == []
+    assert gowe["store"].calls.get("next_version", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_entry_without_a_chunk_method_falls_back_to_the_server_default(
+    client, gowe, monkeypatch
+):
+    """An entry that records no method is read as `CHUNK_METHOD` by the guard.
+
+    Reading only `entry.chunk_method` would wave such a collection through. The
+    fallback is conservative rather than exact — see the helper's docstring: the
+    shard tool would actually use its OWN argparse default here, because
+    `_gowe_inputs` sends no `chunk_method` when the entry has none. Refusing is
+    still the right answer, since the alternative is a run chunked by a method
+    nobody chose and no store records. API-created collections never hit this:
+    `create_collection` persists the resolved method.
+    """
+    from ragstack.config import settings
+
+    _set_chunk_method(None)
+    monkeypatch.setattr(settings, "chunk_method", "semantic")
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 422, r.text
+    assert "semantic" in r.json()["detail"]
+
+    monkeypatch.setattr(settings, "chunk_method", "fixed")
+    assert (await _upload(client, "a.pdf")).status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_local_backend_does_not_refuse_semantic(client, gowe, monkeypatch):
+    """The guard is about THIS deployment's ingest path, not about semantic.
+
+    `ingest_backend=local` chunks in-process, where the embed bridge exists and
+    semantic works — so the same collection must not be refused there. A guard
+    that fired on the method alone would break every local semantic ingest,
+    which is a far larger regression than the bug it fixes.
+    """
+    from ragstack.config import settings
+
+    _set_chunk_method("semantic")
+    monkeypatch.setattr(settings, "ingest_backend", "local")
+    monkeypatch.setattr(settings, "ingest_root", "")  # local path stops at its own gate
+    r = await _upload(client, "a.pdf")
+    assert r.status_code != 422, r.text
+    assert r.status_code == 503 and "INGEST_ROOT" in r.json()["detail"]
