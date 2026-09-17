@@ -1074,11 +1074,11 @@ func TestYellowGateIsScopedToTheOpsOwnPreconditions(t *testing.T) {
 	// findings above; it does depend on disk_low.
 	e, store, _ := newTestEngine(t, fakeRegistry{"backup": happyOp(tr, func() Store { return st })},
 		func(o *EngineOptions) {
-			o.PreconditionCodes = func(op string) []string {
+			o.PreconditionCodes = func(op string) ([]string, bool) {
 				if op == "backup" {
-					return []string{"disk_low", "port_owner_mismatch"}
+					return []string{"disk_low", "port_owner_mismatch"}, true
 				}
-				return nil
+				return nil, false
 			}
 			o.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 				return model.DoctorResponse{
@@ -1136,5 +1136,104 @@ func TestYellowGateIsScopedToTheOpsOwnPreconditions(t *testing.T) {
 	red.ForceWithDoctorDiff = hash
 	if _, _, err := e.Submit(ctx, red); !errors.Is(err, ErrDoctorRed) {
 		t.Fatalf("a red doctor was forced: %v", err)
+	}
+}
+
+// TestAnEmptyPreconditionSetIsNotAnUnknownOp is the engine half of the bug
+// that refused `ragstack-ctl env pg-password hackathon --yes --wait` on a host
+// whose only warnings were `linger_missing`, `runtime_dir_missing` and
+// `user_dropin_missing` — the systemd trio no operation can clear.
+//
+// `env-pg-password`'s precondition row is `{}`: it gates on NOTHING, on
+// purpose. The gate could not tell that set from the nil an op with no row at
+// all returns, so it took the conservative branch and demanded a hash for
+// three findings the op does not depend on and cannot repair. An op that
+// deliberately gates on nothing was the most gated op on the host.
+//
+// The answer the table gives now has two parts — the codes, and whether the
+// op is KNOWN — because "no codes" and "no row" are different facts and only
+// one of them is a reason to be conservative.
+func TestAnEmptyPreconditionSetIsNotAnUnknownOp(t *testing.T) {
+	tr := newTracker()
+	var st Store
+	hash := sha256Of([]byte("the systemd trio"))
+	findings := []model.Finding{
+		{Level: model.LevelWarn, Code: "linger_missing", Detail: "no linger for svcbvbrc"},
+		{Level: model.LevelWarn, Code: "runtime_dir_missing", Detail: "no XDG_RUNTIME_DIR"},
+		{Level: model.LevelWarn, Code: "user_dropin_missing", Detail: "no drop-in"},
+	}
+	registry := fakeRegistry{
+		// The op with the empty row, and one with a row that names a warning
+		// the host actually has.
+		"env-pg-password": happyOp(tr, func() Store { return st }),
+		"restore":         happyOp(tr, func() Store { return st }),
+		// A verb the precondition table has never heard of.
+		"unknown-verb": happyOp(tr, func() Store { return st }),
+	}
+	e, store, _ := newTestEngine(t, registry, func(o *EngineOptions) {
+		o.PreconditionCodes = func(op string) ([]string, bool) {
+			switch op {
+			case "env-pg-password":
+				return []string{}, true // a row, and it raises nothing
+			case "restore":
+				return []string{"linger_missing"}, true
+			}
+			return nil, false // no row at all
+		}
+		o.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
+			return model.DoctorResponse{
+				Status: model.StatusFor(findings), Hash: hash, GeneratedAt: "2026-09-16T10:00:00Z",
+				Scope:    model.Scope{Tenant: model.NullString(tenant), Op: model.NullString(op)},
+				Findings: findings,
+			}, nil
+		}
+	})
+	st = store
+	ctx := context.Background()
+
+	// The op that gates on nothing runs, with no hash quoted, and the three
+	// warnings are recorded on the job rather than blocking it.
+	_, job, err := e.Submit(ctx, req("env-pg-password", "dev", "e1"))
+	if err != nil {
+		t.Fatalf("an op whose precondition set is EMPTY was refused: %v", err)
+	}
+	waitFor(t, e, job.ID, model.JobSucceeded)
+	done, err := e.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := fmt.Sprint(done.Result["doctor_warnings"]); got != "[linger_missing runtime_dir_missing user_dropin_missing]" {
+		t.Errorf("doctor_warnings = %v, want all three unrelated codes recorded on the job", got)
+	}
+
+	// An op whose set NAMES one of those warnings still has to be
+	// acknowledged, and the refusal names the code.
+	_, _, err = e.Submit(ctx, req("restore", "dev", "e2"))
+	if !errors.Is(err, ErrDoctorRed) {
+		t.Fatalf("an op that depends on linger_missing ran unacknowledged: %v", err)
+	}
+	if !strings.Contains(err.Error(), "linger_missing") {
+		t.Errorf("the refusal does not name the finding: %v", err)
+	}
+	forced := req("restore", "dev", "e3")
+	forced.ForceWithDoctorDiff = hash
+	if _, _, err := e.Submit(ctx, forced); err != nil {
+		t.Fatalf("the acknowledged hash was still refused: %v", err)
+	}
+
+	// A verb with NO row stays conservative: nothing scopes the gate, so
+	// every warning counts. (ops.TestEveryVerbHasAPreconditionRow keeps this
+	// branch unreachable through a real verb.)
+	if _, _, err := e.Submit(ctx, req("unknown-verb", "dev", "e4")); !errors.Is(err, ErrDoctorRed) {
+		t.Fatalf("a verb the precondition table does not know skipped the gate: %v", err)
+	}
+
+	// And red is refused whoever it is about, hash or no hash — for the op
+	// that gates on nothing as much as for any other.
+	findings = []model.Finding{{Level: model.LevelError, Code: "linger_missing", Detail: "no linger"}}
+	red := req("env-pg-password", "dev", "e5")
+	red.ForceWithDoctorDiff = hash
+	if _, _, err := e.Submit(ctx, red); !errors.Is(err, ErrDoctorRed) {
+		t.Fatalf("a red doctor was forced through the empty-set op: %v", err)
 	}
 }

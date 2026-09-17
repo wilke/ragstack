@@ -273,13 +273,26 @@ func RedCodesForDestination(op, dest string) []string {
 // gate and the doctor's own levels are two readings of one table. Without it
 // the gate demanded a `--force-with-doctor-diff` for exactly the finding an op
 // exists to clear.
+//
+// An op the table KNOWS gets a non-nil answer, empty when it gates on nothing
+// — `env-pg-password`, whose row is deliberately `{}`, and `env-normalize`,
+// whose one entry it tolerates. Only an op with no row at all comes back nil.
+// That distinction is the whole point: "gates on no warning" and "nobody wrote
+// a row" are different facts, and reading the first as the second is what made
+// `env pg-password` demand `--force-with-doctor-diff` for the three systemd
+// findings it neither depends on nor can repair. Callers pair this with
+// KnownOp rather than testing the slice for nil.
 func GateCodes(op, dest string) []string {
+	red := RedCodesForDestination(op, dest)
+	if red == nil {
+		return nil
+	}
 	tolerated := map[string]bool{}
 	for _, c := range Tolerated(op) {
 		tolerated[c] = true
 	}
-	var out []string
-	for _, c := range RedCodesForDestination(op, dest) {
+	out := make([]string, 0, len(red))
+	for _, c := range red {
 		if !tolerated[c] {
 			out = append(out, c)
 		}
