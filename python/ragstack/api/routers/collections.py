@@ -76,7 +76,8 @@ from ragstack.collection_store import CollectionRecord, CollectionStore, CreateO
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.backends import ingest_backend_name
-from ragstack.ingestion.chunker_config import shard_refusal
+from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
+from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
@@ -314,7 +315,9 @@ class ChunkConfig(BaseModel):
 
 # Chunk methods whose boundaries come from embedding similarity rather than a
 # size budget, and the tunables they read out of the free-form ``chunk.params``.
-SEMANTIC_METHODS = ("semantic", "semantic_pooled")
+# Re-exported from the library so this module and the ingest tools cannot
+# disagree about which methods embed while chunking (#609).
+SEMANTIC_METHODS = _SEMANTIC_METHODS
 # name -> (numeric kind, inclusive min, inclusive max)
 SEMANTIC_PARAM_BOUNDS: dict[str, tuple[type, float, float]] = {
     "buffer_size": (int, 1, 50),
@@ -405,7 +408,14 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
     """
     if ingest_backend_name(settings) != "gowe":
         return
-    refusal = shard_refusal(method)
+    # The set comes from the DEPLOYMENT (INGEST_WORKER_UNSUPPORTED_METHODS), not
+    # from a constant: which methods this tenant's worker image can run is not a
+    # property of this source tree, and it changes when the image is rolled rather
+    # than when the API is released.
+    refusal = shard_refusal(
+        method,
+        unsupported=parse_unsupported_methods(settings.ingest_worker_unsupported_methods),
+    )
     if refusal is not None:
         raise HTTPException(422, refusal)
 

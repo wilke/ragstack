@@ -33,7 +33,7 @@ import httpx
 
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker, shard_refusal
+from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
@@ -43,14 +43,22 @@ from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
 
 def _build_chunker(args):
-    # Same constant as ingest_shard and the API guards (#609). This was a fourth
-    # independent decider — a `startswith("semantic")` prefix test, which would
-    # also refuse a future method merely NAMED that way. Not on the API's ingest
-    # path (embed-bulk.cwl is operator-run), so it was never part of the reported
-    # failure; it is here so "one constant" is true rather than nearly true.
-    refusal = shard_refusal(args.chunk_method)
-    if refusal is not None:
-        raise SystemExit(refusal)
+    # A LOCAL refusal, on purpose (#609). ingest_shard.py now builds the breakpoint
+    # embed bridge and can chunk semantically; THIS tool does not build one, so the
+    # semantic methods have nothing to call here whatever a deployment's
+    # INGEST_WORKER_UNSUPPORTED_METHODS says. Sharing that setting would mean
+    # flipping it for ingest_shard silently turned this tool's clear message into
+    # make_chunker's "requires an embed_fn" mid-shard.
+    #
+    # Reached by embed-bulk.cwl / pdf-ingest.cwl / jats-ingest.cwl — operator
+    # workflows, not the API's ingest path. Wiring a bridge here is a separate
+    # decision; until then the refusal names where semantic DOES work.
+    if needs_embed_fn(args.chunk_method):
+        raise SystemExit(
+            f"--chunk-method {args.chunk_method} needs a breakpoint embedding bridge, "
+            "which embed_shard does not build; use fixed/fixed_token/sentence/words "
+            "here, or ingest_shard.py / ingest_jsonl.py for the semantic methods."
+        )
     chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,

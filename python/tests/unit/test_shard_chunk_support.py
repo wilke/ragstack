@@ -21,15 +21,54 @@ from __future__ import annotations
 import pytest
 
 from ragstack.ingestion.chunker_config import (
+    SEMANTIC_METHODS,
     SHARD_UNSUPPORTED_METHODS,
+    needs_embed_fn,
+    parse_unsupported_methods,
     shard_refusal,
     shard_supported_methods,
 )
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 
 
-def test_semantic_methods_are_the_unsupported_ones() -> None:
-    assert SHARD_UNSUPPORTED_METHODS == {"semantic", "semantic_pooled"}
+def test_the_default_refuses_the_semantic_methods() -> None:
+    """A DEFAULT, not a fact about the library (#609).
+
+    Which methods a worker can run is a property of the deployed image — the API
+    and the worker fleet release and roll separately, and this host has two worker
+    image directories. So the set is a deployment setting and this constant is
+    only its conservative default.
+    """
+    assert SHARD_UNSUPPORTED_METHODS == set(SEMANTIC_METHODS)
+
+
+def test_an_empty_setting_admits_everything() -> None:
+    """The state after an image carrying the semantic wiring is rolled."""
+    for method in CHUNK_METHODS:
+        assert shard_refusal(method, unsupported=frozenset()) is None
+
+
+def test_the_setting_parses_and_rejects_a_typo() -> None:
+    assert parse_unsupported_methods("semantic,semantic_pooled") == set(SEMANTIC_METHODS)
+    assert parse_unsupported_methods("") == frozenset()
+    assert parse_unsupported_methods(None) == frozenset()
+    assert parse_unsupported_methods(" semantic , semantic_pooled ") == set(SEMANTIC_METHODS)
+    # A typo must fail loudly. Silently guarding nothing while looking exactly
+    # like a guard that works is the failure mode this whole issue is about.
+    with pytest.raises(ValueError, match="semantik"):
+        parse_unsupported_methods("semantik")
+
+
+def test_semantic_methods_is_the_one_membership_test() -> None:
+    """`needs_embed_fn` is what the five hand-written copies became.
+
+    The deferred rename (`semantic` -> `semantic_window`, plan §7d) is a one-line
+    change to this tuple only if nothing tests membership by hand again.
+    """
+    assert set(SEMANTIC_METHODS) <= set(CHUNK_METHODS)
+    for m in CHUNK_METHODS:
+        assert needs_embed_fn(m) is (m in SEMANTIC_METHODS)
+    assert needs_embed_fn(None) is False
 
 
 def test_every_unsupported_method_is_a_real_chunk_method() -> None:

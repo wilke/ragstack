@@ -41,6 +41,7 @@ from ragstack.grading.store import make_grading_store
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
+from ragstack.ingestion.chunker_config import needs_embed_fn, parse_unsupported_methods
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
@@ -418,7 +419,7 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     size = entry.chunk_size if entry.chunk_size is not None else settings.chunk_size
     overlap = entry.chunk_overlap if entry.chunk_overlap is not None else settings.chunk_overlap
     params = dict(entry.chunk_params or {})
-    if method in ("semantic", "semantic_pooled") and embed_fn is None:
+    if needs_embed_fn(method) and embed_fn is None:
         raise ValueError(
             f"chunk_method={method!r} needs an embedding backend for this collection, "
             "but none could be built"
@@ -485,7 +486,7 @@ def _embed_fn_for(app_state: Any, entry: CollectionEntry) -> Any:
     """The sync ``embed_fn`` a collection's chunker needs, or ``None``. Only the
     semantic methods embed during chunking, so nothing else pays for a bridge."""
     method = entry.chunk_method or settings.chunk_method
-    if method not in ("semantic", "semantic_pooled"):
+    if not needs_embed_fn(method):
         return None
     return _embed_bridge_for(app_state, entry)
 
@@ -1228,7 +1229,7 @@ def _build_chunker():
     # sentence once and mean-pools, but it still needs the bridge. Testing only for
     # 'semantic' here meant CHUNK_METHOD=semantic_pooled died at startup with
     # make_chunker's "requires an embed_fn".
-    if method in ("semantic", "semantic_pooled"):
+    if needs_embed_fn(method):
         bridge = SyncEmbedBridge(_build_embedder)
         embed_fn = bridge
 
@@ -1342,6 +1343,13 @@ def _validate_production_settings() -> None:
     one to be present when durability (the production marker) is required.
     """
     _validate_ingest_root()
+    # A typo in INGEST_WORKER_UNSUPPORTED_METHODS must stop the BOOT, not 500 on
+    # the first user's create (#609). The setting is a safety guard, and a guard
+    # whose value is a misspelling refuses nothing while looking exactly like one
+    # that works — so an operator who mistypes it during a rollout would believe
+    # semantic was still blocked while every submission sailed through to a worker
+    # image that cannot run it. Loud, immediate, and before any traffic.
+    parse_unsupported_methods(settings.ingest_worker_unsupported_methods)
     if not settings.require_durable_backends:
         return
     missing = []
