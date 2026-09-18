@@ -127,7 +127,14 @@ def _build_chunker(args, spec=None, embed_fn=None):
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
         embed_fn=embed_fn,
-        **_semantic_params(spec),
+        # Only for the methods that HAVE semantic params. `_validate_chunk`
+        # range-checks `params` solely for the semantic methods, but
+        # `create_collection` persists them for any method — so a `fixed`
+        # collection can legitimately carry junk in `chunk_params`, and reading it
+        # unconditionally turned that into a refused shard. Before this commit the
+        # tool never read the spec at all, so that would have been a regression on
+        # the path every current collection uses.
+        **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
     )
     return chunker
 
@@ -196,7 +203,9 @@ def _build_bridge(args) -> SyncEmbedBridge:
     they would be a second source of a value that is part of collection identity.
     """
     return SyncEmbedBridge(
-        lambda http: _build_embedder(args, http), batch_size=args.batch_size
+        lambda http: _build_embedder(args, http),
+        batch_size=args.breakpoint_batch_size,
+        max_inflight=args.breakpoint_max_inflight,
     )
 
 
@@ -299,6 +308,20 @@ def parse_args(argv=None):
     p.add_argument("--boilerplate-config", default="",
                    help="JSON object overriding BoilerplateConfig thresholds")
     p.add_argument("--chunk-method", default="fixed_token")
+    # Breakpoint-embed fan-out, semantic methods only. These change REQUEST
+    # GRANULARITY, not vectors: the bridge re-concatenates sub-batch results in
+    # input order, so the embeddings — and therefore the distances, breakpoints
+    # and chunk ids — are identical however they are batched. That is why they are
+    # safe as CLI knobs when the breakpoint MODEL is not (a second source for a
+    # value that is part of collection identity).
+    #
+    # They exist so #609's load check has something to turn: `max_inflight` is the
+    # only bound on concurrent breakpoint calls from one process, and there was no
+    # way to reach it.
+    p.add_argument("--breakpoint-batch-size", type=int, default=64,
+                   help="sentences/buffers per breakpoint embed call (semantic only)")
+    p.add_argument("--breakpoint-max-inflight", type=int, default=8,
+                   help="concurrent breakpoint embed calls per process (semantic only)")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)
     p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
