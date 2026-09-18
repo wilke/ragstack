@@ -975,11 +975,39 @@ func under(path, root string) bool {
 	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
+// gitDescribeArgv is the argv of the one git call this package makes.
+//
+// `-c safe.directory=*` is the whole of #611. git refuses ("detected dubious
+// ownership in repository at …", exit 128) to read a repository whose
+// directory is owned by another account, and that is the NORMAL shape here:
+// the tenant worktrees and the bare mirror they point back into are wilke's,
+// the ctl runs as the service account, and the PR-D2 ACL grants give that
+// account read access without changing the owner — which is precisely the
+// case git's check is designed to distrust. So `adopt --readopt` as svcbvbrc
+// recorded code.tag "unknown" for every handed-over tenant while the same
+// describe as wilke resolved v1.6.2, and while the argv drivers/git.go builds
+// — which has carried this flag from the start — worked for svcbvbrc too.
+//
+// It is safe for the same reason it is safe there: the ownership check
+// protects a person from a planted repository in a directory they happened to
+// cd into, and this path is a worktree an operator named in the registry or on
+// the command line. `describe` runs no hook, so unlike the driver's mutating
+// verbs this one needs no core.hooksPath. Scoped to this argv; nothing is
+// written to any gitconfig.
+//
+// It must be a `-c` and not a git config file: safe.directory is honoured only
+// in PROTECTED configuration (system, global, and the command line), and the
+// ctl has no business writing into the service account's ~/.gitconfig.
+func gitDescribeArgv(worktree string) []string {
+	return []string{"-c", "safe.directory=*", "-C", worktree, "describe", "--tags", "--always"}
+}
+
 // GitDescribe returns `git describe --tags --always` for a worktree. An
 // unreadable gitdir (the service account before handover) is an error, which
-// adopt records as code.tag "unknown" plus a yellow finding.
+// adopt records as code.tag "unknown" plus a yellow finding carrying git's own
+// stderr.
 func (r *Real) GitDescribe(worktree string) (string, error) {
-	out, err := runArgv(binGit, "-C", worktree, "describe", "--tags", "--always")
+	out, err := runArgv(binGit, gitDescribeArgv(worktree)...)
 	if err != nil {
 		return "", err
 	}
@@ -1111,6 +1139,58 @@ func runDU(ctx context.Context, path string) (int64, error) {
 	return n, nil
 }
 
+// CmdError is a failed runArgv.
+//
+// The program's own stderr is a FIELD and not merely a slice of the message,
+// because the caller that reports such a failure to an operator (adopt's
+// code.tag finding, #611) wants git's sentence — "detected dubious ownership
+// in repository at …" — and not the argv and the exit status in front of it,
+// in a detail line that has room for one of the two.
+type CmdError struct {
+	Prog   string // basename of the program
+	Args   []string
+	Stderr string // the program's stderr, trimmed
+	Err    error  // the underlying os/exec error
+}
+
+func (e *CmdError) Error() string {
+	msg := fmt.Sprintf("%s %s: %v", e.Prog, strings.Join(e.Args, " "), e.Err)
+	if e.Stderr != "" {
+		msg += ": " + e.Stderr
+	}
+	return msg
+}
+
+// Unwrap keeps the os/exec error matchable (context.DeadlineExceeded and
+// exec.ExitError both reach a caller through it).
+func (e *CmdError) Unwrap() error { return e.Err }
+
+// StderrOf is what a failing host command said, for a finding's detail: the
+// program's own stderr when err carries one, the error's message otherwise,
+// as ONE line of at most max bytes.
+//
+// Callers pass this straight into an operator-visible finding, so it collapses
+// the newlines git's multi-line advice ("To add an exception for this
+// directory, call: …") would otherwise smuggle into a one-line detail. It
+// needs no redaction: what it carries is a program's diagnostic, never a value
+// out of tenant.env — the ctl's redactor still runs over every response and
+// job log behind it.
+func StderrOf(err error, max int) string {
+	if err == nil {
+		return ""
+	}
+	var ce *CmdError
+	s := err.Error()
+	if errors.As(err, &ce) && ce.Stderr != "" {
+		s = ce.Stderr
+	}
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if max > 0 && len(s) > max {
+		s = strings.ToValidUTF8(s[:max], "") + "…"
+	}
+	return s
+}
+
 // runArgv runs an absolute program with a fixed argument list, no shell, a
 // sanitized environment and a 2 s timeout.
 func runArgv(bin string, args ...string) (string, error) {
@@ -1130,7 +1210,12 @@ func runArgv(bin string, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s: %w: %s", filepath.Base(bin), strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), &CmdError{
+			Prog:   filepath.Base(bin),
+			Args:   args,
+			Stderr: strings.TrimSpace(stderr.String()),
+			Err:    err,
+		}
 	}
 	return stdout.String(), nil
 }

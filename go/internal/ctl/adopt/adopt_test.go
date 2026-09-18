@@ -588,6 +588,53 @@ func TestTenantRowMarshalsWithNoOmittedMembers(t *testing.T) {
 	}
 }
 
+// TestDescribeFailureNamesTheCause is the second half of #611: a describe the
+// ctl could not run must say WHY in the finding, because the operator who sees
+// it cannot re-run the command as the service account. The detail carries
+// git's own stderr — here the dubious-ownership refusal that was the bug — and
+// still records code.tag "unknown".
+func TestDescribeFailureNamesTheCause(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	wt := filepath.Join(roots.ReposDir, "dev")
+	if h.Errs == nil {
+		h.Errs = map[string]error{}
+	}
+	h.Errs["describe:"+wt] = &hostfacts.CmdError{
+		Prog: "git", Args: []string{"-C", wt, "describe", "--tags", "--always"},
+		Stderr: "fatal: detected dubious ownership in repository at '" + wt + "'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory " + wt,
+		Err:    errors.New("exit status 128"),
+	}
+	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	tenant, findings, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: wt, UIPort: 8090, Host: h, Now: func() time.Time { return at },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.Code.Tag != "unknown" {
+		t.Errorf("code.tag = %q, want unknown when describe failed", tenant.Code.Tag)
+	}
+	var detail string
+	for _, f := range findings {
+		if f.Code == doctor.WorktreeGitdirUnreadable {
+			detail = f.Detail
+		}
+	}
+	if detail == "" {
+		t.Fatalf("no %s finding: %v", doctor.WorktreeGitdirUnreadable, codes(findings))
+	}
+	for _, want := range []string{wt + ": git describe failed", "dubious ownership"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("finding detail %q does not mention %q", detail, want)
+		}
+	}
+	if strings.Contains(detail, "\n") {
+		t.Errorf("finding detail is not one line: %q", detail)
+	}
+}
+
 func countCode(findings []model.Finding, code string) int {
 	n := 0
 	for _, f := range findings {

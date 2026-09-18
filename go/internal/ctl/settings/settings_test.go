@@ -39,7 +39,13 @@ func TestClassify(t *testing.T) {
 		"EMBEDDING_MODEL": Public, "EMBEDDING_MODEL_DIM": Public, "RERANK_ENABLED": Public, "LLM_MODEL": Public,
 		"REQUIRE_DURABLE_BACKENDS": Public, "MAX_DOCUMENT_BYTES": Public, "LOG_LEVEL": Public, "INGEST_BACKEND": Public,
 		"GOWE_WORKER_GROUP": Public, "NEO4J_USER": Public, "MAX_COLLECTIONS_PER_OWNER": Public, "MAX_CHUNKS_PER_COLLECTION": Public,
-		"ALLOW_USER_COLLECTION_CREATE": Public, "RATE_LIMIT_COLLECTIONS_CREATE_PER_HOUR": Public, "RATE_LIMIT_INGEST_PER_HOUR": Public,
+		// A comma-separated list of chunk-method names (#609, #615) — no
+		// credential, and the one setting an operator has to change at a worker
+		// image roll, so it must stay editable through the typed env API rather
+		// than fall through to Unsupported (where `env set` would refuse it and
+		// adopt would record it as drift).
+		"INGEST_WORKER_UNSUPPORTED_METHODS": Public,
+		"ALLOW_USER_COLLECTION_CREATE":      Public, "RATE_LIMIT_COLLECTIONS_CREATE_PER_HOUR": Public, "RATE_LIMIT_INGEST_PER_HOUR": Public,
 		"QDRANT_COLLECTION_EXPLICIT": Public, "ELASTICSEARCH_INDEX": Public, "QDRANT_TIMEOUT": Public, "ELASTICSEARCH_TIMEOUT": Public,
 		"DEFAULT_COLLECTION_ID": Public, "CHUNK_METHOD": Public, "CHUNK_SIZE": Public, "CHUNK_OVERLAP": Public,
 		"DOI_ENRICHMENT_ENABLED": Public, "DOI_ENRICHMENT_MAILTO": Public, "RETRIEVAL_DEMOTE_BOILERPLATE": Public,

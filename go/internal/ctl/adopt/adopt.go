@@ -1000,6 +1000,11 @@ func (p *previewer) jsonMap(key string) map[string]string {
 
 // --------------------------------------------------------------- code / ui
 
+// gitStderrDetailMax is how much of git's stderr a finding's detail carries.
+// Enough for the first sentence of a dubious-ownership refusal, which is the
+// one that matters, and short enough that a finding stays one line.
+const gitStderrDetailMax = 200
+
 func (p *previewer) code() registry.Code {
 	c := registry.Code{Tag: "unknown"}
 	g, err := p.host.Gitdir(p.worktree)
@@ -1012,7 +1017,17 @@ func (p *previewer) code() registry.Code {
 	}
 	tag, err := p.host.GitDescribe(p.worktree)
 	if err != nil || tag == "" {
-		p.warn(doctor.WorktreeGitdirUnreadable, fmt.Sprintf("%s: git describe failed; code.tag recorded as unknown", p.worktree))
+		// Carry git's own sentence (#611). "git describe failed" named the
+		// symptom and hid every cause it could have — a dubious-ownership
+		// refusal, a repository that is not one, an empty object database —
+		// and an operator who cannot re-run the command as the service
+		// account had nothing to go on. It is a diagnostic, not a value out
+		// of tenant.env, so there is nothing here to redact.
+		detail := fmt.Sprintf("%s: git describe failed; code.tag recorded as unknown", p.worktree)
+		if why := hostfacts.StderrOf(err, gitStderrDetailMax); why != "" {
+			detail += ": " + why
+		}
+		p.warn(doctor.WorktreeGitdirUnreadable, detail)
 		return c
 	}
 	c.Tag = tag
