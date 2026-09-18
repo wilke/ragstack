@@ -506,6 +506,20 @@ class Settings(BaseSettings):
     # token; nothing is staged on the API host. Needs a bearer (BV-BRC) caller
     # and a registered collection — an API-key principal gets 401.
     ingest_backend: str = "local"           # local | gowe
+    # Chunk methods this deployment's OUT-OF-PROCESS ingest cannot run, refused at
+    # POST /v1/collections and at submit with a 422 naming what does work (#609).
+    #
+    # A DEPLOYMENT setting, not a code constant, because the thing it describes is
+    # "which tool image does this tenant's worker group run" — the API and the
+    # worker fleet release and roll separately, and this host has two worker image
+    # directories, so a constant is wrong for one of them by construction. Flip it
+    # per tenant through ragstack-ctl once an image carrying the semantic wiring is
+    # rolled; flip it back, with no release, if the load check says no.
+    #
+    # Empty string = nothing is refused. Names are validated against CHUNK_METHODS
+    # at read time, so a typo here fails loudly rather than silently guarding
+    # nothing.
+    ingest_worker_unsupported_methods: str = "semantic,semantic_pooled"
     # GoWe engine connection + workflow (used only when ingest_backend=gowe).
     gowe_url: str = "http://localhost:8091"
     gowe_token: str = ""                     # empty → GoWeClient loads a BV-BRC token file

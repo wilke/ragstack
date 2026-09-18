@@ -20,7 +20,7 @@ the segmentation-cache fingerprint).
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.tokenization import (
@@ -44,10 +44,34 @@ from ragstack.ingestion.tokenization import (
 #: them 20 documents at a time, with retries that cannot help. One constant means
 #: wiring the bridge re-opens all three call sites at once instead of leaving a
 #: guard behind to refuse work the tool can now do.
-SHARD_UNSUPPORTED_METHODS: frozenset[str] = frozenset({"semantic", "semantic_pooled"})
+#: The chunk methods that detect boundaries by EMBEDDING, and therefore need an
+#: ``embed_fn``.
+#:
+#: The single source of this membership test. It was written out by hand in at
+#: least five places (``api/deps.py`` ``_embed_fn_for``, ``routers/collections.py``,
+#: ``ingest_jsonl.py`` twice, and the constant below), which is how a method gets
+#: silently dropped to a different chunker when the set changes: a missed site does
+#: not fail, it chunks differently. That matters most for a rename — the owner has
+#: deferred ``semantic`` -> ``semantic_window`` (docs/plans/chunking-one-factory.md
+#: §7d), and this constant is what keeps that a one-line change instead of a
+#: five-site hunt.
+SEMANTIC_METHODS: tuple[str, ...] = ("semantic", "semantic_pooled")
 
 
-def shard_supported_methods() -> tuple[str, ...]:
+def needs_embed_fn(method: str | None) -> bool:
+    """Does ``method`` detect boundaries by embedding, and so need an ``embed_fn``?"""
+    return method in SEMANTIC_METHODS
+
+
+#: Default for ``Settings.ingest_worker_unsupported_methods`` — see
+#: :func:`shard_refusal`. A DEFAULT, not a fact about the library: which methods a
+#: worker can run is a property of the deployed image, not of this source tree.
+SHARD_UNSUPPORTED_METHODS: frozenset[str] = frozenset(SEMANTIC_METHODS)
+
+
+def shard_supported_methods(
+    unsupported: Collection[str] = SHARD_UNSUPPORTED_METHODS,
+) -> tuple[str, ...]:
     """The chunk methods the shard ingest *can* perform, in ``CHUNK_METHODS`` order.
 
     Derived by subtraction rather than listed, so a method added to
@@ -55,23 +79,58 @@ def shard_supported_methods() -> tuple[str, ...]:
     second edit — the failure mode of a hand-kept list is that it silently stops
     naming a method the tool actually supports.
     """
-    return tuple(m for m in CHUNK_METHODS if m not in SHARD_UNSUPPORTED_METHODS)
+    return tuple(m for m in CHUNK_METHODS if m not in unsupported)
 
 
-def shard_refusal(method: str | None) -> str | None:
-    """Why the shard ingest cannot chunk ``method``, or ``None`` when it can.
+def parse_unsupported_methods(raw: str | None) -> frozenset[str]:
+    """Parse ``INGEST_WORKER_UNSUPPORTED_METHODS`` into a validated set.
 
-    One message for the tool's ``SystemExit`` and for the API's 422 body, so a
+    Empty/unset means nothing is refused — the state after an image carrying the
+    wiring is rolled and the tenant is flipped.
+
+    A name that is not a real chunk method raises. A typo would otherwise guard
+    nothing while looking exactly like a guard that works, which is the failure
+    mode this whole issue is about: the refusal is a *safety* mechanism, and a
+    safety mechanism that silently does nothing is worse than none.
+    """
+    if not raw or not raw.strip():
+        return frozenset()
+    names = frozenset(n.strip() for n in raw.split(",") if n.strip())
+    unknown = sorted(names - set(CHUNK_METHODS))
+    if unknown:
+        raise ValueError(
+            f"INGEST_WORKER_UNSUPPORTED_METHODS names {', '.join(unknown)}, which "
+            f"{'is not a chunk method' if len(unknown) == 1 else 'are not chunk methods'}; "
+            f"valid: {', '.join(CHUNK_METHODS)}"
+        )
+    return names
+
+
+def shard_refusal(
+    method: str | None, *, unsupported: Collection[str] = SHARD_UNSUPPORTED_METHODS
+) -> str | None:
+    """Why the out-of-process ingest cannot chunk ``method``, or ``None`` when it can.
+
+    One message for the API's 422 body and for any tool that refuses locally, so a
     user who hits this from the browser and an operator who hits it from the CLI
     read the same sentence and can find the same issue.
+
+    ``unsupported`` is passed in rather than read from the module constant because
+    **which methods a worker can run is a property of the deployed image, not of
+    this source tree**. The API and the worker fleet are released and rolled
+    separately; a constant can only be right for one fleet at a time, and this
+    host runs two worker image directories. Callers pass
+    ``settings.ingest_worker_unsupported_methods``, which ragstack-ctl can flip
+    per tenant once an image carrying the wiring is rolled — and flip back, without
+    a release, if the load check says no.
     """
-    if method is None or method not in SHARD_UNSUPPORTED_METHODS:
+    if method is None or method not in unsupported:
         return None
     return (
         f"chunk_method={method!r} is not yet wired for out-of-process bulk ingest: "
         f"it embeds sentence buffers while chunking and the shard step builds no "
         f"embedding bridge (issue #609). Supported on this path: "
-        f"{', '.join(shard_supported_methods())}."
+        f"{', '.join(shard_supported_methods(unsupported))}."
     )
 
 

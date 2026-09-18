@@ -48,8 +48,9 @@ import httpx
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
-from ragstack.ingestion.chunker_config import build_chunker, shard_refusal
+from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
+from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
@@ -69,21 +70,53 @@ def _build_embedder(args, http: httpx.AsyncClient):
     )
 
 
-def _build_chunker(args):
+def _semantic_params(spec) -> dict:
+    """The semantic tunables, **from the registry entry** — never from a CLI flag.
+
+    ``_gowe_inputs`` sends ``chunk_method``/``chunk_size``/``chunk_overlap`` as
+    workflow inputs but has never sent ``chunk_params``, so ``buffer_size``,
+    ``breakpoint_percentile_threshold`` and ``min_chunk_length`` silently fell back
+    to this tool's defaults. Harmless so far — every semantic collection carries
+    ``{}`` and the defaults coincide (3 / 80.0 / 500) — but semantic is the first
+    method where those values change the output, so a collection created with
+    ``buffer_size=5`` must be ingested with 5.
+
+    Deliberately NOT a CWL input: a submission's ``submitted_inputs`` is an
+    immutable, UI-rendered, plaintext snapshot, and a second source for a value
+    that is part of collection identity is exactly how #609 happened. The entry is
+    the one source.
+
+    A bad value raises here rather than reaching ``make_chunker`` as a TypeError
+    mid-shard, so the task fails at configuration with a message naming the key.
+    """
+    params = dict(getattr(spec, "chunk_params", None) or {}) if spec is not None else {}
+    out: dict = {}
+    for key, cast in (("buffer_size", int), ("breakpoint_percentile", float),
+                      ("min_chunk_length", int)):
+        # The API's contract spells the percentile `breakpoint_percentile_threshold`
+        # (routers/collections.py SEMANTIC_PARAM_BOUNDS); build_chunker's kwarg is
+        # `breakpoint_percentile`. Accept the contract's spelling, which is what a
+        # collection actually records.
+        src = "breakpoint_percentile_threshold" if key == "breakpoint_percentile" else key
+        if params.get(src) is None:
+            continue
+        try:
+            out[key] = cast(params[src])
+        except (TypeError, ValueError):
+            raise SystemExit(
+                f"collection chunk_params[{src!r}] must be a number; got {params[src]!r}"
+            ) from None
+    return out
+
+
+def _build_chunker(args, spec=None, embed_fn=None):
     """Chunker via the shared factory (fixed_token token-window included).
 
-    Semantic methods are **not yet wired** here: they need the breakpoint embed
-    bridge, which this tool does not build. The refusal text and the set of
-    methods it covers come from
-    :data:`~ragstack.ingestion.chunker_config.SHARD_UNSUPPORTED_METHODS`, NOT from
-    a local ``startswith("semantic")`` — the API guards a create and a submit on
-    that same constant, and #609 is what a disagreement between them costs. When
-    step 3 builds the bridge, emptying the constant re-opens the tool and both API
-    guards together.
+    ``embed_fn`` is the breakpoint bridge, required by the semantic methods and
+    built by :func:`amain` (see there for why it is not built in here). Passing
+    ``None`` for a semantic method reaches ``make_chunker``'s own
+    ``requires an embed_fn`` refusal rather than being silently demoted.
     """
-    refusal = shard_refusal(args.chunk_method)
-    if refusal is not None:
-        raise SystemExit(refusal)
     chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -93,11 +126,21 @@ def _build_chunker(args):
         max_tokens=args.chunk_max_tokens,
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
+        embed_fn=embed_fn,
+        # Only for the methods that HAVE semantic params. `_validate_chunk`
+        # range-checks `params` solely for the semantic methods, but
+        # `create_collection` persists them for any method — so a `fixed`
+        # collection can legitimately carry junk in `chunk_params`, and reading it
+        # unconditionally turned that into a refused shard. Before this commit the
+        # tool never read the spec at all, so that would have been a regression on
+        # the path every current collection uses.
+        **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
     )
     return chunker
 
 
-async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> IngestionPipeline:
+async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
+                          embed_fn=None) -> IngestionPipeline:
     # Guard the half-ingest footgun: a qdrant vector store with an in-memory text
     # index (or vice versa) would silently write only one leg. Require both real
     # or both in-memory.
@@ -106,7 +149,8 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
             "vector-backend and text-backend must be consistent (both durable or "
             f"both in-memory); got vector={args.vector_backend} text={args.text_backend}"
         )
-    chunker = _build_chunker(args)  # fail fast on a bad chunk config, before any I/O
+    # fail fast on a bad chunk config, before any I/O
+    chunker = _build_chunker(args, getattr(target, "spec", None), embed_fn=embed_fn)
     embedder = _build_embedder(args, http)
     if args.vector_backend == "memory":
         vstore = InMemoryVectorStore()
@@ -144,16 +188,56 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
                                  args.boilerplate, args.boilerplate_config))
 
 
+def _build_bridge(args) -> SyncEmbedBridge:
+    """The breakpoint embed bridge for a semantic shard.
+
+    It embeds with the SAME ``--embedding-*`` backend the shard stores vectors
+    with — which, on the GoWe path, is the collection's own endpoints (the API
+    sends them as ``embedding_url``). That is the rule ``deps._embed_bridge_for``
+    already applies in-process: detecting boundaries with a different model than
+    the one storing the chunks would make the boundaries unrelated to the
+    embedding space they are supposed to describe.
+
+    No ``--breakpoint-embedding-*`` flags here, deliberately (``ingest_jsonl.py``
+    has them and keeps them): nothing on a GoWe submission can populate them, and
+    they would be a second source of a value that is part of collection identity.
+    """
+    return SyncEmbedBridge(
+        lambda http: _build_embedder(args, http),
+        batch_size=args.breakpoint_batch_size,
+        max_inflight=args.breakpoint_max_inflight,
+    )
+
+
 async def amain(args, target=None) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     report = ExtractReport.load(args.extract_report) if args.extract_report else None
-    async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
-        pipeline = await _build_pipeline(args, http, target)
-        shard_id = args.shard_id or os.path.basename(args.shard)
-        receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
-                                  embedding_file=args.embedding_file or None,
-                                  report=report, max_chunks=max(0, args.max_chunks))
+    # Built HERE and not in _build_pipeline: the bridge owns a background event
+    # loop + thread, and closing it has to outlive run_shard. Built lazily and only
+    # for the methods that embed while chunking, so a non-semantic shard — and a
+    # shard refused by _build_pipeline's own config guards — never spins a thread.
+    bridge: SyncEmbedBridge | None = (
+        _build_bridge(args) if needs_embed_fn(args.chunk_method) else None
+    )
+    try:
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
+            pipeline = await _build_pipeline(args, http, target, embed_fn=bridge)
+            shard_id = args.shard_id or os.path.basename(args.shard)
+            receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
+                                      embedding_file=args.embedding_file or None,
+                                      report=report, max_chunks=max(0, args.max_chunks))
+    finally:
+        if bridge is not None:
+            # close() can raise RuntimeError of its own: after thread.join(5.0)
+            # times out against a wedged endpoint it closes a still-running loop.
+            # Letting that escape would turn a correctly written FAILED receipt
+            # into a traceback and lose the exit code the engine classifies on.
+            # The thread is daemon=True, so an unclosed bridge cannot hang exit.
+            try:
+                bridge.close()
+            except Exception as e:  # pragma: no cover - defensive
+                print(f"[ingest_shard] embed bridge close failed: {e!r}", flush=True)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
@@ -224,6 +308,20 @@ def parse_args(argv=None):
     p.add_argument("--boilerplate-config", default="",
                    help="JSON object overriding BoilerplateConfig thresholds")
     p.add_argument("--chunk-method", default="fixed_token")
+    # Breakpoint-embed fan-out, semantic methods only. These change REQUEST
+    # GRANULARITY, not vectors: the bridge re-concatenates sub-batch results in
+    # input order, so the embeddings — and therefore the distances, breakpoints
+    # and chunk ids — are identical however they are batched. That is why they are
+    # safe as CLI knobs when the breakpoint MODEL is not (a second source for a
+    # value that is part of collection identity).
+    #
+    # They exist so #609's load check has something to turn: `max_inflight` is the
+    # only bound on concurrent breakpoint calls from one process, and there was no
+    # way to reach it.
+    p.add_argument("--breakpoint-batch-size", type=int, default=64,
+                   help="sentences/buffers per breakpoint embed call (semantic only)")
+    p.add_argument("--breakpoint-max-inflight", type=int, default=8,
+                   help="concurrent breakpoint embed calls per process (semantic only)")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)
     p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],

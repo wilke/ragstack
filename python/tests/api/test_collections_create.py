@@ -646,3 +646,54 @@ async def test_nonadmin_still_gets_403_before_the_422(client, monkeypatch):
     monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
     assert r.status_code == 403, r.text
+
+
+async def test_flipping_the_setting_admits_semantic(client, monkeypatch):
+    """The deploy interlock: the guard is a per-tenant setting, not a constant.
+
+    Emptying a code constant was the wrong lever — it also gated the shard tool's
+    own refusal, so a rolled image would still refuse and the roll could never be
+    verified before flipping; and it assumes one worker fleet when this host has
+    two image directories. With a setting, ragstack-ctl flips the tenant whose
+    image carries the wiring, and flips it back with no release if the load check
+    says no.
+    """
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    monkeypatch.setattr(settings, "ingest_worker_unsupported_methods", "")
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert r.status_code == 201, r.text
+    assert r.json()["chunk_method"] == "semantic"
+
+
+async def test_a_typo_in_the_setting_fails_the_boot(monkeypatch):
+    """A guard that silently guards nothing is worse than no guard — and the place
+    to say so is startup, not the first user's request.
+
+    An operator who mistypes this during a rollout would otherwise believe
+    semantic was blocked while every submission sailed through to a worker image
+    that cannot run it.
+    """
+    from ragstack.api.deps import _validate_production_settings
+
+    monkeypatch.setattr(settings, "ingest_worker_unsupported_methods", "semantik")
+    with pytest.raises(ValueError, match="semantik"):
+        _validate_production_settings()
+
+    # Control: the real values boot fine, so the assertion is about the typo.
+    monkeypatch.setattr(settings, "ingest_worker_unsupported_methods", "semantic,semantic_pooled")
+    _validate_production_settings()
+
+
+async def test_one_method_can_be_admitted_without_the_other(client, monkeypatch):
+    """Per-method, so `semantic_pooled` can open while the 7x legacy path stays shut."""
+    await _register(client, EMB)
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    monkeypatch.setattr(settings, "ingest_worker_unsupported_methods", "semantic")
+    pooled = await client.post(
+        "/v1/collections",
+        json={"embedding": "emb-sfr", "chunk": {"method": "semantic_pooled", "size": 512, "overlap": 0}},
+    )
+    assert pooled.status_code == 201, pooled.text
+    legacy = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": SEMANTIC})
+    assert legacy.status_code == 422, legacy.text

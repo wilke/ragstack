@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -182,10 +183,257 @@ def test_build_chunker_fixed_offline() -> None:
     assert ingest_shard._build_chunker(args) is not None  # no crash, no network
 
 
-def test_build_chunker_rejects_semantic() -> None:
-    args = ingest_shard.parse_args(["x.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1", "--chunk-method", "semantic_pooled"])
-    with pytest.raises(SystemExit, match="not yet wired"):
-        ingest_shard._build_chunker(args)
+# --------------------------------------------------------------------------- #
+# semantic chunking (#609) — the tool can do it now
+# --------------------------------------------------------------------------- #
+
+
+def _topic_embed_fn(texts):
+    """Vectors keyed on cat-vs-dog content, so a real topic shift produces a large
+    cosine distance and a breakpoint actually fires.
+
+    A constant-vector fake — which is what `_FakeEmbedder` above is — makes every
+    distance 0, so the 80th percentile is 0, nothing exceeds it, and the document
+    comes back as ONE chunk. Every assertion below would still pass while
+    breakpoint detection never ran. Same shape as
+    `tests/unit/test_chunkers_semantic.py::_topic_embed_fn`.
+    """
+    out = []
+    for t in texts:
+        tl = t.lower()
+        out.append([float(tl.count("cat")) + 0.01, float(tl.count("dog")) + 0.01])
+    return out
+
+
+def _args_for(method: str, **over):
+    argv = ["x.jsonl", "--qdrant-url", "http://127.0.0.1:1",
+            "--es-url", "http://127.0.0.1:1", "--chunk-method", method]
+    for k, v in over.items():
+        argv += [f"--{k.replace('_', '-')}", str(v)]
+    return ingest_shard.parse_args(argv)
+
+
+class _Spec:
+    """Just the attribute `_semantic_params` reads off a CollectionSpec."""
+
+    def __init__(self, chunk_params):
+        self.chunk_params = chunk_params
+
+
+@pytest.mark.parametrize("method", ["semantic", "semantic_pooled"])
+def test_build_chunker_accepts_semantic_with_a_bridge(method: str) -> None:
+    """The refusal is gone: given an embed_fn, both semantic methods build."""
+    chunker = ingest_shard._build_chunker(_args_for(method), None, embed_fn=_topic_embed_fn)
+    assert type(chunker).__name__ == "SemanticChunker"
+    assert chunker.pool_sentences is (method == "semantic_pooled")
+
+
+@pytest.mark.parametrize("method", ["semantic", "semantic_pooled"])
+def test_semantic_without_a_bridge_refuses_rather_than_demoting(method: str) -> None:
+    """Never a silent fall back to a different chunker — that would re-chunk the
+    corpus under a method nobody selected and no store records."""
+    with pytest.raises(ValueError, match="requires an embed_fn"):
+        ingest_shard._build_chunker(_args_for(method), None, embed_fn=None)
+
+
+def test_semantic_chunker_actually_splits_on_a_topic_shift() -> None:
+    """The fake must be topic-sensitive or this test is vacuous — see above."""
+    from ragstack.ingestion.loaders import Document
+
+    text = ("Cats are wonderful. Cats purr softly. Cats love to nap. "
+            "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls.")
+    # buffer_size=1 matters: at the default 3, every buffer over a 6-sentence
+    # document spans the WHOLE document, so all buffer vectors are identical, all
+    # distances are 0 and no breakpoint can fire. That is not a bug in the fake —
+    # it is the same "the test passes without exercising anything" failure the
+    # docstring above warns about, reached from the other direction.
+    chunker = ingest_shard._build_chunker(
+        _args_for("semantic_pooled"),
+        _Spec({"buffer_size": 1, "min_chunk_length": 10}),
+        embed_fn=_topic_embed_fn,
+    )
+    chunks = chunker.chunk(Document(id="d1", content=text, metadata={}, source="t"))
+    assert len(chunks) > 1, "no breakpoint fired — the embed fake is not topic-sensitive"
+    # Lossless: the spans still tile the source exactly.
+    assert "".join(text[c.start_char:c.end_char] for c in chunks) == text
+
+
+def test_chunk_params_come_from_the_registry_entry() -> None:
+    """`_gowe_inputs` never sends chunk_params, so the entry is the only source.
+
+    A collection created with buffer_size=5 must be ingested with 5; falling back
+    to the tool's default silently chunks it differently than it was specified.
+    """
+    chunker = ingest_shard._build_chunker(
+        _args_for("semantic_pooled"),
+        _Spec({"buffer_size": 5, "breakpoint_percentile_threshold": 66.0,
+               "min_chunk_length": 42}),
+        embed_fn=_topic_embed_fn,
+    )
+    assert chunker.buffer_size == 5
+    assert chunker.breakpoint_percentile_threshold == 66.0
+    assert chunker.min_chunk_length == 42
+
+    # Control: with no params the tool's defaults stand, so the assertion above
+    # is about the entry and not about whatever the defaults happen to be.
+    default = ingest_shard._build_chunker(
+        _args_for("semantic_pooled"), _Spec({}), embed_fn=_topic_embed_fn)
+    assert (default.buffer_size, default.breakpoint_percentile_threshold,
+            default.min_chunk_length) == (3, 80.0, 500)
+
+
+def test_bad_chunk_param_fails_at_config_not_mid_shard() -> None:
+    with pytest.raises(SystemExit, match="buffer_size"):
+        ingest_shard._build_chunker(
+            _args_for("semantic_pooled"), _Spec({"buffer_size": "lots"}),
+            embed_fn=_topic_embed_fn)
+
+
+class _TopicEmbedder:
+    """Async embedder with topic-sensitive vectors, for the bridge to drive."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        return _topic_embed_fn(texts)
+
+
+def _semantic_argv(shard: str, out: str, method: str = "semantic_pooled") -> list[str]:
+    return [shard, "--out", out, "--chunk-method", method,
+            "--vector-backend", "memory", "--text-backend", "memory",
+            "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1",
+            "--embedding-model", "test/model", "--chunk-token-counter", "estimate"]
+
+
+def test_amain_runs_a_semantic_shard_end_to_end(tmp_path, monkeypatch) -> None:
+    """Drives `amain` with a REAL SyncEmbedBridge — only the embedder is faked.
+
+    This is the test whose absence let a crash ship: `_build_bridge` passed
+    `args.batch_size`, an attribute this tool's parser does not define (it was
+    copied from ingest_jsonl.py, which does). Every semantic shard would have died
+    with AttributeError before any I/O — no receipt written, a traceback instead
+    of a refusal, and the engine retrying it three times.
+
+    The suite was green because the only test touching the bridge builder
+    monkeypatched it away, and nothing ran `amain` with a semantic method. So the
+    rule here is: stub the EMBEDDER, never the bridge. The bridge's own
+    construction, background loop, fan-out and close are what this exercises.
+    """
+    import asyncio
+
+    text = ("Cats are wonderful. Cats purr softly. Cats love to nap. "
+            "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls.")
+    shard = tmp_path / "s.jsonl"
+    shard.write_text(json.dumps({"text": text, "path": "/corpus/a.txt"}), encoding="utf-8")
+    out = str(tmp_path / "r.json")
+
+    embedder = _TopicEmbedder()
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: embedder)
+    args = ingest_shard.parse_args(_semantic_argv(str(shard), out))
+    # buffer_size=1: at the default 3 every buffer spans this whole document, all
+    # distances are 0 and no breakpoint can fire — see the note on the split test.
+    monkeypatch.setattr(ingest_shard, "_semantic_params",
+                        lambda spec: {"buffer_size": 1, "min_chunk_length": 10})
+
+    rc = asyncio.run(ingest_shard.amain(args))
+
+    assert rc == 0
+    receipt = json.loads(Path(out).read_text())
+    assert receipt["status"] == COMPLETED
+    assert receipt["n_chunks"] > 1, "the semantic chunker did not split"
+    assert embedder.calls >= 2, "breakpoint embed never happened"
+    # The bridge's background thread is gone: the `finally` ran and close() worked.
+    assert [t for t in threading.enumerate() if "embed" in t.name.lower()] == []
+
+
+def test_amain_closes_the_bridge_when_the_shard_fails(tmp_path, monkeypatch) -> None:
+    """A failing shard must still leave no thread behind — and still write its
+    receipt, because that is what the engine classifies on."""
+    import asyncio
+
+    class _Boom:
+        async def embed(self, texts):
+            raise RuntimeError("fleet down")
+
+    shard = tmp_path / "s.jsonl"
+    shard.write_text(json.dumps({"text": "Cats nap. Dogs bark.", "path": "/c/a.txt"}),
+                     encoding="utf-8")
+    out = str(tmp_path / "r.json")
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Boom())
+    args = ingest_shard.parse_args(_semantic_argv(str(shard), out))
+
+    rc = asyncio.run(ingest_shard.amain(args))
+
+    assert rc == 1
+    assert json.loads(Path(out).read_text())["status"] == FAILED
+    assert [t for t in threading.enumerate() if "embed" in t.name.lower()] == []
+
+
+def test_amain_survives_a_close_that_raises(tmp_path, monkeypatch) -> None:
+    """close() raises after thread.join times out against a wedged endpoint.
+
+    Letting that escape would turn a correctly written receipt into a traceback
+    and lose the exit code the engine classifies on.
+    """
+    import asyncio
+
+    from ragstack.ingestion.embed_bridge import SyncEmbedBridge
+
+    shard = tmp_path / "s.jsonl"
+    shard.write_text(json.dumps({"text": "Cats nap. Dogs bark.", "path": "/c/a.txt"}),
+                     encoding="utf-8")
+    out = str(tmp_path / "r.json")
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _TopicEmbedder())
+    real_close = SyncEmbedBridge.close
+
+    def _angry(self):
+        real_close(self)
+        raise RuntimeError("event loop is running")
+
+    monkeypatch.setattr(SyncEmbedBridge, "close", _angry)
+    args = ingest_shard.parse_args(_semantic_argv(str(shard), out))
+
+    rc = asyncio.run(ingest_shard.amain(args))
+
+    assert rc == 0
+    assert json.loads(Path(out).read_text())["status"] == COMPLETED
+
+
+def test_non_semantic_shard_builds_no_bridge(tmp_path, monkeypatch) -> None:
+    """A fixed_token shard must not spin a background loop + thread it never uses.
+
+    Asserted through `amain`, not by stubbing `_build_bridge` and checking a list
+    that could not have been appended to — which is what the first version of this
+    test did, and why it proved nothing.
+    """
+    import asyncio
+
+    def _explode(args):
+        raise AssertionError("built a breakpoint bridge for a non-semantic method")
+
+    monkeypatch.setattr(ingest_shard, "_build_bridge", _explode)
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _FakeEmbedder())
+    shard = _shard(tmp_path, "s.jsonl", n=2)
+    out = str(tmp_path / "r.json")
+    args = ingest_shard.parse_args(
+        _semantic_argv(shard, out, method="fixed") )
+
+    rc = asyncio.run(ingest_shard.amain(args))
+
+    assert rc == 0
+    assert json.loads(Path(out).read_text())["status"] == COMPLETED
+
+
+def test_non_semantic_method_ignores_junk_chunk_params() -> None:
+    """`_validate_chunk` range-checks params only for the semantic methods, but
+    create_collection persists them for any method — so a `fixed` collection can
+    carry junk. Reading it unconditionally refused a shard on the path every
+    current collection actually uses."""
+    chunker = ingest_shard._build_chunker(
+        _args_for("fixed"), _Spec({"buffer_size": "lots"}))
+    assert type(chunker).__name__ == "RecursiveCharacterChunker"
 
 
 @pytest.mark.asyncio

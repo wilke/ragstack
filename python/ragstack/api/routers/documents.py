@@ -62,7 +62,7 @@ from ragstack.ingestion.chunk_cap import (
     effective_chunk_cap,
     is_cap_refusal,
 )
-from ragstack.ingestion.chunker_config import shard_refusal
+from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
     GoWeBackend,
@@ -535,7 +535,10 @@ def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
     The method-less entries are the ones registered by the bulk CLI or by hand.
     """
     method = entry.chunk_method or settings.chunk_method
-    refusal = shard_refusal(method)
+    refusal = shard_refusal(
+        method,
+        unsupported=parse_unsupported_methods(settings.ingest_worker_unsupported_methods),
+    )
     if refusal is not None:
         raise HTTPException(status_code=422, detail=refusal)
 

@@ -71,7 +71,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
@@ -506,7 +506,7 @@ async def run(
     # them a SyncEmbedBridge that builds its own BREAKPOINT embedder on a background
     # loop. Built only for the semantic methods; closed at run() exit.
     embed_bridge: SyncEmbedBridge | None = None
-    if args.chunk_method in ("semantic", "semantic_pooled"):
+    if needs_embed_fn(args.chunk_method):
         # The breakpoint embedder defaults to the main --embedding-* backend, but
         # --breakpoint-embedding-* can route boundary detection to a separate,
         # cheaper (e.g. GPU-served BGE) model while stored chunks keep the main
@@ -1121,7 +1121,7 @@ async def run(
     manifest_dir = getattr(args, "manifest_dir", "") or os.getenv("COLLECTION_MANIFEST_DIR", "")
     if manifest_dir and not args.no_index:
         params: dict[str, Any] = {}
-        if args.chunk_method in ("semantic", "semantic_pooled"):
+        if needs_embed_fn(args.chunk_method):
             params = {
                 "breakpoint_percentile": args.chunk_breakpoint_percentile,
                 "buffer_size": args.chunk_buffer_size,
