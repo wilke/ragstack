@@ -147,15 +147,14 @@ check measures for `semantic` is what that user gets.
 `completed` → chunk count > 0 in **both** stores, metadata as the API path
 produces.
 
-## 7b. Naming the two semantic methods (owner decision, 2026-09-18)
+## 7b. The two semantic methods, and why naming is POSTPONED
 
-They are **not** synonyms. One boolean in `make_chunker` separates them and it
-changes two things:
+They are **not** synonyms. One boolean in `make_chunker` separates them:
 
-| | legacy `semantic` | `semantic_pooled` |
+| | `semantic` | `semantic_pooled` |
 |---|---|---|
 | embedded input | each overlapping **buffer text** (`2*buffer_size+1` sentences, re-embedded per position) | each **sentence once**, mean-pooled over the same window |
-| embed tokens | ~7× the document at `buffer_size=3` | ~1× |
+| embed tokens | ~7x the document at `buffer_size=3` | ~1x |
 | `distance_round` | `None` (raw cosine) | `6` decimals before the percentile |
 
 Everything downstream is the same code. Whether they produce the same
@@ -163,54 +162,62 @@ Everything downstream is the same code. Whether they produce the same
 linear in its input, and cross-sentence attention is what pooling discards), but
 the breakpoint rule consumes only the **percentile rank** of consecutive
 distances, so equal boundaries need rank-order preservation, not equal vectors.
-Plausible; unproven. **No test compares them** —
-`test_chunkers_semantic.py` asserts pooled's own invariants only.
+Plausible; unproven. **No test compares them** — `test_chunkers_semantic.py`
+asserts pooled's own invariants only.
 
-### The decision
+### Decision (owner, 2026-09-18): keep both, change no names yet
 
-* **`semantic_window`** — embed the overlapping window text.
-* **`semantic_pooled`** — embed sentences, pool the vectors. **The default** for
-  new collections, the CWL enum default, and the only one the UI recommends.
-* **`semantic` is a permanent accepted alias for `semantic_window`.** Never
-  repointed at pooled.
+* Both methods stay supported. The names stay `semantic` and `semantic_pooled`.
+* `semantic_pooled` becomes the **recommended default for new collections** —
+  a settings/CWL-default/docs change, which costs nothing in code.
+* The rename to `semantic_window` / `semantic_pooled` is **deferred** to keep
+  this change small. It is not abandoned; §7d records the path.
 
-Why the alias is permanent rather than a migration: `asm-semantic` on hackathon
-holds **6,718,269 points in both stores**, recorded as `semantic`, and it is not
-routed — it really lives in hackathon's own Qdrant. Repointing the keyword would
-leave a populated collection whose spec names an algorithm that did not produce
-its chunks (the ADR-0002 failure); dropping the keyword would make that
-collection permanently impossible to ingest into. Reads and restore are
-unaffected either way — neither builds a chunker.
+### Why the names are wrong, for whoever picks this up
 
-`semantic` therefore stays in `CHUNK_METHODS` **and in the CWL enum**, or ingest
-into `asm-semantic` would be refused at submission.
+`semantic` reads as canonical when it is the expensive legacy path, and
+`semantic_pooled` reads as a variant when both are equally semantic. What
+actually differs is *how the boundary signal is embedded* — which is what the
+names should say.
 
-### Where the alias has to be taught
+## 7d. The path to renaming later
 
-Three exact-string comparisons would otherwise treat the two spellings as a
-mismatch:
+Recorded now so the option stays cheap. The rename is an **alias**, never a
+repoint:
 
-1. `make_chunker` — accepts all three spellings; `semantic`/`semantic_window`
-   build with `pool_sentences=False`, `semantic_pooled` with `True`.
+* `semantic_window` becomes the preferred spelling; `semantic` stays accepted
+  **permanently** as an alias for it; `semantic` is never repointed at pooled.
+* Why permanent: `asm-semantic` on hackathon holds **6,718,269 points in both
+  stores**, recorded as `semantic`, in hackathon's own (unrouted) Qdrant.
+  Repointing the keyword would leave a populated collection whose spec names an
+  algorithm that did not produce its chunks (the ADR-0002 failure); dropping the
+  keyword would make that collection permanently impossible to ingest into.
+  Reads and restore are unaffected either way — neither builds a chunker.
+
+**Three exact-string comparisons would have to learn the alias:**
+
+1. `make_chunker` — the dispatch itself.
 2. `IngestTarget.check_build` (`ops/ingest_target.py:128`) does
-   `cmp("chunk_method", spec.chunk_method, chunk_method)` on raw strings — a
+   `cmp("chunk_method", spec.chunk_method, chunk_method)` on raw strings, so a
    `semantic` registry row against a `semantic_window` CLI value would **exit 2**.
-   Canonicalise both sides before comparing.
-3. Every `method in ("semantic", "semantic_pooled")` test — `deps._embed_fn_for`,
-   `routers/collections.py:315`, `ingest_jsonl.py:509,1124`,
-   `chunker_config.SHARD_UNSUPPORTED_METHODS`. The set now has three members, so
-   the shared `SEMANTIC_METHODS` constant stops being a nicety.
+3. Every `method in ("semantic", "semantic_pooled")` membership test.
 
-**`chunk_descriptor` is deliberately NOT canonicalised.** It feeds
-`collection_name` (the content address) and `spec_hash`, and `spec_hash` is
-stamped on Workspace folders and archive manifests. Changing what
-`chunk_descriptor("semantic", ...)` returns would move `asm-semantic`'s hash
-under 6.7M existing points. The cost of leaving it alone is that a *new,
-unnamed* corpus created as `semantic` and one created as `semantic_window`
-content-address to two stores despite being the same algorithm — marginal, since
-named libraries fold their id in anyway and nothing new should be created as
-`semantic`. New collections are normalised to `semantic_window` on create;
-existing rows are never rewritten.
+**And one place it must NOT go:** `chunk_descriptor` feeds `collection_name`
+(the content address) and `spec_hash`, and `spec_hash` is stamped on Workspace
+folders and archive manifests. Canonicalising it would move `asm-semantic`'s hash
+under 6.7M existing points. Leave it; the cost is that a new *unnamed* corpus
+created under each spelling content-addresses to two stores despite being one
+algorithm — marginal, since named libraries fold their id in anyway.
+
+**What makes this cheap later, and is worth doing NOW:** a single
+`SEMANTIC_METHODS` constant. The membership test is currently written out by hand
+in at least five places (`api/deps.py` `_embed_fn_for`, `routers/collections.py:315`,
+`ingest_jsonl.py:509` and `:1124`, `chunker_config.SHARD_UNSUPPORTED_METHODS`).
+With one constant, adding a third spelling is a one-line change; without it, the
+rename is a five-site hunt in which a missed site silently drops a method to a
+different chunker. This is already part of the consolidation (§8) — it is pulled
+forward not as extra scope but because it is the thing that keeps the deferred
+decision reversible.
 
 ## 7c. The comparison run
 
