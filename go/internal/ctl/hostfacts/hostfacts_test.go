@@ -2,10 +2,14 @@ package hostfacts
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -266,6 +270,107 @@ func TestGitdirClassification(t *testing.T) {
 	}
 	if g, _ := r.Gitdir(filepath.Join(root, "no-such-worktree")); g.Location != GitdirUnreadable {
 		t.Errorf("missing worktree: %+v, want unreadable", g)
+	}
+}
+
+// TestGitDescribeReadsAWorktreeOwnedByAnotherAccount is #611, against the real
+// git on this host.
+//
+// A tenant worktree is wilke's and the ctl runs as the service account, so
+// every describe the ctl makes is a read of a repository git considers to be
+// of "dubious ownership" — the exact case GIT_TEST_ASSUME_DIFFERENT_OWNER
+// exists to simulate without a second uid. The control arm runs the argv this
+// package USED to build and requires it to fail, so a git that does not
+// enforce the check cannot leave the fixed arm proving nothing.
+func TestGitDescribeReadsAWorktreeOwnedByAnotherAccount(t *testing.T) {
+	if _, err := os.Stat(binGit); err != nil {
+		t.Skipf("no git at %s", binGit)
+	}
+	wt := t.TempDir()
+	home := t.TempDir() // never the developer's ~/.gitconfig
+	base := append(os.Environ(),
+		"HOME="+home, "GIT_CONFIG_NOSYSTEM=1", "LC_ALL=C",
+		"GIT_AUTHOR_NAME=ctl", "GIT_AUTHOR_EMAIL=ctl@example.invalid",
+		"GIT_COMMITTER_NAME=ctl", "GIT_COMMITTER_EMAIL=ctl@example.invalid",
+	)
+	run := func(env []string, args ...string) (string, error) {
+		cmd := exec.Command(binGit, args...)
+		cmd.Dir, cmd.Env = wt, env
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "."},
+		{"commit", "-q", "--allow-empty", "-m", "seed"},
+		{"tag", "v1.6.2"},
+	} {
+		if out, err := run(base, args...); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	// As the owner — the `adopt` that works today, run by wilke.
+	r := &Real{}
+	if got, err := r.GitDescribe(wt); err != nil || got != "v1.6.2" {
+		t.Fatalf("GitDescribe as the owner = %q, %v; want v1.6.2", got, err)
+	}
+
+	asOther := append(base, "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	// Control: the argv without `-c safe.directory=*`, which is what the ctl
+	// ran before this fix.
+	out, err := run(asOther, "-C", wt, "describe", "--tags", "--always")
+	if err == nil {
+		t.Skipf("this git does not enforce the ownership check under GIT_TEST_ASSUME_DIFFERENT_OWNER (%q); the fixed arm would prove nothing", out)
+	}
+	if !strings.Contains(out, "dubious ownership") {
+		t.Fatalf("expected a dubious-ownership refusal, got %v: %s", err, out)
+	}
+
+	// Fixed: the argv the package builds now reads the same repository.
+	out, err = run(asOther, gitDescribeArgv(wt)...)
+	if err != nil {
+		t.Fatalf("GitDescribe's argv still refuses another account's worktree: %v: %s", err, out)
+	}
+	if out != "v1.6.2" {
+		t.Errorf("describe = %q, want v1.6.2", out)
+	}
+}
+
+// TestStderrOf is what a finding's detail gets to say (#611): git's own
+// sentence, on one line, bounded.
+func TestStderrOf(t *testing.T) {
+	if got := StderrOf(nil, 200); got != "" {
+		t.Errorf("StderrOf(nil) = %q, want empty", got)
+	}
+	ce := &CmdError{
+		Prog: "git", Args: []string{"-C", "/rag/repos/tenants/dev", "describe"},
+		Stderr: "fatal: detected dubious ownership in repository at '/rag/repos/tenants/dev'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /rag/repos/tenants/dev",
+		Err:    errors.New("exit status 128"),
+	}
+	got := StderrOf(ce, 200)
+	if !strings.HasPrefix(got, "fatal: detected dubious ownership in repository at '/rag/repos/tenants/dev'") {
+		t.Errorf("StderrOf lost git's sentence: %q", got)
+	}
+	if strings.ContainsAny(got, "\n\t") {
+		t.Errorf("a finding detail is one line: %q", got)
+	}
+	if len(got) > 200+len("…") {
+		t.Errorf("StderrOf(%d bytes) is unbounded: %q", len(got), got)
+	}
+	// A wrapped CmdError still yields the stderr, and the argv and exit status
+	// stay in the error's own message.
+	if got := StderrOf(fmt.Errorf("code: %w", ce), 200); !strings.HasPrefix(got, "fatal: detected dubious") {
+		t.Errorf("wrapped CmdError = %q", got)
+	}
+	if !strings.Contains(ce.Error(), "exit status 128") {
+		t.Errorf("CmdError.Error lost the exit status: %q", ce.Error())
+	}
+	// Any other error still explains itself rather than going silent.
+	if got := StderrOf(errors.New("context deadline exceeded"), 200); got != "context deadline exceeded" {
+		t.Errorf("plain error = %q", got)
+	}
+	if got := StderrOf(errors.New(strings.Repeat("x", 500)), 10); got != strings.Repeat("x", 10)+"…" {
+		t.Errorf("truncation = %q", got)
 	}
 }
 

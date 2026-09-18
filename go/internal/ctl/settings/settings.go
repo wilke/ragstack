@@ -183,6 +183,14 @@ var public = set(
 	"INGEST_BACKEND",
 	"INGEST_CONCURRENCY",
 	"INGEST_SHARD_SIZE",
+	// The chunk methods this tenant's OUT-OF-PROCESS ingest refuses (#609): a
+	// comma-separated list of CHUNK_METHOD names, with no credential in it, and
+	// a DEPLOYMENT fact rather than a code constant — which methods a worker can
+	// run is a property of the rolled tool image, and the API and the worker
+	// fleet release separately. Public so an operator can flip it per tenant
+	// through the typed env API the moment an image carrying the semantic wiring
+	// lands, and flip it back with no release if the load check says no.
+	"INGEST_WORKER_UNSUPPORTED_METHODS",
 	"JOB_STORE_BACKEND",
 	"KG_EXTRACTION_ENABLED",
 	"KG_EXTRACTION_MAX_CHUNKS",
