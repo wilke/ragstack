@@ -147,6 +147,93 @@ check measures for `semantic` is what that user gets.
 `completed` → chunk count > 0 in **both** stores, metadata as the API path
 produces.
 
+## 7b. Naming the two semantic methods (owner decision, 2026-09-18)
+
+They are **not** synonyms. One boolean in `make_chunker` separates them and it
+changes two things:
+
+| | legacy `semantic` | `semantic_pooled` |
+|---|---|---|
+| embedded input | each overlapping **buffer text** (`2*buffer_size+1` sentences, re-embedded per position) | each **sentence once**, mean-pooled over the same window |
+| embed tokens | ~7× the document at `buffer_size=3` | ~1× |
+| `distance_round` | `None` (raw cosine) | `6` decimals before the percentile |
+
+Everything downstream is the same code. Whether they produce the same
+*boundaries* is unknown: the vectors necessarily differ (a transformer is not
+linear in its input, and cross-sentence attention is what pooling discards), but
+the breakpoint rule consumes only the **percentile rank** of consecutive
+distances, so equal boundaries need rank-order preservation, not equal vectors.
+Plausible; unproven. **No test compares them** —
+`test_chunkers_semantic.py` asserts pooled's own invariants only.
+
+### The decision
+
+* **`semantic_window`** — embed the overlapping window text.
+* **`semantic_pooled`** — embed sentences, pool the vectors. **The default** for
+  new collections, the CWL enum default, and the only one the UI recommends.
+* **`semantic` is a permanent accepted alias for `semantic_window`.** Never
+  repointed at pooled.
+
+Why the alias is permanent rather than a migration: `asm-semantic` on hackathon
+holds **6,718,269 points in both stores**, recorded as `semantic`, and it is not
+routed — it really lives in hackathon's own Qdrant. Repointing the keyword would
+leave a populated collection whose spec names an algorithm that did not produce
+its chunks (the ADR-0002 failure); dropping the keyword would make that
+collection permanently impossible to ingest into. Reads and restore are
+unaffected either way — neither builds a chunker.
+
+`semantic` therefore stays in `CHUNK_METHODS` **and in the CWL enum**, or ingest
+into `asm-semantic` would be refused at submission.
+
+### Where the alias has to be taught
+
+Three exact-string comparisons would otherwise treat the two spellings as a
+mismatch:
+
+1. `make_chunker` — accepts all three spellings; `semantic`/`semantic_window`
+   build with `pool_sentences=False`, `semantic_pooled` with `True`.
+2. `IngestTarget.check_build` (`ops/ingest_target.py:128`) does
+   `cmp("chunk_method", spec.chunk_method, chunk_method)` on raw strings — a
+   `semantic` registry row against a `semantic_window` CLI value would **exit 2**.
+   Canonicalise both sides before comparing.
+3. Every `method in ("semantic", "semantic_pooled")` test — `deps._embed_fn_for`,
+   `routers/collections.py:315`, `ingest_jsonl.py:509,1124`,
+   `chunker_config.SHARD_UNSUPPORTED_METHODS`. The set now has three members, so
+   the shared `SEMANTIC_METHODS` constant stops being a nicety.
+
+**`chunk_descriptor` is deliberately NOT canonicalised.** It feeds
+`collection_name` (the content address) and `spec_hash`, and `spec_hash` is
+stamped on Workspace folders and archive manifests. Changing what
+`chunk_descriptor("semantic", ...)` returns would move `asm-semantic`'s hash
+under 6.7M existing points. The cost of leaving it alone is that a *new,
+unnamed* corpus created as `semantic` and one created as `semantic_window`
+content-address to two stores despite being the same algorithm — marginal, since
+named libraries fold their id in anyway and nothing new should be created as
+`semantic`. New collections are normalised to `semantic_window` on create;
+existing rows are never rewritten.
+
+## 7c. The comparison run
+
+The owner will run Clark's workflow (the `Salmonella_AMR2` corpus, 20 PDFs) under
+**both** methods.
+
+Chunk method is collection identity, so this needs **two collections** over the
+same documents — which is the correct A/B anyway. `Salmonella_AMR2` is declared
+`semantic` (→ `semantic_window`) and is currently empty (0 points in both stores,
+`archive_version=1` from the failed job); the pooled arm needs a sibling
+collection.
+
+What to compare, cheapest-first:
+
+1. **Spearman correlation of the two distance series** — this tests the actual
+   mechanism, since the percentile rule consumes only rank order.
+2. **Jaccard over chunk span sets** — did the boundaries move.
+3. **Chunk-count distribution** and realised embed tokens per arm — the 7× claim,
+   measured rather than derived.
+
+The `semantic_window` arm is also the load check for #609 step 4: it is the
+expensive path, and it is what `Salmonella_AMR2` will actually run.
+
 ## 8. The consolidation (follow-up, no deadline)
 
 Not "two chunker builders" as #609 says. **Five**, with three answers to one
