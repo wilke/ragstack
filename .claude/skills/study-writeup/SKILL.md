@@ -92,7 +92,15 @@ stops.
   coverage evidence; without it, "no prior work does this" is an assertion.
 - **Established names for what we invented** — before coining a term, find out whether the
   field already has one. Adopting it costs nothing; inventing a duplicate is a reviewer's
-  easiest objection.
+  easiest objection. This has already paid twice: `EM @ l tokens` for budget-normalised
+  evaluation and "within-document retrieval failure" for the reach/containment phenomenon were
+  both already in the literature when we were about to name them ourselves.
+
+**Prefer the arXiv API and OpenAlex over web search.** The WebSearch budget is shared across
+concurrent agents and runs out; `export.arxiv.org/api/query` and `api.openalex.org` are
+authoritative for metadata and do not. Publisher access that reliably fails: ACM DL, dblp,
+Springer, OpenReview, Semantic Scholar. Access that works: ACL Anthology, arXiv `/abs/`, PMLR,
+CEUR, sigir.org, institutional repositories.
 
 **Chase the citation graph both ways** from every anchor paper. Forward citations find the
 critiques; backward citations find the pre-neural ancestor the modern work forgot to cite.

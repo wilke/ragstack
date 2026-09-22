@@ -306,8 +306,28 @@ Two caveats I checked in the PDF and which must be stated if we quote the 25%:
 2. They deliberately "selected 50 items with high disagreement in the original label sets for
    re-annotation", so 25% is a rate on a hard-case subsample, **not** a population estimate.
 
-- Who disagrees: **within one annotator, repeated** (test-retest, label–relabel interval varying from
-  minutes to longer; 15/56 reviewed papers do not even state the interval).
+⚠️ **They also hand us the right vocabulary.** Their Table 3 is headed **"Reliability (Inter-)"** and
+**"Stability (Intra-)"** — Krippendorff's own terms — with pairwise raw percentage agreement:
+
+| task | reliability (inter) µ / σ | stability (intra) µ / σ |
+|---|---|---|
+| Offence | 68.3 / 15.4 | 74.4 / 15.0 |
+| Sentiment | 63.6 / 21.7 | 69.2 / 19.5 |
+| Entailment | 58.6 / 21.4 | 72.6 / 15.1 |
+| Anaphora | 76.2 / 14.3 | 80.5 / 13.0 |
+| **Overall** | **66.7 / 19.6** | **74.2 / 16.3** |
+
+"As expected, agreement is higher for stability than reliability for all tasks, although considerably
+lower than perfect agreement — just 74.2% overall, and no higher than 80.5% for any task."
+Per-annotator stability µ = 74.2%, σ = 4.3%, range 67.5–81.5%; matched by Abercrombie et al. (2023)
+at 74.5% on hate speech. Kruskal-Wallis shows tasks differ significantly on both (H = 12.42 and
+10.76, both p = 0.01). They report raw percent agreement as primary "as intra-annotator agreement is
+typically assumed to be 100%", with Cohen's κ relegated to an appendix. Two of the 56 reviewed papers
+study interval length and **both find consistency degrades monotonically with it.**
+
+- Who disagrees: **within one annotator, repeated** (2-week interval in their own study; in the
+  reviewed literature the label–relabel interval ranges from minutes to a year, and 15/56 do not
+  state it at all).
 - Unit: **item-level label**, not span.
 - Gold: single label; the contribution is the reliability measure, not a new gold object.
 - Statistic: standard agreement coefficients (they recommend applying any of them within-annotator);
@@ -1088,6 +1108,243 @@ they note that "the same spans on the NLI item can be highlighted for different 
 on the verdict, disagreement on the reasoning", and we should use it rather than coin something. Note
 the difference: their "reasoning" is free text, ours is *location*, which is measurable without
 paraphrase-matching — that is an advantage worth stating.
+
+---
+
+## 5b. Evidence sets in fact verification and attributed QA — where the field *already* reports presence and location with two different statistics
+
+### `thorne-2018` (FEVER) — ★★
+
+**FEVER: a Large-scale Dataset for Fact Extraction and VERification**
+James Thorne, Andreas Vlachos, Christos Christodoulopoulos, Arpit Mittal.
+NAACL-HLT 2018, pp. 809–819, DOI `10.18653/v1/N18-1074`.
+https://aclanthology.org/N18-1074/
+**verified** (ACL Anthology BibTeX) · **read** (ACL PDF; I extracted and checked these numbers
+myself).
+
+⚠️⚠️ **FEVER separates the verdict from the evidence location, and uses two different statistics
+precisely because κ has no denominator for an evidence set.** Verbatim from the PDF:
+
+- Verdict: "inter-annotator agreement of **0.6841 in Fleiss κ** … in claim verification
+  classification" (5-way agreement on a random 4% sample). Compared in-text against Bowman et al.'s
+  κ = 0.7 for SNLI, "a simpler task, since the annotators were given the premise/evidence to verify a
+  hypothesis against **without the additional task of finding it**."
+- Evidence location: super-annotators with no time limit searched all of Wikipedia for every possible
+  evidence sentence; regular annotators scored **95.42% precision and 72.36% recall** against that.
+  All but two annotators achieved >90% precision; all but nine >70% recall.
+- The author validation is the sharpest line: of 227 examples, "most of the examples that were
+  annotated incorrectly were cases where **the label was correct, but the evidence selected was not
+  sufficient** (only 4 out of 227 examples were labeled incorrectly)."
+- The system error analysis found the pipeline retrieved **new, valid evidence the annotators had
+  never marked in 21.85% (n = 210) of claims**.
+- The scoring rule is explicitly **disjunctive over evidence sets** — "Some claims may be equally
+  supported by different pieces of evidence; in this case **one complete set** of sentences should be
+  predicted" — while multi-hop claims require all sentences of a set. They concede "it is not
+  feasible to ensure that the evidence selection annotations are complete."
+
+- Who disagrees: **between** annotators (5-way for labels, vs super-annotators for evidence).
+- Unit: **sentence-level evidence sets inside documents** — our unit.
+- Gold: hard, disjunctive sets; no graded object.
+- Statistic: **Fleiss κ for the verdict, uncorrected P/R for the evidence, never mixed.**
+
+**Weight** — **must-cite, and among the three most important entries in this file.** It is the
+canonical evidence-set benchmark; it already shows verdicts are reliable while evidence location has
+~72% recall against a thorough search; and its disjunctive scoring rule is an implicit admission that
+the span set is not a well-defined object. Our result is the repeated-measures, single-annotator
+version of what FEVER's numbers already hint at.
+
+### `min-2020` (AmbigQA)
+
+**AmbigQA: Answering Ambiguous Open-domain Questions**
+Sewon Min, Julian Michael, Hannaneh Hajishirzi, Luke Zettlemoyer.
+EMNLP 2020; arXiv:2004.10645.
+https://arxiv.org/abs/2004.10645
+**verified** (arXiv) · **read** (PDF).
+
+⚠️ **A clean set-valued analogue of the presence/location gap, with a 28-point number.** Two
+independent annotators agree at **60.8 F1** on *which set of answers exists*, while the *validity*
+judgment — "is this a valid answer" — is far more reliable: F1 **89.0** between co-authors and
+workers on 50 validations, and validators passed all annotations for 76% of questions. Over 50% of
+dev/test examples contain multiple QA pairs.
+
+- Gold: a set; no graded object. Statistic: set F1, no chance correction.
+
+**Weight** — high. "Is this a valid element" is reliable; "what is the complete set" is not — the
+same shape as our result, in the answer-set rather than the span-set domain.
+
+### `rajpurkar-2016` / `rajpurkar-2018` (SQuAD)
+
+- **SQuAD: 100,000+ Questions for Machine Comprehension of Text** — Pranav Rajpurkar, Jian Zhang,
+  Konstantin Lopyrev, Percy Liang, EMNLP 2016; arXiv:1606.05250.
+- **Know What You Don't Know: Unanswerable Questions for SQuAD** — Pranav Rajpurkar, Robin Jia,
+  Percy Liang, ACL 2018 (Short), pp. 784–789. https://aclanthology.org/P18-2124/
+
+**verified** (arXiv / ACL Anthology) · **read** (both PDFs).
+
+⚠️ **One sentence in SQuAD is the whole span-vs-label problem, and it is filed as a nuisance.**
+Human performance is measured by treating a second annotator's answer as a prediction against the
+others: **EM 77.0%, F1 86.8%** — i.e. two humans give the *same* answer span exactly only 77% of the
+time. Their own diagnosis: *"Mismatch occurs mostly due to **inclusion/exclusion of non-essential
+phrases** (e.g., monsoon trough versus movement of the monsoon trough) rather than fundamental
+disagreements about the answer."* SQuAD 2.0 collects ~4.8 answers per question, resolves by majority
+vote with ties broken toward answering and toward **shorter** answers, and reports human EM/F1
+86.9/89.5 and 82.3/91.2.
+
+- Gold: single span by majority vote with explicit length-biased tie-breaking.
+- Statistic: EM and token F1 only. **No chance correction and no reliability coefficient anywhere in
+  either paper.**
+
+**Weight** — **high rhetorically.** The most-used span benchmark in NLP concedes a 23-point exact-
+match gap between two humans on the same question and attributes it to boundary quibbles — which is
+the location instability we are measuring, named and then set aside.
+
+### `rashkin-2023` (AIS)
+
+**Measuring Attribution in Natural Language Generation Models**
+Hannah Rashkin, Vitaly Nikolaev, Matthew Lamm, Lora Aroyo, Michael Collins, Dipanjan Das,
+Slav Petrov, Gaurav Singh Tomar, Iulia Turc, David Reitter.
+*Computational Linguistics* 49(4):777–840, 2023, DOI `10.1162/coli_a_00486`.
+**verified** (Crossref by DOI). ⚠️ A **duplicate Crossref record** exists under
+DOI `10.1162/coli_a_00490` (same title, same 10 authors, "pp. 1–66", dated 2023-07-06) — that is the
+Just-Accepted version. **Cite `_00486`.** I confirmed both records exist.
+
+The AIS framework: two binary questions, *Interpretability* and *Attributable to Identified Sources*.
+Table 7 reports three statistics side by side and they tell different stories — CNN/DM
+Interpretability F1 .83 / pairwise agreement .80 / **Krippendorff α .46**; AIS .92/.89/**.69**;
+and against expert consensus, CNN/DM Interpretability α = **−0.04, worse than chance**.
+
+- Unit: **the whole (response, source) pair — no localisation at all.** This is the pure *whether*
+  case with no *where*: the framework asks only whether the whole response is supported by the whole
+  source.
+- Statistic: Krippendorff's α, pairwise agreement and F1-vs-consensus, side by side.
+
+**Weight** — **high, as the baseline our unit improves on.** The field's standard attribution
+framework is document-level; the fact that AIS deliberately declines to localise is the gap our
+per-sentence object fills. The F1 .83 vs α .46 contrast on the same data is also a very clean
+illustration for the statistics discussion.
+
+### `liu-2023` and `bohnet-2022`
+
+- **Evaluating Verifiability in Generative Search Engines** — Nelson F. Liu, Tianyi Zhang,
+  Percy Liang, Findings of EMNLP 2023; arXiv:2304.09848. **verified** · **read** (PDF).
+  Headline: **only 51.5% of generated sentences are fully supported by their citations, and only
+  74.5% of citations support their associated statement.** Annotator agreement (n = 250 pairs) is
+  pairwise-% and F1-vs-majority only, **no chance correction**: Citation Supports 82.0/91.0,
+  Statement Supported 82.2/91.1.
+- **Attributed Question Answering: Evaluation and Modeling for Attributed Large Language Models** —
+  Bernd Bohnet, Vinh Q. Tran, Pat Verga, Roee Aharoni, Daniel Andor, Livio Baldini Soares,
+  Massimiliano Ciaramita, Jacob Eisenstein, Kuzman Ganchev, Jonathan Herzig, Kai Hui, Tom Kwiatkowski,
+  Ji Ma, Jianmo Ni, Lierni Sestorain Saralegui, Tal Schuster, William W. Cohen, Michael Collins,
+  Dipanjan Das, Donald Metzler, Slav Petrov, Kellie Webster. arXiv:2212.08037. **verified** (arXiv
+  preprint; author list as printed) · **read** (PDF). Adopts AIS verbatim, scores by **majority vote
+  of 5 raters**, and **reports no inter-annotator agreement coefficient at all.**
+
+**Weight** — medium-high as a pair: attribution evaluation at scale currently runs on uncorrected
+percent agreement or on nothing, at document granularity.
+
+---
+
+## 5c. Test-retest on spans outside NLP — it is routine in medical imaging
+
+This is the asymmetry worth one paragraph in the paper: the design we are running is standard
+practice in radiology under the names *intra-observer variability* and *intra-rater Dice*, and absent
+from NLP and IR.
+
+### `li-2010` — the only NLP test-retest on a location task
+
+**Enriching Word Alignment with Linguistic Tags**
+Xuansong Li, Niyu Ge, Stephen Grimes, Stephanie M. Strassel, Kazuaki Maeda.
+LREC 2010, Valletta, pp. 2189–2194, DOI `10.63317/2ioujs4uaq4c`.
+http://www.lrec-conf.org/proceedings/lrec2010/pdf/670_Paper.pdf
+**verified** (Crossref + LREC landing page) · **read** (PDF).
+
+LDC/IBM Chinese–English word alignment, 32,823 sentence pairs. Agreement is defined over **links** —
+a link is a claim about *where* a correspondence sits — as precision/recall/F. Both axes are
+reported on the same task, which makes them comparable: **inter**-annotator F 86.4/87.1/84.3/82.3
+(junior, first round) rising to 96.5/95.7/90.8/91.2 (senior, post-QC); **intra**-annotator by
+interval (Table 9) — **1 week F 98.15; 2 weeks F 97.07; 1 month F 94.51.**
+
+- Who disagrees: **both, in the same paper.** Unit: link/location. Statistic: **P/R/F only, no chance
+  correction, no reliability coefficient.**
+
+**Weight** — **high.** The nearest NLP neighbour to our design, and it shows intra > inter on a
+location task (94.5–98.2 vs 90.8–96.5 post-QC) — a result we should expect and may need to explain,
+since it cuts against a naive "the model is less self-consistent than people are with each other".
+It also shows self-consistency **degrades monotonically with the interval**, which has no analogue
+for a stateless model and is worth noting as a disanalogy.
+
+### `covert-2022`
+
+**Intra- and inter-operator variability in MRI-based manual segmentation of HCC lesions and its
+impact on dosimetry**
+Elise C. Covert, Kellen Fitzpatrick, Justin Mikell, Ravi K. Kaza, John D. Millet, Daniel Barkmeier,
+Joseph Gemmete, Jared Christensen, Matthew J. Schipper, Yuni K. Dewaraja.
+*EJNMMI Physics* 9(1):90, 2022, DOI `10.1186/s40658-022-00515-6`.
+https://pmc.ncbi.nlm.nih.gov/articles/PMC9772368/
+**verified** (Crossref + PMC full text).
+
+⚠️ **The design template, done properly, in another field.** Three board-certified radiologists,
+20 lesions; two of the three each did **3 contouring sessions separated by 1-month intervals**;
+140 observations, 7 reads per lesion. **Intra-observer Dice 0.85 (SE 0.006) vs inter-observer Dice
+0.79 (SE 0.009), p < 0.001.** ICCs reported for the downstream quantity too: volume ICC 0.992 intra /
+0.967 inter; mean dose 0.995 / 0.987.
+
+**Weight** — **high.** Cite it for "this design is standard elsewhere" and for the ICC-on-the-derived-
+quantity move, which is structurally what we do with the graded score.
+
+### `abhishek-2025` and `ribeiro-2019`
+
+- **What Can We Learn from Inter-Annotator Variability in Skin Lesion Segmentation?** —
+  Kumar Abhishek, Jeremy Kawahara, Ghassan Hamarneh, MICCAI ISIC Skin Image Analysis Workshop 2025;
+  arXiv:2508.09381. **verified** (arXiv) · **read** (PDF). 2,394 images, **5,111 masks, 15
+  annotators**. Explicit methodological statement: *"Although previous IAA studies have used Cohen's
+  kappa and Fleiss' kappa, these metrics measure categorical agreement and **fail to capture spatial
+  overlap** between annotations; thus, we adopt the Dice metric."* Confirms **"intra-annotator
+  agreement is significantly higher than inter-annotator agreement"**. And — the part most useful to
+  us — they train a model to **predict a lesion's Dice-IAA from the image** and use IAA prediction as
+  an auxiliary task that improves diagnosis. That is the strongest published form of "disagreement
+  about *where* is itself signal".
+- **Handling Inter-Annotator Agreement for Automated Skin Lesion Segmentation** — Vinicius Ribeiro,
+  Sandra Avila, Eduardo Valle, ISIC Skin Image Analysis Workshop 2019; arXiv:1906.02415.
+  **verified** (arXiv) · **read** (PDF). Per-pixel Cohen's κ, median ~0.72–0.75; shows that
+  "conditioning" the gold (morphological opening/closing, convex hull) substantially raises agreement
+  without changing the ground truth much, while bounding boxes make it worse. Note per-pixel κ is
+  legitimate here **only because an image bounds the negative class** — exactly the condition
+  `hripcsak-2005` says text spans lack.
+
+**Weight** — `abhishek-2025` high; `ribeiro-2019` medium-high (agreement is a function of the
+granularity you demand, which is the argument a graded gold rests on).
+
+### `warfield-2004` (STAPLE) — ★ the graded pooled gold, for images, since 2004
+
+**Simultaneous Truth and Performance Level Estimation (STAPLE): An Algorithm for the Validation of
+Image Segmentation**
+Simon K. Warfield, Kelly H. Zou, William M. Wells.
+*IEEE Transactions on Medical Imaging* 23(7):903–921, 2004, DOI `10.1109/TMI.2004.828354`.
+**verified** (Crossref by DOI). ⚠️ **Not read** — IEEE paywall. The mechanism description below is
+second-hand, from `abhishek-2025` and `ribeiro-2019` which cite it, and should be checked before we
+characterise it in print.
+
+An EM algorithm that jointly estimates a **probabilistic ("soft") reference segmentation** and each
+rater's sensitivity/specificity from a collection of segmentations, instead of taking a majority
+vote.
+
+**Weight** — **high, and the sharpest framing available for the graded object.** "Pool several
+annotations of *where* into a probabilistic per-unit truth, with rater quality modelled" is 22 years
+old in medical imaging and has **no text-span equivalent**. It is both the best analogy to cite and
+the reason to state our text-side contribution carefully.
+
+### `titeux-2021` (pygamma-agreement)
+
+**pygamma-agreement: Gamma (γ) measure for inter/intra-annotator agreement in Python**
+Hadrien Titeux, Rachid Riad. *JOSS* 6(62):2989, 2021, DOI `10.21105/joss.02989`.
+**verified** (Crossref) · **read** (5 pp).
+
+⚠️ The title advertises **"inter/intra-annotator"** agreement, but the body only ever discusses
+inter-rater use. The tooling to run γ and γ_cat on a test-retest span design exists and is packaged;
+nobody has published the study.
+
+**Weight** — medium, but a nice concrete line: the instrument is on the shelf, unused.
 
 ---
 

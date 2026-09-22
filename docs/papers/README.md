@@ -29,6 +29,36 @@ book. If a sentence needs the word *currently*, *still* or *next*, it is in the 
 
 Target for both: **arXiv preprint first**, venue-neutral, venue chosen afterwards.
 
+### Naming decisions, settled 2026-09-22 — adopt, do not coin
+
+The surveys were asked whether the field already has names for things we were about to invent.
+It does, in two cases, and adopting them costs nothing while coining duplicates is a reviewer's
+easiest objection.
+
+| we were going to call it | the field already calls it | source |
+|---|---|---|
+| budget-normalised retrieval evaluation | **`EM @ l tokens`**, "at a fixed retrieval token budget" | `chen-2024-densex` (EMNLP 2024), with `lu-2025-hichunk` giving the fairness argument independently |
+| reach vs containment (the phenomenon) | **"within-document retrieval failure"** — correct document retrieved, answer-bearing chunk missed | `kobeissi-2026` (arXiv 2602.17981) |
+
+Nuance on the second: `kobeissi-2026` is an unrefereed preprint on 150 FinanceBench questions and
+is **not** budget-normalised, but it is the only prior work that decomposes this way *behind a
+cross-encoder reranker*. So: adopt their name for the phenomenon, keep **reach** and
+**containment** as our names for the two measured quantities (nobody has named those), and claim
+the budget-normalised version as ours. Do **not** borrow `retrievability` (Azzopardi & Vinay) —
+it is collection-level retrieval bias, a different concept.
+
+**Where we appear to be genuinely first:** non-inferiority testing in IR/NLP. The survey searched
+exhaustively and every hit was clinical or biostatistical. Cite Lakens 2017 for TOST and the
+smallest effect size of interest, and say plainly that we found no IR precedent.
+
+**Best citable statement of the powered-null rule**, and it is from 2008, not from us:
+Webber, Moffat & Zobel (CIKM 2008) — a failure to find significance does not license concluding no
+difference exists, and the experimenter needs to know how large a difference could have been
+missed. That *is* the power floor. The same paper warns that growing the topic set until power is
+reached biases toward finding significance, which speaks directly to our n = 80 problem. Pair
+Fuhr's guidelines with Sakai's response, which answers "agreed" on hypotheses-before-experiment
+and on multiplicity, so the practice does not read as one researcher's opinion.
+
 ### What the literature survey did to the roster, 2026-09-22
 
 Both papers narrowed, and both are better for it. The surveys in `bib-inbox/` were told to hunt
@@ -53,6 +83,25 @@ for A's repositioning; for B the essentials are:
   distribution". Retrieval inherited the segmenters and not the lesson. Good framing, freely given.
 - **Parent-document / small-to-big retrieval has almost no peer-reviewed evidence base**, and
   **late chunking is arXiv-only**. Both absences are findings worth stating.
+- **`boytsov-2025`** is the threat with teeth: long-document benchmarks front-load their evidence,
+  so any large-chunk advantage may be a corpus artefact. We can answer it directly — our position
+  oracle measured that 55.4 % of judged evidence *starts past token 1,024* — and the paper must
+  report that rather than assume the corpus is neutral.
+- **`jin-2025`** and Yu and colleagues both find an inverted U in answer quality against delivered
+  context, so budget-normalised *retrieval* quality is an upper bound and not a proxy for answer
+  quality. That is an argument for the synthesis stage, and it should be stated as one.
+- **Cite `cuconasu-2024` precisely or not at all.** Its famous result is that random documents beat
+  *topically related distractors*, not that noise beats no noise. It is routinely misquoted.
+
+### Survey coverage, for the record
+
+287 verified entries across five areas, each file ending with a "searched and did not find"
+section so coverage is evidenced rather than asserted. Two operational notes for whoever runs the
+next one: the 200-call WebSearch budget is shared across concurrent agents and was exhausted
+partway, after which the agents fell back to the **arXiv API** and **OpenAlex**, which are better
+defaults for this work anyway. Publisher access that fails: ACM DL (403), dblp (Anubis), Springer
+(IdP bounce), OpenReview (bot wall), Semantic Scholar (429). Access that works: ACL Anthology,
+arXiv `/abs/`, PMLR, CEUR, sigir.org, institutional repositories, OpenAlex.
 
 Paper A is first because it is self-contained, general beyond chunking, and its data is
 complete. Paper B's confirmatory verdict cannot be written until the human read produces κ
