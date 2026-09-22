@@ -1,0 +1,18 @@
+common labels (support>=20 in both A and B): 77 of 121
+  probe macroF1 on common:  A=0.503  B=0.466  delta=-0.037
+  kNN   macroF1 on common:  A=0.436  B=0.371  delta=-0.065
+
+=== bootstrap 95% CI on the A->B micro-F1 delta (2000 resamples) ===
+  probe  A=0.596 B=0.591 delta=-0.006  CI=[-0.018,+0.006]
+  kNN    A=0.544 B=0.525 delta=-0.019  CI=[-0.032,-0.008]
+
+=== (C) is B low because the journal is UNSEEN, or because FCIM is harder? ===
+  F_train=1479 F_test=1479 (same rows scored under both models)
+  probe  F_test microF1: journal UNSEEN=0.585  journal SEEN=0.617  gain from in-journal labels=+0.032
+         F_test macroF1(common): UNSEEN=0.463  SEEN=0.491  gain=+0.028
+  kNN    F_test microF1: journal UNSEEN=0.519  journal SEEN=0.539  gain from in-journal labels=+0.020
+         F_test macroF1(common): UNSEEN=0.364  SEEN=0.366  gain=+0.002
+
+=== (F) cost ===
+  kNN scoring 2958 queries against 9507 labelled: 0.003s
+  probe scoring 2958 docs: 0.0009s

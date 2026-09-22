@@ -1,0 +1,29 @@
+[ncbi-idconv] 273653 DOIs, 0 already cached, 273653 to fetch
+[ncbi-idconv] 50/1369 req  10000 found  0 miss  4 429  0 err  529 doi/s  19s
+[ncbi-idconv] 100/1369 req  20000 found  0 miss  7 429  0 err  547 doi/s  37s
+[ncbi-idconv] 150/1369 req  30000 found  0 miss  9 429  0 err  556 doi/s  54s
+[ncbi-idconv] 200/1369 req  40000 found  0 miss  16 429  0 err  542 doi/s  74s
+[ncbi-idconv] 250/1369 req  50000 found  0 miss  20 429  0 err  538 doi/s  93s
+[ncbi-idconv] 300/1369 req  60000 found  0 miss  20 429  0 err  548 doi/s  110s
+[ncbi-idconv] 350/1369 req  70000 found  0 miss  25 429  0 err  546 doi/s  128s
+[ncbi-idconv] 400/1369 req  80000 found  0 miss  25 429  0 err  552 doi/s  145s
+[ncbi-idconv] 450/1369 req  90000 found  0 miss  28 429  0 err  553 doi/s  163s
+[ncbi-idconv] 500/1369 req  100000 found  0 miss  28 429  0 err  558 doi/s  179s
+[ncbi-idconv] 550/1369 req  110000 found  0 miss  38 429  0 err  547 doi/s  201s
+[ncbi-idconv] 600/1369 req  120000 found  0 miss  38 429  0 err  551 doi/s  218s
+[ncbi-idconv] 650/1369 req  130000 found  0 miss  38 429  0 err  555 doi/s  234s
+[ncbi-idconv] 700/1369 req  140000 found  0 miss  38 429  0 err  558 doi/s  251s
+[ncbi-idconv] 750/1369 req  150000 found  0 miss  38 429  0 err  561 doi/s  268s
+[ncbi-idconv] 800/1369 req  160000 found  0 miss  38 429  0 err  563 doi/s  284s
+[ncbi-idconv] 850/1369 req  170000 found  0 miss  38 429  0 err  565 doi/s  301s
+[ncbi-idconv] 900/1369 req  180000 found  0 miss  40 429  0 err  566 doi/s  318s
+[ncbi-idconv] 950/1369 req  190000 found  0 miss  40 429  0 err  567 doi/s  335s
+[ncbi-idconv] 1000/1369 req  200000 found  0 miss  40 429  0 err  569 doi/s  352s
+[ncbi-idconv] 1050/1369 req  210000 found  0 miss  40 429  0 err  570 doi/s  368s
+[ncbi-idconv] 1100/1369 req  220000 found  0 miss  42 429  0 err  571 doi/s  386s
+[ncbi-idconv] 1150/1369 req  230000 found  0 miss  42 429  0 err  572 doi/s  402s
+[ncbi-idconv] 1200/1369 req  240000 found  0 miss  42 429  0 err  573 doi/s  419s
+[ncbi-idconv] 1250/1369 req  250000 found  0 miss  42 429  0 err  574 doi/s  436s
+[ncbi-idconv] 1300/1369 req  260000 found  0 miss  42 429  0 err  575 doi/s  452s
+[ncbi-idconv] 1350/1369 req  270000 found  0 miss  42 429  0 err  576 doi/s  469s
+SUMMARY {"route": "ncbi-idconv", "requests": 1369, "batches": 1369, "found": 273653, "not_found": 0, "http429": 44, "errors": 0, "elapsed_s": 476.0, "req_per_s": 2.88, "doi_per_s": 574.9, "stopped_early": false, "finished": "2026-09-15T19:50:52+00:00"}

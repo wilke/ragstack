@@ -115,20 +115,40 @@ The obvious fix — put the registry's coordinates on the submission next to
   token, and `documents.py` 401s a principal without one). Everyone who can use
   the ingest path therefore already holds a credential GoWe accepts directly, and
   GoWe's submission API is publicly proxied — only `/api/v1/workers` is guarded
-  at the gateway. Group names are enumerable via `GET /api/v1/fleet`, and GoWe
+  at the gateway. Group names are enumerable via `GET /api/v1/fleet` — which does
+  require a credential (it answers `UNAUTHORIZED` unauthenticated, measured
+  2026-09-16; the "only `/api/v1/workers` is guarded" clause above is about the
+  nginx gateway, not GoWe's own auth). That is not a mitigation here, because the
+  sentence above establishes that everyone who can reach the ingest path already
+  holds a credential GoWe accepts. And GoWe
   auto-provisions a user on first contact, so there is no membership list to be
   outside of. Treat the group as **placement and convenience, not security**.
   GoWe#261 (submitter-side group ACL) and GoWe#262 (per-group image and
   admin-registered-workflow restriction) are the controls; until they land there
-  is no boundary, only the absence of an attempt.
+  is no boundary, only the absence of an attempt. **Confirmed against the GoWe
+  tracker on 2026-09-16: #261 and #262 are OPEN, not implemented and not
+  scheduled**, and are *not* in v0.20.0.
 * **Consequently, credentials that have sat in a worker env file should be
   rotated as part of that hardening** — `NEO4J_PASSWORD` on the `ragstack` group,
   the hackathon `COLLECTION_STORE_DSN`, and, by exactly the same argument,
   `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` on the `default` group, which is where an
   unlabelled submission lands. This deployment is a development and
-  demonstration environment, so the rotation is scheduled with #261/#262 rather
-  than treated as an incident; the principle is that the assumption a group
-  contained them was never true for the period they were there.
+  demonstration environment, so the rotation was deferred rather than treated as
+  an incident; the principle is that the assumption a group contained them was
+  never true for the period they were there.
+
+  **Corrected 2026-09-16.** An earlier revision said the rotation was "scheduled
+  with #261/#262". It is not scheduled, because *they* are not: both are open and
+  unimplemented. The two are also independent, and conflating them deferred the
+  rotation behind work that may never be prioritised —
+
+  > rotation does not need the ACL; the ACL is what makes the post-rotation state
+  > *stay* clean.
+
+  So these three credentials can and should be rotated on our own schedule. What
+  #261/#262 would add is that a rotated secret does not simply re-accumulate the
+  same exposure, because the group would finally be an authorization boundary
+  rather than a placement hint.
 * Defence in depth, not a substitute for care: the worker redacts secret values
   from captured task output, and `ragstack.ops.ingest_target` scrubs DSNs out of
   third-party error text before printing a refusal. Neither licenses putting a
@@ -138,7 +158,16 @@ The obvious fix — put the registry's coordinates on the submission next to
   therefore carry no DSN for the new name: a restored tenant needs a manual
   worker-secret-file entry before it can ingest. Known follow-up.
 * Forward-compatible without being forward-dependent, and this survived GoWe#260
-  being re-scoped. #260 was originally worker-side `secret://<name>` references
+  being re-scoped. **GoWe#260 is implemented by PR #265 and released in
+  v0.20.0 — deployed to `:8091` on 2026-09-16 as `0.20.0+06b6696`, verified from
+  `GET /api/v1/health` rather than taken from the release note; **now
+  `0.20.1+f757592`** (2026-09-17, same verification), a hotfix that does not touch
+  the secrets surface — see the note below**
+  (confirmed against the tracker 2026-09-16: #265 carries `Closes #260`, and #260
+  closed on 2026-09-15 by that merge). GoWe#263 holds the limitations deferred out
+  of #260 — `cwltool:Secrets` in sub-workflows, output redaction, IWDR file modes
+  — and is open; none of them touch the `secret_env` path this ADR relies on.
+  #260 was originally worker-side `secret://<name>` references
   resolved against the worker's own secret file; it is now **submission-time
   secrets** — `POST /submissions` takes an optional `secrets: {NAME: value}` map,
   encrypted at rest the way the BV-BRC token already is, never echoed into
@@ -149,7 +178,50 @@ The obvious fix — put the registry's coordinates on the submission next to
   and scrubbed from the task row at terminal state.
 
   That fits here better, because the tenant API already holds the credential at
-  submit time. On #260 landing: the tenant API adds
+  submit time. **The clause below fires when v0.20.0 is live on :8091, not when
+  the PR merged** — it is deployed, not merged, that changes what a worker holds.
+  **That happened on 2026-09-16 (`0.20.0+06b6696`), so this is now WORK TO DO,
+  not a forward-looking note.** Live on the server as of that build: `secrets` and
+  `secrets_retention` on `POST /submissions` (server default `ttl:720h`, per-submission
+  `keep`), `secret_env` opt-in delivery, `secret_names`/`secrets_state` metadata,
+  `DELETE …/secrets` purge, a 409 on retry-after-purge, and 403 for
+  anonymous-with-secrets.
+  **Cutover precedence, confirmed against the shipped v0.20.0 code (2026-09-16):**
+  if a worker's `--secret-file` also defines a name the submission supplies, the
+  **submission's value wins** for that task and the worker logs a WARN naming the
+  variable. That is the safe direction: during the transition a tenant-supplied
+  DSN overrides a stale group-file entry rather than the other way round, so the
+  two can coexist and the group file can be emptied *after* the tenant API starts
+  sending secrets, not before. Delivery is by exact name on all three runtimes —
+  `cmd.Env` locally, `-e NAME` on Docker, `APPTAINERENV_NAME` under Apptainer,
+  which Apptainer injects as plain `NAME` inside the container — so a tool reading
+  `COLLECTION_STORE_DSN` needs no code change; only the suffix convention goes.
+
+  **Retention does not threaten a long ingest.** The sweep considers only
+  TERMINAL submissions and `DELETE …/secrets` refuses a non-terminal one with 409,
+  so a running multi-hour ingest cannot lose its secrets under any policy.
+  Retention governs post-completion *retries* only: the server default `ttl:720h`
+  covers a retry within 30 days of terminal state, and `keep` matters only beyond
+  that. The default is therefore sufficient here; `keep` is a dev/demo
+  convenience, not a correctness requirement.
+
+  **v0.20.1 (2026-09-17) — a hotfix, and the reason it is recorded here is that it
+  came out of #267 rather than the secrets work.** #267 made a failed pre-stage fail
+  fast, and the new dispatch gate made an unstaged READY step wait; individually
+  correct, together they deadlocked the exact case #267 targeted — a submission was
+  activated to RUNNING on the same tick its pre-stage failed, the pre-stage loop only
+  revisited PENDING rows, so it never retried, never hit the fail threshold, and sat
+  RUNNING with zero tasks for 3.8 hours. v0.20.1 continues pre-staging on
+  RUNNING-but-unstaged submissions and recovers already-stuck rows. Nothing about
+  `secrets`, `secret_env` or retention changed, so everything above still holds.
+
+  Worth keeping in mind when reading this ADR's confidence about #260: that surface
+  was verified on 0.20.0 and has not been re-exercised on 0.20.1. The hotfix's
+  regression test (`TestPrestageDeadlock_NeverStrandedRunningWithoutPrestage`) pins
+  the combination rather than either half, which is the right shape — a test for
+  each mechanism alone would have passed throughout.
+
+  On #260 landing: the tenant API adds
   `secrets: {COLLECTION_STORE_DSN: <that tenant's dsn>}` to the submission and the
   per-group secret files go away; the tool reads `COLLECTION_STORE_DSN` from its
   environment exactly as it does now, with no suffix. **Nothing in this ADR

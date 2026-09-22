@@ -121,6 +121,65 @@ the same class of divergence.
 A real `date` field. `year` is what the data has; adding month/day precision is a schema
 and re-ingest question, not a filter question.
 
+### When finer precision is wanted: `date` as `yyyymmdd`, one int — decided 2026-09-15
+
+Recorded here so nobody implements the alternative on the strength of an earlier
+recommendation. **Not work for Part A** — it changes nothing until a range operator exists,
+which is what Part A is for. But it constrains what the backfill writes, so it is a decision
+now rather than later.
+
+Three options were weighed. The earlier recommendation was **split `year`/`month`/`day` ints
+plus a `date_precision` field**; the owner proposed **a single `yyyymmdd` int**; a real date
+type was the third.
+
+**`yyyymmdd` wins, and the deciding argument is the filter grammar, not the storage.**
+
+    "after 2020-03-15"
+
+      yyyymmdd    date >= 20200315                              one comparison; needs only `gte`
+
+      split ints  year > 2020
+                  OR (year == 2020 AND (month > 3
+                  OR (month == 3 AND day >= 15)))               needs OR
+
+`filters` are **ANDed** (`query_request.json`). Split ints therefore need disjunction *as well
+as* a range operator — a far larger change across the four interpreters §"Why it is not a
+one-line change" says must agree. `yyyymmdd` needs only what Part A already plans.
+
+**Unknown components are zero-padded, and that is the point:**
+
+| source | stored |
+|---|---|
+| `2020-03-15` | `20200315` |
+| `2020-03` | `20200300` |
+| `2020` | `20200000` |
+
+This is **self-describing about precision** — `% 100 == 0` means no day, `% 10000 == 0` means
+no month — so no separate `date_precision` field is needed. It also sorts correctly:
+`20200000 < 20200300 < 20200315`, so a year-only document sorts before all of March and a
+month-only document before the 15th. A range query excludes what is genuinely unknown rather
+than guessing.
+
+A real date type cannot do this. It must invent `2020-03-01` for a month-only date and then
+**cannot record that it invented it** — the failure this repo keeps hitting, where a wrong
+value looks like a right one. Not a corner case: the ASM metadata cache built 2026-09-15 is
+**76.6% year-month only, 23.2% year-month-day**. Also, Qdrant's datetime payload index wants
+RFC-3339 *strings*, which would reintroduce the string temporal field #573 just removed.
+
+**Costs nothing structurally:** it is an int, so the type rule merged in #573 covers it,
+`KNOWN_INT_FIELDS` already exists, and both stores index ints natively — no ES mapping-class
+problem, unlike a date type (seven of nine live indices already map `year: long`; ~136 GB
+would need reindexing).
+
+**The one hazard: `year` and `date` must not drift.** `year` already exists, is an int, and is
+indexed. Where `date` is present, **`year` is derived as `date // 10000`** — never captured
+independently. Two independently-written representations of the same fact is precisely the
+bug class of #573 and the `asm-semantic` divergence. `year` continues to stand alone for
+documents that have nothing finer, which is most of ASM.
+
+Honest downsides: unreadable at a glance, and arithmetic on it is meaningless
+(`20200315 + 1` is not the next day). Neither matters for a field that is only ever compared.
+
 ---
 
 ## Part B — backfill `year` on `open-access`
@@ -186,37 +245,23 @@ divergence at data level, permanently and silently.
 
 ---
 
-## The packed form (decided 2026-09-17)
+## Addendum 2026-09-17: the packed field now exists — and two consequences
 
-Part B above backfills `year`. That leaves the question this plan did not answer: what
-happens when a source carries a **full** publication date, and what a caller filters on
-when precision varies across a corpus. The answer, now declared in
-`contracts/schemas/chunk_metadata.json` and produced by `metadata_schema.packed_date()`:
+The `yyyymmdd` decision above (§ *When finer precision is wanted*, 2026-09-15) is
+now declared in `contracts/schemas/chunk_metadata.json` and produced by
+`metadata_schema.packed_date()` (#606). The reasoning is not repeated here; two
+things follow from the field *existing* that the decision did not have to say.
 
-**`date` is a packed `yyyymmdd` integer, with unknown components 0.** `19860000` is "1986,
-month and day unknown"; `19820300` is "March 1982"; `20200315` is a full date.
+**INVARIANT: where both are present, `year == date // 10000`.** `year` is
+DERIVED. Nothing should capture the two independently, and a producer that
+writes one without the other is writing a record whose two temporal fields can
+drift apart. Verified across all 61M chunks at the time of writing — zero
+violations.
 
-Three properties made this the choice over the alternatives:
-
-- **One field, one range.** The filter grammar ANDs and has no OR (Part A § *Why it is not
-  a one-line change*). A split `year`/`month`/`day` would need a disjunction that does not
-  exist — "after 2020-03-15" becomes *(year > 2020) OR (year = 2020 AND month > 3) OR …*.
-  Packed, it is `date >= 20200315`, which needs only the range operator Part A adds.
-- **Precision is self-describing.** `% 10000 == 0` is year-only, `% 100 == 0` has no day.
-  No companion precision field to keep in sync, and nothing to get wrong on a partial write.
-- **Zeros sort where the ambiguity belongs.** `19860000 < 19860101`, so a year-only record
-  sorts at the head of its year and is included by `>= 1986` and by `< 1987` — the two
-  bounds a caller actually writes.
-
-**INVARIANT: where both are present, `year == date // 10000`.** `year` is DERIVED. Nothing
-should capture the two independently, and a producer that writes one without the other is
-writing a record whose two temporal fields can drift apart. This holds across all 61M
-chunks measured at the time of writing.
-
-**What does not follow from this.** Declaring the field is not the same as populating it:
-**no ingest path writes `date` today**, so its coverage is strictly narrower than `year`'s
-already-thin 14.8% and is limited to whatever a backfill put there. Part B remains the work
-that makes either field useful, and it should write `date` alongside `year` rather than
+**Declaring the field is not populating it.** No ingest path writes `date`
+today; its coverage is strictly narrower than `year`'s already-thin 14.8% and is
+limited to whatever a backfill put there. Part B remains the work that makes
+either field useful, and it should write `date` alongside `year` rather than
 leaving a second field to backfill later.
 
 ---

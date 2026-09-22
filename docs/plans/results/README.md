@@ -37,6 +37,15 @@ pre-registration it was written against (where one exists), and the machine-read
 
 Read them in that order — most have a "read this first" block that assumes its predecessors.
 
+**One run here is not part of that series** and does not belong in that reading order:
+
+| dir | run | date |
+|---|---|---|
+| [`mesh-transfer/`](mesh-transfer/) | does a MeSH topic label transfer to an unseen microbiology journal? — metadata / KG track, exploratory | 2026-09-15 |
+
+It is filed here because this is where measurements live, and it ships its own harness and
+logs. See [`mesh-transfer/README.md`](mesh-transfer/README.md).
+
 **Three things about the copies, none of which is a defect in the reports:**
 
 - **Links to `.py`, `.jsonl` and to intermediate `.json` artefacts do not resolve.** Each
