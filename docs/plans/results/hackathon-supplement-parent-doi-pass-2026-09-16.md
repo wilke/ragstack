@@ -5,7 +5,7 @@
 on Qdrant `http://localhost:24081` + Elasticsearch `http://localhost:24083` (hackathon tenant).
 **Status:** COMPLETE — plan exhausted, 151/151 documents, 138,532 points, both stores.
 **Working dir:** `/rag/data/asm-supplement-pass/` (`plan.jsonl`, `ledger.jsonl`, `checkpoint.json`).
-**Not committed.**
+**Record committed 2026-09-22 (#624); the run's working directory under `/rag/data/…` is not in git.**
 
 ---
 

@@ -45,6 +45,25 @@ Read them in that order — most have a "read this first" block that assumes its
 
 It is filed here because this is where measurements live, and it ships its own harness and
 logs. See [`mesh-transfer/README.md`](mesh-transfer/README.md).
+### Metadata backfill records, 2026-09-15 → 17
+
+Not part of the chunking series above. These are the records themselves (not
+sha256-verified copies), committed with the scripts and logs that produced them
+where those were small enough to keep; each says at its head what is and is not
+in git.
+
+| record | what it established | date |
+|---|---|---|
+| [`asm-tenant-metadata-audit-2026-09-15.md`](asm-tenant-metadata-audit-2026-09-15.md) | audit of the asm tenant's collections: `ragstack_sfr_tok256` (24.8M points, the tenant default) at 0% on journal/publisher/date/pmcid/pmid, 46.5% title | 2026-09-15 |
+| [`oa-idfix-pmc-idconv-2026-09-15.md`](oa-idfix-pmc-idconv-2026-09-15.md) | PMC id-conversion fix via NCBI idconv; the supplementary discovery file widened the `open-access` join by 0 points | 2026-09-15 |
+| [`asm-metadata-cache/`](asm-metadata-cache/) | Crossref / NCBI / OpenAlex metadata cache build for asm: coverage 415,540 (94.4%). Two headline figures are flagged unverified in the record itself | 2026-09-15 |
+| [`pubtator3/`](pubtator3/) | PubTator3 coverage: 1,228,740 of 1,400,998 pmids; AMR family miss rate 68.7% | 2026-09-15 → 16 |
+| [`lucid-year-int-canary-2026-09-16.md`](lucid-year-int-canary-2026-09-16.md) | canary for the lucid `year` str→int backfill | 2026-09-16 |
+| [`lucid-year-int-backfill-complete-2026-09-16.md`](lucid-year-int-backfill-complete-2026-09-16.md) | lucid `year` str→int complete: 764,402 int / 0 str; three-way reconciliation exact | 2026-09-16 |
+| [`hackathon-supplement-parent-doi-pass-2026-09-16.md`](hackathon-supplement-parent-doi-pass-2026-09-16.md) | supplement parent-DOI recovery from `source_path`: 151 docs / 138,532 points; title coverage → 99.18% | 2026-09-16 |
+| [`RESULTS-asm-semantic-metadata-backfill-2026-09-16.md`](RESULTS-asm-semantic-metadata-backfill-2026-09-16.md) | asm semantic collection metadata backfill: 431,808 docs / 6,403,265 payloads | 2026-09-16 |
+| [`oa-year-backfill-2026-09-16.md`](oa-year-backfill-2026-09-16.md) | `open-access` year/date backfill canary — clean, then **STOPPED** at the disk gate after 253,008 of 40.6M points (0.140 GiB retained per 10k) | 2026-09-16 |
+| [`asm-master-semantic-replay-2026-09-17.md`](asm-master-semantic-replay-2026-09-17.md) | asm-next master semantic replay: 431,959 docs / 6,541,797 points, both legs 6,718,269, 2000/2000 sampled exact | 2026-09-17 |
 
 **Three things about the copies, none of which is a defect in the reports:**
 

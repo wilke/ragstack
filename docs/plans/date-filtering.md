@@ -166,6 +166,8 @@ value looks like a right one. Not a corner case: the ASM metadata cache built 20
 **76.6% year-month only, 23.2% year-month-day**. Also, Qdrant's datetime payload index wants
 RFC-3339 *strings*, which would reintroduce the string temporal field #573 just removed.
 
+*(Caveat added 2026-09-22, from the #624 review: this 76.6% / 23.2% split does not resolve to a committed artifact, and the committed `results/asm-metadata-cache/coverage-final.txt` — which measures the maximum `date-parts` length across **all** Crossref date kinds, `created`/`deposited` included — reports `{3: 263532}`, i.e. 100% three-part, and does not support it. Treat as unverified until re-measured on `issued` alone; see the note under that table.)*
+
 **Costs nothing structurally:** it is an int, so the type rule merged in #573 covers it,
 `KNOWN_INT_FIELDS` already exists, and both stores index ints natively — no ES mapping-class
 problem, unlike a date type (seven of nine live indices already map `year: long`; ~136 GB
@@ -245,23 +247,37 @@ divergence at data level, permanently and silently.
 
 ---
 
-## Addendum 2026-09-17: the packed field now exists — and two consequences
+## The packed form (decided 2026-09-17)
 
-The `yyyymmdd` decision above (§ *When finer precision is wanted*, 2026-09-15) is
-now declared in `contracts/schemas/chunk_metadata.json` and produced by
-`metadata_schema.packed_date()` (#606). The reasoning is not repeated here; two
-things follow from the field *existing* that the decision did not have to say.
+Part B above backfills `year`. That leaves the question this plan did not answer: what
+happens when a source carries a **full** publication date, and what a caller filters on
+when precision varies across a corpus. The answer, now declared in
+`contracts/schemas/chunk_metadata.json` and produced by `metadata_schema.packed_date()`:
 
-**INVARIANT: where both are present, `year == date // 10000`.** `year` is
-DERIVED. Nothing should capture the two independently, and a producer that
-writes one without the other is writing a record whose two temporal fields can
-drift apart. Verified across all 61M chunks at the time of writing — zero
-violations.
+**`date` is a packed `yyyymmdd` integer, with unknown components 0.** `19860000` is "1986,
+month and day unknown"; `19820300` is "March 1982"; `20200315` is a full date.
 
-**Declaring the field is not populating it.** No ingest path writes `date`
-today; its coverage is strictly narrower than `year`'s already-thin 14.8% and is
-limited to whatever a backfill put there. Part B remains the work that makes
-either field useful, and it should write `date` alongside `year` rather than
+Three properties made this the choice over the alternatives:
+
+- **One field, one range.** The filter grammar ANDs and has no OR (Part A § *Why it is not
+  a one-line change*). A split `year`/`month`/`day` would need a disjunction that does not
+  exist — "after 2020-03-15" becomes *(year > 2020) OR (year = 2020 AND month > 3) OR …*.
+  Packed, it is `date >= 20200315`, which needs only the range operator Part A adds.
+- **Precision is self-describing.** `% 10000 == 0` is year-only, `% 100 == 0` has no day.
+  No companion precision field to keep in sync, and nothing to get wrong on a partial write.
+- **Zeros sort where the ambiguity belongs.** `19860000 < 19860101`, so a year-only record
+  sorts at the head of its year and is included by `>= 1986` and by `< 1987` — the two
+  bounds a caller actually writes.
+
+**INVARIANT: where both are present, `year == date // 10000`.** `year` is DERIVED. Nothing
+should capture the two independently, and a producer that writes one without the other is
+writing a record whose two temporal fields can drift apart. This holds across all 61M
+chunks measured at the time of writing.
+
+**What does not follow from this.** Declaring the field is not the same as populating it:
+**no ingest path writes `date` today**, so its coverage is strictly narrower than `year`'s
+already-thin 14.8% and is limited to whatever a backfill put there. Part B remains the work
+that makes either field useful, and it should write `date` alongside `year` rather than
 leaving a second field to backfill later.
 
 ---

@@ -18,6 +18,8 @@ request — paced to the 3 req/s that endpoint itself announces. Measured: 373�
 Paired with the NCBI PMC ID Converter (200 ids/request, 3 req/s) for `pmcid`/`pmid`, which
 measured **575 DOIs/s sustained across the entire population**.
 
+> **Unverified as committed (found in the #624 review).** The **373 DOIs/s paced at 3 req/s, 0× 429** and **547 (first 100 req of the real run)** figures do not resolve to any committed log: `bench_cr_batch.log` holds only the batch-200 rows at concurrency 1/2/4 = 141.7 / 304.2 / 198.9 docs/s, and the only "547" in a committed log is NCBI's (`ncbi_full.log`). What *is* committed for Crossref is the real-run average of 88 DOIs/s with 14× 429 over 1,378 requests (`cr_full2.log`). Read the headline as a claim, the 88 as the measurement.
+
 **ETA for the full fetch: about 9 minutes per route, run in parallel. It is already done.**
 The cache holds all **277,682** distinct DOIs behind all **440,049** ASM documents.
 
@@ -196,6 +198,8 @@ granularity across the 263,532 resolved records:
 | year + month + day | 61,261 (23.2%) |
 | year + month | 201,901 (76.6%) |
 | year only | 370 (0.1%) |
+
+> **Unverified as committed (found in the #624 review).** These three counts came from a per-`issued`-date pass whose script and output were not kept. The committed `coverage-final.txt` measures the *maximum* `date-parts` length across **all** Crossref date kinds (`created`/`deposited` included) and reports `{3: 263532}` — 100% three-part — which is exactly the trap this document warns about below, and does **not** support this split. Re-measure on `issued` alone before relying on it. The 76.6% figure is re-quoted in `docs/plans/date-filtering.md` and `docs/plans/metadata-consistency.md`, each now carrying this caveat.
 
 **A consumer must read the length of `date-parts` and not assume 3.** Note also that `created`
 and `deposited` always carry three parts and are Crossref *registration* dates — mistaking them

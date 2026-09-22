@@ -5,7 +5,7 @@
 **Elasticsearch was deliberately NOT written** — `metadata.year` is mapped `keyword` there and
 already matches both the numeric and the string form of a term query (measured before the run).
 **Status:** plan exhausted, 1,484/1,484 batches. Collection green at rest.
-**Not committed.**
+**Record committed 2026-09-22 (#624); the run's working directory under `/rag/data/…` is not in git.**
 
 ---
 

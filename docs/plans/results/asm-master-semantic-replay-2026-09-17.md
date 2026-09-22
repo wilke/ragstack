@@ -5,7 +5,7 @@
 (the **asm-next master**, the collection `asm` exposes as `asm-semantic`).
 **Status:** plan exhausted — 431,959/431,959 documents, 6,541,797 points, both legs.
 **Working dir:** `/rag/data/asm-master-replay/` (plan, ledger, checkpoint, disk log, supervisor log, rollback).
-**Not committed.**
+**Record committed 2026-09-22 (#624); the run's working directory under `/rag/data/…` is not in git.**
 
 ---
 

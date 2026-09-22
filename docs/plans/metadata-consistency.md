@@ -274,6 +274,8 @@ for the 86% that are body articles, title → **99.2%** and pmcid → **98.7%**.
 and so is `year` (`date // 10000`). Store both from the same parse; never capture them
 separately.
 
+*(Caveat added 2026-09-22, from the #624 review: this 76.6% / 23.2% split does not resolve to a committed artifact, and the committed `results/asm-metadata-cache/coverage-final.txt` — which measures the maximum `date-parts` length across **all** Crossref date kinds, `created`/`deposited` included — reports `{3: 263532}`, i.e. 100% three-part, and does not support it. Treat as unverified until re-measured on `issued` alone; see the note under that table.)*
+
 | field | from | key | cost, per *document* |
 |---|---|---|---|
 | title, authors, journal, publisher, `date`→`year` | **the local cache** (above) | doi | local join; no network |

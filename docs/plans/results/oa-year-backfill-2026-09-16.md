@@ -4,7 +4,7 @@
 **Target:** `ragstack_lib_open_access_salesforce_sfr_embedding_4096_fixed_token_512_64_cd24acfc`
 on Qdrant `http://localhost:6333` (storage `/rag/data/qdrant`) + Elasticsearch `http://localhost:9200`
 **Status:** **STOPPED at the disk gate after 253,008 of 40,590,664 points.** Canary itself: clean, 15/15 checks pass.
-**Not committed.**
+**Record committed 2026-09-22 (#624); the run's working directory under `/rag/data/…` is not in git.**
 
 ---
 
