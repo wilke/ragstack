@@ -65,10 +65,34 @@ KNOWN_ROLES: frozenset[str] = frozenset({"admin", "user", "researcher"})
 #: no ``$``/backticks — nothing a shell or JSON fragment would carry.
 _LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$")
 
-#: A label that shares this many characters with any configured key is treated
-#: as a fragment of one, whatever it looks like. 8 is the shortest prefix the
-#: canary tests refuse; a label shorter than this cannot be a useful fragment.
+#: A label is a FRAGMENT of a key if any window of this many characters of it
+#: occurs inside any key the run knows about (shorter labels: if the whole label
+#: occurs inside a key). Whole-containment — the first rewrite's rule — let a
+#: label that overlapped a key by 20 characters through because neither was a
+#: substring of the other; the canary refuses prefixes down to 4 characters, so
+#: the module's rule has to be at least that strict for short labels.
 _FRAGMENT_LEN = 8
+#: KNOWN LIMITATION, accepted: under a key scheme that embeds the subject in the
+#: key (``rk-<subject>-<random>``), the subject is a substring of its own key and
+#: is suppressed as ``(unrecognised)``. This host's ctl mints ``token_hex(32)``
+#: keys, in which no real subject can occur (they contain non-hex characters), so
+#: the rule never fires on real names here — pinned by
+#: ``test_real_subject_forms_on_this_host_are_never_suppressed``. If the key
+#: format ever changes to embed subjects, this rule must change with it.
+
+#: What a CREDENTIAL looks like, independent of any key the run can see: the ctl's
+#: ``key mint`` emits ``token_hex(32)`` (64 hex chars, ``go/internal/ctl/ops/creds.go``)
+#: and the quickstart's ``openssl rand -hex 32`` is the same shape; user keys carry
+#: the reserved ``rsk_`` prefix (#584). No subject on this host is hex-only. This is
+#: the rule for the case the fragment check cannot cover — a key from a tenant
+#: OUTSIDE the run pasted into a map value — and it is why a 64-character label
+#: bound alone was not enough: a 64-hex key IS a syntactically valid label.
+_HEXISH = re.compile(r"^[0-9a-fA-F]{32,}$")
+_RESERVED_PREFIXES = ("rsk_",)
+
+
+def _looks_like_a_credential(label: str) -> bool:
+    return bool(_HEXISH.match(label)) or label.startswith(_RESERVED_PREFIXES)
 
 
 class Secret:
@@ -158,17 +182,29 @@ def _map(env: dict[str, str], name: str) -> dict[str, str]:
 
 
 def _is_fragment(label: str, keys: Iterable[str]) -> bool:
-    """Does ``label`` share ≥ _FRAGMENT_LEN characters with any key, either way round?"""
+    """Does any ``_FRAGMENT_LEN``-char window of ``label`` occur inside any key?
+
+    Shorter labels: does the whole label occur inside any key. Windows, not
+    containment: ``label in k or k in label`` missed a label that overlapped a
+    key by twenty characters with a decoration on each end.
+    """
+    ks = [k for k in keys if k]
+    if not label:
+        return False
     if len(label) < _FRAGMENT_LEN:
-        # Too short to be a usable fragment — but never a key itself.
-        return any(label == k for k in keys)
-    return any(label in k or k in label for k in keys)
+        return any(label in k for k in ks)
+    windows = {label[i:i + _FRAGMENT_LEN] for i in range(len(label) - _FRAGMENT_LEN + 1)}
+    return any(w in k for k in ks for w in windows)
 
 
-def _safe_subject(label: str | None, keys: list[str]) -> str:
+def _safe_subject(label: str | None, known_keys: Iterable[str]) -> str:
+    """The label if it is printable, else a marker. ``known_keys`` is every key
+    value the RUN has seen — every file of every tenant, read before any merge —
+    not just this tenant's final list. See :func:`key_material` for why."""
     if label is None:
         return UNMAPPED
-    if _LABEL.match(label) and not _is_fragment(label, keys):
+    if _LABEL.match(label) and not _looks_like_a_credential(label) \
+            and not _is_fragment(label, known_keys):
         return label
     return UNRECOGNISED
 
@@ -179,15 +215,24 @@ def _safe_role(label: str | None) -> str:
     return label if label in KNOWN_ROLES else UNRECOGNISED
 
 
-def summarize(env: dict[str, str]) -> list[ApiKeyInfo]:
-    """Describe every configured key. Raises on any shape the API would refuse."""
+def summarize(env: dict[str, str], known_keys: Iterable[str] = ()) -> list[ApiKeyInfo]:
+    """Describe every configured key. Raises on any shape the API would refuse.
+
+    ``known_keys`` widens the allowlist's denominator beyond this env's own
+    ``API_KEYS`` — pass :func:`key_material` of every file in the run. Without it
+    a key that is NOT in the final merged list (rotation residue in ``tenant.env``
+    overridden by ``secrets.env``; a key pasted from another tenant into a map
+    value) is not a fragment of anything and, being 64 hex characters, is a
+    syntactically valid label. That is how the second rewrite leaked.
+    """
     keys = _keys(env)
     subjects = _map(env, "API_KEY_TENANTS")
     roles = _map(env, "API_KEY_ROLES")
+    known = set(keys) | set(known_keys)
     return [
         ApiKeyInfo(
             fingerprint=Secret(k).fingerprint(),
-            subject=_safe_subject(subjects.get(k), keys),
+            subject=_safe_subject(subjects.get(k), known),
             role=_safe_role(roles.get(k)),
         )
         for k in keys
@@ -202,18 +247,67 @@ def summarize(env: dict[str, str]) -> list[ApiKeyInfo]:
 CONFIG_FILES = ("tenant.env", "secrets.env")
 
 
+_KEY_SETTINGS = ("API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES")
+
+
+def tenant_files(name: str, root: str = TENANT_ROOT) -> list[Path]:
+    return [f for fn in CONFIG_FILES if (f := Path(root) / name / "config" / fn).is_file()]
+
+
 def tenant_env(name: str, root: str = TENANT_ROOT) -> dict[str, str]:
     """Merged config for a tenant. Later files win, matching the launch order."""
     env: dict[str, str] = {}
-    for fn in CONFIG_FILES:
-        f = Path(root) / name / "config" / fn
-        if f.is_file():
-            env.update(parse_env_file(f))
+    for f in tenant_files(name, root):
+        env.update(parse_env_file(f))
     return env
 
 
-def summarize_tenant(name: str, root: str = TENANT_ROOT) -> list[ApiKeyInfo]:
-    return summarize(tenant_env(name, root))
+def key_material(files: Iterable[Path]) -> set[str]:
+    """Every string that could be a key, from every file read INDIVIDUALLY.
+
+    This is the allowlist's *denominator*: each ``API_KEYS`` entry (and the raw
+    ``API_KEYS`` text, which holds only keys, so an undecodable value still
+    counts), plus every side-map dict KEY — the maps are keyed by the secret.
+
+    NOT the maps' values, and NOT the maps' raw text: those contain the labels,
+    and a label that is in the denominator is a fragment of itself — the first
+    draft of this function suppressed every legitimate subject that way. An
+    inverted map's values ARE keys, but they are keys the run already knows
+    from some ``API_KEYS`` list, or they are refused by shape
+    (:func:`_looks_like_a_credential`); the map itself fails the shape check
+    if it is not ``str→str``.
+
+    A file or setting that cannot be read contributes nothing — ``summarize``
+    will say so for that tenant. Read pre-merge: the merged view is exactly
+    what hides a superseded key still sitting in ``tenant.env``.
+    """
+    found: set[str] = set()
+    for f in files:
+        try:
+            env = parse_env_file(f)
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        for name in _KEY_SETTINGS:
+            raw = (env.get(name, "") or "").strip()
+            if not raw:
+                continue
+            if name == "API_KEYS":
+                found.add(raw)
+            try:
+                obj = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            if name == "API_KEYS" and isinstance(obj, list):
+                found.update(str(x) for x in obj)
+            elif name != "API_KEYS" and isinstance(obj, dict):
+                found.update(str(k) for k in obj)
+    return {x for x in found if x}
+
+
+def summarize_tenant(name: str, root: str = TENANT_ROOT,
+                     known_keys: Iterable[str] = ()) -> list[ApiKeyInfo]:
+    files = tenant_files(name, root)
+    return summarize(tenant_env(name, root), set(known_keys) | key_material(files))
 
 
 def reserved_prefix_collisions(env: dict[str, str], prefix: str = "rsk_") -> int:
@@ -236,22 +330,35 @@ def _main(argv: list[str] | None = None) -> int:
     ap.add_argument("--by-subject", action="store_true")
     a = ap.parse_args(argv)
 
+    root = Path(a.root)
+    if not root.is_dir():
+        print(f"no such tenant root: {root}")
+        return 1
     names = a.tenant or sorted(
-        p.name for p in Path(a.root).iterdir()
+        p.name for p in root.iterdir()
         if any((p / "config" / f).is_file() for f in CONFIG_FILES)
     )
+    # Pass 1: every key value the whole run can see, before any merge. A key that
+    # one tenant lists and another tenant's map carries as a VALUE is only
+    # suppressible if the second tenant's allowlist knows the first tenant's key.
+    known: set[str] = set()
+    for name in names:
+        known |= key_material(tenant_files(name, a.root))
     for name in names:
         try:
             env = tenant_env(name, a.root)
-            keys = summarize(env)
+            keys = summarize(env, known)
             coll = reserved_prefix_collisions(env)
         except UnrecognisedKeyConfig as e:
             # The message names the setting and shape; it never carries a value.
             print(f"{name}: UNRECOGNISED key config — {e}")
             continue
-        except (OSError, UnicodeDecodeError, ValueError) as e:
-            # ValueError: shlex refusing an unbalanced quote in parse_env_file. Its
-            # message names the problem, never the value.
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError) as e:
+            # parse_env_file swallows shlex's own errors and keeps the raw text, so
+            # ValueError here is defence in depth rather than a live path;
+            # RecursionError is json.loads on a pathologically nested value.
+            # Either way: one line naming the class, never a value, and on to the
+            # next tenant.
             print(f"{name}: unreadable ({e.__class__.__name__})")
             continue
         roles = Counter(k.role or "(default)" for k in keys)
