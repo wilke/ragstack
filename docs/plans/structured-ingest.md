@@ -28,31 +28,46 @@ following `prev_chunk_id`/`next_chunk_id`, and is not scoped to `doc_id` — but
 So structure has to be carried as **per-chunk metadata on a whole-document
 record**, not as a record boundary.
 
-## 2. How the three document types differ
+## 2. How the four document types differ
 
-| | JATS XML | HTML (arXiv, rendered) | PDF |
-|---|---|---|---|
-| structure | **explicit, exact** — `<sec>`, `<title>`, `<table-wrap>`, `<fig>`, `<ref-list>` | **explicit**, publisher-variable tags | **absent** — inferred from layout and text |
-| metadata | **in the file** (`<article-meta>`): DOI, title, authors, journal, pub-date, pmid/pmcid | `<meta>` + the arXiv API | **recovered**: filename → DOI regex → Crossref |
-| references | `<ref-list>`, per-reference elements | list markup | prose blob, heuristic only |
-| today | `jats.py` — section-aware, titles kept as markdown headings, tables/figures split out | **nothing** | `PdfLoader` + `enrich.py` + `doi_metadata.py` + boilerplate heuristics |
+Markdown is a fourth type, not a PDF fallback — added 2026-09-22. `.md` is
+already a registered loader (`loaders.py`: `registry.register(".md", text)`),
+and unlike PDF it carries **explicit structure**: `#`/`##`/`###` headings are
+cheaper to parse than either HTML tags or the PDF heuristic. It belongs beside
+JATS and HTML in the "already there" half of this table, not beside PDF in the
+"must infer" half — see #580 in §8.4 for why today's routing gets this backwards.
 
-**Only the PDF column requires inference.** That is the whole shape of the work:
-two extractors read structure that is already there, one has to guess.
+| | JATS XML | HTML (arXiv, rendered) | Markdown | PDF |
+|---|---|---|---|---|
+| structure | **explicit, exact** — `<sec>`, `<title>`, `<table-wrap>`, `<fig>`, `<ref-list>` | **explicit**, publisher-variable tags | **explicit** — `#`/`##`/`###` headings | **absent** — inferred from layout and text |
+| metadata | **in the file** (`<article-meta>`): DOI, title, authors, journal, pub-date, pmid/pmcid | `<meta>` + the arXiv API | none in-band — frontmatter if the source adds it, else recovered like PDF | **recovered**: filename → DOI regex → Crossref |
+| references | `<ref-list>`, per-reference elements | list markup | a heading-delimited section like any other — no special markup | prose blob, heuristic only |
+| today | `jats.py` — section-aware, titles kept as markdown headings, tables/figures split out | **nothing** | registered, but the GoWe worker feeds it to `PdfLoader` regardless (#580) — its structure is currently discarded before anything can read it | `PdfLoader` + `enrich.py` + `doi_metadata.py` + boilerplate heuristics |
 
-## 3. One workflow, three extractors
+**Structure and metadata are separate axes, and Markdown splits them** — the one
+case here where "has structure" doesn't imply "has metadata". A markdown record
+with no frontmatter needs PDF-style recovery for authors/DOI/year even though its
+sections are free. The normalized record (§3) has to let a document be
+structure-tier-1 and metadata-tier-3 at once.
 
-Not three workflows. This is already the de facto shape — `jats-ingest.cwl` and
+**Three of the four columns require no structural inference.** That is the whole
+shape of the work: three extractors read structure that is already there, one has
+to guess.
+
+## 3. One workflow, four extractors
+
+Not four workflows. This is already the de facto shape — `jats-ingest.cwl` and
 `pdf-ingest.cwl` differ **only in the extract step**, then both run
 `embed_shard.py` → `load_embeddings.py`. The seam exists; what is missing is that
-the PDF path's intermediate JSONL carries no structure, and there is no HTML
-producer at all.
+the PDF path's intermediate JSONL carries no structure, Markdown's structure is
+discarded before it reaches one (§2), and there is no HTML producer at all.
 
-So: **one normalized extract record, three producers into it.**
+So: **one normalized extract record, four producers into it.**
 
 ```
 JATS XML ─┐
-HTML ─────┼──► normalized extract record ──► chunk ──► embed ──► index
+HTML ─────┤
+Markdown ─┼──► normalized extract record ──► chunk ──► embed ──► index
 PDF ──────┘         (text + structure + metadata + provenance)
 ```
 
@@ -64,7 +79,9 @@ The record needs, per document:
 * `metadata_source` — **already a declared field**; say which tier supplied it
 * `excluded` — reference-list and supplemental spans, carried out-of-band (§5)
 
-Adding a fourth source later is one extractor, not a pipeline.
+Adding a fifth source later is one extractor, not a pipeline — as Markdown
+becoming the fourth already shows: it cost a table column and a stage, not a
+redesign.
 
 ## 4. Where metadata comes from — three tiers, existing precedence
 
@@ -122,15 +139,56 @@ the vector leg never sees them; a separate sink writes them to Postgres (rows) a
 4. **`chunk_index` must be an `int`.** The schema records that
    `scripts/ingest_chunks.py` accepted a caller-supplied value verbatim and has
    already written it as a **string** to a live collection.
+5. **One extractor library, four callers, not four extractors.** Owner
+   constraint, 2026-09-22, and the exact defect #609 was — "two chunker
+   builders" turned out to be five, with three different token-budget policies,
+   because convenience functions kept getting written beside their first caller
+   instead of in the shared module. `chunker_config.chunker_for` is now that
+   library's one construction point for chunking; §3's four extractors need the
+   same shape from the start, not a retrofit once a second caller exists.
+
+   The precedent for *where* is already in the tree and already has two
+   callers: `ragstack.ingestion.jats` / `ragstack.ingestion.loaders` (not
+   `scripts/`) is what `scripts/jats_extract.py` imports, and
+   `loaders.default_loader_registry()` is the same factory `api/deps.py` calls
+   for the local (non-gowe) in-process ingest path. Every new extractor —
+   Markdown's heading parser (§7 Stage 1a), the HTML extractor (§7 Stage 1b),
+   the PDF heuristic (§7 Stage 3) — goes in `ragstack.ingestion`, never inline
+   in a `scripts/*.py` tool or embedded in a CWL `InlineJavascriptRequirement`.
+   CLI tools and CWL steps (which just containerize the CLI tools) get this for
+   free by importing the module; nothing CWL-specific to design.
+
+   **"Chunking experiments" names a caller explicitly**, and it is not
+   hypothetical — the chunking-study session already needed exactly this
+   discipline. Their first comparison script built a lookalike embedder instead
+   of reusing `ingest_shard._build_embedder`, and was corrected to call the
+   tool's own builder so the comparison ran on the real path rather than a
+   stand-in (`docs/plans/results/semantic-vs-pooled-2026-09-18.md`). The same
+   rule applies to every extractor here: an experiment script imports
+   `ragstack.ingestion`, it does not re-implement a heading parser to save an
+   import.
 
 ## 7. Plan, in the owner's order
 
-**Stage 1 — HTML extractor (near-term goal, and the cheap half).**
-arXiv's rendered HTML carries real section tags, so this is extraction, not
-inference. Produces the normalized record with true `sections`. No new workflow:
-register an `.html` loader and an extract step alongside `pdf-extract`.
-*Note `DEFAULT_INGEST_SUFFIXES` is `(.pdf, .txt, .md, .jsonl)` — no `.html`, no
-`.xml`.*
+**Stage 1 — Markdown and HTML extractors (near-term goal).**
+Two sub-stages, ordered by cost, both producing the normalized record with true
+`sections`:
+
+* **1a — Markdown.** The cheaper of the two, possibly free. The `.md` loader
+  already exists (`loaders.py`); the only code needed is a trivial
+  heading-span parser (`#`/`##`/`###` → `(start, end, title, depth)`, no DOM) and
+  #580's routing fix, so the GoWe worker path stops discarding that structure by
+  feeding every `.md` to `PdfLoader` regardless of extension (§2, §8.4). Do this
+  fix *as* Stage 1a, not before it — there is no reason to fix the routing and
+  then not also finish the parser it was blocking.
+* **1b — HTML.** arXiv's rendered HTML carries real section tags, so this is
+  extraction, not inference, but it needs an actual parser (DOM/tag-walk) where
+  Markdown needed a regex. No new workflow either: register an `.html` loader
+  and an extract step alongside `pdf-extract`.
+
+*Note `DEFAULT_INGEST_SUFFIXES` is `(.pdf, .txt, .md, .jsonl)` — `.md` is present
+but, per §2, its structure is currently thrown away before it reaches a chunker;
+there is no `.html` entry at all.*
 
 **Stage 2 — section-aware chunking over the normalized record.**
 A chunker that takes `sections` and cuts **at** boundaries, falling back to the
@@ -161,11 +219,29 @@ near-term corpus is PDF and HTML, and JATS is not blocked on any of the above.
 
 ## 8. Open questions
 
-1. **Postgres, graph, or both** for references (§5).
-2. **Supplemental material**: excluded entirely, or its own collection? It is
-   often where methods detail lives.
+1. ~~Postgres, graph, or both for references (§5)?~~ **Decided (owner,
+   2026-09-22): both.** Both are sinks off the same parsed
+   `extract_citations()` output — one write, two destinations — so this is
+   confirmation to build both writers, not a choice between them.
+2. ~~Supplemental material: excluded entirely, or its own collection?~~
+   **Decided (owner, 2026-09-22): kept, not excluded — labeled.** Not dropped
+   like references (§5), and not silently left in the main body stream either.
+   Needs a field on the normalized record (§3) and a corresponding declared
+   chunk-metadata field — `is_supplemental`, or a value alongside the existing
+   boilerplate verdicts (`references` / `license` / `acknowledgements`) — so a
+   caller filters it in or out per query rather than the ingest-time choice
+   being final. The label is the deliverable; unlike references there is no
+   separate sink to move it to. "If we can label it" is load-bearing: JATS and
+   arXiv HTML (§2, §8.5) have an explicit supplemental section to detect;
+   PDF does not, so Stage 3 inherits this as a detection problem it may not
+   fully solve.
 3. **Does the section-aware chunker get a new `CHUNK_METHODS` entry**, or is it a
-   modifier on existing methods? Identity implications either way (§6.2).
-4. **#580** — the GoWe worker feeds every input to `PdfLoader`, so `.md` behaviour
-   depends on the installed PyMuPDF. An `.html` loader hits the same seam and
-   should be designed with that issue's fix, not around it.
+   modifier on existing methods? Identity implications either way (§6.2). Still
+   open.
+4. **#580, sharper now that Markdown is in scope (§2).** The GoWe worker feeds
+   *every* input to `PdfLoader` regardless of extension, so `.md` behaviour
+   depends on the installed PyMuPDF — even though Markdown headers are
+   **explicit structure**, cheaper to parse than either HTML tags or the PDF
+   heuristic. Today's routing throws that away before it can be used. An
+   `.html` loader hits the same seam and should be designed together with
+   #580's fix, not around it — not sequenced after.
