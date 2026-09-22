@@ -1,1190 +1,1212 @@
 {
-  "paper": "Reliable but not canonical: LLM judges for passage-level evidence localisation",
-  "generated_utc": "2026-09-22T00:00:00Z",
-  "checker": "docs/papers/check_claims.py",
-  "population_note": "Unless a claim says otherwise, every development-set number is over the same 308 development labeling pairs (208 pooled + 100 bias-bound) drawn from the 10 TREC CDS development topics of docs/plans/design/SPEC-confirmation-run.md. 'Scale' numbers are the 80 confirmation topics. No human read has been performed anywhere in this record.",
-  "claims": [
-    {
-      "id": "s0-span-self-consistency-quote-anchored",
-      "section": "1",
-      "statement": "Re-shown the same document under the original ten-word quote-anchored protocol, the judge reproduced its own span set on only 0.3226 of re-presented pairs, against a pre-registered gate of >= 0.90.",
-      "value": 0.3226,
-      "source": "docs/plans/results/stage0/artifacts/label_gates.json",
-      "pointer": "self_consistency.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 31 re-presented pairs out of 308 (the 10 % duplication sample), NOT 308; a second reading of every pair did not exist until r3.1. Consistency is span-union Jaccard >= 0.5; two empty verdicts count as consistent. Single judge (Llama-4-Scout); dev set only."
-    },
-    {
-      "id": "s0-whether-self-agreement",
-      "section": "1",
-      "statement": "The same judge agreed with itself about *whether* a document contains localizable evidence on 27 of 31 re-presented pairs (0.871), while agreeing about *where* on 0.32.",
-      "value": 0.871,
-      "source": "docs/plans/results/stage0/RESULTS-stage0-calibration.md",
-      "pointer": "evidence on **27 / 31** duplicated pairs (0.871)",
-      "kind": "text",
-      "verified": true,
-      "note": "MARKDOWN-ONLY: the original Stage 0 gate file (artifacts/label_gates.json) records no whether-agreement field — that gate was introduced at r3. n = 31, not 308. The paired 'where' figure is the 0.3226 of claim s0-span-self-consistency-quote-anchored."
-    },
-    {
-      "id": "s0-span-index-agreement",
-      "section": "1",
-      "statement": "Only 0.64496 of the judge's verified spans were actually at the character indices it claimed; 140 of 476 verified spans had to be relocated to where their own quote resolved.",
-      "value": 0.64496,
-      "source": "docs/plans/results/stage0/artifacts/label_gates.json",
-      "pointer": "index_agreement.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "307 of 476 attempted spans had the claimed (unit, first, last) equal to the location its own quote resolves to; the 140 misindexed ones were relocated rather than dropped, so this is a property of the judge, not a loss in the pipeline. No gate was attached to it."
-    },
-    {
-      "id": "s0-minimality-unmeasurable",
-      "section": "1",
-      "statement": "The minimality audit could not be measured at all: the audit re-prompt returned an empty set on 29 of 29 audited pairs, a shrinkage rate of 1.0.",
-      "value": 1.0,
-      "source": "docs/plans/results/stage0/artifacts/label_gates.json",
-      "pointer": "minimality_shrinkage.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "ABSENT, NOT PASSED. A rate of 1.0 here means every audited span shrank to nothing, i.e. the instrument returned nothing on every one of 29 pairs — the audit failed to run, it did not find perfect non-minimality. The artifact itself marks the gate 'descriptive (no threshold)'."
-    },
-    {
-      "id": "r3-scout-whether-agreement",
-      "section": "1",
-      "statement": "Under the quote-primary protocol Llama-4-Scout agreed with itself about whether a document contains localizable evidence on 0.9677 of re-presented pairs — a clear pass — while its span self-consistency was 0.6452.",
-      "value": 0.9677,
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.scout.whether_agreement.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 31 re-presented pairs (30 agree), not 308. Gate >= 0.90, PASS. The contrast with the same judge's 0.6452 span self-consistency on the same 31 pairs is the whole point: whether passes where where fails."
-    },
-    {
-      "id": "r3-qwen-whether-agreement",
-      "section": "1",
-      "statement": "Qwen3.6-35B-A3B likewise agreed with itself about whether on 0.9677 of re-presented pairs while agreeing about where on 0.4194.",
-      "value": 0.9677,
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.qwen.whether_agreement.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 31 re-presented pairs (30 agree). Identical rate to Scout's by coincidence of the same denominator and one disagreement each."
-    },
-    {
-      "id": "s0-hallucinated-span-rate-ten-word-anchor",
-      "section": "2",
-      "statement": "Under ten-word quote anchors the original Stage 0 labeling pass hallucinated 24 of 476 attempted spans — 0.05042, failing a <= 0.05 gate.",
-      "value": {
-        "rate": 0.05042,
-        "failed_spans": 24,
-        "attempted_spans": 476,
-        "wilson95_upper": 0.07393,
-        "PASS": false
-      },
-      "source": "docs/plans/results/stage0/artifacts/label_gates.json",
-      "pointer": "hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "Single judge (Scout), single reading, original prompt sha256 2a77049b…. A hallucinated span is one whose quoted words appear NOWHERE in the document. This is the 'before' figure for Scout under the first protocol, not the quote-primary r3 one."
-    },
-    {
-      "id": "r3-scout-hallucinated-span-rate",
-      "section": "2",
-      "statement": "Under the quote-primary protocol with ten-word anchors, Scout hallucinated 58 of 707 attempted spans — 0.08204 — against a <= 0.05 gate.",
-      "value": {
-        "rate": 0.08204,
-        "failed_spans": 58,
-        "attempted_spans": 707,
-        "wilson95_upper": 0.10459,
-        "PASS": false
-      },
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.scout.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "The 'before' figure for the whole-sentence-anchor change. Denominator is the primary pass only; the re-presented 10 % are reported separately (7/62) and a sensitivity reading including them gives 0.08453."
-    },
-    {
-      "id": "r3-scout-closing-anchor-failures",
-      "section": "2",
-      "statement": "54 of Scout's 58 hallucinated spans failed on the closing ten-word anchor rather than the opening one.",
-      "value": {
-        "last_quote_not_in_document": 54,
-        "quote_not_in_document": 4
-      },
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
-      "kind": "json",
-      "verified": true,
-      "note": "This is the diagnosis that motivated whole-sentence anchoring: the model could copy the start of a span and invented its end. 'quote_not_in_document' is the first-ten-words anchor, 'last_quote_not_in_document' the last-ten-words anchor."
-    },
-    {
-      "id": "r3-qwen-hallucinated-span-rate",
-      "section": "2",
-      "statement": "Under the same quote-primary protocol Qwen hallucinated 9 of 356 spans — 0.02528 — passing the <= 0.05 gate.",
-      "value": {
-        "rate": 0.02528,
-        "failed_spans": 9,
-        "attempted_spans": 356,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.qwen.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "Qwen attempted roughly half as many spans as Scout (356 vs 707) on the same 308 pairs, so the rates are not over comparable exposure; Qwen also emitted 1.15 spans per positive pair against Scout's 2.10."
-    },
-    {
-      "id": "r31-scout-hallucinated-span-rate",
-      "section": "2",
-      "statement": "With whole-sentence anchors Scout's hallucinated-span rate fell from 0.08204 to 0.02517 (22 of 874 spans), passing the gate.",
-      "value": {
-        "rate": 0.02517,
-        "failed_spans": 22,
-        "attempted_spans": 874,
-        "wilson95_upper": 0.03782,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "Read on presentation k = 0 only, as the earlier gate was read. Over all five presentations the rate is 0.01957. The closing-anchor failures fell from 54 of 58 to 6 of 22."
-    },
-    {
-      "id": "r31-scout-closing-anchor-failures",
-      "section": "2",
-      "statement": "After the anchor change only 6 of Scout's 22 remaining hallucinations were closing-anchor failures, down from 54 of 58.",
-      "value": {
-        "first_sentence_quote": 16,
-        "last_sentence_quote": 6,
-        "empty_first_quote": 0
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
-      "kind": "json",
-      "verified": true,
-      "note": "The failure mode inverted: under ten-word anchors 93 % of failures were on the closing anchor, under whole-sentence anchors 27 % are. The anchor change fixed the specific defect it targeted."
-    },
-    {
-      "id": "r31-qwen-hallucinated-span-rate",
-      "section": "2",
-      "statement": "With whole-sentence anchors Qwen's hallucinated-span rate fell from 0.02528 to 0.00279 (1 of 358 spans).",
-      "value": {
-        "rate": 0.00279,
-        "failed_spans": 1,
-        "attempted_spans": 358,
-        "wilson95_upper": 0.01565,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.qwen.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "One failure in 358; the Wilson 95 % upper bound is 0.01565, which is the honest number to quote for a single-event rate."
-    },
-    {
-      "id": "claude-sonnet5-hallucinated-span-rate",
-      "section": "2",
-      "statement": "Claude Sonnet 5, on the whole-sentence-anchor protocol, hallucinated 1 of 525 spans — 0.0019.",
-      "value": {
-        "rate": 0.0019,
-        "failed_spans": 1,
-        "attempted_spans": 525,
-        "wilson95_upper": 0.01071,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.sonnet5.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "THERE IS NO 'BEFORE' FOR THE CLAUDE MODELS: they were only ever run under the whole-sentence-anchor protocol (revision 3.1), one reading per pair. The paper must not present these as an improvement over a ten-word-anchor baseline that was never measured for them."
-    },
-    {
-      "id": "claude-opus5-hallucinated-span-rate",
-      "section": "2",
-      "statement": "Claude Opus 5 hallucinated 1 of 955 spans — 0.00105.",
-      "value": {
-        "rate": 0.00105,
-        "failed_spans": 1,
-        "attempted_spans": 955,
-        "wilson95_upper": 0.00591,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.opus5.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "Whole-sentence-anchor protocol only; one reading per pair; n = 308 pairs. No ten-word-anchor comparison exists for this model."
-    },
-    {
-      "id": "claude-fable51-hallucinated-span-rate",
-      "section": "2",
-      "statement": "Claude Fable 5.1 hallucinated 0 of 645 spans — 0.0000, Wilson 95 % upper 0.00592.",
-      "value": {
-        "rate": 0.0,
-        "failed_spans": 0,
-        "attempted_spans": 645,
-        "wilson95_upper": 0.00592,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.fable51.hallucinated_span_rate",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 251 of 308 pairs, not 308: the run stopped on the account's session limit. Quote the Wilson upper bound, not the zero. No ten-word-anchor comparison exists for this model."
-    },
-    {
-      "id": "fable51-incomplete-n",
-      "section": "2",
-      "statement": "Every Fable 5.1 figure is on 251 of the 308 development pairs, because the run was stopped by the account's session limit.",
-      "value": {
-        "pairs_labeled": 251,
-        "pairs_expected": 308,
-        "stopped_by_usage_limit": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.fable51",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 251, NOT 308. Any Fable number placed beside a Sonnet or Opus number in a table is on a different sample; the Fable support baseline in particular (5.35) differs from the shared 2.86 because it is computed over its own 248 positive pairs."
-    },
-    {
-      "id": "prereg-p-ext-3-hallucination-holds",
-      "section": "2",
-      "statement": "The pre-registered prediction that the hallucinated-span rate would stay <= 0.05 at the fifteen new Scout and five new Qwen presentations was scored PASS: 0.01956 for Scout (260 of 13,291 spans) and 0.01061 for Qwen (19 of 1,791).",
-      "value": {
-        "threshold": 0.05,
-        "scout.rate": 0.01956,
-        "scout.failed": 260,
-        "scout.attempted": 13291,
-        "qwen.rate": 0.01061,
-        "qwen.failed": 19,
-        "qwen.attempted": 1791,
-        "SCORED": "PASS"
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_3",
-      "kind": "json",
-      "verified": true,
-      "note": "Pre-registered in artifacts/r31ext/PREDICTIONS.md and predictions.json before the first new label was generated. Scored on the NEW presentations only (Scout k = 5..19, Qwen k = 5..9), so the denominators differ from the k = 0 gate figures."
-    },
-    {
-      "id": "prereg-p-ext-3-as-written",
-      "section": "2",
-      "statement": "The prediction as pre-registered reads: the hallucinated-span rate at the new presentations stays <= 0.05 for both judges.",
-      "value": 0.05,
-      "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
-      "pointer": "P_ext_3.threshold",
-      "kind": "json",
-      "verified": true,
-      "note": "The prediction file is the pre-registration copy the scorer reads; it was committed before the run and is not edited after. Its stated basis was r3.1's 0.01957 (Scout) and 0.00888 (Qwen)."
-    },
-    {
-      "id": "r3-scout-span-self-consistency",
-      "section": "3",
-      "statement": "Under the quote-primary protocol Scout's span self-consistency was 0.6452, against a >= 0.90 gate.",
-      "value": {
-        "rate": 0.6452,
-        "PASS": false
-      },
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.scout.self_consistency",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 31 re-presented pairs (20 consistent), not 308. Under the two alternative checker readings the same 31 pairs give 0.7742 (primary span only) and 0.9032 (best-pair) — the verdict is reading-dependent at this depth, which is why r3.1 re-presented every pair."
-    },
-    {
-      "id": "r3-qwen-span-self-consistency",
-      "section": "3",
-      "statement": "Qwen's span self-consistency under the same protocol was 0.4194.",
-      "value": {
-        "rate": 0.4194,
-        "PASS": false
-      },
-      "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
-      "pointer": "judges.qwen.self_consistency",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 31 re-presented pairs (13 consistent). All three checker readings agree at 0.4194 for Qwen, unlike Scout."
-    },
-    {
-      "id": "r31-scout-span-self-consistency",
-      "section": "3",
-      "statement": "With whole-sentence anchors and every pair presented five times, Scout's span self-consistency measured over all 308 pairs is 0.3831 — lower than the 0.6452 the anchor change was meant to improve on.",
-      "value": {
-        "rate": 0.3831,
-        "PASS": false,
-        "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
-        "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.self_consistency",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 308 here against n = 31 at r3, so 0.6452 -> 0.3831 is NOT a like-for-like fall. On the same 31 pairs r3.1 gives 0.2903. Averaged over all ten presentation pairs the rate is 0.4201 (range 0.3766-0.4675), so the 0-vs-1 reading is not an unlucky draw."
-    },
-    {
-      "id": "r31-qwen-span-self-consistency",
-      "section": "3",
-      "statement": "Qwen's span self-consistency over all 308 pairs is 0.5617, still far below the >= 0.90 gate.",
-      "value": {
-        "rate": 0.5617,
-        "PASS": false,
-        "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
-        "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.qwen.self_consistency",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 308, against n = 31 at r3 (0.4194). On the same 31 pairs r3.1 gives 0.5484."
-    },
-    {
-      "id": "r31-scout-whether-agreement-five-presentations",
-      "section": "3",
-      "statement": "Scout agrees with itself about whether on 0.9188 of pairs across all five presentations (283 of 308), still passing the >= 0.90 gate that the where-gate fails.",
-      "value": {
-        "rate": 0.9188,
-        "all_five_agree": 283,
-        "n_pairs": 308,
-        "mean_pairwise": 0.961,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.whether_agreement",
-      "kind": "json",
-      "verified": true,
-      "note": "'All five agree' is a stricter criterion than the pairwise one: the mean pairwise agreement is 0.961. At twenty readings the same statistic falls to 0.8539 and fails (claim r31ext-scout-whether-agreement-curve)."
-    },
-    {
-      "id": "r31-qwen-whether-agreement-five-presentations",
-      "section": "3",
-      "statement": "Qwen agrees with itself about whether on 0.9805 of pairs across five presentations (302 of 308).",
-      "value": {
-        "rate": 0.9805,
-        "all_five_agree": 302,
-        "n_pairs": 308,
-        "mean_pairwise": 0.9909,
-        "PASS": true
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.qwen.whether_agreement",
-      "kind": "json",
-      "verified": true,
-      "note": "Qwen calls 0.9805 of pairs positive, so the whether-agreement is partly a base-rate artefact; the cross-judge kappa on the same verdict is only 0.29."
-    },
-    {
-      "id": "r31ext-scout-whether-agreement-curve",
-      "section": "3",
-      "statement": "Scout's whether-agreement decays with the number of readings — 0.961 at 2, 0.9188 at 5, 0.8734 at 10, 0.8539 at 20 — crossing below the >= 0.90 gate somewhere between five and ten readings.",
-      "value": {
-        "2": 0.961,
-        "5": 0.9188,
-        "10": 0.8734,
-        "20": 0.8539
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges.scout.whether_agreement_curve",
-      "kind": "json",
-      "verified": true,
-      "note": "This is an 'all k readings agree' statistic, so it is monotone decreasing in k BY CONSTRUCTION — the paper must say that the decay is expected and that the interesting quantity is how fast it falls, not that it falls. At k = 20 the gate reads FAIL (0.8539)."
-    },
-    {
-      "id": "r31ext-qwen-whether-agreement-curve",
-      "section": "3",
-      "statement": "Qwen's whether-agreement is 0.9903 at 2 readings, 0.9805 at 5 and 0.961 at 10, still above the gate at the deepest depth measured for it.",
-      "value": {
-        "2": 0.9903,
-        "5": 0.9805,
-        "10": 0.961
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges.qwen.whether_agreement_curve",
-      "kind": "json",
-      "verified": true,
-      "note": "Qwen was read 10 times, Scout 20, so there is NO Qwen value at k = 20 — it is absent, not passing. Monotone by construction, as above."
-    },
-    {
-      "id": "r31-scout-union-not-saturating-at-5",
-      "section": "3",
-      "statement": "At five readings the marginal gain in Scout's union of distinct evidence sets was still 0.1022 of the union size, against a 0.05 saturation bar.",
-      "value": {
-        "marginal_gain_at_k5": 0.1022,
-        "saturation_threshold": 0.05
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.union_saturation",
-      "kind": "json",
-      "verified": true,
-      "note": "Sets, not sentences, merged under the D3 rule (two sets merge iff span-union Jaccard >= 0.5), accumulated in presentation order from k = 0. The per-judge VERDICT string in this file reads 'NOT SATURATING'."
-    },
-    {
-      "id": "r31-qwen-union-not-saturating-at-5",
-      "section": "3",
-      "statement": "Qwen's union of distinct evidence sets was still gaining 0.1127 per reading at k = 5.",
-      "value": {
-        "marginal_gain_at_k5": 0.1127,
-        "saturation_threshold": 0.05
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.qwen.union_saturation",
-      "kind": "json",
-      "verified": true,
-      "note": "Same D3 merge rule. At ten readings this falls to 0.0461, i.e. the SET-level union does eventually saturate for Qwen (see r31ext-set-union-saturates); the sentence-level union does not."
-    },
-    {
-      "id": "r31ext-set-union-saturates",
-      "section": "3",
-      "statement": "Measured deeper, the union of distinct evidence *sets* does saturate under the merge rule — Scout's marginal gain is 0.0274 at twenty readings and Qwen's 0.0461 at ten, both below the 0.05 bar.",
-      "value": {
-        "scout.union_saturation.marginal_gain_at_k5": 0.0274,
-        "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
-        "scout.union_saturation.saturation_threshold": 0.05,
-        "qwen.union_saturation.saturation_threshold": 0.05
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges",
-      "kind": "json",
-      "verified": true,
-      "note": "THE KEY NAME LIES. In gates-r31ext.json the field `union_saturation.marginal_gain_at_k5` holds the gain at the judge's FULL depth — k = 20 for Scout, k = 10 for Qwen — not at k = 5. The k = 5 values are 0.1022 and 0.1127 and live in gates-r31.json. Never quote a 'k5' field from the extension file as a five-reading number. Sets, merged at Jaccard >= 0.5; the SENTENCE-level union does not saturate."
-    },
-    {
-      "id": "r31ext-scout-set-union-marginal-gain",
-      "section": "3",
-      "statement": "Scout's set-level union gains only 0.0274 of its size at the twentieth reading — below the 0.05 saturation bar.",
-      "value": 0.0274,
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges.scout.set_saturation_incremental.marginal_gain_at_n",
-      "kind": "json",
-      "verified": true,
-      "note": "This is the honest home for the number: `set_saturation_incremental.marginal_gain_at_n` is explicitly at n = 20, whereas the sibling `union_saturation.marginal_gain_at_k5` holds the same 0.0274 under a key named for k = 5. Sets, merged at Jaccard >= 0.5 — NOT sentences, which do not saturate."
-    },
-    {
-      "id": "r31ext-qwen-set-union-marginal-gain",
-      "section": "3",
-      "statement": "Qwen's set-level union gains 0.0461 of its size at the tenth reading, also below the bar.",
-      "value": 0.0461,
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges.qwen.set_saturation_incremental.marginal_gain_at_n",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 10, Qwen's full depth. Read with the sentence-level result: the coarse object (a set, merged at Jaccard >= 0.5) converges while the fine object (which sentences) does not."
-    },
-    {
-      "id": "prereg-p-ext-2-fit-parameters",
-      "section": "3",
-      "statement": "The pre-registered Michaelis-Menten fit to Scout's k = 1..5 sentence-union curve gave Vmax = 72.3277 and Km = 4.6179 (r2 = 0.994174), projecting U(20) = 58.7603, which is 81.24 % of the asymptote, so the prediction 'within 10 % of the asymptote' required an observed U(20) >= 65.0949.",
-      "value": {
-        "Vmax_prereg": 72.3277,
-        "Km_prereg": 4.6179,
-        "r2_prereg": 0.994174,
-        "projected_U20": 58.7603,
-        "projected_U20_as_fraction_of_Vmax": 0.8124,
-        "threshold_U20": 65.0949,
-        "secondary_threshold_relative_error": 0.1
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
-      "pointer": "P_ext_2",
-      "kind": "json",
-      "verified": true,
-      "note": "The pre-registration states in advance that the prediction AS WRITTEN is expected to FAIL, because its own fit already puts k = 20 at 81 % of Vmax. The informative secondary is the projection's accuracy: |U(20)_obs - 58.7603| / 58.7603 <= 0.10. Both were registered before any new label was generated."
-    },
-    {
-      "id": "prereg-p-ext-2-scored",
-      "section": "3",
-      "statement": "Observed, Scout's mean union of distinct evidence sentences at twenty readings was 133.8267 — 1.85 times the pre-registered asymptote, so the prediction scored PASS while the projection it rested on was wrong by 128 %.",
-      "value": {
-        "observed_U20": 133.8267,
-        "observed_over_prereg_Vmax": 1.8503,
-        "SCORED": "PASS",
-        "secondary_projection_accuracy.relative_error": 1.2775,
-        "secondary_projection_accuracy.SCORED": "FAIL"
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_2",
-      "kind": "json",
-      "verified": true,
-      "note": "THE PASS IS AN ARTEFACT. The scored estimator is a MEAN of a heavy-tailed count, and one reading in 6,160 (the locator blow-up of claim locator-blowup-dev) contributed 22,366 distinct sentences to one pair. The paper must report the blow-up-excluded reading beside it (claim prereg-p-ext-2-excluding-blowups), where the same prediction scores FAIL and its secondary scores PASS."
-    },
-    {
-      "id": "prereg-p-ext-2-excluding-blowups",
-      "section": "3",
-      "statement": "Dropping the single blown-up pair by mechanism, Scout's observed U(20) is 58.6187 against the pre-registered projection of 58.7603 — a relative error of 0.0024 — and on that reading the prediction as written scores FAIL while its secondary scores PASS.",
-      "value": {
-        "observed_U20_excluding_blowups": 58.6187,
-        "n_pairs": 299,
-        "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
-        "secondary_projection_relative_error": 0.0024,
-        "SCORED_SECONDARY_ON_THIS_READING": "PASS",
-        "median_U20_all_pairs": 42.0
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_2.THE_PASS_IS_AN_ARTEFACT_UNLESS_THIS_AGREES",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 299 pairs here, against 300 in the unfiltered reading. This is the strongest single result in the record: a five-point Michaelis-Menten fit extrapolated four-fold to within 0.24 %. The artifact itself notes the median (42.0) is unaffected by the blow-up and is the estimator a re-run should pre-register."
-    },
-    {
-      "id": "r31ext-scout-sentence-fit-excluding-blowups",
-      "section": "3",
-      "statement": "Refitting Michaelis-Menten to all twenty of Scout's blow-up-excluded points gives Vmax = 68.3302, Km = 4.6368 (r2 = 0.988735), putting twenty readings at 0.8118 of the asymptote — the sentence union is still 19 % short of converged after twenty readings.",
-      "value": {
-        "mm_fit.Vmax": 68.3302,
-        "mm_fit.Km": 4.6368,
-        "mm_fit.r2": 0.988735,
-        "mm_fit.DEGENERATE": false,
-        "frac_of_asymptote_at_n": 0.8118,
-        "marginal_gain_at_n": 0.0272
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "judges.scout.sentence_saturation_excluding_blowups",
-      "kind": "json",
-      "verified": true,
-      "note": "The twenty-point refit (Vmax 68.33) lands within 5.5 % of the five-point pre-registered Vmax (72.33), which is the real vindication of the fit. This is SENTENCES, the fine-grained object; the SET-level union does saturate (claim r31ext-scout-set-union-marginal-gain)."
-    },
-    {
-      "id": "r31ext-scout-sentence-fit-degenerate-unfiltered",
-      "section": "3",
-      "statement": "On the unfiltered data the twenty-point Michaelis-Menten refit is degenerate — Km runs to the search ceiling, the curve is linear over the range measured, and there is no identifiable asymptote to take a fraction of.",
-      "value": null,
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_2.refit_frac_of_asymptote_at_20",
-      "kind": "json",
-      "verified": true,
-      "note": "ABSENT, NOT ZERO and not 1.0. The fit reports Vmax = 3810.7637 and Km = 500.0409 with DEGENERATE = true; the artifact explicitly says 'Do not quote this Vmax as an asymptote'. Only the slope, 7.62 sentences per reading, is identified. A linear no-saturation null fits marginally better (r2 0.861368 against 0.860211)."
-    },
-    {
-      "id": "r31ext-pooled-sentence-union-still-growing",
-      "section": "3",
-      "statement": "Pooling both judges' thirty readings and excluding the blow-up, the union of distinct evidence sentences per pair reaches 58.48 at thirty readings — 0.7816 of the fitted asymptote, still gaining 2.64 % per reading.",
-      "value": {
-        "mean_distinct_sentences_at_k.30": 58.4804,
-        "mean_distinct_sentences_at_k.10": 36.7974,
-        "mean_distinct_sentences_at_k.20": 45.6667,
-        "frac_of_asymptote_at_n": 0.7816,
-        "marginal_gain_at_n": 0.0264,
-        "mm_fit.Vmax": 68.4676,
-        "mm_fit.Km": 8.3806,
-        "mm_fit.r2": 0.968155,
-        "n_pairs_positive_somewhere": 306
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "pooled.sentence_saturation_excluding_blowups",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 306 positive pairs of 307 (the blown-up pair is dropped). Use THIS series, not `pooled.sentence_saturation`, whose k >= 22 values are contaminated by the blow-up (its k = 30 mean is 132.2085 and its fit is degenerate). Thirty readings still have not enumerated the locations."
-    },
-    {
-      "id": "r31ext-pooled-fit-degenerate-unfiltered",
-      "section": "3",
-      "statement": "On the unfiltered pooled data no fraction of the asymptote can be stated at all: the fit is degenerate and the value is absent.",
-      "value": null,
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "pooled.sentence_saturation.frac_of_asymptote_at_n",
-      "kind": "json",
-      "verified": true,
-      "note": "ABSENT, NOT ZERO. The accompanying note in the artifact reads 'ABSENT, not zero: the fit is degenerate (Km at the search ceiling), so there is no identifiable asymptote to take a fraction of.' Vmax = 2169.7085 and Km = 500.0409 are grid artefacts; only the slope 4.3391 sentences per reading is identified."
-    },
-    {
-      "id": "r31-scout-union-as-labeler-unstable",
-      "section": "3",
-      "statement": "Read as a labeler rather than as a gate, the union of Scout's first three presentations reproduces the union of its last two on only 0.4708 of pairs (145 of 308), at a mean Jaccard of 0.5067.",
-      "value": {
-        "rate": 0.4708,
-        "consistent": 145,
-        "n_pairs": 308,
-        "mean_jaccard_where_both_positive": 0.5067,
-        "PASS": false
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "judges.scout.split_half_union_stability",
-      "kind": "json",
-      "verified": true,
-      "note": "This is the direct test of whether pooling readings produces a stable span set: it does not. It is the counterpart to the graded-support result, which uses the same readings and IS stable — the difference is the object scored, not the data."
-    },
-    {
-      "id": "r31-cross-judge-span-jaccard",
-      "section": "3",
-      "statement": "Where both judges call a document positive, their selected spans overlap at a mean Jaccard of 0.2123 (median 0.0805), and only 0.1459 of pairs reach a Jaccard of 0.5.",
-      "value": {
-        "mean": 0.2123,
-        "median": 0.0805,
-        "n": 281
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
-      "pointer": "cross_judge.at_presentation_0.span_union_jaccard_where_both_positive",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 281 of 308 pairs (those both judges call positive). At the five-reading unions the mean FALLS to 0.1613 — pooling readings makes the judges agree less about where, not more. The pair-level kappa on whether is only 0.29 despite 0.9286 observed agreement, a base-rate artefact."
-    },
-    {
-      "id": "graded-support-reliability-at-10",
-      "section": "4",
-      "statement": "Pooled over ten readings, graded per-sentence support has a split-half reliability of 0.5444, Spearman-Brown-corrected to 0.7050 for the full instrument.",
-      "value": {
-        "n_readings": 10,
-        "split_half_r": 0.5444,
-        "spearman_brown_full_n": 0.705,
-        "top3_overlap_between_halves": 0.6557,
-        "draws": 20
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "pooled.support_reliability[3]",
-      "kind": "json",
-      "verified": true,
-      "note": "The pre-registered estimator: every pair whose union has >= 2 sentences, no exclusions, 20 seeded half-splits, pooled interleaved order s0,q0,s1,q1,…. Ten readings do NOT clear the 0.9 bar — this is the number the extension was run to beat."
-    },
-    {
-      "id": "graded-support-reliability-at-20",
-      "section": "4",
-      "statement": "At twenty pooled readings the split-half reliability is 0.7526 and the Spearman-Brown full-instrument reliability 0.8588 — still short of the bar.",
-      "value": {
-        "n_readings": 20,
-        "split_half_r": 0.7526,
-        "spearman_brown_full_n": 0.8588,
-        "top3_overlap_between_halves": 0.7044,
-        "draws": 20
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "pooled.support_reliability[5]",
-      "kind": "json",
-      "verified": true,
-      "note": "0.8588 is below both the 0.9 labeler bar and, marginally, above the 0.85 pre-registered threshold — the paper should not claim twenty readings suffice."
-    },
-    {
-      "id": "graded-support-reliability-at-30",
-      "section": "4",
-      "statement": "At thirty pooled readings the split-half reliability is 0.8527 and the Spearman-Brown full-instrument reliability 0.9205, clearing the >= 0.9 labeler bar the span gates never came near.",
-      "value": {
-        "n_readings": 30,
-        "split_half_r": 0.8527,
-        "spearman_brown_full_n": 0.9205,
-        "top3_overlap_between_halves": 0.7551,
-        "draws": 20,
-        "split_half_r_sd_over_draws": 0.0059,
-        "pairs_without_variance_in_a_half": 1
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "pooled.support_reliability[6]",
-      "kind": "json",
-      "verified": true,
-      "note": "Thirty readings = Scout k = 0..19 plus Qwen k = 0..9, pooled across two model families, on 308 dev pairs. The bar is r3's labeler bar of >= 0.90 applied to the graded instrument. The reliability is of the GRADED score, not of any span set: the same 30 readings give a span-set union that is stable on only 0.4708 of pairs."
-    },
-    {
-      "id": "graded-support-bar",
-      "section": "4",
-      "statement": "The bar the graded instrument is read against is >= 0.9 — the same labeler bar the span self-consistency gate used.",
-      "value": ">= 0.9 (r3's labeler bar, read on the graded instrument -- this is the number SS10 item 4 (a) turns on)",
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "gates.graded_support_reliability",
-      "kind": "json",
-      "verified": true,
-      "note": "Verbatim from the artifact, including its ASCII rendering of the section sign. The bar was set for the span gate and then reused, so the paper can say the graded object clears a bar written for the object it replaces."
-    },
-    {
-      "id": "graded-support-reliability-sensitivities",
-      "section": "4",
-      "statement": "The 0.9205 result does not rest on the estimator's choices: excluding the locator blow-up gives 0.9233 and restricting to pairs with at least three touched sentences gives 0.9209.",
-      "value": {
-        "excluding_locator_blowups.spearman_brown_full_n": 0.9233,
-        "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9209
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_1.sensitivity",
-      "kind": "json",
-      "verified": true,
-      "note": "The scored value is the pre-registered estimator (no exclusions). Both sensitivities move the number UP, which is the direction that matters least for the claim."
-    },
-    {
-      "id": "prereg-p-ext-1-scored",
-      "section": "4",
-      "statement": "The pre-registered prediction that graded-support reliability would reach >= 0.85 at thirty readings was scored PASS, at 0.9205 against a projection of 0.8826 made before the run.",
-      "value": {
-        "predicted": 0.85,
-        "projected_at_preregistration": 0.8826,
-        "observed": 0.9205,
-        "observed_split_half_r": 0.8527,
-        "SCORED": "PASS"
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "predictions.P_ext_1",
-      "kind": "json",
-      "verified": true,
-      "note": "The prediction was set BELOW the projection (0.85 < 0.883) and above what ten readings then bought (0.705), so it was a genuine bet in both directions. Registered in artifacts/r31ext/PREDICTIONS.md and predictions.json before the first new label."
-    },
-    {
-      "id": "prereg-p-ext-1-as-registered",
-      "section": "4",
-      "statement": "As pre-registered, the threshold was 0.85 and the projection 0.8826.",
-      "value": {
-        "threshold": 0.85,
-        "projected": 0.8826
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
-      "pointer": "P_ext_1",
-      "kind": "json",
-      "verified": true,
-      "note": "The separate pre-registration copy, committed before the run and never edited, so the threshold in the scored file can be checked against an independent artifact."
-    },
-    {
-      "id": "cross-family-sonnet5-support-lift",
-      "section": "5",
-      "statement": "The 626 sentences Sonnet 5 picked carry a mean pooled support of 10.78 of 30 local readings, against a baseline of 2.86 over every sentence the local pool touched — a lift of +7.92.",
-      "value": {
-        "mean_support_of_picked_sentences": 10.7843,
-        "mean_support_of_all_locally_touched_sentences": 2.8634,
-        "lift_over_baseline": 7.9209,
-        "n_sentences_picked": 626,
-        "n_pairs_with_local_support": 277,
-        "n_locally_touched_sentences": 40588,
-        "frac_picked_with_support_0": 0.1262,
-        "max_possible_support": 30
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "sentence_support_pooled30.per_judge.sonnet5",
-      "kind": "json",
-      "verified": true,
-      "note": "USE THE pooled30 BLOCK, NOT `sentence_support`: the sibling ten-reading block gives the much smaller lift of +1.314 for the same model, and the two are easy to confuse. n = 277 pairs (those where Sonnet is positive and local support exists), not 308. 12.6 % of Sonnet's picks have zero local support."
-    },
-    {
-      "id": "cross-family-opus5-support-lift",
-      "section": "5",
-      "statement": "Opus 5's 1,327 picked sentences carry a mean pooled support of 9.18 against the same 2.86 baseline — a lift of +6.31.",
-      "value": {
-        "mean_support_of_picked_sentences": 9.1771,
-        "mean_support_of_all_locally_touched_sentences": 2.8634,
-        "lift_over_baseline": 6.3137,
-        "n_sentences_picked": 1327,
-        "n_pairs_with_local_support": 306,
-        "frac_picked_with_support_0": 0.217
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "sentence_support_pooled30.per_judge.opus5",
-      "kind": "json",
-      "verified": true,
-      "note": "21.7 % of Opus's picks have ZERO local support — either recall the local judges lack or noise, and the record cannot tell which without the human read. Opus picks twice as many sentences as Sonnet, which is why its mean support is lower despite agreeing more with Fable."
-    },
-    {
-      "id": "cross-family-fable51-support-lift",
-      "section": "5",
-      "statement": "Fable 5.1's 825 picked sentences carry a mean pooled support of 10.80 against a baseline of 5.35 on its own pairs — a lift of +5.46.",
-      "value": {
-        "mean_support_of_picked_sentences": 10.8024,
-        "mean_support_of_all_locally_touched_sentences": 5.3469,
-        "lift_over_baseline": 5.4555,
-        "n_sentences_picked": 825,
-        "n_pairs_with_local_support": 248,
-        "frac_picked_with_support_0": 0.1661
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "sentence_support_pooled30.per_judge.fable51",
-      "kind": "json",
-      "verified": true,
-      "note": "THE BASELINE IS DIFFERENT (5.35, not 2.86) because Fable covers only 248 pairs and the baseline is recomputed over those pairs' 14,907 touched sentences. Fable's lift is therefore NOT comparable to Sonnet's and Opus's without saying so. n = 251 pairs labeled of 308."
-    },
-    {
-      "id": "cross-family-local-self-reference-anchor",
-      "section": "5",
-      "statement": "For scale, Scout's own first reading — one of the thirty readings that builds the support map — picks sentences at mean support 10.97, a lift of +8.11: the Claude models' lift is of the same order as a judge scoring its own contribution.",
-      "value": {
-        "mean_support_of_picked_sentences": 10.972,
-        "lift_over_baseline": 8.1086,
-        "n_sentences_picked": 3678,
-        "frac_picked_with_support_0": 0.0
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "sentence_support_pooled30.local_self_reference.scout",
-      "kind": "json",
-      "verified": true,
-      "note": "SELF-REFERENTIAL BY CONSTRUCTION: Scout k = 0 is one of the 30 readings, so every sentence it picked has support >= 1 necessarily (frac with support 0 is exactly 0.0). This is an UPPER ANCHOR, not a comparable baseline. Qwen's equivalent anchor is 15.28 / +12.42."
-    },
-    {
-      "id": "cross-family-opus-fable-agreement",
-      "section": "5",
-      "statement": "The two strongest Claude tiers agree with each other far more than with anything else: Opus 5 and Fable 5.1 overlap at a mean span Jaccard of 0.5041 with a whether-kappa of 0.7981 over 251 co-labeled pairs.",
-      "value": {
-        "span_union_jaccard_where_both_positive.mean": 0.5041,
-        "span_union_jaccard_where_both_positive.median": 0.4545,
-        "whether_kappa.kappa": 0.7981,
-        "whether_kappa.observed_agreement": 0.996,
-        "co_labeled_pairs": 251
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "within_family[\"opus5 vs fable51\"]",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 251 co-labeled pairs (Fable's limit). 0.5041 is roughly three times the Scout-vs-Qwen span Jaccard (0.2123 at k = 0, 0.1613 at the five-reading unions) and above a local judge against ITSELF (0.3831-0.5617). One reading each, so this is agreement between single readings, not between converged sets."
-    },
-    {
-      "id": "cross-family-sonnet-opus-jaccard",
-      "section": "5",
-      "statement": "Sonnet 5 and Opus 5 overlap at a mean span Jaccard of 0.4179 over 277 co-labeled positive pairs.",
-      "value": 0.4179,
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "within_family[\"sonnet5 vs opus5\"].span_union_jaccard_where_both_positive.mean",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 277. The whether-kappa for this pair is only 0.1104 despite 0.9058 observed agreement — a base-rate artefact, since both judges call almost everything positive."
-    },
-    {
-      "id": "cross-family-sonnet-fable-jaccard",
-      "section": "5",
-      "statement": "Sonnet 5 and Fable 5.1 overlap at a mean span Jaccard of 0.4568 over 230 co-labeled positive pairs.",
-      "value": 0.4568,
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "within_family[\"sonnet5 vs fable51\"].span_union_jaccard_where_both_positive.mean",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 230 (Fable's 251 pairs, restricted to those both call positive)."
-    },
-    {
-      "id": "claude-cost-per-pair",
-      "section": "5",
-      "statement": "Measured per document, the three Claude judges cost $0.1326 (Sonnet 5), $0.3023 (Opus 5) and $0.2445 (Fable 5.1) for one reading each.",
-      "value": {
-        "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.1326,
-        "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.3023,
-        "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.2445
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges",
-      "kind": "json",
-      "verified": true,
-      "note": "Fable's per-pair cost is over 251 pairs, the other two over 308. ONE reading per pair: these are not the cost of a stability-grade pass. RESULTS-stage0b-claude-judges.md §5 puts a full three-model reading of all 308 pairs at about $210 and three readings each at about $630; the thirty-reading depth the graded instrument needs was never priced or run for this family."
-    },
-    {
-      "id": "claude-sonnet5-cost",
-      "section": "5",
-      "statement": "Sonnet 5 labeled 308 pairs once for $40.83 in total, $0.1326 per pair.",
-      "value": {
-        "total_cost_usd": 40.8278,
-        "mean_cost_usd_per_pair": 0.1326,
-        "n_pairs_costed": 308
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.sonnet5.cost_and_latency",
-      "kind": "json",
-      "verified": true,
-      "note": "Cost is the CLI's own total_cost_usd summed over label records; the manifest and in-process counters agree exactly. 13.3 % of Sonnet's bill ($5.44) is an ancillary Haiku call, not the judge itself — the artifact records this under raw_accounting.ancillary_haiku_call."
-    },
-    {
-      "id": "claude-opus5-cost",
-      "section": "5",
-      "statement": "Opus 5 labeled 308 pairs once for $93.12 in total, $0.3023 per pair.",
-      "value": {
-        "total_cost_usd": 93.1172,
-        "mean_cost_usd_per_pair": 0.3023,
-        "n_pairs_costed": 308
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.opus5.cost_and_latency",
-      "kind": "json",
-      "verified": true,
-      "note": "Opus cost more per pair than Fable because it wrote more (1,327 sentences picked against 825 on fewer pairs), not because of a higher token price."
-    },
-    {
-      "id": "claude-fable51-cost",
-      "section": "5",
-      "statement": "Fable 5.1 labeled 251 pairs once for $61.37 in total, $0.2445 per pair.",
-      "value": {
-        "total_cost_usd": 61.3743,
-        "mean_cost_usd_per_pair": 0.2445,
-        "n_pairs_costed": 251
-      },
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.fable51.cost_and_latency",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 251, not 308. The same artifact records manifest_recorded_cost_usd = 7.6543 and in_process_counter_cost_usd = 23.9744 for this judge — the three accountings DISAGREE for Fable alone (the run was interrupted three times), and the $61.37 is the sum over label records. Quote it with that caveat."
-    },
-    {
-      "id": "claude-total-cost",
-      "section": "5",
-      "statement": "The whole three-model Claude pass — 867 judge calls, one reading per pair — cost $195.32.",
-      "value": 195.32,
-      "source": "docs/plans/results/stage0/RESULTS-stage0b-claude-judges.md",
-      "pointer": "867 calls | **$195.32**",
-      "kind": "text",
-      "verified": true,
-      "note": "MARKDOWN-ONLY: the total is not a field in gates-claude.json; it is the sum of the three per-judge totals (40.8278 + 93.1172 + 61.3743 = 195.3193). 867 calls covers 308 + 308 + 251 pairs. A full three-model reading of all 308 pairs would be about $210; three readings each about $630."
-    },
-    {
-      "id": "judge-judge-graded-support-correlation",
-      "section": "6",
-      "statement": "The graded support maps the two local judges build independently correlate at a mean per-pair r of 0.2976 (median 0.3099), with a pooled r of 0.2657 over 40,588 sentences.",
-      "value": {
-        "mean_r": 0.2976,
-        "median_r": 0.3099,
-        "pooled_r_over_all_sentences": 0.2657,
-        "n_pairs": 297,
-        "n_sentences_pooled": 40588
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "cross_judge.support_correlation",
-      "kind": "json",
-      "verified": true,
-      "note": "THIS IS THE RELIABILITY-IS-NOT-VALIDITY NUMBER. Each judge's graded map reproduces itself (pooled SB 0.9205) but the two judges' maps agree with each other at r ~ 0.30. n = 297 pairs; each judge's FULL depth is used (Scout 20, Qwen 10), unlike the kappa figures in the same block which are read at the common depth of 10."
-    },
-    {
-      "id": "judge-judge-top3-overlap",
-      "section": "6",
-      "statement": "The two judges' three highest-support sentences per document overlap at 0.4473, and only 0.2727 of pairs reach a correlation of 0.5.",
-      "value": {
-        "top3_overlap": 0.4473,
-        "[\"frac_pairs_r_at_least_0.5\"]": 0.2727
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "cross_judge.support_correlation",
-      "kind": "json",
-      "verified": true,
-      "note": "0.4473 top-3 overlap between families sits against a within-instrument top-3 overlap between half-splits of 0.7551 at thirty readings — the instrument agrees with itself far more than the two families agree with each other."
-    },
-    {
-      "id": "claude-self-consistency-absent",
-      "section": "6",
-      "statement": "No self-consistency, whether-agreement or union-saturation figure exists for any Claude judge: each was run once per pair, so those statistics are absent, not zero and not passed.",
-      "value": null,
-      "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
-      "pointer": "judges.opus5.self_consistency.rate",
-      "kind": "json",
-      "verified": true,
-      "note": "ABSENT, NOT PASSED. The artifact stores null and an explicit ABSENT string: 'NOT MEASURABLE from this run… It is absent, not 1.0 and not 0.' The same holds for sonnet5 and fable51. Nothing in the Claude run says a Claude judge would pass the stability gates."
-    },
-    {
-      "id": "human-read-not-performed",
-      "section": "6",
-      "statement": "No human read was performed anywhere in this record, and no agent read was substituted for one: there is no kappa against a human, and the two-independent-reader validation remains outstanding.",
-      "value": "no agent read was substituted for a human read",
-      "source": "docs/plans/results/stage0/README.md",
-      "pointer": "no agent read was substituted for a human read",
-      "kind": "text",
-      "verified": true,
-      "note": "Every gate artifact in this inventory carries a HUMAN_HALF field reading PENDING-HUMAN. The sample is drawn (100 pairs, seed 20260915) and the read sheets are rendered, but the read itself is 32-48 person-hours and has not happened. A second recorded deviation: the rubric was never signed off by a human reader before labeling began."
-    },
-    {
-      "id": "deep-section-stratum-underpopulated",
-      "section": "6",
-      "statement": "The human read's deep-section stratum wanted 20 pairs and only 3 existed across all 308 development pairs — only 3 had every supplied span outside the abstract and the first body unit.",
-      "value": 3,
-      "source": "docs/plans/results/stage0/README.md",
-      "pointer": "deep-section stratum wanted 20 pairs and only 3 existed",
-      "kind": "text",
-      "verified": true,
-      "note": "MARKDOWN-ONLY as a statement about the human-read draw. The per-judge deep-section counts in the gate files differ and are not this number (Scout r3: 6/308; Qwen r3: 80/308; Opus: 52/306) — this 3 is over the original Stage 0 labels that the draw was stratified on. It is the abstract-bias finding observed directly: the stratum the human read most needs is the one the labels barely populate."
-    },
-    {
-      "id": "confirmation-scale-pairs",
-      "section": "7",
-      "statement": "The method was applied at scale to 3,738 query-document pairs over the 80 confirmation topics — 2,962 pooled from retrieval and 776 drawn as a bias bound.",
-      "value": {
-        "topics": 80,
-        "totals.pairs": 3738,
-        "totals.pooled": 2962,
-        "totals.sample": 776,
-        "pairs_per_topic.mean": 46.73,
-        "pairs_per_topic.median": 39,
-        "pairs_per_topic.min": 8,
-        "pairs_per_topic.max": 153
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
-      "pointer": "$",
-      "kind": "json",
-      "verified": true,
-      "note": "COUNTS ONLY. pool_counts.json says so itself: 'Counts are not outcomes: no ranking, score, arm or mode is recorded here.' The 80 confirmation topics were never scored — this inventory contains the SIZE of the application and nothing about its result. Pairs per topic range from 8 to 153."
-    },
-    {
-      "id": "confirmation-scale-pairs-total",
-      "section": "7",
-      "statement": "The confirmation application covered 3,738 query-document pairs over 80 topics.",
-      "value": 3738,
-      "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
-      "pointer": "totals.pairs",
-      "kind": "json",
-      "verified": true,
-      "note": "80 topics, 46.73 pairs per topic on average (median 39, range 8-153). Against the pre-registration's expectation of <= 3,600 pooled plus <= 800 bias-bound. These are COUNTS ONLY: the confirmation-topic outcomes are quarantined and no endpoint value is computed anywhere in the committed record."
-    },
-    {
-      "id": "confirmation-scale-composition",
-      "section": "7",
-      "statement": "Of those 3,738 pairs, 2,962 were pooled from retrieval and 776 drawn as a bias bound.",
-      "value": {
-        "pooled": 2962,
-        "sample": 776,
-        "pairs": 3738,
-        "pooled_confirmatory_path_only": 1696
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
-      "pointer": "totals",
-      "kind": "json",
-      "verified": true,
-      "note": "2,962 + 776 = 3,738. Only 1,696 of the pooled pairs lie on the confirmatory path; the rest come from exploratory arms. 76 rankings were pooled per topic, top 20 documents each."
-    },
-    {
-      "id": "confirmation-readings-per-judge",
-      "section": "7",
-      "statement": "Each pair was read twenty times by Llama-4-Scout and ten times by Qwen3.6-35B-A3B, the same depths the development extension established.",
-      "value": {
-        "scout": 20,
-        "qwen": 10
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/label-manifest-conf.json",
-      "pointer": "n_presentations_per_judge",
-      "kind": "json",
-      "verified": true,
-      "note": "The manifest asserts the instrument hashes equal to the development run's before the first call (prompt sha256 ba09e122…, rubric sha256 2e11f368…), so the scale application uses a byte-identical instrument."
-    },
-    {
-      "id": "confirmation-total-readings",
-      "section": "7",
-      "statement": "That is 112,140 readings over 3,738 pairs: 74,760 from Scout (3,738 x 20) and 37,380 from Qwen (3,738 x 10).",
-      "value": 112140,
-      "source": "docs/plans/results/stage0/RESULTS-confirmation-run-a-setup.md",
-      "pointer": "LABELING COMPLETE — 112,140 readings over 3,738 pairs.",
-      "kind": "text",
-      "verified": true,
-      "note": "MARKDOWN-ONLY for the total; the two components are in span-filter-conf.json (files.scout.records = 74,760 and files.qwen.records = 37,380) and are separately verified. Qwen's run spanned a host reboot, stopping at 33,238 records and resuming for the remaining 4,142 with the instrument hashes re-asserted."
-    },
-    {
-      "id": "confirmation-record-counts",
-      "section": "7",
-      "statement": "The scale run produced 74,760 Scout records and 37,380 Qwen records, exactly 3,738 x 20 and 3,738 x 10.",
-      "value": {
-        "scout.records": 74760,
-        "qwen.records": 37380
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
-      "pointer": "files",
-      "kind": "json",
-      "verified": true,
-      "note": "Record counts were preserved exactly through the post-filter and the output hashes re-verified after the run; both source and destination sha256 are recorded in the same artifact."
-    },
-    {
-      "id": "span-filter-dev-counts",
-      "section": "7",
-      "statement": "On the development set the locator post-filter rewrote 82 of Scout's 6,160 readings (1.33 %) and zero of Qwen's 3,080.",
-      "value": {
-        "scout.records": 6160,
-        "scout.records_filtered": 82,
-        "scout.spans_dropped": 1088,
-        "scout.sentences_dropped": 25208,
-        "scout.records_flagged_blowup": 1,
-        "qwen.records": 3080,
-        "qwen.records_filtered": 0,
-        "qwen.spans_dropped": 0,
-        "qwen.sentences_dropped": 0,
-        "qwen.records_flagged_blowup": 0
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
-      "pointer": "files",
-      "kind": "json",
-      "verified": true,
-      "note": "Qwen's zero on dev is the number that mattered: it made the defect look like a Scout-only problem. The same filter code and the same seven-case offline selftest were used on both sets, so the instrument is identical on dev and at scale."
-    },
-    {
-      "id": "span-filter-conf-counts",
-      "section": "7",
-      "statement": "At scale the same filter rewrote 1,050 of Scout's 74,760 readings (1.40 %) but nine of Qwen's 37,380 — and those nine carried 1,653 dropped spans, about 184 each.",
-      "value": {
-        "scout.records": 74760,
-        "scout.records_filtered": 1050,
-        "scout.spans_dropped": 1441,
-        "scout.sentences_dropped": 33721,
-        "qwen.records": 37380,
-        "qwen.records_filtered": 9,
-        "qwen.spans_dropped": 1653,
-        "qwen.sentences_dropped": 8060
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
-      "pointer": "files",
-      "kind": "json",
-      "verified": true,
-      "note": "THIS IS THE DEFECT THE DEVELOPMENT SET COULD NOT HAVE SURFACED. Qwen filtered zero records on 308 dev pairs and nine here; those nine carry more dropped spans (1,653) than Scout's 1,050 records do (1,441). The cross-unit fill fires on long documents and the dev pairs did not contain them. Scout's rate is essentially unchanged (1.40 % against 1.33 % on dev), so the filter is stable where it was already exercised."
-    },
-    {
-      "id": "span-filter-instrument-unchanged",
-      "section": "7",
-      "statement": "Applying the filter to the development labels moved the graded-support reliability by -0.0013 (0.9205 to 0.9192), inside the +/-0.01 requirement, so the instrument is the same on the development set and at scale.",
-      "value": {
-        "delta_spearman_brown": -0.0013,
-        "recomputed_unfiltered.spearman_brown": 0.9205,
-        "recomputed_filtered.spearman_brown": 0.9192,
-        "committed_gates_r31ext.spearman_brown_at_30": 0.9205,
-        "VERDICT": "PASS",
-        "reproduces_committed_number": true,
-        "pairs": 308
-      },
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
-      "pointer": "$",
-      "kind": "json",
-      "verified": true,
-      "note": "n = 308 development pairs. The unfiltered recomputation reproduces the committed 0.9205 exactly, which is what makes the delta meaningful: the estimator was re-run, not re-quoted. Requirement |delta| <= 0.01."
-    },
-    {
-      "id": "span-filter-delta",
-      "section": "7",
-      "statement": "Applying the locator filter to the development labels moved the thirty-reading Spearman-Brown reliability by -0.0013.",
-      "value": -0.0013,
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
-      "pointer": "delta_spearman_brown",
-      "kind": "json",
-      "verified": true,
-      "note": "0.9205 unfiltered to 0.9192 filtered, against a stated requirement of |delta| <= 0.01. The unfiltered recomputation reproduces the committed 0.9205 exactly, which is the check that the estimator was re-run and not re-quoted."
-    },
-    {
-      "id": "span-filter-verdict",
-      "section": "7",
-      "statement": "That verification is recorded as PASS against a requirement of |delta| <= 0.01.",
-      "value": "PASS",
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
-      "pointer": "VERDICT",
-      "kind": "json",
-      "verified": true,
-      "note": "The requirement string in the same file reads: 'the instrument must be the same on the dev set and on the confirmation set'. The filter was written as a post-filter over BOTH sets rather than tuned on dev alone, which is why this check is meaningful."
-    },
-    {
-      "id": "locator-blowup-dev",
-      "section": "7",
-      "statement": "The locator defect showed itself once in 6,160 development readings: on a 5 MB compendium document one model span became 986 emitted spans covering 22,366 sentences, from 22 spans the model actually wrote.",
-      "value": {
-        "n_readings_flagged": 1,
-        "n_readings_examined": 6160,
-        "readings[0].spans_seen": 22,
-        "readings[0].spans_emitted": 986,
-        "readings[0].distinct_sentences": 22366,
-        "readings[0].topic": "2016_1",
-        "readings[0].docno": "4212306"
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "locator_blowups.scout",
-      "kind": "json",
-      "verified": true,
-      "note": "One reading in 6,160 — which was enough to make a pre-registered prediction score PASS for the wrong reason (claim prereg-p-ext-2-scored). The flag criterion is spans_emitted >= 10 x max(spans_seen, 1). Qwen had zero flagged readings in 3,080 on the development set, which is precisely why the scale run was informative."
-    },
-    {
-      "id": "locator-blowup-qwen-dev-zero",
-      "section": "7",
-      "statement": "Qwen showed no locator blow-up at all in 3,080 development readings.",
-      "value": {
-        "n_readings_flagged": 0,
-        "n_readings_examined": 3080
-      },
-      "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
-      "pointer": "locator_blowups.qwen",
-      "kind": "json",
-      "verified": true,
-      "note": "Zero here and nine filtered records at scale is the whole argument of the paper's last step: the development set had no documents long enough to trigger the defect. Note the scale run's blow-up FLAG counts are 2 (Scout) and 3 (Qwen) of the filtered records, a different and smaller statistic than the nine filtered Qwen records."
-    },
-    {
-      "id": "confirmation-outputs-quarantined",
-      "section": "7",
-      "statement": "No confirmation-topic outcome is computed, printed or committed anywhere in this record: the scale application is reported as counts only.",
-      "value": "counts only — no endpoint value is computed, printed or stored here",
-      "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
-      "pointer": "QUARANTINE",
-      "kind": "json",
-      "verified": true,
-      "note": "The harness's quarantine guard raises on any attempt to compute the study's endpoints, and the confirmation label files themselves are not committed. The paper can therefore report the scale of the application and the defect it surfaced, but no confirmation-set result — that is a scope statement, not an omission."
-    }
-  ]
+ "paper": "Reliable but not canonical: LLM judges for passage-level evidence localisation",
+ "generated_utc": "2026-09-22T00:00:00Z",
+ "checker": "docs/papers/check_claims.py",
+ "population_note": "Unless a claim says otherwise, every development-set number is over the same 308 development labeling pairs (208 pooled + 100 bias-bound) drawn from the 10 TREC CDS development topics of docs/plans/design/SPEC-confirmation-run.md. 'Scale' numbers are the 80 confirmation topics. No human read has been performed anywhere in this record.",
+ "claims": [
+  {
+   "id": "s0-span-self-consistency-quote-anchored",
+   "section": "1",
+   "statement": "Re-shown the same document under the original ten-word quote-anchored protocol, the judge reproduced its own span set on only 0.3226 of re-presented pairs, against a pre-registered gate of >= 0.90.",
+   "value": 0.3226,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "self_consistency.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31 re-presented pairs out of 308 (the 10 % duplication sample), NOT 308; a second reading of every pair did not exist until r3.1. Consistency is span-union Jaccard >= 0.5; two empty verdicts count as consistent. Single judge (Llama-4-Scout); dev set only."
+  },
+  {
+   "id": "s0-whether-self-agreement",
+   "section": "1",
+   "statement": "The same judge agreed with itself about *whether* a document contains localizable evidence on 27 of 31 re-presented pairs (0.871), while agreeing about *where* on 0.32.",
+   "value": 0.871,
+   "source": "docs/plans/results/stage0/RESULTS-stage0-calibration.md",
+   "pointer": "evidence on **27 / 31** duplicated pairs (0.871)",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the original Stage 0 gate file (artifacts/label_gates.json) records no whether-agreement field \u2014 that gate was introduced at r3. n = 31, not 308. The paired 'where' figure is the 0.3226 of claim s0-span-self-consistency-quote-anchored."
+  },
+  {
+   "id": "s0-span-index-agreement",
+   "section": "1",
+   "statement": "Only 0.64496 of the judge's verified spans were actually at the character indices it claimed; 140 of 476 verified spans had to be relocated to where their own quote resolved.",
+   "value": 0.64496,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "index_agreement.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "307 of 476 attempted spans had the claimed (unit, first, last) equal to the location its own quote resolves to; the 140 misindexed ones were relocated rather than dropped, so this is a property of the judge, not a loss in the pipeline. No gate was attached to it."
+  },
+  {
+   "id": "s0-minimality-unmeasurable",
+   "section": "1",
+   "statement": "The minimality audit could not be measured at all: the audit re-prompt returned an empty set on 29 of 29 audited pairs, a shrinkage rate of 1.0.",
+   "value": 1.0,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "minimality_shrinkage.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "ABSENT, NOT PASSED. A rate of 1.0 here means every audited span shrank to nothing, i.e. the instrument returned nothing on every one of 29 pairs \u2014 the audit failed to run, it did not find perfect non-minimality. The artifact itself marks the gate 'descriptive (no threshold)'."
+  },
+  {
+   "id": "r3-scout-whether-agreement",
+   "section": "1",
+   "statement": "Under the quote-primary protocol Llama-4-Scout agreed with itself about whether a document contains localizable evidence on 0.9677 of re-presented pairs \u2014 a clear pass \u2014 while its span self-consistency was 0.6452.",
+   "value": 0.9677,
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.whether_agreement.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31 re-presented pairs (30 agree), not 308. Gate >= 0.90, PASS. The contrast with the same judge's 0.6452 span self-consistency on the same 31 pairs is the whole point: whether passes where where fails."
+  },
+  {
+   "id": "r3-qwen-whether-agreement",
+   "section": "1",
+   "statement": "Qwen3.6-35B-A3B likewise agreed with itself about whether on 0.9677 of re-presented pairs while agreeing about where on 0.4194.",
+   "value": 0.9677,
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.whether_agreement.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31 re-presented pairs (30 agree). Identical rate to Scout's by coincidence of the same denominator and one disagreement each."
+  },
+  {
+   "id": "s0-hallucinated-span-rate-ten-word-anchor",
+   "section": "2",
+   "statement": "Under ten-word quote anchors the original Stage 0 labeling pass hallucinated 24 of 476 attempted spans \u2014 0.05042, failing a <= 0.05 gate.",
+   "value": {
+    "rate": 0.05042,
+    "failed_spans": 24,
+    "attempted_spans": 476,
+    "wilson95_upper": 0.07393,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "Single judge (Scout), single reading, original prompt sha256 2a77049b\u2026. A hallucinated span is one whose quoted words appear NOWHERE in the document. This is the 'before' figure for Scout under the first protocol, not the quote-primary r3 one."
+  },
+  {
+   "id": "r3-scout-hallucinated-span-rate",
+   "section": "2",
+   "statement": "Under the quote-primary protocol with ten-word anchors, Scout hallucinated 58 of 707 attempted spans \u2014 0.08204 \u2014 against a <= 0.05 gate.",
+   "value": {
+    "rate": 0.08204,
+    "failed_spans": 58,
+    "attempted_spans": 707,
+    "wilson95_upper": 0.10459,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "The 'before' figure for the whole-sentence-anchor change. Denominator is the primary pass only; the re-presented 10 % are reported separately (7/62) and a sensitivity reading including them gives 0.08453."
+  },
+  {
+   "id": "r3-scout-closing-anchor-failures",
+   "section": "2",
+   "statement": "54 of Scout's 58 hallucinated spans failed on the closing ten-word anchor rather than the opening one.",
+   "value": {
+    "last_quote_not_in_document": 54,
+    "quote_not_in_document": 4
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
+   "kind": "json",
+   "verified": true,
+   "note": "This is the diagnosis that motivated whole-sentence anchoring: the model could copy the start of a span and invented its end. 'quote_not_in_document' is the first-ten-words anchor, 'last_quote_not_in_document' the last-ten-words anchor."
+  },
+  {
+   "id": "r3-qwen-hallucinated-span-rate",
+   "section": "2",
+   "statement": "Under the same quote-primary protocol Qwen hallucinated 9 of 356 spans \u2014 0.02528 \u2014 passing the <= 0.05 gate.",
+   "value": {
+    "rate": 0.02528,
+    "failed_spans": 9,
+    "attempted_spans": 356,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "Qwen attempted roughly half as many spans as Scout (356 vs 707) on the same 308 pairs, so the rates are not over comparable exposure; Qwen also emitted 1.15 spans per positive pair against Scout's 2.10."
+  },
+  {
+   "id": "r31-scout-hallucinated-span-rate",
+   "section": "2",
+   "statement": "With whole-sentence anchors Scout's hallucinated-span rate fell from 0.08204 to 0.02517 (22 of 874 spans), passing the gate.",
+   "value": {
+    "rate": 0.02517,
+    "failed_spans": 22,
+    "attempted_spans": 874,
+    "wilson95_upper": 0.03782,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "Read on presentation k = 0 only, as the earlier gate was read. Over all five presentations the rate is 0.01957. The closing-anchor failures fell from 54 of 58 to 6 of 22."
+  },
+  {
+   "id": "r31-scout-closing-anchor-failures",
+   "section": "2",
+   "statement": "After the anchor change only 6 of Scout's 22 remaining hallucinations were closing-anchor failures, down from 54 of 58.",
+   "value": {
+    "first_sentence_quote": 16,
+    "last_sentence_quote": 6,
+    "empty_first_quote": 0
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
+   "kind": "json",
+   "verified": true,
+   "note": "The failure mode inverted: under ten-word anchors 93 % of failures were on the closing anchor, under whole-sentence anchors 27 % are. The anchor change fixed the specific defect it targeted."
+  },
+  {
+   "id": "r31-qwen-hallucinated-span-rate",
+   "section": "2",
+   "statement": "With whole-sentence anchors Qwen's hallucinated-span rate fell from 0.02528 to 0.00279 (1 of 358 spans).",
+   "value": {
+    "rate": 0.00279,
+    "failed_spans": 1,
+    "attempted_spans": 358,
+    "wilson95_upper": 0.01565,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "One failure in 358; the Wilson 95 % upper bound is 0.01565, which is the honest number to quote for a single-event rate."
+  },
+  {
+   "id": "claude-sonnet5-hallucinated-span-rate",
+   "section": "2",
+   "statement": "Claude Sonnet 5, on the whole-sentence-anchor protocol, hallucinated 1 of 525 spans \u2014 0.0019.",
+   "value": {
+    "rate": 0.0019,
+    "failed_spans": 1,
+    "attempted_spans": 525,
+    "wilson95_upper": 0.01071,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.sonnet5.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "THERE IS NO 'BEFORE' FOR THE CLAUDE MODELS: they were only ever run under the whole-sentence-anchor protocol (revision 3.1), one reading per pair. The paper must not present these as an improvement over a ten-word-anchor baseline that was never measured for them."
+  },
+  {
+   "id": "claude-opus5-hallucinated-span-rate",
+   "section": "2",
+   "statement": "Claude Opus 5 hallucinated 1 of 955 spans \u2014 0.00105.",
+   "value": {
+    "rate": 0.00105,
+    "failed_spans": 1,
+    "attempted_spans": 955,
+    "wilson95_upper": 0.00591,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "Whole-sentence-anchor protocol only; one reading per pair; n = 308 pairs. No ten-word-anchor comparison exists for this model."
+  },
+  {
+   "id": "claude-fable51-hallucinated-span-rate",
+   "section": "2",
+   "statement": "Claude Fable 5.1 hallucinated 0 of 645 spans \u2014 0.0000, Wilson 95 % upper 0.00592.",
+   "value": {
+    "rate": 0.0,
+    "failed_spans": 0,
+    "attempted_spans": 645,
+    "wilson95_upper": 0.00592,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51.hallucinated_span_rate",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 251 of 308 pairs, not 308: the run stopped on the account's session limit. Quote the Wilson upper bound, not the zero. No ten-word-anchor comparison exists for this model."
+  },
+  {
+   "id": "fable51-incomplete-n",
+   "section": "2",
+   "statement": "Every Fable 5.1 figure is on 251 of the 308 development pairs, because the run was stopped by the account's session limit.",
+   "value": {
+    "pairs_labeled": 251,
+    "pairs_expected": 308,
+    "stopped_by_usage_limit": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 251, NOT 308. Any Fable number placed beside a Sonnet or Opus number in a table is on a different sample; the Fable support baseline in particular (5.35) differs from the shared 2.86 because it is computed over its own 248 positive pairs."
+  },
+  {
+   "id": "prereg-p-ext-3-hallucination-holds",
+   "section": "2",
+   "statement": "The pre-registered prediction that the hallucinated-span rate would stay <= 0.05 at the fifteen new Scout and five new Qwen presentations was scored PASS: 0.01956 for Scout (260 of 13,291 spans) and 0.01061 for Qwen (19 of 1,791).",
+   "value": {
+    "threshold": 0.05,
+    "scout.rate": 0.01956,
+    "scout.failed": 260,
+    "scout.attempted": 13291,
+    "qwen.rate": 0.01061,
+    "qwen.failed": 19,
+    "qwen.attempted": 1791,
+    "SCORED": "PASS"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_3",
+   "kind": "json",
+   "verified": true,
+   "note": "Pre-registered in artifacts/r31ext/PREDICTIONS.md and predictions.json before the first new label was generated. Scored on the NEW presentations only (Scout k = 5..19, Qwen k = 5..9), so the denominators differ from the k = 0 gate figures."
+  },
+  {
+   "id": "prereg-p-ext-3-as-written",
+   "section": "2",
+   "statement": "The prediction as pre-registered reads: the hallucinated-span rate at the new presentations stays <= 0.05 for both judges.",
+   "value": 0.05,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_3.threshold",
+   "kind": "json",
+   "verified": true,
+   "note": "The prediction file is the pre-registration copy the scorer reads; it was committed before the run and is not edited after. Its stated basis was r3.1's 0.01957 (Scout) and 0.00888 (Qwen)."
+  },
+  {
+   "id": "r3-scout-span-self-consistency",
+   "section": "3",
+   "statement": "Under the quote-primary protocol Scout's span self-consistency was 0.6452, against a >= 0.90 gate.",
+   "value": {
+    "rate": 0.6452,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.self_consistency",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31 re-presented pairs (20 consistent), not 308. Under the two alternative checker readings the same 31 pairs give 0.7742 (primary span only) and 0.9032 (best-pair) \u2014 the verdict is reading-dependent at this depth, which is why r3.1 re-presented every pair."
+  },
+  {
+   "id": "r3-qwen-span-self-consistency",
+   "section": "3",
+   "statement": "Qwen's span self-consistency under the same protocol was 0.4194.",
+   "value": {
+    "rate": 0.4194,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.self_consistency",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31 re-presented pairs (13 consistent). All three checker readings agree at 0.4194 for Qwen, unlike Scout."
+  },
+  {
+   "id": "r31-scout-span-self-consistency",
+   "section": "3",
+   "statement": "With whole-sentence anchors and every pair presented five times, Scout's span self-consistency measured over all 308 pairs is 0.3831 \u2014 lower than the 0.6452 the anchor change was meant to improve on.",
+   "value": {
+    "rate": 0.3831,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 308 here against n = 31 at r3, so 0.6452 -> 0.3831 is NOT a like-for-like fall. On the same 31 pairs r3.1 gives 0.2903. Averaged over all ten presentation pairs the rate is 0.4201 (range 0.3766-0.4675), so the 0-vs-1 reading is not an unlucky draw."
+  },
+  {
+   "id": "r31-qwen-span-self-consistency",
+   "section": "3",
+   "statement": "Qwen's span self-consistency over all 308 pairs is 0.5617, still far below the >= 0.90 gate.",
+   "value": {
+    "rate": 0.5617,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.self_consistency",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 308, against n = 31 at r3 (0.4194). On the same 31 pairs r3.1 gives 0.5484."
+  },
+  {
+   "id": "r31-scout-whether-agreement-five-presentations",
+   "section": "3",
+   "statement": "Scout agrees with itself about whether on 0.9188 of pairs across all five presentations (283 of 308), still passing the >= 0.90 gate that the where-gate fails.",
+   "value": {
+    "rate": 0.9188,
+    "all_five_agree": 283,
+    "n_pairs": 308,
+    "mean_pairwise": 0.961,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.whether_agreement",
+   "kind": "json",
+   "verified": true,
+   "note": "'All five agree' is a stricter criterion than the pairwise one: the mean pairwise agreement is 0.961. At twenty readings the same statistic falls to 0.8539 and fails (claim r31ext-scout-whether-agreement-curve)."
+  },
+  {
+   "id": "r31-qwen-whether-agreement-five-presentations",
+   "section": "3",
+   "statement": "Qwen agrees with itself about whether on 0.9805 of pairs across five presentations (302 of 308).",
+   "value": {
+    "rate": 0.9805,
+    "all_five_agree": 302,
+    "n_pairs": 308,
+    "mean_pairwise": 0.9909,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.whether_agreement",
+   "kind": "json",
+   "verified": true,
+   "note": "Qwen calls 0.9805 of pairs positive, so the whether-agreement is partly a base-rate artefact; the cross-judge kappa on the same verdict is only 0.29."
+  },
+  {
+   "id": "r31ext-scout-whether-agreement-curve",
+   "section": "3",
+   "statement": "Scout's whether-agreement decays with the number of readings \u2014 0.961 at 2, 0.9188 at 5, 0.8734 at 10, 0.8539 at 20 \u2014 crossing below the >= 0.90 gate somewhere between five and ten readings.",
+   "value": {
+    "2": 0.961,
+    "5": 0.9188,
+    "10": 0.8734,
+    "20": 0.8539
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.whether_agreement_curve",
+   "kind": "json",
+   "verified": true,
+   "note": "This is an 'all k readings agree' statistic, so it is monotone decreasing in k BY CONSTRUCTION \u2014 the paper must say that the decay is expected and that the interesting quantity is how fast it falls, not that it falls. At k = 20 the gate reads FAIL (0.8539)."
+  },
+  {
+   "id": "r31ext-qwen-whether-agreement-curve",
+   "section": "3",
+   "statement": "Qwen's whether-agreement is 0.9903 at 2 readings, 0.9805 at 5 and 0.961 at 10, still above the gate at the deepest depth measured for it.",
+   "value": {
+    "2": 0.9903,
+    "5": 0.9805,
+    "10": 0.961
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.whether_agreement_curve",
+   "kind": "json",
+   "verified": true,
+   "note": "Qwen was read 10 times, Scout 20, so there is NO Qwen value at k = 20 \u2014 it is absent, not passing. Monotone by construction, as above."
+  },
+  {
+   "id": "r31-scout-union-not-saturating-at-5",
+   "section": "3",
+   "statement": "At five readings the marginal gain in Scout's union of distinct evidence sets was still 0.1022 of the union size, against a 0.05 saturation bar.",
+   "value": {
+    "marginal_gain_at_k5": 0.1022,
+    "saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.union_saturation",
+   "kind": "json",
+   "verified": true,
+   "note": "Sets, not sentences, merged under the D3 rule (two sets merge iff span-union Jaccard >= 0.5), accumulated in presentation order from k = 0. The per-judge VERDICT string in this file reads 'NOT SATURATING'."
+  },
+  {
+   "id": "r31-qwen-union-not-saturating-at-5",
+   "section": "3",
+   "statement": "Qwen's union of distinct evidence sets was still gaining 0.1127 per reading at k = 5.",
+   "value": {
+    "marginal_gain_at_k5": 0.1127,
+    "saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.union_saturation",
+   "kind": "json",
+   "verified": true,
+   "note": "Same D3 merge rule. At ten readings this falls to 0.0461, i.e. the SET-level union does eventually saturate for Qwen (see r31ext-set-union-saturates); the sentence-level union does not."
+  },
+  {
+   "id": "r31ext-set-union-saturates",
+   "section": "3",
+   "statement": "Measured deeper, the union of distinct evidence *sets* does saturate under the merge rule \u2014 Scout's marginal gain is 0.0274 at twenty readings and Qwen's 0.0461 at ten, both below the 0.05 bar.",
+   "value": {
+    "scout.union_saturation.marginal_gain_at_k5": 0.0274,
+    "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
+    "scout.union_saturation.saturation_threshold": 0.05,
+    "qwen.union_saturation.saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges",
+   "kind": "json",
+   "verified": true,
+   "note": "THE KEY NAME LIES. In gates-r31ext.json the field `union_saturation.marginal_gain_at_k5` holds the gain at the judge's FULL depth \u2014 k = 20 for Scout, k = 10 for Qwen \u2014 not at k = 5. The k = 5 values are 0.1022 and 0.1127 and live in gates-r31.json. Never quote a 'k5' field from the extension file as a five-reading number. Sets, merged at Jaccard >= 0.5; the SENTENCE-level union does not saturate."
+  },
+  {
+   "id": "r31ext-scout-set-union-marginal-gain",
+   "section": "3",
+   "statement": "Scout's set-level union gains only 0.0274 of its size at the twentieth reading \u2014 below the 0.05 saturation bar.",
+   "value": 0.0274,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.set_saturation_incremental.marginal_gain_at_n",
+   "kind": "json",
+   "verified": true,
+   "note": "This is the honest home for the number: `set_saturation_incremental.marginal_gain_at_n` is explicitly at n = 20, whereas the sibling `union_saturation.marginal_gain_at_k5` holds the same 0.0274 under a key named for k = 5. Sets, merged at Jaccard >= 0.5 \u2014 NOT sentences, which do not saturate."
+  },
+  {
+   "id": "r31ext-qwen-set-union-marginal-gain",
+   "section": "3",
+   "statement": "Qwen's set-level union gains 0.0461 of its size at the tenth reading, also below the bar.",
+   "value": 0.0461,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.set_saturation_incremental.marginal_gain_at_n",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 10, Qwen's full depth. Read with the sentence-level result: the coarse object (a set, merged at Jaccard >= 0.5) converges while the fine object (which sentences) does not."
+  },
+  {
+   "id": "prereg-p-ext-2-fit-parameters",
+   "section": "3",
+   "statement": "The pre-registered Michaelis-Menten fit to Scout's k = 1..5 sentence-union curve gave Vmax = 72.3277 and Km = 4.6179 (r2 = 0.994174), projecting U(20) = 58.7603, which is 81.24 % of the asymptote, so the prediction 'within 10 % of the asymptote' required an observed U(20) >= 65.0949.",
+   "value": {
+    "Vmax_prereg": 72.3277,
+    "Km_prereg": 4.6179,
+    "r2_prereg": 0.994174,
+    "projected_U20": 58.7603,
+    "projected_U20_as_fraction_of_Vmax": 0.8124,
+    "threshold_U20": 65.0949,
+    "secondary_threshold_relative_error": 0.1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_2",
+   "kind": "json",
+   "verified": true,
+   "note": "The pre-registration states in advance that the prediction AS WRITTEN is expected to FAIL, because its own fit already puts k = 20 at 81 % of Vmax. The informative secondary is the projection's accuracy: |U(20)_obs - 58.7603| / 58.7603 <= 0.10. Both were registered before any new label was generated."
+  },
+  {
+   "id": "prereg-p-ext-2-scored",
+   "section": "3",
+   "statement": "Observed, Scout's mean union of distinct evidence sentences at twenty readings was 133.8267 \u2014 1.85 times the pre-registered asymptote, so the prediction scored PASS while the projection it rested on was wrong by 128 %.",
+   "value": {
+    "observed_U20": 133.8267,
+    "observed_over_prereg_Vmax": 1.8503,
+    "SCORED": "PASS",
+    "secondary_projection_accuracy.relative_error": 1.2775,
+    "secondary_projection_accuracy.SCORED": "FAIL"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2",
+   "kind": "json",
+   "verified": true,
+   "note": "THE PASS IS AN ARTEFACT. The scored estimator is a MEAN of a heavy-tailed count, and one reading in 6,160 (the locator blow-up of claim locator-blowup-dev) contributed 22,366 distinct sentences to one pair. The paper must report the blow-up-excluded reading beside it (claim prereg-p-ext-2-excluding-blowups), where the same prediction scores FAIL and its secondary scores PASS."
+  },
+  {
+   "id": "prereg-p-ext-2-excluding-blowups",
+   "section": "3",
+   "statement": "Dropping the single blown-up pair by mechanism, Scout's observed U(20) is 58.6187 against the pre-registered projection of 58.7603 \u2014 a relative error of 0.0024 \u2014 and on that reading the prediction as written scores FAIL while its secondary scores PASS.",
+   "value": {
+    "observed_U20_excluding_blowups": 58.6187,
+    "n_pairs": 299,
+    "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
+    "secondary_projection_relative_error": 0.0024,
+    "SCORED_SECONDARY_ON_THIS_READING": "PASS",
+    "median_U20_all_pairs": 42.0
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2.THE_PASS_IS_AN_ARTEFACT_UNLESS_THIS_AGREES",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 299 pairs here, against 300 in the unfiltered reading. This is the strongest single result in the record: a five-point Michaelis-Menten fit extrapolated four-fold to within 0.24 %. The artifact itself notes the median (42.0) is unaffected by the blow-up and is the estimator a re-run should pre-register."
+  },
+  {
+   "id": "r31ext-scout-sentence-fit-excluding-blowups",
+   "section": "3",
+   "statement": "Refitting Michaelis-Menten to all twenty of Scout's blow-up-excluded points gives Vmax = 68.3302, Km = 4.6368 (r2 = 0.988735), putting twenty readings at 0.8118 of the asymptote \u2014 the sentence union is still 19 % short of converged after twenty readings.",
+   "value": {
+    "mm_fit.Vmax": 68.3302,
+    "mm_fit.Km": 4.6368,
+    "mm_fit.r2": 0.988735,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.8118,
+    "marginal_gain_at_n": 0.0272
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.sentence_saturation_excluding_blowups",
+   "kind": "json",
+   "verified": true,
+   "note": "The twenty-point refit (Vmax 68.33) lands within 5.5 % of the five-point pre-registered Vmax (72.33), which is the real vindication of the fit. This is SENTENCES, the fine-grained object; the SET-level union does saturate (claim r31ext-scout-set-union-marginal-gain)."
+  },
+  {
+   "id": "r31ext-scout-sentence-fit-degenerate-unfiltered",
+   "section": "3",
+   "statement": "On the unfiltered data the twenty-point Michaelis-Menten refit is degenerate \u2014 Km runs to the search ceiling, the curve is linear over the range measured, and there is no identifiable asymptote to take a fraction of.",
+   "value": null,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2.refit_frac_of_asymptote_at_20",
+   "kind": "json",
+   "verified": true,
+   "note": "ABSENT, NOT ZERO and not 1.0. The fit reports Vmax = 3810.7637 and Km = 500.0409 with DEGENERATE = true; the artifact explicitly says 'Do not quote this Vmax as an asymptote'. Only the slope, 7.62 sentences per reading, is identified. A linear no-saturation null fits marginally better (r2 0.861368 against 0.860211)."
+  },
+  {
+   "id": "r31ext-pooled-sentence-union-still-growing",
+   "section": "3",
+   "statement": "Pooling both judges' thirty readings and excluding the blow-up, the union of distinct evidence sentences per pair reaches 58.48 at thirty readings \u2014 0.7816 of the fitted asymptote, still gaining 2.64 % per reading.",
+   "value": {
+    "mean_distinct_sentences_at_k.30": 58.4804,
+    "mean_distinct_sentences_at_k.10": 36.7974,
+    "mean_distinct_sentences_at_k.20": 45.6667,
+    "frac_of_asymptote_at_n": 0.7816,
+    "marginal_gain_at_n": 0.0264,
+    "mm_fit.Vmax": 68.4676,
+    "mm_fit.Km": 8.3806,
+    "mm_fit.r2": 0.968155,
+    "n_pairs_positive_somewhere": 306
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.sentence_saturation_excluding_blowups",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 306 positive pairs of 307 (the blown-up pair is dropped). Use THIS series, not `pooled.sentence_saturation`, whose k >= 22 values are contaminated by the blow-up (its k = 30 mean is 132.2085 and its fit is degenerate). Thirty readings still have not enumerated the locations."
+  },
+  {
+   "id": "r31ext-pooled-fit-degenerate-unfiltered",
+   "section": "3",
+   "statement": "On the unfiltered pooled data no fraction of the asymptote can be stated at all: the fit is degenerate and the value is absent.",
+   "value": null,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.sentence_saturation.frac_of_asymptote_at_n",
+   "kind": "json",
+   "verified": true,
+   "note": "ABSENT, NOT ZERO. The accompanying note in the artifact reads 'ABSENT, not zero: the fit is degenerate (Km at the search ceiling), so there is no identifiable asymptote to take a fraction of.' Vmax = 2169.7085 and Km = 500.0409 are grid artefacts; only the slope 4.3391 sentences per reading is identified."
+  },
+  {
+   "id": "r31-scout-union-as-labeler-unstable",
+   "section": "3",
+   "statement": "Read as a labeler rather than as a gate, the union of Scout's first three presentations reproduces the union of its last two on only 0.4708 of pairs (145 of 308), at a mean Jaccard of 0.5067.",
+   "value": {
+    "rate": 0.4708,
+    "consistent": 145,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5067,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.split_half_union_stability",
+   "kind": "json",
+   "verified": true,
+   "note": "This is the direct test of whether pooling readings produces a stable span set: it does not. It is the counterpart to the graded-support result, which uses the same readings and IS stable \u2014 the difference is the object scored, not the data."
+  },
+  {
+   "id": "r31-cross-judge-span-jaccard",
+   "section": "3",
+   "statement": "Where both judges call a document positive, their selected spans overlap at a mean Jaccard of 0.2123 (median 0.0805), and only 0.1459 of pairs reach a Jaccard of 0.5.",
+   "value": {
+    "mean": 0.2123,
+    "median": 0.0805,
+    "n": 281
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_presentation_0.span_union_jaccard_where_both_positive",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 281 of 308 pairs (those both judges call positive). At the five-reading unions the mean FALLS to 0.1613 \u2014 pooling readings makes the judges agree less about where, not more. The pair-level kappa on whether is only 0.29 despite 0.9286 observed agreement, a base-rate artefact."
+  },
+  {
+   "id": "graded-support-reliability-at-10",
+   "section": "4",
+   "statement": "Pooled over ten readings, graded per-sentence support has a split-half reliability of 0.5444, Spearman-Brown-corrected to 0.7050 for the full instrument.",
+   "value": {
+    "n_readings": 10,
+    "split_half_r": 0.5444,
+    "spearman_brown_full_n": 0.705,
+    "top3_overlap_between_halves": 0.6557,
+    "draws": 20
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[3]",
+   "kind": "json",
+   "verified": true,
+   "note": "The pre-registered estimator: every pair whose union has >= 2 sentences, no exclusions, 20 seeded half-splits, pooled interleaved order s0,q0,s1,q1,\u2026. Ten readings do NOT clear the 0.9 bar \u2014 this is the number the extension was run to beat."
+  },
+  {
+   "id": "graded-support-reliability-at-20",
+   "section": "4",
+   "statement": "At twenty pooled readings the split-half reliability is 0.7526 and the Spearman-Brown full-instrument reliability 0.8588 \u2014 still short of the bar.",
+   "value": {
+    "n_readings": 20,
+    "split_half_r": 0.7526,
+    "spearman_brown_full_n": 0.8588,
+    "top3_overlap_between_halves": 0.7044,
+    "draws": 20
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[5]",
+   "kind": "json",
+   "verified": true,
+   "note": "0.8588 is below both the 0.9 labeler bar and, marginally, above the 0.85 pre-registered threshold \u2014 the paper should not claim twenty readings suffice."
+  },
+  {
+   "id": "graded-support-reliability-at-30",
+   "section": "4",
+   "statement": "At thirty pooled readings the split-half reliability is 0.8527 and the Spearman-Brown full-instrument reliability 0.9205, clearing the >= 0.9 labeler bar the span gates never came near.",
+   "value": {
+    "n_readings": 30,
+    "split_half_r": 0.8527,
+    "spearman_brown_full_n": 0.9205,
+    "top3_overlap_between_halves": 0.7551,
+    "draws": 20,
+    "split_half_r_sd_over_draws": 0.0059,
+    "pairs_without_variance_in_a_half": 1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[6]",
+   "kind": "json",
+   "verified": true,
+   "note": "Thirty readings = Scout k = 0..19 plus Qwen k = 0..9, pooled across two model families, on 308 dev pairs. The bar is r3's labeler bar of >= 0.90 applied to the graded instrument. The reliability is of the GRADED score, not of any span set: the same 30 readings give a span-set union that is stable on only 0.4708 of pairs."
+  },
+  {
+   "id": "graded-support-bar",
+   "section": "4",
+   "statement": "The bar the graded instrument is read against is >= 0.9 \u2014 the same labeler bar the span self-consistency gate used.",
+   "value": ">= 0.9 (r3's labeler bar, read on the graded instrument -- this is the number SS10 item 4 (a) turns on)",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "gates.graded_support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "Verbatim from the artifact, including its ASCII rendering of the section sign. The bar was set for the span gate and then reused, so the paper can say the graded object clears a bar written for the object it replaces."
+  },
+  {
+   "id": "graded-support-reliability-sensitivities",
+   "section": "4",
+   "statement": "The 0.9205 result does not rest on the estimator's choices: excluding the locator blow-up gives 0.9233 and restricting to pairs with at least three touched sentences gives 0.9209.",
+   "value": {
+    "excluding_locator_blowups.spearman_brown_full_n": 0.9233,
+    "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9209
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_1.sensitivity",
+   "kind": "json",
+   "verified": true,
+   "note": "The scored value is the pre-registered estimator (no exclusions). Both sensitivities move the number UP, which is the direction that matters least for the claim."
+  },
+  {
+   "id": "prereg-p-ext-1-scored",
+   "section": "4",
+   "statement": "The pre-registered prediction that graded-support reliability would reach >= 0.85 at thirty readings was scored PASS, at 0.9205 against a projection of 0.8826 made before the run.",
+   "value": {
+    "predicted": 0.85,
+    "projected_at_preregistration": 0.8826,
+    "observed": 0.9205,
+    "observed_split_half_r": 0.8527,
+    "SCORED": "PASS"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_1",
+   "kind": "json",
+   "verified": true,
+   "note": "The prediction was set BELOW the projection (0.85 < 0.883) and above what ten readings then bought (0.705), so it was a genuine bet in both directions. Registered in artifacts/r31ext/PREDICTIONS.md and predictions.json before the first new label."
+  },
+  {
+   "id": "prereg-p-ext-1-as-registered",
+   "section": "4",
+   "statement": "As pre-registered, the threshold was 0.85 and the projection 0.8826.",
+   "value": {
+    "threshold": 0.85,
+    "projected": 0.8826
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_1",
+   "kind": "json",
+   "verified": true,
+   "note": "The separate pre-registration copy, committed before the run and never edited, so the threshold in the scored file can be checked against an independent artifact."
+  },
+  {
+   "id": "cross-family-sonnet5-support-lift",
+   "section": "5",
+   "statement": "The 626 sentences Sonnet 5 picked carry a mean pooled support of 10.78 of 30 local readings, against a baseline of 2.86 over every sentence the local pool touched \u2014 a lift of +7.92.",
+   "value": {
+    "mean_support_of_picked_sentences": 10.7843,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 7.9209,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support": 277,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_with_support_0": 0.1262,
+    "max_possible_support": 30
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.sonnet5",
+   "kind": "json",
+   "verified": true,
+   "note": "USE THE pooled30 BLOCK, NOT `sentence_support`: the sibling ten-reading block gives the much smaller lift of +1.314 for the same model, and the two are easy to confuse. n = 277 pairs (those where Sonnet is positive and local support exists), not 308. 12.6 % of Sonnet's picks have zero local support."
+  },
+  {
+   "id": "cross-family-opus5-support-lift",
+   "section": "5",
+   "statement": "Opus 5's 1,327 picked sentences carry a mean pooled support of 9.18 against the same 2.86 baseline \u2014 a lift of +6.31.",
+   "value": {
+    "mean_support_of_picked_sentences": 9.1771,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 6.3137,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support": 306,
+    "frac_picked_with_support_0": 0.217
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.opus5",
+   "kind": "json",
+   "verified": true,
+   "note": "21.7 % of Opus's picks have ZERO local support \u2014 either recall the local judges lack or noise, and the record cannot tell which without the human read. Opus picks twice as many sentences as Sonnet, which is why its mean support is lower despite agreeing more with Fable."
+  },
+  {
+   "id": "cross-family-fable51-support-lift",
+   "section": "5",
+   "statement": "Fable 5.1's 825 picked sentences carry a mean pooled support of 10.80 against a baseline of 5.35 on its own pairs \u2014 a lift of +5.46.",
+   "value": {
+    "mean_support_of_picked_sentences": 10.8024,
+    "mean_support_of_all_locally_touched_sentences": 5.3469,
+    "lift_over_baseline": 5.4555,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support": 248,
+    "frac_picked_with_support_0": 0.1661
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.fable51",
+   "kind": "json",
+   "verified": true,
+   "note": "THE BASELINE IS DIFFERENT (5.35, not 2.86) because Fable covers only 248 pairs and the baseline is recomputed over those pairs' 14,907 touched sentences. Fable's lift is therefore NOT comparable to Sonnet's and Opus's without saying so. n = 251 pairs labeled of 308."
+  },
+  {
+   "id": "cross-family-local-self-reference-anchor",
+   "section": "5",
+   "statement": "For scale, Scout's own first reading \u2014 one of the thirty readings that builds the support map \u2014 picks sentences at mean support 10.97, a lift of +8.11: the Claude models' lift is of the same order as a judge scoring its own contribution.",
+   "value": {
+    "mean_support_of_picked_sentences": 10.972,
+    "lift_over_baseline": 8.1086,
+    "n_sentences_picked": 3678,
+    "frac_picked_with_support_0": 0.0
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.local_self_reference.scout",
+   "kind": "json",
+   "verified": true,
+   "note": "SELF-REFERENTIAL BY CONSTRUCTION: Scout k = 0 is one of the 30 readings, so every sentence it picked has support >= 1 necessarily (frac with support 0 is exactly 0.0). This is an UPPER ANCHOR, not a comparable baseline. Qwen's equivalent anchor is 15.28 / +12.42."
+  },
+  {
+   "id": "cross-family-opus-fable-agreement",
+   "section": "5",
+   "statement": "The two strongest Claude tiers agree with each other far more than with anything else: Opus 5 and Fable 5.1 overlap at a mean span Jaccard of 0.5041 with a whether-kappa of 0.7981 over 251 co-labeled pairs.",
+   "value": {
+    "span_union_jaccard_where_both_positive.mean": 0.5041,
+    "span_union_jaccard_where_both_positive.median": 0.4545,
+    "whether_kappa.kappa": 0.7981,
+    "whether_kappa.observed_agreement": 0.996,
+    "co_labeled_pairs": 251
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"opus5 vs fable51\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 251 co-labeled pairs (Fable's limit). 0.5041 is roughly three times the Scout-vs-Qwen span Jaccard (0.2123 at k = 0, 0.1613 at the five-reading unions) and above a local judge against ITSELF (0.3831-0.5617). One reading each, so this is agreement between single readings, not between converged sets."
+  },
+  {
+   "id": "cross-family-sonnet-opus-jaccard",
+   "section": "5",
+   "statement": "Sonnet 5 and Opus 5 overlap at a mean span Jaccard of 0.4179 over 277 co-labeled positive pairs.",
+   "value": 0.4179,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"sonnet5 vs opus5\"].span_union_jaccard_where_both_positive.mean",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 277. The whether-kappa for this pair is only 0.1104 despite 0.9058 observed agreement \u2014 a base-rate artefact, since both judges call almost everything positive."
+  },
+  {
+   "id": "cross-family-sonnet-fable-jaccard",
+   "section": "5",
+   "statement": "Sonnet 5 and Fable 5.1 overlap at a mean span Jaccard of 0.4568 over 230 co-labeled positive pairs.",
+   "value": 0.4568,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"sonnet5 vs fable51\"].span_union_jaccard_where_both_positive.mean",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 230 (Fable's 251 pairs, restricted to those both call positive)."
+  },
+  {
+   "id": "claude-cost-per-pair",
+   "section": "5",
+   "statement": "Measured per document, the three Claude judges cost $0.1326 (Sonnet 5), $0.3023 (Opus 5) and $0.2445 (Fable 5.1) for one reading each.",
+   "value": {
+    "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.1326,
+    "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.3023,
+    "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.2445
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges",
+   "kind": "json",
+   "verified": true,
+   "note": "Fable's per-pair cost is over 251 pairs, the other two over 308. ONE reading per pair: these are not the cost of a stability-grade pass. RESULTS-stage0b-claude-judges.md \u00a75 puts a full three-model reading of all 308 pairs at about $210 and three readings each at about $630; the thirty-reading depth the graded instrument needs was never priced or run for this family."
+  },
+  {
+   "id": "claude-sonnet5-cost",
+   "section": "5",
+   "statement": "Sonnet 5 labeled 308 pairs once for $40.83 in total, $0.1326 per pair.",
+   "value": {
+    "total_cost_usd": 40.8278,
+    "mean_cost_usd_per_pair": 0.1326,
+    "n_pairs_costed": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.sonnet5.cost_and_latency",
+   "kind": "json",
+   "verified": true,
+   "note": "Cost is the CLI's own total_cost_usd summed over label records; the manifest and in-process counters agree exactly. 13.3 % of Sonnet's bill ($5.44) is an ancillary Haiku call, not the judge itself \u2014 the artifact records this under raw_accounting.ancillary_haiku_call."
+  },
+  {
+   "id": "claude-opus5-cost",
+   "section": "5",
+   "statement": "Opus 5 labeled 308 pairs once for $93.12 in total, $0.3023 per pair.",
+   "value": {
+    "total_cost_usd": 93.1172,
+    "mean_cost_usd_per_pair": 0.3023,
+    "n_pairs_costed": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.cost_and_latency",
+   "kind": "json",
+   "verified": true,
+   "note": "Opus cost more per pair than Fable because it wrote more (1,327 sentences picked against 825 on fewer pairs), not because of a higher token price."
+  },
+  {
+   "id": "claude-fable51-cost",
+   "section": "5",
+   "statement": "Fable 5.1 labeled 251 pairs once for $61.37 in total, $0.2445 per pair.",
+   "value": {
+    "total_cost_usd": 61.3743,
+    "mean_cost_usd_per_pair": 0.2445,
+    "n_pairs_costed": 251
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51.cost_and_latency",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 251, not 308. The same artifact records manifest_recorded_cost_usd = 7.6543 and in_process_counter_cost_usd = 23.9744 for this judge \u2014 the three accountings DISAGREE for Fable alone (the run was interrupted three times), and the $61.37 is the sum over label records. Quote it with that caveat."
+  },
+  {
+   "id": "claude-total-cost",
+   "section": "5",
+   "statement": "The whole three-model Claude pass \u2014 867 judge calls, one reading per pair \u2014 cost $195.32.",
+   "value": 195.32,
+   "source": "docs/plans/results/stage0/RESULTS-stage0b-claude-judges.md",
+   "pointer": "867 calls | **$195.32**",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the total is not a field in gates-claude.json; it is the sum of the three per-judge totals (40.8278 + 93.1172 + 61.3743 = 195.3193). 867 calls covers 308 + 308 + 251 pairs. A full three-model reading of all 308 pairs would be about $210; three readings each about $630."
+  },
+  {
+   "id": "judge-judge-graded-support-correlation",
+   "section": "6",
+   "statement": "The graded support maps the two local judges build independently correlate at a mean per-pair r of 0.2976 (median 0.3099), with a pooled r of 0.2657 over 40,588 sentences.",
+   "value": {
+    "mean_r": 0.2976,
+    "median_r": 0.3099,
+    "pooled_r_over_all_sentences": 0.2657,
+    "n_pairs": 297,
+    "n_sentences_pooled": 40588
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "cross_judge.support_correlation",
+   "kind": "json",
+   "verified": true,
+   "note": "THIS IS THE RELIABILITY-IS-NOT-VALIDITY NUMBER. Each judge's graded map reproduces itself (pooled SB 0.9205) but the two judges' maps agree with each other at r ~ 0.30. n = 297 pairs; each judge's FULL depth is used (Scout 20, Qwen 10), unlike the kappa figures in the same block which are read at the common depth of 10."
+  },
+  {
+   "id": "judge-judge-top3-overlap",
+   "section": "6",
+   "statement": "The two judges' three highest-support sentences per document overlap at 0.4473, and only 0.2727 of pairs reach a correlation of 0.5.",
+   "value": {
+    "top3_overlap": 0.4473,
+    "[\"frac_pairs_r_at_least_0.5\"]": 0.2727
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "cross_judge.support_correlation",
+   "kind": "json",
+   "verified": true,
+   "note": "0.4473 top-3 overlap between families sits against a within-instrument top-3 overlap between half-splits of 0.7551 at thirty readings \u2014 the instrument agrees with itself far more than the two families agree with each other."
+  },
+  {
+   "id": "claude-self-consistency-absent",
+   "section": "6",
+   "statement": "No self-consistency, whether-agreement or union-saturation figure exists for any Claude judge: each was run once per pair, so those statistics are absent, not zero and not passed.",
+   "value": null,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.self_consistency.rate",
+   "kind": "json",
+   "verified": true,
+   "note": "ABSENT, NOT PASSED. The artifact stores null and an explicit ABSENT string: 'NOT MEASURABLE from this run\u2026 It is absent, not 1.0 and not 0.' The same holds for sonnet5 and fable51. Nothing in the Claude run says a Claude judge would pass the stability gates."
+  },
+  {
+   "id": "human-read-not-performed",
+   "section": "6",
+   "statement": "No human read was performed anywhere in this record, and no agent read was substituted for one: there is no kappa against a human, and the two-independent-reader validation remains outstanding.",
+   "value": "no agent read was substituted for a human read",
+   "source": "docs/plans/results/stage0/README.md",
+   "pointer": "no agent read was substituted for a human read",
+   "kind": "text",
+   "verified": true,
+   "note": "Every gate artifact in this inventory carries a HUMAN_HALF field reading PENDING-HUMAN. The sample is drawn (100 pairs, seed 20260915) and the read sheets are rendered, but the read itself is 32-48 person-hours and has not happened. A second recorded deviation: the rubric was never signed off by a human reader before labeling began."
+  },
+  {
+   "id": "deep-section-stratum-underpopulated",
+   "section": "6",
+   "statement": "The human read's deep-section stratum wanted 20 pairs and only 3 existed across all 308 development pairs \u2014 only 3 had every supplied span outside the abstract and the first body unit.",
+   "value": 3,
+   "source": "docs/plans/results/stage0/README.md",
+   "pointer": "deep-section stratum wanted 20 pairs and only 3 existed",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY as a statement about the human-read draw. The per-judge deep-section counts in the gate files differ and are not this number (Scout r3: 6/308; Qwen r3: 80/308; Opus: 52/306) \u2014 this 3 is over the original Stage 0 labels that the draw was stratified on. It is the abstract-bias finding observed directly: the stratum the human read most needs is the one the labels barely populate."
+  },
+  {
+   "id": "confirmation-scale-pairs",
+   "section": "7",
+   "statement": "The method was applied at scale to 3,738 query-document pairs over the 80 confirmation topics \u2014 2,962 pooled from retrieval and 776 drawn as a bias bound.",
+   "value": {
+    "topics": 80,
+    "totals.pairs": 3738,
+    "totals.pooled": 2962,
+    "totals.sample": 776,
+    "pairs_per_topic.mean": 46.73,
+    "pairs_per_topic.median": 39,
+    "pairs_per_topic.min": 8,
+    "pairs_per_topic.max": 153
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "$",
+   "kind": "json",
+   "verified": true,
+   "note": "COUNTS ONLY. pool_counts.json says so itself: 'Counts are not outcomes: no ranking, score, arm or mode is recorded here.' The 80 confirmation topics were never scored \u2014 this inventory contains the SIZE of the application and nothing about its result. Pairs per topic range from 8 to 153."
+  },
+  {
+   "id": "confirmation-scale-pairs-total",
+   "section": "7",
+   "statement": "The confirmation application covered 3,738 query-document pairs over 80 topics.",
+   "value": 3738,
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "totals.pairs",
+   "kind": "json",
+   "verified": true,
+   "note": "80 topics, 46.73 pairs per topic on average (median 39, range 8-153). Against the pre-registration's expectation of <= 3,600 pooled plus <= 800 bias-bound. These are COUNTS ONLY: the confirmation-topic outcomes are quarantined and no endpoint value is computed anywhere in the committed record."
+  },
+  {
+   "id": "confirmation-scale-composition",
+   "section": "7",
+   "statement": "Of those 3,738 pairs, 2,962 were pooled from retrieval and 776 drawn as a bias bound.",
+   "value": {
+    "pooled": 2962,
+    "sample": 776,
+    "pairs": 3738,
+    "pooled_confirmatory_path_only": 1696
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "totals",
+   "kind": "json",
+   "verified": true,
+   "note": "2,962 + 776 = 3,738. Only 1,696 of the pooled pairs lie on the confirmatory path; the rest come from exploratory arms. 76 rankings were pooled per topic, top 20 documents each."
+  },
+  {
+   "id": "confirmation-readings-per-judge",
+   "section": "7",
+   "statement": "Each pair was read twenty times by Llama-4-Scout and ten times by Qwen3.6-35B-A3B, the same depths the development extension established.",
+   "value": {
+    "scout": 20,
+    "qwen": 10
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/label-manifest-conf.json",
+   "pointer": "n_presentations_per_judge",
+   "kind": "json",
+   "verified": true,
+   "note": "The manifest asserts the instrument hashes equal to the development run's before the first call (prompt sha256 ba09e122\u2026, rubric sha256 2e11f368\u2026), so the scale application uses a byte-identical instrument."
+  },
+  {
+   "id": "confirmation-total-readings",
+   "section": "7",
+   "statement": "That is 112,140 readings over 3,738 pairs: 74,760 from Scout (3,738 x 20) and 37,380 from Qwen (3,738 x 10).",
+   "value": 112140,
+   "source": "docs/plans/results/stage0/RESULTS-confirmation-run-a-setup.md",
+   "pointer": "LABELING COMPLETE \u2014 112,140 readings over 3,738 pairs.",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY for the total; the two components are in span-filter-conf.json (files.scout.records = 74,760 and files.qwen.records = 37,380) and are separately verified. Qwen's run spanned a host reboot, stopping at 33,238 records and resuming for the remaining 4,142 with the instrument hashes re-asserted."
+  },
+  {
+   "id": "confirmation-record-counts",
+   "section": "7",
+   "statement": "The scale run produced 74,760 Scout records and 37,380 Qwen records, exactly 3,738 x 20 and 3,738 x 10.",
+   "value": {
+    "scout.records": 74760,
+    "qwen.records": 37380
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "files",
+   "kind": "json",
+   "verified": true,
+   "note": "Record counts were preserved exactly through the post-filter and the output hashes re-verified after the run; both source and destination sha256 are recorded in the same artifact."
+  },
+  {
+   "id": "span-filter-dev-counts",
+   "section": "7",
+   "statement": "On the development set the locator post-filter rewrote 82 of Scout's 6,160 readings (1.33 %) and zero of Qwen's 3,080.",
+   "value": {
+    "scout.records": 6160,
+    "scout.records_filtered": 82,
+    "scout.spans_dropped": 1088,
+    "scout.sentences_dropped": 25208,
+    "scout.records_flagged_blowup": 1,
+    "qwen.records": 3080,
+    "qwen.records_filtered": 0,
+    "qwen.spans_dropped": 0,
+    "qwen.sentences_dropped": 0,
+    "qwen.records_flagged_blowup": 0
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "files",
+   "kind": "json",
+   "verified": true,
+   "note": "Qwen's zero on dev is the number that mattered: it made the defect look like a Scout-only problem. The same filter code and the same seven-case offline selftest were used on both sets, so the instrument is identical on dev and at scale."
+  },
+  {
+   "id": "span-filter-conf-counts",
+   "section": "7",
+   "statement": "At scale the same filter rewrote 1,050 of Scout's 74,760 readings (1.40 %) but nine of Qwen's 37,380 \u2014 and those nine carried 1,653 dropped spans, about 184 each.",
+   "value": {
+    "scout.records": 74760,
+    "scout.records_filtered": 1050,
+    "scout.spans_dropped": 1441,
+    "scout.sentences_dropped": 33721,
+    "qwen.records": 37380,
+    "qwen.records_filtered": 9,
+    "qwen.spans_dropped": 1653,
+    "qwen.sentences_dropped": 8060
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "files",
+   "kind": "json",
+   "verified": true,
+   "note": "THIS IS THE DEFECT THE DEVELOPMENT SET COULD NOT HAVE SURFACED. Qwen filtered zero records on 308 dev pairs and nine here; those nine carry more dropped spans (1,653) than Scout's 1,050 records do (1,441). The cross-unit fill fires on long documents and the dev pairs did not contain them. Scout's rate is essentially unchanged (1.40 % against 1.33 % on dev), so the filter is stable where it was already exercised."
+  },
+  {
+   "id": "span-filter-instrument-unchanged",
+   "section": "7",
+   "statement": "Applying the filter to the development labels moved the graded-support reliability by -0.0013 (0.9205 to 0.9192), inside the +/-0.01 requirement, so the instrument is the same on the development set and at scale.",
+   "value": {
+    "delta_spearman_brown": -0.0013,
+    "recomputed_unfiltered.spearman_brown": 0.9205,
+    "recomputed_filtered.spearman_brown": 0.9192,
+    "committed_gates_r31ext.spearman_brown_at_30": 0.9205,
+    "VERDICT": "PASS",
+    "reproduces_committed_number": true,
+    "pairs": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "$",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 308 development pairs. The unfiltered recomputation reproduces the committed 0.9205 exactly, which is what makes the delta meaningful: the estimator was re-run, not re-quoted. Requirement |delta| <= 0.01."
+  },
+  {
+   "id": "span-filter-delta",
+   "section": "7",
+   "statement": "Applying the locator filter to the development labels moved the thirty-reading Spearman-Brown reliability by -0.0013.",
+   "value": -0.0013,
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "delta_spearman_brown",
+   "kind": "json",
+   "verified": true,
+   "note": "0.9205 unfiltered to 0.9192 filtered, against a stated requirement of |delta| <= 0.01. The unfiltered recomputation reproduces the committed 0.9205 exactly, which is the check that the estimator was re-run and not re-quoted."
+  },
+  {
+   "id": "span-filter-verdict",
+   "section": "7",
+   "statement": "That verification is recorded as PASS against a requirement of |delta| <= 0.01.",
+   "value": "PASS",
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "VERDICT",
+   "kind": "json",
+   "verified": true,
+   "note": "The requirement string in the same file reads: 'the instrument must be the same on the dev set and on the confirmation set'. The filter was written as a post-filter over BOTH sets rather than tuned on dev alone, which is why this check is meaningful."
+  },
+  {
+   "id": "locator-blowup-dev",
+   "section": "7",
+   "statement": "The locator defect showed itself once in 6,160 development readings: on a 5 MB compendium document one model span became 986 emitted spans covering 22,366 sentences, from 22 spans the model actually wrote.",
+   "value": {
+    "n_readings_flagged": 1,
+    "n_readings_examined": 6160,
+    "readings[0].spans_seen": 22,
+    "readings[0].spans_emitted": 986,
+    "readings[0].distinct_sentences": 22366,
+    "readings[0].topic": "2016_1",
+    "readings[0].docno": "4212306"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "locator_blowups.scout",
+   "kind": "json",
+   "verified": true,
+   "note": "One reading in 6,160 \u2014 which was enough to make a pre-registered prediction score PASS for the wrong reason (claim prereg-p-ext-2-scored). The flag criterion is spans_emitted >= 10 x max(spans_seen, 1). Qwen had zero flagged readings in 3,080 on the development set, which is precisely why the scale run was informative."
+  },
+  {
+   "id": "locator-blowup-qwen-dev-zero",
+   "section": "7",
+   "statement": "Qwen showed no locator blow-up at all in 3,080 development readings.",
+   "value": {
+    "n_readings_flagged": 0,
+    "n_readings_examined": 3080
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "locator_blowups.qwen",
+   "kind": "json",
+   "verified": true,
+   "note": "Zero here and nine filtered records at scale is the whole argument of the paper's last step: the development set had no documents long enough to trigger the defect. Note the scale run's blow-up FLAG counts are 2 (Scout) and 3 (Qwen) of the filtered records, a different and smaller statistic than the nine filtered Qwen records."
+  },
+  {
+   "id": "confirmation-outputs-quarantined",
+   "section": "7",
+   "statement": "No confirmation-topic outcome is computed, printed or committed anywhere in this record: the scale application is reported as counts only.",
+   "value": "counts only \u2014 no endpoint value is computed, printed or stored here",
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "QUARANTINE",
+   "kind": "json",
+   "verified": true,
+   "note": "The harness's quarantine guard raises on any attempt to compute the study's endpoints, and the confirmation label files themselves are not committed. The paper can therefore report the scale of the application and the defect it surfaced, but no confirmation-set result \u2014 that is a scope statement, not an omission."
+  },
+  {
+   "id": "r31-scout-partial-credit-jaccard",
+   "section": "3",
+   "statement": "Under partial credit rather than set equality, Scout's span agreement with itself is still low: the mean raw pairwise span-union Jaccard over all ten presentation pairs is 0.4350 (median 0.3534, n = 2,898 pair-comparisons).",
+   "value": 0.435,
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency.reading_ii_all_ten_presentation_pairs.mean_pairwise_span_union_jaccard.mean",
+   "kind": "json",
+   "verified": true,
+   "note": "THE ANSWER TO THE METRIC-ARTEFACT OBJECTION (HotpotQA Table 8 shows a whether/where gap that lives almost entirely in exact set match). Here the contrast survives partial credit: the raw Jaccard is 0.4350 against a graded-support reliability of 0.9205 on the SAME readings. Raw value, not the >= 0.5 indicator; pairs where both presentations returned nothing are excluded (their Jaccard is 0/0)."
+  },
+  {
+   "id": "r31-qwen-partial-credit-jaccard",
+   "section": "3",
+   "statement": "Qwen's mean raw pairwise span-union Jaccard is 0.5430 (median 0.7518, n = 3,056), so partial credit does not rescue span agreement for the more precise judge either.",
+   "value": 0.543,
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.self_consistency.reading_ii_all_ten_presentation_pairs.mean_pairwise_span_union_jaccard.mean",
+   "kind": "json",
+   "verified": true,
+   "note": "Mean 0.5430 but median 0.7518 \u2014 the distribution is bimodal, many near-identical re-readings plus a tail of near-disjoint ones. Report both; the mean alone understates how often Qwen reproduces itself exactly and the median alone hides the tail."
+  }
+ ]
 }

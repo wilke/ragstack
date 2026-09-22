@@ -29,6 +29,31 @@ book. If a sentence needs the word *currently*, *still* or *next*, it is in the 
 
 Target for both: **arXiv preprint first**, venue-neutral, venue chosen afterwards.
 
+### What the literature survey did to the roster, 2026-09-22
+
+Both papers narrowed, and both are better for it. The surveys in `bib-inbox/` were told to hunt
+for work that contradicts us, and they found a lot. Read `paper-a-evidence-localisation/OUTLINE.md`
+for A's repositioning; for B the essentials are:
+
+- **`zhou-2026`** (Zhou, Wang, Koopman, Zuccon) asks our confound question *verbatim* — "prior
+  work has not controlled for this variable … do effectiveness differences reflect segmentation
+  quality, or merely chunk size?" — and answers it with a **per-query correlation**, not a matched
+  comparison. This is the paper B must cite and then distinguish, and the distinction is the
+  estimand.
+- **The claim "nobody controls for chunk size" is not defensible** and must be replaced by the
+  finer, true one: the literature *controls nominal* size (`amiri-2025`), *bounds* realised size
+  (`demoura-2026`), *reports* realised size (`duarte-2024`, `smith-2024-chroma`) and *matches
+  delivered token budget* (RAPTOR, HiChunk, Dense X) — but no published study conditions its
+  method comparison on matched **realised** chunk length.
+- **`kaszkiel-2001`** is the threat to take seriously: if effectiveness is flat across 50–450
+  words, our semantic chunker collapsing to ~350 tokens supports "the four labels were meaningless"
+  but is neutral on "and it cost us performance". Do not overclaim the second.
+- **`pevzner-2002`** shows the realised-length confound was diagnosed in text segmentation in 2002
+  — WindowDiff replaced Pk precisely because Pk "is affected by variation in segment size
+  distribution". Retrieval inherited the segmenters and not the lesson. Good framing, freely given.
+- **Parent-document / small-to-big retrieval has almost no peer-reviewed evidence base**, and
+  **late chunking is arXiv-only**. Both absences are findings worth stating.
+
 Paper A is first because it is self-contained, general beyond chunking, and its data is
 complete. Paper B's confirmatory verdict cannot be written until the human read produces κ
 and the labels are frozen.
