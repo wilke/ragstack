@@ -39,7 +39,8 @@ orders, so a topic boundary exists at a known offset.
 Both arms: `buffer_size=2`, percentile 80.0, `min_chunk_length=500`,
 `Salesforce/SFR-Embedding-Mistral` over dev's two endpoints, run inside
 `ragstack-worker-v1.6.4.sif` through the tool's own embedder builder. Identical
-shard bytes (`md5 972bf35258f82a01382403a2d0d22f1d`).
+shard bytes (`md5 972bf35258f82a01382403a2d0d22f1d` — the committed
+`semantic-vs-pooled-2026-09-18/shard.jsonl`, see *Artifacts*).
 
 Distances taken from the real `SemanticChunker._buffer_embeddings`, with pooled's
 `distance_round` applied as the chunker applies it.
@@ -108,3 +109,29 @@ during this work was that default, not these collections.
   (docs/plans/chunking-one-factory.md §7d): `asm-semantic` holds 6,718,269 points
   recorded as `semantic`, and an alias would have silently changed what they
   claim to be.
+
+## Artifacts
+
+Every number above resolves to a committed file under
+`docs/plans/results/semantic-vs-pooled-2026-09-18/` (the publication-track rule:
+claims must resolve to committed artifacts, not a session scratchpad):
+
+| file | what it is |
+|---|---|
+| `shard.jsonl` | the three input documents, byte-identical to both ingest runs (`md5 972bf35258f82a01382403a2d0d22f1d`) |
+| `probe.py` | build-only probe proving the registry's `buffer_size=2` reached the chunker (tool default is 3) |
+| `compare.py` | the two-arm comparison: texts/tokens embedded, per-doc Spearman and Jaccard, the overall figures |
+| `control.py` | the self-reproducibility control — each arm run twice against itself |
+| `es_only.py` | the isolation showing the `Unclosed client session` warning is the ES leg (#617), not the bridge |
+| `receipt.json` / `receipt-legacy.json` | the shard receipts from the two real ingests into dev (5 chunks each, `completed`) |
+
+The scripts were run **inside** `ragstack-worker-v1.6.4.sif` on dev — embedding
+endpoints `localhost:9001` / `9002`, stores `:24041` / `:24043`, registry
+`/rag/data/tenants/dev/state/ragstack_collections.db`. They are a record of what
+ran and are re-runnable only in that environment.
+
+**Known gap, stated rather than hidden:** the raw per-pair distance series are
+not captured — `compare.py` and `control.py` print summary statistics only. The
+51-pair series behind the 0.4254 exist only as those printed figures; re-running
+the scripts regenerates them. A future run should dump the series to a file
+alongside the summary.

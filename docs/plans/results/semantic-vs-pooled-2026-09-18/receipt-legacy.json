@@ -1,0 +1,63 @@
+{
+  "chunk_ids": [
+    "80706554-8ff8-52b9-baae-f97ace46e244",
+    "97977a01-4148-514b-987a-75ccb1830d70",
+    "a67f52b8-03bc-5c75-928b-5e7030d3b74e",
+    "505aa46b-16b8-5a7e-8452-07b750a8f3be",
+    "5043d0d6-bd34-52ea-9c8e-23828cb6410e"
+  ],
+  "docs": [
+    {
+      "chunk_ids": [
+        "80706554-8ff8-52b9-baae-f97ace46e244"
+      ],
+      "doc_id": "de326c7b-3ef6-5873-8f19-10230529e320",
+      "error": "",
+      "metadata": {
+        "doc_type": "article",
+        "filename": "sem-e2e-doc0.txt",
+        "n_citations": 0,
+        "source_path": "/corpus/sem-e2e-doc0.txt"
+      },
+      "source": "/corpus/sem-e2e-doc0.txt"
+    },
+    {
+      "chunk_ids": [
+        "97977a01-4148-514b-987a-75ccb1830d70",
+        "a67f52b8-03bc-5c75-928b-5e7030d3b74e"
+      ],
+      "doc_id": "d39de95f-bed0-5fd0-af36-592215c4726b",
+      "error": "",
+      "metadata": {
+        "doc_type": "article",
+        "filename": "sem-e2e-doc1.txt",
+        "n_citations": 0,
+        "source_path": "/corpus/sem-e2e-doc1.txt"
+      },
+      "source": "/corpus/sem-e2e-doc1.txt"
+    },
+    {
+      "chunk_ids": [
+        "505aa46b-16b8-5a7e-8452-07b750a8f3be",
+        "5043d0d6-bd34-52ea-9c8e-23828cb6410e"
+      ],
+      "doc_id": "68eebd90-1160-5ba2-ad5a-ad3f833c589c",
+      "error": "",
+      "metadata": {
+        "doc_type": "article",
+        "filename": "sem-e2e-doc2.txt",
+        "n_citations": 0,
+        "source_path": "/corpus/sem-e2e-doc2.txt"
+      },
+      "source": "/corpus/sem-e2e-doc2.txt"
+    }
+  ],
+  "embedding_file": "",
+  "error": "",
+  "n_chunks": 5,
+  "n_docs": 3,
+  "n_docs_failed": 0,
+  "shard_id": "sem-e2e-legacy-1",
+  "status": "completed",
+  "tenant": "dev"
+}
