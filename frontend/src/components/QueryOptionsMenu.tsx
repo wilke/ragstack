@@ -29,8 +29,13 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
   topK: 5,
 };
 
-// Matches Compare's lane cap so the two views can't request different ranges.
-const MAX_TOPK = 20;
+// THE cap for both Explore and Compare — exported, not duplicated. It used to be
+// a private 20 here and a bare `20` written twice in CompareView, so the comment
+// claiming the two views "can't request different ranges" was an invariant nobody
+// enforced. 100 is the contract's own ceiling (`top_k.maximum`,
+// contracts/schemas/query_request.json), so the UI now offers exactly what the
+// API accepts and not one more.
+export const MAX_TOPK = 100;
 
 // Fallback when /v1/config is unreadable (it is admin-only): the backend's
 // compiled default is rerank_enabled=False (config.py), so display "off".

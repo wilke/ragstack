@@ -1,11 +1,11 @@
-// The synthesized answer as an editorial block: lead claim (first sentence)
-// behind the yellow rule with a Verify-in-Evidence link, remaining sentences
-// as secondary paragraphs, `[n]` markers as citation chips, then the
+// The synthesized answer as an editorial block: the WHOLE answer behind the
+// yellow rule with a Verify-in-Evidence link, `[n]` markers as citation chips,
+// then the
 // rewritten-query chips and the feedback control. Shows the skeleton while the
 // request is in flight. All content is untrusted → rendered as React text.
 
 import { AnswerSkeleton } from "./AnswerSkeleton";
-import { firstCited, segmentCitations, splitAnswer } from "../lib/claims";
+import { answerParagraphs, firstCited, segmentCitations } from "../lib/claims";
 import { lookupTerm } from "../lib/glossary";
 import { Eyebrow } from "./explore/Eyebrow";
 import { FeedbackControl } from "./FeedbackControl";
@@ -22,9 +22,9 @@ interface Props {
 }
 
 // Inline text with `[n]` markers rendered as superscript citation chips. The
-// yellow chip is scoped to the LEAD claim's first-cited source (per-claim
-// grounding is a backend gap; "cited by this claim" reduces to "cited first in
-// the lead" until it exists) — secondary-paragraph chips are always blue.
+// yellow chip is the answer's first-cited source (per-claim grounding is a
+// backend gap, so "cited by this claim" reduces to "cited first"); every other
+// marker is blue.
 function CitedText({
   text,
   sourceCount,
@@ -62,9 +62,9 @@ export function AnswerCard({
   sourceCount,
   onOpenEvidence,
 }: Props) {
-  const parts = answer ? splitAnswer(answer) : { lead: "", rest: [] };
-  // Computed from the lead only: the yellow treatment belongs to the lead claim.
-  const first = answer ? firstCited(parts.lead, sourceCount) : null;
+  const paragraphs = answer ? answerParagraphs(answer) : [];
+  // Over the whole answer now that it is one block — there is no "lead" to scope to.
+  const first = answer ? firstCited(answer, sourceCount) : null;
 
   return (
     <section aria-labelledby="answer-heading">
@@ -76,8 +76,7 @@ export function AnswerCard({
           <span className="mb-1.5 block">{lookupTerm("citation")}</span>
           <span className="block">
             n is the source&rsquo;s rank in the Sources list below, so [2] is the second
-            card. The yellow chip is the first source the lead claim cites — the sentence
-            behind the yellow rule.
+            card. The yellow chip is the first source the answer cites.
           </span>
         </HelpTip>
       </div>
@@ -86,10 +85,22 @@ export function AnswerCard({
         <AnswerSkeleton />
       ) : (
         <>
+          {/* ONE block: the yellow rule spans the entire answer. It used to bound
+              only a "lead sentence", which a regex cut at the first period —
+              splitting "E. coli" and spilling the remainder outside the rule. */}
           <div className="mb-[18px] border-l-[3px] border-accent pl-4">
-            <p className="mb-2.5 text-[20px] leading-[1.7] text-strong [text-wrap:pretty]">
-              <CitedText text={parts.lead} sourceCount={sourceCount} first={first} />
-            </p>
+            {paragraphs.map((para, i) => (
+              <p
+                key={i}
+                className={
+                  i === 0
+                    ? "mb-2.5 text-[17px] leading-[1.7] text-strong [text-wrap:pretty]"
+                    : "mb-2.5 text-[15px] leading-[1.75] text-body [text-wrap:pretty]"
+                }
+              >
+                <CitedText text={para} sourceCount={sourceCount} first={first} />
+              </p>
+            ))}
             <span className="flex items-center gap-2">
               <button
                 type="button"
@@ -114,12 +125,6 @@ export function AnswerCard({
               </HelpTip>
             </span>
           </div>
-
-          {parts.rest.map((p, i) => (
-            <p key={i} className="mb-[22px] text-base leading-[1.75] text-body">
-              <CitedText text={p} sourceCount={sourceCount} first={null} />
-            </p>
-          ))}
 
           {rewrittenQueries && rewrittenQueries.length > 1 && (
             <div className="mb-4 flex flex-wrap gap-1.5">

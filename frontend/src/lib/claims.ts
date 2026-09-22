@@ -1,6 +1,6 @@
 // The canonical answer-text module: one grammar for `[n]` citation markers,
 // consumed by both presentations — Explore's editorial split (lead sentence +
-// paragraphs, markers as chips: splitAnswer/segmentCitations/firstCited) and
+// paragraphs, markers as chips: answerParagraphs/segmentCitations/firstCited) and
 // Evidence's claim-by-claim decomposition (splitClaims). Pure string
 // functions — no DOM, no React.
 //
@@ -32,27 +32,25 @@ function markerRanks(payload: string, sourceCount: number): number[] {
 // Explore: editorial answer block
 // ---------------------------------------------------------------------------
 
-export interface AnswerParts {
-  lead: string;
-  rest: string[]; // remaining paragraphs (the first paragraph's tail included)
-}
-
-// Lead claim = the first sentence: up to the first `.` `!` `?` followed by
-// whitespace/end, letting attached citation markers ride along ("…axis. [1]").
-// Decimals survive: "." before a digit has no following whitespace.
-const LEAD_RE = new RegExp(String.raw`^[\s\S]*?[.!?](?:\s*${CITE_SRC})*(?=\s|$)`);
-
-export function splitAnswer(answer: string): AnswerParts {
-  const paras = answer
-    .split(/\n+/)
+// The answer's paragraphs, in order. Blank lines separate them.
+//
+// This deliberately does NOT split into a "lead sentence" and a remainder.
+// It used to: a regex took everything up to the first `.` `!` `?` followed by
+// whitespace. In a biomedical corpus that is unwinnable — every genus
+// abbreviation ends a "sentence":
+//
+//     "Several genes in E. coli are responsible…"  ->  "Several genes in E."
+//     "Growth was measured at 37 deg C. vs. 42…"   ->  "Growth was measured at 37 deg C."
+//
+// and the broken half rendered outside the highlighted block. `E. coli`,
+// `S. aureus`, `et al.`, `i.e.`, `Fig.`, `spp.` — an abbreviation list is a
+// losing game against this corpus, so the answer is now one block and the
+// distinction is gone.
+export function answerParagraphs(answer: string): string[] {
+  return answer
+    .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
-  if (paras.length === 0) return { lead: "", rest: [] };
-  const [first, ...others] = paras;
-  const m = first.match(LEAD_RE);
-  if (!m || m[0].length === first.length) return { lead: first, rest: others };
-  const tail = first.slice(m[0].length).trim();
-  return { lead: m[0], rest: tail ? [tail, ...others] : others };
 }
 
 export type CitationSegment = { text: string } | { cite: number };

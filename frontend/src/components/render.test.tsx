@@ -71,7 +71,7 @@ describe("static render", () => {
   // The editorial answer block: first sentence is the lead claim behind the
   // yellow rule, [n] markers become citation chips (first-cited = yellow),
   // and the Verify link + feedback pills are present.
-  it("renders the answer as lead claim + citation chips + Verify link", () => {
+  it("renders the answer as one block + citation chips + Verify link", () => {
     const html = render(
       createElement(AnswerCard, {
         query: "bees?",
@@ -87,7 +87,38 @@ describe("static render", () => {
     expect(html).toMatch(/<sup[^>]*>1<\/sup>/); // marker → superscript chip
     expect(html).not.toContain("[1]");
     expect(html).toContain("bg-accent "); // first-cited chip is yellow
-    expect(html).toContain("border-accent"); // the lead claim's rule
+    expect(html).toContain("border-accent"); // the rule around the answer
+  });
+
+  // Regression: the answer used to be cut into a "lead sentence" and a
+  // remainder by a regex that ended the lead at the first `.` followed by
+  // whitespace. In this corpus that is every genus abbreviation — the reported
+  // case rendered "Several genes in E." inside the yellow rule and dropped
+  // "coli are responsible…" outside it. The answer is one block now.
+  it("keeps an answer containing 'E. coli' whole and inside the rule", () => {
+    const answer =
+      "Several genes in E. coli are responsible for pathogen responses [1]. " +
+      "Growth was measured at 37 deg C. vs. 42 deg C.\n\nA second paragraph [2].";
+    const html = render(
+      createElement(AnswerCard, {
+        query: "genes?",
+        answer,
+        rewrittenQueries: [],
+        pending: false,
+        sourceCount: 2,
+        onOpenEvidence: () => {},
+      }),
+    );
+    // Nothing is severed at the abbreviation.
+    expect(html).toContain("Several genes in E. coli are responsible for pathogen responses");
+    expect(html).toContain("37 deg C. vs. 42 deg C.");
+    // Everything, including the later paragraph, sits inside the single rule:
+    // exactly one accent rule, and it opens before all the answer text.
+    const rules = html.match(/border-accent/g) ?? [];
+    expect(rules).toHaveLength(1);
+    const ruleAt = html.indexOf("border-accent");
+    expect(html.indexOf("Several genes in E. coli")).toBeGreaterThan(ruleAt);
+    expect(html.indexOf("A second paragraph")).toBeGreaterThan(ruleAt);
   });
 
   it("keeps out-of-range citation markers as literal text", () => {
