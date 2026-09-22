@@ -1,4 +1,4 @@
-# Structure-preserving ingest: one contract, three extractors
+# Structure-preserving ingest: one contract, four extractors
 
 **Status:** plan, 2026-09-22. Not started.
 **Near-term goal (owner):** the chunking session's corpus — **PDF and HTML**.
@@ -21,9 +21,18 @@ reason is worth recording because it is not obvious:
 > link across section edges, and `doc_id` stops meaning "paper". `CompareView`'s
 > neighbour rendering stops dead at every boundary.
 
-(Neighbour *expansion* survives — `_expand_sources` calls `get_chunks(ids=...)`
-following `prev_chunk_id`/`next_chunk_id`, and is not scoped to `doc_id` — but
-`chunk_index`, the per-document grouping, and document identity do not.)
+(Neighbour *expansion* survives, with one caveat. The server-side
+`context_window` walk is `expand_context` in `retrieval/retriever.py`: it hops
+`window` steps each way, and each hop's ids come from `prev_chunk_id` /
+`next_chunk_id` on the chunks already in hand — the function's own comment says
+"ids are opaque uuid5s, not derivable from `chunk_index`" — fetched in one
+batched `store.get_chunks(ids, filters)` per hop. So it follows **ids**, not
+`doc_id`, and would cross a section boundary if the links were stitched. The
+caveat: the walk is **scoped by the request's filters** — a neighbour the caller
+cannot read under those filters is simply not returned and the walk stops there.
+Stitched links only help if every section-record is visible under the same
+scope. `chunk_index`, the per-document grouping, and document identity do not
+survive regardless.)
 
 So structure has to be carried as **per-chunk metadata on a whole-document
 record**, not as a record boundary.
@@ -76,7 +85,14 @@ The record needs, per document:
 * `text` — the body, in reading order
 * `sections` — ordered spans over that text: `(start, end, title, depth)`
 * `metadata` — the `chunk_metadata.json` fields the source can supply
-* `metadata_source` — **already a declared field**; say which tier supplied it
+* `metadata_tier` (or similar) — which of §4's three tiers supplied the
+  metadata. **Not `metadata_source`**: that field is already declared, but its
+  declared meaning is narrower than it sounds — "the operator-facing twin of
+  `doi_enriched_from`, carrying the same service list", i.e. which DOI-enrichment
+  services touched the record. Reusing it for the extraction tier would overload
+  a field whose consumers expect a service list. Either extend its declared
+  semantics deliberately or declare a new field (§6.3); don't improvise on the
+  name.
 * `excluded` — reference-list and supplemental spans, carried out-of-band (§5)
 
 Adding a fifth source later is one extractor, not a pipeline — as Markdown
@@ -106,8 +122,14 @@ came from"*.
 ## 5. References and supplemental material
 
 **The exclusion already exists.** `--boilerplate` has `off` / `flag` / `drop`
-(`filter_from_mode`), and production runs `flag`. Keeping references out of the
-vector index is **a config change, not code**.
+(`filter_from_mode`), and the API side has the same switch as
+`boilerplate_drop: bool = False` beside `boilerplate_detection_enabled: bool =
+True` (`config.py:438-444`). Both planes default to **flag** semantics — detect
+and stamp `section` / `is_boilerplate`, remove nothing — and no tenant sets
+either knob explicitly (hackathon, dev and demo all leave `BOILERPLATE*` unset;
+the `action=flag` in dev's startup log is the default, not a decision). Keeping
+references out of the vector index is therefore **a config change, not code**:
+`--boilerplate drop` on the CLI tools, `BOILERPLATE_DROP=true` on the API.
 
 **The routing does not exist**, and that is the actual work. `drop` discards;
 #593 deliberately chose flag-over-delete for literature for exactly that reason.
@@ -143,9 +165,14 @@ the vector leg never sees them; a separate sink writes them to Postgres (rows) a
    constraint, 2026-09-22, and the exact defect #609 was — "two chunker
    builders" turned out to be five, with three different token-budget policies,
    because convenience functions kept getting written beside their first caller
-   instead of in the shared module. `chunker_config.chunker_for` is now that
-   library's one construction point for chunking; §3's four extractors need the
-   same shape from the start, not a retrofit once a second caller exists.
+   instead of in the shared module. That consolidation is **not finished**:
+   `chunker_config.build_chunker` is the one factory the three bulk tools share
+   today, but the API still carries two builders of its own (`deps._chunker_for`
+   and `deps._build_chunker`), and folding them into one `chunker_for` is the
+   deferred follow-up in `docs/plans/chunking-one-factory.md` (PR #612, not yet on `main`) §8. §3's four
+   extractors need the one-library shape from the start — not a retrofit once a
+   second caller exists, which is precisely how the chunker side ended up with
+   five.
 
    The precedent for *where* is already in the tree and already has two
    callers: `ragstack.ingestion.jats` / `ragstack.ingestion.loaders` (not
@@ -232,7 +259,7 @@ near-term corpus is PDF and HTML, and JATS is not blocked on any of the above.
    caller filters it in or out per query rather than the ingest-time choice
    being final. The label is the deliverable; unlike references there is no
    separate sink to move it to. "If we can label it" is load-bearing: JATS and
-   arXiv HTML (§2, §8.5) have an explicit supplemental section to detect;
+   arXiv HTML (§2) have an explicit supplemental section to detect;
    PDF does not, so Stage 3 inherits this as a detection problem it may not
    fully solve.
 3. **Does the section-aware chunker get a new `CHUNK_METHODS` entry**, or is it a
