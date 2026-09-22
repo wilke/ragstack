@@ -1,6 +1,21 @@
 # Semantic chunking on the GoWe path, and one module that builds chunkers
 
-**Status:** plan, agreed with the owner 2026-09-18.
+**Status:** plan, agreed with the owner 2026-09-18; **partly landed** — see below.
+**Citations:** paths are package-relative (`api/deps.py` = `python/ragstack/api/deps.py`,
+`scripts/…` = `python/scripts/…`); the **symbol** is authoritative and the line
+number is a convenience re-verified against `main` `49ffb07` on 2026-09-22 — main
+moved 60 lines under one of these in four days, so re-derive from the symbol.
+
+**Landed** (2026-09-18): step 1's guard, #610 → v1.6.3. Steps 2–3, #615
+(`a2be96f`) → v1.6.4: `ingest_shard.py` builds the breakpoint bridge and reads
+`chunk_params` from the registry entry; the guard is the per-tenant setting
+`INGEST_WORKER_UNSUPPORTED_METHODS` (§5, done); `SEMANTIC_METHODS` /
+`needs_embed_fn` replace the hand-written membership tests (§7d, done). hackathon
+runs v1.6.4 with the setting **empty** (both semantic methods admitted) since
+14:03 UTC; dev runs on its own `ragstack-dev` worker group. A first comparison
+ran (§7c) — on a synthetic 3-document shard, not yet on the owner's corpus.
+**Still open:** the corpus-scale comparison (§7c), the consolidation (§8), the
+CWL enum (#613), image versioning (#614).
 **Goal:** *enable semantic chunking via the API/GoWe route.* The guard shipped in
 [#609](https://github.com/wilke/ragstack/issues/609) step 1 only refuses it.
 
@@ -22,8 +37,8 @@ the GoWe branch before the in-process path is reached:
 
 | route | GoWe branch | in-process path |
 |---|---|---|
-| `POST /v1/ingest` | `documents.py:927` → returns | `_resolve_ingest_target` at 989 — unreachable |
-| `POST /v1/ingest/upload` | `documents.py:1357` → returns | `_resolve_ingest_target` at 1418 — unreachable |
+| `POST /v1/ingest` | `documents.py:1037` — the gowe branch's `return IngestResponse(` | `_resolve_ingest_target` at `:1060` — unreachable |
+| `POST /v1/ingest/upload` | `documents.py:1477` — the gowe branch's `return IngestResponse(` | `_resolve_ingest_target` at `:1490` — unreachable |
 
 `_chunker_for` is reached only via `build_ingestor_for`, only via
 `_resolve_ingest_target`. So on hackathon and dev every ingest is
@@ -33,7 +48,8 @@ the GoWe branch before the in-process path is reached:
 
 ## 2. Update the tool, not a new workflow
 
-`_gowe_inputs` already sends `embedding_url` (`documents.py:64`) — the tool holds
+`_gowe_inputs` already sends `embedding_url` (`documents.py:681`, the
+`inputs["embedding_url"] = …` line) — the tool holds
 the collection's embedding endpoints because it embeds chunks with them. The
 breakpoint bridge reuses exactly those.
 
@@ -127,9 +143,13 @@ semantic end-to-end on dev → load check → flip hackathon (API restart AND st
 UI rebuild) → conformance
 ```
 
-**dev's ingest uses the shared `ragstack` worker group**, not a dedicated one, so
-the image roll touches every consumer of that group — agree the tag with the GoWe
-session explicitly. The image roll and the `--image-dir` staging are theirs; the
+**dev runs on its own `ragstack-dev` worker group** (`GOWE_WORKER_GROUP=ragstack-dev`,
+moved 2026-09-18 for exactly this work, with its own `--image-dir` and the tool
+image behind a versioned symlink — #614). So a dev roll touches nothing else. The
+original concern — that dev shared the `ragstack` group with the four OA-plane
+workers, so a dev roll was an OA roll — is resolved for dev but **still holds for
+any future roll of the shared `ragstack` group itself**: agree the tag with the
+GoWe session explicitly. Image rolls and `--image-dir` staging are theirs; the
 ctl restarts are the management session's.
 
 **On hackathon an API restart alone is not enough**: the 422-detail rendering
@@ -209,10 +229,14 @@ under 6.7M existing points. Leave it; the cost is that a new *unnamed* corpus
 created under each spelling content-addresses to two stores despite being one
 algorithm — marginal, since named libraries fold their id in anyway.
 
-**What makes this cheap later, and is worth doing NOW:** a single
-`SEMANTIC_METHODS` constant. The membership test is currently written out by hand
-in at least five places (`api/deps.py` `_embed_fn_for`, `routers/collections.py:315`,
-`ingest_jsonl.py:509` and `:1124`, `chunker_config.SHARD_UNSUPPORTED_METHODS`).
+**What makes this cheap later — DONE in #615:** a single `SEMANTIC_METHODS`
+constant (`ingestion/chunker_config.py:58`) with `needs_embed_fn()` as the one
+membership test. The five hand-written copies are gone: `api/deps.py`
+`_embed_fn_for` (`:485`) and `_chunker_for` call `needs_embed_fn`,
+`routers/collections.py:320` re-exports the constant, `ingest_jsonl.py:509` and
+`:1124` call `needs_embed_fn`, and `SHARD_UNSUPPORTED_METHODS` is derived from it.
+The one deliberate holdout is `chunkers.py`'s own dispatch tuple, left literal
+because that file is frozen for the study (§5).
 With one constant, adding a third spelling is a one-line change; without it, the
 rename is a five-site hunt in which a missed site silently drops a method to a
 different chunker. This is already part of the consolidation (§8) — it is pulled
@@ -221,8 +245,13 @@ decision reversible.
 
 ## 7c. The comparison run
 
-The owner will run Clark's workflow (the `Salmonella_AMR2` corpus, 20 PDFs) under
-**both** methods.
+**A first comparison has run — on a synthetic 3-document shard, not the corpus.**
+Result and committed artifacts: `docs/plans/results/semantic-vs-pooled-2026-09-18.md`.
+Headline: the two methods share **no** boundaries on the documents that split
+(rank correlation 0.4254, span Jaccard 0.111) while each is reproducible against
+itself (0.9984 / 0.9993), so the difference is algorithmic. **The corpus-scale
+run is still pending:** the owner will run Clark's workflow (the `Salmonella_AMR2`
+corpus, 20 PDFs) under **both** methods; `Salmonella_AMR2` still holds 0 points.
 
 Chunk method is collection identity, so this needs **two collections** over the
 same documents — which is the correct A/B anyway. `Salmonella_AMR2` is declared
@@ -248,9 +277,9 @@ question:
 
 | builder | token budget |
 |---|---|
-| `api/deps.py:401` `_chunker_for` (per collection) | none, ever |
-| `api/deps.py:1198` `_build_chunker` (app default) | opt-in via `settings.chunk_max_tokens` |
-| `ingestion/chunker_config.py:116` `build_chunker` | always — live `GET /v1/models` |
+| `api/deps.py:402` `_chunker_for` (per collection) | none, ever |
+| `api/deps.py:1208` `_build_chunker` (app default) | opt-in via `settings.chunk_max_tokens` |
+| `ingestion/chunker_config.py:176` `build_chunker` | always — live `GET /v1/models` |
 | `scripts/ingest_shard.py` `_build_chunker` | inherits the above |
 | `scripts/embed_shard.py` `_build_chunker` | inherits the above |
 
