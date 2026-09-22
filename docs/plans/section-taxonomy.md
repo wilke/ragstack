@@ -161,3 +161,32 @@ cannot be recovered from the store. So order won, and the section boundaries wai
 
 Re-ingest will be needed regardless — **chunk strategy is fixed at collection creation and
 cannot be edited**, so a section-aware collection is a new collection by construction.
+
+## JATS family-A preview, 2026-09-22
+
+`jats.py` / `scripts/jats_extract.py` already exist and are validated at corpus scale (the
+docstring cites the out-of-tree predecessor: 800 articles → 6,538 records, 0 failures), so this
+was a load of real full-text JATS into a store, not a build. Ran a 300-article preview from
+`/rag/oa/corpus/clean` (the `<back>`-stripped tree) straight into **`oa-dev`** — a dev-tenant
+collection already labelled "OA JATS prototype (dev) — mixed prose+table/figure units" and
+already carrying 24,263 chunks from an earlier, undocumented pass, so this extended an existing
+target rather than spending the tenant's last free collection slot (4/5 owned by `dev` before
+this run).
+
+Extraction: 300 articles, 0 failures, 3,442 records (300 article + 1,476 table + 1,666 figure
+units, 29 units dropped below `--min-unit-chars`), 12.49 M chars. Ingest matched `oa-dev`'s
+existing build spec exactly (`fixed_token` 512 / **overlap 64** — this collection predates the
+zero-overlap finding, and mixing chunk specs inside one collection is refused by
+`IngestTarget.check_build`, correctly, so this run conformed to the entry rather than to our own
+convention): 3,442 docs indexed, 0 skipped, 9,864 chunks, 0 failed batches, 150 s wall,
+15 chunks boilerplate-flagged / 0 dropped. Qdrant and Elasticsearch legs agree at 34,127 points
+(24,263 + 9,864 new — no id collisions with the prior pass, so none of these 300 pmcids were
+already present). A retrieval smoke test (`scripts/search.py`, no domain tuning) returned the
+correct article's own chunks at the top for a query paraphrasing its abstract, with intact
+`prev_chunk_id`/`next_chunk_id` linking.
+
+Scope was deliberately small: this is a pipeline validation, not a corpus commitment. Two larger
+options are on the table and undecided — the exact 32,791-pmcid TREC CDS confirmation-run corpus
+(`stage0/s0_corpus.py`'s `fetchlist.txt`; non-outcome data, not quarantined), or a hand-picked set
+of RAG/chunking-relevant articles to sit next to `chunking-study-lit`. Neither is committed by
+this run.
