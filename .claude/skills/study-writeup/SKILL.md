@@ -63,6 +63,45 @@ burned by an unverified one. Before any reference enters `docs/papers/bibliograp
   theses with an evaluation framework its own authors call unreliable is not the same kind
   of evidence as a peer-reviewed controlled comparison.
 
+## Running a literature survey
+
+A survey for a preprint is not "find some related work". It is a coverage argument, and it has
+to hold up when a reviewer names a paper we missed.
+
+**Fan out by area, not by keyword.** One agent per distinct literature, run concurrently, each
+writing to its own file under `docs/papers/bib-inbox/` so they cannot collide; integrate and
+dedupe afterwards. A single agent asked to cover everything returns the obvious papers and
+stops.
+
+**Give every agent the same three obligations**, because they are what make the result usable:
+
+1. **Verify or drop.** Fetch the publisher page, confirm title, authors, venue and year.
+   Anything unverifiable goes in a `COULD NOT VERIFY` section with the queries tried, never
+   into the body.
+2. **Answer our specific question of every paper.** Not "what is this about" but the thing our
+   contribution turns on — *does it report realised chunk size or only nominal?*, *does it
+   repeat an annotation on the same item?*, *is the unit a document or a span inside one?* A
+   survey that cannot answer that paper by paper cannot establish a gap.
+3. **Hunt for what contradicts us.** Every survey file ends with a section for work that
+   challenges our result or our framing, and finding it is the best outcome, not the worst. A
+   survey that returns only supportive work was run wrong.
+
+**Two more sections earn their place in every survey file:**
+
+- **Searched and did not find** — the queries that returned nothing relevant. This is the
+  coverage evidence; without it, "no prior work does this" is an assertion.
+- **Established names for what we invented** — before coining a term, find out whether the
+  field already has one. Adopting it costs nothing; inventing a duplicate is a reviewer's
+  easiest objection.
+
+**Chase the citation graph both ways** from every anchor paper. Forward citations find the
+critiques; backward citations find the pre-neural ancestor the modern work forgot to cite.
+
+**Read the limitations sections.** They are the most useful paragraphs in the literature for
+positioning, because they often name, in the authors' own words, the gap the new work fills.
+The strongest framing this project has came from a negative result whose limitations section
+listed three gaps that were exactly our three contributions.
+
 ## What a paper in this project must contain
 
 Shape it venue-neutral for a preprint first; a venue's template is a later transformation,
