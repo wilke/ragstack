@@ -1207,6 +1207,61 @@
    "kind": "json",
    "verified": true,
    "note": "Mean 0.5430 but median 0.7518 \u2014 the distribution is bimodal, many near-identical re-readings plus a tail of near-disjoint ones. Report both; the mean alone understates how often Qwen reproduces itself exactly and the median alone hides the tail."
+  },
+  {
+   "id": "graded-support-reliability-at-4",
+   "section": "4",
+   "statement": "Pooled graded-support reliability at 4 readings is 0.1879.",
+   "value": 0.1879,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[0].spearman_brown_full_n",
+   "kind": "json",
+   "verified": true,
+   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=4, 47 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+  },
+  {
+   "id": "graded-support-reliability-at-6",
+   "section": "4",
+   "statement": "Pooled graded-support reliability at 6 readings is 0.4738.",
+   "value": 0.4738,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[1].spearman_brown_full_n",
+   "kind": "json",
+   "verified": true,
+   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=6, 12 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+  },
+  {
+   "id": "graded-support-reliability-at-8",
+   "section": "4",
+   "statement": "Pooled graded-support reliability at 8 readings is 0.6272.",
+   "value": 0.6272,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[2].spearman_brown_full_n",
+   "kind": "json",
+   "verified": true,
+   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=8, 5 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+  },
+  {
+   "id": "graded-support-reliability-at-14",
+   "section": "4",
+   "statement": "Pooled graded-support reliability at 14 readings is 0.788.",
+   "value": 0.788,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[4].spearman_brown_full_n",
+   "kind": "json",
+   "verified": true,
+   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=14, 2 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+  },
+  {
+   "id": "graded-support-degenerate-halves-at-4",
+   "section": "4",
+   "statement": "At four readings, 47 pairs have no variance in a half, against 1 at thirty readings.",
+   "value": 47,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[0].pairs_without_variance_in_a_half",
+   "kind": "json",
+   "verified": true,
+   "note": "Why k = 4 and k = 6 must not be used as Spearman-Brown anchors. The k = 30 value is 1."
   }
  ]
 }

@@ -42,6 +42,11 @@ art and must be cited as such, not rediscovered:
 | measuring a judge against *itself* over repeated runs | `haldar-2025-rating-roulette` defines "self-reliability" verbatim — but whole-response only, three runs, no span or sub-response analysis |
 | reliability coexisting with invalidity in LLM judges | `norman-2026-reliability-without-validity`: test–retest > 0.95 alongside position bias > 0.10, over 541k judgments |
 | a strict/relaxed two-number shape for span agreement | `lee-sun-2019-pico`, SIGIR 2019: medical experts on biomedical abstracts, exact-boundary F1 0.357–0.576 against relaxed token-overlap F1 0.713–0.758 |
+| decomposing agreement into *presence* and *location* | **`mathet-2017`, γ_cat** (Computational Linguistics) — a chance-corrected coefficient built for exactly this, where γ − γ_cat isolates the positional component. Barely cited, and it must be engaged by name |
+| a graded pooled per-unit support object | `warfield-2004-staple` (probabilistic per-voxel reference by EM over raters), `mathew-2021-hatexplain` (soft per-token rationales), `muscato-2026` (SOFT vs HARD vs union) — **novel as a representation: no.** Our claim narrows to the reliability *measurement* |
+| pooling repeated LLM runs and reporting α | `reiss-2023` (α 0.75 → 0.91 over ten repetitions), Barrie and colleagues' intra-PSS over 30 identical-prompt repetitions |
+| the name for agree-on-verdict / diverge-on-reasoning | **"within-label variation"** (`hong-2025`, `jiang-2023`). Do not coin a new term |
+| the estimator itself | **k-rater reliability**, `wong-2022`: ICC(k), equivalent to Spearman-Brown |
 
 **The claim that survives, and it is narrower and better.** The field has repeatedly *observed*
 span-set disagreement and then **worked around it**: FEVER scores against any one annotated set
@@ -179,9 +184,28 @@ under partial credit the raw mean pairwise span-union Jaccard is **0.4350** for 
 readings. The contrast survives partial credit. Report Qwen's median of 0.7518 beside its mean,
 because that distribution is bimodal and the mean alone misrepresents it.
 
-**5.4 Graded support does converge.** The constructive half. Reliability against readings:
-`graded-support-reliability-at-10` (0.7050), `-at-20` (0.8588), `-at-30` (0.9205), against the
-0.90 bar the pre-registration had written for the span gate. Ten readings do not suffice and
+**5.4 Graded support does converge — and report the curve, never the endpoint.** The constructive
+half, and the section most exposed to a methodological objection. `wong-2022` gives the
+established name for what we are computing (**k-rater reliability**, ICC(k), equivalent to
+Spearman-Brown) and a precedent of the same shape (ICC(1) 0.590 to ICC(13) 0.950). Which invites
+the obvious attack: a high coefficient at thirty readings is arithmetically implied by
+Spearman-Brown from any moderate single-reading value, so 0.9205 on its own says nothing.
+
+**Answer it with the curve, which we have** (`graded-support-reliability-at-4` through `-at-30`). Inverting
+Spearman-Brown at each k, the implied single-reading reliability is not constant — it rises from
+0.1929 at ten readings to 0.2785 at thirty. If the readings were exchangeable it would be flat.
+Because it rises, the observed curve beats every projection from an earlier anchor: +0.0429 from
+k = 10, +0.0320 from k = 14, +0.0193 from k = 20. Pooling buys more than the prophecy formula
+predicts, and that is the finding rather than the endpoint.
+
+Two honesties belong in the same paragraph. The **single-reading reliability is low**, around
+0.19 to 0.28, and saying so is what makes the thirty-reading number meaningful. And the small-k
+points are **attenuated by halves with no variance** — 47 such pairs at k = 4 against 1 at k = 30
+(`graded-support-degenerate-halves-at-4`) — so k ≥ 10 is the honest range; the 44 % rise survives
+there, where the degeneracy difference is two pairs against one out of about 306.
+
+Reliability against readings: `graded-support-reliability-at-10` (0.7050), `-at-20` (0.8588),
+`-at-30` (0.9205), against the 0.90 bar the pre-registration had written for the span gate. Ten readings do not suffice and
 twenty do not either, which is worth stating because it is the cost of the method.
 `graded-support-reliability-sensitivities` shows the result does not rest on estimator choices,
 and `prereg-p-ext-1-scored` shows the bet was registered below the projection and above what ten
@@ -230,10 +254,26 @@ where the variation comes from — presentation order is seeded and varied by de
 and non-deterministic kernels remain. If we cannot attribute it, a reviewer will call it a
 pipeline artefact.
 
-**The human floor.** `soboroff-2003-novelty` gives two NIST assessors on the same topic at
-sentence level an F of 0.58 relevant and 0.46 novel; `lee-sun-2019-pico` gives medical experts
-exact-boundary F1 of 0.357–0.576. Our 0.38–0.56 is in that range, which is the honest framing:
-a machine re-reading the same document is about as unstable as two humans reading it once.
+**The human floor, and the one number that frames the whole paper.** `scholer-2013` ran a
+prospective test-retest with the between-assessor comparison in the same experiment:
+self-agreement 51.62 % against between-participant 44.80 %. A person agrees with themselves only
+about seven points better than with a stranger. `soboroff-2003-novelty` gives two NIST assessors
+at sentence level an F of 0.58 relevant and 0.46 novel; `lee-sun-2019-pico` gives medical experts
+exact-boundary F1 of 0.357–0.576. Our 0.38–0.56 sits inside that band, which is the honest
+framing: a machine re-reading the same document is about as unstable as a person is, and roughly
+as unstable as two different people.
+
+**The published counter-result, and it is in our domain.** `hofstatter-2020-fira` measured
+location agreement separately on TREC data and got the *opposite* ordering — word-selection κ of
+0.5–0.8 against binary relevance κ of 0.5–0.8. Blunting factors that must be stated rather than
+used to dismiss it: κ is computed against a majority aggregate that includes the annotator being
+scored, n = 10 pairs, and only already-relevant documents were annotated. It is still a real
+published result against our headline and the paper engages it directly.
+
+**Statistic choice is a finding, not a detail.** Report mean pairwise F1 for the span condition
+(`hripcsak-2005`), not κ — negatives are uncountable when the unit is a span in a long document —
+and not token-κ, which `mathet-2017` §3.4.1 shows is the discretising workaround that inflates
+agreement. Say why in the paper; a reviewer will otherwise ask for κ.
 
 **Spearman-Brown assumes what may not hold.** `yang-2026-judge-changes` finds repeated-sample
 juries add little when errors are correlated. Report the observed pairwise correlation between

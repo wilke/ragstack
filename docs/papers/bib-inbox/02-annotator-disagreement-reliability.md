@@ -3,16 +3,50 @@
 Survey for the preprint. Area: how much annotators disagree, whether evaluation survives it,
 and what has been proposed instead of a single correct label.
 
+**Scale.** ~125 distinct works are listed below (103 unique DOIs plus ~24 arXiv-only preprints),
+across 94 entries — some entries cluster two to four closely related papers. **34 were read in full
+at PDF level.**
+
 **Status vocabulary**
 
 - **verified** — publisher-deposited metadata retrieved (Crossref DOI record, ACL Anthology BibTeX,
-  arXiv API) and/or the publisher landing page fetched. Exact title, full author list, venue and year
-  below are copied from what came back, not from memory.
-- **read** — the PDF was downloaded and the methods/results extracted (`pymupdf`). Numbers quoted
-  below with a page-level claim come from the extracted text.
+  arXiv API, OpenAlex) and/or the publisher landing page fetched. Exact title, full author list,
+  venue and year below are copied from what came back, not from memory.
+- **read** — the PDF was downloaded and the methods/results extracted (`pymupdf`). Any number quoted
+  below alongside a **read** marker comes from that extracted text.
 
-Every entry below was fetched. Entries that could not be fetched are in
+**Every work listed below was fetched to at least metadata level.** Nothing appears here on the
+strength of a remembered citation. Where the *full text* could not be obtained, the entry says so
+explicitly and either quotes only the publisher-deposited abstract or attributes the number to a
+different PDF that *was* read — the classical-IR section has several of these, because ACM DL,
+ScienceDirect and SpringerLink all block this client and the Internet Archive was down for the whole
+session. Works that could not be verified at all are in
 [§ COULD NOT VERIFY](#could-not-verify), not in the body.
+
+**Two claims in this file were checked by me personally against the primary PDF after a subagent
+reported them**, because they are the most load-bearing: `scholer-2013`'s 51.62% self-agreement vs
+44.80% between-participant agreement, and `mathet-2017`'s statement of what γ_cat is for. Both
+survived verbatim. One subagent claim did **not** survive — see the ⚠️ in `artstein-2008`.
+
+**Contents**
+
+1. Classical IR — how much assessors disagree, and whether orderings survive
+2. Within-assessor repetition (test-retest) — the thin part of the literature
+3. Agreement methodology and its critics
+4. Disagreement as signal, not noise
+5. Location vs. presence — rationale and evidence-span annotation
+   · 5b. Evidence sets in fact verification and attributed QA
+   · 5c. Test-retest on spans outside NLP
+6. Graded / pooled gold objects that already exist
+7. Reliability of LLM-produced annotations
+— then **Contradicts or complicates us**, **The strongest framing available**,
+**Searched and did not find**, **COULD NOT VERIFY**.
+
+**The five entries to read first**, if nothing else: `mathet-2017` (γ_cat — the presence/location
+decomposition already has a coefficient), `wong-2022` (k-rater reliability — our statistic has a
+name), `scholer-2013` (human self-agreement 51.62% vs between-assessor 44.80%), `hofstatter-2020`
+(FiRA — an IR paper that measured location agreement separately and got the *opposite* ordering to
+ours), and `reiss-2023` (repeat an LLM ten times, pool, α rises 0.75 → 0.91).
 
 **Four questions asked of every paper** (abbreviated in each entry):
 
@@ -43,14 +77,35 @@ showed the *rankings of systems* computed from the different qrel sets correlate
 conclusion carried forward for twenty-five years is that Cranfield comparative evaluation is stable
 under assessor variation even though absolute scores are not.
 
+⚠️ **The PDF could not be obtained** (ACM 403, ScienceDirect unreachable, no OA copy, Internet
+Archive down for the whole session). The numbers below are therefore taken from **three PDFs that
+were read**, each of which re-analyses Voorhees' own data — sourced individually:
+
+- From **`webber-2012`'s PDF**, which re-uses the exact TREC-4/TREC-6 data: positive overlap on
+  TREC-4 of **0.421** (original vs first alternative assessor) and **0.494** (vs second), computed on
+  the re-assessed sample; **mean Kendall τ = 0.938** between the system rankings. Webber et al. then
+  make a point that matters for anyone quoting Voorhees: because 91.3% of originally-relevant but
+  only 13.6% of originally-irrelevant pool documents were sampled, **sample overlap overstates pool
+  overlap — the pool-extrapolated figures are 0.301 and 0.340.**
+- From **`oard-2013`'s PDF, Table 5.1**: Voorhees TREC-4 on-sample mutual F1 **0.58** (SD 0.24),
+  Cohen's κ **0.48** (SD 0.25); on-pool F1 **0.45** (SD 0.22), κ **0.41** (SD 0.23).
+- From **`parry-2025`'s PDF, Table 1**: they tabulate the Voorhees study as overlap **0.36**,
+  τ **0.890**. (Their single summary number differs from the paper's own per-pair 0.42/0.49; use the
+  per-pair figures when quoting Voorhees directly.)
+
+Also from `webber-2012`: the two alternative assessors were not exchangeable *with each other* —
+the first found on average **17.3 more documents relevant** than the second (sd 51.2, p = 0.02).
+
 - Who disagrees: **between** assessors (different people re-judging).
 - Unit: **whole document**, binary relevant/not.
 - Gold: single label per document per assessor; no graded pooled object.
-- Statistic: pairwise **overlap** (size of intersection over size of union of the relevant sets) for
-  the judgments, **Kendall's τ** for the downstream system orderings.
+- Statistic: pairwise **overlap** (intersection over union of the relevant sets) for the judgments,
+  **Kendall's τ** for the downstream system orderings.
 
 **Weight** — must-cite; it is the claim our result has to be positioned against, and it is a
 *document-level, between-assessor* claim, which is exactly the boundary we are pushing past.
+**Before quoting a specific number, check it against the IP&M original** — everything above is
+second-hand, albeit from three independent re-analyses that agree with each other.
 
 ### `parry-2025`
 
@@ -91,11 +146,16 @@ https://doi.org/10.1145/1390334.1390447
 assessment"; the full title with subtitle is confirmed from the NIST and Microsoft Research landing
 pages and the IR Anthology record).
 
-Introduces the gold / silver / bronze assessor taxonomy (topic originator; task expert who did not
-originate the topic; neither). Agreement between the three classes is low; system scores and system
-rankings differ consistently but by small amounts across the three assessment sets. The practical
-reading is that judges are *not* exchangeable in the strict sense but the induced ranking error is
-bounded.
+Introduces the gold / silver / bronze assessor taxonomy (topic originator who is a task expert; task
+expert who did not originate the topic; neither), on TREC Enterprise track data. From the Microsoft
+Research landing page, verbatim: "test collections are **not completely robust to changes of judge
+when these judges vary widely in task and topic expertise**", with bronze judges potentially unable
+to substitute.
+
+⚠️ **The PDF could not be obtained** (ACM 403; `paulthomas.id.au` no longer resolves; the MSR page
+carries no PDF; Internet Archive down). **Do not quote a specific gold/silver/bronze agreement number
+from this paper until someone opens it.** The indirect anchor available is `oard-2013`'s survey range
+of positive agreement 0.33–0.76 across studies, which includes this one.
 
 - Who disagrees: **between** assessors, and structurally (by assessor class, not just by person).
 - Unit: **document**.
@@ -257,6 +317,130 @@ how many assessors, to reach a target reliability.
 
 ---
 
+### `oard-2013` — ★ the consolidated numbers table
+
+***Information Retrieval for E-Discovery***
+Douglas W. Oard, William Webber.
+*Foundations and Trends in Information Retrieval*, DOI `10.1561/1500000025`.
+http://www.williamwebber.com/research/papers/ow13fntir.pdf
+**verified** (DOI + author-hosted PDF) · **read**.
+
+⚠️ **Table 5.1 is the single best consolidated numeric table in the assessor-agreement literature**
+and saves us reciting eight studies. Mutual F1 / Cohen's κ across 8 study conditions: Voorhees
+sample **0.58 / 0.48**, Voorhees pool **0.45 / 0.41**; Grossman & Cormack sample 0.63 / 0.59,
+collection 0.44 / 0.43; Roitblat et al. **0.33 / 0.18**; Webber et al. 2012 sample 0.76 / 0.57,
+select 0.47 / 0.31; Wang & Soergel sample 0.53 / 0.48.
+
+Their three summary claims, each useful:
+
+1. **Mean pairwise F1 between assessors ≈ 0.5, mean κ ≈ 0.4** (F1 generally 0.44–0.63, κ 0.31–0.59).
+2. "Agreement is **highly dependent upon the topic** (more so than on the pair of assessors)."
+3. **Sample-based agreement systematically overstates population agreement**, because sampling
+   equalises the relevant/irrelevant ratio and thereby suppresses one assessor's false positives.
+
+**Weight** — **high.** Cite it once for "here is the whole distribution of human assessor agreement",
+and use claim (3) as a methodological warning: our own figures must state whether they are computed
+over a sampled or a full population of units.
+
+### `webber-2013` — the downstream cost of disagreement, quantified
+
+**Assessor Disagreement and Text Classifier Accuracy**
+William Webber, Jeremy Pickens.
+SIGIR '13, pp. 929–932, DOI `10.1145/2484028.2484156`.
+http://www.williamwebber.com/research/papers/wp13sigir.pdf
+**verified** (Crossref) · **read** (author-hosted PDF).
+
+Train a classifier on labels from a non-authoritative assessor and evaluate against the authoritative
+conception: "using alternative assessors leads to a **significant decrease in binary classification
+quality, though less so ranking quality. A ranking consumer would have to go on average **25% deeper
+in the ranking** produced by alternative-assessor training to achieve the same yield."
+
+**Weight** — **high, and the right rebuttal to "but the rankings survive".** Ordering stability and
+downstream cost are different measurements and are not in conflict. If our instability has a cost, it
+is a cost of this shape, and this is the paper that shows how to quantify one.
+
+### `webber-2012` and `chandar-2013` — disagreement is predictable, per document
+
+- **Alternative Assessor Disagreement and Retrieval Depth** — William Webber, Praveen Chandar,
+  Ben Carterette, **CIKM '12** (⚠️ CIKM, not SIGIR), pp. 125–134, DOI `10.1145/2396761.2396781`.
+  http://www.williamwebber.com/research/papers/wcc12cikm.pdf **verified** (Crossref) · **read**.
+  Models P(second assessor disagrees) as logistic in "metarank". **A high-metarank document judged
+  relevant by assessor 1 is almost twice as likely to be judged irrelevant by assessor 2** as a
+  low-metarank one, and the effect is stronger for documents judged irrelevant first. Folding
+  assessor variability into significance testing flips **~1 in 10 system pairs** between significant
+  and non-significant, though the overall significance rate is unchanged.
+- **Document features predicting assessor disagreement** — Praveen Chandar, William Webber,
+  Ben Carterette, SIGIR '13, pp. 745–748, DOI `10.1145/2484028.2484161`.
+  http://www.williamwebber.com/research/papers/cwc13sigir.pdf **verified** (Crossref) · **read**.
+  Predicts disagreement from topic-independent document features (reading level, cohesiveness), "on a
+  par with the meta-search feature". Counter-intuitively, reading-level features are **negatively**
+  correlated with disagreement.
+
+⚠️ `webber-2012` produces **per-document probabilities of disagreement** — the closest thing in the
+classical IR literature to a probabilistic gold, though used for *simulation* rather than as the gold
+itself.
+
+**Weight** — both high. Together they say disagreement is not noise but a predictable property of the
+item, which is the same claim `abhishek-2025` makes for segmentation and which our per-sentence score
+operationalises.
+
+### `sanderson-2005`, `buckley-2007`, `sakai-2008`, `lipani-2015` — verified metadata, numbers unread
+
+- **Information retrieval system evaluation: effort, sensitivity, and reliability** — Mark Sanderson,
+  Justin Zobel, SIGIR '05, pp. 162–169, DOI `10.1145/1076034.1076064`. **verified** (Crossref
+  title+subtitle; the deposit splits the title at the colon). Publisher abstract: the t-test is
+  highly reliable, more so than sign or Wilcoxon, and past work over-estimated significance-test
+  error rates. The line that matters for us: per unit of assessor effort, "**assessor effort would be
+  better spent building test collections with more topics, each assessed in less detail**" — a direct
+  breadth-over-depth argument, and the opposite of what `gruber-2024` concludes for label variation.
+  **Numbers not verified** (PDF unobtainable).
+- **Bias and the limits of pooling for large collections** — Chris Buckley, Darrin Dimmick,
+  Ian Soboroff, Ellen Voorhees, *Information Retrieval* 10(6):491–508, 2007,
+  DOI `10.1007/s10791-007-9032-x` (SIGIR '06 precursor: "Bias and the limits of pooling",
+  pp. 619–620, DOI `10.1145/1148170.1148284`). **verified** (Crossref, both). ⚠️ **No abstract in
+  Crossref or OpenAlex and the PDF was unobtainable — no numbers or characterisation given here.**
+- **On information retrieval metrics designed for evaluation with incomplete relevance assessments**
+  — Tetsuya Sakai, Noriko Kando, *Information Retrieval* 11(5):447–470, 2008,
+  DOI `10.1007/s10791-008-9059-7`; and **Alternatives to Bpref** — Tetsuya Sakai, SIGIR '07,
+  pp. 71–78, DOI `10.1145/1277741.1277756`. **verified** (Crossref + deposited abstracts). Condensed-
+  list measures (Q′, nDCG′, AP′) beat bpref and RBP on discriminative power and Kendall τ under
+  artificially reduced judgments — and, relevant to us, **graded relevance is shown to be more robust
+  to incompleteness than binary**, which is an independent argument for a graded gold.
+- **Splitting Water: Precision and Anti-Precision to Reduce Pool Bias** — Aldo Lipani, Mihai Lupu,
+  Allan Hanbury, SIGIR '15, pp. 103–112, DOI `10.1145/2766462.2767749`; **The Solitude of Relevant
+  Documents in the Pool** — Aldo Lipani, Mihai Lupu, Evangelos Kanoulas, Allan Hanbury, CIKM '16,
+  pp. 1989–1992, DOI `10.1145/2983323.2983891`. **verified** (Crossref; note the Crossref title for
+  the first truncates at the colon). Pool-bias estimation and correction over 15 TREC collections.
+  **Numbers not verified.**
+
+**Weight** — background cluster, medium. Cite `sakai-2008` if we want an independent "graded is more
+robust" argument, and `sanderson-2005` as the counterweight to `gruber-2024` on depth vs breadth.
+
+### `damessie-2017` and `maddalena-2017-ictir`
+
+- **Gauging the Quality of Relevance Assessments using Inter-Rater Agreement** — Tadele T. Damessie,
+  Thao P. Nghiem, Falk Scholer, J. Shane Culpepper, SIGIR '17, pp. 1089–1092,
+  DOI `10.1145/3077136.3080729`. **verified** (Crossref + deposited abstract); numbers not verified.
+  Lab assessors agree with ground truth more than two crowd conditions do, and **inter-rater
+  agreement shows analogous trends — so in the absence of ground truth, inter-rater agreement is a
+  usable proxy for judgment quality.** (Companion: *The Influence of Topic Difficulty, Relevance
+  Level, and Document Ordering on Relevance Judging*, Damessie, Scholer, Culpepper, ADCS '16,
+  pp. 41–48, DOI `10.1145/3015022.3015033`, which introduces normalised processing speed and
+  normalised dwell time as effort measures.)
+- **Considering Assessor Agreement in IR Evaluation** — Eddy Maddalena, Kevin Roitero,
+  Gianluca Demartini, Stefano Mizzaro, ICTIR '17, pp. 75–82, DOI `10.1145/3121050.3121060`.
+  **verified** (Crossref + deposited abstract). ⚠️ **PDF not obtained.** From the abstract, the
+  contribution includes "the definition of an **agreement-aware effectiveness metric that does not
+  discard information about multiple judgments for the same document** as it typically happens in a
+  crowdsourcing setting". They also note that crowdsourcing uses agreement as a proxy for quality
+  "**without any systematic verification of the conjecture**".
+
+**Weight** — `maddalena-2017-ictir` is **high and unread**: an effectiveness metric that retains
+multiple judgments per document rather than collapsing them is direct prior art for a pooled graded
+gold in IR. **Second-highest-priority unread item in this file** (after `kocmi-2024`).
+
+---
+
 ## 2. Within-assessor repetition (test-retest) — the thin part of the literature
 
 ### `scholer-2011`
@@ -265,21 +449,85 @@ how many assessors, to reach a target reliability.
 Falk Scholer, Andrew Turpin, Mark Sanderson.
 SIGIR '11, pp. 1063–1072, DOI `10.1145/2009916.2010057`.
 https://doi.org/10.1145/2009916.2010057
-**verified** (Crossref).
+**verified** (Crossref for title/authors/venue/pages; OpenAlex for the publisher-deposited abstract).
 
-The one classical-IR design that is genuinely test-retest: duplicate documents are planted in the
-assessment pool so the *same* assessor judges the *same* document twice, and self-inconsistency is
-measured directly.
+The classical-IR test-retest design, done **retrospectively**: duplicate and near-duplicate documents
+already present inside TREC collections were consequently shown twice to the *same* assessor, so
+self-inconsistency can be measured from existing qrels without running a new study.
+
+⚠️ **The PDF could not be obtained by anyone on this task** — ACM 403; no OA copy; Mark Sanderson's
+own publication site hosts PDFs only from ~2015; the RMIT repository record (figshare 27379491) is
+**metadata-only with no file attached**; the Internet Archive was down all session. **Someone with
+ACM access should pull this one** — it is the most load-bearing paper in the file that we could not
+open.
+
+From the publisher-deposited abstract (OpenAlex, verbatim in part): the study "retrospectively"
+examines a wide range of test collections and demonstrates "a high level of inconsistency across the
+collections studied", varying by topic; "**inconsistency in judging increases with time**"; the level
+of detail in a topic specification does **not** appear to influence the errors; but judgments are
+"**significantly affected by the decisions made on previously seen similar documents**" and assessors
+"display an **assessment inertia**". Ranking systems with qrels produced early vs late in the
+judgement process reveals a consistent influence across most collections.
+
+**The self-disagreement rate, quoted from a PDF that *was* read** — `scholer-2013`, §2, verbatim:
+*"Analyzing TREC assessment data, Scholer et al. [23] find that a single assessor will make at
+different times a different assessment of the **binary relevance of the same document between 15% to
+19% of the time, and 19% to 24% of the time for trinary relevance**."* Scholer is an author of both
+papers, so this is authoritative — but it is still second-hand.
 
 - Who disagrees: **within one assessor, repeated** — a real test-retest design.
-- Unit: **whole document**. Presence only; no location component.
-- Gold: single label.
-- Statistic: self-disagreement rate.
+- Unit: **whole document** (duplicate documents, not spans). Presence only; no location component.
+- Gold: single label. The paper uses inconsistency as a **quality metric for a collection**, which is
+  arguably the closest classical analogue of a reliability coefficient.
+- Statistic: percentage self-disagreement. ⚠️ **We could not verify how duplicates were identified
+  (exact vs near-duplicate threshold) or the denominator** — do not describe the mechanism precisely
+  without the PDF.
 
 **Weight** — **highest in this section, and the single most dangerous paper for a
 "test-retest is novel" claim.** Our claim must be narrowed to: test-retest on *span-level / location*
 annotation, and test-retest of a *model* rather than a person. Scholer et al. own the document-level
 human case.
+
+### `scholer-2013` — ★★ the cleanest test-retest number in IR, and it is devastating
+
+**The effect of threshold priming and need for cognition on relevance calibration and assessment**
+Falk Scholer, Diane Kelly, Wan-Ching Wu, Hanseul S. Lee, William Webber.
+SIGIR '13, pp. 623–632, DOI `10.1145/2484028.2484090`.
+http://www.williamwebber.com/research/papers/skwlw13sigir.pdf
+**verified** (Crossref) · **read** (author-hosted PDF; I extracted and re-checked every number below
+myself after a subagent reported them).
+
+⚠️⚠️ **A prospective, controlled test-retest with a between-assessor comparison in the same
+experiment — and the two numbers are almost the same.** 82 participants, 3 TREC topics, judgments on
+Sormunen's 4-level re-judgment of TREC-7/8. Documents at list positions 46, 47, 48 are **exact
+duplicates of positions 21, 22, 24**, so each participant re-judges three documents within one
+session.
+
+Verbatim from the PDF:
+
+- Between-participant: "This mean pairwise percentage agreement among all participants is
+  **44.80%**."
+- Within-participant: "The average **self-agreement** across participants was **51.62%**" (52.56% /
+  49.38% / 52.87% by priming treatment; differences n.s., F(2,79) = 0.09, p = 0.918).
+- Topic effect on between-participant agreement **is** significant (F(2,326) = 5.70, p = 0.004):
+  42.76 / 44.79 / 47.99 for topics 385 / 396 / 415. Priming treatment is not (p = 0.373).
+- Threshold priming is real: participants primed with only non-relevant documents later assigned
+  significantly higher relevance scores.
+- The authors flag their own result as an open question — "the low self-agreement for individual
+  assessors over time" may be genuine drift in the internal relevance model, or fatigue.
+
+**A person agrees with themselves only ~7 points better than with a stranger**, on the same 4-level
+scale, in the same session, on documents seen minutes earlier.
+
+- Who disagrees: **both, in the same experiment** — this is the design template.
+- Unit: **whole document**. Gold: 4-level graded input, no pooled gold.
+- Statistic: percentage agreement (exact-grade overlap); ANOVA.
+
+**Weight** — **among the three most important entries in this file.** It supplies (a) the
+within-vs-between comparison in one table, which is exactly what we should report, (b) a
+human baseline that is startlingly low, and (c) the warning that *order effects and priming* are
+confounds in any repeated-judgment design — worth a sentence about why a stateless model at
+temperature zero is not subject to them, which is a genuine methodological advantage of our setup.
 
 ### `abercrombie-2023`
 
@@ -385,8 +633,17 @@ confirmed by reading:
    anaphora. At least in the second case, weighted coefficients are almost unavoidable." They
    present Jaccard and Dice distances and Passonneau's MASI as the α weights for set-valued items.
 
-**There is no occurrence of "intra-coder", "intra-annotator", or "test-retest" anywhere in the
-42 pages.** I grepped for all three.
+5. **κ misbehaves on skewed data, in their own words.** "when the data are highly skewed, coders may
+   agree on a high proportion of items while producing annotations that are indeed correct to a high
+   degree, yet the reliability coefficients remain low" — which is the exact regime of a span task
+   where most sentences are not evidence.
+
+⚠️ **There is no occurrence of "intra-coder", "intra-annotator", "test-retest", "stability" or
+"same observer" anywhere in the 42 pages** — I grepped for all of them, twice, after a subagent
+claimed otherwise. "Reproducibility" appears 11 times. So the standard CL agreement survey adopts
+exactly **one half** of Krippendorff's reliability pair (reproducibility, across observers) and
+silently drops the other (stability, same observer repeated). That is a sharper version of the claim
+than "test-retest is rare", and it is checkable by anyone.
 
 - Who disagrees: between coders throughout. Test-retest is simply not in the survey.
 - Unit: both — this is the survey that separates *unitizing* from *labelling*.
@@ -564,9 +821,17 @@ mean pairwise F1 *is* a legitimate inter-rater reliability statistic in exactly 
 - Unit: **text markup / retrieved set** — precisely the span-set case.
 - Statistic: positive specific agreement ≡ mean pairwise F1; argument against κ.
 
-**Weight** — **high.** This is the cleanest citation for "κ is the wrong statistic for span sets, and
-here is what to use instead". It also legitimises reporting a pairwise-F1-shaped number for the span
-condition.
+⚠️ **Read what it does and does not license.** It shows F ≈ κ *in the limit where the negative class
+is huge*, i.e. F approximates a chance-corrected number precisely in the regime where the chance
+correction vanishes. **F itself is not chance-corrected**, and per `james-2026` the segmentation and
+structured measures (F1, Boundary Similarity, WindowDiff, Pk, γ) "**lack standard interpretive
+scales** … making relative rather than absolute comparisons more informative". So a span-agreement
+number of 0.47 is meaningful *against another number computed the same way*, not against the 0.67/0.8
+κ conventions.
+
+**Weight** — **high.** The cleanest citation for "κ is the wrong statistic for span sets, and here is
+what to use instead", and it legitimises reporting a pairwise-F1-shaped number for the span
+condition — with the interpretive-scale caveat attached.
 
 ### `carletta-1996`
 
@@ -581,6 +846,43 @@ The paper that made κ and the 0.67/0.8 thresholds standard in CL. `artstein-200
 considered α = 0.8 "a pretty low standard".
 
 **Weight** — medium; cite when we say what the field's default expectations are.
+
+### `krippendorff-2004`
+
+**Reliability in Content Analysis: Some Common Misconceptions and Recommendations**
+Klaus Krippendorff.
+*Human Communication Research* 30(3):411–433, 2004, DOI `10.1111/j.1468-2958.2004.tb00738.x`.
+**verified** (Crossref). ⚠️ **Not read** — metadata only.
+
+Listed because Krippendorff is the origin of the **stability / reproducibility / accuracy** trio that
+gives our design its proper name (see § The strongest framing available). I did **not** verify which
+Krippendorff text states that trio — `abercrombie-2023`, which I did read, uses "Reliability
+(Inter-)" and "Stability (Intra-)" as its table headings and attributes the framing to Krippendorff.
+**Before citing Krippendorff for the stability/reproducibility distinction, check whether the right
+citation is this paper or *Content Analysis: An Introduction to Its Methodology*.** I could not
+settle that from what I fetched.
+
+### `deleger-2012`
+
+**Building Gold Standard Corpora for Medical Natural Language Processing Tasks**
+Louise Deleger, Qi Li, Todd Lingren, Megan Kaiser, Katalin Molnar, Laura Stoutenborough,
+Michal Kouril, Keith Marsolo, Imre Solti.
+*AMIA Annual Symposium Proceedings* 2012:144–153.
+https://pmc.ncbi.nlm.nih.gov/articles/PMC3540456/
+**verified** (PMC full text; AMIA proceedings of that era have no DOI, so there is no Crossref
+record — this is why it is verified by publisher page rather than by DOI metadata).
+
+Clinical-NLP practice applying `hripcsak-2005`: uses F-measure as the primary IAA statistic for
+entity-span annotation and reports κ only "for reference", stating that "**kappa requires the number
+of negative cases to be computed, which is unknown in the case of named entities**" and that
+token-level κ is distorted because "the number of negative cases (all tokens that have not been
+annotated) will be much larger than the number of positive cases". Numbers: PHI elements F 0.7694
+during training → **0.9176 post-training**; medications F ~0.90; diseases/disorders F 0.85–0.89.
+
+**Weight** — medium-high. Two uses: (a) it is the worked precedent for reporting F rather than κ on
+spans, and (b) the 0.77 → 0.92 jump *from training the annotators* is a reminder that span agreement
+is substantially a function of guideline convergence — which a single model reading at temperature
+zero does not have available to it.
 
 ### `feinstein-1990`, `byrt-1993`, `powers-2012`
 
@@ -612,6 +914,26 @@ Meta-analysis of what actually moves agreement (domain, number of categories, tr
 count).
 
 **Weight** — medium; useful for "agreement numbers are not comparable across studies".
+
+### `klie-2024`, `artstein-2017`, `kocmi-2024` — leads, verified metadata only
+
+- **Analyzing Dataset Annotation Quality Management in the Wild** — Jan-Christoph Klie,
+  Richard Eckart de Castilho, Iryna Gurevych, *Computational Linguistics* 50(3):817–866, 2024,
+  DOI `10.1162/coli_a_00516`. **verified** (Crossref); **not read**. A survey of what dataset papers
+  actually do about annotation quality; `james-2026` characterises it as showing that many report
+  kappa-type coefficients inappropriately. Treat that characterisation as a lead, not as evidence,
+  until the paper is read.
+- **Inter-annotator Agreement** — Ron Artstein, in *Handbook of Linguistic Annotation*, pp. 297–313,
+  2017, DOI `10.1007/978-94-024-0881-2_11`. **verified** (Crossref); **not read**. The book-chapter
+  update to `artstein-2008`; worth checking whether it added anything on unitizing or intra-annotator
+  agreement, since `abercrombie-2023` cites it for the inter-annotator standard.
+- **Error Span Annotation: A Balanced Approach for Human Evaluation of Machine Translation** —
+  Tom Kocmi, Vilém Zouhar, Eleftherios Avramidis, Roman Grundkiewicz, Marzena Karpinska,
+  Maja Popović, Mrinmaya Sachan, Mariya Shmatova, WMT 2024, pp. 1440–1453,
+  DOI `10.18653/v1/2024.wmt-1.131`. **verified** (Crossref); **not read**. MT error *spans* with
+  multiple annotators, and MT is the one sub-field `abercrombie-2023` found regularly reports
+  intra-annotator agreement — so this is the most likely place a span-level test-retest actually
+  exists. **Highest-priority unread item in this file.**
 
 ### `james-2026`
 
@@ -1404,6 +1726,99 @@ Background for the nugget-assessment instability that `lin-2006` responds to.
 
 **Weight** — low-medium; cite only as the source of the nugget protocol.
 
+### `maddalena-2017-tois` — ★★ the continuous pooled relevance gold, in IR, already
+
+**On Crowdsourcing Relevance Magnitudes for Information Retrieval Evaluation**
+Eddy Maddalena, Stefano Mizzaro, Falk Scholer, Andrew Turpin.
+*ACM Transactions on Information Systems* 35(3), Article 19, pp. 1–32, 2017, DOI `10.1145/3002172`.
+**verified** (Crossref, including the publisher-deposited abstract). ⚠️ **PDF not obtained** — ACM
+403; the RMIT repository record (figshare 27505632) is metadata-only with no file attached.
+
+⚠️⚠️ **The strongest potential counterexample to any "nobody gives a pooled continuous relevance
+gold" claim, and we could not open it.** From the deposited abstract, verbatim in part: magnitude
+estimation, "a large-scale user study across **18 TREC topics** and collecting over **50,000
+magnitude estimation judgments** using crowdsourcing… ME judgments **can be reliably collected using
+crowdsourcing**… We explore the application of magnitude estimation for IR evaluation, **calibrating
+two gain-based effectiveness metrics, nDCG and ERR, directly from user-reported perceptions of
+relevance.**" And their conclusion, which is almost ours: system rankings from binary, ordinal and ME
+relevance "show **substantial variation**… this effect is due in part to **varying perceptions of
+relevance: different users have different perceptions of the impact of relative differences in
+document relevance**… current assumptions about a single view of relevance being sufficient to
+represent a population of users are unlikely to hold."
+
+- Who disagrees: **between** assessors (crowd). Unit: **whole document**.
+- Gold: **unbounded continuous relevance, normalised per assessor and pooled, feeding nDCG/ERR gains
+  directly.** This *is* a pooled graded gold, in IR, in TOIS, in 2017.
+- Statistic: rank alignment with expert ordinal judgments; system-ranking comparison across scales.
+  ⚠️ **We could not confirm whether any reliability coefficient (ICC, Cronbach's α, split-half) is
+  reported for the aggregated ME score**, and it does not appear to be headlined.
+
+**Weight** — **must read before the paper is written.** If it does report a reliability coefficient
+for the pooled continuous gold, our framing needs rewriting; if it does not, that absence is the
+precise gap we fill, and we should say so with this paper named.
+Precursors, both **verified** (Crossref): *Judging Relevance Using Magnitude Estimation*, Maddalena,
+Mizzaro, Scholer & Turpin, ECIR 2015, LNCS pp. 215–220, DOI `10.1007/978-3-319-16354-3_23`; *The
+Benefits of Magnitude Estimation Relevance Assessments for Information Retrieval Evaluation*, Turpin,
+Scholer, Mizzaro & Maddalena, SIGIR '15, DOI `10.1145/2766462.2767760`.
+
+### `roitero-2018`
+
+**On Fine-Grained Relevance Scales**
+Kevin Roitero, Eddy Maddalena, Gianluca Demartini, Stefano Mizzaro.
+SIGIR '18, pp. 675–684, DOI `10.1145/3209978.3210052`.
+**verified** (Crossref + deposited abstract); numbers not verified.
+
+Proposes **S100**, a bounded 100-level relevance scale, compared against binary, 4-level and
+magnitude estimation. Fine-grained beats both coarse-grained and unbounded scales; S100 keeps ME's
+flexibility (an assessor can always fit a new judgment between two previous ones) while being a
+familiar, efficient scale. Follow-up **verified**: *On the effect of relevance scales in crowdsourcing
+relevance assessments for Information Retrieval evaluation*, Roitero, Maddalena, Mizzaro & Scholer,
+*Information Processing & Management* 58(6):102688, 2021, DOI `10.1016/j.ipm.2021.102688`.
+
+**Weight** — medium-high. The IR precedent for "a finer-grained judgment scale is better", which is
+one half of our argument; no reliability coefficient visible.
+
+### `voorhees-2001` — ★ the documented counterexample to "orderings always survive"
+
+**Evaluation by highly relevant documents**
+Ellen M. Voorhees. SIGIR '01, pp. 74–82, DOI `10.1145/383952.383963`.
+**verified** (Crossref + deposited abstract); numbers not verified (PDF unobtainable).
+
+⚠️ **Voorhees' own qualification of Voorhees 2000, and it is rarely cited alongside it.** On the
+TREC-9 web track with a 3-point scale plus a "best page" per topic, from the abstract: "evaluating by
+highly relevant documents can be **unstable since there are relatively few highly relevant
+documents**. **TREC assessors frequently disagreed in their selection of the best page, and
+subsequent evaluation by best page across different assessors varied widely.**" Discounted cumulative
+gain "**increases evaluation stability by incorporating all relevance judgments** while still giving
+precedence to highly relevant documents."
+
+**Weight** — **high, and rhetorically valuable.** When the relevant set is small and the judgment is
+"pick the single best one", orderings do *not* survive — and the fix Voorhees endorses is
+**a graded measure that incorporates all judgments rather than a discrete top pick.** That is our
+argument, made by the author of the stability result, twenty-five years ago.
+Companion **verified**: *IR evaluation methods for retrieving highly relevant documents*, Kalervo
+Järvelin & Jaana Kekäläinen, SIGIR '00, pp. 41–48, DOI `10.1145/345508.345545` (reprinted *ACM SIGIR
+Forum* 51(2):243–250, 2017, DOI `10.1145/3130348.3130374`) — the origin of (n)DCG.
+
+### `ferrante-2021`
+
+**Towards Meaningful Statements in IR Evaluation: Mapping Evaluation Measures to Interval Scales**
+Marco Ferrante, Nicola Ferro, Norbert Fuhr.
+*IEEE Access* 9:136182–136216, 2021, DOI `10.1109/ACCESS.2021.3116857`; arXiv:2101.02668.
+**verified** (Crossref + deposited abstract). Open access; the arXiv PDF is fetchable.
+
+Representational measurement theory applied to IR: "the most popular evaluation measures in IR are
+**not interval-scaled**", so means, variances and t-tests over them are formally impermissible —
+"taken to the extremes, it might even mean that decades of experimental IR research used potentially
+improper methods." They propose a method for mapping a measure onto an interval scale.
+
+**Weight** — medium-high, and **it is the paper that could bite us**. Spearman–Brown, ICC and
+Pearson/Spearman correlations all presuppose something about the scale of the underlying quantity. If
+we report a reliability coefficient over a graded per-sentence support score, we should be able to
+say what scale we are claiming it lives on. This is the citation for taking that question seriously —
+and also, symmetrically, the best argument *for* preferring a continuous pooled score over an ordinal
+one.
+
 ### `wong-2022` (k-rater reliability)
 
 **k-Rater Reliability: The Correct Unit of Reliability for Aggregated Human Annotations**
@@ -1911,132 +2326,295 @@ snapshot, and we should say which.
 
 ---
 
+
 ## Contradicts or complicates us
 
-Ordered by how much damage each could do.
+Ordered by how much damage each could do. The first four are the ones to read before writing a word
+of related work.
 
-1. **`wong-2022` — the thing we did has a name, and the name is not ours.**
-   "k-rater reliability", computed as ICC(k) / Spearman–Brown, is an *existing, published* proposal
-   for reporting the reliability of an aggregated annotation, with a worked example (ICC(1) 0.590 →
-   ICC(13) 0.950) of the same qualitative shape as ours. We must not present "report reliability of
-   the pooled object rather than of one reading" as novel. What is still ours: the aggregation is
-   over **repeated readings of one annotator**, not over distinct raters, and the comparison is
-   against a **set-valued** object's reproduction rate rather than against ICC(1) of the same
-   quantity.
+1. **`mathet-2017` (γ_cat) — the presence/location decomposition already has a chance-corrected
+   coefficient designed for exactly it.** Its stated purpose, verbatim: "γ_cat tries to answer the
+   question: If annotators had not had to unitize the continuum … but only to categorize predefined
+   units on the continuum, what would have been their agreement?" So γ − γ_cat *is* the positional
+   component, isolated, in *Computational Linguistics* in 2017. If our paper frames a
+   presence/location split as a new way of looking at annotation, this refutes it. What survives:
+   γ_cat is a *coefficient over a set of annotations*; it does not produce a per-unit graded object
+   that a downstream system can consume, and nobody has run it on a test-retest design — the
+   `pygamma-agreement` package advertises "inter/intra-annotator" support that no published study
+   uses. Engage with γ_cat by name or a reviewer will.
 
-2. **`mathew-2021` (HateXplain) — a graded per-token support score pooled over annotations already
-   exists as a data representation.** HateXplain pools multiple annotators' rationale spans into a
-   soft temperature-scaled per-token distribution. `muscato-2026` systematises this as the SOFT
-   rationale space and shows it beats the HARD (majority) and INTERMEDIATE (union) spaces. Our "the
-   stable object is a graded per-unit support score, not a span set" is therefore **not novel as a
-   representation**. Narrow the claim to the *reliability measurement*: who has reported a reliability
-   coefficient for the graded object side by side with the reproduction rate of the discrete one?
+2. **`wong-2022` (k-rater reliability) — the statistic we are reporting has an established name, and
+   it is not ours.** kRR = ICC(k), obtained from ICC(1) by the Spearman–Brown prophecy formula, is a
+   published proposal for reporting the reliability of an *aggregated* annotation rather than of one
+   rating, with a worked example on WordSim-353 (ICC(1) = 0.590 → ICC(13) = 0.950, bootstrap 0.953)
+   of exactly our qualitative shape. Do not present "report the reliability of the pooled object" as
+   new. What is still ours: aggregation over **repeated readings of one annotator** rather than over
+   distinct raters, and the side-by-side comparison against a **set-valued** object.
 
-3. **`jakobsen-2023` — someone already conditioned location agreement on presence agreement.**
+3. **`warfield-2004` (STAPLE) + `mathew-2021` (HateXplain) — a graded, pooled, per-unit support
+   object is not new.** STAPLE has estimated a **probabilistic per-voxel reference segmentation**
+   from multiple raters by EM, with rater quality modelled, since 2004. HateXplain pools annotator
+   rationale spans into a soft temperature-scaled per-token distribution; `muscato-2026`
+   systematises that as the SOFT rationale space and shows it beats both the HARD (majority) and
+   INTERMEDIATE (**union** — our unstable object) spaces. "The stable object is a graded per-unit
+   support score rather than a span set" is therefore **not novel as a representation**, in images
+   since 2004 and in text since 2021. Narrow the claim to the *measurement*: nobody has reported a
+   reliability coefficient for the graded object **side by side with the reproduction rate of the
+   discrete object off the same readings.**
+
+4. **`hofstatter-2020` (FiRA) — an IR paper already measured location agreement separately from
+   presence agreement on TREC data, and got the opposite ordering.** Three Cohen's κ distributions
+   side by side: word-selection **0.5–0.8**, binary relevance **0.5–0.8**, 4-class relevance
+   **0.3–0.6**. On their data, deciding *where* was no harder than deciding *whether*. We must
+   address this directly. The differences that blunt it — all checked in the PDF — are: κ is computed
+   against a majority aggregate **that includes the annotator**, not pairwise; the IAA analysis rests
+   on **10 query–document pairs**; and they annotated only documents **already judged relevant by
+   TREC**, which pre-settles the presence question. But it is a real published counter-result on our
+   exact question in our exact domain.
+
+5. **`jakobsen-2023` — someone already conditioned location agreement on presence agreement.**
    They restrict to instances with **full label agreement** and then measure rationale agreement
-   across annotator groups, getting token-F1 of 0.41–0.67. That is the between-annotator version of
-   our presence/location dissociation, published at ACL 2023. Our dissociation is therefore a
-   *replication in the within-annotator, repeated-reading regime* of a known between-annotator
-   effect — which is still worth reporting, but must be framed that way.
+   across six demographic groups: token-F1 **0.41–0.67**. ACL 2023. And `zaidan-2007` did the same
+   conditioning sixteen years earlier ("we ignored documents where A_i and A_j disagreed on the
+   class"), with 4-way class agreement on 89% of documents and pairwise rationale overlap of
+   39.7–80.1%. Our dissociation is a *within-annotator, repeated-reading replication* of an
+   established between-annotator effect, and must be framed that way.
 
-4. **`scholer-2011` — test-retest on relevance judgments is not new in IR.** Planting duplicate
-   documents so the same assessor judges the same document twice is a 2011 SIGIR design. Our
-   test-retest novelty claim survives only if it is scoped to *span/location* annotation and to a
-   *model* as the repeated annotator.
+6. **`scholer-2011` and `scholer-2013` — test-retest on relevance judgments is not new in IR, and
+   the human numbers are worse than anyone assumes.** Scholer et al. 2011 re-judge duplicate
+   documents retrospectively (15–19% binary self-flip, 19–24% trinary); Scholer et al. 2013 do it
+   **prospectively, with the between-assessor comparison in the same experiment**, and get
+   **self-agreement 51.62% against between-participant agreement 44.80%** on a 4-level scale, within
+   one session. A person agrees with themselves only ~7 points better than with a stranger. Our
+   test-retest novelty survives only if scoped to **span/location** annotation and to a **model** as
+   the repeated annotator — and `scholer-2013` is also the right human baseline to put our numbers
+   next to.
 
-5. **`abercrombie-2023` — test-retest is rare, but it is no longer unremarked.** They surveyed the
-   ACL Anthology, found 56/80,000+ papers (<0.07%) reporting intra-annotator agreement, and argued it
-   should be standard. If we say "test-retest is rare", cite them for the number instead of asserting
-   it — and note their tasks were all 2–3-class labels, never spans, and that their 25% inconsistency
-   is measured on a deliberately high-disagreement subsample.
+6b. **`maddalena-2017-tois` — a pooled continuous relevance gold already exists in IR, and we could
+   not open it.** Magnitude estimation over 18 TREC topics and >50,000 crowdsourced judgments,
+   normalised per assessor, pooled, and used to **calibrate nDCG and ERR gains directly**. TOIS 2017.
+   Their conclusion is close to ours — "current assumptions about a single view of relevance being
+   sufficient to represent a population of users are unlikely to hold". ⚠️ **Whether they report a
+   reliability coefficient for the aggregated score is unverified.** If they do, our framing needs
+   rewriting. **Read this before drafting.** Its sibling `maddalena-2017-ictir` defines an
+   "agreement-aware effectiveness metric that does not discard information about multiple judgments
+   for the same document" — also unread, also direct prior art.
 
-6. **`nenkova-2004` / `lin-2006` — "replace the unstable discrete judgment with a pooled graded one"
-   is a 2004–2006 idea.** The Pyramid method weights content units by how many humans produced them;
-   Lin & Demner-Fushman apply it to TREC QA nuggets precisely because the binary vitality judgment
-   was unstable. This is the intellectual ancestor of our move and it is two decades old. Cite it
-   rather than let a reviewer find it.
+7. **`reiss-2023` — "repeat the model N times, pool, watch reliability cross threshold" is published,
+   with Krippendorff's α, in 2023.** 46,800 classifications; α = 0.75 unpooled → **0.91 pooling ten
+   repetitions**. Also `barrie-2024`, whose intra-PSS is α over **30 repetitions of an identical
+   prompt** — the same repetition count as ours. And `stureborg-2024` already puts model
+   inter-sample α (0.587) next to human inter-annotator α (0.659) in one table. The repeated-reading
+   psychometrics of LLM annotation is an occupied field. What is *not* occupied: doing it on
+   **location**, and pooling into a **graded** object rather than a majority label.
 
-7. **`mathet-2015` (γ) and `krippendorff-1995` (α_U) — there are purpose-built coefficients for span
-   agreement, and we did not use them.** γ handles unitizing and categorisation jointly and is
-   chance-corrected; the `pygamma-agreement` implementation advertises **intra**-annotator support.
-   Expect "why not γ?" and have an answer.
+8. **`abercrombie-2023` — test-retest is rare, but it is no longer unremarked, and the number is
+   theirs.** 56 of >80,000 ACL Anthology papers (<0.07%) report intra-annotator agreement; their own
+   experiment gives stability 74.2% vs reliability 66.7% overall. Cite them for the claim rather than
+   asserting it — and note their tasks are all 2–3-class labels, never spans, and that their items
+   were deliberately sampled for high disagreement.
 
-8. **`hong-2025` / `jiang-2023` — "within-label variation" is the existing term** for agreement on the
-   verdict with divergence in the reasoning. Using a new phrase for it will read as not knowing the
-   literature.
+9. **`nenkova-2004` / `lin-2006` — "replace an unstable discrete judgment with a pooled graded one"
+   is a 2004–2006 idea, and `lin-2006` did it in IR.** The Pyramid method weights content units by
+   how many humans produced them; Lin & Demner-Fushman carry it into TREC QA nugget evaluation
+   *precisely because* the binary vitality judgment was unstable. This is our move's direct
+   ancestor. Cite it rather than let a reviewer find it.
 
-9. **`parry-2025` — the "disagreement doesn't break rankings" result has just been re-confirmed on
-   modern short-passage collections** (κ as low as 0.12 on 4-grade relevance, τ = 0.879 on system
-   order). Any claim that our instability threatens evaluation must contend with this.
+10. **`li-2010` — the one NLP test-retest on a location task found intra *better* than inter.**
+    Word-alignment links: intra F 98.15 / 97.07 / 94.51 at 1 week / 2 weeks / 1 month, vs inter F
+    90.8–96.5 post-QC. `covert-2022` finds the same ordering on lesion segmentation (intra Dice 0.85
+    vs inter 0.79, p < 0.001), as does `abhishek-2025` at n = 5,111 masks. So the *expected* result
+    is that a repeated annotator is more self-consistent on location than two annotators are with
+    each other. Any claim that within-model location agreement is surprisingly low needs the
+    between-annotator comparison in the same table to mean anything.
 
-**Baseline check.** The one dramatic-multiple claim in the papers I read myself is `wong-2022`'s
-ICC(1) 0.590 → ICC(13) 0.950. That is *not* a gain against a zero baseline: the single-rater baseline
-is 0.590, a real and non-trivial number, and the jump is exactly what Spearman–Brown predicts
-analytically (the bootstrap estimate 0.953 agrees). It is a correct and unsurprising result, not an
-inflated one. Its implication for us is the reverse of flattering: a large Spearman–Brown coefficient
-at k = 30 is *expected* given a moderate single-reading ICC, so the interesting number in our result
-is the single-reading reliability and the *contrast* with the span-set reproduction rate — not the
-0.92 on its own.
+11. **`hong-2025` / `jiang-2023` — "within-label variation" is the existing term** for agreement on
+    the verdict with divergence in the reasoning. LiTEx quantifies it: **613 of 1,002 items (61.2%)**
+    got more than one explanation-taxonomy category despite a shared label. Coining a new phrase will
+    read as not knowing the literature.
+
+12. **`parry-2025` — the "disagreement doesn't break rankings" result was just re-confirmed on
+    modern short-passage collections.** Cohen's κ as low as 0.12 on 4-grade relevance, yet system
+    ordering at τ = 0.879. Any claim that annotation instability threatens evaluation has to contend
+    with this, and with the twenty-five-year consistency of the finding (Voorhees' own mean
+    τ = 0.938).
+
+    **But the stability claim is narrower than it is usually used for, and there are five documented
+    exceptions** — this is the material for our rebuttal paragraph, and every item was verified:
+    (i) **liberal/optimistic assessors disrupt rankings while conservative ones do not**
+    (`carterette-2010`); (ii) **evaluation by highly relevant documents or "best page" is unstable
+    across assessors** (`voorhees-2001`, by the same author); (iii) **absolute scores and recall were
+    never stable** (`zobel-1998`); (iv) downstream consumers pay — **25% deeper in the ranking** for
+    a classifier trained on non-authoritative labels (`webber-2013`); (v) a high aggregate τ conceals
+    failure where decisions are made — **τ = 0.51 over the top 20 systems**, and **−0.40** over the
+    top 5 under circularity (`clarke-2024`). Add `parry-2025`'s own point that once systems approach
+    the human ceiling (nDCG@10 ≈ 0.81 on DL'19, with RankZephyr/RankGPT at 0.78–0.80), ranking
+    stability stops being informative about progress at all.
+
+13. **`aroyo-2015` (crowd truth), `uma-2021`, `nie-2020` (ChaosNLI, ~100 annotations per item),
+    `passonneau-2014` / `paun-2018` (Bayesian annotation models) — "replace the single label with a
+    distribution" is the mainstream position, not a novelty.** Expect "why a mean over readings
+    rather than a Dawid-Skene-style model?" Our honest answer — an identical annotator leaves no
+    per-annotator bias term to estimate — should be in the paper, not improvised at review time.
+
+14. **A methodological trap, from `passonneau-2006-masi`.** On one dataset, α ranges from **−0.44 to
+    +0.81** purely from the choice of distance (nominal / Jaccard / MASI) and coding unit (spans /
+    words). Any single reproduction figure for a span set must state its unit and distance, or it
+    means nothing. `mathet-2015` §3.4.1 adds that token-level κ over a document — the obvious
+    alternative — is the "discretising workaround", which **artificially inflates** agreement in
+    proportion to how much of the document is unannotated.
+
+**Baseline checks performed.** Three dramatic-sounding claims were checked against their baselines:
+
+- **`wong-2022`, ICC(1) 0.590 → ICC(13) 0.950.** Not a gain over a zero baseline — 0.590 is real and
+  non-trivial, and the jump is exactly what Spearman–Brown predicts analytically (bootstrap 0.953
+  agrees). **Implication for us, and it is unflattering: a high Spearman–Brown coefficient at k = 30
+  is *arithmetically expected* given a moderate single-reading reliability.** The interesting numbers
+  in our result are the single-reading reliability and the *contrast* with the span-set figure — not
+  0.92 on its own.
+- **`gilardi-2023`, "ChatGPT outperforms crowd workers".** The accuracy comparison is against
+  **third-party MTurk crowd workers**, on a gold standard restricted to items **two research
+  assistants already agreed on**, with absolute accuracy of 70 / 81 / 83 / **59** percent on the
+  *binary* relevance task. And the headline "intercoder agreement 91–97% beats humans' 56–79%" puts
+  **two runs of one model** (test-retest) in the same bar chart as **two different people**
+  (inter-rater), uncorrected for chance. `kristensen-mclachlan-2025` supplies the baseline they never
+  ran — a fine-tuned DistilBERT — and it wins.
+- **`stureborg-2024`, "LLM self-consistency is worse than human agreement".** True on the mean
+  (α 0.587 vs 0.659) but **reversed on two of four dimensions** (coherence 0.646 vs 0.559; relevance
+  0.589 vs 0.453). Cite the per-dimension table, not the average.
 
 ---
 
 ## The strongest framing available
 
-**Use the existing names. There are three, and they nest.**
+**Use the existing names. There are four, and they nest.**
 
-1. **k-rater reliability (kRR)** — `wong-2022`. This is the established name for "the reliability of
-   the aggregate, not of one reading", and it comes with ICC(k) and Spearman–Brown as the standard
-   estimators. This is the frame for our 0.92. Say "k-rater reliability" and cite Wong & Paritosh the
-   first time the number appears, then Warrens/de Vet via them for the ICC(k)≡Spearman–Brown identity.
+1. **Stability vs reproducibility (Krippendorff's terms).** This is the best framing and almost
+   nobody in NLP uses it. **Reproducibility** = agreement across observers. **Stability** = the same
+   observer repeated — test-retest. `abercrombie-2023` heads its main table exactly this way
+   ("Reliability (Inter-)" / "Stability (Intra-)"). And the check that makes this a *finding* rather
+   than a vocabulary choice: I grepped all 42 pages of `artstein-2008`, the field's standard
+   agreement survey, and **"reproducibility" occurs 11 times while "stability", "intra-annotator",
+   "intra-coder" and "test-retest" occur zero times.** The canonical survey adopts one half of
+   Krippendorff's pair and drops the other. *(Confirm which Krippendorff text is the right citation
+   for the trio before using it — see `krippendorff-2004`.)*
 
-2. **Generalizability theory** — `urbano-2013`, `bodoff-2007`/`bodoff-2008`. The IR community's own
-   vocabulary for decomposing measurement variance and predicting the reliability of a pooled
-   measurement. Using it signals that the reliability claim is psychometrics, not a correlation we
-   liked the look of. `urbano-2013` also maps generalizability coefficients onto Kendall τ, which is
-   the currency of `voorhees-2000` and `parry-2025` — that is the bridge between our number and the
-   classical IR result.
+2. **k-rater reliability (kRR)** — `wong-2022`. The established name for the reliability of the
+   *aggregate*, with ICC(k) and Spearman–Brown as its estimators. Say "k-rater reliability" and cite
+   Wong & Paritosh the first time the number appears.
 
-3. **Human label variation / within-label variation** — `plank-2022`, `hong-2025`. HLV is the NLP
-   term for "there is no single correct label"; **within-label variation** is the term for our exact
-   phenomenon — agreement on the verdict, divergence in the justification. Do not coin a new phrase.
+3. **Generalizability theory** — `urbano-2013`, `bodoff-2007`/`bodoff-2008`, and in the LLM era
+   `messing-2026`. The IR community's own vocabulary for decomposing measurement variance and
+   predicting the reliability of a pooled measurement. `urbano-2013` also maps generalizability
+   coefficients onto **Kendall τ**, which is the currency of `voorhees-2000` and `parry-2025` — that
+   is the bridge from our reliability number to the classical IR result.
 
-**The framing sentence I would write**, using only established terms:
+4. **Human label variation / within-label variation** — `plank-2022`, `hong-2025`. HLV is the NLP
+   term for "there is no single correct label"; **within-label variation** names our exact
+   phenomenon, agreement on the verdict with divergence in the justification.
 
-> Presence is a *reliable* judgment; location exhibits **within-label variation** (Hong et al., 2025;
-> Jiang et al., 2023). Where the discrete object — the span set — has low **k-rater reliability**, a
-> graded per-sentence support score pooled over k readings has high kRR (Wong & Paritosh, 2022),
-> in the same way that a graded pooled content-unit weight was substituted for an unstable binary
-> vitality judgment in summarisation and QA evaluation (Nenkova & Passonneau, 2004;
-> Lin & Demner-Fushman, 2006).
+**A framing sentence built only from established terms:**
 
-**The best single prior work to position against** is `lin-2006` for the *move* (unstable binary
-judgment → pooled graded weight, in IR, with the ranking consequences worked out) and `wong-2022` for
-the *statistic*. `nenkova-2004` is the older and more famous version of the move; `aroyo-2015` is the
-manifesto version.
+> Presence is judged with high **stability**; location exhibits **within-label variation**
+> (Hong et al., 2025; Jiang et al., 2023). Where the discrete object — the span set — has low
+> **k-rater reliability**, a graded per-sentence support score pooled over k readings has high kRR
+> (Wong & Paritosh, 2022), in the same way that a pooled graded content-unit weight was substituted
+> for an unstable binary vitality judgment in summarisation and QA evaluation
+> (Nenkova & Passonneau, 2004; Lin & Demner-Fushman, 2006), and that a probabilistic pooled
+> segmentation was substituted for a majority-vote mask in medical imaging (Warfield et al., 2004).
 
-**On statistics:** report a Jaccard/IOU-family number for the span condition because that is what
-`deyoung-2020` made standard and what `jakobsen-2023` reports, but cite `hripcsak-2005` for why it is
-mean pairwise F1 (≡ positive specific agreement) and not κ — negatives are not countable in a span
-task — and cite `artstein-2008` §4.3 and the κ-paradox cluster (`feinstein-1990`, `byrt-1993`,
-`powers-2012`) for why a low κ on a low-prevalence span task is uninformative. That turns "we used a
-convenient metric" into "we used the metric the methodology literature prescribes for this data
-shape".
+**The best single prior work to position against**, in order:
+
+- **`voorhees-2001`** for the *authority* — the author of the stability result herself showing that
+  when the judgment is a small discrete top pick, "TREC assessors frequently disagreed in their
+  selection of the best page, and subsequent evaluation by best page across different assessors
+  varied widely", and endorsing a **graded measure that incorporates all relevance judgments** as the
+  fix. That is our argument, in SIGIR, in 2001, from the least convenient possible source for anyone
+  who wants to wave us off with Voorhees 2000.
+- **`lin-2006`** for the *move* — unstable binary judgment replaced by a pooled graded weight, in IR,
+  with the ranking consequences worked out. `nenkova-2004` is the older and more famous version.
+- **`warfield-2004` (STAPLE)** for the *object* — a probabilistic per-unit truth pooled over
+  annotations, with rater quality modelled, and with **no text-span equivalent**. This is the
+  strongest analogy available and it also tells us what a reviewer will ask for (a latent-truth
+  model, not just a mean).
+- **`wong-2022`** for the *statistic*.
+- **`mathet-2017` (γ_cat)** for the *decomposition* — and this one must be engaged with, not merely
+  cited.
+
+**On statistics.** Report a Jaccard/IOU-family number for the span condition because that is what
+`deyoung-2020` made standard and what `jakobsen-2023`, `zaidan-2007` and `sen-2020` report — but:
+
+- cite `hripcsak-2005` for why it is mean pairwise F1 (≡ positive specific agreement) and **not κ**:
+  in a span task the negative class is uncountable, so κ is not defined, and `deleger-2012` is the
+  worked precedent for doing exactly that;
+- state the unit and the distance, because `passonneau-2006-masi` shows the answer moves from −0.44
+  to +0.81 with those two choices alone;
+- do **not** fall back to token-level κ, because `mathet-2015` §3.4.1 shows that "discretising
+  workaround" inflates agreement in proportion to the unannotated fraction of the document;
+- say that F has **no interpretive scale** (`james-2026`), so the span number is meaningful against
+  another number computed the same way, not against the 0.67/0.8 κ conventions;
+- and cite the κ-paradox cluster (`feinstein-1990`, `byrt-1993`, `powers-2012`, plus `artstein-2008`'s
+  own skew discussion) for why a low κ on a low-prevalence span task would have been uninformative
+  anyway.
+
+**On the model-specific methods claims**, two sentences need the right citations:
+
+- *Why do repeated temperature-0 readings differ at all?* → `he-2025` (batch-invariance, not
+  floating-point non-associativity — the folk explanation is wrong and a reviewer may know it),
+  supported by `atil-2024` and `ouyang-2023` for the empirical fact.
+- *Is sampling or prompting the dominant variance source?* → `thomas-2024` (42 paraphrases of one
+  prompt move κ by ~0.22 at temperature 0) and `reiss-2023` (prompt-paraphrase α 0.24–0.70, mean
+  0.43, vs identical-input α > 0.9). **Between-prompt variance dwarfs within-prompt variance**, so
+  our thirty readings measure the smaller of the two quantities and we should say so.
 
 **The honest novelty statement**, after all of the above:
 
-> Between-annotator versions of each piece exist — test-retest at the document level
-> (Scholer et al., 2011), rationale disagreement conditioned on label agreement
-> (Jakobsen et al., 2023), graded per-token pooling (Mathew et al., 2021), and kRR as the reliability
-> unit (Wong & Paritosh, 2022). What is not in the literature is the *within-annotator, repeated-
-> reading* version of the location/presence dissociation, or a side-by-side reliability comparison of
-> the graded and the set-valued object off the same readings.
+> Between-annotator versions of each component exist — test-retest at the document level
+> (Scholer et al., 2011; Abercrombie et al., 2025), rationale disagreement conditioned on label
+> agreement (Zaidan et al., 2007; Jakobsen et al., 2023), separate location and presence agreement in
+> IR (Hofstätter et al., 2020), graded per-token pooling (Warfield et al., 2004; Mathew et al.,
+> 2021), a coefficient that factors position out of categorisation (Mathet, 2017), and repeated-
+> sampling reliability for LLM annotators (Reiss, 2023; Barrie et al., 2024). What we could not find
+> anywhere is the combination: **repeated readings of a single annotator on an evidence-location
+> task, with the reliability of the graded pooled object reported beside the reproduction rate of
+> the discrete one.**
+
+**The human baselines to quote, so our numbers are read on the right scale.** Do not let a
+reliability figure float free:
+
+| quantity | human value | source |
+|---|---|---|
+| between-assessor mutual F1, relevance | ≈ 0.5 (range 0.44–0.63) | `oard-2013` Table 5.1, 8 studies |
+| between-assessor Cohen's κ, relevance | ≈ 0.4 (range 0.31–0.59) | `oard-2013` Table 5.1 |
+| between-assessor positive agreement, surveyed | 0.33 – 0.76 | `oard-2013` via `scholer-2013` |
+| **within-assessor** self-agreement, 4-level, same session | **51.62%** | `scholer-2013` (read) |
+| between-participant agreement, same experiment | 44.80% | `scholer-2013` (read) |
+| within-assessor binary self-flip rate, TREC | 15–19% | `scholer-2011` via `scholer-2013` |
+| within-annotator stability, NLP labels | 74.2% (vs 66.7% inter) | `abercrombie-2023` (read) |
+| within-annotator F, word-alignment links, 1 month | 94.51 (vs inter 90.8–96.5) | `li-2010` (read) |
+| within-observer Dice, lesion segmentation | 0.85 (vs inter 0.79) | `covert-2022` |
+| between-annotator token-F1, rationales, label agreed | 0.41 – 0.67 | `jakobsen-2023` (read) |
+| between-human exact-match on the same answer span | 77.0% (F1 86.8) | `rajpurkar-2016` (read) |
+
+Two things this table settles. First, **`oard-2013`'s warning that sample-based agreement
+systematically overstates population agreement** applies to us: say whether our figures are over a
+sampled or a full population of units. Second, **agreement is more topic-dependent than
+assessor-dependent** (`oard-2013`; `scholer-2013`, topic effect p = 0.004 while treatment effect
+p = 0.373) — so per-item variance is expected and a single pooled number will hide it.
+
+**Reliability is not validity — say it ourselves before a reviewer does.** `artstein-2008`:
+"achieving good agreement cannot ensure validity: Two observers of the same event may well share the
+same prejudice while still being objectively wrong." `alaofi-2024` is the concrete version: injecting
+query terms into nonsensical passages got ~26% of them labelled "perfectly relevant" by GPT-4. A
+model that agrees with itself thirty times can be thirty-times consistently wrong.
 
 ---
 
 ## Searched and did not find
 
-Queries run against the arXiv API (`search_query` shown) that returned **zero** results, establishing
-that the obvious phrasings are unoccupied:
+### arXiv API queries returning **zero** results
+
+These establish that the obvious phrasings are unoccupied (`search_query` shown verbatim):
 
 | Query | Hits |
 |---|---|
@@ -2048,41 +2626,199 @@ that the obvious phrasings are unoccupied:
 | `abs:"per-sentence" AND abs:"support score"` | 0 |
 | `abs:"Spearman-Brown" AND abs:"annotat"` | 0 |
 | `abs:"sentence-level" AND abs:"support" AND abs:"attribution" AND abs:"agreement"` | 0 |
+| `ti:"LLM Stability"` (the title given in our own brief) | 0 — the paper meant is `atil-2024` |
 
-Searched and found only adjacent, non-competing work:
+### Searched and found only adjacent, non-competing work
 
 - `abs:"test-retest" AND abs:"annotation"` — returns `amidei-2020` plus **medical-imaging**
-  segmentation papers (FatSegNet, SVRDA). Within-rater span/region consistency is a normal thing to
-  measure in *radiology*, under the names intra-observer variability and Dice/Jaccard intra-rater
-  agreement; it is not a thing in NLP or IR. That asymmetry is worth one sentence in our paper.
+  segmentation papers. Within-rater region consistency is routine in radiology (intra-observer
+  variability, intra-rater Dice) and absent from NLP and IR. **That asymmetry deserves a sentence in
+  our paper.**
 - `abs:"test-retest" AND abs:"large language model"` — returns clinical-classification validation and
-  purchase-intent simulation, i.e. test-retest of an LLM used as a *measurement instrument for
-  something else*, not of an LLM as an annotator of evidence.
-- Full-text grep of `artstein-2008` (42 pages) for `intra-coder`, `intra-annotator`, `test-retest`,
-  `stability` — **zero occurrences of all four**. The standard agreement survey does not consider
-  within-annotator repetition at all.
+  purchase-intent simulation, i.e. test-retest of an LLM as a measurement instrument *for something
+  else*, never as an annotator of evidence location.
+- Full-text grep of `artstein-2008` (42 pp) for `intra-coder`, `intra-annotator`, `test-retest`,
+  `stability`, `same observer` — **zero occurrences of all five**; `reproducib*` occurs 11 times.
+- Searches for a Song/Wang paper specifically on **judge self-consistency** returned nothing on
+  point; the closest real paper is `song-2024`, which is about non-determinism in LLM evaluation
+  generally.
+- Searches for "Arora et al. on rationale agreement" and for a paper titled "Quantifying Question
+  Answering annotation variability" returned nothing matching; both appear to be misremembered.
 
-Not covered here by design (they belong to other files in this inbox): attribution/citation
-evaluation for RAG, faithfulness metrics, LLM-as-judge for generation quality except where it bears
-on annotation reliability.
+### Verified absences, i.e. we looked *inside* the candidate papers and the cell is empty
+
+- **No IR relevance-judgment paper repeats one judge N times on one query–document pair, scores the
+  repeats with a reliability coefficient, and pools them into a graded label.** UMBRELA, Faggioli,
+  Thomas et al., MacAvaney & Soldaini, Upadhyay, Farzi & Dietz all run the judge **exactly once per
+  pair**. `rahmani-2024-judgeblender` does produce a graded pooled label by average voting — but
+  across *heterogeneous* models and prompts, never across repeated samples of one configuration.
+- **No text-span analogue of STAPLE exists.** `hofstatter-2020` gets closest (a per-word
+  annotator-count heatmap over 87 annotators) but presents it as a figure, not a released score or a
+  statistic; `sen-2020` defines only AND/OR pooling; `deyoung-2020`'s soft scoring is on the *model*
+  side against a *hard* human gold.
+- **`mcdonnell-2016` computed rationale-span similarity between annotators and then threw the number
+  away**, using it only as a filter before label aggregation. Verbatim: "While we do not investigate
+  the document position of selected rationales in this study (left for future work)…" The number we
+  want was computed and discarded.
+- **`abercrombie-2023`'s enumeration of the 56 intra-annotator papers contains no span, rationale,
+  evidence or QA-answer task.** The only location-flavoured item is word alignment (`li-2010`).
+- **Every study in the classical-IR assessor-agreement literature judges whole documents** (or whole
+  passages, in TREC DL 2019). A systematic pass over sections 1–4 of that literature turned up **no
+  span-level or passage-within-document relevance-agreement study** at all. For a span-level unit in
+  IR, that is an uncontested gap — `hofstatter-2020` (FiRA) is the exception that proves it, and it
+  is a resource paper rather than an agreement study.
+- **No paper in the classical-IR slice publishes a pooled continuous gold *with* a reliability
+  coefficient.** The three building blocks exist separately — continuous pooled judgments
+  (`maddalena-2017-tois`, `roitero-2018`), a metric that does not collapse multiple judgments
+  (`maddalena-2017-ictir`), and a variance-components reliability framework (`bodoff-2007`,
+  `urbano-2013`) — and nobody combines them. ⚠️ **This gap is asserted on abstracts, not full texts,
+  for three of those four papers.** Verify against the TOIS and ICTIR PDFs before claiming it.
+
+### Out of scope by design
+
+Attribution/citation evaluation for RAG, faithfulness metrics, and LLM-as-judge for generation
+quality, except where they bear directly on annotation reliability. Those belong to other files in
+this inbox.
+
+### Budget note
+
+The session's WebSearch quota (200 calls) was exhausted partway through. Everything after that point
+was done through the Crossref REST API, the arXiv API, ACL Anthology BibTeX and direct WebFetch of
+publisher pages — which is *better* evidence for metadata verification, but worse for open-ended
+discovery. **The most likely place an unfound competitor hides is machine-translation error-span
+annotation**, since MT is the one sub-field that routinely reports intra-annotator agreement; see
+`kocmi-2024`, which is verified but unread.
 
 ---
 
 ## COULD NOT VERIFY
 
-*(none in the body above — every entry listed was fetched. Items that failed verification are
-recorded here.)*
+Nothing in the body is unfetched. Recorded here are the items whose *full text* could not be
+retrieved (metadata verified only), the citation traps found, and the access failures.
 
-- **Urbano, Marrero & Martín (SIGIR 2013)** — metadata verified via Crossref and the author's CRAN
-  package page, but the **full text was not retrieved** (ACM DL returns 403 to this client; the
-  author's PDF mirror `julian-urbano.info/files/publications/017-…pdf` returns a 404 page). The
-  description above is deliberately confined to what the title, Crossref record and package
-  description support. Re-check before citing a specific number from it.
-- **James (2026), "Counting on Consensus"** — arXiv record verified; the claimed LREC 2026 acceptance
-  is asserted only in the arXiv comment field and I did not locate a proceedings record. Cite as a
-  preprint or not at all.
-- **ACM Digital Library pages generally** returned HTTP 403 to this client, and **dblp** returned a
-  bot-check page. All ACM-published items above were therefore verified through **Crossref's
-  publisher-deposited DOI metadata** (which is ACM's own deposit) rather than through the DL page.
-  Where Crossref truncates a title at the colon — it does this for `bailey-2008`, `carterette-2008-
-  preference` and `nenkova-2007` — the full title was recovered from a second source, noted inline.
+### Metadata verified, full text NOT retrieved — do not quote numbers from these
+
+- **`urbano-2013`** — ACM DL returns 403; the author's PDF mirror 404s. Described only from the
+  Crossref record and the CRAN `gt4ireval` page.
+- **`krippendorff-1995`** (α_U) — JSTOR paywall; the Penn repository copy 404s. Its content above is
+  reported **second-hand from `artstein-2008` §4.3.2**, which I did read, and is attributed as such.
+- **`krippendorff-2016`** — Springer paywall (the IDP redirect defeats WebFetch). Content reported
+  second-hand from `mathet-2017`.
+- **`warfield-2004` (STAPLE)** — IEEE paywall. Mechanism described second-hand from `abhishek-2025`
+  and `ribeiro-2019`. **Check before characterising it in print.**
+- **`krippendorff-2004`** (HCR) — metadata only; and I could not settle whether it or the *Content
+  Analysis* book is the right citation for the stability/reproducibility/accuracy trio.
+- **`ollion-2024`**, **`klie-2024`**, **`artstein-2017`**, **`kocmi-2024`**, **`lalor-2016`**,
+  **`bodoff-2007`/`bodoff-2008`**, **`amidei-2020`** — metadata verified, not read.
+- **`voorhees-2000`** — PDF unobtainable. Its numbers above come from three PDFs that *were* read
+  (`webber-2012`, `oard-2013`, `parry-2025`), which agree with each other; still second-hand.
+- **`scholer-2011`** — PDF unobtainable from every route tried (ACM 403; Sanderson's own site hosts
+  PDFs only from ~2015; RMIT figshare record 27379491 is metadata-only with no file). Abstract from
+  OpenAlex; the 15–19% / 19–24% self-flip rates are quoted from `scholer-2013`, which was read.
+- **`bailey-2008`** — PDF unobtainable; `paulthomas.id.au` no longer resolves. **The gold/silver/
+  bronze agreement numbers remain unverified.**
+- **`maddalena-2017-tois`** and **`maddalena-2017-ictir`** — abstracts only. These two are the
+  strongest potential counterexamples on the graded-gold claim and **both must be read before
+  drafting.**
+- **`cormack-2006`**, **`sanderson-2005`**, **`buckley-2004`**, **`sakai-2008`**, **`lipani-2015`**,
+  **`voorhees-2001`**, **`roitero-2018`**, **`damessie-2017`** — Crossref metadata and (except
+  `cormack-2006` and `buckley-2007`) publisher-deposited abstracts; internal numbers **not verified**.
+- **`buckley-2007`** ("Bias and the limits of pooling for large collections") — metadata only.
+  **Neither Crossref nor OpenAlex holds an abstract and the PDF was unobtainable**, so nothing is
+  characterised about its content above beyond its title.
+- **`messing-2026`**, **`lin-2026`** (*A validity-guided workflow for robust large language model
+  research in psychology*, Zhicheng Lin, *Behavior Research Methods* 58:216, 2026; arXiv:2507.04491)
+  — abstracts only. In particular I could **not** confirm that `lin-2026` reports Cronbach's α or ICC
+  numerically; do not attribute psychometric coefficients to it without fetching the PDF.
+- **`sakai-2025`** — *Open-Source LLM-based Relevance Assessment vs. Highly Reliable Manual Relevance
+  Assessment: A Case Study*, Tetsuya Sakai, Khant Myoe Rain, Rikiya Takehi, Sijie Tao, Young-In Song,
+  CIKM '25, pp. 5186–5190, DOI `10.1145/3746252.3760934`. Crossref-verified, full text not retrieved,
+  **no numbers reported here.** Listed because it is the strongest available "against a *high-quality*
+  human baseline" counterpoint and deserves a full read.
+
+### Could not verify at all — do not cite
+
+- **"Arora et al. on rationale agreement"** — no matching paper found in Crossref or arXiv.
+- **"Quantifying Question Answering annotation variability"** — no such title found; probably a
+  paraphrase of `min-2020` or of the ChaosNLI line.
+- **Fournier & Inkpen, "Segmentation Similarity and Agreement" (2012)** and **Fournier, "Evaluating
+  Text Segmentation using Boundary Edit Distance" (2013)** — Crossref returned nothing for either.
+  They exist only as citations inside `james-2026`. Findable by ACL Anthology ID if wanted; not
+  verified here.
+- **`james-2026`'s LREC 2026 acceptance** — asserted in the arXiv comment field and on an
+  `aclanthology.org/2026.lrec-1.347/` URL reported by a subagent that I did not independently
+  re-fetch. Treat as a preprint.
+
+### Citation traps found during verification — each of these would have produced a wrong citation
+
+1. **"Variations in Relevance Judgments and the Shelf Life of Test Collections" is NOT by Voorhees.**
+   It is Parry, Fröbe, Scells, Schlatt, Faggioli, Zerhoudi, MacAvaney & Yang (SIGIR 2025). The title
+   deliberately echoes Voorhees 2000. Our own brief had this wrong.
+2. **`barrie-2024` is Barrie, Palaiologou & Törnberg**, not "Barrie/Palmer/Spirling". Arthur Spirling
+   is not an author.
+3. **`atil-2024`'s title is "Non-Determinism of 'Deterministic' LLM Settings"**; the title "LLM
+   Stability: A detailed analysis with some surprises" returns zero hits on arXiv.
+4. **`krippendorff-2016` is Krippendorff, Mathet, *Bouvry*, Widlöcher** — Métivier is on the 2015 γ
+   paper, not this one. There is also a **separate erratum** at *Quality & Quantity* 50(6):2365.
+5. **`carterette-2010` is "The effect of assessor error"**, singular — the plural form is a common
+   mis-citation.
+6. **`rashkin-2023` has two Crossref records** — `10.1162/coli_a_00486` (CL 49(4):777–840, final) and
+   `10.1162/coli_a_00490` ("pp. 1–66", Just-Accepted). Both confirmed to exist. **Cite `_00486`.**
+7. **`upadhyay-2025`'s arXiv preprint has a different author list** from the published ICTIR version.
+   Use the Crossref list for the published paper.
+8. **`faggioli-2023` contains no community survey with respondent counts** — it is opposing essays by
+   the co-authors. Any percentage attributed to a survey in that paper is invented.
+9. **Crossref truncates titles at the colon** for several ACM/AAAI/Springer deposits — confirmed for
+   `bailey-2008` ("Relevance assessment"), `carterette-2008-preference` ("Here or There"),
+   `nenkova-2007` ("The Pyramid Method") and `hripcsak-2005` (author list truncated to the first
+   author only). Every such case above was recovered from a second source and noted inline.
+10. **`pangakis-2025`** — Crossref also returns a same-titled 2024 article by different authors in a
+    different journal. Match on DOI `10.1609/icwsm.v19i1.35883`, not on title.
+11. **`lin-zhang-2025`** (*Navigating the Risks of Using Large Language Models for Text Annotation in
+    Social Science Research*, Hao Lin & Yongjun Zhang, *Social Science Computer Review* 44(3):403–427,
+    DOI `10.1177/08944393251366243`) — **the title changed and the author order flipped** between the
+    SocArXiv preprint and the journal version. Crossref-verified only, not read.
+
+### Pull these next, in this order, with ACM/Elsevier/IEEE access
+
+1. **`maddalena-2017-tois`** (DOI `10.1145/3002172`) — does it report a reliability coefficient for
+   the aggregated magnitude-estimation gold? This determines whether our framing stands.
+2. **`kocmi-2024`** (DOI `10.18653/v1/2024.wmt-1.131`) — MT error *spans* with multiple annotators,
+   in the one sub-field that routinely reports intra-annotator agreement. Most likely hiding place
+   for a span-level test-retest.
+3. **`maddalena-2017-ictir`** (DOI `10.1145/3121050.3121060`) — the definition of the agreement-aware
+   effectiveness metric that retains multiple judgments per document.
+4. **`scholer-2011`** (DOI `10.1145/2009916.2010057`) — the exact self-disagreement rate, how
+   duplicates were identified, and the denominator.
+5. **`warfield-2004`** (DOI `10.1109/TMI.2004.828354`) — before characterising STAPLE in print.
+6. **`bailey-2008`** (DOI `10.1145/1390334.1390447`) — the gold/silver/bronze agreement numbers.
+7. **`bodoff-2007`** (DOI `10.1145/1277741.1277805`) and **`urbano-2013`** (DOI
+   `10.1145/2484028.2484038`) — the actual generalizability coefficients and variance components.
+8. **`voorhees-2000`** (DOI `10.1016/S0306-4573(00)00010-8`) — to confirm 0.421/0.494 and τ = 0.938
+   against the original rather than three re-analyses.
+
+### Access failures encountered (so the next pass does not repeat them)
+
+- **ACM Digital Library** returns HTTP 403 to this client, and **dblp** returns a bot-check page. All
+  ACM-published items above were verified through **Crossref's publisher-deposited DOI metadata**,
+  which is ACM's own deposit.
+- **PNAS** and **Europe PMC** return 403; `gilardi-2023` was read from the arXiv v2 PDF instead.
+- **Springer** defeats WebFetch via an IDP redirect; use the Crossref record or a mirror.
+- `WebFetch` on a raw `arxiv.org/pdf/...` URL does not parse; download with `curl` and extract with
+  `pymupdf`, or fetch `arxiv.org/html/<id>` instead.
+- `pdftotext` is not installed on this host; `pymupdf` is (`/rag/envs/ragstack/bin/python3`).
+- **The Internet Archive was hard down for the whole session** (Wayback CDX, `scholar.archive.org`
+  and the fatcat API all returned "Internet Archive services are temporarily offline"), which removed
+  the main fallback route to archived publisher PDFs. This is the single biggest reason so many
+  classical-IR PDFs are unread above; **retry that route before spending effort elsewhere.**
+- **Semantic Scholar** rate-limits the title-search endpoint (HTTP 429) but the by-DOI endpoint works
+  with ~3 s pacing. **OpenAlex's `abstract_inverted_index` was the productive fallback** for
+  publisher abstracts of pre-2015 ACM papers, where Semantic Scholar's `abstract` field is empty.
+- Author pages that yielded nothing: `goanna.cs.rmit.edu.au/~fscholer/`, `cs.rmit.edu.au/~fscholer/`
+  (both gone), `people.eng.unimelb.edu.au/jzobel/`, `cs.uwaterloo.ca/~gvcormac/`,
+  `culpepper.io/publications/`, `f.waseda.jp/tetsuya/publications.html`, `aldolipani.com`,
+  and **`paulthomas.id.au` (DNS failure — the domain appears dead)**.
+  `williamwebber.com/research/papers/` **does** work and hosts five of the papers read here.
+- **RMIT's figshare-backed repository** has records for `scholer-2011` (27379491) and
+  `maddalena-2017-tois` (27505632) but **both are metadata-only with zero attached files** — do not
+  waste time there.
