@@ -1,0 +1,214 @@
+
+== A_nodoi_notitle ==
+  n                        386
+  no_first_page              2 (0.5%)
+  produced                 347 (89.9%)
+  no_output                 39 (10.1%)
+  plausible_len            211 (54.7%)
+  implausible_len          136 (35.2%)
+
+== B_nodoi_title ==
+  n                        193
+  produced                 173 (89.6%)
+  no_output                 20 (10.4%)
+  plausible_len            135 (69.9%)
+  implausible_len           38 (19.7%)
+  gold_is_internal_id       34 (17.6%)
+  scored                   158 (81.9%)
+  exact_ish                 37 (19.2%)
+  partial                   10 (5.2%)
+  wrong                    111 (57.5%)
+  -> title recovered (>=0.90 on scored) : 37/158 = 23.4%
+  -> recovered or near (>=0.60)         : 29.7%
+
+== C_doi_title_ctrl ==
+  n                        300
+  produced                 295 (98.3%)
+  no_output                  5 (1.7%)
+  plausible_len            287 (95.7%)
+  implausible_len            8 (2.7%)
+  gold_is_internal_id       10 (3.3%)
+  scored                   290 (96.7%)
+  exact_ish                128 (42.7%)
+  partial                  126 (42.0%)
+  wrong                     36 (12.0%)
+  -> title recovered (>=0.90 on scored) : 128/290 = 44.1%
+  -> recovered or near (>=0.60)         : 87.6%
+
+== D_doi_notitle ==
+  n                        300
+  produced                 286 (95.3%)
+  no_output                 14 (4.7%)
+  plausible_len            248 (82.7%)
+  implausible_len           38 (12.7%)
+
+
+===== FAILURE EXAMPLES =====
+
+--- implausible_A_nodoi_notitle (n=136) ---
+  file=zjm999095916s6.pdf
+    gold=None
+    pred=1
+  file=zam999103538so1.pdf
+    gold=None
+    pred=Table S1. Cp-values in IS1111 qPCR for throat swabs collected before inoculation (-3), at 3-52 days post inocu
+  file=zii999091468so1.pdf
+    gold=None
+    pred=Supplemental Material
+  file=zjm999094336so1.pdf
+    gold=None
+    pred=1
+
+--- implausible_B_nodoi_title (n=38) ---
+  file=zjv999097216so1.pdf
+    gold=Control—18993
+    pred=Supplemental Material
+  file=suppmaterial.pdf
+    gold=TABLE 1
+    pred=SUPPLEMENTARY INFORMATION
+  file=zjm999095475s1.pdf
+    gold=Microsoft Word - figure legends for supplementary figure 1.doc
+    pred=Supplementary Figure 1 Analysis of T-SPOT values in different patient groups. (A) T-SPOT values in the ‘defini
+  file=zam004188312s1.pdf
+    gold=Microsoft Word - SI-Chrysogine_AEM.docx
+    pred=1
+
+--- implausible_C_doi_title_ctrl (n=8) ---
+  file=aem.71.8.4771-4776.2005.pdf
+    gold=Novel AroA with High Tolerance to Glyphosate, Encoded by a Gene of Pseudomonas putida 4G-1 Isolated from an Ex
+    pred=Novel AroA with High Tolerance to Glyphosate, Encoded by a Gene of Pseudomonas putida 4G-1 Isolated from an Ex
+  file=jvi.00181-11.pdf
+    gold=Evidence for Ebola Virus Superantigen Activity
+    pred=Evidence for Ebola Virus Superantigen Activity† Zaire Ebola virus (ZEBOV) is the most lethal Ebola virus spec
+  file=jcm.00039-23.pdf
+    gold=Retrospective Evaluation of the Association of Oxacillin MIC on Acute Treatment Outcomes with Cefazolin and An
+    pred=Retrospective Evaluation of the Association of Oxacillin MIC on Acute Treatment Outcomes with Cefazolin and An
+  file=aac.01411-17.pdf
+    gold=Intrapulmonary Pharmacokinetics of Relebactam, a Novel β-Lactamase Inhibitor, Dosed in Combination with Imipen
+    pred=Intrapulmonary Pharmacokinetics of Relebactam, a Novel -Lactamase Inhibitor, Dosed in Combination with Imipen
+
+--- implausible_D_doi_notitle (n=38) ---
+  file=jb.102.2.411-422.1970.pdf
+    gold=None
+    pred=Copyright a 1970
+  file=jvi.14.3.493-502.1974.pdf
+    gold=None
+    pred=Copyright 0 1974
+  file=jb.130.1.144-147.1977.pdf
+    gold=None
+    pred=Copyright 0 1977
+  file=iai.9.2.266-272.1974.pdf
+    gold=None
+    pred=Copyright @ 1974
+
+--- no_output_A_nodoi_notitle (n=39) ---
+  file=zam999116673so1.pdf
+    gold=None
+    pred=None
+  file=zam023188881s1.pdf
+    gold=None
+    pred=None
+  file=admin.pdf
+    gold=None
+    pred=None
+  file=masthead.pdf
+    gold=None
+    pred=None
+
+--- no_output_B_nodoi_title (n=20) ---
+  file=aem.masthead.85-5.pdf
+    gold=Editorial Board
+    pred=None
+  file=jvi.masthead.89-22.pdf
+    gold=Editorial Board
+    pred=None
+  file=jcm.masthead.52-1.pdf
+    gold=Editorial Board
+    pred=None
+  file=editorial-board.pdf
+    gold=SM-AMAC230198 1..1
+    pred=None
+
+--- no_output_C_doi_title_ctrl (n=5) ---
+  file=aem.65.1.156-162.1999.pdf
+    gold=Morphological and Biochemical Properties of aSphaerotilus sp. Isolated From Paper Mill Slimes
+    pred=None
+  file=jvi.02206-17.pdf
+    gold=Correction for Liu et al., “Endoplasmic Reticulum Protein SCAP Inhibits Dengue Virus NS2B3 Protease by Suppres
+    pred=None
+  file=jvi.01071-21.pdf
+    gold=SM-JVIJ210410 1..1
+    pred=None
+  file=jcm.02029-17.pdf
+    gold=Reply to Beal et al., ‘The “3-Day Rule” for Stool Tests May Not Apply When Using PCR Panels’
+    pred=None
+
+--- no_output_D_doi_notitle (n=14) ---
+  file=aac.45.11.3209-3212.2001.pdf
+    gold=None
+    pred=None
+  file=jb.51.6.753-759.1946.pdf
+    gold=None
+    pred=None
+  file=aem.64.2.459-464.1998.pdf
+    gold=None
+    pred=None
+  file=aac.44.8.2231-2232.2000.pdf
+    gold=None
+    pred=None
+
+--- partial_B_nodoi_title (n=10) ---
+  file=zam009188463s1.pdf
+    gold=Supplementary_Material_cover_sheet
+    pred=Supplementary Material
+  file=msphere.00466-17.pdf
+    gold=Jjj1 Is a Negative Regulator of Pdr1-Mediated Fluconazole Resistance in Candida glabrata
+    pred=Jjj1 Is a Negative Regulator of Pdr1-Mediated Fluconazole Resistance in Candida glabrata Sarah G. Whaley,a Kel
+  file=spectrum.00384-22.pdf
+    gold=A Case Series of Rifabutin Use in Staphylococcal Prosthetic Infections
+    pred=A Case Series of Rifabutin Use in Staphylococcal Prosthetic Infections Miranda Monk,a Ramy Elshaboury,a Alexan
+  file=spectrum.04727-22.pdf
+    gold=Characterization of an International High-Risk Escherichia coli ST410 Clone Coproducing NDM-5 and OXA-181 in a
+    pred=Characterization of an International High-Risk Escherichia coli ST410 Clone Coproducing NDM-5 and OXA-181 in a
+
+--- partial_C_doi_title_ctrl (n=126) ---
+  file=spectrum.03190-23.pdf
+    gold=Longitudinal gut microbiota composition of South African and Nigerian infants in relation to tetanus vaccine r
+    pred=Longitudinal gut microbiota composition of South African and Nigerian infants in relation to tetanus vaccine r
+  file=jcm.06438-11.pdf
+    gold=Oral Streptococcal Bacteremia in Hospitalized Patients: Taxonomic Identification and Clinical Characterization
+    pred=Oral Streptococcal Bacteremia in Hospitalized Patients: Taxonomic Identiﬁcation and Clinical Characterization 
+  file=jcm.02320-08.pdf
+    gold=Improvement in Mycobacterial Yield and Reduced Time to Detection in Pediatric Samples by Use of a Nutrient Bro
+    pred=Improvement in Mycobacterial Yield and Reduced Time to Detection in Pediatric Samples by Use of a Nutrient Bro
+  file=aem.01709-16.pdf
+    gold=Nectrisine Biosynthesis Genes in Thelonectria discophora SANK 18292: Identification and Functional Analysis
+    pred=Nectrisine Biosynthesis Genes in Thelonectria discophora SANK 18292: Identiﬁcation and Functional Analysis Ryu
+
+--- wrong_B_nodoi_title (n=111) ---
+  file=zac999101727so5.pdf
+    gold=Supplemental Table 3.xls
+    pred=Table S3, relates to Figure 5. Bioinformatics analysis of isoprenoid synthesis and utilization in C. parvum an
+  file=aem.masthead.85-5.pdf
+    gold=Editorial Board
+    pred=None
+  file=zjm999093670so1.pdf
+    gold=Microsoft Word - JCM supplementary table 1
+    pred=Supplementary Table 1. Comparison of predictor models to estimate QuIC metrics. Models represent linear regres
+  file=jvi.masthead.89-22.pdf
+    gold=Editorial Board
+    pred=None
+
+--- wrong_C_doi_title_ctrl (n=36) ---
+  file=jvi.01995-20.pdf
+    gold=SM-JVIJ200119 1..22
+    pred=Transcriptional Analysis of Lymphoid Tissues from Infected Nonhuman Primates Reveals the Basis for Attenuation
+  file=aac.00140-14.pdf
+    gold=Assessment of Mycobacterium tuberculosis Pantothenate Kinase Vulnerability through Target Knockdown and Mechan
+    pred=Assessment of Mycobacterium tuberculosis Pantothenate Kinase Vulnerability through Target Knockdown and Mechan
+  file=aem.65.1.156-162.1999.pdf
+    gold=Morphological and Biochemical Properties of aSphaerotilus sp. Isolated From Paper Mill Slimes
+    pred=None
+  file=jcm.01197-06.pdf
+    gold=Molecular Basis of Resistance Displayed by Highly Ciprofloxacin-Resistant Salmonella enterica Serovar Typhi in
+    pred=Molecular Basis of Resistance Displayed by Highly Ciproﬂoxacin-Resistant Salmonella enterica Serovar Typhi in 

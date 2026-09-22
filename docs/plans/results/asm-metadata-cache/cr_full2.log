@@ -1,0 +1,29 @@
+[crossref] 273653 DOIs, 57800 already cached, 215826 to fetch
+[crossref] 50/1354 req  7383 found  0 miss  1 429  0 err  234 doi/s  32s
+[crossref] 100/1354 req  14719 found  0 miss  1 429  0 err  236 doi/s  62s
+[crossref] 150/1354 req  21953 found  0 miss  2 429  0 err  211 doi/s  104s
+[crossref] 200/1354 req  29381 found  9 miss  3 429  0 err  177 doi/s  166s
+[crossref] 250/1354 req  36861 found  9 miss  3 429  0 err  158 doi/s  234s
+[crossref] 300/1354 req  44100 found  9 miss  6 429  0 err  140 doi/s  314s
+[crossref] 350/1354 req  51482 found  132 miss  6 429  0 err  125 doi/s  414s
+[crossref] 400/1354 req  60658 found  956 miss  6 429  0 err  120 doi/s  514s
+[crossref] 450/1354 req  68325 found  956 miss  7 429  0 err  112 doi/s  617s
+[crossref] 500/1354 req  75803 found  958 miss  8 429  0 err  107 doi/s  718s
+[crossref] 550/1354 req  82956 found  958 miss  8 429  0 err  103 doi/s  818s
+[crossref] 600/1354 req  90094 found  958 miss  9 429  0 err  99 doi/s  920s
+[crossref] 650/1354 req  97628 found  958 miss  9 429  0 err  97 doi/s  1019s
+[crossref] 700/1354 req  105527 found  1001 miss  9 429  0 err  95 doi/s  1120s
+[crossref] 750/1354 req  114799 found  1729 miss  12 429  0 err  95 doi/s  1226s
+[crossref] 800/1354 req  122637 found  1770 miss  12 429  0 err  94 doi/s  1326s
+[crossref] 850/1354 req  129925 found  1770 miss  13 429  0 err  92 doi/s  1427s
+[crossref] 900/1354 req  137245 found  1836 miss  13 429  0 err  91 doi/s  1528s
+[crossref] 950/1354 req  146681 found  2337 miss  14 429  0 err  91 doi/s  1629s
+[crossref] 1000/1354 req  156269 found  2749 miss  14 429  0 err  92 doi/s  1730s
+[crossref] 1050/1354 req  164327 found  2749 miss  14 429  0 err  91 doi/s  1830s
+[crossref] 1100/1354 req  171619 found  2750 miss  14 429  0 err  90 doi/s  1929s
+[crossref] 1150/1354 req  178816 found  2750 miss  14 429  0 err  89 doi/s  2029s
+[crossref] 1200/1354 req  185842 found  2751 miss  14 429  0 err  89 doi/s  2130s
+[crossref] 1250/1354 req  192478 found  4525 miss  14 429  0 err  88 doi/s  2230s
+[crossref] 1300/1354 req  196935 found  8952 miss  14 429  0 err  88 doi/s  2329s
+[crossref] 1350/1354 req  206155 found  9041 miss  14 429  0 err  89 doi/s  2430s
+SUMMARY {"route": "crossref", "requests": 1354, "batches": 1354, "found": 206754, "not_found": 9072, "http429": 14, "errors": 0, "elapsed_s": 2437.8, "req_per_s": 0.56, "doi_per_s": 88.5, "stopped_early": false, "finished": "2026-09-15T20:31:28+00:00"}

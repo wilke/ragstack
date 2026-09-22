@@ -1,0 +1,23 @@
+crossref cache: 277682 DOIs   ncbi cache: 277682 DOIs
+documents: 440049
+
+== document-level coverage (of every ASM doc_id in all three collections) ==
+  title_before                178137   40.5%
+  title_from_crossref         415540   94.4%
+  title_newly_recoverable     248477   56.5%
+  journal_from_crossref       415486   94.4%
+  authors_from_crossref       411436   93.5%
+  publisher_from_crossref     415540   94.4%
+  dates_from_crossref         415540   94.4%
+  abstract_from_crossref      388538   88.3%
+  pmcid                       411587   93.5%
+  pmid                        407213   92.5%
+  no_record_at_all             24504    5.6%
+
+  join route: {'direct-doi': 394131, 'parent-doi': 45613, 'none': 305}
+  unrecoverable by doc_type: {'at_all': 24504, 'supplement': 16375, 'front-matter': 5239, 'article': 2879, 'short': 11}
+
+== DOI-level ==
+  crossref found 263532/277682 = 94.9%
+  ncbi pmcid     260657/277682 = 93.9%
+  crossref date granularity (parts: 0=none,1=year,2=y-m,3=y-m-d): {3: 263532}

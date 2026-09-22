@@ -1,0 +1,1 @@
+{"route": "ncbi/idconv-200", "concurrency": 1, "requests": 2, "elapsed_s": 0.6, "req_per_s": 3.32, "records_returned": 400, "docs_per_s": 664.5, "ok": 2, "http429": 0, "err": 0, "lat_p50": 0.338, "lat_p95": 0.338, "hdrs": {}}

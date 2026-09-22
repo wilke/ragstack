@@ -1,0 +1,22 @@
+== per collection ==
+collection         docs  title before  title after    pmcid     pmid
+asm-semantic     205589        40.6%       94.4%   93.5%   92.5%
+asm-tok256       439513        40.5%       94.4%   93.5%   92.6%
+asm-tok512       439818        40.5%       94.4%   93.5%   92.5%
+
+== by doc_type ==
+doc_type           docs  title before  title after    pmcid
+article          377665        39.5%       99.2%   98.7%
+supplement        52488        50.4%       68.8%   68.7%
+front-matter       5264        10.7%        0.5%    0.4%
+short              4632        41.5%       99.8%   58.7%
+
+== articles with no record at all (examples) ==
+   jvi.masthead.88-16.pdf | doi: None | parent: 10.1128/jvi.2014.88.issue-16
+   jvi.masthead.93-11.pdf | doi: None | parent: 10.1128/jvi.2019.93.issue-11
+   cmr.masthead.28-4.pdf | doi: None | parent: 10.1128/cmr.2015.28.issue-4
+   msphere.00668-19.pdf | doi: 10.1128/mSphere | parent: None
+   jb.masthead.195-6.pdf | doi: None | parent: 10.1128/jb.2013.195.issue-6
+   jb.masthead.203-24.pdf | doi: None | parent: 10.1128/jb.2021.203.issue-24
+   msystems.00876-21.pdf | doi: 10.1128/mSystems | parent: None
+   microbiolspec.psib-0028-2019.pdf | doi: 10.1128/microbiolspec.PSIB- | parent: None

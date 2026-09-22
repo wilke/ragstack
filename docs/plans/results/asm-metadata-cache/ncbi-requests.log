@@ -1,0 +1,2 @@
+{"route": "ncbi-idconv", "requests": 1369, "batches": 1369, "found": 273653, "not_found": 0, "http429": 44, "errors": 0, "elapsed_s": 476.0, "req_per_s": 2.88, "doi_per_s": 574.9, "stopped_early": false, "finished": "2026-09-15T19:50:52+00:00"}
+{"route": "ncbi-idconv", "requests": 24, "batches": 24, "found": 4074, "not_found": 0, "http429": 0, "errors": 0, "elapsed_s": 7.9, "req_per_s": 3.03, "doi_per_s": 513.9, "stopped_early": false, "finished": "2026-09-15T20:35:27+00:00"}

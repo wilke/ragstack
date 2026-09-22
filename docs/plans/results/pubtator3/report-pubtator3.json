@@ -1,0 +1,1415 @@
+{
+ "provenance": {
+  "pubtator3_ftp": "https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/",
+  "bulk_last_modified": "2026-08-17",
+  "downloaded": "2026-09-15",
+  "sha256_prefixes": {
+   "species2pubtator3.gz": "804dc2afa5720801",
+   "gene2pubtator3.gz": "9b458af3f43049a6",
+   "chemical2pubtator3.gz": "d973e7022691db5f",
+   "disease2pubtator3.gz": "9896ad7ac33760af",
+   "relation2pubtator3.gz": "6fca7a4c6a7b6fb9",
+   "card-ontology.tar.bz2": "b6c48b73d80dbe58",
+   "card-data.tar.bz2": "94b89501fc26daaf"
+  },
+  "bytes_downloaded_bulk": 5595664788,
+  "bytes_downloaded_api": 284715061,
+  "corpus": "/rag/oa/corpus/discovery.jsonl (1,441,791 records)",
+  "fulltext": "/rag/oa/corpus/clean (JATS XML, 111 GB)",
+  "work_dir": "/rag/data/pubtator3"
+ },
+ "coverage": {
+  "corpus_total": 1441791,
+  "joinable": 1409724,
+  "species_docs": 1228740,
+  "species_pct_joinable": 87.16,
+  "gene_docs": 812012,
+  "gene_pct_joinable": 57.6,
+  "chemical_docs": 1196451,
+  "chemical_pct_joinable": 84.87,
+  "disease_docs": 1204687,
+  "disease_pct_joinable": 85.46,
+  "any_docs": 1400998,
+  "any_pct_joinable": 99.38,
+  "by_journal": {
+   "Frontiers in Microbiology": {
+    "total": 38588,
+    "joinable": 38478,
+    "any": 38426,
+    "species": 37575,
+    "gene": 19506,
+    "chemical": 36087,
+    "disease": 33314
+   },
+   "Microorganisms": {
+    "total": 17512,
+    "joinable": 17047,
+    "any": 17022,
+    "species": 16449,
+    "gene": 6990,
+    "chemical": 14932,
+    "disease": 14064
+   },
+   "Antibiotics": {
+    "total": 9642,
+    "joinable": 9346,
+    "any": 9344,
+    "species": 9108,
+    "gene": 4076,
+    "chemical": 8659,
+    "disease": 8754
+   },
+   "PLOS One": {
+    "total": 322311,
+    "joinable": 322054,
+    "any": 320638,
+    "species": 304026,
+    "gene": 171899,
+    "chemical": 275542,
+    "disease": 292630
+   },
+   "Scientific Reports": {
+    "total": 282800,
+    "joinable": 282608,
+    "any": 278778,
+    "species": 210154,
+    "gene": 122080,
+    "chemical": 235300,
+    "disease": 220605
+   },
+   "Nature Communications": {
+    "total": 78972,
+    "joinable": 78928,
+    "any": 78475,
+    "species": 50397,
+    "gene": 41283,
+    "chemical": 69984,
+    "disease": 53487
+   },
+   "Frontiers in Cellular and Infection Microbiology": {
+    "total": 11019,
+    "joinable": 10986,
+    "any": 10979,
+    "species": 10710,
+    "gene": 7388,
+    "chemical": 9387,
+    "disease": 10694
+   }
+  },
+  "by_year": {
+   "2005": {
+    "total": 3553,
+    "joinable": 3220,
+    "any": 3206,
+    "species": 3041,
+    "gene": 2199,
+    "chemical": 2822,
+    "disease": 2572
+   },
+   "2006": {
+    "total": 4618,
+    "joinable": 4312,
+    "any": 4288,
+    "species": 4085,
+    "gene": 3026,
+    "chemical": 3766,
+    "disease": 3466
+   },
+   "2007": {
+    "total": 6414,
+    "joinable": 6166,
+    "any": 6138,
+    "species": 5911,
+    "gene": 4457,
+    "chemical": 5519,
+    "disease": 5274
+   },
+   "2008": {
+    "total": 9786,
+    "joinable": 9620,
+    "any": 9584,
+    "species": 9198,
+    "gene": 6922,
+    "chemical": 8716,
+    "disease": 8314
+   },
+   "2009": {
+    "total": 13838,
+    "joinable": 12989,
+    "any": 12948,
+    "species": 12493,
+    "gene": 9685,
+    "chemical": 11896,
+    "disease": 11377
+   },
+   "2010": {
+    "total": 17499,
+    "joinable": 16958,
+    "any": 16920,
+    "species": 16367,
+    "gene": 12576,
+    "chemical": 15635,
+    "disease": 15096
+   },
+   "2011": {
+    "total": 26494,
+    "joinable": 25834,
+    "any": 25777,
+    "species": 25022,
+    "gene": 18930,
+    "chemical": 23908,
+    "disease": 23201
+   },
+   "2012": {
+    "total": 39394,
+    "joinable": 38327,
+    "any": 38251,
+    "species": 37078,
+    "gene": 27411,
+    "chemical": 35763,
+    "disease": 34602
+   },
+   "2013": {
+    "total": 50923,
+    "joinable": 50253,
+    "any": 50141,
+    "species": 47972,
+    "gene": 34876,
+    "chemical": 46731,
+    "disease": 45278
+   },
+   "2014": {
+    "total": 57679,
+    "joinable": 55510,
+    "any": 55338,
+    "species": 52178,
+    "gene": 36912,
+    "chemical": 51713,
+    "disease": 49683
+   },
+   "2015": {
+    "total": 63218,
+    "joinable": 62786,
+    "any": 62630,
+    "species": 56977,
+    "gene": 39697,
+    "chemical": 58552,
+    "disease": 55132
+   },
+   "2016": {
+    "total": 70533,
+    "joinable": 70322,
+    "any": 70121,
+    "species": 62597,
+    "gene": 44162,
+    "chemical": 65859,
+    "disease": 61643
+   },
+   "2017": {
+    "total": 80081,
+    "joinable": 78420,
+    "any": 78204,
+    "species": 70378,
+    "gene": 49649,
+    "chemical": 73768,
+    "disease": 69524
+   },
+   "2018": {
+    "total": 78637,
+    "joinable": 76259,
+    "any": 76077,
+    "species": 69756,
+    "gene": 48455,
+    "chemical": 71422,
+    "disease": 68576
+   },
+   "2019": {
+    "total": 86399,
+    "joinable": 83724,
+    "any": 83567,
+    "species": 76805,
+    "gene": 53372,
+    "chemical": 78552,
+    "disease": 75833
+   },
+   "2020": {
+    "total": 102662,
+    "joinable": 100631,
+    "any": 100432,
+    "species": 93614,
+    "gene": 65047,
+    "chemical": 93924,
+    "disease": 93039
+   },
+   "2021": {
+    "total": 123389,
+    "joinable": 121709,
+    "any": 121518,
+    "species": 114164,
+    "gene": 80157,
+    "chemical": 113384,
+    "disease": 113733
+   },
+   "2022": {
+    "total": 131843,
+    "joinable": 130692,
+    "any": 130468,
+    "species": 121637,
+    "gene": 85535,
+    "chemical": 122310,
+    "disease": 121737
+   },
+   "2023": {
+    "total": 122075,
+    "joinable": 118911,
+    "any": 118696,
+    "species": 108779,
+    "gene": 75466,
+    "chemical": 110236,
+    "disease": 110529
+   },
+   "2024": {
+    "total": 126411,
+    "joinable": 125313,
+    "any": 125036,
+    "species": 90698,
+    "gene": 42147,
+    "chemical": 72675,
+    "disease": 88076
+   },
+   "2025": {
+    "total": 156423,
+    "joinable": 153609,
+    "any": 152943,
+    "species": 107502,
+    "gene": 49776,
+    "chemical": 92312,
+    "disease": 105890
+   },
+   "2026": {
+    "total": 63721,
+    "joinable": 59165,
+    "any": 53935,
+    "species": 37993,
+    "gene": 19681,
+    "chemical": 33626,
+    "disease": 38079
+   }
+  },
+  "by_journal_top25": {
+   "PLOS One": {
+    "total": 322311,
+    "joinable": 322054,
+    "any": 320638,
+    "species": 304026,
+    "gene": 171899,
+    "chemical": 275542,
+    "disease": 292630
+   },
+   "Scientific Reports": {
+    "total": 282800,
+    "joinable": 282608,
+    "any": 278778,
+    "species": 210154,
+    "gene": 122080,
+    "chemical": 235300,
+    "disease": 220605
+   },
+   "International Journal of Molecular Sciences": {
+    "total": 109691,
+    "joinable": 107773,
+    "any": 107660,
+    "species": 97429,
+    "gene": 86544,
+    "chemical": 97711,
+    "disease": 98835
+   },
+   "Nature Communications": {
+    "total": 78972,
+    "joinable": 78928,
+    "any": 78475,
+    "species": 50397,
+    "gene": 41283,
+    "chemical": 69984,
+    "disease": 53487
+   },
+   "Frontiers in Immunology": {
+    "total": 49851,
+    "joinable": 49619,
+    "any": 49610,
+    "species": 46107,
+    "gene": 43890,
+    "chemical": 41269,
+    "disease": 48961
+   },
+   "Frontiers in Microbiology": {
+    "total": 38588,
+    "joinable": 38478,
+    "any": 38426,
+    "species": 37575,
+    "gene": 19506,
+    "chemical": 36087,
+    "disease": 33314
+   },
+   "Frontiers in Pharmacology": {
+    "total": 28820,
+    "joinable": 28709,
+    "any": 28683,
+    "species": 26692,
+    "gene": 22669,
+    "chemical": 27022,
+    "disease": 28099
+   },
+   "Nucleic Acids Research": {
+    "total": 27885,
+    "joinable": 27153,
+    "any": 26988,
+    "species": 24861,
+    "gene": 21774,
+    "chemical": 23623,
+    "disease": 20198
+   },
+   "Open Forum Infectious Diseases": {
+    "total": 24662,
+    "joinable": 5779,
+    "any": 5773,
+    "species": 5542,
+    "gene": 2460,
+    "chemical": 4396,
+    "disease": 5677
+   },
+   "Proceedings of the National Academy of Sciences": {
+    "total": 21187,
+    "joinable": 21112,
+    "any": 20814,
+    "species": 16271,
+    "gene": 10592,
+    "chemical": 16408,
+    "disease": 14586
+   },
+   "PeerJ": {
+    "total": 21095,
+    "joinable": 21007,
+    "any": 20894,
+    "species": 19741,
+    "gene": 8181,
+    "chemical": 17116,
+    "disease": 17636
+   },
+   "Science Advances": {
+    "total": 18893,
+    "joinable": 18838,
+    "any": 18603,
+    "species": 11754,
+    "gene": 8684,
+    "chemical": 16272,
+    "disease": 12601
+   },
+   "BMC Genomics": {
+    "total": 18856,
+    "joinable": 18730,
+    "any": 18666,
+    "species": 18269,
+    "gene": 13835,
+    "chemical": 16547,
+    "disease": 15710
+   },
+   "eLife": {
+    "total": 18829,
+    "joinable": 18825,
+    "any": 18765,
+    "species": 18094,
+    "gene": 14564,
+    "chemical": 16219,
+    "disease": 16309
+   },
+   "Microorganisms": {
+    "total": 17512,
+    "joinable": 17047,
+    "any": 17022,
+    "species": 16449,
+    "gene": 6990,
+    "chemical": 14932,
+    "disease": 14064
+   },
+   "Viruses": {
+    "total": 17202,
+    "joinable": 17081,
+    "any": 17068,
+    "species": 16771,
+    "gene": 12531,
+    "chemical": 13878,
+    "disease": 16355
+   },
+   "BMC Infectious Diseases": {
+    "total": 16523,
+    "joinable": 15726,
+    "any": 15707,
+    "species": 14883,
+    "gene": 7751,
+    "chemical": 12152,
+    "disease": 15462
+   },
+   "Frontiers in Genetics": {
+    "total": 15852,
+    "joinable": 15806,
+    "any": 15765,
+    "species": 15025,
+    "gene": 13091,
+    "chemical": 13099,
+    "disease": 14866
+   },
+   "Emerging Infectious Diseases": {
+    "total": 12907,
+    "joinable": 12011,
+    "any": 11923,
+    "species": 11625,
+    "gene": 3815,
+    "chemical": 8426,
+    "disease": 11715
+   },
+   "BMC Bioinformatics": {
+    "total": 12823,
+    "joinable": 12488,
+    "any": 12373,
+    "species": 10746,
+    "gene": 7688,
+    "chemical": 10107,
+    "disease": 10001
+   },
+   "PLoS Neglected Tropical Diseases": {
+    "total": 12653,
+    "joinable": 12647,
+    "any": 12646,
+    "species": 12363,
+    "gene": 5606,
+    "chemical": 10587,
+    "disease": 12564
+   },
+   "PLoS Pathogens": {
+    "total": 11924,
+    "joinable": 11919,
+    "any": 11913,
+    "species": 11816,
+    "gene": 10256,
+    "chemical": 10883,
+    "disease": 11584
+   },
+   "PLoS Computational Biology": {
+    "total": 11910,
+    "joinable": 11888,
+    "any": 11766,
+    "species": 10628,
+    "gene": 6588,
+    "chemical": 9362,
+    "disease": 9491
+   },
+   "Frontiers in Cellular and Infection Microbiology": {
+    "total": 11019,
+    "joinable": 10986,
+    "any": 10979,
+    "species": 10710,
+    "gene": 7388,
+    "chemical": 9387,
+    "disease": 10694
+   },
+   "PLoS Genetics": {
+    "total": 10739,
+    "joinable": 10736,
+    "any": 10726,
+    "species": 10584,
+    "gene": 9677,
+    "chemical": 9815,
+    "disease": 9700
+   }
+  },
+  "species_concepts": 7189513,
+  "species_concepts_with_id": 7189513,
+  "species_mean_per_covered_doc": 5.851,
+  "gene_concepts": 14257528,
+  "gene_concepts_with_id": 14257528,
+  "gene_mean_per_covered_doc": 17.558,
+  "chemical_concepts": 20134169,
+  "chemical_concepts_with_id": 19119848,
+  "chemical_mean_per_covered_doc": 16.828,
+  "disease_concepts": 14146752,
+  "disease_concepts_with_id": 14146752,
+  "disease_mean_per_covered_doc": 11.743
+ },
+ "density": {
+  "by_year": {
+   "2010": {
+    "n": 16958,
+    "concepts_per_doc": 44.81,
+    "species": 6.46,
+    "gene": 13.1,
+    "chemical": 16.06,
+    "disease": 9.2,
+    "frac_le19_concepts": 25.22
+   },
+   "2011": {
+    "n": 25834,
+    "concepts_per_doc": 45.71,
+    "species": 6.3,
+    "gene": 13.19,
+    "chemical": 16.51,
+    "disease": 9.72,
+    "frac_le19_concepts": 23.84
+   },
+   "2012": {
+    "n": 38327,
+    "concepts_per_doc": 47.0,
+    "species": 6.2,
+    "gene": 13.66,
+    "chemical": 16.9,
+    "disease": 10.24,
+    "frac_le19_concepts": 23.63
+   },
+   "2013": {
+    "n": 50253,
+    "concepts_per_doc": 46.61,
+    "species": 5.93,
+    "gene": 13.33,
+    "chemical": 16.83,
+    "disease": 10.52,
+    "frac_le19_concepts": 24.21
+   },
+   "2014": {
+    "n": 55510,
+    "concepts_per_doc": 45.33,
+    "species": 5.85,
+    "gene": 12.06,
+    "chemical": 16.94,
+    "disease": 10.49,
+    "frac_le19_concepts": 25.38
+   },
+   "2015": {
+    "n": 62786,
+    "concepts_per_doc": 43.47,
+    "species": 5.67,
+    "gene": 10.86,
+    "chemical": 16.8,
+    "disease": 10.15,
+    "frac_le19_concepts": 27.75
+   },
+   "2016": {
+    "n": 70322,
+    "concepts_per_doc": 44.33,
+    "species": 5.66,
+    "gene": 11.03,
+    "chemical": 17.35,
+    "disease": 10.3,
+    "frac_le19_concepts": 27.82
+   },
+   "2017": {
+    "n": 78420,
+    "concepts_per_doc": 46.52,
+    "species": 5.76,
+    "gene": 11.94,
+    "chemical": 17.91,
+    "disease": 10.92,
+    "frac_le19_concepts": 26.52
+   },
+   "2018": {
+    "n": 76259,
+    "concepts_per_doc": 48.92,
+    "species": 6.15,
+    "gene": 13.25,
+    "chemical": 18.01,
+    "disease": 11.52,
+    "frac_le19_concepts": 26.35
+   },
+   "2019": {
+    "n": 83724,
+    "concepts_per_doc": 49.62,
+    "species": 6.28,
+    "gene": 12.87,
+    "chemical": 18.43,
+    "disease": 12.04,
+    "frac_le19_concepts": 25.18
+   },
+   "2020": {
+    "n": 100631,
+    "concepts_per_doc": 52.39,
+    "species": 6.64,
+    "gene": 13.5,
+    "chemical": 18.71,
+    "disease": 13.54,
+    "frac_le19_concepts": 23.55
+   },
+   "2021": {
+    "n": 121709,
+    "concepts_per_doc": 54.57,
+    "species": 6.73,
+    "gene": 14.42,
+    "chemical": 18.66,
+    "disease": 14.76,
+    "frac_le19_concepts": 23.3
+   },
+   "2022": {
+    "n": 130692,
+    "concepts_per_doc": 53.86,
+    "species": 6.46,
+    "gene": 13.73,
+    "chemical": 18.91,
+    "disease": 14.77,
+    "frac_le19_concepts": 23.73
+   },
+   "2023": {
+    "n": 118911,
+    "concepts_per_doc": 50.68,
+    "species": 6.09,
+    "gene": 11.87,
+    "chemical": 18.38,
+    "disease": 14.34,
+    "frac_le19_concepts": 25.93
+   },
+   "2024": {
+    "n": 125313,
+    "concepts_per_doc": 9.2,
+    "species": 1.62,
+    "gene": 1.63,
+    "chemical": 2.98,
+    "disease": 2.96,
+    "frac_le19_concepts": 92.68
+   },
+   "2025": {
+    "n": 153609,
+    "concepts_per_doc": 8.46,
+    "species": 1.5,
+    "gene": 1.39,
+    "chemical": 2.81,
+    "disease": 2.76,
+    "frac_le19_concepts": 93.78
+   },
+   "2026": {
+    "n": 59165,
+    "concepts_per_doc": 11.6,
+    "species": 1.72,
+    "gene": 2.21,
+    "chemical": 4.02,
+    "disease": 3.65,
+    "frac_le19_concepts": 87.33
+   }
+  },
+  "by_journal": {
+   "Frontiers in Microbiology": {
+    "n": 38478,
+    "concepts_per_doc": 51.38,
+    "species": 14.49,
+    "gene": 6.02,
+    "chemical": 23.13,
+    "disease": 7.74
+   },
+   "Microorganisms": {
+    "n": 17047,
+    "concepts_per_doc": 45.43,
+    "species": 13.46,
+    "gene": 4.4,
+    "chemical": 18.43,
+    "disease": 9.15
+   },
+   "Antibiotics": {
+    "n": 9346,
+    "concepts_per_doc": 47.44,
+    "species": 9.69,
+    "gene": 2.28,
+    "chemical": 22.49,
+    "disease": 12.99
+   },
+   "PLOS One": {
+    "n": 322054,
+    "concepts_per_doc": 35.23,
+    "species": 4.6,
+    "gene": 7.58,
+    "chemical": 12.19,
+    "disease": 10.86
+   },
+   "Scientific Reports": {
+    "n": 282608,
+    "concepts_per_doc": 27.99,
+    "species": 3.13,
+    "gene": 5.54,
+    "chemical": 12.0,
+    "disease": 7.32
+   },
+   "Nature Communications": {
+    "n": 78928,
+    "concepts_per_doc": 38.55,
+    "species": 2.75,
+    "gene": 11.46,
+    "chemical": 19.12,
+    "disease": 5.23
+   },
+   "Frontiers in Cellular and Infection Microbiology": {
+    "n": 10986,
+    "concepts_per_doc": 51.73,
+    "species": 10.93,
+    "gene": 9.74,
+    "chemical": 16.32,
+    "disease": 14.74
+   }
+  }
+ },
+ "fulltext_sample": {
+  "2015": {
+   "requested": 300,
+   "returned": 300,
+   "fulltext": 300,
+   "abstract_only": 0,
+   "pct_fulltext": 100.0,
+   "median_ann_ft": 283.0,
+   "median_ann_abs": NaN,
+   "ci95": [
+    98.7,
+    100.0
+   ]
+  },
+  "2020": {
+   "requested": 300,
+   "returned": 300,
+   "fulltext": 300,
+   "abstract_only": 0,
+   "pct_fulltext": 100.0,
+   "median_ann_ft": 287.0,
+   "median_ann_abs": NaN,
+   "ci95": [
+    98.7,
+    100.0
+   ]
+  },
+  "2023": {
+   "requested": 300,
+   "returned": 300,
+   "fulltext": 297,
+   "abstract_only": 3,
+   "pct_fulltext": 99.0,
+   "median_ann_ft": 326,
+   "median_ann_abs": 20,
+   "ci95": [
+    97.1,
+    99.7
+   ]
+  },
+  "2024": {
+   "requested": 300,
+   "returned": 293,
+   "fulltext": 190,
+   "abstract_only": 103,
+   "pct_fulltext": 64.85,
+   "median_ann_ft": 272.0,
+   "median_ann_abs": 10,
+   "ci95": [
+    59.2,
+    70.1
+   ]
+  },
+  "2025": {
+   "requested": 300,
+   "returned": 300,
+   "fulltext": 196,
+   "abstract_only": 104,
+   "pct_fulltext": 65.33,
+   "median_ann_ft": 250.0,
+   "median_ann_abs": 15.5,
+   "ci95": [
+    59.8,
+    70.5
+   ]
+  },
+  "2026": {
+   "requested": 300,
+   "returned": 300,
+   "fulltext": 82,
+   "abstract_only": 218,
+   "pct_fulltext": 27.33,
+   "median_ann_ft": 252.0,
+   "median_ann_abs": 10.0,
+   "ci95": [
+    22.6,
+    32.6
+   ]
+  }
+ },
+ "amr_scale": {
+  "docs": 57267,
+  "docs_amr_text": 6388,
+  "all_annotated": 583,
+  "partial": 2563,
+  "none": 3242,
+  "family": {
+   "aac6Ib": {
+    "text": 426,
+    "annotated": 177
+   },
+   "gyrA": {
+    "text": 1386,
+    "annotated": 55
+   },
+   "parC": {
+    "text": 673,
+    "annotated": 224
+   },
+   "blaOXA": {
+    "text": 1791,
+    "annotated": 774
+   },
+   "blaKPC": {
+    "text": 729,
+    "annotated": 473
+   },
+   "ampC": {
+    "text": 1391,
+    "annotated": 627
+   },
+   "mecA/C": {
+    "text": 820,
+    "annotated": 2
+   },
+   "blaCTX-M": {
+    "text": 1359,
+    "annotated": 752
+   },
+   "blaTEM": {
+    "text": 1037,
+    "annotated": 550
+   },
+   "blaSHV": {
+    "text": 704,
+    "annotated": 181
+   },
+   "blaCMY": {
+    "text": 515,
+    "annotated": 223
+   },
+   "blaGES": {
+    "text": 203,
+    "annotated": 5
+   },
+   "blaVEB": {
+    "text": 91,
+    "annotated": 0
+   },
+   "qnr": {
+    "text": 913,
+    "annotated": 344
+   },
+   "aph": {
+    "text": 852,
+    "annotated": 103
+   },
+   "ant": {
+    "text": 327,
+    "annotated": 18
+   },
+   "aadA": {
+    "text": 1011,
+    "annotated": 390
+   },
+   "sul": {
+    "text": 1275,
+    "annotated": 625
+   },
+   "dfrA": {
+    "text": 950,
+    "annotated": 375
+   },
+   "mcr": {
+    "text": 816,
+    "annotated": 11
+   },
+   "floR": {
+    "text": 544,
+    "annotated": 235
+   },
+   "catA/B": {
+    "text": 528,
+    "annotated": 153
+   },
+   "armA": {
+    "text": 215,
+    "annotated": 70
+   },
+   "fosA": {
+    "text": 462,
+    "annotated": 153
+   },
+   "tet": {
+    "text": 1677,
+    "annotated": 339
+   },
+   "qacE": {
+    "text": 286,
+    "annotated": 8
+   },
+   "msr": {
+    "text": 407,
+    "annotated": 94
+   },
+   "mph": {
+    "text": 483,
+    "annotated": 84
+   },
+   "strA/B": {
+    "text": 418,
+    "annotated": 191
+   },
+   "blaNDM": {
+    "text": 984,
+    "annotated": 423
+   },
+   "blaVIM": {
+    "text": 407,
+    "annotated": 111
+   },
+   "blaIMP": {
+    "text": 366,
+    "annotated": 71
+   },
+   "blaSPM": {
+    "text": 66,
+    "annotated": 0
+   },
+   "vanA-N": {
+    "text": 424,
+    "annotated": 154
+   },
+   "cfr": {
+    "text": 246,
+    "annotated": 90
+   },
+   "optrA": {
+    "text": 112,
+    "annotated": 0
+   },
+   "poxtA": {
+    "text": 61,
+    "annotated": 0
+   },
+   "blaZ": {
+    "text": 311,
+    "annotated": 160
+   },
+   "blaDHA": {
+    "text": 198,
+    "annotated": 58
+   },
+   "erm": {
+    "text": 682,
+    "annotated": 171
+   },
+   "lsa": {
+    "text": 64,
+    "annotated": 0
+   },
+   "oqxAB": {
+    "text": 277,
+    "annotated": 59
+   },
+   "blaPER": {
+    "text": 123,
+    "annotated": 6
+   },
+   "cmlA": {
+    "text": 412,
+    "annotated": 39
+   },
+   "arr": {
+    "text": 135,
+    "annotated": 24
+   },
+   "blaLEN": {
+    "text": 21,
+    "annotated": 0
+   },
+   "blaMOX": {
+    "text": 32,
+    "annotated": 2
+   },
+   "rmt": {
+    "text": 222,
+    "annotated": 129
+   },
+   "blaIMI": {
+    "text": 49,
+    "annotated": 0
+   },
+   "blaGIM": {
+    "text": 39,
+    "annotated": 0
+   },
+   "blaCARB": {
+    "text": 96,
+    "annotated": 0
+   },
+   "blaSME": {
+    "text": 24,
+    "annotated": 0
+   },
+   "vga": {
+    "text": 46,
+    "annotated": 1
+   },
+   "blaADC": {
+    "text": 123,
+    "annotated": 0
+   },
+   "blaAIM": {
+    "text": 22,
+    "annotated": 6
+   },
+   "blaBEL": {
+    "text": 15,
+    "annotated": 0
+   },
+   "blaSFO": {
+    "text": 16,
+    "annotated": 0
+   },
+   "blaTLA": {
+    "text": 19,
+    "annotated": 0
+   },
+   "blaOKP": {
+    "text": 6,
+    "annotated": 0
+   },
+   "blaCphA": {
+    "text": 1,
+    "annotated": 0
+   }
+  },
+  "pairs_text": 27888,
+  "pairs_annotated": 8740,
+  "core": {
+   "pairs_text": 9113,
+   "pairs_annotated": 3623,
+   "docs": 3727,
+   "docs_all": 653,
+   "docs_none": 1868
+  }
+ },
+ "amr_api_check": {
+  "mecA/C": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  },
+  "mcr": {
+   "checked": 40,
+   "api_also_misses": 37,
+   "api_has": 3,
+   "api_no_fulltext": 0
+  },
+  "optrA": {
+   "checked": 40,
+   "api_also_misses": 37,
+   "api_has": 3,
+   "api_no_fulltext": 0
+  },
+  "gyrA": {
+   "checked": 40,
+   "api_also_misses": 37,
+   "api_has": 3,
+   "api_no_fulltext": 0
+  },
+  "blaOXA": {
+   "checked": 40,
+   "api_also_misses": 39,
+   "api_has": 1,
+   "api_no_fulltext": 1
+  },
+  "blaCTX-M": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  },
+  "blaVEB": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  },
+  "tet": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  },
+  "qacE": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  },
+  "blaADC": {
+   "checked": 40,
+   "api_also_misses": 40,
+   "api_has": 0,
+   "api_no_fulltext": 0
+  }
+ },
+ "amr_id_spread": {
+  "blaOXA": {
+   "rows": 1263,
+   "distinct_ids": 27
+  },
+  "blaCTX-M": {
+   "rows": 1713,
+   "distinct_ids": 23
+  },
+  "blaKPC": {
+   "rows": 1020,
+   "distinct_ids": 14
+  },
+  "blaNDM": {
+   "rows": 722,
+   "distinct_ids": 18
+  },
+  "blaTEM": {
+   "rows": 1218,
+   "distinct_ids": 28
+  },
+  "blaSHV": {
+   "rows": 256,
+   "distinct_ids": 8
+  },
+  "mecA/C": {
+   "rows": 2,
+   "distinct_ids": 2
+  },
+  "blaVIM": {
+   "rows": 146,
+   "distinct_ids": 8
+  },
+  "blaCMY": {
+   "rows": 315,
+   "distinct_ids": 15
+  }
+ },
+ "micro_by_year": {
+  "Frontiers in Microbiology|2018": {
+   "n": 3272,
+   "species_pct": 99.6,
+   "gene_pct": 58.7,
+   "concepts_per_doc": 63.0
+  },
+  "Frontiers in Microbiology|2019": {
+   "n": 3035,
+   "species_pct": 99.8,
+   "gene_pct": 58.6,
+   "concepts_per_doc": 60.7
+  },
+  "Frontiers in Microbiology|2020": {
+   "n": 3521,
+   "species_pct": 99.7,
+   "gene_pct": 59.6,
+   "concepts_per_doc": 60.3
+  },
+  "Frontiers in Microbiology|2021": {
+   "n": 4188,
+   "species_pct": 99.7,
+   "gene_pct": 59.8,
+   "concepts_per_doc": 62.8
+  },
+  "Frontiers in Microbiology|2022": {
+   "n": 5215,
+   "species_pct": 99.6,
+   "gene_pct": 59.9,
+   "concepts_per_doc": 63.9
+  },
+  "Frontiers in Microbiology|2023": {
+   "n": 3698,
+   "species_pct": 99.6,
+   "gene_pct": 56.9,
+   "concepts_per_doc": 60.2
+  },
+  "Frontiers in Microbiology|2024": {
+   "n": 2888,
+   "species_pct": 90.8,
+   "gene_pct": 16.8,
+   "concepts_per_doc": 8.1
+  },
+  "Frontiers in Microbiology|2025": {
+   "n": 3148,
+   "species_pct": 89.8,
+   "gene_pct": 19.1,
+   "concepts_per_doc": 10.4
+  },
+  "Frontiers in Microbiology|2026": {
+   "n": 1301,
+   "species_pct": 87.2,
+   "gene_pct": 21.8,
+   "concepts_per_doc": 14.8
+  },
+  "Microorganisms|2018": {
+   "n": 127,
+   "species_pct": 100.0,
+   "gene_pct": 54.3,
+   "concepts_per_doc": 63.1
+  },
+  "Microorganisms|2019": {
+   "n": 757,
+   "species_pct": 99.9,
+   "gene_pct": 53.2,
+   "concepts_per_doc": 61.9
+  },
+  "Microorganisms|2020": {
+   "n": 2042,
+   "species_pct": 100.0,
+   "gene_pct": 57.7,
+   "concepts_per_doc": 68.4
+  },
+  "Microorganisms|2021": {
+   "n": 2582,
+   "species_pct": 99.9,
+   "gene_pct": 57.1,
+   "concepts_per_doc": 65.6
+  },
+  "Microorganisms|2022": {
+   "n": 2470,
+   "species_pct": 99.8,
+   "gene_pct": 54.1,
+   "concepts_per_doc": 65.9
+  },
+  "Microorganisms|2023": {
+   "n": 2774,
+   "species_pct": 99.8,
+   "gene_pct": 56.1,
+   "concepts_per_doc": 65.3
+  },
+  "Microorganisms|2024": {
+   "n": 2398,
+   "species_pct": 91.4,
+   "gene_pct": 17.3,
+   "concepts_per_doc": 10.4
+  },
+  "Microorganisms|2025": {
+   "n": 2883,
+   "species_pct": 90.6,
+   "gene_pct": 12.7,
+   "concepts_per_doc": 7.7
+  },
+  "Microorganisms|2026": {
+   "n": 820,
+   "species_pct": 87.2,
+   "gene_pct": 13.0,
+   "concepts_per_doc": 8.5
+  },
+  "Antibiotics|2018": {
+   "n": 108,
+   "species_pct": 100.0,
+   "gene_pct": 42.6,
+   "concepts_per_doc": 54.2
+  },
+  "Antibiotics|2019": {
+   "n": 274,
+   "species_pct": 100.0,
+   "gene_pct": 46.7,
+   "concepts_per_doc": 62.3
+  },
+  "Antibiotics|2020": {
+   "n": 927,
+   "species_pct": 99.9,
+   "gene_pct": 52.1,
+   "concepts_per_doc": 62.5
+  },
+  "Antibiotics|2021": {
+   "n": 1561,
+   "species_pct": 99.9,
+   "gene_pct": 55.4,
+   "concepts_per_doc": 61.6
+  },
+  "Antibiotics|2022": {
+   "n": 1839,
+   "species_pct": 100.0,
+   "gene_pct": 55.8,
+   "concepts_per_doc": 62.7
+  },
+  "Antibiotics|2023": {
+   "n": 1688,
+   "species_pct": 99.9,
+   "gene_pct": 56.4,
+   "concepts_per_doc": 64.0
+  },
+  "Antibiotics|2024": {
+   "n": 1114,
+   "species_pct": 90.8,
+   "gene_pct": 15.8,
+   "concepts_per_doc": 11.5
+  },
+  "Antibiotics|2025": {
+   "n": 1268,
+   "species_pct": 91.2,
+   "gene_pct": 14.3,
+   "concepts_per_doc": 8.4
+  },
+  "Antibiotics|2026": {
+   "n": 381,
+   "species_pct": 95.0,
+   "gene_pct": 26.5,
+   "concepts_per_doc": 22.7
+  },
+  "Frontiers in Cellular and Infection Microbiology|2018": {
+   "n": 440,
+   "species_pct": 99.8,
+   "gene_pct": 84.3,
+   "concepts_per_doc": 68.2
+  },
+  "Frontiers in Cellular and Infection Microbiology|2019": {
+   "n": 460,
+   "species_pct": 100.0,
+   "gene_pct": 85.2,
+   "concepts_per_doc": 68.0
+  },
+  "Frontiers in Cellular and Infection Microbiology|2020": {
+   "n": 920,
+   "species_pct": 100.0,
+   "gene_pct": 86.0,
+   "concepts_per_doc": 75.5
+  },
+  "Frontiers in Cellular and Infection Microbiology|2021": {
+   "n": 1398,
+   "species_pct": 99.9,
+   "gene_pct": 83.4,
+   "concepts_per_doc": 68.6
+  },
+  "Frontiers in Cellular and Infection Microbiology|2022": {
+   "n": 1876,
+   "species_pct": 100.0,
+   "gene_pct": 82.1,
+   "concepts_per_doc": 70.6
+  },
+  "Frontiers in Cellular and Infection Microbiology|2023": {
+   "n": 1328,
+   "species_pct": 99.9,
+   "gene_pct": 78.4,
+   "concepts_per_doc": 67.4
+  },
+  "Frontiers in Cellular and Infection Microbiology|2024": {
+   "n": 1101,
+   "species_pct": 91.0,
+   "gene_pct": 28.6,
+   "concepts_per_doc": 8.1
+  },
+  "Frontiers in Cellular and Infection Microbiology|2025": {
+   "n": 1486,
+   "species_pct": 92.3,
+   "gene_pct": 28.5,
+   "concepts_per_doc": 10.0
+  },
+  "Frontiers in Cellular and Infection Microbiology|2026": {
+   "n": 658,
+   "species_pct": 91.0,
+   "gene_pct": 35.4,
+   "concepts_per_doc": 17.2
+  }
+ },
+ "relation_coverage": {
+  "corpus_pmids_with_relations": 473200,
+  "pct_joinable": 33.57,
+  "relation_rows_total": 40094383
+ }
+}

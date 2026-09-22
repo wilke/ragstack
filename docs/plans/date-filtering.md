@@ -121,6 +121,67 @@ the same class of divergence.
 A real `date` field. `year` is what the data has; adding month/day precision is a schema
 and re-ingest question, not a filter question.
 
+### When finer precision is wanted: `date` as `yyyymmdd`, one int — decided 2026-09-15
+
+Recorded here so nobody implements the alternative on the strength of an earlier
+recommendation. **Not work for Part A** — it changes nothing until a range operator exists,
+which is what Part A is for. But it constrains what the backfill writes, so it is a decision
+now rather than later.
+
+Three options were weighed. The earlier recommendation was **split `year`/`month`/`day` ints
+plus a `date_precision` field**; the owner proposed **a single `yyyymmdd` int**; a real date
+type was the third.
+
+**`yyyymmdd` wins, and the deciding argument is the filter grammar, not the storage.**
+
+    "after 2020-03-15"
+
+      yyyymmdd    date >= 20200315                              one comparison; needs only `gte`
+
+      split ints  year > 2020
+                  OR (year == 2020 AND (month > 3
+                  OR (month == 3 AND day >= 15)))               needs OR
+
+`filters` are **ANDed** (`query_request.json`). Split ints therefore need disjunction *as well
+as* a range operator — a far larger change across the four interpreters §"Why it is not a
+one-line change" says must agree. `yyyymmdd` needs only what Part A already plans.
+
+**Unknown components are zero-padded, and that is the point:**
+
+| source | stored |
+|---|---|
+| `2020-03-15` | `20200315` |
+| `2020-03` | `20200300` |
+| `2020` | `20200000` |
+
+This is **self-describing about precision** — `% 100 == 0` means no day, `% 10000 == 0` means
+no month — so no separate `date_precision` field is needed. It also sorts correctly:
+`20200000 < 20200300 < 20200315`, so a year-only document sorts before all of March and a
+month-only document before the 15th. A range query excludes what is genuinely unknown rather
+than guessing.
+
+A real date type cannot do this. It must invent `2020-03-01` for a month-only date and then
+**cannot record that it invented it** — the failure this repo keeps hitting, where a wrong
+value looks like a right one. Not a corner case: the ASM metadata cache built 2026-09-15 is
+**76.6% year-month only, 23.2% year-month-day**. Also, Qdrant's datetime payload index wants
+RFC-3339 *strings*, which would reintroduce the string temporal field #573 just removed.
+
+*(Caveat added 2026-09-22, from the #624 review: this 76.6% / 23.2% split does not resolve to a committed artifact, and the committed `results/asm-metadata-cache/coverage-final.txt` — which measures the maximum `date-parts` length across **all** Crossref date kinds, `created`/`deposited` included — reports `{3: 263532}`, i.e. 100% three-part, and does not support it. Treat as unverified until re-measured on `issued` alone; see the note under that table.)*
+
+**Costs nothing structurally:** it is an int, so the type rule merged in #573 covers it,
+`KNOWN_INT_FIELDS` already exists, and both stores index ints natively — no ES mapping-class
+problem, unlike a date type (seven of nine live indices already map `year: long`; ~136 GB
+would need reindexing).
+
+**The one hazard: `year` and `date` must not drift.** `year` already exists, is an int, and is
+indexed. Where `date` is present, **`year` is derived as `date // 10000`** — never captured
+independently. Two independently-written representations of the same fact is precisely the
+bug class of #573 and the `asm-semantic` divergence. `year` continues to stand alone for
+documents that have nothing finer, which is most of ASM.
+
+Honest downsides: unreadable at a glance, and arithmetic on it is meaningless
+(`20200315 + 1` is not the next day). Neither matters for a field that is only ever compared.
+
 ---
 
 ## Part B — backfill `year` on `open-access`

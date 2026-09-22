@@ -1,0 +1,201 @@
+pool=15423 TRAIN=9507 (fit=8081 dev=1426) A|R|=2958 B|F|=2958 labels=121
+vocab coverage of true headings: A=0.380 (11.2 headings/doc)  B=0.382 (10.4/doc)
+
+=== kNN hyperparameter sweep (dev = in-distribution slice of TRAIN) ===
+  k= 10 th=0.15  microF1=0.472 P=0.350 R=0.728 macroF1=0.340
+  k= 10 th=0.20  microF1=0.472 P=0.350 R=0.728 macroF1=0.340
+  k= 10 th=0.25  microF1=0.543 P=0.489 R=0.610 macroF1=0.360
+  k= 10 th=0.30  microF1=0.543 P=0.489 R=0.610 macroF1=0.360
+  k= 10 th=0.35  microF1=0.548 P=0.597 R=0.506 macroF1=0.297
+  k= 10 th=0.40  microF1=0.548 P=0.597 R=0.506 macroF1=0.297
+  k= 10 th=0.50  microF1=0.517 P=0.693 R=0.413 macroF1=0.228
+  k= 25 th=0.15  microF1=0.502 P=0.377 R=0.753 macroF1=0.376
+  k= 25 th=0.20  microF1=0.562 P=0.502 R=0.638 macroF1=0.371
+  k= 25 th=0.25  microF1=0.566 P=0.549 R=0.584 macroF1=0.343
+  k= 25 th=0.30  microF1=0.562 P=0.592 R=0.535 macroF1=0.300
+  k= 25 th=0.35  microF1=0.550 P=0.633 R=0.487 macroF1=0.254
+  k= 25 th=0.40  microF1=0.519 P=0.703 R=0.412 macroF1=0.188
+  k= 25 th=0.50  microF1=0.466 P=0.762 R=0.336 macroF1=0.131
+  k= 50 th=0.15  microF1=0.526 P=0.412 R=0.728 macroF1=0.391
+  k= 50 th=0.20  microF1=0.563 P=0.506 R=0.633 macroF1=0.357
+  k= 50 th=0.25  microF1=0.567 P=0.560 R=0.573 macroF1=0.299
+  k= 50 th=0.30  microF1=0.553 P=0.622 R=0.498 macroF1=0.235
+  k= 50 th=0.35  microF1=0.542 P=0.661 R=0.459 macroF1=0.201
+  k= 50 th=0.40  microF1=0.509 P=0.711 R=0.397 macroF1=0.143
+  k= 50 th=0.50  microF1=0.456 P=0.773 R=0.323 macroF1=0.092
+  k=100 th=0.15  microF1=0.529 P=0.428 R=0.693 macroF1=0.367
+  k=100 th=0.20  microF1=0.551 P=0.504 R=0.607 macroF1=0.306
+  k=100 th=0.25  microF1=0.552 P=0.556 R=0.549 macroF1=0.251
+  k=100 th=0.30  microF1=0.538 P=0.619 R=0.476 macroF1=0.185
+  k=100 th=0.35  microF1=0.524 P=0.658 R=0.435 macroF1=0.144
+  k=100 th=0.40  microF1=0.494 P=0.712 R=0.379 macroF1=0.099
+  k=100 th=0.50  microF1=0.429 P=0.775 R=0.297 macroF1=0.061
+  -> chosen k=50 th=0.25
+
+=== kNN full sweep on A and B (transparency; selection was on dev) ===
+  k= 10 th=0.15  A microF1=0.480 macroF1=0.348 | B microF1=0.434 macroF1=0.258 | delta=-0.045
+  k= 10 th=0.20  A microF1=0.480 macroF1=0.348 | B microF1=0.434 macroF1=0.258 | delta=-0.045
+  k= 10 th=0.25  A microF1=0.549 macroF1=0.368 | B microF1=0.511 macroF1=0.260 | delta=-0.038
+  k= 10 th=0.30  A microF1=0.549 macroF1=0.368 | B microF1=0.511 macroF1=0.260 | delta=-0.038
+  k= 10 th=0.35  A microF1=0.554 macroF1=0.308 | B microF1=0.525 macroF1=0.207 | delta=-0.028
+  k= 10 th=0.40  A microF1=0.554 macroF1=0.308 | B microF1=0.525 macroF1=0.207 | delta=-0.028
+  k= 10 th=0.50  A microF1=0.520 macroF1=0.237 | B microF1=0.499 macroF1=0.151 | delta=-0.021
+  k= 25 th=0.15  A microF1=0.500 macroF1=0.375 | B microF1=0.463 macroF1=0.282 | delta=-0.037
+  k= 25 th=0.20  A microF1=0.560 macroF1=0.372 | B microF1=0.528 macroF1=0.260 | delta=-0.033
+  k= 25 th=0.25  A microF1=0.568 macroF1=0.345 | B microF1=0.537 macroF1=0.234 | delta=-0.031
+  k= 25 th=0.30  A microF1=0.567 macroF1=0.313 | B microF1=0.539 macroF1=0.198 | delta=-0.028
+  k= 25 th=0.35  A microF1=0.558 macroF1=0.275 | B microF1=0.532 macroF1=0.170 | delta=-0.027
+  k= 25 th=0.40  A microF1=0.523 macroF1=0.206 | B microF1=0.497 macroF1=0.110 | delta=-0.026
+  k= 25 th=0.50  A microF1=0.476 macroF1=0.140 | B microF1=0.451 macroF1=0.079 | delta=-0.025
+  k= 50 th=0.15  A microF1=0.523 macroF1=0.386 | B microF1=0.490 macroF1=0.285 | delta=-0.034
+  k= 50 th=0.20  A microF1=0.561 macroF1=0.357 | B microF1=0.526 macroF1=0.239 | delta=-0.035
+  k= 50 th=0.25  A microF1=0.566 macroF1=0.317 | B microF1=0.535 macroF1=0.204 | delta=-0.031
+  k= 50 th=0.30  A microF1=0.557 macroF1=0.254 | B microF1=0.526 macroF1=0.149 | delta=-0.031
+  k= 50 th=0.35  A microF1=0.545 macroF1=0.215 | B microF1=0.517 macroF1=0.120 | delta=-0.029
+  k= 50 th=0.40  A microF1=0.513 macroF1=0.161 | B microF1=0.489 macroF1=0.087 | delta=-0.024
+  k= 50 th=0.50  A microF1=0.463 macroF1=0.105 | B microF1=0.439 macroF1=0.060 | delta=-0.024
+  k=100 th=0.15  A microF1=0.530 macroF1=0.375 | B microF1=0.498 macroF1=0.259 | delta=-0.033
+  k=100 th=0.20  A microF1=0.554 macroF1=0.327 | B microF1=0.518 macroF1=0.214 | delta=-0.036
+  k=100 th=0.25  A microF1=0.557 macroF1=0.276 | B microF1=0.522 macroF1=0.169 | delta=-0.035
+  k=100 th=0.30  A microF1=0.545 macroF1=0.205 | B microF1=0.509 macroF1=0.112 | delta=-0.036
+  k=100 th=0.35  A microF1=0.528 macroF1=0.162 | B microF1=0.497 macroF1=0.087 | delta=-0.031
+  k=100 th=0.40  A microF1=0.494 macroF1=0.111 | B microF1=0.471 macroF1=0.064 | delta=-0.023
+  k=100 th=0.50  A microF1=0.438 macroF1=0.069 | B microF1=0.419 macroF1=0.045 | delta=-0.019
+  kNN per-label thresholds on dev: microF1=0.570 macroF1=0.448
+  kNN per-label th: A microF1=0.544 macroF1=0.403 | B microF1=0.525 macroF1=0.291 | delta=-0.019
+  -> kNN per-label thresholds win on dev; using them
+
+=== linear probe: C + global threshold tuned on dev (LBFGS, fp64) ===
+  C=0.1 th=0.10  microF1=0.437 P=0.376 R=0.522 macroF1=0.080
+  C=0.1 th=0.15  microF1=0.465 P=0.450 R=0.480 macroF1=0.066
+  C=0.1 th=0.20  microF1=0.477 P=0.519 R=0.442 macroF1=0.059
+  C=0.1 th=0.25  microF1=0.479 P=0.581 R=0.408 macroF1=0.051
+  C=0.1 th=0.30  microF1=0.467 P=0.637 R=0.369 macroF1=0.045
+  C=0.1 th=0.35  microF1=0.446 P=0.681 R=0.332 macroF1=0.037
+  C=0.1 th=0.40  microF1=0.424 P=0.722 R=0.300 macroF1=0.031
+  C=0.1 th=0.50  microF1=0.372 P=0.798 R=0.242 macroF1=0.023
+  C=1 th=0.10  microF1=0.537 P=0.413 R=0.765 macroF1=0.414
+  C=1 th=0.15  microF1=0.576 P=0.506 R=0.669 macroF1=0.382
+  C=1 th=0.20  microF1=0.587 P=0.575 R=0.601 macroF1=0.329
+  C=1 th=0.25  microF1=0.574 P=0.623 R=0.532 macroF1=0.261
+  C=1 th=0.30  microF1=0.563 P=0.671 R=0.486 macroF1=0.217
+  C=1 th=0.35  microF1=0.547 P=0.710 R=0.445 macroF1=0.176
+  C=1 th=0.40  microF1=0.529 P=0.745 R=0.410 macroF1=0.143
+  C=1 th=0.50  microF1=0.481 P=0.805 R=0.343 macroF1=0.092
+  C=10 th=0.10  microF1=0.540 P=0.407 R=0.801 macroF1=0.437
+  C=10 th=0.15  microF1=0.587 P=0.484 R=0.745 macroF1=0.469
+  C=10 th=0.20  microF1=0.607 P=0.539 R=0.694 macroF1=0.469
+  C=10 th=0.25  microF1=0.616 P=0.587 R=0.649 macroF1=0.460
+  C=10 th=0.30  microF1=0.618 P=0.630 R=0.607 macroF1=0.443
+  C=10 th=0.35  microF1=0.613 P=0.665 R=0.568 macroF1=0.423
+  C=10 th=0.40  microF1=0.604 P=0.699 R=0.532 macroF1=0.395
+  C=10 th=0.50  microF1=0.577 P=0.759 R=0.465 macroF1=0.339
+  C=100 th=0.10  microF1=0.526 P=0.404 R=0.752 macroF1=0.414
+  C=100 th=0.15  microF1=0.553 P=0.453 R=0.709 macroF1=0.427
+  C=100 th=0.20  microF1=0.568 P=0.491 R=0.673 macroF1=0.430
+  C=100 th=0.25  microF1=0.578 P=0.525 R=0.641 macroF1=0.435
+  C=100 th=0.30  microF1=0.585 P=0.558 R=0.615 macroF1=0.434
+  C=100 th=0.35  microF1=0.587 P=0.584 R=0.590 macroF1=0.430
+  C=100 th=0.40  microF1=0.588 P=0.611 R=0.567 macroF1=0.426
+  C=100 th=0.50  microF1=0.581 P=0.659 R=0.520 macroF1=0.400
+  -> chosen C=10 th=0.3
+  per-label thresholds on dev: microF1=0.621 macroF1=0.519
+
+=== probe threshold sweep on A and B (transparency) ===
+  th=0.10  A microF1=0.544 macroF1=0.447 | B microF1=0.527 macroF1=0.376 | delta=-0.017
+  th=0.15  A microF1=0.587 macroF1=0.470 | B microF1=0.577 macroF1=0.394 | delta=-0.010
+  th=0.20  A microF1=0.606 macroF1=0.472 | B microF1=0.600 macroF1=0.391 | delta=-0.006
+  th=0.25  A microF1=0.616 macroF1=0.467 | B microF1=0.612 macroF1=0.383 | delta=-0.005
+  th=0.30  A microF1=0.618 macroF1=0.451 | B microF1=0.614 macroF1=0.364 | delta=-0.004
+  th=0.35  A microF1=0.616 macroF1=0.429 | B microF1=0.610 macroF1=0.340 | delta=-0.006
+  th=0.40  A microF1=0.606 macroF1=0.397 | B microF1=0.600 macroF1=0.311 | delta=-0.005
+  th=0.50  A microF1=0.575 macroF1=0.338 | B microF1=0.573 macroF1=0.253 | delta=-0.002
+  per-label th: A microF1=0.596 macroF1=0.469 | B microF1=0.591 macroF1=0.379 | delta=-0.006
+  -> per-label thresholds win on dev; using them
+
+=== recall against ALL true headings (vocab ceiling included) ===
+  A knn    full-MeSH recall=0.239  (vocab ceiling 0.380)
+  B knn    full-MeSH recall=0.229  (vocab ceiling 0.382)
+  A probe  full-MeSH recall=0.243  (vocab ceiling 0.380)
+  B probe  full-MeSH recall=0.247  (vocab ceiling 0.382)
+
+=== prior baseline (always predict top-n TRAIN labels) ===
+  top 1  A microF1=0.234 | B microF1=0.291
+  top 3  A microF1=0.347 | B microF1=0.374
+  top 5  A microF1=0.363 | B microF1=0.344
+  top10  A microF1=0.301 | B microF1=0.271
+
+================ HEADLINE ================
+kNN k=50 th=per-label  A     microF1=0.544 (P=0.480 R=0.627) macroF1=0.403 (P=0.399 R=0.464) labels_with_support=121
+kNN k=50 th=per-label  B     microF1=0.525 (P=0.467 R=0.599) macroF1=0.291 (P=0.355 R=0.315) labels_with_support=119
+  kNN   A->B delta microF1 = -0.019 (-3.6%)  macroF1 = -0.112
+probe wd=10 th=per-label  A  microF1=0.596 (P=0.560 R=0.638) macroF1=0.469 (P=0.469 R=0.506) labels_with_support=121
+probe wd=10 th=per-label  B  microF1=0.591 (P=0.545 R=0.646) macroF1=0.379 (P=0.425 R=0.402) labels_with_support=119
+  probe A->B delta microF1 = -0.006 (-0.9%)  macroF1 = -0.090
+  probe - kNN on A = +0.052; on B = +0.066
+
+=== per-label transfer (labels with >=20 true positives in BOTH tests) ===
+label                                           supA   supB  probeA  probeB       d   knnA   knnB
+Prevalence                                        53     51   0.612   0.324  -0.287  0.415  0.242
+Genomics                                          51     39   0.368   0.093  -0.275  0.261  0.205
+Cell Proliferation                                64     25   0.387   0.133  -0.254  0.374  0.133
+Polymorphism, Single Nucleotide                   72     27   0.667   0.417  -0.250  0.578  0.129
+Brain                                             66     31   0.459   0.216  -0.242  0.439  0.458
+Male                                             816    425   0.704   0.547  -0.156  0.668  0.476
+Vaccination                                       34     28   0.554   0.400  -0.154  0.556  0.370
+Aged, 80 and over                                 96     46   0.392   0.240  -0.152  0.314  0.192
+Apoptosis                                         62     42   0.632   0.481  -0.151  0.429  0.364
+Bacteria                                          51    298   0.580   0.439  -0.142  0.531  0.457
+Young Adult                                      191     97   0.439   0.299  -0.140  0.393  0.256
+Computational Biology                             78     45   0.325   0.192  -0.133  0.273  0.135
+Prospective Studies                               59     50   0.264   0.136  -0.129  0.199  0.103
+Gene Expression Profiling                        102     98   0.533   0.405  -0.128  0.430  0.227
+Aged                                             291    202   0.599   0.476  -0.123  0.558  0.404
+Adult                                            429    276   0.626   0.503  -0.123  0.582  0.434
+Escherichia coli                                  51    106   0.588   0.467  -0.121  0.505  0.378
+Female                                           857    581   0.717   0.599  -0.118  0.691  0.522
+Middle Aged                                      376    242   0.600   0.485  -0.116  0.576  0.421
+Adolescent                                       148     77   0.439   0.328  -0.111  0.435  0.295
+  ... best-transferring:
+COVID-19                                          84    179   0.860   0.928  +0.068  0.882  0.906
+Host-Pathogen Interactions                        22    205   0.322   0.401  +0.079  0.364  0.306
+SARS-CoV-2                                        65    155   0.808   0.916  +0.108  0.813  0.900
+Pregnancy                                         55     71   0.703   0.813  +0.110  0.588  0.661
+Machine Learning                                  44     28   0.475   0.605  +0.130  0.358  0.294
+High-Throughput Nucleotide Sequencing             41     97   0.381   0.520  +0.139  0.361  0.485
+Child                                            109    130   0.534   0.711  +0.177  0.420  0.341
+Biomarkers                                        85     96   0.441   0.626  +0.185  0.430  0.381
+Retrospective Studies                            101    175   0.426   0.638  +0.212  0.375  0.538
+Sensitivity and Specificity                       29    126   0.469   0.684  +0.215  0.468  0.669
+
+=== labels predictable at all (probe, B) ===
+  A: labels with support>0 and F1>=0.3: 99/121
+  A: labels with support>0 and F1>=0.5: 51/121
+  B: labels with support>0 and F1>=0.3: 71/119
+  B: labels with support>0 and F1>=0.5: 37/119
+
+=== biggest prevalence shift TRAIN -> B ===
+  over-represented in FCIM:
+    Humans                                        train=0.614 B=0.726
+    Anti-Bacterial Agents                         train=0.019 B=0.120
+    Bacteria                                      train=0.016 B=0.101
+    RNA, Ribosomal, 16S                           train=0.010 B=0.084
+    Microbial Sensitivity Tests                   train=0.010 B=0.075
+    Host-Pathogen Interactions                    train=0.010 B=0.069
+    Bacterial Proteins                            train=0.020 B=0.075
+    Animals                                       train=0.341 B=0.385
+    Disease Models, Animal                        train=0.033 B=0.070
+    China                                         train=0.025 B=0.060
+  under-represented in FCIM:
+    Models, Molecular                             train=0.025 B=0.004
+    Software                                      train=0.022 B=0.000
+    Adolescent                                    train=0.050 B=0.026
+    Young Adult                                   train=0.067 B=0.033
+    Cell Line, Tumor                              train=0.040 B=0.005
+    Algorithms                                    train=0.038 B=0.003
+    Middle Aged                                   train=0.127 B=0.082
+    Adult                                         train=0.145 B=0.093
+    Female                                        train=0.285 B=0.196
+    Male                                          train=0.270 B=0.144
+
+wrote report.json
