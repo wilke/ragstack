@@ -35,6 +35,12 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 // enforced. 100 is the contract's own ceiling (`top_k.maximum`,
 // contracts/schemas/query_request.json), so the UI now offers exactly what the
 // API accepts and not one more.
+// 100 is the contract's ceiling (`contracts/schemas/query_request.json`
+// `top_k.maximum`) and the Python default (`settings.max_top_k`); the API 422s
+// above it. `topk.test.ts` pins this constant to the schema so the two cannot
+// drift. What it CANNOT see: `MAX_TOP_K` is also a per-tenant env override, and
+// `/v1/config` does not expose it — a tenant that sets it below 100 will have
+// the UI offer values its API refuses. No tenant does today.
 export const MAX_TOPK = 100;
 
 // Fallback when /v1/config is unreadable (it is admin-only): the backend's

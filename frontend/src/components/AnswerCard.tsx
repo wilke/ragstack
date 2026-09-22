@@ -94,8 +94,8 @@ export function AnswerCard({
                 key={i}
                 className={
                   i === 0
-                    ? "mb-2.5 text-[17px] leading-[1.7] text-strong [text-wrap:pretty]"
-                    : "mb-2.5 text-[15px] leading-[1.75] text-body [text-wrap:pretty]"
+                    ? "mb-2.5 whitespace-pre-line text-[17px] leading-[1.7] text-strong [text-wrap:pretty]"
+                    : "mb-2.5 whitespace-pre-line text-[15px] leading-[1.75] text-body [text-wrap:pretty]"
                 }
               >
                 <CitedText text={para} sourceCount={sourceCount} first={first} />

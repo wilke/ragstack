@@ -46,9 +46,20 @@ function markerRanks(payload: string, sourceCount: number): number[] {
 // `S. aureus`, `et al.`, `i.e.`, `Fig.`, `spp.` — an abbreviation list is a
 // losing game against this corpus, so the answer is now one block and the
 // distinction is gone.
+// A PARAGRAPH is separated by a blank line; a LINE is separated by a single
+// newline, and lines are preserved inside their paragraph. The distinction
+// matters: the generator has no format constraint (`_SYSTEM_PROMPT` in
+// python/ragstack/llm.py) and routinely emits markdown bullet lists on single
+// newlines — "Summary:\n- gene A\n- gene B". Splitting on `\n{2,}` alone kept
+// that as one string, and without `whitespace-pre-line` on the `<p>` the browser
+// collapsed it to "Summary: - gene A - gene B" on one line. That was a
+// regression against the old splitter, which split on every newline. So:
+// `\r\n` is normalised first, a "blank" line may carry whitespace (`\n  \n`
+// is a break), and the rendering side keeps the single newlines as breaks.
 export function answerParagraphs(answer: string): string[] {
   return answer
-    .split(/\n{2,}/)
+    .replace(/\r\n?/g, "\n")
+    .split(/(?:\n[ \t]*){2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
 }
@@ -121,8 +132,11 @@ export function splitClaims(answer: string, sourceCount: number): Claim[] {
     // "Bees pollinate. [1] Nectar follows. [2]" hands [1] to the SECOND
     // sentence — every citation shifts one claim down and the first claim
     // renders uncited — and markers-after-the-period is a form the generator
-    // actually emits. It mirrors LEAD_RE above so Explore and Evidence cannot
-    // disagree about which source a sentence cites.
+    // actually emits. This is the sentence splitter Explore's lead used to
+    // share (LEAD_RE, since removed — the answer is one block now, see
+    // answerParagraphs). Evidence keeps sentence granularity here and so still
+    // breaks at "E. coli"; that is the other half of the problem, tracked in
+    // #625. Do not "fix" it with an abbreviation list.
     const sentences =
       trimmed.match(
         new RegExp(String.raw`[^.!?]*[.!?]+["'”’)\]]*(?:\s*${CITE_SRC})*|[^.!?]+$`, "g"),

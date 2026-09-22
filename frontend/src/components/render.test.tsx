@@ -68,8 +68,8 @@ describe("static render", () => {
     expect(tuned).toContain("k=10");
   });
 
-  // The editorial answer block: first sentence is the lead claim behind the
-  // yellow rule, [n] markers become citation chips (first-cited = yellow),
+  // The editorial answer block: the WHOLE answer sits behind the yellow rule
+  // (no lead/rest split), [n] markers become citation chips (first-cited = yellow),
   // and the Verify link + feedback pills are present.
   it("renders the answer as one block + citation chips + Verify link", () => {
     const html = render(
@@ -88,6 +88,47 @@ describe("static render", () => {
     expect(html).not.toContain("[1]");
     expect(html).toContain("bg-accent "); // first-cited chip is yellow
     expect(html).toContain("border-accent"); // the rule around the answer
+  });
+
+  // #622 review: firstCited moved from the (now-removed) lead sentence to the
+  // WHOLE answer. That is intended — with no lead there is no other coherent
+  // scope — but it changes which chip is yellow for any answer whose first
+  // sentence is uncited, and the review's mutation back to a first-paragraph
+  // scope failed no test. This one fails it: the first paragraph is uncited.
+  it("highlights the first source cited ANYWHERE in the answer, not the first paragraph", () => {
+    const html = render(
+      createElement(AnswerCard, {
+        query: "q",
+        answer: "No citation in the first paragraph at all.\n\nSecond paragraph cites [3] then [1].",
+        rewrittenQueries: [],
+        pending: false,
+        sourceCount: 3,
+        onOpenEvidence: () => {},
+      }),
+    );
+    const yellow = html.match(/<sup[^>]*bg-accent text-ink-600[^>]*>(\d+)<\/sup>/);
+    expect(yellow?.[1]).toBe("3");
+    expect(html).toMatch(/<sup[^>]*bg-linkSoft[^>]*>1<\/sup>/); // [1] is NOT the yellow one
+  });
+
+  // #622 review: a bullet list on single newlines collapsed to one run-on line
+  // because the splitter kept it as one paragraph and the <p> did not preserve
+  // newlines. Both halves are pinned: the text keeps its "\n"s, and the
+  // paragraph carries whitespace-pre-line so the browser renders them.
+  it("keeps single newlines inside a paragraph as visible line breaks", () => {
+    const html = render(
+      createElement(AnswerCard, {
+        query: "q",
+        answer: "Summary:\n- gene A [1]\n- gene B [2]",
+        rewrittenQueries: [],
+        pending: false,
+        sourceCount: 2,
+        onOpenEvidence: () => {},
+      }),
+    );
+    expect(html).toContain("whitespace-pre-line");
+    expect(html).toContain("Summary:\n- gene A");
+    expect(html).toContain("\n- gene B");
   });
 
   // Regression: the answer used to be cut into a "lead sentence" and a
