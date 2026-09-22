@@ -264,11 +264,14 @@ framing: a machine re-reading the same document is about as unstable as a person
 as unstable as two different people.
 
 **The published counter-result, and it is in our domain.** `hofstatter-2020-fira` measured
-location agreement separately on TREC data and got the *opposite* ordering — word-selection κ of
-0.5–0.8 against binary relevance κ of 0.5–0.8. Blunting factors that must be stated rather than
-used to dismiss it: κ is computed against a majority aggregate that includes the annotator being
-scored, n = 10 pairs, and only already-relevant documents were annotated. It is still a real
-published result against our headline and the paper engages it directly.
+location agreement separately on TREC data and found **no gap**: word-selection κ "ranging from
+0.5 to 0.8", the same band as 2-class relevance (0.5–0.8), with only the harder 4-class grading
+lower (0.3–0.6). That is not the opposite ordering — it is presence and location agreeing
+*equally*, which is still a result against our headline. Blunting factors that must be stated
+rather than used to dismiss it: κ is each student's annotation against a majority aggregate that
+includes that student, n = 10 query–document pairs, non-expert (student) annotators, and only
+already-relevant documents were annotated. It is a real published result and the paper engages
+it directly. (Verified against the CIKM 2020 text, §5, on 2026-09-22 — see `bibliography.md`.)
 
 **Statistic choice is a finding, not a detail.** Report mean pairwise F1 for the span condition
 (`hripcsak-2005`), not κ — negatives are uncountable when the unit is a span in a long document —

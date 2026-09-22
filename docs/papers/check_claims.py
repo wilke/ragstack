@@ -20,11 +20,13 @@ Exit status is 0 only if every claim verified.
 
 HOW A PAPER CITES A CLAIM
 -------------------------
-Each claim has a stable kebab-case `id`. The prose cites it as a marker the build (or a
-reviewer) can grep for, e.g.
+Each claim has a stable kebab-case `id`. The prose cites it in backticks beside the
+number, so a reviewer can grep for it, e.g.
 
-    ... reaches a Spearman-Brown reliability of 0.92 at thirty pooled readings
-    [claim:graded-support-reliability-at-30] ...
+    ... reaches Spearman-Brown 0.9205 (`graded-support-reliability-at-30`) ...
+
+(`[claim:graded-support-reliability-at-30]` is the same citation in a marker form a
+build can strip; either spelling resolves to the same id.)
 
 The `id` is the contract. `value`, `source` and `pointer` may be re-measured and
 updated; the id stays, so the citation in the prose never goes stale, and

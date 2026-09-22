@@ -149,8 +149,6 @@ def emit_jsonl(dest: pathlib.Path) -> int:
                     continue
                 rel = src.relative_to(REPO).as_posix()
                 text = src.read_text(encoding="utf-8", errors="replace")
-                heads = [h[1] for h in (HEADING.match(l) and (0, HEADING.match(l).group(2))
-                                        or (0, None) for l in text.splitlines()) if h[1]]
                 rec = {
                     "text": text,
                     "path": rel,

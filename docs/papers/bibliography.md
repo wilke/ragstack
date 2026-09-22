@@ -104,6 +104,56 @@ This entry is the project's worked example of why a citation gets read before it
 
 ---
 
+## Annotation agreement and evidence localisation
+
+These three are cited by `paper-a-evidence-localisation/OUTLINE.md` and were, until
+2026-09-22, in neither this file nor any `bib-inbox/` survey — i.e. recalled, not verified, which
+is the failure the `study-writeup` skill exists to prevent. Each was fetched on 2026-09-22; the
+status line says how far it was read.
+
+### `hofstatter-2020-fira` — Fine-Grained Relevance Annotations for Multi-Task Document Ranking and Question Answering
+Sebastian Hofstätter, Markus Zlabinger, Mete Sertkan, Michael Schröder, Allan Hanbury.
+CIKM 2020. <https://doi.org/10.1145/3340531.3412878> · arXiv 2008.05363 · **verified, read (full
+PDF, §5 "Annotation quality")**
+
+Extends TREC-DL 2019 document ranking with passage- and word-level graded relevance for all
+relevant documents (FiRA), and reports inter-annotator agreement as Cohen's κ **of each student
+annotator against the majority-vote aggregate**, on the 10 query–document pairs every student
+annotated. Their own numbers, verbatim: for 2-class relevance and for "the labeling of the relevant
+word phrases, substantial Kappa agreements are reached, ranging from 0.5 to 0.8"; for 4-class
+grading "a mediocre agreement ranging from 0.3 to 0.6".
+
+**What it establishes for us:** a published measurement in which agreement on *where* the evidence
+is (word selection) is **as high as** agreement on *whether* the document is relevant (2-class).
+That is the counter-result to our headline and Paper A must engage it. **It is not** an "opposite
+ordering" — location does not out-agree presence here; they tie — and an earlier draft of the
+outline mis-stated this. Weight: **moderate, with stated blunting factors** — κ against an
+aggregate that contains the rater being scored inflates agreement; n = 10 pairs; non-expert
+student annotators; only documents already judged relevant were annotated, so the presence
+condition is easier than ours. They themselves note agreement in line with Alonso & Mizzaro for
+non-expert TREC labelling. Cite it as the published tie, then say why our design differs.
+
+### `mathew-2021-hatexplain` — HateXplain: A Benchmark Dataset for Explainable Hate Speech Detection
+Binny Mathew, Punyajoy Saha, Seid Muhie Yimam, Chris Biemann, Pawan Goyal, Animesh Mukherjee.
+AAAI 2021. <https://doi.org/10.1609/aaai.v35i17.17745> · arXiv 2012.10289 · **verified (title,
+authors, venue, year, abstract); not read past the abstract**
+
+Cited only as prior art for a **soft per-token rationale** — each post annotated by several
+raters with the token spans their label rests on, aggregated into a per-token score. That is the
+representation the outline's "not novel" table needs it for, and the abstract establishes it.
+Weight for that purpose: **mention, not support**. Do not cite it for any number.
+
+### `warfield-2004-staple` — Simultaneous Truth and Performance Level Estimation (STAPLE): An Algorithm for the Validation of Image Segmentation
+Simon K. Warfield, Kelly H. Zou, William M. Wells. IEEE Transactions on Medical Imaging 23(7),
+2004. <https://doi.org/10.1109/tmi.2004.828354> · **verified (title, authors, venue, year,
+abstract); not read past the abstract**
+
+The canonical **probabilistic per-unit reference estimated by EM over multiple raters** — a
+per-voxel truth estimate plus per-rater sensitivity/specificity, from segmentations that
+individually disagree. Cited as the representational ancestor of a graded pooled per-sentence
+support map, which is all the "not novel" table claims for it. ~2,100 citations (OpenAlex).
+Weight for that purpose: **mention, not support**.
+
 ## How these fit together
 
 The published record does **not** say semantic chunking fails. It says:

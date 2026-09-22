@@ -35,7 +35,6 @@ Needs `pandoc` on PATH and `pymupdf` in the interpreter. Writes only under --out
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import pathlib
 import re
@@ -48,35 +47,38 @@ UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chr
 # Populated from docs/papers/bibliography.md. Keep the key identical to the bibliography's
 # short-key so a reader can move between the two without a lookup table.
 PAPERS = [
-    dict(key="qu-2025",
-         title="Is Semantic Chunking Worth the Computational Cost?",
-         authors="Renyi Qu; Ruixuan Tu; Forrest Sheng Bao",
-         venue="Findings of the ACL: NAACL 2025",
-         pdf="https://aclanthology.org/2025.findings-naacl.114.pdf"),
-    dict(key="wang-2025-pic",
-         title="Document Segmentation Matters for Retrieval-Augmented Generation",
-         authors="Zhitong Wang; Cheng Gao; Chaojun Xiao; Yufei Huang; Shuzheng Si; "
+    {"key": "qu-2025",
+         "title": "Is Semantic Chunking Worth the Computational Cost?",
+         "authors": "Renyi Qu; Ruixuan Tu; Forrest Sheng Bao",
+         "venue": "Findings of the ACL: NAACL 2025",
+         "pdf": "https://aclanthology.org/2025.findings-naacl.114.pdf"},
+    {"key": "wang-2025-pic",
+         "title": "Document Segmentation Matters for Retrieval-Augmented Generation",
+         "authors": "Zhitong Wang; Cheng Gao; Chaojun Xiao; Yufei Huang; Shuzheng Si; "
                  "Kangyang Luo; Yuzhuo Bai; Wenhao Li; Tangjian Duan; Chuancheng Lv; "
                  "Guoshan Lu; Gang Chen; Fanchao Qi; Maosong Sun",
-         venue="Findings of the ACL 2025",
-         pdf="https://aclanthology.org/2025.findings-acl.422.pdf"),
-    dict(key="zhao-2025-moc",
-         title="MoC: Mixtures of Text Chunking Learners for Retrieval-Augmented Generation System",
-         authors="Jihao Zhao; Zhiyuan Ji; Zhaoxin Fan; Hanyu Wang; Simin Niu; Bo Tang; "
+         "venue": "Findings of the ACL 2025",
+         "pdf": "https://aclanthology.org/2025.findings-acl.422.pdf"},
+    {"key": "zhao-2025-moc",
+         "title": "MoC: Mixtures of Text Chunking Learners for Retrieval-Augmented Generation "
+                  "System",
+         "authors": "Jihao Zhao; Zhiyuan Ji; Zhaoxin Fan; Hanyu Wang; Simin Niu; Bo Tang; "
                  "Feiyu Xiong; Zhiyu Li",
-         venue="ACL 2025 (Long Papers)",
-         pdf="https://aclanthology.org/2025.acl-long.258.pdf"),
-    dict(key="kreileder-2026",
-         title="Evaluating Chunking Strategies for Retrieval-Augmented Generation on Academic Texts",
-         authors="Valentin J. J. Kreileder; Johannes Reisinger; Andreas Fischer",
-         venue="arXiv 2607.01852",
-         arxiv="2607.01852"),
-    dict(key="allamraju-2025",
-         title="Breaking It Down: Domain-Aware Semantic Segmentation for Retrieval Augmented Generation",
-         authors="Aparajitha Allamraju; Maitreya Prafulla Chitale; Hiranmai Sri Adibhatla; "
+         "venue": "ACL 2025 (Long Papers)",
+         "pdf": "https://aclanthology.org/2025.acl-long.258.pdf"},
+    {"key": "kreileder-2026",
+         "title": "Evaluating Chunking Strategies for Retrieval-Augmented Generation on "
+                  "Academic Texts",
+         "authors": "Valentin J. J. Kreileder; Johannes Reisinger; Andreas Fischer",
+         "venue": "arXiv 2607.01852",
+         "arxiv": "2607.01852"},
+    {"key": "allamraju-2025",
+         "title": "Breaking It Down: Domain-Aware Semantic Segmentation for Retrieval "
+                  "Augmented Generation",
+         "authors": "Aparajitha Allamraju; Maitreya Prafulla Chitale; Hiranmai Sri Adibhatla; "
                  "Rahul Mishra; Manish Shrivastava",
-         venue="arXiv 2512.00367",
-         arxiv="2512.00367"),
+         "venue": "arXiv 2512.00367",
+         "arxiv": "2512.00367"},
 ]
 
 
