@@ -12,6 +12,7 @@ Read in this order when picking up the repo cold:
 | [MEMORY.md](MEMORY.md) | **Before coding.** Project conventions, hardware constraints, and the list of debugged failures (apptainer rootless quirks, Neo4j 5 password rule, qdrant-client API rename, etc.). |
 | [SPEC.md](SPEC.md) | Architectural north star — data models, milestones, planned endpoints. Authoritative for design *intent*. |
 | [scratchpad.md](scratchpad.md) | Per-session change log — most recent entry has the latest decisions and rationale. |
+| [docs/papers/](docs/papers/README.md) | **Before writing up any study result.** The three tiers — the record, the lab book, the paper — and which one you are editing. Process rules are the `study-writeup` skill. |
 
 When in doubt about *intended* design vs. current code, SPEC wins for intent and code wins for current reality.
 
