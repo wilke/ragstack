@@ -125,13 +125,72 @@ def slug(s: str, n: int = 48) -> str:
     return (s[:n] or "section").strip("-")
 
 
+def emit_jsonl(dest: pathlib.Path) -> int:
+    """One record per source document: {"text", "path", "metadata"}.
+
+    Why per-document and not per-section: `delete_prior` replaces per `doc_id`, so two
+    records sharing a path would delete each other, and `link_neighbors_by_document`
+    groups by `doc_id`, so one record per section restarts `chunk_index` at every
+    heading and never links across one. Order was the stated requirement, so order wins
+    here; sections wait for a section-aware chunker and a new collection (the chunk
+    strategy is fixed at collection creation and cannot be edited later).
+
+    Metadata uses only names declared in `contracts/schemas/chunk_metadata.json`, which
+    is enforced at the ingest boundary (#603/#604). Nothing invented: an undeclared
+    field is accepted but gets no ES mapping and is typed by whichever document lands
+    first.
+    """
+    import json as _json
+    n, total = 0, 0
+    with dest.open("w", encoding="utf-8") as fh:
+        for pattern, kind, area in SOURCES:
+            for src in sorted(REPO.glob(pattern)):
+                if not src.is_file():
+                    continue
+                rel = src.relative_to(REPO).as_posix()
+                text = src.read_text(encoding="utf-8", errors="replace")
+                heads = [h[1] for h in (HEADING.match(l) and (0, HEADING.match(l).group(2))
+                                        or (0, None) for l in text.splitlines()) if h[1]]
+                rec = {
+                    "text": text,
+                    "path": rel,
+                    "metadata": {
+                        "title": src.stem,
+                        "source": rel,
+                        "source_path": rel,
+                        "doc_type": kind,
+                        "keywords": "; ".join([kind, area, "ragstack", "chunking-study"]),  # enrich.split_keywords
+                        # expects a DELIMITED STRING, not a list — a list raises TypeError in re.split.
+                        "publisher": "wilke/ragstack",
+                        "content_type": "text/markdown",
+                    },
+                }
+                fh.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+                n += 1; total += len(text)
+    print(f"{n} document records -> {dest} ({total/1e6:.2f} MB of text)")
+    print("NOTE: section boundaries are NOT respected in this shape; see "
+          "docs/plans/section-taxonomy.md for why and what would fix it.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/tmp/corpus")
     ap.add_argument("--manifest-only", action="store_true")
+    ap.add_argument("--jsonl", metavar="FILE",
+                    help="emit ONE RECORD PER DOCUMENT for scripts/ingest_jsonl.py instead of "
+                         "one file per section. This is the shape that preserves document "
+                         "ordering: ingest_jsonl gives each line its own doc_id and "
+                         "link_neighbors_by_document groups by doc_id, so sections of one "
+                         "source must share a record or their chunk_index restarts and the "
+                         "prev/next links never cross a heading. Section boundaries are NOT "
+                         "respected in this mode — that needs the unimplemented section-aware "
+                         "chunker (docs/plans/section-taxonomy.md).")
     a = ap.parse_args()
     out = pathlib.Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
+    if a.jsonl:
+        return emit_jsonl(pathlib.Path(a.jsonl))
     manifest, n_files, n_sections = [], 0, 0
     for pattern, kind, area in SOURCES:
         for src in sorted(REPO.glob(pattern)):

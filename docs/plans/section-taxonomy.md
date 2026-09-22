@@ -128,3 +128,36 @@ source documents to 595 section files, each carrying `source_file`, `kind`, `are
 `heading_path`, `section_title`, `section_index` and `sections_in_document` in the text, so a
 `fixed_token` 512 / overlap 0 window picks them up. It is a workaround, not the design — the
 design belongs in ingest, where family A can use what `jats.py` already knows.
+
+---
+
+## A hard constraint on any section-aware chunker (from ragstack-ui, 2026-09-22)
+
+`chunkers.py` is **pinned by the chunking study's harness**: `s0_common.py` sets
+`EXPECT_COMMIT` and calls `pin_repo()`, and the labelers additionally assert that
+`git diff EXPECT_COMMIT..HEAD -- chunkers.py` is **empty**.
+
+Comments in that file are safe to change on `main` — the study runs only from its pinned
+checkout, where the diff is empty by construction. **Behaviour is not.** Specifically:
+
+> A section-aware chunker **must not change `sentence_spans`**.
+
+The study's 112,140 committed labels are keyed by **sentence index**. If `sentence_spans`
+moves, every recorded span slides onto text the labeler never read, and the labels are
+silently invalidated — not at ingest, but at the next re-pin. That is a real design
+constraint on the feature, not a preference.
+
+## Where the interim collection landed
+
+`chunking-study-lit` on the dev tenant: `fixed_token` 512, **overlap 0**, SFR-Embedding-Mistral
+4096-dim, both store legs (Qdrant `:24041`, Elasticsearch `:24043`). 25 documents, 712 chunks.
+
+**It does not respect sections**, deliberately. One record per section would have given section
+boundaries but destroyed document identity and ordering — `delete_prior` replaces per `doc_id`
+and `link_neighbors_by_document` groups by it, so sections of one source would delete each other
+and `chunk_index` would restart at every heading. The losses are asymmetric: headings survive in
+the text and are recoverable by re-chunking, whereas document identity is destroyed at ingest and
+cannot be recovered from the store. So order won, and the section boundaries wait.
+
+Re-ingest will be needed regardless — **chunk strategy is fixed at collection creation and
+cannot be edited**, so a section-aware collection is a new collection by construction.
