@@ -1374,8 +1374,21 @@ def make_chunker(
     if method in ("semantic", "semantic_pooled"):
         if embed_fn is None:
             raise ValueError(f"chunk_method={method!r} requires an embed_fn")
-        # semantic_pooled embeds each sentence once + mean-pools (cheaper, GPU-
-        # friendly) and rounds distances so the blocks are reproducible cross-host.
+        # semantic_pooled embeds each sentence once + mean-pools, and rounds
+        # distances so the blocks are reproducible cross-host.
+        #
+        # NOT "the same chunker, cheaper". Measured on dev 2026-09-18 over
+        # identical input (docs/plans/results/semantic-vs-pooled-2026-09-18.md):
+        # the two share NO boundaries on documents that split, boundary-signal
+        # rank correlation 0.4254, span Jaccard 0.111 — while each arm is
+        # reproducible against itself (0.998/0.999), so the difference is
+        # algorithmic, not fleet noise. They agree on chunk COUNT, which is how a
+        # summary that counts chunks reports false agreement.
+        #
+        # Pooling is cheaper (4.47x fewer embed tokens at buffer_size=2, ~7x at
+        # the default 3) AND it moves the boundaries. Choosing it to save tokens
+        # also changes where the chunks are; chunk method is collection identity,
+        # so that choice cannot be revisited in place.
         pooled = method == "semantic_pooled"
         return SemanticChunker(
             embed_fn=embed_fn,
