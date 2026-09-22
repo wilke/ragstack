@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitClaims } from "./claims";
+import { splitClaims, answerParagraphs } from "./claims";
 
 describe("splitClaims", () => {
   it("splits sentences and resolves [n] markers to 0-based source indices", () => {
@@ -59,5 +59,35 @@ describe("citations after the period", () => {
     const c = splitClaims("Two sources agree. [1, 2] One is missing. [9]", 2);
     expect(c[0].cited).toEqual([0, 1]);
     expect(c[1].cited).toEqual([]); // [9] points outside the retrieved set
+  });
+});
+
+// #622 review: the paragraph splitter's choices were unpinned — reverting the
+// blank-line regex to every-newline, or deleting the trim/filter, failed no
+// test. Each case here fails exactly one of those mutations.
+describe("answerParagraphs", () => {
+  it("keeps a bullet list on single newlines as ONE paragraph, breaks intact", () => {
+    // The generator emits this shape; the old splitter made four paragraphs,
+    // the first draft of the new one collapsed it to a run-on line.
+    const out = answerParagraphs("Summary:\n- gene A [1]\n- gene B [2]\n- gene C");
+    expect(out).toEqual(["Summary:\n- gene A [1]\n- gene B [2]\n- gene C"]);
+  });
+  it("splits on a blank line", () => {
+    expect(answerParagraphs("A.\n\nB.")).toEqual(["A.", "B."]);
+  });
+  it("treats a whitespace-only line as blank", () => {
+    expect(answerParagraphs("A.\n  \nB.")).toEqual(["A.", "B."]);
+    expect(answerParagraphs("A.\n\t\nB.")).toEqual(["A.", "B."]);
+  });
+  it("normalises CRLF before splitting", () => {
+    expect(answerParagraphs("A.\r\n\r\nB.")).toEqual(["A.", "B."]);
+    expect(answerParagraphs("x\r\ny")).toEqual(["x\ny"]);
+  });
+  it("collapses runs of blank lines and trims the edges", () => {
+    expect(answerParagraphs("\n\nA.\n\n\n\nB.\n\n")).toEqual(["A.", "B."]);
+  });
+  it("never yields an empty or whitespace-only paragraph", () => {
+    expect(answerParagraphs("")).toEqual([]);
+    expect(answerParagraphs("   \n\n  \t \n")).toEqual([]);
   });
 });

@@ -1,3 +1,4 @@
+import { MAX_TOPK } from "./QueryOptionsMenu";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
@@ -192,12 +193,12 @@ function LeverControls({
           type="number"
           aria-label="top_k"
           min={1}
-          max={20}
+          max={MAX_TOPK}
           value={value.topK ?? ""}
           placeholder={topKPlaceholder}
           onChange={(e) => {
             const v = e.target.value.trim();
-            onChange({ topK: v === "" ? null : Math.max(1, Math.min(20, Number(v) || 1)) });
+            onChange({ topK: v === "" ? null : Math.max(1, Math.min(MAX_TOPK, Number(v) || 1)) });
           }}
           className={`${sel} tabular-nums`}
         />
