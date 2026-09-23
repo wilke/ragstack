@@ -136,9 +136,11 @@ async def test_core_op_not_admin_gated(
 # documents router include carries the resolve_tenant gate, so a keyless-off
 # server returns 401 without a key. #130 tenant-stamped jobs and scoped
 # job_store.get(job_id) by tenant_id (admin bypasses, logged, per ADR-0003
-# §5), closing the cross-tenant IDOR this comment used to describe. A real
-# assertion here still needs a two-tenant fixture this single-tenant probe
-# harness doesn't have; that conformance coverage is tracked under #100.
+# §5), closing the cross-tenant IDOR this comment used to describe. The
+# cross-tenant assertion lives in test_job_scope.py (#628): P1 uploads, P1 and
+# admin read the real status, P2 and a second tenant (B) read "unknown",
+# byte-identical to a missing id. It needs the four keyed principals, so it
+# runs under `make test-conformance-keyed`.
 # --------------------------------------------------------------------------- #
 _PROBE = "___conformance_authz_probe___"
 EXTRA_TENANT_OPS = [
