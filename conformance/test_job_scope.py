@@ -1,9 +1,21 @@
-"""Conformance: an ingest job's status is readable by its submitter and an admin,
-and by nobody else (#628; matrix row A4; the IDOR #130 closed).
+"""Conformance: an ingest job's status is readable within the submitter's TENANT and
+by an admin, and by no other tenant (#628; matrix row A4; the IDOR #130 closed).
+
+The scope is the tenant, not the submitting principal: the server compares the
+job's stamped tenant_id with the caller's (jobstore._apply_tenant_scope). The
+keyed harness maps every key to its own subject, which is why P1/P2/B behave as
+separate tenants here; two API keys absent from API_KEY_TENANTS would share the
+tenant "default" and read each other's jobs.
+
+On the keyed in-memory boot the P1 job lands `failed` (ResponseHandlingException:
+build_collection_entry constructs a QdrantVectorStore for non-default collections
+regardless of VECTOR_BACKEND=memory, and QDRANT_URL is dead-pinned — #392, pre-
+existing on main). The assertions here are about visibility, so `failed` is a real
+status for their purpose; do not chase it as a regression of this file.
 
 ``POST /v1/ingest/upload`` answers 202 with a ``job_id``, and the contract says
 to poll ``GET /v1/ingest/{job_id}`` for it. That read is tenant-scoped: the
-submitter and an admin get the job's real status; any other principal gets the
+submitter's tenant and an admin get the job's real status; any other tenant gets the
 SAME 200 ``{"status": "unknown", ...}`` a missing id gets, so the endpoint never
 confirms that a foreign id exists. Before this file, the cross-tenant half was
 covered only by Python unit tests (``python/tests/api/
@@ -152,7 +164,7 @@ def _poll(base_url: str, job_id: str, headers: dict[str, str]) -> httpx.Response
 
 
 # --------------------------------------------------------------------------- #
-# The submitter and an admin see the real status
+# The submitter's tenant and an admin see the real status
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("who", ["p1", "admin"])
 def test_submitter_and_admin_read_the_real_status(
