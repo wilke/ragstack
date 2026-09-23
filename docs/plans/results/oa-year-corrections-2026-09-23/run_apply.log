@@ -1,0 +1,20 @@
+ledger rows in scope=8208 SUFFIX=''
+BEFORE: {"bytes": 913466820550, "avail_gb": 1152, "status": "green", "segments": 193, "points": 47625155, "optimizer": "ok"}
+qdrant todo=8208 already=0 years=20
+  [q 1] 0.2s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 3] 0.7s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 6] 1.1s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 13] 1.6s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 595] 2.3s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 879] 2.9s status=yellow segs=194 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 2,090] 4.1s status=yellow segs=194 d=+0.86GiB avail=1151G pts=47,625,155
+  [q 4,868] 6.1s status=yellow segs=194 d=+2.24GiB avail=1150G pts=47,625,155
+  [q 6,169] 7.4s status=yellow segs=194 d=+3.08GiB avail=1149G pts=47,625,155
+  [q 6,191] 7.9s status=yellow segs=194 d=+3.24GiB avail=1149G pts=47,625,155
+  [q 6,990] 8.6s status=yellow segs=194 d=+3.30GiB avail=1149G pts=47,625,155
+  [q 8,186] 11.3s status=yellow segs=194 d=+3.61GiB avail=1149G pts=47,625,155
+  [q 8,208] 11.8s status=yellow segs=194 d=+3.61GiB avail=1149G pts=47,625,155
+QDRANT DONE 8,208 in 12.0s
+es todo=8208 already=0
+ES DONE 8,208 in 4.7s errors=0
+AFTER: {"bytes": 917354176119, "avail_gb": 1149, "status": "yellow", "segments": 194, "points": 47625155, "optimizer": "ok"}

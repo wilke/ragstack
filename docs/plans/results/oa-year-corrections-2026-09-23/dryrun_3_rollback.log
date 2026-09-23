@@ -1,0 +1,2 @@
+to revert: 10 corrections (SUFFIX='.dryrun')
+ROLLBACK COMPLETE: 10 reverted. Verify: ES year>2026 should return to 8,208 (or the subset size).
