@@ -22,14 +22,17 @@
 08:44:30Z  worker-ragstack-dev-1: task received step=pack
 ```
 
-**The task is tied to the API's job, not just adjacent in time.** The worker's task workdir
-`/scout/wf/gowe/workdir/ragstack-dev-1/task_cc7850d3-801f-4326-bca7-9d5fe565ae60/` carries the collection name
-`dispatch-proof`, the API's `"job_id": "9f9cfc5b-2db5-4627-ad08-eea0405c36ce"`, and the GoWe submission id
-**`sub_c4b49e40-bdfc-4658-ad4f-8e942ec32cd8`** in its inputs. GoWe's own record of that submission
-(`GET :8091/api/v1/submissions/sub_c4b49e40…`, 08:53Z): workflow `ragstack-bulk-ingest`, state **`COMPLETED`**, inputs
+**The task is tied to the API's job, not just adjacent in time** — three joins, strongest first:
+
+1. **The dev API log records the hand-off** (`/rag/data/tenants/dev/logs/api-dev.log`, grep by the *submission* id, not the job id):
+   `08:44:15.062Z rid=12b812bc13c34aea route="POST /v1/ingest/upload" msg="gowe: submitted sub_c4b49e40-bdfc-4658-ad4f-8e942ec32cd8 (1 item(s)) as workflow wf_518c2e23-d988-48db-ac43-2279869ee1fe"`.
+2. **The worker's own command lines** (`worker-ragstack-dev-1.log`, the `executing in Apptainer` lines): ingest carries
+   `--collection ragstack_lib_dispatch_proof_… --collection-id dispatch-proof --chunk-method fixed --chunk-size 512 --chunk-overlap 64 --qdrant-url http://localhost:24041 --es-url http://localhost:24043 --embedding-url :9001 :9002`; pack carries `--job-id 9f9cfc5b-… --spec-hash c0ba7587`.
+3. **The pack step's outputs** in `/scout/wf/gowe/workdir/ragstack-dev-1/task_cc7850d3-801f-4326-bca7-9d5fe565ae60/1/`: `manifest.json` (collection_id, job_id, spec_hash) and `receipt.json` (the staged source path under `sub_c4b49e40…`).
+
+GoWe's own record of the submission (`GET :8091/api/v1/submissions/sub_c4b49e40…`, 08:53Z, author-observed with a token; the reviewer could not reproduce without one): workflow `ragstack-bulk-ingest`, state **`COMPLETED`**, inputs
 `job_id=9f9cfc5b…`, `collection_id=dispatch-proof`, `chunk_method=fixed`, `qdrant_url=http://localhost:24041`,
-`es_url=http://localhost:24043`, `embedding_url=[:9001, :9002]`, `spec_hash=c0ba7587` — the dev stores, the dev spec. (The dev API log itself records nothing for the submission —
-only my 404'd polls of the job id — so the workdir is the join; see #628.)
+`es_url=http://localhost:24043`, `embedding_url=[:9001, :9002]`, `spec_hash=c0ba7587` — the dev stores, the dev spec.
 
 Each DAG step is dispatched only after its predecessor succeeds, and the point landed between `ingest` and `pack` — so the chain **API submit → GoWe scheduling by `worker_group` label → `ragstack-dev` worker → tool image → dev Qdrant** is exercised end to end on dev, for the first time through the API (earlier dev runs of the semantic tool went through `ingest_shard.py` directly and never touched the registry — which is why `sem-e2e` was "unknown collection" to the API).
 
@@ -41,8 +44,8 @@ A non-admin can only create default-spec (fixed/512) collections. Proving `seman
 
 ## Observations (not failures)
 
-- **`stage-out failed … workspace stager: no authentication`** (4 WARN lines per task) — pre-existing on all four `ragstack-hackathon` workers since 2026-09-17 13:31, and **by design, not a misconfiguration** (traced by the GoWe session): `--workspace-stager` is required on these groups (GoWe #267/#268); the worker makes an eager per-file `ws://` upload attempt with the step's `OutputDestination`, and plain `worker`-executor steps (extract/ingest/pack) never receive a per-task credential, so that attempt fails every time and falls back to `file://`; the real delivery happens server-side afterwards with the submission's own token. Confirmed on this submission: `output_destination=ws:///awilke@bvbrc/home/.ragstack/collections/dispatch-proof/versions/`, **`output_state=delivered`**. No token to add anywhere. Cosmetic fix tracked as **GoWe #272** (skip or downgrade the attempt when no credential exists).
-- **The job id in the 202 has no read endpoint**: `GET /v1/jobs/9f9cfc5b…` → 404 for *everyone* — there is no per-id route in `jobs.py` or the contract; `GET /v1/jobs` → 403 for non-admins by design (#85; tenant-scoped list is #100, open). The job row itself exists (`job_lifecycle` runs at `documents.py:1017`, before the GoWe dispatch at `:1027`, for every backend). **#628** — fix is a scoped `GET /v1/jobs/{id}` (contract first), or stop handing out the id until one exists.
+- **`stage-out failed … workspace stager: no authentication`** (2/2/4 WARN lines for extract/ingest/pack, 8 per submission) — pre-existing on three of the four `ragstack-hackathon` workers (earliest 2026-09-17 08:56 -05:00 on hackathon-2; -3 and -4 later that day; hackathon-1 has run no task since the flag was added), and **by design, not a misconfiguration** (traced by the GoWe session): `--workspace-stager` is required on these groups (GoWe #267/#268); the worker makes an eager per-file `ws://` upload attempt with the step's `OutputDestination`, and plain `worker`-executor steps (extract/ingest/pack) never receive a per-task credential, so that attempt fails every time and falls back to `file://`; the real delivery happens server-side afterwards with the submission's own token. Confirmed on this submission: `output_destination=ws:///awilke@bvbrc/home/.ragstack/collections/dispatch-proof/versions/`, **`output_state=delivered`**. No token to add anywhere. Cosmetic fix tracked as **GoWe #272** (skip or downgrade the attempt when no credential exists).
+- **I polled the wrong path for 2 minutes.** The 24 polls went to `GET /v1/ingest/jobs/{id}` (does not exist → 404) and one to `GET /v1/jobs/{id}` (does not exist either; `/v1/jobs` is the admin-only list, #85/#100). The per-id read is **`GET /v1/ingest/{job_id}`** (`contracts/openapi.yaml:550`, `api/routers/documents.py:1555`, tenant-scoped since #130) — and as the submitter it answered `{"status":"completed","items":{"total":1,"completed":1,...},"collection":"dispatch-proof"}`; a fake id answers 200 `unknown` by design (no IDOR). The job row is created for every backend (`job_lifecycle` at `api/routers/documents.py:1017`, before the GoWe dispatch at `:1027`). **#628** was filed on the wrong premise and has been re-scoped to what is real: the Go stub answers `not_found` where the contract says `unknown`; no conformance test covers the cross-tenant job read; the 202 body does not name the poll path (which is how this happened).
 - `GET /v1/collections/{id}` → 405 (not in the contract; the listing is the read path). Not a bug, noted so nobody re-discovers it.
 
 ## State left behind
