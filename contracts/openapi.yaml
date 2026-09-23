@@ -285,7 +285,10 @@ paths:
               $ref: "#/components/schemas/IngestRequest"
       responses:
         "200":
-          description: Ingestion accepted
+          description: >-
+            Ingestion accepted. Poll GET /v1/ingest/{job_id} with the returned
+            `job_id` for progress; any principal of the submitter's tenant (and an admin) can read
+            it — a foreign or unknown id answers 200 with status "unknown".
           content:
             application/json:
               schema:
@@ -439,7 +442,11 @@ paths:
                     writable default (see the endpoint description).
       responses:
         "202":
-          description: Upload accepted and queued for ingestion
+          description: >-
+            Upload accepted and queued for ingestion. Poll
+            GET /v1/ingest/{job_id} with the returned `job_id` for progress;
+            any principal of the submitter's tenant (and an admin) can read it — a foreign or
+            unknown id answers 200 with status "unknown".
           content:
             application/json:
               schema:
@@ -554,6 +561,15 @@ paths:
       description: >
         Reports job status, one of: accepted, running, completed, failed.
         An unknown job_id returns status "unknown" with HTTP 200.
+
+
+        Tenant-scoped (#130), not submitter-scoped: any principal of the tenant
+        that submitted the job, and an admin, see its real status (API keys absent
+        from API_KEY_TENANTS share the tenant "default"). A job belonging to any
+        other tenant answers
+        exactly like an unknown one — 200, status "unknown", `chunk_ids` empty,
+        `items` and `collection` null — so this endpoint never confirms that a
+        foreign job_id exists.
       tags: [Documents]
       parameters:
         - name: job_id

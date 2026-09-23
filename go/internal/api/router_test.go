@@ -117,6 +117,44 @@ func TestIngestEndpoint(t *testing.T) {
 	}
 }
 
+// TestIngestStatusUnknownJob pins the contract's answer for a job id the server
+// cannot read (#628): 200, status "unknown", the job_id echoed, and exactly the
+// five IngestResponse keys. It used to answer the undefined status "not_found".
+func TestIngestStatusUnknownJob(t *testing.T) {
+	r := newRouter()
+	const jobID = "0b6c2a4e-3f1d-4c55-9a7e-2d8f1e0c9b31"
+	req := httptest.NewRequest(http.MethodGet, "/v1/ingest/"+jobID, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["job_id"] != jobID {
+		t.Errorf("job_id: expected %q echoed, got %v", jobID, body["job_id"])
+	}
+	if body["status"] != "unknown" {
+		t.Errorf("status: expected \"unknown\", got %v", body["status"])
+	}
+	if ids, ok := body["chunk_ids"].([]any); !ok || len(ids) != 0 {
+		t.Errorf("chunk_ids: expected [], got %#v", body["chunk_ids"])
+	}
+	for _, k := range []string{"items", "collection"} {
+		v, present := body[k]
+		if !present || v != nil {
+			t.Errorf("%s: expected present and null, got present=%v value=%#v", k, present, v)
+		}
+	}
+	// additionalProperties:false in ingest_response.json: no extra keys.
+	if len(body) != 5 {
+		t.Errorf("expected exactly 5 keys, got %d: %v", len(body), body)
+	}
+}
+
 func TestListDocumentsReturnsEmptyList(t *testing.T) {
 	r := newRouter()
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents", nil)

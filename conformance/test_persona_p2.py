@@ -17,8 +17,9 @@ there is no ownership seam to assert against; the fixture skips there.
 
 Still blocked, and deliberately not faked here:
 
-* **A4** (job status is not readable across tenants) needs a second *tenant*,
-  not a second principal in one tenant — tracked under #100.
+* **A4** (job status is not readable across tenants) is no longer blocked: every
+  keyed principal maps to its own subject, so P2 and B are both foreign to P1.
+  It lives in ``test_job_scope.py`` (#628).
 * **C7** (an oversized/wrong-type upload is refused) needs C1: conformance
   still never uploads a file.
 * **E1** (an evicted collection answers 503 + Retry-After) needs a real
