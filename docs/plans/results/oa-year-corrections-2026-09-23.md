@@ -126,8 +126,8 @@ Launched under `nohup` with the pid recorded in `apply.pid`; the process exited 
 the in-run floor checks peaked at +3.61 GiB), status yellow, segments 193 → 194, while the optimizer merged the
 appendable segment; the peak after the run's end was not sampled. It then settled at **+0.13 GiB** (`verify_full.log` du 913,602,568,579 − BEFORE) with 193 segments and status green. That is
 0.16 GiB / 10k points net — consistent with the 0.140 GiB / 10k the 09-16 record measured. Note the transient is
-a near-fixed cost of one segment merge, not proportional to points: 8,208 points cost ~3.6 GiB against the 5.2 GiB the
-canary's 50,200 points cost 5.2 GiB.
+mostly the cost of one segment merge, far from proportional to points: 8,208 points cost ~3.6 GiB, the canary's
+50,200 points cost 5.2 GiB.
 
 **Live-tenant impact:** not re-measured for a 17-second write; the 09-16 probes covered 30× this volume.
 
