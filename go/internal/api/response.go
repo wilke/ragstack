@@ -41,11 +41,23 @@ type RetrieveResponse struct {
 	Sources []Source `json:"sources"`
 }
 
-// IngestResponse is the response for POST /v1/ingest and GET /v1/ingest/{job_id}.
+// IngestResponse is the response for POST /v1/ingest and GET /v1/ingest/{job_id}
+// (contracts/schemas/ingest_response.json). Items and Collection are nullable in
+// the contract and are always emitted, as null when unset, like the Python side.
 type IngestResponse struct {
-	JobID    string   `json:"job_id"`
-	Status   string   `json:"status"`
-	ChunkIDs []string `json:"chunk_ids"`
+	JobID      string            `json:"job_id"`
+	Status     string            `json:"status"`
+	ChunkIDs   []string          `json:"chunk_ids"`
+	Items      *IngestItemCounts `json:"items"`
+	Collection *string           `json:"collection"`
+}
+
+// IngestItemCounts is per-document progress for a batch/directory ingest.
+type IngestItemCounts struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Pending   int `json:"pending"`
 }
 
 // DocumentInfo represents metadata about an indexed document.
