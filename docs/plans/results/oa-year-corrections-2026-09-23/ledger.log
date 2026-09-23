@@ -1,0 +1,9 @@
+plan ids=8408
+canary corrections already done=200  remaining=8208
+fetched=8208 missing=0
+prior_year<=2026 or non-int: 0   prior!=plan: 0   prior_date present: 0
+ES cross-check: missing=0 disagree=0 e.g.[]
+LEDGER WRITTEN corrections_ledger.jsonl rows= 8208
+prior years: [(2027, 244), (2028, 190), (2029, 155), (2030, 519), (2031, 163), (2032, 211), (2033, 195), (2034, 223), (2035, 360), (2036, 214), (2037, 161), (2038, 168)] ...
+new years: [(2002, 1), (2008, 2), (2009, 3), (2010, 7), (2011, 582), (2012, 284), (2013, 1211), (2014, 1825), (2015, 953), (2016, 1301), (2017, 22), (2018, 799), (2019, 290), (2020, 329), (2021, 50), (2022, 57), (2023, 136), (2024, 120), (2025, 214), (2026, 22)]
+distinct pmcids: 611

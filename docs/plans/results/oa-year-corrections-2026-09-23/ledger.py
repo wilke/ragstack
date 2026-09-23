@@ -3,7 +3,9 @@ Read-only against both stores. Same row format as canary_ledger.jsonl."""
 import json,urllib.request,glob,os,sys
 C="ragstack_lib_open_access_salesforce_sfr_embedding_4096_fixed_token_512_64_cd24acfc"
 QD="http://localhost:6333"; ES="http://localhost:9200"
-BF="/tmp/claude-3581/-home-wilke-Development-ragstack/5f5c3e4a-7165-4b98-84ba-6da7bc9b431c/scratchpad/oa-year-backfill"
+# The 09-16 backfill working dir (plan/, canary_*, discovery.pkl). NOT in git; session-scoped /tmp by default.
+# Override with OA_BACKFILL_DIR once it has been copied to durable storage (e.g. /rag/data/oa-year-backfill).
+BF=os.environ.get("OA_BACKFILL_DIR","/tmp/claude-3581/-home-wilke-Development-ragstack/5f5c3e4a-7165-4b98-84ba-6da7bc9b431c/scratchpad/oa-year-backfill")
 def post(u,b,t=300):
     r=urllib.request.Request(u,data=json.dumps(b).encode(),headers={'Content-Type':'application/json'})
     return json.load(urllib.request.urlopen(r,timeout=t))

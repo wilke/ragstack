@@ -1,0 +1,12 @@
+=== scope: 10 rows, expect=reverted, subset=True ===
+  PASS  qdrant points_count == 47,625,155  got 47,625,155
+  PASS  qdrant status green  optimizer=ok segments=193
+  PASS  ES doc count == 47,625,155  got 47,625,155
+  PASS  10/10 qdrant year,date == expected (pmcid,chunk_id intact)  0 bad e.g.[]
+  PASS  qdrant year/date are int  0 bad
+  PASS  10/10 ES metadata.year,date == expected and int (pmcid intact)  0 bad e.g.[]
+  PASS  ES sibling metadata intact  0 e.g.[]
+  PASS  random 10: new_year == discovery.jsonl year for pmcid  0 e.g.[]
+  PASS  all 10: new_year == discovery year  0
+
+VERIFY: ALL PASS

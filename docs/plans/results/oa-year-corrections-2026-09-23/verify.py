@@ -3,7 +3,9 @@ Full mode also checks the global ES counts and that writes have stopped (update_
 import json,urllib.request,os,sys,random,pickle,subprocess,time
 C="ragstack_lib_open_access_salesforce_sfr_embedding_4096_fixed_token_512_64_cd24acfc"
 QD="http://localhost:6333"; ES="http://localhost:9200"
-BF="/tmp/claude-3581/-home-wilke-Development-ragstack/5f5c3e4a-7165-4b98-84ba-6da7bc9b431c/scratchpad/oa-year-backfill"
+# The 09-16 backfill working dir (plan/, canary_*, discovery.pkl). NOT in git; session-scoped /tmp by default.
+# Override with OA_BACKFILL_DIR once it has been copied to durable storage (e.g. /rag/data/oa-year-backfill).
+BF=os.environ.get("OA_BACKFILL_DIR","/tmp/claude-3581/-home-wilke-Development-ragstack/5f5c3e4a-7165-4b98-84ba-6da7bc9b431c/scratchpad/oa-year-backfill")
 D=f"/rag/data/qdrant/storage/collections/{C}"
 def post(u,b,t=300):
     r=urllib.request.Request(u,data=json.dumps(b).encode(),headers={'Content-Type':'application/json'})
@@ -51,7 +53,7 @@ chk("ES sibling metadata intact", not sib, f"{len(sib)} e.g.{sib[:2]}")
 prim=pickle.load(open(f"{BF}/discovery.pkl","rb"))["prim"]
 samp=random.Random(23).sample(led,min(50,len(led)))
 dis=[(e["qid"],e["pmcid"],e["new_year"],prim.get(e["pmcid"])) for e in samp if prim.get(e["pmcid"])!=e["new_year"]]
-chk(f"random {len(samp)}: new_year == discovery.jsonl year for pmcid", not dis, f"{len(dis)} e.g.{dis[:3]}")
+chk(f"random {len(samp)}: new_year == discovery.pkl prim year for pmcid", not dis, f"{len(dis)} e.g.{dis[:3]}")
 alld=[e for e in led if prim.get(e["pmcid"])!=e["new_year"]]
 chk(f"all {len(led)}: new_year == discovery year", not alld, f"{len(alld)}")
 if not subset:

@@ -1,0 +1,12 @@
+ledger rows in scope=10 SUFFIX='.dryrun'
+BEFORE: {"bytes": 913466820260, "avail_gb": 1152, "status": "green", "segments": 193, "points": 47625155, "optimizer": "ok"}
+qdrant todo=10 already=0 years=5
+  [q 1] 0.2s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 3] 0.7s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 8] 1.1s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 9] 1.6s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+  [q 10] 2.1s status=green segs=193 d=+0.00GiB avail=1152G pts=47,625,155
+QDRANT DONE 10 in 2.3s
+es todo=10 already=0
+ES DONE 10 in 0.2s errors=0
+AFTER: {"bytes": 913466820521, "avail_gb": 1152, "status": "green", "segments": 193, "points": 47625155, "optimizer": "ok"}

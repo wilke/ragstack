@@ -5,6 +5,7 @@ ES script metadata.year=prior_year, remove metadata.date. Both stores. Resumable
   python3 rollback_corrections.py --dry-run
   python3 rollback_corrections.py --execute          (env SUBSET=<qid file>, SUFFIX=<done-file suffix>)"""
 import json,urllib.request,os,sys,time,collections
+from pathlib import Path
 C="ragstack_lib_open_access_salesforce_sfr_embedding_4096_fixed_token_512_64_cd24acfc"
 QD="http://localhost:6333"; ES="http://localhost:9200"
 SUF=os.environ.get("SUFFIX",""); DONE=f"rollback_corrections_done{SUF}.txt"
@@ -12,7 +13,11 @@ def post(u,b,t=300,ndjson=False):
     data=b if ndjson else json.dumps(b).encode()
     r=urllib.request.Request(u,data=data,headers={'Content-Type':'application/x-ndjson' if ndjson else 'application/json'})
     return json.load(urllib.request.urlopen(r,timeout=t))
-led=[json.loads(l) for l in open("corrections_ledger.jsonl")]
+# The ledger is resolved next to this script, never from cwd.
+LEDGER=Path(__file__).resolve().parent/"corrections_ledger.jsonl"
+if not LEDGER.is_file():
+    sys.exit(f"refusing: ledger not found at {LEDGER} (it must sit next to rollback_corrections.py)")
+led=[json.loads(l) for l in open(LEDGER)]
 if os.environ.get("SUBSET"):
     sub={l.strip() for l in open(os.environ["SUBSET"]) if l.strip()}
     led=[e for e in led if e["qid"] in sub]; assert len(led)==len(sub)

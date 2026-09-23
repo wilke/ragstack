@@ -1,0 +1,20 @@
+=== scope: 8208 rows, expect=applied, subset=False ===
+  PASS  qdrant points_count == 47,625,155  got 47,625,155
+  PASS  qdrant status green  optimizer=ok segments=193
+  PASS  ES doc count == 47,625,155  got 47,625,155
+  PASS  8208/8208 qdrant year,date == expected (pmcid,chunk_id intact)  0 bad e.g.[]
+  PASS  qdrant year/date are int  0 bad
+  PASS  8208/8208 ES metadata.year,date == expected and int (pmcid intact)  0 bad e.g.[]
+  PASS  ES sibling metadata intact  0 e.g.[]
+  PASS  random 50: new_year == discovery.jsonl year for pmcid  0 e.g.[]
+  PASS  all 8208: new_year == discovery year  0
+  PASS  ES year>2026 == 0  got 0
+  PASS  ES has-year == 7,294,845 (unchanged)  got 7,294,845
+  PASS  ES has-date == 261,216  got 261,216
+  PASS  qdrant int-match year=2014 on corrected subset == 1825  got 1825
+  PASS  ES int-term year=2014 on corrected subset == 1825  got 1825
+  PASS  qdrant update_queue length == 0  [(0, {'length': 0, 'op_num': 22172867})]
+  PASS  three du samples byte-identical (writes stopped)  [913602568579, 913602568579, 913602568579]
+  PASS  qdrant optimizer_status ok after settle  ok segs=193
+
+VERIFY: ALL PASS
