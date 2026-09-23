@@ -1323,6 +1323,7 @@ leaves the prior version intact.
 is the case where the *server* chose, so a caller who omitted the field learns
 where the write landed without guessing. The id is always one from the caller's
 own `GET /v1/collections`, so echoing it discloses nothing.
+**Poll `GET /v1/ingest/{job_id}`** with the returned `job_id` for progress; only the submitter (and an admin) can read it — a foreign or unknown id answers **200** with `status: "unknown"`.
 
 ```bash
 curl -s "$BASE"/v1/ingest \
@@ -1334,7 +1335,10 @@ curl -s "$BASE"/v1/ingest \
 ### GET /v1/ingest/{job_id}
 
 Polls status: `accepted` → `running` → `completed` | `failed` (unknown id →
-`unknown`, HTTP 200). Batch/directory jobs include `items`:
+`unknown`, HTTP 200). **Tenant-scoped** (#130): the submitter and an admin see the
+real status; another principal's job id answers exactly like an unknown one —
+`unknown`, `chunk_ids: []`, `items` and `collection` null — so the endpoint never
+confirms that a foreign id exists. Batch/directory jobs include `items`:
 `{ total, completed, failed, pending }`. The response also carries `collection` —
 the row's **own** stamp, so a poll answers "where did this land?" with the same
 id the accept did; `null` on legacy rows written before the stamp existed.
@@ -1368,6 +1372,8 @@ curl -s -X POST "$BASE"/v1/ingest/upload \
   -F 'collection=my-papers'
 # {"job_id": "...", "status": "accepted", "collection": "my-papers"}
 ```
+
+**Poll `GET /v1/ingest/{job_id}`** with the returned `job_id` for progress; only the submitter (and an admin) can read it — a foreign or unknown id answers **200** with `status: "unknown"`.
 
 Bounds are all checked **before anything is staged or written**, and re-checked
 while the files stream out of the server's spool, so nothing oversized reaches
