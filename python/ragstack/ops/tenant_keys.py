@@ -22,6 +22,11 @@ is TRUE rather than defended is one that never prints a map value.
     THE ONLY THINGS THAT LEAVE THIS MODULE ARE SHA-256 PREFIXES, COUNTS, AND
     THE THREE ROLE CONSTANTS. NOTHING READ FROM A CONFIG FILE IS PRINTED.
 
+That is exactly the boundary, no wider: three things that are NOT config-file
+content do print verbatim — tenant directory names (from ``--root``'s listing
+or argv), argparse's echo of a bad argument, and the operator's own
+``--subject`` candidates. All are operator- or filesystem-supplied.
+
 So a subject is reported as ``sha256(label)[:12]`` — the same disclosure level
 the module already accepts for the key itself — and never as text. The audit
 that motivated the tool ("thirty keys share one subject") is a count per
@@ -73,15 +78,25 @@ FINGERPRINT_LEN = 12
 
 
 def fingerprint(value: str, n: int = FINGERPRINT_LEN) -> str:
-    """``sha256(value)[:n]`` — the one shape of anything value-derived here."""
-    return hashlib.sha256(value.encode()).hexdigest()[:n]
+    """``sha256(value)[:n]`` — the one shape of anything value-derived here.
+
+    ``surrogatepass`` because ``json.loads`` accepts a lone surrogate and the API
+    starts on it; a plain ``.encode()`` would raise and make ONE odd label hide
+    every key in the tenant — the worst direction for an inventory to be wrong.
+    """
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:n]
 
 
 class Secret:
     """A string that will not print itself.
 
     ``repr``, ``str`` and ``format`` render ``<redacted>``, so a Secret is safe in
-    an f-string, a log line, a traceback and ``json.dumps(..., default=str)``.
+    an f-string, a log line, a locals-capturing traceback and
+    ``json.dumps(..., default=str)``. Keys and labels are wrapped at the parse
+    (``_keys`` / ``_map``) so everything ``summarize`` holds is a Secret. What is
+    NOT wrapped: the ``env`` dict itself (raw file text) — ``summarize`` drops
+    it the moment parsing is done, and the CLI catches every exception per
+    tenant precisely so that no traceback of the parsing frames is rendered.
     Equality and hashing use the real value so it remains usable as a dict key.
     It refuses to pickle: ``pickle.dumps`` would write the value in plaintext.
     """
@@ -127,11 +142,18 @@ class UnrecognisedKeyConfig(ValueError):
     """
 
 
-def _decode(name: str, raw: str) -> object | None:
-    """JSON-decode ``raw`` or raise. ``None`` for absent/empty (the API's default)."""
-    raw = (raw or "").strip()
-    if not raw:
+def _decode(env: dict[str, str], name: str) -> object | None:
+    """JSON-decode ``env[name]`` or raise. ``None`` only when the setting is ABSENT.
+
+    Present-but-empty (``API_KEYS=``) is not the default: pydantic-settings cannot
+    JSON-decode ``""`` for a complex field and the API fails to boot on it, and
+    ``apptainer/up.sh`` sources with ``set -a`` so an empty line does reach it.
+    """
+    if name not in env:
         return None
+    raw = env[name].strip()
+    if not raw:
+        raise UnrecognisedKeyConfig(f"{name} is present but empty; the API refuses to start on it")
     try:
         return json.loads(raw)
     except (ValueError, RecursionError) as e:
@@ -141,32 +163,36 @@ def _decode(name: str, raw: str) -> object | None:
         ) from None
 
 
-def _keys(env: dict[str, str]) -> list[str]:
+def _keys(env: dict[str, str]) -> list[Secret]:
     """``API_KEYS`` as the API reads it: a JSON list of strings. Anything else raises."""
-    obj = _decode("API_KEYS", env.get("API_KEYS", ""))
+    obj = _decode(env, "API_KEYS")
     if obj is None:
         return []
     if isinstance(obj, list) and all(isinstance(x, str) for x in obj):
-        return obj
+        return [Secret(x) for x in obj]
     kind = type(obj).__name__ if not isinstance(obj, list) else "list with non-string items"
     raise UnrecognisedKeyConfig(f"API_KEYS decoded to {kind}; the API accepts only a list of strings")
 
 
-def _map(env: dict[str, str], name: str) -> dict[str, str]:
-    """A ``{key: label}`` side map as the API reads it. Absent → {}; wrong shape raises."""
-    obj = _decode(name, env.get(name, ""))
+def _map(env: dict[str, str], name: str) -> dict[Secret, Secret]:
+    """A ``{key: label}`` side map as the API reads it. Absent → {}; wrong shape raises.
+
+    Both sides wrapped: the key IS a credential and the label is config text
+    this module has decided never to print.
+    """
+    obj = _decode(env, name)
     if obj is None:
         return {}
     if isinstance(obj, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in obj.items()):
-        return obj
+        return {Secret(k): Secret(v) for k, v in obj.items()}
     kind = type(obj).__name__ if not isinstance(obj, dict) else "dict with non-string entries"
     raise UnrecognisedKeyConfig(f"{name} decoded to {kind}; the API accepts only a string→string dict")
 
 
-def _role(label: str | None) -> str:
+def _role(label: Secret | None) -> str:
     if label is None:
         return ""
-    return label if label in KNOWN_ROLES else UNRECOGNISED
+    return label.reveal() if label.reveal() in KNOWN_ROLES else UNRECOGNISED
 
 
 def summarize(env: dict[str, str]) -> list[ApiKeyInfo]:
@@ -178,12 +204,13 @@ def summarize(env: dict[str, str]) -> list[ApiKeyInfo]:
     keys = _keys(env)
     subjects = _map(env, "API_KEY_TENANTS")
     roles = _map(env, "API_KEY_ROLES")
+    del env  # raw file text; from here this frame holds only Secrets (tested)
     out = []
     for k in keys:
         label = subjects.get(k)
         out.append(ApiKeyInfo(
-            fingerprint=Secret(k).fingerprint(),
-            subject=UNMAPPED if label is None else fingerprint(label),
+            fingerprint=k.fingerprint(),
+            subject=UNMAPPED if label is None else label.fingerprint(),
             role=_role(roles.get(k)),
         ))
     return out
@@ -239,7 +266,7 @@ def reserved_prefix_collisions(env: dict[str, str], prefix: str = "rsk_") -> int
     earlier version returned ``-1`` for "cannot tell", and ``-1`` is truthy,
     ``< 1`` and sums into a total — every way a caller can misread it.
     """
-    return sum(1 for k in _keys(env) if k.startswith(prefix))
+    return sum(1 for k in _keys(env) if k.reveal().startswith(prefix))
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -252,7 +279,8 @@ def _main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=TENANT_ROOT)
     ap.add_argument("--subject", action="append", default=[], metavar="LABEL",
                     help="a candidate subject label (your own input); reports how many keys "
-                         "carry it, by hash match. Repeatable.")
+                         "carry it. EXACT, case-sensitive match — a wrong-case or "
+                         "trailing-space guess reports 0. Repeatable.")
     a = ap.parse_args(argv)
 
     root = Path(a.root)

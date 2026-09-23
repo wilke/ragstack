@@ -34,7 +34,7 @@ from ragstack.ops.tenant_keys import (
     summarize_tenant,
 )
 
-M1, M2, M3 = "ZQMARKERQZ", "XJMARKERJX", "PVMARKERVP"   # distinct per key — never shared
+M1, M2 = "ZQMARKERQZ", "XJMARKERJX"   # distinct per key — never shared; K3 is bare hex, covered by prefix checks
 K1 = f"rk-{M1}-SUPERSECRETVALUE123456"
 K2 = f"aweb_{M2}-DEADBEEFCAFEBABE0123456789"
 K3 = _secrets.token_hex(32)                              # what the ctl mints
@@ -53,7 +53,7 @@ def _assert_clean(blob: str, where: str) -> None:
         for n in PREFIXES:
             assert s[:n] not in blob, f"{where}: {n}-char prefix of a key on output"
         assert s not in blob and s[::-1] not in blob and s.upper() not in blob
-    for m in (M1, M2, M3):
+    for m in (M1, M2):
         assert m not in blob, f"{where}: marker on output"
     assert "asm-ro" not in blob and "svc-asm-web" not in blob, f"{where}: a config LABEL on output"
 
@@ -154,6 +154,19 @@ def test_subject_groups_give_the_thirty_keys_one_subject_audit_without_names(tmp
     assert "svc-hackathon-admin" not in out  # ...a label from the config never does
 
 
+def test_subject_candidate_that_differs_by_case_or_space_reports_zero_and_echoes_nothing(tmp_path, capsys) -> None:
+    """A mutant matching case-insensitively and echoing the CONFIG's spelling passed
+    every earlier test: the only --subject tests used exact labels."""
+    _tenant(tmp_path, "t", SHAPES["real"])
+    # candidates that differ by case/underscore only — none CONTAINS the label,
+    # so the operator echo cannot mask a config echo
+    _main(["--root", str(tmp_path), "--subject", "ASM-RO", "--subject", "asm_ro", "--subject", "Svc-Asm-Web"])
+    out = capsys.readouterr().out
+    assert "--subject 'ASM-RO': 0 keys" in out and "--subject 'asm_ro': 0 keys" in out
+    assert "--subject 'Svc-Asm-Web': 0 keys" in out
+    _assert_clean(out, "case-variant --subject")
+
+
 def test_resolve_subjects_matches_by_hash() -> None:
     infos = summarize(REAL)
     assert resolve_subjects(infos, ["asm-ro", "svc-asm-web", "other"]) == {"asm-ro": 1, "svc-asm-web": 1, "other": 0}
@@ -192,8 +205,33 @@ def test_the_exception_message_carries_no_key_material() -> None:
         _assert_clean(str(ei.value), "exception")
 
 
-def test_absent_config_is_empty_not_an_error() -> None:
-    assert summarize({}) == [] and summarize({"API_KEYS": ""}) == []
+def test_absent_config_is_empty_but_present_and_empty_is_a_boot_failure() -> None:
+    assert summarize({}) == []
+    for env in ({"API_KEYS": ""}, {"API_KEYS": "  "}, {"API_KEYS": json.dumps([K1]), "API_KEY_TENANTS": ""}):
+        with pytest.raises(UnrecognisedKeyConfig, match="present but empty"):
+            summarize(env)
+
+
+def test_a_lone_surrogate_in_a_label_or_key_yields_a_hash_not_a_hidden_tenant() -> None:
+    """json.loads accepts it and the API starts on it; a plain .encode() would
+    raise and make one odd label hide every key in the tenant."""
+    env = {"API_KEYS": json.dumps([K1, "\ud800" + K2]),
+           "API_KEY_TENANTS": json.dumps({K1: "asm\ud800ro"})}
+    infos = summarize(env)
+    assert len(infos) == 2 and all(len(i.fingerprint) == 12 for i in infos)
+    assert infos[0].subject == fingerprint("asm\ud800ro")
+
+
+def test_summarize_holds_only_secrets_so_a_locals_traceback_shows_no_key() -> None:
+    import traceback
+    from unittest import mock
+    with mock.patch("ragstack.ops.tenant_keys.ApiKeyInfo", side_effect=RuntimeError("boom")):
+        try:
+            summarize(REAL)
+        except RuntimeError:
+            tb = "".join(traceback.TracebackException(*__import__("sys").exc_info(), capture_locals=True).format())
+    frame = tb[tb.index("in summarize"):]          # the frame that holds keys/subjects/roles
+    _assert_clean(frame, "summarize locals")
 
 
 def test_reserved_prefix_collisions_counts_without_naming_and_raises_on_junk() -> None:
