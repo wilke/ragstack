@@ -25,7 +25,10 @@
 **The task is tied to the API's job, not just adjacent in time.** The worker's task workdir
 `/scout/wf/gowe/workdir/ragstack-dev-1/task_cc7850d3-801f-4326-bca7-9d5fe565ae60/` carries the collection name
 `dispatch-proof`, the API's `"job_id": "9f9cfc5b-2db5-4627-ad08-eea0405c36ce"`, and the GoWe submission id
-**`sub_c4b49e40-bdfc-4658-ad4f-8e942ec32cd8`** in its inputs. (The dev API log itself records nothing for the submission —
+**`sub_c4b49e40-bdfc-4658-ad4f-8e942ec32cd8`** in its inputs. GoWe's own record of that submission
+(`GET :8091/api/v1/submissions/sub_c4b49e40…`, 08:53Z): workflow `ragstack-bulk-ingest`, state **`COMPLETED`**, inputs
+`job_id=9f9cfc5b…`, `collection_id=dispatch-proof`, `chunk_method=fixed`, `qdrant_url=http://localhost:24041`,
+`es_url=http://localhost:24043`, `embedding_url=[:9001, :9002]`, `spec_hash=c0ba7587` — the dev stores, the dev spec. (The dev API log itself records nothing for the submission —
 only my 404'd polls of the job id — so the workdir is the join; see #628.)
 
 Each DAG step is dispatched only after its predecessor succeeds, and the point landed between `ingest` and `pack` — so the chain **API submit → GoWe scheduling by `worker_group` label → `ragstack-dev` worker → tool image → dev Qdrant** is exercised end to end on dev, for the first time through the API (earlier dev runs of the semantic tool went through `ingest_shard.py` directly and never touched the registry — which is why `sem-e2e` was "unknown collection" to the API).
