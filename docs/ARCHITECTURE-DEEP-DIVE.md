@@ -125,7 +125,7 @@ path D.
 
 A source becomes chunk metadata in up to five steps. Which of them run depends on the ingest path (§0), and two are switched by settings:
 
-| Step | Module / symbol | Local API pipeline (paths A/B) | GoWe shard tools (`ingest_shard.py`, `embed_shard.py`) | `ingest_jsonl.py` (path C) |
+| Step | Module / symbol | Local API pipeline (path A) | GoWe shard tools (`ingest_shard.py`, `embed_shard.py`; paths B/C) | `ingest_jsonl.py` (path D) |
 |---|---|---|---|---|
 | Load + dispatch | `ingestion/loaders.py` `LoaderRegistry` | yes | `JsonlLoader` only | own reader + `enrich` |
 | Offline scholarly enrichment | `ingestion/enrich.py` `enrich` / `index_metadata` | JSONL sources only | yes, through `JsonlLoader` | yes |
@@ -154,7 +154,7 @@ All citations below are repo-relative paths at `main` 22b44be. `python/ragstack/
 
 **Inputs → Outputs:** `source: str` → `list[Document]`, or a `LoaderError` subclass.
 
-**Scalability & parallelization:** Synchronous and single-source. `IngestionPipeline.prepare_source` calls `self.loader.load(source)` directly on the event loop. Only chunking is moved off the loop with `asyncio.to_thread`. Concurrency across sources comes from the caller: path B's `LocalAsyncIORunner`, or the GoWe scatter.
+**Scalability & parallelization:** Synchronous and single-source. `IngestionPipeline.prepare_source` calls `self.loader.load(source)` directly on the event loop. Only chunking is moved off the loop with `asyncio.to_thread`. Concurrency across sources comes from the caller: path A's `LocalAsyncIORunner`, or the GoWe scatter (paths B/C).
 
 **Single vs bulk:** One path in per call. `.jsonl` is the in-file batch format (one file yields many documents). The `default_loader_registry` docstring still points very large corpora at `scripts/ingest_jsonl.py`, which streams and is not subject to `max_bytes`.
 
@@ -488,13 +488,13 @@ Four facts frame this section:
 |---|---|---|
 | `ragstack/api/deps.py` `_chunker_for(entry, embed_fn=)` | per-collection ingest on the local backend (`build_ingestor_for`) | none. `fixed_token` gets an HF counter as its window unit, nothing else gets a `max_tokens` |
 | `ragstack/api/deps.py` `_build_chunker()` | the app-default collection | only when `settings.chunk_max_tokens` is set (`resolve_max_tokens`) |
-| `ragstack/ingestion/chunker_config.py` `build_chunker(...)` | the bulk tools | always. `resolve_max_tokens` uses the override or a live `GET /v1/models` (default 4096, minus a 16-token reserve) |
-| `scripts/ingest_shard.py` `_build_chunker` | GoWe `pdf-ingest-scatter.cwl` | inherits `build_chunker` |
+| `ragstack/ingestion/chunker_config.py` `build_chunker(...)` | the bulk tools | always. `resolve_max_tokens` uses the override or a live `GET /v1/models` (the override or `max_model_len` minus a 16-token reserve; 4096 unreduced when nothing is reachable) |
+| `scripts/ingest_shard.py` `_build_chunker` | GoWe `pdf-ingest-scatter.cwl` and `ingest-bulk.cwl` | inherits `build_chunker` |
 | `scripts/embed_shard.py` `_build_chunker` | `embed-bulk`, `pdf-ingest`, `jats-ingest` CWL | inherits `build_chunker` |
 
 `scripts/ingest_jsonl.py` also calls `build_chunker` inline.
 
-**Why it matters:** The builders give identical results for `fixed`, `fixed_token` and `semantic`. They differ for `sentence` and `words`, because once a token budget is present `_pack_spans` delegates to `_pack_spans_tokens`, which ignores `chunk_size` and packs to the model window. The plan's measurement on a 4,489-char document (size 200, overlap 20) gave 30 vs 1 chunks for `sentence` and 25 vs 1 for `words` (chunking-one-factory.md §8). The same plan reports zero live collections on hackathon or dev using `sentence` or `words` (read 2026-09-18).
+**Why it matters:** The builders give identical results for `fixed` and `fixed_token`, and for `semantic` apart from edge cases. They differ for `sentence` and `words`, because once a token budget is present `_pack_spans` delegates to `_pack_spans_tokens`, which ignores `chunk_size` and packs to the model window. The plan's measurement on a 4,489-char document (size 200, overlap 20) gave 30 vs 1 chunks for `sentence` and 25 vs 1 for `words` (chunking-one-factory.md §8). The same plan reports zero live collections on hackathon or dev using `sentence` or `words` (read 2026-09-18).
 
 **What #615 (`a2be96f`) consolidated:**
 - `chunker_config.SEMANTIC_METHODS = ("semantic", "semantic_pooled")` and `needs_embed_fn(method)` are the single membership test. `api/deps.py` `_chunker_for` / `_embed_fn_for` / `_build_chunker`, `ingest_shard.py`, `embed_shard.py` and `ingest_jsonl.py` call `needs_embed_fn`. `api/routers/collections.py` re-exports the constant. `SHARD_UNSUPPORTED_METHODS` is derived from it.
@@ -515,7 +515,7 @@ Four facts frame this section:
 
 **Scalability & parallelization:** Construction runs once per app, collection or tool run. `api/deps.py` `_embed_bridge_for` caches one bridge per collection id on `app_state`.
 
-**Single vs bulk:** The API builders serve paths A and B. `build_chunker` serves the bulk tools. That split is where the `sentence` / `words` divergence comes from.
+**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. That split is where the `sentence` / `words` divergence comes from.
 
 **Diagram:**
 ```mermaid
@@ -763,7 +763,7 @@ flowchart TD
 
 **Inputs → Outputs:** `Sequence[str]` → `list[list[float]]`, order-preserving.
 
-**Scalability & parallelization:** `max_inflight` caps concurrent sub-batches across all documents chunked concurrently on one bridge. This protects a single-endpoint breakpoint service that has no semaphore of its own (module docstring). The in-code note says there is no CLI flag for it, so raising `--embedding-max-concurrency` above 8 is silently re-capped here.
+**Scalability & parallelization:** `max_inflight` caps concurrent sub-batches across all documents chunked concurrently on one bridge. This protects a single-endpoint breakpoint service that has no semaphore of its own (module docstring). `scripts/ingest_shard.py` exposes it as `--breakpoint-max-inflight` (default 8; the module's "no CLI flag" note predates that flag); `ingest_jsonl.py` has no flag, so there raising `--embedding-max-concurrency` above 8 is silently re-capped.
 
 **Single vs bulk:** Inherently bulk: one call per document. The API caches one bridge per collection. `ingest_shard.py` builds one per tool run.
 
@@ -945,8 +945,7 @@ admin actions. The registry is documented as not thread-safe and runs on a
 single event loop.
 
 **Single vs bulk:** Same spec on both paths. The API ingest path reuses the
-entry's endpoints (`_embed_bridge_for`). The bulk CLIs build their own pool from
-the same URLs (§3.4, `make_embedder_auto`).
+entry's endpoints (`_embed_bridge_for`). The shard tools (`ingest_shard.py`, `embed_shard.py`) build their own pool from the same URLs (§3.4, `make_embedder_auto`); `ingest_jsonl.py` uses `_make_endpoint_embedder`, pooled only for more than one URL like the API (§10 I4).
 
 **Diagram:**
 ```mermaid
@@ -1040,12 +1039,10 @@ whole document. Infrastructure failures (5xx, network) are always re-raised.
 are awaited one after another. When the base is a `PooledEmbedder`, a group
 larger than the pool's `request_batch` (default 128) is fanned out again below
 (§3.4). With the API defaults (64-item groups) that split usually does not fire.
-The main fan-out beneficiaries are the bulk CLIs, which call the pool directly
-with large lists.
+The main fan-out beneficiaries are the shard tools (`ingest_shard.py` / `embed_shard.py`), which call the pool directly with large lists.
 
 **Single vs bulk:** Same class for both. `embed` is the strict path.
-`embed_isolated` is the fault-tolerant path used by the bulk ingest backstop
-(`scripts/ingest_jsonl.py` `_embed_drop_bad`, per the `PooledEmbedder.embed_isolated` docstring).
+`embed_isolated` is the fault-tolerant path: `IngestionPipeline._embed_and_link` prefers it whenever the embedder exposes it (§4 step 5), and `scripts/ingest_jsonl.py` `_embed_drop_bad` uses it directly.
 
 **Diagram:**
 ```mermaid
@@ -1464,9 +1461,7 @@ per-document receipts onto the job.
     `_run_gowe_ingest` then calls `append_version(collection, version)`, marks each
     item, sets `archive_ref`, and writes the provenance manifest. The failure modes
     are:
-    - `OutputStagingFailed`: the job fails with `OUTPUT_STAGING_FAILED` and the row
-      gets `set_archive_pending(True)`, so the collection cannot be evicted before it
-      is re-archived.
+    - `OutputStagingFailed`: the job fails with `OUTPUT_STAGING_FAILED` and the row gets `set_archive_pending(True)`, which blocks eviction; nothing in the tree clears it (§8.6 step 2, §9.9 #5).
     - Any other non-COMPLETED terminal state: every item fails under the engine state
       or the chunk-cap label (`cap_refusal_of`).
     - `GoWeContractError` (delivered but with unusable receipts): the job fails with
@@ -1688,9 +1683,7 @@ operator tool for the large extraction dumps". `docs/ingest-paths.md` still mark
 
 - **Path B writes archive versions.** Each delivered GoWe ingest creates
   `versions/<n>/` (`ragstack-archive/1`) in the owner's Workspace and appends `n` to
-  the registry row's ordered `versions` list (`CollectionStore.append_version`). A
-  failed post-stage sets `archive_pending`, which blocks eviction until the
-  collection is re-archived. **Path A writes no archive**: only the provenance
+  the registry row's ordered `versions` list (`CollectionStore.append_version`). A failed post-stage sets `archive_pending`, which blocks eviction; no code path clears it (§8.6). **Path A writes no archive**: only the provenance
   manifest.
 - **Restore replays those versions.** `python/ragstack/restore.py`
   `CollectionRestorer` submits `cwl/restore-collection.cwl` as the user. The workflow
@@ -1755,8 +1748,7 @@ filter dict every leg uses.
    the same 404. A dormant collection returns 503 + `Retry-After` through the
    lifecycle gate.
 4. **Share widening:** `shared_scope(entry, registry, principal)`
-   (`python/ragstack/api/scope.py`) returns the owner's tenant when the caller reaches
-   a private collection through a share. It returns nothing for the shared
+   (`python/ragstack/api/scope.py`) returns the owner's tenant when the caller reaches a private collection through a share or the `public` grant (any non-owner reader, admins included). It returns nothing for the shared
    surface, for co-resident collections, when auth is off, and on any ACL error
    (fail-soft, never widens).
 5. **Tenant pin:** `scope_filters(filters, tenant, extra)`
@@ -2438,7 +2430,7 @@ A *collection* is one Qdrant collection plus one Elasticsearch index **of the sa
 **Algorithm / workflow:**
 1. `validate_filter_values` (called at the API seam in `routers/query.py::_resolve_retrieval` L712-715, and again inside each interpreter): a value is `str | int | bool`, or a homogeneous list of `str` or of `int`; floats, `None`, objects (range operators) and nested lists are refused with `InvalidFilterValue`; `KNOWN_INT_FIELDS` (`{"year"}`, from `metadata_schema.py`) refuses a string where an int is declared rather than coercing.
 2. `validate_filters` (the `get_chunks` path only) refuses `_REFUSED_KEYS = PAYLOAD_RESERVED | {"library_id"}` with `UnknownFilterKey`, so an unsupported scope key rejects the call instead of silently not applying (#197).
-3. **Negation is server-constructed only.** `Not(value)` (L168-196) has no wire syntax; the server builds it for exactly one key today (`is_boilerplate`, for `exclude_boilerplate`) and merges it into the *already-scoped* dict (`query.py::_resolve_retrieval` L723-724).
+3. **Negation is server-constructed only.** `Not(value)` (L168-196) has no wire syntax; the server builds it for exactly one key today (`is_boilerplate`, for `exclude_boilerplate`) and merges it into the caller's validated, still-unscoped dict (`query.py::_resolve_retrieval` L723-724); `scope_filters` then pins `tenant_id` last (L727 / L753). The `Not` and `_exclude_boilerplate` docstrings say "already-scoped"; they are stale.
 4. **The owner field may never be negated.** `NEGATION_FORBIDDEN_KEYS = frozenset({OWNER_FIELD})` (L165, `OWNER_FIELD = "tenant_id"` in `tenancy.py` L36); `_check_negation` (L300-329) refuses it in every interpreter with `"'tenant_id' may not be negated — it is the tenant isolation boundary"`. A negated list is also refused.
 5. An absent key satisfies a negation (the record is kept) — measured identical on Qdrant and ES (module docstring).
 
@@ -2481,7 +2473,7 @@ flowchart TD
 
 **Scalability & parallelization:** one client per physical collection; upsert fan-out is opt-in and bounded; everything else is one request per call and scales at the Qdrant layer. The binding constraint is the **collection count per instance** (ADR-0003 consequences; `max_collections`, §9.6), not this adapter.
 
-**Single vs bulk:** one class; the API path A/B and the bulk CLI both call `upsert` (the CLI additionally wraps it in backpressure and calls `ensure_collection` directly — the registration hole ADR-0005 §6 names).
+**Single vs bulk:** one class; the API path A/B and the bulk CLI both call `upsert` (the CLI additionally wraps it in backpressure and calls `ensure_collection` itself, on the physical names it resolved from the registry, §5.4).
 
 ### 8.3 ElasticsearchTextIndex (`python/ragstack/stores/elasticsearch.py`)
 
@@ -2574,7 +2566,7 @@ flowchart TD
 **Algorithm / workflow:**
 1. **Version reservation** — `_reserve_version` → `CollectionStore.next_version` (atomic `UPDATE … RETURNING` on `archive_version`; the JSON backend raises `NotImplementedError`, surfaced as 503 — a GoWe-backed tenant needs sqlite/postgres). `_gowe_inputs` carries `version, collection_id, spec_hash (record.spec_hash), job_id, tenant, collection, es_index, store URLs, build spec`. Output destination is `ws://…/<caller subject>/…/<id>/versions/`.
 2. **Delivery** — `_run_gowe_ingest` appends the version to `rec.versions` only if the run produced an `archive_ref`; an `OutputStagingFailed` sets `archive_pending=True`. **`archive_pending` is never cleared** (the only `set_archive_pending` call passes `True`, `routers/documents.py` L764) — once flagged, the collection is non-evictable until the row is edited.
-3. **Restore** — `restore.py::CollectionRestorer._submit` locates the archive by **`workspace_subject(rec.spec.owner)`** (the owner, not the caller), lists `versions/`, and submits `cwl/restore-collection.cwl` as the caller with `versions[]`, `collection_id`, `spec_hash`; `load_embeddings.py::verify_replay` checks every version's sha256, geometry, `manifest.spec_hash == registry spec_hash` and `collection_id` **before any store write**. Exit 3 / `ArchiveCorrupt` / `SpecMismatch` → `lost`; any other failure → `dormant` with the reason; COMPLETED → `active` (every write a CAS from `restoring`).
+3. **Restore** — `restore.py::CollectionRestorer._submit` locates the archive by **`workspace_subject(rec.spec.owner)`** (the owner, not the caller), lists `versions/`, and submits `cwl/restore-collection.cwl` as the caller with `versions[]`, `collection_id`, `spec_hash`; `ingestion/load_embeddings.py::verify_replay` checks every version's sha256, geometry, `manifest.spec_hash == registry spec_hash` and `collection_id` **before any store write**. Exit 3 / `ArchiveCorrupt` / `SpecMismatch` → `lost`; any other failure → `dormant` with the reason; COMPLETED → `active` (every write a CAS from `restoring`).
 4. **Physical drops** share one driver, `python/ragstack/ops/evict.py::drop_stores(entry, graph_store=…) -> (deleted, absent, failed)`, which calls `drop_collection`, `drop_index` and — only when a graph store is passed — `delete_collection(None, collection)`:
 
 | Caller | Qdrant | ES | Neo4j triples | Manifest | Workspace archive |
@@ -2583,7 +2575,7 @@ flowchart TD
 | Eviction (`api/eviction.py::run_eviction` L179-188) | drop | drop | **kept** (comment: "archive has no triples leg yet" — stale since `write_triples` landed, behaviour unchanged) | kept | is the source of truth |
 | Create rollback (`create_collection`) | drop | drop | — | delete | — |
 
-All three are guarded by `_shared_store_users` (another registry id claims a leg) and `_routed_store_legs`.
+Purge and create-rollback are guarded by `_shared_store_users` (another registry id claims a leg) and `_routed_store_legs`; eviction uses `ops/evict.py::protected` instead (derived-default / shared-surface legs and sibling claimants in the live registry or the durable rows) and does not consult the route tables.
 
 5. **Startup re-ensures every spec's stores regardless of lifecycle state.** `deps.py::_build_collection_registry` iterates `list_specs()` (unfiltered) and `build_collection_entry` calls `ensure_collection` / `ensure_index` best-effort — so a restart re-creates **empty** Qdrant/ES stores for `dormant` and `lost` rows. They are not counted against `max_collections` (the row is not in `PHYSICAL`), but they exist, and a dormant collection's reads still 503 through the lifecycle gate rather than returning empty.
 
@@ -2686,7 +2678,7 @@ flowchart TD
 
 **Scalability & parallelization:** the durable store — not the in-process dict — is the record of truth, so several API processes can share one registry (sqlite/postgres) and the count/reserve section is atomic across them.
 
-**Single vs bulk:** the API creates through `create()`; the bulk CLIs (`scripts/ingest_jsonl.py`, `load_embeddings.py`) still call `ensure_collection()` directly and bypass registration — the hole ADR-0005 §6 names and ADR-0009 (registry selection for bulk workers) addresses.
+**Single vs bulk:** the API creates through `create()`; the bulk CLIs (`scripts/ingest_jsonl.py`, `load_embeddings.py`, `ingest_shard.py`, `ingest_chunks.py`) resolve the entry through `ingest_target.resolve_or_exit` first (§5.4; an unregistered id is refused unless `--create-via-api`) and then call `ensure_collection()` / `ensure_index()` themselves on the entry's physical names — the registry is consulted, but the physical stores are created by the tool rather than by `create()`; ADR-0009 decides which registry they resolve against.
 
 ### 9.3 Ownership, shares, groups: the one authorization seam
 
@@ -2761,7 +2753,7 @@ flowchart TD
 
 **The one carve-out — the legacy shared surface.** On the entry with `is_shared_surface=True`, the ingest and `DELETE /v1/documents/{doc_id}` routes require `"read" if target.is_shared_surface else "write"` (`routers/documents.py` L360-362, L1697-1699): every caller writes into and deletes from its own `tenant_id` stripe, so demanding ownership would lock every non-admin out of the flagship corpus. It keys on the **entry flag**, never on "is this the pointer target" — pointing `default` at an owned collection with a pointer-keyed exemption would let any reader ingest into it by omitting `collection` (ADR-0003 §2b). It lives in `access.py::filter_writable` + the routers, never in `authz.py`.
 
-**Known gap — ownership transfer does not re-stamp chunks** ([#558](https://github.com/wilke/ragstack/issues/558), **still OPEN**, filed 2026-09-15, label `bug`): `transfer_owner` moves the ACL row and nothing else, and `shared_scope` is a no-op for the owner, so after a transfer the new owner passes the read gate with scope `{their tenant, public}` while the chunks remain stamped with the previous owner's tenant — **they see zero chunks in a collection they own** (an empty result, not an error). The same mechanism bites when an admin ingests into someone else's collection. `test_collection_owner_transfer.py` has no read-after-transfer assertion. Until it is fixed, treat transfer as "keeps the data, not the visibility".
+**Known gap — ownership transfer does not re-stamp chunks** ([#558](https://github.com/wilke/ragstack/issues/558), **still OPEN**, filed 2026-09-15, label `bug`): `transfer_owner` moves the ACL row and nothing else, and `shared_scope` is a no-op for the owner, so after a transfer the new owner passes the read gate with scope `{their tenant, public}` while the chunks remain stamped with the previous owner's tenant — **they see zero chunks in a collection they own** (an empty result, not an error). The same mechanism bites when an admin ingests into someone else's collection. `test_collection_owner_transfer.py` has no assertion that the *new* owner can read chunks. Until it is fixed, treat transfer as "keeps the data, not the visibility".
 
 **Tools & models:** none — pure filter derivation; enforcement rides on the stores honouring the injected list (§8.1).
 
@@ -3033,7 +3025,7 @@ Ranked by drift risk. In 2026-07 the risk was predicted; at 22b44be, for most of
 
 **Still correctly *not* duplication:**
 - The per-backend filter emitters (`qdrant._build_filter`, `elasticsearch._build_query`) and the `delete_except` mechanisms still diverge on purpose.
-- The path-A/path-C delete-vs-upsert order inversion is documented and intentional.
+- The path-A/path-D delete-vs-upsert order inversion is documented and intentional.
 - Neo4j scoping is now factored properly (S8 fixed).
 - The Python ↔ Go reimplementations are expected under the polyglot contract and are not counted here.
 
