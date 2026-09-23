@@ -1,0 +1,42 @@
+# Dev dispatch proof — API → GoWe → `ragstack-dev` worker → dev Qdrant (2026-09-23)
+
+**Verdict: proven for the default build spec. Not yet proven for a semantic method, because the API's build-spec override is admin-only and the submitting principal was not admin.**
+
+## What ran
+
+| | |
+|---|---|
+| tenant / tag | `dev`, **v1.6.4** (`ffd04cb`), `INGEST_BACKEND=gowe`, `GOWE_WORKER_GROUP=ragstack-dev`, `INGEST_WORKER_UNSUPPORTED_METHODS=` (empty: semantic admitted), `ALLOW_USER_COLLECTION_CREATE=true` |
+| principal | the owner's BV-BRC token (non-admin on dev), via `http://localhost:9000/ragstack/dev/api` |
+| workers | `ragstack-dev-1` / `-2` (pids 552677/552678), `--image-dir /scout/containers/ragstack-dev`, image `ragstack-worker.sif -> ragstack-worker-v1.6.3-1-ga2be96f.sif` (the symlink-to-versioned layout of #614) |
+| input | `contracts/fixtures/documents/sample_small.pdf` (908 B) |
+
+```
+08:44:13Z  POST /v1/collections {"id":"dispatch-proof"}            -> 201
+           physical: ragstack_lib_dispatch_proof_salesforce_sfr_embedding_4096_fixed_512_64_220ff9ba
+           chunk_method=fixed size=512 overlap=64  (server default; spec_hash c0ba7587)   points_count 0
+08:44:14Z  POST /v1/ingest/upload collection=dispatch-proof         -> 202  job_id 9f9cfc5b-2db5-4627-ad08-eea0405c36ce
+08:44:17Z  worker-ragstack-dev-1: task received step=extract   executing in Apptainer image=ragstack-worker.sif
+08:44:21Z  worker-ragstack-dev-1: task received step=ingest
+08:44:29Z  dev Qdrant :24041  points_count 0 -> 1
+08:44:30Z  worker-ragstack-dev-1: task received step=pack
+```
+
+Each DAG step is dispatched only after its predecessor succeeds, and the point landed between `ingest` and `pack` — so the chain **API submit → GoWe scheduling by `worker_group` label → `ragstack-dev` worker → tool image → dev Qdrant** is exercised end to end on dev, for the first time through the API (earlier dev runs of the semantic tool went through `ingest_shard.py` directly and never touched the registry — which is why `sem-e2e` was "unknown collection" to the API).
+
+## What is NOT proven, and why
+
+**Semantic through the API.** `POST /v1/collections {"chunk":{"method":"semantic_pooled"}}` → **403**
+`build-spec overrides ('embedding', 'chunk') are admin-only; omit both fields to create a collection from the server-default build spec`.
+A non-admin can only create default-spec (fixed/512) collections. Proving `semantic_pooled` through the API therefore needs either an admin key on dev for that one `POST`, or a tenant whose *default* spec is semantic. The worker side of semantic is already proven on dev (`docs/plans/results/semantic-vs-pooled-2026-09-18.md`); what remains unexercised is only the registry entry + `_gowe_inputs` carrying the semantic method.
+
+## Observations (not failures)
+
+- **`stage-out failed … workspace stager: no authentication`** (4 WARN lines per task) — pre-existing: identical lines on all four `ragstack-hackathon` workers since 2026-09-17 13:31. The workers are started with the Workspace stager enabled and no token; outputs still land in the store. Benign, but noise that hides a real stage-out failure; see the follow-up.
+- **A non-admin submitter cannot poll the job it was handed**: `GET /v1/jobs/9f9cfc5b…` → 404, `GET /v1/jobs` → 403 `insufficient role`. The 202 body tells the client to poll a job id the client is then not allowed to read. Filed as an issue.
+- `GET /v1/collections/{id}` → 405 (not in the contract; the listing is the read path). Not a bug, noted so nobody re-discovers it.
+
+## State left behind
+
+Collection `dispatch-proof` on dev (1 point). Delete when no longer useful:
+`DELETE /v1/collections/dispatch-proof` as its creator, or leave as the smoke fixture for the next tag bump.
