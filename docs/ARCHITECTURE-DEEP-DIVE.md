@@ -6,14 +6,22 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 **Mermaid diagram** of the algorithm. It closes with a cross-cutting analysis of
 **shared functionality and code duplication**.
 
-> Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (the high-level overview). Scope:
-> the **Python** implementation only (Go is a Phase-1 stub). Every claim is grounded
-> in `file:line` references. Produced by a multi-agent sweep of the source, with the
-> duplication findings adversarially re-verified against the code.
+> Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (the high-level overview) and the
+> [ADRs](adr/README.md). Scope: the **Python** implementation and the offline ingest
+> plane (GoWe/CWL, ADR-0006); `ragstack-ctl` (Go) appears only where it bounds a
+> tenant (§9).
+>
+> **Verified against `main` @ `22b44be` on 2026-09-23.** Rewritten section by
+> section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
+> **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
+> and a line number, where given, was checked at that commit — re-derive it from the
+> symbol if the file has moved. Numbers are quoted only from committed documents
+> and are cited to them. Where the code and an ADR disagree, the section says so;
+> §9.9 collects those.
 
 ## Contents
 
-1. [Single vs bulk — the three ingest paths and one query path](#0-single-vs-bulk--the-three-ingest-paths-and-one-query-path)
+1. [Single vs bulk — the ingest paths and one query path](#0-single-vs-bulk--the-ingest-paths-and-one-query-path)
 2. [Loading & Enrichment](#1-loading--enrichment)
 3. [Chunking](#2-chunking)
 4. [Embedding & Embedder Pool](#3-embedding--embedder-pool)
@@ -22,57 +30,92 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 7. [Retrieval & RRF Fusion](#6-retrieval--rrf-fusion)
 8. [Rewriting, Reranking, Answer Generation](#7-rewriting-reranking-answer-generation)
 9. [Storage Adapters & Knowledge Graph](#8-storage-adapters--knowledge-graph)
-10. [Tenancy, RBAC, Quota, Jobs](#9-tenancy-rbac-quota-jobs)
+10. [Identity, Access Control, Tenancy & Lifecycle](#9-identity-access-control-tenancy--lifecycle)
 11. [Shared functionality & code duplication](#10-shared-functionality--code-duplication)
 
 ---
 
-## 0. Single vs bulk — the three ingest paths and one query path
+## 0. Single vs bulk — the ingest paths and one query path
 
-This is the single most important structural fact about the system, so it is stated
-up front and referenced by the capability sections below.
+This is the most important structural fact about the system, so it comes first and
+the capability sections below refer back to it.
 
-**Ingestion has three distinct code paths, not two:**
+**One pipeline, four drivers.** Every path that writes chunks runs the same
+`IngestionPipeline` halves (`python/ragstack/ingestion/pipeline.py`:
+`prepare_documents` → `_embed_and_link` → `index_chunks`), except the legacy
+`ingest_jsonl.py` (path D), which is still a fork. What differs between paths is
+*who drives the pipeline, and where*.
 
-| Path | Entry point | Unit | Concurrency model | Resumability | Notes |
+**Which API path runs is a deployment setting.** `INGEST_BACKEND` is `local` (the
+default, `python/ragstack/config.py` `ingest_backend`) or `gowe`, normalised by
+`python/ragstack/ingestion/backends.py` `ingest_backend_name`. Both ingest routes
+start with `_refuse_unknown_backend` (`python/ragstack/api/routers/documents.py:461`),
+which answers **501** for any other value. On `gowe`, `ingest`
+(`documents.py:997`) and `ingest_upload` (`documents.py:1428`) return from the GoWe
+branch **before** `_resolve_ingest_target` (`documents.py:1060` / `:1490`) is
+reached, so on a GoWe deployment the API process never loads, chunks or embeds a
+document — the CWL workflow does.
+
+ADR-0006 (Status: Proposed, supersedes ADR-0001) records the intent behind this
+split: the offline plane on GoWe/CWL is "accepted as built"; the in-process path is
+"dev/test only, selected by `ingest_backend=local` and never exposed to
+self-service users"; `ingest_jsonl.py` is "retired: deprecated now … deleted after
+the next tagged release".
+
+| Path | Entry point | Unit of work | Concurrency model | Resume / retry | Status at `22b44be` |
 |---|---|---|---|---|---|
-| **A. Single document** | `IngestionPipeline.ingest()` (`ingestion/pipeline.py`) | one `Document` | none internally; chunking offloaded to a thread | n/a | The atomic unit. `delete`-then-`upsert` with an `EmptyIngestError` guard so a failed/empty re-ingest can't wipe the prior version. |
-| **B. Bulk via API** | `POST /v1/ingest` (dir) → `ShardedIngestor` → `LocalAsyncIORunner` (`ingestion/{sharded,backends,manifest}.py`) | many items, each → path A | `asyncio` shards under a semaphore (`ingest_concurrency`) + a per-tenant quota slot per item | per-item checkpoints in `JobStore` (memory/sqlite/postgres) | Each item is a full path-A run; failure is isolated per item. |
-| **C. Bulk via CLI** | `scripts/ingest_jsonl.py` | streamed JSONL records → fixed-size chunk batches | bespoke bounded **producer → N workers** pipeline; `--concurrency` workers embed+upsert in parallel, `--chunk-concurrency` chunks fold in file order | filesystem checkpoint **frontier** + out-of-order `done_ranges`; `--resume`, `--batch-retries` | **Does not reuse path A** — it re-implements chunk/enrich/embed-drop/replace inline (this is the [#25](https://github.com/wilke/ragstack/issues/25) overlap; see §10). Uses `upsert`-then-prune, the *inverse* of path A's ordering, deliberately (a filtered delete on a large collection once timed out mid-batch). |
+| **A. API, local, in-process** | `POST /v1/ingest` (server path under `INGEST_ROOT`) and `POST /v1/ingest/upload` (staged under `{INGEST_ROOT}/uploads/{tenant}/{job_id}/`) → `_run_ingest` → `ShardedIngestor.ingest_manifest` → `LocalAsyncIORunner` | one file = one manifest item = one `IngestionPipeline.ingest` | `asyncio` shards under a semaphore (`ingest_concurrency`, default 4) of `ingest_shard_size` (default 64) items; items within a shard run in order; optional per-tenant `TenantQuota` slot per item | per-item checkpoints in `JobStore`; the public API has no way to resume a job id (`ingest` docstring). At startup, `job_store.fail_interrupted()` marks interrupted jobs failed; on the Postgres store it is a no-op (`api/deps.py`) | Works. ADR-0006 §2: dev/test only |
+| **B. API → GoWe/CWL (the user plane)** | the same two routes with `INGEST_BACKEND=gowe` → `_run_gowe_ingest` → `GoWeBackend.run_submission` → `cwl/pdf-ingest-scatter.cwl` | a **batch** of PDFs (`batch_size`, default 20) per task chain `pdf_extract.py` → `ingest_shard.py`; one receipt row per document | the GoWe engine scatters batches over its workers; the API holds only a background poll task | the engine retries tasks; each task is idempotent (deterministic ids + upsert). No API-side resume | The user-facing path. Needs a BV-BRC bearer token and a registered collection |
+| **C. Operator bulk CWL** | `python/scripts/gowe_batch_ingest.py` over `cwl/jats-ingest.cwl`, or `cwl/ingest-bulk.cwl`, `cwl/embed-bulk.cwl` + `cwl/load-embeddings.cwl`, `cwl/pdf-ingest.cwl`, submitted by an operator | a pre-planned JSONL shard (`plan_shards.py`) per scatter task | engine scatter over workers; the load is a single un-scattered task; the driver pipelines batch N's load behind batch N+1's embed | engine retry per task; the driver keeps a resumable ledger and checks both store legs after each batch | ADR-0006 §1: "the reference shape for every future bulk job" |
+| **D. Legacy `ingest_jsonl.py`** | `python/scripts/ingest_jsonl.py` (operator CLI) | cross-document chunk batches streamed from one JSONL file | its own producer → N workers pipeline | its own `.ckpt` frontier + `done_ranges`, `--resume`, `--batch-retries` | ADR-0006 says retire it. **The code does not yet say so** — see §5.5 |
+
+A fifth writer, `python/scripts/ingest_chunks.py`, loads pre-chunked JSON (the caller
+supplies the chunks). It resolves its target through the registry like the other bulk
+writers (`ingest_target.resolve_or_exit`) and runs `validate_chunks`. It is a small
+tool, not a separate ingest plane.
 
 ```mermaid
 flowchart TD
-    subgraph A["Path A — single doc (atomic unit)"]
-        AP["IngestionPipeline.ingest<br/>load-chunk-embed-replace-index"]
+    subgraph CORE["Shared core - IngestionPipeline"]
+        P1["prepare_documents: DOI enrich, chunk, boilerplate filter"]
+        P2["_embed_and_link: embed, quarantine, neighbor-link"]
+        P3["index_chunks: validate metadata, delete-prior, upsert both legs"]
+        P1 --> P2 --> P3
     end
-    subgraph B["Path B — bulk via API"]
-        BAPI["POST /v1/ingest dir"] --> BM["build_manifest"] --> BSI["ShardedIngestor"]
-        BSI --> BR["LocalAsyncIORunner<br/>semaphore + quota slot/item"]
-        BR -->|per item| AP
-        BSI -.checkpoint/item.-> BJS[("JobStore<br/>mem/sqlite/pg")]
+    subgraph A["A. API local, INGEST_BACKEND=local"]
+        A1["POST /v1/ingest or /v1/ingest/upload"] --> A2["_resolve_ingest_target"]
+        A2 --> A3["ShardedIngestor + LocalAsyncIORunner"]
     end
-    subgraph C["Path C — bulk via CLI (bespoke)"]
-        CS["ingest_jsonl.py"] --> CP["producer<br/>stream JSONL to batches"]
-        CP --> CQ["bounded queue"]
-        CQ --> CW["N workers<br/>embed+upsert"]
-        CW -.frontier + done_ranges.-> CK[("filesystem<br/>checkpoint")]
+    subgraph B["B. API to GoWe, INGEST_BACKEND=gowe"]
+        B1["POST /v1/ingest or /v1/ingest/upload"] --> B2["_authorize_ingest_target, reserve version"]
+        B2 --> B3["GoWeBackend.run_submission as the caller"]
+        B3 --> B4["pdf-ingest-scatter.cwl: pdf_extract then ingest_shard per batch"]
     end
+    subgraph C["C. Operator bulk CWL"]
+        C1["plan_shards.py + gowe_batch_ingest.py"] --> C2["jats-ingest / ingest-bulk / embed-bulk + load-embeddings"]
+        C2 --> C3["embed_shard or ingest_shard, then load_embeddings"]
+    end
+    subgraph D["D. Legacy CLI"]
+        D1["ingest_jsonl.py: own producer, workers, checkpoint, upsert-then-prune - bypasses the core"]
+    end
+    A3 -- "per item" --> P1
+    B4 -- "per batch" --> P1
+    C3 -- "per shard" --> P1
+    D1 -.-> STORES
+    P3 --> STORES[("Qdrant + Elasticsearch, optional Neo4j")]
 ```
 
 **Querying has one path and no bulk API.** `POST /v1/query` and `POST /v1/retrieve`
-each serve a single query; there is no batch-query endpoint. Intra-request
-concurrency is real, though: query rewriting fans out to N variants retrieved with
-`asyncio.gather`, and each `HybridRetriever` call runs its dense/BM25/graph legs
-concurrently. Cross-request fairness comes from the per-tenant `TenantQuota` slot and
-the embedder pool's global concurrency semaphore, not from any batch mechanism. The
-`search.py` CLI is likewise one query per invocation.
+(`python/ragstack/api/routers/query.py`) each serve one query; there is no
+batch-query route. Intra-request fan-out and fairness belong to §6–§7.
 
-**Why it matters:** paths A and B share code (B is A-per-item), so they stay
-consistent for free. Path C is a parallel implementation optimized for streaming and
-crash-safe resume at 500k-document scale — its throughput wins are real, but it
-duplicates correctness-critical logic (deterministic IDs, poison isolation, the
-replace-orphan contract) that must be kept in lockstep with path A by hand. §10
-quantifies that debt.
+**Why it matters.** Paths A, B and C call the same pipeline, so chunk ids, neighbour
+links, quarantine, the metadata contract and the delete-prior rule cannot drift
+between them. What they do **not** share is *where the build spec comes from*: path A
+builds the chunker from the collection entry in-process (`api/deps.py`
+`build_ingestor_for`), while paths B and C receive it as CLI arguments and check it
+against the registry (`IngestTarget.check_build`, §5.4). The one remaining fork is
+path D.
 
 ---
 
@@ -80,1354 +123,2992 @@ quantifies that debt.
 
 ## 1. Loading & Enrichment
 
-### Document Loading & LoaderRegistry Dispatch
-**What it is:** `LoaderRegistry` is the single ingest ingress: it resolves a source path under two security guards (LFI/path-traversal confinement and a max-bytes DoS ceiling), then dispatches to a per-extension loader (`loaders.py:194-229`). It satisfies the `DocumentLoader` protocol so it drops into the pipeline in place of a bare loader.
+A source becomes chunk metadata in up to five steps. Which of them run depends on the ingest path (§0), and two are switched by settings:
+
+| Step | Module / symbol | Local API pipeline (path A) | GoWe shard tools (`ingest_shard.py`, `embed_shard.py`; paths B/C) | `ingest_jsonl.py` (path D) |
+|---|---|---|---|---|
+| Load + dispatch | `ingestion/loaders.py` `LoaderRegistry` | yes | `JsonlLoader` only | own reader + `enrich` |
+| Offline scholarly enrichment | `ingestion/enrich.py` `enrich` / `index_metadata` | JSONL sources only | yes, through `JsonlLoader` | yes |
+| Network metadata resolution (Crossref / DataCite / NCBI ID Converter) | `ingestion/doi_metadata.py` `DoiEnricher` | when `doi_enrichment_enabled` | when `--doi-enrichment` is passed | no |
+| Chunk-level boilerplate flag/drop | `ingestion/boilerplate.py` `BoilerplateFilter` | `boilerplate_detection_enabled` (default on), `boilerplate_drop` (default off) | `--boilerplate off/flag/drop`, default `flag` | `--boilerplate`, default `flag` |
+| Declared-schema check at the ingest boundary | `metadata_schema.validate_chunks` | in `IngestionPipeline.index_chunks` | through `index_chunks` | direct call before the store write |
+
+All citations below are repo-relative paths at `main` 22b44be. `python/ragstack/` is abbreviated to `ragstack/`, and `python/scripts/` to `scripts/`.
+
+### 1.1 Document Loading & LoaderRegistry Dispatch
+
+**What it is:** `ragstack/ingestion/loaders.py` `LoaderRegistry` is the single ingest ingress. It confines a source path to `ingest_root` (the LFI guard), enforces a per-file size ceiling (the DoS guard), then dispatches on file suffix. It satisfies the `DocumentLoader` protocol, so it drops into `IngestionPipeline` in place of a bare loader.
 
 **Algorithm / workflow:**
-1. `LoaderRegistry.__init__` pre-resolves `ingest_root` to an absolute path once, stores `max_bytes` and a suffix→loader map with a default (`TextFileLoader`) (`loaders.py:204-213`).
-2. Callers `register(suffix, loader)` lowercased extensions; `default_loader_registry()` wires `.pdf`→`PdfLoader`, `.txt`/`.md`→shared `TextFileLoader`, `.jsonl`→`JsonlLoader` (`loaders.py:215-216`, `237-259`).
-3. `load(source)` first calls `_resolve(source)` (`loaders.py:226-227`).
-4. `_resolve` calls `confine_to_root(source, self._root)` — the LFI guard: `Path(source).resolve()` collapses `..` and follows symlinks, then rejects anything that is neither equal to nor relative to the resolved root via `is_relative_to` (`loaders.py:37-47`, `218-219`). This is the single home for the check so per-file and directory-manifest paths can't drift.
-5. Still in `_resolve`: reject non-files (`source not found`), then the **DoS guard** — `path.stat().st_size > self._max_bytes` (only when `max_bytes` is truthy) raises `source exceeds the maximum allowed size` (`loaders.py:220-224`).
-6. Back in `load`: look up loader by resolved `path.suffix.lower()`, falling back to `_default`, and delegate `loader.load(str(path))` (`loaders.py:228-229`).
-7. All failures surface as `LoaderError` with caller-safe messages that never embed raw paths or upstream exception text (`loaders.py:31-34`).
+1. `LoaderRegistry.__init__` resolves `ingest_root` once, stores `max_bytes`, and defaults to `TextFileLoader`.
+2. `default_loader_registry(ingest_root, max_bytes, profile)` registers `.pdf` → `PdfLoader`, `.txt` / `.md` → one shared `TextFileLoader`, and `.jsonl` → `JsonlLoader(profile=profile)`. `DEFAULT_INGEST_SUFFIXES` is the matching tuple that a directory ingest enqueues.
+3. `load(source)` → `_resolve(source)` → `confine_to_root(source, root)`. `Path.resolve()` collapses `..` and follows symlinks. Anything that is neither the root nor `is_relative_to(root)` raises `LoaderError("source is outside the permitted ingest root")`. Directory-manifest builds call the same function, so the guard has one home.
+4. `_resolve` then rejects non-files (`source not found`) and, when `max_bytes` is truthy, files over the limit.
+5. It looks up the loader by `path.suffix.lower()`, falling back to the default.
+6. Failure classes (new since the old doc):
+   - `LoaderError` carries caller-safe messages only.
+   - `NoTextExtracted(LoaderError)` is raised for an image-only PDF. It carries the constant `job_error = NO_TEXT_ERROR` ("no extractable text (scanned PDF?)"), so a job can count such items with a GROUP BY.
+   - `no_loader_error(suffix)` produces a constant per-suffix string ("no loader for .xml") for staged files with no registered loader (#202).
 
-**Tools & models:** stdlib only — `pathlib.Path` (`resolve`, `is_relative_to`, `stat`, `is_file`), `uuid.uuid5` for deterministic IDs. No external services.
+**Tools & models:** stdlib only (`pathlib`, `uuid.uuid5`).
 
-**Inputs → Outputs:** in: `source: str` (filesystem path). out: `list[Document]` (`ragstack.models.Document`) or raises `LoaderError`.
+**Inputs → Outputs:** `source: str` → `list[Document]`, or a `LoaderError` subclass.
 
-**Scalability & parallelization:** Fully synchronous and blocking; no asyncio, threads, or fan-out anywhere in the module. One `load()` handles one source path; concurrency (if any) is entirely the caller's responsibility. The `max_bytes` guard bounds per-file memory but the whole file is read into memory (e.g. `read_text`, all PDF pages joined). Bottleneck: single-threaded disk I/O and parsing.
+**Scalability & parallelization:** Synchronous and single-source. `IngestionPipeline.prepare_source` calls `self.loader.load(source)` directly on the event loop. Only chunking is moved off the loop with `asyncio.to_thread`. Concurrency across sources comes from the caller: path A's `LocalAsyncIORunner`, or the GoWe scatter (paths B/C).
 
-**Single vs bulk:** The registry itself is per-source (one path in). Bulk is expressed two ways: (a) a directory ingest enqueues files by the `DEFAULT_INGEST_SUFFIXES` set (`loaders.py:232-234`) — each still routed through one `load()` call; (b) `.jsonl` is an intra-file batch format where one `load()` yields many `Document`s. The docstring explicitly steers multi-hundred-MB corpora away from the registry (its per-file `max_bytes` ceiling applies) toward `scripts/ingest_jsonl.py`, which streams and bypasses the ceiling (`loaders.py:246-251`).
+**Single vs bulk:** One path in per call. `.jsonl` is the in-file batch format (one file yields many documents). The `default_loader_registry` docstring still points very large corpora at `scripts/ingest_jsonl.py`, which streams and is not subject to `max_bytes`.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    A[load source] --> B[confine_to_root<br/>LFI guard]
-    B -->|resolve collapses ..<br/>follows symlinks| C{path == root<br/>or under root?}
-    C -->|no| E[raise LoaderError<br/>outside ingest root]
-    C -->|yes| D{is_file?}
-    D -->|no| F[raise LoaderError<br/>not found]
-    D -->|yes| G{max_bytes set<br/>and size over?}
-    G -->|yes| H[raise LoaderError<br/>too large]
-    G -->|no| I[lookup loader<br/>by suffix]
-    I -->|miss| J[default<br/>TextFileLoader]
-    I -->|hit| K[registered loader]
-    J --> L[loader.load]
+    A["load source"] --> B["confine_to_root: resolve, follow symlinks"]
+    B --> C{"inside ingest_root?"}
+    C -- "no" --> E["LoaderError: outside ingest root"]
+    C -- "yes" --> D{"is a file?"}
+    D -- "no" --> F["LoaderError: not found"]
+    D -- "yes" --> G{"max_bytes set and exceeded?"}
+    G -- "yes" --> H["LoaderError: too large"]
+    G -- "no" --> I["lookup loader by lowercased suffix"]
+    I --> J["PdfLoader / TextFileLoader / JsonlLoader, else default TextFileLoader"]
+    J --> K["list of Document with deterministic uuid5 ids"]
+```
+
+### 1.2 PDF / Text / JSONL Loaders, and the JATS extract that feeds JSONL
+
+**What it is:** These are the concrete `DocumentLoader`s in `ragstack/ingestion/loaders.py`. Each derives the document id with `deterministic_doc_id(key)` = `uuid5(NAMESPACE_URL, key)`, so a re-ingest overwrites in place. `ragstack/ingestion/jats.py` is not a loader. It is the stdlib-only parser behind `scripts/jats_extract.py` that produces the JSONL `JsonlLoader` consumes.
+
+**Algorithm / workflow:**
+- **`TextFileLoader`** reads the file as UTF-8 and returns one `Document` with `metadata={"filename"}`. The id key is the resolved path.
+- **`PdfLoader`** does a lazy `import pymupdf` (the `pdf` extra), then `pymupdf.open` and `page.get_text()` per page, and joins the pages with a newline.
+  - It now also calls `_doi_from_pdf_metadata(doc)`, which scans the PDF info dictionary's `subject`, `keywords`, `title`, `creator` and `producer` for a DOI and normalises it with `doi_metadata.normalize_doi`. A hit is stamped as `doi` with `doi_source="pdf-metadata"`.
+  - Empty text raises `NoTextExtracted`.
+  - Metadata is deliberately `{filename, pages[, doi, doi_source]}`. The class docstring says the PDF's embedded `title` and `author` are not lifted because they are mostly producer junk, and under the "existing metadata wins" rule junk would permanently block the resolved title (§1.4).
+- **`JsonlLoader`** streams lines, skips blank and undecodable lines, and runs `_document(record)`:
+  1. `enrich(record, profile)` (§1.3). Records whose `doc_type` is in `skip_types` (default `{EMPTY}`) are skipped.
+  2. The id key has three cases. An absolute `path` is `resolve()`d. A relative path (for example `PMC123#table-2`) is used as the literal string, because resolving would make the id depend on the worker's cwd; a GoWe re-ingest once duplicated a corpus that way. With no path, the id key is the text.
+  3. `_metadata(enriched, record)` = `index_metadata(enriched)` plus opted-in raw keys from `passthrough_keys`. The enriched value always wins a name collision. `_passthrough_value` keeps scalars and flat scalar lists, drops dicts and blank strings, and coerces `KNOWN_INT_FIELDS` keys (today `year`) through `metadata_schema.coerce_declared`.
+  4. Every raw key that does not reach the document is counted in `self.dropped`, a `DropReport` with two causes: `not_allowed` (policy: the key is not in the allow-list) and `unusable` (data: opted in but empty, nested, or the wrong type). `abstract` and `citations` are excluded from the report (`_CONSUMED_BY_DESIGN`). `scripts/embed_shard.py` builds `JsonlLoader(passthrough_keys=...)` from `--metadata-passthrough`. `scripts/ingest_shard.py` and the API registry build a bare `JsonlLoader()`.
+  5. A file with no usable documents raises `LoaderError`.
+- **`jats.py` `article_records`** emits two record kinds:
+  - One `content_type="article"` record per article: abstract plus body, with every `<table-wrap>` and `<fig>` lifted out.
+  - One record per table or figure unit (`content_type="table"` or `"figure"`, `section_title` = the unit suffix, `path` = `PMC123#table-2[-part-N]`). Oversized tables are pre-split by row with the caption and header repeated.
+
+  `front_meta` sets `year` from the first `<pub-date>` whose `<year>` passes `metadata_schema.coerce_year`, as an int. It reads no month or day, so JATS extraction produces no `date` (see §1.6). `authors` and `keywords` are emitted as `"; "`-joined strings, which `enrich.parse_authors` / `split_keywords` turn into lists.
+
+**Tools & models:** PyMuPDF (optional `pdf` extra); stdlib `json`, `xml.etree.ElementTree` (JATS), `uuid5`. `jats.py`'s only non-stdlib import is `ragstack.metadata_schema`, a dependency-free leaf.
+
+**Inputs → Outputs:**
+- Text and PDF: path → one `Document`.
+- JSONL: path → N `Document`s, plus a `DropReport` on the loader instance.
+- JATS: XML path → `(records, skipped)` dicts. Nothing is dropped silently.
+
+**Scalability & parallelization:** All synchronous. PDF and text read the whole file. JSONL streams lines but accumulates the whole `list[Document]` before returning, which is the memory ceiling. `enrich` runs serially per record. `jats.py` is written to run once per document inside a CPU-only CWL worker, and its module docstring explains the import-cost constraint behind the stdlib-only design.
+
+**Single vs bulk:** Text and PDF loaders are single-document. `JsonlLoader` is the batch loader, and the only one that skips bad records instead of failing.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["JsonlLoader.load: next line"] --> B{"blank or bad JSON?"}
+    B -- "yes" --> A
+    B -- "no" --> C["enrich record with PublisherProfile"]
+    C --> D{"doc_type in skip_types?"}
+    D -- "yes" --> A
+    D -- "no" --> E["id key: resolved abs path, literal rel path, or text"]
+    E --> F["index_metadata plus opted-in passthrough keys"]
+    F --> G["count dropped keys: not_allowed or unusable"]
+    G --> H["Document"]
+    H --> A
+    A -- "EOF" --> I{"any documents?"}
+    I -- "no" --> J["LoaderError"]
+    I -- "yes" --> K["list of Document"]
+```
+
+### 1.3 Offline Scholarly Enrichment (`enrich.py`)
+
+**What it is:** `ragstack/ingestion/enrich.py` is a pure module with no I/O and no network. It recovers `doc_type`, DOI, title, authors, keywords, year and citations from the signals that survive extraction. Publisher specifics are isolated in a frozen `PublisherProfile`. `DEFAULT_PROFILE` is ASM (`10.1128`), and `resolve_profile(name)` falls back to it for unknown names.
+
+**Algorithm / workflow (`enrich`):**
+1. `classify(path, text, profile)` → `EMPTY`, `SUPPLEMENT` (`/suppl/` in the path, or a basename starting with `suppl`), `FRONT_MATTER` (basename in `profile.front_matter_names`), `SHORT` (under 1500 chars), or `ARTICLE`.
+2. `derive_doi(path, text, meta_doi, profile=)` → `(doi, doi_source)`. The legs are tried in priority order:
+   1. `metadata`: a non-blank `meta_doi`.
+   2. `filename`: the `.pdf`-stripped stem through `profile.doi_from_filename`.
+   3. `text`: the first `_DOI_IN_TEXT` match in `text[:4000]`, cleaned by `_trim_text_doi` (strips sentence punctuation and only an *unbalanced* trailing `)`).
+   4. Otherwise `("", "")`.
+3. `extract_citations(text)` runs only for `ARTICLE`. It finds a `LITERATURE CITED` / `REFERENCES` / `BIBLIOGRAPHY` header, coalesces numbered entries, and stops on a list restart. It caps at 250 entries.
+4. `derive_year(path, doi, text, meta_year)` has changed since the old doc:
+   - The record's own declared year (`meta.get("year")`, for example from JATS) now wins, via `metadata_schema.coerce_year`.
+   - Otherwise it scans path, then DOI, for *every* `_YEAR` candidate (1950–2049) and takes the first plausible one.
+   - Otherwise it looks for an anchored text year (copyright / received / accepted / … within 40 chars) in `text[:4000]`.
+   - Every arm goes through `coerce_year`. The docstring records why: scratch UUIDs, ISSNs and accessions had produced future years in production.
+   - The result is an `int` or `None`, never a string.
+5. `EnrichedDoc` holds `source_path`, `filename`, `doc_type`, `doi`, `doi_source`, `title`, `authors` (`parse_authors`), `keywords` (`split_keywords`), `year`, `abstract`, `n_citations` and `citations`.
+6. `index_metadata(doc)` = `model_dump(exclude={"citations","abstract"})`, then drops `""`, `[]` and `None`. `n_citations` is kept, including 0. This is where "absent is a state" (§1.6) starts: a field the record did not have is omitted, not defaulted.
+
+**`packed_date` / `year_from_packed_date` (new):**
+- `enrich.packed_date(year, month=None, day=None)` returns `yyyymmdd` with unknown parts set to 0. It returns `None` for an implausible year. A day without a month is dropped to 0.
+- `year_from_packed_date(date)` returns `date // 10000` when plausible.
+- At 22b44be **no production code calls either function**: the only references are `python/tests/unit/test_packed_date.py`, and no ingest path writes a `date` key.
+
+**Tools & models:** stdlib `re`; `pydantic` (`PublisherProfile`, `EnrichedDoc`). Year coercions are re-exported from `metadata_schema`.
+
+**Inputs → Outputs:** `enrich(record, *, prefix, profile) -> EnrichedDoc`; `index_metadata(EnrichedDoc) -> dict`; `derive_doi(...) -> (str, str)`; `derive_year(...) -> int | None`; `packed_date(...) -> int | None`.
+
+**Scalability & parallelization:** CPU-bound and per-record. Scans are bounded (4000 chars for DOI and year text, 250 citations). The functions are pure, so they are trivially parallel, but no caller parallelises them.
+
+**Single vs bulk:** Per record. `JsonlLoader` keeps only `index_metadata`. `scripts/ingest_jsonl.py` also writes the full `EnrichedDoc` (with citations) to a catalog.
+
+**Diagram (DOI and year derivation):**
+```mermaid
+flowchart TD
+    A["enrich record"] --> B["classify: empty, supplement, front-matter, short, article"]
+    B --> C{"meta doi non-blank?"}
+    C -- "yes" --> CD["doi, source metadata"]
+    C -- "no" --> D{"profile filename rule matches stem?"}
+    D -- "yes" --> DD["prefix plus stem, source filename"]
+    D -- "no" --> E{"DOI regex in first 4000 chars?"}
+    E -- "yes" --> ED["trimmed match, source text"]
+    E -- "no" --> EN["no doi"]
+    CD --> Y["derive_year"]
+    DD --> Y
+    ED --> Y
+    EN --> Y
+    Y --> Y1{"declared year passes coerce_year?"}
+    Y1 -- "yes" --> YR["year int"]
+    Y1 -- "no" --> Y2["first plausible year in path, then doi, then anchored text"]
+    Y2 --> YR
+    YR --> Z["EnrichedDoc, then index_metadata drops empty values"]
+```
+
+### 1.4 Scholarly Metadata Resolution at Upload (`doi_metadata.py`, #596 / #602)
+
+**What it is:** `ragstack/ingestion/doi_metadata.py` is the network leg. It turns each document's DOI into a bibliographic record from Crossref (DataCite as a 404 fallback) plus `pmid` / `pmcid` from the NCBI ID Converter, and fills metadata that is absent. It exists because an uploaded PDF otherwise arrives with only `{filename, pages[, doi]}`, so every downstream label falls back to the filename (module docstring).
+
+**Where it runs:** It runs between load and chunk, so one write per `Document` reaches every chunk (`chunkers._make_chunk` copies `dict(doc.metadata)`):
+- **Local backend:** `IngestionPipeline._apply_doi_enrichment` is called from `prepare_documents` and `iter_embed_source`, using the enricher `api/deps.py` `_build_doi_enricher` builds at startup (`app.state.doi_enricher`).
+- **GoWe backend:** the CWL step `scripts/ingest_shard.py` or `scripts/embed_shard.py` passes `enricher_from_args(args, http)` into its pipeline. Its flags come from `add_doi_enrichment_args` and are seeded per job by `api/routers/documents.py` `_gowe_inputs`, which sends `doi_enrichment=True` (plus `doi_mailto` / `doi_cache_dir`) only when `settings.doi_enrichment_enabled`.
+- `scripts/ingest_jsonl.py` does not use it.
+
+**Default state (verify before relying on it):** `ragstack/config.py` `Settings.doi_enrichment_enabled` is **`False`** at 22b44be. The comment above it says it "ships off anyway" because the shared GoWe worker image must learn `--doi-enrichment` before the API sends it. The docstrings of `doi_metadata.py` and `api/deps.py` `_build_doi_enricher` still say "ON by default since #596". The worker-tool flag is off unless passed.
+
+**Algorithm / workflow (`DoiEnricher._enrich`):**
+1. **Discover (local, no network).** `document_doi(doc, profile)` calls `enrich.derive_doi(path, "", meta_doi)` for the metadata and filename legs only, normalises with `normalize_doi` (lowercases and strips `doi:` / `https://doi.org/` wrappers), and falls back to `scan_text_for_doi(doc.content)`.
+   - `scan_text_for_doi` looks at the first `TEXT_SCAN_CHARS = 20_000` chars (wider than `derive_doi`'s 4000). The most frequent candidate wins, with earliest position as the tie-break.
+   - A discovered DOI is written onto the document only if `doi` is absent.
+2. **Resolve distinct DOIs.** `DoiMetadataResolver.resolve_many` de-duplicates and consults `DoiCache` first. The cache is in memory, plus one JSON file per DOI under `doi_enrichment_cache_dir`; negatives are cached, transient failures are not.
+3. **Batched ID Converter.** `_fetch_pubmed_ids` sends one GET per `MAX_IDCONV_IDS = 200` DOIs to `IDCONV_URL`. `map_idconv` keys on `requested-id` and coerces `pmid` / `pmcid` to `str`.
+4. **Per-DOI Crossref.** Up to `concurrency` (default 4) Crossref fetches run at once, via `asyncio.gather` under a semaphore. DataCite is tried only on an authoritative Crossref 404. `map_crossref` produces title, authors, journal, `year` (int, from the `issued` / `published*` / `created` date-parts), doi, publisher, `type` → `publication_type`, and url.
+5. **Politeness and failure handling:**
+   - Requests carry a descriptive `User-Agent` with a `mailto`.
+   - There is one bounded retry that honours `Retry-After` up to `MAX_RETRY_AFTER_SECONDS = 30`.
+   - A circuit breaker stops making requests after `BREAKER_THRESHOLD = 5` consecutive transport failures.
+   - `enrich_documents` swallows every exception, so enrichment can never fail an ingest.
+6. **Merge.** `merge_enrichment(metadata, fields, service)` applies "existing explicit metadata wins": it fills only missing keys. If it filled anything, it stamps `doi_enriched_from` and `metadata_source` with the service list, for example `crossref+idconv`.
+
+**Tools & models:** `httpx.AsyncClient` (shared app client on the API; a per-tool client in workers); Crossref, DataCite and NCBI ID Converter HTTP APIs. No ML models.
+
+**Inputs → Outputs:** `list[Document]` → the same list, metadata mutated in place, plus the count of changed documents.
+
+**Scalability & parallelization:** The unit of work is the distinct DOI, not the document or the chunk. The docstring's example: a two-paper upload of 382 chunks costs two Crossref requests and one ID Converter request. Concurrency is bounded by the resolver semaphore. With a cache dir, re-ingests make no requests. One air-gapped failure costs at most 5 timeouts before the breaker opens.
+
+**Single vs bulk:** One call per source's document list. Bulk is amortised by de-duplication, the 200-id batch, and the cache.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["documents after load"] --> B["document_doi: derive_doi metadata and filename legs"]
+    B --> C{"normalized doi?"}
+    C -- "no" --> D["scan_text_for_doi: first 20000 chars, most frequent"]
+    C -- "yes" --> E["stamp doi if absent"]
+    D --> E
+    E --> F["resolve_many: dedupe distinct DOIs"]
+    F --> G{"in DoiCache?"}
+    G -- "hit" --> M["Resolution"]
+    G -- "miss" --> H["ID Converter batch, 200 per GET"]
+    H --> I["Crossref per DOI under semaphore"]
+    I --> J{"Crossref 404?"}
+    J -- "yes" --> K["DataCite fallback"]
+    J -- "no" --> L["map_crossref"]
     K --> L
-    L --> M[list Document]
+    L --> M
+    M --> N["merge_enrichment: fill absent keys only"]
+    N --> O["stamp doi_enriched_from and metadata_source"]
 ```
 
-### PDF / Text / JSONL Loaders
-**What it is:** Three concrete `DocumentLoader` implementations that turn a file on disk into `Document`s, each stamping a deterministic content/path-derived ID so re-ingest overwrites in place rather than duplicating the corpus (`loaders.py:18-28`).
+### 1.5 Chunk-level Boilerplate Classification (`boilerplate.py`)
+
+**What it is:** `ragstack/ingestion/boilerplate.py` is the chunk-level counterpart to `enrich.classify`. It is a pure classifier (no model, no network) that labels a chunk `references`, `license`, `acknowledgements` or `body`. `BoilerplateFilter` stamps, and optionally drops, the non-body chunks between chunking and embedding.
 
 **Algorithm / workflow:**
-- **TextFileLoader** (`loaders.py:50-63`): `path.read_text(encoding="utf-8")` → one `Document` with `metadata={"filename": path.name}` and `id = uuid5(NAMESPACE_URL, resolved_path)`.
-- **PdfLoader** (`loaders.py:80-121`): lazy `import pymupdf` (raises `LoaderError` prompting the `pdf` extra if missing, `82-95`); `pymupdf.open(path)` (open failure → `LoaderError`); extract `page.get_text()` for every page (`103`); `finally: doc.close()`; join pages with `\n` and `strip()`; **empty text raises `LoaderError`** so scanned/image-only PDFs aren't silently ingested (`109-113`); emit one `Document` with `metadata={"filename", "pages": len(pages)}`.
-- **JsonlLoader** (`loaders.py:124-191`): open file, iterate lines; skip blank lines; `json.loads` per line with `JSONDecodeError` swallowed so one corrupt line can't sink the corpus (`165-169`); `_document(record)` calls `enrich(record, profile)` (`178`), skips records whose `doc_type` ∈ `skip_types` (default `{EMPTY}`, `151`, `179`); ID key = resolved `record["path"]` if present else the raw text (`185`); metadata = `index_metadata(enriched)` (`189`). Empty result (no usable docs) raises `LoaderError` (`173-174`).
+1. `classify_chunk(text, config)` tests the most certain rules first:
+   - **Licence:** at least `license_min_markers = 2` distinct licence markers, or one marker in a chunk of at most `license_short_chars = 400` chars.
+   - **Acknowledgements:** an end-matter header that starts within `ack_header_window = 240` chars, or at least `ack_min_headers = 2` distinct headers. In both cases the evidence must begin within `max_onset_fraction = 0.5` of the chunk.
+   - **References:** density-based, on chunks of at least 25 words whose `function_word_ratio` is at most 0.22. A chunk qualifies with `reference_signal_density ≥ 12`/100 words, or `≥ 7` when a References header or at least 3 numbered entries start in the dominant half.
+   - Anything else is `BODY`.
+2. `BoilerplateFilter.apply(chunks)` works only on a non-body verdict:
+   - It sets `metadata["section"]` to the verdict and `metadata["is_boilerplate"]` to `section in config.boilerplate_sections`.
+   - A body chunk's metadata is not touched.
+   - So `is_boilerplate` is a **presence flag**. In the default config it is only ever `true`. It is `false` only when an operator narrowed `boilerplate_sections` to exclude a detected section.
+3. With `drop=True`, chunks whose section is in `boilerplate_sections` are removed, except under the **all-boilerplate guard**: a document whose every chunk would be dropped keeps all of them (`FilterResult.rescued_docs`).
+4. `IngestionPipeline._filter_boilerplate` logs counts at INFO, and at WARNING when more than half a source's chunks were dropped. Any classifier exception keeps every chunk.
 
-**Tools & models:** `pymupdf` (PyMuPDF, lazy/optional `pdf` extra) — parser only, no JS execution / no remote fetch (`loaders.py:81-87`); stdlib `json`, `pathlib`, `uuid5`. JSONL loader pulls in the whole `enrich` module.
+**Modes:**
+- API: `boilerplate_detection_enabled` (default `True`) and `boilerplate_drop` (default `False`) in `ragstack/config.py`, wired by `api/deps.py` `_build_boilerplate_filter`.
+- CLIs: `boilerplate.filter_from_mode("off" | "flag" | "drop")` for `ingest_jsonl.py`, `ingest_shard.py` and `embed_shard.py`, all defaulting to `flag`.
+- Threshold overrides come from `BOILERPLATE_CONFIG_JSON` or `--boilerplate-config` via `config_from_json`.
+- `_gowe_inputs` does not forward any boilerplate setting, so GoWe workers always run their `flag` default (see findings).
 
-**Inputs → Outputs:** Text/PDF: `source: str` → `list[Document]` of length 1. JSONL: `source: str` → `list[Document]` of length N (one per surviving line).
+**`section` is not `section_title`:**
+- `section` is this filter's verdict: one of `references`, `license`, `acknowledgements`, never `body`.
+- `section_title` is the source's own heading or unit suffix, for example from `jats.article_records`.
+- `contracts/schemas/chunk_metadata.json` declares them as separate fields.
 
-**Scalability & parallelization:** All synchronous. Text and PDF load the entire file/all pages into memory. JSONL streams the file line-by-line (constant-ish memory per line) but accumulates every resulting `Document` in a list before returning — so the returned list is the memory ceiling for a big corpus. `enrich()` runs per record serially; no batching or parallelism. Bottleneck: PDF text extraction (per-page, single-threaded) and, for JSONL, the serial per-line enrich + JSON parse.
+**Tools & models:** stdlib `re`, `collections.Counter`.
 
-**Single vs bulk:** `TextFileLoader`/`PdfLoader` are strictly single-document (one file → one `Document`). `JsonlLoader` is the batch entry point (one file → many `Document`s) and is the only loader that per-record skips rather than errors, tolerating malformed/empty records mid-stream.
+**Inputs → Outputs:** `list[Chunk]` → `FilterResult(chunks, flagged, dropped, rescued_docs)`, with metadata mutated in place.
+
+**Scalability & parallelization:** Some regex passes plus a word count per chunk; linear and single-threaded. Dropping happens before embedding, so it also saves GPU work.
+
+**Single vs bulk:** Applied per source's chunk list. The drop guard works per `doc_id` within that list.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    subgraph JSONL
-    A[open file] --> B[next line]
-    B -->|blank| B
-    B --> C{json.loads ok?}
-    C -->|no| B
-    C -->|yes| D[enrich record]
-    D --> E{doc_type in skip?}
-    E -->|yes| B
-    E -->|no| F[Document<br/>index_metadata]
-    F --> B
-    B -->|EOF| G{any docs?}
-    G -->|no| H[raise LoaderError]
-    G -->|yes| I[list Document]
-    end
+    A["chunk text"] --> B{"licence markers: 2 or more, or 1 in a short chunk?"}
+    B -- "yes" --> L["license"]
+    B -- "no" --> C{"end-matter header dominant?"}
+    C -- "yes" --> K["acknowledgements"]
+    C -- "no" --> D{"enough words and low prose ratio?"}
+    D -- "no" --> BODY["body: metadata untouched"]
+    D -- "yes" --> E{"reference density above bar?"}
+    E -- "no" --> BODY
+    E -- "yes" --> R["references"]
+    L --> S["stamp section and is_boilerplate"]
+    K --> S
+    R --> S
+    S --> F{"drop mode?"}
+    F -- "no" --> KEEP["keep chunk"]
+    F -- "yes" --> G{"every chunk of this doc droppable?"}
+    G -- "yes" --> KEEP
+    G -- "no" --> DROP["drop before embedding"]
 ```
 
-### Scholarly Enrichment
-**What it is:** A pure (no I/O, no network) module that recovers scholarly metadata — DOI, title, authors, year, document class, citations — from the sparse signals that survive PDF extraction: the source path/filename, the body text, and whatever `metadata` was extracted (`enrich.py:1-17`). Publisher specifics are isolated in a frozen `PublisherProfile`.
+### 1.6 The Declared Chunk-Metadata Contract (#603)
 
-**Algorithm / workflow (`enrich()` orchestration, `enrich.py:302-341`):**
-1. Resolve `profile` (default `DEFAULT_PROFILE` = ASM, `10.1128` prefix); the `prefix=` back-compat arg does a `model_copy` overriding only `doi_prefix` (`317-319`).
-2. Pull `path`, `text`, `meta` from the record with `or ""`/`or {}` guards (`320-322`).
-3. `classify(path, text, profile)` → `doc_type` (`324`): empty/blank text → `EMPTY`; `/suppl/` in path or basename starts `suppl` → `SUPPLEMENT`; basename ∈ `profile.front_matter_names` → `FRONT_MATTER`; `len(text) < 1500` → `SHORT`; else `ARTICLE` (`151-167`).
-4. `derive_doi(...)` → `(doi, doi_source)` — the fallback chain (`170-203`, detailed below).
-5. `extract_citations(text)` only when `doc_type == ARTICLE` (`326`).
-6. Build `EnrichedDoc` (`328-341`): `title` (stripped meta), `authors = parse_authors` (split on `;`/newline, `135-140`), `keywords = split_keywords` (split on `;`/`,`/newline, `143-148`), `year = derive_year` (path/DOI scanned freely; free text only fires near a copyright/received/accepted anchor, `221-235`), `abstract`, `n_citations`, `citations`.
+**What it is:** `contracts/schemas/chunk_metadata.json` is the source of truth for which chunk-metadata fields exist and what type each one is. `ragstack/metadata_schema.py` `DECLARED_FIELDS` mirrors it field-for-field for runtime use, because `contracts/` is not packaged into the wheel and `metadata_schema` must stay a stdlib-only leaf that `jats.py` can import. `python/tests/unit/test_chunk_metadata_schema.py` pins the two together (`test_python_declares_exactly_the_contract_fields`, `test_python_agrees_with_the_contract_on_every_type`).
 
-**`derive_doi` fallback chain (`enrich.py:189-203`):** priority-ordered, returns the source tag:
-1. **metadata** — if `meta_doi` is non-empty (after strip), return it with source `"metadata"` (`192-193`).
-2. **filename** — strip `.pdf` from basename to get `stem`; `profile.doi_from_filename(stem)` applies the compiled `filename_doi_rule` and, on match, returns `f"{doi_prefix}/{group(1) or group(0)}"`, source `"filename"` (`194-199`, `96-107`). Default rule `_FN_DOI` matches `jvi.02415-06`-style stems (`enrich.py:47`).
-3. **text** — scan first 4000 chars for `_DOI_IN_TEXT` (`10\.\d{4,9}/...`); on hit, `_trim_text_doi` strips trailing sentence punctuation and *unbalanced* trailing `)` (preserving balanced parens in DOIs like `10.1016/S0140-6736(98)01085-X`), source `"text"` (`200-202`, `206-218`).
-4. **not found** — `("", "")`.
+**The table:**
+- 35 declared fields.
+- Exactly one is required: `tenant_id`, the row-level isolation boundary.
+- Types are `string`, `integer` or `boolean`. Only `authors` and `keywords` are arrays.
+- `pmid` and `pmcid` are declared **strings**.
+- The integer fields are `year`, `date`, `chunk_index`, `n_citations`, `n_tables`, `n_figures` and `pages`.
+- The namespace is **open** (`additionalProperties: true`). Undeclared keys pass through to ES's dynamic template or to dynamic inference. `ragstack/ops/metadata_conformance.py` reports what a live collection carries that is not declared.
+- `KNOWN_INT_FIELDS = {"year"}` is a separate, narrower set: the filter-side type check. `INT_FIELDS` is the producer-side set, and a test asserts the first is a subset of the second.
 
-**`extract_citations` (`enrich.py:238-271`):** find a `LITERATURE CITED`/`REFERENCES`/`BIBLIOGRAPHY` header (MULTILINE); walk lines after it matching `_CITE_LINE` (`^\d{1,3}[.)] entry`); coalesce wrapped continuation lines into the current entry; flush on each new number; break when a list restart (n≤2, n < last_num−5, >3 entries collected) signals we've run past the references into e.g. a figure list; cap at 250 (`261-268`).
+**Absent is a state (`x-ragstack-absence`):** No producer may invent a default. `null` is accepted wherever a value is and means the same as absent. `link_neighbors` writes `prev_chunk_id` / `next_chunk_id = None` at a document's edges on purpose. The worked example is `is_boilerplate`: it is stamped only on non-body verdicts (§1.5), so `{"is_boilerplate": false}` matches nothing, and `/v1/query`'s `exclude_boilerplate` is built as a negation of `true` (#601). Backfilling `false` would reclassify every pre-#597 chunk from "never classified" to "asserted not boilerplate".
 
-**`index_metadata` (`enrich.py:344-354`):** `model_dump(exclude={"citations","abstract"})` drops the heavy document-level fields, then filters out empty `""`/`[]`/`None` values so chunk payloads and the ES keyword index aren't littered. Keeps `n_citations` so a chunk still advertises how richly cited its source is.
+**Store shape (`x-ragstack-store-shape`):**
+- **Elasticsearch** nests metadata under `metadata.*`. `metadata_schema.es_field_path(name)` returns `metadata.{name}`.
+- **Qdrant** is flat at the payload top level. `qdrant_field_path(name)` returns `name`, sharing the namespace with the reserved `chunk_id`, `doc_id`, `content`, `start_char` and `end_char`. `stores/qdrant.py` drops metadata keys in `stores.filters.PAYLOAD_RESERVED` on upsert.
+- The caller-facing filter key is bare in both stores, and `stores/elasticsearch.py` `_build_query` adds the prefix.
 
-**Tools & models:** stdlib `re` (compiled patterns for filename-DOI, in-text DOI, year, citation header/line), `pydantic` (`BaseModel`/`ConfigDict(frozen=True)` for `PublisherProfile` and `EnrichedDoc`). No models, no network, no external services — deliberately pure.
+**Derived ES mapping:** `DeclaredField.elasticsearch_mapping` maps `integer` → `long`, `boolean` → `boolean`, and everything else → `keyword` with `ignore_above = KEYWORD_IGNORE_ABOVE = 8191`. `elasticsearch_metadata_properties()` is spliced into `stores/elasticsearch.py` `_MAPPINGS["properties"]["metadata"]["properties"]`, so a newly created index types declared fields by decision rather than by whichever document lands first.
 
-**Inputs → Outputs:** `enrich(record: dict[str,Any], *, prefix, profile) -> EnrichedDoc`. `derive_doi(path, text, meta_doi, prefix, profile) -> tuple[str,str]`. `classify(path, text, profile) -> str`. `extract_citations(text, cap) -> list[str]`. `index_metadata(EnrichedDoc) -> dict[str,Any]`.
+**Enforcement at ingest:**
+- `metadata_problems(metadata)` iterates the chunk's keys: required-field presence, then per-field type checks. `bool` is refused for integer fields, and a joined author string is refused for the `authors` list.
+- `validate_chunks(chunks, where=...)` raises `ChunkMetadataTypeError` on the first bad chunk.
+- It is called in `ragstack/ingestion/pipeline.py` `IngestionPipeline.index_chunks` **before** the delete-prior and before any store write, so a refused batch never destroys the prior version. It is also called in `scripts/ingest_jsonl.py` and `scripts/ingest_chunks.py`, which write without `index_chunks`.
+- `tenant_id` is stamped earlier, in `IngestionPipeline._embed_and_link`.
 
-**Scalability & parallelization:** Purely CPU-bound, synchronous, single-record functions — no concurrency in the module. Being pure/total (`enrich` always returns a record, never raises; `resolve_profile` degrades to default rather than raising, `122-132`) makes it trivially parallelizable by a caller (thread/process pool or `asyncio.to_thread`), but nothing here does so today. Cost is bounded: DOI/year text scans are capped at the first 4000 chars, citations at 250 entries — so per-record work doesn't blow up with document size. `PublisherProfile` is frozen so one shared instance is safely reused across all records without aliasing hazards (`85-89`).
+**Packed `date`:**
+- Declared as an integer `yyyymmdd` with unknown parts set to 0. The contract states the invariant `year == date // 10000` and that `year` is derived, never captured separately.
+- `enrich.packed_date` is the only function in the tree that produces it.
+- **No ingest path writes `date` at 22b44be.** The contract's own description says so, and a repo-wide search finds `packed_date` called only from its unit test. The field exists only where an out-of-tree backfill put it.
+- The filter grammar does not yet support range operators. `stores/filters.py` refuses a dict value such as `{"gte": ...}` with a 400, so `date >= 20200315` is not expressible today (`docs/plans/date-filtering.md` Part A is unbuilt).
 
-**Single vs bulk:** No dual entry points — enrichment is intrinsically per-record. Bulk-ness is the caller's loop: `JsonlLoader._document` calls `enrich` per line and keeps only `index_metadata` (chunk-safe subset), while the bulk operator script is noted to additionally emit the full catalog with `citations` (`enrich.py:13-16`, `274-299`). The single split that matters is field-weight: `_HEAVY_FIELDS = {citations, abstract}` ride only in the full `EnrichedDoc`, everything else propagates to chunks via `index_metadata`.
+**Tools & models:** stdlib only (`dataclasses`, `re`, `datetime`).
 
-**Diagram (DOI fallback chain):**
+**Inputs → Outputs:** chunk `metadata: dict` → `list[str]` of problems (`metadata_problems`), or a raise (`validate_chunks`). `elasticsearch_metadata_properties() -> dict`.
+
+**Scalability & parallelization:** O(keys per chunk). The loop deliberately iterates the chunk's roughly 20 keys rather than the 35-row table, because it runs once per chunk across very large corpora. It fails fast on the first bad chunk.
+
+**Single vs bulk:** The same check runs on every write path that reaches a store: the local pipeline, the shard tools through `index_chunks`, and the two direct-write scripts.
+
+**Diagram:**
 ```mermaid
 flowchart TD
-    A[derive_doi] --> B{meta_doi<br/>non-empty?}
-    B -->|yes| BR[return doi<br/>source=metadata]
-    B -->|no| C[strip .pdf<br/>from basename]
-    C --> D{filename_doi_rule<br/>matches stem?}
-    D -->|yes| DR[prefix/suffix<br/>source=filename]
-    D -->|no| E{DOI regex in<br/>first 4000 chars?}
-    E -->|yes| ER[trim punctuation<br/>+ unbalanced paren<br/>source=text]
-    E -->|no| FR[empty<br/>source=empty]
+    J["contracts/schemas/chunk_metadata.json: source of truth"] -- "pinned by unit test" --> P["metadata_schema.DECLARED_FIELDS"]
+    P --> M["elasticsearch_metadata_properties"]
+    M --> ES["ES index created with metadata.* typed by decision"]
+    P --> V["validate_chunks in index_chunks and direct-write scripts"]
+    C["chunks with tenant_id stamped"] --> V
+    V --> Q{"any declared field wrong type, or tenant_id absent?"}
+    Q -- "yes" --> X["ChunkMetadataTypeError before delete-prior"]
+    Q -- "no" --> W["delete-prior, then upsert"]
+    W --> QD["Qdrant payload: fields flat"]
+    W --> ED["ES doc: fields under metadata"]
+    P --> CF["ops/metadata_conformance: live collection vs declared"]
 ```
 
-Files analyzed: `python/ragstack/ingestion/loaders.py`, `python/ragstack/ingestion/enrich.py`.
+Files analyzed:
+- `python/ragstack/ingestion/loaders.py`
+- `python/ragstack/ingestion/jats.py`
+- `python/ragstack/ingestion/enrich.py`
+- `python/ragstack/ingestion/doi_metadata.py`
+- `python/ragstack/ingestion/boilerplate.py`
+- `python/ragstack/ingestion/pipeline.py`
+- `python/ragstack/metadata_schema.py`
+- `contracts/schemas/chunk_metadata.json`
+- `python/ragstack/config.py`
+- `python/ragstack/api/deps.py`
+- `python/ragstack/api/routers/documents.py`
+- `python/ragstack/stores/elasticsearch.py`
+- `python/ragstack/stores/filters.py`
+- `docs/plans/date-filtering.md`
+
+---
 
 ---
 
 ## 2. Chunking
 
-### RecursiveCharacterChunker (`fixed`)
-**What it is:** Character-window chunker that slides a fixed `chunk_size`-char window with `chunk_overlap`-char overlap, optionally hard-capping each emitted window to a token budget so no chunk overflows the embedder context (`chunkers.py:213-251`).
-**Algorithm / workflow:**
-1. `start=0`; loop while `start < len(text)`, `end = min(start+chunk_size, len(text))` (`chunkers.py:238-240`).
-2. `_emit(doc, start, end)` produces chunk(s) for the span (`chunkers.py:241`).
-3. If no token budget → one `_make_chunk` for the raw char span (`chunkers.py:249-250`); else `_token_split_span` splits the window losslessly to `<=max_tokens` pieces and maps each to a contiguous sub-span (`chunkers.py:251,254-275`).
-4. Break if `end == len(text)`, else advance `start = end - chunk_overlap` (`chunkers.py:242-244`).
-**Tools & models:** none beyond the injected `TokenCounter` (only used on the token-cap path). Pure Python string slicing.
-**Inputs -> Outputs:** `Document` -> `list[Chunk]` (each with deterministic `uuid5(doc_id:start:end)` id, `start_char`/`end_char`, sliced `content`, copied metadata via `_make_chunk` `chunkers.py:43-56`).
-**Scalability & parallelization:** O(n) single-threaded per document; no internal fan-out. Token-cap path uses the offset-map O(n) split (`split_text_to_token_budget`), so no O(n²) blowup. Parallelism is external (ingest-level `--chunk-concurrency` threads over docs). Bottleneck: sequential char walk plus, on the token path, one whole-window tokenization.
-**Single vs bulk:** No distinct entry point — one `chunk(doc)` call per doc; bulk is just many independent calls.
+Four facts frame this section:
+
+- **The algorithms are frozen.** `ragstack/ingestion/chunkers.py` behaviour is pinned by the chunking study: `docs/plans/results/stage0/s0_common.py` sets `EXPECT_COMMIT = "55a0fc2…"` (the #488 commit), and `provenance()` raises if HEAD differs. Between 55a0fc2 and 22b44be, `git diff` on `chunkers.py` is comment-only: an explanatory comment in the semantic branch of `make_chunker`. `docs/plans/chunking-one-factory.md` §8 records the rule that consolidation work "must not change `chunkers.py` semantics".
+- **The method is collection identity.** `chunk_method` / `chunk_size` / `chunk_overlap` / `chunk_params` are part of a collection's spec. A collection cannot be moved to another method in place; it has to be recreated (`docs/plans/results/semantic-vs-pooled-2026-09-18.md`, *Consequences*).
+- **Chunk ids are deterministic.** `chunkers._make_chunk` is the only `Chunk` constructor. It sets `id = uuid5(NAMESPACE_URL, "{doc_id}:{start}:{end}")`, `doc_id = doc.id` and `metadata = dict(doc.metadata)`, so everything §1 put on the document reaches every chunk.
+- **Methods:** `chunkers.CHUNK_METHODS = ("fixed", "fixed_token", "sentence", "words", "semantic", "semantic_pooled")`.
+
+### 2.1 Chunker Construction: the Five Builders, and what #615 Consolidated
+
+**What it is:** Every path ends at `chunkers.make_chunker(method, ...)`, but the arguments it receives are decided by several different builders. `docs/plans/chunking-one-factory.md` §8 counts five, with three different answers to "is there a token budget?":
+
+| Builder | Used by | Token budget passed to `make_chunker` |
+|---|---|---|
+| `ragstack/api/deps.py` `_chunker_for(entry, embed_fn=)` | per-collection ingest on the local backend (`build_ingestor_for`) | none. `fixed_token` gets an HF counter as its window unit, nothing else gets a `max_tokens` |
+| `ragstack/api/deps.py` `_build_chunker()` | the app-default collection | only when `settings.chunk_max_tokens` is set (`resolve_max_tokens`) |
+| `ragstack/ingestion/chunker_config.py` `build_chunker(...)` | the bulk tools | always. `resolve_max_tokens` uses the override or a live `GET /v1/models` (the override or `max_model_len` minus a 16-token reserve; 4096 unreduced when nothing is reachable) |
+| `scripts/ingest_shard.py` `_build_chunker` | GoWe `pdf-ingest-scatter.cwl` and `ingest-bulk.cwl` | inherits `build_chunker` |
+| `scripts/embed_shard.py` `_build_chunker` | `embed-bulk`, `pdf-ingest`, `jats-ingest` CWL | inherits `build_chunker` |
+
+`scripts/ingest_jsonl.py` also calls `build_chunker` inline.
+
+**Why it matters:** The builders give identical results for `fixed` and `fixed_token`, and for `semantic` apart from edge cases. They differ for `sentence` and `words`, because once a token budget is present `_pack_spans` delegates to `_pack_spans_tokens`, which ignores `chunk_size` and packs to the model window. The plan's measurement on a 4,489-char document (size 200, overlap 20) gave 30 vs 1 chunks for `sentence` and 25 vs 1 for `words` (chunking-one-factory.md §8). The same plan reports zero live collections on hackathon or dev using `sentence` or `words` (read 2026-09-18).
+
+**What #615 (`a2be96f`) consolidated:**
+- `chunker_config.SEMANTIC_METHODS = ("semantic", "semantic_pooled")` and `needs_embed_fn(method)` are the single membership test. `api/deps.py` `_chunker_for` / `_embed_fn_for` / `_build_chunker`, `ingest_shard.py`, `embed_shard.py` and `ingest_jsonl.py` call `needs_embed_fn`. `api/routers/collections.py` re-exports the constant. `SHARD_UNSUPPORTED_METHODS` is derived from it.
+- The one deliberate literal left is `chunkers.make_chunker`'s own `method in ("semantic", "semantic_pooled")` (plus `scripts/eval/chunking_compare_7way.py`), because `chunkers.py` is frozen.
+- `scripts/ingest_shard.py` now builds a `SyncEmbedBridge` from its own `--embedding-*` endpoints when `needs_embed_fn(args.chunk_method)` (`_build_bridge`, closed in a `finally`). It reads the semantic tunables from the registry entry's `chunk_params` (`_semantic_params(spec)`), never from CWL inputs.
+- The API's GoWe guard is now a per-tenant setting, `Settings.ingest_worker_unsupported_methods`, parsed by `chunker_config.parse_unsupported_methods` (unknown names raise) and rendered by `shard_refusal`.
+- `embed_shard.py` keeps a **local** refusal for semantic methods, because it builds no bridge.
+
+**Still open:** the single `chunker_for` factory (§8 of the plan) is not built. The five builders remain.
+
+**Other construction rules at 22b44be:**
+- `chunker_config.resolve_token_backend` forces `hf` for `fixed_token` and raises when an `hf` or `endpoint` backend has no model.
+- `tokenization.make_token_counter` **no longer degrades** hf → endpoint → estimate. A tokenizer that fails to load raises `TokenCounterUnavailable`. The estimator has to be requested explicitly.
+
+**Tools & models:** the embedding model's HF tokenizer (`transformers`), vLLM `/v1/models`, and, for the semantic methods, the collection's embedding endpoints via `SyncEmbedBridge`.
+
+**Inputs → Outputs:** a collection spec or CLI args → a chunker. `build_chunker` also returns `(token_counter, resolved_max_tokens)`.
+
+**Scalability & parallelization:** Construction runs once per app, collection or tool run. `api/deps.py` `_embed_bridge_for` caches one bridge per collection id on `app_state`.
+
+**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. That split is where the `sentence` / `words` divergence comes from.
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[start=0] --> B{start < len text}
-  B -- no --> Z[return chunks]
-  B -- yes --> C[end=min start+size, len]
-  C --> D{token budget set}
-  D -- no --> E[one chunk for span]
-  D -- yes --> F[token split span<br/>lossless pieces]
-  E --> G{end == len}
-  F --> G
-  G -- yes --> Z
-  G -- no --> H[start = end - overlap]
-  H --> B
+    S["collection spec or CLI args"] --> Q{"which path?"}
+    Q -- "API local, per collection" --> A["deps._chunker_for: no max_tokens"]
+    Q -- "API default collection" --> B["deps._build_chunker: max_tokens only if chunk_max_tokens set"]
+    Q -- "bulk tools" --> C["chunker_config.build_chunker: always resolves max_tokens"]
+    C --> C1["ingest_shard._build_chunker: bridge plus chunk_params from registry"]
+    C --> C2["embed_shard._build_chunker: refuses semantic methods"]
+    C --> C3["ingest_jsonl inline"]
+    A --> N{"needs_embed_fn: method in SEMANTIC_METHODS?"}
+    B --> N
+    C1 --> N
+    N -- "yes" --> E["attach SyncEmbedBridge as embed_fn"]
+    N -- "no" --> F["no embed_fn"]
+    E --> M["chunkers.make_chunker"]
+    F --> M
 ```
 
-### SentenceChunker (`sentence`)
-**What it is:** Packs whole sentences (NLTK Punkt boundaries, regex fallback) greedily into `~chunk_size`-char (or `~max_tokens`-token) chunks with sliding-window overlap, never splitting a sentence except when one sentence alone exceeds the token budget (`chunkers.py:423-467`).
+### 2.2 RecursiveCharacterChunker (`fixed`)
+
+**What it is:** A character sliding window of `chunk_size` with `chunk_overlap`, optionally hard-capped to a token budget (`chunkers.py` `RecursiveCharacterChunker`).
+
 **Algorithm / workflow:**
-1. Empty text -> `[]`; `chunk_size == -1` -> `_whole_doc` (whole doc, token-split if budgeted) (`chunkers.py:455-458,534-542`).
-2. `sentence_spans(text)` -> gapless `(start,end)` spans: try `_punkt_sentence_spans` (lazy `nltk.PunktSentenceTokenizer`, no punkt data needed), else `_fallback_sentence_spans` regex `[.!?]+["')\]]*\s+|\n{2,}`, then `_subsplit_long_spans` breaks any span > 2000 chars on newline/tab/`;`/whitespace (`chunkers.py:287-420`).
-3. `_pack_spans`: greedily accumulate consecutive spans until adding the next would exceed the budget, emit `_make_chunk(cur_start, last_end)` (`chunkers.py:566-616`).
-4. Overlap: `_overlap_resume` walks back accumulating trailing whole units until their char length would exceed `chunk_overlap`, always advancing ≥1 unit (`chunkers.py:545-563`).
-5. Token variant `_pack_spans_tokens` has two fill modes, selected by `budget_mode`. Default `"joined"`: fill to `max_tokens` measured on the **joined** chunk text — a galloping-then-binary search over joined-prefix counts, O(log k) counter calls per chunk — then cut back to the nearest unit boundary (realised fill ~0.99-1.00). Legacy `"summed"`: pack by the running **sum** of per-unit counts, each unit tokenized in isolation; that sum over-counts the joined chunk (a BPE tokenizer merges the leading space into a word's token, which a lone word can't show) by 1.47-1.50x per word and 1.00-1.04x per sentence, so the arm under-fills to ~0.65-0.68 (words) / ~0.91-0.95 (sentence). The legacy mode is kept, not deleted, so the completed Leg A/Leg B grids stay reproducible and the study's realised-vs-nominal claim stays testable. Both modes hard-split a single over-budget sentence via `_token_split_span` and assert the never-exceed-budget invariant on the measured count.
-**Tools & models:** NLTK Punkt (optional `[chunking]` extra) with regex fallback; injected `TokenCounter` on the token path.
-**Inputs -> Outputs:** `Document` -> `list[Chunk]`; chunk char ranges may overlap (overlap re-emits earlier sentences), ids differ by span.
-**Scalability & parallelization:** O(n) span detection + O(k) packing; on the token path the default `joined` mode costs O(log k) counter calls per chunk (memoized joined-prefix counts) and the legacy `summed` mode O(k) (memoized per-span counts), neither O(k²). No internal parallelism. Bottleneck: Punkt tokenization and (token path) per-span `count` calls. Overlap re-counting avoided via `span_tok` memo.
-**Single vs bulk:** Single entry `chunk(doc)`; char vs token packing selected by `max_tokens`/`token_counter` (distinct internal path `_pack_spans` vs `_pack_spans_tokens`).
+1. Start at 0 and set `end = min(start + chunk_size, len)`.
+2. `_emit(doc, start, end)` produces one `_make_chunk`, or `_token_split_span` pieces when `max_tokens` and `token_counter` are set.
+3. Stop at the end of the text, otherwise continue from `start = end - chunk_overlap`.
 
-### WordChunker (`words`)
-**What it is:** Same greedy packer as `SentenceChunker` but the atomic unit is a word (`\S+` run with trailing whitespace attached) instead of a sentence (`chunkers.py:492-531`).
-**Algorithm / workflow:** identical to SentenceChunker steps 3-5, but units come from `word_spans` (`_WORD = re.compile(r"\S+")`, tiling gaplessly, `chunkers.py:474-489`); `chunk_size == -1` -> `_whole_doc`; empty word list -> single whole-doc chunk (`chunkers.py:517-531`). Shares `_pack_spans`/`_pack_spans_tokens`/`_overlap_resume`.
-**Tools & models:** regex only; injected `TokenCounter` on the token path. No NLTK.
-**Inputs -> Outputs:** `Document` -> `list[Chunk]`.
-**Scalability & parallelization:** O(n) tokenize-to-words + O(k) pack; same memoized token path. No internal parallelism.
-**Single vs bulk:** Single `chunk(doc)`; char vs token path as above.
+**Tools & models:** none, except the injected `TokenCounter` on the cap path.
 
-**Diagram (shared sentence/word greedy packer):**
-```mermaid
-flowchart TD
-  A[unit spans<br/>sentences or words] --> B{i < n}
-  B -- no --> Z[return chunks]
-  B -- yes --> C{token budget}
-  C -- char --> D[grow j while<br/>size+unit_len <= size]
-  C -- token --> E[grow j while<br/>memoized tok sum <= max]
-  E --> F{single unit<br/>over budget}
-  F -- yes --> G[token split span]
-  F -- no --> H[emit chunk<br/>first.start..last.end]
-  D --> H
-  G --> I[i = overlap resume]
-  H --> I
-  I --> B
-```
+**Inputs → Outputs:** `Document` → `list[Chunk]`.
 
-### FixedTokenWindowChunker (`fixed_token`)
-**What it is:** A true token-*size* sliding-window chunker: tokenizes the whole doc once with the embedding model's HF fast tokenizer, slides an N-token window advancing `N-overlap` tokens, and maps each window back to exact source char offsets, trimming so the re-tokenized slice fits the window (`chunkers.py:696-796`).
-**Algorithm / workflow:**
-1. Construction requires an HF `TokenCounter` exposing a callable `_tokenizer` (offset mapping); a non-HF counter is rejected to avoid a silent whole-doc-chunk regression (`chunkers.py:736-746`).
-2. Tokenize `text` once, `return_offsets_mapping=True, add_special_tokens=False`; `offsets` len `n` (`chunkers.py:754-756`).
-3. `window=max(1,chunk_size)`, `overlap=max(0,min(chunk_overlap,window-1))` (`chunkers.py:759-760`).
-4. Loop: `end_tok=min(start_tok+window,n)`, `char_start=offsets[start_tok][0]`, `char_end=offsets[end_tok-1][1]` (`chunkers.py:763-766`).
-5. **Trim:** only for a full window, shrink `end_tok` by whole tokens while `count(text[char_start:char_end]) > window` — an isolated boundary re-encode can gain a merge token; stops at a single indivisible token (`chunkers.py:769-780`).
-6. Emit chunk if span non-zero; advance `start_tok = max(start_tok+1, end_tok - overlap)` from the *trimmed* end so trimmed tokens are never skipped (`chunkers.py:783-792`).
-7. If no chunk emitted (degenerate tail), fall back to one whole-doc chunk (`chunkers.py:794-795`).
-**Tools & models:** HF `transformers` fast tokenizer of the embedding model (via `HFTokenCounter._tokenizer`). No embedding calls.
-**Inputs -> Outputs:** `Document` -> `list[Chunk]`; `chunk_size`/`chunk_overlap` are **tokens** (unlike char chunkers).
-**Scalability & parallelization:** O(n) tokens for the single tokenize; the trim loop re-tokenizes only a full window's slice per step (bounded, typically ≤ a few merge-token shrinks), so effectively near-linear. No internal parallelism; also reused as the SemanticChunker oversize fallback. Bottleneck: the one whole-doc HF tokenization and per-full-window trim `count` calls.
-**Single vs bulk:** Single `chunk(doc)` entry; no separate bulk path.
+**Scalability & parallelization:** O(n) per document with no internal parallelism. The cap path uses the O(n) offset split (§2.6).
+
+**Single vs bulk:** One `chunk(doc)` per document.
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[tokenize whole doc<br/>offset mapping] --> B{start_tok < n}
-  B -- no --> Y{any chunk emitted}
-  Y -- no --> Z2[whole-doc chunk]
-  Y -- yes --> Z[return chunks]
-  B -- yes --> C[end_tok=min start+window,n<br/>char_start/char_end from offsets]
-  C --> D{full window}
-  D -- yes --> E[trim end_tok while<br/>recount slice > window]
-  D -- no --> F[emit chunk if non-zero]
-  E --> F
-  F --> G{end_tok >= n}
-  G -- yes --> Z
-  G -- no --> H[start_tok=max start+1, end_tok-overlap]
-  H --> B
+    A["start at 0"] --> B{"start before end of text?"}
+    B -- "no" --> Z["return chunks"]
+    B -- "yes" --> C["end is start plus chunk_size, clipped"]
+    C --> D{"token budget set?"}
+    D -- "no" --> E["one chunk for the span"]
+    D -- "yes" --> F["token-split span into lossless pieces"]
+    E --> G{"end reached?"}
+    F --> G
+    G -- "yes" --> Z
+    G -- "no" --> H["start is end minus overlap"]
+    H --> B
 ```
 
-### SemanticChunker (`semantic` / `semantic_pooled`)
-**What it is:** Splits a document at topic boundaries detected by embedding-similarity: it embeds per-sentence buffers, cosine-distances consecutive buffers, and places breakpoints where the distance exceeds a percentile threshold, then merges short chunks and token-caps the results (`chunkers.py:895-1149`). `semantic_pooled` is the same class with `pool_sentences=True` and `distance_round=6` (`chunkers.py:1217-1236`).
+### 2.3 SentenceChunker (`sentence`) & WordChunker (`words`), with the #488 fill fix
+
+**What it is:** Greedy packers over unit spans. The units are sentences (`sentence_spans`: NLTK Punkt when available, else the `_SENTENCE_END` regex, then `_subsplit_long_spans` for spans over 2000 chars) or words (`word_spans`, `\S+` runs with trailing whitespace). Both classes share `_pack_spans`, `_pack_spans_tokens` and `_overlap_resume`.
+
 **Algorithm / workflow:**
-1. `sentence_spans(text)`; empty/1-sentence -> single emit (`chunkers.py:1077-1082`).
-2. **Oversize fallback (before any embed):** if `len(spans) > max_breakpoint_sentences` (default 3000), `_oversize_fallback` chunks via `FixedTokenWindowChunker` (lazily built if an HF counter exists) or a whole-doc token split — zero per-span embedding, protecting the embed fleet from a giant table doc (`chunkers.py:966-980,1084-1092,991-1020`).
-3. `_buffer_embeddings` builds per-sentence buffer vectors (`chunkers.py:1042-1070`):
-   - Legacy (`pool_sentences=False`): embed each overlapping buffer *text* (window up to `2*buffer_size+1` sentences), each capped by `_cap_tokens` to the breakpoint model's budget (`chunkers.py:1065-1070,1028-1040`).
-   - Pooled: embed each sentence once, then `_mean_pool` the adjacent-sentence window per index — ~`(2*buffer_size+1)`× fewer tokens embedded (`chunkers.py:1057-1064,881-892`).
-4. `_cosine_distance` between consecutive buffer vectors (pure Python, no numpy); optional `round(d, distance_round)` for cross-host reproducibility (`chunkers.py:1096-1101,855-862`).
-5. `_breakpoint_groups`: `threshold = _percentile(distances, breakpoint_percentile_threshold)` (linear-interp, numpy-compatible), split after every distance index `> threshold` (`chunkers.py:1116-1130,865-878`).
-6. Map sentence-index groups -> contiguous char spans; `_merge_short` folds chunks `< min_chunk_length` into a neighbour (`chunkers.py:1107-1110,1132-1149`).
-7. `_emit` each span, token-splitting if over `max_tokens` (`chunkers.py:1112-1113,1022-1026`).
-**Tools & models:** injected sync `embed_fn` (bridged from the async embedder via `SyncEmbedBridge`, backed by a vLLM/pooled embedder e.g. BGE-512 for breakpoints / SFR-4096 for storage); optional separate `breakpoint_token_counter`/`breakpoint_max_tokens`; NLTK/regex sentence splitting; pure-Python cosine/percentile/mean-pool.
-**Inputs -> Outputs:** `Document` -> `list[Chunk]`. Intermediate: `list[list[float]]` buffer embeddings.
-**Scalability & parallelization:** This is the embed-heavy path. Breakpoint cost scales with sentence-span count — one embed input per sentence (pooled) or per buffer window (legacy). The single `embed_fn(...)` call is fanned out concurrently by `SyncEmbedBridge` across the pooled embedder's endpoints (CPU sentence-splitting + pure-Python distance math vs GPU embedding split). Bottlenecks/limits: (a) span count → embed volume, bounded by the `max_breakpoint_sentences=3000` fallback; (b) pooled mode cuts tokens ~`(2b+1)`×; (c) pure-Python `_cosine_distance`/`_mean_pool` are O(spans·dim) on one thread — fine for prose, could matter at thousands of spans; (d) upstream fleet capped by the pool's own `max_concurrency` semaphore. External `--chunk-concurrency` runs multiple docs' chunkers in parallel threads.
-**Single vs bulk:** One `chunk(doc)` per document; buffers for a whole doc go to the bridge in ONE call (then sub-batched). Distinct modes selected by `make_chunker`: `semantic` (buffer-text embed, no rounding) vs `semantic_pooled` (per-sentence embed + mean-pool + `distance_round=6`). Oversize docs divert to the `FixedTokenWindowChunker` fallback path.
+1. Empty text returns `[]`. `chunk_size == -1` returns the whole document (`_whole_doc`).
+2. **Char budget** (no `max_tokens`): `_pack_spans` accumulates units until the next would exceed `chunk_size`, always taking at least one unit.
+3. **Token budget** (`max_tokens` + `token_counter`): `_pack_spans_tokens` has two `budget_mode`s (`BUDGET_MODES = ("joined", "summed")`, `DEFAULT_BUDGET_MODE = "joined"`). This is the #488 fix (`55a0fc2`):
+   - **`joined`** (default): `_furthest_fitting_unit` gallops, then binary-searches, for the furthest unit boundary whose *joined* text measures within `max_tokens`. That is O(log k) counter calls per chunk, and every emitted boundary was actually measured.
+   - **`summed`** (legacy): pack while the sum of per-unit counts, each tokenized in isolation, stays within budget. The docstring gives the measured over-count with the SFR tokenizer: 1.47–1.50× per word (realised fill about 0.68) and 1.00–1.04× per sentence (fill about 0.92–0.97). Legacy is kept so the chunking study's completed Leg A / Leg B grids stay reproducible.
+   - In both modes, a single unit over budget is hard-split with `_token_split_span`, and `assert emitted <= max_tokens` holds.
+4. **Overlap:** `_overlap_resume` walks back whole trailing units while their char length stays within `chunk_overlap` (chars in both modes), always advancing at least one unit.
+5. `budget_mode` is a `make_chunker` parameter, but no production builder passes it (§2.1). Only `scripts/eval/chunking_compare_7way.py` sets `summed`. Every ingest path gets `joined`.
+
+**Tools & models:** NLTK Punkt (optional `[chunking]` extra) with a regex fallback; the injected `TokenCounter` on the token path.
+
+**Inputs → Outputs:** `Document` → `list[Chunk]`. Overlapping chunks have distinct ids because their spans differ.
+
+**Scalability & parallelization:** O(n) segmentation. Packing is O(k) on the char path, O(log k) counter calls per chunk in `joined` mode, and O(k) memoized counts in `summed` mode. No internal parallelism.
+
+**Single vs bulk:** One `chunk(doc)` per document. Which packer runs depends on the builder (§2.1).
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[sentence_spans] --> B{spans <= 1}
-  B -- yes --> Z1[single emit]
-  B -- no --> C{spans > max_breakpoint<br/>default 3000}
-  C -- yes --> F[oversize fallback<br/>fixed_token, no embed]
-  C -- no --> D{pool_sentences}
-  D -- pooled --> E1[embed each sentence once<br/>mean-pool windows]
-  D -- legacy --> E2[embed each buffer text]
-  E1 --> G[cosine distance<br/>consecutive buffers]
-  E2 --> G
-  G --> H[optional round distances]
-  H --> I[threshold = percentile<br/>split where dist > threshold]
-  I --> J[groups -> char spans]
-  J --> K[merge short < min_length]
-  K --> L[emit each span<br/>token-split if over budget]
-  L --> Z[return chunks]
-  F --> Z
+    A["unit spans: sentences or words"] --> B{"units left?"}
+    B -- "no" --> Z["return chunks"]
+    B -- "yes" --> C{"token budget?"}
+    C -- "no" --> D["grow while char size fits chunk_size"]
+    C -- "yes" --> E{"single unit over budget?"}
+    E -- "yes" --> F["hard-split unit by tokens, advance one"]
+    E -- "no" --> G{"budget_mode"}
+    G -- "joined" --> H["gallop plus binary search on joined count"]
+    G -- "summed" --> I["grow while sum of isolated unit counts fits"]
+    D --> J["emit chunk: first start to last end"]
+    H --> J
+    I --> J
+    J --> K["overlap resume by chars, advance at least one unit"]
+    F --> B
+    K --> B
 ```
 
-### Token-budget splitting (`split_text_to_token_budget`) + TokenCounter strategies
-**What it is:** A lossless routine that splits one text into substrings each `<=max_tokens`, plus the `TokenCounter` abstraction with three backends (hf / estimate / endpoint) used everywhere chunkers size or cap by tokens (`chunkers.py:177-210`, `tokenization.py`).
+### 2.4 FixedTokenWindowChunker (`fixed_token`)
+
+**What it is:** A true token-size sliding window. It tokenizes the document once with the embedding model's HF fast tokenizer, slides `chunk_size` tokens forward by `chunk_size - overlap`, and maps each window back to exact char offsets (`chunkers.py` `FixedTokenWindowChunker`).
+
 **Algorithm / workflow:**
-1. `split_text_to_token_budget`: empty/`max_tokens<=0` guard (`chunkers.py:195-196`).
-2. If the counter exposes an HF fast tokenizer (`_hf_offset_tokenizer`, `chunkers.py:69-83`), use `_split_by_offsets`: tokenize once with `return_offsets_mapping`, if `n<=max_tokens` return whole text, else carve at `budget=max(1,max_tokens-1)` tokens (one token of headroom so an isolated re-count still fits), each piece spanning contiguous char offsets, gapless — O(n) single pass (`chunkers.py:86-131,202-206`).
-3. Else fall back: if `count(text) <= max_tokens` return whole, else `_split_by_estimate` — estimate chars-per-token from one full count, seek to the estimated boundary, then bounded local grow/shrink `count` calls (never re-tokenizes growing prefixes), 1-char floor for progress (`chunkers.py:134-174,208-210`).
-4. `TokenCounter` backends: `HFTokenCounter` (lazy `AutoTokenizer.from_pretrained`, `encode(add_special_tokens=False)`, **the default**, exact/offline, `tokenization.py:73-98`); `EndpointTokenCounter` (sync `httpx.Client`, POST `/tokenize` to vLLM, double-checked-locked lazy client, `tokenization.py:101-148`); `EstimatingTokenCounter` (`ceil(len/2.5)`, zero-dep conservative fallback, `tokenization.py:49-70`).
-5. `make_token_counter`: `hf` forces the lazy load, falling back to `endpoint` (if `base_url`) then `estimate` on failure (`tokenization.py:181-200`). `resolve_max_tokens` GETs `/v1/models` for `max_model_len`, subtracts a 16-token reserve, defaults 4096 on any failure (`tokenization.py:210-255`).
-**Tools & models:** HF `transformers` AutoTokenizer; vLLM `/tokenize` and `/v1/models` HTTP endpoints; `httpx`.
-**Inputs -> Outputs:** `(text, max_tokens, TokenCounter) -> list[str]` that concatenates back to `text` exactly. `TokenCounter.count(str) -> int`.
-**Scalability & parallelization:** HF offset path is O(n) single pass — a multi-million-char blob splits in seconds (the docstring notes this replaced an O(n²) prefix-rescan). Estimate path is bounded-local, not O(n²). No internal parallelism; `EndpointTokenCounter` reuses one lock-guarded `httpx.Client` and is safe under `ThreadPoolExecutor` (multiple chunk threads share it). Bottleneck: the one whole-text tokenization (HF) or repeated network `/tokenize` round-trips (endpoint — the slowest backend).
-**Single vs bulk:** One function, no bulk variant; called per span/window across all chunkers.
+1. Construction requires a counter exposing a callable `_tokenizer` (the offset mapping). `make_chunker("fixed_token")` without a `token_counter` raises.
+2. Tokenize with `return_offsets_mapping=True, add_special_tokens=False`.
+3. For each window, take the char span from the offsets. For a full window, trim whole tokens while re-counting the slice exceeds the window.
+4. Advance from the trimmed end minus `overlap`, always moving forward by at least one token. If the degenerate case emits nothing, return one whole-document chunk.
+5. `max_tokens` is not threaded here: the window is the cap (see the `make_chunker` comment).
+
+**Tools & models:** the HF `transformers` tokenizer of the collection's embedding model.
+
+**Inputs → Outputs:** `Document` → `list[Chunk]`. `chunk_size` and `chunk_overlap` are in tokens.
+
+**Scalability & parallelization:** One O(n) tokenization plus bounded trim re-counts. Also used as `SemanticChunker`'s oversize fallback.
+
+**Single vs bulk:** One `chunk(doc)` per document.
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[split_text_to_token_budget] --> B{empty or max<=0}
-  B -- yes --> Z1[return text or empty]
-  B -- no --> C{HF fast tokenizer}
-  C -- yes --> D[tokenize once + offsets]
-  D --> E{n <= max_tokens}
-  E -- yes --> Z2[whole text]
-  E -- no --> F[carve at budget=max-1<br/>slice on token offsets<br/>gapless O of n]
-  C -- no --> G{count text <= max}
-  G -- yes --> Z2
-  G -- no --> H[estimate cpt<br/>seek + bounded adjust]
-  F --> Z[pieces tile text exactly]
-  H --> Z
+    A["tokenize whole doc with offset mapping"] --> B{"start token before n?"}
+    B -- "no" --> Y{"any chunk emitted?"}
+    Y -- "no" --> W["one whole-doc chunk"]
+    Y -- "yes" --> Z["return chunks"]
+    B -- "yes" --> C["window end, char span from offsets"]
+    C --> D{"full window?"}
+    D -- "yes" --> E["trim end while recount exceeds window"]
+    D -- "no" --> F["emit chunk if non-empty"]
+    E --> F
+    F --> G{"end reached?"}
+    G -- "yes" --> Z
+    G -- "no" --> H["advance to trimmed end minus overlap, at least one token"]
+    H --> B
 ```
 
-### SyncEmbedBridge (sub-batch fan-out)
-**What it is:** A synchronous bridge that lets the sync SemanticChunker call the async `Embedder`: it owns a dedicated background event loop and, for a whole document's buffers, fans them out into fixed-size sub-batches dispatched concurrently so a pooled embedder spreads them across all vLLM endpoints (`embed_bridge.py`).
-**Algorithm / workflow:**
-1. `__call__(texts)` -> `_ensure_loop` lazily starts one daemon thread running `loop.run_forever` (guarded by a lock) (`embed_bridge.py:70-86,113-116`).
-2. Submit `_embed(list(texts))` via `run_coroutine_threadsafe`, block on `fut.result()` — safe because it runs on a *different* loop/thread than the caller's main loop (`embed_bridge.py:114-116`).
-3. `_embed`: lazily build a dedicated `httpx.AsyncClient` + embedder on the bridge loop (avoids cross-loop client binding `RuntimeError`) (`embed_bridge.py:88-93`).
-4. If `batch_size<=0` or `n<=batch_size` -> single `embedder.embed(texts)` (identical to pre-fan-out) (`embed_bridge.py:96-98`).
-5. Else split into `ceil(n/batch_size)` sub-batches, `asyncio.gather` them concurrently, then re-concatenate **in input order** so vectors/distances/chunk ids stay byte-identical to a single call (`embed_bridge.py:99-111`).
-6. `close()` shuts the client down on its own loop, stops the loop, joins the thread (`embed_bridge.py:118-137`).
-**Tools & models:** `asyncio`, `httpx.AsyncClient`, the injected `Embedder` (typically `PooledEmbedder` over N vLLM replicas). Default `batch_size=64`.
-**Inputs -> Outputs:** `Sequence[str]` -> `list[list[float]]`, order-preserving.
-**Scalability & parallelization:** This is the fan-out mechanism. A single `embedder.embed(buffers)` would land on ONE endpoint (idling N-1 GPUs); the sub-batch `asyncio.gather` lets the pool route each batch least-loaded across the whole fleet. Total in-flight is still bounded by the pool's own `max_concurrency` semaphore. Bottleneck: with one endpoint configured only request count changes, not throughput; the single background loop/thread serializes only the coroutine scheduling, not the concurrent HTTP.
-**Single vs bulk:** Inherently bulk — one call carries a whole doc's buffers; single-buffer or tiny docs (`n<=batch_size`) take the single-call fast path. One bridge instance is shared across docs.
-**Diagram:**
-```mermaid
-sequenceDiagram
-  participant CH as SemanticChunker sync
-  participant BR as SyncEmbedBridge
-  participant LP as bg event loop
-  participant PL as PooledEmbedder
-  CH->>BR: __call__ buffers
-  BR->>LP: run_coroutine_threadsafe _embed
-  LP->>LP: lazy build client + embedder
-  alt n <= batch_size
-    LP->>PL: embed all buffers
-  else fan-out
-    LP->>PL: gather sub-batch 0..k concurrently
-    PL-->>LP: least-loaded across endpoints
-  end
-  LP-->>BR: concat in input order
-  BR-->>CH: list of vectors
-```
+### 2.5 SemanticChunker (`semantic` / `semantic_pooled`)
 
-### SegmentationCache
-**What it is:** A content-addressed, append-only JSONL cache of per-document chunk *spans* that makes semantic segmentation reproducible despite embedding jitter and skips the expensive breakpoint embed on any re-run of already-segmented content (`segmentation_cache.py`).
+**What it is:** Splits a document at topic boundaries detected from embedding similarity (`chunkers.py` `SemanticChunker`). The two method names are **the same class with different arguments**. `make_chunker` sets `pool_sentences = (method == "semantic_pooled")` and `distance_round = 6 if pooled else None`.
+
+**The two methods place different boundaries, not the same boundaries at different cost.** `docs/plans/results/semantic-vs-pooled-2026-09-18.md` compared them on identical input:
+- Setup: **3 synthetic documents** (1,624 chars each, 51 distance pairs), `buffer_size=2`, percentile 80, SFR-Embedding-Mistral on the dev fleet.
+- Between methods: Spearman rank correlation of the two distance series **0.4254**; overall span Jaccard **0.111**. On the two documents that split, the methods agree on chunk *count* but share **no** boundary.
+- Each method against itself: Spearman 0.9984 (`semantic`) and 0.9993 (`semantic_pooled`), with identical spans. So the difference is algorithmic, not fleet noise.
+- Tokens embedded: 10,032 vs 2,244, a 4.47× ratio at `buffer_size=2` (about 7× expected at the default 3).
+- The results document flags this as **small-n**. It does not establish which method is better, or anything at corpus scale. The corpus-scale comparison is still open (chunking-one-factory.md §7c).
+
 **Algorithm / workflow:**
-1. `config_fingerprint(**parts)` -> stable JSON string of the segmentation config (chunk method, buffer/percentile/min-length, token budgets, breakpoint model); any change yields a new cache key (`segmentation_cache.py:33-39`).
-2. `__init__` loads the whole JSONL into `_spans` (dict: sha1 key -> list of int pairs), skipping corrupt lines, then opens an append handle (`segmentation_cache.py:53-77`).
-3. `_key(content)` = `sha1(fingerprint + \x00 + content)` (`segmentation_cache.py:79-84`).
-4. `get_or_compute(doc, chunk_fn)`: under lock, look up key; **hit** -> rebuild chunks via `_make_chunk(doc, s, e)` from cached spans (identical `uuid5` ids, no embed) (`segmentation_cache.py:95-101`). **Miss** -> run `chunk_fn` OUTSIDE the lock (so concurrent misses on distinct docs segment in parallel), then under lock append `{"k":key,"s":spans}` and flush (`segmentation_cache.py:102-112`).
-**Tools & models:** `hashlib.sha1`, `json`, `threading.Lock`, filesystem JSONL. No models.
-**Inputs -> Outputs:** `(Document, chunk_fn) -> list[Chunk]`; persists only `(start,end)` int pairs (never corpus text).
-**Scalability & parallelization:** Thread-safe under `--chunk-concurrency`; the expensive `chunk_fn` runs outside the lock so distinct docs segment concurrently — only the dict/file/counter mutation is serialized. Loaded fully into memory (one small entry per doc). Bottleneck: memory grows with corpus doc count; the flush-per-miss serializes writes. Biggest win is on re-ingest — a hit does zero embedding.
-**Single vs bulk:** One `get_or_compute` per doc; concurrency comes from the caller running it on many threads. No separate bulk API.
+1. `sentence_spans(text)`. With zero or one span, emit the whole document (token-split if budgeted).
+2. **Oversize fallback:** if `len(spans) > max_breakpoint_sentences` (default 3000), `_oversize_fallback` uses a lazily built `FixedTokenWindowChunker` when an HF counter is present, else a whole-document token split. No breakpoint embedding happens.
+3. `_buffer_embeddings(text, spans)`:
+   - **`semantic`:** embed each window text `spans[i-b .. i+b]`, capped by `_cap_tokens` to `breakpoint_max_tokens` or else `max_tokens`, using `breakpoint_token_counter` or else `token_counter`.
+   - **`semantic_pooled`:** embed each sentence once, then `_mean_pool` the same window.
+   - Either way it is one `embed_fn` call per document.
+4. Take `_cosine_distance` between consecutive buffer vectors (pure Python). With `distance_round` set, round to 6 places.
+5. `_breakpoint_groups` computes `threshold = _percentile(distances, breakpoint_percentile_threshold)` and splits after every distance above it.
+6. Map groups to char spans, then `_merge_short` folds spans under `min_chunk_length` into a neighbour, including a short leading span.
+7. `_emit` each span, token-splitting when over `max_tokens`.
+
+**Tools & models:**
+- A sync `embed_fn`: a `SyncEmbedBridge` over the collection's own embedding endpoints (`api/deps.py` `_embed_bridge_for`; `scripts/ingest_shard.py` `_build_bridge`), so boundaries are detected with the model that stores the vectors.
+- `scripts/ingest_jsonl.py` can instead point breakpoints at a separate endpoint, with `breakpoint_max_tokens` / `breakpoint_token_counter`.
+- Tunables: `buffer_size` (default 3), `breakpoint_percentile_threshold` (80.0) and `min_chunk_length` (500), read from the collection's `chunk_params`.
+
+**Inputs → Outputs:** `Document` → `list[Chunk]`; intermediate `list[list[float]]`.
+
+**Scalability & parallelization:** This is the embed-heavy chunker.
+- Cost scales with sentence count: roughly `(2·buffer_size+1)×` the document's tokens for `semantic`, about 1× for pooled.
+- The bridge fans one document's buffers out in sub-batches (§2.7).
+- Distance and pool math are single-threaded O(spans·dim).
+- The 3000-span fallback bounds the worst case.
+- Legacy `semantic` has no rounding, so reproducibility across fleets is observed, not guaranteed (results doc).
+
+**Single vs bulk:** One `chunk(doc)` per document with one bridge call. Bulk parallelism comes from `--chunk-concurrency` threads in `ingest_jsonl.py`, or the GoWe scatter.
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[get_or_compute doc] --> B[key = sha1 fingerprint + content]
-  B --> C{key in cache}
-  C -- hit --> D[rebuild chunks from spans<br/>no embed, same ids]
-  C -- miss --> E[run chunk_fn OUTSIDE lock]
-  E --> F[spans = chunk start/end]
-  F --> G[under lock: append JSONL + flush]
-  G --> H[return chunks]
-  D --> H
+    A["sentence_spans"] --> B{"one span or fewer?"}
+    B -- "yes" --> Z1["emit whole doc"]
+    B -- "no" --> C{"spans over max_breakpoint_sentences?"}
+    C -- "yes" --> F["oversize fallback: fixed_token window, no embed"]
+    C -- "no" --> D{"pool_sentences?"}
+    D -- "semantic_pooled" --> E1["embed each sentence once, mean-pool window"]
+    D -- "semantic" --> E2["embed each window text, capped to breakpoint budget"]
+    E1 --> G["cosine distance of consecutive buffers"]
+    E2 --> G
+    G --> H{"distance_round set?"}
+    H -- "pooled: 6 places" --> H1["round distances"]
+    H -- "legacy: none" --> I
+    H1 --> I["threshold is percentile, split where distance exceeds it"]
+    I --> J["groups to char spans, merge short"]
+    J --> K["emit, token-split if over budget"]
+    K --> Z["return chunks"]
+    F --> Z
 ```
 
-### link_neighbors_by_document
-**What it is:** Stamps sibling-navigation metadata (`chunk_index`, `prev_chunk_id`, `next_chunk_id`) on an ordered chunk list, grouping by `doc_id` first so a mixed multi-document batch never cross-links one doc's tail to the next doc's head (`chunkers.py:804-847`).
+### 2.6 Token-budget Splitting & TokenCounter
+
+**What it is:** `chunkers.split_text_to_token_budget` splits one text losslessly into pieces of at most `max_tokens` each. `ragstack/ingestion/tokenization.py` provides the `TokenCounter` backends.
+
 **Algorithm / workflow:**
-1. `link_neighbors_by_document(chunks)` groups chunks into `dict[doc_id, list[Chunk]]` preserving order (`chunkers.py:842-844`).
-2. Per group, `link_neighbors` sets on each chunk's metadata: `chunk_index=i`, `prev_chunk_id = chunks[i-1].id` (or None), `next_chunk_id = chunks[i+1].id` (or None), using the doc-level `uuid5` id (not the tenant-prefixed store id) so links are stable across tenants and idempotent re-ingest (`chunkers.py:804-826`).
-3. Returns the grouping for reuse (e.g. per-document metrics) (`chunkers.py:845-847`).
-**Tools & models:** none; pure dict/list.
-**Inputs -> Outputs:** `list[Chunk]` (mutated in place) -> `dict[str, list[Chunk]]`.
-**Scalability & parallelization:** O(total chunks) single pass, trivial. Must be called on the FINAL stored list (after embedding drops unembeddable chunks) so a survivor's neighbour links never dangle to a quarantined chunk (`chunkers.py:829-841`). No parallelism needed.
-**Single vs bulk:** Explicitly bulk-aware — `link_neighbors_by_document` handles a flattened multi-doc batch; `link_neighbors` is the per-document primitive it calls.
+1. **HF offset path.** With an HF fast tokenizer (`_hf_offset_tokenizer`), `_split_by_offsets` tokenizes once and carves at `max(1, max_tokens - 1)` tokens (one token of headroom) on offset boundaries. It is O(n) and gapless.
+2. **Estimate path.** Otherwise, if `count(text)` is within budget, return the whole text. If not, `_split_by_estimate` seeks to an estimated chars-per-token boundary and adjusts locally.
+3. **Backends:**
+   - `HFTokenCounter`: lazy `AutoTokenizer`, `add_special_tokens=False`.
+   - `EndpointTokenCounter`: POST to vLLM `/tokenize` over one lock-guarded `httpx.Client`.
+   - `EstimatingTokenCounter`: `ceil(len/2.5)`.
+4. **`make_token_counter(backend, ...)` changed:** `hf` loads the tokenizer eagerly and raises `TokenCounterUnavailable` on failure. The endpoint and estimate backends are selected only when asked for by name.
+5. **`resolve_max_tokens(explicit, base_url=)` changed:** an explicit value is now treated as the model window and reduced by `DEFAULT_TOKEN_RESERVE = 16`. Without one, it reads `max_model_len` from `GET {base_url}/v1/models` minus 16, and defaults to 4096 on any failure.
+
+**Tools & models:** HF `transformers`; vLLM `/tokenize` and `/v1/models`; `httpx`.
+
+**Inputs → Outputs:** `(text, max_tokens, TokenCounter) -> list[str]`, which concatenates back to `text` exactly.
+
+**Scalability & parallelization:** O(n) on the HF path. The endpoint counter makes a network round-trip per count, which makes it the slowest backend. The HF and endpoint counters are safe to share across chunking threads.
+
+**Single vs bulk:** Called per span or window by every chunker.
+
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[link_neighbors_by_document chunks] --> B[group by doc_id<br/>preserve order]
-  B --> C[for each doc group]
-  C --> D[link_neighbors group]
-  D --> E[set chunk_index i]
-  E --> F[prev_chunk_id = prev.id or None]
-  F --> G[next_chunk_id = next.id or None]
-  G --> H[return groups dict]
+    A["split_text_to_token_budget"] --> B{"empty or budget not positive?"}
+    B -- "yes" --> Z1["return text as is"]
+    B -- "no" --> C{"HF fast tokenizer available?"}
+    C -- "yes" --> D["tokenize once with offsets"]
+    D --> E{"fits budget?"}
+    E -- "yes" --> Z2["whole text"]
+    E -- "no" --> F["carve at budget minus one token on offsets"]
+    C -- "no" --> G{"count fits budget?"}
+    G -- "yes" --> Z2
+    G -- "no" --> H["estimate boundary, bounded local adjust"]
+    F --> Z["pieces tile the text exactly"]
+    H --> Z
+```
+
+### 2.7 SyncEmbedBridge (bounded sub-batch fan-out)
+
+**What it is:** `ragstack/ingestion/embed_bridge.py` `SyncEmbedBridge` lets the synchronous semantic chunker call an async `Embedder`. It owns a background event loop on a daemon thread, and fans a document's buffers out in sub-batches so a pooled embedder spreads them across endpoints.
+
+**Algorithm / workflow:**
+1. `__call__(texts)` → `_ensure_loop()` (lock-guarded, lazy) → `run_coroutine_threadsafe(self._embed(texts), loop).result()`.
+2. On first use, `_embed` builds an `httpx.AsyncClient`, the embedder from `embedder_factory`, and an `asyncio.Semaphore(max_inflight)` on the bridge loop, so nothing crosses event loops.
+3. If `batch_size <= 0` or `n <= batch_size` (default 64), it makes one `embedder.embed(texts)` call.
+4. Otherwise it `gather`s sub-batches of `batch_size`, each under the **bridge-wide** semaphore `max_inflight` (default 8, new since the old doc). It re-concatenates in input order, so vectors and ids match the single-call path.
+5. `close()` closes the client on its loop, stops the loop, and joins with a 5 s timeout. `scripts/ingest_shard.py` wraps this in its own try (chunking-one-factory.md §3).
+
+**Tools & models:** `asyncio`, `httpx.AsyncClient`, the injected embedder (typically `PooledEmbedder`).
+
+**Inputs → Outputs:** `Sequence[str]` → `list[list[float]]`, order-preserving.
+
+**Scalability & parallelization:** `max_inflight` caps concurrent sub-batches across all documents chunked concurrently on one bridge. This protects a single-endpoint breakpoint service that has no semaphore of its own (module docstring). `scripts/ingest_shard.py` exposes it as `--breakpoint-max-inflight` (default 8; the module's "no CLI flag" note predates that flag); `ingest_jsonl.py` has no flag, so there raising `--embedding-max-concurrency` above 8 is silently re-capped.
+
+**Single vs bulk:** Inherently bulk: one call per document. The API caches one bridge per collection. `ingest_shard.py` builds one per tool run.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["SemanticChunker calls embed_fn with buffers"] --> B["run_coroutine_threadsafe on bridge loop"]
+    B --> C["lazy build: AsyncClient, embedder, semaphore"]
+    C --> D{"n within batch_size?"}
+    D -- "yes" --> E["single embed call"]
+    D -- "no" --> F["split into sub-batches of batch_size"]
+    F --> G["gather sub-batches, each under max_inflight semaphore"]
+    G --> H["concatenate in input order"]
+    E --> I["vectors back to the chunker thread"]
+    H --> I
+```
+
+### 2.8 SegmentationCache
+
+**What it is:** `ragstack/ingestion/segmentation_cache.py` `SegmentationCache` is a content-addressed, append-only JSONL cache of per-document chunk spans. Its only caller at 22b44be is `scripts/ingest_jsonl.py`, behind `--segmentation-cache`.
+
+**Algorithm / workflow:**
+1. `config_fingerprint(**parts)` builds a stable string from the segmentation config.
+2. The key is `sha1(fingerprint + "\x00" + content)`.
+3. `get_or_compute(doc, chunk_fn)`:
+   - **Hit:** rebuild chunks from the cached `(start, end)` pairs via `_make_chunk`. The ids are identical and there is no embedding.
+   - **Miss:** run `chunk_fn` outside the lock, then append `{"k", "s"}` under the lock and flush.
+
+**Tools & models:** `hashlib.sha1`, `json`, `threading.Lock`.
+
+**Inputs → Outputs:** `(Document, chunk_fn) -> list[Chunk]`. Only integer spans are persisted, never text.
+
+**Scalability & parallelization:** Thread-safe under `--chunk-concurrency`; distinct documents segment concurrently. The whole cache is held in memory.
+
+**Single vs bulk:** Bulk CLI only. The API and the shard tools do not use it.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["get_or_compute doc"] --> B["key is sha1 of fingerprint plus content"]
+    B --> C{"key cached?"}
+    C -- "hit" --> D["rebuild chunks from spans, no embed, same ids"]
+    C -- "miss" --> E["run chunk_fn outside lock"]
+    E --> F["under lock: append spans to JSONL and flush"]
+    D --> G["return chunks"]
+    F --> G
+```
+
+### 2.9 link_neighbors_by_document
+
+**What it is:** `chunkers.link_neighbors_by_document` stamps `chunk_index`, `prev_chunk_id` and `next_chunk_id` on the final stored chunk list, grouping by `doc_id` so a multi-document batch never cross-links documents.
+
+**Algorithm / workflow:**
+1. Group by `doc_id`, preserving order.
+2. `link_neighbors(group)` sets `chunk_index = i` and `prev_chunk_id` / `next_chunk_id` to the neighbour's doc-level chunk id. They are set to `None` at the edges, deliberately, as the contract's absence rules describe (§1.6).
+3. Return the grouping.
+4. `IngestionPipeline._embed_and_link` calls it **after** embedding drops unembeddable chunks, so links never point at a quarantined chunk.
+
+**Tools & models:** none.
+
+**Inputs → Outputs:** `list[Chunk]` (mutated in place) → `dict[str, list[Chunk]]`.
+
+**Scalability & parallelization:** O(total chunks).
+
+**Single vs bulk:** Designed for flattened multi-document batches. `docs/plans/structured-ingest.md` notes the consequence that one ingest record per section would restart `chunk_index` and break linking at section edges. That is one reason the plan (status "Not started") rejects per-section records.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["surviving embedded chunks"] --> B["group by doc_id, keep order"]
+    B --> C["for each document group"]
+    C --> D["chunk_index is position"]
+    D --> E["prev_chunk_id: previous id, or null at start"]
+    E --> F["next_chunk_id: next id, or null at end"]
+    F --> G["return groups"]
 ```
 
 Files analyzed:
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/chunkers.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/tokenization.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/segmentation_cache.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/embed_bridge.py`
+- `python/ragstack/ingestion/chunkers.py`
+- `python/ragstack/ingestion/chunker_config.py`
+- `python/ragstack/ingestion/tokenization.py`
+- `python/ragstack/ingestion/embed_bridge.py`
+- `python/ragstack/ingestion/segmentation_cache.py`
+- `python/ragstack/api/deps.py`
+- `python/ragstack/api/routers/collections.py`
+- `python/scripts/ingest_shard.py`
+- `python/scripts/embed_shard.py`
+- `python/scripts/ingest_jsonl.py`
+- `docs/plans/chunking-one-factory.md`
+- `docs/plans/results/semantic-vs-pooled-2026-09-18.md`
+- `docs/plans/results/stage0/s0_common.py`
+- `docs/plans/structured-ingest.md`
 
 ---
 
 ## 3. Embedding & Embedder Pool
 
-### SidecarEmbedder & OpenAIEmbedder (HTTP embedder clients)
-**What it is:** Two async HTTP clients exposing a uniform `embed(texts) -> vectors` interface: `SidecarEmbedder` targets the RAGStack embedding sidecar (`POST /embed`), `OpenAIEmbedder` targets any OpenAI-compatible embeddings API (`POST /v1/embeddings`, e.g. vLLM `--runner pooling`). `make_embedder()` (embedders.py:188) selects between them by name.
+Embedding is the one model call made at **both** ingest and query time. Four
+layers stack on top of each other. Each one satisfies the same
+`embed(texts) -> vectors` surface, so a caller never needs to know which layers
+are present:
 
-**Algorithm / workflow:**
-1. Construct with a shared `httpx.AsyncClient` and a `SidecarClient` wrapper (embedders.py:34, 65).
-2. `SidecarEmbedder.embed`: POST `{"texts": texts}` to `embed`, return `body["embeddings"]` verbatim — order is trusted (embedders.py:44-46).
-3. `OpenAIEmbedder.embed`: build headers, add `Authorization: Bearer <key>` if `api_key` set (embedders.py:78-80); POST `{"model": ..., "input": texts}` to `v1/embeddings` (embedders.py:81-85).
-4. **Index reordering:** the OpenAI response `data` array is re-sorted by each item's `index` field before extracting embeddings, because some OpenAI-compatible servers (notably some vLLM builds) do not preserve input order; a silent reorder would bind vectors to the wrong chunks (embedders.py:86-90).
-5. `make_embedder`: `api="sidecar"` → `SidecarEmbedder`; `api="openai"` → requires `model` else `ValueError`; unknown → `ValueError` (embedders.py:197-206).
-
-**Tools & models:** `httpx.AsyncClient`; `ragstack.sidecar_http.SidecarClient` / `DEFAULT_TIMEOUT` (embedders.py:19). External services: RAGStack embedding sidecar; any OpenAI-embeddings server (vLLM pooling, OpenAI, Together). Model is caller-supplied (e.g. `Salesforce/SFR-Embedding-Mistral`, embedders.py:203); the sidecar path carries no model name.
-
-**Inputs -> Outputs:** `list[str]` -> `list[list[float]]`.
-
-**Scalability & parallelization:** No internal parallelism — one HTTP request per `embed` call, `await`ed. Both are pure async so many concurrent `embed` calls can run on one event loop, but batching/fan-out is delegated upward to `BatchingEmbedder`/`PooledEmbedder`. Bottleneck: a single unbounded request sends **all** texts at once (embedders.py:45, 83), which overflows backend max-batch/context on large inputs — the exact problem `BatchingEmbedder` exists to fix.
-
-**Single vs bulk:** No distinction — the signature is always a list; a "single" text is a one-element list. Same code path regardless of count.
-
-**Diagram:**
-```mermaid
-flowchart TD
-  A[embed texts] --> B{make_embedder api}
-  B -->|sidecar| C[POST /embed<br/>texts]
-  B -->|openai| D[POST /v1/embeddings<br/>model + input]
-  C --> E[return body embeddings<br/>order trusted]
-  D --> F[sort data by index<br/>fix reordering]
-  F --> G[return embeddings]
+```
+BatchingEmbedder            request shaping + poison-input bisection   (embedders.py)
+  └─ PooledEmbedder          fan-out, backpressure, failover, health    (embed_pool.py)   [only when >1 URL on the API path]
+       └─ SidecarEmbedder | OpenAIEmbedder   one HTTP call              (embedders.py)
 ```
 
-### BatchingEmbedder — bounded batching + poison-isolation bisection
-**What it is:** A decorator over any embedder that splits a large text list into item- and token-bounded batches, and — via `embed_isolated` — bisects a failing batch to quarantine a single unembeddable input rather than losing the whole document. Infra failures (5xx/network) are always re-raised, never quarantined (embedders.py:93-106).
+Which model and which endpoints a given collection uses is decided *before*
+these layers, by the collection's build spec. That comes first here.
+
+### 3.1 Model registry & how a collection binds its embedding model
+
+**What it is:** Two separate mechanisms that are easy to mix up:
+
+1. **Collection build spec**: the source of truth for embedding. Every
+   registry collection (`CollectionSpec` in `python/ragstack/collection_store.py`)
+   records concrete `embedding_api`, `embedding_model`, `embedding_model_dim`,
+   `embedding_endpoints` / `embedding_sidecar_url`. Each served collection gets its
+   own embedder built from that spec. Build-time config *is* collection identity:
+   a collection cannot be re-pointed at a new embedder (docstring of
+   `create_collection`, `python/ragstack/api/routers/collections.py`).
+2. **Runtime model registry** (`ModelRegistry`, `python/ragstack/api/model_registry.py`):
+   an admin-curated catalogue of `ModelEntry {id, task, provider, base_urls, model, dim, params}`.
+   `TASKS = {embedding, tokenizer, llm, reranker}`. Only
+   `HOT_SWAPPABLE = {llm, reranker}` can be assigned live. An `embedding` entry is
+   used only as a **template at collection-create time**: its values are copied
+   into the new spec, not linked by reference.
 
 **Algorithm / workflow:**
-1. `_batches` (embedders.py:124-138): greedily walk indices, estimating tokens as `len(text)//chars_per_token + 1` (embedders.py:121-122, default 4 chars/token). Start a new group when the current group hits `max_batch_items` (default 64) **or** adding the next text would exceed `max_batch_tokens` (default 8192). Returns lists of input indices, preserving order.
-2. `embed` (embedders.py:140-145): for each group, call `self._base.embed([...])` sequentially and `extend` output. All-or-nothing — any exception propagates.
-3. `embed_isolated` (embedders.py:147-160): pre-fill `out` with `None` sized to `texts`; for each group call `_embed_group`, accumulating a `quarantined` count. Returns `(vectors_with_None_holes, quarantined)`.
-4. `_embed_group` (embedders.py:162-185): try `base.embed(group)`; on success scatter vectors into `out` at original indices via `zip(..., strict=True)`.
-5. **Bisection on failure:** catch `httpx.HTTPStatusError`; read status. If status is `None` or **not** 4xx (i.e. 5xx/other) → **re-raise** (embedders.py:172-173). If it's a 4xx (bad input) and the group is a **single** index → log and quarantine, return 1 (embedders.py:174-178). Otherwise split at `mid = len//2` and recurse on both halves, summing quarantine counts (embedders.py:179-182). This binary-searches the poison input in O(log n) failing calls per bad item.
+1. **Registration (admin):** `POST/PUT/DELETE /v1/admin/models/registry[/{id}]`
+   (`python/ragstack/api/routers/models_registry.py`, mounted under `/v1/admin` with the
+   admin dependency in `python/ragstack/api/main.py`). `ModelRegistry._validate`
+   checks task and provider (`sidecar|openai|vllm`), requires ≥1 `base_url`, requires
+   a positive `dim` for embedding models, and checks each URL against
+   `model_url_allowlist`. `_url_allowed` fails closed when the allowlist is empty and
+   compares the parsed `(scheme, host[, port])`, not a string prefix (SSRF guard).
+   The default allowlist is loopback only (`Settings.model_url_allowlist`,
+   `python/ragstack/config.py`). Persisted as JSON at `models_registry_file`; empty means in-memory only.
+2. **Binding an embedding model to a new collection:** `create_collection`
+   resolves `body.embedding`, which is admin-only per its docstring. An unknown id
+   returns 404. A non-`embedding` task or missing `dim` returns 400. The concrete
+   values are then copied into the spec: `provider == "sidecar"` becomes `sidecar`,
+   anything else becomes `openai`; the registered model name, `dim`, and `base_urls`
+   become the endpoints. If `embedding` is omitted, the spec gets the
+   server-default settings, resolved to concrete values at that moment.
+3. **Building embedders at startup:** `_build_collection_registry`
+   (`python/ragstack/api/deps.py`) builds one embedder per distinct
+   `CollectionSpec.emb_signature()` = `(api, model, sorted endpoints, dim)` and caches it
+   in `emb_cache`. Collections with the same signature share one embedder, and so
+   one pool. `POST /v1/collections` at runtime builds a fresh one
+   (`build_collection_entry` with `embedder=None`).
+4. **Hot swap (llm/reranker only):** `PATCH /v1/admin/config/assignments` goes
+   through `ModelRegistry.resolve_assignment`, then `deps.apply_assignment`, which
+   atomically swaps `app.state.generator` + `app.state.rewriters` (llm) or
+   `app.state.reranker`. Only `base_urls[0]` is used. Extra URLs log a warning
+   because fan-out for those tasks is deferred to the Go router (ADR-0001, per the
+   `apply_assignment` docstring).
+5. **Per-request override:** `GET /v1/models/available`
+   (`list_available_models`, `python/ragstack/api/routers/collections.py`) lists
+   `HOT_SWAPPABLE` entries **without `base_urls`** to any authenticated caller.
+   `/v1/query` `llm` and `/v1/query`/`/v1/retrieve` `reranker` name one of those ids
+   (§7.2, §7.3). No public `GET /v1/models` route exists. `/v1/models` is only
+   probed *outbound* against the LLM server by the admin `GET /v1/stats/models`.
 
-**Tools & models:** Pure Python + `httpx.HTTPStatusError` for status classification (embedders.py:167-168). No models; wraps an inner embedder.
+**Tools & models:** Pydantic models, a JSON file, `urllib.parse.urlsplit`. The
+defaults in `Settings` are `embedding_api="sidecar"`, `embedding_model_dim=768`,
+`embedding_sidecar_url=http://localhost:50053`. The sidecar default model is
+`BAAI/bge-base-en-v1.5` (`sidecars/embedding/main.py`). `embedding_model` itself
+defaults to `text-embedding-3-small`, which matters only for `api=openai`.
 
-**Inputs -> Outputs:** `embed`: `list[str] -> list[list[float]]`. `embed_isolated`: `list[str] -> tuple[list[list[float] | None], int]` (vectors aligned to input with `None` for quarantined slots; count of quarantined).
+**Inputs → Outputs:** registry CRUD: `ModelEntry` → persisted entry.
+Create-collection: an `embedding` model id → a `CollectionSpec` with concrete
+embedding fields. Startup: specs → `CollectionEntry.embedder` (a `BatchingEmbedder`).
 
-**Scalability & parallelization:** **Not parallelized** — batches run in a sequential `for` loop (embedders.py:143-144, 158-159); bisection recursion is also sequential (embedders.py:180-182). Scalability win is *request shaping*, not concurrency: it bounds each request so the backend isn't overwhelmed and one bad input can't fail a whole document. Bottleneck: per-batch latency is serialized; throughput = sum of batch round-trips. Fan-out/concurrency is deferred entirely to `PooledEmbedder` underneath. Token estimation is deliberately crude — it only bounds request size (embedders.py:105-106).
+**Scalability & parallelization:** Embedders are shared by signature, so N
+same-model collections do not open N connection pools. Registry writes are rare
+admin actions. The registry is documented as not thread-safe and runs on a
+single event loop.
 
-**Single vs bulk:** One class, two entry points: `embed` (strict, all-or-nothing — normal path) vs `embed_isolated` (fault-tolerant, used by the ingest backstop). A single text still flows through `_batches` (one group of one).
+**Single vs bulk:** Same spec on both paths. The API ingest path reuses the
+entry's endpoints (`_embed_bridge_for`). The shard tools (`ingest_shard.py`, `embed_shard.py`) build their own pool from the same URLs (§3.4, `make_embedder_auto`); `ingest_jsonl.py` uses `_make_endpoint_embedder`, pooled only for more than one URL like the API (§10 I4).
 
 **Diagram:**
 ```mermaid
 flowchart TD
-  A[embed_isolated texts] --> B[_batches<br/>bound by items and tokens]
-  B --> C[for each group]
-  C --> D[base.embed group]
-  D -->|ok| E[scatter vecs into out]
-  D -->|HTTPStatusError| F{status 4xx?}
-  F -->|no / 5xx / network| G[RE-RAISE<br/>infra fault]
-  F -->|yes, len==1| H[quarantine input<br/>return 1]
-  F -->|yes, len>1| I[split at mid]
-  I --> J[recurse left half]
-  I --> K[recurse right half]
-  J --> C
-  K --> C
-  E --> L[return out, quarantined]
+  A["admin registers ModelEntry"] --> B{"allowlist and task checks pass?"}
+  B -- "no" --> E1["RegistryError 400 or 404 or 409"]
+  B -- "yes" --> R["ModelRegistry persisted to JSON"]
+  R --> C{"task"}
+  C -- "embedding" --> D["POST /v1/collections with embedding id"]
+  D --> S["values COPIED into CollectionSpec: api, model, dim, endpoints"]
+  S --> T["startup: one embedder per emb_signature, shared"]
+  C -- "llm or reranker" --> H["PATCH /v1/admin/config/assignments: swap app.state"]
+  C -- "llm or reranker" --> P["GET /v1/models/available: ids only, no base_urls"]
+  P --> Q["per-request llm or reranker override on /v1/query"]
+```
+
+### 3.2 SidecarEmbedder & OpenAIEmbedder — the HTTP clients
+
+**What it is:** Two async clients with the same `embed(texts)` interface
+(`python/ragstack/embedders.py`). `SidecarEmbedder` calls the RAGStack embedding
+sidecar: `POST <base>/embed {"texts": [...]}`. `OpenAIEmbedder` calls any
+OpenAI-compatible server: `POST <base>/v1/embeddings {"model", "input"}`, e.g.
+vLLM `--runner pooling`. `make_embedder(api, http, base_url, model, api_key)`
+chooses between them.
+
+**Algorithm / workflow:**
+1. Both wrap a shared `httpx.AsyncClient` in `SidecarClient`
+   (`python/ragstack/sidecar_http.py`) using `DEFAULT_TIMEOUT`. They expose
+   `base_url`/`http`, which the Ops status probe uses.
+2. `SidecarEmbedder.embed` returns `body["embeddings"]` and trusts the order.
+3. `OpenAIEmbedder.embed` adds `Authorization: Bearer` when `api_key` is set. It
+   then **sorts `data` by `index`** before extracting vectors, because some
+   compatible servers do not preserve input order and a silent reorder would
+   attach vectors to the wrong chunks.
+4. `make_embedder`: `sidecar` returns a `SidecarEmbedder`. `openai` requires `model`
+   and otherwise raises `ValueError`. Any other value raises `ValueError`.
+
+**Tools & models:** httpx. External services: the embedding sidecar
+(`sidecars/embedding/main.py`, sentence-transformers, `MODEL_NAME` default
+`BAAI/bge-base-en-v1.5`, port 50053), or vLLM/OpenAI. The sidecar's `/embed`
+handler calls `model.encode(...)` synchronously inside an `async def`, so one
+sidecar process serves one encode at a time.
+
+**Inputs → Outputs:** `list[str]` → `list[list[float]]`.
+
+**Scalability & parallelization:** One HTTP request per call, with no size bound
+of its own. Request shaping belongs to `BatchingEmbedder`/`PooledEmbedder`.
+Many concurrent calls can interleave on one event loop.
+
+**Single vs bulk:** No distinction. A single query is a one-element list.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  A["embed texts"] --> B{"make_embedder api"}
+  B -- "sidecar" --> C["POST base/embed with texts"]
+  B -- "openai" --> D["POST base/v1/embeddings with model and input"]
+  C --> E["return embeddings in sent order"]
+  D --> F["sort data by index"]
+  F --> G["return embeddings"]
+```
+
+### 3.3 BatchingEmbedder: bounded batching and poison-input bisection
+
+**What it is:** The outermost layer for every embedder the API builds
+(`deps._make_embedder`). It splits a text list into batches bounded by item
+count and estimated tokens. It also offers `embed_isolated`, which bisects a
+failing batch so that a single bad input is quarantined instead of failing the
+whole document. Infrastructure failures (5xx, network) are always re-raised.
+
+**Algorithm / workflow:**
+1. `_batches`: a greedy walk. Token estimate is `len(text)//chars_per_token + 1`.
+   A new group starts when the current one reaches `max_batch_items` or the next
+   text would exceed `max_batch_tokens`. Defaults are 64 / 8192 / 4, set in
+   `Settings.embedding_max_batch_items|tokens` and
+   `embedding_chars_per_token`.
+2. `embed`: runs the groups **sequentially** and is all-or-nothing.
+3. `embed_isolated` → `_embed_group`: on `httpx.HTTPStatusError` with status
+   4xx, it quarantines if the group has one item, otherwise splits at `len//2`
+   and recurses on both halves. A non-4xx status is re-raised. The return value
+   is `(vectors with None holes, quarantined_count)`.
+4. `base` property: exposes the wrapped client or pool, so
+   `routers/models.py::_pool_load` can read live per-endpoint load.
+
+**Tools & models:** Pure Python plus `httpx.HTTPStatusError`. No model.
+
+**Inputs → Outputs:** `embed`: `list[str] → list[list[float]]`.
+`embed_isolated`: `list[str] → (list[list[float] | None], int)`.
+
+**Scalability & parallelization:** Not concurrent at this layer, because groups
+are awaited one after another. When the base is a `PooledEmbedder`, a group
+larger than the pool's `request_batch` (default 128) is fanned out again below
+(§3.4). With the API defaults (64-item groups) that split usually does not fire.
+The main fan-out beneficiaries are the shard tools (`ingest_shard.py` / `embed_shard.py`), which call the pool directly with large lists.
+
+**Single vs bulk:** Same class for both. `embed` is the strict path.
+`embed_isolated` is the fault-tolerant path: `IngestionPipeline._embed_and_link` prefers it whenever the embedder exposes it (§4 step 5), and `scripts/ingest_jsonl.py` `_embed_drop_bad` uses it directly.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  A["embed_isolated texts"] --> B["_batches: bound by items and est. tokens"]
+  B --> C["next group, sequential"]
+  C --> D["base.embed group"]
+  D -- "ok" --> E["scatter vectors to original indices"]
+  D -- "HTTPStatusError" --> F{"status is 4xx?"}
+  F -- "no: 5xx or network" --> G["re-raise: infra fault"]
+  F -- "yes, one item" --> H["quarantine, count 1"]
+  F -- "yes, several" --> I["split at mid, recurse both halves"]
+  I --> D
+  E --> L["return vectors and quarantined count"]
   H --> L
 ```
 
-### PooledEmbedder — multi-endpoint routing, backpressure & failover
-**What it is:** Fans embedding requests across multiple backend endpoints (e.g. vLLM replicas on H200s) with least-loaded selection, a global concurrency cap for backpressure, per-endpoint health tracking, and failover. It satisfies the same `Embedder` protocol so it drops in behind `BatchingEmbedder` exactly like a single embedder (embed_pool.py:1-9, 41-56).
+### 3.4 PooledEmbedder: multi-endpoint fan-out, backpressure, failover
+
+**What it is:** Spreads embedding across several backend endpoints, such as vLLM
+replicas (`python/ragstack/embed_pool.py`). It provides least-loaded routing, a
+global concurrency cap, per-endpoint health, and failover. **Since the previous
+revision it also splits one oversized call into sub-requests and runs them
+concurrently** (`request_batch`, #308).
+
+**When it is used:**
+- **API process:** `deps._make_embedder` builds a pool **only when more than one
+  URL is configured** (`embedding_endpoints`, or a spec's endpoints). With one URL
+  it wraps the plain client directly.
+- **Bulk CLIs** (`ingest_shard` / `embed_shard`): `make_embedder_auto` **always**
+  builds a pool, even for a single URL. The docstring says this is because the
+  pool is what bounds request size and keeps several requests in flight.
 
 **Algorithm / workflow:**
-1. **Construct** (embed_pool.py:58-75): require ≥1 endpoint; build an `asyncio.Semaphore(max_concurrency)` (default 8), record `health_interval` (default 30s), seed `_last_health = now` so the first probe waits a full interval rather than firing immediately, and create a `_health_lock`. Each `Endpoint` (embed_pool.py:29-38) is `__slots__` with `embedder`, `health_url`, optimistic `healthy=True`, and live `active=0` counter.
-2. **`embed`** (embed_pool.py:77-120): first `await _maybe_refresh_health()` **outside** the semaphore, so a slow probe round never holds a backpressure permit hostage (embed_pool.py:78-80).
-3. Acquire the semaphore (`async with self._sem`) — this is the global in-flight cap / backpressure (embed_pool.py:81).
-4. **Failover loop**, up to `len(endpoints)` attempts (embed_pool.py:84): `_select(tried)` picks an endpoint; if `None`, break.
-5. **Least-loaded selection** (`_select`, embed_pool.py:172-179): filter to healthy, not-yet-tried endpoints; if none healthy, fall back to any not-yet-tried endpoint (a stale health flag shouldn't strand a request); return `min` by `active` count.
-6. Increment `ep.active` (embed_pool.py:88), then `await ep.embedder.embed(texts)`; on success return immediately (embed_pool.py:90). `finally` decrements `active` (embed_pool.py:118-119).
-7. **Error classification** on `httpx.HTTPError | OSError` (embed_pool.py:91-96): extract status if `HTTPStatusError`.
-   - **Non-retriable 4xx** (4xx not in `{408,425,429}`, embed_pool.py:26) → `raise` immediately: it's a bad input, fails the same on every endpoint, so propagate for `BatchingEmbedder` to quarantine (embed_pool.py:97-103).
-   - **5xx / network** (`status is None or >= 500`) → set `ep.healthy = False` (**demote**) (embed_pool.py:108-109).
-   - **Retriable 4xx** (429/408/425) → do **not** demote (busy ≠ down), just fail over (embed_pool.py:104-110).
-   - Record `last_exc`, add `id(ep)` to `tried`, log, continue loop (embed_pool.py:110-117).
-8. If loop exhausts all endpoints → `raise RuntimeError("all embedding endpoints failed") from last_exc` (embed_pool.py:120).
-9. **`embed_isolated`** (embed_pool.py:122-170): mirrors `BatchingEmbedder.embed_isolated` for the pooled path. Calls `self.embed`; only a genuine bad-input 4xx surfaces as `HTTPStatusError` (pool routes non-retriable 4xx straight through), which it bisects to quarantine; `RuntimeError`/retriable errors are **not** caught and propagate so `--resume`/`--batch-retries` re-feed with no data loss (embed_pool.py:147-170).
-10. **Lazy health re-probe** (`_maybe_refresh_health`, embed_pool.py:181-188): double-checked locking — if `now - _last_health < health_interval` return early; else acquire `_health_lock`, re-check the condition inside the lock, run `check_health()`, update `_last_health`. Ensures only one probe round per interval even under concurrent `embed` calls.
-11. **`check_health`** (embed_pool.py:190-200): `asyncio.gather` a `probe` coroutine per endpoint — GET `health_url` with 5s timeout, set `healthy = (status==200)`; on `HTTPError/OSError` set `healthy=False`. This is where a recovered endpoint rejoins the rotation.
+1. **Construct:** requires ≥1 `Endpoint`, each with `embedder`, `health_url`,
+   optimistic `healthy=True`, and `active=0`. Creates
+   `Semaphore(max_concurrency)` (default 8, `Settings.embedding_max_concurrency`),
+   `request_batch` (default 128), and `health_interval` 30 s. The first probe is
+   deferred by a full interval.
+2. **`embed` fan-out (new):** when `len(texts) > request_batch`, the list is cut
+   into `request_batch`-sized slices. Each slice runs through `_embed_one` under
+   **`asyncio.gather`**, and the results are concatenated in order. The docstring
+   records the motivating measurement (#308, OA pilot): a 6-endpoint fleet
+   benchmarked at 2,606 texts/s, but the pipeline reached 58 texts/s because one
+   22k-text request pinned one endpoint.
+3. **`_embed_one`:** runs `_maybe_refresh_health()` **outside** the semaphore,
+   then acquires it (the global in-flight cap). It then loops up to
+   `len(endpoints)` times: `_select(tried)` picks the least-`active` healthy
+   endpoint not yet tried, falling back to any untried endpoint. It increments
+   `active` and calls the endpoint's `embed`.
+4. **Error classification:** a 4xx other than `{408, 425, 429}`
+   (`_RETRIABLE_STATUS`) is **re-raised** as a bad input so the caller can
+   quarantine it. A 5xx or network error **demotes** the endpoint
+   (`healthy=False`) and fails over. A retriable 4xx fails over **without** demoting.
+   When every endpoint fails, it raises `RuntimeError("all embedding endpoints failed")`.
+5. **Observability:** a successful call records `note("embed_ep", health_url)`.
+   This is the per-request `embed_ep=` field on the summary log line (#427). Before
+   #427 the endpoint was visible only in muted httpx INFO lines.
+6. **`embed_isolated`:** the pool's own bisection over `self.embed`. Only a
+   genuine bad-input `HTTPStatusError` is bisected. `RuntimeError`/retriable errors
+   propagate so that `--resume` / `--batch-retries` can re-feed the batch.
+7. **Health:** `_maybe_refresh_health` uses double-checked locking, so there is
+   at most one probe round per interval. `check_health` sends `GET health_url`
+   (5 s) to every endpoint via `asyncio.gather`, and `healthy = status==200`.
+   `health_path` comes from `Settings.embedding_health_path`.
+8. **`endpoint_load()`:** returns `(base_url, in_flight, healthy)` per endpoint for
+   the admin `GET /v1/stats/models`.
 
-**Tools & models:** `asyncio` (Semaphore, Lock, gather), `time.monotonic` for the interval clock, `httpx.AsyncClient` (shared, for both embedding calls and health GETs). `make_pooled_embedder` (embed_pool.py:203-227) reuses `make_embedder` per endpoint and builds each `health_url` by appending `health_path` (default `/health`, suits sidecar and vLLM) to the base URL. External: the vLLM/sidecar replica fleet.
+**Tools & models:** `asyncio` (Semaphore, Lock, gather), `time.monotonic`, httpx.
+`make_pooled_embedder` builds each endpoint with `make_embedder`.
 
-**Inputs -> Outputs:** `embed`: `list[str] -> list[list[float]]`. `embed_isolated`: `list[str] -> tuple[list[list[float] | None], int]`. `check_health`: side-effect on endpoint `healthy` flags.
+**Inputs → Outputs:** `embed`: `list[str] → list[list[float]]` in order.
+`embed_isolated`: `(vectors | None, quarantined)`. `check_health`: updates the
+flags as a side effect.
 
-**Scalability & parallelization:** This is the scaling layer. **Fan-out:** concurrent `embed` calls (issued from above) are spread across endpoints by least-loaded routing, and the `active` counter makes routing load-aware in real time. **Backpressure:** the global `Semaphore(max_concurrency=8)` caps total in-flight embedding requests fleet-wide, so a large ingest can't open unbounded concurrent calls (embed_pool.py:81) — this is the primary throughput governor. **Health probes** are themselves fully parallel via `asyncio.gather` (embed_pool.py:200). Health refresh runs **outside** the semaphore to avoid stealing a permit (embed_pool.py:78-80). Bottleneck / limits: `max_concurrency` caps aggregate throughput regardless of fleet size; a single `embed` call is still one request to one endpoint (no intra-request sharding — that's `BatchingEmbedder`'s job); the failover loop is sequential per request (tries endpoints one at a time, not racing them). `active` mutation is unguarded but safe under a single-threaded event loop.
+**Scalability & parallelization:** This is the scaling layer. It fans out both
+across concurrent callers and within one oversized call. `max_concurrency`
+caps in-flight requests per pool across the whole fleet. It is per pool, and
+pools are per embedding signature (§3.1), so two distinct-signature collections
+have independent caps. Failover inside one request is sequential. Tenant
+fairness sits above this layer (`tenant_max_concurrency`, default 0 =
+unlimited; `config.py` notes it must be set below `embedding_max_concurrency` to
+matter). **Query-time cost:** each `HybridRetriever` embeds its query
+separately, so a request with V rewrite variants over N collections issues
+V×N one-text embed calls, even when collections share a spec. STATUS.md lists
+"same-spec shared embedding call" as not yet done.
 
-**Single vs bulk:** No single-vs-bulk fork inside the class — every `embed`/`embed_isolated` takes a list. The single-vs-pool decision is made *above*: per the module docstring, "with one endpoint configured the plain single-endpoint embedder is used instead" (embed_pool.py:6-8). Two entry points as with the batcher: `embed` (strict, failover) vs `embed_isolated` (fault-tolerant bisection over the fan-out).
+**Single vs bulk:** The class has no single/bulk fork. The fork is in *which
+factory* builds it: `_make_embedder` (API, pooled only if >1 URL) or
+`make_embedder_auto` (CLI, always pooled). Note that the module docstring
+("with one endpoint configured the plain single-endpoint embedder is used
+instead") describes only the API path.
 
-**Diagram (routing + failover):**
+**Diagram (routing, fan-out, failover):**
 ```mermaid
 flowchart TD
-  A[embed texts] --> B[maybe_refresh_health<br/>outside semaphore]
-  B --> C[acquire global semaphore<br/>backpressure cap]
-  C --> D[select least-loaded<br/>healthy, not-tried]
-  D -->|none left| Z[RuntimeError<br/>all endpoints failed]
-  D --> E[active++ then<br/>endpoint.embed]
-  E -->|success| R[return vectors]
-  E -->|HTTPError / OSError| F{status}
-  F -->|4xx not retriable| G[RAISE<br/>bad input to quarantine]
-  F -->|5xx or network| H[demote healthy=false<br/>failover]
-  F -->|429 / 408 / 425| I[no demote<br/>failover]
-  H --> J[mark tried, loop]
-  I --> J
-  J --> D
+  A["embed texts"] --> B{"more than request_batch texts?"}
+  B -- "yes" --> C["slice into request_batch chunks"]
+  C --> D["asyncio.gather: _embed_one per slice"]
+  D --> Z2["concatenate in order"]
+  B -- "no" --> E["_embed_one"]
+  E --> F["maybe refresh health, outside semaphore"]
+  F --> G["acquire global semaphore"]
+  G --> H["select least-loaded healthy untried endpoint"]
+  H -- "none left" --> X["RuntimeError: all endpoints failed"]
+  H --> I["active plus 1, endpoint.embed"]
+  I -- "ok" --> J["note embed_ep, return vectors"]
+  I -- "error" --> K{"status class"}
+  K -- "non-retriable 4xx" --> L["re-raise: bad input"]
+  K -- "5xx or network" --> M["demote endpoint, mark tried"]
+  K -- "408 or 425 or 429" --> N["no demote, mark tried"]
+  M --> H
+  N --> H
 ```
 
-**Diagram (lazy health re-probe):**
-```mermaid
-flowchart TD
-  A[maybe_refresh_health] --> B{now - last < interval?}
-  B -->|yes| C[return early<br/>no probe]
-  B -->|no| D[acquire health_lock]
-  D --> E{re-check<br/>now - last < interval?}
-  E -->|yes| F[return<br/>another task probed]
-  E -->|no| G[check_health]
-  G --> H[gather probe per endpoint<br/>GET health_url 5s]
-  H --> I[healthy = status==200]
-  I --> J[last_health = now]
-```
+Source files: `python/ragstack/embedders.py`, `python/ragstack/embed_pool.py`,
+`python/ragstack/api/model_registry.py`, `python/ragstack/api/deps.py`
+(`_make_embedder`, `embedding_urls`, `_build_collection_registry`,
+`apply_assignment`), `python/ragstack/api/routers/collections.py`
+(`create_collection`, `list_available_models`), `python/ragstack/api/routers/models.py`,
+`sidecars/embedding/main.py`.
 
-Source files: `/Users/me/Development/dxkb/ragstack/python/ragstack/embedders.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/embed_pool.py`.
+---
 
 ---
 
 ## 4. Single-document Ingestion Pipeline
 
-### Document Ingestion Pipeline (single-doc atomic unit)
-**What it is:** `IngestionPipeline.ingest` (`ingestion/pipeline.py:55`) is the end-to-end atomic unit that turns one source string into stored, retrievable chunks across the vector store, text index, and (optionally) the knowledge graph. It is the reused building block: bulk ingestion (`ShardedIngestor`) calls this exact method once per document (`ingestion/sharded.py:91`), so a 1-doc request and a 500k-doc manifest share one code path.
+### Document Ingestion Pipeline (`IngestionPipeline`, the shared unit)
 
-**Algorithm / workflow:**
-1. **Load.** `self.loader.load(source)` returns `list[Document]` (`pipeline.py:62`). A single source may expand to multiple `Document`s.
-2. **Chunk (in a worker thread).** For each doc, `await asyncio.to_thread(self.chunker.chunk, doc)` (`pipeline.py:68`). Chunkers are synchronous and `SemanticChunker` blocks on a bridged embed round-trip, so `to_thread` keeps the event loop responsive. Every chunk gets a deterministic `id = uuid5(NAMESPACE_URL, "{doc.id}:{start_char}:{end_char}")` (`chunkers.py:39-40`) — the linchpin of idempotent re-ingest.
-3. **Stamp tenant.** `chunk.metadata["tenant_id"] = tenant_id` on every chunk (`pipeline.py:69-70`); `produced` records the pre-embed count (`pipeline.py:71`).
-4. **Embed (poison-isolated).** Build `texts` from chunk content; if the embedder exposes `embed_isolated` (duck-typed via `getattr`, `pipeline.py:77`), call `await embed_isolated(texts)` → `(vectors, quarantined)` where a poison input is `None` rather than failing the doc (`pipeline.py:79`). Otherwise fall back to plain `embed` with `quarantined=0` (`pipeline.py:81`).
-5. **Drop quarantined.** Zip chunks with vectors (`strict=True`); skip `None` vectors, set `chunk.embedding` on survivors into `kept` (`pipeline.py:83-88`); log a warning if any were quarantined (`pipeline.py:89-92`); `all_chunks = kept`.
-6. **Link neighbors on survivors.** `link_neighbors_by_document(all_chunks)` (`pipeline.py:98`) groups by `doc_id` and stamps `chunk_index`/`prev_chunk_id`/`next_chunk_id` (`chunkers.py:804-847`) — done *after* the embed drop so a survivor's neighbor chain never dangles to a quarantined chunk, and grouping prevents cross-document links in a mixed batch.
-7. **EmptyIngest guard.** If `not all_chunks`, raise `EmptyIngestError` *before* any delete (`pipeline.py:105-109`). This is the "never delete prior data without a replacement" invariant — an empty/all-quarantined re-ingest must not silently wipe the previously-stored version.
-8. **Replace-old (delete-by-doc).** For each doc: `vector_store.delete(doc.id, tenant_id=...)`, `text_index.delete(doc.id, ...)`, and if configured `graph_store.delete_by_doc(doc.id, ...)` (`pipeline.py:118-122`). Deterministic ids make a byte-identical re-ingest overwrite in place, but an *edited* doc yields shifted spans → new ids, so old chunks must be deleted or they orphan. This runs only after a successful embed (a transient embed failure raises at step 4).
-9. **Index (upsert-then... actually delete-then-upsert here).** `vector_store.upsert(all_chunks)` then `text_index.index(all_chunks)` (`pipeline.py:125-126`). Qdrant upsert scopes each point id by tenant via `_point_id = uuid5(NAMESPACE_URL, "{tenant}:{chunk_id}")` (`stores/qdrant.py:135,250-253`) and raises if any chunk lacks an embedding (`qdrant.py:120-121`).
-10. **Optional KG extraction hook.** If both `kg_extractor` and `graph_store` are set: `triples = await kg_extractor.extract(all_chunks)`, stamp `triple.tenant_id` on each (`pipeline.py:129-134`), then `graph_store.add_triples(triples)` (`pipeline.py:135`).
-11. **Return** `[c.id for c in all_chunks]` — the surviving chunk ids (`pipeline.py:137`).
+**What it is:** `IngestionPipeline` (`python/ragstack/ingestion/pipeline.py`) turns a
+source into stored, retrievable chunks in the vector store, the text index and,
+optionally, the knowledge graph. It is no longer one method. It is **two halves
+plus a pre-embed step**, so each driver can run the part it needs:
 
-**Ordering nuance (upsert-then-prune vs. delete-then-upsert):** the *pipeline* itself uses **delete-old-then-upsert-new** (steps 8→9), safe because the delete only runs after a successful embed. The complementary **upsert-then-prune** ordering the protocols document (`delete_except` called *after* upsert so a failure can't lose data — `protocols.py:45-50, 74-79`) is a store-level primitive; `ingest` does not call `delete_except` (it deletes the whole doc up front), but the same "replacement must exist before old data is destroyed" principle governs both.
+| Method | What it does | Who calls it |
+|---|---|---|
+| `ingest(source, tenant_id)` | `index_chunks(embed_source(...))` — the coupled path | `ShardedIngestor._ingest_item` (path A, uncapped) |
+| `prepare_source` / `prepare_documents` | load; DOI enrichment; chunk; boilerplate filter. Text only: no GPU, no store | the chunk-cap gate `ShardedIngestor._admit` |
+| `embed_prepared` / `ingest_prepared` | embed an already-prepared source; with the empty-ingest guard | path A when a chunk cap applies |
+| `embed_documents(documents, ...)` | `prepare_documents` + embed; **does not raise** when nothing survives | `ragstack.ingestion.shard.run_shard` (the `ingest_shard.py` core, paths B and C) |
+| `iter_embed_source(source, group_size=64)` | streaming embed in document groups; no store | `ragstack.ingestion.embed_shard.run_embed_shard` (`embed_shard.py`, path C) |
+| `index_chunks(chunks, tenant_id)` | validate → delete-prior → upsert both legs → optional KG | every path; also `load_embeddings.py` over embedding files |
 
-**Tools & models:** stdlib `asyncio` (`to_thread`), `logging`; `uuid.uuid5` for deterministic chunk + point ids. Injected collaborators (protocol-typed, `pipeline.py:37-53`): `DocumentLoader`, `Chunker`, `Embedder` (concretely `BatchingEmbedder`/`PooledEmbedder` wrapping `SidecarEmbedder` BGE or `OpenAIEmbedder`/vLLM, e.g. SFR-Embedding-Mistral), `VectorStore` (`QdrantVectorStore`), `TextIndex` (Elasticsearch/BM25), optional `GraphStore` (Neo4j) + `KGExtractor`. External services: embedding sidecar/vLLM over HTTP, Qdrant, ES, Neo4j.
+**Algorithm / workflow (the coupled `ingest`):**
 
-**Inputs → Outputs:** In: `source: str`, `tenant_id: str` (default `DEFAULT_TENANT`). Out: `list[str]` of surviving chunk ids. Side effects: points in Qdrant, docs in ES, triples in Neo4j. Raises `EmptyIngestError` on no embeddable chunks; re-raises infra (5xx/network) errors from the embedder.
+1. **Load.** `self.loader.load(source)` returns `list[Document]`. On path A this is
+   `default_loader_registry` (confined to `INGEST_ROOT`, `max_document_bytes`); on the
+   worker tools it is `JsonlLoader` over a shard that the extract step wrote.
+2. **DOI enrichment (optional, #596).** `_apply_doi_enrichment` runs
+   `DoiEnricher.enrich_documents` *between load and chunk*, so one metadata write per
+   document reaches every chunk. `doi_enricher=None` disables it. Any exception is
+   logged and swallowed — enrichment never fails an ingest. The metadata detail is
+   covered in the metadata section.
+3. **Chunk (in a worker thread).** `await asyncio.to_thread(self.chunker.chunk, doc)`
+   per document, one at a time. Semantic chunkers block on a bridged embed call, so
+   `to_thread` keeps the event loop free. Chunk ids are deterministic (`uuid5` over
+   doc id and span; see §2).
+4. **Boilerplate filter (optional).** `_filter_boilerplate` flags or drops chunks
+   through `BoilerplateFilter.apply`. It logs counts, and warns when more than half a
+   source's chunks are dropped. It never fails an ingest.
+5. **Stamp tenant + embed with poison isolation.** `_embed_and_link` sets
+   `metadata["tenant_id"]` on every chunk, then calls the embedder's `embed_isolated`
+   when it has one (found with `getattr`), so a poison input comes back as `None`
+   rather than failing the batch; otherwise it calls plain `embed`.
+6. **Drop quarantined, link survivors.** Chunks whose vector is `None` are dropped.
+   `link_neighbors_by_document(kept)` stamps `chunk_index` / `prev_chunk_id` /
+   `next_chunk_id` on the survivors only, so no chain points at a quarantined chunk.
+7. **Empty-ingest guard.** In `embed_prepared`, no survivors raises
+   `EmptyIngestError` *before any store is touched*, so an empty or all-quarantined
+   re-ingest cannot delete the prior version. Documents that loaded but kept no chunk
+   are named in a warning ("kept prior data for N document(s)").
+8. **Metadata contract (#603/#604).** `index_chunks` first calls
+   `ragstack.metadata_schema.validate_chunks(chunks, where="index_chunks")`
+   (`pipeline.py:446`). A declared field with the wrong type is refused **before the
+   delete-prior and before either store is written**. Undeclared keys pass through.
+9. **Delete-prior, bounded-concurrent, survivors only.** For each `doc_id` that has a
+   surviving chunk, it deletes that document's rows from the vector store, the text
+   index and, if configured, the graph (scoped by `collection`, #209). The deletes run
+   under `asyncio.Semaphore(delete_concurrency)` (default 8). A document with no
+   survivor keeps its prior rows — they may be stale, but they are not lost.
+   `delete_prior=False` skips this step. Only `load_embeddings.py` sets it
+   (`--no-delete-prior`, and always in `--replay`, which does its own per-version
+   delete).
+10. **Index both legs together.** `asyncio.gather(vector_store.upsert(chunks),
+    text_index.index(chunks), return_exceptions=True)`, then the first exception is
+    re-raised. Both legs run to completion before the method returns, so a failed
+    load cannot still be writing to one store afterwards.
+11. **Optional KG extraction.** If both `kg_extractor` and `graph_store` are set,
+    triples are extracted, stamped with `tenant_id` **and** `collection`, and added.
+    (Path B never sets a KG extractor. Graph extraction is its own workflow,
+    `cwl/graph-extract.cwl`.)
+12. **Return** the surviving chunk ids.
 
-**Scalability & parallelization:** Within a single `ingest` call the work is **largely sequential** — the per-document chunk loop `await`s each doc in turn (`pipeline.py:64-68`, one `to_thread` at a time, no `gather`), and load/embed/delete/upsert/index run in strict sequence. Parallelism lives *below and above* this method: the `Embedder` batches (`BatchingEmbedder._batches`, item- and token-bounded, `embedders.py:124-138`) and, when a `PooledEmbedder` is used, fans batches across a fleet; poison isolation bisects failing 4xx batches recursively (`embedders.py:162-185`). Above, `ShardedIngestor` runs whole documents concurrently (`sharded.py:64-67`, `backend.run_shards`) with a per-tenant concurrency slot (`self._quota.slot`, `sharded.py:90`) so one tenant can't monopolize the embedding fleet. **Bottleneck:** the embedding round-trip (network + GPU) dominates; the sequential per-doc chunk loop and the single-request Qdrant `upsert`/ES `index` (one call for all of a doc's chunks, `qdrant.py:140`) are secondary. Throughput is limited by embedding fleet capacity, per-tenant quota slots, and shard concurrency — not by this method's own structure.
+**Ordering, restated:** the pipeline is **delete-then-upsert**. It is safe because the
+delete runs only after a successful embed *and* a successful metadata validation.
+Path D alone uses upsert-then-prune (`delete_except` after `upsert`, §5.5).
 
-**Single vs bulk:** The algorithm is **identical**; only the entry point differs. Single-doc: `IngestionPipeline.ingest` called directly (or as a 1-item manifest). Bulk: `ShardedIngestor.ingest_manifest` (`sharded.py:39`) → `partition` into shards → `_run_shard` → `_ingest_item` (`sharded.py:86`) which wraps the *same* `pipeline.ingest` in a quota slot and try/except so one bad doc yields a `FAILED` `ItemResult` instead of aborting the shard (`sharded.py:92-99`). The API background worker `_run_ingest` (`api/routers/documents.py:42`) treats a single file as a 1-item manifest (`documents.py:52`), and job status is `failed` only if the run errors or *every* item fails (`_final_status`, `documents.py:38-39`) — so an `EmptyIngestError` from one doc records a failed item while leaving the prior corpus intact.
+**Tools & models:** stdlib `asyncio` (`to_thread`, `Semaphore`, `gather`), `uuid5`.
+Collaborators are injected and typed by protocol (`ragstack.protocols`):
+`DocumentLoader`, `Chunker`, `Embedder` (the pooled/batching embedders of §3),
+`VectorStore` (Qdrant), `TextIndex` (Elasticsearch), optional `GraphStore` +
+`KGExtractor`, optional `DoiEnricher`
+(`python/ragstack/ingestion/doi_metadata.py`) and `BoilerplateFilter`
+(`python/ragstack/ingestion/boilerplate.py`). On path A the pipeline for a
+non-surface collection is built per request by `api/deps.py` `build_ingestor_for`:
+that collection's own chunker (`_chunker_for`, with a per-collection
+`SyncEmbedBridge` for the semantic methods), embedder and stores, plus the app's
+shared `doi_enricher`.
+
+**Inputs → Outputs:** In: `source: str`, `tenant_id`. Out: `list[str]` of surviving
+chunk ids. Side effects: Qdrant points, ES documents, and optionally Neo4j triples.
+Raises `EmptyIngestError` (no survivors), `ChunkMetadataTypeError` (contract
+violation), or infra errors from the embedder or the stores.
+
+**Scalability & parallelization:** Inside one call, loading and chunking are
+sequential per document. The parallelism is below (the embedder's batching and
+pool, §3), inside `index_chunks` (bounded-concurrent deletes, the two legs gathered),
+and above (drivers: path A shards, path B/C engine scatter). The embedding
+round-trip is the dominant cost.
+
+**Single vs bulk:** the algorithm is the same on every path except D; only the
+driver changes. Path A calls `ingest` / `ingest_prepared` once per manifest item.
+Path B's `ingest_shard.py` calls `embed_documents` → writes an embedding file →
+`index_chunks` for a *batch* of documents (`run_shard`), and turns per-document
+emptiness into receipt rows instead of `EmptyIngestError`. Path C either does the
+same (`ingest-bulk.cwl`) or splits the halves across two tools: `embed_shard.py`
+(`iter_embed_source`, no store) and `load_embeddings.py` (`index_chunks` over files).
 
 **Diagram:**
 
 ```mermaid
-sequenceDiagram
-    participant C as Caller<br/>Sharded or API
-    participant P as IngestionPipeline.ingest
-    participant L as DocumentLoader
-    participant K as Chunker<br/>to_thread
-    participant E as Embedder<br/>embed_isolated
-    participant V as VectorStore<br/>Qdrant
-    participant T as TextIndex<br/>ES
-    participant G as GraphStore + KG<br/>optional
-
-    C->>P: ingest source, tenant_id
-    P->>L: load source
-    L-->>P: list of Document
-    loop per document
-        P->>K: chunk doc in worker thread
-        K-->>P: chunks with uuid5 ids
-    end
-    P->>P: stamp tenant_id on chunks
-    P->>E: embed texts poison isolated
-    E-->>P: vectors + quarantined count
-    P->>P: drop None vectors, keep survivors
-    P->>P: link neighbors by document
-    alt no surviving chunks
-        P-->>C: raise EmptyIngestError<br/>prior data untouched
-    else has survivors
-        loop per document
-            P->>V: delete by doc_id + tenant
-            P->>T: delete by doc_id + tenant
-            P->>G: delete_by_doc optional
-        end
-        P->>V: upsert survivors<br/>tenant scoped point ids
-        P->>T: index survivors
-        opt kg_extractor and graph_store
-            P->>G: extract + add triples
-        end
-        P-->>C: return surviving chunk ids
-    end
+flowchart TD
+    S["source"] --> L["loader.load"]
+    L --> E1["_apply_doi_enrichment - optional, never fatal"]
+    E1 --> CH["chunker.chunk per doc in to_thread"]
+    CH --> BF["_filter_boilerplate - optional, never fatal"]
+    BF --> EM["_embed_and_link: stamp tenant, embed_isolated, drop None, link neighbors"]
+    EM --> G1{"any survivors?"}
+    G1 -- "no" --> X1["EmptyIngestError - prior data untouched"]
+    G1 -- "yes" --> V["validate_chunks - metadata contract"]
+    V -- "type error" --> X2["ChunkMetadataTypeError - nothing deleted, nothing written"]
+    V -- "ok" --> DP["delete-prior for docs with survivors, Semaphore delete_concurrency"]
+    DP --> UP["gather: vector upsert + text index"]
+    UP --> KG{"kg_extractor and graph_store?"}
+    KG -- "yes" --> T["extract triples, stamp tenant + collection, add_triples"]
+    KG -- "no" --> R["return chunk ids"]
+    T --> R
 ```
 
-Key file references: `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/pipeline.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/sharded.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/chunkers.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/embedders.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/qdrant.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/api/routers/documents.py`.
+Key files: `python/ragstack/ingestion/pipeline.py`, `python/ragstack/metadata_schema.py`,
+`python/ragstack/ingestion/doi_metadata.py`, `python/ragstack/ingestion/boilerplate.py`,
+`python/ragstack/ingestion/chunkers.py` (`link_neighbors_by_document`),
+`python/ragstack/api/deps.py` (`build_ingestor_for`).
+
+---
 
 ---
 
 ## 5. Bulk / Sharded Ingestion
 
-### Sharded manifest ingestion (`ShardedIngestor` + `LocalAsyncIORunner` + `JobStore` resume)
+### 5.1 Path A — `ShardedIngestor` + `LocalAsyncIORunner` (in-process)
 
-**What it is:** The library-level bulk path that turns a file-or-directory source into an immutable manifest of work items and runs each item through the full single-document `IngestionPipeline` under bounded concurrency, with per-item resume via a `JobStore`. This is what the API's `/v1/ingest` endpoint drives; a single file is just a 1-item manifest, so the single-doc and 500k-doc cases share one code path (`sharded.py:6-7`).
+**What it is:** the library-level driver that `_run_ingest`
+(`python/ragstack/api/routers/documents.py`) uses when `INGEST_BACKEND=local`. It turns
+a file or directory into a `Manifest` and runs each item through `IngestionPipeline`
+under bounded concurrency, checkpointing each item in the `JobStore`.
 
 **Algorithm / workflow:**
-1. **Build manifest** — `build_manifest(source, suffixes, ingest_root)` (`manifest.py:52`). A directory is walked with `rglob("*")`, sorted for determinism, and filtered by suffix set (`manifest.py:68-72`). Each file is re-confined to `ingest_root` (LFI guard, because `rglob` follows symlinks) and its `item_id` is derived from the confined resolved path via `deterministic_doc_id` so manifest ids equal stored document ids (`manifest.py:83-88`). Escaping symlinks are skipped, not enumerated (`manifest.py:85-87`).
-2. **Resume filter (optional)** — if a `job_store` and `job_id` are set, `ingest_manifest` registers all items as pending via `add_items` (idempotent), reads `completed_item_ids`, and drops already-completed items from the work list (`sharded.py:53-62`).
-3. **Partition** — `partition(items, shard_size)` slices the remaining items into shards of at most `shard_size` (default 64) (`backends.py:22-26`, `sharded.py:64`).
-4. **Run shards** — the `IngestBackend` (`LocalAsyncIORunner`) runs shards via `asyncio.gather`, each shard wrapped in `async with sem` on an `asyncio.Semaphore(max_concurrency)` (default 4) so total in-flight shards are bounded (`backends.py:53-61`). `return_exceptions=True` means a shard whose processor raises wholesale is not fatal: every item in it is recorded `FAILED` and the run continues (`backends.py:64-73`).
-5. **Per-shard sequential processing** — `_run_shard` iterates items *sequentially* within a shard; after each item it calls `mark_item` to checkpoint the outcome (`sharded.py:69-84`).
-6. **Per-item ingest** — `_ingest_item` acquires a `TenantQuota.slot(tenant_id)` (per-tenant concurrency cap so one tenant can't monopolize the shared embedding fleet, `quota.py:28`), then calls `self._pipeline.ingest(item.source, tenant_id=...)` which runs load→chunk→embed→link→replace→index (`pipeline.py:55-137`). Per-item exceptions are caught and returned as a `FAILED` `ItemResult` with only the exception class name as the error label (`sharded.py:86-105`).
 
-**Tools & models:** `asyncio` (semaphore + gather); Pydantic models (`WorkItem`, `Manifest`, `ItemResult`); `JobStore` backends — `InMemoryJobStore`, `SqliteJobStore` (stdlib sqlite3 in WAL, run under `asyncio.to_thread`), `PostgresJobStore` (asyncpg pool, the multi-writer "500k checkpoint of record") (`jobstore.py:231-517`); `TenantQuota` (per-tenant `asyncio.Semaphore`). The actual embedding/store work lives in the injected `IngestionPipeline` (embedder, `QdrantVectorStore`, text index, optional graph/KG).
+1. **Request gates** (`ingest` / `ingest_upload`): `_refuse_unknown_backend`; **503**
+   if `INGEST_ROOT` is unset (otherwise the route would be an arbitrary server-side
+   file read). Uploads are checked first by `_admit_uploads`: file count, content
+   type and `%PDF` magic, per-file and per-request byte caps (413/415). The upload
+   route also has `single_inflight_ingest`, which returns 429 while one of the
+   caller's jobs is in flight.
+2. **Target** — `_resolve_ingest_target` → `_authorize_ingest_target`: an implicit
+   target (the field omitted, or the reserved pointer name) goes to
+   `resolve_ingest_default_entry`; an explicit id goes through the allowlist,
+   `resolve`, then `enforce_access`. The action is `"read"` on the legacy shared
+   surface and `"write"` otherwise. `_guard` runs `check_ingest_build_spec` (409 on a
+   manifest mismatch, ADR-0002). A non-surface entry gets a per-collection ingestor
+   from `build_ingestor_for`. A tokenizer that cannot load returns **503**.
+3. **Job row** — `job_lifecycle` (#415) owns the row from creation until
+   `background_tasks.add_task`, so a failure in between cannot leave a row stranded
+   in `accepted`.
+4. **Manifest** — `build_manifest(source, suffixes, ingest_root)`
+   (`python/ragstack/ingestion/manifest.py`): a sorted `rglob`, filtered by
+   `DEFAULT_INGEST_SUFFIXES`. Every file is re-confined to the root, and its
+   `item_id = deterministic_doc_id(resolved path)`. For uploads (`every_file=True`),
+   files with no loader become failed items (`no_loader_error`) instead of being
+   dropped silently (`_fail_unsupported_items`).
+5. **Chunk cap (#291)** — `_chunk_cap_for` resolves the cap once per job: the
+   registry `max_chunks` override, else `max_chunks_per_collection` for a
+   user-created collection. The shared surface is never capped. With a cap,
+   `ShardedIngestor._admit` takes **one** live `vector_store.count()`, prepares
+   every remaining item (text only), and refuses the whole job with
+   `ChunkCapExceeded` before the first embed. Every item is then marked failed.
+6. **Resume filter** — `add_items` (idempotent), then already-`completed_item_ids`
+   are skipped.
+7. **Partition + run** — `partition(items, shard_size)`, then
+   `LocalAsyncIORunner.run_shards` runs `asyncio.gather` under
+   `Semaphore(max_concurrency)` with `return_exceptions=True`. If a shard raises as a
+   whole, all its items become `FAILED` results. Inside a shard, `_run_shard` runs
+   items **in order** and calls `mark_item` after each.
+8. **Per item** — `_ingest_item` (or `_ingest_prepared_item` on the capped path)
+   holds `TenantQuota.slot(tenant_id)` around `pipeline.ingest`. An exception becomes
+   a `FAILED` `ItemResult` whose label is `job_error` or the exception class name.
+9. **Finalise** — `_final_status`: `failed` only if items existed and none completed.
+   The response carries `chunk_ids` only for a single completed item. On success,
+   `write_ingest_manifest_for` writes the provenance manifest (for the shared
+   surface, `write_ingest_manifest`). **No archive version is written on this path**
+   (compare §5.2).
 
-**Inputs → Outputs:** In: `source: str` (path), optional `suffixes`, `ingest_root`, `job_id`, `tenant_id`. Out: `list[ItemResult]` (one per *processed* item — resumed-skipped items are excluded), each carrying `item_id/source/status/chunk_ids/error`. Side effect: per-item rows durably marked in the `JobStore`.
+**Tools & models:** `asyncio`; Pydantic `WorkItem` / `Manifest` / `ItemResult`;
+`JobStore` backends in `python/ragstack/jobstore.py` (memory / sqlite / postgres);
+`TenantQuota` (`python/ragstack/quota.py`, LRU-bounded per-tenant semaphores;
+`tenant_max_concurrency` defaults to 0 = unlimited).
 
-**Scalability & parallelization:** Parallelized across shards via `asyncio.gather` under a semaphore (`backends.py:53-61`); default breadth is only 4 shards × 64 items. Note items *within* a shard run serially (`sharded.py:73`), so intra-shard latency is not hidden — parallelism is shard-granular, not item-granular. Bottleneck is the shared embedding fleet; the `TenantQuota` semaphore is the throttle that keeps one tenant from saturating it. The `IngestBackend` protocol is an explicit seam so a Parsl/k8s runner (one task = one shard) can replace `LocalAsyncIORunner` for cluster scale-out without touching the pipeline (`backends.py:1-8`, `29-35`).
+**Inputs → Outputs:** In: a server path or uploaded files, an optional `collection`.
+Out: `IngestResponse{job_id, status, collection}` right away; per-item rows and a
+provenance manifest after the background task finishes.
 
-**Single vs bulk:** *One code path, size-parameterized* — a single file becomes a 1-item manifest and flows through the identical partition→run_shards machinery (`sharded.py:6-7`, `documents.py:51-52`). The only single-vs-bulk branch is cosmetic: `_run_ingest` surfaces `chunk_ids` on the response only when `len(results) == 1` (back-compat), otherwise callers poll `item_counts` (`documents.py:79-80`). Entry point: `ShardedIngestor.ingest_manifest`; API wrapper: `_run_ingest` → `background_tasks.add_task` (`documents.py:42-81`, `134`).
+**Scalability & parallelization:** parallel across shards (`ingest_concurrency`
+shards × `ingest_shard_size` items), serial within a shard, and bounded by one
+process's event loop and the shared embedder pool. ADR-0006's context records that
+this in-process `BackgroundTasks` path "cannot take self-service load" (#203). That
+is why path B exists.
 
-**Diagram:**
+**Single vs bulk:** one code path. A single file is a 1-item manifest.
+
 ```mermaid
 flowchart TD
-  A[source path] --> B[build_manifest<br/>rglob + confine + doc_id]
-  B --> C{job_store + job_id?}
-  C -->|yes| D[add_items<br/>read completed_item_ids<br/>drop completed]
-  C -->|no| E[all items]
-  D --> F[partition<br/>shard_size 64]
-  E --> F
-  F --> G[LocalAsyncIORunner<br/>gather under Semaphore max=4]
-  G --> H[per shard: items SEQUENTIAL]
-  H --> I[quota.slot tenant]
-  I --> J[pipeline.ingest<br/>load chunk embed link replace index]
-  J --> K[mark_item status in JobStore]
-  H -->|shard raises| L[all items FAILED<br/>run continues]
-  K --> M[list ItemResult]
-  L --> M
+    R["POST /v1/ingest or /v1/ingest/upload, INGEST_BACKEND=local"] --> G["INGEST_ROOT set? uploads admitted?"]
+    G --> T["_resolve_ingest_target: authorize, build-spec 409, build_ingestor_for"]
+    T --> J["job_lifecycle creates row, add_task _run_ingest"]
+    J --> M["build_manifest: rglob, confine, item_id = doc id"]
+    M --> CAP{"chunk cap applies?"}
+    CAP -- "yes" --> AD["_admit: one count, prepare all, refuse whole or keep prepared"]
+    CAP -- "no" --> RS["resume filter via JobStore"]
+    AD --> RS
+    RS --> PT["partition shard_size"]
+    PT --> LR["LocalAsyncIORunner: gather under Semaphore"]
+    LR --> SH["per shard, items in order, quota slot, pipeline.ingest"]
+    SH --> MK["mark_item in JobStore"]
+    MK --> FS["_final_status, write provenance manifest"]
 ```
 
----
+### 5.2 Path B — API → GoWe/CWL (`INGEST_BACKEND=gowe`)
 
-### Bulk JSONL ingestion (`ingest_jsonl.py`): bounded producer→worker→coordinator pipeline with crash-safe frontier + out-of-order resume
+**What it is:** the user-triggered ingest plane (#203/#353). The API validates,
+authorizes, reserves an archive version, and submits `cwl/pdf-ingest-scatter.cwl` to
+the GoWe engine **as the caller**. The workers do all the loading, chunking,
+embedding and writing. The API then waits for completion *and* delivery, and maps
+per-document receipts onto the job.
 
-**What it is:** The operator CLI for large pre-extracted JSONL dumps (hundreds of MB) that exceed the API's per-file size guard. It *streams* the file at constant memory, enriches scholarly metadata, chunks, embeds in batches, and upserts to Qdrant (+ optional Elasticsearch), with a crash-safe line-number checkpoint that survives out-of-order batch completion (`ingest_jsonl.py:2-8`, `531`). This is the true bulk engine — it does **not** go through `ShardedIngestor`/`IngestionPipeline`; it reimplements the load→chunk→embed→upsert loop with a hand-rolled concurrent pipeline.
+**Algorithm / workflow** (`documents.py` gowe branches of `ingest` and
+`ingest_upload`, then `_run_gowe_ingest`):
 
-**Algorithm / workflow (the `--index` path, `run()` at `ingest_jsonl.py:531`):**
-1. **Setup** — resolve doc-type filter, publisher profile, chunker (`make_chunker`), token counter/budget (auto-detected from the endpoint's `max_model_len`), optional semantic breakpoint embedder via `SyncEmbedBridge`, optional segmentation cache (`ingest_jsonl.py:532-661`).
-2. **Read checkpoint** — `_open_checkpoint_paths` loads `{line, doc_types, done_ranges}`; a resume under a *different* `--doc-types` is rejected fail-closed (`ingest_jsonl.py:227-235`). Index vs catalog-only passes use separate default checkpoints so a cheap `--no-index` run can't advance the expensive run's frontier (`ingest_jsonl.py:209-219`).
-3. **Probe + ensure stores** — one-text embed probe sizes the vector dim; `QdrantVectorStore.ensure_collection`, optional `ElasticsearchTextIndex.ensure_index` (`ingest_jsonl.py:702-713`).
-4. **Spawn workers** — `concurrency` (`--concurrency`, default 1) `worker()` tasks read from a bounded `asyncio.Queue(maxsize=concurrency*2)` (`ingest_jsonl.py:723-895`).
-5. **Producer loop** (`ingest_jsonl.py:976-1031`) streams `_iter_records`; per record it skips lines `<= start_line`, enriches, then classifies:
-   - **filtered** → `("skip", …)` appended to `inflight` (`ingest_jsonl.py:983-993`)
-   - **#65 resume fast-path** — `_line_covered(line_no, start_line, resume_done_ranges)` true → `("resume", …)`: skip chunk+embed+upsert entirely, buffer only the cheap catalog row (`ingest_jsonl.py:994-1009`)
-   - **chunk** → `asyncio.create_task(_chunk_task(doc))` and `("chunk", …)` appended (`ingest_jsonl.py:1010-1024`).
-   The window `inflight` deque is drained oldest-first via `_fold` whenever it exceeds `window = chunk_concurrency + 1` (`ingest_jsonl.py:1026-1027`).
-6. **Chunk fan-out** — `_chunk_task` runs `chunker.chunk` (or `seg_cache.get_or_compute`) under `asyncio.to_thread` gated by `chunk_sem = Semaphore(chunk_concurrency)` so up to `--chunk-concurrency` docs chunk at once (`ingest_jsonl.py:915-922`).
-7. **Coordinator `_fold`** (`ingest_jsonl.py:924-966`) is the single file-order serializer: called oldest-first, it awaits each chunk task, folds chunks into `buf`, and assigns `seq`/`buf_start_line`/`buf_end_line` — *only ever inside `_fold`* — so seq is strictly monotonic in file order regardless of which chunk task finished first (`ingest_jsonl.py:906-910`). When `buf` reaches `--batch-size`, it `queue.put`s `(seq, start, end, buf, cat_rows, doc_info)` and resets buffers (`ingest_jsonl.py:958-966`).
-8. **Worker `_store_batch`** (`ingest_jsonl.py:749-781`): `_embed_drop_bad` (quarantines over-context chunks via `embed_isolated`), `link_neighbors_by_document`, **upsert-first** (deterministic uuid5 ids → idempotent, no delete-before-upsert), optional `--replace` prune-by-id after upsert under `delete_sem`.
-9. **Retry** — on a transient error (`ragstack.ingestion.retry.is_transient_error` walks `__cause__`/`__context__` for timeouts/5xx/pool-fail phrases) the batch retries up to `--batch-retries` with jittered exponential backoff `retry_delay` (1s,2s,4s… cap 30s, ±25% so co-failing workers don't retry in lockstep); a 4xx/bad-input is non-transient and surfaces immediately.
-10. **Frontier advance under lock** (`ingest_jsonl.py:849-891`): worker records `completed[seq] = (end_line, cat_rows)`, then drains the *contiguous* prefix `while next_seq in completed`, writing catalog rows in seq order, advancing `frontier_line`. `_trim_below` drops now-subsumed `done_ranges`. If this batch finished *above* a still-open gap, `_union_range` records its `[start_ln,end_line]` interval in `done_ranges` (the #65 out-of-order record). `_write_checkpoint` atomically persists `{frontier_line, doc_types, done_ranges}` (tmp+rename).
-11. **Failure handling** — a batch that exhausts retries is appended to `failed` and *left out of `completed`*, so the frontier stalls at the gap and its lines enter neither the frontier nor `done_ranges` — guaranteeing `--resume` re-feeds them (no data loss) (`ingest_jsonl.py:829-848`). At end, a non-empty `failed` list forces `SystemExit(1)` (`ingest_jsonl.py:1084-1090`).
-12. **Shutdown** — producer sends one `None` sentinel per worker and `asyncio.gather`s them; a producer exception cancels pending chunk tasks first (`ingest_jsonl.py:1039-1051`). On a clean finish (`next_seq == seq`) the checkpoint advances over trailing skipped lines (`ingest_jsonl.py:1060-1061`).
+1. **Identity** — `_gowe_caller` → `api/security.py` `gowe_caller`. Without a BV-BRC
+   bearer token this returns **401**: API keys and bearers from other issuers cannot
+   submit.
+2. **Source** — `POST /v1/ingest` accepts only a Workspace reference
+   (`_workspace_reference`: `ws:///<user>/home/…` or `/<user>/home/…`, otherwise
+   400). `INGEST_ROOT` is not checked because nothing on the API host is read. For
+   `POST /v1/ingest/upload`, `_admit_uploads` runs first.
+3. **Target + gates, all before any write or version reservation:**
+   `_authorize_ingest_target` (the same authorization and build-spec 409 as path A);
+   `_refuse_unrunnable_chunk_method` (**422** when the entry's `chunk_method` is in
+   `INGEST_WORKER_UNSUPPORTED_METHODS`, see below); `_registry_row` (**400** unless
+   the collection is a registered row — the settings-derived default is not); and
+   `_chunk_cap_for`.
+4. **Reserve the version** — `_reserve_version` → `CollectionStore.next_version`. A
+   registry that cannot reserve (the JSON backend) returns **503**.
+5. **Upload only: write the sources** — `_gowe_upload_sources` writes each file into
+   the caller's Workspace, under `.ragstack/collections/<id>/sources/`, with the
+   caller's token. File names are ASCII-folded (`_safe_upload_name` →
+   `_ascii_fold`) because the Workspace cannot address non-ASCII paths. A same-named
+   file returns **409** and is never overwritten.
+6. **Per-job inputs** — `_gowe_inputs` seeds `version`, `collection_id`,
+   `spec_hash`, `job_id`, `tenant`, the physical `collection` / `es_index`, and
+   `qdrant_url` / `es_url` from **this API's** routing (`ragstack.store_routing`,
+   #407). When the entry records them, it adds `embedding_model`, `embedding_url`,
+   `chunk_method` / `chunk_size` / `chunk_overlap` and `max_chunks`. It adds
+   `registry` when `COLLECTION_REGISTRY_NAME` is set (#563, ADR-0009), and
+   `doi_enrichment` / `doi_mailto` / `doi_cache_dir` when DOI enrichment is on
+   (#596). `make_ingest_backend` refuses at boot any
+   `GOWE_WORKFLOW_INPUTS_JSON` that sets `qdrant_url` / `es_url`.
+7. **Submit** — `GoWeBackend.run_submission`
+   (`python/ragstack/ingestion/gowe_backend.py`): refuse duplicate source basenames;
+   `register_workflow`; `submit` with `{**static_inputs, **inputs, pdfs: [File…]}`,
+   the `worker_group` label, and
+   `output_destination = <collection folder>/versions/`; then `wait` with
+   `require_delivery=True`.
+8. **Workflow** (`cwl/pdf-ingest-scatter.cwl`): the `batch` ExpressionTool groups
+   `pdfs` by `batch_size` (default 20). Then, per batch, `extract` (`pdf_extract.py`
+   → one JSONL shard + a skip report) and `ingest` (`ingest_shard.py` → both stores +
+   one `ShardReceipt` with a row per document + the batch's embedding file). Finally
+   `pack` (`archive_version.py`) gathers everything into the `archive` Directory
+   named by the version — the workflow's **only** output. GoWe post-stages it to
+   `<output_destination>/<version>/`.
+9. **Inside `ingest_shard.py`** (`python/scripts/ingest_shard.py`, core
+   `ragstack.ingestion.shard.run_shard`): `ingest_target.resolve_or_exit` resolves
+   `--collection-id` through the registry named by `--registry` and checks
+   model/chunk spec (§5.4). `_build_pipeline` probes the embedding dim and calls
+   `target.check_build(dim=...)`. Semantic methods get a `SyncEmbedBridge` built from
+   the same `--embedding-url` (#609 steps 2–3). `run_shard` then does
+   `embed_documents` → `check_chunk_cap` → `write_embedding_file` → `index_chunks`.
+   Per-document failures, such as `NO_TEXT_ERROR` from the extract report or no
+   embeddable chunk, are **rows**, and the task still exits 0. Only a batch-level
+   error exits non-zero (1), and a chunk-cap refusal exits
+   `CAP_REFUSED_EXIT_CODE` = 4 (`permanentFailCodes: [4]` in the CWL).
+10. **Results** — for a COMPLETED and delivered submission,
+    `_map_archive_receipts` reads `versions/<n>/receipt.json` through the Workspace
+    with the caller's token and matches rows to items by source basename.
+    `_run_gowe_ingest` then calls `append_version(collection, version)`, marks each
+    item, sets `archive_ref`, and writes the provenance manifest. The failure modes
+    are:
+    - `OutputStagingFailed`: the job fails with `OUTPUT_STAGING_FAILED` and the row gets `set_archive_pending(True)`, which blocks eviction; nothing in the tree clears it (§8.6 step 2, §9.9 #5).
+    - Any other non-COMPLETED terminal state: every item fails under the engine state
+      or the chunk-cap label (`cap_refusal_of`).
+    - `GoWeContractError` (delivered but with unusable receipts): the job fails with
+      that class name.
 
-**Tools & models:** `asyncio` (bounded `Queue`, two `Semaphore`s, `Lock`, `to_thread`, `create_task`, `gather`); `httpx.AsyncClient`; `make_embedder`/`make_pooled_embedder` (single vs multi-endpoint fan-out, `ingest_jsonl.py:296-303`); `QdrantVectorStore`, `ElasticsearchTextIndex`; `make_chunker` incl. semantic methods via `SyncEmbedBridge`; `make_token_counter` (HF AutoTokenizer / endpoint `/tokenize` / estimate) + `resolve_max_tokens`; `enrich`/`index_metadata`/`resolve_profile`; `SegmentationCache`. Atomic checkpoint via `tmp.write_text` + `tmp.replace` (`ingest_jsonl.py:186-194`).
+**Where the per-deployment guards sit:**
 
-**Inputs → Outputs:** In: a JSONL file (one `{text, path, metadata}` per line) plus a large CLI arg surface. Out (side effects): Qdrant upserts (+ ES); `<input>.ckpt` JSON checkpoint; optional `--catalog-out` JSONL (full enriched metadata, written in strict seq/frontier lockstep so it never gets ahead of the resume point, `ingest_jsonl.py:860-861`); optional `--doc-metrics-out` per-doc JSONL and `--run-metrics-out` per-file summary. Process exit code 0/1.
+- **`INGEST_WORKER_UNSUPPORTED_METHODS`** (`python/ragstack/config.py`, default
+  `semantic,semantic_pooled`; parsed by `chunker_config.parse_unsupported_methods`,
+  which rejects unknown names at boot). The same set is enforced in two places:
+  `collections.py` refuses to *create* such a collection on a gowe deployment, and
+  `documents.py` `_refuse_unrunnable_chunk_method` refuses to *ingest* into one that
+  already exists. It is a deployment setting, not a constant, because what a worker
+  can run depends on the deployed image (`shard_refusal` docstring).
+- **Metadata at upload (#596/#602):** DOI resolution happens **in the worker**
+  (`ingest_shard.py` passes `doi_enricher=enricher_from_args(...)` into the
+  pipeline) because the API's enricher never sees a GoWe document.
+- **Metadata contract (#603/#604):** enforced in `index_chunks` inside the worker,
+  the same call as on path A.
 
-**Scalability & parallelization:** Genuinely concurrent on three axes: `--concurrency` embed+upsert workers, `--chunk-concurrency` concurrent `chunk()` calls (each fanning breakpoint embeds across the pool), and multi-URL embedder fan-out (`PooledEmbedder` least-loaded + failover). Memory is bounded on arbitrarily large inputs by (a) streaming `_iter_records`, (b) `queue maxsize = concurrency*2`, and (c) the `window = chunk_concurrency + 1` cap on pending chunk tasks/results (`ingest_jsonl.py:727`, `968-969`). Bottleneck is the embedding fleet throughput; the checkpoint's single `lock` serializes only the fast frontier bookkeeping, not the embed/upsert. A persistently-stuck early batch caps `done_ranges` growth via `_trim_below` but stalls the frontier by design.
+**Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
+`WorkspaceClient` (`python/ragstack/workspace.py`), the `ragstack-worker` Apptainer
+image (built from `apptainer/ragstack-worker.def`, see `cwl/README.md`), the receipt
+contract `ragstack.ingestion.receipts` (`ShardReceipt` / `DocRow`), and the archive
+format `ragstack.ingestion.archive` (`FORMAT = "ragstack-archive/1"`).
 
-**Single vs bulk — this is the crux.** The API `/v1/ingest` **single/small path** (`documents.py` → `ShardedIngestor` → `IngestionPipeline.ingest`) processes *whole documents* as the unit: load→chunk→embed→delete-then-upsert per doc, resume keyed on `item_id` (= doc id) in a `JobStore` table, item-granular parallelism, and it *deletes prior chunks before upsert* inside a per-doc replace (`pipeline.py:118-126`). The **bulk JSONL path** is a different engine with three distinct roles:
-- **Producer** (single, the `for line_no, record` loop): streams + enriches + classifies + dispatches chunk tasks, never blocks on embedding (`ingest_jsonl.py:976-1031`).
-- **Coordinator `_fold`** (single, file-order serializer): the *only* place `seq`/batch-line bounds are assigned, guaranteeing monotonic file order despite out-of-order chunk completion (`ingest_jsonl.py:906-910`, `924-966`).
-- **Workers** (`--concurrency` of them): embed+upsert *batches of chunks spanning multiple docs* in parallel, with in-process transient retry and the crash-safe frontier (`ingest_jsonl.py:783-893`).
+**Inputs → Outputs:** In: a Workspace reference or uploaded files, a registered
+`collection`, and a BV-BRC bearer token. Out: an immediate job id. Later: per-item
+rows, `archive_ref`, points in both stores, and `versions/<n>/` (`manifest.json`,
+`chunks.jsonl.gz`, `vectors.f32`, `receipt.json`) in the owner's Workspace.
 
-Key differences from the single path: (1) unit of work is a **cross-document chunk batch**, not a document; (2) resume keys on **line number + `done_ranges`**, not per-doc job rows; (3) **upsert-first, no delete-before-upsert** (deterministic ids overwrite; `--replace` prunes by id *after*, avoiding the data-loss window the pipeline's delete-then-upsert has if a delete lands but upsert times out, `ingest_jsonl.py:762-781`); (4) constant-memory streaming vs loading a doc's chunks in one shot. Entry points differ entirely: `ingest_jsonl.run()` (CLI, `asyncio.run`) vs `ShardedIngestor.ingest_manifest` (library/API).
+**Scalability & parallelization:** the engine scatters batches across the worker
+group, and each batch's embed fans out over the collection's embedding endpoints.
+The API holds only a poll loop: small submissions use `interactive_poll_interval`
+(`GoWeBackend.poll_interval_for`). The chunk cap is checked **per task** on this
+path: concurrent batches can together go over the cap (`run_shard` docstring). On
+path A the whole job is sized first.
 
-**Diagram — producer→worker + checkpoint frontier:**
+**Single vs bulk:** a Workspace-reference ingest is one work item; an upload is N
+items. Both take the same submission path. `batch_size` is set by the workflow and
+the API does not pass it.
+
 ```mermaid
 sequenceDiagram
-  participant P as Producer<br/>stream+enrich
-  participant CT as chunk tasks<br/>Semaphore chunk_concurrency
-  participant F as Coordinator _fold<br/>file-order, assigns seq
-  participant Q as Queue<br/>maxsize concurrency x2
-  participant W as Workers xN<br/>embed+upsert
-  participant CK as Checkpoint<br/>frontier+done_ranges
-  P->>CT: create_task chunk doc
-  P->>F: fold oldest-first when window full
-  F->>Q: put seq start end buf rows
-  Q->>W: get batch
-  W->>W: retry transient, upsert-first idempotent
-  W->>CK: lock, record completed seq, drain contiguous prefix
-  CK->>CK: advance frontier_line then trim_below
-  CK->>CK: if above gap union_range into done_ranges
-  W-->>CK: on fail append failed not completed so frontier stalls
+    participant U as Caller with BV-BRC token
+    participant API as documents.py gowe branch
+    participant REG as CollectionStore
+    participant WS as BV-BRC Workspace
+    participant GW as GoWe engine
+    participant WK as Worker pdf_extract then ingest_shard
+    participant ST as Qdrant and ES
+    U->>API: POST /v1/ingest or /v1/ingest/upload
+    API->>API: gowe_caller, authorize, build-spec 409, unsupported-method 422
+    API->>REG: registry row, chunk cap, next_version
+    opt upload
+        API->>WS: write sources with caller token
+    end
+    API-->>U: 200 or 202 with job_id
+    API->>GW: submit pdf-ingest-scatter as caller, output_destination versions/
+    GW->>WK: per batch of 20 PDFs
+    WK->>WK: resolve collection_id via named registry, check_build
+    WK->>ST: embed_documents, cap check, index_chunks
+    WK->>GW: receipt with a row per document
+    GW->>WS: post-stage archive to versions/N
+    API->>GW: wait for COMPLETED and delivered
+    API->>WS: read versions/N/receipt.json
+    API->>REG: append_version or set_archive_pending
+    API->>API: mark items, archive_ref, provenance manifest
 ```
 
-**Diagram — #65 done_ranges resume-skip:**
+### 5.3 Path C — operator bulk CWL
+
+**What it is:** CWL workflows that an operator submits directly (the `gowe` CLI, GoWe,
+or `cwltool`) to build or rebuild a corpus. ADR-0006 §1 calls this the operator
+plane: "CWL workflows + per-stage Python CLIs + the batch driver". The open-access
+build ran on it: 32 of 32 batches, 47,625,155 chunks (ADR-0006 Context; run record
+`reports/oa-ingest-run.md`).
+
+| Workflow | Shape | Tools |
+|---|---|---|
+| `cwl/jats-ingest.cwl` | scatter `extract` → scatter `embed` (two flat scatters: GoWe runs scatter-over-subworkflow children one at a time, GoWe#164) → `merge` → **single** `load` | `jats_extract.py`, `embed_shard.py`, `merge_receipts.py`, `load_embeddings.py` |
+| `cwl/ingest-bulk.cwl` | scatter coupled `ingest_shard` per JSONL shard → `merge` | `ingest_shard.py`, `merge_receipts.py` |
+| `cwl/embed-bulk.cwl` + `cwl/load-embeddings.cwl` | decoupled (#141): scatter `embed_shard` → embedding files; then one `load` task | `embed_shard.py`, `load_embeddings.py` |
+| `cwl/pdf-ingest.cwl` | one shard per run: `pdf_extract` → `embed_shard` → `load_embeddings` → `pack` | as named, plus `archive_version.py` |
+
+**Algorithm / workflow (the JATS reference build):**
+
+1. **Register first.** The collection must already exist in the registry
+   (`POST /v1/collections`). `load_embeddings.py` refuses an id the registry does not
+   hold (`jats-ingest.cwl` header).
+2. **Plan.** `plan_shards.py` assigns each article to
+   `int(sha1(pmcid)[:16], 16) % n_shards`. The assignment is stable while the corpus
+   grows, because `n_shards` is set by the operator rather than derived from the
+   count.
+3. **Drive in batches.** `gowe_batch_ingest.py` submits a batch of shards
+   (`gowe submit … --group`), polls, and **verifies against the stores**: submission
+   COMPLETED, a load summary with `n_shards_failed == 0`, and Qdrant and ES agreeing
+   with each other. A zero delta is accepted as an idempotent re-run. It then deletes
+   that batch's `*.emb.jsonl` and appends a row to a resumable ledger.
+4. **Per shard.** `jats_extract.py` (JATS → `{text, path, metadata}` JSONL) →
+   `embed_shard.py` (`run_embed_shard` → `pipeline.iter_embed_source`, document groups
+   sized from the fleet; no store contact).
+5. **Load.** A single `load_embeddings.py` task reads the embedding files. Its dim
+   comes from each file's header, and a mismatched file is rejected before any write.
+   It optionally wraps the store in `BackpressuredVectorStore`
+   (`python/ragstack/stores/backpressure.py`, `--backpressure`), sets `--bulk-refresh`
+   and `--file-concurrency`, then calls `index_chunks`, and writes the provenance
+   manifest.
+
+**Differences from path B:** `embed_shard.py` refuses the semantic methods locally,
+whatever the deployment setting, because it builds no embed bridge (its
+`_build_chunker`). `jats-ingest.cwl`'s load step fixes the registry through
+`EnvVarRequirement` (`COLLECTION_STORE_BACKEND: sqlite`,
+`COLLECTION_STORE_PATH: $(inputs.registry_db.path)`) and binds no `--registry`. This
+is the exemption ADR-0009 decision 6 names.
+
+**Scalability & parallelization:** engine scatter over workers for extract and embed.
+The load is deliberately a single task, because backpressure is a control loop
+(`cwl/load-embeddings.cwl` header). The driver's batching pipelines one batch's load
+behind the next batch's embed and caps the intermediate disk it uses
+(`gowe_batch_ingest.py` docstring).
+
+**Single vs bulk:** the tools are shard-granular. A "single document" on this plane is
+a one-line shard.
+
 ```mermaid
 flowchart TD
-  A[resume: read ckpt<br/>frontier=start_line<br/>done_ranges] --> B[for each record line_no]
-  B --> C{line_no <= start_line?}
-  C -->|yes| D[skip, already at/below frontier]
-  C -->|no| E{_line_covered<br/>in a done_range?}
-  E -->|yes| F[resume fast-path<br/>skip chunk+embed+upsert<br/>buffer catalog row only]
-  E -->|no| G[chunk + embed + upsert<br/>full work]
-  G --> H{batch end_line ><br/>frontier_line?}
-  H -->|yes above gap| I[union_range into done_ranges<br/>persist at unchanged frontier]
-  H -->|no fills prefix| J[advance frontier<br/>trim_below done_ranges]
-  K[failed batch] --> L[lines in NEITHER<br/>frontier nor done_ranges<br/>always re-fed on resume]
+    REGF["collection registered via POST /v1/collections"] --> PL["plan_shards.py: shard = sha1 pmcid mod n"]
+    PL --> DRV["gowe_batch_ingest.py: batch of shards"]
+    DRV --> SUB["gowe submit jats-ingest.cwl"]
+    SUB --> EX["scatter: jats_extract.py per shard"]
+    EX --> EMB["scatter: embed_shard.py per shard, no store"]
+    EMB --> MG["merge_receipts.py"]
+    MG --> LD["single task: load_embeddings.py, resolve registry, check dim, index_chunks"]
+    LD --> VER["driver verifies: COMPLETED, no failed shards, legs agree"]
+    VER -- "ok" --> CL["delete batch emb files, append ledger row"]
+    VER -- "fail" --> STOP["stop, rerun retries that batch"]
+    CL --> DRV
 ```
 
-Relevant files (all absolute):
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/manifest.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/backends.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/sharded.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/pipeline.py` (single-doc pipeline the sharded path calls)
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/jobstore.py` (resume backends)
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/quota.py` (per-tenant slot)
-- `/Users/me/Development/dxkb/ragstack/python/scripts/ingest_jsonl.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/api/routers/documents.py` (`/v1/ingest` single wrapper)
+### 5.4 Target resolution for workers — `IngestTarget` and registry selection
+
+**What it is:** `python/ragstack/ops/ingest_target.py`. Every bulk writer —
+`ingest_shard.py`, `load_embeddings.py`, `ingest_jsonl.py`, `ingest_chunks.py` —
+resolves where it writes through the collection registry, never from its own CLI
+names (#263, ADR-0005 decision 6).
+
+**Algorithm:**
+
+1. `add_arguments` adds `--collection-id`, `--create-via-api`, `--api-key`,
+   `--api-bearer` and `--registry`. `--registry` has **no** environment default
+   (ADR-0009 decision 6).
+2. `resolve_from_args` → `registry_settings(name)`. The name is checked against
+   `^[a-z0-9][a-z0-9_]{0,63}$`, upper-cased into a suffix, and read from
+   `COLLECTION_STORE_BACKEND_<NAME>` + `COLLECTION_STORE_{DSN,PATH}_<NAME>`, with every
+   unsuffixed coordinate blanked. A named registry that is not configured is fatal
+   and never falls back. An empty name keeps the unsuffixed variables — the
+   behaviour before #563.
+3. `resolve(collection_id)` returns an `IngestTarget` (physical `collection`,
+   `qdrant_url`, `es_index`, `es_url`, all taken from the entry and its routes), or
+   refuses with the known ids. Without `--collection-id`, `resolve_by_store_name`
+   matches the physical `--collection` against the registry. That is the migration
+   path: an unclaimed name is refused, and so is a name claimed more than once.
+   `--create-via-api` creates the entry through `POST /v1/collections` and then
+   resolves it again from the registry.
+4. `_checked` refuses a `--collection` / `--es-index` that contradicts the entry.
+5. `IngestTarget.check_build(model, dim, chunk_method, chunk_size, chunk_overlap)`
+   compares **field by field**. A field that is unset on either side is not a
+   mismatch; a field both sides state differently raises `TargetError`.
+   `resolve_or_exit` turns any `TargetError` into exit 2 with the message.
+6. After a successful load, `IngestTarget.write_manifest` writes the provenance
+   manifest from the *registry entry*. That manifest is what later arms the API's
+   `check_ingest_build_spec`.
+
+**Two build-spec guards, one rule.** The API compares against the provenance
+**manifest** (`api/deps.py` `check_ingest_build_spec`, which does nothing when no
+manifest exists yet). Workers compare against the **registry entry**
+(`IngestTarget.check_build`, where an entry always exists). Both implement ADR-0002
+decision 3 (the build spec is immutable).
+
+**Registry selection (ADR-0009, Proposed).** The API sends `registry` as a *name* on
+the submission. The credential (DSN) reaches the container only through the worker's
+`--secret-file`, because `submitted_inputs` is an immutable, plaintext snapshot.
+ADR-0009 also records that a worker group is **not** a confidentiality boundary, and
+that GoWe v0.20.0 submission-time `secrets` are now deployed and open as follow-up
+work.
+
+### 5.5 Path D — legacy `ingest_jsonl.py`
+
+**What it is:** a streaming operator CLI (`python/scripts/ingest_jsonl.py`) for large
+`{text, path, metadata}` JSONL dumps. It still has its own concurrency and resume
+machinery: a producer → coordinator `_fold` (which assigns `seq` in file order) →
+`--concurrency` embed and upsert workers; `--chunk-concurrency` parallel chunking; an
+atomic `.ckpt` frontier plus out-of-order `done_ranges` (#65); and `--batch-retries`
+with backoff. The mechanics were described in full in the July edition of this
+document and have not changed in kind.
+
+**What changed since July:** it now resolves its target through
+`ingest_target.resolve_or_exit` with `check_build` (registry-first, §5.4). It runs
+`validate_chunks(kept, where="ingest_jsonl")` before upsert, so it follows the same
+metadata contract as `index_chunks`.
+
+**What did not change:** it still does **not** call `IngestionPipeline.index_chunks`.
+Its worker upserts first and prunes afterwards (`store.upsert(kept)`, then
+`delete_except` only under `--replace`), which is the reverse of the pipeline's
+delete-then-upsert order, and it has its own quarantine and neighbour-link calls.
+This is the #25 fork.
+
+**Status — decision vs code:** ADR-0006 §2 says the script is "retired: deprecated
+now with a pointer to the CWL path, deleted after the next tagged release", and
+`ROADMAP.md` lists it as ADR-0006 follow-through. At `22b44be` **the script carries
+no deprecation notice or warning**: its module docstring still presents it as "the
+operator tool for the large extraction dumps". `docs/ingest-paths.md` still marks it
+"**Production** — the operator path for big corpora". Readers should treat it as
+**slated for removal**. Its replacements are `ingest-bulk.cwl` (coupled) or
+`embed-bulk.cwl` + `load-embeddings.cwl` (decoupled) over shards.
+
+### 5.6 How ingest touches the collection lifecycle (short)
+
+- **Path B writes archive versions.** Each delivered GoWe ingest creates
+  `versions/<n>/` (`ragstack-archive/1`) in the owner's Workspace and appends `n` to
+  the registry row's ordered `versions` list (`CollectionStore.append_version`). A failed post-stage sets `archive_pending`, which blocks eviction; no code path clears it (§8.6). **Path A writes no archive**: only the provenance
+  manifest.
+- **Restore replays those versions.** `python/ragstack/restore.py`
+  `CollectionRestorer` submits `cwl/restore-collection.cwl` as the user. The workflow
+  runs `load_embeddings.py --replay` (`ragstack.ingestion.load_embeddings`
+  `verify_replay` then `run_replay`). It verifies every version's sha256s, geometry
+  and `spec_hash` **before any write**, then replays chunk versions and tombstones in
+  order. The registry row moves `restoring → active`, back to `dormant` on an engine
+  failure, or to `lost` on `ArchiveCorrupt` / `SpecMismatch` (exit 3).
+- The graph leg is archived as a delta by `cwl/graph-extract.cwl` into the same
+  `versions/<n>/` folder. Lifecycle states, eviction and the graph workflow are
+  covered in the storage and tenancy sections.
 
 ---
 
 ## 6. Retrieval & RRF Fusion
 
-### Hybrid Retrieval
-**What it is:** `HybridRetriever` fans a query out across three independent retrieval legs — dense vector search, BM25 sparse text search, and optional graph-neighborhood expansion — all tenant-scoped, then fuses them into one ranked list via RRF (`retriever.py:11-57`).
+`/v1/retrieve` and `/v1/query` run through one pipeline in
+`python/ragstack/api/routers/query.py`:
+
+```
+authz: _resolve_retrieval  → filters validated, scoped; retriever chosen (single or multi-collection)
+[rewrite: _expand_query]   → /v1/query only (§7.1)
+_retrieve_fused            → per-variant retrieve (§6.2/§6.4) → RRF (§6.3) → pool cut → rerank (§7.2) → shape → top_k
+expand: _expand_sources    → neighbour context (§6.6), post-rank
+[generate]                 → /v1/query only (§7.3)
+```
+
+Each bracketed name is also an observability `stage(...)` timer.
+
+### 6.1 Request resolution, filter grammar & tenant scoping
+
+**What it is:** A single seam, `_resolve_retrieval`, that both endpoints pass
+through. It validates the caller's `filters`, adds optional server-built
+conditions, authorizes every requested collection, and produces the scoped
+filter dict every leg uses.
 
 **Algorithm / workflow:**
-1. Embed the query into a single vector: `query_vectors = await self.embedder.embed([query])`, taking `query_vectors[0]` (`retriever.py:40`). Note the embedder receives a one-element batch even for a single query.
-2. Dense leg: `await self.vector_store.search(query_vectors[0], top_k=top_k*2, filters=filters)` — fetches **2× top_k** candidates (`retriever.py:41-43`).
-3. Sparse/BM25 leg: `await self.text_index.search(query, top_k=top_k*2, filters=filters)` — also **2× top_k** (`retriever.py:46`).
-4. Assemble `ranked_lists = [vector_results, bm25_results]` (`retriever.py:48`).
-5. If `use_graph` and a `graph_store` is configured, call `_graph_context(query, top_k, tenant_id)` and append its chunks as a third ranked list only if non-empty (`retriever.py:51-54`).
-6. Fuse: `fused = self.rrf.fuse(ranked_lists)` (`retriever.py:56`).
-7. Truncate to `top_k` and return: `return fused[:top_k]` (`retriever.py:57`). The 2× over-fetch per leg widens the candidate pool before the final cut.
+1. **Value grammar (#471):** `validate_filter_values(filters)`
+   (`python/ragstack/stores/filters.py`) runs on **the caller's dict, before
+   tenant keys are merged**. A violation returns 400. Filters are
+   **equality/membership only** and ANDed across keys. A scalar is
+   `str|int|bool`. A list is homogeneous `str` or `int` and means membership;
+   `[]` matches nothing. `float`, `None`, nested lists, and **`dict` values are
+   refused**. The dict refusal explicitly covers range operators such as
+   `{"year": {"gte": 2025}}` (docs/API.md, "Range operators are not supported").
+   Types are never coerced: `year` is an int field. The same grammar is
+   enforced inside all four interpreters (Qdrant `_build_filter`, ES
+   `_build_query`, in-memory `_matches`, `payload_matches`).
+   **Range operators are an open issue (#599)**, planned in `docs/plans/date-filtering.md`.
+2. **Server-side negation (#597):** when `exclude_boilerplate=true`,
+   `_exclude_boilerplate` adds `{is_boilerplate: Not(True)}`. `Not` is
+   **server-constructed only**: JSON cannot express it, and a client `dict` value
+   is already a 400. It becomes Qdrant `must_not` / ES `bool.must_not`, and a
+   chunk with no stamp is kept. `NEGATION_FORBIDDEN_KEYS = {OWNER_FIELD}` (i.e.
+   `tenant_id`) makes every interpreter refuse a `Not` on the owner field, so the
+   isolation filter can never be inverted.
+3. **Collection resolution:** `collections is None` goes to `_resolve_entry` (one
+   entry). Otherwise **every** id is resolved in request order *before any leg
+   runs* (§6.4).
+   `_resolve_entry` covers the `TENANT_COLLECTIONS` allowlist, registry lookup,
+   and `enforce_access(principal, id, "read")`. Unknown and unreadable ids return
+   the same 404. A dormant collection returns 503 + `Retry-After` through the
+   lifecycle gate.
+4. **Share widening:** `shared_scope(entry, registry, principal)`
+   (`python/ragstack/api/scope.py`) returns the owner's tenant when the caller reaches a private collection through a share or the `public` grant (any non-owner reader, admins included). It returns nothing for the shared
+   surface, for co-resident collections, when auth is off, and on any ACL error
+   (fail-soft, never widens).
+5. **Tenant pin:** `scope_filters(filters, tenant, extra)`
+   (`python/ragstack/tenancy.py`) returns `{**filters, "tenant_id": readable_tenants(tenant, extra)}`.
+   `tenant_id` is **set last**, so a caller-supplied `tenant_id` key is
+   overwritten and cannot widen scope. `readable_tenants` = own + `public` + extras.
 
-**Tools & models:** Protocol-typed collaborators, not concrete classes (`retriever.py:7`, injected via `__init__` at `retriever.py:17-29`): `VectorStore` (e.g. Qdrant), `TextIndex` (e.g. Elasticsearch/BM25), `GraphStore` (e.g. Neo4j), an `embedder` (typed loosely as `object`, `retriever.py:21`; concretely `SidecarEmbedder`/`OpenAIEmbedder` per CLAUDE.md), and `RRFScorer` for fusion. No models are loaded in this file — all model work happens behind the injected protocols/sidecars.
+**Tools & models:** Pure Python. The ACL store (Postgres or others) is used
+for `enforce_access` / `owner_of`.
 
-**Inputs -> Outputs:** In: `query: str`, `top_k: int=5`, `filters: dict|None`, `use_graph: bool=True`, `tenant_id: str|None` (`retriever.py:31-38`). Out: `list[ScoredChunk]` of length ≤ `top_k`, each with `retrieval_method="hybrid"` (score set by RRF at `scorers.py:43`).
+**Inputs → Outputs:** `(collection | collections, filters, exclude_boilerplate, principal, tenant)`
+→ `(retriever, filters, targets)`. `targets` maps each collection stamp to
+`(vector_store, scoped_filters)` for §6.6. In the single-collection case
+`filters` is already scoped. In the multi case they are unscoped, and each
+`CollectionLeg.filters()` scopes them per leg.
 
-**Scalability & parallelization:** **Not parallelized today.** Although `retrieve` is `async`, the three legs are `await`ed sequentially (`retriever.py:40-52`) — the embed→vector call, then BM25, then graph each block the next. There is **no `asyncio.gather`, no semaphore, no thread-pool, no fan-out** anywhere in the file. Wall-clock latency is the *sum* of the legs, so the slowest backend (often the graph neighborhood query, or the embed round-trip) dominates. Because it's I/O-bound async, many *concurrent queries* still interleave fine on one event loop; the missed win is intra-query concurrency — wrapping the three independent awaits in `asyncio.gather` would collapse latency to the max of the legs. The `top_k*2` over-fetch (`retriever.py:42,46`) is a constant-factor cost on each backend, not a scaling limit. Throughput ceiling is set by the injected backends (Qdrant/ES/graph) and the embedder sidecar, not by this orchestration code.
+**Scalability & parallelization:** Members are resolved sequentially, one ACL
+round trip each (≤5). The whole step is timed as the `authz` stage.
 
-**Single vs bulk:** **Single-query only.** There is exactly one entry point, `retrieve()`, and it takes a scalar `query: str` — no batch/bulk variant exists in this class. Even so, it calls `embedder.embed([query])` with a list of one (`retriever.py:40`), so the batch-capable embedder API is used at batch size 1. Bulk retrieval would require the caller to loop or `gather` over multiple `retrieve()` calls; the class itself offers no fan-in over many queries.
+**Single vs bulk:** Single request only. Bulk ingest has its own paths (§4–5).
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    Q[query, top_k, filters<br/>use_graph, tenant_id] --> E[embedder.embed<br/>batch of 1]
-    E --> V[vector_store.search<br/>top_k times 2]
-    Q --> B[text_index.search<br/>BM25 top_k times 2]
-    Q --> G{use_graph<br/>and graph_store?}
-    G -->|yes| GC[_graph_context<br/>depth 1, tenant scoped]
-    G -->|no| SKIP[skip graph leg]
-    V --> L[ranked_lists]
-    B --> L
-    GC -->|if non-empty| L
-    SKIP --> L
-    L --> F[rrf.fuse]
-    F --> C[slice to top_k]
-    C --> OUT[list of ScoredChunk<br/>method hybrid]
+  A["caller filters"] --> B["validate_filter_values"]
+  B -- "dict, float, null, mixed list" --> E["400"]
+  B --> C{"exclude_boilerplate?"}
+  C -- "yes" --> D["add is_boilerplate: Not True, server-built"]
+  C -- "no" --> F["collections given?"]
+  D --> F
+  F -- "no" --> G["_resolve_entry: allowlist, registry, enforce_access read"]
+  F -- "yes" --> H["_resolve_entry for EVERY id, in order, before any leg"]
+  G --> I["shared_scope: owner tenant if reached by share"]
+  H --> I
+  I --> J["scope_filters: tenant_id pinned LAST"]
+  J --> K["retriever plus expansion targets"]
 ```
-Note: arrows show data dependencies, not concurrency — legs execute sequentially in source order (`retriever.py:40-52`).
 
-### RRF Fusion (RRFScorer.fuse)
-**What it is:** Reciprocal Rank Fusion merges multiple ranked lists into one without needing score normalization, by summing a rank-based reciprocal weight per chunk across all lists (`scorers.py:15-46`).
+### 6.2 HybridRetriever: one collection, dense + BM25 + optional graph
 
-**Algorithm / workflow:**
-1. Init two dicts keyed by chunk id: `scores: dict[str,float]` and `chunks: dict[str,Chunk]` (`scorers.py:35-36`).
-2. Outer loop over each ranked list; inner loop over `(rank, scored)` via `enumerate` so `rank` is 0-based (`scorers.py:37-38`).
-3. For each chunk, accumulate: `scores[cid] = scores.get(cid, 0.0) + 1.0/(self.k + rank + 1)` (`scorers.py:40`). **The exact formula is `1 / (k + rank + 1)`** with `k = 60` by default (`scorers.py:23`); the `+1` converts the 0-based `rank` to a 1-based rank, so this is the standard RRF `1/(k + rank_1based)`. A chunk appearing in multiple legs has its contributions **summed**, which is what rewards cross-leg agreement.
-4. Store the chunk object under its id for later reconstruction (`scorers.py:41`); last write wins if the same id appears in multiple lists (content assumed identical per id).
-5. Sort chunk ids by accumulated score descending: `sorted(scores.items(), key=lambda x: x[1], reverse=True)` (`scorers.py:44`).
-6. Emit `ScoredChunk(chunk, score, retrieval_method="hybrid")` in that order (`scorers.py:42-45`). Note: `fuse` returns the **full** fused list — the caller (`retriever.py:57`) does the `top_k` cut, not `fuse`.
+**What it is:** The retriever for a single collection
+(`HybridRetriever`, `python/ragstack/retrieval/retriever.py`). `deps._hybrid_retriever`
+builds one per registry entry, bound to that entry's vector store, ES index,
+embedder, and physical collection name.
 
-The constant `k=60` dampens the influence of exact rank position (a large `k` flattens the reciprocal curve so top ranks aren't wildly dominant); it's set once in `__init__` (`scorers.py:23`) and is the only tunable.
+**Algorithm / workflow (`retrieve(query, top_k, filters, use_graph, tenant_id, mode)`):**
+1. `depth = top_k * candidate_multiplier`, where the multiplier is
+   `Settings.retrieval_candidate_multiplier` (default 2).
+2. **`mode`** (`retrieval_mode` on the request: `hybrid` default, `vector`,
+   `bm25`). Anything except `bm25` embeds the query as `embed([query])` (stage
+   `embed`) and runs `vector_store.search(vec, top_k=depth, filters)` (stage
+   `vector`). Anything except `vector` runs `text_index.search(query, top_k=depth, filters)`
+   (stage `text`). An unknown mode falls back to hybrid. The request models
+   only accept the three literals.
+3. **Graph leg:** if `use_graph` and a `graph_store` is wired, runs
+   `_graph_context(query, top_k, tenant_id)`. It is appended only if non-empty (§6.5).
+4. `rrf.fuse(ranked_lists)` (stage `fuse`, §6.3), then **`shape(fused)[:top_k]`**.
+5. **`shape`** is post-fusion reordering. Both passes are off by default and are
+   stable demotions, never deletions:
+   - `demote_boilerplate` (`retrieval_demote_boilerplate`) moves chunks stamped
+     `is_boilerplate` (or classified by text when unstamped) to the back.
+   - `max_per_doc` (`retrieval_max_per_doc`) demotes a document's chunks beyond N.
+   The router re-applies `shape` after reranking (§7.2) because rerank re-sorts
+   the pool.
 
-**Tools & models:** Pure Python — no libraries, no models, no I/O. Just dict accumulation and a `sorted()` call (`scorers.py:33-46`). (The separate `score()` method at `scorers.py:26-31` is a trivial fallback that assigns `1/(k+i+1)` by input order and is not used by the hybrid path.)
+**Tools & models:** Protocol-typed `VectorStore` (Qdrant), `TextIndex`
+(Elasticsearch BM25), `GraphStore` (Neo4j or in-memory), the collection's
+`BatchingEmbedder`, and `RRFScorer(k=settings.rrf_k)`.
 
-**Inputs -> Outputs:** In: `ranked_lists: list[list[ScoredChunk]]` (`scorers.py:33`) — the incoming `ScoredChunk.score` values are **ignored**; only list position matters. Out: `list[ScoredChunk]` sorted by fused RRF score descending, each tagged `retrieval_method="hybrid"`.
+**Inputs → Outputs:** query + knobs → `list[ScoredChunk]` (≤ `top_k`,
+`retrieval_method="hybrid"`, `collection=None`).
 
-**Scalability & parallelization:** Synchronous, single-threaded, in-memory. Cost is O(N log N) where N is the total number of chunks across all lists (linear accumulation + one `sorted`). Not parallelized and doesn't need to be — the input lists are tiny (`top_k*2` each, so ~2×top_k per leg, a few dozen items). It's never the bottleneck; the upstream backend calls dominate. No streaming or chunking of the fusion itself.
+**Scalability & parallelization:** **The legs inside one retriever are still
+awaited sequentially** (`embed → vector → text → graph`; there is no `gather` in
+`HybridRetriever.retrieve`), so per-collection latency is the sum of the legs.
+Concurrency exists one level up: across rewrite variants (`_retrieve_fused`,
+§7.1) and across collections (§6.4). `vector` and `bm25` modes skip a leg,
+and `bm25` also skips the embed round trip.
 
-**Single vs bulk:** One code path. `fuse` handles any number of input lists uniformly (2 lists without graph, 3 with) — there's no separate single vs bulk fusion variant. It fuses one query's leg-results per call; there is no batched multi-query fusion.
+**Single vs bulk:** Single query. The embedder is called with a one-element batch.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    IN[ranked_lists] --> LoopL[for each ranked list]
-    LoopL --> LoopR[for rank, chunk<br/>via enumerate]
-    LoopR --> W[weight = 1 / k + rank + 1<br/>k = 60]
-    W --> ACC[scores of cid<br/>plus equals weight]
-    ACC --> STORE[chunks of cid = chunk]
-    STORE --> LoopR
-    LoopR --> LoopL
-    LoopL --> SORT[sort by score desc]
-    SORT --> OUT[list of ScoredChunk<br/>method hybrid]
+  Q["query, depth = top_k x multiplier"] --> M{"retrieval_mode"}
+  M -- "hybrid or vector" --> E["embed query, batch of 1"]
+  E --> V["vector_store.search, scoped filters"]
+  M -- "hybrid or bm25" --> B["text_index.search BM25, scoped filters"]
+  Q --> G{"use_graph and graph_store?"}
+  G -- "yes" --> GC["graph leg, if non-empty"]
+  V --> L["ranked lists"]
+  B --> L
+  GC --> L
+  L --> F["RRF fuse"]
+  F --> S["shape: demote boilerplate, per-doc cap"]
+  S --> T["cut to top_k"]
 ```
+Arrows show data dependencies. The legs run one after another, in source order.
 
-### Graph-Context Expansion (_graph_context)
-**What it is:** An optional retrieval leg that pulls the 1-hop entity neighborhood for the query out of the knowledge graph and turns each returned triple into a synthetic, fixed-score chunk (`retriever.py:59-87`).
+### 6.3 RRF fusion, keyed on (collection, chunk id)
+
+**What it is:** Reciprocal Rank Fusion (`RRFScorer.fuse`,
+`python/ragstack/scoring/scorers.py`). It is used at three levels: legs within a
+retriever, collections within a fan-out, and rewrite variants in the router
+(`_RRF` module singleton, `query.py`).
 
 **Algorithm / workflow:**
-1. Call `await self.graph_store.query_neighborhood(query, depth=1, tenant_id=tenant_id)` — a **depth-1** (single-hop) neighborhood query, tenant-scoped (`retriever.py:70-72`).
-2. Take the first `top_k` triples: `for triple in triples[:top_k]` (`retriever.py:74`). Note it slices by `top_k`, not `top_k*2` like the other two legs.
-3. For each triple, synthesize content by concatenating the SPO: `content = f"{triple.subject} {triple.predicate} {triple.object}"` (`retriever.py:75`).
-4. Wrap it in a `ScoredChunk` with a deterministic synthetic id `graph-{subject}-{predicate}-{object}`, `doc_id=triple.doc_id`, a **hard-coded `score=0.5`**, and `retrieval_method="graph"` (`retriever.py:76-86`). The 0.5 is inert — RRF ignores incoming scores and uses only rank position (`scorers.py:40`), so the triples' *order* from the graph store is what matters.
-5. Return the list; the caller appends it as a third RRF leg only if it's non-empty (`retriever.py:53-54,87`).
+1. For each list and each 0-based `rank`, the key is **`(scored.collection, scored.chunk.id)`**.
+   Then `scores[key] += 1 / (k + rank + 1)`, and the last chunk object seen per key is kept.
+2. Sort by score descending. `sorted` is stable, so ties keep first-seen order,
+   and in a multi-collection fan-out that is request order.
+3. Emit `ScoredChunk(chunk, score, retrieval_method="hybrid", collection=key[0])`.
+4. `k = Settings.rrf_k` (default 60) at every call site built by the API.
+   `RRFScorer()` without arguments also defaults to 60.
+5. Incoming scores are ignored, so only rank position matters. This is why
+   `graph_context_score` is inert (the `config.py` comment says so).
+6. `fuse` returns the **full** fused list. Callers do the cutting.
 
-**Tools & models:** The injected `GraphStore` protocol (`retriever.py:7`, e.g. Neo4j) via `query_neighborhood`; `Chunk`/`ScoredChunk` models (`Chunk` imported lazily inside the method, `retriever.py:68`). No embeddings or model inference in this leg — it's a pure graph lookup + string formatting.
+**What changed:** identity used to be `chunk.id` alone. With the
+`(collection, id)` key, the same chunk id from two collections stays two
+candidates, each with its own stamp. With no stamps (every `collection=None`)
+the behaviour is byte-identical to the old chunk-id fusion.
 
-**Inputs -> Outputs:** In: `query: str`, `top_k: int`, `tenant_id: str|None` (`retriever.py:59-61`). The `tenant_id` scopes the graph read to the caller's triples plus the shared `public` corpus; `None` reads unscoped for dev/tests/unauthenticated, matching the other legs (`retriever.py:62-67`). Out: `list[ScoredChunk]` (length ≤ `top_k`) of synthetic SPO chunks tagged `retrieval_method="graph"`, all with `score=0.5`.
+**Tools & models:** Pure Python dict accumulation plus `sorted`.
 
-**Scalability & parallelization:** One `await` to the graph store, then a tight in-memory loop over ≤`top_k` triples — trivial CPU. Not parallelized; as part of the hybrid path it runs sequentially after the vector and BM25 legs (`retriever.py:52`), so it *adds* to end-to-end latency rather than overlapping. The cost/limit lives entirely in `graph_store.query_neighborhood` (graph traversal at depth 1); a deeper traversal or a hot entity with a large neighborhood would be the scaling risk, but this code caps output at `top_k` after the fact (so it fetches potentially many triples then slices).
+**Inputs → Outputs:** `list[list[ScoredChunk]]` → `list[ScoredChunk]` (fused, untruncated).
 
-**Single vs bulk:** Single-query only — one `query` string, one neighborhood call. No batch entry point; bulk would mean repeated calls by the orchestrator.
+**Scalability & parallelization:** O(M log M) over M total candidates.
+In-memory and never the bottleneck.
+
+**Single vs bulk:** One code path for any number of lists.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    IN[query, top_k, tenant_id] --> QN[graph_store.query_neighborhood<br/>depth 1, tenant scoped]
-    QN --> SL[take first top_k triples]
-    SL --> LOOP[for each triple]
-    LOOP --> C[content = subject predicate object]
-    C --> SC[ScoredChunk<br/>synthetic id, score 0.5<br/>method graph]
-    SC --> LOOP
-    LOOP --> OUT[list of ScoredChunk]
-    OUT --> APP[appended as 3rd RRF leg<br/>only if non-empty]
+  IN["ranked lists"] --> L1["for each list, for each rank"]
+  L1 --> K["key = collection, chunk id"]
+  K --> W["score of key += 1 / k + rank + 1, k = rrf_k"]
+  W --> L1
+  L1 --> S["stable sort by score, descending"]
+  S --> O["ScoredChunk list, method hybrid, collection stamped"]
 ```
 
-**Key cross-cutting note:** The single most impactful observation across all three: the three retrieval legs at `retriever.py:40-52` are independent but executed **sequentially** — no `asyncio.gather`. This is the clearest latency win available and the main scalability gap in `HybridRetriever`.
+### 6.4 Multi-collection retrieval (`collections: [...]`, #253)
 
-Relevant files:
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/retrieval/retriever.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/scoring/scorers.py`
+**What it is:** Query up to five collections in one request.
+`MultiCollectionRetriever` (`python/ragstack/retrieval/retriever.py`) wraps one
+`CollectionLeg` per member and exposes the same `retrieve` surface, so
+`_retrieve_fused` drives it unchanged.
+
+**Algorithm / workflow:**
+1. **Validation** (`QueryRequest`/`RetrieveRequest`): `collections` has 1–5
+   items (`MAX_QUERY_COLLECTIONS = 5`, matching the per-owner quota). It is
+   mutually exclusive with `collection`, and duplicates are rejected (422,
+   `_check_collections`). Two ids that resolve to the same entry, e.g.
+   `default` next to its target, return 422 in `_resolve_retrieval`.
+2. **Authorize all members first.** Each id goes through `_resolve_entry`
+   (§6.1) in request order. The first refusal answers for the whole request:
+   404 for unknown or unreadable, 503 + `Retry-After` for dormant, 409 for lost.
+   No partial answers.
+3. **Build legs.** Per member, `shared_scope` is computed once and used both for
+   the leg's `extra_tenants` and for its context-expansion target
+   (`targets[entry.id] = (vector_store, scope_filters(filters, tenant, extra))`).
+4. **`retrieve(query, top_k=depth, ...)`:**
+   - **One leg:** the leg's list is returned as-is, plus the stamp.
+     `collections: [x]` is byte-for-byte `collection: x` plus `Source.collection`.
+   - **≥2 legs:** every leg runs **concurrently** (`asyncio.gather`) at the
+     **same depth** the single path would use, **with its own graph leg
+     disabled**. `CollectionLeg.filters` scopes the caller's filters per leg. If
+     `use_graph` is set and a graph store exists, **one** shared graph task
+     (`_graph`, §6.5) is added.
+   - `_stamp` gives each result `ScoredChunk.collection = leg.id` **and** puts
+     `metadata[STAMP_KEY="_rs_collection"]` on a shallow copy of the chunk. The
+     metadata stamp survives a reranker that rebuilds chunks.
+   - Returns `rrf.fuse(...)` over the legs: the **untruncated union**, up to N × depth.
+5. **Router side** (`_retrieve_fused`): when a reranker is active and the
+   retriever fans out (`_fans_out`), the union is cut to `depth` (the rerank
+   pool) and **reranked once** (§7.2). `_restamp` copies the stamp back from
+   `metadata[STAMP_KEY]` after reranking, falling back to object identity.
+6. **Output:** `_to_sources` sets `Source.collection`. `_source_metadata`
+   strips `STAMP_KEY` so it never shows up as a metadata key. The field is
+   omitted on the single-collection path.
+
+**Tools & models:** `asyncio.gather`, each member's own `HybridRetriever`
+(and so its own embedder, stores, and embedding model), plus one `RRFScorer`.
+
+**Inputs → Outputs:** `collections` + query → `list[Source]`, each carrying
+`collection`. A document present in two collections appears once per
+collection.
+
+**Scalability & parallelization:** Legs run concurrently, so wall time is
+roughly the slowest leg. Each leg is still internally sequential (§6.2). There
+is **never a many-valued store filter**: vector/BM25 scoping is always one
+store per leg (#199, #354). Rerank cost is bounded by `rerank_candidates`
+regardless of N. The router comment notes that per-collection recall into the
+pool is roughly depth/N under RRF interleaving. The query is embedded once per
+leg (§3.4).
+
+**Single vs bulk:** Request-level only. The per-leg code is the
+single-collection retriever.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  R["collections: ids, 1 to 5 unique"] --> A["resolve and authorize EVERY id first"]
+  A -- "any refusal" --> X["404, 503 or 409 for whole request"]
+  A --> B{"how many legs"}
+  B -- "one" --> O1["leg list as-is, stamped"]
+  B -- "two or more" --> C["asyncio.gather"]
+  C --> L1["leg 1: HybridRetriever, own scope, no graph"]
+  C --> L2["leg N: HybridRetriever, own scope, no graph"]
+  C --> G["one graph query across members, if enabled"]
+  L1 --> S["stamp collection on ScoredChunk and chunk copy"]
+  L2 --> S
+  G --> S
+  S --> F["RRF on collection and chunk id: union, uncut"]
+  F --> P["router: cut to rerank pool, rerank ONCE, restamp"]
+  P --> T["shape, cut to top_k, Source.collection"]
+  O1 --> P
+```
+
+### 6.5 Graph-context leg
+
+**What it is:** An optional ranked list of synthetic "triple" chunks taken from
+the knowledge graph (`graph_context` / `query_entities` in
+`python/ragstack/retrieval/retriever.py`).
+
+**Effectively off by default.** The request flag `use_graph` defaults to `true`
+(contracts), and `graph_backend` defaults to `memory`. But the leg only returns
+something when the graph store holds triples for the caller's
+`(tenant, collection)`. Triples come only from opt-in extraction: ingest-time
+`kg_extraction_enabled` (default `False`, which also needs an LLM) or the
+lifecycle step `POST /v1/collections/{id}/graph` ("off by default", docs/API.md).
+`graph_backend=disabled` removes the store entirely. docs/USER-GUIDE.md: "most
+[deployments] don't" have one.
+
+**Algorithm / workflow:**
+1. **Entity extraction (#349), no model:** `query_candidates` produces
+   case-folded 1..`graph_query_ngram_max` (default 3) n-grams with 1-gram
+   stopwords removed. **One** `graph_store.match_entities(candidates, tenant_id, collection)`
+   call returns exact indexed matches. The results are re-validated against the
+   candidates, ranked longest-first then by query position, and cut to
+   `graph_query_entity_max` (default 5). The raw query string is never sent to
+   the store.
+2. One `query_neighborhood(entity, depth=graph_context_depth, tenant_id, collection)`
+   per matched entity. The loop is sequential, and triples are de-duplicated on
+   their full identity.
+3. **Re-checks on return:** `t.tenant_id ∈ readable_tenants(tenant_id)` and
+   `t.collection ∈ collections`. Both fail closed, so unstamped triples are dropped.
+4. **Confidence floor (#347):** `filter_by_confidence(triples, graph_min_confidence)`.
+   The default is 0, and it deliberately fails open.
+5. The first `top_k` triples become `ScoredChunk`s: `id = graph-{s}-{p}-{o}`,
+   content `"s p o"`, `score = graph_context_score` (inert under RRF),
+   `retrieval_method="graph"`, and metadata carrying `tenant_id` and `collection`.
+6. **Multi-collection:** one call with `collection IN [physical names]` and one
+   shared `top_k` budget. Pseudo-chunks are mapped back to the leg id through
+   `metadata["collection"]`. Co-resident stores map to the first such leg.
+
+**Scope caveat: no share widening on the graph leg.** The graph leg is scoped
+by `readable_tenants(tenant_id)` only, meaning own + `public`. The
+`extra_tenants` from `shared_scope` are passed to the vector/BM25 filters
+(`CollectionLeg.filters`, `scope_filters`) and **never** to `graph_context`.
+A caller who reaches a private collection through a share therefore gets
+widened dense/BM25 results but **no graph triples** from the owner's tenant.
+
+**Tools & models:** `GraphStore.match_entities` / `query_neighborhood`
+(Neo4j Cypher or in-memory). No embeddings and no LLM.
+
+**Inputs → Outputs:** `(query, top_k, tenant_id, collections)` → ≤ `top_k`
+graph pseudo-chunks. Empty means the leg is skipped.
+
+**Scalability & parallelization:** 1 + (≤ `entity_max`) sequential store calls.
+In the single-collection path this adds to the leg latency. In the fan-out it
+runs as one concurrent task alongside the legs. Stage `graph`.
+
+**Single vs bulk:** Single query.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  Q["query"] --> C["n-gram candidates, stopwords dropped"]
+  C --> M["ONE match_entities, tenant and collection scoped"]
+  M -- "no match" --> Z["empty leg, no neighbourhood call"]
+  M --> R["rank: longest first, then position, keep entity_max"]
+  R --> N["query_neighborhood per entity, depth graph_context_depth"]
+  N --> K["re-check tenant: own plus public ONLY, no share widening"]
+  K --> K2["re-check collection membership"]
+  K2 --> F["confidence floor, fails open"]
+  F --> P["first top_k triples to pseudo-chunks, method graph"]
+```
+
+### 6.6 Neighbour expansion (`context_window`, #322)
+
+**What it is:** A step after ranking that attaches each returned source's
+document neighbours as `Source.context`, following the
+`prev_chunk_id`/`next_chunk_id` links stamped at ingest. The ranking is not
+changed.
+
+**Algorithm / workflow:**
+1. `context_window` is 0–3 (`MAX_CONTEXT_WINDOW = 3`; above 3 is a 422). 0 (the
+   default) means no store call and a byte-identical response.
+2. `_expand_sources(targets, scored, window)` groups the final sources by
+   collection stamp. For each collection it runs `expand_context(store, subset, window, filters)`
+   with **that collection's own store and scoped filter dict**, all collections
+   concurrently (`asyncio.gather`).
+3. `expand_context`: per hop, it collects every live walk's next neighbour id
+   (`_neighbour_id` treats missing, empty, and the literal `"None"` as a document
+   edge) and fetches **all ids not already in hand in one batched
+   `store.get_chunks(ids, filters)`**. A neighbour the store does not return
+   (out of scope or dangling) ends that direction. A neighbour that is itself a
+   returned source is walked through but not attached. Results are
+   `ContextChunk(chunk_id, position=±hop, content)` sorted by position.
+4. The filters are the same scoped dict the leg used, including tenant pin,
+   share widening, and `exclude_boilerplate`. A neighbour outside the caller's
+   scope is never returned. `UnknownFilterKey`/`InvalidFilterValue` return 400.
+5. `/v1/query` passes the decorated sources to generation (§7.3), which packs
+   the neighbours around each passage.
+
+**Tools & models:** `VectorStore.get_chunks` (point-id retrieve plus the Python
+`payload_matches` re-check, `stores/filters.py`).
+
+**Inputs → Outputs:** final `list[ScoredChunk]` + window →
+`{(collection, chunk_id): [ContextChunk]}` → `Source.context`, omitted when empty.
+
+**Scalability & parallelization:** At most `window` batched round trips per
+collection, independent of `top_k`. Across collections this is ≤ 5 × 3.
+Collections run concurrently, and hops within one are necessarily sequential.
+Stage `expand`, recorded even when it is a no-op.
+
+**Single vs bulk:** Same code for one or many collections. `GET /v1/chunks`
+is the client-driven, single-collection equivalent.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  A["final ranked sources"] --> B{"context_window > 0?"}
+  B -- "no" --> Z["no store call"]
+  B -- "yes" --> C["group by collection stamp"]
+  C --> D["gather: expand_context per collection, own store and scoped filters"]
+  D --> H["hop h: collect prev and next ids of live walks"]
+  H --> G["ONE batched get_chunks for ids not in hand"]
+  G --> K{"neighbour returned?"}
+  K -- "no: out of scope or edge" --> S["stop this direction"]
+  K -- "is a source" --> W["walk through, do not attach"]
+  K -- "yes" --> AT["attach ContextChunk at position plus or minus h"]
+  W --> H
+  AT --> H
+```
+
+Source files: `python/ragstack/api/routers/query.py`
+(`_resolve_retrieval`, `_resolve_entry`, `_exclude_boilerplate`, `_retrieve_fused`,
+`_expand_sources`, `_to_sources`, `_source_metadata`), `python/ragstack/retrieval/retriever.py`,
+`python/ragstack/scoring/scorers.py` (`RRFScorer`), `python/ragstack/stores/filters.py`,
+`python/ragstack/tenancy.py`, `python/ragstack/api/scope.py`,
+`contracts/schemas/query_request.json`, `contracts/schemas/retrieve_request.json`, `docs/API.md`.
+
+---
 
 ---
 
 ## 7. Rewriting, Reranking, Answer Generation
 
-### Multi-strategy query expansion + concurrent retrieve + RRF fuse
-**What it is:** The `/v1/query` (and single-variant `/v1/retrieve`) path expands a user query into retrieval variants via pluggable rewriters (passthrough / multiquery / HyDE), retrieves each variant concurrently, and fuses the ranked lists with Reciprocal Rank Fusion before optional reranking. Improves recall by casting a wider net per query.
+### 7.1 Query rewriting and concurrent per-variant retrieval
+
+**What it is:** `/v1/query` only. It expands the query into retrieval variants
+through pluggable rewriters, retrieves each variant concurrently, and fuses the
+results with RRF. `/v1/retrieve` always uses the single original query.
 
 **Algorithm / workflow:**
-1. `query()` scopes filters to the tenant and calls `_expand_query(query, rewrite_strategies, rewriters)` (`query.py:257`).
-2. `_expand_query` seeds `variants=[query]` and iterates requested strategy names (`query.py:43-45`); unknown/unavailable strategies are skipped via `rewriters.get(name) is None` (`query.py:47-48`) — e.g. `multiquery`/`hyde` are absent from the registry when no LLM is configured (`deps.py:254-257`).
-3. Each rewriter's `rewrite(query)` is awaited; `asyncio.CancelledError` re-raised, any other exception logged and skipped so retrieval degrades to the plain query (`query.py:49-54`).
-4. `PassthroughRewriter` returns `[query]` (`rewriters.py:8-9`); `MultiQueryRewriter` prompts the LLM for N paraphrases, splits on lines, returns `[query] + alternatives[:n]` (`rewriters.py:24-32`); `HyDERewriter` asks the LLM for a hypothetical answer and returns `[query, hypothetical]` (`rewriters.py:46-53`).
-5. Variants are de-duplicated (original first, empties stripped) into a `seen` set (`query.py:56-60`).
-6. `_retrieve_fused` computes retrieval `depth`: `max(top_k, rerank_candidates)` when a reranker is active, else `top_k` (`query.py:155-160`).
-7. If one variant: single `retriever.retrieve` (`query.py:161-165`). If multiple: `asyncio.gather` fans out one `retriever.retrieve` per variant concurrently, then `_RRF.fuse(list(ranked))` (`query.py:166-177`).
-8. `RRFScorer.fuse` sums `1/(k + rank + 1)` per chunk id across all lists (default `k=60`), sorts descending, tags `retrieval_method="hybrid"` (`scorers.py:33-46`).
-9. Optional rerank via `_maybe_rerank`, then `scored[:top_k]` (`query.py:178-179`).
+1. `_expand_query(query, rewrite_strategies, rewriters)` (stage `rewrite`)
+   starts from `[query]`. It runs each requested strategy that is **present in
+   the registry**. `deps._build_rewriters` always includes `passthrough`, and
+   includes `multiquery`/`hyde` only when an LLM is configured. Unknown or
+   unavailable strategies are skipped. A rewriter exception is logged and
+   skipped. `CancelledError` is re-raised. Variants are stripped and
+   de-duplicated, with the original first.
+2. Rewriters (`python/ragstack/rewriting/rewriters.py`):
+   `PassthroughRewriter` returns `[query]`. `MultiQueryRewriter(n=Settings.multiquery_n,
+   default 3)` asks for N paraphrases and returns `[query] + lines[:n]`.
+   `HyDERewriter` returns `[query, hypothetical_answer]`. Both LLM rewriters
+   call `OpenAILLM.complete_text` (512 max tokens, temperature 0).
+3. `_retrieve_fused`: a single variant makes one `retriever.retrieve`. Several
+   variants go through **`asyncio.gather`**, one `retrieve` each (single or
+   multi-collection), followed by `_RRF.fuse` keyed on `(collection, id)`.
+4. The rewrite stage is independent of templates (ADR-0008 decision 6): the
+   template never changes `query`. A per-request `llm` override changes
+   generation only, not the rewriters (`build_generator_for`).
 
-**Tools & models:** `asyncio.gather` for fan-out; module-level singleton `_RRF = RRFScorer()` (`query.py:30`); LLM-backed rewriters use `OpenAILLM.complete_text` against the configured chat endpoint (default `llm_model="gpt-4o-mini"`, `config.py:15`; any OpenAI-compatible/vLLM server via `llm_endpoint`). No rewriter LLM calls unless `llm_endpoint` is set.
+**Tools & models:** The rewriters' LLM is the globally assigned one
+(`llm_endpoint`/`llm_model`, default `gpt-4o-mini`, or the registry assignment).
+`asyncio.gather` for variant fan-out.
 
-**Inputs -> Outputs:** In: `QueryRequest` (`query: str`, `rewrite_strategies: list[str]` default `["passthrough"]`, `top_k`, `filters`, `rerank`, `rerank_candidates`). Out: `QueryResponse(answer, sources: list[Source], rewritten_queries: list[str])`. Internally `_expand_query` returns `list[str]`; `_retrieve_fused` returns `list[ScoredChunk]`.
+**Inputs → Outputs:** `(query, rewrite_strategies)` → `list[str]` variants,
+echoed as `QueryResponse.rewritten_queries`. Variants × retrieve produce the
+fused `list[ScoredChunk]`.
 
-**Scalability & parallelization:** Per-variant retrievals are parallelized with `asyncio.gather` so wall-clock latency is ~one retrieve regardless of variant count (`query.py:168`). Rewriter calls themselves are sequential in `_expand_query` (a `for` loop of awaits, `query.py:45-55`) — for HyDE/multiquery this means one blocking LLM round-trip each before any retrieval starts, a serial bottleneck when combining strategies. Tenant admission control (`tenant_slot` → `quota.slot`, `query.py:195-203`) caps concurrent requests per tenant against the shared embedding fleet, which bounds fan-out amplification. Throughput is limited by LLM rewriter latency (serial) and the retriever/embedding backend.
+**Scalability & parallelization:** Variant retrieval is concurrent. **Rewriter
+calls are sequential** (a `for` loop of awaits), so each LLM strategy adds a
+full LLM round trip before retrieval starts. Admission control is
+`tenant_slot` → `quota.slot(tenant)`, with a cap of `tenant_max_concurrency`
+(default 0 = unlimited).
 
-**Single vs bulk:** Two entry points share `_retrieve_fused`. `/retrieve` (`query.py:206`) always passes a single-element `[request.query]` variant list with no rewriting → takes the `len(variants)==1` fast path (no gather, no fuse). `/query` (`query.py:242`) runs full `_expand_query` and may hit the multi-variant gather+fuse path. There is no batch-of-queries endpoint; "bulk" here means multiple variants of one query, not multiple queries.
+**Single vs bulk:** `/v1/retrieve` takes the one-variant path with no fuse.
+There is no batch-of-queries endpoint.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    A[POST /query] --> B[_expand_query]
-    B --> C{strategy in registry}
-    C -->|passthrough| D[return query]
-    C -->|multiquery| E[LLM N paraphrases]
-    C -->|hyde| F[LLM hypothetical answer]
-    C -->|unknown or raises| G[skip]
-    D --> H[dedup variants<br/>original first]
-    E --> H
-    F --> H
-    G --> H
-    H --> I{one variant}
-    I -->|yes| J[single retrieve]
-    I -->|no| K[asyncio.gather<br/>retrieve per variant]
-    K --> L[RRF fuse<br/>sum 1 over k+rank+1]
-    J --> M[maybe rerank]
-    L --> M
-    M --> N[cut to top_k]
+  A["POST /v1/query"] --> B["_expand_query, sequential rewriters"]
+  B --> C{"strategy registered?"}
+  C -- "passthrough" --> D["original query"]
+  C -- "multiquery" --> E["LLM: N paraphrases"]
+  C -- "hyde" --> F["LLM: hypothetical answer"]
+  C -- "missing or raised" --> G["skip"]
+  D --> H["dedupe, original first"]
+  E --> H
+  F --> H
+  G --> H
+  H --> I{"one variant?"}
+  I -- "yes" --> J["single retrieve"]
+  I -- "no" --> K["asyncio.gather retrieve per variant"]
+  K --> L["RRF fuse on collection and chunk id"]
+  J --> M["pool cut, rerank, shape, top_k"]
+  L --> M
 ```
 
-### Cross-encoder reranking via sidecar
-**What it is:** After RRF fusion, an optional cross-encoder rescores the candidate pool for relevance, keeping only the top_k. Backed by an HTTP sidecar (`SidecarReranker`) so the heavy model stays out of the API process; an in-process `CrossEncoderScorer` variant also exists.
+### 7.2 Cross-encoder reranking: on by default, per-request control
 
-**Algorithm / workflow:**
-1. `_retrieve_fused` sets `active = reranker if rerank is not False else None`; when active it deepens the retrieval pool to `max(top_k, rerank_candidates)` so the cross-encoder has real recall to rerank (`query.py:155-158`).
-2. After fusion, `_maybe_rerank(active, query, scored, top_k)` runs (`query.py:178`). It short-circuits to the fused order if `reranker is None or not scored` (`query.py:112-113`).
-3. `SidecarReranker.score` POSTs `/rerank` with `{query, documents: [c.content...], top_k: len(candidates) if top_k is None else min(top_k, len(candidates))}` (`scorers.py:134-141`).
-4. Sidecar returns parallel `scores`/`indices` arrays sorted descending; indices point back into the sent documents (`scorers.py:142-144`).
-5. **Index validation** before use: raises `ValueError` if `len(scores) != len(indices)` (`scorers.py:151-152`), if any index is non-int or out of `[0,n)` (`scorers.py:153-154`), or if indices contain duplicates (`scorers.py:155-156`) — preventing `IndexError` / silent chunk duplication.
-6. Builds `ScoredChunk(chunk=candidates[i], score, retrieval_method="reranked")` in sidecar order (`scorers.py:157-162`).
-7. **Graceful degrade:** `_maybe_rerank` re-raises `CancelledError`; logs `KeyError`/`ValueError` at ERROR (contract bug) and returns fused order; logs any other exception at WARNING and returns fused order (`query.py:116-126`). So a reranker outage degrades quality, not availability.
-8. Final `scored[:top_k]` cut happens in `_retrieve_fused` after reranking (`query.py:179`).
+**What it is:** A final precision stage over the fused pool, using the
+crossencoder sidecar (`SidecarReranker`, `python/ragstack/scoring/scorers.py`). It
+is **on by default**: `Settings.rerank_enabled = True`, and the `config.py`
+comment explains that an unreachable sidecar costs latency, not availability.
+`rerank_enabled=false` opts a deployment out.
 
-**Tools & models:** `SidecarReranker` uses `SidecarClient` over `httpx.AsyncClient` (`scorers.py:119`, `DEFAULT_TIMEOUT`). Model is `BAAI/bge-reranker-v2-m3` (`config.py:205`, `reranker_model`), served by the crossencoder sidecar at `crossencoder_sidecar_url`. Opt-in via `rerank_enabled` (`deps.py:267`); default pool `rerank_candidates=50` (`config.py:213`). The alternative in-process `CrossEncoderScorer` loads `sentence_transformers.CrossEncoder` lazily and calls `.predict(pairs)` (`scorers.py:67-94`), raising a clear `RuntimeError` if sentence-transformers isn't installed (`scorers.py:74-78`).
+**Algorithm / workflow (`_retrieve_fused` + `_maybe_rerank`):**
+1. **Choose the reranker:** the server default `app.state.reranker`
+   (`deps._build_reranker`, `None` when disabled), or the per-request
+   `reranker: <registry id>` (`_override_model` → `build_reranker_for`: unknown
+   id 404, wrong task 400, `base_urls[0]` only).
+2. **Per-request control:** `rerank: null` (default) follows the server.
+   `false` skips reranking and the pool stays shallow at `top_k`. `true` is a
+   no-op when nothing is wired. `rerank_candidates` overrides the pool depth.
+3. **Pool sizing:** when active, `depth = max(top_k, rerank_candidates ?? settings.rerank_candidates)`
+   (default 50). Each variant and leg retrieves at `depth`. The multi-collection
+   union is cut to `depth` before reranking (§6.4).
+4. `_maybe_rerank` (stage `rerank`) calls `reranker.score(query, chunks, top_k=top_k)`.
+   It passes `top_k=None` instead when post-rerank shaping is active, so
+   `shape` has the full pool to promote from.
+5. `SidecarReranker.score` POSTs `/rerank {query, documents, top_k}`. The
+   sidecar returns parallel `scores`/`indices` sorted descending. The client
+   **validates** matching lengths, int indices in range, and no duplicates,
+   raising `ValueError` otherwise.
+6. `_restamp` carries multi-collection stamps across the rerank (§6.4).
+7. **Graceful degradation:** `KeyError`/`ValueError` is logged at ERROR as a
+   contract bug, and any other exception at WARNING. Both fall back to fused
+   order. `CancelledError` is re-raised.
+8. Then `shape` if active, and finally `[:top_k]`.
 
-**Inputs -> Outputs:** In: `query: str`, `candidates: list[Chunk]`, `top_k: int | None`. Out: `list[ScoredChunk]` in reranked descending order (empty list for empty candidates, `scorers.py:132-133`). Over HTTP: JSON `{query, documents, top_k}` -> `{scores: list[float], indices: list[int]}`.
+**Reranker token truncation:** In the sidecar (`sidecars/crossencoder/main.py`),
+`CrossEncoder(MODEL_NAME, max_length=MAX_LENGTH)` truncates each
+(query, document) pair to `MAX_LENGTH` tokens. The default is **4096**, via env
+`MAX_LENGTH` or `CROSSENCODER_MAX_LENGTH` in `deploy/docker-compose.sidecars.yml`.
+The code comment says this default lets the reranker see whole chunks up to the
+4096-token chunk cap, and suggests 512 to trade long-chunk recall for latency.
+`RERANK_BATCH_SIZE` (default 32) bounds each forward pass. `predict` runs in a
+threadpool, and fp16 is used on CUDA. The model is loaded at startup (lifespan warm-up).
+The API client sends full chunk text and does no truncation of its own.
 
-**Scalability & parallelization:** The sidecar decouples model scaling from the API — it can scale/swap independently (docstring `scorers.py:100-104`). The API-side call is a single awaited HTTP round-trip per request (no fan-out); batching happens inside the sidecar (whole pool scored at once). Bottleneck is the cross-encoder forward pass over `pool` query-document pairs (O(rerank_candidates) per query) and the serialization of all document contents into one request body. `min(top_k, len)` on the payload shrinks the response, not the compute. In-process `CrossEncoderScorer` blocks the event loop on `.predict` (no `await`/thread offload), so the sidecar path is the scalable one.
+**Tools & models:** `BAAI/bge-reranker-v2-m3` (`Settings.reranker_model`,
+sidecar `MODEL_NAME`) at `crossencoder_sidecar_url` (default `:50052`). The
+in-process `CrossEncoderScorer` (sentence-transformers) implements the same
+`Scorer` protocol but blocks the event loop on `predict`. The API builds only
+the sidecar client.
 
-**Single vs bulk:** Same `score` entry point for one or many candidates; there is no per-request batching across queries. Two interchangeable `Scorer` implementations: `SidecarReranker` (HTTP, production, `scorers.py:97`) vs `CrossEncoderScorer` (in-process sentence-transformers, `scorers.py:49`) — both honor `top_k=None` → full ranked pool for drop-in interchangeability (`scorers.py:92-94`).
+**Inputs → Outputs:** `(query, list[Chunk], top_k | None)` →
+`list[ScoredChunk]` (`retrieval_method="reranked"`). On the wire:
+`{query, documents, top_k}` → `{scores, indices}`.
+
+**Scalability & parallelization:** One HTTP call per request, however many
+variants or collections there are. Cost scales with pool size × `MAX_LENGTH`.
+The sidecar batches internally and stays responsive under concurrent requests
+because of the threadpool.
+
+**Single vs bulk:** Same `score` entry point for any pool size. There is no
+cross-query batching.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    A[fused ScoredChunks] --> B{reranker wired<br/>and rerank not False}
-    B -->|no| C[return fused order]
-    B -->|yes| D[SidecarReranker.score]
-    D --> E[POST /rerank<br/>query + documents + top_k]
-    E --> F[sidecar bge-reranker-v2-m3<br/>scores + indices]
-    F --> G{validate indices<br/>len match, in range, unique}
-    G -->|invalid| H[ValueError -> log ERROR<br/>fall back to fused]
-    G -->|valid| I[map indices to chunks<br/>reranked order]
-    I --> J[cut to top_k]
-    D -->|outage/exception| K[log WARN<br/>fall back to fused]
+  A["fused pool"] --> B{"reranker active? default ON, rerank not false"}
+  B -- "no" --> C["pool depth was top_k, keep fused order"]
+  B -- "yes" --> D["pool depth = max top_k, rerank_candidates"]
+  D --> E["fan-out only: cut union to depth"]
+  E --> F["POST /rerank: query, documents, top_k or full pool"]
+  F --> G["sidecar: truncate pairs to MAX_LENGTH tokens, batched predict"]
+  G --> H{"indices valid?"}
+  H -- "no" --> I["log ERROR, fused order"]
+  H -- "yes" --> J["reranked order, restamp collection"]
+  F -- "outage" --> K["log WARNING, fused order"]
+  J --> L["shape if active, cut to top_k"]
+  I --> L
+  K --> L
+  C --> L
 ```
 
-### RagGenerator answer synthesis with context packing
-**What it is:** `RagGenerator` turns the retrieved `Source`s plus the question into a grounded, citation-bearing answer via an OpenAI-compatible chat completion, with a char-budgeted context packer and graceful fallback when no LLM (or a failed LLM) is present.
+### 7.3 Answer generation: `RagGenerator` and context packing
+
+**What it is:** `/v1/query` only. It turns the final sources, including their
+`context_window` neighbours, into a grounded answer with `[n]` citations
+through an OpenAI-compatible chat call (`python/ragstack/llm.py`).
 
 **Algorithm / workflow:**
-1. `query()` maps scored chunks to `Source`s (`_to_sources`, `query.py:271`, `182-192`). If `generator is None`, returns `_fallback_answer("[LLM not configured]", ...)` surfacing chunk count + top score (`query.py:272-273`, `231-239`).
-2. Otherwise `generator.generate(query, sources)` (`query.py:276`).
-3. `generate` builds context via `_format_context` (or `"(no relevant passages found)"` when empty, `llm.py:109`).
-4. **Context packing bound** (`_format_context`, `llm.py:94-106`): iterate sources 1-indexed, format each block as `[{i}] {content}`; account for the 2-char `\n\n` separator (`sep = 2 if parts else 0`); **stop** adding once `used + sep + len(block) > max_context_chars` (default 8000, `llm.py:90`); a lone oversized first passage is hard-truncated to the budget (`llm.py:102-103`); join with `\n\n`.
-5. Build messages: system prompt instructing answer-from-context-only, say "I don't know" if absent, and **cite passages as `[n]`** (`_SYSTEM_PROMPT`, `llm.py:19-23`); user message `Context:\n{context}\n\nQuestion: {query}` (`llm.py:110-113`).
-6. `OpenAILLM.complete` POSTs `<base>/v1/chat/completions` with `model`, `messages`, `max_tokens=512`, `temperature=0.0`, optional `Bearer` auth, 120s timeout (`llm.py:41-60`).
-7. **Response hardening:** raises `ValueError` on no `choices` (content filter) or empty `content` (finish_reason length / tool_calls) rather than `IndexError`/`None` (`llm.py:66-72`).
-8. **Graceful degrade at the router:** any generation exception is logged WARNING and replaced with `_fallback_answer("[answer generation failed]", ...)` — retrieval already succeeded, so sources are still returned (`query.py:277-281`).
+1. **Choose the generator:** `app.state.generator` (built only when an LLM is
+   configured, or swapped by assignment), or a per-request `llm: <registry id>`
+   → `build_generator_for`. This is an ephemeral `RagGenerator` over
+   `_llm_from_entry`, where the entry's `params` become the chat `extra_body`.
+   It does not touch the rewriters.
+2. **No generator:** `_fallback_answer("[LLM not configured]", ...)`, which
+   reports the chunk count and top score and still returns the sources.
+3. **Untemplated path:** `generator.generate(query, sources, max_tokens=settings.llm_max_output_tokens)`
+   (default 512, bounded 1–100,000). Messages are `_SYSTEM_PROMPT` ("answer
+   ONLY from the context … say you don't know … cite as [n]") and
+   `Context:\n{format_context}\n\nQuestion: {query}`.
+4. **Context packing** (`format_context` → `_format_context`):
+   - Base budget `max_context_chars` = `Settings.llm_max_context_chars` (default 8000).
+   - **Without neighbours** the behaviour is unchanged: blocks `[i] content`
+     joined by `\n\n`, added in rank order until the next one no longer fits,
+     with a lone oversized first block cut to the budget.
+   - **With neighbours** the budget scales by `(2·window + 1)`. Each source gets
+     `room` = the remainder minus a reserved share per later source (but never
+     less than its own share), so an early hit's context cannot crowd out later
+     hits. `_passage_text` is **passage-first**: it renders
+     `(context before)` / `(passage)` / `(context after)` blocks. When space is
+     short, the before-side is trimmed from the left and the after-side from the
+     right, the spare room is split evenly, and an ellipsis marks each cut. The
+     passage itself is never trimmed to make room for context.
+   - An empty source list becomes `"(no relevant passages found)"`.
+5. **Transport:** `OpenAILLM.complete_detailed` sends `POST <base>/v1/chat/completions`
+   with `temperature 0`, a 120 s timeout, and optional Bearer auth. It raises
+   `ValueError` on no `choices` or empty `content`, naming the `finish_reason`,
+   and returns `(text, finish_reason)`.
+6. **Failure:** any exception is logged at WARNING and becomes
+   `_fallback_answer("[answer generation failed]", ...)`. Retrieval has already
+   succeeded, so the sources are still returned.
 
-**Tools & models:** `OpenAILLM` over `httpx.AsyncClient` against `llm_endpoint` (OpenAI, vLLM, or any `/v1/chat/completions`-compatible server). Model = `llm_model` (default `gpt-4o-mini`, `config.py:15`; must match the served model for vLLM). `RagGenerator(llm, max_context_chars=8000)` built only when an LLM is configured (`deps.py:510`). Deterministic decoding (`temperature=0.0`).
+**Tools & models:** `OpenAILLM` over the shared httpx client. `llm_endpoint`
+plus `llm_model` (default `gpt-4o-mini`), or a registered `llm` entry.
+`QueryRequest.stream` exists in the schema, but generation always returns a
+complete string. No streaming is implemented.
 
-**Inputs -> Outputs:** In: `query: str`, `sources: list[Source]`. Out: `str` answer (with `[n]` inline citations). `OpenAILLM.complete` takes `list[dict[str,str]]` messages -> `str`; `complete_text` wraps a single prompt as one user message (`llm.py:75-84`, used by rewriters).
+**Inputs → Outputs:** `(query, list[Source])` → `answer: str`. The provenance
+fields are covered in §7.4.
 
-**Scalability & parallelization:** Single awaited HTTP call per query — no internal parallelism, and generation runs after retrieval/fuse/rerank complete (strictly serial tail of the pipeline). The 120s timeout (`llm.py:59`) and `max_tokens=512` bound worst-case latency/cost. The context bound (`max_context_chars=8000`) caps the prompt size, preventing unbounded token growth from a large candidate pool — but the same `max_tokens`/timeout apply regardless of load, so throughput is gated by the shared LLM endpoint's concurrency. No streaming despite a `stream` field on `QueryRequest` (`query.py:70`) — `generate` returns a full string.
+**Scalability & parallelization:** One awaited LLM call per request. It is the
+last stage and runs strictly after retrieval, rerank, and expansion. Prompt size
+is bounded by the character budget, and output by `llm_max_output_tokens`.
+Throughput is bounded by the shared LLM endpoint. ADR-0008 notes that
+generation spend is not metered (`quota` is off by default, and `ratelimit`
+covers writes only).
 
-**Single vs bulk:** One `generate` per request; no batch synthesis. The only branch is presence/absence (or failure) of the generator, both handled by `_fallback_answer` (`query.py:231-239`) — no distinct bulk class. `complete` (chat, answer synthesis) vs `complete_text` (single-prompt, rewriters) are the two distinct call shapes on `OpenAILLM`.
+**Single vs bulk:** One generation per request. `complete` / `complete_detailed`
+serve chat generation, and `complete_text` serves single-prompt rewriters.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    A[sources + query] --> B{generator wired}
-    B -->|no| C[fallback answer<br/>chunk count + top score]
-    B -->|yes| D[_format_context]
-    D --> E[loop sources as bracket-n block]
-    E --> F{used + sep + len<br/>over max_context_chars}
-    F -->|yes| G[stop packing]
-    F -->|no| E
-    G --> H[system prompt<br/>cite as bracket-n]
-    H --> I[POST /v1/chat/completions<br/>temp 0 max_tokens 512]
-    I --> J{choices empty<br/>or content empty}
-    J -->|yes| K[ValueError -> log WARN<br/>fallback answer]
-    J -->|no| L[grounded answer]
+  A["final sources with optional context"] --> B{"generator wired? per-request llm override applied"}
+  B -- "no" --> C["fallback: LLM not configured, sources returned"]
+  B -- "yes" --> D{"template named?"}
+  D -- "no" --> E["system = fixed _SYSTEM_PROMPT"]
+  D -- "yes" --> T["render template, see 7.4"]
+  E --> P["format_context: budget x 2w+1, per-source share, passage-first"]
+  T --> P
+  P --> Q["POST v1/chat/completions, temp 0, max_tokens"]
+  Q -- "no choices or empty content" --> F["fallback: generation failed"]
+  Q --> R["answer with n citations"]
 ```
 
-Relevant files: `/Users/me/Development/dxkb/ragstack/python/ragstack/rewriting/rewriters.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/scoring/scorers.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/llm.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/api/routers/query.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/api/deps.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/config.py`.
+### 7.4 Prompt templates (ADR-0008)
+
+**What it is:** Named, operator-authored generation templates. The caller
+**selects** one by id and **fills declared slots**, and never supplies prompt
+text ("level 2" in ADR-0008; arbitrary caller prompts, "level 3", are refused).
+Implemented in `python/ragstack/prompts.py` and wired in `routers/query.py`.
+ADR-0008's header still reads **Status: Proposed**, although the mechanism has shipped.
+
+**Algorithm / workflow:**
+1. **Load at startup** (`load_templates`, from `Settings.prompt_templates_file`,
+   YAML or JSON, per tenant deployment). Every authoring error fails the boot
+   (`TemplateValidationError`): a marker in `system`, a slot referenced but
+   undeclared or declared but unreferenced, a missing `max_len`, or
+   `max_output_tokens` out of range. Each template's identity is
+   `(id, version, content_hash)`.
+2. **Discover:** `GET /v1/prompt-templates` returns declarations only (`to_wire`:
+   id, version, hash, label, output shape, columns, slots), **never the
+   `system`/`user` bodies**. With none configured it returns an empty list.
+3. **Fail fast:** `/v1/query` resolves `template` (unknown → 404) and
+   `_validate_template_vars` does a dry render (undeclared key, missing or empty
+   required slot, over-length, non-string → **422**) **before any retrieval runs**.
+4. **Render** (`render(t, vars, context)`): single-pass and append-only, with no
+   re-scan of values, so `{{…}}` inside a value is inert. `system` is emitted
+   verbatim. Reserved names `context`, `columns` (tab-joined), and `label` come
+   from server state, and a caller setting one gets a 422. `{{#slot}}…{{/slot}}`
+   sections render only when the slot is non-empty. `context` is exactly
+   `generator.format_context(sources)`, the same packing as §7.3.
+5. **Generate:** `generate_with(system, user, max_tokens=template.max_output_tokens or settings.llm_max_output_tokens)`
+   → `(text, truncated = finish_reason == "length")`.
+6. **Provenance (ADR-0008 §3b):** `template`, `template_version`,
+   `template_hash`, `model` (read from the live client), and `truncated` (only
+   when true) are set **only when a templated generation succeeded**. They are
+   omitted otherwise, including on fallback, so an untemplated response is
+   byte-identical to one from before ADR-0008.
+
+**Tools & models:** A hand-rolled parser/renderer, `hashlib`, JSON/YAML
+loading. A template does not pin a model (ADR-0008 decision 5). The model is
+whatever `llm` override or default resolves, and it is echoed back.
+
+**Inputs → Outputs:** `(template id, template_vars, sources)` →
+`(system, user)` messages → `(answer, truncated)` + provenance fields.
+
+**Scalability & parallelization:** Rendering is string building. Validation
+happens once at load plus one cheap dry render per request.
+
+**Single vs bulk:** One template per request. `/v1/retrieve` takes no template.
+
+**Diagram:**
+```mermaid
+flowchart TD
+  S["startup: load_templates, validate, hash"] --> L["GET /v1/prompt-templates: declarations only"]
+  A["/v1/query with template and template_vars"] --> B{"template known?"}
+  B -- "no" --> E404["404"]
+  B -- "yes" --> V["dry render: slot rules"]
+  V -- "bad vars" --> E422["422, before any retrieval"]
+  V --> R["retrieve, rerank, expand"]
+  R --> C["context = format_context sources"]
+  C --> RE["render: system verbatim, user single-pass"]
+  RE --> G["generate_with, template or server max tokens"]
+  G -- "ok" --> P["answer plus template, version, hash, model, truncated"]
+  G -- "fails" --> F["fallback answer, NO provenance fields"]
+```
+
+Source files: `python/ragstack/api/routers/query.py` (`_expand_query`,
+`_retrieve_fused`, `_maybe_rerank`, `_restamp`, `_override_model`,
+`_resolve_template`, `_validate_template_vars`, `query`, `retrieve`),
+`python/ragstack/rewriting/rewriters.py`, `python/ragstack/scoring/scorers.py`,
+`python/ragstack/llm.py`, `python/ragstack/prompts.py`, `python/ragstack/api/deps.py`
+(`_build_rewriters`, `_build_reranker`, `build_generator_for`, `build_reranker_for`,
+`apply_assignment`), `python/ragstack/config.py`, `sidecars/crossencoder/main.py`,
+`docs/adr/0008-prompt-templates.md`.
 
 ---
 
 ## 8. Storage Adapters & Knowledge Graph
 
-### QdrantVectorStore
+> Verified against `main` @ `22b44be` (2026-09-23). Citations are repo-relative `path::symbol`; line numbers, where given, were checked at that sha. This section supersedes the 2026-07-03 text, which predates ADR-0002 (collection identity), the shared filter grammar (#471/#597), the `(tenant, collection)` graph scope (#209/#253), and the archive/restore/eviction lifecycle (#353 family).
 
-**What it is:** A `VectorStore`-protocol adapter over Qdrant (`AsyncQdrantClient`) that stores chunk embeddings in a `(model, dim)`-scoped collection with tenant-isolated, deterministic point IDs (`python/ragstack/stores/qdrant.py:65-73`).
+### 8.0 What a collection physically is (ADR-0002)
+
+A *collection* is one Qdrant collection plus one Elasticsearch index **of the same derived name**, plus a slice of the single shared Neo4j graph tagged with that name. The name is derived from the build spec, never chosen by the caller, and never exposed on the API (only the registry `id` is).
+
+**Naming.** `collection_name(base, model, dim, *, chunk=None, name=None)` lives in `python/ragstack/stores/qdrant.py` (not in `collection_store.py`). Three modes:
+
+| Mode | When | Shape | Hash (sha1, 8 hex) covers |
+|---|---|---|---|
+| Legacy | `chunk=None` | `{base}_{slug(model)}_{dim}_{digest}` | `model` only — byte-identical to pre-ADR names, so existing stores keep resolving |
+| Corpus | `chunk` given, no `name` | `{base}_{slug(model)}_{dim}_{slug(chunk,24)}_{digest}` | `model\|dim\|chunk` |
+| Named library | `name` given | `{base}_lib_{slug(name,32)}_{slug(model,24)}_{dim}[_{slug(chunk,20)}]_{digest}` | `name\|model\|dim\|chunk` |
+
+`POST /v1/collections` (`api/routers/collections.py::create_collection`, L611-621) computes `desc = chunk_descriptor(method, size, overlap, params)` (`provenance.py::chunk_descriptor`, `"method/size/overlap[/json(params)]"`), then `physical = collection_name(settings.qdrant_collection, model, dim, chunk=desc, name=body.id or None)`, and the registry id is `body.id or physical` — a corpus created without an id takes its physical name *as* its id (ADR-0002 §"escape hatch", #276). The spec is persisted with `collection = text_index = physical`, so `CollectionSpec.es_index()` rides on the Qdrant name (`collection_store.py::CollectionSpec.es_index`). The settings-derived entry uses `deps.py::_derived_collection_name`: `QDRANT_COLLECTION_EXPLICIT` verbatim if set, else `collection_name(...)` with `chunk=None` unless `collection_name_include_chunk` (default `False`) — i.e. the flagship corpus still carries the legacy `(model, dim)` name.
+
+**`spec_hash`.** `provenance.spec_hash(model, dim, chunk) = sha1("model|dim|chunk")[:8]`, denormalised onto every registry row (`collection_store.py::CollectionRecord.spec_hash`, `make_record`). It equals a corpus-mode name's digest and is what the archive manifest and restore replay compare (see 8.5); note it is **not** what the ingest-time 409 guard compares — see §9.3.
+
+**Instances and routing.** There is no per-tenant routing in the stores: a tenant is a whole API process with its own `QDRANT_URL` / `ELASTICSEARCH_URL` (ADR-0005). Within one process, `python/ragstack/store_routing.py::qdrant_url_for` / `es_url_for` map a **physical** collection/index name to an alternate instance via `qdrant_collection_routes` / `es_collection_routes` (both default `{}`, `config.py`); `deps.py::_build_vector_store` logs "routed to instance". Routed legs are refused for purge and for create-rollback drops (`routers/collections.py::_routed_store_legs`), because the registry cannot enumerate an instance it does not own.
+
+### 8.1 The shared filter grammar (`python/ragstack/stores/filters.py`)
+
+**What it is:** One grammar, four interpreters — `qdrant.py::_build_filter`, `elasticsearch.py::_build_query`, `memory.py::_matches`, and the pure `filters.py::payload_matches` re-check used by both `get_chunks` paths — so a filter value that is a 400 at the API is never a 500 in a store or a silent zero-hit read (#471).
 
 **Algorithm / workflow:**
-1. **Collection naming** — `collection_name(base, model, dim)` slugifies the model name (regex-cleaned, lowercased, truncated to 40 chars) and appends `dim` plus an 8-char SHA1 digest of the full model string, e.g. `ragstack_bge_m3_1024_1a2b3c4d` (`qdrant.py:31-42`). Different dims/models route to physically separate collections.
-2. **`ensure_collection`** — lists collections; if the target exists, extracts its existing vector size via the fully-defensive `_existing_vector_size` (walks `config.params.vectors`, tolerates named-vector dict maps, returns `None` on any unexpected shape rather than raising — `qdrant.py:45-62`) and raises `VectorDimMismatch` if it disagrees with the configured dim (`qdrant.py:101-106`); otherwise creates it with `VectorParams(size, distance)` (`qdrant.py:108-113`).
-3. **`upsert`** — for each chunk, requires a non-null embedding (`qdrant.py:120-121`), builds a payload of reserved fields (`chunk_id, doc_id, content, start_char, end_char`) plus non-reserved metadata (`_PAYLOAD_RESERVED` guards collisions — `qdrant.py:28,123-130`), computes the point id via `_point_id(chunk_id, tenant)` = `uuid5(NAMESPACE_URL, "{tenant}:{chunk_id}")` (`qdrant.py:135,250-253`), and issues one batched `client.upsert` (`qdrant.py:140`).
-4. **`search`** — builds a filter with `_build_filter` (list→`MatchAny`, scalar→`MatchValue`, empty list dropped as "no constraint" — `qdrant.py:256-273`), calls `query_points` (the ≥1.10 replacement for `search`, `qdrant.py:150-156`), and rehydrates each hit's payload back into a `Chunk`/`ScoredChunk` with `retrieval_method="vector"` (`qdrant.py:158-170`).
-5. **`count_tenants`** — fail-closed on empty tenant list (`qdrant.py:184-185`), then an exact filtered `client.count` scoped to the tenants — deliberately not `points_count`, which would leak the whole-collection total (`qdrant.py:173-191`).
-6. **`delete_except`** (orphan sweep) — computes kept point ids, scrolls the doc's points in 1024-page batches (`qdrant.py:231-241`), collects stale ids, and deletes **by id** — O(stale) not O(collection), to dodge the filtered-delete-at-scale timeout (`qdrant.py:215-247`).
+1. `validate_filter_values` (called at the API seam in `routers/query.py::_resolve_retrieval` L712-715, and again inside each interpreter): a value is `str | int | bool`, or a homogeneous list of `str` or of `int`; floats, `None`, objects (range operators) and nested lists are refused with `InvalidFilterValue`; `KNOWN_INT_FIELDS` (`{"year"}`, from `metadata_schema.py`) refuses a string where an int is declared rather than coercing.
+2. `validate_filters` (the `get_chunks` path only) refuses `_REFUSED_KEYS = PAYLOAD_RESERVED | {"library_id"}` with `UnknownFilterKey`, so an unsupported scope key rejects the call instead of silently not applying (#197).
+3. **Negation is server-constructed only.** `Not(value)` (L168-196) has no wire syntax; the server builds it for exactly one key today (`is_boilerplate`, for `exclude_boilerplate`) and merges it into the caller's validated, still-unscoped dict (`query.py::_resolve_retrieval` L723-724); `scope_filters` then pins `tenant_id` last (L727 / L753). The `Not` and `_exclude_boilerplate` docstrings say "already-scoped"; they are stale.
+4. **The owner field may never be negated.** `NEGATION_FORBIDDEN_KEYS = frozenset({OWNER_FIELD})` (L165, `OWNER_FIELD = "tenant_id"` in `tenancy.py` L36); `_check_negation` (L300-329) refuses it in every interpreter with `"'tenant_id' may not be negated — it is the tenant isolation boundary"`. A negated list is also refused.
+5. An absent key satisfies a negation (the record is kept) — measured identical on Qdrant and ES (module docstring).
 
-**Tools & models:** `qdrant-client` (`AsyncQdrantClient`), Python `hashlib.sha1` / `uuid.uuid5`. No embedding model here — vectors arrive pre-computed on `Chunk.embedding`. External service: Qdrant at `url` (default `http://localhost:6333`).
-
-**Inputs -> Outputs:** `upsert(list[Chunk])` -> `None`; `search(query_vector: list[float], top_k, filters: dict) -> list[ScoredChunk]`; `count_tenants(list[str]) -> int`; `delete`/`delete_except` -> `None`.
-
-**Scalability & parallelization:** All methods are `async` over a single shared `AsyncQdrantClient`; there is **no in-process fan-out** (no `asyncio.gather`, no semaphore) — `upsert` sends all points in one batched request, and Qdrant itself does the heavy lifting/sharding. Concurrency comes only from the event loop interleaving awaits across requests. Bottlenecks: single upsert batch is unbounded (a huge chunk list becomes one large payload); `delete_except` serializes scroll pages (each page round-trips before the next). `timeout` is configurable to fail fast on heavy filtered ops. Scales horizontally at the Qdrant layer, not in this client.
-
-**Single vs bulk:** One class, one code path — `upsert` always takes a list and batches. There is no separate single-document entry point; a single chunk is a one-element list. `delete` (whole doc) vs `delete_except` (keep-set orphan prune) are the two distinct deletion entry points.
+**Fail-closed on an empty readable-tenant list, per store:** Qdrant `_build_filter` emits `MatchAny([])` (matches nothing), `count_tenants` → 0, `get_chunks` → `[]`; ES `_build_query` **raises** `ValueError` on a missing/empty `tenant_id` (built outside `_guard` so it is not misreported as a 503), `count_tenants` → 0, `list_documents` → `([], None)`; memory `_matches` → no match; Neo4j `x IN []` is false. Only `scope_filters` (`tenancy.py` L78-84) ever writes the `tenant_id` key, and it writes it **last**.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-    subgraph Write
-        A[upsert chunks] --> B{embedding present}
-        B -->|no| E1[raise ValueError]
-        B -->|yes| C[build payload<br/>reserved + metadata]
-        C --> D[point id<br/>uuid5 tenant:chunk_id]
-        D --> F[batched client.upsert]
+    A["caller filters dict"] --> B["validate_filter_values at the API seam"]
+    B -->|"bad value"| X["400"]
+    B --> C["server merges Not is_boilerplate if requested"]
+    C --> D["scope_filters pins tenant_id last"]
+    D --> E{"interpreter"}
+    E --> F["qdrant _build_filter"]
+    E --> G["es _build_query"]
+    E --> H["memory _matches"]
+    E --> I["payload_matches re-check"]
+    F --> J["_check_negation refuses Not on tenant_id"]
+    G --> J
+    H --> J
+    I --> J
+```
+
+### 8.2 QdrantVectorStore (`python/ragstack/stores/qdrant.py`)
+
+**What it is:** The `VectorStore`-protocol adapter (`protocols.py::VectorStore`: `upsert`, `search`, `delete`, `delete_except`, `count_tenants`, `get_chunks`, `count`) over one physical Qdrant collection per instance; owner-stamped, deterministic point ids; flat payload.
+
+**Algorithm / workflow:**
+1. **`ensure_collection`** creates the collection or raises `VectorDimMismatch` on a vector-size disagreement, then `_ensure_payload_indexes` creates KEYWORD payload indexes on `tenant_id` **and** `doc_id`.
+2. **`upsert`** batches `upsert_batch_size` (256) points via `_upsert_points`; with `upsert_concurrency > 1` batches run under `asyncio.gather` + a semaphore. Point id = `_point_id(chunk_id, tenant) = uuid5(NAMESPACE_URL, f"{tenant}:{chunk_id}")` with `tenant = tenancy.tenant_of(chunk)` (still true). Payload is **flat**: `chunk_id, doc_id, content, start_char, end_char` + metadata; metadata keys colliding with `filters.PAYLOAD_RESERVED` are dropped, and `_chunk_from_payload` pops the reserved keys back out on read.
+3. **`search`** → `query_points` with `_build_filter` (scalar → `MatchValue`, list → `MatchAny`, `Not` → `must_not MatchValue`, `{}`/`None` → unfiltered — it does not raise on a missing tenant key because the unscoped delete paths need it); an `ApiException` becomes `errors.StoreUnavailable(kind ∈ timeout|unreachable|error)`, which the API maps to 503.
+4. **`get_chunks(ids, filters)`** validates keys and values first, returns `[]` unless `filters["tenant_id"]` is a non-empty list, retrieves by `_point_id(cid, t)` for every (id, tenant) pair, and re-checks each record with `payload_matches`.
+5. **`count_tenants`** — 0 on empty list; exact filtered count under `_COUNT_TIMEOUT_S` (5 s) with an estimate fallback. **`count()`** is unfiltered and serves only the per-collection chunk cap (#291).
+6. **`delete(doc_id, tenant_id)`** is a filtered delete (`tenant_id=None` crosses tenants — only unscoped callers use it); **`delete_except`** scrolls the doc's point ids and deletes stale ones by id (O(stale), not a filtered delete at scale).
+7. **`drop_collection() -> bool`** (idempotent), `collection_health() -> CollectionHealth`, `healthcheck()` are *not* on the protocol; callers reach them via `getattr` (`python/ragstack/ops/evict.py::drop_stores`, `routers/collections.py` create rollback).
+
+**Tools & models:** `qdrant-client` (`AsyncQdrantClient`); `stores/backpressure.py::BackpressuredVectorStore` optionally wraps a store and gates **only `upsert`** on `collection_health()` reaching `green` + optimizer-ok (`max_wait` → `BackpressureTimeout`), used by the bulk loader (`scripts/load_embeddings.py`), not by the API.
+
+**Inputs → Outputs:** as the protocol above; `search(list[float], top_k, filters) -> list[ScoredChunk]` with `retrieval_method="vector"`.
+
+**Scalability & parallelization:** one client per physical collection; upsert fan-out is opt-in and bounded; everything else is one request per call and scales at the Qdrant layer. The binding constraint is the **collection count per instance** (ADR-0003 consequences; `max_collections`, §9.6), not this adapter.
+
+**Single vs bulk:** one class; the API path A/B and the bulk CLI both call `upsert` (the CLI additionally wraps it in backpressure and calls `ensure_collection` itself, on the physical names it resolved from the registry, §5.4).
+
+### 8.3 ElasticsearchTextIndex (`python/ragstack/stores/elasticsearch.py`)
+
+**What it is:** The `TextIndex`-protocol adapter (`index`, `search`, `delete`, `delete_except`, `count_tenants`, `list_documents`) giving BM25 over `content`, with metadata **nested under `metadata.*`** (Qdrant keeps it flat — the two layouts are declared in `contracts/schemas/chunk_metadata.json` `x-ragstack-store-shape` and `metadata_schema.py::es_field_path` / `qdrant_field_path`).
+
+**Algorithm / workflow:**
+1. **Mapping is schema-derived.** `_MAPPINGS` = `content: text`; `doc_id`, `chunk_id: keyword`; `start_char`, `end_char: integer`; `metadata: {type: object, properties: elasticsearch_metadata_properties()}` where the properties come from `metadata_schema.py::DECLARED_FIELDS`, which mirrors `contracts/schemas/chunk_metadata.json` field-for-field (35 fields, only `tenant_id` required, `additionalProperties: true`; the JSON is not read at runtime — a test pins the two). `DeclaredField.elasticsearch_mapping`: integer → `long`, boolean → `boolean`, else `keyword` with `ignore_above` 8191. A dynamic template `metadata_strings_as_keyword` (`path_match "metadata.*"`) catches undeclared strings. `python/ragstack/ops/metadata_conformance.py::compare_mapping` reports live-index drift.
+2. **`ensure_index`** creates idempotently (`resource_already_exists` is success); on an existing index it `put_mapping(_MAPPINGS)` and, if that is rejected, falls back to the template-only mapping; a transport error warns and returns.
+3. **`index`** stamps `metadata.tenant_id` (default `DEFAULT_TENANT`), `_id = _es_id(tenant, chunk_id) = f"{tenant}:{chunk_id}"` (still true), and bulk-writes in batches of 500 / 20 MiB (`_BULK_MAX_BYTES`); `_index_batch` raises `RuntimeError` on `errors: true`.
+4. **`search`** → `_build_query`: **raises `ValueError` if `not filters.get("tenant_id")`** (still true), then `validate_filter_values`; each key targets `metadata.<key>` — list → `terms`, scalar → `term`, `Not` → `bool.must_not term`; `must: [match content]`.
+5. **`list_documents(tenants, limit, cursor)`** — composite terms aggregation on `doc_id` with a `top_hits` exemplar; the source of `GET /v1/documents` (#86); fails closed to `([], None)`.
+6. **`delete` / `delete_except`** — `delete_by_query`, `conflicts="proceed"`; **`drop_index() -> bool`** (404 → `False`); `bulk_load_refresh` / `restore_refresh` / `refresh` for the bulk loader.
+
+**Tools & models:** `AsyncElasticsearch` (lazy import, `text` extra); reads and bulk writes go through `_guard(op)`, which maps transport failures to `StoreUnavailable` and lets 4xx propagate.
+
+**Inputs → Outputs:** `search(str, top_k, filters) -> list[ScoredChunk]` with `retrieval_method="bm25"` and full metadata rehydrated for RRF parity.
+
+**Scalability & parallelization:** single client, one bulk per batch; `refresh_on_write` (default `True`) trades throughput for immediate visibility and is switched off by the bulk loader. Scales at the ES cluster layer.
+
+**Single vs bulk:** one class; batching is internal.
+
+**Diagram (write path, both stores):**
+```mermaid
+flowchart LR
+    C["Chunk with metadata tenant_id"] --> Q["Qdrant point id uuid5 tenant colon chunk_id, flat payload"]
+    C --> E["ES doc id tenant colon chunk_id, metadata nested"]
+    Q --> QI["payload indexes tenant_id and doc_id"]
+    E --> EM["schema-derived mapping plus keyword dynamic template"]
+```
+
+### 8.4 Neo4jGraphStore (`python/ragstack/stores/neo4j.py`)
+
+**What it is:** The `GraphStore`-protocol adapter (`add_triples`, `query_neighborhood`, `match_entities`, `list_entities`, `stats`, `delete_by_doc`, `delete_collection`) over one Neo4j database that holds **every** collection's triples; the collection boundary therefore lives in the data, on two axes — `tenant_id` and `collection` (#209/#253).
+
+**Algorithm / workflow:**
+1. **`ensure_schema`** drops the old `entity_name_tenant` constraint and creates `entity_name_tenant_collection`: `(e.name, e.tenant_id, e.collection) IS UNIQUE`. **Changed from the old doc:** entities are keyed `(name, tenant_id, collection)`, not `(name, tenant_id)`.
+2. **`add_triples`** — `UNWIND $rows`, `MERGE` entities on `{name, tenant_id, collection}`, `MERGE` the edge `[:REL {predicate, doc_id, tenant_id, collection}]` (also changed), with evidence props (`evidence, chunk_id, derived_by, confidence, subject_id, object_id`) set outside the key; an empty tenant becomes `DEFAULT_TENANT`.
+3. **Scoping.** `_scope(params, tenant_id, collection)` yields `alias.tenant_id IN $tenants` (`$tenants = readable_tenants(tenant_id)`) plus `alias.collection = $collection` (string) or `IN $collections` (list). `None` on either axis = unscoped on that axis (dev/library reads only; the HTTP API always passes a tenant).
+4. **`query_neighborhood`** clamps depth to `[1, _MAX_DEPTH=5]` (still true); anchors the start node on the collection; the path clause is now `all(rel IN rels WHERE <tenant pred> AND <collection pred>)` — every hop is scoped on **both** axes, so a multi-hop traversal cannot tunnel through another tenant's or another collection's edge; the same predicates are re-applied to the returned edge. Entry is `toLower(start.name) CONTAINS` (substring scan). Since #349 the retriever no longer hands it the raw query: `match_entities` does an exact, case-folded, scoped lookup of the query's n-grams first.
+5. **`stats`** counts entities on the node predicates and relationships via `OPTIONAL MATCH`; fails closed on an empty tenant list.
+6. **`delete_by_doc(doc_id, tenant_id, collection)`** matches the edge on exact `tenant_id` (not the readable set) and `collection`, then sweeps only endpoints left edgeless. **`delete_collection(tenant_id, collection) -> int`** refuses an empty collection name and deletes in `CALL {...} IN TRANSACTIONS OF 1000 ROWS` (auto-commit session).
+
+**Tools & models:** `neo4j` async driver (lazy, `graph` extra); Neo4j 5 (rejects the literal password `neo4j`).
+
+**Inputs → Outputs:** `query_neighborhood(entity, depth, tenant_id, collection) -> list[Triple]` (each `Triple` carries `tenant_id` and `collection`, which `retrieval/retriever.py::graph_context` **re-checks** against `readable_tenants(tenant_id)` and the requested collections — an unstamped triple fails both).
+
+**Scalability & parallelization:** one Cypher per call; depth cap bounds the combinatorial traversal; the per-collection triple cap (`graph_max_triples_per_collection`, default 200 000, `graph/budget.py::check_graph_cap`) bounds the single shared database. Note the graph leg of a query is scoped to the caller's **own + public** tenants only — the share-based widening that the vector/BM25 legs receive is not applied to it (see §9.4, an under-exposure, not a leak).
+
+**Single vs bulk:** one class; `add_triples` is always an `UNWIND` batch.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["query_neighborhood entity depth tenant collection"] --> B["clamp depth 1 to 5"]
+    B --> C["tenants = readable own plus public"]
+    C --> D["MATCH start CONTAINS entity AND start.collection matches"]
+    D --> E["rels REL star 1 to depth"]
+    E --> F["all rel in rels: rel.tenant_id IN tenants AND rel.collection matches"]
+    F --> G["UNWIND DISTINCT re-match directed edge"]
+    G --> H["Triples with tenant_id and collection"]
+    H --> I["retriever re-checks both stamps"]
+```
+
+### 8.5 LLM knowledge-graph extraction (`python/ragstack/graph/`)
+
+**What it is:** Two drivers over one extractor. `extractor.py::LLMKGExtractor` (the `KGExtractor` protocol: `extract(chunks)`) prompts an OpenAI-compatible LLM for strict-JSON `(subject, predicate, object, evidence)` triples; `extract_version.py` is the opt-in **lifecycle** step that runs it concurrently over one *archived* chunk version (#350).
+
+**Default-off, twice over:** `kg_extraction_enabled: bool = False` and `deps.py::_build_kg_extractor` returns `None` unless that is on **and** an LLM is configured; `graph_backend` defaults to `memory`. The ingest path never extracts unless enabled; the lifecycle path is an explicit owner-or-admin `POST /v1/collections/{id}/graph[?version=n]` (202, one in-flight per owner → 429).
+
+**Algorithm / workflow:**
+1. **Ingest-path `extract`** — still a sequential `for` loop; `_extract_chunk` wraps any LLM exception as `ExtractionFailed`, which `extract` skips (`continue`) so one failure never fails an ingest; dedup on `(subject, predicate, object, doc_id)`.
+2. **`_parse`** — `_extract_json_object` with `re.compile(r"\{.*\}", re.DOTALL)` (greedy, still true); keeps `evidence` only if it appears verbatim in the chunk after whitespace squashing; stamps `derived_by=DERIVED_BY_LLM` and `confidence=LLM_MAX_CONFIDENCE` itself (ignores anything the model claims); never sets typed ids.
+3. **Lifecycle `extract_triples`** — `asyncio.Semaphore(concurrency)` + `gather` (`graph_extract_concurrency`, default 8), ordered and deduped by chunk order; stamps `tenant_id` from chunk metadata (fallback: the manifest's tenant) and **leaves `collection` empty — the loader stamps it**. `extract_version` first verifies the archived version via `load_chunks` (`ExtractRefused` on `ArchiveCorrupt` / `SpecMismatch`), refuses when every chunk failed or the failed fraction exceeds `graph_extraction_max_failed_fraction` (0.5), refuses whole at `GraphCapExceeded` (exit 4, job `graph_cap_exceeded`), else writes `triples.jsonl.gz` via `ingestion/archive.py::write_triples` and rewrites the manifest `graph: true`. Delivery records the version in the row's `graph_archived_versions`.
+4. **Loading** — `graph/archive_load.py::load_triples` calls `budget.check_graph_cap` (one `stats(tenant_id=None, collection=…)`), then `add_triples` scoped `(tenant, collection)`. A restore replay also loads the graph leg where `manifest.graph` is true and is never capped.
+
+**Tools & models:** injected `llm.complete_text` (vLLM/OpenAI-compatible); GoWe/CWL (`cwl/graph-extract.cwl`) for the lifecycle step.
+
+**Inputs → Outputs:** `extract(list[Chunk]) -> list[Triple]`; `extract_version(...) -> triples.jsonl.gz` in `versions/<n>/`.
+
+**Scalability & parallelization:** the ingest-path extractor is still linear in chunk count (N serialized LLM calls); the lifecycle driver is the scalable one (bounded fan-out, runs as the user off the request path).
+
+**Single vs bulk:** the ingest path is per-document; the lifecycle path is per archived version (bulk by construction).
+
+### 8.6 Archive, restore and physical drops as a storage concern
+
+**What it is:** The physical stores of a collection are **reconstructible from a Workspace archive**, which is what makes eviction (§9.7) safe. The archive is written by the GoWe ingest workflow, not by the API process; the API only reserves versions, records them on the registry row, and submits replays.
+
+**Layout** (`python/ragstack/ingestion/archive.py`): `<subject>/home/.ragstack/collections/<id>/versions/<n>/` holding `manifest.json` (format `ragstack-archive/1`; identity `collection_id / tenant / spec_hash / version / job_id`), `chunks.jsonl.gz`, `vectors.f32`, `receipt.json`, optionally `tombstone.json` (deletes) and, after graph extraction, `triples.jsonl.gz` with `graph: true`. The Workspace folder itself is stamped `ragstack_format / collection_id / tenant / spec_hash` (`workspace.py`).
+
+**Algorithm / workflow:**
+1. **Version reservation** — `_reserve_version` → `CollectionStore.next_version` (atomic `UPDATE … RETURNING` on `archive_version`; the JSON backend raises `NotImplementedError`, surfaced as 503 — a GoWe-backed tenant needs sqlite/postgres). `_gowe_inputs` carries `version, collection_id, spec_hash (record.spec_hash), job_id, tenant, collection, es_index, store URLs, build spec`. Output destination is `ws://…/<caller subject>/…/<id>/versions/`.
+2. **Delivery** — `_run_gowe_ingest` appends the version to `rec.versions` only if the run produced an `archive_ref`; an `OutputStagingFailed` sets `archive_pending=True`. **`archive_pending` is never cleared** (the only `set_archive_pending` call passes `True`, `routers/documents.py` L764) — once flagged, the collection is non-evictable until the row is edited.
+3. **Restore** — `restore.py::CollectionRestorer._submit` locates the archive by **`workspace_subject(rec.spec.owner)`** (the owner, not the caller), lists `versions/`, and submits `cwl/restore-collection.cwl` as the caller with `versions[]`, `collection_id`, `spec_hash`; `ingestion/load_embeddings.py::verify_replay` checks every version's sha256, geometry, `manifest.spec_hash == registry spec_hash` and `collection_id` **before any store write**. Exit 3 / `ArchiveCorrupt` / `SpecMismatch` → `lost`; any other failure → `dormant` with the reason; COMPLETED → `active` (every write a CAS from `restoring`).
+4. **Physical drops** share one driver, `python/ragstack/ops/evict.py::drop_stores(entry, graph_store=…) -> (deleted, absent, failed)`, which calls `drop_collection`, `drop_index` and — only when a graph store is passed — `delete_collection(None, collection)`:
+
+| Caller | Qdrant | ES | Neo4j triples | Manifest | Workspace archive |
+|---|---|---|---|---|---|
+| `DELETE …?purge=true` (`routers/collections.py::_purge_physical`) | drop | drop | **drop, collection-wide** | delete | untouched |
+| Eviction (`api/eviction.py::run_eviction` L179-188) | drop | drop | **kept** (comment: "archive has no triples leg yet" — stale since `write_triples` landed, behaviour unchanged) | kept | is the source of truth |
+| Create rollback (`create_collection`) | drop | drop | — | delete | — |
+
+Purge and create-rollback are guarded by `_shared_store_users` (another registry id claims a leg) and `_routed_store_legs`; eviction uses `ops/evict.py::protected` instead (derived-default / shared-surface legs and sibling claimants in the live registry or the durable rows) and does not consult the route tables.
+
+5. **Startup re-ensures every spec's stores regardless of lifecycle state.** `deps.py::_build_collection_registry` iterates `list_specs()` (unfiltered) and `build_collection_entry` calls `ensure_collection` / `ensure_index` best-effort — so a restart re-creates **empty** Qdrant/ES stores for `dormant` and `lost` rows. They are not counted against `max_collections` (the row is not in `PHYSICAL`), but they exist, and a dormant collection's reads still 503 through the lifecycle gate rather than returning empty.
+
+**Tools & models:** GoWe + CWL (`cwl/restore-collection.cwl`, `cwl/graph-extract.cwl`), BV-BRC Workspace (`workspace.py`), `scripts/load_embeddings.py --replay`.
+
+**Scalability & parallelization:** archive writes happen in the workflow engine off the API host; restore is one workflow per collection with a per-process watcher; `drop_stores` is three sequential network calls.
+
+**Single vs bulk:** one collection per archive/restore/purge; eviction evicts exactly one per create/restore admission and up to `need` via the admin endpoint.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    I["GoWe ingest as caller"] --> V["next_version atomic reserve"]
+    V --> W["workflow writes versions n in caller Workspace"]
+    W --> R["registry row versions append"]
+    R --> E["evictable = active and not archive_pending and versions non-empty"]
+    E --> D["evict: CAS active to dormant then drop_stores without graph"]
+    D --> G["lifecycle gate: dormant read gets 503 plus Retry-After and one restore submitted"]
+    G --> S["restorer lists owner Workspace versions, submits replay"]
+    S --> C["verify_replay: sha256, geometry, spec_hash, collection_id"]
+    C -->|"ok"| A["CAS restoring to active"]
+    C -->|"corrupt or spec mismatch"| L["lost, 409 until repaired"]
+    C -->|"other failure"| M["back to dormant with reason"]
+```
+
+**Note on `memory.py`:** `InMemoryVectorStore` / `InMemoryTextIndex` / `InMemoryGraphStore` remain the reference fakes for the same three protocols and the same grammar (`_matches` is the fourth interpreter of §8.1); they also implement `drop_collection`, `drop_index` and `delete_collection` so the lifecycle code paths run in tests.
+
+Relevant files: `python/ragstack/stores/{qdrant,elasticsearch,neo4j,filters,memory,backpressure,errors}.py`, `python/ragstack/store_routing.py`, `python/ragstack/graph/{extractor,extract_version,budget,archive_load}.py`, `python/ragstack/ingestion/archive.py`, `python/ragstack/restore.py`, `python/ragstack/ops/evict.py`, `python/ragstack/metadata_schema.py`, `contracts/schemas/chunk_metadata.json`.
+
+---
+
+---
+
+## 9. Identity, Access Control, Tenancy & Lifecycle
+
+> Verified against `main` @ `22b44be` (2026-09-23). This section replaces the 2026-07-03 "Tenancy, RBAC, Quota, Jobs" text in full: the four-role RBAC, the "tenant = payload value" model and the tenant-only read scope it described were superseded by ADR-0003 (collection-level access, two roles), ADR-0004 (users, groups, shares), ADR-0005 (a tenant is a process set), the collection lifecycle (#353/#358/#359/#381) and ADR-0007 (the control plane). Where an ADR and the code disagree, the code is documented and the disagreement is listed in §9.9. Every authorization claim below is traceable to `path::symbol`.
+
+**The model in one paragraph.** A *tenant* is one API process bound to its own stores (ADR-0005); nothing crosses that boundary. Inside a tenant, *access is asserted at the collection*: one decision function, `authz.py::resolve_access`, answers "may this subject perform read / write / owner on this collection id", from an owner row, shares (to a person, a group, or the built-in `public` group) and the logged admin bypass. Underneath, every stored chunk still carries the writer's `tenant_id` and every read is filtered to the tenants the caller may see — that filter is now **owner provenance plus defence in depth**, not the authorization mechanism, except on the one legacy shared surface where it still is.
+
+### 9.1 Identity: API keys, BV-BRC / OIDC bearer identities, `Principal`, roles
+
+**What it is:** `api/security.py::resolve_principal` turns one credential into a frozen `Principal(tenant, role, token, token_id, token_exp, issuer, subject)` (`security.py` L126-162; `token` is redacted in `__repr__`). `tenant` is the *subject string* the whole authorization layer keys on: `f"{issuer}:{sub}"` for a bearer identity, the mapped tenant for an API key, `DEFAULT_TENANT` (`"default"`) for the keyless dev path.
+
+**Algorithm / workflow** (`_authenticate`, L849-870):
+1. **Identity layer off** (`identity_provider = "none"`, the default): `Authorization` is ignored entirely; only `X-API-Key` authenticates.
+2. **Identity layer on, both headers present** → **400** `"present exactly one credential: X-API-Key or Authorization, not both"` (L859-865) — no silent precedence.
+3. **Bearer** (`Authorization`, read with `APIKeyHeader` not `HTTPBearer` because the BV-BRC wire format carries **no `Bearer` prefix**; `_bearer_credential` strips one if present, L657-669): the configured provider verifies it — `IdentityInvalid` → 401, `IdentityUnavailable` → **503**, never a fall-through to the key path (L803-814). BV-BRC (`identity/bvbrc.py`): pipe-separated `k=v…|sig=<hex>`, RSA-PKCS#1v1.5/SHA-1 over the bytes before `|sig=`, `SigningSubject` must be in a pinned allowlist *before* any network call, missing/non-numeric/past expiry is invalid, then `un` and `tokenid` are required; fixture vectors in `contracts/fixtures/identity/bvbrc/` are replayed by both the Python and the Go (ctl) verifiers. OIDC (`identity/oidc.py`): an RS256 ID token checked for `iss`, `aud ∩ client_ids`, `exp`, `nbf`/`iat`, with `sub`, `jti`, `email`, `email_verified`, `name` read after verification. Successful verifications are cached by `sha256(credential)` for `identity_cache_ttl_seconds` (300, hard-capped at 300; `identity/cache.py`).
+4. **Bearer role** (`_bearer_role`, L638-654) is a *positive* branch with exactly two admin sources: `ADMIN_SUBJECTS` (env allowlist of `issuer:subject`, a pure set test with no I/O — the break-glass path that works on an empty users table) and then `users.role == admin` via `_stored_role_is_admin`, which **fails closed** (any store error → `user`) and is cached ≤ 300 s. `settings.default_role` is never consulted on this path — it is `admin` on the production deployments, so inheriting it would make every end user a superuser (ADR-0003 §4 amendment; matches code).
+5. **API key** (`_principal_from_key`, L165-197): keyless → `Principal(DEFAULT_TENANT, normalize_role(default_role))` (dev only; `deps.py::_validate_production_settings` requires keys under `require_durable_backends`); otherwise a no-short-circuit `sum(secrets.compare_digest(...))` over every configured key, tenant from `api_key_tenants` (fallback `default`), role from `api_key_roles` (fallback `default_role`), 401 on no match. `_principal_from_key_checked` then applies the **service-account disabled check**, which **fails open** (`_service_account_disabled`, L254-333: a store error means "not disabled", cached `service_account_disabled_cache_ttl_seconds` = 30) — the deliberate mirror of the role lookup's fail-closed, per ADR-0004 §7: the authoritative revoke is removing the key from `API_KEYS` and restarting.
+6. **Roles** are exactly `{admin, user}` (`VALID_ROLES`, L101); `researcher` is a warned alias for `user`; `engineer`/`manager` are refused at startup (`validate_role_settings`). `require_role(*roles)` (L1226-1259) passes an admin or an allowed role, else 403; its **only** call site is `main.py:237`, gating `GET /v1/config`, `/v1/health/deep`, `/v1/stats/models*`, `/v1/jobs` and everything under `/v1/admin/*` (models registry, service accounts, `PATCH users/{subject}/role`, `collections/evict`, log level). A bearer admin reaches all of them — `require_role` tests the role, not the credential kind.
+7. **First-auth profile upsert** is fire-and-forget and debounced 300 s per subject (`_schedule_profile_upsert`); the SQL `ON CONFLICT` assignment list `_SEEN_ASSIGN_COLUMNS` (`user_store.py` L862-864) excludes `role`, `kind` and `disabled*`, so a login can never reset an admin grant or reclassify a service account. Email is stored only when `email_verified`.
+8. **Service accounts** (`user_store.py`, `api/routers/service_accounts.py`): `users` rows with `kind='service'`, a **colon-free** subject that *is* the API-key tenant (bearer subjects always carry a colon — disjoint namespaces), `default`/`public` refused as subjects (`RESERVED_SERVICE_SUBJECTS`), self-disable refused (409), converting a human row refused (409). The API manages the record, never the credential: `API_KEYS` has no writer in the process.
+9. **Last-admin refusal** (`admin_users.py::set_user_role` → `user_store.set_role(require_remaining_admin=…)`): the count is taken inside the write's own transaction; the refusal is skipped only when `security.admin_recovery_sources()` finds a *usable* `ADMIN_SUBJECTS` entry or a live admin API key (checked with the strict, fail-closed disabled lookup).
+
+**Tools & models:** `secrets.compare_digest`, `cryptography` (RSA), JWKS/OIDC discovery via `identity/_http.py`, the `users` table (memory / sqlite / postgres, `user_store.py`).
+
+**Inputs → Outputs:** headers → `Principal`; 400 / 401 / 503 as above.
+
+**Scalability & parallelization:** per-request, memoized on `request.state`; the identity and role caches bound verification cost; the profile upsert is off the request path.
+
+**Single vs bulk:** one path for every request; a bulk ingest authenticates once at admission and its job carries `tenant_id`.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["request headers"] --> B{"identity provider on"}
+    B -->|"no"| K["X-API-Key path"]
+    B -->|"yes"| C{"both X-API-Key and Authorization"}
+    C -->|"yes"| X400["400 exactly one credential"]
+    C -->|"no bearer"| K
+    C -->|"bearer"| V["provider verifies token"]
+    V -->|"invalid"| X401["401"]
+    V -->|"unavailable"| X503["503"]
+    V -->|"ok"| S["subject = issuer colon sub"]
+    S --> R{"ADMIN_SUBJECTS or users.role admin"}
+    R -->|"yes"| PA["Principal role admin"]
+    R -->|"no or store error"| PU["Principal role user"]
+    K --> KC{"key matches constant time"}
+    KC -->|"no"| X401
+    KC -->|"yes"| KD{"service account disabled"}
+    KD -->|"yes"| X401
+    KD -->|"no or store error"| KP["Principal tenant and role from maps"]
+```
+
+### 9.2 The registry and collection identity (ADR-0002)
+
+**What it is:** `collection_store.py` persists one `CollectionSpec` per collection id (model, dim, chunker + params, `owner`, physical `collection`/`text_index`, `max_chunks`) plus lifecycle fields, behind one `CollectionStore` protocol with `json` (default; `flock` on `{file}.lock`, lifecycle in a `.lifecycle.json` sidecar), `memory`, `sqlite` and `postgres` backends. `api/collections.py::CollectionRegistry` is the in-process view of built entries; `api/deps.py::_build_collection_registry` builds it from the store at startup.
+
+**Algorithm / workflow:**
+1. **Ids.** An explicit `id` names a *library* and is folded into the physical name; an omitted id is a *corpus* whose content-addressed physical name becomes its id (§8.0). Ids are `≤128` chars; the pointer name is refused.
+2. **No repointing.** There is no PATCH/PUT on `/v1/collections`; `CollectionStore.create` never upserts on `DUPLICATE`; `put()` is called only by the one-time `seed_from_json`. The only way to change a spec is to edit the row/file by hand (`collection_store.py` L118-124 admits this). Changing the build spec means a new collection.
+3. **`default` is a pointer, not an entry** (`RESERVED_COLLECTION_ID = "default"`, `collection_store.py` L559-564). No row is synthesised for it; a legacy `default` row is dropped on read (`drop_reserved_rows`, `_live_rows`) and removed on the next write; `CollectionRegistry._refuse_reserved` rejects it in `__init__`/`add`; create and delete answer 409 for it. `registry.canonical(None | "default") → default_id`; `registry.permitted()` expands `"default"` inside a `TENANT_COLLECTIONS` allowlist to the current target. Authorization always runs on the canonical id, never on the literal `"default"` — ACL rows left under that id by a pre-#276 registry must grant nothing.
+4. **One physical store, one registry entry** (ADR-0002 §5) is enforced at startup (`_build_collection_registry`): a spec claiming a leg of the settings-derived entry suppresses that entry only if it claims **both** legs — a partial claim, two specs on one leg, or a spec named `default` are a `RuntimeError` — and at runtime by the delete path (§9.3 step 6).
+5. **The legacy shared surface** is the settings-derived entry and only it: `CollectionEntry.is_shared_surface=True` is set at exactly one construction site (`deps.py` L699) and `False` for every spec-built entry. It is *not* "is the pointer target" (`entry.id == registry.default_id`); the two carry different exemptions (§9.4).
+6. **Caller-relative default** (`api/default_collection.py`, ADR-0003 §2b): `visible_entries` = allowlist ∩ readable (`filter_readable`), `pick_default` = the pointer when visible, else the first visible entry in *insertion* order; no visible entry → 404 naming **no id**. `GET /v1/collections`, `/v1/query`, `/v1/retrieve`, `/v1/chunks`, `GET/DELETE /v1/documents` all import this one symbol. Ingest narrows it further to `writable_entries` (owned, admin, or the shared surface) and answers 403 `NO_WRITABLE_COLLECTION` (no id) when the caller can read but not write anything. One documented divergence remains: `api/collections.py::confined_collection_name` (the graph endpoints' collection scope) applies the allowlist alone, lexicographically — it can name a collection the caller cannot read, though today no deployed tenant sets `TENANT_COLLECTIONS`.
+
+**Tools & models:** `flock`, sqlite `BEGIN IMMEDIATE`, Postgres advisory xact locks (`_COLLECTIONS_CREATE_LOCK_KEY`).
+
+**Inputs → Outputs:** `create(spec, limit) -> CreateOutcome{CREATED, DUPLICATE, AT_CAP, UNSUPPORTED}`, `get`, `list_records`, `set_state(expect=…)`, `begin_restore`, `next_version`, `touch_accessed`, `delete`.
+
+**Scalability & parallelization:** the durable store — not the in-process dict — is the record of truth, so several API processes can share one registry (sqlite/postgres) and the count/reserve section is atomic across them.
+
+**Single vs bulk:** the API creates through `create()`; the bulk CLIs (`scripts/ingest_jsonl.py`, `load_embeddings.py`, `ingest_shard.py`, `ingest_chunks.py`) resolve the entry through `ingest_target.resolve_or_exit` first (§5.4; an unregistered id is refused unless `--create-via-api`) and then call `ensure_collection()` / `ensure_index()` themselves on the entry's physical names — the registry is consulted, but the physical stores are created by the tool rather than by `create()`; ADR-0009 decides which registry they resolve against.
+
+### 9.3 Ownership, shares, groups: the one authorization seam
+
+**What it is:** `authz.py::resolve_access(subject, role, collection_id, action, store) -> AccessDecision(allowed, reason, via)` is the **only** authorization decision in the tree (routers never run inline SQL or ad-hoc owner checks); `api/access.py::enforce_access` is its HTTP mapping. `authz.py` imports nothing from `ragstack.api` and knows nothing about registry entries — deliberately, so a second consumer (the future ACL sidecar, GoWe) inherits no HTTP carve-outs.
+
+**Algorithm / workflow** (`resolve_access`, `authz.py` L63-131):
+1. `role == "admin"` → allowed, `via="admin-bypass"`, **logged on every call** (`"authz admin-bypass: subject=… action=… collection=…"`) — ADR-0003 §5's "a decision the code states". The batch variants log one summary line per listing/picker call.
+2. `store.owner_of(collection_id) == subject` → allowed, `via="owner"`.
+3. `action == "read"`: any active grant to the subject on this collection — directly, via a group the subject belongs to, or via `public` — allows it (`via="grant"` preferred over `via="public"` when both exist). `grants_for_subject` is the seam that makes groups work: the base `*AclStore` unions direct + `public` only; the `*GroupStore` subclasses **override** it to add shares to every group the subject actively belongs to (`group_store.py` L44-49), and the lifespan installs the *group* store as the ACL store, the user store and the group store — one object, one database (`deps.py` L1883-1888). `public` membership is constant-true (ADR-0004 §4).
+4. `action in {"write", "owner"}` → **owner only**. Write shares, `grant_option` and delegated granting are not exposed (ADR-0004 implementation notes); `resolve_write_many` restates the same policy side-by-side so the two must change together.
+5. **Any store failure → `AuthzUnavailable`** (fail closed); `access.py` maps it to **503**, never 200.
+
+**HTTP mapping** (`access.py::enforce_access`, L115-166):
+- read denied → **404**, byte-identical to an unknown id (no existence oracle);
+- write/owner denied → **403** *only if* the caller can read the collection; otherwise the same **404**, so a probing `POST /v1/ingest` cannot distinguish "exists, not yours" from "doesn't exist";
+- store down → **503**;
+- read/write enforcement is a no-op when auth is unconfigured (`auth_configured()`: no API keys and no identity provider — the open dev path); `owner` is **always** enforced (it replaced a `require_role(admin)` that already gated keyless callers);
+- an allowed read/write then passes the **lifecycle gate** (§9.5); `owner` actions never do, so a dormant collection can be managed without restoring it.
+
+**The shares API** (`api/routers/collections.py`, all owner-or-admin via `enforce_access(..., "owner")`):
+- `POST /v1/collections/{id}/shares`: `permission` must be `read` — `owner` → **400** naming `POST …/owner`; anything else → **422**. Grantee spellings (`_resolve_grantee`, L1594-1683): `@public`/`public` → the built-in group; `@group:<id>`/`group:<id>` → a RAGStack group (must exist and be active → else 422); `@service:<subject>` → a colon-free user subject (a colon inside, or `default`/`public`, → 422); `issuer:subject` verbatim (degenerate halves → 422); a bare name → `<issuer>:<name>` (BV-BRC usernames). A grant to the current owner → 409; a duplicate active grant → 409; `grant_option` is never writable. A never-seen grantee gets a provisional users row (`ensure_provisional`); there is no BV-BRC existence check, so the resolved subject is echoed back.
+- `DELETE …/shares/{share_id}`: soft revoke (`revoked_at`/`revoked_by`, never `DELETE`; ADR-0004 §6). `AclStore.revoke` follows `granted_by` chains with a **grounded least-fixpoint** (`_revocation_plan`) — an onward grant survives if its grantee retains access through an independent share.
+- `POST /v1/collections/{id}/owner` (L1982-): the only route by which ownership moves. `AclStore.transfer_owner` revokes the current owner row and inserts the new one **in one transaction on every backend**; replay → 409; a group subject → 400; no active owner row → 409 (only an admin can reach it; the backfill repairs it); the outgoing owner gets **no consolation read grant** and the response reports `previous_owner_retains_read` re-evaluated through the seam. The **recipient's** admin status, not the actor's, exempts from the per-owner quota; a non-admin actor may not transfer to a never-seen subject (422) because a ghost's owned count is always 0.
+- **Create** writes the owner row *after* the durable registry write (`access.py::write_owner_row`), private by default (no `public` grant); a residual owner row for a reused id → 409 without revealing whose; a store outage → 503 and the create is rolled back (registry row, manifest, and — guarded — the just-ensured stores).
+- **Delete** (`delete_collection`, L1294-1486): pointer name / shared surface / current pointer target → 409 *before* the owner gate; then `enforce_access(owner)`; then, after the gate (so a 409 cannot be an existence oracle), exactly one of the two forms is legal — `purge=true` is refused when another registry id or a routed leg shares a store, and `purge=false` is refused when **nothing** else claims the store (a store no entry claims is governed by no ACL — ADR-0002 §5's "not zero" half). `revoke_collection_acl` soft-revokes every row **before** the registry entry goes, so a later collection reusing the id inherits neither an owner nor a `public` grant.
+- **Startup backfill** (`access.py::backfill_collection_owners`, every boot, idempotent): an entry whose spec records a creator gets a lost owner row repaired to that creator and stays private; an entry with no recorded creator and no real active owner is *legacy* and gets `owner = acl_backfill_owner` plus `read → public` — unless the row's full history (revoked rows included) shows the grant was deliberately revoked, or, for the shared surface, the latest public-read row under the legacy `default` id was revoked (#276). A failed lookback skips publishing that boot rather than publishing blind.
+
+**Groups** (`group_store.py`, `api/routers/groups.py`): native per-tenant rows, flat membership (a `@public`/`@group:` member is 422 — no nesting), owner-managed; `public` is a real, listable, never-editable, never-deletable row; a group owner is not implicitly a member. Membership edits are instant access changes.
+
+**Tools & models:** the `shares` table with partial unique indexes `shares_active` (per grantee) and `shares_active_owner` (one active owner per collection) and `shares_active_owned_by` (the per-owner count); memory / sqlite / postgres; Postgres advisory locks for the owner-quota section.
+
+**Inputs → Outputs:** `resolve_access(...) -> AccessDecision`; `resolve_read_many` / `resolve_write_many` (one `grants_for_subject` round trip per listing); `enforce_access` → `None` or `HTTPException(403|404|503)`.
+
+**Scalability & parallelization:** per-collection decisions cost `owner_of` + `grants_for_subject`; listings use the batch resolvers (one round trip for N entries, #314); the admin-bypass log line is the only per-call cost for admins.
+
+**Single vs bulk:** one decision per collection per request; a multi-collection query resolves and authorizes every member before any leg runs (§9.4).
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["enforce_access principal collection action"] --> B{"auth configured or action owner"}
+    B -->|"no"| L["lifecycle gate then allow"]
+    B -->|"yes"| C["resolve_access"]
+    C -->|"store error"| S503["503 fail closed"]
+    C --> D{"role admin"}
+    D -->|"yes"| LOG["log admin-bypass"] --> AL["allow"]
+    D -->|"no"| E{"owner row equals subject"}
+    E -->|"yes"| AL
+    E -->|"no"| F{"action"}
+    F -->|"read"| G{"active grant direct or group or public"}
+    G -->|"yes"| AL
+    G -->|"no"| N404["404 unknown collection"]
+    F -->|"write or owner"| H{"caller can read"}
+    H -->|"yes"| N403["403 no access"]
+    H -->|"no"| N404
+    AL --> I{"action is owner"}
+    I -->|"no"| L
+    I -->|"yes"| OK["allow without lifecycle gate"]
+```
+
+### 9.4 Row-level scoping: `tenant_id` as owner provenance, share widening, and the one carve-out
+
+**What it is:** Every chunk carries `metadata["tenant_id"]` = the *writer's* subject (`tenancy.py::OWNER_FIELD = "tenant_id"`; conceptually `owner_id` per ADR-0003 §1, but the stored key is never renamed — it is indexed in Qdrant and baked into ES and point ids, `tenancy.py` L8-16). Every read carries a `tenant_id` filter pinned **last** by `scope_filters` (L78-84) to `readable_tenants(tenant, extra)` = own + `public` + any `extra` writer-tenants the caller has been authorized to see for *this* collection.
+
+**Algorithm / workflow** (the authorized read, `routers/query.py::_resolve_retrieval` L674-762):
+1. Validate the caller's filter values (400 on a bad value) and, if requested, merge the server-built `Not(is_boilerplate)`.
+2. `_resolve_entry`: an explicit id passes the `TENANT_COLLECTIONS` allowlist (404 otherwise, same body as unknown) and the registry; an omitted id (or the literal `"default"`) resolves the caller's own default. Then **`enforce_access(principal, entry.id, "read")`** — the seam and the lifecycle gate.
+3. **Share widening** (`api/scope.py::shared_scope`, L39-77): a caller who reaches a collection *through a share* (or `public`) has scope `{own, public}` but the chunks are stamped with the **owner's** tenant, so they would pass the read gate and see nothing. `shared_scope` returns `[owner]` as an `extra` writer-tenant — exactly the grant, no wider — **only** when `_widening_eligible`: not the shared surface (there `tenant_id` *is* the isolation and the owner is only a backfill artifact), and not a collection **co-resident** with another registry entry on either physical leg (the stores filter by `tenant_id` alone, no `collection_id` predicate, so widening one of a pair would expose the other's chunks — the review-caught leak of #244). No-op when auth is unconfigured or the caller is the owner; **never widens on a store error**. `count_scope` uses the same rule so `GET /v1/collections` counts what a query would return.
+4. `scope_filters(filters, tenant, extra)` produces the scoped dict for the dense and BM25 legs; `/v1/chunks` uses the same scoped dict for `get_chunks`. A multi-collection request (`collections: [...]`, 1–5 ids) resolves and authorizes **every** member first — the first refusal (404 / 503 / 409) is the answer for the whole request — then computes widening per member and runs one leg per member (`MultiCollectionRetriever`).
+5. **Negation of the owner field is refused in every interpreter** (`stores/filters.py::NEGATION_FORBIDDEN_KEYS`, §8.1), and the wire cannot express a negation at all.
+6. **The graph leg is scoped differently.** `retrieval/retriever.py::graph_context` scopes the neighbourhood query to `readable_tenants(tenant_id)` (own + public) and to the physical collection(s), and re-checks both stamps on the way back — but it receives **no `extra` writer-tenants**, so a collection reached through a share contributes no graph context (an under-exposure, recorded in STATUS.md as deferred; not a leak). The standalone `/v1/graph/*` endpoints likewise never call the ACL seam: they are `resolve_tenant`-scoped and confined by `confined_collection_name` only (`routers/graph.py`).
+
+**The one carve-out — the legacy shared surface.** On the entry with `is_shared_surface=True`, the ingest and `DELETE /v1/documents/{doc_id}` routes require `"read" if target.is_shared_surface else "write"` (`routers/documents.py` L360-362, L1697-1699): every caller writes into and deletes from its own `tenant_id` stripe, so demanding ownership would lock every non-admin out of the flagship corpus. It keys on the **entry flag**, never on "is this the pointer target" — pointing `default` at an owned collection with a pointer-keyed exemption would let any reader ingest into it by omitting `collection` (ADR-0003 §2b). It lives in `access.py::filter_writable` + the routers, never in `authz.py`.
+
+**Known gap — ownership transfer does not re-stamp chunks** ([#558](https://github.com/wilke/ragstack/issues/558), **still OPEN**, filed 2026-09-15, label `bug`): `transfer_owner` moves the ACL row and nothing else, and `shared_scope` is a no-op for the owner, so after a transfer the new owner passes the read gate with scope `{their tenant, public}` while the chunks remain stamped with the previous owner's tenant — **they see zero chunks in a collection they own** (an empty result, not an error). The same mechanism bites when an admin ingests into someone else's collection. `test_collection_owner_transfer.py` has no assertion that the *new* owner can read chunks. Until it is fixed, treat transfer as "keeps the data, not the visibility".
+
+**Tools & models:** none — pure filter derivation; enforcement rides on the stores honouring the injected list (§8.1).
+
+**Inputs → Outputs:** `readable_tenants(str, extra) -> list[str]`; `scope_filters(dict, str, extra) -> dict`; `shared_scope(entry, registry, principal) -> list[str]`; `tenant_of(Chunk) -> str`.
+
+**Scalability & parallelization:** `shared_scope` is one `owner_of` per collection on the query path and one `owners_of` per listing (`shared_scope_many`).
+
+**Single vs bulk:** reads scope per query; writes stamp per item (`pipeline.ingest(..., tenant_id=…)`), so the bulk API path and the single path stamp identically; the bulk CLI stamps via `--tenant`.
+
+**Sequence diagram — an authorized read:**
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant Q as query router
+    participant D as default_collection
+    participant A as access.enforce_access
+    participant Z as authz.resolve_access
+    participant L as lifecycle gate
+    participant S as scope.shared_scope
+    participant R as HybridRetriever
+    C->>Q: POST v1 query with optional collection and filters
+    Q->>Q: validate_filter_values, merge Not is_boilerplate
+    alt collection omitted or default
+        Q->>D: resolve_default_entry
+        D->>Z: resolve_read_many over allowlist entries
+        D-->>Q: first visible entry or 404 naming no id
+    else explicit id
+        Q->>Q: allowlist check and registry resolve, else 404
     end
-    subgraph Read
-        G[search query_vector] --> H[_build_filter]
-        H --> I{value type}
-        I -->|list| J[MatchAny tenant own+public]
-        I -->|scalar| K[MatchValue]
-        I -->|empty list| L[drop no constraint]
-        J --> M[query_points top_k]
-        K --> M
-        L --> M
-        M --> N[rehydrate Chunk<br/>method vector]
-    end
+    Q->>A: enforce_access read
+    A->>Z: resolve_access subject role id read
+    Z-->>A: allow via owner or grant or public or admin-bypass, else deny
+    A-->>Q: 404 on deny, 503 on store error
+    A->>L: enforce_lifecycle
+    L-->>Q: proceed, or 503 Retry-After dormant or restoring, or 409 lost
+    Q->>S: shared_scope entry
+    S-->>Q: owner tenant if eligible and not owner, else empty
+    Q->>Q: scope_filters filters tenant extra, tenant_id pinned last
+    Q->>R: retrieve with scoped filters and tenant_id
+    R-->>Q: dense and bm25 legs scoped by extra, graph leg own plus public only
+    Q-->>C: sources
 ```
 
----
+### 9.5 Collection lifecycle: active / archiving / dormant / restoring / lost
 
-### ElasticsearchTextIndex
+**What it is:** Every registry row carries `state ∈ {active, archiving, dormant, restoring, lost}`, `versions` (archive versions), `archive_pending`, `last_accessed_at`, `graph_archived_versions` (`collection_store.py` L174-227). Transitions are compare-and-swap (`set_state(cid, state, expect=…)`; `begin_restore` adds the capacity count in the same atomic section). The `api/lifecycle.py::LifecycleGate` sits **after** authorization on the read/write path.
 
-**What it is:** A `TextIndex`-protocol adapter over Elasticsearch providing BM25 lexical retrieval, tenant-scoped by a `tenant:chunk_id` document id and mandatory tenant filtering (`python/ragstack/stores/elasticsearch.py:73-74`).
+**Algorithm / workflow** (`LifecycleGate.enforce`, L191-257; one registry read memoized `collection_state_cache_seconds` = 5):
+- `active` / `archiving` → proceed and `AccessTracker.touch(cid)` (batched, flushed every `collection_access_flush_seconds` = 60, never per request).
+- `dormant` → the restore is submitted **as the caller**, which requires a BV-BRC bearer token (`security.gowe_caller`): an API-key / keyless / other-issuer caller gets **503 + `Retry-After`** saying a user token is required and the row **stays dormant**. Otherwise `admit()` CASes `dormant → restoring` **within the active bound** (`CollectionStore.begin_restore`, #381): at `AT_CAP` it re-tries under a per-process lock, evicts exactly one (§9.7) and re-tries once — never a loop; still at cap → 503 "tenant at capacity", row left `dormant`. Admitted → `touch_accessed` immediately (so the just-restored collection is not the next LRU victim) and the workflow is spawned; the caller gets 503 + `Retry-After` (`collection_restore_retry_after` = 30) either way.
+- `restoring` → 503 + `Retry-After`; a row `restoring` longer than `collection_restore_timeout` (3600 s) that this process is not watching is presumed orphaned and CASed back to `dormant`.
+- `lost` → **409** with the recorded reason; only `POST /v1/collections/{id}/restore` (owner-or-admin, 202, idempotent, **may retry from `lost`**, 400 without a BV-BRC token) is the way back after repairing the Workspace archive.
+- A row the store does not track (the settings-derived surface) is never gated.
 
-**Algorithm / workflow:**
-1. **Mapping** — `content` is the only analyzed (`text`/BM25) field; `doc_id`/`chunk_id` are `keyword`; `metadata` is a nested object with a dynamic template mapping every `metadata.*` string to `keyword` for exact term matching (`elasticsearch.py:21-39`).
-2. **`ensure_index`** — creates idempotently, swallowing `resource_already_exists_exception` to survive two workers racing on create; re-raises any other `ApiError` (`elasticsearch.py:82-93`).
-3. **`index`** — for each chunk, stamps `tenant_id` into metadata (default `DEFAULT_TENANT`), builds the bulk `index` op with `_id = _es_id(tenant, chunk_id)` = `"{tenant}:{chunk_id}"` (`elasticsearch.py:42-43,106`), persisting **full** metadata so BM25 hits round-trip the same metadata as the vector store for RRF fusion (`elasticsearch.py:100-116`). One `client.bulk(refresh=True)` call (`elasticsearch.py:118`).
-4. **Bulk partial-failure surfacing** — ES returns HTTP 200 with `errors:true` on partial failure instead of raising; the code inspects `resp["items"]` and raises `RuntimeError` on the **first** item carrying an `error`, so a silently-dropped doc becomes a hard failure (`elasticsearch.py:122-129`).
-5. **`search` / `_build_query`** — **fail-closed**: raises `ValueError` if `tenant_id` filter is empty/absent, since an unscoped BM25 search would leak across all tenants (`elasticsearch.py:54-59`). Builds a `bool` query: `must` = `match` on `content` (BM25), `filter` = per-key `term`/`terms` clauses against `metadata.<key>` (list→`terms`, empty list dropped — `elasticsearch.py:60-70`). Hits rehydrate to `ScoredChunk` with `retrieval_method="bm25"` (`elasticsearch.py:141-155`).
-6. **`count_tenants`** — fail-closed 0 on empty list, else a `terms`-filtered `_count` on `metadata.tenant_id` (`elasticsearch.py:158-169`).
-7. **`delete_except`** — orphan prune via a single `delete_by_query` scoped to one `doc_id` with `must_not: terms(chunk_id in keep)`, `conflicts="proceed"` — O(chunks-per-doc), avoiding the whole-index filtered-delete timeout the Qdrant side scrolls to dodge (`elasticsearch.py:189-211`).
+Restore/verification mechanics, `spec_hash` checks and the `lost` classification are in §8.6. Two facts to hold onto: **nothing ever sets `archiving`** — the constant is defined and read but no code path writes it; and **restore locates the archive under the recorded `spec.owner`'s Workspace**, whereas an ingest archives into the *caller's* — a co-writer's versions (an admin ingesting into someone else's collection) are not where restore looks (§9.9).
 
-**Tools & models:** `elasticsearch` client (`AsyncElasticsearch`, lazily imported so the `text` extra is optional — `elasticsearch.py:77`), Elasticsearch BM25 scoring. External service: Elasticsearch at `url`.
+**Tools & models:** the registry backends' CAS primitives; GoWe (`cwl/restore-collection.cwl`).
 
-**Inputs -> Outputs:** `index(list[Chunk]) -> None`; `search(query: str, top_k, filters) -> list[ScoredChunk]`; `count_tenants(list[str]) -> int`; `delete`/`delete_except` -> `None`.
+**Inputs → Outputs:** `enforce(principal, cid, action) -> None | HTTPException(503 | 409)`; `admit(cid, expect, reason) -> Admission{ADMITTED | AT_CAP | MOVED}`.
 
-**Scalability & parallelization:** `async` over a single `AsyncElasticsearch`; **no client-side fan-out** — indexing is one `bulk` op per call, search/count/delete are single requests. `refresh=True` on every write forces an index refresh, which trades ingest throughput for immediate searchability — a real throughput cost at high write volume. Bottleneck: the one unbounded `bulk` payload per `index()` call and the forced refresh. Scales at the ES cluster layer (sharding/replicas), not in this adapter.
+**Scalability & parallelization:** N concurrent requests on a dormant row all CAS; exactly one wins and submits; across processes the store's atomic count keeps the bound (two processes may each evict one victim in a narrow window — under-fills, never over-fills).
 
-**Single vs bulk:** One class, one path — `index` always batches a list into a single `bulk` request; no separate single-doc entry point. `delete` (whole doc) and `delete_except` (orphan prune) are the distinct deletion entry points, both via `delete_by_query`.
+**Single vs bulk:** one collection per gate call; multi-collection queries gate each member and fail the whole request on the first 503/409.
 
----
-
-### Neo4jGraphStore
-
-**What it is:** A `GraphStore`-protocol adapter over Neo4j 5 storing triples as `(:Entity)-[:REL]->(:Entity)`, with entities keyed by `(name, tenant_id)` so a surface form is a distinct node per tenant, and depth-capped, tenant-scoped neighborhood traversal (`python/ragstack/stores/neo4j.py:35-42`).
-
-**Algorithm / workflow:**
-1. **`ensure_schema`** — idempotent uniqueness constraint on `(e.name, e.tenant_id)`, enforcing tenant-scoped entity identity at the DB and keeping MERGE fast (`neo4j.py:56-63`).
-2. **`add_triples`** — maps each `Triple` to a row (stamping `tenant_id` via `_tenant_or_default`), then one `UNWIND $rows` Cypher that `MERGE`s both endpoint entities on `(name, tenant_id)` and `MERGE`s the `REL` edge keyed by `(predicate, doc_id, tenant_id)` — idempotent re-ingest, no duplicate edges (`neo4j.py:70-97`).
-3. **`query_neighborhood`** — clamps `depth` to `[1, _MAX_DEPTH=5]` (`neo4j.py:24-25,110`); lowercases the entity; if scoped, sets `params["tenants"] = readable_tenants(tenant_id)` (own + `public`). Builds a variable-length pattern `(start)-[rels:REL*1..{depth}]-(:Entity)` where `start.name CONTAINS $entity`, plus a **path_clause** `WHERE all(rel IN rels WHERE rel.tenant_id IN $tenants)` that scopes **every hop** — so a multi-hop query cannot tunnel through another tenant's edge to reach an otherwise-invisible node (connectivity leak at depth>1) (`neo4j.py:114-136`). Unwinds `rels`, dedups to distinct edges, re-matches directed `(s)-[r]->(o)` to reconstruct triples.
-4. **`stats`** — tenant-scoped `(entities, relationships)`; uses `count(e)` (single-row even at zero) plus an `OPTIONAL MATCH` for relationships so an entities-but-no-edges graph reports correctly instead of `(0,0)`; fails closed because Cypher `x IN []` is false (`neo4j.py:159-189`).
-5. **`delete_by_doc`** (tenant-scoped orphan sweep) — matches this doc's `REL` edges (optionally `AND r.tenant_id = $tenant_id`), collects their endpoint entities, `DELETE`s the edges, then sweeps **only those endpoints** if now edgeless (`WHERE NOT (e)--()`) — never full-scans the graph, never crosses tenants (`neo4j.py:191-213`).
-
-**Tools & models:** `neo4j` async driver (`AsyncGraphDatabase`, lazily imported — optional `graph` extra), Cypher. External service: Neo4j 5 (note: rejects literal password `neo4j`; deployed stack uses `ragstack`). No LLM here — extraction is a separate component.
-
-**Inputs -> Outputs:** `add_triples(list[Triple]) -> None`; `query_neighborhood(entity: str, depth, tenant_id) -> list[Triple]`; `list_entities(...) -> list[tuple[str,int]]`; `stats(...) -> tuple[int,int]`; `delete_by_doc(...) -> None`.
-
-**Scalability & parallelization:** `async` over a single shared `AsyncDriver`; each method opens its own session and runs **one** Cypher statement — no client-side fan-out or gather. Query planning/execution is delegated to Neo4j. The traversal bottleneck is intrinsic: a variable-length `*1..depth` pattern is combinatorial in the branching factor, which is exactly why `_MAX_DEPTH=5` caps it (an unbounded depth would let Neo4j enumerate exponentially many paths — a DoS, `neo4j.py:22-25`). `CONTAINS` on `start.name` is a substring scan (not index-backed), a scalability weak point on large graphs.
-
-**Single vs bulk:** One class. `add_triples` always batches via `UNWIND` — no single-triple path. Writes (`add_triples`) vs reads (`query_neighborhood`/`list_entities`/`stats`) vs delete (`delete_by_doc`) are the distinct entry points.
-
-**Diagram:**
-```mermaid
-flowchart TD
-    A[query_neighborhood entity depth] --> B[clamp depth 1..5]
-    B --> C{tenant_id set}
-    C -->|yes| D[tenants = readable own+public]
-    C -->|no| E[unscoped dev/tests]
-    D --> F[MATCH start CONTAINS entity]
-    E --> F
-    F --> G[var-length rels REL*1..depth]
-    G --> H{path_clause}
-    H -->|scoped| I[all rel in rels<br/>tenant readable<br/>every hop scoped]
-    H -->|unscoped| J[no hop filter]
-    I --> K[UNWIND rels DISTINCT r]
-    J --> K
-    K --> L[re-match s -r-> o]
-    L --> M[return triples]
-```
-
----
-
-### LLMKGExtractor
-
-**What it is:** A `KGExtractor`-protocol component (M4 Phase 2) that prompts an OpenAI-compatible LLM for strict-JSON `(subject, predicate, object)` triples per chunk, parses defensively, and returns deduplicated `Triple`s with `doc_id` set and `tenant_id` left for the pipeline to stamp (`python/ragstack/graph/extractor.py:55-71`).
-
-**Algorithm / workflow:**
-1. **`extract`** — early-returns `[]` on empty input; selects at most `max_chunks` chunks (0 = all) (`extractor.py:80-82`). Iterates chunks, accumulating triples into a global `seen` set keyed on `(subject, predicate, object, doc_id)` for cross-chunk dedup (`extractor.py:84-95`).
-2. **`_extract_chunk`** — skips blank chunks; calls `llm.complete_text(_PROMPT.format(text=...))` wrapped in `try/except Exception` → on **any** LLM error, logs a warning and returns `[]` (per-chunk graceful degrade so one failure never fails the ingest) (`extractor.py:97-112`).
-3. **Prompt** — instructs STRICT JSON in an exact `{"triples":[...]}` shape with `temperature`-implied determinism; explicitly forbids inventing facts and gives an empty-list escape hatch (`extractor.py:32-41`).
-4. **`_parse`** (defensive) — `_extract_json_object` regex-matches the first `{...}` span greedily to the last brace, tolerating code fences / surrounding prose (`extractor.py:45-52,117`); returns `[]` if no JSON span, on `JSONDecodeError`/`ValueError`, or if `data["triples"]` is absent/not a list (`extractor.py:118-130`). Per item: skips non-dicts and any triple missing subject/predicate/object after `str().strip()`; builds a `Triple(doc_id=...)`; honors `max_triples_per_chunk` as an early break (`extractor.py:132-146`).
-
-**Tools & models:** An injected `llm` object exposing `async complete_text(prompt) -> str` (e.g. `ragstack.llm.OpenAILLM`) — any OpenAI-compatible endpoint incl. vLLM. Std-lib `json` + `re`. Determinism via `temperature=0.0` (documented design goal, set on the LLM). Only constructed when `kg_extraction_enabled` and an LLM is configured (`deps._build_kg_extractor`).
-
-**Inputs -> Outputs:** `extract(list[Chunk]) -> list[Triple]` (deduplicated, `tenant_id` empty).
-
-**Scalability & parallelization:** **Sequentially processes chunks in a plain `for` loop** — one `await self._llm.complete_text(...)` at a time, no `asyncio.gather`, no semaphore, no batching (`extractor.py:88-89`). This is the dominant bottleneck: N chunks = N serialized LLM round-trips, so cost/latency is linear in chunk count. `max_chunks` and `max_triples_per_chunk` are the only throttles (bounding cost, not parallelizing). This is the least-scalable component of the four covered — an obvious candidate for bounded-concurrency fan-out.
-
-**Single vs bulk:** One class, one path. `extract` is the only public entry; a single chunk is a one-element list. `_extract_chunk` (one chunk → one LLM call) is the per-item unit but is not a separate public entry point.
-
-**Diagram:**
-```mermaid
-flowchart TD
-    A[extract chunks] --> B[select max_chunks]
-    B --> C[for each chunk]
-    C --> D{content blank}
-    D -->|yes| C
-    D -->|no| E[await llm.complete_text]
-    E --> F{LLM error}
-    F -->|yes| G[log warn return empty]
-    G --> C
-    F -->|no| H[_extract_json_object<br/>regex first brace span]
-    H --> I{JSON parses}
-    I -->|no| J[return empty]
-    J --> C
-    I -->|yes| K{triples is list}
-    K -->|no| J
-    K -->|yes| L[per item strip s/p/o]
-    L --> M{all present}
-    M -->|no| L
-    M -->|yes| N{seen s p o doc_id}
-    N -->|dup| L
-    N -->|new| O[append Triple]
-    O --> C
-    C --> P[return triples]
-```
-
----
-
-**Note on `memory.py`** (in-scope by file, not in your enumerated capability list): `InMemoryVectorStore`/`InMemoryTextIndex`/`InMemoryGraphStore` are dev/test fakes for the same three protocols. Their tenancy semantics are the reference the real stores mirror: identity keyed on `(tenant_of(c), c.id)` so two tenants' copies coexist (`memory.py:44-45,106-110`), `_matches` drops empty-list filters identically to the Qdrant `_build_filter` (`memory.py:11-23`), graph dedup keys on `(s,p,o,tenant_id)` matching Neo4j's per-tenant MERGE (`memory.py:176-181`), and `count_tenants` fails closed on empty (`memory.py:89-94,158-163`). `InMemoryGraphStore.query_neighborhood` expands via recursion rather than a single traversal query and, unlike Neo4j, dedups on `(s,p,o)` **without** re-scoping each hop — the multi-hop path filter is a Neo4j-only guarantee (`memory.py:191-215`).
-
-Relevant files:
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/qdrant.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/elasticsearch.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/neo4j.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/memory.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/graph/extractor.py`
-
----
-
-## 9. Tenancy, RBAC, Quota, Jobs
-
-### Multi-Tenant Data Isolation
-**What it is:** Every stored chunk carries a server-derived `tenant_id`; a caller reads its own tenant plus the shared `public` corpus, but writes/deletes only within its own tenant. The tenant is never trusted from the request body (`tenancy.py:1-6`).
-**Algorithm / workflow:**
-1. A request arrives with an `X-API-Key` header; the tenant is resolved server-side by `resolve_tenant` (`security.py:94-104`), never from the body.
-2. On a read (query/retrieve), `readable_tenants(tenant)` returns `[tenant, PUBLIC_TENANT]` — or just `[PUBLIC_TENANT]` if the caller *is* the public tenant (`tenancy.py:21-25`).
-3. `scope_filters(filters, tenant)` merges the caller's filters with `{"tenant_id": readable_tenants(tenant)}`, setting `tenant_id` **last** so a client-supplied `--filter` can't widen the scope (`tenancy.py:34-37`). Called in `query.py:222` before hitting the retriever.
-4. On a write (ingest), the pipeline is called as `pipeline.ingest(item.source, tenant_id=tenant_id)` (`sharded.py:91`), stamping the chunk. Ownership of a stored chunk is read back via `tenant_of(chunk)` → `chunk.metadata["tenant_id"]` with a `DEFAULT_TENANT` fallback for unstamped chunks (`tenancy.py:28-31`).
-**Tools & models:** No external services — pure filter-derivation constants (`PUBLIC_TENANT="public"`, `DEFAULT_TENANT="default"`, `tenancy.py:16-18`). Enforcement rides on the downstream store's `tenant_id` filter.
-**Inputs -> Outputs:** `readable_tenants(str) -> list[str]`; `scope_filters(dict, str) -> dict`; `tenant_of(Chunk) -> str`.
-**Scalability & parallelization:** Stateless, allocation-only functions — trivially parallel, no bottleneck of their own. Isolation strength is only as strong as the store honoring the injected `tenant_id` filter list.
-**Single vs bulk:** Same primitives for both. Reads use `scope_filters` per query (`query.py:222`); writes stamp `tenant_id` per item in the bulk ingest loop (`sharded.py:91`). No separate bulk entry point — isolation is enforced per-item/per-query uniformly.
-**Diagram:**
-```mermaid
-flowchart TD
-  A[X-API-Key header] --> B[resolve_tenant<br/>server-side]
-  B --> C{operation?}
-  C -->|read| D[readable_tenants<br/>own + public]
-  D --> E[scope_filters<br/>tenant_id set last]
-  E --> F[store query<br/>filtered]
-  C -->|write| G[pipeline.ingest<br/>tenant_id stamped]
-  G --> H[chunk.metadata<br/>tenant_id]
-```
-
-### API-Key Authentication + RBAC
-**What it is:** Two server-side layers keyed off `X-API-Key`: a **tenant** (data isolation) and a **role** (`admin`|`engineer`|`manager`|`researcher`) gating admin/dashboard surfaces (`security.py:1-11`). `admin` is a superuser passing every `require_role` check.
-**Algorithm / workflow:**
-1. `_principal_from_key(api_key)` is the single verifier (`security.py:44-65`). If no `api_keys` are configured, it's the open dev/test path: returns `Principal(tenant=DEFAULT_TENANT, role=settings.default_role)` (`security.py:52-54`) — production's startup check forbids keyless.
-2. Otherwise it authenticates in **constant time**: `sum(secrets.compare_digest(api_key, k) for k in keys) > 0` — `sum()` over the generator runs *every* `compare_digest` with no short-circuit, so total time doesn't reveal which key matched or its position (`security.py:56-57`).
-3. On match, tenant/role come from `settings.api_key_tenants.get(api_key, DEFAULT_TENANT)` and `settings.api_key_roles.get(api_key, settings.default_role)` — a valid-but-unmapped key falls back to defaults (`security.py:58-61`). No match → 401 (`security.py:62-65`).
-4. `resolve_principal` / `resolve_tenant` are FastAPI dependencies wrapping the verifier; FastAPI caches per request so it runs once (`security.py:68-70, 94-104`).
-5. `require_role(*roles)` is a dependency **factory**: it validates `roles` against `VALID_ROLES` at *build time* so a typo (`require_role("admn")`) fails loudly at import, not as a silent permanent 403 (`security.py:118-123`). The returned `_dependency` passes if `principal.role == ROLE_ADMIN or principal.role in allowed`, else 403 (`security.py:126-134`).
-6. **Fail-fast at startup:** `validate_role_settings()` (`security.py:73-91`) rejects an unknown `default_role` or any `api_key_roles` value outside `VALID_ROLES`, logging only the offending role values (never keys). Called in `lifespan` (`deps.py:388-390`), alongside `_validate_production_settings` which forces every configured key to have a tenant mapping (`deps.py:375-379`).
-**Tools & models:** `secrets.compare_digest` (constant-time), `fastapi.security.APIKeyHeader` (`auto_error=False`, `security.py:26`), `fastapi.Depends`/`Security`. No external auth service.
-**Inputs -> Outputs:** `_principal_from_key(str|None) -> Principal` (frozen dataclass `{tenant, role}`, `security.py:36-41`) or raises 401/403; `resolve_tenant -> str`; `require_role -> dependency -> Principal`.
-**Scalability & parallelization:** O(number of configured keys) per request — the `sum()` scans every key deliberately, so cost scales with the keylist size (fine for a small operator keyset). Purely CPU-local, no I/O, no lock; caching in FastAPI dedupes within a request.
-**Single vs bulk:** One code path — every request (single query or the POST that launches a bulk ingest) resolves the same way. There is no batch auth; the bulk ingest authenticates once at admission, then reuses the resolved tenant across all items.
-**Diagram:**
-```mermaid
-flowchart TD
-  A[X-API-Key] --> B{api_keys<br/>configured?}
-  B -->|no| C[Principal<br/>default tenant + default_role]
-  B -->|yes| D[sum compare_digest<br/>over all keys]
-  D --> E{any match?}
-  E -->|no| F[401]
-  E -->|yes| G[lookup tenant + role<br/>fallback to defaults]
-  G --> H{require_role?}
-  C --> H
-  H -->|admin or in allowed| I[Principal returned]
-  H -->|else| J[403]
-```
-
-### Per-Tenant Concurrency Quota
-**What it is:** A per-tenant admission-control semaphore bounding how many in-flight embed-bearing operations a *single* tenant may hold, so one tenant's 500k-doc ingest can't starve another's queries on the shared embedding GPUs (`quota.py:1-9`). Enforced at the admission layer (queries + ingest items), keeping the embedder tenant-agnostic.
-**Algorithm / workflow:**
-1. `TenantQuota(limit)` — `limit <= 0` disables it entirely (unlimited; the opt-in default `tenant_max_concurrency=0`, `config.py:143`). Constructed in `lifespan` (`deps.py:477`).
-2. `slot(tenant)` async context manager: if disabled, `yield` immediately (`quota.py:30-32`).
-3. Otherwise get-or-create a lazy `asyncio.Semaphore(limit)` per tenant. Get-or-create is atomic under asyncio because there's **no `await` between lookup and insert**, so no lock is needed (`quota.py:33-38`).
-4. `async with sem: yield` — the caller holds one slot for the whole operation (`quota.py:39-40`).
-5. Two call sites: query/retrieve via `tenant_slot` holding a slot for the whole request (`query.py:195-203`), and ingest via `_ingest_item` wrapping the per-item pipeline call (`sharded.py:88-91`).
-6. Startup guard: if `tenant_max_concurrency >= embedding_max_concurrency`, `lifespan` warns the quota won't actually isolate tenants on the shared pool (`deps.py:478-485`).
-**Tools & models:** `asyncio.Semaphore`, `contextlib.asynccontextmanager`. No external service.
-**Inputs -> Outputs:** `slot(tenant: str) -> async context manager yielding None`.
-**Scalability & parallelization:** This *is* the fairness/parallelization control. It caps concurrency **per tenant**; the embedder pool (`embedding_max_concurrency`, `config.py:54`) caps the fleet total — the quota only isolates if set strictly below it. The semaphore dict grows one entry per tenant and is never evicted, which is bounded because tenants come from the finite `api_key_tenants` map (`quota.py:20-25`); the comment flags eviction is needed only if tenants ever derive from untrusted input. Bottleneck: a tenant exceeding its limit blocks (awaits) on its own semaphore, applying backpressure without affecting other tenants' semaphores.
-**Single vs bulk:** The unit differs. A single query holds **one** slot for the request (`query.py:202`). A bulk ingest acquires a slot **per item** inside the fan-out (`sharded.py:90`), so a large manifest holds at most `limit` slots concurrently regardless of shard/backend concurrency (`LocalAsyncIORunner` fans shards out via `asyncio.gather` under its own `Semaphore(max_concurrency)`, `backends.py:50-63`) — the tenant quota is the tighter, tenant-scoped gate layered under it.
-**Diagram:**
-```mermaid
-flowchart TD
-  A[slot tenant] --> B{limit <= 0?}
-  B -->|yes| C[yield now<br/>unlimited]
-  B -->|no| D[get-or-create<br/>Semaphore per tenant]
-  D --> E{slot free?}
-  E -->|no| F[await<br/>backpressure]
-  E -->|yes| G[acquire + yield<br/>run operation]
-  F --> G
-  G --> H[release on exit]
-```
-
-### Resumable Job Store
-**What it is:** Persistence for the async `/v1/ingest` flow — POST creates a job and returns immediately, the pipeline runs as an in-process background task, and `GET /v1/ingest/{job_id}` reports real progress (`jobstore.py:1-8`). Three backends behind one `JobStore` Protocol, with per-item checkpointing for crash-resumable manifest runs and startup reaping of interrupted jobs.
-**Algorithm / workflow:**
-1. **Backend selection:** `make_job_store(backend, path, dsn)` returns `SqliteJobStore` | `PostgresJobStore` | `InMemoryJobStore` (`jobstore.py:519-525`; config `job_store_backend`, `config.py:148`). All satisfy the `@runtime_checkable JobStore` Protocol (`jobstore.py:114-149`).
-2. **Job lifecycle:** `create(source)` inserts an `IngestJob` in status `accepted` (`jobstore.py:30-40`). Status vocabulary: `accepted|running|completed|failed|unknown`, plus per-item `pending` (`jobstore.py:21-28`).
-3. **Per-item resumable state:** `ingest_manifest` with a `job_store`+`job_id` registers all items via `add_items` (idempotent — `INSERT OR IGNORE`/`ON CONFLICT DO NOTHING`, `jobstore.py:317-321, 473-476`), then fetches `completed_item_ids` and processes only the remainder, so re-invoking after a crash skips finished work (`sharded.py:53-62`).
-4. Each item's outcome is checkpointed as it finishes via `mark_item` (upsert: `ON CONFLICT ... DO UPDATE`, `jobstore.py:326-333, 488-494`), called per item in `_run_shard` (`sharded.py:75-82`). `item_counts` folds a `GROUP BY status` into a zero-seeded `{pending, completed, failed}` dict (`jobstore.py:105-111, 343-349`).
-5. **Interrupted-job reaping:** At startup `lifespan` calls `fail_interrupted()` (`deps.py:471`). Since ingestion runs as in-process background tasks, any job left non-terminal in a durable store belongs to a worker that died with the previous process; it's flipped to `failed` with error label `interrupted` (`jobstore.py:54-59, 177-186, 304-313`). **Postgres deliberately no-ops this** — an unscoped sweep would reap sibling workers' live jobs; it needs a per-owner lease/heartbeat (issue #7) (`jobstore.py:460-465`).
-6. **Error hygiene:** `IngestJob.error` / `JobItem.error` hold only a caller-safe label (e.g. exception class name), never raw paths or upstream messages, so the poll endpoint can't leak internals (`jobstore.py:37-39`; `_ingest_item` stores `type(e).__name__`, `sharded.py:98`).
-**Tools & models:** stdlib `sqlite3` (WAL mode, connection-per-op run under `asyncio.to_thread` so blocking sqlite never stalls the loop, `jobstore.py:231-252, 295-302`); `asyncpg` connection pool for Postgres, created lazily on first use under a double-checked lock (`jobstore.py:399-417`); Pydantic models; shared DDL string for both SQL dialects (`jobstore.py:63-82`). `_normalize_dsn` strips SQLAlchemy `+driver` suffixes asyncpg rejects (`jobstore.py:376-380`).
-**Inputs -> Outputs:** `create(str) -> IngestJob`; `get(str) -> IngestJob|None`; `update(job_id, **fields) -> None` (filtered to `_JOB_UPDATE_COLUMNS`, chunk_ids JSON-encoded, `jobstore.py:95-102`); `add_items(job_id, list[(item_id, source)]) -> None`; `mark_item(...) -> None`; `completed_item_ids(job_id) -> set[str]`; `item_counts(job_id) -> dict[str,int]`; `fail_interrupted() -> int`.
-**Scalability & parallelization:** In-memory guards all mutations with a single `asyncio.Lock` (`jobstore.py:158`) — process-local, lost on restart. Sqlite opens a connection per op offloaded to a thread; WAL lets the single background writer coexist with status reads — but it's a **single-writer** store, so it doesn't parallelize writers. Postgres is the multi-process checkpoint of record for the 500k path: its pool (`min/max` size 1/5, `jobstore.py:392`) lets multiple workers update item state concurrently via per-item upserts. Bottleneck: sqlite single-writer serialization; Postgres pool size and the currently-missing lease mechanism for safe cross-worker reaping.
-**Single vs bulk:** Distinct paths. A single ingest tracks only the top-level `IngestJob` (`create`/`update`/`get`). A **bulk/manifest** run additionally uses the per-item table (`add_items` → `completed_item_ids` → `mark_item` → `item_counts`) driven by `ShardedIngestor.ingest_manifest` (`sharded.py:39-84`) for skip-completed resumability. The distinct classes are `InMemoryJobStore` (dev/tests) vs `SqliteJobStore` (single-node durable) vs `PostgresJobStore` (multi-process bulk), all behind the `JobStore` Protocol.
 **Diagram:**
 ```mermaid
 stateDiagram-v2
-  [*] --> accepted: create
-  accepted --> running: worker starts
-  running --> completed: all items done
-  running --> failed: worker error
-  running --> failed: fail_interrupted<br/>at startup
-  state item_state {
-    [*] --> pending: add_items<br/>idempotent
-    pending --> completed_i: mark_item ok
-    pending --> failed_i: mark_item err
-    completed_i --> skipped: resume<br/>skip completed
-  }
-  completed --> [*]
-  failed --> [*]
+    [*] --> active: create
+    active --> dormant: evict CAS then drop stores
+    dormant --> restoring: begin_restore admitted
+    dormant --> dormant: at cap or no bearer token 503
+    restoring --> active: workflow completed
+    restoring --> dormant: workflow failed or watchdog timeout
+    restoring --> lost: archive folder missing, no versions, or verification failed sha256 or spec_hash
+    lost --> restoring: explicit POST restore after repair
 ```
 
-Key files: `/Users/me/Development/dxkb/ragstack/python/ragstack/tenancy.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/quota.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/jobstore.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/api/security.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/api/deps.py` (lifespan L382-511), `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/sharded.py` (per-item quota + resumability), `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/backends.py` (LocalAsyncIORunner fan-out), `/Users/me/Development/dxkb/ragstack/python/ragstack/api/routers/query.py` (L195-203 tenant_slot).
+### 9.6 Quotas, limits, rate limits and the job store
+
+**What it is:** Five independent admission controls plus the durable job record.
+
+| Control | Where | Default | Scope | Admin | Answer |
+|---|---|---|---|---|---|
+| `MAX_COLLECTIONS` | `store.create(limit=…)` / `begin_restore` | 100 (`0` = off) | per tenant, counts `PHYSICAL = {active, archiving, restoring}` rows, atomically with the reserve; the shared surface charges one reserved slot (`effective_limit`) | **not exempt** (physical protection, ADR-0005 §5) | evict one, else **507** with per-reason counts; effective cap 0 → 403 |
+| `MAX_COLLECTIONS_PER_OWNER` | `AclStore.grant(owner_quota=…)` / `transfer_owner` | 5 (`0` = off) | active owner rows per subject (dormant collections count) | exempt, **logged** (`"owner-quota admin-bypass"`); on transfer the *recipient's* admin-ness decides | **409** `{error: owner_quota_exceeded, owned, limit}` |
+| `ALLOW_USER_COLLECTION_CREATE` | `create_collection` first statement | `true` | deployment-wide | never subject to it | 403 (note: body validation and the rate-limit dependency run first, so a malformed body is 422/413 and a refused call still spends a token) |
+| Rate limits (`ratelimit.py::TokenBucketLimiter`, `deps.py::rate_limited`) | `ingest` 10/h, `collections_create` 5/h, `shares` 60/h | per `principal.tenant` (per user on bearer, per tenant on keys, one global bucket for keyless) | exempt, logged | **429 + `Retry-After`**; per process, in memory — N replicas ≈ N× the rate |
+| Single in-flight ingest (`deps.py::single_inflight_ingest`) | `POST /v1/ingest/upload` only | not configurable | one `accepted`/`running` ingest job per tenant (`JobStore.count_active`, jobs untouched for `STALE_AFTER` = 6 h stop counting) | exempt, logged | **429 + `Retry-After: 30`**; documented check-then-create race |
+| `TENANT_MAX_CONCURRENCY` (`quota.py::TenantQuota`) | `/query`, `/retrieve` (one slot per request), sharded ingest (one slot per item) | 0 = unlimited | per-tenant `asyncio.Semaphore`, LRU-bounded map of 10 000, live entries never evicted | no exemption | awaits (backpressure) |
+
+Per-collection **chunk cap** (#291): `CollectionSpec.max_chunks` (`None` = derive, `0` = exempt) applies to *user-created* collections — `access.py::is_user_created` = has an active owner row that is neither the backfill owner nor an admin by any role source, and it fails **toward the cap** on an ACL outage.
+
+**Job store** (`jobstore.py`): `memory | sqlite | postgres` (default `memory`); statuses `accepted → running → completed | failed`, items `pending`; rows carry `tenant_id`, `collection_id`, `kind` (`""` ingest / `"graph"`), `archive_ref`, `updated_at`; `error` holds only a caller-safe label. `GET /v1/ingest/{job_id}` is tenant-scoped with a logged admin bypass (`_apply_tenant_scope`); **`GET /v1/jobs` is admin-only and unscoped** (every tenant's jobs; `source` is a raw path — #100 tracks a scoped listing). `fail_interrupted()` reaps all non-terminal jobs at startup on memory/sqlite; **Postgres deliberately no-ops it (issue #7, still open — no lease/heartbeat exists)**, mitigated only by the 6 h `STALE_AFTER` rule. `api/job_lifecycle.py::job_lifecycle` marks a row `failed` (`never-dispatched`) if the handler exits before dispatching, so a stuck `accepted` row cannot pin a tenant at 429 for six hours.
+
+**Diagram:**
+```mermaid
+flowchart LR
+    A["POST create or upload or share"] --> B["rate_limited bucket 429"]
+    B --> C["single_inflight_ingest 429 upload only"]
+    C --> D["ALLOW_USER_COLLECTION_CREATE 403"]
+    D --> E["store.create with MAX_COLLECTIONS atomic count"]
+    E -->|"at cap"| F["evict one LRU archived collection"]
+    F -->|"nothing evictable"| G["507 with reasons"]
+    E --> H["write_owner_row with MAX_COLLECTIONS_PER_OWNER"]
+    H -->|"over"| I["409 owned limit and rollback"]
+```
+
+### 9.7 Eviction at `max_collections`
+
+**What it is:** `python/ragstack/ops/evict.py` frees a physical slot by turning the least-recently-accessed **archived** `active` collection `dormant` and dropping its Qdrant and ES stores; wired into create (`api/eviction.py::make_room_for_create`), restore admission (`RestoreCapacity.make_room`) and the operator handle `POST /v1/admin/collections/evict?need=k[&dry_run=true]`.
+
+**Algorithm / workflow:**
+1. `plan_eviction`: flush the access tracker, `list_records`, query in-flight jobs (`JobStore.active_collection_ids`), build the protected set.
+2. `choose_victims`: sort by `last_accessed_at`, else `created_at`, ties by id; skip with a reason, in order: `not_active`, `archive_pending`, `no_archive` (`versions` empty), `in_flight`, `protected` (either leg belongs to the derived default / a shared-surface entry, or is also claimed by another id in the live registry or the durable records), `unregistered`.
+3. `evict`: re-check `evictable` and in-flight (re-queried immediately before the act), **CAS `active → dormant` first** — losing it leaves the stores untouched — then `drop_stores` (Qdrant + ES; **triples are kept**, §8.6), recording leftovers in `state_reason` via a `dormant → dormant` CAS, and invalidating the lifecycle gate's cache after every write.
+4. One eviction, one retry, never a loop: a second `AT_CAP` means a concurrent reservation took the freed slot → **507** (`Retry-After: 5` on a lost CAS).
+
+**What makes eviction safe:** it may destroy only what exists elsewhere — hence `versions` non-empty and `!archive_pending` — and a dormant collection restores on first access by a bearer caller (§9.5). What weakens that today: `archive_pending` is set but never cleared; a `GoWeError` (as opposed to `OutputStagingFailed`) does not set it; `DELETE /v1/documents` writes no tombstone version, so a restore can resurrect deleted documents; and with `ingest_backend=local` no archive is ever written, so nothing is evictable and the cap becomes a plain 507.
+
+**Inputs → Outputs:** `evict_collections(need, dry_run) -> EvictionResponse{victims, shortfall}`; `make_room_for_create -> None | reason`.
+
+**Scalability & parallelization:** per-process serialization of the evict-then-retry section; the store's atomic count is the cross-process bound.
+
+**Single vs bulk:** exactly one victim per admission; `need=k` (1–1000) via the admin endpoint.
+
+**Diagram:**
+```mermaid
+flowchart TD
+    A["create or restore at cap"] --> B["plan: flush tracker, list records, in-flight jobs, protected set"]
+    B --> C["candidates sorted LRU"]
+    C --> D{"eligible: active, not archive_pending, versions non-empty, not in flight, not protected, registered"}
+    D -->|"none"| E["507 per-reason counts"]
+    D -->|"victim"| F["CAS active to dormant"]
+    F -->|"lost CAS"| G["stores untouched, 507 retry"]
+    F -->|"won"| H["drop Qdrant and ES, keep triples"]
+    H --> I["invalidate gate cache, retry reserve once"]
+```
+
+### 9.8 Tenant anatomy and the control plane (ADR-0005 / ADR-0007)
+
+**What a tenant is** (ADR-0005 §1, matched by `apptainer/new-tenant.sh` and `go/internal/ctl/ops/create.go`): one API process + its env (identity config, role maps, keys), a dedicated Qdrant, a dedicated Elasticsearch, and one database holding the collection registry, the job store and the users/shares/groups tables (sqlite by default, or a local/shared Postgres). Shared plumbing: the embedding fleet, reranker, LLM endpoint, the frontend, the host. **Not per tenant in practice:** Neo4j (`GRAPH_BACKEND=disabled` on provisioned tenants; the registry schema marks Neo4j `external`) and Redis. Consequences that follow directly: no global user directory, no cross-tenant sharing, `public` means public *within this tenant*, `MAX_COLLECTIONS=100` is stamped per tenant (`new-tenant.sh` L553, `render.go` L111) and binds admins. Five tenants run today on coconut (`STATUS.md` header), not all on one tag.
+
+**The control plane, `ragstack-ctl`** (`go/cmd/ragstack-ctl`, `go/internal/ctl/**`, contract `contracts/ctl/openapi.yaml`, conformance `conformance/ctl/`): ADR-0007 is *Proposed* but largely implemented. One Go static binary is both CLI and daemon (`serve`, bound to `127.0.0.1:23990`, a non-loopback bind refused without an explicit flag). It owns: tenant create / start / stop / restart / backup / restore-as-fresh / handover / decommission-as-quarantine, credentials (`key mint|revoke`, `admin add|remove` editing a tenant's `ADMIN_SUBJECTS`, `sa create|disable|enable`), gateway render / apply / reload / rollback, boot persistence (`systemd --user` units under the `svcbvbrc` service account), `doctor`, `fleet`. `registry.json` (`contracts/ctl/schemas/registry.json`, `additionalProperties: false`; ports, stores with `ownership: exclusive|shared|unknown`, artifacts, tombstones, key fingerprints, `admin_subjects_count`) is the source of truth; `manifest.tsv`, units and nginx maps are projections. Its own authz is a deny-by-default 27-row operation × role matrix over two roles, `viewer` and `operator` (`go/internal/ctl/authz/matrix_gen.go`); a valid but unenrolled credential is 403; a browser session is read-only and every mutation re-presents an operator ctl key; both credentials together → 400.
+
+**What the ctl does NOT own: collection contents.** *"The ctl manages; it does not query"* is enforced as a fixed name→route table, `go/internal/ctl/drivers/tenantapi.go::routes` (L59-93): `GET /health`, `GET /v1/version`, `GET /v1/health/deep`, `GET /v1/collections` (`counts=false` for inventory; one `counts=true` call), `POST /v1/admin/service-accounts`, `POST …/{subject}/disable|enable`, `GET /v1/jobs` (a handover refuses over a running ingest), and — for the sandbox `selftest` only, origin restricted to the sandbox port block (`sandboxOrigin`) — `POST /v1/ingest` + `GET /v1/ingest/{id}`. A path not in the table cannot be reached; `%s` substitutions are validated against a narrow regex and `PathEscape`d; credentials go only to the tenant's registered loopback origin, no redirects. There is no search, retrieve or query route, so the ctl cannot become the federation gateway ADR-0005 deferred. On the tenant side, the only route added for it is `GET /v1/version` (`routers/version.py`; any credential, no role, Python-only in v1).
+
+**Diagram:**
+```mermaid
+flowchart TD
+    subgraph CTL["ragstack-ctl on loopback 23990 behind the gateway"]
+        REG["registry.json source of truth"] --> UNITS["systemd user units"]
+        REG --> NGX["nginx maps"]
+        REG --> MAN["manifest.tsv projection"]
+    end
+    subgraph T1["tenant dev: API process, Qdrant, ES, sqlite or PG for registry plus ACL plus jobs"]
+        API1["tenant API"]
+    end
+    subgraph T2["tenant asm-next: same shape, own stores"]
+        API2["tenant API"]
+    end
+    CTL -->|"allowlisted only: health, version, deep health, collections listing, service accounts, jobs"| API1
+    CTL -->|"same allowlist"| API2
+    U["users and UIs"] -->|"query, ingest, shares"| API1
+    U -->|"query, ingest, shares"| API2
+    SH["shared: embedding fleet, reranker, LLM"] --- API1
+    SH --- API2
+```
+
+### 9.9 ADR-vs-code discrepancies and open authorization gaps (verified at 22b44be)
+
+| # | Claim in ADR / doc | What the code does | Where |
+|---|---|---|---|
+| 1 | ADR-0002 §3: ingesting with a different model/dim/chunker is **rejected with 409** | The guard (`deps.py::check_ingest_build_spec`) compares the entry against the **provenance manifest**, not the registry `spec_hash`, and is a no-op unless `COLLECTION_MANIFEST_DIR` is set — the code default is `""` (`config.py` L288). Provisioned tenants set it (`new-tenant.sh` L592); a bare deployment has no guard. | `deps.py` L607-626 |
+| 2 | ADR-0002 §2: `spec_hash` is denormalised "for the guard below to compare against" | The ingest 409 never reads `record.spec_hash`; only the archive manifest and restore replay do. | `documents.py::_gowe_inputs`, `load_embeddings.py::verify_replay` |
+| 3 | ADR-0002 §4: `?purge=true` destroys "the Qdrant collection and ES index" | Also drops the collection's Neo4j triples (collection-wide) and the manifest; never the Workspace archive; additionally refused for routed legs, the shared surface and the pointer target. | `routers/collections.py::_purge_physical`, `delete_collection` |
+| 4 | ADR-0005 §5 amendment: lifecycle includes `archiving` | The state is defined and read (gate, restore, graph endpoints) but **no code path ever writes it**. | grep `ARCHIVING` |
+| 5 | ADR-0005 §5: eviction picks a collection "whose archive is current" | "Current" = `versions` non-empty and `!archive_pending`. `archive_pending` is set (`documents.py` L764) and **never cleared**; a `GoWeError` does not set it; API document deletes write no tombstone version, so a restore can resurrect deleted documents. | `python/ragstack/ops/evict.py::evictable`, `documents.py::_run_gowe_ingest` |
+| 6 | ADR-0005 §5: "a dormant collection restores on first access" | Only for a caller with a BV-BRC bearer token; API-key/keyless callers get 503 and the row stays dormant. And every restart re-ensures **empty** Qdrant/ES stores for dormant and lost rows (uncounted, but present). | `lifecycle.py` L234-240; `deps.py::_build_collection_registry` |
+| 7 | Ingest and restore Workspace folders | Ingest archives under the **caller's** subject (`documents.py` L999/L1029); restore lists the **owner's** (`restore.py::workspace_subject(rec.spec.owner)`). An admin's (or any non-owner's) ingest into a collection produces versions restore will not find. | `documents.py`, `restore.py` L265-280 |
+| 8 | ADR-0004 §2: pending shares keyed on a verified email | **Not implemented**; `ensure_provisional` creates subject-keyed placeholder rows instead, nothing is keyed on email. | grep `pending_shares` |
+| 9 | ADR-0004 Consequences: "`oidc.py` currently reads `sub` only" | Stale — it reads `email`, `email_verified`, `name`. | `identity/oidc.py` |
+| 10 | ADR-0003 §1: `tenant_id` "is renamed `owner_id`" | Code-level alias only (`OWNER_FIELD = "tenant_id"`); the stored key never changes. | `tenancy.py` L8-16 |
+| 11 | ADR-0007 §5 allowlist: `/v1/config` and "user-role admin routes"; matched on `(method, path-template, query-set)` after `path.Clean` | Neither route is in the table; the table also contains `POST /v1/ingest` + `GET /v1/ingest/{id}` (sandbox selftest only) and a `counts=true` listing call not mentioned; matching is a fixed name→route map, not a template matcher. | `tenantapi.go` L59-93 |
+| 12 | ADR-0007 §6: backups **fail closed** when no `age` recipients are configured | The bundle is written with the secret files **excluded** and a warning — a fail-safe, not a refusal. | `go/internal/ctl/ops/backup.go` L1244-1266 |
+| 13 | ADR-0007 status "Proposed" | Roughly 72k lines under `go/internal/ctl/**` plus contract, conformance and Ansible exist; a built `go/ragstack-ctl` binary is committed. | `git ls-files` |
+| 14 | STATUS.md / old §9: `GET /v1/jobs` | Admin-only **and unscoped** — an admin sees every tenant's jobs with raw source paths. | `routers/jobs.py` |
+| 15 | Old §9: Postgres `fail_interrupted` "needs a lease (issue #7)" | Still true: no lease/owner column; the sweep is a no-op on Postgres; `STALE_AFTER` = 6 h is the only mitigation. | `jobstore.py` L852-857 |
+| 16 | **Open authz gap (#558)** | Ownership transfer does not re-stamp chunks: the new owner passes the read gate and sees nothing. Still open. | §9.4 |
+| 17 | Under-exposure, recorded | The graph leg and `/v1/graph/*` receive no share-based widening and never call the ACL seam (tenant + allowlist scoping only). | `retriever.py::graph_context`, `routers/graph.py` |
+| 18 | Documented divergence | `confined_collection_name` (graph scope) is allowlist-only, lexicographic; the read default is allowlist ∩ readable, insertion order. Nil blast radius today (no tenant sets `TENANT_COLLECTIONS`). | `api/collections.py` L246-301 |
+
+Relevant files: `python/ragstack/api/security.py`, `python/ragstack/identity/{bvbrc,oidc,cache,factory}.py`, `python/ragstack/user_store.py`, `python/ragstack/acl_store.py`, `python/ragstack/group_store.py`, `python/ragstack/authz.py`, `python/ragstack/api/{access,scope,default_collection,lifecycle,eviction,job_lifecycle}.py`, `python/ragstack/api/collections.py`, `python/ragstack/collection_store.py`, `python/ragstack/tenancy.py`, `python/ragstack/quota.py`, `python/ragstack/ratelimit.py`, `python/ragstack/jobstore.py`, `python/ragstack/ops/evict.py`, `python/ragstack/restore.py`, `python/ragstack/api/routers/{collections,documents,query,graph,jobs,admin_users,service_accounts}.py`, `python/ragstack/api/main.py`, `go/internal/ctl/drivers/tenantapi.go`, `contracts/ctl/schemas/registry.json`, `apptainer/new-tenant.sh`.
 
 ---
 
 ## 10. Shared functionality & code duplication
 
-This section audits the codebase for repeated logic across components. Findings were
-produced by three focused lenses (HTTP/LLM plumbing, store tenant-scoping, ingest-vs-library
-overlap) and then **adversarially re-verified** against the source — false positives were
-rejected, severities corrected, and several missed duplications added. The verified,
-per-lens tables follow the executive summary.
+*Re-audited at `main` 22b44be (2026-09-23), 412 commits after the 2026-07-03 audit.*
+Every finding from the July audit was re-checked against the source. A fresh sweep then
+covered the code added since July: the GoWe bulk plane (`scripts/ingest_shard.py`,
+`embed_shard.py`, `load_embeddings.py`, `cwl/`), the API ingest routers, the ops and ctl
+code, the store adapters, and the control-plane stores.
 
-### Executive summary — the debt that will actually rot
+Each new finding was checked adversarially: both sites were opened and compared, and
+candidates that only share a name were rejected (listed at the end).
 
-Ranked by drift risk (verified severity, most valuable to fix first):
+**Citation rules for this section:**
+- Paths are relative to `python/` unless they start with `go/`, `cwl/` or `docs/`.
+- A line number appears only where it was checked at 22b44be.
+- `§10-old` refers to the July section's own numbering: H = HTTP lens, S = store lens, I = ingest lens.
 
-| Rank | Duplication | Where | Sev | Fix |
-|---|---|---|---|---|
-| 1 | **Bisect-to-quarantine poison isolation** copied verbatim — same control flow, same `zip(strict=True)`, the log string `"quarantining unembeddable input #%d (HTTP %d)"` is byte-identical in both | `embedders.py:162-185` ↔ `embed_pool.py:147-170` | high | Extract `bisect_isolate(embed_fn, texts, indices, out)` |
-| 2 | **Record → Document recipe** (`enrich` → `index_metadata` → `deterministic_doc_id`) + the doc-id key derivation are reproduced inline in the bulk CLI instead of reusing the loader — the [#25](https://github.com/wilke/ragstack/issues/25) overlap; risks the "re-ingest overwrites in place" invariant silently diverging | `scripts/ingest_jsonl.py:1010-1017`, `:84-86` ↔ `ingestion/loaders.py:177-191` | high | Export `record_to_document()` + `doc_id_key_for_record()` from `loaders.py` |
-| 3 | **Embed-then-drop-quarantined loop** duplicated between the CLI and the pipeline | `scripts/ingest_jsonl.py:337-370` ↔ `ingestion/pipeline.py:76-93` | high | Shared `embed_and_keep(embedder, chunks)` |
-| 4 | **OpenAI-compatible transport** (Bearer header + POST + `raise_for_status` + `.json()`) hand-rolled in `OpenAILLM` instead of routing through the shared `SidecarClient` that the three other HTTP callers use | `llm.py:47-66` ↔ `embedders.py:78-85` / `sidecar_http.py` | high | Give `OpenAILLM` a `SidecarClient`; folds in the `rstrip`/header copies |
-| 5 | **In-memory stores**: `delete` / `delete_except` / `count_tenants` are byte-for-byte identical across `InMemoryVectorStore` and `InMemoryTextIndex` | `memory.py:68-94` ↔ `memory.py:137-163` | med | Extract a `_ChunkListStore` base |
-| 6 | **Config defaults duplicated** as argparse literals vs `Settings` fields (512 / 64 / 3 / 80.0 / 500 / 8 / "sidecar" / `:50053`) — tuning a `Settings` default silently won't move the CLI | `scripts/ingest_jsonl.py:1140-1201` ↔ `config.py:42-125` | med | Seed argparse `default=` from `Settings.model_fields[...]` |
-| 7 | **Chunk reconstruction** unpack with identical `int(… or 0)` / `str(…)` coercions on the search read-path | `qdrant.py:160-167` ↔ `elasticsearch.py:145-152` | med | `Chunk.from_storage_fields(**raw)` classmethod |
-| 8 | **`{tenant}:{chunk_id}` scoped-id convention** independently encoded in two stores | `qdrant.py:253` ↔ `elasticsearch.py:42-43` | med | `tenancy.scoped_id(tenant, chunk_id)` primitive |
-| 9 | **Embedder builder** (`len(urls)>1 → pooled else single`) duplicated CLI vs deps (deps also wraps in `BatchingEmbedder`; CLI intentionally does not) | `scripts/ingest_jsonl.py:296-303` ↔ `deps.py:99-119` | med | `build_embedder_base()` returning the **unwrapped** base |
-| 10 | **`120.0` timeout literal** re-typed in three places instead of importing `DEFAULT_TIMEOUT` | `llm.py:59`, `deps.py:391`, `embed_bridge.py:92` | med | Import `sidecar_http.DEFAULT_TIMEOUT` |
+**Headline:** the July audit predicted that the ingest-script copies "will rot", and two of
+them have. Loader fixes #303 and #302 landed in `JsonlLoader` but not in `scripts/ingest_jsonl.py`. The two
+ingesters now mint different doc ids, and different metadata, for the same record.
+ADR-0006, which would retire the script, is still **Proposed**. The script is still documented
+as a supported path in `docs/cookbook-new-org-ingest.md` and `docs/LOCAL-DEMO.md`.
 
-**Correctly *not* duplication (verified, left alone):** the per-store tenant-scope
-*filter builders* (Qdrant `Condition` vs ES DSL vs Python predicate) and the
-`delete_except` *mechanisms* (scroll-by-id vs `delete_by_query`) are deliberately
-divergent per backend dialect — consolidating them would force one backend's strategy
-on another. The `delete`-vs-`upsert` ordering difference between path A and path C is a
-documented, intentional inversion, not drift. The Neo4j per-method Cypher `tenant_clause`
-fragments are already factored down to the shared `readable_tenants()` call. And the
-LLM chat-envelope guard vs the KG JSON-object extractor solve unrelated problems.
+### Status of the July findings
 
-**Lower-severity spread (verified low):** the optional-Bearer header idiom (4 copies),
-`base_url.rstrip("/")` (5 copies), and three distinct spellings of the `DEFAULT_TENANT`
-fallback (`tenant_of` dict-get, ES inline, Neo4j `_tenant_or_default` string-`or`) — all
-real but near-zero drift risk; worth a one-line helper each when convenient.
+Totals: **1 fixed**, **16 still present**, **3 still correctly "not duplication"**, **8 moved or changed**.
+Four of the eight moved/changed items have **already diverged** in behaviour.
+
+| Finding (§10-old id) | July status | Status at 22b44be | Evidence (22b44be) |
+|---|---|---|---|
+| H6 Bisect-to-quarantine copied verbatim | high, confirmed | **still present** | `embedders.py` `BatchingEmbedder._embed_group` L168-191 ↔ `embed_pool.py` `PooledEmbedder._embed_isolated_range` L184-207. The log string is still byte-identical (L182 / L198). Tracked in #103 (open). |
+| H7 4xx `status` predicate | low | **still present** | `embedders.py` L174-178; `embed_pool.py` L117-126 (excludes `_RETRIABLE_STATUS`) and L190-194 |
+| H1 `OpenAILLM` bypasses `SidecarClient` | high | **still present** | `llm.py` `OpenAILLM.complete_detailed` L73-88 hand-rolls the header, POST and `raise_for_status`. Compare `embedders.py` `OpenAIEmbedder.embed` L78-87, which goes through `sidecar_http.SidecarClient.post_json`. Tracked in #104 (open). |
+| H2 `llm.py` `rstrip` + raw `http` | med (folded into H1) | **still present** | `llm.py` L38 |
+| H3 Optional-Bearer idiom | low | **still present** (4 copies) | `llm.py` L75, `embedders.py` L80, `ingestion/tokenization.py` L203, L297. A fifth copy appeared in `python/ragstack/ops/ingest_target.py` L694. |
+| H5 `120.0` literal instead of `DEFAULT_TIMEOUT` | med | **still present** (lines moved) | `llm.py` L86, `api/deps.py` L1654, `ingestion/embed_bridge.py` L119 ↔ `sidecar_http.py` L18. Tracked in #104. |
+| A1 `base_url.rstrip("/")` | low | **still present**, and more widespread | `sidecar_http.py` L36, `llm.py` L38, `tokenization.py` L184/L299, `embed_pool.py` L270. It is also in `ingestion/gowe_client.py` L98, `workspace.py` L257 and `python/ragstack/ops/store_inventory.py` L490/496/528. |
+| A2 Sync vLLM-control HTTP in `tokenization.py` | low | **changed** | `EndpointTokenCounter.count` (L200-210) now reuses a lazily built client (`_http`, L191-198). `resolve_max_tokens` (L297-299) still builds its own `httpx.Client(timeout=30.0)`. There are still two sites. |
+| H4 Chat-envelope guard vs. KG JSON extractor | rejected | **still not duplication** | `llm.py` L94 ↔ `graph/extractor.py` `_extract_json_object` L69 |
+| S1 `{tenant}:{chunk_id}` scoped id | med | **still present** | `stores/qdrant.py` `_point_id` L734-737 ↔ `stores/elasticsearch.py` `_es_id` L155-156. Tracked in #107. |
+| S2 ES re-implements the `tenant_of` fallback | low | **still present** | `stores/elasticsearch.py` `_index_batch` L535 ↔ `tenancy.py` `tenant_of` L70-75 |
+| S3 `delete_except` contract | low (the mechanism differs on purpose) | **still not duplication** | `qdrant.py` L699, `elasticsearch.py` L721, `memory.py` L124/L230 |
+| S4 In-memory `delete` / `delete_except` / `count_tenants` bodies | med | **still present**, byte-identical | `stores/memory.py` L117-143 (`InMemoryVectorStore`) ↔ L223-249 (`InMemoryTextIndex`). Tracked in #105 (open). |
+| S5 Tenant-scope filter builders | low | **changed** | The value grammar and validation moved into `stores/filters.py` (#197/#367, #471, #597/#601). There are now **four** interpreters held together by "keep in sync" comments. One of them is a true same-dialect copy: see N6. |
+| S6 `if not tenants: return 0` guard | low | **still present** | `qdrant.py` L551, `elasticsearch.py` L605/L622, `memory.py` L141/L247 |
+| S7 `Chunk` reconstruction on the read path | med | **moved** | The Qdrant side is now factored into `qdrant.py` `_chunk_from_payload` L740-751 (fe5ec93) and used at L404 and L632. ES still builds it inline at `elasticsearch.py` L584-594. A **third** copy was added: `scripts/backfill_es_from_qdrant.py` `_chunk` (N13). Tracked in #107. |
+| S8 Neo4j per-method `tenant_clause` | low | **fixed** | Collapsed into `stores/neo4j.py` `Neo4jGraphStore._scope` L194-222, which all four reads call (L254/319/341/369). Fixed in ce71716 (#209/#212). |
+| S9 `_tenant_or_default` third fallback spelling | low | **still present** | `stores/neo4j.py` L63-64 |
+| S10 `(tenant_of(c), c.id)` identity dedup | low | **still present** | `stores/memory.py` L84-85 ↔ L184-189 |
+| I1 + I9 Record → `Document` recipe | high | **changed: diverged** | `ingestion/loaders.py` `JsonlLoader._document` L434-461 now uses `self._metadata()` L386-432 (the passthrough allow-list from #301/#302, 8965f7c). `scripts/ingest_jsonl.py` L1036-1042 still uses bare `index_metadata(enriched)`, so passthrough keys are silently missing on the CLI path. |
+| I2 Doc-id key derivation | high | **changed: diverged** (the predicted bug happened) | `loaders.py` L452-455 resolves **only absolute** paths; relative paths are used literally (#303, 10b678f). `scripts/ingest_jsonl.py` `_doc_id_key` L90-92 still always calls `resolve()`, so ids are CWD-dependent. It is used at L1005/1016/1031/1038. Parent issue #25 is open. |
+| I3 Embed-then-drop-quarantined loop | high | **still present** | `scripts/ingest_jsonl.py` `_embed_drop_bad` L343-376 ↔ `ingestion/pipeline.py` `_embed_and_link` L329-355. The GoWe tools correctly reuse the pipeline. |
+| I4 Embedder builder `len(urls)>1` | med | **changed: more copies and more policies** | Four branch copies: `api/deps.py` `_make_embedder` L205-229, `scripts/ingest_jsonl.py` `_make_endpoint_embedder` L302-309, `scripts/ingest_chunks.py` L169-185, `scripts/search.py` L63-76. There is now a **third** policy, `embed_pool.py` `make_embedder_auto` L278-294 ("always pooled", used by the shard tools). API-key sourcing also differs: `settings.openai_api_key` vs `OPENAI_API_KEY` vs `--embedding-api-key`. |
+| I5 Neighbor-link + store sequence | low | **still present** (the divergence is by design) | `scripts/ingest_jsonl.py` `_store_batch` L729-770 ↔ `pipeline.py` `index_chunks` L395-480 |
+| I6 Chunker construction | low | **moved** | `ingest_jsonl.py` now calls `ingestion/chunker_config.py` `build_chunker` (L559). Semantic-method membership is centralised as `chunker_config.SEMANTIC_METHODS` / `needs_embed_fn` (L58-63, #615 a2be96f). The residual literal is in `chunkers.py` L1374. The divergence moved to the **five builders** in `docs/plans/chunking-one-factory.md` §8, and it now affects behaviour: see N2. |
+| I7 argparse default literals vs `Settings` | med | **still present, and spreading** | `scripts/ingest_jsonl.py` L1232-1295 ↔ `config.py` L291-394. The shard tools add more literals: `ingest_shard.py` L345 and `embed_shard.py` L177 default `--embedding-api` to `"openai"`, while `Settings` says `"sidecar"`. Tracked in #106. |
+| I8 `BatchingEmbedder` present in deps but not the CLI | rejected | **still not duplication** | The caveat on I4 stands. |
+
+### Executive summary: the debt that will actually rot
+
+Ranked by drift risk. In 2026-07 the risk was predicted; at 22b44be, for most of these, the drift can already be measured.
+
+| Rank | Duplication | Where (22b44be) | Sev | Drifted already? | Issue | Fix |
+|---|---|---|---|---|---|---|
+| 1 | **Two JSONL ingesters, two doc-id rules, two metadata recipes** | `ingestion/loaders.py` `JsonlLoader._document` L434-461 ↔ `scripts/ingest_jsonl.py` `_doc_id_key` L90-92 + L1036-1042 | **high** | **Yes.** #303's CWD fix and #302's passthrough exist only in the loader. A relative-path record gets different ids on the two paths, so a re-ingest duplicates instead of overwriting in place. | #25 (open), #303 | Export `loaders.record_doc_id(record, text)` + `record_to_document()`, or accept ADR-0006 and delete the script together with its docs |
+| 2 | **Five chunker builders; the semantic-param defaults are forked** | `api/deps.py` `_chunker_for` L402-447 / `_semantic_param` L386-399 (defaults from `settings.chunk_*`) ↔ `scripts/ingest_shard.py` `_semantic_params` L73-109 → `chunker_config.build_chunker` L176-223 (literals 3/80.0/500 at L187-189) | **high** | **Latent.** It fires the first time an operator changes `CHUNK_BUFFER_SIZE` and the like: API and GoWe then chunk the same collection differently. The API validates params for every method; the tool validates them only for semantic methods. | #609 (open), plan §8 | The §8 `chunker_for(..., params, defaults: ChunkDefaults)` factory |
+| 3 | **Control-plane store backends: bootstrap and DSN copied 4-6×** | `_normalize_dsn` is identical in `jobstore.py` L714, `collection_store.py` L1607, `user_store.py` L1193 and `grading/store.py` L524. The lazy `asyncpg.create_pool` bootstrap is in all six Postgres stores. | **high** | **Yes.** Only users/shares/groups take a DDL advisory lock at boot (`user_store.py` L1236-1239); jobs/collections/grading do not (`jobstore.py` L748-760, `collection_store.py` L1641-1647, `grading/store.py` L557-563), although `user_store.py` explains the race is generic. SQLite `busy_timeout=5000` is set in collection/grading (`collection_store.py` L1370, `grading/store.py` L332) but not in jobs/users (`jobstore.py` L497-498, `user_store.py` L992-993). | #351 (open; broader) | `ragstack/sqlstore.py`: `normalize_dsn`, `sqlite_connect(path)`, `lazy_pg_pool(dsn, ddl, lock_key)` |
+| 4 | **Shard-worker CLI skeleton and store opening copied between tools** | `scripts/ingest_shard.py` L64-70/L112-139/L147-176/L310-349 ↔ `scripts/embed_shard.py` L45-85/L170-187 ↔ `scripts/load_embeddings.py` `_build_pipeline` L85-154 | **high** | **Yes.** `--embedding-max-concurrency` is 8 **total** in `ingest_shard` (L349) but 8 **per endpoint** in `embed_shard` (L79, L181). `ingest_shard` makes `--qdrant-url`/`--es-url` required (L335-343, #454), while `load_embeddings`, also a write path, still defaults both to localhost, which is production (L412, L453). | #454, #204, #106 | `ingestion/worker_cli.py` (`add_chunk_args`, `add_embedding_args`, `add_store_args(required=True)`) + `IngestTarget.open_stores(dim, …)` |
+| 5 | **Store-construction and routing rules copied** | `store_routing.py` `qdrant_url_for`/`es_url_for` L27-57 ↔ `python/ragstack/ops/ingest_target.py` `_qdrant_url_for`/`_es_url_for` L479-510; `api/deps.py` `_build_vector_store` (constructor L179-187) ↔ `build_collection_entry` L341-348 | **med-high** | **Yes.** The registry-collection `QdrantVectorStore` drops `upsert_batch_size`/`upsert_concurrency`, so those settings are silently ignored for every registered collection. | #445 (Qdrant half only) | `store_routing.*_url_for(…, override=)`; one `_qdrant_store_for()` in deps |
+| 6 | **GoWe ingest gate sequence written twice** | `api/routers/documents.py` `ingest` L995-1034 ↔ `ingest_upload` L1426-1476 (`_gowe_caller` → `_authorize_ingest_target` → `_refuse_unrunnable_chunk_method` → … → `_reserve_version` → `add_task(_run_gowe_ingest, …)`) | **med** | Not yet. The gate order is load-bearing (#415), so every new gate (#595, #609) must be added twice. | none | `_prepare_gowe()` + `_dispatch_gowe()` |
+| 7 | **Bisect-to-quarantine** (July rank 1) | `embedders.py` L168-191 ↔ `embed_pool.py` L184-207 | med (was high) | No, still verbatim. Neither copy has changed since July, which lowers the practical risk. | #103 | `bisect_isolate(embed_fn, texts, indices, out)` |
+| 8 | **#603's metadata key-path helpers are dead; ES `metadata.` prefix hard-coded** | `metadata_schema.py` `es_field_path` L313 / `qdrant_field_path` L330 have **no callers**. The prefix is inlined at `stores/elasticsearch.py` L116/190/610/635/713/732 and in `scripts/backfill_collection_metadata.py` L92/98/185-190. | **med** | No, only spelling today. But the "stated here and nowhere else" contract is fiction. | related #594/#601/#603 | Route all ES keys through `es_field_path()` |
+| 9 | **Repair script re-implements the DOI → metadata mapping** | `scripts/backfill_collection_metadata.py` `resolve` L102-137 ↔ `ingestion/doi_metadata.py` `_crossref_authors` L328 / `map_crossref` L344 / `map_idconv` L424 | **med** | **Yes.** Authors are written as "Family, Given" by the script and "Given Family" by ingest. The ID-Converter calls are not batched (ingest caps at 200). DOIs are not normalised. | none | Call `doi_metadata.map_crossref`/`map_idconv` |
+| 10 | **Inlined CWL worker tools without agreement tests** | `embed_shard` ×3 (`cwl/embed-bulk.cwl`, `pdf-ingest.cwl`, `jats-ingest.cwl`), `load_embeddings` ×4 (+ `load-embeddings.cwl`, `restore-collection.cwl`), `ingest_shard` ×2 (`ingest-bulk.cwl`, `pdf-ingest-scatter.cwl`) | **med** | **Yes.** `ingest-bulk.cwl` lacks `permanentFailCodes: [4]`, `--max-chunks` and `--shard-id`. `jats-ingest` passes the registry through an env var; the others use `--registry`. | none | Agreement tests modelled on `tests/integration/test_archive_cwl.py::test_standalone_and_inlined_archive_tools_agree` |
+
+**Still correctly *not* duplication:**
+- The per-backend filter emitters (`qdrant._build_filter`, `elasticsearch._build_query`) and the `delete_except` mechanisms still diverge on purpose.
+- The path-A/path-D delete-vs-upsert order inversion is documented and intentional.
+- Neo4j scoping is now factored properly (S8 fixed).
+- The Python ↔ Go reimplementations are expected under the polyglot contract and are not counted here.
+
+**Lower-severity spread, unchanged since July:**
+- Bearer header (5 copies)
+- `rstrip("/")` (now ~12 sites)
+- three `DEFAULT_TENANT` fallback spellings (S2, S9, `tenant_of`)
+- the `120.0` literal
 
 ### Verified per-lens findings
 
-### HTTP client & LLM/JSON plumbing
+#### HTTP client & LLM/embedding plumbing
 
-| # | What is duplicated | Location A | Location B | Severity | Verdict | Consolidation suggestion |
+Everything from July is still present (see the status table). No new transport copies were added in library code; the new GoWe tools reuse `make_embedder_auto`/`PooledEmbedder`. Hand-rolled `/v1/embeddings` calls exist only in `scripts/eval/` (`chunking_compare.py` L240, `chunking_compare_7way.py` L601). Those are research harnesses and are out of scope.
+
+#### Store adapters & metadata contract
+
+| # | What is duplicated | Site A | Site B | Sev | Verdict | Notes |
 |---|---|---|---|---|---|---|
-| 1 | OpenAI-compatible transport: Bearer-header build + POST JSON to `<base>/v1/…` + `raise_for_status()` + `r.json()`, reimplemented inline instead of via `SidecarClient.post_json` | `llm.py:47-66` (`OpenAILLM.complete`) | `embedders.py:78-85` (`OpenAIEmbedder.embed`) | **high** | **CONFIRMED** | Route `OpenAILLM` through a `SidecarClient` and call `post_json("v1/chat/completions", body, headers=…)`. It is the one OpenAI-shaped caller that bypasses the shared client. |
-| 2 | `OpenAILLM` hand-rolls `base_url.rstrip("/")` + owns raw `http` + inline POST, instead of holding a `SidecarClient` like the three other clients | `sidecar_http.py:36-58` | `llm.py:36-61` | high → **med** | **DOWNGRADED** | Same underlying defect as #1 (the transport bypass). Split out only because it names the `rstrip`/POST scaffolding rather than the header/JSON block. Fixing #1 fixes this; not an independent third issue. Merge-worthy with #1. |
-| 3 | Optional-Bearer idiom `{"Authorization": f"Bearer {api_key}"}` when `api_key` set | `llm.py:47-49`, `embedders.py:78-80` | `tokenization.py:141`, `tokenization.py:236` | med → **low** | **DOWNGRADED** | Real: four copies (two async, two sync). But it is a one-line, behaviorally-stable idiom — near-zero drift risk. A `bearer_headers(api_key)` helper in `sidecar_http.py` is warranted and also serves #1, but severity is low, not med. Note the two `tokenization.py` copies build `… else None` while the embedder copies build `… else {"Content-Type": …}` — not textually identical. |
-| 4 | Chat-envelope guard (`choices[0].message.content`) vs. code-fence-tolerant JSON-object extraction | `llm.py:66-73` | `extractor.py:45-52,114-131` | low | **REJECTED** | Not duplication. A validates the OpenAI *transport envelope*; B regex-extracts a `{…}` object from the model's *content string* and validates a `triples` list. No shared code path or failure mode. There is exactly one JSON-object extractor (`_extract_json_object`), so nothing to dedupe. Correctly self-flagged as "leave separate" — should not have been tabled as a finding at all. |
-| 5 | `120.0` HTTP-budget literal re-typed instead of importing `DEFAULT_TIMEOUT` | `llm.py:59`, `deps.py:391`, `embed_bridge.py:92` | `sidecar_http.py:18` (`DEFAULT_TIMEOUT`) | **med** | **CONFIRMED** | All three re-literal the same 120.0 (grep-confirmed: those are the only `timeout=120` sites). Import `DEFAULT_TIMEOUT`. Caveat: `sidecar_http` applies it **per-request**; `deps.py`/`embed_bridge.py` set it as an **`AsyncClient`-wide default** — same value, different axis, so a mechanical swap to a shared constant is right but they don't collapse into one call. |
-| 6 | Recursive bisect-to-quarantine isolation over `HTTPStatusError` (4xx→quarantine / else→re-raise), incl. verbatim log string | `embedders.py:162-185` (`BatchingEmbedder._embed_group`) | `embed_pool.py:147-170` (`PooledEmbedder._embed_isolated_range`) | **high** | **CONFIRMED** | Sharpest copy in scope. Identical control flow, identical `zip(strict=True)` fill, and the log string `"quarantining unembeddable input #%d (HTTP %d)"` is verbatim in both (`embedders.py:175-177` = `embed_pool.py:160-162`). `embed_pool.py:127` self-documents the mirroring. Will drift. Extract a shared `bisect_isolate(embed_fn, texts, indices, out)`. |
-| 7 | `HTTPStatusError` → `status\|None` → 4xx range-check idiom | `embedders.py:167-172` | `embed_pool.py:91-108`, `embed_pool.py:152-157` | med → **low** | **DOWNGRADED** | Present in three spots, but the three are **not** the same predicate: `embedders.py:172` and `embed_pool.py:157` test bare `400 <= status < 500`, while `embed_pool.py:97-101` additionally excludes `_RETRIABLE_STATUS` (408/425/429) and its `status is not None` extraction also guards `isinstance(e, httpx.HTTPStatusError)`. A `client_error_status(exc) -> int \| None` helper removes the `e.response is not None` guard, but the divergent range logic can't fully collapse. Real but low; folds naturally into #6's extraction. |
+| N6 | Python filter predicate: key loop, `Not` / list / scalar branches, "absent key satisfies `Not`" | `stores/filters.py` `payload_matches` L389-422 | `stores/memory.py` `_matches` L25-63 | med | **NEW, confirmed** | The same dialect (Python over `Chunk.metadata`), so unlike the Qdrant/ES emitters this copy has no reason to exist. They differ in two ways: `_matches` validates once up front and never refuses reserved keys, while `payload_matches` validates per value via `_resolve_key`. Both were edited in lock-step in #471 (9e055bb) and #597/#601 (65315cb). Fix: `payload_matches(chunk.metadata, filters, refuse_reserved=False)`. |
+| N8 | ES-nested vs Qdrant-flat key path | `metadata_schema.py` `es_field_path` L313-328 / `qdrant_field_path` L330-335 (no callers anywhere) | `stores/elasticsearch.py` L116, L190, L610, L635, L713, L732; `scripts/backfill_collection_metadata.py` L92, L98, L185-190 | med | **NEW, confirmed** | #603 introduced the helper as the single statement of the shape difference, but nothing adopted it. |
+| N13 | Qdrant payload → `Chunk` projection | `stores/qdrant.py` `_chunk_from_payload` L740-751 + `stores/filters.py` `PAYLOAD_RESERVED` L150 | `scripts/backfill_es_from_qdrant.py` `_RESERVED` L26 / `_chunk` L36-45 | low-med | **NEW, confirmed** | The copy raises `KeyError` on a missing `chunk_id` instead of falling back to the point id, and it parses `int(float(...))`. Tracked in #107. |
+| N14 | Qdrant payload-index field set | `stores/qdrant.py` `QdrantVectorStore._ensure_payload_indexes` L294-313 | `scripts/copy_collection.py` `PAYLOAD_INDEX_FIELDS` L115 / `ensure_payload_indexes` L811-824 | low-med | **NEW, confirmed** | The copy's docstring says it mirrors A "exactly". A newly indexed field would silently be missing on copied destinations. Export the tuple. |
+| N5 | Store routing rule | `store_routing.py` `qdrant_url_for` L27-39 / `es_url_for` L42-57 | `python/ragstack/ops/ingest_target.py` `_qdrant_url_for` L479-491 / `_es_url_for` L494-510 | high | **NEW, confirmed** | B adds `override` (route > `--*-url` > default). The ES copy was added in the same commit as the canonical helper (8cf66b2, #578). Also related: `api/routers/collections.py` `_routed_store_legs` L1250-1251 re-reads both route tables (low). |
+| N5b | `QdrantVectorStore(...)` construction | `api/deps.py` `_build_vector_store` (constructor L179-187) | `api/deps.py` `build_collection_entry` L341-348 | med-high | **NEW, confirmed, drifted** | B omits `upsert_batch_size`/`upsert_concurrency` (see rank 5). `timeout` and `postmortem_probe` were each hand-added to both sites. |
 
-### Added findings (missed by the original)
+#### Ingest: API, GoWe plane, legacy CLI
 
-| # | What is duplicated | Location A | Location B | Severity | Verdict | Notes |
+| # | What is duplicated | Site A | Site B | Sev | Verdict | Notes |
 |---|---|---|---|---|---|---|
-| A1 | `base_url.rstrip("/")` normalization | `sidecar_http.py:36`, `llm.py:36`, `tokenization.py:122` | `tokenization.py:238`, `embed_pool.py:223` | low | **ADDED** | Five copies of the base-URL normalization. Three (`sidecar_http`, `llm`, `EndpointTokenCounter.__init__`) store it; two (`resolve_max_tokens`, `make_pooled_embedder` health-URL build) inline `url.rstrip('/')` at use. The sync `tokenization.py` sites can't hold a `SidecarClient`, but a trivial `normalize_base_url(url)` in `sidecar_http.py` would give one definition. Very low drift risk; noting for completeness alongside #2. |
-| A2 | Bearer-auth'd GET/POST to a vLLM control endpoint (`/tokenize`, `/v1/models`) with sync `httpx.Client(timeout=30.0)` + `raise_for_status()` + `.json()` | `tokenization.py:138-148` (`EndpointTokenCounter.count`) | `tokenization.py:235-243` (`resolve_max_tokens`) | low | **ADDED** | Same sync-client shape as #1/#3 but on the *synchronous* chunker path, so it can't share the async `SidecarClient`. Two independent `httpx.Client` construction sites with the same 30.0 timeout, Bearer header, and `raise_for_status()`/`.json()` unwrap. A small sync `_get_json`/`_post_json(base, path, api_key, timeout=30.0)` helper would cover both and pairs with the #3 `bearer_headers` helper. Note the 30.0 here is a distinct budget from the 120.0 in #5 — do not unify the values. |
+| N1 | Record → `Document` + doc-id key | `ingestion/loaders.py` `JsonlLoader._document` L434-461, `_metadata` L386-432 | `scripts/ingest_jsonl.py` `_doc_id_key` L90-92, L1036-1042 | high | **July I1/I2/I9, now DIVERGED** | See rank 1. The GoWe tools go through `JsonlLoader`, so only the legacy CLI is wrong. Its docs still direct users to it (`docs/cookbook-new-org-ingest.md` L328-335, `docs/API.md` L1869). |
+| N2 | Semantic `chunk_params` parsing + fallback defaults | `api/deps.py` `_semantic_param` L386-399, used by `_chunker_for` L436-447 | `scripts/ingest_shard.py` `_semantic_params` L73-109 → `chunker_config.build_chunker` defaults L187-189 (and again at `chunkers.py` `make_chunker` L1313-1315) | high | **NEW, confirmed** | Defaults come from `settings.chunk_*` in one and hard-coded literals in the other. `ingest_shard`'s own docstring admits "the defaults coincide (3 / 80.0 / 500)". Chunk ids are part of a collection's identity, so a divergence is silent corruption. Tracked in #609. |
+| N2b | `fixed_token ⇒ hf + model` token-backend rule | `api/deps.py` `_build_chunker` L1245-1275 | `ingestion/chunker_config.py` `resolve_token_backend` L137-173 | med | **NEW, confirmed** | The API path lacks the endpoint-without-model refusal. In scope for plan §8. |
+| N3 | Shard worker CLI skeleton | `scripts/ingest_shard.py` `_build_embedder` L64-70, `build_chunker` call L120-128, argparse L310-349 | `scripts/embed_shard.py` embedder L79-85, `_build_chunker` L45-72, argparse L170-187 | high | **NEW, confirmed, drifted** | See rank 4. `args.embedding_api_key or os.getenv("OPENAI_API_KEY")` is written 4 times across the two files. `embed_shard` has `--metadata-passthrough` and `ingest_shard` does not. |
+| N4 | Open stores from an `IngestTarget` | `scripts/ingest_shard.py` `_build_pipeline` L147-176 | `scripts/load_embeddings.py` `_build_pipeline` L85-154; also `ingest_jsonl.py` L666-693, `ingest_chunks.py` L195-200 | med-high | **NEW, confirmed, drifted** | The vector/text-backend consistency guard is verbatim (L147-151 ↔ L85-89). `es_url = target.es_url or args.es_url` is redundant with the ES routing in `ingest_target.py`. The #454 required-URL fix reached only `ingest_shard`. |
+| N7 | Delete-prior fan-out (vector + text + graph per doc) | `ingestion/pipeline.py` `index_chunks` `_delete_prior` L451-464 | `ingestion/load_embeddings.py` `_delete_docs` L198-232 | med | **NEW, confirmed** | A change to delete scoping (as happened with #209's collection scoping) has to land twice. Fix: `IngestionPipeline.delete_docs(doc_ids, tenant_id, *, graph=True)`. |
+| N9 | `iter_embed_source` re-inlines `prepare_documents` + `_embed_chunks` | `ingestion/pipeline.py` `iter_embed_source` L373-391 | same file, `prepare_documents` L180-188, `_embed_chunks` L196-201 | med | **NEW, confirmed** | A new prepare stage would silently skip `embed_shard`, the decoupled plane. |
+| N10 | GoWe/local ingest gate + dispatch | `api/routers/documents.py` `ingest` L995-1082 | `api/routers/documents.py` `ingest_upload` L1426-1552 | med | **NEW, confirmed** | See rank 6. The job-finalisation tail is also paralleled in `_run_ingest` L175-209 ↔ `_run_gowe_ingest` L788-803 (low; the manifest difference is documented). |
+| N11 | Run-summary construction | `ingestion/receipts.py` `merge_summary` L139-154 | `scripts/load_embeddings.py` `_refuse_over_cap` L292-296 | low-med | **NEW, confirmed, drifted** | The refusal summary lacks `n_docs_failed`. The `json.dump(indent=2, sort_keys=True)` summary write is repeated ×3 in `load_embeddings.py` and once in `merge_receipts.py`. |
+| N12 | Manifest-dir resolution bypasses `Settings` | `config.py` `Settings.collection_manifest_dir` L288 | `args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")` in `ingest_shard.py` L259, `load_embeddings.py` L362, `ingest_chunks.py` L225, `ingest_jsonl.py` L1121 | low-med | **NEW, confirmed** | A directory set only in `.env` is seen by the API but not by the tools. Same class as #106. |
+| N15 | Inlined CWL tool definitions | see rank 10 | see rank 10 | med | **NEW, confirmed, drifted** | Inlining is by design (GoWe registers CWL text). The archive and pdf_extract copies are already guarded by agreement tests; these three tools are not. |
+| N16 | Registry/GoWe knowledge in the batch driver | `scripts/gowe_batch_ingest.py` `resolve_store_name` L190-202 (raw SQLite), `TERMINAL` L59 | `python/ragstack/ops/ingest_target.py` resolve/`target_from_spec`; `ingestion/gowe_client.py` `TERMINAL_STATES` L34 | low-med | **NEW, confirmed** | `store_counts` ignores collection routes, so verification of a routed collection reads the wrong instance. `TERMINAL` adds `"ERROR"`, which is not a GoWe state. |
+| N17 | Small same-file copies | `ingestion/sharded.py` `_ingest_item` L195-216 ↔ `_ingest_prepared_item` L218-242; `ingestion/embedding_file.py` `write_embedding_file` L62-64 ↔ `EmbeddingFileWriter.write` L147-154 | — | low | **NEW, confirmed** | The streaming writer omits `count` from the header. |
 
-### Summary of changes to the original audit
-- **#4 REJECTED** — not duplication; two unrelated layers.
-- **#2 DOWNGRADED to med** and folded into #1 (same transport-bypass defect, not a separate high).
-- **#3, #7 DOWNGRADED to low** — real but low drift risk; #7's three sites are not one predicate (retriable-4xx exclusion diverges).
-- **#1, #5, #6 CONFIRMED** at their stated severities. #6 is the strongest (verbatim log string + self-documented mirror).
-- **Added A1** (5-copy `base_url.rstrip("/")`) and **A2** (duplicate sync vLLM-control HTTP plumbing in `tokenization.py`), both missed by the original, both low.
+#### Control-plane stores (users / shares / groups / collections / jobs / grading)
 
-### Store tenant-scoping & delete/id patterns
+| # | What is duplicated | Sites | Sev | Verdict | Notes |
+|---|---|---|---|---|---|
+| N18 | `_normalize_dsn` (byte-identical) | `jobstore.py` L714, `collection_store.py` L1607, `user_store.py` L1193, `grading/store.py` L524 | low | **NEW, confirmed** | The docstring in `grading/store.py` says outright that it is "the same helper :mod:`ragstack.jobstore` needs". |
+| N19 | Lazy `asyncpg.create_pool` + DDL bootstrap under double-checked `asyncio.Lock` | `jobstore.py` L735-760, `collection_store.py` L1630-1647, `user_store.py` L1215-1242, `grading/store.py` ~L550-563; `acl_store.py` L916 and `group_store.py` L850 inherit and extend it | high | **NEW, confirmed, drifted** | The cross-process DDL advisory lock is present in 3 of 6 stores (see rank 3). |
+| N20 | SQLite `_connect` pragmas | `jobstore.py` L492-498, `user_store.py` L989-993, `collection_store.py` L1361-1371, `grading/store.py` L330-334 | med | **NEW, confirmed, drifted** | `busy_timeout=5000` is in 2 of 4. |
+| N21 | Read-validate-write transactions written per dialect | e.g. `user_store.py` `SqliteUserStore._set_role_sync` L1084-1111 ↔ `PostgresUserStore.set_role` L1337-1367 | med | **NEW, partly mitigated** | The decision logic is already shared (`_apply_role` L570, `_is_demotion` L620, `_last_admin_error` L631). What is duplicated is the locking and transaction scaffolding and the paired `_SQLITE`/`_POSTGRES` SQL constants (L882-915). #351 proposes one `SqlStore` per protocol with a dialect object. |
 
-| # | What is duplicated | Location A | Location B | Severity | Verdict | Notes |
+#### Ops / ctl
+
+| # | What is duplicated | Site A | Site B | Sev | Verdict | Notes |
 |---|---|---|---|---|---|---|
-| 1 | Tenant-scoped composite id convention `{tenant}:{chunk_id}` | qdrant.py:253 `_point_id` (wraps in `uuid5`) | elasticsearch.py:42-43 `_es_id` (raw) | **med** | **CONFIRMED** | Real duplication of a *convention*, not a string coincidence. Both independently encode "same source, two tenants → distinct storage id" via the exact `{tenant}:{chunk_id}` join order/separator. A `tenancy.scoped_id(tenant, chunk_id)` primitive would make the join load-bearing in one place; Qdrant keeps the `uuid5` wrap, ES uses it raw. The join is documented as the shared contract in elasticsearch.py:2-3 ("Mirrors the Qdrant store's tenancy"). |
-| 2 | `metadata.get("tenant_id", DEFAULT_TENANT)` fallback re-implemented instead of `tenant_of` | elasticsearch.py:104 (write, on a dict) | tenancy.py:28-31 `tenant_of` (self-described "single source"); used at qdrant.py:122, memory.py:44,106 | **low** (was med) | **DOWNGRADED** | Real divergence from a stated single-source, but narrower than claimed. Only :104 is a true miss — and it's trivially fixable (`tenant = tenant_of(c)`, since `c` is a `Chunk` and `metadata` is its copy). The cited :144 `setdefault` operates on an ES `_source` hit dict (not a `Chunk`), so `tenant_of` does **not** apply there — that half of the finding is a false pair. One genuine drift site, mechanical fix → low. |
-| 3 | `delete_except` orphan-prune contract (upsert-then-prune, tenant+doc scoped) | qdrant.py:215-247 (scroll-by-id) | elasticsearch.py:189-211 (`delete_by_query`), memory.py:75-87 / 144-156 (list comp) | **low** | **CONFIRMED** | Shared *contract*, deliberately divergent *mechanism* — the qdrant.py:218-223 and elasticsearch.py:193-197 docstrings explicitly explain the scroll-by-id vs `delete_by_query` split to dodge the at-scale filtered-delete timeout. Consolidating bodies would force one backend's strategy on the other. The only shareable piece is the protocol docstring. Correctly low; not true logic duplication. |
-| 4 | Identical `delete`, `delete_except`, `count_tenants` bodies across the two in-memory stores | memory.py:68-73, 75-87, 89-94 (`InMemoryVectorStore`) | memory.py:137-142, 144-156, 158-163 (`InMemoryTextIndex`) | **med** | **CONFIRMED** | The clearest real copy-paste. All three method bodies are byte-for-byte identical because both classes are thin `list[Chunk]` wrappers with zero backend-dialect reason to diverge. A `_ChunkListStore` base carrying these three methods is pure win and will drift the moment one copy is patched. Highest-value, lowest-risk fix. |
-| 5 | Tenant-scope filter builders (scalar→exact, list→any-of, empty-list→skip) | qdrant.py:256-273 `_build_filter` | elasticsearch.py:46-70 `_build_query`, memory.py:11-23 `_matches` | **low** | **CONFIRMED** | Shared *semantic* spec across three incompatible dialects (Qdrant `Condition`, ES DSL, Python predicate) — emitters can't merge. ES additionally rewrites keys to `metadata.<key>` (:62) and, unlike the other two, hard-*requires* a non-empty `tenant_id` (:55-59) instead of failing open, so it is not even a clean sibling. The empty-list-skip invariant is held by a hand-maintained comment (qdrant.py:259-260 "Keep … in sync with `_matches`"). Correctly low; the comment is the fragile part. |
-| 6 | `if not tenants: return 0` fail-closed count guard | qdrant.py:184-185, elasticsearch.py:163-164 | memory.py:92-93 & 161-162 | **low** (was med) | **DOWNGRADED** | Real repeated security invariant, but three of the four sites are *forced apart* — the guard must live before each backend's filter build (qdrant.py:184 documents exactly why: `_build_filter` would fail-open on an empty list). It can't move to a shared helper without also moving the filter call. The two memory.py copies are already covered by #4's base-class extraction. Risk is omission-in-next-store, not drift of existing copies → low, plus a documented protocol precondition. |
-| 7 | `Chunk` reconstruction (unpack) with identical `int(… or 0)` / `str(…)` coercions and id-fallback | qdrant.py:160-167 (search) | elasticsearch.py:145-152 (search) | **med** | **CONFIRMED** | Pack sides legitimately differ (Qdrant flattens metadata into payload and strips `_PAYLOAD_RESERVED`; ES nests under `metadata`) — not duplication. But the *unpack* `Chunk(id=str(pop/get … or storage_id), doc_id=…, start_char=int(… or 0), …)` block is near-identical in both. A `Chunk.from_storage_fields(**raw)` classmethod on models.py removes the copy and gives one place to evolve coercion. Real. |
-| 8 | Per-method Cypher `tenant_clause` assembly from `readable_tenants` | neo4j.py:114-116, 146-148, 170-173, 194-198 | (four methods, one file) | **low** | **CONFIRMED** | Superficial four-way repetition; the only reusable piece — `readable_tenants(tenant_id)` — is already centralized in tenancy.py and called at all four sites. What remains is positionally-sensitive Cypher fragment assembly (`AND r.tenant_id IN`, `WHERE e.tenant_id IN`, `= $tenant_id`), each different; a generic helper risks miswiring WHERE/AND for little gain. Correctly factored already. |
-| 9 | **Third** `DEFAULT_TENANT` fallback variant `tenant_id or DEFAULT_TENANT` | neo4j.py:31-32 `_tenant_or_default` (used at :82) | tenancy.py:28-31 `tenant_of`, plus ES :104 (#2) | **low** | **ADDED** | Original missed this. It's a *different* fallback shape (`X or DEFAULT` on an empty-string field, vs `dict.get(key, DEFAULT)`) — so it can't call `tenant_of` (operates on a `Triple.tenant_id` string, not a chunk's metadata). It reinforces #2's thesis: the DEFAULT_TENANT fallback semantics now live in three spellings across three files. If `tenancy.py` grows a `tenant_or_default(str)` primitive, both this and ES :104 could route through the tenancy module even though the input types differ. Low, but worth noting alongside #2 as the real cross-store gap. |
-| 10 | **Identity-dedup on `(tenant_of(c), c.id)`** in the two in-memory writers | memory.py:44-46 (`InMemoryVectorStore.upsert`) | memory.py:106-111 (`InMemoryTextIndex.index`) | **low** | **ADDED** | Original missed this. Both writers build an incoming/existing set keyed on `(tenant_of(c), c.id)` and drop collisions — same tenant-scoped identity rule, two spellings (upsert rewrites the list; index appends-if-absent). `InMemoryGraphStore.add_triples` (memory.py:176-181) is a third variant keyed on `(s,p,o,tenant_id)`. Not byte-identical like #4 (the loop shapes differ), so lower priority — but if #4's `_ChunkListStore` base is created, a shared `_dedup_key` naturally belongs with it. |
+| N22 | Tenant config-file discovery | `python/ragstack/ops/tenant_keys.py` `CONFIG_FILES` / `tenant_files` / `tenant_env` L240-252 | `python/ragstack/ops/store_inventory.py` `discover` L450-452 (globs only `*/config/tenant.env`) | med | **NEW, confirmed, drifted** | The inventory never reads `secrets.env`, which is where `ragstack-ctl env normalize` moves connection strings. The inventory feeds reclaim decisions, so a store could be reported as unclaimed. |
+| N23 | ES `_cat/indices` listing + system-index filter | `python/ragstack/ops/store_inventory.py` `probe_elasticsearch` L512-554, `_ES_SYSTEM_PREFIX` L70 | `python/ragstack/ops/metadata_conformance.py` `list_indices` L172-189, `_SYSTEM_PREFIX` L88 | low | **NEW, confirmed** | `metadata_conformance.TEMPLATE_NAME` L80 also re-types the key from `stores/elasticsearch.py` `_DYNAMIC_TEMPLATES` L115. |
+| G1 | API-key fingerprint (must match `registry.json`) | `go/internal/ctl/auth/keys.go` `Fingerprint` L75 | `go/internal/ctl/ops/creds.go` `fingerprint` L925; `go/internal/ctl/adopt/adopt.go` `fingerprint` L1400 | med | **NEW, confirmed** | Currently identical. It is authorization-relevant: the `creds.go` copy drives revocation matching. `ops` and `adopt` can import `auth`. |
+| G2 | Atomic file write | `go/internal/ctl/drivers/real.go` `writeAtomic` L478 | `go/internal/ctl/registry/registry.go` `writeAtomic` L693; `go/internal/ctl/gateway/gateway.go` `writeFileAtomic` L335; `api/serve.go` `writePIDFile` | med | **NEW, confirmed, drifted** | The durability differs: registry syncs file + dir, gateway syncs the file only, the pidfile does not sync. The `real.go` comment itself warns that two copies are "two places to get it wrong". |
+| G3 | Port parsing of store URLs | `go/internal/ctl/adopt/confirm.go` `portOf` L401-416 (`LastIndex(":")`) | `go/internal/ctl/fleet/fleet.go` `portOf` L376-389 (`url.Parse`, 1024-65535) | med | **NEW (sweep-verified)** | The two disagree on the same `Stores.*.URL` fields: a scheme-less URL, or a port below 1024, is parsed differently. |
+| G4-G6 | `pgPortOf` ×2, `ctlUID` ×3, `under(path, root)` ×4 | `adopt/confirm.go`, `go/internal/ctl/ops/backup.go`; `cmd/ragstack-ctl/main.go`, `internal/ctl/api/live.go`, `doctor/doctor.go`; `rebase.go`, `adopt.go`, `doctor.go`, `hostfacts/real.go` | low | **NEW (sweep-verified)** | Latent or trivial. Fold into `hostfacts` when next touched. |
 
-### Summary of changes to the original audit
+G3-G6 line numbers come from the sweep; only G1 and G2's function locations were re-grepped for this section.
 
-- **Downgraded #2 (med→low):** the `:144` half is a false pair (`tenant_of` takes a `Chunk`, not an ES hit dict); only `:104` is a genuine, one-line-fix miss.
-- **Downgraded #6 (med→low):** three of four sites are structurally pinned before each backend's filter build (documented at qdrant.py:184); it is an omission risk, not a drift risk, and the memory copies fold into #4.
-- **Confirmed as-is:** #1, #3, #4, #5, #7, #8 — severities accurate. #4 remains the highest-value fix (in-file base class); #1 the highest-value cross-store fix (`scoped_id` primitive).
-- **Added #9** (`_tenant_or_default` — a third DEFAULT_TENANT fallback spelling in neo4j.py:31) and **#10** (duplicated `(tenant_of(c), c.id)` identity-dedup across the two in-memory writers) — both missed by the original and both in the same tenant-scoping area.
-- **No REJECTED findings** — every original item points at real, verifiable shared code or a real shared contract; the corrections are to severity and to one false sub-pair in #2.
+### Rejected in this sweep (not duplication)
 
-Relevant files (all absolute): `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/qdrant.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/elasticsearch.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/memory.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/stores/neo4j.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/tenancy.py`.
+- **The new tools vs the pooled-vs-single embedder branch:** the bulk tools use `make_embedder_auto` on purpose (always pooled, #308). The branch copies are July's I4, not new code.
+- **`load_embeddings._chunk_from_record` vs `embedding_file.read_embedding_file`:** different input formats.
+- **Scroll loops** (`qdrant.delete_except`, `copy_collection.copy_vectors`, `backfill_es_from_qdrant`): each needs different payload, vector and checkpoint handling.
+- **`scripts/store_inventory.py` and `scripts/metadata_conformance.py`:** thin wrappers over `ops.*.main`.
+- **`/v1/query` vs `/v1/retrieve` filter validation:** both go through the single `_resolve_retrieval`.
+- **Inlined `archive_version` and `pdf_extract` CWL tools:** already guarded by agreement tests.
+- **`qdrant._failure_kind` vs `_describe_failure`:** a documented deliberate copy.
+- **`seal.fingerprint` in Go:** a different domain (an age recipient, not an API key).
+- **`sharded._admit` vs `check_chunk_cap`:** incremental counting by design.
 
-### Ingest-script vs pipeline overlap + config/model dup
+### Net priority (consolidation order)
 
-Verified against `python/scripts/ingest_jsonl.py` and `python/ragstack/{ingestion/{loaders,pipeline,chunkers}.py, api/deps.py, config.py}`. The script legitimately re-implements a streaming, checkpoint-aware ingest, but re-derives several library primitives inline. Note the script *does* correctly import `deterministic_doc_id` and `collection_name` from the package — so the duplication is narrower than "the whole pipeline," concentrated in the record→Document recipe, the embed-drop loop, the embedder builder, and config default values.
-
-| # | What is duplicated | Location A (file:line) | Location B (file:line) | Severity | Verdict | Notes |
-|---|---|---|---|---|---|---|
-| 1 | Per-record JSONL → `Document` recipe: `enrich(record, profile)` → doc_type filter → `deterministic_doc_id(key)` + `index_metadata(enriched)` + `record["path"]` as source | `scripts/ingest_jsonl.py:1010-1017` (+ id re-derived at `:990-992`, `:1005-1007`) | `ragstack/ingestion/loaders.py:177-191` (`JsonlLoader._document`) | high | **CONFIRMED** | The three-call recipe (`enrich`→`index_metadata`→`deterministic_doc_id`) is reproduced inline, and the id is re-derived twice more for skip/resume metrics rows. This is the "re-ingest overwrites in place" correctness invariant duplicated across two ingest paths. The script can't call `JsonlLoader.load()` wholesale (it streams for checkpointing and needs the raw `enriched` for its catalog), but a factored `record_to_document(record, profile)` would collapse all four sites. |
-| 2 | Doc-id key derivation: `str(Path(rec_path).resolve()) if rec_path else text` | `scripts/ingest_jsonl.py:84-86` (`_doc_id_key`) | `ragstack/ingestion/loaders.py:182-185` (inline in `_document`) | high | **CONFIRMED** | Byte-for-byte identical. Loaders keeps this inline (not exported), so the script re-typed it even though it *does* import `deterministic_doc_id` from the same module. If either side ever normalizes paths differently (symlinks/casing), the two paths mint different point ids for the same PDF and re-ingests silently duplicate. Export one `doc_id_key_for_record()` from `loaders.py` and call it from both. |
-| 3 | Embed-then-drop-quarantined loop: `embed_isolated(texts)` → `zip(strict=True)` → drop `None` vectors → warn on quarantined count | `scripts/ingest_jsonl.py:337-370` (`_embed_drop_bad`) | `ragstack/ingestion/pipeline.py:76-93` | high | **CONFIRMED** | Same poison-isolation contract, twice. Differences are cosmetic (stderr `print` vs `log.warning`; the script's empty-list guard for catalog-only batches). This *will* rot if the quarantine policy changes (e.g. a cap on quarantined fraction) on one side only. Factor a shared `embed_and_keep(embedder, chunks) -> kept`. |
-| 4 | Embedder construction by endpoint count: `len(urls) > 1` → `make_pooled_embedder(...)` else `make_embedder(...)`, over a shared `{api, http, model, api_key}` kwargs dict | `scripts/ingest_jsonl.py:296-303` (`_make_endpoint_embedder`) | `ragstack/api/deps.py:99-119` (`_build_embedder`) | med | **CONFIRMED** | Same branch, same common-kwargs pattern. The only real difference is that `deps` wraps the result in `BatchingEmbedder` (deps.py:120-125) and the script does not. Promote `build_embedder_base(http, *, api, urls, model, api_key, max_concurrency, health_path=None)` returning the **unwrapped** base; each caller keeps its own wrapping decision. |
-| 5 | Neighbor-link + index sequence: `link_neighbors_by_document(kept)` then per-doc replace/index | `scripts/ingest_jsonl.py:749-781` (`_store_batch`) | `ragstack/ingestion/pipeline.py:98-126` | ~~med~~ **low** | **DOWNGRADED** | The delete/upsert ordering is *deliberately inverted* and documented on both sides (pipeline: delete-then-upsert with `EmptyIngestError` guard, pipeline.py:105-120; script: upsert-then-prune-by-id because a filtered delete on a large collection once timed out mid-batch, script:759-762). They even use `link_neighbors_by_document` differently — pipeline for its side effect, script for its return value (chunkers.py:829 returns `dict[str, list[Chunk]]`). This is a structural parallel with divergent, well-justified bodies, not drift-prone copy-paste. Real severity is low; consolidation is optional and must keep both orderings selectable. |
-| 6 | Chunker construction: `make_chunker(method, chunk_size, chunk_overlap, ...)` + `SyncEmbedBridge` for the semantic method | `scripts/ingest_jsonl.py:543-552, 624-640` | `ragstack/api/deps.py:283-292, 305+` (`_build_chunker`) | ~~med~~ **low** | **DOWNGRADED** | The genuinely shared surface is one `make_chunker` call and "build a `SyncEmbedBridge` when method is semantic." Everything else diverges substantially: the script carries fixed_token/breakpoint-embedder/token-counter/segmentation-cache/`max_breakpoint_sentences` machinery deps lacks; deps guards a *different* method set (`fixed|sentence|words|semantic`) and gates token sizing on `chunk_max_tokens`, while the script accepts `semantic_pooled`/`fixed_token`. Too little co-varying logic to rank as med; the bridge lifecycle is the only piece worth sharing. |
-| 7 | Chunker/embedder default *values* duplicated as argparse literals vs `Settings` fields: `chunk_size=512`, `chunk_overlap=64`, `buffer_size=3`, `breakpoint_percentile=80.0`, `min_length=500`, `max_concurrency=8`, `embedding_api="sidecar"`, sidecar URL `http://localhost:50053`, chunk-method choices | `scripts/ingest_jsonl.py:1140-1201` (argparse `default=`) | `ragstack/config.py:42-96,123-125` (`Settings` defaults) | med | **CONFIRMED** | Every value verified equal across both sites today (512 / 64 / 3 / 80.0 / 500 / 8 / "sidecar" / `:50053`) — which is exactly why silent drift is the risk: tuning a `Settings` default won't move the script. Seed argparse defaults from `Settings.model_fields[...].default` (or a `Settings()` instance) for one source of truth. |
-| 8 | `BatchingEmbedder` wrapping present in deps, absent in script | `scripts/ingest_jsonl.py:306-313, 352` | `ragstack/api/deps.py:120-125` | low | **REJECTED (as a finding)** | This is a *divergence*, not duplication — by the original's own reasoning the script intentionally forgoes `BatchingEmbedder` and does producer-side batching via `--batch-size`, leaning on `PooledEmbedder.embed_isolated`. There's no copied logic here to drift. Keep it only as a **caveat on #4**: the shared base-builder must return the unwrapped base so consolidating #4 doesn't force `BatchingEmbedder` onto the script's path (which would double-batch). |
-| 9 | `enrich(record, profile)` → `index_metadata(enriched)` metadata mapping applied identically at both ingest entry points | `scripts/ingest_jsonl.py:982, 1015` | `ragstack/ingestion/loaders.py:178, 189` | — | **ADDED (folded into #1)** | The original framed #1 around the doc-id; the metadata half (`index_metadata(enrich(...))`) is the same co-varying recipe and belongs in the same `record_to_document()` extraction. Not a separate fix — noted so the consolidation target covers metadata, not just the id. |
-
-### Summary of changes to the original audit
-- **Confirmed (5):** #1, #2, #3, #4, #7 — genuine duplication of logic or values that will drift.
-- **Downgraded (2):** #5 med→low and #6 med→low — both are structural parallels whose bodies diverge by design, with far less shared logic than a med rating implies.
-- **Rejected (1):** #8 is a deliberate divergence, not a duplication finding; retained only as a constraint on the #4 fix.
-- **Added (1):** #9 — the `enrich→index_metadata` metadata recipe is a third element co-varying with the doc-id at both sites; fold it into the #1 `record_to_document()` extraction.
-
-**Net priority (consolidation order):** (1) factor `record_to_document(record, profile)` + `doc_id_key_for_record(record)` out of `loaders.py:177-191`, killing #1/#2/#9; (2) shared `embed_and_keep()` for #3; (3) `build_embedder_base()` returning the unwrapped base for #4 (respecting #8's caveat); (4) seed argparse defaults from `Settings` for #7. #5 and #6 are optional low-value cleanups.
-
-Relevant files (absolute paths):
-- `/Users/me/Development/dxkb/ragstack/python/scripts/ingest_jsonl.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/loaders.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/pipeline.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/chunkers.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/api/deps.py`
-- `/Users/me/Development/dxkb/ragstack/python/ragstack/config.py`
-
-
----
-
-*Companion to [ARCHITECTURE.md](ARCHITECTURE.md), [SPEC.md](../SPEC.md), and [STATUS.md](../STATUS.md). Duplication findings were adversarially re-verified against the source before inclusion.*
+1. **Settle `ingest_jsonl.py`.** Either accept ADR-0006 and delete the script (and its docs), or make it call an exported `loaders.record_doc_id()` / `record_to_document()`. This closes N1 and July I1/I2/I3/I7/I9 in one move. Related: #25.
+2. **Land plan §8's single `chunker_for` factory** with one `ChunkDefaults` (N2, N2b). Related: #609.
+3. **Extract `ragstack/sqlstore.py`** for the DSN, SQLite connect and Postgres bootstrap, and add the DDL lock to the three stores that lack it (N18-N20). This is the cheap first slice of #351.
+4. **Add `ingestion/worker_cli.py` and `IngestTarget.open_stores()`** with required store URLs (N3, N4, N12). This finishes #454.
+5. **Make `store_routing` take an `override`** and route `python/ragstack/ops/ingest_target.py` through it; add one Qdrant-store factory in `deps` (N5, N5b). Related: #445.
+6. **Mechanical cleanups**, each small and already filed: #103 (bisect), #104 (LLM transport + `120.0`), #105 (in-memory base; N6 folds in naturally), #107 (`scoped_id` + `Chunk.from_storage_fields`, also closing N13).

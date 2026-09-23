@@ -252,7 +252,7 @@ divergence at data level, permanently and silently.
 Part B above backfills `year`. That leaves the question this plan did not answer: what
 happens when a source carries a **full** publication date, and what a caller filters on
 when precision varies across a corpus. The answer, now declared in
-`contracts/schemas/chunk_metadata.json` and produced by `metadata_schema.packed_date()`:
+`contracts/schemas/chunk_metadata.json` and produced by `ingestion.enrich.packed_date()`:
 
 **`date` is a packed `yyyymmdd` integer, with unknown components 0.** `19860000` is "1986,
 month and day unknown"; `19820300` is "March 1982"; `20200315` is a full date.
