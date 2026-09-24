@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from ragstack.graph.budget import GRAPH_CAP_EXCEEDED, graph_cap_refusal_of
+from ragstack.ingestion.backends import substitute_tool_image
 from ragstack.ingestion.gowe_backend import OUTPUT_STAGING_FAILED, _staging_failed
 from ragstack.ingestion.gowe_client import GoWeError
 from ragstack.jobstore import COMPLETED, FAILED, RUNNING, JobStore
@@ -117,6 +118,7 @@ class GraphExtractRunner:
         workflow_name: str = "ragstack-graph-extract",
         static_inputs: dict[str, Any] | None = None,
         worker_group: str = "",
+        tool_image: str = "",
         poll_interval: float = 5.0,
         timeout: float = 7200.0,
         output_wait_timeout: float = 600.0,
@@ -133,6 +135,8 @@ class GraphExtractRunner:
         self.workflow_name = workflow_name
         self.static_inputs = dict(static_inputs or {})
         self.worker_group = (worker_group or "").strip()
+        # #614: GOWE_TOOL_IMAGE, substituted into the CWL text when it is read.
+        self.tool_image = (tool_image or "").strip()
         self.poll_interval = poll_interval
         self.timeout = timeout
         self.output_wait_timeout = output_wait_timeout
@@ -154,6 +158,10 @@ class GraphExtractRunner:
                 raise GraphExtractError(
                     f"graph-extract workflow {self._cwl_path} is not readable: {e}", status=503,
                 ) from e
+            # Every tool is inlined, so this covers every dockerPull the engine sees.
+            self._cwl_text = substitute_tool_image(
+                self._cwl_text, self.tool_image, source=str(self._cwl_path)
+            )
         return self._cwl_text
 
     def _changed(self, cid: str) -> None:

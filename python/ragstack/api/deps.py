@@ -39,7 +39,7 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.grading.store import make_grading_store
 from ragstack.graph.extractor import LLMKGExtractor
-from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
+from ragstack.ingestion.backends import IngestBackend, make_ingest_backend, validate_tool_image
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
 from ragstack.ingestion.chunker_config import needs_embed_fn, parse_unsupported_methods
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
@@ -1350,6 +1350,10 @@ def _validate_production_settings() -> None:
     # semantic was still blocked while every submission sailed through to a worker
     # image that cannot run it. Loud, immediate, and before any traffic.
     parse_unsupported_methods(settings.ingest_worker_unsupported_methods)
+    # Same reasoning for GOWE_TOOL_IMAGE (#614): a pin whose value is a path or
+    # not a .sif resolves to no image under the worker's --image-dir (or to one
+    # outside it). Refuse at boot, not on the first submission.
+    validate_tool_image(settings.gowe_tool_image)
     if not settings.require_durable_backends:
         return
     missing = []
@@ -1492,6 +1496,7 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
         workflow_name=settings.collection_restore_workflow_name,
         static_inputs=static_inputs,
         worker_group=settings.gowe_worker_group,
+        tool_image=settings.gowe_tool_image,
         poll_interval=settings.collection_restore_poll_interval,
         timeout=settings.collection_restore_timeout,
         on_change=gate.invalidate,
@@ -1541,6 +1546,7 @@ def _build_graph_extract_runner(
         workflow_name=settings.graph_extract_workflow_name,
         static_inputs=static_inputs,
         worker_group=settings.gowe_worker_group,
+        tool_image=settings.gowe_tool_image,
         poll_interval=settings.gowe_poll_interval,
         timeout=settings.gowe_timeout,
         output_wait_timeout=settings.gowe_output_wait_timeout,

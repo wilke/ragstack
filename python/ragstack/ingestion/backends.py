@@ -9,6 +9,8 @@ pipeline. This is the seam the "single host now, cluster later" decision rests o
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -19,6 +21,8 @@ if TYPE_CHECKING:
     import httpx
 
     from ragstack.config import Settings
+
+log = logging.getLogger(__name__)
 
 # A shard processor: given a shard (list of work items), return one result each.
 ShardFn = Callable[[list[WorkItem]], Awaitable[list[ItemResult]]]
@@ -115,6 +119,85 @@ def make_ingest_backend(
     )
 
 
+# --- per-tenant tool image (#614) ------------------------------------------- #
+
+#: The tool image every shipped CWL names in its ``DockerRequirement``. GoWe joins
+#: the bare name onto the worker's ``--image-dir``, so without substitution the
+#: image is a property of the worker GROUP, not of the tenant or the submission.
+DEFAULT_TOOL_IMAGE = "ragstack-worker.sif"
+
+# A value of `DockerRequirement`: the key at the START of a (non-comment) line,
+# the default name as the whole value — optionally quoted, optionally followed by
+# a trailing comment. Anchored on the key so a comment or prose that merely
+# MENTIONS the name is left alone. `dockerImageId` is rewritten alongside
+# `dockerPull` (GoWe reads only the latter, cwltool --singularity only the
+# former) so the registered document never names two different images.
+_TOOL_IMAGE_RE = re.compile(
+    r"^(?P<key>[ \t]*(?P<field>dockerPull|dockerImageId):[ \t]*(?P<q>[\"']?))"
+    + re.escape(DEFAULT_TOOL_IMAGE)
+    + r"(?=(?P=q)[ \t]*(?:#.*)?$)",
+    re.MULTILINE,
+)
+
+# A bare image FILENAME: GoWe joins it onto `--image-dir`, so a separator (or a
+# leading dot, for `..`) would resolve outside that directory.
+_TOOL_IMAGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.sif")
+
+
+def validate_tool_image(name: str) -> str:
+    """Return ``name`` stripped, or raise ``ValueError`` naming ``GOWE_TOOL_IMAGE``.
+
+    Empty is valid (= no substitution). Anything else must be a bare filename
+    ending in ``.sif``: no ``/`` or ``\\``, no leading dot — a path would escape
+    the worker's ``--image-dir``, and a non-``.sif`` name is not what the
+    apptainer runtime resolves.
+    """
+    value = (name or "").strip()
+    if value and not _TOOL_IMAGE_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"GOWE_TOOL_IMAGE={value!r} is not a bare image filename: it must end in "
+            "'.sif' and contain no path separator or leading dot (the engine joins it "
+            "onto the worker's --image-dir, so a path would escape it). "
+            f"Example: {DEFAULT_TOOL_IMAGE.replace('.sif', '-v1.6.3.sif')}"
+        )
+    return value
+
+
+def substitute_tool_image(cwl: str, tool_image: str, *, source: str = "workflow") -> str:
+    """Replace the default tool image in a CWL document's ``DockerRequirement``.
+
+    Empty ``tool_image`` (or the default name itself) returns ``cwl`` unchanged,
+    byte for byte. Otherwise every ``dockerPull: ragstack-worker.sif`` (and its
+    ``dockerImageId`` twin) is rewritten; nothing else in the text is touched. A
+    document with no ``dockerPull`` naming the default logs a WARNING — the
+    setting then pins nothing, and a pin that silently does nothing is the
+    failure the runbook warns about (the old image runs, the new flags never
+    take effect).
+    """
+    image = (tool_image or "").strip()
+    if not image or image == DEFAULT_TOOL_IMAGE:
+        return cwl
+    pulls = 0
+
+    def _sub(m: re.Match[str]) -> str:
+        nonlocal pulls
+        if m.group("field") == "dockerPull":
+            pulls += 1
+        return m.group("key") + image
+
+    out = _TOOL_IMAGE_RE.sub(_sub, cwl)
+    if pulls == 0:
+        log.warning(
+            "GOWE_TOOL_IMAGE=%s substituted nothing: %s has no 'dockerPull: %s' line, "
+            "so its steps run whatever image that CWL names, not the pinned one",
+            image, source, DEFAULT_TOOL_IMAGE,
+        )
+    else:
+        log.info("GOWE_TOOL_IMAGE: %s pinned to %s (%d dockerPull site(s))",
+                 source, image, pulls)
+    return out
+
+
 # Workflow inputs the API owns and seeds per run (#407). An operator setting
 # these in GOWE_WORKFLOW_INPUTS_JSON is refused at boot — see _make_gowe_backend.
 _RESERVED_STATIC_INPUTS = frozenset({"qdrant_url", "es_url"})
@@ -143,6 +226,13 @@ def _make_gowe_backend(
         cwl = cwl_path.read_text(encoding="utf-8")
     except OSError as e:
         raise ValueError(f"gowe_workflow_cwl {str(cwl_path)!r} is unreadable: {e}") from e
+    # #614: pin this tenant's tool image. The text is POSTed verbatim at every
+    # submission and every tool is inlined (no external `run:` file), so this one
+    # substitution covers every dockerPull that reaches the engine.
+    # Validated here too, so a caller that builds the backend without the boot
+    # check still cannot register a path-shaped image name.
+    tool_image = validate_tool_image(getattr(settings, "gowe_tool_image", "") or "")
+    cwl = substitute_tool_image(cwl, tool_image, source=str(cwl_path))
     try:
         static_inputs = json.loads(settings.gowe_workflow_inputs_json or "{}")
     except json.JSONDecodeError as e:
