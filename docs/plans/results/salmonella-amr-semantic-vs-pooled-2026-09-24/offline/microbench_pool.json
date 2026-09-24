@@ -1,0 +1,10 @@
+{
+ "dim": 4096,
+ "window": 7,
+ "n_iter": 2000,
+ "python": "3.12.14",
+ "mean_pool_ms_per_window": 1.692,
+ "cosine_distance_ms_per_pair": 0.533,
+ "projected_mean_pool_s": 22.5,
+ "projected_cosine_s": 7.1
+}

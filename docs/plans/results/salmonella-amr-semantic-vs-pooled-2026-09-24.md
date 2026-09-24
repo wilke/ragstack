@@ -45,9 +45,12 @@ worker command). Token counts are in that model's HF tokenizer via
 
 Qdrant points == ES documents for every arm (2,090 / 375 / 418). Both new arms have
 exactly 20 distinct `doc_id`s. The 4,080-token maximum is the worker's resolved
-budget (`max_model_len 4096 − reserve 16`): 16 semantic and 10 pooled chunks sit at
-it, split by `_emit`'s token budget — so the GoWe path **does** apply a token budget
-where the in-process API builder (`api/deps.py _chunker_for`) applies none. The
+budget (`max_model_len 4096 − reserve 16`). At the budget: semantic 4 at 4,080 +
+12 at 4,079, pooled 10 at 4,079 — `_split_by_offsets` carves at `max_tokens − 1`
+(`chunkers.py:145–151`), so split pieces top out at 4,079 and only an unsplit chunk
+landing exactly on budget reads 4,080. So the GoWe path **does** apply a token budget
+where the per-collection API builder `_chunker_for` (`api/deps.py:478–520`, the one
+uploads reach via `deps.py:591`) passes no `max_tokens`. The
 fixed arm's Σ tokens is higher because 64-char overlaps are counted twice.
 
 Per-document chunk counts (ES read-back, `readback/readback-summary.json`):
@@ -86,8 +89,12 @@ chunker's own `_breakpoint_groups → _merge_short → _emit` sequence
 (`chunkers.py` v1.6.4, `chunk()` lines 199–219), applied once per embed so each arm
 is embedded once per run. `compare_corpus.py`; analysis in `analyze.py`.
 
-**The offline spans are byte-identical to what the API/GoWe path wrote to ES** — all
-20 documents, both arms (span Jaccard 1.0, `analysis.json → offline_vs_es`). That is
+**The offline spans are span-identical — same `(start, end)` on text-identical
+extraction — to what the API/GoWe path wrote to ES**, all 20 documents, both arms
+(span Jaccard 1.0, `analysis.json → offline_vs_es`). Chunk text was additionally
+verified equal to `text[start:end]` of the worker's own extraction (375/375,
+418/418); that check is not reproducible from the committed read-back, which
+carries offsets only. That is
 the link between this section and the live collections above, and it says the
 bulk and query endpoint pairs place the same boundaries.
 
@@ -103,7 +110,7 @@ chunks                      375              418
 
 distance pairs                     13,274                        51
 overall Spearman                   0.2694                        0.4254
-per-doc Spearman   median 0.204, range −0.054 … 0.674     0.24 / 0.46 / 0.58
+per-doc Spearman   median 0.200, range −0.054 … 0.674     0.24 / 0.46 / 0.58
 span Jaccard                       0.0025  (2 / 791)            0.111
 docs with any shared span            2 / 20                     1 / 3
 docs with identical spans            1 / 20                     1 / 3
@@ -118,9 +125,10 @@ against counting chunks, again.
 
 Spearman is the tie-aware (average-rank) estimator; the 09-18 script's ordinal
 estimator gives the same 0.2694 overall. Ties are real: pooled's 6-decimal rounding
-produces 1,298 tied pairs and legacy has 585 (concentrated in `19778917.pdf`, 415,
-and `PMC2443889.pdf`, 170 — documents with many repeated sentences, e.g. running
-headers, whose buffers embed identically).
+yields 1,298 duplicated distance values (n − distinct; 60,639 tied pairs) and legacy
+585 (9,156 tied pairs), concentrated in `19778917.pdf` (415) and `PMC2443889.pdf`
+(170) — documents with many repeated sentences, e.g. running headers, whose buffers
+embed identically.
 
 ### Control
 
@@ -146,11 +154,14 @@ is that legacy's texts are 7-sentence windows). The arithmetic `2·3+1 = 7` pred
 
 **Time: the saving does not reach the wall clock.** Breakpoint embed time is 39.9 s vs
 14.8 s (2.7×, run2 37.6 / 14.7), but arm wall time is 52.1 s vs 50.1 s offline, and
-the worker's ingest step took **65.8 s (semantic) vs 62.4 s (pooled)**. The cause is
-measured, not inferred: `_mean_pool` is pure Python over 4,096-d lists, and
-projecting its per-window cost onto this corpus's 13,294 windows gives ≈ 23 s —
-almost exactly the 25 s of embed time pooled saves. (`_cosine_distance`, also pure
-Python, costs ≈ 8 s in both arms.) Offline wall times also include this harness's
+the worker's ingest step took **65.8 s (semantic) vs 62.4 s (pooled)**. The cause:
+`_mean_pool` is pure Python over 4,096-d lists. Projected from a per-window
+microbenchmark inside the v1.6.4 image (`microbench_pool.py`,
+`offline/microbench_pool.json`): `_mean_pool` 1.69 ms/window on 7 × 4,096 lists ×
+13,294 windows ≈ 22.5 s; `_cosine_distance` 0.53 ms/pair ≈ 7.1 s (paid by both
+arms). Corroborated by the non-embed wall gap: pooled 50.1 − 14.8 = 35.3 s vs
+semantic 52.1 − 39.9 = 12.2 s → 23.1 s, against the 25 s of embed time pooled
+saves. Offline wall times also include this harness's
 own tokenizer counting, which is heavier on the legacy arm; the worker's step times
 are the clean comparison. A NumPy `_mean_pool` would make pooled's cost advantage
 real; today it is a GPU-token advantage only.
@@ -163,7 +174,8 @@ Fleet: both arms' breakpoint embeds went to `:9005`/`:9006` offline (bulk) and t
 Gate order: baseline listing → create A → upload A → completed + counts → create B →
 upload B → completed + counts → read-back → offline. Nothing pre-existing was
 modified; `Salmonella_AMR2` (0 points, another user's) was not touched. Both new
-collections are left in place. Upload bounds on `origin/main` (`max_upload_files` 50,
+collections are left in place, owned by the submitting principal
+`bvbrc:awilke@bvbrc` (admin on hackathon). Upload bounds on `origin/main` (`max_upload_files` 50,
 `max_upload_bytes_per_request` 500 MB, tenant `MAX_DOCUMENT_BYTES` 50 MB) admit
 20 PDFs / 17 MB in one request, so each arm is one GoWe submission.
 
@@ -181,9 +193,11 @@ collections are left in place. Upload bounds on `origin/main` (`max_upload_files
 | upload → registry | **119 s** | **108 s** |
 | Qdrant points / ES docs / distinct docs | 375 / 375 / 20 | 418 / 418 / 20 |
 
-Worker timestamps are the logs' local time (UTC−5) converted to UTC. The
-`WARN stage-out failed … no authentication token available` lines around each step
-are the known benign GoWe#272. The ingest command carries `--chunk-size 256
+Worker timestamps are the logs' local time (UTC−5) converted to UTC. Step **end**
+times are the timestamp of the step's first `WARN stage-out failed` line — the
+worker writes no explicit finished line — the same convention as the 09-23 record;
+those `… no authentication token available` warnings are the known benign
+GoWe#272. The ingest command carries `--chunk-size 256
 --chunk-overlap 32` for both semantic arms (ignored by `SemanticChunker`; the
 collections record `chunk_size: null`).
 
@@ -208,8 +222,12 @@ collections record `chunk_size: null`).
   input order is deterministic in NumPy too, but not bit-identical to the Python
   sum); it would be a follow-up, not part of this record.
 - The GoWe ingest path applies the model-window token budget (4,080) to semantic
-  chunks; the in-process API builder does not. Same collection spec, two chunk-length
-  ceilings depending on `INGEST_BACKEND` — one more row for the §8 consolidation.
+  chunks; the per-collection API builder `_chunker_for` (`deps.py:478–520`, reached
+  by uploads at `deps.py:591`) passes no `max_tokens`. The server-default builder
+  `_build_chunker()` (`deps.py:1293`) does resolve one when `CHUNK_MAX_TOKENS` is
+  set, so the claim is about per-collection uploads: same collection spec, two
+  chunk-length ceilings depending on `INGEST_BACKEND` — one more row for the §8
+  consolidation.
 - The GoWe worker embeds breakpoints on the **query** endpoints (`:9001`/`:9002`),
   not the bulk pair. 2.4 M tokens per 20-paper semantic ingest lands on the pair
   serving live queries.
@@ -230,6 +248,7 @@ tokens, keys or DSNs; log excerpts are redacted (`Bearer <redacted>`).
 | `offline/spans-*-{run1,run2}.json` | per-document chunk spans with char and token lengths |
 | `offline/summary-{run1,run2}.json` | per-arm texts/tokens/calls/embed-time/wall, per-doc sentence and chunk counts |
 | `offline/analysis.json` | the computed comparison and control |
+| `microbench_pool.py`, `offline/microbench_pool.json` | per-window cost of `_mean_pool` / `_cosine_distance` inside the image (no store, no endpoint) and its projection onto this corpus |
 | `offline/run.log` | the run's stdout |
 | `readback/readback-summary.json`, `readback/readback-<arm>.json` | ES read-back: counts, distributions, metadata fields, per-chunk records |
 | `receipts/baseline-*` | `GET /v1/collections`, Qdrant `/collections`, ES `_cat/indices` before anything was created |
