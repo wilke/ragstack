@@ -72,7 +72,7 @@ def snapshot() -> str:
 
 def _code(text: str) -> str:
     """The script minus its full-line comments — what actually executes."""
-    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 # --------------------------------------------------------------------------- #
@@ -92,8 +92,8 @@ def test_no_tenant_name_is_spelled_in_the_code(script, name):
     covered too.
     """
     code = _code((OPS / script).read_text())
-    hits = [l.strip() for l in code.splitlines()
-            if name in l and f"ragstack-{name}" not in l]
+    hits = [line.strip() for line in code.splitlines()
+            if name in line and f"ragstack-{name}" not in line]
     assert hits == [], (
         f"{script} names the tenant {name!r} in code — the registry is the list:\n  "
         + "\n  ".join(hits)
@@ -106,7 +106,7 @@ def test_no_tenant_port_is_spelled_in_the_code(script, port):
     """Ports are the other half of the same list. The shared stores' ports are
     allowed (they belong to no tenant) and are asserted separately below."""
     code = _code((OPS / script).read_text())
-    hits = [l.strip() for l in code.splitlines() if re.search(rf"\b{port}\b", l)]
+    hits = [line.strip() for line in code.splitlines() if re.search(rf"\b{port}\b", line)]
     assert hits == [], (
         f"{script} carries the tenant port {port} in code — it comes from the row:\n  "
         + "\n  ".join(hits)
@@ -226,7 +226,7 @@ def test_qdrant_and_es_are_rebuilt_from_the_row_not_from_up_sh(restore):
     assert "tenant_qdrant_up" in code and "tenant_es_up" in code, \
         "restore.sh has no per-kind reconstruction"
     # The launcher is reached from the postgres branch and nowhere else.
-    up_uses = [l.strip() for l in code.splitlines() if "tenant_up_script" in l and "()" not in l]
+    up_uses = [line.strip() for line in code.splitlines() if "tenant_up_script" in line and "()" not in line]
     assert up_uses, "restore.sh never calls tenant_up_script"
     for line in up_uses:
         assert "postgres" in line or "up=$(tenant_up_script" in line, \
