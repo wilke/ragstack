@@ -125,7 +125,7 @@ credential skips, and the runner fails on those too, because it provisioned them
 
 | # | Use case | Layer | State | Note |
 |---|---|---|---|---|
-| C1 | Upload a batch; job completes; chunks in both legs | C·L | ⚠️ | conformance **never uploads a file** |
+| C1 | Upload a batch; job completes; chunks in both legs | C·L | ⚠️ | C leg partly closed by #630: `conformance/test_job_scope.py` (`make test-conformance-keyed`) has P1 upload `sample_small.txt` into a collection it owns and confirms the job's status is readable by P1/admin only, `unknown` to P2/B. Completion is not awaited (accepted/running/completed/failed all count as pass) and chunks are never read back, so **"job completes; chunks in both legs" is still unproven**. Also missing: a multi-file upload, an upload into the `default` collection as a non-admin, and size/limit bounds — `test_upload_hardening.py` (#377) is F-only, not C |
 | C2 | **Upload a second batch into the same collection** | F·C·L | ⚠️ | #414 fixed (#416), F-tested and live-proven; the C leg is blocked on C1 |
 | C3 | Upload a third and fourth batch; versions 1..n all replayable | L | ❌ | only n=2 proven |
 | C4 | A second upload while one is in flight → 429, not corruption | F·C | ⚠️ | #377 (`single_inflight_ingest`); `test_upload_hardening.py` — conformance sends no 429 |
