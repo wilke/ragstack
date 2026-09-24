@@ -1,0 +1,29 @@
+{
+  "inputs": [
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/15848289.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/19778917.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/25769786.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/26683630.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/27559761.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/29091182.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/33877914.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/37906281.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/40391708.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/7590165.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC11057200.2.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC155865.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC2443889.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC2650546.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC3035553.1.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC4244539.1.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC4371985.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC5020279.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC6881056.1.pdf",
+    "/tmp/gowe-ws-stage/sub_84303b70-3e42-4e83-a936-37e3bd248c68/PMC7762970.1.pdf"
+  ],
+  "n_extracted": 20,
+  "n_input": 20,
+  "n_skipped": 0,
+  "out": "batch-00000.jsonl",
+  "skipped": []
+}

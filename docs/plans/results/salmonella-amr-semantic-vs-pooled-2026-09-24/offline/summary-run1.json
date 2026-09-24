@@ -1,0 +1,243 @@
+{
+ "tag": "run1",
+ "model": "Salesforce/SFR-Embedding-Mistral",
+ "urls": [
+  "http://localhost:9005",
+  "http://localhost:9006"
+ ],
+ "buffer_size": 3,
+ "percentile": 80.0,
+ "min_chunk_length": 500,
+ "n_docs": 20,
+ "chars": 933068,
+ "arms": {
+  "semantic": {
+   "texts_embedded": 13294,
+   "tokens_embedded": 2413763,
+   "embed_calls": 20,
+   "embed_s": 39.85,
+   "wall_s": 52.05,
+   "distance_round": null,
+   "max_tokens": 4080,
+   "pool_sentences": false,
+   "n_chunks": 375,
+   "n_distance_pairs": 13274,
+   "per_doc": {
+    "15848289.pdf": {
+     "n_sentences": 1081,
+     "n_chunks": 72,
+     "doc_s": 4.723
+    },
+    "19778917.pdf": {
+     "n_sentences": 629,
+     "n_chunks": 11,
+     "doc_s": 2.006
+    },
+    "25769786.pdf": {
+     "n_sentences": 267,
+     "n_chunks": 21,
+     "doc_s": 1.75
+    },
+    "26683630.pdf": {
+     "n_sentences": 999,
+     "n_chunks": 7,
+     "doc_s": 3.763
+    },
+    "27559761.pdf": {
+     "n_sentences": 722,
+     "n_chunks": 5,
+     "doc_s": 2.442
+    },
+    "29091182.pdf": {
+     "n_sentences": 350,
+     "n_chunks": 19,
+     "doc_s": 1.973
+    },
+    "33877914.pdf": {
+     "n_sentences": 555,
+     "n_chunks": 6,
+     "doc_s": 2.336
+    },
+    "37906281.pdf": {
+     "n_sentences": 368,
+     "n_chunks": 29,
+     "doc_s": 2.015
+    },
+    "40391708.pdf": {
+     "n_sentences": 594,
+     "n_chunks": 29,
+     "doc_s": 2.997
+    },
+    "7590165.pdf": {
+     "n_sentences": 203,
+     "n_chunks": 7,
+     "doc_s": 1.149
+    },
+    "PMC11057200.2.pdf": {
+     "n_sentences": 1089,
+     "n_chunks": 26,
+     "doc_s": 3.832
+    },
+    "PMC155865.pdf": {
+     "n_sentences": 123,
+     "n_chunks": 1,
+     "doc_s": 0.578
+    },
+    "PMC2443889.pdf": {
+     "n_sentences": 1347,
+     "n_chunks": 5,
+     "doc_s": 3.315
+    },
+    "PMC2650546.pdf": {
+     "n_sentences": 868,
+     "n_chunks": 11,
+     "doc_s": 3.067
+    },
+    "PMC3035553.1.pdf": {
+     "n_sentences": 144,
+     "n_chunks": 5,
+     "doc_s": 0.98
+    },
+    "PMC4244539.1.pdf": {
+     "n_sentences": 1864,
+     "n_chunks": 35,
+     "doc_s": 5.976
+    },
+    "PMC4371985.pdf": {
+     "n_sentences": 504,
+     "n_chunks": 27,
+     "doc_s": 2.273
+    },
+    "PMC5020279.pdf": {
+     "n_sentences": 280,
+     "n_chunks": 14,
+     "doc_s": 1.39
+    },
+    "PMC6881056.1.pdf": {
+     "n_sentences": 580,
+     "n_chunks": 17,
+     "doc_s": 2.585
+    },
+    "PMC7762970.1.pdf": {
+     "n_sentences": 727,
+     "n_chunks": 28,
+     "doc_s": 2.863
+    }
+   }
+  },
+  "semantic_pooled": {
+   "texts_embedded": 13294,
+   "tokens_embedded": 356146,
+   "embed_calls": 20,
+   "embed_s": 14.78,
+   "wall_s": 50.12,
+   "distance_round": 6,
+   "max_tokens": 4080,
+   "pool_sentences": true,
+   "n_chunks": 418,
+   "n_distance_pairs": 13274,
+   "per_doc": {
+    "15848289.pdf": {
+     "n_sentences": 1081,
+     "n_chunks": 53,
+     "doc_s": 4.148
+    },
+    "19778917.pdf": {
+     "n_sentences": 629,
+     "n_chunks": 14,
+     "doc_s": 2.272
+    },
+    "25769786.pdf": {
+     "n_sentences": 267,
+     "n_chunks": 16,
+     "doc_s": 1.251
+    },
+    "26683630.pdf": {
+     "n_sentences": 999,
+     "n_chunks": 14,
+     "doc_s": 3.783
+    },
+    "27559761.pdf": {
+     "n_sentences": 722,
+     "n_chunks": 9,
+     "doc_s": 2.796
+    },
+    "29091182.pdf": {
+     "n_sentences": 350,
+     "n_chunks": 19,
+     "doc_s": 1.497
+    },
+    "33877914.pdf": {
+     "n_sentences": 555,
+     "n_chunks": 8,
+     "doc_s": 2.054
+    },
+    "37906281.pdf": {
+     "n_sentences": 368,
+     "n_chunks": 28,
+     "doc_s": 1.428
+    },
+    "40391708.pdf": {
+     "n_sentences": 594,
+     "n_chunks": 31,
+     "doc_s": 2.274
+    },
+    "7590165.pdf": {
+     "n_sentences": 203,
+     "n_chunks": 8,
+     "doc_s": 0.852
+    },
+    "PMC11057200.2.pdf": {
+     "n_sentences": 1089,
+     "n_chunks": 27,
+     "doc_s": 4.027
+    },
+    "PMC155865.pdf": {
+     "n_sentences": 123,
+     "n_chunks": 1,
+     "doc_s": 0.532
+    },
+    "PMC2443889.pdf": {
+     "n_sentences": 1347,
+     "n_chunks": 17,
+     "doc_s": 4.823
+    },
+    "PMC2650546.pdf": {
+     "n_sentences": 868,
+     "n_chunks": 16,
+     "doc_s": 3.231
+    },
+    "PMC3035553.1.pdf": {
+     "n_sentences": 144,
+     "n_chunks": 9,
+     "doc_s": 0.644
+    },
+    "PMC4244539.1.pdf": {
+     "n_sentences": 1864,
+     "n_chunks": 42,
+     "doc_s": 6.527
+    },
+    "PMC4371985.pdf": {
+     "n_sentences": 504,
+     "n_chunks": 24,
+     "doc_s": 1.97
+    },
+    "PMC5020279.pdf": {
+     "n_sentences": 280,
+     "n_chunks": 23,
+     "doc_s": 1.179
+    },
+    "PMC6881056.1.pdf": {
+     "n_sentences": 580,
+     "n_chunks": 31,
+     "doc_s": 2.155
+    },
+    "PMC7762970.1.pdf": {
+     "n_sentences": 727,
+     "n_chunks": 28,
+     "doc_s": 2.637
+    }
+   }
+  }
+ }
+}
