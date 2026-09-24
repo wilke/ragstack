@@ -182,8 +182,10 @@ inputs:
     type: string
     default: "public"
   chunk_method:
-    type: string
-    default: "fixed_token"
+    type:
+      type: enum
+      symbols: [fixed, fixed_token, sentence, words, semantic, semantic_pooled]
+    default: fixed_token
   chunk_size:
     type: int
     default: 256
@@ -400,7 +402,11 @@ steps:
           type: ["null", string]
           inputBinding: {prefix: --es-index, position: 5}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 6}}
-        chunk_method: {type: string, inputBinding: {prefix: --chunk-method, position: 7}}
+        chunk_method:
+          type:
+            type: enum
+            symbols: [fixed, fixed_token, sentence, words, semantic, semantic_pooled]
+          inputBinding: {prefix: --chunk-method, position: 7}
         chunk_size: {type: int, inputBinding: {prefix: --chunk-size, position: 8}}
         chunk_overlap: {type: int, inputBinding: {prefix: --chunk-overlap, position: 9}}
         embedding_model: {type: string, inputBinding: {prefix: --embedding-model, position: 10}}

@@ -67,8 +67,10 @@ inputs:
     doc: "Stamped on every chunk; point ids are uuid5('{tenant}:{chunk_id}'), so
       changing this later means a full re-ingest."
   chunk_method:
-    type: string
-    default: "fixed_token"
+    type:
+      type: enum
+      symbols: [fixed, fixed_token, sentence, words]
+    default: fixed_token
   chunk_size:
     type: int
     default: 512
@@ -209,7 +211,9 @@ steps:
             prefix: --tenant
             position: 3
         chunk_method:
-          type: string
+          type:
+            type: enum
+            symbols: [fixed, fixed_token, sentence, words]
           inputBinding:
             prefix: --chunk-method
             position: 4
