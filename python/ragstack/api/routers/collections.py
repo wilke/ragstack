@@ -852,6 +852,9 @@ async def create_collection(
                         "create %r: rollback of %s left a physical store behind",
                         cid, op, exc_info=True,
                     )
+            # ...and, under vector_backend=memory, the bank entry the build just
+            # made — a rolled-back create must not leak one store per attempt.
+            _prune_memory_bank(request.app.state, registry, built)
         raise
 
     tenants = readable_tenants(principal.tenant)
@@ -1268,6 +1271,38 @@ def _routed_store_legs(entry: CollectionEntry) -> list[str]:
     return legs
 
 
+def _prune_memory_bank(app_state: Any, registry: CollectionRegistry, entry: CollectionEntry) -> bool:
+    """Forget a purged collection's in-memory vector store (#392, #644 review).
+
+    Under ``vector_backend=memory`` every physical collection's store lives in
+    ``app.state.memory_vector_stores`` for the process, so that an UNREGISTERED
+    collection (``purge=false``) keeps its chunks the way a Qdrant collection
+    outlives its registry binding. A PURGED one must not: a purged Qdrant
+    collection is gone, and keeping the emptied object around let 200
+    create+purge cycles leave 200 dead stores in the bank.
+
+    Pops the entry's physical name only when the bank's object IS this entry's
+    store (never a Qdrant entry, never a name someone else re-seeded), when no
+    remaining registry entry still claims that name (aliases share the object;
+    the purge guard already refuses that case, so this is belt and braces), and
+    never the seeded settings-derived store, which ``app.state.vector_store``
+    and the default pipeline hold by reference for the process. Returns whether
+    an entry was removed. ``app_state`` is duck-typed: without a bank there is
+    nothing to prune."""
+    bank = getattr(app_state, "memory_vector_stores", None)
+    if not bank:
+        return False
+    name = entry.collection
+    if bank.get(name) is not entry.vector_store:
+        return False
+    if bank[name] is getattr(app_state, "vector_store", None):
+        return False
+    if any(e.collection == name for e in registry.entries() if e.id != entry.id):
+        return False
+    del bank[name]
+    return True
+
+
 async def _purge_physical(
     entry: CollectionEntry, report: PurgeReport, *, graph_store: Any = None,
 ) -> None:
@@ -1483,6 +1518,9 @@ async def delete_collection(
     await _purge_physical(
         entry, report, graph_store=getattr(request.app.state, "graph_store", None),
     )
+    # The registry row is already gone (removed above), so the alias check in
+    # here sees exactly the entries that would still be served by this store.
+    _prune_memory_bank(request.app.state, registry, entry)
     report.ok = not report.failed
     log.info(
         "purged collection %r (store=%s): deleted=%s absent=%s failed=%s",
