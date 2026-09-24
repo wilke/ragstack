@@ -113,11 +113,14 @@ async def test_p2_omitted_collection_is_not_the_419_404(
     The defect was that the query path resolved the GLOBAL registry pointer and
     then 404'd on the ownership seam — telling the caller, by id, that a
     collection they had never been shown did not exist. The assertion is about
-    the **resolution**, deliberately not about the answer: a self-booted
-    in-memory run has a stub embedder and P2's own collection is served by a
-    backend that may be unreachable, so a 5xx from the *store* is not a failure
-    of this contract. What must never happen is a refusal that says P2 has
-    nothing to read, or that names ``D``.
+    the **resolution**, not about retrieval quality: a self-booted in-memory
+    run has a stub embedder, so nothing here says what the hits are. But the
+    query must ANSWER (200): P2's own collection is served by the configured
+    backends like every other, so a 5xx from the store is a real failure. (It
+    used to be hedged as "the backend may be unreachable" because a user
+    collection on the in-memory boot got a Qdrant client at a dead URL — #392.)
+    What must never happen is a refusal that says P2 has nothing to read, or
+    that names ``D``.
     """
     p2 = caller_without_default_access
     resp = await p2.client.post(
@@ -127,6 +130,11 @@ async def test_p2_omitted_collection_is_not_the_419_404(
     assert resp.status_code != 404, (
         "POST /v1/query with `collection` omitted 404'd a caller who owns "
         f"{p2.readable_id!r} — the #419 defect: {resp.text}"
+    )
+    assert resp.status_code == 200, (
+        f"POST /v1/query with `collection` omitted resolved to P2's own "
+        f"{p2.readable_id!r} but answered {resp.status_code}: the collection's "
+        f"store could not serve a read (#392): {resp.text[:400]}"
     )
     assert _NO_ACCESSIBLE not in resp.text, (
         f"the server answered {resp.status_code} with the empty-readable-set "
