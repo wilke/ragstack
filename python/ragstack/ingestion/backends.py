@@ -135,7 +135,7 @@ DEFAULT_TOOL_IMAGE = "ragstack-worker.sif"
 _TOOL_IMAGE_RE = re.compile(
     r"^(?P<key>[ \t]*(?P<field>dockerPull|dockerImageId):[ \t]*(?P<q>[\"']?))"
     + re.escape(DEFAULT_TOOL_IMAGE)
-    + r"(?=(?P=q)[ \t]*(?:#.*)?$)",
+    + r"(?=(?P=q)[ \t]*(?:#.*)?\r?$)",
     re.MULTILINE,
 )
 
@@ -153,14 +153,52 @@ def validate_tool_image(name: str) -> str:
     apptainer runtime resolves.
     """
     value = (name or "").strip()
-    if value and not _TOOL_IMAGE_NAME_RE.fullmatch(value):
+    if value and (
+        not _TOOL_IMAGE_NAME_RE.fullmatch(value)
+        # NAME_MAX: a longer name cannot exist as a file in any image dir.
+        or len(value.encode("utf-8")) > 255
+    ):
         raise ValueError(
             f"GOWE_TOOL_IMAGE={value!r} is not a bare image filename: it must end in "
             "'.sif' and contain no path separator or leading dot (the engine joins it "
-            "onto the worker's --image-dir, so a path would escape it). "
+            "onto the worker's --image-dir, so a path would escape it) and be at most "
+            "255 bytes. "
             f"Example: {DEFAULT_TOOL_IMAGE.replace('.sif', '-v1.6.3.sif')}"
         )
     return value
+
+
+class ToolImageError(ValueError):
+    """The pin could not be applied to every image site of a CWL document."""
+
+
+# The default name as a whole token (not a prefix of `ragstack-worker.sif.bak`).
+_DEFAULT_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9._-])" + re.escape(DEFAULT_TOOL_IMAGE) + r"(?![A-Za-z0-9._-])"
+)
+
+
+def _residual_image_sites(cwl: str) -> list[int]:
+    """1-based line numbers where the default image is still named as an image.
+
+    A site the substitution regex cannot see — a flow mapping
+    (``{dockerPull: ragstack-worker.sif}``), a list item (``- dockerPull: …``),
+    ``dockerPull :``, a differently-cased key, or the value on the next line —
+    would run the unpinned image on that one step. Comment lines are skipped, and
+    so is prose that merely mentions the name: a line counts only if it also
+    names a docker key or is the bare value alone.
+    """
+    sites = []
+    for n, line in enumerate(cwl.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        code = re.split(r"[ \t]#", line, maxsplit=1)[0]
+        if not _DEFAULT_TOKEN_RE.search(code):
+            continue
+        bare = code.strip().lstrip("-").strip().strip("\"'")
+        if "docker" in code.lower() or bare == DEFAULT_TOOL_IMAGE:
+            sites.append(n)
+    return sites
 
 
 def substitute_tool_image(cwl: str, tool_image: str, *, source: str = "workflow") -> str:
@@ -168,11 +206,19 @@ def substitute_tool_image(cwl: str, tool_image: str, *, source: str = "workflow"
 
     Empty ``tool_image`` (or the default name itself) returns ``cwl`` unchanged,
     byte for byte. Otherwise every ``dockerPull: ragstack-worker.sif`` (and its
-    ``dockerImageId`` twin) is rewritten; nothing else in the text is touched. A
-    document with no ``dockerPull`` naming the default logs a WARNING — the
-    setting then pins nothing, and a pin that silently does nothing is the
-    failure the runbook warns about (the old image runs, the new flags never
-    take effect).
+    ``dockerImageId`` twin) is rewritten; nothing else in the text is touched.
+
+    Two failure shapes, handled differently:
+
+    * **Nothing to substitute** (no site names the default at all) logs a
+      WARNING: the pin does nothing, but the document is self-consistent — every
+      step runs what the CWL names.
+    * **A half-substituted document** — some sites rewritten, one the regex
+      cannot see left naming the default — RAISES :class:`ToolImageError` naming
+      each residual line. A pinned tenant would otherwise run one step on the
+      wrong image with nothing in the logs a reader would connect to it; a warn
+      scrolls past at boot, while a refusal is fixed once, before any traffic.
+      The ingest backend is built at boot, so it fails the boot there.
     """
     image = (tool_image or "").strip()
     if not image or image == DEFAULT_TOOL_IMAGE:
@@ -186,6 +232,16 @@ def substitute_tool_image(cwl: str, tool_image: str, *, source: str = "workflow"
         return m.group("key") + image
 
     out = _TOOL_IMAGE_RE.sub(_sub, cwl)
+    residual = _residual_image_sites(out)
+    if residual:
+        raise ToolImageError(
+            f"GOWE_TOOL_IMAGE={image} could not be applied to all of {source}: "
+            f"line(s) {', '.join(map(str, residual))} still name {DEFAULT_TOOL_IMAGE} "
+            "in a form the substitution does not rewrite (flow mapping, list item, "
+            "'dockerPull :', key case, or value on the next line). Those steps would "
+            f"run the unpinned image. Write them as 'dockerPull: {DEFAULT_TOOL_IMAGE}' "
+            "on one line, or unset GOWE_TOOL_IMAGE."
+        )
     if pulls == 0:
         log.warning(
             "GOWE_TOOL_IMAGE=%s substituted nothing: %s has no 'dockerPull: %s' line, "

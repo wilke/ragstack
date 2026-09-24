@@ -28,7 +28,10 @@ func TestClassify(t *testing.T) {
 		// the prompts the tenant answers with (ADR-0008): executable surface,
 		// so `env set` may write it and an HTTP caller may not.
 		"PROMPT_TEMPLATES_FILE": ExecutableSurface,
-		"QDRANT_URL":            ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
+		// The per-tenant tool image (#614): which container every workflow step
+		// runs in — with the CWL paths, not Unsupported (adopt would never edit it).
+		"GOWE_TOOL_IMAGE": ExecutableSurface,
+		"QDRANT_URL":      ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
 		"EMBEDDING_ENDPOINTS": ExecutableSurface, "EMBEDDING_SIDECAR_URL": ExecutableSurface, "CROSSENCODER_SIDECAR_URL": ExecutableSurface,
 		"LLM_ENDPOINT": ExecutableSurface, "GOWE_URL": ExecutableSurface, "WORKSPACE_URL": ExecutableSurface,
 		"MODEL_URL_ALLOWLIST": ExecutableSurface, "PORT": ExecutableSurface, "ROOT_PATH": ExecutableSurface,

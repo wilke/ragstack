@@ -19,6 +19,8 @@ import pytest
 from ragstack.api import deps
 from ragstack.ingestion.backends import (
     DEFAULT_TOOL_IMAGE,
+    ToolImageError,
+    _residual_image_sites,
     make_ingest_backend,
     substitute_tool_image,
     validate_tool_image,
@@ -32,6 +34,7 @@ PINNED = "ragstack-worker-v1.6.3-1-ga2be96f.sif"
 
 SAMPLE = """\
 # A comment that mentions dockerPull: ragstack-worker.sif must be left alone.
+  # dockerPull: ragstack-worker.sif
 cwlVersion: v1.2
 class: Workflow
 steps:
@@ -78,7 +81,8 @@ def test_replaces_every_default_dockerpull_and_nothing_else():
     # … the unrelated image, the look-alike, the comment and the prose are not.
     assert "dockerPull: other.sif" in out and "dockerImageId: other.sif" in out
     assert "dockerPull: ragstack-worker.sif.bak" in out
-    assert out.splitlines()[0] == SAMPLE.splitlines()[0]
+    assert out.splitlines()[:2] == SAMPLE.splitlines()[:2]  # both comment lines
+    assert "  # dockerPull: ragstack-worker.sif\n" in out  # pins the ^ anchor
     assert "doc: ragstack-worker.sif is mentioned in prose here" in out
     assert '"ragstack-worker.sif"      # GoWe reads only this' not in out
     assert f'"{PINNED}"      # GoWe reads only this' in out
@@ -110,6 +114,56 @@ def test_no_warning_when_it_substitutes(caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
+# One regex-visible site plus one the regex cannot see: without the residual
+# check this is HALF-substituted with no log line, and the second step runs the
+# unpinned image. (fuzz case id, document, 1-based residual line)
+_VISIBLE = "a:\n  DockerRequirement:\n    dockerPull: ragstack-worker.sif\n"
+_HALF = [
+    ("flow-mapping", _VISIBLE + "b: {dockerPull: ragstack-worker.sif}\n", 4),
+    ("list-item", _VISIBLE + "b:\n  - dockerPull: ragstack-worker.sif\n", 5),
+    ("value-next-line", _VISIBLE + "b:\n  dockerPull:\n    ragstack-worker.sif\n", 6),
+    ("space-before-colon", _VISIBLE + "b:\n  dockerPull : ragstack-worker.sif\n", 5),
+    ("capitalised-key", _VISIBLE + "b:\n  DockerPull: ragstack-worker.sif\n", 5),
+    ("quoted-flow", _VISIBLE + 'b: {"dockerPull": "ragstack-worker.sif"}\n', 4),
+]
+
+
+@pytest.mark.parametrize(("doc", "line"), [(d, n) for _, d, n in _HALF],
+                         ids=[i for i, _, _ in _HALF])
+def test_half_substitution_is_refused_naming_the_residual_line(doc, line):
+    with pytest.raises(ToolImageError) as info:
+        substitute_tool_image(doc, PINNED, source="wf.cwl")
+    msg = str(info.value)
+    assert "GOWE_TOOL_IMAGE" in msg and "wf.cwl" in msg
+    assert f"line(s) {line} " in msg  # exactly the residual site, not line 3
+
+
+def test_only_invisible_sites_is_refused_too():
+    """No visible site at all but one the regex cannot see: still a pin that
+    would not apply — refused, not merely the nothing-substituted warning."""
+    with pytest.raises(ToolImageError, match=r"line\(s\) 1 "):
+        substitute_tool_image("b: {dockerPull: ragstack-worker.sif}\n", PINNED)
+
+
+def test_crlf_document_is_fully_substituted():
+    doc = _VISIBLE.replace("\n", "\r\n") + "b:\r\n  dockerPull: ragstack-worker.sif\r\n"
+    out = substitute_tool_image(doc, PINNED)
+    assert out.count(f"dockerPull: {PINNED}\r\n") == 2
+    assert DEFAULT_TOOL_IMAGE not in out
+
+
+def test_restore_runner_surfaces_a_half_substitution_as_its_own_error(tmp_path):
+    from ragstack.collection_store import InMemoryCollectionStore
+    from ragstack.restore import CollectionRestorer, RestoreError
+
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text(_HALF[0][1])
+    r = CollectionRestorer(InMemoryCollectionStore(), workspace=None, gowe=None,
+                           cwl_path=cwl, tool_image=PINNED)
+    with pytest.raises(RestoreError, match="GOWE_TOOL_IMAGE"):
+        r._cwl()
+
+
 @pytest.mark.parametrize("path", sorted(CWL_DIR.glob("*.cwl")), ids=lambda p: p.name)
 def test_every_shipped_cwl_image_site_is_the_one_known_token(path):
     """Guard: a CWL that names its image any other way would silently escape the
@@ -117,7 +171,8 @@ def test_every_shipped_cwl_image_site_is_the_one_known_token(path):
     either has none (a workflow with no container step) or has them all."""
     text = path.read_text(encoding="utf-8")
     sites = re.findall(r"^[ \t]*(?:dockerPull|dockerImageId):.*$", text, re.MULTILINE)
-    out = substitute_tool_image(text, PINNED, source=path.name)
+    out = substitute_tool_image(text, PINNED, source=path.name)  # raises on a residual
+    assert _residual_image_sites(out) == []
     assert DEFAULT_TOOL_IMAGE not in "\n".join(
         re.findall(r"^[ \t]*(?:dockerPull|dockerImageId):.*$", out, re.MULTILINE)
     )
@@ -127,13 +182,15 @@ def test_every_shipped_cwl_image_site_is_the_one_known_token(path):
 # --- boot validation -------------------------------------------------------- #
 
 @pytest.mark.parametrize("bad", ["../x.sif", "/abs/x.sif", "x.img", "dir/x.sif",
-                                 "..sif", ".hidden.sif", "x.sif/", "x\\y.sif", "x.sif.bak"])
+                                 "..sif", ".hidden.sif", "x.sif/", "x\\y.sif", "x.sif.bak",
+                                 "a" * 296 + ".sif"])
 def test_validate_rejects_non_bare_sif_names(bad):
     with pytest.raises(ValueError, match="GOWE_TOOL_IMAGE"):
         validate_tool_image(bad)
 
 
-@pytest.mark.parametrize("good", ["", PINNED, DEFAULT_TOOL_IMAGE, "ragstack-worker-v1.6.3.sif"])
+@pytest.mark.parametrize("good", ["", PINNED, DEFAULT_TOOL_IMAGE, "ragstack-worker-v1.6.3.sif",
+                                  "a" * 251 + ".sif"])
 def test_validate_accepts_bare_sif_names(good):
     assert validate_tool_image(good) == good
 
