@@ -7,12 +7,6 @@ keyed harness maps every key to its own subject, which is why P1/P2/B behave as
 separate tenants here; two API keys absent from API_KEY_TENANTS would share the
 tenant "default" and read each other's jobs.
 
-On the keyed in-memory boot the P1 job lands `failed` (ResponseHandlingException:
-build_collection_entry constructs a QdrantVectorStore for non-default collections
-regardless of VECTOR_BACKEND=memory, and QDRANT_URL is dead-pinned — #392, pre-
-existing on main). The assertions here are about visibility, so `failed` is a real
-status for their purpose; do not chase it as a regression of this file.
-
 ``POST /v1/ingest/upload`` answers 202 with a ``job_id``, and the contract says
 to poll ``GET /v1/ingest/{job_id}`` for it. That read is tenant-scoped: the
 submitter's tenant and an admin get the job's real status; any other tenant gets the
@@ -25,10 +19,17 @@ key there maps to its own subject, so P2 and B are both foreign to P1.
 
 The flow, once per module: P1 (``RAGSTACK_API_KEY_NONADMIN``) creates a scratch
 collection it owns, uploads one small text file into it (202 + ``job_id``), and
-every principal polls that id. Completion is NOT awaited: accepted, running,
-completed and failed are all a real status, and the assertion is only about
-*who can see it*. The scratch collection is purged at module teardown and the
-purge verified by listing.
+every principal polls that id. The foreign-principal assertions are only about
+*who can see it*, so they do not await completion. The submitter's and admin's
+read polls briefly for a terminal state and asserts the job never lands
+``failed``: a one-file upload into a collection its owner just created must
+complete, and on the keyed in-memory boot it used to fail every time because
+the user collection's vector store was a Qdrant client at a dead URL
+(``build_collection_entry`` ignored ``VECTOR_BACKEND=memory`` — #392). A
+``failed`` here means the collection could not take a write, and every A-row
+test that reads back from a P1 collection is then exercising only the metadata
+path. The scratch collection is purged at module teardown and the purge
+verified by listing.
 
 **Why a feature probe and not a ``_python_only`` autouse fixture.** Nothing here
 is Python-specific in the contract; what the Go phase-1 scaffold lacks is the
@@ -53,6 +54,7 @@ Runs in ``make test-conformance-keyed``.
 from __future__ import annotations
 
 import secrets
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,6 +82,16 @@ SAMPLE = (
 
 #: Statuses a readable job can carry. "unknown" is deliberately absent.
 REAL_STATUSES = {"accepted", "running", "completed", "failed"}
+
+#: What the submitter (or an admin) may see for a one-file upload into a
+#: collection the submitter owns. "failed" is deliberately absent: it is a real
+#: status, but for THIS upload it means the collection could not accept a write.
+HEALTHY_STATUSES = {"accepted", "running", "completed"}
+
+#: How long the submitter's read waits for a terminal state. The file is a few
+#: hundred bytes and the in-memory boot chunks it in milliseconds; the bound is
+#: generous so a loaded host does not turn a slow "running" into a failure.
+TERMINAL_WAIT_S = 10.0
 
 PRINCIPALS = {
     "admin": "RAGSTACK_API_KEY_ADMIN",
@@ -163,6 +175,24 @@ def _poll(base_url: str, job_id: str, headers: dict[str, str]) -> httpx.Response
         return c.get(f"/v1/ingest/{job_id}", headers=headers)
 
 
+def _poll_until_terminal(
+    base_url: str, job_id: str, headers: dict[str, str], *, wait_s: float
+) -> httpx.Response:
+    """Poll for at most ``wait_s`` seconds, returning the first response whose
+    status is terminal (``completed``/``failed``) — or the last one seen, which
+    the caller then judges: a job still ``accepted``/``running`` at the deadline
+    is not a failure of the contract under test, only ``failed`` is."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        resp = _poll(base_url, job_id, headers)
+        if resp.status_code != 200:
+            return resp
+        status = resp.json().get("status")
+        if status in ("completed", "failed") or time.monotonic() >= deadline:
+            return resp
+        time.sleep(0.2)
+
+
 # --------------------------------------------------------------------------- #
 # The submitter's tenant and an admin see the real status
 # --------------------------------------------------------------------------- #
@@ -170,7 +200,9 @@ def _poll(base_url: str, job_id: str, headers: dict[str, str]) -> httpx.Response
 def test_submitter_and_admin_read_the_real_status(
     who: str, job: SimpleNamespace, base_url: str, schemas: dict[str, dict]
 ) -> None:
-    resp = _poll(base_url, job.job_id, job.headers[who])
+    resp = _poll_until_terminal(
+        base_url, job.job_id, job.headers[who], wait_s=TERMINAL_WAIT_S
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, schemas)
@@ -178,6 +210,12 @@ def test_submitter_and_admin_read_the_real_status(
     assert body["status"] in REAL_STATUSES, (
         f"{who} polled the job it can read and got status {body['status']!r}; "
         f"expected one of {sorted(REAL_STATUSES)} (never 'unknown')"
+    )
+    assert body["status"] in HEALTHY_STATUSES, (
+        f"{who} read P1's upload into P1's own collection {job.collection!r} as "
+        f"{body['status']!r}: the collection could not accept a write, so every "
+        f"read-back from a user-owned collection on this server is exercising "
+        f"only the metadata path (#392). Body: {body}"
     )
     # The poll answers "where did this land?" with the collection the upload named.
     assert body["collection"] == job.collection

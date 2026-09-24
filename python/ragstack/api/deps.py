@@ -328,23 +328,99 @@ def _hybrid_retriever(
     )
 
 
+def _vector_store_for(
+    collection: str,
+    *,
+    dim: int,
+    memory_vector_stores: dict[str, InMemoryVectorStore] | None = None,
+) -> Any:
+    """The vector store bound to one physical ``collection`` — the per-collection
+    twin of :func:`_build_vector_store`, and the ONLY place a non-default
+    collection's vector store is constructed.
+
+    Honours ``vector_backend`` exactly as the default collection does (#392).
+    Before this existed, every spec entry got a real ``QdrantVectorStore``
+    regardless of the backend switch, so a ``VECTOR_BACKEND=memory`` test
+    server given a ``COLLECTIONS_JSON`` — or asked to create a collection over
+    HTTP — opened a client at ``qdrant_url``, which on the dev host is the
+    production instance; and with that URL dead-pinned, every ingest into a
+    user-created collection ended ``failed`` while the default collection's
+    completed, so the keyed conformance suite was only ever exercising the
+    metadata path of the collections it "ingested" into.
+
+    ``qdrant`` → a ``QdrantVectorStore`` at the collection's routed URL, built
+    exactly as before (no fallback to memory: a misconfigured production must
+    still fail loudly, at ``ensure_collection`` or the first write).
+
+    ``memory`` → one ``InMemoryVectorStore`` PER PHYSICAL COLLECTION, looked up
+    in ``memory_vector_stores`` (``app.state.memory_vector_stores``, created at
+    startup and living for the process) so that a collection unregistered and
+    re-registered under the same physical name keeps its chunks, just as a
+    Qdrant collection would, and ``purge`` (``drop_collection``) empties that
+    one store and no other. Two collections never share an instance. Without a
+    bank (a caller that has no ``app.state``) the store is simply fresh — still
+    isolated, just not remembered.
+    """
+    if settings.vector_backend == "qdrant":
+        from ragstack.stores.qdrant import QdrantVectorStore
+
+        url = _qdrant_url_for(collection)
+        if url != settings.qdrant_url:
+            log.info("qdrant: collection %r routed to instance %s", collection, url)
+        return QdrantVectorStore(
+            url=url,
+            collection=collection,
+            vector_size=dim,
+            api_key=settings.qdrant_api_key or None,
+            timeout=settings.qdrant_timeout,
+            postmortem_probe=settings.qdrant_postmortem_probe,
+        )
+
+    if settings.require_durable_backends:
+        raise RuntimeError(
+            f"vector_backend={settings.vector_backend!r} is not durable but "
+            "require_durable_backends is set; use 'qdrant'."
+        )
+    if memory_vector_stores is None:
+        log.info(
+            "collection %r: in-memory vector store (vector_backend=%s), not "
+            "retained across rebuilds — no store bank was supplied",
+            collection, settings.vector_backend,
+        )
+        return InMemoryVectorStore()
+    store = memory_vector_stores.get(collection)
+    if store is None:
+        store = memory_vector_stores[collection] = InMemoryVectorStore()
+        log.info(
+            "collection %r: in-memory vector store (vector_backend=%s); lost on restart",
+            collection, settings.vector_backend,
+        )
+    return store
+
+
 async def build_collection_entry(
-    http: httpx.AsyncClient, *, graph_store: Any, spec: CollectionSpec, embedder: Any = None,
+    http: httpx.AsyncClient,
+    *,
+    graph_store: Any,
+    spec: CollectionSpec,
+    embedder: Any = None,
+    memory_vector_stores: dict[str, InMemoryVectorStore] | None = None,
 ) -> CollectionEntry:
     """Build one ready-to-serve, non-default ``CollectionEntry`` from a spec:
-    its embedder (unless a shared one is passed), Qdrant store, ES index (both
-    best-effort ensured), and hybrid retriever. Used by the startup loop (with a
-    shared embedder from the cache) and by ``POST /v1/collections`` (fresh)."""
-    from ragstack.stores.qdrant import QdrantVectorStore
+    its embedder (unless a shared one is passed), vector store and text index
+    (both per the configured backends — see :func:`_vector_store_for` and
+    :func:`_build_text_index_for` — and both best-effort ensured), and hybrid
+    retriever. Used by the startup loop (with a shared embedder from the cache)
+    and by ``POST /v1/collections`` (fresh).
 
+    ``memory_vector_stores`` is the process-lifetime bank of in-memory vector
+    stores keyed by physical collection name (``app.state.memory_vector_stores``);
+    it is consulted only under ``vector_backend=memory``."""
     emb = embedder if embedder is not None else _embedder_for_spec(http, spec)
-    vs = QdrantVectorStore(
-        url=_qdrant_url_for(spec.collection),
-        collection=spec.collection,
-        vector_size=spec.embedding_model_dim,
-        api_key=settings.qdrant_api_key or None,
-        timeout=settings.qdrant_timeout,
-        postmortem_probe=settings.qdrant_postmortem_probe,
+    vs = _vector_store_for(
+        spec.collection,
+        dim=spec.embedding_model_dim,
+        memory_vector_stores=memory_vector_stores,
     )
     ti = _build_text_index_for(spec.es_index())
     # Best-effort readiness — a collection that isn't reachable yet shouldn't abort
@@ -667,6 +743,7 @@ async def _build_collection_registry(
     default_retriever: Any,
     default_collection: str,
     store: CollectionStore | None = None,
+    memory_vector_stores: dict[str, InMemoryVectorStore] | None = None,
 ) -> CollectionRegistry:
     """Build the collection registry. The top-level pinned/derived collection is
     the settings-derived entry (reusing the already-built objects), registered
@@ -685,7 +762,12 @@ async def _build_collection_registry(
 
     ``store`` is the authoritative registry (``collection_store_backend``); it
     defaults to the JSON-file backend, which reads exactly the
-    ``collections_file``/``collections_json`` this used to read directly."""
+    ``collections_file``/``collections_json`` this used to read directly.
+
+    ``memory_vector_stores`` is the process-lifetime bank each spec's in-memory
+    vector store is drawn from under ``vector_backend=memory`` (#392); the
+    lifespan seeds it with the settings-derived store under its physical name,
+    so a spec that CLAIMS the default's stores serves the same object."""
     derived = CollectionEntry(
         id=default_collection,
         label=default_collection,
@@ -760,7 +842,10 @@ async def _build_collection_registry(
             emb = _embedder_for_spec(http, spec)
             emb_cache[sig] = emb
         entries.append(
-            await build_collection_entry(http, graph_store=graph_store, spec=spec, embedder=emb)
+            await build_collection_entry(
+                http, graph_store=graph_store, spec=spec, embedder=emb,
+                memory_vector_stores=memory_vector_stores,
+            )
         )
         # Materialized BEFORE the derived entry's manifest below, deliberately:
         # manifests are keyed by PHYSICAL collection, and
@@ -1791,6 +1876,15 @@ async def lifespan(app: FastAPI):
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
+    # The process-lifetime bank of in-memory vector stores, one per physical
+    # collection name (#392). Seeded with the settings-derived store under its
+    # own name so a spec claiming the default's stores serves the same object,
+    # exactly as two Qdrant clients on one collection name would. Consulted by
+    # `_vector_store_for` only under vector_backend=memory; empty otherwise.
+    memory_vector_stores: dict[str, InMemoryVectorStore] = {}
+    if isinstance(vector_store, InMemoryVectorStore):
+        memory_vector_stores[default_collection] = vector_store
+    app.state.memory_vector_stores = memory_vector_stores
     app.state.text_index = text_index
     app.state.graph_store = graph_store
     app.state.kg_extractor = kg_extractor
@@ -1911,6 +2005,7 @@ async def lifespan(app: FastAPI):
         default_retriever=retriever,
         default_collection=default_collection,
         store=collection_store,
+        memory_vector_stores=memory_vector_stores,
     )
 
     # ACL backfill (issue #243 / ADR-0004 decision 4): reconcile every registry

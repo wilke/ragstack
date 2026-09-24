@@ -747,6 +747,12 @@ async def create_collection(
             request.app.state.http_client,
             graph_store=request.app.state.graph_store,
             spec=spec,
+            # The lifespan's bank of per-collection in-memory stores (#392);
+            # absent when the lifespan did not run (in-process tests), in which
+            # case a memory-backend store is fresh rather than remembered.
+            memory_vector_stores=getattr(
+                request.app.state, "memory_vector_stores", None
+            ),
         )
     except BaseException:
         # BaseException, not Exception: `asyncio.CancelledError` derives from
