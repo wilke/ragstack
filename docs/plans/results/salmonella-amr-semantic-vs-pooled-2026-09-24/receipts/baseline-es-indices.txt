@@ -1,0 +1,11 @@
+ragstack                                                                                             0    249b
+ragstack_lib_asm_semantic_salesforce_sfr_embedding_4096_semantic_f59de32c                      6718269  23.3gb
+ragstack_lib_catlle_50genes_salesforce_sfr_embedding_4096_fixed_512_64_915eb6bf                      0    249b
+ragstack_lib_dengue_salesforce_sfr_embedding_4096_fixed_512_64_2127eaf9                            382 420.9kb
+ragstack_lib_glyco_salesforce_sfr_embedding_4096_fixed_512_64_1157feb1                            1265   1.4mb
+ragstack_lib_influenza_2024_2025_12_papers_salesforce_sfr_embedding_4096_fixed_512_64_bd816aaf    2218   3.6mb
+ragstack_lib_influenza_2024_2025_salesforce_sfr_embedding_4096_fixed_512_64_6266e7ac              3064   4.8mb
+ragstack_lib_refamr_salesforce_sfr_embedding_4096_fixed_512_64_52e7ffb7                          14151  12.6mb
+ragstack_lib_salmonella_amr2_salesforce_sfr_embedding_4096_semantic_bf5ea445                         0    249b
+ragstack_lib_salmonella_amr_salesforce_sfr_embedding_4096_fixed_512_64_4a77730a                   2090     2mb
+ragstack_lib_scratch_uiguide_salesforce_sfr_embedding_4096_fixed_512_64_31a57a58                   513 548.3kb

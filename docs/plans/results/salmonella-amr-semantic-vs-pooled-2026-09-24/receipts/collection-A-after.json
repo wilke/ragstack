@@ -1,0 +1,33 @@
+{
+ "id": "salmonella-amr-semantic",
+ "label": "Salmonella AMR corpus \u2014 semantic (buffer 3, p80, min 500)",
+ "model": "Salesforce/SFR-Embedding-Mistral",
+ "dim": 4096,
+ "chunk_method": "semantic",
+ "chunk_size": null,
+ "default": false,
+ "is_default": false,
+ "state": "active",
+ "archive_pending": false,
+ "versions": [
+  1
+ ],
+ "count": 375,
+ "text_count": 375,
+ "provenance": {
+  "collection": "ragstack_lib_salmonella_amr_semantic_salesforce_sfr_embedding_4096_semantic_9bcfa50f",
+  "model": "Salesforce/SFR-Embedding-Mistral",
+  "dim": 4096,
+  "embedding_api": "openai",
+  "chunk_method": "semantic",
+  "chunk_size": null,
+  "chunk_overlap": null,
+  "chunk_params": {},
+  "spec_hash": "b2edb53e",
+  "corpus": "upload",
+  "chunk_count": 375,
+  "ingested_at": "2026-09-24T13:25:37.371016+00:00",
+  "ragstack_version": "",
+  "source": "ingest"
+ }
+}
