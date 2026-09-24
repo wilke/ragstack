@@ -531,6 +531,15 @@ class Settings(BaseSettings):
     # MUST match the served collection or ingest writes where the API can't read.
     gowe_workflow_inputs_json: str = "{}"
     gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
+    # Tool image name substituted for the CWL's `dockerPull` at registration
+    # (e.g. `ragstack-worker-v1.6.3.sif`); empty = the CWL's own name
+    # (`ragstack-worker.sif`), a no-op. #614: GoWe joins the bare name onto the
+    # worker's --image-dir, so without this the image is a property of the worker
+    # GROUP; with it, images coexist in one dir and each tenant pins its own. Covers
+    # every workflow the API registers (ingest, graph-extract, restore). Must be a
+    # bare filename ending in .sif — validated at boot (a path would escape
+    # --image-dir).
+    gowe_tool_image: str = ""
     gowe_poll_interval: float = 5.0
     gowe_timeout: float = 7200.0
     # The workflow's scattered File[] input and its per-item receipts output

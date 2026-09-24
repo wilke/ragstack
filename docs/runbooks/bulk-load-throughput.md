@@ -42,6 +42,35 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
    required for **image** reasons while only one image dir carries the `postgres`
    extra. Collapse the groups only once every image dir a tenant might land on
    has that extra.
+
+   **`GOWE_TOOL_IMAGE` pins the image per tenant instead ([#614](https://github.com/wilke/ragstack/issues/614)).**
+   Set it in a tenant's env (e.g. `GOWE_TOOL_IMAGE=ragstack-worker-v1.6.3.sif`)
+   and the API substitutes that name for `ragstack-worker.sif` in every
+   `dockerPull` (and its `dockerImageId` twin) of every workflow it registers —
+   ingest, graph-extract and restore — before POSTing the text. Versioned images
+   then coexist in one `--image-dir`: stage the new file next to the old one,
+   point one tenant at it, restart that tenant's API. Nothing else moves, and a
+   submission already in flight keeps the image its registered text names. Once
+   a tenant sets `GOWE_TOOL_IMAGE`, **the worker group is no longer that tenant's
+   version knob** — installing a rebuild as `ragstack-worker.sif` in its group's
+   dir changes nothing for it; the file it names must exist in *every* image dir
+   its group's workers resolve. A missing `.sif` is not detected at registration
+   or at dispatch: apptainer fails fast, the task retries 3× and the job FAILS
+   in about 16 s with the resolved image path in its stderr — so a wrong pin
+   surfaces as the tenant's first failed job, not at boot. Empty keeps today's
+   behaviour (the bare `ragstack-worker.sif`, resolved by the group). The value
+   must be a bare filename ending in `.sif`, at most 255 bytes; anything else
+   fails the boot. An API that finds no `dockerPull: ragstack-worker.sif` to
+   replace logs a warning naming the setting; one that could rewrite only some
+   of a workflow's image sites (a flow mapping, a list item, a value on the next
+   line) refuses, naming the residual lines, rather than run those steps
+   unpinned. **The pin covers only what the API registers:**
+   `python/scripts/gowe_batch_ingest.py` and a hand-run `gowe submit <cwl>`
+   bundle the CWL from disk as written, so the bulk/JATS plane is not pinned and
+   still runs whatever `ragstack-worker.sif` its group resolves. Open
+   question, not yet verified against the engine: whether GoWe resolves the name
+   at dispatch or caches it at registration — confirm before relying on two
+   tenants running different images side by side.
 4. **Never overwrite the image in place while a load is running** — a container
    is mapped to that file. Stage it under a versioned name and swap at a batch
    boundary. (An atomic `mv` on the same filesystem preserves the running

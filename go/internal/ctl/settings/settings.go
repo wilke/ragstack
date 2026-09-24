@@ -88,6 +88,9 @@ var executableSurface = set(
 	// session that could repoint it would be choosing what every answer says.
 	"PROMPT_TEMPLATES_FILE",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
+	// GOWE_TOOL_IMAGE (#614) names the container image every registered workflow
+	// runs its steps in — what executes, the same class as the CWL paths above.
+	"GOWE_TOOL_IMAGE",
 	"QDRANT_URL", "ELASTICSEARCH_URL", "NEO4J_URI", "REDIS_URL",
 	"EMBEDDING_ENDPOINTS", "EMBEDDING_SIDECAR_URL", "CROSSENCODER_SIDECAR_URL",
 	"LLM_ENDPOINT", "GOWE_URL", "WORKSPACE_URL", "MODEL_URL_ALLOWLIST",
