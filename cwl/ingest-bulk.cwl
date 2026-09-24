@@ -80,7 +80,11 @@ inputs:
       than silently fallen back from — one worker group could otherwise serve
       only one tenant's registry."
   tenant: {type: string, default: "public"}
-  chunk_method: {type: string, default: "fixed_token"}
+  chunk_method:
+    type:
+      type: enum
+      symbols: [fixed, fixed_token, sentence, words, semantic, semantic_pooled]
+    default: fixed_token
   chunk_size: {type: int, default: 256}
   chunk_overlap: {type: int, default: 32}
   embedding_url:
@@ -135,7 +139,11 @@ steps:
         shard: {type: File, inputBinding: {position: 2}}
         collection: {type: string, inputBinding: {prefix: --collection, position: 3}}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 4}}
-        chunk_method: {type: string, inputBinding: {prefix: --chunk-method, position: 5}}
+        chunk_method:
+          type:
+            type: enum
+            symbols: [fixed, fixed_token, sentence, words, semantic, semantic_pooled]
+          inputBinding: {prefix: --chunk-method, position: 5}
         chunk_size: {type: int, inputBinding: {prefix: --chunk-size, position: 6}}
         chunk_overlap: {type: int, inputBinding: {prefix: --chunk-overlap, position: 7}}
         embedding_model: {type: string, inputBinding: {prefix: --embedding-model, position: 8}}

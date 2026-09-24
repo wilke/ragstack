@@ -55,8 +55,10 @@ inputs:
     type: string
     default: "public"
   chunk_method:
-    type: string
-    default: "fixed_token"
+    type:
+      type: enum
+      symbols: [fixed, fixed_token, sentence, words]
+    default: fixed_token
   chunk_size:
     type: int
     default: 256
@@ -204,7 +206,11 @@ steps:
       inputs:
         shard: {type: File, inputBinding: {position: 2}}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 3}}
-        chunk_method: {type: string, inputBinding: {prefix: --chunk-method, position: 4}}
+        chunk_method:
+          type:
+            type: enum
+            symbols: [fixed, fixed_token, sentence, words]
+          inputBinding: {prefix: --chunk-method, position: 4}
         chunk_size: {type: int, inputBinding: {prefix: --chunk-size, position: 5}}
         chunk_overlap: {type: int, inputBinding: {prefix: --chunk-overlap, position: 6}}
         embedding_model: {type: string, inputBinding: {prefix: --embedding-model, position: 7}}
