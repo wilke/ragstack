@@ -462,6 +462,15 @@ real instance is one hand-run away from writing to it.
 > now asserts the **presence** of the inputs and that each is bound to its CLI
 > flag.
 
+The CLIs underneath are the backstop. `ingest_shard.py` requires both flags
+(#454). `load_embeddings.py` — which `load-embeddings.cwl`,
+`restore-collection.cwl`, `pdf-ingest.cwl` and `jats-ingest.cwl` run — has no
+default either (#636): per leg it takes the collection's route, else the flag,
+else an **explicitly configured** `QDRANT_URL` / `ELASTICSEARCH_URL` (never the
+code default), and otherwise exits 2 naming the missing flag. It also refuses a
+run with no `--collection-id`/`--collection` on every backend, the in-memory one
+included.
+
 They are **not** operator config either. The API seeds them into every ingest
 submission per run from its own `QDRANT_URL` / `ELASTICSEARCH_URL` settings
 (honouring `QDRANT_COLLECTION_ROUTES` for the vector store and

@@ -510,6 +510,72 @@ def _es_url_for(index: str, settings: Any, override: str = "") -> str:
     return override or settings.elasticsearch_url
 
 
+def configured_explicitly(settings: Any, field: str) -> bool:
+    """Was ``field`` set by configuration rather than left at its code default?
+
+    "Configuration" is whatever pydantic-settings read: the process environment
+    (``QDRANT_URL``), the ``.env`` file, or a constructor argument — exactly the
+    fields pydantic records in ``model_fields_set``. A field absent from that set
+    holds the literal default written in ``config.py``, and for the store URLs
+    that default is ``localhost``: the PRODUCTION stores on the deployment host
+    (#636). An object that does not record what was set (a test double, an older
+    caller) counts as NOT explicit — the safe answer for a write path.
+    A named registry's view delegates this to the real settings object."""
+    fields_set = getattr(settings, "model_fields_set", None) or ()
+    return field in fields_set
+
+
+#: (flag, Settings field, routes field, env var, what) per store leg.
+_STORE_LEGS = {
+    "vector": ("--qdrant-url", "qdrant_url", "qdrant_collection_routes",
+               "QDRANT_URL", "Qdrant instance"),
+    "text": ("--es-url", "elasticsearch_url", "es_collection_routes",
+             "ELASTICSEARCH_URL", "Elasticsearch cluster"),
+}
+
+
+def require_store_urls(
+    target: IngestTarget,
+    *,
+    qdrant_url: str = "",
+    es_url: str = "",
+    settings: Any | None = None,
+    vector: bool = True,
+    text: bool = True,
+) -> None:
+    """Refuse a write whose store URL would come from a code default (#636).
+
+    Per leg, the URL may come from — in the order :func:`_qdrant_url_for` and
+    :func:`_es_url_for` already apply — the collection's ROUTE in the registry
+    settings, the explicit flag, or the settings' URL **only if that setting
+    was explicitly configured** (:func:`configured_explicitly`). If none
+    applies, the resolver would have fallen through to ``localhost``, which on
+    the deployment host is production, so this raises instead of guessing.
+
+    Call it with the same settings the target was resolved with (``None`` =
+    the process settings, which is what ``resolve_or_exit`` uses by default)."""
+    s = settings or _settings()
+    missing: list[str] = []
+    for leg, wanted, override, name in (
+        ("vector", vector, qdrant_url, target.collection),
+        ("text", text, es_url, target.es_index),
+    ):
+        if not wanted:
+            continue
+        flag, field, routes_field, env, what = _STORE_LEGS[leg]
+        routes = getattr(s, routes_field, None) or {}
+        if name in routes or override or configured_explicitly(s, field):
+            continue
+        missing.append(
+            f"{flag} is required: collection {target.collection_id!r} "
+            f"({name!r}) is not routed and {env} is not configured, so pass the "
+            f"{what} to write to — there is no default, because the conventional "
+            f"localhost one is the PRODUCTION store on the deployment host (#636)."
+        )
+    if missing:
+        raise TargetError("\n".join(missing))
+
+
 def target_from_spec(
     spec: Any, settings: Any | None = None, *, qdrant_url: str = "", es_url: str = ""
 ) -> IngestTarget:
