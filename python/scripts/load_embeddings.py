@@ -38,11 +38,20 @@ disagreement between this worker and the API exits **2**; a mid-stream failure
 exits **1** (both leave it ``dormant``, retried). Chunk versions replace their
 documents and upsert both legs; tombstone versions delete by doc id.
 
-Usage::
+**Store URLs have no default** (#636, the #454 rule): on the deployment host
+``localhost:6333`` / ``:9200`` are the PRODUCTION stores. Per leg the URL comes
+from the collection's route (``QDRANT_COLLECTION_ROUTES`` /
+``ES_COLLECTION_ROUTES``, which always wins), else ``--qdrant-url`` /
+``--es-url``, else an EXPLICITLY configured ``QDRANT_URL`` / ``ELASTICSEARCH_URL``
+— never the code default. With none of those the run exits 2 naming the flag.
+A collection is required on every backend; ``--vector-backend memory`` needs
+no URL.
+
+Usage (substitute the stores you actually mean to write to)::
 
     python scripts/load_embeddings.py shard.s0.emb.jsonl shard.s1.emb.jsonl \
-        --collection ragstack_sfr_tok256 --es-index ragstack_sfr_tok256 \
-        --qdrant-url http://localhost:6333 --es-url http://localhost:9200 \
+        --collection-id my-collection \
+        --qdrant-url http://CHANGE-ME-QDRANT:6333 --es-url http://CHANGE-ME-ES:9200 \
         --out load-summary.json
 """
 from __future__ import annotations
@@ -409,7 +418,13 @@ def parse_args(argv=None):
     p.add_argument("--collection", default=None,
                    help="DEPRECATED — the PHYSICAL store name. Accepted only when "
                         "a registry entry already claims it; prefer --collection-id")
-    p.add_argument("--qdrant-url", default="http://localhost:6333")
+    p.add_argument("--qdrant-url", default="",
+                   help="Qdrant instance to WRITE to. NO default (#636): the "
+                        "conventional localhost:6333 is the PRODUCTION instance on "
+                        "the deployment host, and this is a write path. Required "
+                        "with --vector-backend qdrant unless the collection is "
+                        "routed (QDRANT_COLLECTION_ROUTES) or QDRANT_URL is "
+                        "explicitly configured; a route always wins")
     p.add_argument("--qdrant-timeout", type=int, default=120)
     p.add_argument("--upsert-batch-size", type=int, default=256,
                    help="points per Qdrant upsert request (bounds payload size)")
@@ -450,7 +465,12 @@ def parse_args(argv=None):
                         "per-call, so N files means N x --delete-concurrency "
                         "concurrent deletes and N x --upsert-concurrency upserts")
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
-    p.add_argument("--es-url", default="http://localhost:9200")
+    p.add_argument("--es-url", default="",
+                   help="Elasticsearch cluster to WRITE to. NO default — see "
+                        "--qdrant-url (#636). Required with --text-backend "
+                        "elasticsearch unless the index is routed "
+                        "(ES_COLLECTION_ROUTES) or ELASTICSEARCH_URL is explicitly "
+                        "configured")
     p.add_argument("--es-index", default=None)
     p.add_argument("--manifest-dir", default="",
                    help="write a provenance manifest here (defaults to "
@@ -460,20 +480,40 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
+def _refuse(message: str) -> None:
+    """Exit 2 with an operator-facing line — ``resolve_or_exit``'s shape."""
+    print(f"error: {message}", file=sys.stderr, flush=True)
+    raise SystemExit(2)
+
+
+def main(argv=None, *, settings=None) -> int:
     args = parse_args(argv)
     if bool(args.replay) == bool(args.embeddings):
         raise SystemExit("give either embedding files or --replay VERSION_DIR..., not both/neither")
     if args.replay and args.replay_batch < 1:
         raise SystemExit("--replay-batch must be >= 1")
-    # Resolve the registry entry before any store is created or written (#263).
-    # The in-memory backend is the dev/test path and owns no physical store, so
-    # it has nothing to register.
-    target = (
-        ingest_target.resolve_or_exit(args)
-        if args.vector_backend == "qdrant"
-        else None
-    )
+    if args.vector_backend == "qdrant":
+        # Resolve the registry entry before any store is created or written (#263).
+        target = ingest_target.resolve_or_exit(args, settings=settings)
+        # Then decide WHERE, with no guessing (#636): a route, the flag, or an
+        # explicitly configured QDRANT_URL / ELASTICSEARCH_URL — never the code
+        # default, which is localhost and therefore production on this host.
+        try:
+            ingest_target.require_store_urls(
+                target, qdrant_url=args.qdrant_url, es_url=args.es_url,
+                settings=settings, text=args.text_backend == "elasticsearch",
+            )
+        except ingest_target.TargetError as e:
+            _refuse(str(e))
+    else:
+        # The in-memory backend owns no physical store and has nothing to
+        # register or connect to, so it needs no URL. It still needs a
+        # collection: "no collection" is refused on every path (#636).
+        if not (args.collection_id or args.collection):
+            _refuse("--collection-id is required, on --vector-backend memory too: "
+                    "a load that names no collection is refused rather than guessed "
+                    "(#636).")
+        target = None
     return asyncio.run(amain(args, target))
 
 

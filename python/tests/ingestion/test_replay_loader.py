@@ -239,6 +239,7 @@ def test_cli_replay_writes_a_summary(versions, tmp_path, capsys):
     rc = load_cli.main([
         "--replay", *map(str, versions["dirs"]), "--spec-hash", SPEC,
         "--vector-backend", "memory", "--text-backend", "memory", "--out", str(out),
+        "--collection-id", "lib",  # required on every backend (#636)
     ])
     assert rc == 0
     summary = json.loads(out.read_text())
@@ -264,6 +265,7 @@ def test_cli_replay_refusal_exits_3_with_the_marker_line(versions, tmp_path, cap
     rc = load_cli.main([
         "--replay", *map(str, versions["dirs"]), "--spec-hash", SPEC,
         "--vector-backend", "memory", "--text-backend", "memory", "--out", str(out),
+        "--collection-id", "lib",  # required on every backend (#636)
     ])
     assert rc == 3
     assert not out.exists()  # nothing written, not even a summary
