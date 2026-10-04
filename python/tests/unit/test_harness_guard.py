@@ -370,5 +370,15 @@ def test_the_conformance_runners_pin_the_same_set_as_the_python_tests():
         f"  only in boot_env.sh: {sorted(set(exported) - set(PINNED_ENV))}\n"
         f"  only in pinned_env_support.py: {sorted(set(PINNED_ENV) - set(exported))}"
     )
-    live = {k: v for k, v in exported.items() if "127.0.0.1:1" not in v}
+    from tests.pinned_env_support import OFFLINE_SWITCHES
+
+    live = {
+        k: v
+        for k, v in exported.items()
+        if k not in OFFLINE_SWITCHES and "127.0.0.1:1" not in v
+    }
     assert live == {}, f"boot_env.sh exports these at a reachable target: {live}"
+    switches = {k: exported.get(k) for k in OFFLINE_SWITCHES}
+    assert switches == OFFLINE_SWITCHES, (
+        f"boot_env.sh leaves an outbound feature on: {switches}"
+    )

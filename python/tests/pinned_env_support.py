@@ -61,7 +61,16 @@ PINNED_ENV: dict[str, str] = {
     # table in #369. `pg_test_dsn` gates the *test* path; this gates the child
     # processes, which build settings from the environment and never see it.
     "POSTGRES_DSN": "postgresql+asyncpg://ragstack:ragstack@127.0.0.1:1/ragstack",
+    # Not a URL but the same hazard pointed at the public internet: DOI
+    # enrichment ships ON (#634), so a child that ingests a document with a DOI
+    # would query Crossref / the NCBI ID Converter. Listed in
+    # ``OFFLINE_SWITCHES`` so the parity test knows it is not a dead URL.
+    "DOI_ENRICHMENT_ENABLED": "false",
 }
+
+#: Keys of ``PINNED_ENV`` that are off-switches rather than dead endpoints,
+#: with the value each must be pinned to.
+OFFLINE_SWITCHES: dict[str, str] = {"DOI_ENRICHMENT_ENABLED": "false"}
 
 
 def pinned_env(base: dict[str, str] | None = None, **overrides: str) -> dict[str, str]:

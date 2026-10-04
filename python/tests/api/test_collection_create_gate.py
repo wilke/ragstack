@@ -200,9 +200,13 @@ async def test_config_reports_whether_ingest_resolves_scholarly_metadata(
     have a shell on can only ask the API. It is also the single switch that says
     whether ingest reaches the public internet, which is its own reason to be
     visible."""
+    # Ships ON (#634) — but the test harness pins it off (tests/conftest.py) so
+    # no test reaches Crossref; the shipped default is asserted on the model.
+    from ragstack.config import Settings
+
+    assert Settings.model_fields["doi_enrichment_enabled"].default is True
+
     body = (await client.get("/v1/config", headers=_h("admin"))).json()
-    # Ships OFF: the gowe worker image is shared fleet-wide and an API ahead of
-    # its image fails every ingest, so this is opted into per tenant.
     assert body["doi_enrichment_enabled"] is False
 
     monkeypatch.setattr(settings, "doi_enrichment_enabled", True)

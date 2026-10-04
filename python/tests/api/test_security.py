@@ -85,6 +85,71 @@ def test_dev_skips_production_validation(monkeypatch):
     deps._validate_production_settings()  # must not raise
 
 
+# --- DOI enrichment: ON by default, warned about — never refused — at boot (#634)
+
+
+def _doi_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "DOI" in r.getMessage()
+    ]
+
+
+def test_doi_enrichment_ships_on():
+    """The minimum metadata contract: the shipped default is ON. (The test
+    harness pins the live ``settings`` off — see tests/conftest.py — so this is
+    asserted on the model, not on the environment.)"""
+    from ragstack.config import Settings
+
+    assert Settings.model_fields["doi_enrichment_enabled"].default is True
+
+
+def test_the_harness_never_builds_a_doi_enricher():
+    """Proof that the default flip cannot make the in-process suite call
+    Crossref: under the harness the enricher is never built."""
+    assert deps.settings.doi_enrichment_enabled is False
+    assert deps._build_doi_enricher(None) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_boot_warns_when_doi_enrichment_is_off(monkeypatch, caplog, tmp_path, durable):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", durable)
+    monkeypatch.setattr(deps.settings, "api_keys", ["k"])
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+    monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
+    monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
+    monkeypatch.setattr(deps.settings, "collection_store_backend", "sqlite")
+    monkeypatch.setattr(deps.settings, "collection_store_path", "/tmp/rs-test-colls.db")
+    monkeypatch.setattr(deps.settings, "doi_enrichment_enabled", False)
+    with caplog.at_level(logging.WARNING):
+        deps._validate_production_settings()  # a warning, never a refusal
+    msgs = _doi_warnings(caplog)
+    assert len(msgs) == 1, msgs
+    assert "DOI_ENRICHMENT_ENABLED=false" in msgs[0]
+    assert "air-gapped" in msgs[0]
+
+
+def test_boot_warns_when_doi_enrichment_has_no_mailto(monkeypatch, caplog):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "doi_enrichment_enabled", True)
+    monkeypatch.setattr(deps.settings, "doi_enrichment_mailto", "")
+    with caplog.at_level(logging.WARNING):
+        deps._validate_production_settings()
+    msgs = _doi_warnings(caplog)
+    assert len(msgs) == 1, msgs
+    assert "DOI_ENRICHMENT_MAILTO" in msgs[0]
+
+
+def test_boot_is_quiet_about_doi_enrichment_when_fully_configured(monkeypatch, caplog):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "doi_enrichment_enabled", True)
+    monkeypatch.setattr(deps.settings, "doi_enrichment_mailto", "ops@example.org")
+    with caplog.at_level(logging.WARNING):
+        deps._validate_production_settings()
+    assert _doi_warnings(caplog) == []
+
+
 # --- ingest_root: request-time gate + boot-time shape check ------------------ #
 
 
