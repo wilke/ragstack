@@ -53,6 +53,10 @@ ragstack_pin_dead_backends() {
   # select JOB_STORE_BACKEND=memory, so nothing reads it today; that is a
   # shield, not a pin, and shields move.
   export POSTGRES_DSN="postgresql+asyncpg://ragstack:ragstack@127.0.0.1:1/ragstack"
+  # DOI enrichment ships ON (#634) and reaches the public internet (Crossref,
+  # NCBI ID Converter) for any ingested document with a DOI. Not a URL, but the
+  # same hazard: a self-booted conformance server must not make those calls.
+  export DOI_ENRICHMENT_ENABLED="false"
 }
 
 # Abort, naming both paths, unless $2 (the interpreter that is about to boot the

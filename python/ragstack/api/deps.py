@@ -1121,11 +1121,12 @@ def _build_kg_extractor(llm: OpenAILLM | None) -> LLMKGExtractor | None:
 def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
     """The Crossref/DataCite/ID-Converter metadata enricher, or ``None`` when off.
 
-    ON by default since #596 (``doi_enrichment_enabled``): off is what made every
+    ON by default (#634, ``doi_enrichment_enabled``): off is what made every
     upload-built collection arrive without a title. It is still the only part of
     ingest that reaches the public internet, so it remains one switch —
     ``DOI_ENRICHMENT_ENABLED=false`` restores exactly the behaviour ingest had
-    before enrichment existed, which is what offline/air-gapped deployments need.
+    before enrichment existed, which only offline/air-gapped deployments need.
+    :func:`_warn_on_doi_enrichment_settings` warns at boot when it is off.
 
     This wires the **local** ingest backend (``INGEST_BACKEND=local``), where the
     pipeline runs in this process. On ``INGEST_BACKEND=gowe`` the work happens in
@@ -1135,17 +1136,12 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
 
     Shares the app's HTTP client (deps owns its lifecycle) and the app's
     publisher profile, so DOI discovery here uses the same filename->DOI rule as
-    the local ``enrich`` leg. Warns — but still builds — without a contact
-    address, since Crossref's polite pool is a genuine operational nicety we
-    shouldn't silently skip.
+    the local ``enrich`` leg. Builds without a contact address too; the missing
+    ``DOI_ENRICHMENT_MAILTO`` is warned about once, at boot, by
+    :func:`_warn_on_doi_enrichment_settings`.
     """
     if not settings.doi_enrichment_enabled:
         return None
-    if not settings.doi_enrichment_mailto:
-        log.warning(
-            "doi enrichment enabled without DOI_ENRICHMENT_MAILTO: requests will "
-            "use Crossref's anonymous pool. Set a contact address."
-        )
     log.info(
         "doi enrichment enabled (concurrency=%d, timeout=%.1fs, cache=%s, pubmed_ids=%s)",
         settings.doi_enrichment_concurrency,
@@ -1418,6 +1414,28 @@ def _validate_ingest_root() -> None:
         )
 
 
+def _warn_on_doi_enrichment_settings() -> None:
+    """Warn — never refuse — at boot about a weakened DOI-enrichment setup (#634).
+
+    Enrichment is the minimum metadata contract and ships ON. Off is legitimate
+    only on an air-gapped deployment, and on without a contact address it runs
+    in Crossref's anonymous pool, which is the first to be throttled or blocked.
+    Neither breaks ingest, so neither stops the boot; both are worth a line an
+    operator sees. Runs on every boot, not only under require_durable_backends.
+    """
+    if not settings.doi_enrichment_enabled:
+        log.warning(
+            "DOI_ENRICHMENT_ENABLED=false: ingested documents will get no title, "
+            "authors, journal, pmid or pmcid from their DOI. Disable enrichment "
+            "only on an air-gapped deployment."
+        )
+    elif not settings.doi_enrichment_mailto:
+        log.warning(
+            "DOI enrichment is on without DOI_ENRICHMENT_MAILTO: requests will use "
+            "Crossref's anonymous pool. Set a contact address."
+        )
+
+
 def _validate_production_settings() -> None:
     """Refuse to start in production without the security-critical settings.
 
@@ -1439,6 +1457,7 @@ def _validate_production_settings() -> None:
     # not a .sif resolves to no image under the worker's --image-dir (or to one
     # outside it). Refuse at boot, not on the first submission.
     validate_tool_image(settings.gowe_tool_image)
+    _warn_on_doi_enrichment_settings()
     if not settings.require_durable_backends:
         return
     missing = []

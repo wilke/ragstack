@@ -70,7 +70,17 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-#: The tree under test: ``python/``, the directory holding ``ragstack/`` and
+# DOI enrichment ships ON (#634) and is the one part of ingest that reaches the
+# public internet (Crossref, DataCite, the NCBI ID Converter). No test may make
+# those requests by default, so the whole suite runs with it OFF: set in the
+# environment here — before ``ragstack.config`` builds ``settings``, and so it
+# is inherited by every child process a test spawns — and re-asserted per test
+# by ``_doi_enrichment_off`` below in case something imported settings first.
+# Tests that exercise the ON path monkeypatch it back on explicitly; the
+# shipped default is asserted against ``Settings.model_fields``, not the env.
+os.environ["DOI_ENRICHMENT_ENABLED"] = "false"
+
+#: The tree under test:``python/``, the directory holding ``ragstack/`` and
 #: ``tests/``. Resolved, so worktrees and symlinked checkouts compare equal.
 CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -150,6 +160,21 @@ def pytest_configure(config: pytest.Config) -> None:
         return
 
     raise pytest.UsageError(problem)
+
+
+@pytest.fixture(autouse=True)
+def _doi_enrichment_off(monkeypatch):
+    """Keep DOI enrichment OFF for every test (#634) — see the module-level
+    ``DOI_ENRICHMENT_ENABLED`` pin. A test that wants the ON path sets it with
+    its own ``monkeypatch.setattr``, which runs after this and is undone with it.
+
+    Guarded by ``hasattr`` because the import-origin escape hatch deliberately
+    runs this suite against a foreign ``ragstack`` that may predate the setting.
+    """
+    from ragstack.config import settings
+
+    if hasattr(settings, "doi_enrichment_enabled"):
+        monkeypatch.setattr(settings, "doi_enrichment_enabled", False)
 
 
 @pytest_asyncio.fixture

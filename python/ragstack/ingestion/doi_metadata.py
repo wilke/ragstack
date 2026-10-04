@@ -22,9 +22,9 @@ duplicating it:
   would change existing JSONL ingest behaviour.
 * ``enrich`` stays pure/offline (it is the local, no-network leg); everything
   network-touching lives here, behind a single switch — ``DOI_ENRICHMENT_ENABLED``,
-  ON by default since #596, because off is what made every upload-built
-  collection arrive with a DOI and nothing else. An air-gapped deployment sets it
-  false and gets the pre-#596 behaviour exactly.
+  ON by default (#634), because off is what made every upload-built collection
+  arrive with a DOI and nothing else. Only an air-gapped deployment should set it
+  false; it then gets the pre-#596 behaviour exactly.
 
 Three properties are non-negotiable:
 

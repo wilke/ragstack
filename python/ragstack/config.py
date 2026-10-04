@@ -330,9 +330,12 @@ class Settings(BaseSettings):
     # PDFs that carry no usable metadata stop showing up as bare filenames in
     # citations.
     #
-    # ON by default since #596. It was off, and the cost was measurable: every
-    # collection built from user uploads was born bare — on the `Dengue`
-    # collection, doi 382/382 and title/authors/journal/pmid/pmcid 0/382 — and
+    # ON by default (#634). Scholarly metadata on every ingested document is the
+    # minimum this service promises, not an opt-in: everything built since #596
+    # (citations, metadata filters, the title/authors/pmid/journal columns)
+    # assumes ingest filled those fields. Off, the cost was measurable — every
+    # collection built from user uploads was born bare (on the `Dengue`
+    # collection, doi 382/382 and title/authors/journal/pmid/pmcid 0/382) and
     # the only repair was an operator running
     # scripts/backfill_collection_metadata.py after the fact, which nobody knows
     # to do until a user reports that their citations are filenames. A default
@@ -344,25 +347,28 @@ class Settings(BaseSettings):
     # title" rather than a failed job, lookups are per DISTINCT DOI and cached,
     # and a resolver that cannot reach the network trips a circuit breaker
     # (``doi_metadata.BREAKER_THRESHOLD``) after a handful of attempts instead of
-    # paying a timeout per document. An air-gapped deployment sets
-    # DOI_ENRICHMENT_ENABLED=false and gets exactly the pre-#596 behaviour.
+    # paying a timeout per document.
     #
-    # WHY IT SHIPS OFF ANYWAY. The gowe ingest runs inside a prebuilt worker
-    # image, and that image is SHARED across worker groups on this host. An API
-    # rolled out ahead of its image sends --doi-enrichment to an argparse that
-    # does not know the flag, and every gowe ingest exits 2. Default-on would
-    # therefore impose a fleet-wide deploy ORDER (rebuild the image, then roll
-    # the APIs) on a change whose whole point is that it is optional. Off, this
-    # merges inert: an operator rebuilds the image when convenient and then sets
-    # DOI_ENRICHMENT_ENABLED=true per tenant. Flip this line once every worker
-    # image in the fleet carries the flag.
-    doi_enrichment_enabled: bool = False
+    # The remaining deploy constraint (gowe backend): the ingest runs inside a
+    # prebuilt worker image, and with this on the API sends --doi-enrichment on
+    # every submission. A worker image whose ingest_shard.py predates the flag
+    # rejects it in argparse and every gowe ingest exits 2. So any worker image
+    # that an API tenant's worker group runs MUST carry --doi-enrichment. The
+    # `ragstack-dev` and `ragstack-hackathon` group images do; the shared
+    # `ragstack` group's image predates the flag and must be rebuilt before any
+    # API tenant is pointed at that group. `api/deps.py` warns at boot when this
+    # is off, or on without DOI_ENRICHMENT_MAILTO.
+    #
+    # Turning it off (DOI_ENRICHMENT_ENABLED=false) is for air-gapped
+    # deployments only — it is the only part of ingest that reaches the public
+    # internet, and off gives exactly the pre-#596 behaviour.
+    doi_enrichment_enabled: bool = True
     # Resolve pmid/pmcid from the NCBI ID Converter as well. Batched — one
     # request per 200 distinct DOIs — so it is close to free; turn it off for a
     # corpus PMC will never have a record for.
     doi_enrichment_pubmed_ids: bool = True
     # Contact address for Crossref's polite pool. Not required, but strongly
-    # recommended: it routes requests to better-behaved infrastructure and lets
+    # recommended (the API warns at boot without it): it routes requests to better-behaved infrastructure and lets
     # Crossref reach an operator instead of blocking the deployment outright.
     doi_enrichment_mailto: str = ""
     # Directory for the on-disk resolution cache (one JSON per DOI, negatives
