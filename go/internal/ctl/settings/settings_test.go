@@ -24,6 +24,9 @@ func TestClassify(t *testing.T) {
 		"INGEST_ROOT": ExecutableSurface, "COLLECTION_MANIFEST_DIR": ExecutableSurface,
 		"USER_STORE_PATH": ExecutableSurface, "JOB_STORE_PATH": ExecutableSurface, "COLLECTION_STORE_PATH": ExecutableSurface,
 		"COLLECTIONS_FILE": ExecutableSurface, "MODELS_REGISTRY_FILE": ExecutableSurface, "GOWE_WORKFLOW_CWL": ExecutableSurface,
+		// The image store dirs the boot identity check reads (ADR-0010 decision
+		// 7, #655 step 4): a host path, the CWL paths' sibling — CLI-only.
+		"GOWE_IMAGE_DIRS": ExecutableSurface,
 		// A path the API loads and validates at startup, whose records become
 		// the prompts the tenant answers with (ADR-0008): executable surface,
 		// so `env set` may write it and an HTTP caller may not.

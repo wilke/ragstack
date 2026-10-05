@@ -279,7 +279,10 @@ def gowe_boot(monkeypatch, tmp_path):
     monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", "")
     monkeypatch.setattr(deps.settings, "graph_extract_cwl", str(tmp_path / "absent-graph.cwl"))
     monkeypatch.setattr(deps.settings, "collection_restore_cwl", str(tmp_path / "absent-restore.cwl"))
+    import ragstack.tool_image as ti
+
     _SHA256_CACHE.clear()
+    ti._LABELS_CACHE.clear()
 
 
 def test_boot_passes_on_a_stamped_tree_with_a_matching_store(gowe_boot, store, tmp_path, no_apptainer, monkeypatch, caplog):
@@ -373,7 +376,8 @@ def test_boot_checks_the_graph_and_restore_defaults_too(gowe_boot, store, tmp_pa
 
 
 def test_boot_hashes_a_shared_image_once(gowe_boot, store, tmp_path, no_apptainer, monkeypatch):
-    """Three registrars naming one image: one verdict, one hash."""
+    """Three registrars naming one image: a verdict per CWL (each has its own
+    committed receipt to compare), but the 250 MB file is hashed once."""
     import ragstack.tool_image as ti
 
     a = _stamped_cwl(tmp_path / "a", store)
@@ -391,8 +395,18 @@ def test_boot_hashes_a_shared_image_once(gowe_boot, store, tmp_path, no_apptaine
         return real(*args, **kw)
 
     monkeypatch.setattr(ti, "verify_named_image", counting)
+    opened = []
+    real_open = Path.open
+
+    def counting_open(self, *a, **kw):
+        if self.name == NAME and (a and "b" in a[0]):
+            opened.append(str(self))
+        return real_open(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "open", counting_open)
     deps._validate_production_settings()
-    assert calls == [NAME]
+    assert calls == [NAME] * 3
+    assert len(opened) == 1
 
 
 # --- the CLI the ctl shells to --------------------------------------------- #
@@ -440,3 +454,115 @@ def test_verify_cwl_file_on_a_document_without_an_image(tmp_path, no_apptainer):
     assert rec["tool_image"] is None and rec["verdict"]["state"] == "unstamped"
     assert rec["verdict"]["problems"] == []
     assert isinstance(ImageVerdict("", []).to_dict()["problems"], list)
+
+
+# --- review of #672: one implementation, per-CWL committed receipt, dedupe --- #
+
+def test_boot_refuses_a_mixed_stamped_document(gowe_boot, store, tmp_path, no_apptainer, monkeypatch):
+    """A stamped CWL with ONE site changed to a different stamped name: the
+    document names two images. `tool_image_of` returns None, which the first
+    cut of the boot logged as "skipped" and BOOTED — while `verify --cwl` (the
+    ctl) said `problem`. Decision 7 says refuse, and the boot now goes through
+    the same `verify_cwl_file` the ctl does."""
+    cwl = _stamped_cwl(tmp_path / "cwl", store)
+    other = "ragstack-tools-v9.9.9-b2.sif"  # a stamped name nothing in the store answers to
+    cwl.write_text(cwl.read_text() + f"""\
+  b:
+    run:
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: {other}
+          dockerImageId: {other}
+""")
+    monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", str(cwl))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", str(store))
+    with pytest.raises(RuntimeError, match=r"(?s)GOWE_WORKFLOW_CWL=.*names 2 distinct images") as info:
+        deps._validate_production_settings()
+    assert "Refusing to boot" in str(info.value)
+
+
+def test_boot_reaches_the_unstamped_branch_of_the_check(gowe_boot, tmp_path, no_apptainer, monkeypatch):
+    """The unstamped boot path is `verify_named_image`'s own unstamped branch,
+    not a short-circuit in deps: break that branch and the boot refuses."""
+    import ragstack.tool_image as ti
+
+    cwl = tmp_path / "cwl" / "pdf-ingest-scatter.cwl"
+    cwl.parent.mkdir()
+    cwl.write_text(CWL)
+    monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", str(cwl))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", str(tmp_path))
+    seen = []
+    real = ti.verify_named_image
+
+    def spy(name, dirs, **kw):
+        seen.append(name)
+        return real(name, dirs, **kw)
+
+    monkeypatch.setattr(ti, "verify_named_image", spy)
+    deps._validate_production_settings()
+    assert seen == [DEFAULT_TOOL_IMAGE]
+    # Mutation in-process: an unstamped name treated as a stamped one is a
+    # missing file, and the boot must refuse it.
+    monkeypatch.setattr(ti, "DEFAULT_TOOL_IMAGE", "something-else.sif")
+    with pytest.raises(RuntimeError, match="neither"):
+        deps._validate_production_settings()
+
+
+def test_boot_compares_the_committed_receipt_per_cwl(gowe_boot, store, tmp_path, no_apptainer, monkeypatch):
+    """Two registered CWLs naming ONE image from different dirs: the graph
+    CWL's committed receipt is tampered, the ingest CWL's is fine. A verdict
+    cached by image name alone would compare only the first dir's receipt and
+    boot; the ctl says `problem`. Both must refuse."""
+    a = _stamped_cwl(tmp_path / "a", store)
+    b = _stamped_cwl(tmp_path / "b", store)
+    (tmp_path / "b" / RECEIPT_BASENAME).write_text(json.dumps(_receipt("f" * 64)))
+    monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", str(a))
+    monkeypatch.setattr(deps.settings, "graph_extract_cwl", str(b))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", str(store))
+    with pytest.raises(RuntimeError) as info:
+        deps._validate_production_settings()
+    msg = str(info.value)
+    assert f"GRAPH_EXTRACT_CWL={b}" in msg and "committed receipt" in msg
+    assert f"GOWE_WORKFLOW_CWL={a}" not in msg  # the good one is not blamed
+
+
+def test_boot_refusal_names_each_registrar_once_per_finding(gowe_boot, store, tmp_path, no_apptainer, monkeypatch):
+    """Three registrars, one broken image: the finding is printed once, with
+    all three settings in front of it, not three times."""
+    a = _stamped_cwl(tmp_path / "a", store)
+    b = _stamped_cwl(tmp_path / "b", store)
+    c = _stamped_cwl(tmp_path / "c", store)
+    (store / NAME).write_bytes(b"swapped")
+    for k, p in (("gowe_workflow_cwl", a), ("graph_extract_cwl", b), ("collection_restore_cwl", c)):
+        monkeypatch.setattr(deps.settings, k, str(p))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", str(store))
+    with pytest.raises(RuntimeError) as info:
+        deps._validate_production_settings()
+    msg = str(info.value)
+    assert msg.count("problem: sha256 mismatch") == 1
+    assert f"GOWE_WORKFLOW_CWL={a}, GRAPH_EXTRACT_CWL={b}, COLLECTION_RESTORE_CWL={c}" in msg
+
+
+def test_boot_inspects_a_shared_image_once(gowe_boot, store, tmp_path, good_apptainer, monkeypatch):
+    """Labels are cached per image file like the sha256: three CWLs, one
+    `apptainer inspect`."""
+    import ragstack.tool_image as ti
+
+    ti._LABELS_CACHE.clear()
+    calls = []
+    real = ti._read_image_labels
+
+    def counting(path, apptainer="apptainer"):
+        calls.append(str(path))
+        return real(path, apptainer)
+
+    monkeypatch.setattr(ti, "_read_image_labels", counting)
+    exe = tmp_path / "bin" / "apptainer"
+    exe.write_text(exe.read_text().replace("exit 0", "echo ran >> \"${0%/*}/calls\"\nexit 0"))
+    for k, d in (("gowe_workflow_cwl", "a"), ("graph_extract_cwl", "b"), ("collection_restore_cwl", "c")):
+        monkeypatch.setattr(deps.settings, k, str(_stamped_cwl(tmp_path / d, store)))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", str(store))
+    deps._validate_production_settings()
+    assert len(calls) == 3  # asked three times ...
+    assert (tmp_path / "bin" / "calls").read_text().count("ran") == 1  # ... inspected once

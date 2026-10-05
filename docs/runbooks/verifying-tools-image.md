@@ -47,7 +47,8 @@ against: the shared release store and/or the group's own dir.
 |---|---|
 | stamped, dirs set, all checks pass | boots; one info line per image: `verified at <path>` |
 | stamped, dirs set, any problem | **refuses**: `tool image identity check FAILED (ADR-0010 decision 7, #655)`, then per setting the image, the path tried and each problem |
-| stamped, `GOWE_IMAGE_DIRS` unset | **warns** naming the setting and boots — this host cannot see a store; verify from one that can |
+| stamped, `GOWE_IMAGE_DIRS` unset (`unchecked`) | **warns** naming the setting and boots — this host cannot see a store; verify from one that can |
+| a document naming more than one image (`problem`) | **refuses** — a mixed document is a release that cannot be cut |
 | unstamped (`ragstack-worker.sif`) | boots; info: `unstamped tree, identity check skipped` |
 | `INGEST_BACKEND=local` | no check |
 
@@ -112,5 +113,18 @@ python -m ragstack.tool_image verify --cwl cwl/pdf-ingest-scatter.cwl --dirs /sc
 * **labels not verified: no 'apptainer'** — a warning only; the sha256 holds
   the file to its receipt. Run the ctl from a worker host for the full check.
 
-Setting `GOWE_IMAGE_DIRS` is a CLI-only (executable-surface) edit:
-`ragstack-ctl env set <tenant> GOWE_IMAGE_DIRS /scout/containers/ragstack`.
+`GOWE_IMAGE_DIRS` is an executable-surface key, like the three CWL path keys:
+`ragstack-ctl env set` refuses it (that verb takes public-class keys only).
+Set it by editing the tenant's `tenant.env` directly, from the management
+session that owns `/rag`, then restart the tenant.
+
+## The JSON `state` values
+
+`verify --json` and `gowe render --json` carry one `state` per workflow:
+
+| `state` | meaning | boot |
+|---|---|---|
+| `ok` | stamped name; file found, receipt beside it, sha256 and labels agree, committed receipt agrees | boots |
+| `problem` | at least one entry in `problems` (any check above failed, or the document names more than one image) | refuses |
+| `unstamped` | the bare `ragstack-worker.sif` (or a document with no `dockerPull` at all) — nothing to verify | boots, info |
+| `unchecked` | a stamped name but no store dirs (`GOWE_IMAGE_DIRS` unset): this host cannot see a store | boots, warning |

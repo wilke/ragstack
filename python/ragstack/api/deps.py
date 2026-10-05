@@ -1485,48 +1485,47 @@ def _verify_tool_images_at_boot() -> None:
 
     GoWe resolves a ``dockerPull`` as ``<image-dir>/<name>`` at task time and
     never checks ``dockerImageId``, so this is the ONLY place the image behind
-    a stamped name is held to the build the release stamped. For every CWL
-    this API registers: a stamped name is looked up in ``GOWE_IMAGE_DIRS`` and
-    verified against the receipt beside it (sha256, labels) and the committed
-    ``cwl/tool-image.receipt.json``; any problem REFUSES the boot, naming the
-    image, the path tried and each finding. An unstamped tree (the bare
-    ``ragstack-worker.sif``) has nothing to verify and says so at info. With
-    ``GOWE_IMAGE_DIRS`` unset the host cannot see a store, and the ADR refuses
-    only where it can: one WARNING naming the setting. Only when
-    ``INGEST_BACKEND=gowe`` — a local backend registers nothing.
+    a stamped name is held to the build the release stamped. Every CWL this
+    API registers goes through :func:`ragstack.tool_image.verify_cwl_file` —
+    the same call ``ragstack-ctl gowe render`` makes, so the boot and the ctl
+    cannot disagree — against ``GOWE_IMAGE_DIRS``, and the verdict's ``state``
+    decides: ``problem`` REFUSES the boot (the image, the path tried and each
+    finding are named; a document naming more than one image is a problem
+    too); ``unstamped`` (the bare ``ragstack-worker.sif``) is nothing to
+    verify, at info; ``unchecked`` (dirs unset — the host cannot see a store,
+    and the ADR refuses only where it can) is one WARNING naming the setting.
+    Only when ``INGEST_BACKEND=gowe`` — a local backend registers nothing.
+    The sha256 and the labels are cached per image file, so three registrars
+    naming one image cost one hash and one inspect; the committed receipt is
+    compared per CWL (each lives beside its own ``tool-image.receipt.json``).
     """
-    from ragstack.tool_image import (
-        DEFAULT_TOOL_IMAGE,
-        parse_image_dirs,
-        read_committed_receipt,
-        tool_image_of,
-        verify_named_image,
-    )
+    from ragstack.tool_image import parse_image_dirs, verify_cwl_file
 
     if (settings.ingest_backend or "local").lower() != "gowe":
         return
     dirs = parse_image_dirs(settings.gowe_image_dirs)
-    verdicts: dict[str, Any] = {}
-    failures: list[str] = []
+    # Identical findings from several registrars naming one image are
+    # reported once, with every setting that led there.
+    failures: dict[str, list[str]] = {}
     for setting_name, path in _registered_cwl_paths():
         if not path:
             continue  # make_ingest_backend refuses a missing GOWE_WORKFLOW_CWL itself
+        cwl_path = Path(path).expanduser()
         try:
-            text = Path(path).expanduser().read_text(encoding="utf-8")
+            record = verify_cwl_file(cwl_path, dirs)
         except OSError as e:
             # The registrar that owns the path refuses (ingest) or 503s
             # (graph/restore) on its own; the identity check has no text to read.
             log.warning("tool image check: %s=%r unreadable (%s); skipped", setting_name, path, e)
             continue
-        name = tool_image_of(text)
-        if name is None:
-            log.warning("tool image check: %s=%r names no single image; skipped", setting_name, path)
-            continue
-        if name == DEFAULT_TOOL_IMAGE:
+        verdict = record["verdict"]
+        name = record["tool_image"] or "(no single image)"
+        state = verdict["state"]
+        if state == "unstamped":
             log.info("tool image check: %s names %s — unstamped tree, identity check skipped",
                      setting_name, name)
             continue
-        if not dirs:
+        if state == "unchecked":
             log.warning(
                 "tool image check: %s names stamped image %s but GOWE_IMAGE_DIRS is unset, so "
                 "this host cannot see the image store and the identity check is NOT run. Set "
@@ -1535,25 +1534,28 @@ def _verify_tool_images_at_boot() -> None:
                 setting_name, name,
             )
             continue
-        committed = read_committed_receipt(Path(path).expanduser().parent)
-        verdict = verdicts.get(name)
-        if verdict is None:
-            verdict = verify_named_image(name, dirs, committed_receipt=committed)
-            verdicts[name] = verdict
-        for w in verdict.warnings:
+        for w in verdict["warnings"]:
             log.warning("tool image check: %s: %s", name, w)
-        if verdict.problems:
-            failures.append(f"{setting_name}={path}\n" + verdict.summary())
+        if verdict["problems"]:
+            where = verdict["path"] or (
+                "not found in " + ", ".join(verdict["dirs"]) if verdict["dirs"] else "no store dirs"
+            )
+            summary = "\n".join(
+                [f"{name}: {state} ({where})"]
+                + [f"  problem: {p}" for p in verdict["problems"]]
+                + [f"  warning: {w}" for w in verdict["warnings"]]
+            )
+            failures.setdefault(summary, []).append(f"{setting_name}={cwl_path}")
         else:
             log.info("tool image check: %s (%s) verified at %s: sha256 ok, labels %s",
-                     name, setting_name, verdict.path,
-                     "ok" if verdict.labels_ok else "not checked")
+                     name, setting_name, verdict["path"],
+                     "ok" if verdict["labels_ok"] else "not checked")
     if failures:
         raise RuntimeError(
             "tool image identity check FAILED (ADR-0010 decision 7, #655): the image a "
             "registered workflow names is not the build its receipt describes, so the engine "
             "would run unverified bytes under a stamped name. Refusing to boot.\n"
-            + "\n".join(failures)
+            + "\n".join(", ".join(sources) + "\n" + summary for summary, sources in failures.items())
             + "\nFix the store (copy the image AND its receipt from the build), or check out "
             "the release whose CWL names the image that is there."
         )

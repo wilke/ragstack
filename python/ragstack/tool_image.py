@@ -521,6 +521,9 @@ APPTAINER_INSPECT_TIMEOUT_S = 60.0
 # sha256 cache: (path, size, mtime_ns) -> hex. Boot verifies the same image for
 # three registrars; hashing 250 MB once is fine, three times is not.
 _SHA256_CACHE: dict[tuple[str, int, int], str] = {}
+# labels cache: (apptainer exe, path, size, mtime_ns) -> labels, for the same
+# reason — one inspect per image per process, however many CWLs name it.
+_LABELS_CACHE: dict[tuple[str, str, int, int], dict[str, str]] = {}
 
 
 def file_sha256(path: str | os.PathLike[str]) -> str:
@@ -627,6 +630,11 @@ def _read_image_labels(path: Path, apptainer: str = "apptainer") -> dict[str, st
     exe = shutil.which(apptainer)
     if exe is None:
         return None
+    st = path.stat()
+    key = (exe, str(path), st.st_size, st.st_mtime_ns)
+    hit = _LABELS_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
     try:
         proc = subprocess.run(
             [exe, "inspect", "--json", "--labels", str(path)],
@@ -645,7 +653,9 @@ def _read_image_labels(path: Path, apptainer: str = "apptainer") -> dict[str, st
         raise RuntimeError(f"{apptainer} inspect {path}: unexpected output ({e})") from e
     if not isinstance(labels, dict):
         raise RuntimeError(f"{apptainer} inspect {path}: labels are not an object")
-    return {str(k): str(v) for k, v in labels.items()}
+    out = {str(k): str(v) for k, v in labels.items()}
+    _LABELS_CACHE[key] = out
+    return dict(out)
 
 
 def verify_named_image(
