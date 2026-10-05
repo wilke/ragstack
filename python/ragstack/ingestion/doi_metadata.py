@@ -77,6 +77,7 @@ from urllib.parse import quote
 import httpx
 
 from ragstack.ingestion.enrich import PublisherProfile, derive_doi
+from ragstack.metadata_schema import coerce_year
 from ragstack.models import Document
 
 log = logging.getLogger(__name__)
@@ -349,12 +350,15 @@ def map_crossref(message: dict[str, Any]) -> dict[str, Any]:
     field and an empty one would behave identically, and omitting keeps the
     cached JSON small and readable.
     """
-    year = _year_from_date_parts(message.get("issued"))
-    if year is None:
-        for key in ("published", "published-print", "published-online", "created"):
-            year = _year_from_date_parts(message.get(key))
-            if year is not None:
-                break
+    # Every year goes through ``coerce_year`` — the same 1500..next-year
+    # validity bound as every other year path (#637). An out-of-range
+    # ``issued`` (a deposit typo like ``[[20019]]``) is not a year, so the next
+    # date field is tried rather than the bogus int stamped onto every chunk.
+    year = None
+    for key in ("issued", "published", "published-print", "published-online", "created"):
+        year = coerce_year(_year_from_date_parts(message.get(key)))
+        if year is not None:
+            break
     resolved: dict[str, Any] = {
         "title": _first_str(message.get("title")),
         "authors": _crossref_authors(message.get("author")),
@@ -397,11 +401,8 @@ def map_datacite(data: dict[str, Any]) -> dict[str, Any]:
     journal = ""
     if isinstance(container, dict):
         journal = _clean(container.get("title"))
-    year = attrs.get("publicationYear")
-    try:
-        year_int = int(year) if year is not None else None
-    except (TypeError, ValueError):
-        year_int = None
+    # Same validity bound as map_crossref and every other year path (#637).
+    year_int = coerce_year(attrs.get("publicationYear"))
     types = attrs.get("types")
     work_type = ""
     if isinstance(types, dict):
@@ -569,7 +570,9 @@ class DoiCache:
     #:     wrapped whitespace collapsed). 3 — pmid/pmcid from the NCBI ID
     #:     Converter folded into the entry (#596); a v2 entry has no PubMed ids
     #:     and must be re-fetched rather than served as "already resolved".
-    VERSION = 3
+    #: 4 — years bounded by ``coerce_year`` (#637); a v3 entry may carry an
+    #:     out-of-range year.
+    VERSION = 4
 
     def __init__(self, directory: str | Path | None = None) -> None:
         self._dir = Path(directory) if directory else None

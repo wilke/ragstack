@@ -255,6 +255,26 @@ def test_map_crossref_tolerates_garbage():
     assert map_crossref({"title": 7, "author": "nope", "issued": "nope"}) == {}
 
 
+@pytest.mark.parametrize("bogus", [20019, 1066, 9999])
+def test_map_crossref_bounds_the_year_like_every_other_path(bogus):
+    """#637: the Crossref year went straight from ``date-parts`` onto the chunk,
+    skipping ``coerce_year`` — so a deposit typo landed as a year that every
+    "recent" filter then matched. Out of range is not a year: the next date field
+    is tried, and with none the key is omitted."""
+    mapped = map_crossref(
+        {"DOI": DOI, "issued": {"date-parts": [[bogus, 1, 1]]},
+         "created": {"date-parts": [[2019, 3, 4]]}}
+    )
+    assert mapped["year"] == 2019
+    only_bogus = map_crossref({"DOI": DOI, "issued": {"date-parts": [[bogus]]}})
+    assert "year" not in only_bogus
+
+
+def test_map_datacite_bounds_the_year_too():
+    assert "year" not in map_datacite({"attributes": {"publicationYear": 30000}})
+    assert map_datacite({"attributes": {"publicationYear": "2024"}})["year"] == 2024
+
+
 def test_map_datacite_to_normalized_fields():
     assert map_datacite(DATACITE_DATA) == {
         "title": "A Deposited Dataset",
