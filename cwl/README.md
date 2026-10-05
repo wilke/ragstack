@@ -50,11 +50,17 @@ one). **Provenance** (decision 8, #655 step 2): the API-registered workflows
 (`pdf-ingest-scatter`, `graph-extract`, `restore-collection`) declare three
 optional inputs — `workflow_id`, `tool_image`, `tool_image_digest` — that the
 API seeds *between registration and submission* (the `wf_` id exists only
-then; the digest comes from the committed receipt, `null` when unstamped) and
-the pack / ingest / extract / replay tools RECORD together with their own
-image's `/opt/ragstack/RELEASE` as `manifest.provenance`, the receipt's
-`provenance`, `graph_extraction.provenance` and the load summary's
-`provenance`. Nothing verifies them here; the identity check is step 4. The
+then; the digest comes from the committed receipt) and the pack / ingest /
+extract / replay tools RECORD together with their own image's
+`/opt/ragstack/RELEASE` as `manifest.provenance`, the receipt's `provenance`,
+`graph_extraction.provenance` and the load summary's `provenance`. **On an
+unstamped tree the API seeds no provenance inputs** — the stamp is the
+declaration that the named image supports the workflow (decision 4), and the
+builds `ragstack-worker.sif` resolves to today predate the tools' flags — so
+the inputs stay null, the flags are omitted (GoWe skips null inputs before any
+prefix) and the records carry only the image's own `RELEASE` identity (null
+outside a RELEASE-bearing image). Provenance begins with the first stamped
+release. Nothing verifies the fields here; the identity check is step 4. The
 `ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
 the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
 at `/opt/ragstack/scripts`. This **replaces the old

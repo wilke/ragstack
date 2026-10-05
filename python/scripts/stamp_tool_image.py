@@ -67,8 +67,12 @@ file's sha256 cannot live inside the file, so the worker cannot learn it, and
 the shared store (step 3/4) is not something the API can read offline.
 ``--check`` holds the two together: a stamped tree must carry the receipt of
 the image it names (same ``name``, a well-formed ``sha256``), an unstamped
-tree must carry none. On an unstamped tree the API records
-``tool_image: ragstack-worker.sif`` and ``tool_image_digest: null``.
+tree must carry none. On an unstamped tree the API seeds no provenance inputs
+at all (``ragstack.tool_image.provenance_inputs`` gates on a stamped name:
+the deployed builds the bare name resolves to predate the tools' flags);
+provenance begins with the first stamped release. A receipt without
+``build_date`` (or any of the six keys) is refused, as is one whose ``name``
+is not ``version`` + ``build``.
 """
 from __future__ import annotations
 

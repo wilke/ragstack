@@ -56,8 +56,8 @@ log = logging.getLogger(__name__)
 RECEIPT_BASENAME = "tool-image.receipt.json"
 
 #: The three per-submission provenance inputs (ADR-0010 decision 8) the API
-#: seeds between registration and submission, and the worker's pack step
-#: writes into ``manifest.json``/the receipt.
+#: seeds between registration and submission — on a STAMPED tree only — and
+#: the worker's pack step writes into ``manifest.json``/the receipt.
 PROVENANCE_INPUTS = ("workflow_id", "tool_image", "tool_image_digest")
 
 #: The unstamped name every shipped CWL carries on ``main``: GoWe joins it onto
@@ -451,10 +451,23 @@ def provenance_inputs(
 ) -> dict[str, str | None]:
     """The provenance inputs to seed on a submission of ``cwl`` registered as
     ``workflow_id``: ``{workflow_id, tool_image, tool_image_digest}``,
-    restricted to the names the workflow declares. ``tool_image`` is the one
-    ``dockerPull`` of the registered text (the bare default on an unstamped
-    tree); the digest comes from the committed receipt beside ``cwl_path``
-    and is ``None`` when there is none or it names a different image.
+    restricted to the names the workflow declares — and **only when the text
+    names a stamped image** (``ragstack-tools-<version>-b<N>.sif``). On an
+    unstamped tree this returns ``{}`` and nothing is seeded: the
+    ``["null", string]`` inputs stay null and the tools' flags are omitted
+    (GoWe skips null inputs before any prefix; so does cwltool per CWL v1.2).
+
+    Why the gate: the stamp IS the declaration that the named image supports
+    the workflow (ADR-0010 decision 4). An unstamped tree names
+    ``ragstack-worker.sif``, whichever build a worker's ``--image-dir``
+    resolves it to — and the deployed builds predate these flags
+    (``--workflow-id`` is ``unrecognized arguments``, argparse exit 2, on
+    every ingest / extract / replay task). Provenance begins with the first
+    stamped release, whose image is by construction built from a tree that
+    carries the scripts that take the flags. ``tool_image`` is then the
+    stamped name; the digest comes from the committed receipt beside
+    ``cwl_path`` and is ``None`` when there is none or it names a different
+    image.
 
     These are *inputs* because the worker cannot learn them any other way: it
     can read its own image's ``RELEASE`` file, but not the file's digest, and
@@ -463,6 +476,10 @@ def provenance_inputs(
     if not declared.intersection(PROVENANCE_INPUTS):
         return {}
     name = tool_image_of(cwl)
+    if name is None or STAMPED_IMAGE_RE.match(name) is None:
+        log.debug("tool image: %s is not a stamped image name; seeding no provenance "
+                  "inputs (provenance begins with the first stamped release)", name)
+        return {}
     receipt = read_committed_receipt(Path(cwl_path).parent) if cwl_path else None
     values: dict[str, str | None] = {
         "workflow_id": workflow_id or None,

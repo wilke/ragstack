@@ -89,7 +89,7 @@ inputs:
     inputBinding: {prefix: --tool-image, position: 10}
   tool_image_digest:
     type: ["null", string]
-    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when unstamped."
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; seeded on a stamped tree only."
     inputBinding: {prefix: --tool-image-digest, position: 11}
 
 arguments:

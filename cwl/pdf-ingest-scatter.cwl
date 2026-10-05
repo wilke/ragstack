@@ -247,19 +247,24 @@ inputs:
   # inside the file, so neither can be known by the worker — they travel as
   # inputs and are RECORDED (manifest.provenance, the per-batch receipt), never
   # verified here. The image's own version/commit/build the worker reads from
-  # /opt/ragstack/RELEASE. A hand run omits all three and records nulls.
+  # /opt/ragstack/RELEASE. A hand run omits all three and records nulls — and
+  # so does the API on an UNSTAMPED tree: the stamp is the declaration that
+  # the named image supports the workflow (ADR-0010 decision 4), and the builds
+  # the bare name resolves to predate these flags, so nothing is seeded, the
+  # inputs stay null and the flags are omitted. Provenance begins with the
+  # first stamped release.
   workflow_id:
     type: ["null", string]
     doc: "The GoWe workflow id this submission was pinned to (binds the CWL text
-      + the image name it carries)."
+      + the image name it carries). Seeded on a stamped tree only."
   tool_image:
     type: ["null", string]
-    doc: "The tools image name the registered text's DockerRequirement names (the
-      bare default on an unstamped tree)."
+    doc: "The stamped tools image name the registered text's DockerRequirement
+      names. Seeded on a stamped tree only."
   tool_image_digest:
     type: ["null", string]
-    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null on an
-      unstamped tree."
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when
+      the receipt is absent or names another image."
   max_chunks:
     type: int
     default: 0

@@ -201,10 +201,17 @@ tenant or only for production ones (an ops decision once the build exists).
    last three the worker reads from `/opt/ragstack/RELEASE`. The digest's
    source is the **committed receipt** `cwl/tool-image.receipt.json`, which
    the stamping step (6d) writes beside the CWL it stamps and `--check`
-   holds to the stamped name (absent on an unstamped tree → `null`): offline-
-   checkable, in git next to the `dockerPull` it belongs to, and no
-   dependency on the store path step 4 introduces. A version written before
-   this reads as all-`null` ("unknown"), never as an error.
+   holds to the stamped name: offline-checkable, in git next to the
+   `dockerPull` it belongs to, and no dependency on the store path step 4
+   introduces. **On an unstamped tree the API seeds no provenance inputs;
+   provenance begins with the first stamped release** — the stamp is the
+   declaration that the image supports the workflow (decision 4), and the
+   builds the bare name resolves to today predate the tools' flags (an
+   unknown `--workflow-id` is argparse exit 2 on every task). The declared
+   `["null", string]` inputs stay null and the flags are omitted (GoWe skips
+   null inputs before any prefix; cwltool per CWL v1.2). A version written
+   before this, or on an unstamped tree, reads as all-`null` ("unknown"),
+   never as an error.
 3. **The shared store** and the first tools tag built into it (ops).
 4. **`ctl gowe render` and the boot identity check.**
 5. **The first stamped server release**: name the tools image in `cwl/`, tag,

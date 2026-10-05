@@ -195,15 +195,26 @@ def test_declared_inputs_mapping_list_and_garbage() -> None:
     assert declared_workflow_inputs("just a string") == set()
 
 
-def test_provenance_inputs_unstamped_tree(tmp_path: Path) -> None:
+def test_provenance_inputs_unstamped_tree_seeds_nothing(tmp_path: Path) -> None:
+    """THE GATE. An unstamped tree names ``ragstack-worker.sif`` — whatever
+    build a worker's ``--image-dir`` resolves it to, and the deployed builds
+    predate the flags (``--workflow-id`` → argparse exit 2 on every task). The
+    stamp is the declaration that the image supports the workflow (ADR-0010
+    decision 4), so without one nothing is seeded, the ``["null", string]``
+    inputs stay null and the flags are omitted. Even a committed receipt that
+    happens to name the default does not change that."""
     cwl_path = tmp_path / "cwl" / "wf.cwl"
     cwl_path.parent.mkdir()
     cwl_path.write_text(WF)
-    got = provenance_inputs(WF, cwl_path, "wf_abc")
-    assert got == {"workflow_id": "wf_abc", "tool_image": DEFAULT_TOOL_IMAGE,
-                   "tool_image_digest": None}
-    # No path at all (text of unknown origin): the name is still recorded.
-    assert provenance_inputs(WF, None, "wf_abc")["tool_image"] == DEFAULT_TOOL_IMAGE
+    assert tool_image_of(WF) == DEFAULT_TOOL_IMAGE
+    assert provenance_inputs(WF, cwl_path, "wf_abc") == {}
+    assert provenance_inputs(WF, None, "wf_abc") == {}
+    _write_receipt(cwl_path.parent, name=DEFAULT_TOOL_IMAGE)
+    assert provenance_inputs(WF, cwl_path, "wf_abc") == {}
+    # A mixed document (two names) or one with no image site seeds nothing either.
+    assert provenance_inputs(WF.replace("inputs:", "inputs:\n  x: string", 1)
+                             .replace("baseCommand", "x:\n        dockerPull: ragstack-tools-v1.0.0-b1.sif\n      baseCommand"),
+                             None, "wf_abc") == {}
 
 
 def test_provenance_inputs_stamped_tree_with_receipt(tmp_path: Path) -> None:
@@ -220,13 +231,15 @@ def test_provenance_inputs_stamped_tree_with_receipt(tmp_path: Path) -> None:
 
 
 def test_provenance_inputs_only_for_declared_names(tmp_path: Path) -> None:
-    """A workflow that declares none of the three (a bulk-plane CWL) gets
-    nothing seeded; one that declares a subset gets that subset."""
-    bulk = WF.replace("  workflow_id: [\"null\", string]\n", "") \
-             .replace("  tool_image: [\"null\", string]\n", "") \
-             .replace("  tool_image_digest: [\"null\", string]\n", "")
+    """On a stamped tree: a workflow that declares none of the three (a
+    bulk-plane CWL) gets nothing seeded; one that declares a subset gets
+    that subset."""
+    stamped = WF.replace("ragstack-worker.sif", NAME)
+    bulk = stamped.replace("  workflow_id: [\"null\", string]\n", "") \
+                  .replace("  tool_image: [\"null\", string]\n", "") \
+                  .replace("  tool_image_digest: [\"null\", string]\n", "")
     assert provenance_inputs(bulk, None, "wf_1") == {}
-    partial = WF.replace("  tool_image_digest: [\"null\", string]\n", "")
+    partial = stamped.replace("  tool_image_digest: [\"null\", string]\n", "")
     assert set(provenance_inputs(partial, None, "wf_1")) == {"workflow_id", "tool_image"}
 
 
@@ -275,14 +288,26 @@ async def test_gowe_backend_seeds_the_three_inputs(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_gowe_backend_unstamped_records_name_and_null_digest(tmp_path: Path) -> None:
-    client = _Client()
-    backend = GoWeBackend(client, WF, shards_input_key="pdfs", cwl_path=None,
-                          poll_interval=0, interactive_poll_interval=0)
-    await backend.run_submission([WorkItem(item_id="i1", source="ws:///u/home/a.pdf")], inputs={"version": "1"})
-    sub = client.submitted["inputs"]  # type: ignore[index]
-    assert sub["workflow_id"] == "wf_1"
-    assert sub["tool_image"] == DEFAULT_TOOL_IMAGE and sub["tool_image_digest"] is None
+async def test_gowe_backend_unstamped_submits_the_callers_inputs_unchanged(tmp_path: Path) -> None:
+    """The gate through the fake engine: an unstamped CWL → the submitted
+    inputs carry NONE of the three keys, byte-identical to the caller's plus
+    the scattered files. (A key present with a null value would still be
+    harmless — GoWe skips nulls before any prefix — but absent is the proof.)"""
+    for cwl_path in (None, tmp_path / "cwl" / "wf.cwl"):
+        if cwl_path is not None:
+            cwl_path.parent.mkdir()
+            cwl_path.write_text(WF)
+            _write_receipt(cwl_path.parent, name=DEFAULT_TOOL_IMAGE)
+        client = _Client()
+        backend = GoWeBackend(client, WF, shards_input_key="pdfs", cwl_path=cwl_path,
+                              poll_interval=0, interactive_poll_interval=0)
+        await backend.run_submission([WorkItem(item_id="i1", source="ws:///u/home/a.pdf")],
+                                     inputs={"version": "1", "collection_id": "c"})
+        sub = client.submitted["inputs"]  # type: ignore[index]
+        assert set(sub) == {"version", "collection_id", "pdfs"}
+        assert not set(sub).intersection(PROVENANCE_INPUTS)
+        assert json.dumps({k: v for k, v in sub.items() if k != "pdfs"}, sort_keys=True) == \
+            json.dumps({"version": "1", "collection_id": "c"}, sort_keys=True)
 
 
 @pytest.mark.asyncio
@@ -295,33 +320,49 @@ async def test_gowe_backend_leaves_an_undeclaring_workflow_alone() -> None:
 
 
 @pytest.mark.asyncio
-async def test_restorer_and_graph_runner_seed_too(tmp_path: Path) -> None:
-    from ragstack.graph_extract import GraphExtractRunner
-    from ragstack.restore import CollectionRestorer
+async def test_shipped_workflows_seed_only_once_stamped(tmp_path: Path) -> None:
+    """The three API-registered texts as shipped: they DECLARE the inputs, and
+    the seeding follows the tree's state — nothing on the unstamped text,
+    the full triple once the same text is stamped and its receipt committed."""
+    from ragstack.tool_image import check_tree_state, stamp_tool_image
 
-    for cls, src in ((CollectionRestorer, "restore-collection.cwl"),
-                     (GraphExtractRunner, "graph-extract.cwl")):
-        # The real shipped text, from a copied cwl/ dir carrying a receipt for
-        # the (unstamped) default name — the digest rule is the receipt's name.
-        cwl_dir = tmp_path / cls.__name__ / "cwl"
+    for src in ("pdf-ingest-scatter.cwl", "restore-collection.cwl", "graph-extract.cwl"):
+        cwl_dir = tmp_path / src.split(".")[0] / "cwl"
         cwl_dir.mkdir(parents=True)
         shutil.copy(CWL_DIR / src, cwl_dir / src)
         text = (cwl_dir / src).read_text(encoding="utf-8")
         assert set(PROVENANCE_INPUTS) <= declared_workflow_inputs(text), src
+        state = check_tree_state({src: text})[0]
         got = provenance_inputs(text, cwl_dir / src, "wf_x")
-        assert got == {"workflow_id": "wf_x", "tool_image": tool_image_of(text),
-                       "tool_image_digest": None}
-        assert got["tool_image"] is not None
+        if state == "unstamped":
+            assert got == {}, src
+            text = stamp_tool_image(text, NAME, source=src)
+            (cwl_dir / src).write_text(text, encoding="utf-8")
+        else:
+            pytest.skip("shipped tree is stamped; the unstamped half is moot")
+        assert provenance_inputs(text, cwl_dir / src, "wf_x") == {
+            "workflow_id": "wf_x", "tool_image": NAME, "tool_image_digest": None}, src
+        _write_receipt(cwl_dir)
+        assert provenance_inputs(text, cwl_dir / src, "wf_x") == {
+            "workflow_id": "wf_x", "tool_image": NAME, "tool_image_digest": DIGEST}, src
 
 
 @pytest.mark.asyncio
-async def test_restorer_submits_workflow_id_it_registered(tmp_path: Path) -> None:
-    """The restorer's own submit path: the registered id lands on the inputs."""
+@pytest.mark.parametrize("stamped", [False, True], ids=["unstamped", "stamped"])
+async def test_restorer_submits_provenance_only_when_stamped(tmp_path: Path, stamped: bool) -> None:
+    """The restorer's own submit path: on the shipped (unstamped) text the
+    inputs are exactly ``inputs_for``'s; stamped, the registered id lands on
+    them with the name and the committed digest."""
     from ragstack.restore import CollectionRestorer
+    from ragstack.tool_image import stamp_tool_image
 
     cwl_dir = tmp_path / "cwl"
     cwl_dir.mkdir()
-    shutil.copy(CWL_DIR / "restore-collection.cwl", cwl_dir / "restore-collection.cwl")
+    text = (CWL_DIR / "restore-collection.cwl").read_text(encoding="utf-8")
+    if stamped:
+        text = stamp_tool_image(text, NAME)
+        _write_receipt(cwl_dir)
+    (cwl_dir / "restore-collection.cwl").write_text(text, encoding="utf-8")
     client = _Client()
 
     class _WS:
@@ -348,8 +389,12 @@ async def test_restorer_submits_workflow_id_it_registered(tmp_path: Path) -> Non
         if client.submitted is None:
             raise AssertionError(f"nothing submitted: {e!r}") from e
     sub = client.submitted["inputs"]  # type: ignore[index]
-    assert sub["workflow_id"] == "wf_1" and sub["tool_image"] == DEFAULT_TOOL_IMAGE
-    assert sub["tool_image_digest"] is None and sub["collection_id"] == "c"
+    expected = restorer.inputs_for(rec, [(1, "ws:///u/home/.ragstack/collections/c/versions/1")])  # type: ignore[arg-type]
+    if stamped:
+        expected.update({"workflow_id": "wf_1", "tool_image": NAME, "tool_image_digest": DIGEST})
+    else:
+        assert not set(sub).intersection(PROVENANCE_INPUTS)
+    assert sub == expected and sub["collection_id"] == "c"
 
 
 # --------------------------------------------------------------------------- #
