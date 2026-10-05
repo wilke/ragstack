@@ -37,10 +37,14 @@ tool + receipts).
 
 ### Containerized runtime (#135)
 
-Every step now runs inside the **`ragstack-worker` image** (`apptainer/ragstack-worker.def`
-→ `apptainer/images/ragstack-worker.sif`; parallel `apptainer/Dockerfile` for
-Docker hosts) via `DockerRequirement` (both `dockerPull:` **and**
-`dockerImageId: ragstack-worker.sif` — see the gotcha below). The
+Every step now runs inside the **tools image** (`apptainer/ragstack-tools.def`
+→ `apptainer/images/ragstack-tools-<version>-b<N>.sif`, built by
+`apptainer/build-tools-image.sh`; parallel `apptainer/Dockerfile` for Docker
+hosts; see `apptainer/README.md` for version vs build, labels and the receipt)
+via `DockerRequirement` (both `dockerPull:` **and** `dockerImageId:` — see the
+gotcha below). On `main` the CWL still names the image by the bare
+`ragstack-worker.sif`, which each worker's `--image-dir` symlink resolves; a
+release stamps the versioned name and digest in (ADR-0010). The
 `ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
 the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
 at `/opt/ragstack/scripts`. This **replaces the old
@@ -51,9 +55,11 @@ host env.
 Build + run:
 
 ```bash
-apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
-apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
-# cwltool: --singularity resolves the SIF by filename from CWL_SINGULARITY_CACHE.
+apptainer/build-tools-image.sh          # derives the version, labels, verifies, writes the receipt
+# (hosts without --fakeroot: apptainer/build-tools-image.sh --sandbox)
+# cwltool: --singularity resolves the SIF by filename from CWL_SINGULARITY_CACHE
+# — the file named by dockerImageId, so on an unstamped checkout symlink
+# ragstack-worker.sif -> ragstack-tools-<version>-b<N>.sif in that directory.
 # APPTAINER_BIND/HF_HOME bind the tokenizer cache; steps reach the fleet via NetworkAccess.
 CWL_SINGULARITY_CACHE=apptainer/images APPTAINER_BIND=/rag/cache HF_HOME=/rag/cache \
   cwltool --singularity cwl/pdf-ingest.cwl cwl/pdf-ingest.inputs.yml
@@ -74,11 +80,11 @@ hosts — building the SIF directly from the `.def` fails without it.
 After every rebuild, run these against the new SIF before trusting it:
 
 ```bash
-apptainer exec apptainer/images/ragstack-worker.sif \
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
     python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers; print('ok')"
-apptainer exec apptainer/images/ragstack-worker.sif \
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
     python /opt/ragstack/scripts/load_graph.py --help
-apptainer exec apptainer/images/ragstack-worker.sif \
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
     python /opt/ragstack/scripts/extract_graph.py --help
 # Mandatory, in addition to --help: --help never constructs Neo4jGraphStore,
 # so it does not exercise the `neo4j` driver import at all. `load_graph.py`
@@ -87,7 +93,7 @@ apptainer exec apptainer/images/ragstack-worker.sif \
 # ModuleNotFoundError the moment they actually run (#404) -- extract_graph.py
 # (the "extract" leg) does NOT need the driver, it only writes the extraction
 # delta, but the check below is cheap enough to run unconditionally anyway.
-apptainer exec apptainer/images/ragstack-worker.sif python -c "import neo4j"
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif python -c "import neo4j"
 ```
 
 `--help` alone is not a runnable check for `load_graph.py` -- it never
@@ -139,9 +145,11 @@ used `/scout/containers/ragstack-worker.sif`. `CWL_SINGULARITY_CACHE` is a
 **cwltool-only** variable — it has no effect on GoWe workers.
 
 ```bash
-# after rebuilding, refresh the worker-visible copy — ONE PER IMAGE DIR
-cp apptainer/images/ragstack-worker.sif /scout/containers/ragstack-worker.sif
-cp apptainer/images/ragstack-worker.sif /scout/containers/ragstack-hackathon/ragstack-worker.sif
+# after rebuilding, install the build under its own name and repoint the bare
+# name the unstamped CWL resolves — ONE PER IMAGE DIR (the bare name is the
+# runtime symlink today's deployment uses; it goes away once the CWL is stamped)
+cp apptainer/images/ragstack-tools-<version>-b<N>.sif /scout/containers/
+ln -sfn ragstack-tools-<version>-b<N>.sif /scout/containers/ragstack-worker.sif
 ```
 
 Because the name is bare, `--image-dir` is also the **only** way to give one
@@ -414,7 +422,7 @@ cache in a fresh process: `import transformers` ≈ 1.0 s + `from_pretrained` �
 a cold cache downloads it. That is paid **once per task**, so batching turns
 ~1.5 s per PDF into ~0.07 s per PDF at `batch_size: 20`. The worker image sets
 `HF_HOME=/rag/cache` and does **not** bake the tokenizer in
-(`apptainer/ragstack-worker.def`), so the GoWe worker must bind that cache root
+(`apptainer/ragstack-tools.def`), so the GoWe worker must bind that cache root
 into the container — `gowe-worker … --extra-bind <cache root>` — or every task
 re-downloads (or fails offline). `gowe:Execution` has no bind field, so this is a
 worker-side requirement: route ingest to a worker group started with the bind.
@@ -574,8 +582,8 @@ them:
   even wired through `ingest-bulk.cwl`.) Input/output files must live under the
   server's `--upload-download-dirs`.
 
-- **(B, DELIVERED #135) A ragstack-provisioned worker SIF.** `apptainer/ragstack-worker.def`
-  → `apptainer/images/ragstack-worker.sif`, referenced via `DockerRequirement`
+- **(B, DELIVERED #135) A ragstack-provisioned tools SIF.** `apptainer/ragstack-tools.def`
+  → `apptainer/images/ragstack-tools-<version>-b<N>.sif`, referenced via `DockerRequirement`
   (`dockerPull:` + `dockerImageId:` — see the gotcha above)
   (`gowe:Execution.docker_image` on GoWe) — the reproducible/portable production
   path (multi-host). CPU-only (**no torch**: the steps call the embedding fleet
