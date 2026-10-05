@@ -20,7 +20,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0007](0007-tenant-control-plane.md) | Tenant control plane: `ragstack-ctl` owns tenant lifecycle, credentials, gateway and supervision | Proposed |
 | [0008](0008-prompt-templates.md) | Generation is configurable, not arbitrary: named server-side prompt templates | Proposed |
 | [0009](0009-registry-selection-for-bulk-workers.md) | Which collection registry a bulk worker resolves against: a NAME on the submission, the DSN in the worker's secret file | Proposed |
-| [0010](0010-tool-image-binding.md) | A tool is bound to its image at release time: versioned `dockerPull` in git, one image store, repo version (`v1.6.4` / `v1.6.4+<sha>`) distinct from image build (`ragstack-tools-<version>-b<N>.sif`, identity in labels + digest), `GOWE_TOOL_IMAGE` retired, provenance on every collection version | Proposed |
+| [0010](0010-tool-image-binding.md) | Three artifacts, each a build of a tag — tools image, server, workflow (GoWe id = text + image name); release order is linear; identity in labels + receipt; no image override |  Proposed |
 
 ## Conventions
 
