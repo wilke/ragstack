@@ -13,7 +13,7 @@ Neither is the other, and they are named separately.
 
 | Thing | Spelling | Where it comes from |
 |---|---|---|
-| repo version | `v1.6.4` on a release tag; `v1.6.4+a2be96f` past one (dev on `main`) | `python -m ragstack.version` — the only `git describe` in the repo (`ragstack/version.py`). A **dirty tree has no version**: the derivation refuses. |
+| repo version | `v1.6.4` on a release tag; `v1.6.4+a2be96f` past one (dev on `main`) | `python -m ragstack.version` — the only derivation of the repo version (other tools run `git describe` for their own stamps — the ctl binary, the docs build, host facts — never to produce it) (`ragstack/version.py`). A **dirty tree has no version**: the derivation refuses. |
 | `ragstack.__version__` | the same version as PEP 440: `1.6.4`, `1.6.4+a2be96f` | lazily, from the checkout; inside the image from the generated `ragstack/_release.py`; else the distribution version |
 | image build | `ragstack-tools-<version>-b<N>.sif`, e.g. `ragstack-tools-v1.6.4-b1.sif`, `ragstack-tools-v1.6.4+a2be96f-b1.sif` | `build-tools-image.sh`; `N` is the next free build number for that version in `--out` |
 
