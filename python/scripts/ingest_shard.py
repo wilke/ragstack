@@ -56,6 +56,7 @@ from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import ExtractReport, run_shard
 from ragstack.ops import ingest_target
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.qdrant import QdrantVectorStore
@@ -238,6 +239,10 @@ async def amain(args, target=None) -> int:
                 bridge.close()
             except Exception as e:  # pragma: no cover - defensive
                 print(f"[ingest_shard] embed bridge close failed: {e!r}", flush=True)
+    # ADR-0010 decision 8: the receipt says which workflow and which tools
+    # image produced it — the submission inputs the API seeded plus this
+    # image's own RELEASE file (all null on a hand run outside an image).
+    receipt.provenance = provenance_from_args(args)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
@@ -353,6 +358,7 @@ def parse_args(argv=None):
                         "guard for this store; skipped if neither is set")
     add_doi_enrichment_args(p)
     ingest_target.add_arguments(p)
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 

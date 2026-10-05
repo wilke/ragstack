@@ -191,7 +191,20 @@ tenant or only for production ones (an ops decision once the build exists).
    `stamp_tool_image.py`, the unstamped-or-stamped tree test, `GOWE_TOOL_IMAGE`
    refused at boot. `dockerPull: ragstack-worker.sif` stays on `main` until the
    first stamped server release.
-2. **Provenance fields** in manifest and receipt (additive).
+2. **Provenance fields** in manifest and receipt (additive). Shipped as
+   `manifest.provenance` / `ShardReceipt.provenance` /
+   `graph_extraction.provenance` / the replay summary's `provenance`:
+   `{workflow_id, tool_image, tool_image_digest, image_version, image_commit,
+   image_build}`. The first three are **submission inputs** seeded by the
+   three registrars between `register_workflow` and `submit` — the `wf_` id
+   exists only then, and a file's sha256 cannot live inside the file — the
+   last three the worker reads from `/opt/ragstack/RELEASE`. The digest's
+   source is the **committed receipt** `cwl/tool-image.receipt.json`, which
+   the stamping step (6d) writes beside the CWL it stamps and `--check`
+   holds to the stamped name (absent on an unstamped tree → `null`): offline-
+   checkable, in git next to the `dockerPull` it belongs to, and no
+   dependency on the store path step 4 introduces. A version written before
+   this reads as all-`null` ("unknown"), never as an error.
 3. **The shared store** and the first tools tag built into it (ops).
 4. **`ctl gowe render` and the boot identity check.**
 5. **The first stamped server release**: name the tools image in `cwl/`, tag,

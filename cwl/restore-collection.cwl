@@ -94,6 +94,20 @@ inputs:
     doc: "Skip the per-write text-index refresh during the replay (one refresh
       at the end). Nothing searches a collection while it is `restoring`, so
       the default is the fast path."
+  # Provenance (ADR-0010 decision 8, #655 step 2): seeded by the API between
+  # registration and submission (CollectionRestorer._submit). A restore writes
+  # no version, so they are RECORDED in the load summary (`provenance`), next
+  # to each replayed version's own manifest provenance. See
+  # pdf-ingest-scatter.cwl for why these are inputs.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to."
+  tool_image:
+    type: ["null", string]
+    doc: "The tools image name the registered text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when unstamped."
 
 steps:
   replay:
@@ -107,6 +121,9 @@ steps:
       es_url: es_url
       backpressure: backpressure
       bulk_refresh: bulk_refresh
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -163,6 +180,16 @@ steps:
           inputBinding:
             prefix: --registry
             position: 10
+        # Provenance (ADR-0010 decision 8): the load summary's `provenance`.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 11}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 12}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 13}
       arguments:
         - {position: 8, prefix: --fail-on-error}
         - position: 9

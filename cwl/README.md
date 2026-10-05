@@ -44,9 +44,17 @@ hosts; see `apptainer/README.md` for version vs build, labels and the receipt)
 via `DockerRequirement` (both `dockerPull:` **and** `dockerImageId:` — see the
 gotcha below). On `main` the CWL still names the image by the bare
 `ragstack-worker.sif`, which each worker's `--image-dir` symlink resolves; a
-release stamps the versioned name into both (ADR-0010) — the digest is never
-written into the CWL; it lives in the receipt beside the image and in the
-image's labels. The
+release stamps the versioned name in and commits the image's receipt beside
+the CWL as `cwl/tool-image.receipt.json` (ADR-0010; `--check` refuses a stale
+one). **Provenance** (decision 8, #655 step 2): the API-registered workflows
+(`pdf-ingest-scatter`, `graph-extract`, `restore-collection`) declare three
+optional inputs — `workflow_id`, `tool_image`, `tool_image_digest` — that the
+API seeds *between registration and submission* (the `wf_` id exists only
+then; the digest comes from the committed receipt, `null` when unstamped) and
+the pack / ingest / extract / replay tools RECORD together with their own
+image's `/opt/ragstack/RELEASE` as `manifest.provenance`, the receipt's
+`provenance`, `graph_extraction.provenance` and the load summary's
+`provenance`. Nothing verifies them here; the identity check is step 4. The
 `ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
 the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
 at `/opt/ragstack/scripts`. This **replaces the old

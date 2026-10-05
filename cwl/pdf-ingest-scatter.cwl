@@ -241,6 +241,25 @@ inputs:
   job_id:
     type: ["null", string]
     doc: "The RAGStack ingest job id, recorded in the manifest."
+  # Provenance (ADR-0010 decision 8, #655 step 2). Seeded by the API BETWEEN
+  # registration and submission (GoWeBackend.run_submission): the `wf_` id
+  # exists only once the text is registered, and a file's sha256 cannot live
+  # inside the file, so neither can be known by the worker — they travel as
+  # inputs and are RECORDED (manifest.provenance, the per-batch receipt), never
+  # verified here. The image's own version/commit/build the worker reads from
+  # /opt/ragstack/RELEASE. A hand run omits all three and records nulls.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to (binds the CWL text
+      + the image name it carries)."
+  tool_image:
+    type: ["null", string]
+    doc: "The tools image name the registered text's DockerRequirement names (the
+      bare default on an unstamped tree)."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null on an
+      unstamped tree."
   max_chunks:
     type: int
     default: 0
@@ -375,6 +394,9 @@ steps:
       doi_enrichment: doi_enrichment
       doi_mailto: doi_mailto
       doi_cache_dir: doi_cache_dir
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -447,6 +469,16 @@ steps:
         doi_cache_dir:
           type: ["null", string]
           inputBinding: {prefix: --doi-cache-dir, position: 23}
+        # Provenance (ADR-0010 decision 8): recorded on the receipt, not checked.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 24}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 25}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 26}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
@@ -477,6 +509,9 @@ steps:
       tenant: tenant
       spec_hash: spec_hash
       job_id: job_id
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [archive]
     # INLINED copy of cwl/archive-collection.cwl — keep in sync.
     run:
@@ -498,6 +533,16 @@ steps:
         job_id:
           type: ["null", string]
           inputBinding: {prefix: --job-id, position: 7}
+        # Provenance (ADR-0010 decision 8): manifest.provenance.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 9}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 10}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 11}
       arguments:
         - {position: 8, prefix: --out, valueFrom: "."}
       outputs:

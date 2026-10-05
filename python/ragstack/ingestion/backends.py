@@ -208,4 +208,7 @@ def _make_gowe_backend(
         timeout=settings.gowe_timeout,
         output_wait_timeout=float(getattr(settings, "gowe_output_wait_timeout", 600.0) or 600.0),
         workspace=workspace,
+        # The committed tool-image receipt is looked up beside the CWL file
+        # (ADR-0010 decision 8): cwl/tool-image.receipt.json on a stamped tree.
+        cwl_path=cwl_path,
     )

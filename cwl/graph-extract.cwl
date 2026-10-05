@@ -109,6 +109,20 @@ inputs:
       deployment host. The API seeds it per run; a hand-run must name it."
   job_id:
     type: ["null", string]
+  # Provenance (ADR-0010 decision 8, #655 step 2): seeded by the API between
+  # registration and submission (GraphExtractRunner.submit) and RECORDED by
+  # the extract step under the manifest's `graph_extraction.provenance` — the
+  # chunk version's own top-level `provenance` (the ingest that built it) is
+  # left untouched. See pdf-ingest-scatter.cwl for why these are inputs.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to."
+  tool_image:
+    type: ["null", string]
+    doc: "The tools image name the registered text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when unstamped."
 
 steps:
   extract:
@@ -126,6 +140,9 @@ steps:
       max_triples_per_chunk: max_triples_per_chunk
       max_failed_fraction: max_failed_fraction
       job_id: job_id
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [archive, summary]
     run:
       class: CommandLineTool
@@ -178,6 +195,16 @@ steps:
           inputBinding: {prefix: --max-failed-fraction, position: 11}
         job_id:
           type: ["null", string]
+        # Provenance (ADR-0010 decision 8): graph_extraction.provenance.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 14}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 15}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 16}
       arguments:
         - {position: 12, prefix: --out, valueFrom: "."}
         - {position: 13, prefix: --summary, valueFrom: extract-graph-summary.json}

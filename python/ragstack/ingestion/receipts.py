@@ -89,6 +89,14 @@ class ShardReceipt:
     # coupled ingest_shard path (which upserts directly).
     embedding_file: str = ""
     error: str = ""
+    # ADR-0010 decision 8 (#655 step 2): which GoWe workflow and which tools
+    # image produced this receipt — the object ``ragstack.provenance.
+    # tool_provenance`` builds (workflow_id / tool_image / tool_image_digest
+    # from the submission inputs, image_version / image_commit / image_build
+    # from the worker's own RELEASE file). ``None`` on a receipt written
+    # before step 2 or by a hand-run tool given no inputs; readers normalise
+    # it with ``ragstack.provenance.read_provenance``.
+    provenance: dict | None = None
 
     def to_json(self) -> str:
         # Deterministic (sorted, no timestamp) so a re-run against an unchanged
@@ -123,6 +131,8 @@ class ShardReceipt:
             n_docs_failed=int(d.get("n_docs_failed", 0)),
             embedding_file=d.get("embedding_file", ""),
             error=d.get("error", ""),
+            provenance=(dict(d["provenance"]) if isinstance(d.get("provenance"), dict)
+                        else None),
         )
 
     @classmethod

@@ -76,6 +76,7 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import merge_summary
 from ragstack.ops import ingest_target
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.backpressure import BackpressuredVectorStore
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
@@ -243,6 +244,9 @@ async def _replay(args, target) -> int:
         if pipeline.graph_store is not None and hasattr(pipeline.graph_store, "close"):
             await pipeline.graph_store.close()
     out = summary.as_dict()
+    # ADR-0010 decision 8: a restore writes no version, so its load summary is
+    # where "which workflow / image replayed this" is recorded.
+    out["provenance"] = provenance_from_args(args)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, sort_keys=True)
     print(f"replayed {summary.n_versions} version(s): {summary.n_chunks} chunk(s) upserted, "
@@ -477,6 +481,7 @@ def parse_args(argv=None):
                         "$COLLECTION_MANIFEST_DIR). Arms ADR-0002's build-spec "
                         "guard for this store; skipped if neither is set")
     ingest_target.add_arguments(p)
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 

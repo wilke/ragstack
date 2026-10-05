@@ -123,6 +123,18 @@ inputs:
   job_id:
     type: ["null", string]
     doc: "The RAGStack ingest job id, recorded in the manifest."
+  # Provenance (ADR-0010 decision 8, #655 step 2) — see pdf-ingest-scatter.cwl.
+  # This hand-run shape is not API-registered; the inputs exist so the inlined
+  # pack tool stays in sync with cwl/archive-collection.cwl (a hand run records nulls).
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id the submission was pinned to."
+  tool_image:
+    type: ["null", string]
+    doc: "The tools image name the registered text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when unstamped."
   doi_enrichment:
     type: boolean
     default: false
@@ -309,6 +321,9 @@ steps:
       tenant: tenant
       spec_hash: spec_hash
       job_id: job_id
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [archive]
     # INLINED copy of cwl/archive-collection.cwl — keep in sync. The one
     # deliberate difference: `receipt` is a single File here (load emits one
@@ -332,6 +347,16 @@ steps:
         job_id:
           type: ["null", string]
           inputBinding: {prefix: --job-id, position: 7}
+        # Provenance (ADR-0010 decision 8): manifest.provenance.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 9}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 10}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 11}
       arguments:
         - {position: 8, prefix: --out, valueFrom: "."}
       outputs:

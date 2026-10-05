@@ -38,10 +38,27 @@ Engine facts the shapes below encode (GoWe session, 2026-10-04, on #655):
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
+from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
+
+#: The committed copy of a built image's receipt (ADR-0010 decision 8, #655
+#: step 2), written by ``stamp_tool_image.py`` beside the CWL it stamped:
+#: ``cwl/tool-image.receipt.json``. A file's sha256 cannot live inside the
+#: file, so the digest the API records on every submission comes from here —
+#: offline-checkable, in git next to the ``dockerPull`` it belongs to. Absent on
+#: an unstamped tree; ``--check`` refuses a stale one.
+RECEIPT_BASENAME = "tool-image.receipt.json"
+
+#: The three per-submission provenance inputs (ADR-0010 decision 8) the API
+#: seeds between registration and submission, and the worker's pack step
+#: writes into ``manifest.json``/the receipt.
+PROVENANCE_INPUTS = ("workflow_id", "tool_image", "tool_image_digest")
 
 #: The unstamped name every shipped CWL carries on ``main``: GoWe joins it onto
 #: the worker's ``--image-dir``, where a per-group symlink resolves it to some
@@ -346,3 +363,110 @@ def check_tree_state(docs: dict[str, str]) -> tuple[str, str | None, list[str]]:
         for where in pulls[v]:
             problems.append(f"{where}: dockerPull {v!r} (unstamped)")
     return ("mixed", None, problems)
+
+
+# --------------------------------------------------------------------------- #
+# Provenance (ADR-0010 decision 8, #655 step 2): what the API seeds per submission
+# --------------------------------------------------------------------------- #
+
+
+def tool_image_of(cwl: str) -> str | None:
+    """The ONE image name a CWL document's ``dockerPull`` sites carry, or
+    ``None`` when the document names no image or names more than one (a
+    mixed document is a release that cannot be cut — see
+    :func:`check_tree_state`; the provenance record must not pick one)."""
+    names = {value for _n, field, value in image_sites(cwl) if field == "dockerPull"}
+    if len(names) != 1:
+        if names:
+            log.warning("tool image: document names %d distinct images %s; recording none",
+                        len(names), sorted(names))
+        return None
+    return names.pop()
+
+
+def read_committed_receipt(cwl_dir: str | Path) -> dict[str, Any] | None:
+    """``<cwl_dir>/tool-image.receipt.json`` as a dict, or ``None`` when absent
+    or unreadable (logged). Never raises: a missing receipt is the normal
+    state of an unstamped tree and means ``tool_image_digest: null``."""
+    path = Path(cwl_dir) / RECEIPT_BASENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        log.warning("tool image: committed receipt %s unreadable: %s", path, e)
+        return None
+    if not isinstance(data, dict):
+        log.warning("tool image: committed receipt %s is not a JSON object", path)
+        return None
+    return data
+
+
+def tool_image_digest_for(name: str | None, receipt: dict[str, Any] | None) -> str | None:
+    """The receipt's sha256 — but only when the receipt names ``name``. A
+    receipt left behind from an earlier stamping must not lend its digest to
+    an image the CWL no longer names, so a mismatch is ``None`` (and a
+    warning), as is a malformed digest."""
+    if not name or not receipt:
+        return None
+    if str(receipt.get("name") or "") != name:
+        log.warning("tool image: committed receipt names %r but the CWL names %r; "
+                    "recording no digest", receipt.get("name"), name)
+        return None
+    sha = str(receipt.get("sha256") or "")
+    if SHA256_RE.match(sha) is None:
+        log.warning("tool image: committed receipt for %s has no 64-hex sha256; "
+                    "recording no digest", name)
+        return None
+    return sha
+
+
+def declared_workflow_inputs(cwl: str) -> set[str]:
+    """The names a CWL ``Workflow`` declares under its top-level ``inputs``
+    (mapping or list form). Empty when the text does not parse as YAML or is
+    not a workflow — a provenance input must never be sent to a workflow that
+    does not declare it (a bulk-plane CWL, or a hand-written one)."""
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - pyyaml is a runtime dependency
+        log.warning("tool image: PyYAML missing; cannot read declared workflow inputs")
+        return set()
+    try:
+        doc = yaml.safe_load(cwl)
+    except yaml.YAMLError as e:
+        log.warning("tool image: workflow text is not YAML (%s); seeding no provenance inputs", e)
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+    inputs = doc.get("inputs")
+    if isinstance(inputs, dict):
+        return {str(k) for k in inputs}
+    if isinstance(inputs, list):
+        return {str(i.get("id")) for i in inputs if isinstance(i, dict) and i.get("id")}
+    return set()
+
+
+def provenance_inputs(
+    cwl: str, cwl_path: str | os.PathLike[str] | None, workflow_id: str,
+) -> dict[str, str | None]:
+    """The provenance inputs to seed on a submission of ``cwl`` registered as
+    ``workflow_id``: ``{workflow_id, tool_image, tool_image_digest}``,
+    restricted to the names the workflow declares. ``tool_image`` is the one
+    ``dockerPull`` of the registered text (the bare default on an unstamped
+    tree); the digest comes from the committed receipt beside ``cwl_path``
+    and is ``None`` when there is none or it names a different image.
+
+    These are *inputs* because the worker cannot learn them any other way: it
+    can read its own image's ``RELEASE`` file, but not the file's digest, and
+    the ``wf_`` id exists only once the API has registered the text."""
+    declared = declared_workflow_inputs(cwl)
+    if not declared.intersection(PROVENANCE_INPUTS):
+        return {}
+    name = tool_image_of(cwl)
+    receipt = read_committed_receipt(Path(cwl_path).parent) if cwl_path else None
+    values: dict[str, str | None] = {
+        "workflow_id": workflow_id or None,
+        "tool_image": name,
+        "tool_image_digest": tool_image_digest_for(name, receipt),
+    }
+    return {k: v for k, v in values.items() if k in declared}

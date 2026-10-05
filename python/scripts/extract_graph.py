@@ -60,6 +60,7 @@ from ragstack.graph.extract_version import (
 )
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.archive import ArchiveError
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 #: Exit code for a refused archive — the replay loader's, so an operator
 #: learns one code (restore.REFUSED_EXIT_CODE).
@@ -136,6 +137,7 @@ def parse_args(argv=None):
                    help="parent directory for the <N>/ delta (default: cwd)")
     p.add_argument("--summary", default="extract-graph-summary.json",
                    help="where to write the run summary (outside the delta directory)")
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 
@@ -179,7 +181,8 @@ async def amain(args) -> int:
             vdir, extractor, out_dir=out_dir, concurrency=args.concurrency,
             collection_id=args.collection_id, spec_hash=args.spec_hash,
             max_triples=args.max_triples, max_failed_fraction=args.max_failed_fraction,
-            extractor_name=name, log=lambda msg: print(msg, flush=True),
+            extractor_name=name, provenance=provenance_from_args(args),
+            log=lambda msg: print(msg, flush=True),
         )
     except ExtractRefused as e:
         print(str(e), file=sys.stderr, flush=True)

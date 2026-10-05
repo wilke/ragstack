@@ -76,6 +76,21 @@ inputs:
     type: ["null", string]
     doc: "The RAGStack ingest job id this version came from."
     inputBinding: {prefix: --job-id, position: 7}
+  # Provenance (ADR-0010 decision 8, #655 step 2): recorded as
+  # manifest.provenance together with the image's own RELEASE identity.
+  # Seeded by the API on the submission; a hand run omits them (nulls).
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id the submission was pinned to."
+    inputBinding: {prefix: --workflow-id, position: 9}
+  tool_image:
+    type: ["null", string]
+    doc: "The tools image name the registered text's DockerRequirement names."
+    inputBinding: {prefix: --tool-image, position: 10}
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when unstamped."
+    inputBinding: {prefix: --tool-image-digest, position: 11}
 
 arguments:
   - {position: 8, prefix: --out, valueFrom: "."}
