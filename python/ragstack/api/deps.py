@@ -1466,6 +1466,99 @@ def _refuse_retired_tool_image_override() -> None:
         )
 
 
+def _registered_cwl_paths() -> list[tuple[str, str]]:
+    """``(setting name, path)`` for the three CWL documents this API registers
+    with GoWe — the ingest scatter, graph-extract and restore workflows —
+    with the two repo-copy defaults resolved the way their runners do."""
+    from ragstack.graph_extract import DEFAULT_CWL as GRAPH_DEFAULT
+    from ragstack.restore import DEFAULT_CWL as RESTORE_DEFAULT
+
+    return [
+        ("GOWE_WORKFLOW_CWL", settings.gowe_workflow_cwl or ""),
+        ("GRAPH_EXTRACT_CWL", settings.graph_extract_cwl or str(GRAPH_DEFAULT)),
+        ("COLLECTION_RESTORE_CWL", settings.collection_restore_cwl or str(RESTORE_DEFAULT)),
+    ]
+
+
+def _verify_tool_images_at_boot() -> None:
+    """The identity check (ADR-0010 decision 7, #655 step 4), at boot.
+
+    GoWe resolves a ``dockerPull`` as ``<image-dir>/<name>`` at task time and
+    never checks ``dockerImageId``, so this is the ONLY place the image behind
+    a stamped name is held to the build the release stamped. For every CWL
+    this API registers: a stamped name is looked up in ``GOWE_IMAGE_DIRS`` and
+    verified against the receipt beside it (sha256, labels) and the committed
+    ``cwl/tool-image.receipt.json``; any problem REFUSES the boot, naming the
+    image, the path tried and each finding. An unstamped tree (the bare
+    ``ragstack-worker.sif``) has nothing to verify and says so at info. With
+    ``GOWE_IMAGE_DIRS`` unset the host cannot see a store, and the ADR refuses
+    only where it can: one WARNING naming the setting. Only when
+    ``INGEST_BACKEND=gowe`` — a local backend registers nothing.
+    """
+    from ragstack.tool_image import (
+        DEFAULT_TOOL_IMAGE,
+        parse_image_dirs,
+        read_committed_receipt,
+        tool_image_of,
+        verify_named_image,
+    )
+
+    if (settings.ingest_backend or "local").lower() != "gowe":
+        return
+    dirs = parse_image_dirs(settings.gowe_image_dirs)
+    verdicts: dict[str, Any] = {}
+    failures: list[str] = []
+    for setting_name, path in _registered_cwl_paths():
+        if not path:
+            continue  # make_ingest_backend refuses a missing GOWE_WORKFLOW_CWL itself
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except OSError as e:
+            # The registrar that owns the path refuses (ingest) or 503s
+            # (graph/restore) on its own; the identity check has no text to read.
+            log.warning("tool image check: %s=%r unreadable (%s); skipped", setting_name, path, e)
+            continue
+        name = tool_image_of(text)
+        if name is None:
+            log.warning("tool image check: %s=%r names no single image; skipped", setting_name, path)
+            continue
+        if name == DEFAULT_TOOL_IMAGE:
+            log.info("tool image check: %s names %s — unstamped tree, identity check skipped",
+                     setting_name, name)
+            continue
+        if not dirs:
+            log.warning(
+                "tool image check: %s names stamped image %s but GOWE_IMAGE_DIRS is unset, so "
+                "this host cannot see the image store and the identity check is NOT run. Set "
+                "GOWE_IMAGE_DIRS to the dir(s) the worker group resolves --image-dir against, "
+                "or verify from a host that can: ragstack-ctl gowe render <tenant>",
+                setting_name, name,
+            )
+            continue
+        committed = read_committed_receipt(Path(path).expanduser().parent)
+        verdict = verdicts.get(name)
+        if verdict is None:
+            verdict = verify_named_image(name, dirs, committed_receipt=committed)
+            verdicts[name] = verdict
+        for w in verdict.warnings:
+            log.warning("tool image check: %s: %s", name, w)
+        if verdict.problems:
+            failures.append(f"{setting_name}={path}\n" + verdict.summary())
+        else:
+            log.info("tool image check: %s (%s) verified at %s: sha256 ok, labels %s",
+                     name, setting_name, verdict.path,
+                     "ok" if verdict.labels_ok else "not checked")
+    if failures:
+        raise RuntimeError(
+            "tool image identity check FAILED (ADR-0010 decision 7, #655): the image a "
+            "registered workflow names is not the build its receipt describes, so the engine "
+            "would run unverified bytes under a stamped name. Refusing to boot.\n"
+            + "\n".join(failures)
+            + "\nFix the store (copy the image AND its receipt from the build), or check out "
+            "the release whose CWL names the image that is there."
+        )
+
+
 def _validate_production_settings() -> None:
     """Refuse to start in production without the security-critical settings.
 
@@ -1484,6 +1577,7 @@ def _validate_production_settings() -> None:
     # image that cannot run it. Loud, immediate, and before any traffic.
     parse_unsupported_methods(settings.ingest_worker_unsupported_methods)
     _refuse_retired_tool_image_override()
+    _verify_tool_images_at_boot()
     _warn_on_doi_enrichment_settings()
     if not settings.require_durable_backends:
         return

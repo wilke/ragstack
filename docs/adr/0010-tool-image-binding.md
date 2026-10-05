@@ -213,7 +213,21 @@ tenant or only for production ones (an ops decision once the build exists).
    before this, or on an unstamped tree, reads as all-`null` ("unknown"),
    never as an error.
 3. **The shared store** and the first tools tag built into it (ops).
-4. **`ctl gowe render` and the boot identity check.**
+4. **`ctl gowe render` and the boot identity check.** Shipped: one
+   implementation, `ragstack.tool_image.verify_named_image` (exists in the
+   store dirs, receipt beside the image, streamed sha256 == receipt,
+   `apptainer inspect --labels` == receipt, committed
+   `cwl/tool-image.receipt.json` == the store's receipt), exposed as
+   `python -m ragstack.tool_image verify`. The API runs it at boot for the
+   three registered CWLs when `INGEST_BACKEND=gowe` and **refuses** on any
+   problem; the store dirs come from the new `GOWE_IMAGE_DIRS` setting
+   (unset = the host cannot see a store → one warning, per decision 7's
+   "wherever the API host can see the store"). The bare default name is
+   `unstamped`: nothing to verify. `ragstack-ctl gowe render <tenant>` shells
+   to the same Python check from the tenant's checkout and venv and prints
+   each workflow's text sha256 (what GoWe content-hashes), its `dockerPull`
+   and the verdict (`--json` for the records); runbook:
+   `docs/runbooks/verifying-tools-image.md`.
 5. **The first stamped server release**: name the tools image in `cwl/`, tag,
    deploy; then remove #642's substitution code and retire per-group image
    directories when no tenant depends on them.

@@ -541,6 +541,15 @@ class Settings(BaseSettings):
     # MUST match the served collection or ingest writes where the API can't read.
     gowe_workflow_inputs_json: str = "{}"
     gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
+    # The image store(s) the tenant's worker group resolves `--image-dir`
+    # against — the shared release store (/scout/containers/ragstack) and/or
+    # the group's own dir — comma-separated, first hit wins. The boot identity
+    # check (ADR-0010 decision 7, #655 step 4) looks up every stamped
+    # `dockerPull` the API registers here and REFUSES to boot on a mismatch
+    # with the receipt beside the image (sha256, labels, committed receipt).
+    # Empty = this host cannot see the store: the check degrades to a WARNING
+    # naming this setting (the ADR refuses only where the API can see it).
+    gowe_image_dirs: str = ""
     # RETIRED (ADR-0010 decision 5, #655). There is no image override: the tool
     # image is stamped into every `dockerPull` of cwl/*.cwl at release time and
     # a tenant changes it by checking out a different tag. The field is still
