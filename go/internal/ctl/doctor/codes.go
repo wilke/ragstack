@@ -314,6 +314,12 @@ const (
 	// table does not know. Recorded as drift, never rendered. Info.
 	UnsupportedEnvKey = "unsupported_env_key"
 
+	// RetiredEnvKey: a key in tenant.env that a decision retired and the API
+	// now REFUSES TO BOOT with (GOWE_TOOL_IMAGE, ADR-0010 decision 3, #655).
+	// The detail names the decision and says to remove the key. Warn: the
+	// tenant will not start on its next restart until it is gone.
+	RetiredEnvKey = "retired_env_key"
+
 	// APIKeyRoleUnknown: an API_KEY_ROLES entry names a role outside
 	// {admin, user}. The key is recorded as `user` and the original is kept
 	// in the finding. Warn.

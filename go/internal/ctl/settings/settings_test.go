@@ -28,9 +28,10 @@ func TestClassify(t *testing.T) {
 		// the prompts the tenant answers with (ADR-0008): executable surface,
 		// so `env set` may write it and an HTTP caller may not.
 		"PROMPT_TEMPLATES_FILE": ExecutableSurface,
-		// The per-tenant tool image (#614): which container every workflow step
-		// runs in — with the CWL paths, not Unsupported (adopt would never edit it).
-		"GOWE_TOOL_IMAGE": ExecutableSurface,
+		// The per-tenant tool image override is RETIRED (ADR-0010 decision 3,
+		// #655): the API refuses to boot with it set, so the ctl must never
+		// write it — Unsupported, with a reason (TestRetired).
+		"GOWE_TOOL_IMAGE": Unsupported,
 		"QDRANT_URL":      ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
 		"EMBEDDING_ENDPOINTS": ExecutableSurface, "EMBEDDING_SIDECAR_URL": ExecutableSurface, "CROSSENCODER_SIDECAR_URL": ExecutableSurface,
 		"LLM_ENDPOINT": ExecutableSurface, "GOWE_URL": ExecutableSurface, "WORKSPACE_URL": ExecutableSurface,
@@ -68,6 +69,24 @@ func TestClassify(t *testing.T) {
 		if got := Classify(k); got != want {
 			t.Errorf("Classify(%q) = %s, want %s", k, got, want)
 		}
+	}
+}
+
+func TestRetired(t *testing.T) {
+	reason, ok := Retired("GOWE_TOOL_IMAGE")
+	if !ok || !strings.Contains(reason, "ADR-0010") || !strings.Contains(reason, "#655") {
+		t.Errorf("Retired(GOWE_TOOL_IMAGE) = %q, %v; want a reason naming ADR-0010 and #655", reason, ok)
+	}
+	if Classify("GOWE_TOOL_IMAGE") != Unsupported {
+		t.Errorf("a retired key must classify Unsupported so no surface writes it")
+	}
+	for k := range retired {
+		if public[k] || executableSurface[k] || secretExplicit[k] {
+			t.Errorf("%q is retired and also in a live table", k)
+		}
+	}
+	if _, ok := Retired("LOG_LEVEL"); ok {
+		t.Errorf("LOG_LEVEL is not retired")
 	}
 }
 

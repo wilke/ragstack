@@ -82,6 +82,9 @@ func (p *planner) requirePublicKey(key string) error {
 		return p.refuse("%s is an executable-surface key — it decides what code runs or where the process connects — "+
 			"so it is CLI-only for trusted operators, never the env API", key)
 	default:
+		if reason, retired := settings.Retired(key); retired {
+			return p.refuse("%s is %s", key, reason)
+		}
 		return p.refuse("%s is not a known ragstack setting; the typed env API edits the public allowlist only "+
 			"(`ragstack-ctl env get %s` lists it)", key, p.t.Name)
 	}

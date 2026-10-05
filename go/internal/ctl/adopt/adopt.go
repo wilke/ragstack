@@ -619,6 +619,12 @@ func (p *previewer) classify() (map[string]string, []registry.SecretRef, string)
 			// Paths, URLs and interpreter knobs: CLI-only, so the registry
 			// does not carry them as editable settings.
 		default:
+			// A retired key is one the API refuses to BOOT with: say which
+			// decision retired it and that it must go, not "unknown key".
+			if reason, retired := settings.Retired(k); retired {
+				p.warn(doctor.RetiredEnvKey, fmt.Sprintf("%s (%s) is %s", k, e.File, reason))
+				continue
+			}
 			// provision.env is new-tenant.sh's own bookkeeping, not a
 			// ragstack setting: its keys are read (TENANT_ES_HEAP becomes
 			// provision_heap) but never reported as unsupported drift.
