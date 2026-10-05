@@ -350,10 +350,11 @@ the only remaining route.
 - **The 14,057 ASM-shaped DOIs Crossref did not find.** I classified them by shape and read a
   handful; I did not confirm that repairing the filename rule would recover them.
 - **`asm-semantic`'s 47% coverage.** Measured, not investigated — out of scope per the brief.
-- **The contact address.** Both services were given `awilke1972@gmail.com` as the polite-pool
-  `mailto`, because it is the only contact address in this environment and none is configured in
-  the repo (`doi_enrichment_mailto` defaults to empty; `.env.example` sets nothing). **If a role
-  address should carry this traffic instead, set `ASM_CACHE_MAILTO` and the fetcher will use it.**
+- **The contact address.** Both services were given `wilke@anl.gov` (the project contact; the
+  run used a personal address, replaced here) as the polite-pool `mailto`, because it is the
+  only contact address in this environment and none is configured in the repo
+  (`doi_enrichment_mailto` defaults to empty; `.env.example` sets nothing). **If a role
+  address should carry this traffic instead, set `DOI_ENRICHMENT_MAILTO` and the fetcher will use it.**
   The address appears in the `User-Agent` and the `mailto` query parameter of Crossref and NCBI
   requests, and in `retrieved`-stamped provenance nowhere else; it is not in the cache records.
 

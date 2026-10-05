@@ -19,7 +19,9 @@ import json, os, sys, time, threading, queue, urllib.parse, urllib.request, urll
 from datetime import datetime, timezone
 
 CACHE = "/rag/data/asm-metadata-cache"
-MAILTO = os.environ.get("ASM_CACHE_MAILTO", "awilke1972@gmail.com")
+MAILTO = os.environ.get("DOI_ENRICHMENT_MAILTO", "")
+if not MAILTO:
+    sys.exit("DOI_ENRICHMENT_MAILTO must be set (contact address for Crossref/NCBI polite pools)")
 UA = f"RAGStack-ASM-metadata-cache/0.1 (https://github.com/wilke/ragstack; mailto:{MAILTO})"
 BATCH = 200
 

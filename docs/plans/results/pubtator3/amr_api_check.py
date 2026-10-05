@@ -1,4 +1,4 @@
-import json, random, urllib.request, time, collections, sys, re
+import json, os, random, urllib.request, time, collections, sys, re
 sys.path.insert(0,'/rag/data/pubtator3')
 from amr_terms3 import RX
 rows=[json.loads(l) for l in open('amr_scale_rows3.jsonl')]
@@ -12,7 +12,10 @@ focus=['mecA/C','mcr','optrA','gyrA','blaOXA','blaCTX-M','blaVEB','tet','qacE','
 sel={k: random.sample(cand[k], min(40,len(cand[k]))) for k in focus if cand[k]}
 pmids=sorted({p for v in sel.values() for p in v})
 print("candidate docs to verify via API:",len(pmids), file=sys.stderr)
-UA="RAGStack-corpus-coverage-study/0.1 (contact: awilke1972@gmail.com)"
+MAILTO = os.environ.get("DOI_ENRICHMENT_MAILTO", "")
+if not MAILTO:
+    sys.exit("DOI_ENRICHMENT_MAILTO must be set (contact address for Crossref/NCBI polite pools)")
+UA=f"RAGStack-corpus-coverage-study/0.1 (contact: {MAILTO})"
 docs={}
 for i in range(0,len(pmids),100):
     url="https://www.ncbi.nlm.nih.gov/research/pubtator3-api/publications/export/biocjson?pmids="+",".join(pmids[i:i+100])+"&full=true"

@@ -4,7 +4,10 @@
 import json, sys, time, urllib.request, urllib.parse, os
 import xml.etree.ElementTree as ET
 
-UA = "RAGStack-topic-label-transfer-experiment/0.1 (awilke1972@gmail.com; one-off research measurement)"
+MAILTO = os.environ.get("DOI_ENRICHMENT_MAILTO", "")
+if not MAILTO:
+    sys.exit("DOI_ENRICHMENT_MAILTO must be set (contact address for Crossref/NCBI polite pools)")
+UA = f"RAGStack-topic-label-transfer-experiment/0.1 ({MAILTO}; one-off research measurement)"
 URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 BATCH = 100
 SLEEP = 0.4  # ~2.5 req/s, under the 3/s no-key limit
