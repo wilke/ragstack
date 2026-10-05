@@ -487,3 +487,422 @@ def provenance_inputs(
         "tool_image_digest": tool_image_digest_for(name, receipt),
     }
     return {k: v for k, v in values.items() if k in declared}
+
+
+# --------------------------------------------------------------------------- #
+# The identity check (ADR-0010 decision 7, #655 step 4): render + boot
+# --------------------------------------------------------------------------- #
+#
+# GoWe resolves a relative ``dockerPull`` as ``filepath.Join(imageDir, name)``
+# at task execution and never looks at ``dockerImageId``; nothing in the engine
+# compares the file to anything. So "the image behind this name is the build
+# the release stamped" is enforced ONLY here: the named file exists in a store
+# the workers resolve, the receipt beside it names it, the file's sha256 equals
+# the receipt's, and the image's own labels (``apptainer inspect --labels``)
+# equal the receipt. Identity, not compatibility — the release declared the
+# pairing when it stamped the name (decision 4).
+
+#: The receipt beside a built image: ``<name>.receipt.json`` (what
+#: ``apptainer/build-tools-image.sh`` writes, step 5).
+IMAGE_RECEIPT_SUFFIX = ".receipt.json"
+
+#: The label keys the build stamps and the receipt mirrors, with the receipt
+#: field each one must equal.
+LABEL_FIELDS = (
+    ("org.ragstack.version", "version"),
+    ("org.ragstack.commit", "commit"),
+    ("org.ragstack.build", "build"),
+)
+
+#: ``apptainer inspect`` on a 250 MB SIF is a header read, but a wedged
+#: squashfs mount has hung it before; bound it.
+APPTAINER_INSPECT_TIMEOUT_S = 60.0
+
+# sha256 cache: (path, size, mtime_ns) -> hex. Boot verifies the same image for
+# three registrars; hashing 250 MB once is fine, three times is not.
+_SHA256_CACHE: dict[tuple[str, int, int], str] = {}
+# labels cache: (apptainer exe, path, size, mtime_ns) -> labels, for the same
+# reason — one inspect per image per process, however many CWLs name it.
+_LABELS_CACHE: dict[tuple[str, str, int, int], dict[str, str]] = {}
+
+
+def file_sha256(path: str | os.PathLike[str]) -> str:
+    """Streamed sha256 of ``path``, cached in-process by ``(path, size, mtime)``."""
+    import hashlib
+
+    p = Path(path)
+    st = p.stat()
+    key = (str(p), st.st_size, st.st_mtime_ns)
+    hit = _SHA256_CACHE.get(key)
+    if hit is not None:
+        return hit
+    h = hashlib.sha256()
+    with p.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    digest = h.hexdigest()
+    _SHA256_CACHE[key] = digest
+    return digest
+
+
+def parse_image_dirs(value: str | None) -> list[Path]:
+    """``GOWE_IMAGE_DIRS`` — comma-separated, blanks dropped, order kept
+    (first hit wins in :func:`verify_named_image`, as it does for a worker
+    group that resolves one ``--image-dir``)."""
+    return [Path(d.strip()).expanduser() for d in (value or "").split(",") if d.strip()]
+
+
+class ImageVerdict:
+    """What the check found for one ``dockerPull`` name.
+
+    ``state`` is one of ``"ok"`` (every check passed), ``"problem"`` (at least
+    one entry in ``problems``), ``"unstamped"`` (the bare default name —
+    nothing to verify, not a failure) or ``"unchecked"`` (no store dirs were
+    given: the API cannot see any store, and the ADR refuses only where it
+    can). ``warnings`` are findings that do not fail the check — the labels
+    could not be read because ``apptainer`` is not on this host, for one.
+    """
+
+    def __init__(self, name: str, dirs: list[Path]) -> None:
+        self.name = name
+        self.dirs = [str(d) for d in dirs]
+        self.path: str | None = None
+        self.exists = False
+        self.found_in: list[str] = []
+        self.receipt_found = False
+        self.receipt: dict[str, Any] | None = None
+        self.sha256: str | None = None
+        self.sha256_ok: bool | None = None
+        self.labels: dict[str, str] | None = None
+        self.labels_checked = False
+        self.labels_ok: bool | None = None
+        self.committed_receipt_ok: bool | None = None
+        self.state = "problem"
+        self.problems: list[str] = []
+        self.warnings: list[str] = []
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "state": self.state,
+            "dirs": self.dirs,
+            "path": self.path,
+            "exists": self.exists,
+            "found_in": self.found_in,
+            "receipt_found": self.receipt_found,
+            "receipt": self.receipt,
+            "sha256": self.sha256,
+            "sha256_ok": self.sha256_ok,
+            "labels": self.labels,
+            "labels_checked": self.labels_checked,
+            "labels_ok": self.labels_ok,
+            "committed_receipt_ok": self.committed_receipt_ok,
+            "problems": list(self.problems),
+            "warnings": list(self.warnings),
+        }
+
+    def summary(self) -> str:
+        """One paragraph for a boot refusal or a render line."""
+        where = self.path or ("not found in " + ", ".join(self.dirs) if self.dirs else "no store dirs")
+        lines = [f"{self.name}: {self.state} ({where})"]
+        lines += [f"  problem: {p}" for p in self.problems]
+        lines += [f"  warning: {w}" for w in self.warnings]
+        return "\n".join(lines)
+
+
+def _read_image_labels(path: Path, apptainer: str = "apptainer") -> dict[str, str] | None:
+    """``apptainer inspect --json --labels <path>`` → the labels dict.
+
+    Returns ``None`` (the caller records a WARNING, not a problem) only when
+    no ``apptainer`` is on ``PATH``: a host that cannot inspect the image
+    cannot read its labels, and refusing there would refuse every API host
+    without the runtime — ops hosts verify from a worker host instead. Any
+    other failure raises ``RuntimeError``: an inspect that fails on a file
+    apptainer CAN see means the file is not a SIF.
+    """
+    import shutil
+    import subprocess
+
+    exe = shutil.which(apptainer)
+    if exe is None:
+        return None
+    st = path.stat()
+    key = (exe, str(path), st.st_size, st.st_mtime_ns)
+    hit = _LABELS_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
+    try:
+        proc = subprocess.run(
+            [exe, "inspect", "--json", "--labels", str(path)],
+            capture_output=True, text=True, timeout=APPTAINER_INSPECT_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"{apptainer} inspect {path}: {e}") from e
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise RuntimeError(
+            f"{apptainer} inspect {path} exited {proc.returncode}: {err[-1] if err else 'no output'}"
+        )
+    try:
+        labels = json.loads(proc.stdout)["data"]["attributes"]["labels"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise RuntimeError(f"{apptainer} inspect {path}: unexpected output ({e})") from e
+    if not isinstance(labels, dict):
+        raise RuntimeError(f"{apptainer} inspect {path}: labels are not an object")
+    out = {str(k): str(v) for k, v in labels.items()}
+    _LABELS_CACHE[key] = out
+    return dict(out)
+
+
+def verify_named_image(
+    name: str,
+    store_dirs: list[Path] | list[str],
+    *,
+    committed_receipt: dict[str, Any] | None = None,
+    apptainer: str = "apptainer",
+) -> ImageVerdict:
+    """The identity check for one ``dockerPull`` name against the image store(s).
+
+    * ``name`` is :data:`DEFAULT_TOOL_IMAGE` → ``state="unstamped"``: an
+      unstamped tree names whatever the worker group's ``--image-dir`` symlink
+      points at, and there is no receipt to hold it to. Not a failure.
+    * ``store_dirs`` empty → ``state="unchecked"`` with a warning: the API
+      cannot see any store. The ADR refuses only where it can see one.
+    * Otherwise the file is looked up in ``store_dirs`` in order (first hit
+      wins; every dir that has it is listed in ``found_in``), the receipt
+      beside it is read, the file's sha256 is compared to the receipt's, the
+      image's labels are compared to the receipt (``apptainer`` missing →
+      ``labels_checked=False`` and a warning), and — when ``committed_receipt``
+      (``cwl/tool-image.receipt.json``, the one stamping wrote) is given — it
+      must agree with the receipt beside the image. Every disagreement is a
+      ``problem``; ``ok`` is ``not problems``.
+    """
+    dirs = [Path(d) for d in store_dirs]
+    v = ImageVerdict(name, dirs)
+    if name == DEFAULT_TOOL_IMAGE:
+        v.state = "unstamped"
+        return v
+    if STAMPED_IMAGE_RE.match(name) is None:
+        v.problems.append(
+            f"{name!r} is neither {DEFAULT_TOOL_IMAGE} nor a stamped "
+            "ragstack-tools-<version>-b<N>.sif name"
+        )
+        return v
+    if not dirs:
+        v.state = "unchecked"
+        v.warnings.append(
+            "no image store dirs given (GOWE_IMAGE_DIRS is unset): this host cannot see the "
+            f"store, so {name} was not verified — run `ragstack-ctl gowe render <tenant>` "
+            "from a host that can"
+        )
+        return v
+
+    for d in dirs:
+        candidate = d / name
+        if candidate.is_file():
+            v.found_in.append(str(d))
+            if v.path is None:
+                v.path = str(candidate)
+    if v.path is None:
+        v.problems.append(f"{name} not found in: " + ", ".join(v.dirs))
+        return v
+    v.exists = True
+    if len(v.found_in) > 1:
+        v.warnings.append(
+            f"{name} is in {len(v.found_in)} dirs ({', '.join(v.found_in)}); "
+            f"verified the first, {v.found_in[0]}, which is what a worker on that dir resolves"
+        )
+    path = Path(v.path)
+
+    # The receipt beside the image.
+    receipt_path = Path(str(path) + IMAGE_RECEIPT_SUFFIX)
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict):
+            raise ValueError("not a JSON object")
+    except FileNotFoundError:
+        v.problems.append(f"no receipt beside the image: {receipt_path} is missing")
+        receipt = None
+    except (OSError, ValueError) as e:
+        v.problems.append(f"receipt {receipt_path} unreadable: {e}")
+        receipt = None
+    if receipt is not None:
+        v.receipt_found = True
+        v.receipt = receipt
+        if str(receipt.get("name") or "") != name:
+            v.problems.append(
+                f"receipt {receipt_path} names {receipt.get('name')!r}, not {name}"
+            )
+
+    # The digest.
+    try:
+        v.sha256 = file_sha256(path)
+    except OSError as e:
+        v.problems.append(f"cannot hash {path}: {e}")
+    if v.sha256 is not None and receipt is not None:
+        want = str(receipt.get("sha256") or "")
+        if SHA256_RE.match(want) is None:
+            v.sha256_ok = False
+            v.problems.append(f"receipt {receipt_path} has no 64-hex sha256 (got {want!r})")
+        elif want != v.sha256:
+            v.sha256_ok = False
+            v.problems.append(
+                f"sha256 mismatch: file {path} is {v.sha256}, receipt says {want} — the bytes "
+                "under this name are not the build the receipt describes"
+            )
+        else:
+            v.sha256_ok = True
+
+    # The labels.
+    try:
+        labels = _read_image_labels(path, apptainer)
+    except RuntimeError as e:
+        labels = None
+        v.labels_checked = True
+        v.labels_ok = False
+        v.problems.append(f"labels unreadable: {e}")
+    if labels is None and not v.labels_checked:
+        v.warnings.append(
+            f"labels not verified: no {apptainer!r} on PATH on this host; the sha256 "
+            "comparison still holds the file to its receipt"
+        )
+    elif labels is not None:
+        v.labels = labels
+        v.labels_checked = True
+        v.labels_ok = True
+        if receipt is not None:
+            for label, field in LABEL_FIELDS:
+                got, want = labels.get(label), str(receipt.get(field) if receipt.get(field) is not None else "")
+                if got != want:
+                    v.labels_ok = False
+                    v.problems.append(
+                        f"label {label}: image says {got!r}, receipt says {want!r}"
+                    )
+
+    # The committed receipt (what the stamping saw) vs the one beside the image.
+    if committed_receipt is not None and receipt is not None:
+        v.committed_receipt_ok = True
+        for field in ("name", "sha256", "version", "commit", "build"):
+            a, b = committed_receipt.get(field), receipt.get(field)
+            if a is None and b is None:
+                continue
+            if str(a) != str(b):
+                v.committed_receipt_ok = False
+                v.problems.append(
+                    f"committed receipt ({RECEIPT_BASENAME}) {field}={a!r} but the receipt "
+                    f"beside the image says {b!r}: the store holds a different build than "
+                    "the release stamped"
+                )
+
+    v.state = "ok" if not v.problems else "problem"
+    return v
+
+
+def verify_cwl_file(
+    cwl_path: str | os.PathLike[str],
+    store_dirs: list[Path] | list[str],
+    *,
+    apptainer: str = "apptainer",
+) -> dict[str, Any]:
+    """The render record for one registered CWL: its text sha256 (what GoWe
+    content-hashes to mint the ``wf_`` id — over the exact bytes the API
+    POSTs, i.e. the file), its ``dockerPull`` name and the verdict for it
+    against ``store_dirs`` and the committed receipt beside the file."""
+    import hashlib
+
+    p = Path(cwl_path)
+    text = p.read_text(encoding="utf-8")
+    name = tool_image_of(text)
+    record: dict[str, Any] = {
+        "cwl": str(p),
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "tool_image": name,
+        "verdict": None,
+    }
+    if name is None:
+        pulls = {value for _n, field, value in image_sites(text) if field == "dockerPull"}
+        v = ImageVerdict("", [Path(d) for d in store_dirs])
+        if pulls:
+            v.problems.append(f"{p} names {len(pulls)} distinct images: {sorted(pulls)}")
+        else:
+            v.state = "unstamped"
+            v.warnings.append(f"{p} names no image (no dockerPull site)")
+        record["verdict"] = v.to_dict()
+        return record
+    committed = read_committed_receipt(p.parent)
+    v = verify_named_image(name, store_dirs, committed_receipt=committed, apptainer=apptainer)
+    record["verdict"] = v.to_dict()
+    return record
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m ragstack.tool_image verify (--name N | --cwl PATH…) --dirs A,B [--json]``
+
+    The ONE implementation of the identity check, for ``ragstack-ctl gowe
+    render`` to shell to: exit 0 when nothing is wrong (ok, unstamped or
+    unchecked), 1 on any problem, 2 on usage.
+    """
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(prog="python -m ragstack.tool_image")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    vp = sub.add_parser("verify", help="verify a dockerPull name, or every image a CWL names")
+    vp.add_argument("--name", help="a dockerPull name (ragstack-tools-<version>-b<N>.sif)")
+    vp.add_argument("--cwl", action="append", default=[],
+                    help="a CWL file; its dockerPull is verified against the committed "
+                         "receipt beside it (repeatable)")
+    vp.add_argument("--dirs", default="",
+                    help="comma-separated image store dirs (GOWE_IMAGE_DIRS); first hit wins")
+    vp.add_argument("--committed-receipt", type=Path,
+                    help=f"with --name: a {RECEIPT_BASENAME} to hold the store's receipt to")
+    vp.add_argument("--apptainer", default="apptainer", help="the apptainer executable")
+    vp.add_argument("--json", action="store_true", help="JSON records instead of text")
+    args = ap.parse_args(argv)
+    if bool(args.name) == bool(args.cwl):
+        ap.error("give exactly one of --name or --cwl")
+    dirs = parse_image_dirs(args.dirs)
+    records: list[dict[str, Any]] = []
+    if args.name:
+        committed = None
+        if args.committed_receipt:
+            committed = json.loads(args.committed_receipt.read_text(encoding="utf-8"))
+        v = verify_named_image(args.name, dirs, committed_receipt=committed, apptainer=args.apptainer)
+        records.append({"cwl": None, "text_sha256": None, "tool_image": args.name,
+                        "verdict": v.to_dict()})
+    else:
+        for cwl in args.cwl:
+            try:
+                records.append(verify_cwl_file(cwl, dirs, apptainer=args.apptainer))
+            except OSError as e:
+                v = ImageVerdict("", dirs)
+                v.problems.append(f"{cwl}: unreadable: {e}")
+                records.append({"cwl": cwl, "text_sha256": None, "tool_image": None,
+                                "verdict": v.to_dict()})
+    failed = any(r["verdict"]["problems"] for r in records)
+    if args.json:
+        print(json.dumps({"ok": not failed, "records": records}, indent=2))
+    else:
+        for r in records:
+            vd = r["verdict"]
+            if r["cwl"]:
+                print(f"{r['cwl']}")
+                print(f"  text sha256 (GoWe would content-hash this): {r['text_sha256']}")
+            print(f"  dockerPull: {r['tool_image'] or '(none)'} -> {vd['state']}"
+                  + (f" at {vd['path']}" if vd["path"] else ""))
+            for p in vd["problems"]:
+                print(f"    problem: {p}")
+            for w in vd["warnings"]:
+                print(f"    warning: {w}")
+        print("FAIL" if failed else "ok", file=sys.stderr if failed else sys.stdout)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through subprocess in tests
+    import sys
+
+    sys.exit(main())

@@ -88,6 +88,11 @@ var executableSurface = set(
 	// session that could repoint it would be choosing what every answer says.
 	"PROMPT_TEMPLATES_FILE",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
+	// The image store dirs the boot identity check (ADR-0010 decision 7, #655
+	// step 4) looks the stamped dockerPull up in. A host path that decides
+	// which bytes the API holds the release's receipt to — the CWL paths'
+	// sibling, so the same class: an operator at the CLI, never an HTTP caller.
+	"GOWE_IMAGE_DIRS",
 	"QDRANT_URL", "ELASTICSEARCH_URL", "NEO4J_URI", "REDIS_URL",
 	"EMBEDDING_ENDPOINTS", "EMBEDDING_SIDECAR_URL", "CROSSENCODER_SIDECAR_URL",
 	"LLM_ENDPOINT", "GOWE_URL", "WORKSPACE_URL", "MODEL_URL_ALLOWLIST",

@@ -196,6 +196,15 @@ flags every operation accepts:
   serve [--listen 127.0.0.1:23990] [--fake-drivers] [--registry PATH] [--rag-root DIR]
                                             the read-only control-plane HTTP API (PR-A)
 
+  gowe render <tenant> [--json] [--python P] [--worktree D] [--image-dirs A,B]
+                                            what the tenant's API registers with GoWe: each
+                                            workflow's text sha256 (the content hash GoWe mints
+                                            its id from), its dockerPull, and whether the image
+                                            in GOWE_IMAGE_DIRS is the build its receipt describes
+                                            (ADR-0010 decision 7). Runs the tenant's own python
+                                            against its checkout — one implementation, the one
+                                            the boot runs. Exit 3 on any problem.
+
   gateway render [--out DIR]                render the next gateway generation
   gateway diff                              unified diff vs the published generation (or the live maps)
   gateway apply [--dry-run] [--yes] [--expect-bodies DIR]
@@ -301,6 +310,8 @@ func run(args []string) int {
 		return api.RunServe(rest[1:])
 	case "gateway":
 		return cmdGateway(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "gowe":
+		return cmdGowe(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "key":
 		return cmdKey(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "admin":

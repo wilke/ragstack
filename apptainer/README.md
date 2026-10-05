@@ -54,6 +54,14 @@ step 4, the render/boot check) reads the receipt and `apptainer inspect
 checks it, cwltool reads it as a filename, so a digest there would verify
 nothing. The CWL names the image; the receipt and labels prove it.
 
+That check is `ragstack.tool_image.verify_named_image` — run by the API at
+boot (refuses when `GOWE_IMAGE_DIRS` names a store the image disagrees with)
+and by hand as `ragstack-ctl gowe render <tenant>` or
+`python -m ragstack.tool_image verify --name <sif> --dirs <store>[,…]`. It
+holds the file to the receipt beside it (sha256 and the three labels) and the
+receipt to the committed `cwl/tool-image.receipt.json`. See
+[docs/runbooks/verifying-tools-image.md](../docs/runbooks/verifying-tools-image.md).
+
 The def file has no `%arguments` defaults on purpose: `apptainer build` without
 the five `--build-arg`s fails (`build var VERSION is not defined`) instead of
 minting an unlabelled image.
