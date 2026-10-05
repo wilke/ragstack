@@ -41,8 +41,9 @@ From: python:3.12-slim-bookworm
 # for hosts where --fakeroot is unavailable), verifies the labels against its
 # inputs, computes the sha256 and writes <name>.receipt.json beside the image.
 # `python/scripts/stamp_tool_image.py <receipt>` then writes the name into every
-# dockerPull and the digest into every dockerImageId of cwl/*.cwl (release only).
-# See apptainer/README.md.
+# dockerPull AND every dockerImageId of cwl/*.cwl (release only) — the digest is
+# never written into the CWL; it stays in the receipt beside the image and in
+# the image's labels. See apptainer/README.md.
 #
 # CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
 # `/v1/embeddings`); none of them run a model locally, so torch/CUDA are

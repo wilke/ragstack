@@ -78,10 +78,15 @@ different artifacts that produced a circular release flow.)
    build metadata and never orders. The hardcoded version in `pyproject.toml`
    is a *claim* that must equal the last tag's public part (a test holds it).
    `ragstack.__version__` holds the same version as PEP 440 (`1.6.4+a2be96f`).
-   The one function in `ragstack/version.py` derives it — the only `git describe`
-   in the tree; raw describe strings never leave it. Running code reports the
-   commit when it can (a git checkout, or an image's `RELEASE` file) and says
-   which source it used; a commit is not guaranteed and is never invented.
+   `ragstack/version.py` is the only derivation of the **repo version**; raw
+   describe strings never leave it. Other tools may run their own `git
+   describe` for their own stamps — the ctl binary's version, the docs build
+   stamp, the ctl's host-facts `code.tag` — but must never produce or override
+   the repo version (known exception: the ctl populates `RAGSTACK_GIT_TAG`
+   from its own describe — follow-up recorded on #655). Running code reports
+   the commit when it can (a git checkout, or an image's `RELEASE` file) and
+   says which source it used; a commit is not guaranteed and is never
+   invented.
 
 2. **The tools image is one build of the repo at a tag T**, named
    `ragstack-tools-<version>-b<N>.sif` and built **from the tag's own commit**

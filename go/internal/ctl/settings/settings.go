@@ -101,12 +101,12 @@ var executableSurface = set(
 // decision, instead of the generic "not in the classification table".
 //
 // GOWE_TOOL_IMAGE (#614/#642) was the per-tenant tool-image override. ADR-0010
-// decision 3 retires it (#655): there is no image override, the image is
+// decision 5 retires it (#655): there is no image override, the image is
 // stamped into the CWL at release time and a tenant changes it by checking out
 // a tag. python/ragstack/api/deps.py refuses the boot while it is set, so a
 // tenant.env that still carries it will not start — remove it.
 var retired = map[string]string{
-	"GOWE_TOOL_IMAGE": "retired by ADR-0010 decision 3 (#655): there is no image override — " +
+	"GOWE_TOOL_IMAGE": "retired by ADR-0010 decision 5 (#655): there is no image override — " +
 		"the tool image is stamped into cwl/*.cwl at release time. The API refuses to boot " +
 		"while it is set; remove it from tenant.env.",
 }

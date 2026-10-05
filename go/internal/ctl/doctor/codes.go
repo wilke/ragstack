@@ -315,7 +315,7 @@ const (
 	UnsupportedEnvKey = "unsupported_env_key"
 
 	// RetiredEnvKey: a key in tenant.env that a decision retired and the API
-	// now REFUSES TO BOOT with (GOWE_TOOL_IMAGE, ADR-0010 decision 3, #655).
+	// now REFUSES TO BOOT with (GOWE_TOOL_IMAGE, ADR-0010 decision 5, #655).
 	// The detail names the decision and says to remove the key. Warn: the
 	// tenant will not start on its next restart until it is gone.
 	RetiredEnvKey = "retired_env_key"

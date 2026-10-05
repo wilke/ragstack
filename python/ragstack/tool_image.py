@@ -16,7 +16,7 @@ see, live here, shared by:
 * the adversarial tests of #642 (``tests/unit/test_gowe_tool_image.py``),
   whose substitution logic moved here from ``ragstack.ingestion.backends``.
 
-``GOWE_TOOL_IMAGE`` is retired (ADR-0010 decision 3, #655): the API refuses to
+``GOWE_TOOL_IMAGE`` is retired (ADR-0010 decision 5, #655): the API refuses to
 boot while it is set, and :func:`substitute_tool_image` is no longer called on
 the registration path. It stays here because its *checks* — the name shape,
 the refuse-on-partial rule — are what the stamping step runs.
@@ -29,9 +29,12 @@ Engine facts the shapes below encode (GoWe session, 2026-10-04, on #655):
 * A ``+`` in the name is safe: no escaping anywhere, ``resolveApptainerImage``
   is ``filepath.Join(imageDir, name)``. ``ragstack-tools-v1.6.4+a2be96f-b1.sif``
   resolves as written.
-* ``dockerImageId`` is parsed and never checked. The digest written there is
-  enforced only by our own render/boot check (ADR-0010 decision 5, migration
-  step 4); until that lands it is a recorded fact, not a gate.
+* ``dockerImageId`` is parsed and never checked. It carries the same name as
+  ``dockerPull``, never a digest — the digest lives in the receipt beside the
+  image and in its labels. Whether the image behind that name is the right
+  one is enforced only by our own render/boot check against the receipt
+  (ADR-0010 decision 7, migration step 4); until that lands it is a recorded
+  fact, not a gate.
 """
 from __future__ import annotations
 
@@ -51,7 +54,8 @@ STAMPED_IMAGE_RE = re.compile(
     r"^ragstack-tools-(?P<version>v[0-9][^+\s/]*(?:\+[0-9a-f]{4,40})?)-b(?P<build>[1-9][0-9]*)\.sif$"
 )
 
-#: A sha256 hex digest, the value a stamped ``dockerImageId`` carries.
+#: A sha256 hex digest, the value recorded in an image's receipt (never in the
+#: CWL — ``dockerImageId`` carries the same bare name as ``dockerPull``).
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # A bare image FILENAME: GoWe joins it onto `--image-dir`, so a separator (or a
@@ -158,7 +162,7 @@ def substitute_tool_image(cwl: str, tool_image: str, *, source: str = "workflow"
 
     Retired from the registration path by ADR-0010 (#655): nothing calls this
     at boot any more. The stamping step uses :func:`stamp_tool_image` instead,
-    which rewrites both keys to *different* values (name and digest).
+    which rewrites both keys to the same stamped name — never a digest.
     """
     image = (tool_image or "").strip()
     if not image or image == DEFAULT_TOOL_IMAGE:

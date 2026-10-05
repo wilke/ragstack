@@ -1447,7 +1447,7 @@ def _warn_on_doi_enrichment_settings() -> None:
 
 
 def _refuse_retired_tool_image_override() -> None:
-    """``GOWE_TOOL_IMAGE`` is retired (ADR-0010 decision 3, #655 step 5).
+    """``GOWE_TOOL_IMAGE`` is retired (ADR-0010 decision 5, #655 step 5).
 
     The owner's rule: workflows may be pinned, images are not — an image is
     pinned through the CWL tool/workflow specification, stamped at release. A
@@ -1459,7 +1459,7 @@ def _refuse_retired_tool_image_override() -> None:
     if (settings.gowe_tool_image or "").strip():
         raise RuntimeError(
             f"GOWE_TOOL_IMAGE={settings.gowe_tool_image.strip()!r} is set, and the setting is "
-            "retired (ADR-0010 decision 3, #655): there is no image override. The tool image "
+            "retired (ADR-0010 decision 5, #655): there is no image override. The tool image "
             "is fixed by the release — stamped into every dockerPull of cwl/*.cwl — and a "
             "tenant changes it by checking out a different tag. Remove GOWE_TOOL_IMAGE from "
             "tenant.env and restart."
