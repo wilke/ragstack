@@ -579,6 +579,9 @@ async def test_the_real_lifespan_arms_the_rollup_and_disarms_it(tmp_path):
             "HOME": str(tmp_path),
             "PYTHONPATH": package_root,
             **_PINNED_ENV,
+            # The probe boots the lifespan on the in-memory backends, which are
+            # test-only and refused by the shipped default (#651).
+            "REQUIRE_DURABLE_BACKENDS": "false",
         },
         capture_output=True,
         text=True,

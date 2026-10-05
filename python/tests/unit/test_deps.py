@@ -16,8 +16,45 @@ def test_memory_backend_allowed_in_dev(monkeypatch):
 def test_require_durable_rejects_memory_backend(monkeypatch):
     monkeypatch.setattr(deps.settings, "vector_backend", "memory")
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="REQUIRE_DURABLE_BACKENDS=false"):
         deps._build_vector_store()
+
+
+def test_require_durable_backends_defaults_to_true():
+    # #651: the shipped default, read from the model rather than from `settings`
+    # (the test suite opts out via REQUIRE_DURABLE_BACKENDS=false in conftest).
+    # A deployment that forgets the setting must not come up on memory.
+    from ragstack.config import Settings
+
+    assert Settings.model_fields["require_durable_backends"].default is True
+
+
+@pytest.mark.parametrize(
+    "field,builder",
+    [
+        ("vector_backend", "_build_vector_store"),
+        ("text_backend", "_build_text_index"),
+        ("graph_backend", "_build_graph_store"),
+    ],
+)
+def test_memory_backend_refused_by_default_settings(monkeypatch, field, builder):
+    """A Settings built from an environment that never mentions durability
+    refuses every memory backend, naming the opt-out; the explicit opt-out
+    boots it."""
+    from ragstack.config import Settings
+
+    monkeypatch.delenv("REQUIRE_DURABLE_BACKENDS", raising=False)
+    fresh = Settings(_env_file=None, **{field: "memory"})
+    assert fresh.require_durable_backends is True
+    monkeypatch.setattr(deps, "settings", fresh)
+    with pytest.raises(RuntimeError, match="REQUIRE_DURABLE_BACKENDS=false"):
+        getattr(deps, builder)()
+
+    monkeypatch.setenv("REQUIRE_DURABLE_BACKENDS", "false")
+    opted_out = Settings(_env_file=None, **{field: "memory"})
+    assert opted_out.require_durable_backends is False
+    monkeypatch.setattr(deps, "settings", opted_out)
+    assert getattr(deps, builder)() is not None
 
 
 def _prod(monkeypatch, tmp_path):
@@ -272,17 +309,21 @@ def test_graph_backend_neo4j_returns_neo4j_store(monkeypatch):
     assert isinstance(store, Neo4jGraphStore)
 
 
-def test_graph_memory_warns_under_durable(monkeypatch, caplog):
-    import logging
-
-    from ragstack.stores import InMemoryGraphStore
-
+def test_graph_memory_refused_under_durable(monkeypatch):
+    # #651: the in-memory graph is test-only. Under durability it is refused
+    # (it used to only warn), and the message names the explicit opt-out.
     monkeypatch.setattr(deps.settings, "graph_backend", "memory")
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
-    with caplog.at_level(logging.WARNING):
-        store = deps._build_graph_store()
-    assert isinstance(store, InMemoryGraphStore)
-    assert any("knowledge graph is in-memory" in r.message for r in caplog.records)
+    with pytest.raises(RuntimeError, match="REQUIRE_DURABLE_BACKENDS=false"):
+        deps._build_graph_store()
+
+
+def test_graph_disabled_allowed_under_durable(monkeypatch):
+    # "disabled" builds no store, so it loses nothing on restart — the tenants
+    # that do not run a knowledge graph boot this way under durability.
+    monkeypatch.setattr(deps.settings, "graph_backend", "disabled")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    assert deps._build_graph_store() is None
 
 
 class _FakeLLM:
@@ -476,16 +517,21 @@ def test_chunker_explicit_estimate_setting_still_boots(monkeypatch):
     assert captured["max_tokens"] == 240  # 256 minus the specials reserve
 
 
-def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
-    import logging
+def test_text_index_memory_refused_under_durable(monkeypatch):
+    # #651: the in-memory text index is test-only. Under durability it is
+    # refused (it used to only warn), and the message names the opt-out.
+    monkeypatch.setattr(deps.settings, "text_backend", "memory")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    with pytest.raises(RuntimeError, match="REQUIRE_DURABLE_BACKENDS=false"):
+        deps._build_text_index()
 
+
+def test_text_index_memory_allowed_with_explicit_opt_out(monkeypatch):
     from ragstack.stores import InMemoryTextIndex
 
-    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
-    with caplog.at_level(logging.WARNING):
-        index = deps._build_text_index()
-    assert isinstance(index, InMemoryTextIndex)
-    assert any("text index is in-memory" in r.message for r in caplog.records)
+    monkeypatch.setattr(deps.settings, "text_backend", "memory")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    assert isinstance(deps._build_text_index(), InMemoryTextIndex)
 
 
 # --- #563: WHICH registry, on the two submission paths that are not ingest --- #

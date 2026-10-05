@@ -41,8 +41,12 @@ perf-python: ## Run Python performance budget tests
 lint-python: ## Lint Python code
 	cd python && ruff check . && mypy ragstack/
 
-run-python: ## Start Python API server (dev)
-	cd python && uvicorn ragstack.api.main:app --reload --port 8000
+# Dev server on the config defaults, whose text/graph backends are `memory` —
+# test-only, so this opts out of durability explicitly (#651). Export
+# REQUIRE_DURABLE_BACKENDS=true to run it against durable backends instead.
+run-python: ## Start Python API server (dev; opts out of REQUIRE_DURABLE_BACKENDS)
+	cd python && REQUIRE_DURABLE_BACKENDS=$${REQUIRE_DURABLE_BACKENDS:-false} \
+		uvicorn ragstack.api.main:app --reload --port 8000
 
 # ---------------------------------------------------------------------------
 # Frontend (dashboard & explorer SPA — React + Vite + TS)
