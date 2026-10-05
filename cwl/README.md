@@ -44,7 +44,9 @@ hosts; see `apptainer/README.md` for version vs build, labels and the receipt)
 via `DockerRequirement` (both `dockerPull:` **and** `dockerImageId:` — see the
 gotcha below). On `main` the CWL still names the image by the bare
 `ragstack-worker.sif`, which each worker's `--image-dir` symlink resolves; a
-release stamps the versioned name in and commits the image's receipt beside
+release stamps the versioned name into both — the digest is never written into
+the CWL; it lives in the receipt beside the image and in the image's labels —
+and commits the image's receipt beside
 the CWL as `cwl/tool-image.receipt.json` (ADR-0010; `--check` refuses a stale
 one). **Provenance** (decision 8, #655 step 2): the API-registered workflows
 (`pdf-ingest-scatter`, `graph-extract`, `restore-collection`) declare three
