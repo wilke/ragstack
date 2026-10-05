@@ -49,12 +49,12 @@ header{padding-block:40px 8px} header .eyebrow{margin-bottom:12px}
 .meta{color:var(--muted);font-size:14px;margin-top:10px}
 code{font-family:var(--mono);font-size:.92em;background:var(--line-soft);padding:1px 5px;border-radius:3px}
 a{color:var(--num)}
-.strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}
+.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:28px}
 .strip > div{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--line);padding:14px 16px;border-radius:4px}
 .strip .k{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
 .strip .v{font-family:var(--serif);font-size:20px;font-weight:600;margin-top:4px;line-height:1.25}
 .strip .d{font-size:14px;color:var(--muted);margin-top:4px}
-.strip .good{border-left-color:var(--good)} .strip .warn{border-left-color:var(--warn)} .strip .num{border-left-color:var(--num)}
+.strip .good{border-left-color:var(--good)} .strip .warn{border-left-color:var(--warn)} .strip .num{border-left-color:var(--num)} .strip .bad{border-left-color:var(--bad)}
 .prov{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:14px 18px;margin:22px 0;font-size:14.5px}
 .prov table{min-width:0;font-size:14px} .prov th,.prov td{padding:6px 10px}
 figure{margin:28px 0;background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:18px 18px 12px}
@@ -84,6 +84,7 @@ td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
 .corr b{color:var(--bad)}
 ol.steps{margin:14px 0;padding-left:22px} ol.steps li{padding:6px 0;border-bottom:1px solid var(--line-soft)}
 footer{margin-top:56px;color:var(--muted);font-size:13.5px;border-top:1px solid var(--line);padding-top:16px}
+@media (max-width:900px){ .strip{grid-template-columns:1fr 1fr} }
 @media (max-width:720px){ .strip{grid-template-columns:1fr} h2{font-size:23px;margin-top:48px} }
 </style>
 </head>
@@ -93,12 +94,13 @@ footer{margin-top:56px;color:var(--muted);font-size:13.5px;border-top:1px solid 
   <div class="eyebrow">Chunking study · tooling analysis · 5 October 2026</div>
   <h1>Are our experiments Episodes, and can OpenChia plan and run them?</h1>
   <p class="lede prose">Yes to the first, with a precision the earlier assessment missed: a pre-registered fixed-N stage is an Episode whose source is a declared finite list and which ends <code>exhausted</code>, not <code>yield_stop</code>. Planning in OpenChia is possible today and has a precedent — the asm-next configuration study you took through the Duet on 30 September. Running is closer than it was on 2 October, because the host now brokers read-only HTTPS for the sandbox; what remains is one small function registration, one unverified execution backend on coconut, and a harness whose live acceptance is still open upstream.</p>
-  <p class="meta prose">This page separates what was read from what was concluded, and says at which commit each thing was read. It supersedes the capability conclusions of the 2 October assessment; the control-framework description there stands.</p>
+  <p class="meta prose">This page separates what was read from what was concluded, and says at which commit each thing was read. It supersedes the capability conclusions of the 2 October assessment; the control-framework description there stands. <b>Revised later on 5 Oct:</b> the owner asked that the Episode structure not be taken for granted, so the stopping statistic was reimplemented and measured against known truth before anything else — see <a href="#verified">what has actually been verified</a>. One claim from this page's first version is withdrawn there.</p>
 
   <div class="strip">
     <div class="num"><div class="k">The concept</div><div class="v">Unchanged, current</div><div class="d"><code>method_loop</code>, the three-function controller catalog, the nano-graphrag pin — byte-identical between 2 Oct and 4 Oct.</div></div>
     <div class="warn"><div class="k">The runtime</div><div class="v">Moved under us</div><div class="d">~60 commits on 3–4 Oct: host-brokered HTTPS egress, container/systemd backends, an experiment harness. Two of my 2 Oct claims are corrected below.</div></div>
     <div class="good"><div class="k">The precedent</div><div class="v">asm-next, 30 Sep</div><div class="d">A ragstack experiment designed end to end in the Duet: 35 contract revisions, 23 shadow reviews, a 20-Episode tree — then a host bug, and ADR-0002.</div></div>
+    <div class="bad"><div class="k">Verified by measurement</div><div class="v">One statistic, so far</div><div class="d">The stop rule reproduces the recorded 0.749286267 and is calibrated under even sampling; under heavy heterogeneity it never fires and its band misses the truth, always from below, 11–37 % of the time. Nothing executed by OpenChia itself has been reproduced yet.</div></div>
   </div>
 
   <div class="prov">
@@ -114,6 +116,40 @@ footer{margin-top:56px;color:var(--muted);font-size:13.5px;border-top:1px solid 
     </table></div>
   </div>
 </header>
+
+<!-- ============================================================ 0 -->
+<h2 id="verified">0 · What has actually been verified, and what is still a reading</h2>
+<div class="prose">
+<p>Everything on this page below this section was <em>read</em> from source. Reading is not verification, and the upstream record offers very little to reproduce: one passed live acceptance (a scheduling problem solved in two Episode units, which stopped only under a bound of 0.9 — "not the shipped default"), twenty-odd harness receipts for 3–4 Oct reading <em>cancelled / failed / interrupted / not live-validated</em>, an acceptance README that says "Target Workflow acceptance pending", and no calibration of the stopping statistic in either repository (nano-graphrag's <code>experiments/log</code> and <code>experiments/runs</code> are not committed). So the first rung of the reproduction ladder had to sit below "reproduce their results": <b>measure the stopping statistic on populations of known richness.</b></p>
+<p>The statistic was reimplemented independently (stdlib only) from the documented chain and checked against the one recorded number that exists:</p>
+</div>
+<div class="tbl"><table>
+<thead><tr><th>Projected marginal credit upper bound, two units, one identity seen twice (f₁ = 0, f₂ = 1)</th><th class="n">value</th></tr></thead>
+<tbody>
+<tr><td>recorded in <code>docs/openchia/epistemic_yield_acceptance.md</code>, 2 Oct</td><td class="n">0.749286267</td></tr>
+<tr><td>recomputed from the formulas in <code>rarefaction.py</code>, <code>credit_assignment.py</code>, <code>continuation.py</code></td><td class="n">0.7492862673640707</td></tr>
+<tr><td>difference</td><td class="n">3.6 × 10⁻¹⁰</td></tr>
+</tbody></table></div>
+<div class="prose"><p>So what follows exercises the statistic OpenChia actually stops on. A pre-registered simulation (<code>PREREG-R0-stopping-statistic-calibration.json</code>, predictions frozen before the run; 300 replicates; K ∈ {50, 200, 1000}; detection weights even, log-normal σ = 1, log-normal σ = 2 — the last is the web-search regime, a few sources easy to hit and many nearly unreachable) gave, at the default tolerance θ = 0.01:</p></div>
+<div class="tbl"><table>
+<thead><tr><th>condition</th><th class="n">band coverage</th><th class="n">misses from below</th><th class="n">never stopped</th><th class="n">stop unit (median)</th><th class="n">undiscovered at stop (median / p90)</th></tr></thead>
+<tbody>
+<tr><td>K = 50, even</td><td class="n">0.953</td><td class="n">0.047</td><td class="n">0 %</td><td class="n">50</td><td class="n">0.000 / 0.040</td></tr>
+<tr><td>K = 50, mild σ = 1</td><td class="n">0.942</td><td class="n">0.058</td><td class="n">5 %</td><td class="n">157</td><td class="n">0.020 / 0.060</td></tr>
+<tr><td>K = 50, heavy σ = 2</td><td class="n">0.819</td><td class="n">0.181</td><td class="n"><b>85 %</b></td><td class="n">320</td><td class="n"><b>0.140 / 0.260</b></td></tr>
+<tr><td>K = 200, even</td><td class="n">0.987</td><td class="n">0.013</td><td class="n">0 %</td><td class="n">230</td><td class="n">0.000 / 0.010</td></tr>
+<tr><td>K = 200, mild</td><td class="n">0.979</td><td class="n">0.021</td><td class="n">12 %</td><td class="n">1,182</td><td class="n">0.005 / 0.020</td></tr>
+<tr><td>K = 200, heavy</td><td class="n">0.889</td><td class="n">0.111</td><td class="n"><b>100 %</b></td><td class="n">—</td><td class="n">—</td></tr>
+<tr><td>K = 1000, even</td><td class="n">0.996</td><td class="n">0.004</td><td class="n">0 %</td><td class="n">1,190</td><td class="n">0.002 / 0.005</td></tr>
+<tr><td>K = 1000, mild</td><td class="n">0.988</td><td class="n">0.012</td><td class="n">17 %</td><td class="n">7,379</td><td class="n">0.004 / 0.009</td></tr>
+<tr><td>K = 1000, heavy</td><td class="n"><b>0.627</b></td><td class="n"><b>0.373</b></td><td class="n"><b>100 %</b></td><td class="n">—</td><td class="n">—</td></tr>
+</tbody></table></div>
+<div class="prose">
+<p>Every miss, in all nine conditions, is the truth sitting <em>above</em> the band's upper bound — the estimator is biased low, as Chao1 theory predicts and as is now measured rather than cited. No trajectory stopped at n ≤ 2 under the default (0 of 2,700), which is why the acceptance needed θ = 0.9.</p>
+<p><b>Scorecard.</b> P1 (even sampling calibrated, stop at ≤ 2 % undiscovered) <b>held</b>. P4 (the default cannot fire after two units) <b>held</b>. P2 and P3 were <b>falsified as stated</b>: I predicted that heavy heterogeneity would make the rule fire <em>early</em>; instead it does not fire at all at K ≥ 200, and the band under-covers. The direction — unsafe under uneven sampling — was right; the mechanism was wrong, and the record keeps both.</p>
+</div>
+<div class="corr"><b>Withdrawn.</b> The first version of this page, and the 2 Oct assessment, said the controller would give "searched and did not find" a measured number. Literature search is the uneven regime by construction. There the rule neither stops nor bounds the truth; a run ends by <code>bound_hit</code>, which OpenChia correctly refuses to call convergence, and the remaining-richness band it reports on the way is not a number we can quote. <b>The saturation stop is trustworthy where we control the sampling evenly</b> — candidate generation over a known entity table — and that use stands.</div>
+<div class="note num"><b>The ladder.</b> R0 (this) → <b>R0b</b> the same incidence states through OpenChia's own <code>numeric_control_library</code>, compared to the digit (executes external code; the owner runs it) → <b>R1</b> the scheduling acceptance re-run at the default θ = 0.01 → <b>R2</b> our own deterministic results inside their structure: the span-filter Episode must return 0.9205 / Δ −0.0013 with Scout 1,050 and Qwen 9 records filtered, then a seeded dev-subset labeling Episode → <b>R3</b> the survey pilot, with <code>bound_hit</code> now the expected end → only then an Architecture for any confirmatory stage. Record: <code>docs/design/openchia-r0/</code> in the ragstack repository (pre-registration, stdlib reimplementation, raw results, write-up).</div>
 
 <!-- ============================================================ 1 -->
 <h2 id="episodes">1 · Our experiments are Episodes — including the fixed-N ones</h2>
@@ -313,6 +349,7 @@ footer{margin-top:56px;color:var(--muted);font-size:13.5px;border-top:1px solid 
 <!-- ============================================================ 6 -->
 <h2 id="next">6 · What to do, in order</h2>
 <ol class="steps">
+<li><b>Finish the reproduction ladder before any Architecture</b> (§0): R0b through OpenChia's own code, R1 the scheduling acceptance at the default θ, R2 our span-filter and a seeded labeling subset inside their structure with pre-registered expected values. Nothing below this line is built on until R2 reproduces.</li>
 <li><b>Run the smallest brokered-HTTP test against the dev gateway</b>, adapting <code>10-http-broker-test-prompt.md</code>: two GETs (<code>/health</code>, <code>/v1/collections</code>) with an <code>X-API-Key</code> credential. This settles gap 5's one open question in an hour and proves the chain Duet → approve → build → Run → broker → typed result on this account.</li>
 <li><b>Plan the next designs in the Duet, not in Markdown</b>: option (c) and the hard pointed set as Architectures, with the asm-next contract's budget, noise-floor, holdout and closure rules carried over. Admission validates topology, capabilities and function selections; approval is the pre-registration freeze. This works today, on the Mac, without any run.</li>
 <li><b>Contribute gap 1 upstream.</b> <code>exhaust_declared_source</code> and a declared-coverage credit are the smallest change with the largest effect: they make every pre-registered fixed-N run a first-class Episode.</li>
