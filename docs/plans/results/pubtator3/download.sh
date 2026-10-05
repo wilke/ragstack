@@ -1,8 +1,9 @@
 #!/bin/bash
 # Sequential download of PubTator3 bulk files. One at a time, descriptive UA.
 set -u
+: "${DOI_ENRICHMENT_MAILTO:?set DOI_ENRICHMENT_MAILTO}"
 D=/rag/data/pubtator3
-UA="RAGStack-corpus-coverage-study/0.1 (contact: awilke1972@gmail.com; one-off corpus coverage measurement)"
+UA="RAGStack-corpus-coverage-study/0.1 (contact: ${DOI_ENRICHMENT_MAILTO}; one-off corpus coverage measurement)"
 BASE=https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3
 for f in README.txt species2pubtator3.gz gene2pubtator3.gz relation2pubtator3.gz chemical2pubtator3.gz disease2pubtator3.gz; do
   echo "=== $(date -Is) START $f"

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Job 1: measured throughput of candidate metadata routes on real ASM DOIs."""
-import json, sys, time, threading, queue, urllib.parse, urllib.request, urllib.error
+import json, os, sys, time, threading, queue, urllib.parse, urllib.request, urllib.error
 
-MAILTO = "awilke1972@gmail.com"
+MAILTO = os.environ.get("DOI_ENRICHMENT_MAILTO", "")
+if not MAILTO:
+    sys.exit("DOI_ENRICHMENT_MAILTO must be set (contact address for Crossref/NCBI polite pools)")
 UA = f"RAGStack-metadata-audit/0.1 (https://github.com/wilke/ragstack; mailto:{MAILTO})"
 S = "/tmp/claude-3581/-home-wilke-Development-ragstack/5f5c3e4a-7165-4b98-84ba-6da7bc9b431c/scratchpad"
 

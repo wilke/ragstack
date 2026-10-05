@@ -434,8 +434,9 @@ accessions but is in the licence-restricted package.
 
 **Total downloaded: 5,595,664,788 bytes (5.21 GiB) of bulk files + 284,715,061 bytes
 (0.27 GiB) of API responses = 5.88 GB.** One sequential `curl` per file, descriptive
-User-Agent (`RAGStack-corpus-coverage-study/0.1 (contact: awilke1972@gmail.com; one-off
-corpus coverage measurement)`), no parallel requests to the FTP host, 1 s between API calls.
+User-Agent (`RAGStack-corpus-coverage-study/0.1 (contact: wilke@anl.gov; one-off
+corpus coverage measurement)` — the project contact; the run used a personal address,
+replaced here), no parallel requests to the FTP host, 1 s between API calls.
 
 Working directory: **`/rag/data/pubtator3/`** (writing there was permitted). It holds the
 five bulk `.gz` files, the CARD downloads, the per-entity `*_bypmid.tsv` aggregates, the

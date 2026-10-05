@@ -1,6 +1,9 @@
 import random, collections, json, urllib.request, time, sys, os
 sample=json.load(open('ft_sample.json'))
-UA="RAGStack-corpus-coverage-study/0.1 (contact: awilke1972@gmail.com)"
+MAILTO = os.environ.get("DOI_ENRICHMENT_MAILTO", "")
+if not MAILTO:
+    sys.exit("DOI_ENRICHMENT_MAILTO must be set (contact address for Crossref/NCBI polite pools)")
+UA=f"RAGStack-corpus-coverage-study/0.1 (contact: {MAILTO})"
 os.makedirs('ft_raw',exist_ok=True)
 out=open('ft_sample_result.jsonl','w')
 seen=set()
