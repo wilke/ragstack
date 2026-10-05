@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and against `33642f9` the same day for step 2's provenance fields (#668).** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668).** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1501,7 +1501,10 @@ Three artifacts, each **a build of a tag**, and the workflow binds them:
    the last tag; `ragstack.__version__` is the same version as PEP 440. One function,
    `ragstack/version.py`, derives it — the only derivation of the repo version. Other
    tools run `git describe` for their own artifacts' stamps (ctl's `code.tag`, the
-   Makefile's `CTL_VERSION`, `docs/build_docs.py`'s page stamp), never to produce it.
+   Makefile's `CTL_VERSION`, `docs/build_docs.py`'s page stamp), never to produce it —
+   with the one exception ADR-0010 records for follow-up on #655: a ctl-supervised
+   tenant's unit exports `code.tag` as `RAGSTACK_GIT_TAG` (`render/storeargv.go`), which
+   `version.py::package_version` takes over its own describe.
 2. **The tools image is one build of the repo at tag T**, built from T's own commit,
    named `ragstack-tools-<version>-b<N>.sif`. Its identity is its labels
    (`org.ragstack.version`, `org.ragstack.commit`, `org.ragstack.build`,
@@ -1537,7 +1540,7 @@ step writes beside the CWL); the last three the worker reads from the image's
 provenance begins with the first stamped release; a version written before then reads
 as all-`null` ("unknown"), never as an error.
 
-**What the code does at `main` @ `0e9bbb0`** — #655 step 1 (#664) has landed; the rest
+**What the code does at `main` @ `33642f9`** — #655 steps 1 (#664) and 2 (#668) have landed; the rest
 has not:
 - **Landed:** the single version derivation (`ragstack/version.py`; `ragstack.__version__`
   via `ragstack/__init__.py`; `GET /v1/version` reports it); the tools-image build
@@ -1554,8 +1557,8 @@ has not:
 - **Landed in #668 (#655 step 2):** the provenance fields above, written by
   `scripts/archive_version.py`, `ingest_shard.py`, `extract_graph.py` and
   `load_embeddings.py`, read by `ragstack/provenance.py` (`read_provenance`), with the
-  seeding in `ingestion/gowe_backend.py` and `ragstack/tool_image.py`
-  (`provenance_inputs`). Today, unstamped, every new version records them as null.
+  seeding (`ragstack/tool_image.py`, `provenance_inputs`) called by the three
+  registrars — `ingestion/gowe_backend.py`, `graph_extract.py` and `restore.py`. Today the API seeds nothing (unstamped tree) and the deployed worker images predate #668, so a new version carries no `provenance` key and reads as all-`null`.
 - **Not yet:** no release has been stamped (so no `cwl/tool-image.receipt.json` yet) — every `dockerPull` is still the bare
   `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
   (on coconut, as of 2026-10-05, a per-group symlink, e.g.
