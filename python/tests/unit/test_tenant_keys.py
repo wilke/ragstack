@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import re
 import secrets as _secrets
 
 import pytest
@@ -40,6 +41,7 @@ K2 = f"aweb_{M2}-DEADBEEFCAFEBABE0123456789"
 K3 = _secrets.token_hex(32)                              # what the ctl mints
 SECRETS = (K1, K2, K3)
 PREFIXES = (4, 6, 8, 12, 16, 31)
+_HEXONLY = re.compile(r"[0-9a-f]+")
 
 REAL = {
     "API_KEYS": json.dumps([K1, K2]),
@@ -51,6 +53,12 @@ REAL = {
 def _assert_clean(blob: str, where: str) -> None:
     for s in SECRETS:
         for n in PREFIXES:
+            # A short all-hex prefix of a hex key (K3 is token_hex) cannot be told
+            # apart from the sha256 fingerprints the output legitimately carries:
+            # a 4-hex window matches somewhere in a few hundred hex chars about
+            # once per hundred runs (seen 2026-10-05). 8+ hex chars is unambiguous.
+            if n < 8 and _HEXONLY.fullmatch(s[:n]):
+                continue
             assert s[:n] not in blob, f"{where}: {n}-char prefix of a key on output"
         assert s not in blob and s[::-1] not in blob and s.upper() not in blob
     for m in (M1, M2):
