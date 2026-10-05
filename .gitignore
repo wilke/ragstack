@@ -59,10 +59,16 @@ Thumbs.db
 # local demo scratch (SciFact data, backfill, ingest jsonl)
 .localdata/
 
-# Apptainer/Singularity worker images — large build artifacts, not source.
-# Build with: apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
-#          && apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
+# Apptainer/Singularity tools images — large build artifacts, not source.
+# Build with: apptainer/build-tools-image.sh  (ADR-0010; names the file
+# ragstack-tools-<version>-b<N>.sif and writes <name>.receipt.json beside it)
 apptainer/images/*.sif
+apptainer/images/*.receipt.json
+
+# Written by the tools-image build into the installed package so
+# ragstack.__version__ resolves without git (ragstack/version.py step 2).
+# Never committed: in a checkout the version is derived from git.
+python/ragstack/_release.py
 
 # Local sqlite state written by the sqlite job/collection-store backends (ADR-0002).
 # The registry is per-deployment state, never source.
