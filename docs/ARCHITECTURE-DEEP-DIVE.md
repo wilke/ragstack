@@ -1499,14 +1499,18 @@ Three artifacts, each **a build of a tag**, and the workflow binds them:
 1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
    `+` part never orders). `pyproject.toml`'s version is a claim a test holds equal to
    the last tag; `ragstack.__version__` is the same version as PEP 440. One function,
-   `ragstack/version.py`, derives it — the only `git describe` in the tree.
+   `ragstack/version.py`, derives it — the only `git describe` a version passes
+   through. (ADR-0010 wants it to be the only one in the tree; at `0e9bbb0` ctl's
+   `code.tag`, the Makefile's `CTL_VERSION` and `docs/build_docs.py` still run their
+   own, none of which feeds a version.)
 2. **The tools image is one build of the repo at tag T**, built from T's own commit,
    named `ragstack-tools-<version>-b<N>.sif`. Its identity is its labels
    (`org.ragstack.version`, `org.ragstack.commit`, `org.ragstack.build`,
    `org.ragstack.build-date`, mirrored in `/opt/ragstack/RELEASE`) and its sha256 in a
    **receipt beside the image** — not its file name, and not `dockerImageId`. A dirty
    tree refuses to build; `python/` is staged from `git archive HEAD`.
-3. **The server (tenant) is one build at tag S**, and **S and T may differ**: a server
+3. **The server (tenant) image is one build at tag S** (until it exists, tenants run
+   from tagged checkouts whose derived version plays the same role), and **S and T may differ**: a server
    release chooses which tools image its workflows name.
 4. **A workflow is CWL text naming a tools image.** GoWe's workflow id is the content
    hash of that text, so it binds text + image name. The CWL is where "this tools
@@ -1533,11 +1537,12 @@ has not:
   (`apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def`, writing
   `<sif>.receipt.json` with `name`/`version`/`commit`/`build`/`build_date`/`sha256`);
   the stamping step (`python/scripts/stamp_tool_image.py`, `ragstack/tool_image.py`)
-  and the tree-wide pin test (`tests/unit/test_cwl_tool_image_pin.py`: the CWL is
+  and the tree-wide pin test (`python/tests/unit/test_cwl_tool_image_pin.py`: the CWL is
   either all unstamped or all stamped with one name). The API registers the CWL
   **byte-for-byte** (`ingestion/backends.py`); `GOWE_TOOL_IMAGE` makes boot **refuse**
-  (`api/deps.py`, `_validate_production_settings`) and `ragstack-ctl doctor` reports it
-  as `retired_env_key`. #642's substitution survives only as a tested function in
+  (`api/deps.py`, `_validate_production_settings`); `ragstack-ctl adopt` warns
+  `retired_env_key` on a tenant.env that still carries it (`adopt.go`; the code lives in
+  `doctor/codes.go`), and the ctl env API refuses to set it (`ops/env.go`). #642's substitution survives only as a tested function in
   `ragstack/tool_image.py` that nothing calls at runtime.
 - **Not yet:** no release has been stamped — every `dockerPull` is still the bare
   `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
