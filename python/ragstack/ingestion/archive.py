@@ -11,7 +11,11 @@ Layout of one version directory::
 
     <n>/
       manifest.json      format tag, identity (collection_id/tenant/spec_hash/
-                         version/job_id), counts, sha256 + byte size per file
+                         version/job_id), counts, sha256 + byte size per file,
+                         and — since #655 step 2 — ``provenance``: the GoWe
+                         workflow id and the tools image (name, digest, RELEASE
+                         identity) that built it (ADR-0010 decision 8); absent
+                         on older versions, which read as unknown
       chunks.jsonl.gz    one JSON object per chunk — id, doc_id, content,
                          metadata, offsets — WITHOUT the vector (gzip, mtime=0)
       vectors.f32        64-byte header + float32 rows, little-endian,
@@ -279,12 +283,12 @@ def _version_dir(out_dir: str | Path, version: int) -> Path:
 
 
 def _identity(collection_id: str, tenant: str, spec_hash: str, job_id: str,
-              version: int) -> dict[str, Any]:
+              version: int, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
     if not collection_id:
         raise ArchiveError("collection_id is required")
     if not tenant:
         raise ArchiveError("tenant is required")
-    return {
+    identity: dict[str, Any] = {
         "format": FORMAT,
         "collection_id": collection_id,
         "tenant": tenant,
@@ -292,6 +296,13 @@ def _identity(collection_id: str, tenant: str, spec_hash: str, job_id: str,
         "version": version,
         "job_id": job_id or "",
     }
+    if provenance is not None:
+        if not isinstance(provenance, dict):
+            raise ArchiveError("provenance must be a JSON object")
+        # Additive (ADR-0010 decision 8): which workflow / tools image built
+        # this version. Absent on versions written before #655 step 2.
+        identity["provenance"] = dict(provenance)
+    return identity
 
 
 def _write_json(path: Path, obj: Any) -> None:
@@ -317,6 +328,7 @@ def write_version(
     spec_hash: str = "",
     job_id: str = "",
     workers: int | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Pack embedding files (+ the load receipt) into ``<out_dir>/<version>/``.
 
@@ -328,6 +340,9 @@ def write_version(
 
     ``workers`` > 1 packs blocks of lines in a process pool (ordered, bounded
     to ``workers x 32`` lines in flight); ``None`` picks :func:`default_workers`.
+    ``provenance`` (ADR-0010 decision 8) is recorded verbatim under the
+    manifest's ``provenance`` key — :func:`ragstack.provenance.tool_provenance`
+    builds it; omitted, the key is absent and readers see "unknown".
     Raises :class:`ArchiveError` for no records, mixed dims, or a record whose
     dim disagrees with its file header; nothing is left behind on failure.
     """
@@ -340,7 +355,7 @@ def write_version(
     for p in [*chunks_list, *receipts_list]:
         if not p.is_file():
             raise ArchiveError(f"{p}: no such file")
-    manifest = _identity(collection_id, tenant, spec_hash, job_id, version)
+    manifest = _identity(collection_id, tenant, spec_hash, job_id, version, provenance)
     final = _version_dir(out_dir, version)
     final.parent.mkdir(parents=True, exist_ok=True)
     tmp = final.parent / f".{final.name}.tmp"
@@ -449,15 +464,16 @@ def write_tombstone(
     tenant: str,
     spec_hash: str = "",
     job_id: str = "",
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a DELETE version: ``<out_dir>/<version>/`` holding only
     ``manifest.json`` + ``tombstone.json`` (the removed doc ids, sorted, unique).
-    Returns the manifest. An empty id list is refused — a delete of nothing is
-    not a version."""
+    Returns the manifest. ``provenance`` as for :func:`write_version`. An empty
+    id list is refused — a delete of nothing is not a version."""
     ids = sorted({str(d) for d in doc_ids if str(d)})
     if not ids:
         raise ArchiveError("tombstone needs at least one doc id")
-    manifest = _identity(collection_id, tenant, spec_hash, job_id, version)
+    manifest = _identity(collection_id, tenant, spec_hash, job_id, version, provenance)
     final = _version_dir(out_dir, version)
     final.parent.mkdir(parents=True, exist_ok=True)
     tmp = final.parent / f".{final.name}.tmp"

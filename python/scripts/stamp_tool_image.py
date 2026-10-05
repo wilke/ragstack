@@ -58,6 +58,21 @@ there. Identity verification (ADR-0010 step 4, the render/boot check) reads
 the receipt and ``apptainer inspect --labels`` against the file the CWL
 names; until that lands, nothing at the engine verifies the image beyond its
 name.
+
+**The committed receipt** (#655 step 2, ADR-0010 decision 8). Stamping also
+writes the receipt it was given to ``cwl/tool-image.receipt.json`` — in git,
+beside the ``dockerPull`` it belongs to — because that is where the API reads
+``tool_image_digest`` from when it seeds a submission's provenance inputs: a
+file's sha256 cannot live inside the file, so the worker cannot learn it, and
+the shared store (step 3/4) is not something the API can read offline.
+``--check`` holds the two together: a stamped tree must carry the receipt of
+the image it names (same ``name``, a well-formed ``sha256``), an unstamped
+tree must carry none. On an unstamped tree the API seeds no provenance inputs
+at all (``ragstack.tool_image.provenance_inputs`` gates on a stamped name:
+the deployed builds the bare name resolves to predate the tools' flags);
+provenance begins with the first stamped release. A receipt without
+``build_date`` (or any of the six keys) is refused, as is one whose ``name``
+is not ``version`` + ``build``.
 """
 from __future__ import annotations
 
@@ -71,9 +86,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "python"))
 
 from ragstack.tool_image import (  # noqa: E402
+    RECEIPT_BASENAME,
     SHA256_RE,
     ToolImageError,
     check_tree_state,
+    read_committed_receipt,
     stamp_tool_image,
     stamped_image_name,
 )
@@ -110,16 +127,45 @@ def cwl_docs(repo: Path) -> dict[Path, str]:
     return {p: p.read_text(encoding="utf-8") for p in sorted((repo / "cwl").glob("*.cwl"))}
 
 
+def committed_receipt_path(repo: Path) -> Path:
+    return repo / "cwl" / RECEIPT_BASENAME
+
+
 def check(repo: Path, *, receipt: dict[str, str] | None = None) -> list[str]:
-    """The tree-wide gate. Returns the problems (empty = consistent)."""
+    """The tree-wide gate. Returns the problems (empty = consistent).
+
+    Besides the CWL state, the committed receipt (``cwl/tool-image.receipt.json``,
+    #655 step 2) must agree with it: a stamped tree carries the receipt of the
+    image it names (the API reads the digest from it), an unstamped tree
+    carries none (a stale receipt would lend its digest to an image the CWL
+    does not name)."""
     docs = {str(p.relative_to(repo)): t for p, t in cwl_docs(repo).items()}
     state, name, problems = check_tree_state(docs)
+    committed = read_committed_receipt(repo / "cwl")
+    rel = committed_receipt_path(repo).relative_to(repo)
     if state == "stamped" and name is not None:
         if receipt is not None and receipt["name"] != name:
             problems.append(f"tree is stamped with {name}, receipt names {receipt['name']}")
+        if committed is None:
+            problems.append(f"tree is stamped with {name} but {rel} is missing: the API "
+                            "records tool_image_digest from it (re-run the stamping with "
+                            "the image's receipt)")
+        else:
+            cname = str(committed.get("name") or "")
+            csha = str(committed.get("sha256") or "")
+            if cname != name:
+                problems.append(f"{rel} names {cname!r}, the tree is stamped with {name}")
+            if SHA256_RE.match(csha) is None:
+                problems.append(f"{rel}: sha256 {csha!r} is not a 64-hex digest")
+            if receipt is not None and committed.get("sha256") != receipt["sha256"]:
+                problems.append(f"{rel} sha256 differs from the given receipt's")
     elif state == "unstamped":
         if receipt is not None:
             problems.append("tree is unstamped; the receipt was not applied")
+        if committed is not None:
+            problems.append(f"tree is unstamped but {rel} exists (names "
+                            f"{committed.get('name')!r}): a stale receipt would lend its "
+                            "digest to an image the CWL does not name; remove it")
     elif state == "empty":
         problems.append("no dockerPull in cwl/*.cwl at all")
     else:
@@ -129,7 +175,10 @@ def check(repo: Path, *, receipt: dict[str, str] | None = None) -> list[str]:
 
 
 def stamp(repo: Path, receipt: dict[str, str]) -> list[Path]:
-    """Compute every rewrite, then write. Returns the files that changed."""
+    """Compute every rewrite, then write. Returns the files that changed —
+    the CWL documents and the committed receipt (``cwl/tool-image.receipt.json``,
+    the receipt as given, keys sorted), which is written whenever its content
+    would change."""
     writes: dict[Path, str] = {}
     for path, text in cwl_docs(repo).items():
         try:
@@ -138,6 +187,14 @@ def stamp(repo: Path, receipt: dict[str, str]) -> list[Path]:
             raise StampError(f"refused: {e}") from e
         if new != text:
             writes[path] = new
+    rpath = committed_receipt_path(repo)
+    rtext = json.dumps(dict(receipt), indent=2, sort_keys=True) + "\n"
+    try:
+        current = rpath.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    if current != rtext:
+        writes[rpath] = rtext
     for path, text in writes.items():
         path.write_text(text, encoding="utf-8")
     return sorted(writes)

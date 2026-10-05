@@ -45,6 +45,7 @@ from ragstack.ingestion.embedding_file import EmbeddingFileError, read_embedding
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt
 from ragstack.models import Chunk
+from ragstack.provenance import read_provenance
 
 
 async def run_load_file(
@@ -275,7 +276,12 @@ async def run_replay(
     say = log if log is not None else (lambda *_a, **_k: None)
     try:
         for vdir, manifest in zip(version_dirs, manifests, strict=True):
-            entry: dict[str, Any] = {"dir": str(vdir), "version": manifest.get("version")}
+            entry: dict[str, Any] = {
+                "dir": str(vdir), "version": manifest.get("version"),
+                # What built the version being replayed (ADR-0010 decision 8);
+                # a pre-#655 manifest has no key and reads as all-null.
+                "provenance": read_provenance(manifest),
+            }
             if manifest.get("has_tombstone"):
                 ids = archive.read_tombstone(vdir, manifest=manifest)
                 n = await _delete_docs(pipeline, set(ids), delete_concurrency, graph=True)

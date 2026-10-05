@@ -45,6 +45,7 @@ from ragstack.ingestion.gowe_backend import OUTPUT_STAGING_FAILED, _staging_fail
 from ragstack.ingestion.gowe_client import GoWeError
 from ragstack.jobstore import COMPLETED, FAILED, RUNNING, JobStore
 from ragstack.restore import workspace_subject
+from ragstack.tool_image import provenance_inputs
 from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceError,
@@ -312,6 +313,9 @@ class GraphExtractRunner:
         inputs = self.inputs_for(rec, chosen, job_id=job_id)
         try:
             wf_id = await self._gowe.register_workflow(self.workflow_name, self._cwl(), token=token)
+            # ADR-0010 decision 8: the extract step records the registered id
+            # and the tools image under the manifest's graph_extraction.provenance.
+            inputs.update(provenance_inputs(self._cwl(), self._cwl_path, wf_id))
             labels = {"worker_group": self.worker_group} if self.worker_group else None
             sub = await self._gowe.submit(
                 wf_id, inputs, labels=labels, output_destination=destination, token=token,

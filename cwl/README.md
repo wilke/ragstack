@@ -44,9 +44,25 @@ hosts; see `apptainer/README.md` for version vs build, labels and the receipt)
 via `DockerRequirement` (both `dockerPull:` **and** `dockerImageId:` — see the
 gotcha below). On `main` the CWL still names the image by the bare
 `ragstack-worker.sif`, which each worker's `--image-dir` symlink resolves; a
-release stamps the versioned name into both (ADR-0010) — the digest is never
-written into the CWL; it lives in the receipt beside the image and in the
-image's labels. The
+release stamps the versioned name into both — the digest is never written into
+the CWL; it lives in the receipt beside the image and in the image's labels —
+and commits the image's receipt beside
+the CWL as `cwl/tool-image.receipt.json` (ADR-0010; `--check` refuses a stale
+one). **Provenance** (decision 8, #655 step 2): the API-registered workflows
+(`pdf-ingest-scatter`, `graph-extract`, `restore-collection`) declare three
+optional inputs — `workflow_id`, `tool_image`, `tool_image_digest` — that the
+API seeds *between registration and submission* (the `wf_` id exists only
+then; the digest comes from the committed receipt) and the pack / ingest /
+extract / replay tools RECORD together with their own image's
+`/opt/ragstack/RELEASE` as `manifest.provenance`, the receipt's `provenance`,
+`graph_extraction.provenance` and the load summary's `provenance`. **On an
+unstamped tree the API seeds no provenance inputs** — the stamp is the
+declaration that the named image supports the workflow (decision 4), and the
+builds `ragstack-worker.sif` resolves to today predate the tools' flags — so
+the inputs stay null, the flags are omitted (GoWe skips null inputs before any
+prefix) and the records carry only the image's own `RELEASE` identity (null
+outside a RELEASE-bearing image). Provenance begins with the first stamped
+release. Nothing verifies the fields here; the identity check is step 4. The
 `ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
 the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
 at `/opt/ragstack/scripts`. This **replaces the old

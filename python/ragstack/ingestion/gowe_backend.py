@@ -69,6 +69,7 @@ from ragstack.ingestion.manifest import ItemResult, WorkItem
 from ragstack.ingestion.receipts import COMPLETED, DocRow, ShardReceipt
 from ragstack.jobstore import COMPLETED as JOB_COMPLETED
 from ragstack.jobstore import FAILED as JOB_FAILED
+from ragstack.tool_image import provenance_inputs
 from ragstack.workspace import WorkspaceClient, WorkspaceError, ws_path
 
 log = logging.getLogger(__name__)
@@ -144,9 +145,16 @@ class GoWeBackend:
         workspace: WorkspaceClient | None = None,
         interactive_poll_interval: float = 0.5,
         interactive_max_items: int = 50,
+        cwl_path: str | os.PathLike[str] | None = None,
     ) -> None:
         self.client = client
         self.workflow_cwl = workflow_cwl
+        # Where the text came from — the committed tool-image receipt
+        # (``cwl/tool-image.receipt.json``) is looked up beside it for the
+        # per-submission provenance inputs (ADR-0010 decision 8). ``None`` =
+        # text of unknown origin: the image name is still recorded, the
+        # digest is null.
+        self.cwl_path = cwl_path
         self.workflow_name = workflow_name
         self.static_inputs = static_inputs or {}
         self.shards_input_key = shards_input_key
@@ -246,6 +254,14 @@ class GoWeBackend:
         wf_id = await self.client.register_workflow(
             self.workflow_name, self.workflow_cwl, token=token
         )
+        # Provenance (ADR-0010 decision 8): the registered id and the image the
+        # text names travel ON the submission — the worker cannot learn either
+        # by itself — and the pack step writes them into the version manifest.
+        # Seeded after registration (the id exists only now) and after the
+        # caller's inputs (nothing a caller passes may forge them); restricted
+        # to the names the workflow declares, so a bulk-plane CWL that does not
+        # is submitted exactly as before.
+        job.update(provenance_inputs(self.workflow_cwl, self.cwl_path, wf_id))
         labels = {"worker_group": self.worker_group} if self.worker_group else None
         sub = await self.client.submit(
             wf_id, job, labels=labels, output_destination=output_destination, token=token

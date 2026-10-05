@@ -19,6 +19,12 @@ Two modes, mutually exclusive:
 Pure local I/O: no store, no network. Streaming — never holds the vectors in
 memory. Idempotent: a re-run replaces ``<out>/<N>/`` with byte-identical files.
 
+Both modes record ``provenance`` in the manifest (ADR-0010 decision 8, #655
+step 2): ``--workflow-id`` / ``--tool-image`` / ``--tool-image-digest`` as the
+API seeded them on the submission, plus ``image_version`` / ``image_commit`` /
+``image_build`` read from this image's ``/opt/ragstack/RELEASE`` (null outside
+an image). A hand run with none of the flags records an all-null object.
+
 Usage::
 
     python scripts/archive_version.py --version 3 --collection-id oa-dev \
@@ -34,6 +40,7 @@ import sys
 from pathlib import Path
 
 from ragstack.ingestion.archive import ArchiveError, write_tombstone, write_version
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
 def _version(text: str) -> int:
@@ -73,6 +80,7 @@ def parse_args(argv=None):
     p.add_argument("--job-id", default="", help="the RAGStack ingest job id this version came from")
     p.add_argument("--workers", type=int, default=None,
                    help="packer processes (default: min(4, cpus)); 1 = in-process")
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 
@@ -82,18 +90,22 @@ def main(argv=None) -> int:
         raise SystemExit("--tombstone is exclusive with --chunks/--receipt")
     if not args.tombstone and not (args.chunks and args.receipt):
         raise SystemExit("need --chunks and --receipt (chunk version) or --tombstone")
+    # ADR-0010 decision 8: what built this version — the submission inputs the
+    # API seeded (workflow id, image name, digest) plus this image's own RELEASE.
+    provenance = provenance_from_args(args)
     try:
         if args.tombstone:
             manifest = write_tombstone(
                 args.out, args.version, _load_doc_ids(args.tombstone),
                 collection_id=args.collection_id, tenant=args.tenant,
-                spec_hash=args.spec_hash, job_id=args.job_id,
+                spec_hash=args.spec_hash, job_id=args.job_id, provenance=provenance,
             )
         else:
             manifest = write_version(
                 args.out, args.version, args.chunks, args.receipt,
                 collection_id=args.collection_id, tenant=args.tenant,
                 spec_hash=args.spec_hash, job_id=args.job_id, workers=args.workers,
+                provenance=provenance,
             )
     except ArchiveError as e:
         print(f"archive: {e}", file=sys.stderr)

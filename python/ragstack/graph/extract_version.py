@@ -219,6 +219,7 @@ async def extract_version(
     max_triples: int = 0,
     max_failed_fraction: float = DEFAULT_MAX_FAILED_FRACTION,
     extractor_name: str = "",
+    provenance: dict[str, Any] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> ExtractionSummary:
     """The whole step: verify, extract, refuse an outage, budget, write the leg.
@@ -229,7 +230,10 @@ async def extract_version(
     of attempted (non-empty) chunks whose LLM call may fail; every attempted
     chunk failing, or more than this share, is :class:`ExtractionUnavailable`
     (nothing written). ``extractor_name`` is recorded in the manifest's
-    ``graph_extraction`` provenance (the model name).
+    ``graph_extraction`` provenance (the model name); ``provenance`` (ADR-0010
+    decision 8: the graph-extract workflow id and tools image) is recorded
+    under ``graph_extraction.provenance`` — the chunk version's own top-level
+    ``provenance`` (the ingest that built it) is left as it was.
     """
     say = log if log is not None else (lambda *_a: None)
     t0 = time.perf_counter()
@@ -255,6 +259,8 @@ async def extract_version(
         "n_chunks_failed": summary.n_chunks_failed,
         "concurrency": int(concurrency),
     }
+    if provenance is not None:
+        extraction["provenance"] = dict(provenance)
     summary.manifest = archive.write_triples(
         version_dir, triples, out_dir=out_dir, extraction=extraction,
     )

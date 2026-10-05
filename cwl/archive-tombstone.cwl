@@ -47,6 +47,16 @@ inputs:
   job_id:
     type: ["null", string]
     inputBinding: {prefix: --job-id, position: 6}
+  # Provenance (ADR-0010 decision 8): manifest.provenance (see archive-collection.cwl).
+  workflow_id:
+    type: ["null", string]
+    inputBinding: {prefix: --workflow-id, position: 8}
+  tool_image:
+    type: ["null", string]
+    inputBinding: {prefix: --tool-image, position: 9}
+  tool_image_digest:
+    type: ["null", string]
+    inputBinding: {prefix: --tool-image-digest, position: 10}
 
 arguments:
   - {position: 7, prefix: --out, valueFrom: "."}
