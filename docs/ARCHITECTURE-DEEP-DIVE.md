@@ -1493,14 +1493,18 @@ per-document receipts onto the job.
   against declared types (GoWe#273), so today the enum is documentation and the
   API's own check above remains the gate.
 
-**Tool image binding — ADR-0010 (amended by #652).** The decision is that a tool
+**Tool image binding — ADR-0010 (*Proposed*, amended by #652).** The proposed decision is that a tool
 is bound to its image **at release time**: the release that builds
 `ragstack-tools-v<tag>.sif` from a tag writes that name into every `dockerPull`
 in `cwl/*.cwl` (and its digest into `dockerImageId`), stamps the tag into the
-image (`%labels` `org.ragstack.tag` / `commit` / `build-date`,
-`/opt/ragstack/RELEASE`, `ragstack.__version__`), and a render/boot check requires
-filename tag = image label = checkout tag. A tenant's version is therefore its
-checkout tag, and nothing else: there is no image override.
+image (`%labels` `org.ragstack.tag` / `commit` / `build-date`, the same values in
+`/opt/ragstack/RELEASE`) and fails the build unless the installed
+`ragstack.__version__` equals the tag, and a render/boot check requires
+filename tag = image label = checkout tag. Images live once, in a single shared
+versioned store, and new tags name them there by absolute path, so every worker
+group can run every version and groups go back to being placement (ADR-0010
+decision 2, ADR-0009). A tenant's version is therefore its checkout tag, and
+nothing else: there is no image override.
 
 **What the code does today (`main` @ `f3fb936`) — the migration has not started:**
 every `dockerPull` is still the bare `ragstack-worker.sif`, which each worker
@@ -1508,10 +1512,13 @@ resolves against its group's `--image-dir` (on coconut a symlink per group, e.g.
 `ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
 worker **group** is still the effective version knob. `GOWE_TOOL_IMAGE` (#642,
 `config.py` `gowe_tool_image`; `ingestion/backends.py` `substitute_tool_image`)
-still exists and still rewrites `dockerPull` at registration when set; ADR-0010
-retires it (boot will refuse it once the first stamped tag ships), and no tenant
-sets it. Read this paragraph and the previous one together until the stamping
-lands.
+still exists and still rewrites `dockerPull` when the CWL is read at boot
+(`_make_gowe_backend`; likewise `restore.py` and `graph_extract.py`), in the text
+every submission registers. ADR-0010 retires it: until the first stamped tag
+ships the API is to refuse to boot when the variable is set, and after that the
+substitution code is deleted — neither has landed at `f3fb936`, where boot only
+checks the name's shape (`validate_tool_image`) — and no tenant sets it. Read
+this paragraph and the previous one together until the stamping lands.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today
