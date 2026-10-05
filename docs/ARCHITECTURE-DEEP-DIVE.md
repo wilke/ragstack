@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `17425fd` on 2026-10-04 for ADR-0010's versions-vs-builds amendment (#657).** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664).** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1493,55 +1493,71 @@ per-document receipts onto the job.
   against declared types (GoWe#273), so today the enum is documentation and the
   API's own check above remains the gate.
 
-**Tool image binding — ADR-0010 (*Proposed*; amended by #652 and #657).** The
-proposal separates two identities. A **tenant runs a repo version**: `v1.6.4` when
-the checkout is exactly on a release tag, `v1.6.4+<shortsha>` otherwise (dev, which
-runs `main`). The `+<sha>` part is SemVer build metadata and never orders versions;
-`ragstack.__version__` holds the same string. An **image is one build** of some
-source, named `ragstack-tools-<version>-b<N>.sif` (e.g. `ragstack-tools-v1.6.4-b1.sif`);
-one version may have several builds, so a base-image rebuild does not force a release.
-`git describe --tags --match 'v*' --long --dirty` runs only inside the build script,
-to derive the version, and a dirty tree refuses to build.
+**Tool image binding — ADR-0010 (*Proposed*; the three-artifact model, #666).**
+Three artifacts, each **a build of a tag**, and the workflow binds them:
 
-**Identity is in the image's labels and digest, not its file name.** The build
-writes `org.ragstack.version`, `org.ragstack.commit` (full sha), `org.ragstack.build`
-and `org.ragstack.build-date` into `%labels` and `/opt/ragstack/RELEASE`. The
-release step writes the image name into every `dockerPull` in `cwl/*.cwl` and its
-digest into `dockerImageId`, and refuses to cut a tag if any `dockerPull` is
-unpinned or names another version. The render view (`ragstack-ctl gowe render
-<tenant>`) and the API boot check pass only when every named image **exists**, its
-**digest equals `dockerImageId`**, and its **version label equals the checkout's
-derived version** (boot degrades to a warning only where the API host cannot see
-the image store) — which covers branch tenants with no special case. Release
-images live once, in a shared store referenced by absolute path, so worker groups
-go back to being placement (decision 2, ADR-0009); a `+<sha>` image never enters
-that store and stays in the tenant's own image directory. There is **no image
-override**: `GOWE_TOOL_IMAGE` is retired. Collection versions and ingest receipts
-will record the GoWe `workflow_id`, image name and digest (decision 4).
+1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
+   `+` part never orders). `pyproject.toml`'s version is a claim a test holds equal to
+   the last tag; `ragstack.__version__` is the same version as PEP 440. One function,
+   `ragstack/version.py`, derives it — the only `git describe` a version passes
+   through. (ADR-0010 wants it to be the only one in the tree; at `0e9bbb0` ctl's
+   `code.tag`, the Makefile's `CTL_VERSION` and `docs/build_docs.py` still run their
+   own, none of which feeds a version.)
+2. **The tools image is one build of the repo at tag T**, built from T's own commit,
+   named `ragstack-tools-<version>-b<N>.sif`. Its identity is its labels
+   (`org.ragstack.version`, `org.ragstack.commit`, `org.ragstack.build`,
+   `org.ragstack.build-date`, mirrored in `/opt/ragstack/RELEASE`) and its sha256 in a
+   **receipt beside the image** — not its file name, and not `dockerImageId`. A dirty
+   tree refuses to build; `python/` is staged from `git archive HEAD`.
+3. **The server (tenant) image is one build at tag S** (until it exists, tenants run
+   from tagged checkouts whose derived version plays the same role), and **S and T may differ**: a server
+   release chooses which tools image its workflows name.
+4. **A workflow is CWL text naming a tools image.** GoWe's workflow id is the content
+   hash of that text, so it binds text + image name. The CWL is where "this tools
+   image supports this workflow" is declared; the release that writes the name in
+   asserts it tested the pairing.
 
-**What the code does today (`main` @ `17425fd`) — the migration (#655) has not landed:**
-every `dockerPull` is still the bare `ragstack-worker.sif`, which each worker
-resolves against its group's `--image-dir` (on coconut, as of 2026-10-04, a symlink per group, e.g.
-`ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`; dev's
-`ragstack-worker-v1.6.3-1-ga2be96f.sif` is a raw `git describe` name, the case
-ADR-0010 rules out), so the worker **group** is still the effective version knob.
-`GOWE_TOOL_IMAGE` (#642, `config.py` `gowe_tool_image`; `ingestion/backends.py`
-`substitute_tool_image`) still exists and still rewrites `dockerPull` when the CWL is
-read — at boot in `_make_gowe_backend`, on first use in `restore.py` and
-`graph_extract.py` (`_cwl()`).
-ADR-0010 retires it: until the first stamped tag ships the API is to refuse to boot
-when it is set, and after that the substitution code is deleted. Neither has landed
-at `17425fd`, where boot only checks the name's shape (`validate_tool_image`), and no
-tenant sets it. The version side has not landed either: `ragstack.__version__` does
-not exist yet (`python/pyproject.toml` has a static `version = "0.1.0"`), and
-`python/ragstack/version.py` runs `git describe` at runtime, once per process, to
-answer `GET /v1/version`. Read this paragraph and the two before it together until
-#655 lands.
+**Release order is linear** (decision 6): tag `vT` → build the tools image + receipt →
+copy both to the shared store `/scout/containers/ragstack/` (release versions only;
+`+sha` builds stay in a tenant's own image dir) → a server release stamps the image
+name into every `dockerPull`/`dockerImageId` with `scripts/stamp_tool_image.py` →
+commit → tag `vS`. Nothing is stamped after a build and no tag moves. There is **no
+image override**: `GOWE_TOOL_IMAGE` is retired (decision 5). **The check at boot and
+in `ragstack-ctl gowe render`** (decision 7) is an *identity* check — each named file
+exists in the store the workers resolve, its labels equal its receipt, its sha256
+equals the receipt's — and it refuses rather than warns wherever the API host can see
+the store. Compatibility is not re-derived at boot; the release declared it. Each
+collection version will record the GoWe `workflow_id`, image name and digest
+(decision 8).
+
+**What the code does at `main` @ `0e9bbb0`** — #655 step 1 (#664) has landed; the rest
+has not:
+- **Landed:** the single version derivation (`ragstack/version.py`; `ragstack.__version__`
+  via `ragstack/__init__.py`; `GET /v1/version` reports it); the tools-image build
+  (`apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def`, writing
+  `<sif>.receipt.json` with `name`/`version`/`commit`/`build`/`build_date`/`sha256`);
+  the stamping step (`python/scripts/stamp_tool_image.py`, `ragstack/tool_image.py`)
+  and the tree-wide pin test (`python/tests/unit/test_cwl_tool_image_pin.py`: the CWL is
+  either all unstamped or all stamped with one name). The API registers the CWL
+  **byte-for-byte** (`ingestion/backends.py`); `GOWE_TOOL_IMAGE` makes boot **refuse**
+  (`api/deps.py`, `_validate_production_settings`); `ragstack-ctl adopt` warns
+  `retired_env_key` on a tenant.env that still carries it (`adopt.go`; the code lives in
+  `doctor/codes.go`), and the ctl env API refuses to set it (`ops/env.go`). #642's substitution survives only as a tested function in
+  `ragstack/tool_image.py` that nothing calls at runtime.
+- **Not yet:** no release has been stamped — every `dockerPull` is still the bare
+  `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
+  (on coconut, as of 2026-10-05, a per-group symlink, e.g.
+  `ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
+  worker group is still the effective binding; the shared store does not exist; the
+  boot identity check and `ragstack-ctl gowe render` (decision 7), the provenance
+  fields (decision 8) and the server image (migration step 6) are not built.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
-`WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today
-`ragstack-worker.sif`, built from `apptainer/ragstack-worker.def` (`cwl/README.md`);
-`ragstack-tools-<version>-b<N>.sif` under ADR-0010 — the receipt
+`WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today the CWL names
+the bare `ragstack-worker.sif` (images built before #664 from the retired
+`ragstack-worker.def`); since #664 builds come from `apptainer/build-tools-image.sh` +
+`apptainer/ragstack-tools.def` as `ragstack-tools-<version>-b<N>.sif` with a receipt,
+and the CWL names one once a release is stamped (ADR-0010, `cwl/README.md`) — the receipt
 contract `ragstack.ingestion.receipts` (`ShardReceipt` / `DocRow`), and the archive
 format `ragstack.ingestion.archive` (`FORMAT = "ragstack-archive/1"`).
 
