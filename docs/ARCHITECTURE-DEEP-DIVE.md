@@ -11,7 +11,10 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > plane (GoWe/CWL, ADR-0006); `ragstack-ctl` (Go) appears only where it bounds a
 > tenant (§9).
 >
-> **Verified against `main` @ `22b44be` on 2026-09-23.** Rewritten section by
+> **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
+> 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
+> per-collection memory stores, DOI enrichment on by default, no store-URL defaults
+> in `load_embeddings.py`).** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1192,7 +1195,7 @@ plus a pre-embed step**, so each driver can run the part it needs:
 1. **Load.** `self.loader.load(source)` returns `list[Document]`. On path A this is
    `default_loader_registry` (confined to `INGEST_ROOT`, `max_document_bytes`); on the
    worker tools it is `JsonlLoader` over a shard that the extract step wrote.
-2. **DOI enrichment (optional, #596).** `_apply_doi_enrichment` runs
+2. **DOI enrichment (on by default since #634; #596).** `_apply_doi_enrichment` runs
    `DoiEnricher.enrich_documents` *between load and chunk*, so one metadata write per
    document reaches every chunk. `doi_enricher=None` disables it. Any exception is
    logged and swallowed — enrichment never fails an ingest. The metadata detail is
@@ -1277,7 +1280,7 @@ same (`ingest-bulk.cwl`) or splits the halves across two tools: `embed_shard.py`
 ```mermaid
 flowchart TD
     S["source"] --> L["loader.load"]
-    L --> E1["_apply_doi_enrichment - optional, never fatal"]
+    L --> E1["_apply_doi_enrichment - on by default, never fatal"]
     E1 --> CH["chunker.chunk per doc in to_thread"]
     CH --> BF["_filter_boilerplate - optional, never fatal"]
     BF --> EM["_embed_and_link: stamp tenant, embed_isolated, drop None, link neighbors"]
@@ -1481,10 +1484,39 @@ per-document receipts onto the job.
   pipeline) because the API's enricher never sees a GoWe document.
 - **Metadata contract (#603/#604):** enforced in `index_chunks` inside the worker,
   the same call as on path A.
+- **`chunk_method` is a per-workflow enum in the CWL (#613/#643),** not a free
+  string. The symbol list says what each workflow's tool can run:
+  `pdf-ingest-scatter.cwl` and `ingest-bulk.cwl` (`ingest_shard.py`) admit
+  `semantic` and `semantic_pooled`; `pdf-ingest.cwl`, `jats-ingest.cwl` and
+  `embed-bulk.cwl` (`embed_shard.py`, which builds no breakpoint bridge) list only
+  `fixed`, `fixed_token`, `sentence`, `words`. GoWe does not yet validate inputs
+  against declared types (GoWe#273), so today the enum is documentation and the
+  API's own check above remains the gate.
+
+**Tool image binding — ADR-0010 (amended by #652).** The decision is that a tool
+is bound to its image **at release time**: the release that builds
+`ragstack-tools-v<tag>.sif` from a tag writes that name into every `dockerPull`
+in `cwl/*.cwl` (and its digest into `dockerImageId`), stamps the tag into the
+image (`%labels` `org.ragstack.tag` / `commit` / `build-date`,
+`/opt/ragstack/RELEASE`, `ragstack.__version__`), and a render/boot check requires
+filename tag = image label = checkout tag. A tenant's version is therefore its
+checkout tag, and nothing else: there is no image override.
+
+**What the code does today (`main` @ `f3fb936`) — the migration has not started:**
+every `dockerPull` is still the bare `ragstack-worker.sif`, which each worker
+resolves against its group's `--image-dir` (on coconut a symlink per group, e.g.
+`ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
+worker **group** is still the effective version knob. `GOWE_TOOL_IMAGE` (#642,
+`config.py` `gowe_tool_image`; `ingestion/backends.py` `substitute_tool_image`)
+still exists and still rewrites `dockerPull` at registration when set; ADR-0010
+retires it (boot will refuse it once the first stamped tag ships), and no tenant
+sets it. Read this paragraph and the previous one together until the stamping
+lands.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
-`WorkspaceClient` (`python/ragstack/workspace.py`), the `ragstack-worker` Apptainer
-image (built from `apptainer/ragstack-worker.def`, see `cwl/README.md`), the receipt
+`WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today
+`ragstack-worker.sif`, built from `apptainer/ragstack-worker.def` (`cwl/README.md`);
+`ragstack-tools-v<tag>.sif` under ADR-0010 — the receipt
 contract `ragstack.ingestion.receipts` (`ShardReceipt` / `DocRow`), and the archive
 format `ragstack.ingestion.archive` (`FORMAT = "ragstack-archive/1"`).
 
@@ -2601,7 +2633,7 @@ flowchart TD
     C -->|"other failure"| M["back to dormant with reason"]
 ```
 
-**Note on `memory.py`:** `InMemoryVectorStore` / `InMemoryTextIndex` / `InMemoryGraphStore` remain the reference fakes for the same three protocols and the same grammar (`_matches` is the fourth interpreter of §8.1); they also implement `drop_collection`, `drop_index` and `delete_collection` so the lifecycle code paths run in tests.
+**Note on `memory.py`:** `InMemoryVectorStore` / `InMemoryTextIndex` / `InMemoryGraphStore` remain the reference fakes for the same three protocols and the same grammar (`_matches` is the fourth interpreter of §8.1); they also implement `drop_collection`, `drop_index` and `delete_collection` so the lifecycle code paths run in tests. **They are test backends, not a deployment option.** Since #644, `VECTOR_BACKEND=memory` gives every *non-default* collection its own `InMemoryVectorStore` too (`api/deps.py::_vector_store_for`, one store per physical name drawn from `app.state.memory_vector_stores`), which is what lets the keyed conformance boot (`conformance/run_authz_keyed.sh`) exercise user-owned collections end to end. Every tenant sets `REQUIRE_DURABLE_BACKENDS=true`, which refuses `memory` at boot; #651 proposes making that the default. `memory` is not FAISS — nothing under `python/ragstack` uses the `sidecars/faiss` service.
 
 Relevant files: `python/ragstack/stores/{qdrant,elasticsearch,neo4j,filters,memory,backpressure,errors}.py`, `python/ragstack/store_routing.py`, `python/ragstack/graph/{extractor,extract_version,budget,archive_load}.py`, `python/ragstack/ingestion/archive.py`, `python/ragstack/restore.py`, `python/ragstack/ops/evict.py`, `python/ragstack/metadata_schema.py`, `contracts/schemas/chunk_metadata.json`.
 
