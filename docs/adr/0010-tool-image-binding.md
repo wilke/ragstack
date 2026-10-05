@@ -7,7 +7,7 @@ Status: Proposed (2026-09-24; amended 2026-10-04 (rename/retire; versions vs bui
 A CWL `CommandLineTool` is an interface plus a binding: its inputs and outputs,
 and a `DockerRequirement` naming the image that implements it. For our tools the
 image **is** the implementation — `ingest_shard.py`, `embed_shard.py`,
-`archive_version.py` live inside `ragstack-worker.sif` at `/opt/ragstack/scripts/`;
+`archive_version.py` live inside `ragstack-worker.sif` at `/opt/ragstack/python/scripts/` (mirrored at `/opt/ragstack/scripts/`);
 the CWL only names the entry point. So a tool's identity is *CWL text + image*.
 Change either and it is a new version of the tool; a workflow that inlines the
 tool (all of ours do — GoWe cannot resolve an external `run:`) has changed with it.

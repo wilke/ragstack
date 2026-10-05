@@ -1,8 +1,19 @@
-"""GOWE_TOOL_IMAGE (#614): per-tenant tool-image pinning by substituting the
-image name in the CWL text the API registers with GoWe.
+"""The tool image in the CWL the API registers (ADR-0010, #655 step 1).
 
-Stub the engine, never the substitution: the end-to-end tests below drive the
-real ``make_ingest_backend`` / runner code over an ``httpx.MockTransport`` fake
+Two things are pinned here:
+
+* **``GOWE_TOOL_IMAGE`` is retired.** The boot refuses when it is set (naming
+  ADR-0010 and #655), and the text every runner registers — ingest,
+  graph-extract, restore — is byte-identical to the file in the checkout.
+  No substitution happens on the registration path any more.
+* **#642's adversarial checks survive**, relocated to ``ragstack.tool_image``
+  where the release-time stamping uses them: the anchored rewrite, the
+  refuse-on-partial residual check, the bare-filename rule. They are what
+  ``scripts/stamp_tool_image.py`` runs; ``test_cwl_tool_image_pin.py`` covers
+  the stamping itself.
+
+Stub the engine, never the text: the end-to-end tests drive the real
+``make_ingest_backend`` / runner code over an ``httpx.MockTransport`` fake
 engine and assert on the workflow text the engine actually received.
 """
 from __future__ import annotations
@@ -17,20 +28,20 @@ import httpx
 import pytest
 
 from ragstack.api import deps
-from ragstack.ingestion.backends import (
+from ragstack.ingestion.backends import make_ingest_backend
+from ragstack.ingestion.gowe_client import GoWeError
+from ragstack.ingestion.manifest import WorkItem
+from ragstack.tool_image import (
     DEFAULT_TOOL_IMAGE,
     ToolImageError,
     _residual_image_sites,
-    make_ingest_backend,
     substitute_tool_image,
     validate_tool_image,
 )
-from ragstack.ingestion.gowe_client import GoWeError
-from ragstack.ingestion.manifest import WorkItem
 
 REPO = Path(__file__).resolve().parents[3]
 CWL_DIR = REPO / "cwl"
-PINNED = "ragstack-worker-v1.6.3-1-ga2be96f.sif"
+PINNED = "ragstack-tools-v1.6.3+a2be96f-b1.sif"
 
 SAMPLE = """\
 # A comment that mentions dockerPull: ragstack-worker.sif must be left alone.
@@ -69,7 +80,7 @@ steps:
 """
 
 
-# --- the substitution ------------------------------------------------------- #
+# --- the substitution (now the stamping step's rewrite primitive) ----------- #
 
 def test_replaces_every_default_dockerpull_and_nothing_else():
     out = substitute_tool_image(SAMPLE, PINNED)
@@ -99,17 +110,17 @@ def test_empty_or_default_setting_is_byte_identical(image):
 
 def test_warns_when_there_is_nothing_to_substitute(caplog):
     cwl = "cwlVersion: v1.2\nrequirements:\n  DockerRequirement:\n    dockerPull: other.sif\n"
-    with caplog.at_level(logging.WARNING, logger="ragstack.ingestion.backends"):
+    with caplog.at_level(logging.WARNING, logger="ragstack.tool_image"):
         out = substitute_tool_image(cwl, PINNED, source="/x/wf.cwl")
     assert out == cwl
     warned = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warned) == 1
     msg = warned[0].getMessage()
-    assert "GOWE_TOOL_IMAGE" in msg and PINNED in msg and "/x/wf.cwl" in msg
+    assert PINNED in msg and "/x/wf.cwl" in msg
 
 
 def test_no_warning_when_it_substitutes(caplog):
-    with caplog.at_level(logging.WARNING, logger="ragstack.ingestion.backends"):
+    with caplog.at_level(logging.WARNING, logger="ragstack.tool_image"):
         substitute_tool_image(SAMPLE, PINNED)
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
@@ -134,7 +145,7 @@ def test_half_substitution_is_refused_naming_the_residual_line(doc, line):
     with pytest.raises(ToolImageError) as info:
         substitute_tool_image(doc, PINNED, source="wf.cwl")
     msg = str(info.value)
-    assert "GOWE_TOOL_IMAGE" in msg and "wf.cwl" in msg
+    assert "wf.cwl" in msg
     assert f"line(s) {line} " in msg  # exactly the residual site, not line 3
 
 
@@ -152,25 +163,16 @@ def test_crlf_document_is_fully_substituted():
     assert DEFAULT_TOOL_IMAGE not in out
 
 
-def test_restore_runner_surfaces_a_half_substitution_as_its_own_error(tmp_path):
-    from ragstack.collection_store import InMemoryCollectionStore
-    from ragstack.restore import CollectionRestorer, RestoreError
-
-    cwl = tmp_path / "wf.cwl"
-    cwl.write_text(_HALF[0][1])
-    r = CollectionRestorer(InMemoryCollectionStore(), workspace=None, gowe=None,
-                           cwl_path=cwl, tool_image=PINNED)
-    with pytest.raises(RestoreError, match="GOWE_TOOL_IMAGE"):
-        r._cwl()
-
-
 @pytest.mark.parametrize("path", sorted(CWL_DIR.glob("*.cwl")), ids=lambda p: p.name)
 def test_every_shipped_cwl_image_site_is_the_one_known_token(path):
     """Guard: a CWL that names its image any other way would silently escape the
-    pin. Every dockerPull / dockerImageId line must be substituted, and a file
-    either has none (a workflow with no container step) or has them all."""
+    stamping. Every dockerPull / dockerImageId line must be rewritable, and a
+    file either has none (a workflow with no container step) or has them all.
+    Only meaningful on an unstamped tree; the pin test covers the stamped one."""
     text = path.read_text(encoding="utf-8")
     sites = re.findall(r"^[ \t]*(?:dockerPull|dockerImageId):.*$", text, re.MULTILINE)
+    if sites and DEFAULT_TOOL_IMAGE not in sites[0]:
+        pytest.skip("tree is stamped; see test_cwl_tool_image_pin.py")
     out = substitute_tool_image(text, PINNED, source=path.name)  # raises on a residual
     assert _residual_image_sites(out) == []
     assert DEFAULT_TOOL_IMAGE not in "\n".join(
@@ -179,35 +181,47 @@ def test_every_shipped_cwl_image_site_is_the_one_known_token(path):
     assert out.count(PINNED) == len(sites)
 
 
-# --- boot validation -------------------------------------------------------- #
+# --- the name rule (kept for the stamping step) ----------------------------- #
 
 @pytest.mark.parametrize("bad", ["../x.sif", "/abs/x.sif", "x.img", "dir/x.sif",
                                  "..sif", ".hidden.sif", "x.sif/", "x\\y.sif", "x.sif.bak",
                                  "a" * 296 + ".sif"])
 def test_validate_rejects_non_bare_sif_names(bad):
-    with pytest.raises(ValueError, match="GOWE_TOOL_IMAGE"):
+    with pytest.raises(ValueError, match=r"\.sif"):
         validate_tool_image(bad)
 
 
-@pytest.mark.parametrize("good", ["", PINNED, DEFAULT_TOOL_IMAGE, "ragstack-worker-v1.6.3.sif",
+@pytest.mark.parametrize("good", ["", PINNED, DEFAULT_TOOL_IMAGE, "ragstack-tools-v1.6.4-b1.sif",
                                   "a" * 251 + ".sif"])
 def test_validate_accepts_bare_sif_names(good):
     assert validate_tool_image(good) == good
 
 
-@pytest.mark.parametrize("bad", ["../x.sif", "/abs/x.sif", "x.img"])
-def test_boot_refuses_a_bad_tool_image(monkeypatch, bad):
+# --- GOWE_TOOL_IMAGE is retired: the boot refuses it ------------------------ #
+
+@pytest.mark.parametrize("value", [PINNED, "ragstack-worker-v1.6.3.sif", "../x.sif", "  x.sif "])
+def test_boot_refuses_when_gowe_tool_image_is_set(monkeypatch, value):
     monkeypatch.setattr(deps.settings, "require_durable_backends", False)
     monkeypatch.setattr(deps.settings, "ingest_root", "")
-    monkeypatch.setattr(deps.settings, "gowe_tool_image", bad)
-    with pytest.raises(ValueError, match="GOWE_TOOL_IMAGE"):
+    monkeypatch.setattr(deps.settings, "gowe_tool_image", value)
+    with pytest.raises(RuntimeError, match="GOWE_TOOL_IMAGE") as info:
         deps._validate_production_settings()
-    # Control: the same boot with a good name passes, so the refusal is the name.
-    monkeypatch.setattr(deps.settings, "gowe_tool_image", PINNED)
+    msg = str(info.value)
+    assert "ADR-0010" in msg and "#655" in msg and "retired" in msg
+    # Control: the same boot with the variable unset passes, so the refusal is the variable.
+    monkeypatch.setattr(deps.settings, "gowe_tool_image", "")
     deps._validate_production_settings()
 
 
-# --- what reaches the engine ------------------------------------------------ #
+@pytest.mark.parametrize("value", ["", "   "])
+def test_boot_accepts_an_unset_or_blank_gowe_tool_image(monkeypatch, value):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "ingest_root", "")
+    monkeypatch.setattr(deps.settings, "gowe_tool_image", value)
+    deps._validate_production_settings()
+
+
+# --- what reaches the engine is the file, byte for byte --------------------- #
 
 class _Engine:
     """Fake GoWe: records every registered workflow body, then refuses the
@@ -223,7 +237,7 @@ class _Engine:
         return httpx.Response(500, text="stop here")
 
 
-def _gowe_settings(cwl: Path, tool_image: str) -> SimpleNamespace:
+def _gowe_settings(cwl: Path, tool_image: str = "") -> SimpleNamespace:
     return SimpleNamespace(
         ingest_backend="gowe", ingest_concurrency=1, gowe_url="http://gowe.test",
         gowe_token="t", gowe_workflow_cwl=str(cwl), gowe_workflow_name="wf",
@@ -232,7 +246,7 @@ def _gowe_settings(cwl: Path, tool_image: str) -> SimpleNamespace:
     )
 
 
-async def _register_through_backend(tool_image: str) -> str:
+async def _register_through_backend(tool_image: str = "") -> str:
     engine = _Engine()
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as http:
         backend = make_ingest_backend(
@@ -247,39 +261,43 @@ async def _register_through_backend(tool_image: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_ingest_registration_carries_the_pinned_image():
-    source = (CWL_DIR / "pdf-ingest-scatter.cwl").read_text(encoding="utf-8")
-    n_pulls = len(re.findall(r"^[ \t]*dockerPull: ragstack-worker\.sif", source, re.MULTILINE))
-    assert n_pulls >= 1
-    cwl = await _register_through_backend(PINNED)
-    assert len(re.findall(rf"^[ \t]*dockerPull: {re.escape(PINNED)}$", cwl, re.MULTILINE)) \
-        == n_pulls
-    assert not re.search(r"^[ \t]*docker(Pull|ImageId): ragstack-worker\.sif", cwl, re.MULTILINE)
-
-
-@pytest.mark.asyncio
-async def test_ingest_registration_is_unchanged_without_a_pin():
+async def test_ingest_registration_is_the_file_byte_for_byte():
     source = (CWL_DIR / "pdf-ingest-scatter.cwl").read_text(encoding="utf-8")
     assert await _register_through_backend("") == source
 
 
-def test_backend_factory_refuses_a_path_shaped_image():
-    with pytest.raises(ValueError, match="GOWE_TOOL_IMAGE"):
-        make_ingest_backend(_gowe_settings(CWL_DIR / "pdf-ingest-scatter.cwl", "../x.sif"))
+@pytest.mark.asyncio
+async def test_backend_factory_ignores_a_stale_tool_image_setting():
+    """The factory no longer reads the setting at all (the boot refuses it
+    first); a caller that builds the backend directly with one set still
+    registers the file as written."""
+    source = (CWL_DIR / "pdf-ingest-scatter.cwl").read_text(encoding="utf-8")
+    assert await _register_through_backend(PINNED) == source
 
 
-def test_graph_extract_and_restore_runners_substitute_too(monkeypatch):
-    """The other two workflows the API registers carry the pin as well — wired
-    from the same setting in deps, so a tenant's graph leg and restore run the
-    same tool image as its ingest."""
+def test_graph_extract_and_restore_runners_register_the_file_as_written(monkeypatch):
+    """The other two workflows the API registers carry no substitution either."""
     from ragstack.collection_store import InMemoryCollectionStore
 
-    monkeypatch.setattr(deps.settings, "gowe_tool_image", PINNED)
+    monkeypatch.setattr(deps.settings, "gowe_tool_image", "")
     http = httpx.AsyncClient(transport=httpx.MockTransport(_Engine()))
     graph = deps._build_graph_extract_runner(None, InMemoryCollectionStore(), http)
     gate = deps._build_lifecycle_gate(InMemoryCollectionStore(), http)
     for runner in (graph, gate.restorer):
-        assert runner.tool_image == PINNED
-        cwl = runner._cwl()
-        assert f"dockerPull: {PINNED}" in cwl
-        assert not re.search(r"^[ \t]*dockerPull: ragstack-worker\.sif", cwl, re.MULTILINE)
+        assert runner.tool_image == ""
+        assert runner._cwl() == Path(runner._cwl_path).read_text(encoding="utf-8")
+
+
+def test_runner_constructors_accept_and_ignore_tool_image(tmp_path):
+    """Older callers may still pass tool_image=; it is accepted and ignored,
+    and the text is the file, not a half-substituted document (the residual
+    refusal of #642 now lives at release time)."""
+    from ragstack.collection_store import InMemoryCollectionStore
+    from ragstack.restore import CollectionRestorer
+
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text(_HALF[0][1])
+    r = CollectionRestorer(InMemoryCollectionStore(), workspace=None, gowe=None,
+                           cwl_path=cwl, tool_image=PINNED)
+    assert r.tool_image == ""
+    assert r._cwl() == _HALF[0][1]

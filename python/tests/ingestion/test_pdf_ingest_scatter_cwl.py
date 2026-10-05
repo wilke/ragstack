@@ -154,14 +154,19 @@ def test_every_tool_is_inlined(wf: dict) -> None:
 def test_docker_requirement_declares_both_keys(wf: dict) -> None:
     """GoWe reads only ``dockerPull``; cwltool --singularity needs ``dockerImageId``.
     Neither falls back to the other (see cwl/README.md). The ExpressionTool step
-    runs in the engine and declares no image."""
+    runs in the engine and declares no image. Both keys carry the same bare
+    filename: the unstamped default, or a stamped ``ragstack-tools-…-b<N>.sif``
+    (ADR-0010); ``tests/unit/test_cwl_tool_image_pin.py`` holds the whole tree
+    to one of the two."""
+    from ragstack.tool_image import DEFAULT_TOOL_IMAGE, STAMPED_IMAGE_RE
+
     for name, step in _steps(wf).items():
         if step["run"]["class"] == "ExpressionTool":
             assert "DockerRequirement" not in step["run"].get("requirements", {}), name
             continue
         docker = step["run"]["requirements"]["DockerRequirement"]
-        assert docker["dockerPull"] == "ragstack-worker.sif", name
-        assert docker["dockerImageId"] == "ragstack-worker.sif", name
+        assert docker["dockerImageId"] == docker["dockerPull"], name
+        assert docker["dockerPull"] == DEFAULT_TOOL_IMAGE or STAMPED_IMAGE_RE.match(docker["dockerPull"]), name
 
 
 def test_network_access_only_where_needed(wf: dict) -> None:

@@ -88,15 +88,34 @@ var executableSurface = set(
 	// session that could repoint it would be choosing what every answer says.
 	"PROMPT_TEMPLATES_FILE",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
-	// GOWE_TOOL_IMAGE (#614) names the container image every registered workflow
-	// runs its steps in — what executes, the same class as the CWL paths above.
-	"GOWE_TOOL_IMAGE",
 	"QDRANT_URL", "ELASTICSEARCH_URL", "NEO4J_URI", "REDIS_URL",
 	"EMBEDDING_ENDPOINTS", "EMBEDDING_SIDECAR_URL", "CROSSENCODER_SIDECAR_URL",
 	"LLM_ENDPOINT", "GOWE_URL", "WORKSPACE_URL", "MODEL_URL_ALLOWLIST",
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"PORT", "ROOT_PATH",
 )
+
+// retired are keys the API REFUSES TO BOOT with. They classify as Unsupported
+// — the env API will not set them, adopt records them as drift — but with a
+// reason an operator can act on: `adopt` warns `retired_env_key` naming the
+// decision, instead of the generic "not in the classification table".
+//
+// GOWE_TOOL_IMAGE (#614/#642) was the per-tenant tool-image override. ADR-0010
+// decision 3 retires it (#655): there is no image override, the image is
+// stamped into the CWL at release time and a tenant changes it by checking out
+// a tag. python/ragstack/api/deps.py refuses the boot while it is set, so a
+// tenant.env that still carries it will not start — remove it.
+var retired = map[string]string{
+	"GOWE_TOOL_IMAGE": "retired by ADR-0010 decision 3 (#655): there is no image override — " +
+		"the tool image is stamped into cwl/*.cwl at release time. The API refuses to boot " +
+		"while it is set; remove it from tenant.env.",
+}
+
+// Retired reports whether key is a retired setting and why.
+func Retired(key string) (reason string, ok bool) {
+	reason, ok = retired[strings.TrimSpace(key)]
+	return reason, ok
+}
 
 // public is every field of python/ragstack/config.py's Settings (upper-cased)
 // that is neither a secret nor an executable-surface key. Regenerate with:

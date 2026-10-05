@@ -713,7 +713,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		WorktreeOutsideMirror, ImportRagstackOutsideWorktree, WritableByOthers, LingerMissing,
 		UserDropInMissing, RuntimeDirMissing, VMMaxMapCountLow, DiskLow, ESHeapSumHigh,
 		SudoersGroup, DormantProvisionedDirs, StoreURLDisallowed, CapabilitiesUnconfirmed,
-		ESHeapDrift, StoreNotListening, UIPortNotListening, UnsupportedEnvKey,
+		ESHeapDrift, StoreNotListening, UIPortNotListening, UnsupportedEnvKey, RetiredEnvKey,
 		APIKeyRoleUnknown, ExternalRefOutsideDataDir, UnmanagedFiles, DataDirOffLayout,
 		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
 		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,

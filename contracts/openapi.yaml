@@ -3611,7 +3611,10 @@ components:
       properties:
         version:
           type: string
-          description: Package version (importlib.metadata; `0.1.0` when not installed).
+          description: >-
+            The repo version as PEP 440 (ADR-0010): `1.6.4` on a release tag,
+            `1.6.4+a2be96f` past one; from the checkout, else the tools image's
+            generated `ragstack/_release.py`, else the distribution version.
         git_tag:
           type: [string, "null"]
           description: >-

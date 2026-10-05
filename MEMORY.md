@@ -58,7 +58,7 @@ These bit us once. Don't repeat them.
 ### Elasticsearch
 
 - **The `elasticsearch` Python client's major version must match the server's major version.** A 9.x client stamps every request with `Accept: application/vnd.elasticsearch+json; compatible-with=9`; an ES 8.x server rejects that outright with HTTP 400 `media_type_header_exception`. There is no negotiation and no fallback — every call fails. Deployed servers are 8.x (`deploy/docker-compose.infra.yml` and the CI integration job both run `elasticsearch:8.13.4`; prod runs 8.13.4/8.19.3), so `python/pyproject.toml`'s `text` extra is bounded `elasticsearch[async]>=8.13,<9`. **Do not remove that upper bound.** It fails at *runtime on the first ES call*, not at install time, so an unbounded `>=8.13` breaks silently on any fresh install or resolver refresh — which is exactly how the CWL worker image picked up 9.4.1 and the load step died (#225). Raise it to `<10` only in the same change that moves the servers to ES 9.
-- **The bound lives in `pyproject.toml` only.** `apptainer/ragstack-worker.def` and `apptainer/Dockerfile` install the package via its extras and deliberately do *not* repeat the constraint — a second copy would disagree with the API env on an ES 9 migration.
+- **The bound lives in `pyproject.toml` only.** `apptainer/ragstack-tools.def` and `apptainer/Dockerfile` install the package via its extras and deliberately do *not* repeat the constraint — a second copy would disagree with the API env on an ES 9 migration.
 
 ### BV-BRC Workspace
 

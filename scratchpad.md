@@ -541,3 +541,55 @@ A reader picking this repo up cold should read, in order: `CLAUDE.md`, then
 
 This file (`scratchpad.md`) remains the per-session change log for work that
 does not have a results tree of its own.
+
+## 2026-10-05 — #655 step 1: version derivation, `ragstack-tools` image build, stamping tooling (ADR-0010)
+
+Branch `feat/655-tools-image-build`. Repo-only; nothing under `/rag`, `/scout` or any
+tenant touched.
+
+- **One derivation.** `ragstack/version.py` is now the single `git describe`
+  (`--tags --match 'v*' --long --dirty --always`, parsed, never passed through):
+  `derive_version()` → `vX` on a tag, `vX+<shortsha>` past one, `DirtyTreeError`
+  on `-dirty`, `NoTagError` with no `v*` tag. `ragstack.__version__` (lazy,
+  `__getattr__`) and `GET /v1/version`.`version` carry it as PEP 440
+  (`1.6.4+17425fd`; `.dirty` suffix in a modified checkout). In the image a
+  generated `ragstack/_release.py` is read instead; else the distribution
+  version. `python -m ragstack.version --shell` is the build's version step.
+- **PEP 440 fact, pinned:** `Version("1.6.4+abc") != Version("1.6.4")` — the
+  local segment sorts *after* its public version (the brief had it as equal).
+  We never compare derived versions; the test says so.
+- **pyproject.toml** is static = last release's public version (bumped
+  0.1.0 → 1.6.4 here); the stamping step bumps it; a test holds it to the tag.
+- `apptainer/ragstack-worker.def` → `ragstack-tools.def`, templated with
+  `{{ VERSION/COMMIT/BUILD/BUILD_DATE }}` (no `%arguments` defaults: a build
+  without the four args fails instead of minting an unlabelled image);
+  `%post` writes `/opt/ragstack/RELEASE` + `_release.py` before pip install and
+  asserts `ragstack.__version__` in-image. `apptainer/build-tools-image.sh`
+  derives, refuses dirty trees, stages `python/` FROM THE COMMIT (`git archive
+  HEAD` → `--build-arg SRC`; `--dirty` and untracked checks ignore gitignored
+  caches/.env, which a tree build shipped — #664 review M1), picks
+  `b<N>`, builds with `--fakeroot` (works on coconut without a subuid entry;
+  `--sandbox` for the two-step), verifies labels + RELEASE, sha256, receipt.
+- `python/scripts/stamp_tool_image.py <receipt>` / `--check`; `ragstack/tool_image.py`
+  holds #642's checks (moved out of `ingestion/backends.py`) plus the stamping
+  rewrite and the tree-state classifier. Pin test: unstamped or stamped, never
+  mixed; `.sif` suffix asserted (GoWe sends a non-`.sif` name to a registry).
+- `GOWE_TOOL_IMAGE` retired: boot refuses it (ADR-0010/#655 in the message);
+  three substitution call sites dropped; ctl classifies it `Unsupported` with a
+  `Retired()` reason, `adopt` warns `retired_env_key`, env API refuses with it.
+- **Open for the owner (not decided here):** a stamped tree only passes the pin
+  test at the commit whose derived version the image carries — so the stamp
+  commit must be the tag commit (tag, build, stamp, re-tag, push once), and the
+  commit after a release on `main` would fail the strict test unless tags live
+  on a release branch or `main` is un-stamped after each release. Dev on `main`
+  cannot be "stamped and clean" at all (stamping is a commit that moves the
+  sha). Step 4's boot check needs this resolved.
+
+**Addendum (owner decision 2026-10-05, three-artifact model):** the stamped-
+version == derived-version rule is gone, and with it the circularity. Tools
+image = build at tag T (labels T, sha(T)); workflow = CWL naming an image by
+name; server = tag S choosing the image. Order: tag T → build → ops copies
+image + receipt → server release stamps the NAME into dockerPull AND
+dockerImageId (no digest in the CWL — receipt/labels carry it), commits, tags
+S. `stamp_tool_image.py` no longer derives, compares, or bumps pyproject; the
+pin test checks only "all bare" or "all the same well-formed .sif name".
