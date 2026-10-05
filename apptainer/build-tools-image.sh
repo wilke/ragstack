@@ -6,9 +6,13 @@
 # What it does, in order:
 #   1. derives the repo version — `python -m ragstack.version --shell`, the only
 #      place `git describe` runs: vX on a release tag, vX+<shortsha> past one.
-#      A DIRTY tree is refused (exit 3) and so is an untracked file under
-#      python/ (exit 3): %files copies python/ wholesale, so a build must see
-#      exactly what the commit has. No reachable v* tag: exit 4.
+#      A DIRTY tree is refused (exit 3); no reachable v* tag: exit 4.
+#   1b. stages python/ FROM THE COMMIT (`git archive HEAD python | tar -x`) into
+#      a temp dir and passes it to the def as --build-arg SRC: the image ships
+#      what `org.ragstack.commit` names, never the working tree. (`--dirty`
+#      and an untracked-file check both ignore gitignored content — a build
+#      from the tree shipped .mypy_cache, .pytest_cache, __pycache__, and
+#      would ship a gitignored python/.env the same way.)
 #   2. picks BUILD = next free N for that version in the output dir (b1 if
 #      none): a second build of the same version — a base-image rebuild, no
 #      code change — is b2, and never forces a release.
@@ -80,16 +84,6 @@ if ! [[ "$VERSION" =~ ^v[0-9][A-Za-z0-9.+-]*$ ]] || ! [[ "$COMMIT" =~ ^[0-9a-f]{
     echo "build-tools-image: unusable version/commit from ragstack.version: $IDENT" >&2
     exit 2
 fi
-# `git describe --dirty` sees tracked changes only; %files copies python/
-# wholesale, so an untracked file there would ship in an image whose commit
-# label says otherwise.
-UNTRACKED="$(git -C "$REPO" status --porcelain --untracked-files=all -- python | grep '^??' || true)"
-if [ -n "$UNTRACKED" ]; then
-    echo "build-tools-image: refusing to build: untracked files under python/ would be copied into the image:" >&2
-    echo "$UNTRACKED" | sed 's/^/    /' >&2
-    echo "Commit them, add them to .gitignore, or remove them." >&2
-    exit 3
-fi
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ---- 2. the build number ------------------------------------------------------
@@ -105,8 +99,13 @@ NAME="ragstack-tools-$VERSION-b$BUILD.sif"
 SIF="$OUT/$NAME"
 RECEIPT="$SIF.receipt.json"
 
+# ---- 1b. the source: the commit's python/, not the working tree's -------------
+STAGE="${TMPDIR:-/tmp}/ragstack-tools-src.$$"
+SRC="$STAGE/python"
+STAGE_CMD="git -C $(printf '%q' "$REPO") archive --format=tar HEAD python | tar -x -C $(printf '%q' "$STAGE")"
 BUILD_ARGS=(--build-arg "VERSION=$VERSION" --build-arg "COMMIT=$COMMIT"
-            --build-arg "BUILD=$BUILD" --build-arg "BUILD_DATE=$BUILD_DATE")
+            --build-arg "BUILD=$BUILD" --build-arg "BUILD_DATE=$BUILD_DATE"
+            --build-arg "SRC=$SRC")
 SBX="${TMPDIR:-/tmp}/ragstack-tools-$VERSION-b$BUILD.sbx.$$"
 if [ "$SANDBOX" -eq 1 ]; then
     CMD1=(apptainer build --sandbox "${BUILD_ARGS[@]}" "$SBX" "$DEF")
@@ -131,6 +130,7 @@ echo "build:      $BUILD"
 echo "build_date: $BUILD_DATE"
 echo "image:      $SIF"
 echo "receipt:    $RECEIPT"
+echo "stage:      $STAGE_CMD"
 echo "command:    $(printf '%q ' "${CMD1[@]}")"
 [ ${#CMD2[@]} -gt 0 ] && echo "then:       $(printf '%q ' "${CMD2[@]}")"
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -142,6 +142,10 @@ fi
 # ---- 3. build -----------------------------------------------------------------
 mkdir -p "$OUT"
 [ -e "$SIF" ] && { echo "refusing to overwrite existing $SIF" >&2; exit 1; }
+mkdir -p "$STAGE"
+trap 'rm -rf "$STAGE"' EXIT
+git -C "$REPO" archive --format=tar HEAD python | tar -x -C "$STAGE"
+[ -d "$SRC/ragstack" ] || { echo "staging failed: no $SRC/ragstack" >&2; exit 1; }
 "${CMD1[@]}"
 if [ ${#CMD2[@]} -gt 0 ]; then
     "${CMD2[@]}"

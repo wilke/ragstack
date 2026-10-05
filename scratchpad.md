@@ -565,8 +565,9 @@ tenant touched.
   without the four args fails instead of minting an unlabelled image);
   `%post` writes `/opt/ragstack/RELEASE` + `_release.py` before pip install and
   asserts `ragstack.__version__` in-image. `apptainer/build-tools-image.sh`
-  derives, refuses dirty trees AND untracked files under `python/` (`%files`
-  copies the dir wholesale; `git describe --dirty` ignores untracked), picks
+  derives, refuses dirty trees, stages `python/` FROM THE COMMIT (`git archive
+  HEAD` → `--build-arg SRC`; `--dirty` and untracked checks ignore gitignored
+  caches/.env, which a tree build shipped — #664 review M1), picks
   `b<N>`, builds with `--fakeroot` (works on coconut without a subuid entry;
   `--sandbox` for the two-step), verifies labels + RELEASE, sha256, receipt.
 - `python/scripts/stamp_tool_image.py <receipt>` / `--check`; `ragstack/tool_image.py`

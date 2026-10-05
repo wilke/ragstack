@@ -59,9 +59,11 @@ apptainer/build-tools-image.sh --sandbox        # hosts without --fakeroot: buil
 apptainer/build-tools-image.sh --out /some/dir  # never a shared store (see below)
 ```
 
-The script: derives the version (refuses a dirty tree, exit 3; refuses
-untracked files under `python/`, which `%files` would copy in; exit 4 with no
-reachable `v*` tag) → picks `b<N>` → `apptainer build --fakeroot --build-arg …`
+The script: derives the version (refuses a dirty tree, exit 3; exit 4 with no
+reachable `v*` tag), stages `python/` **from the commit** (`git archive HEAD`,
+passed as `--build-arg SRC`, so gitignored working-tree content such as
+`.mypy_cache`, `__pycache__` or a `python/.env` never ships and
+`org.ragstack.commit` is true by construction) → picks `b<N>` → `apptainer build --fakeroot --build-arg …`
 → **verifies** the labels and `/opt/ragstack/RELEASE` against its inputs
 (a mismatch deletes the image) → sha256 → writes the receipt.
 
@@ -84,6 +86,9 @@ It is the input to the stamping step and the record of what was built; keep
 it with the image.
 
 ## Stamping (release only)
+
+> Flow under review (#655): the tag/build/stamp/re-tag sequence below and the
+> strictness of the pin test on post-release `main` are an open owner decision.
 
 ```bash
 python python/scripts/stamp_tool_image.py apptainer/images/ragstack-tools-v1.6.5-b1.sif.receipt.json

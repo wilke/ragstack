@@ -38,9 +38,9 @@ are identities, not ordinals: ``v1.6.4+a2be96f`` is not newer or older than
 ``v1.6.4``, it is a different commit — and ``tests/unit/test_version_derivation.py``
 pins the PEP 440 behaviour so nobody starts.
 
-``git describe --dirty`` sees **tracked** changes only; an untracked file is
-not "dirty". The build script additionally refuses untracked files under
-``python/`` because ``%files`` copies that directory wholesale into the image.
+``git describe --dirty`` sees **tracked** changes only; an untracked or
+gitignored file is not "dirty". That is why the build script ships the
+*commit's* ``python/`` (``git archive HEAD``), never the working tree's.
 
 ``ragstack.__version__`` and ``version``
 ----------------------------------------
@@ -186,6 +186,18 @@ _DESCRIBE_RE = re.compile(
 #: tree-wide pin test take a version apart with it instead of re-deriving.
 VERSION_RE = re.compile(r"^(?P<tag>v[0-9][^+\s]*)(?:\+(?P<sha>[0-9a-f]{4,40}))?$")
 
+#: A release tag: ``v`` + a PEP 440 public version (epoch, release segment,
+#: optional pre/post/dev with PEP 440's permitted separators). ``v-next`` and
+#: ``v1.6.4_hotfix`` fail; ``v1.6.4``, ``v1.7.0-rc1``, ``v2.0.0.post1`` pass.
+#: Checked once, in :attr:`Described.version`, so no caller re-validates.
+_TAG_RE = re.compile(
+    r"^v(?:\d+!)?\d+(?:\.\d+)*"
+    r"(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?"
+    r"(?:[-_.]?(?:post|rev|r)[-_.]?\d*)?"
+    r"(?:[-_.]?dev[-_.]?\d*)?$",
+    re.IGNORECASE,
+)
+
 _LOCK = threading.Lock()
 #: argv tuple → output. **Successes only** — see the module docstring.
 _CACHE: dict[tuple[str, ...], str] = {}
@@ -217,11 +229,19 @@ class Described:
 
     @property
     def version(self) -> str:
-        """``vX`` or ``vX+<shortsha>``; raises :class:`NoTagError` without a tag."""
+        """``vX`` or ``vX+<shortsha>``; raises :class:`NoTagError` without a tag and
+        :class:`VersionError` for a ``v*`` tag that is not version-shaped
+        (``v-next``, ``v1.6.4_hotfix``): the tag must be ``v`` + a PEP 440 public
+        version, or the image name and ``__version__`` it feeds are not versions."""
         if self.tag is None:
             raise NoTagError(
                 f"no v* tag is reachable from HEAD (git describe --always gave {self.sha}). "
                 "A version is a tag or a tag plus a commit; nothing invents one."
+            )
+        if _TAG_RE.match(self.tag) is None:
+            raise VersionError(
+                f"tag {self.tag!r} is not version-shaped: a release tag is 'v' followed by a "
+                "PEP 440 public version (v1.6.4, v1.7.0-rc1, v2.0.0.post1); re-tag."
             )
         return self.tag if self.distance == 0 else f"{self.tag}+{self.sha}"
 
@@ -467,10 +487,16 @@ def package_version(*, arm_backoff: bool = True) -> str:
     else:
         d = _describe(arm_backoff=arm_backoff)
     if d is not None and d.tag is not None:
-        v = pep440(d.version)
-        if d.dirty:
-            v += ".dirty" if "+" in v else "+dirty"
-        return v
+        try:
+            v = pep440(d.version)
+        except VersionError:
+            # A mis-shaped tag: informational here, so fall through rather
+            # than fail an import or 500 the version endpoint.
+            v = ""
+        if v:
+            if d.dirty:
+                v += ".dirty" if "+" in v else "+dirty"
+            return v
     return _release_file_version() or _distribution_version()
 
 

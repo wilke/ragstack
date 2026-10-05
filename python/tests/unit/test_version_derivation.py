@@ -82,8 +82,9 @@ def test_dirty_tree_is_refused(repo):
 
 
 def test_untracked_file_is_not_dirty_to_git_describe(repo):
-    """Documented, not desired: `--dirty` sees tracked changes only. The build
-    script refuses untracked files under python/ separately."""
+    """Documented, not desired: `--dirty` sees tracked changes only. That is
+    why the build script stages python/ from the commit (`git archive HEAD`)
+    instead of the working tree."""
     _git(repo, "tag", "v1.0.0")
     (repo / "stray").write_text("x")
     assert v.derive_version(repo) == "v1.0.0"
@@ -98,6 +99,38 @@ def test_no_v_tag_is_refused_not_invented(repo):
         v.derive_version(repo)
     _git(repo, "tag", "v0.1.0")
     assert v.derive_version(repo) == "v0.1.0"
+
+
+@pytest.mark.parametrize("tag", ["v-next", "v1.6.4_hotfix", "vX", "v1.6.4-hotfix"])
+def test_a_v_tag_that_is_not_version_shaped_is_refused(repo, tag):
+    """`--match v*` would pick these up; the version they would feed is not a
+    version. Refused once, in Described.version, as VersionError (not NoTag)."""
+    _git(repo, "tag", tag)
+    with pytest.raises(v.VersionError, match="not version-shaped") as info:
+        v.derive_version(repo)
+    assert not isinstance(info.value, v.NoTagError)
+    # __version__ falls through to the distribution rather than raising.
+    d = v.describe_repo(repo)
+    with pytest.raises(v.VersionError):
+        _ = d.version
+    v.cache_clear()
+
+    def fake_describe(*, arm_backoff: bool = True) -> v.Described:
+        return d
+
+    original = v._describe
+    v._describe = fake_describe  # type: ignore[assignment]
+    try:
+        assert v.package_version() == v._distribution_version()
+    finally:
+        v._describe = original
+        v.cache_clear()
+
+
+@pytest.mark.parametrize("tag", ["v1.6.4-rc1", "v1.6.4rc1", "v1.6.4.post1", "v2.0.0.dev3", "v1!2.0"])
+def test_pep440_shaped_pre_post_dev_tags_are_accepted(repo, tag):
+    _git(repo, "tag", tag)
+    assert v.derive_version(repo) == tag
 
 
 def test_prerelease_tag_with_a_dash_parses(repo):

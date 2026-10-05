@@ -230,9 +230,12 @@ def test_script_stamps_then_check_passes(tree, tmp_path):
 
 
 def test_script_refuses_a_receipt_for_another_version(tree, tmp_path):
+    before = _docs(tree / "cwl")
     out = _run(tree, str(_receipt(tmp_path, "v9.9.8")))
     assert out.returncode == 1 and "derives v9.9.9" in out.stderr
-    assert check_tree_state(_docs(tree / "cwl"))[0] == "unstamped"  # nothing written
+    # Nothing written — whatever state the copied tree was in (unstamped on
+    # main today; stamped after the first stamped release), it still is.
+    assert _docs(tree / "cwl") == before
 
 
 def test_script_refuses_a_dirty_tree(tree, tmp_path):

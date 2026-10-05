@@ -28,6 +28,10 @@
 #       python /opt/ragstack/scripts/pdf_extract.py ...
 #
 # Build from the repo root, so the python/ build context is in scope (above).
+# COPY takes the WORKING TREE's python/ (gitignored caches included); for an
+# image whose commit label is true by construction, feed the commit instead:
+#   git archive HEAD | docker build -f apptainer/Dockerfile --build-arg … -
+# The SIF build (apptainer/build-tools-image.sh) does this with git archive.
 #
 # Convert to a SIF for apptainer hosts (optional, needs docker running):
 #   apptainer build ragstack-tools-<version>-b<N>.sif docker-daemon://ragstack-tools:<version>-b<N>

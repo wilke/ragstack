@@ -19,6 +19,7 @@ From: python:3.12-slim-bookworm
 #   --build-arg COMMIT=<full sha>        # the commit whose python/ this is
 #   --build-arg BUILD=1                  # N-th build of this version (b2 = base rebuild)
 #   --build-arg BUILD_DATE=2026-10-05T03:00:00Z
+#   --build-arg SRC=<tmp>/python         # python/ staged FROM THE COMMIT (git archive HEAD)
 #
 # templated into %labels (org.ragstack.version / commit / build / build-date,
 # readable by `apptainer inspect --labels`) and written to /opt/ragstack/RELEASE
@@ -26,9 +27,11 @@ From: python:3.12-slim-bookworm
 # `ragstack.__version__` resolves without git (the build asserts it does). The
 # file name — ragstack-tools-<version>-b<N>.sif — is a human handle only: a
 # renamed or copied file proves nothing, the labels and the digest do. There
-# are deliberately NO %arguments defaults: a build without the four values
+# are deliberately NO %arguments defaults: a build without the five values
 # fails ("build var VERSION is not defined") instead of minting an unlabelled
-# image.
+# image. SRC is what makes `org.ragstack.commit` true by construction: the
+# script stages python/ with `git archive HEAD`, so gitignored content of the
+# working tree (.mypy_cache, __pycache__, a python/.env) never ships.
 #
 # BUILD with the script, never by hand:
 #   apptainer/build-tools-image.sh [--out DIR] [--dry-run] [--sandbox]
@@ -79,7 +82,7 @@ From: python:3.12-slim-bookworm
 # `import neo4j` check in cwl/README.md.
 
 %files
-    python /opt/ragstack/python
+    {{ SRC }} /opt/ragstack/python
 
 %post
     set -eu
@@ -103,6 +106,13 @@ COMMIT = "{{ COMMIT }}"
 BUILD = "{{ BUILD }}"
 BUILD_DATE = "{{ BUILD_DATE }}"
 EOF
+    # The wheel's metadata must agree with __version__'s public part: under the
+    # release flow pyproject is bumped in the stamp commit AFTER the build, so
+    # the staged copy is one release behind. Write VERSION's public part
+    # (v1.6.5+abc → 1.6.5) into it before pip reads it.
+    PUBLIC="{{ VERSION }}"; PUBLIC="${PUBLIC#v}"; PUBLIC="${PUBLIC%%+*}"
+    sed -i -E "s/^version = \"[^\"]*\"/version = \"$PUBLIC\"/" /opt/ragstack/python/pyproject.toml
+    grep -q "^version = \"$PUBLIC\"" /opt/ragstack/python/pyproject.toml
 
     python -m pip install --upgrade pip
 
@@ -158,11 +168,13 @@ EOF
     # the generated _release.py, since there is no git and no checkout here.
     # A mismatch means the resolution order in ragstack/version.py broke.
     cd / && python - <<'EOF'
+from importlib.metadata import version
 import ragstack
 from ragstack.version import pep440
 expected = pep440("{{ VERSION }}")
 assert ragstack.__version__ == expected, (ragstack.__version__, expected)
-print("ragstack.__version__ ==", ragstack.__version__)
+assert version("ragstack") == expected.split("+")[0], (version("ragstack"), expected)
+print("ragstack.__version__ ==", ragstack.__version__, "| wheel metadata", version("ragstack"))
 EOF
 
 %environment
