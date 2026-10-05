@@ -298,9 +298,23 @@ def _build_nav(tokens: list[dict]) -> str:
     return "\n".join(out)
 
 
+# Standalone HTML pages published verbatim (no Markdown render, no site chrome).
+# For analyses that carry their own diagrams and styling. Same card fields as
+# PAGES so they sit on the landing page; `src` is relative to docs/, `out` is the
+# flat site path. Kept separate from PAGES because render_page() must not touch them.
+STATIC_PAGES = [
+    dict(
+        src="design/openchia-episodes-as-experiments.html",
+        out="openchia-episodes-as-experiments.html", label="Analysis",
+        card="Episodes as Experiments",
+        blurb="Whether OpenChia's Episode control framework can plan and run the chunking study's experiments — read against upstream at 98d74fb and the asm-next Duet export, with every gap sized.",
+    ),
+]
+
+
 def build_index() -> None:
     cards = []
-    for p in PAGES:
+    for p in PAGES + STATIC_PAGES:
         if not p.get("index", True):
             continue
         cards.append(
@@ -328,6 +342,11 @@ def assemble_site(dest: Path) -> None:
     for name in [p["out"] for p in PAGES] + ["index.html"]:
         (dest / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / name, dest / name)
+    # Standalone HTML pages: copied from their source path to their flat site path,
+    # untouched. They are not rendered, so they never exist beside the script.
+    for p in STATIC_PAGES:
+        (dest / p["out"]).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HERE / p["src"], dest / p["out"])
     # Screenshots and any other page assets. Pages are flattened to the site root,
     # so a doc referencing images/x.png resolves here without rewriting.
     images = HERE / "images"
@@ -336,7 +355,7 @@ def assemble_site(dest: Path) -> None:
         shutil.copytree(images, dest / "images", dirs_exist_ok=True)
         n_assets = sum(1 for f in (dest / "images").rglob("*") if f.is_file())
     (dest / ".nojekyll").touch()
-    print(f"  assembled {len(PAGES) + 1} pages + {n_assets} assets -> {dest}")
+    print(f"  assembled {len(PAGES) + 1} rendered + {len(STATIC_PAGES)} static pages + {n_assets} assets -> {dest}")
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ on:
     # unpublished doc is cheap; not rebuilding on a published one is a stale site.
     paths:
       - "docs/**/*.md"
+      - "docs/**/*.html"   # STATIC_PAGES in build_docs.py are copied verbatim
       - "docs/images/**"
       - docs/build_docs.py
       - .github/workflows/pages.yml
