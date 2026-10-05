@@ -7,9 +7,10 @@ parses it and never checks it). What those values are allowed to be, how they
 are rewritten, and how a document is checked for sites a rewrite could not
 see, live here, shared by:
 
-* ``python/scripts/stamp_tool_image.py`` — the release-time stamping that
-  writes a built image's name into every ``dockerPull`` and its sha256 into
-  every ``dockerImageId`` (ADR-0010 decision 1);
+* ``python/scripts/stamp_tool_image.py`` — the server-release step that
+  writes a built image's name into every ``dockerPull`` and ``dockerImageId``
+  (ADR-0010, three-artifact model: the digest stays in the receipt and the
+  image's labels, never in the CWL);
 * ``tests/unit/test_cwl_tool_image_pin.py`` — the tree-wide pin test (the
   tree is *unstamped* or *stamped*, never mixed);
 * the adversarial tests of #642 (``tests/unit/test_gowe_tool_image.py``),
@@ -242,46 +243,46 @@ def unrewritable_sites(cwl: str) -> list[int]:
     return sorted(bad)
 
 
-def stamp_tool_image(cwl: str, name: str, digest: str, *, source: str = "workflow") -> str:
-    """Write ``name`` into every ``dockerPull`` and ``digest`` into every
-    ``dockerImageId`` of a CWL document. Raises :class:`ToolImageError` when
-    any site is unrewritable (refuse-on-partial, from #642) or when ``name``
-    is not a stamped ``.sif`` name or ``digest`` not a sha256.
+def stamp_tool_image(cwl: str, name: str, *, source: str = "workflow") -> str:
+    """Write ``name`` into every ``dockerPull`` **and** every ``dockerImageId``
+    of a CWL document (both keys carry the same bare filename: GoWe reads the
+    first, cwltool ``--singularity`` the second — see ``cwl/README.md``).
+    Raises :class:`ToolImageError` when any site is unrewritable
+    (refuse-on-partial, from #642), when ``name`` is not a well-formed stamped
+    ``.sif`` name, or when a current ``dockerPull`` does not end in ``.sif``.
 
-    A document with no image site at all (a workflow with no container step)
-    is returned unchanged.
+    The image's digest is NOT written into the CWL: it lives in the receipt
+    beside the image and in the image's labels, and the identity check
+    (ADR-0010 step 4) reads those. The CWL names the image; the receipt proves
+    it. A document with no image site at all (a workflow with no container
+    step) is returned unchanged.
     """
     if STAMPED_IMAGE_RE.match(name) is None or validate_tool_image(name) != name:
         raise ToolImageError(
             f"{name!r} is not a stamped image name (ragstack-tools-<version>-b<N>.sif); "
             "the .sif suffix is load-bearing — without it GoWe sends the name to a registry"
         )
-    if SHA256_RE.match(digest) is None:
-        raise ToolImageError(f"{digest!r} is not a sha256 hex digest")
     bad = unrewritable_sites(cwl)
     if bad:
         raise ToolImageError(
             f"{source}: line(s) {', '.join(map(str, bad))} name a docker image key in a "
             "form the stamping does not rewrite (flow mapping, list item, 'dockerPull :', "
             "key case, or value on the next line). Those steps would run an unstamped "
-            "image. Write them as 'dockerPull: <name>' / 'dockerImageId: <digest>' on one line."
+            "image. Write them as 'dockerPull: <name>' / 'dockerImageId: <name>' on one line."
         )
     # A current value that is not a local image: a hand edit that already sends
     # GoWe to a registry (no .sif) is not something to paper over silently.
-    odd = [
-        f"{n} ({field}: {value})"
-        for n, field, value in image_sites(cwl)
-        if not value.endswith(".sif") and not (field == "dockerImageId" and SHA256_RE.match(value))
-    ]
+    odd = [f"{n} ({field}: {value})" for n, field, value in image_sites(cwl)
+           if not value.endswith(".sif")]
     if odd:
         raise ToolImageError(
-            f"{source}: line(s) {', '.join(odd)} do not name a .sif image (or, for "
-            "dockerImageId, a sha256). GoWe sends a dockerPull without .sif to a registry as "
-            "docker://<name>; fix the site by hand before stamping."
+            f"{source}: line(s) {', '.join(odd)} do not name a .sif image. GoWe sends a "
+            "dockerPull without .sif to a registry as docker://<name>; fix the site by hand "
+            "before stamping."
         )
 
     def _sub(m: re.Match[str]) -> str:
-        return m.group("key") + (name if m.group("field") == "dockerPull" else digest)
+        return m.group("key") + name
 
     return _ANY_SITE_RE.sub(_sub, cwl)
 
@@ -291,11 +292,16 @@ def check_tree_state(docs: dict[str, str]) -> tuple[str, str | None, list[str]]:
 
     Returns ``(state, image_name, problems)``: ``state`` is ``"unstamped"``
     (every ``dockerPull`` is :data:`DEFAULT_TOOL_IMAGE`), ``"stamped"`` (every
-    ``dockerPull`` names one stamped image and every ``dockerImageId`` is a
-    sha256 — ``image_name`` is that name), ``"empty"`` (no image site anywhere)
-    or ``"mixed"``; ``problems`` lists every site that disagrees with the
-    state, with its source and line. A tree in any state but the first two is
-    a release that cannot be cut.
+    ``dockerPull`` names the SAME well-formed stamped image and every
+    ``dockerImageId`` equals it — ``image_name`` is that name), ``"empty"`` (no
+    image site anywhere) or ``"mixed"``; ``problems`` lists every site that
+    disagrees with the state, with its source and line. A tree in any state
+    but the first two is a release that cannot be cut.
+
+    Nothing here compares the stamped name to the checkout's own version: a
+    server release (tag S) CHOOSES which tools image (built at tag T, or
+    ``T+sha`` for a dev server) its CWL names — the three-artifact model of
+    ADR-0010 (docs/adr-0010-three-artifacts).
     """
     problems: list[str] = []
     pulls: dict[str, list[str]] = {}
@@ -324,10 +330,10 @@ def check_tree_state(docs: dict[str, str]) -> tuple[str, str | None, list[str]]:
     if len(stamped) == 1 and not default and not other:
         name = stamped[0]
         for v, wheres in ids.items():
-            if SHA256_RE.match(v) is None:
+            if v != name:
                 for where in wheres:
-                    problems.append(f"{where}: dockerImageId {v!r} in a stamped tree must be "
-                                    "the image's sha256")
+                    problems.append(f"{where}: dockerImageId {v!r} in a stamped tree must equal "
+                                    f"the dockerPull name {name}")
         return ("stamped", name, problems) if not problems else ("mixed", name, problems)
     for v in stamped:
         for where in pulls[v]:

@@ -584,3 +584,12 @@ tenant touched.
   on a release branch or `main` is un-stamped after each release. Dev on `main`
   cannot be "stamped and clean" at all (stamping is a commit that moves the
   sha). Step 4's boot check needs this resolved.
+
+**Addendum (owner decision 2026-10-05, three-artifact model):** the stamped-
+version == derived-version rule is gone, and with it the circularity. Tools
+image = build at tag T (labels T, sha(T)); workflow = CWL naming an image by
+name; server = tag S choosing the image. Order: tag T → build → ops copies
+image + receipt → server release stamps the NAME into dockerPull AND
+dockerImageId (no digest in the CWL — receipt/labels carry it), commits, tags
+S. `stamp_tool_image.py` no longer derives, compares, or bumps pyproject; the
+pin test checks only "all bare" or "all the same well-formed .sif name".

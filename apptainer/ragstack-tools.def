@@ -106,10 +106,10 @@ COMMIT = "{{ COMMIT }}"
 BUILD = "{{ BUILD }}"
 BUILD_DATE = "{{ BUILD_DATE }}"
 EOF
-    # The wheel's metadata must agree with __version__'s public part: under the
-    # release flow pyproject is bumped in the stamp commit AFTER the build, so
-    # the staged copy is one release behind. Write VERSION's public part
-    # (v1.6.5+abc → 1.6.5) into it before pip reads it.
+    # The wheel's metadata must agree with __version__'s public part:
+    # pyproject.toml tracks the SERVER release tag S, which may differ from
+    # the tools tag T this image is built at. Write VERSION's public part
+    # (v1.6.5+abc → 1.6.5) into the staged copy before pip reads it.
     PUBLIC="{{ VERSION }}"; PUBLIC="${PUBLIC#v}"; PUBLIC="${PUBLIC%%+*}"
     sed -i -E "s/^version = \"[^\"]*\"/version = \"$PUBLIC\"/" /opt/ragstack/python/pyproject.toml
     grep -q "^version = \"$PUBLIC\"" /opt/ragstack/python/pyproject.toml

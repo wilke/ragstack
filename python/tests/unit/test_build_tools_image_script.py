@@ -136,9 +136,9 @@ def test_sandbox_mode_prints_the_two_step(repo, tmp_path):
 
 
 def test_def_writes_the_public_version_into_pyproject_before_pip():
-    """Under the release flow pyproject.toml is bumped in the stamp commit AFTER
-    the build, so the staged copy is one release behind; the def rewrites it
-    from VERSION before `pip install` and asserts the wheel metadata equals
+    """pyproject.toml tracks the SERVER release tag S, which may differ from the
+    tools tag T the image is built at; the def rewrites the staged copy from
+    VERSION before `pip install` and asserts the wheel metadata equals
     __version__'s public part (L4 of the #664 review)."""
     text = DEF.read_text()
     post = text[text.index("%post"):text.index("%environment")]

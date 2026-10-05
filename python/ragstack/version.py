@@ -64,11 +64,18 @@ resolved lazily on first access and cached for the process. Resolution order:
    "I cannot tell" answer, and it looks like one.
 
 ``pyproject.toml`` keeps a *static* version: the public part of the last
-release (``1.6.4``). The stamping step (``python/scripts/stamp_tool_image.py``)
-bumps it with every release, and ``tests/unit/test_version_derivation.py``
-asserts it equals the tag part of the checkout's derived version — so the
-metadata and ``__version__`` agree on the release and differ only in the
-local segment that names the commit.
+release (``1.6.4``), bumped by hand when a release is tagged, and
+``tests/unit/test_version_derivation.py`` asserts it equals the tag part of
+the checkout's derived version — so the metadata and ``__version__`` agree on
+the release and differ only in the local segment that names the commit.
+
+Three artifacts are versioned separately (ADR-0010, three-artifact model):
+a *tools image* is a build of the repo at a tag ``T`` (this module derives
+``T`` or ``T+sha`` at build time); a *workflow* is CWL text naming a tools
+image by name; a *server* release is a tag ``S`` that chooses which tools
+image its CWL names. ``pyproject.toml`` and this module describe the repo
+checkout — ``S`` for a server, ``T`` for a tools build — never "the image the
+CWL names"; nothing here compares the two.
 
 The endpoint
 ------------

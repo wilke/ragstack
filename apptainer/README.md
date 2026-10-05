@@ -27,10 +27,12 @@ compare two derived versions). The `.sif` suffix is load-bearing: GoWe keeps a
 `resolveApptainerImage` is `filepath.Join(imageDir, name)`, no escaping.
 
 `python/pyproject.toml` keeps a static `version` = the public part of the last
-release (`1.6.4`). The stamping step bumps it; `tests/unit/test_version_derivation.py`
+release (`1.6.4`), bumped by hand at a server release; `tests/unit/test_version_derivation.py`
 asserts it equals the tag part of the derived version. Metadata and
 `__version__` therefore agree on the release and differ only in the local
-segment that names the commit.
+segment that names the commit. (`pyproject.toml` tracks the *server* tag `S`;
+the tools-image build rewrites its staged copy from `VERSION` so the wheel
+inside the image agrees with the image's own version.)
 
 ## Identity: labels, `RELEASE`, digest
 
@@ -43,11 +45,17 @@ The file name is a human handle. What proves an image is:
   `key=value` lines — and `ragstack/_release.py` in the installed package, so
   `apptainer exec <sif> python -c 'import ragstack; print(ragstack.__version__)'`
   answers without git (the build asserts it equals the version it was given);
-- the **sha256 digest** of the file, recorded in the receipt and stamped into
-  every `dockerImageId`.
+- the **sha256 digest** of the file, recorded in the receipt beside the image
+  (`<sif>.receipt.json`, which travels with it).
+
+The digest is **not** written into the CWL. Identity verification (ADR-0010
+step 4, the render/boot check) reads the receipt and `apptainer inspect
+--labels` of the file the CWL names — GoWe parses `dockerImageId` and never
+checks it, cwltool reads it as a filename, so a digest there would verify
+nothing. The CWL names the image; the receipt and labels prove it.
 
 The def file has no `%arguments` defaults on purpose: `apptainer build` without
-the four `--build-arg`s fails (`build var VERSION is not defined`) instead of
+the five `--build-arg`s fails (`build var VERSION is not defined`) instead of
 minting an unlabelled image.
 
 ## Building
@@ -85,47 +93,62 @@ passed as `--build-arg SRC`, so gitignored working-tree content such as
 It is the input to the stamping step and the record of what was built; keep
 it with the image.
 
-## Stamping (release only)
+## Three artifacts, and the release order
 
-> Flow under review (#655): the tag/build/stamp/re-tag sequence below and the
-> strictness of the pin test on post-release `main` are an open owner decision.
+Three things are named separately (ADR-0010 as amended by the three-artifact
+model, `docs/adr-0010-three-artifacts`):
+
+1. a **tools image** — a build of the repo at tag `T` (labels
+   `org.ragstack.version=T`, `org.ragstack.commit=sha(T)`), built **from the
+   tag commit** by `build-tools-image.sh`. Nothing is written back to the repo
+   first.
+2. a **workflow** — CWL text naming a tools image **by name**. GoWe's
+   content-hash id binds text + image name. "The tools image must support the
+   workflow" is declared by the release that writes the name and proven by
+   that release's tests.
+3. a **server/tenant version** — a separate tag `S` that may differ from
+   `T`. A server release *chooses* which tools image its CWL names. (A server
+   image is a later #655 step.)
+
+Release order is linear — no stamp-after-build, no re-tagging:
+
+1. `git tag vT` on `main`;
+2. `apptainer/build-tools-image.sh` from that checkout →
+   `ragstack-tools-vT-b1.sif` + its receipt;
+3. ops copies the image **and its receipt** to the shared store
+   (`/scout/containers/ragstack/`, release versions only);
+4. a server release runs `python/scripts/stamp_tool_image.py <receipt>` to
+   name it in `cwl/`, commits, tags `vS`.
+
+Off-tag builds (`vT+<sha>`) are for dev and hand use and may be named by a
+dev server on `main`; they never enter the shared store.
+
+## Stamping
 
 ```bash
-python python/scripts/stamp_tool_image.py apptainer/images/ragstack-tools-v1.6.5-b1.sif.receipt.json
+python python/scripts/stamp_tool_image.py /scout/containers/ragstack/ragstack-tools-v1.6.5-b1.sif.receipt.json
 python python/scripts/stamp_tool_image.py --check     # the tree-wide gate
 ```
 
-Stamping writes the receipt's `name` into every `dockerPull` and its `sha256`
-into every `dockerImageId` of `cwl/*.cwl`, and bumps `pyproject.toml`. It
-refuses — writing nothing — when the receipt's version is not the checkout's
-derived version, when any image site is in a form the rewrite cannot see
-(flow mapping, list item, `dockerPull :`, key case, value on the next line —
-#642's refuse-on-partial rule, now at release time), or when any `dockerPull`
-does not end in `.sif`.
+Stamping writes the receipt's `name` into every `dockerPull` **and** every
+`dockerImageId` of `cwl/*.cwl` (both keys carry the same bare filename: GoWe
+reads the first, cwltool `--singularity` the second). It touches nothing
+else — `pyproject.toml` tracks the server tag `S`, not the tools image — and
+it does not compare the receipt to the checkout's own version. It refuses,
+writing nothing, when the receipt is not self-consistent, when any image site
+is in a form the rewrite cannot see (flow mapping, list item, `dockerPull :`,
+key case, value on the next line — #642's refuse-on-partial rule, now at
+release time), or when any current `dockerPull` does not end in `.sif`.
 
 The tree is in exactly one of two states, and `tests/unit/test_cwl_tool_image_pin.py`
-fails anything else:
+(and `--check`) fail anything else:
 
 - **unstamped** — every `dockerPull` is the bare `ragstack-worker.sif`. This
-  is `main`. Dev runs `main` and resolves that name through its worker's
-  `--image-dir` symlink, so the bare name stays until a release stamps it.
-- **stamped** — every `dockerPull` names one `ragstack-tools-<version>-b<N>.sif`
-  whose `<version>` equals the checkout's derived version, and every
-  `dockerImageId` is a sha256.
-
-A stamped tree therefore only passes at the commit whose derived version the
-image carries — i.e. on the tag. The stamp commit is the tag commit: tag
-locally, build, stamp, commit, move the tag onto the stamp commit, push the
-tag once (the image's `org.ragstack.commit` is then the tag's parent, which
-differs from the tag only by `cwl/` and `pyproject.toml`). Which branch the
-tag lives on — `main`, or a release branch so `main` stays unstamped — is the
-owner's call and is not decided here.
-
-What `dockerImageId` enforces today: **nothing at the engine.** GoWe parses
-`dockerImageId` and never checks it; cwltool `--singularity` reads it as a
-filename. The digest is enforced only by our own render/boot check (ADR-0010
-decision 5, migration step 4); until that lands it is a recorded fact a reader
-can verify with `sha256sum`, not a gate.
+  is `main` today. Dev runs `main` and resolves that name through its
+  worker's `--image-dir` symlink, so the bare name stays until a server
+  release stamps it.
+- **stamped** — every `dockerPull` names the **same** well-formed
+  `ragstack-tools-<version>-b<N>.sif` and every `dockerImageId` equals it.
 
 ## Where images live
 

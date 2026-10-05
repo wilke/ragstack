@@ -58,18 +58,27 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
      change), self-labelled (`apptainer inspect --labels`:
      `org.ragstack.version/commit/build/build-date`, the same in
      `/opt/ragstack/RELEASE`) with a receipt carrying its sha256.
-   - **A release binds them:** `python/scripts/stamp_tool_image.py <receipt>`
-     writes the name into every `dockerPull` and the digest into every
-     `dockerImageId` of `cwl/*.cwl`, so the tagged checkout fixes tool + image
-     by itself and GoWe's content hash changes whenever either does. Rolling a
-     tenant forward or back is a checkout change.
+   - **A server release names it:** three artifacts, named separately
+     (`docs/adr-0010-three-artifacts`) — the tools image is a build at tag
+     `T`; a workflow is CWL text naming a tools image by name; a server
+     release is a separate tag `S` that *chooses* which tools image its CWL
+     names. Order: tag `T` → build → ops copies image + receipt to the shared
+     store → a server release runs `python/scripts/stamp_tool_image.py
+     <receipt>` (writes the name into every `dockerPull` and `dockerImageId`
+     of `cwl/*.cwl`), commits, tags `S`. GoWe's content hash then changes
+     whenever the text or the image name does. Rolling a tenant forward or
+     back is a checkout change. The digest stays in the receipt and the
+     image's labels, not in the CWL.
    - **The check:** the tree is either unstamped (every `dockerPull` the bare
-     `ragstack-worker.sif`, which `main` is) or stamped with one image whose
-     version is the checkout's — `tests/unit/test_cwl_tool_image_pin.py` and
-     `stamp_tool_image.py --check`; anything mixed fails. The render/boot
-     check (image exists, digest = `dockerImageId`, label = derived version)
-     is migration step 4 and has not landed yet — until then nothing at the
-     engine verifies `dockerImageId` (GoWe parses it and never checks it).
+     `ragstack-worker.sif`, which `main` is) or stamped with the **same**
+     well-formed `ragstack-tools-<version>-b<N>.sif` in every `dockerPull`
+     and `dockerImageId` — `tests/unit/test_cwl_tool_image_pin.py` and
+     `stamp_tool_image.py --check`; anything mixed fails. No comparison to
+     the checkout's own version (a dev server on `main` may name a `+<sha>`
+     build). The render/boot identity check (image exists; receipt and labels
+     agree with the file) is migration step 4 and has not landed yet — until
+     then nothing at the engine verifies the image beyond its name (GoWe
+     parses `dockerImageId` and never checks it).
 
    Until the first stamped release, the bare name is resolved exactly as
    before: by each worker group's `--image-dir` (a symlink per group on
