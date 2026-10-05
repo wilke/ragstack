@@ -7,7 +7,7 @@
   "required": ["version", "git_tag", "git_sha", "started_at", "python", "impl"],
   "properties": {
     "version": {
-      "description": "Package version from importlib.metadata; `0.1.0` when the package is not installed (a bare PYTHONPATH checkout).",
+      "description": "The repo version as PEP 440 (ADR-0010): `1.6.4` on a release tag, `1.6.4+a2be96f` past one (`.dirty` appended in a modified checkout); derived from the checkout the package was imported from, else from the generated `ragstack/_release.py` inside a tools image, else the distribution version (`0.1.0` when the package is not installed at all).",
       "type": "string"
     },
     "git_tag": {
