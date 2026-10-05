@@ -541,7 +541,7 @@ class Settings(BaseSettings):
     # MUST match the served collection or ingest writes where the API can't read.
     gowe_workflow_inputs_json: str = "{}"
     gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
-    # RETIRED (ADR-0010 decision 3, #655). There is no image override: the tool
+    # RETIRED (ADR-0010 decision 5, #655). There is no image override: the tool
     # image is stamped into every `dockerPull` of cwl/*.cwl at release time and
     # a tenant changes it by checking out a different tag. The field is still
     # declared so the boot can READ it and REFUSE when it is set

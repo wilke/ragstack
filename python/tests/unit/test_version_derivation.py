@@ -225,8 +225,10 @@ def test_dunder_version_is_the_derived_pep440_version_of_this_checkout():
 
 def test_pyproject_carries_the_public_part_of_the_last_release():
     """pyproject.toml is static and holds the last release's public version;
-    the stamping step bumps it. The metadata and __version__ therefore agree
-    on the release and differ only in the local segment naming the commit."""
+    it is bumped by hand at a server release, never by the stamping step
+    (which only rewrites `dockerPull`/`dockerImageId` in the CWL). The
+    metadata and __version__ therefore agree on the release and differ only
+    in the local segment naming the commit."""
     import tomllib
 
     try:

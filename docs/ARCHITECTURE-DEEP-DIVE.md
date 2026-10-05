@@ -1499,7 +1499,7 @@ Three artifacts, each **a build of a tag**, and the workflow binds them:
 1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
    `+` part never orders). `pyproject.toml`'s version is a claim a test holds equal to
    the last tag; `ragstack.__version__` is the same version as PEP 440. One function,
-   `ragstack/version.py`, derives it — the only `git describe` a version passes
+   `ragstack/version.py`, derives it — the only derivation of the repo version (other tools run `git describe` for their own stamps, never to produce it); it is the only describe a version passes
    through. (ADR-0010 wants it to be the only one in the tree; at `0e9bbb0` ctl's
    `code.tag`, the Makefile's `CTL_VERSION` and `docs/build_docs.py` still run their
    own, none of which feeds a version.)

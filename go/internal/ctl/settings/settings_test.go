@@ -28,7 +28,7 @@ func TestClassify(t *testing.T) {
 		// the prompts the tenant answers with (ADR-0008): executable surface,
 		// so `env set` may write it and an HTTP caller may not.
 		"PROMPT_TEMPLATES_FILE": ExecutableSurface,
-		// The per-tenant tool image override is RETIRED (ADR-0010 decision 3,
+		// The per-tenant tool image override is RETIRED (ADR-0010 decision 5,
 		// #655): the API refuses to boot with it set, so the ctl must never
 		// write it — Unsupported, with a reason (TestRetired).
 		"GOWE_TOOL_IMAGE": Unsupported,
