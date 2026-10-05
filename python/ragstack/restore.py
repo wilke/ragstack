@@ -40,7 +40,6 @@ from ragstack.collection_store import (
     CollectionRecord,
     CollectionStore,
 )
-from ragstack.ingestion.backends import ToolImageError, substitute_tool_image
 from ragstack.ingestion.gowe_client import TERMINAL_STATES, GoWeError
 from ragstack.workspace import (
     WorkspaceAuthError,
@@ -193,8 +192,10 @@ class CollectionRestorer:
         self.workflow_name = workflow_name
         self.static_inputs = dict(static_inputs or {})
         self.worker_group = (worker_group or "").strip()
-        # #614: GOWE_TOOL_IMAGE, substituted into the CWL text when it is read.
-        self.tool_image = (tool_image or "").strip()
+        # Retired (ADR-0010, #655): the image a workflow names is stamped into
+        # the CWL at release time; nothing is substituted when it is read.
+        # Accepted and ignored so older callers keep constructing.
+        self.tool_image = ""
         self.poll_interval = poll_interval
         self.timeout = timeout
         self._on_change = on_change
@@ -213,13 +214,8 @@ class CollectionRestorer:
                 raise RestoreError(
                     f"restore workflow {self._cwl_path} is not readable: {e}"
                 ) from e
-            # Every tool is inlined, so this covers every dockerPull the engine sees.
-            try:
-                self._cwl_text = substitute_tool_image(
-                    text, self.tool_image, source=str(self._cwl_path)
-                )
-            except ToolImageError as e:
-                raise RestoreError(str(e)) from e
+            # Registered byte-for-byte: the image is fixed by the release (ADR-0010).
+            self._cwl_text = text
         return self._cwl_text
 
     async def _set(self, cid: str, state: str, reason: str) -> bool:

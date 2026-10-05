@@ -541,14 +541,12 @@ class Settings(BaseSettings):
     # MUST match the served collection or ingest writes where the API can't read.
     gowe_workflow_inputs_json: str = "{}"
     gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
-    # Tool image name substituted for the CWL's `dockerPull` at registration
-    # (e.g. `ragstack-worker-v1.6.3.sif`); empty = the CWL's own name
-    # (`ragstack-worker.sif`), a no-op. #614: GoWe joins the bare name onto the
-    # worker's --image-dir, so without this the image is a property of the worker
-    # GROUP; with it, images coexist in one dir and each tenant pins its own. Covers
-    # every workflow the API registers (ingest, graph-extract, restore). Must be a
-    # bare filename ending in .sif — validated at boot (a path would escape
-    # --image-dir).
+    # RETIRED (ADR-0010 decision 3, #655). There is no image override: the tool
+    # image is stamped into every `dockerPull` of cwl/*.cwl at release time and
+    # a tenant changes it by checking out a different tag. The field is still
+    # declared so the boot can READ it and REFUSE when it is set
+    # (api/deps._refuse_retired_tool_image_override) — a stale tenant.env must
+    # not keep #614's substitution silently alive. Never consulted otherwise.
     gowe_tool_image: str = ""
     gowe_poll_interval: float = 5.0
     gowe_timeout: float = 7200.0
