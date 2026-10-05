@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`).** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `17425fd` on 2026-10-05 for ADR-0010's versions-vs-builds amendment (#657).** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1493,37 +1493,49 @@ per-document receipts onto the job.
   against declared types (GoWe#273), so today the enum is documentation and the
   API's own check above remains the gate.
 
-**Tool image binding — ADR-0010 (*Proposed*, amended by #652).** The proposed decision is that a tool
-is bound to its image **at release time**: the release that builds
-`ragstack-tools-v<tag>.sif` from a tag writes that name into every `dockerPull`
-in `cwl/*.cwl` (and its digest into `dockerImageId`), stamps the tag into the
-image (`%labels` `org.ragstack.tag` / `commit` / `build-date`, the same values in
-`/opt/ragstack/RELEASE`) and fails the build unless the installed
-`ragstack.__version__` equals the tag, and a render/boot check requires
-filename tag = image label = checkout tag. Images live once, in a single shared
-versioned store, and new tags name them there by absolute path, so every worker
-group can run every version and groups go back to being placement (ADR-0010
-decision 2, ADR-0009). A tenant's version is therefore its checkout tag, and
-nothing else: there is no image override.
+**Tool image binding — ADR-0010 (*Proposed*; amended by #652 and #657).** The
+proposal separates two identities. A **tenant runs a repo version**: `v1.6.4` when
+the checkout is exactly on a release tag, `v1.6.4+<shortsha>` otherwise (dev, which
+runs `main`). The `+<sha>` part is SemVer build metadata and never orders versions;
+`ragstack.__version__` holds the same string. An **image is one build** of some
+source, named `ragstack-tools-<version>-b<N>.sif` (e.g. `ragstack-tools-v1.6.4-b1.sif`);
+one version may have several builds, so a base-image rebuild does not force a release.
+`git describe --tags --match 'v*' --long --dirty` runs only inside the build script,
+to derive the version, and a dirty tree refuses to build.
 
-**What the code does today (`main` @ `f3fb936`) — the migration has not started:**
+**Identity is in the image's labels and digest, not its file name.** The build
+writes `org.ragstack.version`, `org.ragstack.commit` (full sha), `org.ragstack.build`
+and `org.ragstack.build-date` into `%labels` and `/opt/ragstack/RELEASE`. The
+release step writes the image name into every `dockerPull` in `cwl/*.cwl` and its
+digest into `dockerImageId`, and refuses to cut a tag if any `dockerPull` is
+unpinned or names another version. The render view (`ragstack-ctl gowe render
+<tenant>`) and the API boot check pass only when every named image **exists**, its
+**digest equals `dockerImageId`**, and its **version label equals the checkout's
+derived version** — which covers branch tenants with no special case. Release
+images live once, in a shared store referenced by absolute path, so worker groups
+go back to being placement (decision 2, ADR-0009); a `+<sha>` image never enters
+that store and stays in the tenant's own image directory. There is **no image
+override**: `GOWE_TOOL_IMAGE` is retired. Collection versions and ingest receipts
+will record the GoWe `workflow_id`, image name and digest (decision 4).
+
+**What the code does today (`main` @ `17425fd`) — the migration (#655) has not landed:**
 every `dockerPull` is still the bare `ragstack-worker.sif`, which each worker
-resolves against its group's `--image-dir` (on coconut a symlink per group, e.g.
-`ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
-worker **group** is still the effective version knob. `GOWE_TOOL_IMAGE` (#642,
-`config.py` `gowe_tool_image`; `ingestion/backends.py` `substitute_tool_image`)
-still exists and still rewrites `dockerPull` when the CWL is read at boot
-(`_make_gowe_backend`; likewise `restore.py` and `graph_extract.py`), in the text
-every submission registers. ADR-0010 retires it: until the first stamped tag
-ships the API is to refuse to boot when the variable is set, and after that the
-substitution code is deleted — neither has landed at `f3fb936`, where boot only
-checks the name's shape (`validate_tool_image`) — and no tenant sets it. Read
-this paragraph and the previous one together until the stamping lands.
+resolves against its group's `--image-dir` (on coconut, as of 2026-10-05, a symlink per group, e.g.
+`ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`; dev's
+`ragstack-worker-v1.6.3-1-ga2be96f.sif` is a raw `git describe` name, the case
+ADR-0010 rules out), so the worker **group** is still the effective version knob.
+`GOWE_TOOL_IMAGE` (#642, `config.py` `gowe_tool_image`; `ingestion/backends.py`
+`substitute_tool_image`) still exists and still rewrites `dockerPull` when the CWL is
+read at boot (`_make_gowe_backend`; likewise `restore.py` and `graph_extract.py`).
+ADR-0010 retires it: until the first stamped tag ships the API is to refuse to boot
+when it is set, and after that the substitution code is deleted. Neither has landed
+at `17425fd`, where boot only checks the name's shape (`validate_tool_image`), and no
+tenant sets it. Read this paragraph and the two before it together until #655 lands.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today
 `ragstack-worker.sif`, built from `apptainer/ragstack-worker.def` (`cwl/README.md`);
-`ragstack-tools-v<tag>.sif` under ADR-0010 — the receipt
+`ragstack-tools-<version>-b<N>.sif` under ADR-0010 — the receipt
 contract `ragstack.ingestion.receipts` (`ShardReceipt` / `DocRow`), and the archive
 format `ragstack.ingestion.archive` (`FORMAT = "ragstack-archive/1"`).
 
