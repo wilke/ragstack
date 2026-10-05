@@ -475,6 +475,10 @@ def print_plan(p: Plan, overwrite: bool) -> None:
               + (f", {st.drift} skipped (stores disagree; use --overwrite)" if st.drift else ""))
         for es_id, b, a in st.examples:
             print(f"      {es_id}\n        before {_show(b)}\n        after  {_show(a)}")
+    stamped = sum(1 for c in p.changes if any(k in c.update for k in PROVENANCE_KEYS))
+    if stamped:
+        print(f"  provenance ({'/'.join(PROVENANCE_KEYS)}) would also be stamped on "
+              f"{stamped} chunk(s) whose field was empty in both stores")
     for label, n in (("chunks in Elasticsearch with no Qdrant point", p.unpaired_es),
                      ("Qdrant points with no Elasticsearch chunk", p.unpaired_qdrant),
                      ("chunks whose DOI differs between the stores", p.doi_disagrees)):
@@ -599,7 +603,13 @@ def main(argv: list[str] | None = None, *,
         if not p.changes:
             print("\nnothing to write.")
             return 0
-        apply(es, qd, p.changes)
+        try:
+            apply(es, qd, p.changes)
+        except SystemExit:
+            print("\napply stopped part-way: Elasticsearch is written before Qdrant, so the "
+                  "two stores may now disagree for some chunks. Re-run with --overwrite "
+                  "(same --fields) to bring them back into agreement.", file=sys.stderr)
+            raise
         print(f"\nwrote {len(p.changes)} chunk(s) to both stores; verifying …")
         bad = verify(es, qd, p.changes)
         if bad:
