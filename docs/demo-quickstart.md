@@ -77,6 +77,11 @@ export CHUNK_METHOD=fixed_token
 export CHUNK_SIZE=512
 export CHUNK_OVERLAP=64
 export RERANK_ENABLED=false
+# The text index and graph default to `memory`, which is test-only: the API
+# refuses to boot on it unless you opt out of durability explicitly (#651).
+# For anything you want to keep, set TEXT_BACKEND=elasticsearch, GRAPH_BACKEND=
+# disabled (or neo4j), API_KEYS, and REQUIRE_DURABLE_BACKENDS=true instead.
+export REQUIRE_DURABLE_BACKENDS=false
 export DEFAULT_ROLE=admin                         # demo convenience; needed for the
                                                   # embedding/chunk overrides + model admin.
                                                   # Plain collection creation (server-default

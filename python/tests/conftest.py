@@ -80,6 +80,14 @@ import pytest_asyncio
 # shipped default is asserted against ``Settings.model_fields``, not the env.
 os.environ["DOI_ENRICHMENT_ENABLED"] = "false"
 
+# ``require_durable_backends`` ships TRUE (#651): the memory vector/text/graph
+# backends are test-only, and a deployment that forgets the setting must refuse
+# to boot on them. The suite boots on exactly those backends, so it opts out
+# explicitly — here, before ``settings`` is built, so child processes inherit it
+# too. Tests of the durable path monkeypatch it back on; the shipped default is
+# asserted against ``Settings.model_fields`` (tests/unit/test_deps.py).
+os.environ["REQUIRE_DURABLE_BACKENDS"] = "false"
+
 #: The tree under test:``python/``, the directory holding ``ragstack/`` and
 #: ``tests/``. Resolved, so worktrees and symlinked checkouts compare equal.
 CHECKOUT_ROOT = Path(__file__).resolve().parents[1]

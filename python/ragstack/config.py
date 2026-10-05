@@ -34,10 +34,14 @@ class Settings(BaseSettings):
     llm_endpoint: str = ""
 
     # Vector store
-    vector_backend: str = "qdrant"          # qdrant | memory
-    # When true (production), refuse to start on a non-durable / unreachable
-    # backend instead of silently degrading to in-memory and losing data.
-    require_durable_backends: bool = False
+    vector_backend: str = "qdrant"          # qdrant (production) | memory (tests only)
+    # When true, refuse to start on a non-durable / unreachable backend instead
+    # of silently degrading to in-memory and losing data. Defaults to TRUE
+    # (#651): a deployment that forgets this setting must not come up on an
+    # in-memory store and lose everything on restart. The `memory` backends
+    # (vector, text, graph) are test-only; every harness that boots an API on
+    # them opts out explicitly with REQUIRE_DURABLE_BACKENDS=false.
+    require_durable_backends: bool = True
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"
@@ -622,9 +626,10 @@ class Settings(BaseSettings):
     grading_store_backend: str = "memory"   # memory | sqlite | postgres
     grading_store_path: str = "ragstack_grading.db"
 
-    # Text index (BM25). "memory" is the dev Jaccard placeholder; "elasticsearch"
-    # is the real durable BM25 backend used for hybrid retrieval.
-    text_backend: str = "memory"            # memory | elasticsearch
+    # Text index (BM25). "memory" is the test-only Jaccard placeholder;
+    # "elasticsearch" is the real durable BM25 backend used for hybrid retrieval.
+    # require_durable_backends refuses "memory".
+    text_backend: str = "memory"            # elasticsearch (production) | memory (tests only)
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "ragstack"
     elasticsearch_api_key: str = ""
@@ -665,11 +670,13 @@ class Settings(BaseSettings):
     # is serving.
     es_collection_routes: dict[str, str] = {}
 
-    # Neo4j (knowledge graph). "memory" is the in-process dev graph (lost on
-    # restart); "neo4j" is the durable property-graph backend (M4). Neo4j 5
-    # rejects the literal password "neo4j", so the default here is "ragstack"
-    # (matches config/rag.env).
-    graph_backend: str = "memory"           # memory | neo4j
+    # Neo4j (knowledge graph). "memory" is the test-only in-process graph (lost
+    # on restart) and is refused under require_durable_backends; "neo4j" is the
+    # durable property-graph backend (M4); "disabled" turns graph support off
+    # (no store is built, so it is allowed under require_durable_backends).
+    # Neo4j 5 rejects the literal password "neo4j", so the default here is
+    # "ragstack" (matches config/rag.env).
+    graph_backend: str = "memory"           # neo4j | disabled | memory (tests only)
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "ragstack"

@@ -190,7 +190,9 @@ def _build_vector_store():
     if settings.require_durable_backends:
         raise RuntimeError(
             f"vector_backend={settings.vector_backend!r} is not durable but "
-            "require_durable_backends is set; use 'qdrant'."
+            "require_durable_backends is set; use 'qdrant'. The in-memory vector "
+            "store is for tests only — set REQUIRE_DURABLE_BACKENDS=false to opt "
+            "out explicitly."
         )
     return InMemoryVectorStore()
 
@@ -379,7 +381,9 @@ def _vector_store_for(
     if settings.require_durable_backends:
         raise RuntimeError(
             f"vector_backend={settings.vector_backend!r} is not durable but "
-            "require_durable_backends is set; use 'qdrant'."
+            "require_durable_backends is set; use 'qdrant'. The in-memory vector "
+            "store is for tests only — set REQUIRE_DURABLE_BACKENDS=false to opt "
+            "out explicitly."
         )
     if memory_vector_stores is None:
         log.info(
@@ -1006,9 +1010,11 @@ def _build_text_index_for(index: str):
         )
 
     if settings.require_durable_backends:
-        log.warning(
-            "text index is in-memory (text_backend=memory); set "
-            "text_backend=elasticsearch for durable BM25 + hybrid retrieval"
+        raise RuntimeError(
+            f"text_backend={settings.text_backend!r} is not durable but "
+            "require_durable_backends is set; use 'elasticsearch'. The in-memory "
+            "text index is for tests only — set REQUIRE_DURABLE_BACKENDS=false to "
+            "opt out explicitly."
         )
     return InMemoryTextIndex()
 
@@ -1060,10 +1066,14 @@ def _build_graph_store():
     if settings.graph_backend == "disabled":
         return None
 
+    # "disabled" (above) builds no store, so it is allowed under durability;
+    # the in-memory graph is test-only and is not.
     if settings.require_durable_backends:
-        log.warning(
-            "knowledge graph is in-memory (graph_backend=memory); set "
-            "graph_backend=neo4j for a durable graph"
+        raise RuntimeError(
+            f"graph_backend={settings.graph_backend!r} is not durable but "
+            "require_durable_backends is set; use 'neo4j', or 'disabled' to turn "
+            "the knowledge graph off. The in-memory graph is for tests only — set "
+            "REQUIRE_DURABLE_BACKENDS=false to opt out explicitly."
         )
     return InMemoryGraphStore()
 
