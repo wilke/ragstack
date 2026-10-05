@@ -307,7 +307,8 @@ record boundary.
 **The #513 post-filter, applied** with the same code and the same selftest that produced §3's
 dev verification (`s0c_span_filter.py --selftest`: all seven synthetic cases pass, four of them
 cases where the filter must *not* fire; `--verify-dev` re-run here and still `PASS`, Δ
-Spearman–Brown **−0.0013**, reproducing the committed 0.9205):
+Spearman–Brown **−0.0013**, reproducing the committed 0.9205 — record of that re-run:
+[`artifacts/conf-a/span-filter-dev-verification-2026-09-14.json`](artifacts/conf-a/span-filter-dev-verification-2026-09-14.json)):
 
 | judge | records | filtered | groups collapsed | fill spans dropped | sentences dropped | blow-ups flagged |
 |---|---|---|---|---|---|---|
