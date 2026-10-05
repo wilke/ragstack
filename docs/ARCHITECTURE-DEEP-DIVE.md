@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664).** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and against `33642f9` the same day for step 2's provenance fields (#668).** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1499,10 +1499,9 @@ Three artifacts, each **a build of a tag**, and the workflow binds them:
 1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
    `+` part never orders). `pyproject.toml`'s version is a claim a test holds equal to
    the last tag; `ragstack.__version__` is the same version as PEP 440. One function,
-   `ragstack/version.py`, derives it — the only derivation of the repo version (other tools run `git describe` for their own stamps, never to produce it); it is the only describe a version passes
-   through. (ADR-0010 wants it to be the only one in the tree; at `0e9bbb0` ctl's
-   `code.tag`, the Makefile's `CTL_VERSION` and `docs/build_docs.py` still run their
-   own, none of which feeds a version.)
+   `ragstack/version.py`, derives it — the only derivation of the repo version. Other
+   tools run `git describe` for their own artifacts' stamps (ctl's `code.tag`, the
+   Makefile's `CTL_VERSION`, `docs/build_docs.py`'s page stamp), never to produce it.
 2. **The tools image is one build of the repo at tag T**, built from T's own commit,
    named `ragstack-tools-<version>-b<N>.sif`. Its identity is its labels
    (`org.ragstack.version`, `org.ragstack.commit`, `org.ragstack.build`,
@@ -1527,8 +1526,16 @@ in `ragstack-ctl gowe render`** (decision 7) is an *identity* check — each nam
 exists in the store the workers resolve, its labels equal its receipt, its sha256
 equals the receipt's — and it refuses rather than warns wherever the API host can see
 the store. Compatibility is not re-derived at boot; the release declared it. Each
-collection version will record the GoWe `workflow_id`, image name and digest
-(decision 8).
+collection version records what built it (decision 8): a `provenance` object
+`{workflow_id, tool_image, tool_image_digest, image_version, image_commit,
+image_build}` in the archive version's `manifest.json`, the shard receipt, the graph
+leg and the replay summary. The first three are submission inputs the API seeds
+between `register_workflow` and `submit` (the `wf_` id exists only then; the digest
+comes from the committed receipt `cwl/tool-image.receipt.json`, which the stamping
+step writes beside the CWL); the last three the worker reads from the image's
+`/opt/ragstack/RELEASE`. **On an unstamped tree the API seeds none of them**, so
+provenance begins with the first stamped release; a version written before then reads
+as all-`null` ("unknown"), never as an error.
 
 **What the code does at `main` @ `0e9bbb0`** — #655 step 1 (#664) has landed; the rest
 has not:
@@ -1544,13 +1551,17 @@ has not:
   `retired_env_key` on a tenant.env that still carries it (`adopt.go`; the code lives in
   `doctor/codes.go`), and the ctl env API refuses to set it (`ops/env.go`). #642's substitution survives only as a tested function in
   `ragstack/tool_image.py` that nothing calls at runtime.
-- **Not yet:** no release has been stamped — every `dockerPull` is still the bare
+- **Landed in #668 (#655 step 2):** the provenance fields above, written by
+  `scripts/archive_version.py`, `ingest_shard.py`, `extract_graph.py` and
+  `load_embeddings.py`, read by `ragstack/provenance.py` (`read_provenance`), with the
+  seeding in `ingestion/gowe_backend.py` and `ragstack/tool_image.py`
+  (`provenance_inputs`). Today, unstamped, every new version records them as null.
+- **Not yet:** no release has been stamped (so no `cwl/tool-image.receipt.json` yet) — every `dockerPull` is still the bare
   `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
   (on coconut, as of 2026-10-05, a per-group symlink, e.g.
   `ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
   worker group is still the effective binding; the shared store does not exist; the
-  boot identity check and `ragstack-ctl gowe render` (decision 7), the provenance
-  fields (decision 8) and the server image (migration step 6) are not built.
+  boot identity check and `ragstack-ctl gowe render` (decision 7) and the server image (migration step 6) are not built.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today the CWL names
@@ -2634,7 +2645,7 @@ flowchart TD
 
 **What it is:** The physical stores of a collection are **reconstructible from a Workspace archive**, which is what makes eviction (§9.7) safe. The archive is written by the GoWe ingest workflow, not by the API process; the API only reserves versions, records them on the registry row, and submits replays.
 
-**Layout** (`python/ragstack/ingestion/archive.py`): `<subject>/home/.ragstack/collections/<id>/versions/<n>/` holding `manifest.json` (format `ragstack-archive/1`; identity `collection_id / tenant / spec_hash / version / job_id`), `chunks.jsonl.gz`, `vectors.f32`, `receipt.json`, optionally `tombstone.json` (deletes) and, after graph extraction, `triples.jsonl.gz` with `graph: true`. The Workspace folder itself is stamped `ragstack_format / collection_id / tenant / spec_hash` (`workspace.py`).
+**Layout** (`python/ragstack/ingestion/archive.py`): `<subject>/home/.ragstack/collections/<id>/versions/<n>/` holding `manifest.json` (format `ragstack-archive/1`; identity `collection_id / tenant / spec_hash / version / job_id`; since #668 a `provenance` object naming the GoWe workflow and tools image that built it, all-`null` until the first stamped release — §5.2), `chunks.jsonl.gz`, `vectors.f32`, `receipt.json`, optionally `tombstone.json` (deletes) and, after graph extraction, `triples.jsonl.gz` with `graph: true`. The Workspace folder itself is stamped `ragstack_format / collection_id / tenant / spec_hash` (`workspace.py`).
 
 **Algorithm / workflow:**
 1. **Version reservation** — `_reserve_version` → `CollectionStore.next_version` (atomic `UPDATE … RETURNING` on `archive_version`; the JSON backend raises `NotImplementedError`, surfaced as 503 — a GoWe-backed tenant needs sqlite/postgres). `_gowe_inputs` carries `version, collection_id, spec_hash (record.spec_hash), job_id, tenant, collection, es_index, store URLs, build spec`. Output destination is `ws://…/<caller subject>/…/<id>/versions/`.
