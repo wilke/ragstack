@@ -986,31 +986,54 @@ The backfill script is now **repair-only** — for collections built before #596
 or whose lookups failed at the time. New uploads should never need it.
 
 ```bash
-python3 python/scripts/backfill_collection_metadata.py \
+. /rag/bin/activate                          # the script imports ragstack's own mapper
+python python/scripts/backfill_collection_metadata.py \
     --es http://127.0.0.1:<tenant_es> --qdrant http://127.0.0.1:<tenant_qdrant> \
+    --tenant-env /rag/data/tenants/<t>/config/tenant.env \
     --index <physical store name>            # dry run; --apply to write
 ```
 
-It does the same resolution the ingest path now does — each **distinct DOI**
-once, two lookups for a two-paper collection rather than one per chunk — and
-stamps the same `metadata_source: crossref+idconv`, so a repaired collection and
-one born enriched answer the same query about where their titles came from.
+It resolves through the ingest path's own resolver (`doi_metadata`: Crossref,
+DataCite on a 404, the NCBI ID Converter) — each **distinct DOI** once — so
+authors (`"Given Family"`), title, journal, year and pmid/pmcid (strings) are
+exactly what an upload would have written, and it stamps the same
+`metadata_source`/`doi_enriched_from` when it fills a field.
+
+**Repairing existing values (#637).** Before #637 this script had its own copy
+of the mapping and wrote authors as `"Family, Given"`; collections it repaired
+in September (including `Dengue`) hold that format. `--fields` names the
+fields to touch (default `title,authors,journal,pmid,pmcid`) and `--overwrite`
+rewrites them even where present:
+
+```bash
+... --fields authors --overwrite             # dry run: per-field counts + 3 before/after examples
+... --fields authors --overwrite --apply     # write, then re-read both stores and verify
+```
+
+An already-identical value is counted unchanged and not written. A value on a
+chunk with no enrichment provenance came from the corpus or an operator and is
+never overwritten (reported as `kept`). After `--apply` the script re-reads every
+changed chunk from both stores and exits non-zero on any mismatch.
 
 Measured on `Dengue` before repair, back when nothing enriched at upload time:
 `doi` 382/382, and `title`, `authors`, `pmcid`, `journal` all **0/382**.
 
-Three things to know before running it:
+Things to know before running it:
 
-- **It writes both stores, in different shapes.** Elasticsearch nests these
-  under `metadata.*`; Qdrant keeps them flat at the payload top level. A
-  backfill that writes one shape to both leaves the retrieval legs disagreeing
-  about the same chunk, and a count-based parity check will not notice.
-- **It refuses a collection that already has titles.** The PMC open-access
-  build is at 99% and `asm-semantic` at 95-99%; this tool is for upload-built
-  collections. `--force` exists but wants a reason.
-- **Never run it against a routed collection.** Those stores are shared with
-  other tenants (see 6b), so a write from one tenant changes what every tenant
-  reads.
+- **It writes both stores, in different shapes, from one dict per chunk.**
+  Elasticsearch nests these under `metadata.*`; Qdrant keeps them flat at the
+  payload top level. A backfill that writes one shape to both leaves the
+  retrieval legs disagreeing about the same chunk, and a count-based parity
+  check will not notice.
+- **It refuses a JATS or curated corpus** — any chunk carrying `content_type`
+  or `licence`, or most titles lacking enrichment provenance. The PMC
+  open-access build and `asm-semantic` are such corpora; this tool is for
+  upload-built collections. `--force` exists but wants a reason.
+- **It refuses a routed or shared store, `--force` or not.** `--apply` requires
+  `--tenant-env`; the index must not appear in that tenant's or any sibling
+  tenant's `*_COLLECTION_ROUTES`, and `--es`/`--qdrant` must be the tenant's own
+  `ELASTICSEARCH_URL`/`QDRANT_URL`. Those stores are shared with other tenants
+  (see 6b), so a write from one tenant changes what every tenant reads.
 
 Caller-supplied metadata — the "can we upload a CSV" question — is
 [#575](https://github.com/wilke/ragstack/issues/575) and not implemented.
