@@ -102,10 +102,21 @@ def test_config_manifest_hashes_chunk_params(manifest_dir, monkeypatch):
     assert m.chunk_params == {"threshold": 0.7}
 
 
-def test_config_manifest_stamps_version(manifest_dir):
+def test_config_manifest_stamps_version(manifest_dir, monkeypatch):
+    # The manifest records which build wrote this corpus: whatever
+    # ``ragstack_version()`` reports. Pinned to a sentinel because its real value
+    # depends on install metadata — "" from an uninstalled source tree, by design —
+    # so asserting mere truthiness tested the environment, not the stamping.
+    # ``deps`` imports it function-locally from ``ragstack.provenance`` at call
+    # time, so patching the module attribute is the name actually looked up.
+    import ragstack.provenance
+
+    sentinel = "0.0.0+stamp-sentinel"
+    monkeypatch.setattr(ragstack.provenance, "ragstack_version", lambda: sentinel)
     deps.materialize_config_manifest_for_spec(_spec())
     m = read_manifest(manifest_dir, "phys_c1")
-    assert m is not None and m.ragstack_version  # which build wrote this corpus
+    assert m is not None
+    assert m.ragstack_version == sentinel
 
 
 def test_config_manifest_never_clobbers_a_verified_one(manifest_dir):
