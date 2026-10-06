@@ -1,5 +1,7 @@
 # Redoing the chunking evaluation
 
+> **Which methods to add as arms, and what the code needs first:** see [chunking-evaluation-candidates.md](chunking-evaluation-candidates.md) (2026-10-06).
+
 **Status:** `PROPOSED`. The existing comparison cannot answer the questions we are about to
 spend a corpus on, and the reason is the ground truth rather than the configurations.
 
