@@ -53,7 +53,10 @@ it*. In short:
    version, the raw `git describe` (provenance only, never a version), the full commit,
    `dirty`, `untracked`, the tools-image `RELEASE` if any, and `segmentation`: span fingerprints, starting with
    `sentence_spans_fingerprint()`, a hash of `sentence_spans()` offsets. It is not a chunker-spec
-   hash; that will be `chunker_spec_fingerprint`.
+   hash; that will be `chunker_spec_fingerprint`. That default entry comes from the
+   *imported* `ragstack`, not the `repo=` being recorded, and each fingerprint's
+   `producer_commit` (full 40-hex, `null` when unknown) names the tree that made it. It is
+   context: `comparison_key()` drops it.
    Run harnesses with `PYTHONPATH=python`. Compare runs with `comparison_key()`: host, time,
    python, installed distribution and warnings are context, not identity.
 2. Prefer running from a versioned `ragstack-tools` image (ADR-0010). The record says
@@ -64,6 +67,10 @@ it*. In short:
 4. Differing span fingerprints mean different coordinate systems. Sentence- or
    unit-keyed labels don't carry across, and no translator gets improvised. Unit- or
    section-bounded arms fingerprint their units as well as their sentences.
+   To record a pinned tree from a newer checkout (a `segmentation from imported tree`
+   warning means you didn't): run step A under the pinned tree to dump its sentence offsets
+   (plus backend and `nltk` version), then call `experiment_provenance(repo=…,
+   fingerprint_self=False, segmentations=[span_fingerprint(…, producer_commit=<pinned>)])`.
 5. A past study's harness keeps its pin. Re-running it means running at that commit, or in
    an image built from it. Reusing its embeddings (`/rag/tmp/stage0-conf/emb`) means the same
    or re-embedding. Never edit a harness to make it run on `main` or to loosen its pin;

@@ -163,7 +163,12 @@ it ran.
   in the coordinate system of the segmenter that produced them. `segmentation` holds
   `sentence_spans_fingerprint()`, a hash of the offsets `sentence_spans()` returns (over the run's own documents when passed `texts=`, else a canonical
   sample), and records the backend (`punkt` vs `regex`) and `nltk` version, because commit
-  equality is only a proxy for that coordinate system. A section- or unit-bounded arm also
+  equality is only a proxy for that coordinate system. That default entry is computed by the
+  **imported** `ragstack` package in the running environment, not by the `repo=` the record
+  names, and each fingerprint says which tree made it: `producer_commit` is the full 40-hex
+  commit of the producing tree (`null` when unknown). It is context, not identity:
+  `comparison_key()` drops it, because equal `sha256` over equal texts is equal coordinates
+  whichever tree computed them. A section- or unit-bounded arm also
   fingerprints its units: pass a `span_fingerprint(spans, kind="units")` in
   `segmentations=`. (These hash span offsets. A fingerprint of a chunker's
   configuration will be a separate `chunker_spec_fingerprint`.) When two fingerprints
@@ -171,6 +176,17 @@ it ran.
   translate between them, and no translator may be improvised. (`scripts/grading_import.py`
   translates renumbering only, because `segment()` yields gapped numbers. It does not re-map
   moved boundaries.)
+- **Recording a pinned tree from a newer checkout.** A wrapper running under `main` that
+  records a run of a checkout pinned at an older commit (e.g. `55a0fc2`) must not let the
+  default fingerprint stand in for it: it would be `main`'s segmentation, and a
+  `segmentation from imported tree` warning says so. Run step A under the pinned tree
+  (`PYTHONPATH=<pinned>/python`, the pinned run's environment) to dump the per-document
+  `sentence_spans()` offsets plus its backend and `nltk` version. Then, from the wrapper, call
+  `experiment_provenance(repo=<pinned checkout>, fingerprint_self=False,
+  segmentations=[span_fingerprint(spans, kind="sentences", texts=texts,
+  producer_commit=<pinned sha>, backend=..., nltk=...)])`. With `fingerprint_self=False`
+  nothing of the importing tree is fingerprinted (`texts=` is ignored). The CLI's
+  `--no-fingerprint-self` does the same, but it cannot pass precomputed segmentations.
 - **Past studies keep their pins.** The committed harnesses under `docs/plans/results/`
   (e.g. `stage0/`, whose `s0_common.EXPECT_COMMIT` is `55a0fc2`) are that study's record.
   Edits that change what they compute, or that loosen the pin, are not made. Making the

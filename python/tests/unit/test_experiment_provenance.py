@@ -8,6 +8,9 @@ fake ``RELEASE`` file) and checks the record against git, not against a regex:
 * dirty checkout                   → no version, ``dirty tree`` warning, not citable
 * inside a tools image (no git)    → version/commit from ``RELEASE``, ``source="image"``
 * no git at all                    → nulls + ``no git checkout``, never an exception
+* a ``repo`` that is not the imported tree → the default fingerprint still names
+  the imported tree (``producer_commit``), a warning says so, and
+  ``fingerprint_self=False`` records only the caller's ``segmentations``
 * JSON round-trip, the CLI, the span fingerprints, and the rule that only
   ``provenance.py`` reads the raw describe out of ``version.py``.
 """
@@ -305,3 +308,111 @@ def test_only_provenance_reads_the_raw_describe():
         and "raw_describe_for_provenance" in f.read_text(encoding="utf-8", errors="replace")
     ]
     assert offenders == []
+
+
+# --------------------------------------------------------------------------- #
+# Which tree produced a fingerprint: producer_commit, fingerprint_self, and
+# the warning for a --repo that is not the imported tree
+# --------------------------------------------------------------------------- #
+
+_SHA40 = re.compile(r"[0-9a-f]{40}")
+
+
+def _imported_head() -> str:
+    if v._proven_git(v._CHECKOUT) is None:
+        pytest.skip("the imported ragstack is not a git checkout")
+    return _git(v._CHECKOUT, "rev-parse", "HEAD")
+
+
+def test_fingerprint_self_false_records_only_given_segmentations(repo, no_release):
+    assert p.experiment_provenance(repo=repo, release_path=no_release,
+                                   fingerprint_self=False)["segmentation"] == []
+    units = p.span_fingerprint([[(0, 3)]], kind="units")
+    rec = p.experiment_provenance(texts=["A b. C d."], segmentations=[units], repo=repo,
+                                  release_path=no_release, fingerprint_self=False)
+    assert rec["segmentation"] == [units]
+    assert any("texts= ignored" in w for w in rec["warnings"])
+    # texts=() is not "none": it is an empty run sample, still fingerprinted.
+    empty = p.experiment_provenance(texts=(), repo=repo, release_path=no_release)
+    assert [(s["kind"], s["sample"], s["n_docs"]) for s in empty["segmentation"]] == [
+        ("sentences", "run", 0)]
+
+
+def test_default_entries_name_the_imported_tree(repo, no_release):
+    head = _imported_head()
+    for kw in ({}, {"texts": ["A b. C d."]}):
+        for r in (None, repo):
+            rec = p.experiment_provenance(repo=r, release_path=no_release, **kw)
+            pc = rec["segmentation"][0]["producer_commit"]
+            assert pc == head
+            assert _SHA40.fullmatch(pc)  # full, lowercase — the shape of `commit`
+    # A foreign --repo's own commit is NOT what the default fingerprint carries.
+    assert _git(repo, "rev-parse", "HEAD") != head
+
+
+def test_in_image_producer_commit_is_the_release_commit(no_release, release, monkeypatch):
+    monkeypatch.setattr(v, "_proven_git", lambda root: None)
+    rec = p.experiment_provenance(release_path=release)
+    assert rec["segmentation"][0]["producer_commit"] == "a" * 40
+    rec = p.experiment_provenance(release_path=no_release)
+    assert "producer_commit" in rec["segmentation"][0]
+    assert rec["segmentation"][0]["producer_commit"] is None
+
+
+def test_span_fingerprint_keeps_explicit_environment_facts(repo, no_release):
+    spans = [[(0, 4), (5, 9)]]
+    bare = p.span_fingerprint(spans, kind="sentences")
+    assert bare["producer_commit"] is None and bare["backend"] is None and bare["nltk"] is None
+    pinned = "55a0fc2" + "0" * 33
+    fp = p.span_fingerprint(spans, kind="sentences", texts=["A b. C d."],
+                            producer="ragstack.ingestion.chunkers.sentence_spans",
+                            producer_commit=pinned, backend="regex", nltk=None)
+    assert (fp["producer_commit"], fp["backend"], fp["nltk"]) == (pinned, "regex", None)
+    fp2 = p.span_fingerprint(spans, kind="sentences", backend="punkt", nltk="3.8.1")
+    assert (fp2["backend"], fp2["nltk"]) == ("punkt", "3.8.1")
+    assert fp2["sha256"] == bare["sha256"]  # metadata, not part of the offsets hash
+    rec = p.experiment_provenance(repo=repo, release_path=no_release, fingerprint_self=False,
+                                  segmentations=[fp])
+    assert rec["segmentation"] == [fp]
+
+
+def test_foreign_repo_warns_that_the_fingerprint_is_the_imported_tree(repo, no_release):
+    rec = p.experiment_provenance(repo=repo, release_path=no_release)
+    hits = [w for w in rec["warnings"] if w.startswith(p.WARN_SEGMENTATION_TREE)]
+    assert len(hits) == 1
+    assert "not the given --repo" in hits[0] and "fingerprint_self=False" in hits[0]
+    assert "segmentations=" in hits[0]
+    assert str(repo) not in hits[0] and str(v._CHECKOUT) not in hits[0]
+    # Opting out silences it: nothing of the imported tree is recorded.
+    assert not _warn(p.experiment_provenance(repo=repo, release_path=no_release,
+                                             fingerprint_self=False),
+                     p.WARN_SEGMENTATION_TREE)
+
+
+def test_imported_checkout_as_repo_does_not_warn(no_release):
+    _imported_head()
+    for r in (None, v._CHECKOUT, str(v._CHECKOUT)):
+        assert not _warn(p.experiment_provenance(repo=r, release_path=no_release),
+                         p.WARN_SEGMENTATION_TREE)
+
+
+def test_comparison_key_ignores_producer_commit(repo, no_release):
+    a = p.experiment_provenance(repo=repo, release_path=no_release)
+    b = json.loads(json.dumps(a))
+    b["segmentation"][0]["producer_commit"] = "f" * 40
+    assert p.comparison_key(a) == p.comparison_key(b)
+    assert "producer_commit" not in p.comparison_key(a)["segmentation"][0]
+    b["segmentation"][0]["sha256"] = "0" * 64
+    assert p.comparison_key(a) != p.comparison_key(b)
+
+
+def test_cli_no_fingerprint_self(repo, no_release):
+    out = subprocess.run(
+        [sys.executable, "-m", "ragstack.provenance", "--repo", str(repo),
+         "--release-path", str(no_release), "--no-fingerprint-self"],
+        capture_output=True, text=True, cwd=PY,
+        env={"PYTHONPATH": str(PY), "PATH": subprocess.os.environ["PATH"]},
+    )
+    assert out.returncode == 0, out.stderr
+    rec = json.loads(out.stdout)
+    assert rec["segmentation"] == [] and not _warn(rec, p.WARN_SEGMENTATION_TREE)

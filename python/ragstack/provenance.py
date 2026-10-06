@@ -324,6 +324,7 @@ WARN_UNTRACKED = "untracked files"
 WARN_NOT_IN_IMAGE = "not in an image"
 WARN_NO_GIT = "no git checkout"
 WARN_ENTRY_POINT = "entry point outside checkout"
+WARN_SEGMENTATION_TREE = "segmentation from imported tree"
 
 #: The record keys that identify *what ran*; see :func:`comparison_key`.
 #: ``host``, ``recorded_at``, ``python``, ``installed_distribution`` and
@@ -333,10 +334,15 @@ EXPERIMENT_COMPARISON_KEYS: tuple[str, ...] = (
 )
 
 #: The fingerprint fields that identify a segmentation (counts and labels are
-#: derivable or descriptive).
+#: derivable or descriptive). ``producer`` and ``producer_commit`` are left out
+#: on purpose: equal ``sha256`` over equal texts *is* equal coordinates, whichever
+#: tree computed them; the producing commit is context, like ``python`` and
+#: ``host``.
 _SEGMENTATION_IDENTITY_KEYS: tuple[str, ...] = (
     "kind", "sha256", "texts_sha256", "backend", "nltk",
 )
+
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: Name of the canonical sample below, recorded as the fingerprint's ``sample``.
 #: A change to the tuple is a new name (``canonical-2``), never an edit in place.
@@ -380,6 +386,9 @@ def span_fingerprint(
     kind: str,
     texts: Sequence[str] | None = None,
     producer: str | None = None,
+    producer_commit: str | None = None,
+    backend: str | None = None,
+    nltk: str | None = None,
 ) -> dict[str, Any]:
     """Fingerprint one coordinate system: per document, the ``(start, end)``
     character spans a segmenter produced. ``kind`` names what the spans are
@@ -393,6 +402,18 @@ def span_fingerprint(
     when that matches too. Equal ``sha256`` over equal texts means a label keyed
     by span index points at the same characters; unequal means it does not, and
     no translation between the two is defined.
+
+    ``producer_commit`` is the full 40-hex commit of the tree whose code
+    produced the spans; ``backend`` (``punkt`` / ``regex``) and ``nltk`` are the
+    segmenting environment's facts. This function computes none of them — it
+    only hashes offsets it is handed — so it records exactly what the caller
+    says, ``None`` when nothing is said. That is how spans dumped under a
+    *different* tree (a pinned checkout, an image) carry that run's facts
+    rather than this process's. :func:`sentence_spans_fingerprint` fills
+    ``backend`` / ``nltk`` from the importing environment instead. The three
+    keys are always present, so every fingerprint has one shape.
+    ``producer_commit`` is context, not identity: :func:`comparison_key`
+    drops it.
     """
     lines = [f"{kind}\t{len(spans_per_doc)}"]
     n_spans = 0
@@ -407,12 +428,15 @@ def span_fingerprint(
         "n_spans": n_spans,
         "texts_sha256": None if texts is None else _sha256_lines(
             [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]),
+        "producer_commit": producer_commit,
+        "backend": backend,
+        "nltk": nltk,
     }
     return out
 
 
 def sentence_spans_fingerprint(
-    texts: Sequence[str], *, sample: str = "run",
+    texts: Sequence[str], *, sample: str = "run", producer_commit: str | None = None,
 ) -> dict[str, Any]:
     """:func:`span_fingerprint` of ``sentence_spans()`` over ``texts``, plus
     which backend segmented them (``punkt`` when ``nltk`` is importable, else
@@ -422,6 +446,12 @@ def sentence_spans_fingerprint(
     experiment's own documents) or :data:`CANONICAL_SEGMENTATION_SAMPLE_NAME`
     (:data:`CANONICAL_SEGMENTATION_SAMPLE`).
 
+    The spans, ``backend`` and ``nltk`` all come from the **imported**
+    ``ragstack`` package and this environment — whichever tree that is, not
+    any ``repo=`` an experiment record names. ``producer_commit`` is passed
+    through to :func:`span_fingerprint`; :func:`experiment_provenance` sets it
+    to the imported tree's commit for the entries it computes.
+
     Named for what it hashes — the offsets :func:`chunkers.sentence_spans`
     returns. It is **not** a fingerprint of a chunker's configuration: that is
     a separate, future ``chunker_spec_fingerprint`` (provenance design study),
@@ -429,17 +459,59 @@ def sentence_spans_fingerprint(
     from ragstack.ingestion import chunkers
 
     spans = [chunkers.sentence_spans(t) for t in texts]
-    fp = span_fingerprint(
-        spans, kind="sentences", texts=texts,
-        producer="ragstack.ingestion.chunkers.sentence_spans")
     try:
-        import nltk  # noqa: F401 - the [chunking] extra; absent means regex
-        nltk_version: str | None = str(getattr(nltk, "__version__", "")) or None
+        import nltk as _nltk  # the [chunking] extra; absent means regex
+        nltk_version: str | None = str(getattr(_nltk, "__version__", "")) or None
     except ImportError:
         nltk_version = None
     backend = "punkt" if chunkers._punkt_sentence_spans("A b. C d.") is not None else "regex"
-    fp.update({"sample": sample, "backend": backend, "nltk": nltk_version})
+    fp = span_fingerprint(
+        spans, kind="sentences", texts=texts,
+        producer="ragstack.ingestion.chunkers.sentence_spans",
+        producer_commit=producer_commit, backend=backend, nltk=nltk_version)
+    fp["sample"] = sample
     return fp
+
+
+def _imported_tree_commit(release: dict[str, str]) -> str | None:
+    """The full 40-hex commit of the tree the imported ``ragstack`` package
+    lives in: ``HEAD`` of ``ragstack.version._CHECKOUT`` when that is the top
+    level of a git working tree, else (a tools image ships ``git archive HEAD``,
+    no ``.git``) the ``RELEASE`` file's ``commit``, else ``None``. Never raises,
+    never abbreviated."""
+    try:
+        from ragstack import version as v
+
+        if v._proven_git(v._CHECKOUT) is not None:
+            try:
+                return v.commit_sha(v._CHECKOUT)
+            except v.VersionError:
+                return None
+    except Exception:  # noqa: BLE001 - never raise over metadata
+        return None
+    commit = (release or {}).get("commit") or ""
+    return commit if _FULL_SHA_RE.fullmatch(commit) else None
+
+
+def _is_imported_tree(repo: str | os.PathLike[str]) -> bool:
+    """Whether ``repo`` is the checkout the imported ``ragstack`` lives in:
+    its git top level (or the path itself, when git cannot say) resolves to
+    ``ragstack.version._CHECKOUT``. Never raises; an unjudgeable path is
+    "not the imported tree"."""
+    try:
+        import shutil
+
+        from ragstack import version as v
+
+        top: Path = Path(repo)
+        git = shutil.which("git")
+        if git is not None:
+            out = v._run_git(git, "rev-parse", "--show-toplevel", cwd=Path(repo), timeout=10.0)
+            if out:
+                top = Path(out)
+        return top.resolve() == v._CHECKOUT.resolve()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def comparison_key(rec: dict[str, Any]) -> dict[str, Any]:
@@ -448,7 +520,10 @@ def comparison_key(rec: dict[str, Any]) -> dict[str, Any]:
     fingerprint reduced to kind / sha256 / texts_sha256 / backend / nltk. Two
     runs with equal keys ran the same code over the same segmentation;
     ``host``, ``recorded_at``, ``python``, ``installed_distribution`` and
-    ``warnings`` are context, not identity."""
+    ``warnings`` are context, not identity. So is a fingerprint's
+    ``producer_commit`` (and ``producer``): equal ``sha256`` over equal texts
+    means equal coordinates whichever tree computed them, so the producing
+    commit is dropped like ``python`` and ``host`` are."""
     out: dict[str, Any] = {k: rec.get(k) for k in EXPERIMENT_COMPARISON_KEYS}
     segs = rec.get("segmentation") or []
     out["segmentation"] = [
@@ -485,6 +560,7 @@ def experiment_provenance(
     segmentations: Sequence[dict[str, Any]] | None = None,
     repo: str | os.PathLike[str] | None = None,
     release_path: str | os.PathLike[str] | None = None,
+    fingerprint_self: bool = True,
 ) -> dict[str, Any]:
     """The provenance block every experiment artifact embeds. JSON-serialisable;
     **never raises** — what cannot be determined is ``None`` and says why in
@@ -516,26 +592,43 @@ def experiment_provenance(
       from the one that ran: an editable install can point at another
       checkout. Context only; it says nothing about the commit.
     * ``segmentation`` — a **list** of span fingerprints of possibly several
-      kinds (offsets, not chunker settings): first
-      :func:`sentence_spans_fingerprint` (``kind="sentences"``) over ``texts``
-      when given, else over :data:`CANONICAL_SEGMENTATION_SAMPLE`; then any
+      kinds (offsets, not chunker settings). With ``fingerprint_self`` (the
+      default) it starts with :func:`sentence_spans_fingerprint`
+      (``kind="sentences"``) over ``texts`` when given, else over
+      :data:`CANONICAL_SEGMENTATION_SAMPLE`. That entry is computed by the
+      **imported** ``ragstack`` package in this environment — not by ``repo``
+      — and says so: its ``producer_commit`` is the imported tree's full
+      commit (``HEAD`` of its checkout, else the image ``RELEASE`` commit, else
+      ``None``), and ``backend`` / ``nltk`` are this environment's. Then any
       precomputed ``segmentations`` (e.g. a ``kind="units"``
-      :func:`span_fingerprint` for a unit-bounded arm).
+      :func:`span_fingerprint` for a unit-bounded arm), recorded as given.
+      With ``fingerprint_self=False`` neither default is computed (``texts``
+      is then ignored) and only ``segmentations`` are recorded.
     * ``python``, ``host``, ``recorded_at`` (UTC, RFC 3339 ``Z``).
     * ``citable`` — the commit is known, the tree had no tracked changes and
       no untracked files. A run that is not citable may be reported, never
       cited as a result.
     * ``warnings`` — each starts with :data:`WARN_DIRTY`, :data:`WARN_UNTRACKED`,
-      :data:`WARN_NOT_IN_IMAGE`, :data:`WARN_NO_GIT`, :data:`WARN_ENTRY_POINT` or
-      ``provenance:``. No warning embeds a caller-supplied path.
+      :data:`WARN_NOT_IN_IMAGE`, :data:`WARN_NO_GIT`, :data:`WARN_ENTRY_POINT`,
+      :data:`WARN_SEGMENTATION_TREE` or ``provenance:``. No warning embeds a
+      caller-supplied path.
 
     To ask "did these two runs run the same thing?", compare
     :func:`comparison_key` of each, not the whole record: ``host``,
-    ``recorded_at``, ``python``, ``installed_distribution`` and ``warnings`` are
-    context, not identity.
+    ``recorded_at``, ``python``, ``installed_distribution``, ``warnings`` and
+    each fingerprint's ``producer_commit`` are context, not identity.
 
     ``repo`` defaults to the checkout this package was imported from and must be
     a working-tree top level; ``release_path`` defaults to :data:`RELEASE_PATH`.
+
+    **Recording a different tree.** When ``repo`` is another checkout than the
+    imported one (a wrapper on ``main`` recording a run pinned at an older
+    commit), the default fingerprint would describe the wrong tree, and a
+    :data:`WARN_SEGMENTATION_TREE` warning says so. Instead, dump the spans
+    under the pinned tree (its own ``sentence_spans()``, its environment) and
+    pass ``fingerprint_self=False, segmentations=[span_fingerprint(spans,
+    kind="sentences", texts=texts, producer_commit=<pinned sha>,
+    backend=..., nltk=...)]``.
     """
     warnings: list[str] = []
     rec: dict[str, Any] = {
@@ -553,6 +646,7 @@ def experiment_provenance(
         pass
 
     # The image, if this process runs in one.
+    release: dict[str, str] = {}
     try:
         release = read_release(RELEASE_PATH if release_path is None else release_path)
         if release:
@@ -632,14 +726,26 @@ def experiment_provenance(
     except Exception:  # noqa: BLE001
         pass
 
-    try:
-        if texts is not None:
-            rec["segmentation"].append(sentence_spans_fingerprint(list(texts), sample="run"))
-        else:
-            rec["segmentation"].append(sentence_spans_fingerprint(
-                CANONICAL_SEGMENTATION_SAMPLE, sample=CANONICAL_SEGMENTATION_SAMPLE_NAME))
-    except Exception as e:  # noqa: BLE001
-        warnings.append(f"provenance: sentence fingerprint failed: {type(e).__name__}: {e}")
+    if fingerprint_self:
+        if repo is not None and not _is_imported_tree(repo):
+            warnings.append(
+                f"{WARN_SEGMENTATION_TREE}: the segmentation fingerprint describes the "
+                "imported ragstack tree, not the given --repo; pass fingerprint_self=False "
+                "and supply segmentations= computed under that repo")
+        try:
+            producer_commit = _imported_tree_commit(release)
+            if texts is not None:
+                rec["segmentation"].append(sentence_spans_fingerprint(
+                    list(texts), sample="run", producer_commit=producer_commit))
+            else:
+                rec["segmentation"].append(sentence_spans_fingerprint(
+                    CANONICAL_SEGMENTATION_SAMPLE, sample=CANONICAL_SEGMENTATION_SAMPLE_NAME,
+                    producer_commit=producer_commit))
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"provenance: sentence fingerprint failed: {type(e).__name__}: {e}")
+    elif texts is not None:
+        warnings.append("provenance: texts= ignored because fingerprint_self=False; "
+                        "only the given segmentations= are recorded")
     for fp in segmentations or ():
         if isinstance(fp, dict):
             rec["segmentation"].append(dict(fp))
@@ -666,11 +772,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--texts", nargs="*", type=Path, default=None, metavar="FILE",
                     help="fingerprint sentence_spans() over these files (one document "
                          "each) instead of the canonical sample")
+    ap.add_argument("--no-fingerprint-self", dest="fingerprint_self", action="store_false",
+                    help="record no sentence fingerprint of the imported tree (use when "
+                         "--repo is a different checkout; this CLI then records none)")
     args = ap.parse_args(argv)
     texts = None
     if args.texts:
         texts = [p.read_text(encoding="utf-8") for p in args.texts]
-    rec = experiment_provenance(texts=texts, repo=args.repo, release_path=args.release_path)
+    rec = experiment_provenance(texts=texts, repo=args.repo, release_path=args.release_path,
+                                fingerprint_self=args.fingerprint_self)
     json.dump(rec, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     return 0
