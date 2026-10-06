@@ -260,6 +260,148 @@ fails fast on some classes of stale config rather than starting wrong — see
 `docs/runbooks/upgrade-407-remove-gowe-store-urls.md` for a release that
 *refuses to boot* until an inert key is removed.
 
+## 4a. A release whose CWL is stamped: the tools image must be where the workers look
+
+> **Never exercised as of 2026-10-06.** No tag carries a stamped CWL yet. The
+> newest tag, `v1.6.4`, names the bare `ragstack-worker.sif` in all 23
+> `dockerPull` sites, and no tag contains the boot check (#672, `cde401b`) or
+> the `GOWE_TOOL_IMAGE` refusal (#664, `0e9bbb0`). This section is written from
+> the code. The first stamped release will validate it. How a release gets
+> stamped is in [`cut-a-release.md`](cut-a-release.md).
+
+A **stamped** release names one versioned tools image in every
+`DockerRequirement` (`dockerPull: ragstack-tools-<version>-b<N>.sif`) and
+commits that image's receipt as `cwl/tool-image.receipt.json`
+([ADR-0010](../adr/0010-tool-image-binding.md) decisions 4 and 6). A GoWe
+worker resolves that name as `<its --image-dir>/<name>`, and **nothing in the
+engine checks the file**. So before the API boots on such a tag, the image
+has to be present, and present as the exact build the release stamped. Run
+this section **before step 5's restart**. You can also run it before step 1:
+everything up to the `render` reads the tag, not the worktree.
+
+**Does it apply?** Ask the tag, not the worktree:
+
+```bash
+git -C "$W" grep -h "dockerPull:" "$TAG" -- 'cwl/*.cwl' | sed 's/^ *//' | sort | uniq -c
+#   23 dockerPull: ragstack-worker.sif                 → UNSTAMPED: skip to step 5 (see the end of this section)
+#   23 dockerPull: ragstack-tools-v1.6.5-b1.sif        → STAMPED with that name: continue
+git -C "$W" show "$TAG":cwl/tool-image.receipt.json  # stamped tags only: the build the release named
+```
+
+A mix of the two names is a release that should never have been tagged, since
+`stamp_tool_image.py --check` and the pin test both refuse one. Stop and report
+it.
+
+**1. `GOWE_TOOL_IMAGE` must not be in `tenant.env`.** The setting is retired
+(ADR-0010 decision 5). Every tag that contains #664 **refuses to boot** while
+it is set, whatever `INGEST_BACKEND` is:
+`GOWE_TOOL_IMAGE='…' is set, and the setting is retired (ADR-0010 decision 5,
+#655) … Remove GOWE_TOOL_IMAGE from tenant.env and restart.`
+(`python/ragstack/api/deps.py`, `_refuse_retired_tool_image_override`).
+`ragstack-ctl adopt` warns `retired_env_key` on it, and `ragstack-ctl env set`
+will not set it.
+
+```bash
+grep -n '^GOWE_TOOL_IMAGE=' "$D/config/tenant.env" && echo "REMOVE IT before the restart"
+```
+
+**2. Know which dir this tenant's workers resolve.** The tenant's group is
+`GOWE_WORKER_GROUP` in its `tenant.env`. The group's `--image-dir` is on the
+running workers' command lines:
+
+```bash
+grep '^GOWE_WORKER_GROUP=' "$D/config/tenant.env"
+ps -eo args | grep '[g]owe-worker' | grep -o -- '--group [^ ]* .*--image-dir [^ ]*' | sort -u
+```
+
+As of 2026-10-06: `dev` uses group `ragstack-dev` → `/scout/containers/ragstack-dev`,
+`hackathon` uses `ragstack-hackathon` → `/scout/containers/ragstack-hackathon`,
+and the shared `ragstack` group resolves `/scout/containers`. **None of them
+resolves the shared release store `/scout/containers/ragstack/`.** A bare name
+does not reach into a subdirectory. [`cut-a-release.md` § 7](cut-a-release.md#7-worker-groups-and---image-dir-during-the-migration-never-exercised)
+gives the two ways to fix that, per group. One of them has to be in place
+before you go on.
+
+**3. Confirm the named image and its receipt are in that dir.** "In" means both
+files, under the stamped name, in the group's `--image-dir`, either directly or
+as symlinks into the store. The check opens the receipt beside the path it
+finds. `GOWE_IMAGE_DIRS` must name that same dir, because it is what the boot
+check searches (first hit wins). The key is executable-surface, so
+`ragstack-ctl env set` refuses it. Edit `tenant.env` directly, as the
+management session that owns `/rag`
+([`verifying-tools-image.md`](verifying-tools-image.md)):
+
+```bash
+grep '^GOWE_IMAGE_DIRS=' "$D/config/tenant.env"     # expect the group's --image-dir
+N=ragstack-tools-v1.6.5-b1.sif; G=/scout/containers/ragstack-hackathon
+ls -lL "$G/$N" "$G/$N.receipt.json"
+```
+
+If `GOWE_IMAGE_DIRS` is unset, the API **boots with a warning** and verifies
+nothing (below). Set it as part of this upgrade.
+
+**4. Run the check: `ragstack-ctl gowe render <tenant>`.** This is read-only.
+It reads the registry row and `tenant.env`, then runs the tenant's own
+interpreter against its own checkout:
+`python -m ragstack.tool_image verify --json --dirs $GOWE_IMAGE_DIRS --cwl …`
+for the three CWLs the API registers. That is the same function the boot
+calls, so the two cannot disagree.
+
+```bash
+ragstack-ctl gowe render "$T"                                    # after step 2's checkout
+ragstack-ctl gowe render "$T" --image-dirs "$G"                  # before tenant.env carries GOWE_IMAGE_DIRS
+ragstack-ctl gowe render "$T" --worktree <a scratch checkout of $TAG> --image-dirs "$G"   # before step 2
+```
+
+**Expect:** for each workflow, a `text sha256 (GoWe would content-hash this)`,
+`dockerPull: ragstack-tools-…-b1.sif -> ok at <dir>/<name>`, and exit **0**.
+Exit **3** is a refusal, the same decision the boot will make: fix the
+store, not the receipt. Every message is listed in
+[`verifying-tools-image.md` § When it fails](verifying-tools-image.md#when-it-fails).
+Exit 1 means the check could not run. Exit 2 is a usage error.
+
+> **Exit 0 does not always mean verified.** If neither `GOWE_IMAGE_DIRS` nor
+> `--image-dirs` names a dir, every stamped workflow comes back `unchecked`
+> and the exit code is still 0. Read the state column, not only the exit code.
+> **The installed `/rag/bin/ragstack-ctl` predates this verb**
+> (`ragstack-ctl-v1.6.2-10-g5a05168` → `unknown command "gowe"`). Until it is
+> reinstalled from a checkout at or after `cde401b`, run the same check from
+> the tenant's checkout:
+> `PYTHONPATH="$W/python" /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --dirs "$G" --cwl "$W/cwl/pdf-ingest-scatter.cwl" --cwl "$W/cwl/graph-extract.cwl" --cwl "$W/cwl/restore-collection.cwl"`
+> (the three paths are the defaults. Use the tenant's `GOWE_WORKFLOW_CWL` /
+> `GRAPH_EXTRACT_CWL` / `COLLECTION_RESTORE_CWL` if it sets them).
+
+**5. Know what the boot does now.** With `INGEST_BACKEND=gowe` the API runs
+that check at startup for the three registered CWLs
+(`_verify_tool_images_at_boot`):
+
+| The tag's CWL, and the tenant's settings | At boot |
+|---|---|
+| stamped, `GOWE_IMAGE_DIRS` set, all checks pass | boots. One info line per image: `verified at <path>: sha256 ok, labels ok` |
+| stamped, `GOWE_IMAGE_DIRS` set, **any** problem (not found, no receipt, sha256 or label mismatch, committed receipt ≠ the store's) | **refuses to boot**: `tool image identity check FAILED (ADR-0010 decision 7, #655)`, naming the image, the path tried and each problem |
+| a document naming two images | **refuses** |
+| stamped, `GOWE_IMAGE_DIRS` **unset** | **warns** (`… GOWE_IMAGE_DIRS is unset … identity check is NOT run`) and boots |
+| stamped, no `apptainer` on the API's `PATH` | label check is a **warning**. The sha256 still has to match. |
+| unstamped (`ragstack-worker.sif`) | boots. Info: `unstamped tree, identity check skipped` |
+| `INGEST_BACKEND` not `gowe` | no check (the `GOWE_TOOL_IMAGE` refusal still applies) |
+
+A refusal shows up in the API log and the API never binds its port. For a
+`manual` tenant, step 5's `/health` check fails. For a ctl-supervised one
+(`dev`, `hackathon`: `supervisor: instance`, run as `svcbvbrc`), it is
+`/rag/bin/ctl-as-svc.sh tenant restart <t> --yes --wait --direct` that fails.
+The boot check runs as the API's account, so for those two tenants
+`svcbvbrc` must be able to read the image and its receipt. The rollback is
+the usual one: check out `worktree-sha` again.
+
+**A tenant still on an unstamped tag: nothing changes.** Its CWL names
+`ragstack-worker.sif`. The worker resolves that through the group dir's
+`ragstack-worker.sif` symlink exactly as before. The boot check logs
+`unstamped` and skips, and the API seeds no provenance inputs, so collection
+manifests record only the image's own `RELEASE` (if it has one). The only new
+boot-time rule it can hit is the `GOWE_TOOL_IMAGE` refusal, and only on a tag
+that contains #664. Keep the group dir's `ragstack-worker.sif` symlink in place
+while any tenant on that group is unstamped.
+
 ## 5. Restart the API by the recipe in `ops/coconut/restore.sh`
 
 **First check who supervises the tenant** —
@@ -573,6 +715,11 @@ does not restate them.
 
 ## Related
 
+- [`cut-a-release.md`](cut-a-release.md) — how a release gets its tools image
+  and stamped CWL (tag `vT` → build → store → stamp → tag `vS`); § 4a above is
+  the tenant side of it.
+- [`verifying-tools-image.md`](verifying-tools-image.md) — the boot identity
+  check and `ragstack-ctl gowe render`, every failure message.
 - [`tenant-admin.md`](tenant-admin.md) — running the tenant after the upgrade:
   roles, shares, quotas, diagnosing a user report.
 - [`upgrade-407-remove-gowe-store-urls.md`](upgrade-407-remove-gowe-store-urls.md)

@@ -131,6 +131,12 @@ Release order is linear — no stamp-after-build, no re-tagging:
 Off-tag builds (`vT+<sha>`) are for dev and hand use and may be named by a
 dev server on `main`; they never enter the shared store.
 
+The operator procedure for this order (exact commands, which account runs
+each step, how to verify it, what to do when one fails partway, and how the
+store meets the worker groups' `--image-dir`) is
+[docs/runbooks/cut-a-release.md](../docs/runbooks/cut-a-release.md). It is a
+draft that has not been exercised end to end.
+
 ## Stamping
 
 ```bash
