@@ -23,7 +23,7 @@ deployments defaulted to `fixed`, a character window of 512/64 (the
 stay `fixed`; see [identity](#a-collection-keeps-its-method-for-life).
 
 A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
-`CHUNK_OVERLAP` in its `tenant.env`. The semantic methods are never the default.
+`CHUNK_OVERLAP` in its `tenant.env`. No tenant uses a semantic method as its default today.
 
 ## The six methods
 
@@ -61,9 +61,15 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
   either side, then cuts wherever the cosine distance between neighbouring
   windows is above the `breakpoint_percentile_threshold` percentile. Chunks
   shorter than `min_chunk_length` *characters* are merged into a neighbour.
-  *size* and *overlap* only matter for a document that splits into more than
-  3,000 sentence spans: that document is chunked by the `fixed_token` window
-  instead (`max_breakpoint_sentences`). Semantic chunks do not overlap.
+    *size* and *overlap* only matter for a document that splits into more than
+  3,000 sentence spans (`max_breakpoint_sentences`). On GoWe that document is
+  chunked by the `fixed_token` window instead, using the collection's
+  size/overlap or, if it recorded none, the workflow defaults (256/32 in
+  `pdf-ingest-scatter.cwl`). On the in-process path no tokenizer is wired for
+  semantic collections, so the fallback returns the whole document as one
+  chunk, which the embedder then truncates (the same root cause as
+  [#647](#token-budget)). Apart from that fallback, semantic chunks do not
+  overlap.
 - **`semantic_pooled`**: the same class with `pool_sentences=True` and
   distances rounded to 6 decimals. It embeds each sentence once and averages
   the vectors over the window, instead of embedding every window's text. That
@@ -204,10 +210,9 @@ Every number below comes from a committed file.
   ([`python/scripts/eval/scifact_chunk_eval_report.md`](../python/scripts/eval/scifact_chunk_eval_report.md);
   STATUS.md v0.15.0): 5,183 abstracts and 300 claim queries with real relevance
   judgements. Under Holm-corrected Wilcoxon, no config differs from
-  `fixed_tok512` (nDCG@10 0.698). The closest was `fixed_tok256` at +0.023 nDCG@10,
+  `fixed_tok512` (nDCG@10 0.698). The largest difference was `fixed_tok256`, +0.023 nDCG@10,
   with a paired-bootstrap interval of [0.006, 0.040] but Holm p = 0.077.
-  Abstracts are short: at 512 tokens there are 1.18 chunks per document, so
-  this benchmark puts little weight on chunking. Chunking time was 169.2 s for
+  Abstracts are short: at 512 tokens there are 1.18 chunks per document, so on this benchmark `fixed_tok512` is close to one chunk per abstract. Chunking time was 169.2 s for
   `semantic` against 4.9 s for `fixed_tok512`.
 - **Overlap**
   ([`plans/results/stage1/RESULTS-stage1-legA.md`](plans/results/stage1/RESULTS-stage1-legA.md) §1):
@@ -254,13 +259,18 @@ chunks have to fit inside it.
 
 ## Recommendations
 
-- **Use the default, `fixed_token` 512/64.** It is deterministic, cannot
-  overflow the embedder, and nothing committed beats it.
+- **Use the default, `fixed_token` 512/64.** It is deterministic and cannot
+  overflow the embedder. No committed comparison beats it with statistical
+  support after Holm correction, though `fixed_tok256` is nominally ahead on
+  both the 7-way and SciFact runs, and on the provisional Leg A grid
+  `fixed_tok512` ranked 21 of 24, inside the noise floor.
 - **Semantic chunking might be worth it** when your documents change topic
   clearly and you want chunks that follow those changes, and you can afford the
-  ingest cost. Measured costs: boundary detection embeds 6.78× more tokens for
-  `semantic` than for `semantic_pooled` at the default `buffer_size`, on top of
-  the normal chunk embedding. Chunks are larger and vary more (p50 611 tokens,
+    ingest cost. Measured on 20 papers (one corpus, default params): boundary
+  detection embedded 2.41 M tokens for `semantic` and 0.36 M for
+  `semantic_pooled` (6.78×), on top of about 0.35 M tokens of chunk embedding.
+  `fixed` 512/64 embedded 0.40 M tokens in total, so `semantic` cost about 7×
+  the embedding tokens of `fixed`, and `semantic_pooled` about 1.8×. Chunks are larger and vary more (p50 611 tokens,
   up to the 4,080 cap, against 179 for `fixed` 512 characters on the same
   papers). On a GoWe tenant you also need the method off
   `INGEST_WORKER_UNSUPPORTED_METHODS` and a workflow that admits it. Choose
