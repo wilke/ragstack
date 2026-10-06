@@ -540,23 +540,26 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     )
 
 
-#: model -> the TokenCounterUnavailable its HF tokenizer probe raised, or None if
-#: it loaded. Per process: tokenizer availability is a property of the deployment
-#: (the [chunking] extra, the HF cache), and caching it keeps the answer — and so
-#: the method a create resolves — stable for the life of the process, which the
-#: content-addressed create relies on (same request -> same physical store).
-_HF_TOKENIZER_PROBES: dict[str, TokenCounterUnavailable | None] = {}
+#: Models whose HF tokenizer has loaded in this process (value always ``None``).
+#: Only SUCCESSES are cached. Once a tokenizer loads, it stays loadable for the
+#: life of the process, so caching keeps the method a create resolves stable
+#: (same request -> same physical store). A failure is NOT cached: it may be
+#: transient (a Hub or NFS hiccup), and caching it would pin every later
+#: default-spec create on that model to the `fixed` fallback until restart.
+_HF_TOKENIZER_PROBES: dict[str, None] = {}
 
 
 def _hf_tokenizer_error(model: str) -> TokenCounterUnavailable | None:
-    """Probe (once per process per model) whether ``model``'s HF tokenizer loads."""
-    if model not in _HF_TOKENIZER_PROBES:
-        try:
-            make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
-            _HF_TOKENIZER_PROBES[model] = None
-        except TokenCounterUnavailable as exc:
-            _HF_TOKENIZER_PROBES[model] = exc
-    return _HF_TOKENIZER_PROBES[model]
+    """``None`` if ``model``'s HF tokenizer loads (probed until the first success,
+    then cached), else the :class:`TokenCounterUnavailable` it raised."""
+    if model in _HF_TOKENIZER_PROBES:
+        return None
+    try:
+        make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
+    except TokenCounterUnavailable as exc:
+        return exc  # deliberately not cached, see _HF_TOKENIZER_PROBES
+    _HF_TOKENIZER_PROBES[model] = None
+    return None
 
 
 def default_chunk_method_for(model: str) -> str:

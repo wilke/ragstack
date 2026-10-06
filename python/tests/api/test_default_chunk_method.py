@@ -16,7 +16,9 @@ Three properties, each one a way the flip could go wrong:
 """
 from __future__ import annotations
 
+import httpx
 import pytest
+from fastapi import HTTPException
 
 from ragstack.api import deps, security
 from ragstack.api.collections import CollectionEntry
@@ -25,7 +27,7 @@ from ragstack.collection_store import CollectionSpec
 from ragstack.config import LEGACY_CHUNK_METHOD, Settings, settings
 from ragstack.ingestion.chunkers import FixedTokenWindowChunker, RecursiveCharacterChunker
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
-from ragstack.provenance import chunk_descriptor, spec_hash
+from ragstack.provenance import chunk_descriptor, read_manifest, spec_hash
 from ragstack.stores.qdrant import collection_name
 
 #: Captured at import, before tests/api/conftest.py pins the probe to "loads".
@@ -138,21 +140,31 @@ async def test_unloadable_tokenizer_is_503_when_fixed_token_is_configured(
     assert "could not load the tokenizer" in r.json()["detail"]
 
 
-def test_tokenizer_probe_runs_once_per_model(monkeypatch, _unconfigured):
-    """The real probe (not the conftest pin): cached per model, so the method a
-    create resolves is stable for the life of the process."""
+def test_tokenizer_probe_caches_success_only(monkeypatch, _unconfigured):
+    """The real probe (not the conftest pin). A success is cached per model, so
+    the method a create resolves is stable. A failure is NOT cached: a transient
+    Hub/NFS error must not pin later creates to the `fixed` fallback until
+    restart."""
     monkeypatch.setattr(deps, "_hf_tokenizer_error", _REAL_PROBE)
     monkeypatch.setattr(deps, "_HF_TOKENIZER_PROBES", {})
     calls: list[str] = []
+    outcomes = iter(["fail", "ok"])
 
-    def _fail(backend, *, model, **kw):
+    class _Counter:
+        def _tokenizer(self):
+            return object()
+
+    def _flaky(backend, *, model, **kw):
         calls.append(model)
-        raise TokenCounterUnavailable(backend, model, OSError("no tokenizer"))
+        if next(outcomes) == "fail":
+            raise TokenCounterUnavailable(backend, model, OSError("hub timeout"))
+        return _Counter()
 
-    monkeypatch.setattr(deps, "make_token_counter", _fail)
-    assert deps.default_chunk_method_for("text-embedding-3-small") == "fixed"
-    assert deps.default_chunk_method_for("text-embedding-3-small") == "fixed"
-    assert calls == ["text-embedding-3-small"]
+    monkeypatch.setattr(deps, "make_token_counter", _flaky)
+    assert deps.default_chunk_method_for("acme/emb") == "fixed"        # transient failure
+    assert deps.default_chunk_method_for("acme/emb") == "fixed_token"  # retried, loads
+    assert deps.default_chunk_method_for("acme/emb") == "fixed_token"  # cached, no 3rd load
+    assert calls == ["acme/emb", "acme/emb"]
 
 
 # --------------------------------------------------------------------------- #
@@ -234,3 +246,80 @@ def test_boot_chunker_with_configured_fixed_token_and_no_tokenizer_fails_clearly
     monkeypatch.setattr(deps, "make_token_counter", _fail)
     with pytest.raises(TokenCounterUnavailable):
         deps._build_chunker()
+
+
+# --------------------------------------------------------------------------- #
+# Per-site coverage: each settings-derived / method-less read of the chunk
+# method. Each test fails if its one site is reverted to settings.chunk_method.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _derived(_unconfigured, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "collection_manifest_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "qdrant_collection_explicit", "")
+    monkeypatch.setattr(settings, "embedding_model", "m")
+    monkeypatch.setattr(settings, "embedding_model_dim", 8)
+    return str(tmp_path)
+
+
+class _NoSpecs:
+    async def list_specs(self):
+        return []
+
+
+async def _registry(monkeypatch, derived="phys_derived"):
+    monkeypatch.setattr(deps, "_es_index_name", lambda: derived)
+    monkeypatch.setattr(settings, "default_collection_id", "")
+    async with httpx.AsyncClient() as http:
+        return await deps._build_collection_registry(
+            http, graph_store=None, default_embedder=object(),
+            default_vector_store=object(), default_text_index=object(),
+            default_retriever=object(), default_collection=derived, store=_NoSpecs(),
+        )
+
+
+def test_ingest_manifest_of_the_derived_default_records_fixed(_derived):
+    """write_ingest_manifest: the derived default's verified manifest."""
+    deps.write_ingest_manifest(source="corpus", chunk_count=3)
+    m = read_manifest(_derived, deps._derived_collection_name())
+    assert m is not None and m.source == "ingest"
+    assert (m.chunk_method, m.chunk_size, m.chunk_overlap) == ("fixed", 512, 64)
+
+
+async def test_derived_entry_records_fixed(_derived, monkeypatch):
+    """The derived CollectionEntry. Were it `fixed_token`, the ingest spec guard
+    would raise BuildSpecMismatch against every existing `fixed/512/64` config
+    manifest: a default-collection ingest outage."""
+    # The manifest a pre-flip boot left behind (dev/hackathon have exactly this).
+    deps._materialize_config_manifest(
+        "phys_derived", model="m", dim=8, api=settings.embedding_api, endpoints=[],
+        chunk_method="fixed", chunk_size=512, chunk_overlap=64,
+    )
+    reg = await _registry(monkeypatch)
+    entry = reg.resolve("phys_derived")
+    assert entry.chunk_method == "fixed"
+    monkeypatch.setattr(settings, "collection_spec_guard", True)
+    deps.check_ingest_build_spec(entry)  # raises BuildSpecMismatch on drift
+
+
+async def test_derived_config_manifest_records_fixed(_derived, monkeypatch):
+    """The config manifest materialized for the derived default at startup."""
+    await _registry(monkeypatch)
+    m = read_manifest(_derived, "phys_derived")
+    assert m is not None and m.source == "config"
+    assert (m.chunk_method, m.chunk_size, m.chunk_overlap) == ("fixed", 512, 64)
+
+
+def test_gowe_guard_does_not_refuse_a_method_less_entry_for_the_new_default(
+    _unconfigured, monkeypatch
+):
+    """documents._refuse_unrunnable_chunk_method: a method-less entry resolves to
+    `fixed`, so refusing `fixed_token` on the worker must not refuse it."""
+    from ragstack.api.routers import documents
+
+    monkeypatch.setattr(settings, "ingest_worker_unsupported_methods", "fixed_token")
+    documents._refuse_unrunnable_chunk_method(_entry(None))  # no raise
+    with pytest.raises(HTTPException) as exc:
+        documents._refuse_unrunnable_chunk_method(_entry("fixed_token"))
+    assert exc.value.status_code == 422
