@@ -88,6 +88,19 @@ different artifacts that produced a circular release flow.)
    says which source it used; a commit is not guaranteed and is never
    invented.
 
+   **One explicit exception (owner, 2026-10-06): an experiment-provenance
+   record.** A study run must be reproducible from its record, which replaces
+   the chunking study's commit pin (`ingestion/chunkers.py` is no longer
+   frozen). Such a record carries the derived version, the **full commit
+   hash**, and the **raw `git describe` output as a provenance field** — never
+   as a version, never as a name, never compared or parsed by anything else.
+   `ragstack.provenance.experiment_provenance()` is the one helper that builds
+   it: it takes the derived version from `ragstack.version`, the raw describe
+   from a single clearly-labelled accessor there (the only way the raw string
+   leaves that module), and, inside an image, the image identity from
+   `provenance.read_release()`. Experiments should run from a versioned tools
+   image so the record names a build, not a working tree.
+
 2. **The tools image is one build of the repo at a tag T**, named
    `ragstack-tools-<version>-b<N>.sif` and built **from the tag's own commit**
    — nothing is written back into the repo before the build, so
