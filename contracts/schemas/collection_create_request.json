@@ -11,7 +11,7 @@
       "minLength": 1
     },
     "chunk": {
-      "description": "Chunk strategy — part of the collection's build identity, so it is fixed at creation and cannot be edited later. An unknown `method`, or a size/overlap the chosen chunker cannot advance through, is a 400. Optional: omitted → the server's default chunk strategy (method, size, overlap from server config) is resolved in. Supplying it is admin-only (403 otherwise).",
+      "description": "Chunk strategy — part of the collection's build identity, so it is fixed at creation and cannot be edited later. An unknown `method`, or a size/overlap the chosen chunker cannot advance through, is a 400. Optional: omitted → the server's default chunk strategy (method, size, overlap from server config) is resolved in: by default fixed_token/512/64 (fixed when the server cannot load the embedding model's tokenizer and CHUNK_METHOD is unset; 503 when CHUNK_METHOD=fixed_token is set explicitly). Supplying it is admin-only (403 otherwise).",
       "type": "object",
       "required": ["method"],
       "properties": {

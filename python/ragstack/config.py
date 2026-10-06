@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -20,6 +20,15 @@ def _split_list_env(value: object) -> object:
             return json.loads(value)
         return [item.strip() for item in value.split(",") if item.strip()]
     return value
+
+
+#: The chunk method a collection was built with when nothing recorded one and the
+#: operator never set ``CHUNK_METHOD``: the server default before 2026-10-06.
+#: See :meth:`Settings.unrecorded_chunk_method` — it exists so that flipping the
+#: default for NEW collections to ``fixed_token`` cannot re-chunk an existing one.
+LEGACY_CHUNK_METHOD = "fixed"
+#: ``Settings.chunk_method``'s default — the method a NEW collection gets.
+_DEFAULT_CHUNK_METHOD = "fixed_token"
 
 
 class Settings(BaseSettings):
@@ -393,7 +402,25 @@ class Settings(BaseSettings):
 
     # Chunker defaults. fixed_token is a sliding TOKEN window (chunk_size/overlap in
     # tokens) and needs embedding_model (its HF tokenizer). See CHUNK_METHODS.
-    chunk_method: str = "fixed"   # fixed | fixed_token | sentence | words | semantic
+    #
+    # Default method: fixed_token — owner decision 2026-10-06. Rationale:
+    #   * token-safe: the window is sized in the embedding model's own tokens, so a
+    #     chunk cannot overflow the embedder's context the way a 512-CHARACTER
+    #     `fixed` chunk's token count drifts (chars/token varies ~2.5-4 by text);
+    #   * it is the measured recommendation (`fixed_tok512`) of the 7-way chunking
+    #     study — python/scripts/eval/chunking_compare_7way.py, results in STATUS.md.
+    # chunk_size=512 / chunk_overlap=64 are unchanged and were NOT part of that
+    # decision (the study found overlap earns nothing; whether to drop it is open).
+    #
+    # SCOPE: this default is what POST /v1/collections resolves into a NEW
+    # collection's spec when the request names no chunk strategy. A collection that
+    # already exists keeps the method it was built with: an API-created spec
+    # records it; a spec that records none, and the settings-derived default
+    # collection, resolve through unrecorded_chunk_method() below — which stays
+    # `fixed` unless CHUNK_METHOD is set explicitly (ADR-0002 identity).
+    chunk_method: str = _DEFAULT_CHUNK_METHOD   # fixed | fixed_token | sentence | words | semantic | semantic_pooled
+    # Whether CHUNK_METHOD was supplied at construction (see unrecorded_chunk_method).
+    _chunk_method_configured: bool = PrivateAttr(default=False)
     chunk_size: int = 512
     chunk_overlap: int = 64
     # Semantic chunker (chunk_method=semantic) tunables. Embeds sentence buffers
@@ -430,6 +457,43 @@ class Settings(BaseSettings):
                 f"chunk_method {value!r} not in {CHUNK_METHODS}"
             )
         return value
+
+    def unrecorded_chunk_method(self) -> str:
+        """The chunk method of a collection whose build spec does not record one.
+
+        Two kinds of collection have no recorded method: the **settings-derived
+        default collection** (its spec *is* these settings) and a registry spec
+        with an empty ``chunk_method`` (registered by the bulk CLI or by hand).
+        Both were built under whatever ``chunk_method`` resolved to at the time.
+
+        ``CHUNK_METHOD`` set explicitly → that value, exactly as before.
+        Not set → :data:`LEGACY_CHUNK_METHOD` (``fixed``), the default these
+        collections were built under, NOT the current ``chunk_method`` default
+        (``fixed_token`` since 2026-10-06). Following the new default would
+        silently re-chunk an existing store: chunks with different boundaries
+        written next to the old ones under an unchanged name — and for the derived
+        default it would also load an HF tokenizer at boot. "Explicitly" means
+        the field was supplied at construction (env, ``.env`` or a kwarg —
+        captured once in ``_chunk_method_configured``), or currently holds a
+        value other than the default (a runtime assignment). The construction
+        snapshot, rather than the live ``model_fields_set``, is deliberate: an
+        assignment adds to that set permanently, so a value assigned and then
+        restored to the default (a test's ``monkeypatch``) would otherwise
+        flip this answer for the rest of the process.
+        """
+        if self.chunk_method_configured():
+            return self.chunk_method
+        return LEGACY_CHUNK_METHOD
+
+    def chunk_method_configured(self) -> bool:
+        """Whether ``chunk_method`` was chosen by the operator rather than taken
+        from the code default (see :meth:`unrecorded_chunk_method` for what
+        counts). Also decides whether the new-collection default may fall back
+        when its tokenizer cannot load (``api.deps.default_chunk_method_for``)."""
+        return self._chunk_method_configured or self.chunk_method != _DEFAULT_CHUNK_METHOD
+
+    def model_post_init(self, context: Any, /) -> None:
+        self._chunk_method_configured = "chunk_method" in self.model_fields_set
 
     # --- Chunk-level boilerplate (ragstack.ingestion.boilerplate) ------------ #
     # Scholarly PDFs contribute chunks that are not content: the Creative Commons

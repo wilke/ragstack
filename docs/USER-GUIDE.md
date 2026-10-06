@@ -214,6 +214,12 @@ curl -s -X POST $BASE/v1/collections \
   chunker are resolved to concrete values at create time, so a later change of
   the defaults never re-identifies your collection). Supplying `embedding` or
   `chunk` is an **admin-only** override (`403` otherwise).
+- **The default chunker is `fixed_token`** — 512 tokens of the collection's
+  embedding model, overlapping by 64 (since 2026-10-06; before that it was the
+  character-based `fixed`). If the server cannot load that model's tokenizer,
+  your collection is created with `fixed` instead and says so in its
+  `chunk_method`. Collections that already exist keep the chunker they were
+  built with.
 - **Pass an `id` to name a library.** The id is folded into the physical store
   name, so two libraries with the same build spec each get their own store.
   **Omit `id` for a corpus:** id and store name are then content-addressed over

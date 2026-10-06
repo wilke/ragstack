@@ -598,6 +598,13 @@ time, so later default changes never re-identify an existing collection). Supply
 `embedding` or `chunk` is an **admin-only** override → `403` otherwise.
 Full schema: `contracts/schemas/collection_create_request.json`.
 
+The default chunk strategy is **`fixed_token`, 512 tokens, overlap 64** (`CHUNK_METHOD` /
+`CHUNK_SIZE` / `CHUNK_OVERLAP`; `fixed_token` since 2026-10-06, `fixed` before). It sizes
+the window with the embedding model's HF tokenizer; when that cannot load on the server
+and `CHUNK_METHOD` is unset, the new collection gets `fixed` instead (recorded in its
+spec), and when `CHUNK_METHOD=fixed_token` is set explicitly the create is a `503` naming
+the remediation. Existing collections are never re-chunked by a default change.
+
 **Success is `201`** with the new `CollectionInfo`. Refusals:
 
 | Status | When |
@@ -608,7 +615,7 @@ Full schema: `contracts/schemas/collection_create_request.json`.
 | `409` | the resolved spec collides with an existing collection; or the id is the reserved pointer name `default`; or the id carries residual ACL state owned by another subject (the create is rolled back rather than inheriting it); or the caller already owns `MAX_COLLECTIONS_PER_OWNER` collections — a structured `{owned, limit}` `detail` |
 | `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) |
 | `429` | `rate_limit_collections_create_per_hour` exceeded (default **5**/h; `Retry-After` in seconds; admins exempt) — see [Rate limits](#rate-limits-issue-87) |
-| `503` | the authorization store could not record ownership — the create is rolled back (fail closed) |
+| `503` | the authorization store could not record ownership — the create is rolled back (fail closed); or the request named no `chunk`, `CHUNK_METHOD=fixed_token` is set explicitly, and the embedding model's tokenizer cannot load on this server (`detail` names the remediation; nothing is created) |
 | `507` | the `max_collections` bound on **active** collections is met and nothing can be evicted to make room (see below) |
 
 The bound counts **active** rows (`state == active`) of the **durable registry**

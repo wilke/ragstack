@@ -1628,7 +1628,10 @@ paths:
         "503":
           description: >-
             Authorization store unavailable — ownership could not be recorded,
-            so the create is rolled back (fail closed).
+            so the create is rolled back (fail closed). Also: the request named
+            no chunk strategy, the server's CHUNK_METHOD is explicitly
+            `fixed_token`, and the embedding model's tokenizer cannot load on
+            this server — `detail` names the remediation; nothing is created.
         "507":
           description: >-
             The server's ACTIVE-collection bound (`MAX_COLLECTIONS`, #359) is
@@ -4995,7 +4998,10 @@ components:
             fixed at creation and cannot be edited later. An unknown `method`, or
             a size/overlap the chosen chunker cannot advance through, is a 400.
             Optional — omitted, the server's default chunk strategy (method,
-            size, overlap from server config) is resolved in. Supplying it is
+            size, overlap from server config) is resolved in: by default
+            `fixed_token`/512/64 (`fixed` when the server cannot load the
+            embedding model's tokenizer and `CHUNK_METHOD` is unset; a 503 when
+            `CHUNK_METHOD=fixed_token` is set explicitly). Supplying it is
             an admin-only build-spec override (403 otherwise).
           type: object
           required: [method]

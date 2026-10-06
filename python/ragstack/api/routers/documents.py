@@ -509,8 +509,10 @@ def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
 
     .. rubric:: The fallback is conservative, and deliberately so
 
-    An entry that records no ``chunk_method`` is read as ``settings.chunk_method``
-    here, and that is a **guess about a different process**. ``_gowe_inputs``
+    An entry that records no ``chunk_method`` is read as
+    ``settings.unrecorded_chunk_method()`` here (``CHUNK_METHOD`` when set, else
+    the pre-2026-10-06 default ``fixed`` — not the ``fixed_token`` default new
+    collections get), and that is a **guess about a different process**. ``_gowe_inputs``
     sends ``chunk_method`` only when the entry has one, so for a method-less
     entry the scatter supplies nothing and ``pdf-ingest-scatter.cwl``'s own
     default decides — ``fixed_token/256/32``, where this process would have said
@@ -519,9 +521,9 @@ def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
     sent either, so semantic tunables would not survive the trip regardless.)
 
     Be clear about what this guard therefore does and does not do for such an
-    entry. It refuses only when ``settings.chunk_method`` is itself a refused
-    method — which on a deployment whose default is supported (hackathon's, where
-    ``CHUNK_METHOD`` is unset and the default is ``fixed``) means it does NOT
+    entry. It refuses only when ``settings.unrecorded_chunk_method()`` is itself
+    a refused method — which on a deployment whose default is supported (hackathon's, where
+    ``CHUNK_METHOD`` is unset and the fallback is ``fixed``) means it does NOT
     fire, and the run proceeds chunked by the CWL default with nothing in either
     store recording which method won. That silent divergence is real and this
     guard does not close it; #609 step 2 does, by having the tool read the
@@ -534,7 +536,7 @@ def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
     persists the RESOLVED method, so their ``chunk_method`` is never ``None``.
     The method-less entries are the ones registered by the bulk CLI or by hand.
     """
-    method = entry.chunk_method or settings.chunk_method
+    method = entry.chunk_method or settings.unrecorded_chunk_method()
     refusal = shard_refusal(
         method,
         unsupported=parse_unsupported_methods(settings.ingest_worker_unsupported_methods),
