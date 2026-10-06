@@ -75,10 +75,30 @@ def _child_env(**overrides: str | None) -> dict[str, str]:
     return env
 
 
+#: The decoy package's ``__init__``. Its *origin* is foreign — ``__file__`` is in
+#: the decoy dir, which is all the guard inspects — but its submodules resolve to
+#: the tree under test. A bare decoy is a regular package whose ``__path__`` holds
+#: only the decoy dir, so once the escape hatch lets the run proceed, the first
+#: ``import ragstack.config`` (the autouse fixture in ``tests/conftest.py``) dies
+#: with ModuleNotFoundError. ``PYTHONPATH`` cannot help: submodules of an
+#: already-imported regular package are looked up on its ``__path__``, not on
+#: ``sys.path``. This passed for as long as the env carried an editable install,
+#: only because setuptools' editable finder resolves ``ragstack.<sub>`` by name
+#: and ignores ``__path__`` — so the child silently ran the frozen production
+#: checkout's ``config.py``. Naming the checkout here makes the child independent
+#: of whether, and where, ``ragstack`` is installed.
+_DECOY_INIT = """\
+# not the checkout: a foreign `ragstack` whose submodules come from the tree under test
+__path__.append({real!r})
+"""
+
+
 def _run_with_decoy(tmp_path: Path, **env_overrides: str | None) -> subprocess.CompletedProcess:
     decoy_root = tmp_path / "decoy"
     (decoy_root / "ragstack").mkdir(parents=True)
-    (decoy_root / "ragstack" / "__init__.py").write_text("# not the checkout\n")
+    (decoy_root / "ragstack" / "__init__.py").write_text(
+        _DECOY_INIT.format(real=str(CHECKOUT_ROOT / "ragstack"))
+    )
 
     stub = textwrap.dedent(_STUB.format(decoy=str(decoy_root)))
     return subprocess.run(
