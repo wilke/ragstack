@@ -1,94 +1,263 @@
 # RAGStack ingest paths
 
-There is **one** chunk→embed→upsert pipeline (`IngestionPipeline.ingest`, reused
-everywhere) and **three** ways to feed it. Which one runs is selected by
-`INGEST_BACKEND` (`local` | `gowe`, `python/ragstack/config.py:219`) plus which
-entrypoint you call. This page maps the three so you pick the right one; it links
-to the deeper docs rather than repeating them.
+**Which ingest path do I use, and what happens to a document on it?** This page is
+the map. It is for operators and power users, and it links to the deeper docs
+rather than repeating them. For the internals of each path read
+[`ARCHITECTURE-DEEP-DIVE.md` §0](ARCHITECTURE-DEEP-DIVE.md#0-single-vs-bulk--the-ingest-paths-and-one-query-path)
+(the overview), [§4](ARCHITECTURE-DEEP-DIVE.md#4-single-document-ingestion-pipeline)
+(the shared pipeline) and [§5](ARCHITECTURE-DEEP-DIVE.md#5-bulk--sharded-ingestion)
+(the paths one by one). For choosing a chunk method read
+[`CHUNKING.md`](CHUNKING.md).
+
+There is **one** pipeline, `IngestionPipeline`
+(`python/ragstack/ingestion/pipeline.py`: `prepare_documents` → `_embed_and_link` →
+`index_chunks`), and **four** paths that drive it. They differ in who runs the
+pipeline and where it runs. The legacy CLI (path D) is the exception: it is still a
+fork with its own chunk/embed/upsert loop.
+
+Two things pick the path:
+
+1. **The API path is a per-tenant deployment setting.** `INGEST_BACKEND` is `local`
+   (the code default) or `gowe` (`python/ragstack/config.py` `ingest_backend`, normalised by
+   `python/ragstack/ingestion/backends.py` `ingest_backend_name`). Any other value gets
+   **501** from both ingest routes (`_refuse_unknown_backend`,
+   `python/ragstack/api/routers/documents.py:461`).
+2. **The operator paths are whichever tool you run.** The operator paths (C and D)
+   write to Qdrant/Elasticsearch directly and never go through the API.
 
 ---
 
 ## Comparison
 
-| | 1. Local API ingest | 2. GoWe backend | 3. Bulk CLI |
-|---|---|---|---|
-| **Entrypoint** | `POST /v1/ingest` (server path) · `POST /v1/ingest/upload` (multipart PDF) | Same API endpoints, but `INGEST_BACKEND=gowe` | `python/scripts/ingest_jsonl.py`; CWL `cwl/{ingest-bulk,embed-bulk,load-embeddings}.cwl` |
-| **Input** | A server-side path/dir under `INGEST_ROOT`, **or** uploaded PDF bytes | Each manifest item's `source` is a **pre-extracted JSONL shard** fed to `ingest_shard.py` — **NOT a PDF** (`config.py:214-218`) | A pre-extracted JSONL corpus (`{text, path, metadata}` per line) |
-| **Execution** | In-process `LocalAsyncIORunner` (`ingestion/backends.py:43`), bounded asyncio, no broker | Shards submitted to the GoWe CWL engine (`GoWeBackend`, `ingestion/gowe_backend.py:34`; built by `make_ingest_backend`, `backends.py:84`) | CLI process (`ingest_jsonl.py`) streaming to Qdrant/ES; or `cwltool`/GoWe running the CWL tools |
-| **Identity / tenant** | From request auth (`resolve_tenant`); uploads staged at `{INGEST_ROOT}/uploads/{tenant}/{job_id}/` (`api/routers/documents.py:344`) | Verified/stamped by RAGStack at load; token merely carried to workers — **unresolved** how it reaches a CWL worker (`libraries-spec.md §6`) | `--tenant` flag, **defaults to `public` = world-readable** (`ingest_jsonl.py:1122`) |
-| **Job tracking** | `job_id` in RAGStack's `JobStore` (in-memory / SQLite / Postgres, `jobstore.py`) | Same RAGStack `job_id` — **not** a GoWe id (see note below) | None — CLI checkpoints to `<input>.ckpt`; CWL receipts merged by `merge_receipts.py` |
-| **When to use** | Demos, a handful of PDFs, self-service upload | (Intended) scaling pre-sharded batches over a worker fleet | Operator corpus builds: large extraction dumps too big for the API size guard |
-| **Status** | **Works** | **Works for PDFs from the caller's Workspace** (#203: batch per task, per-document receipts); the JSONL bulk plane needs `GOWE_SHARDS_INPUT_KEY=shards` | **Production** — the operator path for big corpora |
+| | **A. API, local (in-process)** | **B. API → GoWe/CWL** | **C. Operator bulk CWL** | **D. Legacy `ingest_jsonl.py`** |
+|---|---|---|---|---|
+| **Entrypoint** | `POST /v1/ingest` (server path) · `POST /v1/ingest/upload` (multipart), with `INGEST_BACKEND=local` | The same two routes, with `INGEST_BACKEND=gowe` → `_run_gowe_ingest` → `GoWeBackend.run_submission` (`python/ragstack/ingestion/gowe_backend.py`) → `GOWE_WORKFLOW_CWL` = `cwl/pdf-ingest-scatter.cwl` | An operator submits a workflow: `python/scripts/gowe_batch_ingest.py` over `cwl/jats-ingest.cwl`, or `cwl/ingest-bulk.cwl`, `cwl/embed-bulk.cwl` + `cwl/load-embeddings.cwl`, `cwl/pdf-ingest.cwl` (GoWe or `cwltool`) | `python/scripts/ingest_jsonl.py` (operator CLI) |
+| **Input** | A path or directory under `INGEST_ROOT` (`.pdf`/`.txt`/`.md`), **or** uploaded files staged at `{INGEST_ROOT}/uploads/{tenant}/{job_id}/` | **PDFs** from the caller's BV-BRC Workspace. `/v1/ingest` takes a `ws:///<user>/home/…` reference (a server path is a 400). `/v1/ingest/upload` first writes the files into `<collection folder>/sources/` in the caller's Workspace (`_gowe_upload_sources`) | JSONL shards (`plan_shards.py` output, `{text, path, metadata}` per line), JATS XML (`jats-ingest.cwl`), or PDFs (`pdf-ingest.cwl`) | One pre-extracted JSONL file (`{text, path, metadata}` per line) |
+| **Where chunking happens** | In the API process, with the collection's own chunker (`api/deps.py` `build_ingestor_for`) | **On the GoWe worker** (`ingest_shard.py` inside the scatter). The API never loads or chunks: both routes return from the GoWe branch (`api/routers/documents.py:997`, `:1428`) before `_resolve_ingest_target` (`:1060`, `:1490`) | On the worker (`ingest_shard.py` or `embed_shard.py`) | In the CLI process (its own chunker) |
+| **Execution** | `ShardedIngestor` + `LocalAsyncIORunner` (`ingestion/backends.py`), bounded asyncio, no broker | GoWe engine, worker group `GOWE_WORKER_GROUP`. A **batch** of PDFs per task (`batch_size`, default 20): `pdf_extract.py` → `ingest_shard.py`, then one `archive_version.py` pack | GoWe engine or `cwltool`. Scatter over shards, then one un-scattered load. `gowe_batch_ingest.py` pipelines batches | One process: producer → N workers |
+| **Identity / tenant** | Any authenticated principal (API key or bearer). `resolve_tenant` sets the chunk `tenant_id`. `_authorize_ingest_target` checks the allowlist, ownership and the build spec (409) | **Submits as the caller.** `_gowe_caller` requires a BV-BRC bearer token, so an API key or a non-BV-BRC identity gets **401**. The same `_authorize_ingest_target` gates apply. The target must be a **registered** collection (`_registry_row`, 400 otherwise). The engine stages inputs and outputs with the caller's token. No task ever sees it | The operator's own engine identity. The workflow's `tenant` input **defaults to `public`**. The target is a registry entry (`--collection-id`, plus the `registry` name, ADR-0009) | `--tenant`, **default `public` = world-readable**. Target via `--collection-id` |
+| **Job tracking** | RAGStack `job_id` in `JobStore` (`python/ragstack/jobstore.py`), polled at `GET /v1/ingest/{job_id}` | The same RAGStack `job_id`. It is **not** a GoWe id ([below](#the-job_id-distinction-common-confusion)). Per-document status comes from the per-batch receipts | GoWe submission ids. `gowe_batch_ingest.py` keeps a resumable ledger. Receipts are merged by `merge_receipts.py` | `<input>.ckpt` frontier + `done_ranges` |
+| **Archive** | **None.** Only the provenance manifest is written | **Yes.** `versions/<n>/` in the owner's Workspace, recorded on the registry row once delivered. [Restore](#restore-replaying-an-archive-358) replays it | `pdf-ingest.cwl` emits an archive `Directory`, but nothing records it on the registry (only `_run_gowe_ingest` calls `append_version`). The other workflows write no archive | None |
+| **When to use** | Dev/test, a local demo, and the tenants that still run `local` ([table below](#which-path-each-tenant-uses)) | **The user path** on a GoWe tenant: browser upload, or a PDF already in your Workspace | Operator corpus builds that are too big for the API (e.g. the open-access harvest) | Only to re-run an existing build that depends on it. New builds use C |
+| **Status** | Works. ADR-0006 §2 (Proposed) calls it "dev/test only". `demo`, `asm` and `lucid` still run it | Works. Live on `dev` and `hackathon` | Works. ADR-0006 §1: "the reference shape for every future bulk job" | ADR-0006 §2 (Proposed) **retires** it: "deprecated now with a pointer to the CWL path, deleted after the next tagged release". **The code has no deprecation notice or warning.** Its docstring still calls it "the operator tool for the large extraction dumps" |
+
+**A minor fifth writer.** `python/scripts/ingest_chunks.py` loads caller-supplied
+chunks (a JSON array of documents, each with its `chunks`) into **Qdrant only**. It
+resolves its target through the registry (`ingest_target.resolve_or_exit`) and runs
+`validate_chunks`. It does not do DOI enrichment, boilerplate handling, the chunk cap,
+or Elasticsearch. Like D, its `--qdrant-url` still defaults to `http://localhost:6333`
+(#454).
+
+---
+
+## Which path each tenant uses
+
+Read from `/rag/data/tenants/*/config/tenant.env` on `coconut` on 2026-10-06. An
+unset `INGEST_BACKEND` means the code default, `local`.
+
+| Tenant | `INGEST_BACKEND` | `GOWE_WORKER_GROUP` | `INGEST_WORKER_UNSUPPORTED_METHODS` | API path |
+|---|---|---|---|---|
+| `dev` | `gowe` | `ragstack-dev` | empty (semantic allowed) | **B**, `GOWE_WORKFLOW_CWL=/rag/repos/tenants/dev/cwl/pdf-ingest-scatter.cwl` |
+| `hackathon` | `gowe` | `ragstack-hackathon` | empty (semantic allowed) | **B**, `GOWE_WORKFLOW_CWL=/rag/repos/tenants/hackathon/cwl/pdf-ingest-scatter.cwl` |
+| `demo` | unset → `local` | — | — | **A** (also sets `CHUNK_METHOD=fixed_token`) |
+| `asm` | unset → `local` | — | — | **A** |
+| `lucid` | unset → `local` | — | — | **A**. Its `tenant.env` says to keep ingest frozen (a rollback copy of its index exists) |
+
+The table says which path the tenant's **API** uses. An operator can still load any
+tenant's registered collections with path C or D.
 
 ---
 
 ## Which do I use?
 
-- **A few PDFs, or an interactive demo** → Local API ingest (`/v1/ingest/upload`).
-  See [`docs/demo-quickstart.md`](demo-quickstart.md) and
+- **I am a user on a GoWe tenant (dev, hackathon).** Upload in the UI, or call
+  `POST /v1/ingest/upload` or `POST /v1/ingest` with a `ws://` source. That is path B.
+  You need a BV-BRC bearer token and a collection you own. See
+  [`UI-GUIDE.md`](UI-GUIDE.md), [`cookbook-users.md`](cookbook-users.md) and
   [`contracts/openapi.yaml`](../contracts/openapi.yaml).
-- **A big pre-extracted JSONL dump for an operator/org corpus** → Bulk CLI
-  (`ingest_jsonl.py`). See
-  [`docs/cookbook-new-org-ingest.md`](cookbook-new-org-ingest.md).
-- **You want the offline plane to scatter pre-sharded JSONL over GoWe workers**
-  → GoWe backend (`INGEST_BACKEND=gowe`, needs `gowe_workflow_cwl` + `gowe_url`;
-  do **not** put `qdrant_url`/`es_url` in `GOWE_WORKFLOW_INPUTS_JSON` —
-  [that refuses the boot](#where-a-workflow-run-writes-the-api-seeds-the-store-urls-407)).
-  See [`docs/gowe-integration.md`](gowe-integration.md) and
-  [`docs/m1-scalable-pdf-ingest-plan.md`](m1-scalable-pdf-ingest-plan.md).
-- **You have raw PDFs and want them ingested through GoWe** → `INGEST_BACKEND=gowe`
-  with `GOWE_WORKFLOW_CWL=cwl/pdf-ingest-scatter.cwl` (#203 2b, Option B — a
-  batch of PDFs per task, `batch_size` default 20): the API submits **as the
-  caller** from the caller's Workspace (browser upload →
-  `.ragstack/collections/<id>/sources/` → `ws://` inputs), the engine stages
-  in/out with the caller's token, and the run's archive lands at `versions/<n>/`
-  (recorded as the job's `archive_ref`). Needs a bearer BV-BRC identity and a
-  registered collection. See `cwl/README.md` § PDF scatter-per-batch and
-  [Batch semantics](#batch-semantics-on-the-gowe-path-203-2b) below.
+- **I am trying RAGStack locally, or I am on a `local` tenant.** Use the same routes.
+  That is path A: the server needs `INGEST_ROOT` (503 without it). See
+  [`demo-quickstart.md`](demo-quickstart.md) and [`LOCAL-DEMO.md`](LOCAL-DEMO.md).
+- **I am an operator building a large corpus.** Use path C. Register the collection
+  first (through the API, or `--create-via-api`). Plan the shards with
+  `plan_shards.py` and drive them with `gowe_batch_ingest.py`, or submit
+  `ingest-bulk.cwl` / `embed-bulk.cwl` + `load-embeddings.cwl`. See
+  [`cookbook-new-org-ingest.md`](cookbook-new-org-ingest.md),
+  [`cwl/README.md`](../cwl/README.md) and
+  [`runbooks/bulk-load-throughput.md`](runbooks/bulk-load-throughput.md).
+- **I am configuring a tenant for path B.** Set `INGEST_BACKEND=gowe`, an absolute
+  `GOWE_WORKFLOW_CWL`, `GOWE_URL` and `GOWE_WORKER_GROUP`. Do **not** put `qdrant_url`
+  or `es_url` in `GOWE_WORKFLOW_INPUTS_JSON`: the boot refuses it
+  ([below](#where-a-workflow-run-writes-the-api-seeds-the-store-urls-407)). See
+  [`gowe-integration.md`](gowe-integration.md) and
+  [`runbooks/tenant-admin.md`](runbooks/tenant-admin.md).
+- **I am driving the JSONL plane (`ingest-bulk.cwl`) through the API backend.** Set
+  `GOWE_SHARDS_INPUT_KEY=shards`. The default `pdfs` matches `pdf-ingest-scatter.cwl`.
+- **I have a script that calls `ingest_jsonl.py`.** Move it to path C. ADR-0006
+  retires the script, even though the script itself does not say so yet.
+
+> **Ran a large ingest?** The production open-access build is written up in
+> [`reports/oa-ingest-run.md`](../reports/oa-ingest-run.md): reproduce commands,
+> measured rates, and the incidents worth knowing before the next one.
 
 ---
 
-> **Ran a large ingest?** The production open-access build is written up in
-> [`reports/oa-ingest-run.md`](../reports/oa-ingest-run.md) — reproduce commands,
-> measured rates, and the incidents worth knowing before the next one.
+## What happens to a document
 
-## Every path targets a registry entry (#263)
+The steps run in the order the code runs them. `IngestionPipeline.prepare_documents`
+does **DOI → chunk → boilerplate**, because boilerplate is classified per *chunk*, so
+it runs after chunking. `index_chunks` does **contract validation → delete-prior →
+upsert**, so validation comes after embedding, immediately before the write.
 
-The bulk CLIs write straight to Qdrant/ES — that is why they exist, and it does
-not change. What changed is **how they learn where to write**:
+```mermaid
+flowchart TD
+    subgraph PA["A. API local: every step in the API process"]
+        A1["1 load"] --> A2["2 DOI enrich"] --> A3["3 chunk"] --> A4["4 boilerplate: per settings"]
+        A4 --> A5["5 embed"] --> A6["6 validate contract"] --> A7["7 write Qdrant + ES"]
+    end
+    subgraph PB["B. API to GoWe: the API only gates and submits"]
+        B0["API: authorize, chunk-method guard, reserve version, sources to Workspace, submit as caller"]
+        B0 --> B1["worker: 1 pdf_extract"]
+        B1 --> B2["worker ingest_shard: 2 DOI, 3 chunk, 4 boilerplate always flag, 5 embed, 6 validate, 7 write"]
+        B2 --> B3["worker pack: 8 archive versions/n"]
+        B3 --> B4["engine post-stages to Workspace as caller; API records the version"]
+    end
+    subgraph PC["C. Operator bulk CWL"]
+        C1["worker: 1 extract, or a pre-extracted shard"] --> C2["worker: 2 DOI only if doi_enrichment, 3 chunk, 4 flag, 5 embed"]
+        C2 --> C3["ingest_shard or load_embeddings: 6 validate, 7 write"]
+        C3 --> C4["pdf-ingest.cwl only: 8 archive, not recorded"]
+    end
+    subgraph PD["D. ingest_jsonl.py"]
+        D1["CLI: 1 read JSONL, no DOI lookup, 3 chunk, 4 boilerplate per flag, 5 embed, 6 validate, 7 write"]
+    end
+```
+
+Where each step runs, path by path:
+
+| Step | A. API local | B. API → GoWe | C. Operator bulk CWL | D. `ingest_jsonl.py` |
+|---|---|---|---|---|
+| **1. Load** | API process: `LoaderRegistry` (PDF/text/Markdown; `.xml` uploads fail as `no loader for .xml`) | Worker: `pdf_extract.py` → a JSONL batch. A scanned PDF gets the row `NO_TEXT_ERROR` | Worker: `jats_extract.py` / `pdf_extract.py`, or a pre-extracted shard | The JSONL file. Offline metadata recovery via `ingestion/enrich.py` (`--publisher-profile`) |
+| **2. DOI enrichment** (#596, ON by default since #634) | API process (`app.state.doi_enricher`), when `DOI_ENRICHMENT_ENABLED` (default `true`) | Worker: `ingest_shard --doi-enrichment`. `_gowe_inputs` sends `doi_enrichment` (+ `doi_mailto`, `doi_cache_dir`) whenever the API setting is on | **Off** unless the operator sets `doi_enrichment: true`. Only `pdf-ingest.cwl` and `pdf-ingest-scatter.cwl` declare that input. The worker tools default it off (`doi_metadata.add_doi_enrichment_args`) | **Never.** No Crossref lookup |
+| **3. Chunk** | The collection entry's method/size/overlap | `chunk_method`/`chunk_size`/`chunk_overlap` travel on the submission, **only if the entry records them**. Otherwise the CWL defaults apply (`fixed_token`/256/32). Semantic tunables come from the registry entry's `chunk_params` (`ingest_shard.py` `_semantic_params`), never from CWL inputs | CLI arguments, checked against the registry entry (`IngestTarget.check_build`) | `--chunk-method` etc., checked against the registry entry |
+| **4. Boilerplate** | `BOILERPLATE_DETECTION_ENABLED` (default on, **flag**), `BOILERPLATE_DROP` (default off), `BOILERPLATE_CONFIG_JSON` | **Always `flag`.** No boilerplate setting reaches the worker. `_gowe_inputs` sends none, the CWL declares none, and `ingest_shard --boilerplate` defaults to `flag` (**#635, open**). `BOILERPLATE_DROP=true` has no effect here | `flag` (each tool's default). No CWL exposes `--boilerplate` | `--boilerplate off\|flag\|drop`, default `flag` |
+| **5. Embed** | API process → the entry's embedding endpoints | Worker → the endpoints on the submission (`embedding_url`) | Worker (`embed_shard.py` / `ingest_shard.py`) | CLI → `--embedding-url` |
+| **6. Contract check** (#603/#604) | `index_chunks` → `validate_chunks` | Same, in the worker's `index_chunks` | Same: `ingest_shard.py` and `load_embeddings.py` both write through `index_chunks` | Its own call: `validate_chunks(kept, where="ingest_jsonl")` |
+| **7. Write** | The entry's stores, as resolved by the API | The URLs the API seeds per run (#407) | The registry-resolved stores. `load_embeddings.py` **requires** a URL per leg (#636) | A registry route, else `--qdrant-url` / `--es-url`, which **default to localhost** (#454). ES only with `--text-backend elasticsearch` (default `none`) |
+| **8. Archive** | none | `versions/<n>/`, recorded on the registry | `pdf-ingest.cwl` only, not recorded | none |
+| **Chunk cap** (#291) | Yes, once per job | Yes, per task (`--max-chunks`) | `load_embeddings.py`: yes. `ingest_shard.py`: only if `max_chunks` is passed (default 0 = off) | **No** |
+
+What each step means:
+
+- **DOI metadata** (`python/ragstack/ingestion/doi_metadata.py`) resolves each
+  *distinct* DOI against Crossref (DataCite as fallback) and the NCBI ID Converter. It
+  fills only **absent** fields: title, authors, journal, year, publisher, pmid,
+  pmcid. A network failure degrades to "no title", never a failed job. Turn it off
+  (`DOI_ENRICHMENT_ENABLED=false`) only on an air-gapped deployment. On path B every
+  worker image a tenant's group runs **must** accept `--doi-enrichment`. An image
+  whose `ingest_shard.py` predates the flag fails every task with argparse exit 2 (see the
+  `config.py` comment on `doi_enrichment_enabled`). Depth:
+  [deep-dive §1.4](ARCHITECTURE-DEEP-DIVE.md#14-scholarly-metadata-resolution-at-upload-doi_metadatapy-596--602).
+  Repair an older collection with `scripts/backfill_collection_metadata.py`.
+- **Chunk method.** The default for **new** collections is `fixed_token`: a token
+  window sized by `CHUNK_SIZE` / `CHUNK_OVERLAP`, using the embedding model's
+  tokenizer. Deployments before that change defaulted to the character-based `fixed`
+  512/64. Existing collections keep the method they were built with: the method is
+  part of collection identity (ADR-0002), and `POST /v1/collections` persists the
+  *resolved* method on the entry. Each workflow declares `chunk_method` as an
+  **enum** (#643), and the symbols differ:
+  `pdf-ingest-scatter.cwl` and `ingest-bulk.cwl` accept
+  `fixed, fixed_token, sentence, words, semantic, semantic_pooled`;
+  `pdf-ingest.cwl`, `jats-ingest.cwl` and `embed-bulk.cwl` accept only
+  `fixed, fixed_token, sentence, words`. A value outside the enum is a CWL
+  validation error at submission, not a silent default. See
+  [`CHUNKING.md`](CHUNKING.md) for choosing one.
+- **Semantic chunking on GoWe** (#615). `ingest_shard.py` builds its own embedding
+  bridge for `semantic` / `semantic_pooled`, so path B can run them. Whether a tenant
+  *admits* them depends on `INGEST_WORKER_UNSUPPORTED_METHODS`, because it depends on
+  which image the tenant's worker group runs. The code default is
+  `semantic,semantic_pooled` (refused). `dev` and `hackathon` set it empty (allowed).
+  On a `gowe` tenant a listed method is refused with **422** in two places: at
+  `POST /v1/collections` (`python/ragstack/api/routers/collections.py`, via `shard_refusal`) and at submit, for
+  collections that already exist (`api/routers/documents.py` `_refuse_unrunnable_chunk_method`).
+  The submit check runs before a version is reserved or a file is written. A
+  misspelt method name in the setting raises rather than guarding nothing
+  (`chunker_config.parse_unsupported_methods`).
+- **Boilerplate** (`python/ragstack/ingestion/boilerplate.py`). In **flag** mode
+  non-body chunks get `metadata.section` and `metadata.is_boilerplate`, and nothing is
+  removed. **Drop** also removes them. A document that is entirely boilerplate is
+  never emptied. Flag mode pairs with the query-time `RETRIEVAL_DEMOTE_BOILERPLATE`,
+  which needs no re-ingest. Depth:
+  [deep-dive §1.5](ARCHITECTURE-DEEP-DIVE.md#15-chunk-level-boilerplate-classification-boilerplatepy).
+- **Chunk-metadata contract** (`python/ragstack/metadata_schema.py`
+  `validate_chunks`). Every chunk's metadata is checked against the declared field
+  types (e.g. `year` must be an integer) and the required fields, before anything is
+  written. The first bad chunk raises `ChunkMetadataTypeError` and fails the write.
+  Undeclared keys are allowed. Depth:
+  [deep-dive §1.6](ARCHITECTURE-DEEP-DIVE.md#16-the-declared-chunk-metadata-contract-603).
+- **Write.** The write is a delete-prior per document, then an upsert into Qdrant and
+  Elasticsearch with deterministic ids, so a re-ingest replaces chunks rather than
+  duplicating them. A document with no embeddable chunk keeps its prior version.
+- **Provenance** (#668, ADR-0010 decision 8). Path B archives record what built them:
+  `manifest.provenance` and each per-batch receipt carry `workflow_id`, `tool_image`,
+  `tool_image_digest`, `image_version`, `image_commit` and `image_build`. The API
+  seeds the first three (`GoWeBackend` → `tool_image.provenance_inputs`) **only when
+  the CWL names a stamped image** (`ragstack-tools-<version>-b<N>.sif`). Until a release
+  is stamped, every field is `null`. On 2026-10-06 the `dev` and `hackathon` workflow
+  checkouts still name the unstamped `ragstack-worker.sif`, so their provenance is
+  null today. See [Archive format](#archive-format) below.
+
+---
+
+## Every path targets a registry entry (#263, ADR-0009)
+
+The bulk tools write straight to Qdrant/ES. That is why they exist, and it does not
+change. What changed is **how they learn where to write**:
+`python/ragstack/ops/ingest_target.py` resolves a `--collection-id` through the
+collection registry, and every physical name comes from that entry.
 
 ```bash
 # the store name comes from the registry entry, not from you
-python scripts/ingest_jsonl.py corpus.jsonl --collection-id asm-tok256
+python scripts/ingest_shard.py shard.jsonl --collection-id asm-tok256 \
+    --qdrant-url "$QDRANT_URL" --es-url "$ES_URL"   # REQUIRED, no defaults (#454)
 
 # create it through the API first, so the cap, the owner row and the build
 # spec all come from the normal path. $API is YOUR api — never a bare
 # localhost:8000, which is a production API on the deployment host.
 python scripts/ingest_shard.py shard.jsonl \
     --collection-id new-corpus --create-via-api "$API" \
-    --qdrant-url "$QDRANT_URL" --es-url "$ES_URL"   # REQUIRED, no defaults (#454)
+    --qdrant-url "$QDRANT_URL" --es-url "$ES_URL"
 ```
 
-`--collection-id` resolves through the configured collection store
-(`COLLECTION_STORE_BACKEND`) and supplies **every** physical name: the Qdrant
-collection, its instance (a routed collection lives on its own), and the ES
-index. An id that is not in the registry is refused.
+- **One registry entry supplies every physical name.** `--collection-id` resolves
+  through `COLLECTION_STORE_BACKEND` and supplies the Qdrant collection, its instance
+  (a routed collection lives on its own) and the ES index. An id that is not in the
+  registry is refused. The deprecated `--collection` still takes a *physical* store
+  name, but only when a registry entry already claims it.
+- **The tool's own build parameters are checked, not used.** `IngestTarget.check_build`
+  refuses a write whose build spec differs from the entry's. Each bulk writer also
+  writes the provenance manifest, so ADR-0002's 409 build-spec guard stays armed for
+  later API ingests (`check_ingest_build_spec` early-returns when there is no
+  manifest).
+- **The `registry` name selects which registry (ADR-0009, #563).** A GoWe worker
+  serves many tenants. It learns which tenant's registry to use from the `registry`
+  workflow input (`--registry hackathon`), resolved against per-registry environment
+  variables (`ingest_target.registry_settings`). It is a **name, never a DSN**,
+  because `submitted_inputs` is an immutable plaintext snapshot. An unconfigured name
+  is fatal: it never falls back to another tenant's registry. The API sends it when
+  `COLLECTION_REGISTRY_NAME` is set.
+- **Store URLs must be explicit (#636).** `load_embeddings.py` calls
+  `ingest_target.require_store_urls`. Each leg's URL must come from a registry route,
+  the flag, or an *explicitly configured* `QDRANT_URL` / `ELASTICSEARCH_URL`. It is
+  never the code default, because localhost is production on `coconut`.
+  `ingest_shard.py` makes `--qdrant-url` / `--es-url` required arguments.
+  `ingest_jsonl.py` and `ingest_chunks.py` **do not** check. They still default to
+  `localhost` (#454, open).
 
-The deprecated `--collection` still takes a *physical* store name and still
-works — but only when a registry entry already claims it. An invocation that
-would have minted an unclaimed store now exits 2 with the two ways to fix it.
-
-Why the strictness. A store created outside the registry is invisible to
-`GET /v1/collections` and to the collection cap, governed by no owner row
-(ADR-0004) — and, because it has no provenance manifest, it **permanently
-disarms ADR-0002's 409 build-spec guard** for every later API ingest into it
-(`check_ingest_build_spec` early-returns when there is no manifest). So each
-bulk writer now also writes the manifest, from the registry entry, and checks its
-own build parameters against that entry before writing anything.
-
-Wired: `ingest_jsonl.py`, `ingest_shard.py`, `ingest_chunks.py`,
-`load_embeddings.py`. The eval harnesses under `scripts/eval/` still name their
-own throwaway stores — see the gap below.
+Wired to the registry: `ingest_jsonl.py`, `ingest_shard.py`, `ingest_chunks.py`,
+`load_embeddings.py`, `load_graph.py`. Depth:
+[deep-dive §5.4](ARCHITECTURE-DEEP-DIVE.md#54-target-resolution-for-workers--ingesttarget-and-registry-selection).
+The eval harnesses under `scripts/eval/` still name their own throwaway stores (see
+[Known gaps](#known-gaps)).
 
 ---
 
@@ -152,8 +321,66 @@ A local ingest `job_id` lives in **RAGStack's own `JobStore`**
 `PostgresJobStore` for durable/multi-worker), polled at `GET /v1/ingest/{job_id}`.
 It is **not** a GoWe submission id, even when `INGEST_BACKEND=gowe`. GoWe has its
 own submission ids internally; you do not poll GoWe with a RAGStack `job_id`.
+The operator paths (C, D) mint no RAGStack job at all: path C is tracked by its GoWe
+submission ids and the `gowe_batch_ingest.py` ledger, path D by its checkpoint file.
 
 ---
+
+## Batch semantics on the GoWe path (#203 2b)
+
+`cwl/pdf-ingest-scatter.cwl` ingests a **batch** of PDFs per task: a `batch`
+ExpressionTool groups the submitted `pdfs: File[]` into `File[][]` by
+`batch_size` (default 20; `1` = one task per PDF, the Option-A shape for a small
+upload), and every batch runs extract → `ingest_shard` → one receipt. Per-task
+fixed overhead (dispatch, container start, interpreter, tokenizer load: ~2–4 s)
+is thereby paid once per 20 PDFs instead of once per PDF.
+
+**Per-document status.** A batch's `ShardReceipt` carries a `docs` row per
+document — `error: ""` means its chunks were upserted, otherwise the row names
+why not; `chunk_ids` are that document's. `GoWeBackend` maps each work item to
+its row by **source basename** (the engine pre-stages a `ws://` input under its
+basename; the extract tool records that path), so the job's per-item status,
+chunk ids and error are exact per document regardless of how many receipts the
+archive holds. An Option-A archive (one receipt per item, no rows to match)
+still maps positionally.
+
+**Failure rules.**
+
+| what happened | where it is recorded | task exit |
+|---|---|---|
+| a scanned / image-only PDF (no text) | the extract report skips it; `ingest_shard --extract-report` writes its row with the constant `NO_TEXT_ERROR` (`ragstack.ingestion.loaders`) — the same string the local path records, so `GROUP BY error` counts it on both paths | 0 (batch continues) |
+| a loaded document with no embeddable chunk (empty, or every chunk quarantined) | its row: `NO_CHUNKS_ERROR` (`ragstack.ingestion.receipts`) | 0 |
+| **every** document of the batch failed | every row with its own error; the receipt is still `completed` (`n_docs_failed == n_docs`), the embedding file header-only | **0** — a processed batch, not a failed task |
+| the batch itself failed (shard unreadable, embedder/store down) | the receipt is `failed`; every row without a more specific error carries the batch error | non-zero (the engine retries the task) |
+
+Why an all-failed batch exits 0: GoWe treats any non-zero exit as a task
+failure (it honours no `successCodes`), retries it, then fails the step, its
+dependants and the submission — but the sibling batches have already upserted
+(ingest is coupled embed+load), so `pack` would never run, no `versions/<n>/`
+would exist, the stores and the archive would diverge, and a later restore
+would silently omit those documents. Per-document failure is therefore data
+in the receipt, never a task failure. Known residual (a #357 format decision):
+if **every** batch of a run is all-failed there are zero rows to pack, the
+archive tool refuses a zero-row version and the run fails with the per-item
+detail lost.
+
+The embedding file — hence the archive version — holds only the successful
+documents' chunks. A non-zero task fails the submission before any archive
+exists; the API then reports the submission state on every item (no receipts to
+read). Only receipts that name **none** of the documents are a
+`GoWeContractError` (a workflow that cannot report), never "every document
+failed". Two work items sharing a source basename are refused at submission
+(`GoWeContractError`): rows are matched by basename, and the engine would stage
+them onto one file anyway.
+
+**Poll interval** is per submission: ≤ 50 items poll every 0.5 s, larger runs at
+`GOWE_POLL_INTERVAL` (never slower than the setting). **Tokenizer cache:** the
+worker image reads the HF tokenizer from `HF_HOME` (`/rag/cache`), which the
+GoWe worker must bind into the container (`--extra-bind`); see `cwl/README.md`.
+
+---
+
+<a id="archive-format"></a>
 
 ## Archive format (`ragstack-archive/1`)
 
@@ -217,7 +444,7 @@ byte-identical, like the receipts):
 | `graph` | `false` as written by the ingest workflows; `true` once the extract-graph step added the `triples` leg. The reader requires the two to agree: `graph: true` without a `triples` role (or the reverse) is `ArchiveCorrupt` — a half-applied extraction, refused rather than guessed at |
 | `graph_extraction` | only with `graph: true`: `{"derived_by": "llm", "extractor": <model>, "n_chunks", "n_chunks_empty", "n_chunks_without_triples", "concurrency"}` — the leg's provenance; since #655 step 2 also `"provenance": {…}` (below) for the graph-extract run itself |
 | `has_tombstone` | `true` for a delete version |
-| `provenance` | **what built this version** (ADR-0010 decision 8, #655 step 2): `{"workflow_id", "tool_image", "tool_image_digest", "image_version", "image_commit", "image_build"}`, every value a string or `null`. The first three are seeded by the API on the submission between registration and submit (`ragstack.tool_image.provenance_inputs`: the GoWe `wf_` id, the one `dockerPull` name of the registered text, the sha256 from the committed `cwl/tool-image.receipt.json`) — **only on a stamped tree**: unstamped, nothing is seeded, the inputs stay null and the tools' flags are omitted (the builds `ragstack-worker.sif` resolves to predate them); the last three the pack step reads from its own image's `/opt/ragstack/RELEASE` (`null` outside an image). **Additive**: a version written before step 2 has no key, and `ragstack.provenance.read_provenance` returns the all-`null` object for it — "unknown", never an error. The same object sits on each per-batch `ShardReceipt` in `receipt.json` and, for a restore, in the replay's load summary (`provenance` for the restore run, `versions[i].provenance` for each replayed manifest). |
+| `provenance` | **what built this version** (ADR-0010 decision 8, #655 step 2): `{"workflow_id", "tool_image", "tool_image_digest", "image_version", "image_commit", "image_build"}`, every value a string or `null`. The first three are seeded by the API on the submission between registration and submit (`ragstack.tool_image.provenance_inputs`: the GoWe `wf_` id, the one `dockerPull` name of the registered text, the sha256 from the committed `cwl/tool-image.receipt.json`, which `python/scripts/stamp_tool_image.py` writes at release time and which an unstamped tree such as `main` does not have) — **only on a stamped tree**: unstamped, nothing is seeded, the inputs stay null and the tools' flags are omitted (the builds `ragstack-worker.sif` resolves to predate them); the last three the pack step reads from its own image's `/opt/ragstack/RELEASE` (`null` outside an image). **Additive**: a version written before step 2 has no key, and `ragstack.provenance.read_provenance` returns the all-`null` object for it — "unknown", never an error. The same object sits on each per-batch `ShardReceipt` in `receipt.json` and, for a restore, in the replay's load summary (`provenance` for the restore run, `versions[i].provenance` for each replayed manifest). |
 
 **`vectors.f32` header** (64 bytes, integers little-endian): `RSF32VEC` magic
 (8) · header version `1` (u32) · header length `64` (u32) · `dim` (u32) ·
@@ -360,57 +587,7 @@ deterministic fake for the endpoint; `graph_backend: memory` + an inline
 `COLLECTIONS_JSON` registry make the load step hermetic —
 `tests/integration/test_graph_extract_cwl.py` is the worked example.
 
-## Batch semantics on the GoWe path (#203 2b)
-
-`cwl/pdf-ingest-scatter.cwl` ingests a **batch** of PDFs per task: a `batch`
-ExpressionTool groups the submitted `pdfs: File[]` into `File[][]` by
-`batch_size` (default 20; `1` = one task per PDF, the Option-A shape for a small
-upload), and every batch runs extract → `ingest_shard` → one receipt. Per-task
-fixed overhead (dispatch, container start, interpreter, tokenizer load: ~2–4 s)
-is thereby paid once per 20 PDFs instead of once per PDF.
-
-**Per-document status.** A batch's `ShardReceipt` carries a `docs` row per
-document — `error: ""` means its chunks were upserted, otherwise the row names
-why not; `chunk_ids` are that document's. `GoWeBackend` maps each work item to
-its row by **source basename** (the engine pre-stages a `ws://` input under its
-basename; the extract tool records that path), so the job's per-item status,
-chunk ids and error are exact per document regardless of how many receipts the
-archive holds. An Option-A archive (one receipt per item, no rows to match)
-still maps positionally.
-
-**Failure rules.**
-
-| what happened | where it is recorded | task exit |
-|---|---|---|
-| a scanned / image-only PDF (no text) | the extract report skips it; `ingest_shard --extract-report` writes its row with the constant `NO_TEXT_ERROR` (`ragstack.ingestion.loaders`) — the same string the local path records, so `GROUP BY error` counts it on both paths | 0 (batch continues) |
-| a loaded document with no embeddable chunk (empty, or every chunk quarantined) | its row: `NO_CHUNKS_ERROR` (`ragstack.ingestion.receipts`) | 0 |
-| **every** document of the batch failed | every row with its own error; the receipt is still `completed` (`n_docs_failed == n_docs`), the embedding file header-only | **0** — a processed batch, not a failed task |
-| the batch itself failed (shard unreadable, embedder/store down) | the receipt is `failed`; every row without a more specific error carries the batch error | non-zero (the engine retries the task) |
-
-Why an all-failed batch exits 0: GoWe treats any non-zero exit as a task
-failure (it honours no `successCodes`), retries it, then fails the step, its
-dependants and the submission — but the sibling batches have already upserted
-(ingest is coupled embed+load), so `pack` would never run, no `versions/<n>/`
-would exist, the stores and the archive would diverge, and a later restore
-would silently omit those documents. Per-document failure is therefore data
-in the receipt, never a task failure. Known residual (a #357 format decision):
-if **every** batch of a run is all-failed there are zero rows to pack, the
-archive tool refuses a zero-row version and the run fails with the per-item
-detail lost.
-
-The embedding file — hence the archive version — holds only the successful
-documents' chunks. A non-zero task fails the submission before any archive
-exists; the API then reports the submission state on every item (no receipts to
-read). Only receipts that name **none** of the documents are a
-`GoWeContractError` (a workflow that cannot report), never "every document
-failed". Two work items sharing a source basename are refused at submission
-(`GoWeContractError`): rows are matched by basename, and the engine would stage
-them onto one file anyway.
-
-**Poll interval** is per submission: ≤ 50 items poll every 0.5 s, larger runs at
-`GOWE_POLL_INTERVAL` (never slower than the setting). **Tokenizer cache:** the
-worker image reads the HF tokenizer from `HF_HOME` (`/rag/cache`), which the
-GoWe worker must bind into the container (`--extra-bind`); see `cwl/README.md`.
+---
 
 ## Restore: replaying an archive (#358)
 
@@ -442,6 +619,8 @@ and the worker has a graph store (#350). The API-side settings, all at the end o
 | `collection_restore_cwl` | `""` | Absolute path to `restore-collection.cwl`; empty = the repo copy next to the package. |
 | `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
 | `collection_restore_inputs_json` | `{}` | Extra/**overriding** static inputs. Not required: the API already seeds `qdrant_url` (= `QDRANT_URL`) and `es_url` (= `ELASTICSEARCH_URL`) into every restore submission (#407). Set them here **only** when the worker reaches those stores at a different address than the API does — the values here are merged over the seeded ones. Worker group comes from `gowe_worker_group`. |
+
+---
 
 ## Eviction: the active bound (#359)
 
@@ -513,6 +692,8 @@ the job row (`GET /v1/jobs`). Per path:
 | API, local (`POST /v1/ingest`, `/v1/ingest/upload`) | `ShardedIngestor.ingest_manifest` — the manifest is the job: every remaining item is loaded + chunked (text only, no GPU, no store), one count, then the admitted job embeds and indexes the very chunks it was sized from (`IngestionPipeline.ingest_prepared`) — nothing is loaded twice | post-chunk, pre-quarantine (a conservative overcount) |
 | API, gowe | the API derives the cap per job and passes it as the workflow input `max_chunks` → `ingest_shard --max-chunks`; each scattered task counts once and refuses its own shard (`run_shard`); the API lifts the receipt's label onto the job | post-embed, exact — per task, so concurrent tasks may collectively overshoot by the other tasks' shards |
 | bulk (`scripts/load_embeddings.py`) | the invocation is the job: the files' header counts are summed, one count before the first file is read; refused = exit 1 + `chunk_cap` in the summary. User-created here = `spec.owner` set and neither the backfill owner nor an `ADMIN_SUBJECTS` entry (no ACL/user store in a CLI) | the files' header `count`s |
+| operator `ingest_shard.py` (path C, `ingest-bulk.cwl`) | only when `--max-chunks` / the `max_chunks` input is passed; the default `0` is unlimited, and `ingest-bulk.cwl` does not expose it | post-embed, per shard |
+| `ingest_jsonl.py` (path D), `ingest_chunks.py` | **not capped** | — |
 | replay (`--replay`, restore) | **never capped** — it restores what was already admitted | — |
 
 A byte-identical re-ingest at the cap is refused too (delete-prior would net to zero, but
@@ -520,28 +701,40 @@ A byte-identical re-ingest at the cap is refused too (delete-prior would net to 
 batch". `max_chunks_per_collection=0` disables the default deployment-wide (overrides still
 apply). The value is exposed by `GET /v1/config`.
 
+---
+
 ## Known gaps
 
-Be clear-eyed about what does **not** work today:
+What does **not** work today, or works differently from what you might assume:
 
-- **PDF → GoWe is built for Workspace sources only.** Under `INGEST_BACKEND=gowe`
-  the two ingest endpoints submit `ws://` inputs as the caller (#202/#203, above);
-  a server-side path is refused there. OCR for scanned PDFs does not exist —
-  they are counted per job under the constant `NO_TEXT_ERROR` on both paths, the
-  data the OCR decision (#202) needs.
-- **No ragstack workflow registered on the engine.** `GoWeBackend` requires an
-  absolute `gowe_workflow_cwl`; there is no ragstack bulk-ingest workflow
-  registered on a running GoWe engine out of the box, and nothing in this repo
-  reads CWL step outputs back into a store (`libraries-spec.md §6`).
-- **No GoWe worker image.** Running `ingest_shard.py` on real workers needs a
-  ragstack + deps worker image — **#135**.
+- **Path B: the worker ignores boilerplate settings (#635).** GoWe workers always run
+  boilerplate in `flag` mode. `BOILERPLATE_DROP`, `BOILERPLATE_DETECTION_ENABLED` and
+  `BOILERPLATE_CONFIG_JSON` affect only path A.
+- **Path B: a collection with no recorded `chunk_method` is chunked by the CWL
+  default.** `_gowe_inputs` sends the method, size and overlap only when the registry
+  entry records them. Without them `pdf-ingest-scatter.cwl` uses `fixed_token`/256/32,
+  whatever the API's own default is, and nothing records which method won (#609,
+  open). Collections created through `POST /v1/collections` always record their
+  method. Hand-registered or CLI-registered entries may not.
+- **Path B ingests PDFs from the Workspace only.** A server-side path is a 400 there.
+  An `.xml` (JATS) upload is accepted at the gate but is not wired into the upload
+  workflow (`cwl/jats-ingest.cwl` is operator-only). OCR for scanned PDFs does not
+  exist. They are counted per job under the constant `NO_TEXT_ERROR` on both API
+  paths, which is the data the OCR decision (#202) needs.
+- **Provenance is null until a release is stamped (#668).** See
+  [What happens to a document](#what-happens-to-a-document).
+- **Path C archives are not registry versions.** `pdf-ingest.cwl` packs an archive,
+  but only the API's path B records a version on the registry row. So restore cannot
+  replay an operator-built collection, and eviction will not pick it (no current
+  archive).
+- **`ingest_jsonl.py` is retired on paper only.** ADR-0006 (Proposed) retires it, but
+  the script carries no deprecation notice. It does not use the shared pipeline. It
+  does no DOI lookup and has no chunk cap. Its `--qdrant-url` / `--es-url` default to
+  localhost, which is production on `coconut` (#454).
 - **Eval harnesses still mint unclaimed stores.** `scripts/eval/*` call
   `ensure_collection()` with a name of their own choosing (`chunkcmp_*`,
   `oa_smoke_*`). They are deliberately throwaway, so forcing each comparison arm
-  through a registry entry is the wrong shape — what they need is an explicit
-  *ephemeral* convention that the store inventory can recognise and reclaim.
-  Until that exists they remain the last source of stores no registry claims,
-  and they are why **#293**'s auto-reclaim half is still blocked.
-
-The bulk CLI and local API paths are the ones that run today; the GoWe path is
-scaffolded and validated for pre-sharded JSONL but is not a PDF-in ingest route.
+  through a registry entry is the wrong shape. What they need is an explicit
+  *ephemeral* convention that the store inventory can recognise. Until that exists
+  they remain the last source of stores no registry claims. The store inventory
+  (#293) reports such stores but does not reclaim them.
