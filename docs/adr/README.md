@@ -21,6 +21,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0008](0008-prompt-templates.md) | Generation is configurable, not arbitrary: named server-side prompt templates | Proposed |
 | [0009](0009-registry-selection-for-bulk-workers.md) | Which collection registry a bulk worker resolves against: a NAME on the submission, the DSN in the worker's secret file | Proposed |
 | [0010](0010-tool-image-binding.md) | Three artifacts, each a build of a tag — tools image, server, workflow (GoWe id = text + image name); release order is linear; identity in labels + receipt; no image override |  Proposed |
+| [0011](0011-provenance-records.md) | Provenance records: one record format (`ragstack.provenance/1`, fingerprinted core), one ambient API, written into the artifact it describes; Workflow Run RO-Crate for interchange | Proposed |
 
 ## Conventions
 
