@@ -9,9 +9,10 @@ the only thing they share:
 
 1. **What a build observed.** The per-collection manifest in
    `python/ragstack/provenance.py` (`CollectionManifest`, `write_manifest`,
-   `source: ingest | config`) — ADR-0002's "verified lineage, as opposed to the
-   registry's operator-asserted labels", surfaced as `Provenance` on
-   `GET /v1/collections` (`api/routers/collections.py`).
+   `source: ingest | config`) — the module's own "verified lineage, as opposed
+   to the registry's operator-asserted labels" (ADR-0002's `source: ingest` vs
+   `source: config`), surfaced as `Provenance` on `GET /v1/collections`
+   (`api/routers/collections.py`).
 2. **Which workflow and image ran.** The six-key object ADR-0010 decision 8
    added (`PROVENANCE_KEYS`, `tool_provenance`, `read_provenance` in the same
    module): `workflow_id`, `tool_image`, `tool_image_digest`, `image_version`,
@@ -72,13 +73,14 @@ vocabulary without its serialisation:
 
 | Kind | PROV | Scope | Content |
 |---|---|---|---|
-| **Code / environment identity** | Agent | static per process; computed once | derived version, full commit, raw `git describe`, dirty flag, untracked count; tools-image name, digest, `RELEASE` version / commit / build; GoWe `workflow_id`; Python version |
+| **Code / environment identity** | Agent | static per process; the git / `RELEASE` part computed once, the submission inputs passed in | derived version (`vX` / `vX+<sha>`, ADR-0010 d1), its `source` (`git` \| `image` \| `distribution`, ADR-0010 d1), full commit, raw `git describe`, dirty flag, untracked count; tools-image name, digest, `RELEASE` version / commit / build; GoWe `workflow_id` |
 | **Data lineage** | Entity, Activity, `used`, `wasGeneratedBy` | per step | which inputs (by URI and digest) went into which outputs |
 | **Parameters** | attributes of the Activity | per activity | what the step was asked to do (chunk method, size, model, seeds, arms) |
 
 Identity never carries parameters; parameters never carry identity. A reader
 who wants "same code, different settings" or "same settings, different code"
-compares one field group and not the other.
+compares one field group and not the other. The Python version is context, not
+identity (#682's comparison-key rule), and is recorded in `info`.
 
 ### 2. The record: `ragstack.provenance/1`
 
@@ -87,34 +89,42 @@ compares one field group and not the other.
   "schema": "ragstack.provenance/1",
   "fingerprint": "sha256:…",
   "core": {
-    "activity": {"id": "act_…", "kind": "ingest_shard", "parent_id": null,
+    "activity": {"id": "act_…", "kind": "ingest_shard",
                  "params": {"chunk_method": "semantic", "chunk_size": 256, "…": "…"}},
-    "used":      [{"role": "shard", "uri": "shards/s0.jsonl", "sha256": "…",
+    "used":      [{"role": "shard", "uri": "s0.jsonl", "sha256": "…",
                    "bytes": 1234, "digest_source": "computed"}],
     "generated": [{"role": "receipt", "uri": "receipt.json", "digest_source": "none"}],
-    "agent":     {"version": "1.6.5", "commit": "…40 hex…", "describe": "v1.6.5",
+    "agent":     {"version": "v1.6.5", "commit": "abc1234…40 hex…",
+                  "describe": "v1.6.5-0-gabc1234", "source": "git",
                   "dirty": false, "untracked": 0,
                   "tool_image": "ragstack-tools-v1.6.5-b1.sif", "tool_image_digest": "…",
                   "image_version": "v1.6.5", "image_commit": "…", "image_build": "b1",
-                  "workflow_id": "wf_…", "python": "3.12.4"}
+                  "workflow_id": "wf_…"}
   },
   "info": {
     "started_at": "…", "ended_at": "…", "host": "…", "pid": 0,
-    "request_id": null, "gowe_job_id": "…",
+    "request_id": null, "gowe_job_id": "…", "python": "3.12.4",
     "argv_redacted": ["…"], "packages": {"ragstack": "1.6.5", "nltk": "3.9"},
     "notes": {"embedding_endpoints": ["…"]}
   }
 }
 ```
 
+The example shows every `info` key a record may carry. A shard receipt, an
+embedding-file header and an archive manifest keep a restricted `info`
+(section 5).
+
 * **`core` is deterministic and closed.** It is the only part that is
   fingerprinted. Its JSON Schema, `contracts/schemas/provenance_record.json`,
   sets `additionalProperties: false` on `core` and every object inside it, the
-  same rule the API contract already applies (ADR-0006 decision 4). A new field
-  is a schema change and a new minor version of the record, never an ad-hoc key.
+  same rule the API contract already applies (ADR-0006 decision 4). A new `core`
+  field is a schema change and a new record version (`ragstack.provenance/2`),
+  never an ad-hoc key. Fingerprints are comparable only within one version.
+  Fields may be added to `info` within a version.
 * **`info` is never fingerprinted.** Timestamps, host, pid, the correlation id
-  (`request_id` on the API path, `gowe_job_id` on the engine path), redacted
-  argv, a small named-package list, and `notes`. `info.notes` is the **only
+  (`request_id` on the API path, `gowe_job_id` on the engine path), the Python
+  version, redacted argv, a small named-package list, `parent_kind` on a nested
+  activity's record (section 3), and `notes`. `info.notes` is the **only
   open map** in the record, and it is capped at 64 keys and 64 distinct values
   per key — the same `MAX_SERIES` discipline, for the same reason, as
   `observability/stages.py`: an unbounded dict fed from a run is how a record
@@ -123,24 +133,30 @@ compares one field group and not the other.
   is: keys sorted at every level; compact separators (`,` `:`); strings NFC-
   normalised and encoded UTF-8 without ASCII escaping; floats as Python
   `repr` (shortest round-trip); booleans distinct from integers (`true` is
-  never `1`); `null` kept, never dropped. `activity.id` is the one key removed
-  before hashing, because it is **derived from the fingerprint**:
-  `activity.id = "act_" + fingerprint[7:23]`. Two runs with the same code, the
+  never `1`); `null` kept, never dropped; non-finite floats are refused.
+  `activity.id` is the one key removed before hashing, because it is
+  **derived from the fingerprint**: `activity.id = "act_" + fingerprint[7:23]`. Two runs with the same code, the
   same inputs and the same parameters therefore have the same fingerprint and
   the same activity id, and a receipt re-written on re-run is byte-identical.
 * **`EntityRef`** = `{role, uri, sha256?, bytes?, schema?, spec_hash?,
-  record_fingerprint?, digest_source}`. `uri` is a path **relative to the
-  artifact that holds the record** for files, or `qdrant://<collection>`,
-  `es://<index>`, `ws://<workspace path>` for stores and the BV-BRC Workspace
-  (`ws://` is the scheme the engine already stages from —
-  `api/routers/documents.py`; the design study wrote `workspace:`, the code's
-  spelling wins). `schema` names the entity's own format tag when it has one
-  (`ragstack.embedding_file/v1`); `spec_hash` is ADR-0002's build-spec hash
-  when the entity is a collection; `record_fingerprint` is the fingerprint of
-  the record found *inside* a used entity, which is how lineage chains across
-  steps. `digest_source` says where `sha256` came from: `computed` (hashed by
-  this writer), `upstream` (copied from the entity's own receipt, header or
-  record), `declared` (supplied by the caller, unverified) or `none`.
+  record_fingerprint?, digest_source}`. For a file, `uri` is a path **relative
+  to the artifact that holds the record** (for a sidecar, relative to the
+  artifact it describes) when the file lies under that artifact's directory,
+  and otherwise the file's basename. A CWL-staged input sits in a per-attempt
+  staging directory whose relative path changes on every retry; its `sha256`
+  is the identity and its `uri` is a label. Stores and the BV-BRC Workspace are
+  `qdrant://<collection>`, `es://<index>`, `ws://<workspace path>` (`ws://` is
+  the scheme the engine already stages from — `api/routers/documents.py`; the
+  design study wrote `workspace:`, the code's spelling wins). `schema` names
+  the entity's own format tag when it has one (`ragstack.embedding_file/v1`);
+  `spec_hash` is ADR-0002's build-spec hash when the entity is a collection;
+  `record_fingerprint` is the fingerprint of the record found *inside* a used
+  entity, which is how lineage chains across steps, or, on a
+  `role: "child_activity"` entry in `generated`, the fingerprint of a finished
+  nested activity's record (section 3). `digest_source` says where `sha256`
+  came from: `computed` (hashed by this writer), `upstream` (copied from the
+  entity's own receipt, header or record), `declared` (supplied by the caller,
+  unverified) or `none`.
 * **Naming.** `sentence_spans_fingerprint(texts)` is the fingerprint of the
   sentence-offset coordinate system (#682, where it was renamed from
   `segmentation_fingerprint`); `span_fingerprint(spans, kind=…)` is its generic
@@ -157,16 +173,26 @@ grows the recorder; nothing moves.
 
 | Call | What it does |
 |---|---|
-| `environment()` | The Agent. Cached for the process, **never raises**; one identity function replacing the five in #683. Version and commit come from `version.py` (the only module that may run `git`, ADR-0010 d1); the raw describe comes through the one labelled accessor PR #680 permits as a provenance field; image identity from `RELEASE` as `tool_provenance()` reads it today. |
-| `with activity(kind, params=…, used=…, strict=False) as act:` | Opens an Activity, owns its scope, closes it on exit. The record is built at exit. |
-| `current()`, `used(ref)`, `generated(ref)`, `note(key, value)` | Ambient: act on the current activity from any depth, like `logging.getLogger(__name__).info(…)`. **No-ops outside an activity** — a library function must never fail because nobody opened one. |
+| `environment(workflow_id=None, tool_image=None, tool_image_digest=None)` | The Agent. **Never raises**; one identity function replacing the five in #683. The git / `RELEASE` / Python part is computed once per process and cached: version and commit come from `version.py` (the only module that may run `git`, ADR-0010 d1); the raw describe comes through the one labelled accessor PR #680 permits as a provenance field (`version.raw_describe_for_provenance()`, of which `environment()` is the sole caller); image identity from `RELEASE` as `tool_provenance()` reads it today; the Python version goes to `info`. The three submission inputs are passed by the tool that parsed them — the flags from `add_provenance_arguments`, exactly as `tool_provenance()` takes them today. |
+| `with activity(kind, params=…, used=…, strict=False) as act:` | Opens an Activity and owns its scope. The record is **finalised by the first `attach()` / `write_sidecar()` call**, because the writer needs it inside the block, in the same write as the artifact. After that, `used()` / `generated()` / `note()` on this activity raise in strict mode and are dropped with a warning otherwise. Exit runs the strict checks and resets the context var. |
+| `current()`, `used(ref)`, `generated(ref)`, `note(key, value)` | Ambient: act on the current activity from any depth, like `logging.getLogger(__name__).info(…)`. **No-ops outside an activity** — a library function must never fail because nobody opened one. `note()` is **set-valued per key**: it adds `value` to the key's set of values (a repeat is a no-op) and never overwrites; the set is serialised as a list in canonical order, within the caps of section 2. |
 | `entity(path, role=…)`, `store_entity(kind, name, …)` | Build an `EntityRef`; `entity()` reuses a digest from the file's own receipt/header/record when one exists (`digest_source: upstream`) rather than re-hashing. |
-| `Activity.attach(obj)` / `write_sidecar(path)` / `child(kind, …)` | Put the finished record into a dict that is about to be written (receipt, manifest, header), or beside a non-JSON artifact as `<name>.prov.json`, or open a nested activity with `parent_id` set. |
-| `read(obj_or_path)` | Tolerant reader: a v1 record, a v0 six-key object (upgraded, see 7), or nothing (`None`). Never raises on a malformed record; reports what it could not read. |
-| `citable(record)` | True only when the commit is known, the tree was clean, and the record is a v1 record with a fingerprint. One function, so the g1 harnesses' two dirty gates become the same gate. |
-| `diff(a, b)` | Which `core` fields differ between two records, by group (agent / params / used). |
+| `Activity.attach(obj)` / `write_sidecar(path)` / `child(kind, …)` | Put the finished record into a dict that is about to be written (receipt, manifest, header), or beside a non-JSON artifact as `<name>.prov.json`, or open a nested activity (below). |
+| `read(obj_or_path)` | Tolerant reader: a v1 record, a v0 six-key object, a #682 experiment block (both upgraded, see 7), or nothing (`None`). Never raises on a malformed record; reports what it could not read. |
+| `citable(record)` | True only when the commit is known, `dirty` is false, `untracked` is 0 (#682's rule: the harness may itself be an uncommitted file; a record whose `source` is `image` has no checkout and passes this check), and the record is a v1 record with a fingerprint. One function, so the g1 harnesses' two dirty gates and #682's `citable` key become the same gate. |
+| `diff(a, b)` | Which `core` fields differ between two records, by group (agent / params / used). Subsumes #682's `comparison_key()`. |
 | `lineage(path)` | Walk `used[*].record_fingerprint` through the artifacts it names and return the chain. |
-| `ProvenanceIncomplete` | Raised at activity exit **only in `strict=True`** when an entity has no digest, the agent has no commit, or a generated artifact was never attached. Experiments and release builds run strict; a hand-run tool does not. |
+| `redact_for_export(record)` | The view of a record that leaves the host (section 6): drops `info.host`, `info.pid` and `info.argv_redacted`, and reduces `ws://` URIs to their basename. |
+| `ProvenanceIncomplete` | Raised **only in `strict=True`**: at activity exit when a `used` entity has no digest (`digest_source: none`), the agent has no commit, or no `attach()` / `write_sidecar()` was made; and on a `used()` / `generated()` / `note()` after the record was finalised. The `generated` entry for the artifact that carries the record itself has `digest_source: none` by necessity (a file cannot contain its own hash) and is exempt. Experiments and release builds run strict; a hand-run tool does not. |
+
+**Nesting is recorded parent→children.** There is no `parent_id` in `core`,
+because a child closes before its parent's fingerprint exists and so cannot
+name it. Instead the parent's `generated` lists each finished child record as
+an `EntityRef` with `role: "child_activity"` and `record_fingerprint` set to
+the child's fingerprint, and the child's `info.parent_kind` names the parent's
+`kind` for readers (in `info`, so a child's fingerprint does not depend on where
+it was opened). A child is therefore finished before its parent is finalised; a
+`child()` on a finalised activity is a late call like any other.
 
 ### 4. Context propagation
 
@@ -195,12 +221,12 @@ there is no provenance service.
 
 | Artifact | Written by | Where the record goes |
 |---|---|---|
-| shard receipt (`receipt.json`) | `scripts/ingest_shard.py`, `scripts/embed_shard.py` via `ingestion/receipts.py` | `ShardReceipt.provenance` (v0 today; v1 record per section 7) |
-| embedding file | `scripts/embed_shard.py` via `ingestion/embedding_file.py` | an additional key in the existing line-1 header (`ragstack.embedding_file/v1` already carries `schema`, `tenant`, `dim`, `count`) |
-| load / replay summary (`load-summary.json`) | `scripts/load_embeddings.py` | its `provenance` key |
-| `versions/<n>/manifest.json` | `scripts/archive_version.py` via `ingestion/archive.py` | top-level `provenance`; `graph_extraction.provenance` for `scripts/extract_graph.py` (`graph/extract_version.py`) |
-| collection manifest (`<collection>.json` under `collection_manifest_dir`) | `provenance.write_manifest`, called from `api/deps.py` on API ingest | its `provenance` key |
-| experiment outputs (CSV, markdown, `*_results.json`) | the eval harnesses | JSON outputs embed the record; everything else gets a `<name>.prov.json` sidecar, **written before any index or report that lists the artifact**, so an index never names an output that has no record |
+| shard receipt (`receipt.json`) | `scripts/ingest_shard.py`, `scripts/embed_shard.py` via `ingestion/receipts.py` | `ShardReceipt.provenance` (v0 today, written by `ingest_shard.py` only; `embed_shard.py` writes none) plus `provenance_record` (v1, section 7) |
+| embedding file | `scripts/embed_shard.py` via `ingestion/embedding_file.py` | an additional `provenance_record` key in the existing line-1 header (`ragstack.embedding_file/v1` already carries `schema`, `tenant`, `dim`, `count`); see below |
+| load / replay summary (`load-summary.json`) | `scripts/load_embeddings.py` | `provenance_record` beside its `provenance` key (replay mode writes v0 today; the load-from-files mode and the chunk-cap refusal summary write none) |
+| `versions/<n>/manifest.json` | `scripts/archive_version.py` via `ingestion/archive.py` | top-level `provenance` plus `provenance_record`; `graph_extraction.provenance` plus `graph_extraction.provenance_record` for `scripts/extract_graph.py` (`graph/extract_version.py`) |
+| collection manifest (`<collection>.json` under `collection_manifest_dir`) | `provenance.write_manifest`, called from `api/deps.py` on API ingest and from `ops/ingest_target.py` by `ingest_shard.py` / `load_embeddings.py` | a new `provenance_record` field on `CollectionManifest` (no v0 exists here) |
+| experiment outputs (CSV, markdown, `*_results.json`) | the eval harnesses | JSON outputs embed the record; everything else gets a `<name>.prov.json` sidecar, **written before any index or report that lists the artifact**, so an index never names an output that has no record; #682's `*_results.provenance.json` sidecars become `<name>.prov.json` in PR-5 |
 
 The record is written in the **same write as the artifact** — inside the JSON
 the writer is already serialising (atomic where that writer already is:
@@ -208,21 +234,51 @@ the writer is already serialising (atomic where that writer already is:
 sidecar written before the artifact is announced. A writer that cannot attach
 the record does not emit it to a log instead; in strict mode it fails.
 
+**The embedding file is written before its digest exists.**
+`EmbeddingFileWriter` writes the header on the first `write()`, so the header's record is finalised
+before the first chunk, and its `generated` entry for the file has
+`digest_source: none` (the strict-mode exemption of section 3). The step is
+therefore a parent and a child: the child activity writes the file and its
+header record; the parent's record, attached to the shard receipt written
+after the file, carries the file's digest and lists the child as
+`child_activity`. `embed_shard.py` takes no provenance flags today. PR-3 adds
+`add_provenance_arguments` to it and the matching inputs to the embed
+CommandLineTool in `cwl/` — a workflow-text change, and so a new GoWe id.
+
 **Shard receipts stay byte-identical on re-run.** `ShardReceipt.to_json` is
 documented as "sorted, no timestamp" for idempotence and diff-ability; the
-record keeps that: a receipt's `info` carries no `started_at`, `ended_at`,
-`host` or `pid`.
+record keeps that. A receipt's `info` is exactly `{gowe_job_id, packages,
+notes}` (plus `parent_kind` on a child's record, a constant): no `started_at`,
+`ended_at`, `host`, `pid` or `argv_redacted`, because argv names per-attempt
+staging paths. The same restriction holds for the embedding-file header and
+the archive manifest, whose byte-identity `archive.py` also promises.
 
 ### 6. Determinism, redaction, performance
 
 * Only `core` is fingerprinted (section 2). Nothing time- or host-dependent is
   allowed into `core`; a schema test holds the key set.
 * **Secrets are redacted before fingerprinting**, so the fingerprint never
-  depends on a secret and a redacted record re-fingerprints identically. Key
-  denylist (case-insensitive substring, applied to `params`, `notes` and
-  `argv_redacted`): `token`, `api_key`, `password`, `secret`, `authorization`,
-  `cookie`, `credential`. URLs lose userinfo and query string. `argv` is
-  recorded only redacted and only in `info`. **Never recorded**: `os.environ`,
+  depends on a secret and a redacted record re-fingerprints identically. The
+  rule:
+  * **Matching:** case-insensitive substring match after normalising `-` to `_`.
+  * **Scope:** every key at any depth of `params` and `notes`. For argv, the
+    flag name stays and the following value, or the `=value` tail, is replaced.
+  * **List:** `token`, `api_key`, `apikey`, `password`, `passwd`, `secret`,
+    `authorization`, `auth`, `bearer`, `cookie`, `credential`, `dsn`,
+    `private_key`.
+  * **URLs:** every string value anywhere in the record that parses as a URL
+    loses its userinfo and query string. This includes DSNs
+    (`postgresql+asyncpg://user:pass@host/db`, `redis://:pass@host`),
+    `qdrant_url` / `elasticsearch_url`, and the `embedding_endpoints` in
+    `notes`.
+  * **Export:** records that leave the host (the PR-8 crate, a published study)
+    pass through `redact_for_export(record)`. It additionally drops
+    `info.host`, `info.pid` and `info.argv_redacted`, and reduces `ws://` URIs
+    to their basename, because the Workspace path embeds the BV-BRC username,
+    which this section otherwise forbids recording.
+
+  `argv` is recorded only redacted and only in `info` (never on a receipt,
+  header or archive manifest, section 5). **Never recorded**: `os.environ`,
   user subjects, query text (#114, the same rule `stages.query_sha` enforces),
   document content.
 * **One record per job, shard, version or experiment — never per chunk.** A
@@ -239,13 +295,36 @@ Today's six-key object (`PROVENANCE_KEYS`, `tool_provenance()`,
 It maps onto v1 as the `agent`'s image and workflow fields with an empty
 `used`/`generated` and no fingerprint; `read()` performs that upgrade and marks
 the result `schema: "ragstack.provenance/0"` so a reader can tell an upgraded
-record from a native one. During migration every writer in section 5
-**dual-writes**: the v0 object stays under `provenance` for ADR-0010's readers
-(`read_provenance`, `verify_named_image`'s consumers, the runbook), and the v1
-record is written beside it under `provenance_record`. `tool_provenance()` is
-kept as the six-key view over `environment()`. PR-9 retires the v0 write once
-every reader has moved to `read()`; a record without either key reads as
-unknown, exactly as today (ADR-0010 migration step 2: "never as an error").
+record from a native one. During migration:
+
+* **Writers that write a v0 object today dual-write:** `ingest_shard.py`, the
+  replay summary of `load_embeddings.py`, `archive_version.py`,
+  `extract_graph.py`. The v0 object stays under `provenance` for ADR-0010's
+  readers (`read_provenance`, called from `ingestion/load_embeddings.py`; the
+  runbooks), and v1 goes beside it under `provenance_record`. The graph leg
+  uses `graph_extraction.provenance_record`.
+* **Writers with no v0 today write only `provenance_record`:**
+  `embed_shard.py`, the embedding-file header, the collection manifest, the
+  load-from-files summary.
+* **Existing readers are unaffected:** `ShardReceipt.from_dict` builds from
+  named keys; `archive.read_manifest` shape-checks only `format` / `files` /
+  `sha256` / `counts`; `read_header` returns the dict; `CollectionManifest` is
+  a pydantic model with default `extra=ignore`.
+
+`tool_provenance()` is kept as the six-key view over `environment()`. PR-9
+retires the v0 write once every reader has moved to `read()`; a record without
+either key reads as unknown, exactly as today (ADR-0010 migration step 2:
+"never as an error").
+
+#682's provisional `experiment_provenance()` block is
+**`ragstack.provenance/0-experiment`**. It has `schema: 1` and the keys
+`version` / `describe` / `commit` / `dirty` / `untracked` / `source` /
+`image` / `segmentation` / `citable`, and the three chunking harnesses write it
+as `*_results.provenance.json` once #682 lands. `read()` upgrades it too: the
+identity keys go onto `agent` and `segmentation` goes onto `params`.
+`comparison_key()` is subsumed by `diff()`. PR-5 renames those sidecars to
+`<name>.prov.json`. `0-experiment` labels a pre-v1 shape that only `read()`
+accepts; it is not a step in the record's version sequence.
 
 ### 8. The online query path records nothing
 
@@ -260,11 +339,13 @@ names are not decided here.
 
 * **Export format: Workflow Run RO-Crate, Provenance Run Crate profile 0.6**
   (verified in the prior-art survey): plain JSON-LD, emitted today by Galaxy,
-  Nextflow (nf-prov), COMPSs and others, with a `ContainerImage` slot that
-  carries a sha256 — the one field ADR-0010 made load-bearing. RAGStack exports
-  **one crate per archive version** (`ro-crate-metadata.json` beside
-  `manifest.json`, PR-8), built from the v1 records in the version's manifest,
-  receipts and summaries. GoWe emits **one crate per submission** (GoWe#49,
+  Nextflow (nf-prov), COMPSs and others. Its `ContainerImage` type, defined in
+  Process Run Crate 0.6 and inherited by the provenance profile, carries
+  `name`, `tag`, `registry` and `sha256` — the last the one field ADR-0010 made
+  load-bearing. RAGStack exports **one crate per archive version**
+  (`ro-crate-metadata.json` beside `manifest.json`, PR-8), built from the v1
+  records in the version's manifest, receipts and summaries, each passed
+  through `redact_for_export()` (section 6). GoWe emits **one crate per submission** (GoWe#49,
   open). The two join on **GoWe `workflow_id` + GoWe submission id**: ours says
   what the tools did, GoWe's says how the engine ran them.
 * **CWLProv is not adopted** as either internal format or export: the spec has
@@ -319,12 +400,14 @@ fingerprints of section 2, under `params`.
 * **Receipts and manifests grow** by one object per record — hundreds of bytes
   against receipts that list every chunk id. Negligible; and it is why there is
   no per-chunk record.
-* **Readers must tolerate three states**: no record, a v0 object, a v1 record.
-  `read()` is the only reader; nobody parses `provenance` by hand.
+* **Readers must tolerate four states**: no record, a v0 object, a #682
+  experiment block, a v1 record. `read()` is the only reader; nobody parses
+  `provenance` by hand.
 * **A lineage walk depends on the artifacts still existing.** `lineage()`
-  follows URIs relative to the artifact; a moved or purged upstream is
-  reported as a broken link, not a guess. That is the right failure: the
-  record says what *was* used, not what is still there.
+  follows URIs relative to the artifact; a moved or purged upstream, or a
+  staged input recorded by basename only (section 2), is reported as a broken
+  link, not a guess. That is the right failure: the record says what *was*
+  used, not what is still there.
 * **Two export formats coexist** for one run (our crate, GoWe's crate) until
   GoWe#49 lands; the join key exists from PR-3 onward because `workflow_id` is
   already in v0.
@@ -345,8 +428,8 @@ fingerprints of section 2, under `params`.
 * **A second contextvar discipline.** One object, one var, mutate in place,
   owner resets. Anyone who needs a field adds it to `Activity`, not a new var.
 * **`git` subprocesses outside `ragstack/version.py`.** The raw describe
-  leaves it through one labelled accessor as a provenance field (PR #680), and
-  that is the only door.
+  leaves it through one labelled accessor as a provenance field (PR #680),
+  `environment()` is that accessor's sole caller, and that is the only door.
 
 ## Migration
 
@@ -356,15 +439,62 @@ Each step is its own PR; #682 is step 0 and must land first (the
 
 | PR | Lands |
 |---|---|
-| **PR-1** | `environment()` (cached, never raises) and `fingerprint()` / `canonical()` in `ragstack/provenance.py`; the guard test for `git` callers. `tool_provenance()` becomes the six-key view over `environment()`. |
-| **PR-2** | `contracts/schemas/provenance_record.json` (v1, `core` closed), `read()` with the v0 upgrade, `citable()`, `diff()`. |
-| **PR-3** | The recorder: `activity()`, `current()`, `used()`, `generated()`, `note()`, `entity()`, `store_entity()`, `Activity.attach/write_sidecar/child`, `ProvenanceIncomplete`. **Dual-write** in `ingest_shard.py`, `embed_shard.py` (receipt and embedding-file header), `load_embeddings.py`, `archive_version.py`, `extract_graph.py`. |
+| **PR-1** | `environment()` (cached, never raises) and `fingerprint()` / `canonical()` in `ragstack/provenance.py`; the guard test for `git` callers. `tool_provenance()` becomes the six-key view over `environment()`. `environment()` becomes the sole caller of `version.raw_describe_for_provenance()`; #682's caller-grep test is re-pointed; ADR-0010 d1's exception paragraph (added by PR #680) is amended to name `environment()` in place of `experiment_provenance()`. |
+| **PR-2** | `contracts/schemas/provenance_record.json` (v1, `core` closed), `read()` with the v0 and #682-block upgrades, `citable()`, `diff()`, `redact_for_export()`. |
+| **PR-3** | The recorder: `activity()`, `current()`, `used()`, `generated()`, `note()`, `entity()`, `store_entity()`, `Activity.attach/write_sidecar/child`, `ProvenanceIncomplete`. **Dual-write** in `ingest_shard.py`, `load_embeddings.py` (replay summary), `archive_version.py`, `extract_graph.py`; `provenance_record` only in `embed_shard.py` (receipt and embedding-file header, plus `add_provenance_arguments` and the embed CommandLineTool's inputs in `cwl/` — a new GoWe id) and `load_embeddings.py`'s load-from-files summary. |
 | **PR-4** | Deep notes: `note()` and `used()` calls from inside the pipeline (embedder endpoints used, chunker and sentence-span fingerprints, retry counts), reaching the activity ambiently with no signature changes. |
-| **PR-5** | Experiments: `_g1_rating.py`, `g1_library_sweep.py`, `chunking_compare.py`, `chunking_compare_7way.py`, `scifact_chunk_eval.py` open an activity, delete their own `git` calls, write sidecars before indexes, gate on `citable()`. `experiment_provenance()` is removed. |
-| **PR-6** | The collection manifest and the API ingest path (`api/deps.py`) attach a record; `GET /v1/collections` exposes `fingerprint` and `citable`. |
+| **PR-5** | Experiments: `_g1_rating.py`, `g1_library_sweep.py`, `chunking_compare.py`, `chunking_compare_7way.py`, `scifact_chunk_eval.py` open an activity, delete their own `git` calls, write sidecars before indexes, gate on `citable()`. #682's `*_results.provenance.json` sidecars are renamed to `<name>.prov.json`. `experiment_provenance()` and `comparison_key()` are removed. |
+| **PR-6** | The collection manifest gains `provenance_record`, attached on both `write_manifest` paths (`api/deps.py` on API ingest, `ops/ingest_target.py`); `GET /v1/collections` exposes `fingerprint` and `citable`. |
 | **PR-7** | `lineage()` and a CLI (`python -m ragstack.provenance show|lineage|diff <path>`). |
-| **PR-8** | RO-Crate export per archive version (`ro-crate-metadata.json`, Provenance Run Crate 0.6). |
+| **PR-8** | RO-Crate export per archive version (`ro-crate-metadata.json`, Provenance Run Crate 0.6), from records passed through `redact_for_export()`. |
 | **PR-9** | Retire the v0 write; `read_provenance()` becomes `read()` projected to the six keys; ADR-0010 decision 8's field list is marked as the v0 profile of this record. |
+
+## Open for owner confirmation
+
+This ADR is Proposed. Each item below is a choice the text now makes, with the
+reason for it; the owner confirms or reverses each before PR-1.
+
+* **Nesting direction: parent→children** (section 3). A child closes before its
+  parent's fingerprint exists, so only the parent can name the other.
+* **Finalisation at the first `attach()` / `write_sidecar()`** (section 3). The
+  writer needs the record inside the block, in the same write as the artifact.
+* **Integer record versions** (`ragstack.provenance/2` for a new `core` field;
+  section 2). Fingerprints compare only within one version, so a version must
+  mark every change to what is hashed.
+* **The receipt `info` set `{gowe_job_id, packages, notes}`** (section 5).
+  Keeps receipts, headers and archive manifests byte-identical on re-run.
+* **Basename URIs for staged inputs** (section 2). A per-attempt staging path
+  would change on every retry; the `sha256` carries the identity.
+* **`citable` requires `untracked == 0`** (section 3). #682's rule: the harness
+  may itself be an uncommitted file.
+* **`python` in `info`** (sections 1, 2). #682's comparison-key rule treats it
+  as context, not identity. A consequence: it is absent from a receipt's
+  restricted `info` unless `packages` names it.
+* **The `vX` / `vX+<sha>` version spelling** (section 2). ADR-0010 d1's derived
+  version, as #682 already writes it.
+* **The #682 sidecar rename in PR-5** (`*_results.provenance.json` →
+  `<name>.prov.json`). One sidecar convention for every experiment output.
+* **`read()` upgrades #682 blocks** (section 7). Results written under #682
+  stay readable through the one reader.
+* **`environment()` takes its submission inputs as arguments** (section 3). The
+  tool that parsed the flags passes them, as `tool_provenance()` does today;
+  the cached part stays argument-free.
+* **`note()` is set-valued per key** (section 3). Repeated notes from a loop
+  cannot overwrite each other, and the cap of section 2 bounds the set.
+* **Export-time stripping of `ws://` paths and host** (section 6). The
+  Workspace path embeds the BV-BRC username; host and pid say nothing a reader
+  off the host needs.
+* **`environment()` inherits the raw-describe door** (PR-1). One caller of
+  `version.raw_describe_for_provenance()` keeps PR #680's exception narrow.
+* **`activity.id = "act_" + fingerprint[7:23]`** (section 2). Derived, so a
+  re-run reproduces it; 16 hex digits are enough to tell activities apart.
+* **`digest_source ∈ {computed, upstream, declared, none}`** (section 2). A
+  reader can tell a verified digest from a copied or asserted one.
+* **The `provenance_record` key name** (sections 5, 7). It sits beside v0's
+  `provenance` without colliding during dual-write.
+* **The `sha256:` prefix on fingerprints** (section 2). The algorithm is named
+  in the value, so a future change of hash cannot be mistaken for a match.
+* **`ws://` URIs** (section 2). The scheme the engine already stages from.
 
 ## Alternatives considered
 
