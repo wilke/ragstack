@@ -34,7 +34,7 @@ from ragstack.collection_store import (
     make_collection_store,
     seed_from_json,
 )
-from ragstack.config import settings
+from ragstack.config import LEGACY_CHUNK_METHOD, settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.grading.store import make_grading_store
@@ -49,7 +49,11 @@ from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
-from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
+from ragstack.ingestion.tokenization import (
+    TokenCounterUnavailable,
+    make_token_counter,
+    resolve_max_tokens,
+)
 from ragstack.jobstore import KIND_INGEST, make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.prompts import PromptTemplate, load_templates
@@ -107,8 +111,14 @@ def _derived_collection_name() -> str:
 
     if settings.qdrant_collection_explicit:
         return settings.qdrant_collection_explicit
+    # unrecorded_chunk_method(), NOT chunk_method: the settings-derived collection
+    # records no method of its own, and its name must not move when the default
+    # for NEW collections changes (2026-10-06: fixed -> fixed_token) — that would
+    # repoint a live default at a new, empty store (ADR-0002).
     chunk = (
-        chunk_descriptor(settings.chunk_method, settings.chunk_size, settings.chunk_overlap)
+        chunk_descriptor(
+            settings.unrecorded_chunk_method(), settings.chunk_size, settings.chunk_overlap
+        )
         if settings.collection_name_include_chunk
         else None
     )
@@ -136,7 +146,7 @@ def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> Non
             collection=_derived_collection_name(),
             model=settings.embedding_model, dim=settings.embedding_model_dim,
             embedding_api=settings.embedding_api, embedding_endpoints=eps,
-            chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+            chunk_method=settings.unrecorded_chunk_method(), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             corpus=source, chunk_count=chunk_count,
         )
@@ -495,7 +505,9 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     ``POST /v1/collections``) are honoured here, so a library created with e.g.
     ``buffer_size=5`` is ingested with 5 rather than the server default.
     """
-    method = entry.chunk_method or settings.chunk_method
+    # A spec with no recorded method keeps the one it was built under — never the
+    # current default for new collections (see Settings.unrecorded_chunk_method).
+    method = entry.chunk_method or settings.unrecorded_chunk_method()
     size = entry.chunk_size if entry.chunk_size is not None else settings.chunk_size
     overlap = entry.chunk_overlap if entry.chunk_overlap is not None else settings.chunk_overlap
     params = dict(entry.chunk_params or {})
@@ -526,6 +538,70 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
             params, "min_chunk_length", settings.chunk_min_length, int
         ),
     )
+
+
+#: Models whose HF tokenizer has loaded in this process (value always ``None``).
+#: Only SUCCESSES are cached. Once a tokenizer loads, it stays loadable for the
+#: life of the process, so caching keeps the method a create resolves stable
+#: (same request -> same physical store). A failure is NOT cached: it may be
+#: transient (a Hub or NFS hiccup), and caching it would pin every later
+#: default-spec create on that model to the `fixed` fallback until restart.
+_HF_TOKENIZER_PROBES: dict[str, None] = {}
+
+
+def _hf_tokenizer_error(model: str) -> TokenCounterUnavailable | None:
+    """``None`` if ``model``'s HF tokenizer loads (probed until the first success,
+    then cached), else the :class:`TokenCounterUnavailable` it raised."""
+    if model in _HF_TOKENIZER_PROBES:
+        return None
+    try:
+        make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
+    except TokenCounterUnavailable as exc:
+        return exc  # deliberately not cached, see _HF_TOKENIZER_PROBES
+    _HF_TOKENIZER_PROBES[model] = None
+    return None
+
+
+def default_chunk_method_for(model: str) -> str:
+    """The chunk method a NEW collection embedding with ``model`` gets when the
+    create request names no chunk strategy.
+
+    Normally ``settings.chunk_method`` — ``fixed_token`` by default (owner
+    decision 2026-10-06). ``fixed_token`` sizes its window with the model's HF
+    tokenizer, which not every model has (the code-default
+    ``text-embedding-3-small`` is an OpenAI model with none) and not every
+    deployment can load (no ``[chunking]`` extra). Minting a ``fixed_token``
+    collection there would build one no ingest can populate, so this decides up
+    front, deliberately:
+
+    * the operator CHOSE the method (``CHUNK_METHOD`` set, see
+      ``Settings.chunk_method_configured``) → raise
+      :class:`TokenCounterUnavailable`; the create router answers 503 with the
+      remediation. Their explicit choice is not overridden.
+    * the method is only the code default → fall back to
+      :data:`~ragstack.config.LEGACY_CHUNK_METHOD` (``fixed``), with a WARNING.
+      The fallback is RECORDED in the new spec, so the collection's identity is
+      honest about how it is chunked. Without this, a deployment that configures
+      no chunking — and whose non-admin callers cannot pass ``chunk`` at all —
+      could not create a usable collection.
+    """
+    method = settings.chunk_method
+    if method != "fixed_token":
+        return method
+    error = _hf_tokenizer_error(model) if model else TokenCounterUnavailable(
+        "hf", model, ValueError("no embedding model")
+    )
+    if error is None:
+        return method
+    if settings.chunk_method_configured():
+        raise error
+    log.warning(
+        "default chunk method 'fixed_token' needs the HF tokenizer for %r, which "
+        "cannot load (%s); this new collection gets %r instead. Set CHUNK_METHOD "
+        "explicitly to choose (fixed_token then refuses instead of falling back).",
+        model, error, LEGACY_CHUNK_METHOD,
+    )
+    return LEGACY_CHUNK_METHOD
 
 
 def _embed_bridge_for(app_state: Any, entry: CollectionEntry) -> SyncEmbedBridge:
@@ -565,7 +641,7 @@ def _embed_bridge_for(app_state: Any, entry: CollectionEntry) -> SyncEmbedBridge
 def _embed_fn_for(app_state: Any, entry: CollectionEntry) -> Any:
     """The sync ``embed_fn`` a collection's chunker needs, or ``None``. Only the
     semantic methods embed during chunking, so nothing else pays for a bridge."""
-    method = entry.chunk_method or settings.chunk_method
+    method = entry.chunk_method or settings.unrecorded_chunk_method()
     if not needs_embed_fn(method):
         return None
     return _embed_bridge_for(app_state, entry)
@@ -778,7 +854,7 @@ async def _build_collection_registry(
         collection=default_collection,
         model=settings.embedding_model,
         dim=settings.embedding_model_dim,
-        chunk_method=settings.chunk_method,
+        chunk_method=settings.unrecorded_chunk_method(),
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
         chunk_params={},
@@ -895,7 +971,7 @@ async def _build_collection_registry(
         _materialize_config_manifest(
             default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
             api=settings.embedding_api, endpoints=settings.embedding_endpoints,
-            chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+            chunk_method=settings.unrecorded_chunk_method(), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
     else:
@@ -1306,7 +1382,12 @@ def _build_chunker():
     ``_build_embedder``) — not the app's main-loop client, which would otherwise
     raise a cross-loop error — and is closed at shutdown.
     """
-    method = settings.chunk_method
+    # This is the settings-derived default collection's chunker, so it takes that
+    # collection's method — unrecorded_chunk_method() (CHUNK_METHOD, else the
+    # legacy `fixed`), not the `fixed_token` default a NEW collection is created
+    # with. A deployment that never set CHUNK_METHOD therefore boots exactly as
+    # before: no HF tokenizer is loaded at startup.
+    method = settings.unrecorded_chunk_method()
     # Validate against the canonical set, not a hand-copied literal: an out-of-date
     # literal here silently dropped `fixed_token` (and `semantic_pooled`) to `fixed`,
     # turning a token-window request into char-budget chunking before the

@@ -46,6 +46,7 @@ from ragstack.api.default_collection import pick_default, visible_entries
 from ragstack.api.deps import (
     bound_json_body,
     build_collection_entry,
+    default_chunk_method_for,
     get_collection_store,
     get_collections,
     get_graph_extract_runner,
@@ -79,6 +80,7 @@ from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
 from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
@@ -397,8 +399,9 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
     Called on the **resolved** method, not on ``body.chunk``. An omitted ``chunk``
     takes the server default, so a deployment with ``CHUNK_METHOD=semantic`` and
     ``INGEST_BACKEND=gowe`` would otherwise mint exactly the broken collection
-    this refuses — from a request that names no chunk method at all. (Today's
-    default is ``fixed``, which is why guarding only the explicit field would have
+    this refuses — from a request that names no chunk method at all. (The
+    default — ``fixed`` until 2026-10-06, ``fixed_token`` since — is a method the
+    shard step runs, which is why guarding only the explicit field would have
     looked correct.)
 
     422 rather than 400: the request is well-formed and the method is a real one
@@ -598,8 +601,23 @@ async def create_collection(
         _validate_chunk(body.chunk)
         chunk = body.chunk
     else:
+        # settings.chunk_method — `fixed_token` unless CHUNK_METHOD says otherwise
+        # (owner decision 2026-10-06), or `fixed` when that unconfigured default
+        # cannot load this model's tokenizer (default_chunk_method_for) — recorded
+        # in the spec, so this collection keeps it even if the default changes
+        # again. NOT unrecorded_chunk_method(): that is for collections that
+        # already exist without a recorded method; this one is new.
+        try:
+            default_method = default_chunk_method_for(emb_model)
+        except TokenCounterUnavailable as e:
+            # Same answer, same reasoning, as an ingest that hits it (documents.py):
+            # a persistent operator-side condition, not something the caller can
+            # fix in the payload. Only reached when CHUNK_METHOD=fixed_token was
+            # set explicitly; the unconfigured default falls back instead.
+            log.error("collection create: %s", e)
+            raise HTTPException(503, e.client_detail) from None
         chunk = ChunkConfig(
-            method=settings.chunk_method,
+            method=default_method,
             size=settings.chunk_size,
             overlap=settings.chunk_overlap,
         )

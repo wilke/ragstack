@@ -19,6 +19,11 @@ def _spy_method(monkeypatch, method):
         return object()
 
     monkeypatch.setattr(deps.settings, "chunk_method", method)
+    # As if CHUNK_METHOD were set: _build_chunker serves the settings-derived
+    # collection, which follows chunk_method only when it is CONFIGURED — the
+    # unconfigured default (fixed_token since 2026-10-06) is for new collections
+    # and leaves it on `fixed` (Settings.unrecorded_chunk_method).
+    monkeypatch.setattr(deps.settings, "_chunk_method_configured", True)
     monkeypatch.setattr(deps.settings, "embedding_model", "some/model")
     monkeypatch.setattr(deps, "make_chunker", fake_make_chunker)
     # semantic_pooled/semantic build a real embed bridge; neutralise it.

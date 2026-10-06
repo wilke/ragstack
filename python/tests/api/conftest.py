@@ -67,6 +67,21 @@ def _isolate_qdrant(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hf_tokenizer_loads(monkeypatch):
+    """Never load a real HF tokenizer to decide a create's default chunk method.
+
+    ``POST /v1/collections`` with no ``chunk`` resolves the ``fixed_token``
+    default through ``deps.default_chunk_method_for``, which probes the model's
+    tokenizer — on a host with ``transformers`` that is a hub download, and on
+    one without it a fallback to ``fixed``. Either makes the result depend on the
+    host. Pin the probe to "loads"; the fallback tests override it."""
+    from ragstack.api import deps
+
+    monkeypatch.setattr(deps, "_HF_TOKENIZER_PROBES", {})
+    monkeypatch.setattr(deps, "_hf_tokenizer_error", lambda model: None)
+
+
+@pytest.fixture(autouse=True)
 def _acl_store():
     """A fresh in-memory ACL store per test, seeded exactly like the startup
     backfill would for the conftest's pre-existing shared collection (id
