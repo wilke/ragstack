@@ -200,6 +200,7 @@ A **collection** is one indexed corpus: a registry entry that binds an embedding
 model (and its dimension) to a chunking strategy and one physical store — a
 Qdrant collection plus its Elasticsearch index. That binding is fixed when it
 is built; a different model or chunker is a *different* collection.
+Which chunk method to use, and what it costs: [CHUNKING.md](CHUNKING.md).
 
 ### With the API
 

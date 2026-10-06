@@ -138,6 +138,9 @@ These are real and current. None of them will lose your data.
   reason attached; the detail is only visible to an operator. Ask one.
 - **Collections cannot be renamed.** The name you give at creation is permanent.
   Deleting and recreating is the only way to change it.
+- **A collection's chunking is fixed at creation**, like its name. Ordinary users
+  get the server default; picking a method is admin-only. See
+  [CHUNKING.md](CHUNKING.md).
 - **Do not let someone else upload into your collection on your behalf.**
   Documents are attributed to whoever uploaded them, and your own searches will
   not match documents an organiser loaded for you. Upload them yourself.
