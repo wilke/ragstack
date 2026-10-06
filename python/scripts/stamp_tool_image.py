@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Name a built tools image in the tree (ADR-0010, three-artifact model; #655 step 1).
+"""Name a built tools image in the tree (ADR-0010, three-artifact model; Migration step 1 tooling).
 
     python scripts/stamp_tool_image.py /scout/containers/ragstack/ragstack-tools-v1.6.5-b1.sif.receipt.json
     python scripts/stamp_tool_image.py --check            # the tree-wide gate
@@ -17,9 +17,10 @@ Three artifacts, named separately (docs/adr-0010-three-artifacts):
 3. a **server/tenant version** — a separate tag ``S`` that may differ from
    ``T``; a server release CHOOSES which tools image its CWL names.
 
-Release order is linear: build the tools image at ``T`` → a server release
+Release order is linear (ADR-0010 decision 6): (a) tag ``T``; (b) build the
+tools image; (c) ops places it in the shared store; (d) a server release
 runs this script with the image's receipt, commits, tags ``S``. This script
-is step 2 of that: given the receipt ``build-tools-image.sh`` wrote beside
+is Migration step 1 tooling, used at release order (d): given the receipt ``build-tools-image.sh`` wrote beside
 the image (``{name, version, commit, build, build_date, sha256}``), it writes
 the receipt's ``name`` into every ``dockerPull`` **and** every
 ``dockerImageId`` of ``cwl/*.cwl`` (both keys carry the same bare filename;
@@ -54,17 +55,17 @@ is the same check as a unit test.
 Where the digest lives: in the receipt beside the image and in the image's
 labels — not in the CWL. GoWe parses ``dockerImageId`` and never checks it;
 cwltool reads it as the filename to look for; neither would verify a digest
-there. Identity verification (ADR-0010 step 4, the render/boot check) reads
+there. Identity verification (ADR-0010 decision 7 / Migration step 4, the render/boot check) reads
 the receipt and ``apptainer inspect --labels`` against the file the CWL
 names; until that lands, nothing at the engine verifies the image beyond its
 name.
 
-**The committed receipt** (#655 step 2, ADR-0010 decision 8). Stamping also
+**The committed receipt** (ADR-0010 Migration step 2, decision 8). Stamping also
 writes the receipt it was given to ``cwl/tool-image.receipt.json`` — in git,
 beside the ``dockerPull`` it belongs to — because that is where the API reads
 ``tool_image_digest`` from when it seeds a submission's provenance inputs: a
 file's sha256 cannot live inside the file, so the worker cannot learn it, and
-the shared store (step 3/4) is not something the API can read offline.
+the shared store (Migration steps 3/4) is not something the API can read offline.
 ``--check`` holds the two together: a stamped tree must carry the receipt of
 the image it names (same ``name``, a well-formed ``sha256``), an unstamped
 tree must carry none. On an unstamped tree the API seeds no provenance inputs

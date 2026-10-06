@@ -15,7 +15,7 @@ Neither is the other, and they are named separately.
 |---|---|---|
 | repo version | `v1.6.4` on a release tag; `v1.6.4+a2be96f` past one (dev on `main`) | `python -m ragstack.version` — the only derivation of the repo version (other tools run `git describe` for their own stamps — the ctl binary, the docs build, host facts — never to produce it) (`ragstack/version.py`). A **dirty tree has no version**: the derivation refuses. |
 | `ragstack.__version__` | the same version as PEP 440: `1.6.4`, `1.6.4+a2be96f` | lazily, from the checkout; inside the image from the generated `ragstack/_release.py`; else the distribution version |
-| image build | `ragstack-tools-<version>-b<N>.sif`, e.g. `ragstack-tools-v1.6.4-b1.sif`, `ragstack-tools-v1.6.4+a2be96f-b1.sif` | `build-tools-image.sh`; `N` is the next free build number for that version in `--out` |
+| image build | `ragstack-tools-<version>-b<N>.sif`, e.g. `ragstack-tools-v1.6.4-b1.sif`, `ragstack-tools-v1.6.4+a2be96f-b1.sif` | `build-tools-image.sh`; `N` is 1 + the highest build of that version found in `--out` **and every `--store`** (refuses a name that already exists in either) |
 
 One version may have several builds: `b2` is a base-image security rebuild
 with no code change, so a rebuild never forces a release. The `+<sha>` part
@@ -49,13 +49,14 @@ The file name is a human handle. What proves an image is:
   (`<sif>.receipt.json`, which travels with it).
 
 The digest is **not** written into the CWL. Identity verification (ADR-0010
-step 4, the render/boot check) reads the receipt and `apptainer inspect
+decision 7 / Migration step 4, the render/boot check) reads the receipt and `apptainer inspect
 --labels` of the file the CWL names — GoWe parses `dockerImageId` and never
 checks it, cwltool reads it as a filename, so a digest there would verify
 nothing. The CWL names the image; the receipt and labels prove it.
 
 That check is `ragstack.tool_image.verify_named_image` — run by the API at
-boot (refuses when `GOWE_IMAGE_DIRS` names a store the image disagrees with)
+boot (refuses when `GOWE_IMAGE_DIRS` names a store the image disagrees with,
+and refuses a stamped CWL when `GOWE_IMAGE_DIRS` is unset — "not verified")
 and by hand as `ragstack-ctl gowe render <tenant>` or
 `python -m ragstack.tool_image verify --name <sif> --dirs <store>[,…]`. It
 holds the file to the receipt beside it (sha256 and the three labels) and the
@@ -73,7 +74,23 @@ apptainer/build-tools-image.sh --dry-run        # prints the command, name and r
 apptainer/build-tools-image.sh                  # → apptainer/images/ragstack-tools-<version>-b<N>.sif
 apptainer/build-tools-image.sh --sandbox        # hosts without --fakeroot: build --sandbox, then sif
 apptainer/build-tools-image.sh --out /some/dir  # never a shared store (see below)
+apptainer/build-tools-image.sh --store /scout/containers/ragstack   # count released builds (below)
+apptainer/build-tools-image.sh --python /rag/envs/ragstack/bin/python --repo /path/to/checkout
 ```
+
+* `--store DIR` — a dir where **released** builds live (the shared release
+  store and/or a tenant's image dir); repeatable or comma-separated, read
+  only. `b<N>` is 1 + the highest build of this version across `--out` and
+  every `--store`, and the script refuses if the name already exists in any
+  of them, or if a `--store` is not a directory. **Pass it for any build that
+  may be released**: a fresh worktree's `--out` is empty, so without it the
+  number restarts at `b1` and collides with the `b1` the store already holds.
+* `--python EXE` — the interpreter for the version step and the receipt
+  (needs ≥ 3.11). Default: `$PYTHON` if set, else `python3` *only if* it is
+  ≥ 3.11, else the script refuses (exit 2) naming both. A bare `python` is
+  never used — on coconut it is miniconda 3.8, which dies on `datetime.UTC`.
+* `--repo DIR` — the checkout to build from (default: the one the script is
+  in).
 
 The script: derives the version (refuses a dirty tree, exit 3; exit 4 with no
 reachable `v*` tag), stages `python/` **from the commit** (`git archive HEAD`,
@@ -121,8 +138,9 @@ model, `docs/adr-0010-three-artifacts`):
 Release order is linear — no stamp-after-build, no re-tagging:
 
 1. `git tag vT` on `main`;
-2. `apptainer/build-tools-image.sh` from that checkout →
-   `ragstack-tools-vT-b1.sif` + its receipt;
+2. `apptainer/build-tools-image.sh --store /scout/containers/ragstack` from
+   that checkout → `ragstack-tools-vT-b<N>.sif` (`b1` for a new tag) + its
+   receipt;
 3. ops copies the image **and its receipt** to the shared store
    (`/scout/containers/ragstack/`, release versions only);
 4. a server release runs `python/scripts/stamp_tool_image.py <receipt>` to
@@ -168,7 +186,7 @@ The tree is in exactly one of two states, and `tests/unit/test_cwl_tool_image_pi
 
 `--out` defaults to `apptainer/images/` (gitignored). The shared release store
 (`/scout/containers/ragstack/ragstack-tools-<version>-b<N>.sif`, ADR-0010
-decision 2) is the management session's, by hand, and takes **release versions
+decision 6 (c) / Migration step 3) is the management session's, by hand, and takes **release versions
 only** — a `+<sha>` build never enters it; it lives in the tenant's own image
 dir. Nothing in this directory writes to `/scout` or `/rag`.
 

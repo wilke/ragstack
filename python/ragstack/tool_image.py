@@ -33,8 +33,7 @@ Engine facts the shapes below encode (GoWe session, 2026-10-04, on #655):
   ``dockerPull``, never a digest — the digest lives in the receipt beside the
   image and in its labels. Whether the image behind that name is the right
   one is enforced only by our own render/boot check against the receipt
-  (ADR-0010 decision 7, migration step 4); until that lands it is a recorded
-  fact, not a gate.
+  (ADR-0010 decision 7, Migration step 4 — :func:`verify_named_image`).
 """
 from __future__ import annotations
 
@@ -47,8 +46,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-#: The committed copy of a built image's receipt (ADR-0010 decision 8, #655
-#: step 2), written by ``stamp_tool_image.py`` beside the CWL it stamped:
+#: The committed copy of a built image's receipt (ADR-0010 decision 8,
+#: Migration step 2), written by ``stamp_tool_image.py`` beside the CWL it stamped:
 #: ``cwl/tool-image.receipt.json``. A file's sha256 cannot live inside the
 #: file, so the digest the API records on every submission comes from here —
 #: offline-checkable, in git next to the ``dockerPull`` it belongs to. Absent on
@@ -274,7 +273,7 @@ def stamp_tool_image(cwl: str, name: str, *, source: str = "workflow") -> str:
 
     The image's digest is NOT written into the CWL: it lives in the receipt
     beside the image and in the image's labels, and the identity check
-    (ADR-0010 step 4) reads those. The CWL names the image; the receipt proves
+    (ADR-0010 decision 7 / Migration step 4) reads those. The CWL names the image; the receipt proves
     it. A document with no image site at all (a workflow with no container
     step) is returned unchanged.
     """
@@ -366,7 +365,7 @@ def check_tree_state(docs: dict[str, str]) -> tuple[str, str | None, list[str]]:
 
 
 # --------------------------------------------------------------------------- #
-# Provenance (ADR-0010 decision 8, #655 step 2): what the API seeds per submission
+# Provenance (ADR-0010 decision 8, Migration step 2): what the API seeds per submission
 # --------------------------------------------------------------------------- #
 
 
@@ -490,7 +489,7 @@ def provenance_inputs(
 
 
 # --------------------------------------------------------------------------- #
-# The identity check (ADR-0010 decision 7, #655 step 4): render + boot
+# The identity check (ADR-0010 decision 7, Migration step 4): render + boot
 # --------------------------------------------------------------------------- #
 #
 # GoWe resolves a relative ``dockerPull`` as ``filepath.Join(imageDir, name)``
@@ -503,7 +502,7 @@ def provenance_inputs(
 # pairing when it stamped the name (decision 4).
 
 #: The receipt beside a built image: ``<name>.receipt.json`` (what
-#: ``apptainer/build-tools-image.sh`` writes, step 5).
+#: ``apptainer/build-tools-image.sh`` writes in its own step 5).
 IMAGE_RECEIPT_SUFFIX = ".receipt.json"
 
 #: The label keys the build stamps and the receipt mirrors, with the receipt
@@ -557,10 +556,12 @@ class ImageVerdict:
 
     ``state`` is one of ``"ok"`` (every check passed), ``"problem"`` (at least
     one entry in ``problems``), ``"unstamped"`` (the bare default name —
-    nothing to verify, not a failure) or ``"unchecked"`` (no store dirs were
-    given: the API cannot see any store, and the ADR refuses only where it
-    can). ``warnings`` are findings that do not fail the check — the labels
-    could not be read because ``apptainer`` is not on this host, for one.
+    nothing to verify, not a failure) or ``"unchecked"`` (a stamped name but
+    no store dirs were given: an image is named and NOTHING verified it — a
+    misconfiguration, not a pass; the CLI exits :data:`EXIT_UNCHECKED` and the
+    boot refuses, #673 F3). ``warnings`` are findings that do not fail the
+    check — the labels could not be read because ``apptainer`` is not on this
+    host, for one.
     """
 
     def __init__(self, name: str, dirs: list[Path]) -> None:
@@ -670,8 +671,10 @@ def verify_named_image(
     * ``name`` is :data:`DEFAULT_TOOL_IMAGE` → ``state="unstamped"``: an
       unstamped tree names whatever the worker group's ``--image-dir`` symlink
       points at, and there is no receipt to hold it to. Not a failure.
-    * ``store_dirs`` empty → ``state="unchecked"`` with a warning: the API
-      cannot see any store. The ADR refuses only where it can see one.
+    * ``store_dirs`` empty → ``state="unchecked"`` with a warning: a stamped
+      name that nothing verified. Not a ``problem`` entry (nothing was found
+      wrong with the image), but not a pass either: callers treat it as a
+      refusal (CLI exit :data:`EXIT_UNCHECKED`, boot refuses — #673 F3).
     * Otherwise the file is looked up in ``store_dirs`` in order (first hit
       wins; every dir that has it is listed in ``found_in``), the receipt
       beside it is read, the file's sha256 is compared to the receipt's, the
@@ -695,9 +698,9 @@ def verify_named_image(
     if not dirs:
         v.state = "unchecked"
         v.warnings.append(
-            "no image store dirs given (GOWE_IMAGE_DIRS is unset): this host cannot see the "
-            f"store, so {name} was not verified — run `ragstack-ctl gowe render <tenant>` "
-            "from a host that can"
+            f"not verified: GOWE_IMAGE_DIRS unset — {name} is a stamped name and no image "
+            "store dir was given, so nothing checked the bytes behind it. Set "
+            "GOWE_IMAGE_DIRS=<the dir the tenant's workers resolve --image-dir against>"
         )
         return v
 
@@ -839,12 +842,22 @@ def verify_cwl_file(
     return record
 
 
+#: ``verify`` exit codes. ``EXIT_UNCHECKED``: no problem was found, but at
+#: least one STAMPED name was not verified because no store dirs were given
+#: (``GOWE_IMAGE_DIRS`` unset) — a named image nothing checked is a
+#: misconfiguration, not a pass (#673 F3). An unstamped tree is never this.
+EXIT_OK, EXIT_PROBLEM, EXIT_USAGE, EXIT_UNCHECKED = 0, 1, 2, 4
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m ragstack.tool_image verify (--name N | --cwl PATH…) --dirs A,B [--json]``
 
     The ONE implementation of the identity check, for ``ragstack-ctl gowe
-    render`` to shell to: exit 0 when nothing is wrong (ok, unstamped or
-    unchecked), 1 on any problem, 2 on usage.
+    render`` to shell to: exit 0 when nothing is wrong (ok or unstamped), 1 on
+    any problem, 2 on usage, 4 when nothing is wrong but a stamped name went
+    unverified (``unchecked``: "not verified: GOWE_IMAGE_DIRS unset"). A
+    problem outranks unchecked. The JSON ``ok`` is true only for exit 0;
+    ``unchecked`` is true when any record's state is ``unchecked``.
     """
     import argparse
     import sys
@@ -884,8 +897,10 @@ def main(argv: list[str] | None = None) -> int:
                 records.append({"cwl": cwl, "text_sha256": None, "tool_image": None,
                                 "verdict": v.to_dict()})
     failed = any(r["verdict"]["problems"] for r in records)
+    unchecked = any(r["verdict"]["state"] == "unchecked" for r in records)
     if args.json:
-        print(json.dumps({"ok": not failed, "records": records}, indent=2))
+        print(json.dumps({"ok": not failed and not unchecked, "unchecked": unchecked,
+                          "records": records}, indent=2))
     else:
         for r in records:
             vd = r["verdict"]
@@ -898,8 +913,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    problem: {p}")
             for w in vd["warnings"]:
                 print(f"    warning: {w}")
-        print("FAIL" if failed else "ok", file=sys.stderr if failed else sys.stdout)
-    return 1 if failed else 0
+        if failed:
+            print("FAIL", file=sys.stderr)
+        elif unchecked:
+            print("NOT VERIFIED: GOWE_IMAGE_DIRS unset (a stamped image is named and no store "
+                  "dir was given; pass --dirs)", file=sys.stderr)
+        else:
+            print("ok")
+    if failed:
+        return EXIT_PROBLEM
+    return EXIT_UNCHECKED if unchecked else EXIT_OK
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through subprocess in tests

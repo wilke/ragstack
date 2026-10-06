@@ -98,8 +98,9 @@ type Record struct {
 
 // Output is the Python CLI's JSON document.
 type Output struct {
-	OK      bool     `json:"ok"`
-	Records []Record `json:"records"`
+	OK        bool     `json:"ok"`
+	Unchecked bool     `json:"unchecked"`
+	Records   []Record `json:"records"`
 }
 
 // Report is what `gowe render` prints: the input it resolved, the Python
@@ -116,7 +117,12 @@ type Report struct {
 		Key string `json:"key"`
 		Record
 	} `json:"workflows"`
-	OK bool `json:"ok"`
+	// Unchecked lists the keys whose CWL names a stamped image that was NOT
+	// verified because GOWE_IMAGE_DIRS is unset (state "unchecked"). That is
+	// a refusal, not a pass (#673 F3): the boot refuses it too, so OK is
+	// false whenever this is non-empty.
+	Unchecked []string `json:"unchecked"`
+	OK        bool     `json:"ok"`
 }
 
 // Resolve reads the tenant's row and its tenant.env into an Input.
@@ -219,7 +225,8 @@ func Run(ctx context.Context, in *Input, stderr io.Writer) (*Report, error) {
 	}
 	var doc Output
 	if jerr := json.Unmarshal(out.Bytes(), &doc); jerr != nil {
-		// Exit 1 with JSON is "problems found"; exit 2 (usage) or an import
+		// Exit 1 with JSON is "problems found", exit 4 with JSON is "a
+		// stamped name went unverified"; exit 2 (usage) or an import
 		// error prints no JSON and IS an error — the check did not run.
 		if exit != nil {
 			return nil, fmt.Errorf("%s exited %d without a JSON verdict: %s",
@@ -237,6 +244,10 @@ func Run(ctx context.Context, in *Input, stderr io.Writer) (*Report, error) {
 			Record
 		}{w.Key, rec})
 		if len(rec.Verdict.Problems) > 0 {
+			rep.OK = false
+		}
+		if rec.Verdict.State == "unchecked" {
+			rep.Unchecked = append(rep.Unchecked, w.Key)
 			rep.OK = false
 		}
 	}
@@ -298,11 +309,25 @@ func Print(w io.Writer, rep *Report) {
 			fmt.Fprintf(w, "  warning: %s\n", p)
 		}
 	}
-	if rep.OK {
+	switch {
+	case rep.OK:
 		fmt.Fprintln(w, "\nok")
-	} else {
+	case len(rep.Unchecked) > 0 && !hasProblems(rep):
+		fmt.Fprintf(w, "\nFAIL: not verified: GOWE_IMAGE_DIRS unset (%s name a stamped image); "+
+			"the boot of this tenant would refuse. Set GOWE_IMAGE_DIRS=<the dir the tenant's "+
+			"workers resolve --image-dir against>, or pass --image-dirs\n", strings.Join(rep.Unchecked, ", "))
+	default:
 		fmt.Fprintln(w, "\nFAIL: the boot of this tenant would refuse (ADR-0010 decision 7)")
 	}
+}
+
+func hasProblems(rep *Report) bool {
+	for _, wf := range rep.Workflows {
+		if len(wf.Verdict.Problems) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func orNone(s string) string {

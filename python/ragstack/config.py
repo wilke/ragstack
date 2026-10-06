@@ -547,8 +547,9 @@ class Settings(BaseSettings):
     # check (ADR-0010 decision 7, #655 step 4) looks up every stamped
     # `dockerPull` the API registers here and REFUSES to boot on a mismatch
     # with the receipt beside the image (sha256, labels, committed receipt).
-    # Empty = this host cannot see the store: the check degrades to a WARNING
-    # naming this setting (the ADR refuses only where the API can see it).
+    # Empty with a STAMPED CWL = "not verified": the boot REFUSES too (#673
+    # F3) — an image is named and nothing would check it. Empty on an
+    # unstamped tree is fine (nothing to verify).
     gowe_image_dirs: str = ""
     # RETIRED (ADR-0010 decision 5, #655). There is no image override: the tool
     # image is stamped into every `dockerPull` of cwl/*.cwl at release time and

@@ -146,11 +146,15 @@ different artifacts that produced a circular release flow.)
 
 7. **The check at boot and in `ragstack-ctl gowe render <tenant>`.** For each
    `dockerPull`: the named file exists in the store the workers resolve; its
-   labels equal its receipt; its sha256 equals the receipt's. That is an
+   labels `org.ragstack.version`, `org.ragstack.commit` and
+   `org.ragstack.build` equal its receipt's (`org.ragstack.build-date` is
+   informational and not compared); its sha256 equals the receipt's. That is an
    *identity* check — compatibility is not re-derived at boot, it was declared
    by the release. GoWe parses `dockerImageId` and never checks it, so this is
    the only enforcement of image identity in the whole path: boot refuses,
-   never merely warns, wherever the API host can see the store. Dev on `main`
+   never merely warns. A stamped name with no store configured to check it
+   against (`GOWE_IMAGE_DIRS` unset) is not a pass either — the boot refuses it
+   too (#673). Dev on `main`
    passes the same check as hackathon on a tag; there is no branch-tenant
    special case.
 
@@ -221,9 +225,10 @@ tenant or only for production ones (an ops decision once the build exists).
    `python -m ragstack.tool_image verify`. The API runs it at boot for the
    three registered CWLs when `INGEST_BACKEND=gowe` and **refuses** on any
    problem; the store dirs come from the new `GOWE_IMAGE_DIRS` setting
-   (unset = the host cannot see a store → one warning, per decision 7's
-   "wherever the API host can see the store"). The bare default name is
-   `unstamped`: nothing to verify. `ragstack-ctl gowe render <tenant>` shells
+   (unset with a stamped CWL = `unchecked`, "not verified: GOWE_IMAGE_DIRS
+   unset": the boot refuses, `verify` exits 4, `render` exits 3 — #673; it
+   first shipped as a warning). The bare default name is `unstamped`: nothing
+   to verify, with or without the setting. `ragstack-ctl gowe render <tenant>` shells
    to the same Python check from the tenant's checkout and venv and prints
    each workflow's text sha256 (what GoWe content-hashes), its `dockerPull`
    and the verdict (`--json` for the records); runbook:

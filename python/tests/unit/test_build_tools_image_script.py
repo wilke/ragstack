@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,9 +59,13 @@ def repo(tmp_path: Path) -> Path:
 
 
 def _run(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    e = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp")}
+    # PYTHON pins the interpreter to the test's own (>= 3.11): the script's
+    # default-interpreter rule has its own tests below, which drop it.
+    e = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"),
+         "PYTHON": sys.executable}
     if env:
         e.update(env)
+    e = {k: v for k, v in e.items() if v is not None}
     return subprocess.run(["bash", str(SCRIPT), "--repo", str(repo), *args],
                           capture_output=True, text=True, env=e)
 
@@ -109,6 +114,109 @@ def test_build_number_is_the_next_free_one_for_that_version(repo, tmp_path):
     out = _run(repo, "--dry-run", "--out", str(out_dir))
     assert out.returncode == 0, out.stderr
     assert "build:      4\n" in out.stdout  # max+1, never a gap re-used
+
+
+def test_build_number_counts_the_release_store_too(repo, tmp_path):
+    """#673 F4: a fresh worktree's --out is empty; --out alone minted b1 while
+    the store already held ragstack-tools-<version>-b1.sif. N is now 1 + the
+    max across --out AND every --store (repeatable or comma-separated; a
+    receipt without its .sif counts), and the store is read-only."""
+    out_dir = tmp_path / "images"
+    s1, s2, s3 = tmp_path / "store1", tmp_path / "store2", tmp_path / "store3"
+    for d in (s1, s2, s3):
+        d.mkdir()
+    (s1 / "ragstack-tools-v3.2.1-b1.sif").write_bytes(b"")
+    (s1 / "ragstack-tools-v9.9.9-b8.sif").write_bytes(b"")  # another version: ignored
+    out = _run(repo, "--dry-run", "--out", str(out_dir), "--store", str(s1))
+    assert out.returncode == 0, out.stderr
+    assert "build:      2\n" in out.stdout and "ragstack-tools-v3.2.1-b2.sif" in out.stdout
+    (s2 / "ragstack-tools-v3.2.1-b2.sif").write_bytes(b"")
+    (s3 / "ragstack-tools-v3.2.1-b4.sif.receipt.json").write_text("{}")  # receipt only
+    out = _run(repo, "--dry-run", "--out", str(out_dir), "--store", f"{s1},{s2}", "--store", str(s3))
+    assert out.returncode == 0, out.stderr
+    assert "build:      5\n" in out.stdout
+    assert f"stores:     {s1} {s2} {s3}\n" in out.stdout
+    # Without --store: the collision the finding describes (b1 again).
+    out = _run(repo, "--dry-run", "--out", str(out_dir))
+    assert "build:      1\n" in out.stdout
+    assert sorted(p.name for p in s1.iterdir()) == ["ragstack-tools-v3.2.1-b1.sif",
+                                                    "ragstack-tools-v9.9.9-b8.sif"]
+
+
+def test_a_missing_store_dir_is_refused(repo, tmp_path):
+    """A typo'd --store would silently restart the numbering at b1."""
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"),
+               "--store", str(tmp_path / "no-such-store"))
+    assert out.returncode == 2
+    assert "--store" in out.stderr and "not a directory" in out.stderr
+
+
+def test_build_names_never_reuse_a_store_entry_of_any_kind(repo, tmp_path):
+    """The name the script settles on must not exist in --out or any --store.
+    The explicit `-e` refusal after the scan is belt and braces (it guards a
+    concurrent build; max+1 cannot hit a well-formed name the scan saw), so
+    this holds the scan to entries that are not plain files: a dangling
+    symlink and a directory named like a build both count."""
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "ragstack-tools-v3.2.1-b1.sif").write_bytes(b"")
+    (store / "ragstack-tools-v3.2.1-b2.sif").symlink_to(tmp_path / "gone")  # dangling
+    (store / "ragstack-tools-v3.2.1-b3.sif.receipt.json").mkdir()
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"), "--store", str(store))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "build:      4\n" in out.stdout
+    assert 'refusing: $dir/$NAME (or its receipt) already exists' in SCRIPT.read_text()
+
+
+def _stub_python3(tmp_path: Path, ok: bool) -> Path:
+    """A PATH dir whose `python3` passes or fails the >= 3.11 probe and
+    otherwise defers to the real interpreter."""
+    d = tmp_path / ("py-ok" if ok else "py-old")
+    d.mkdir()
+    stub = d / "python3"
+    if ok:
+        stub.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
+    else:
+        stub.write_text("#!/bin/sh\n"
+                        'if [ "$1" = "--version" ]; then echo "Python 3.8.5"; exit 0; fi\n'
+                        "exit 1\n")
+    stub.chmod(0o755)
+    return d
+
+
+def test_default_interpreter_is_python3_only_when_it_is_3_11_plus(repo, tmp_path):
+    """#673 F5: the default was `python`, which on coconut is miniconda 3.8 and
+    dies on datetime.UTC. Now: $PYTHON, else python3 if >= 3.11, else a
+    refusal naming --python and PYTHON."""
+    path = os.environ["PATH"]
+    old = _stub_python3(tmp_path, ok=False)
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"),
+               env={"PYTHON": None, "PATH": f"{old}:{path}"})
+    assert out.returncode == 2, out.stdout + out.stderr
+    assert "--python" in out.stderr and "PYTHON" in out.stderr and "3.11" in out.stderr
+    assert "Python 3.8.5" in out.stderr
+
+    good = _stub_python3(tmp_path, ok=True)
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"),
+               env={"PYTHON": None, "PATH": f"{good}:{path}"})
+    assert out.returncode == 0, out.stderr
+    assert "build:      1\n" in out.stdout
+
+    # $PYTHON wins over a too-old python3; --python wins over $PYTHON.
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"),
+               env={"PYTHON": sys.executable, "PATH": f"{old}:{path}"})
+    assert out.returncode == 0, out.stderr
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"), "--python", sys.executable,
+               env={"PYTHON": str(tmp_path / "nope"), "PATH": f"{old}:{path}"})
+    assert out.returncode == 0, out.stderr
+
+
+def test_usage_documents_every_flag(repo):
+    out = _run(repo, "--help")
+    assert out.returncode == 0
+    for flag in ("--out", "--store", "--repo", "--python", "--dry-run", "--sandbox"):
+        assert flag in out.stdout, flag
+    assert "set -euo" not in out.stdout
 
 
 def test_off_tag_version_carries_the_sha_and_a_plus_in_the_name(repo, tmp_path):
