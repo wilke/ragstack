@@ -12,9 +12,11 @@ the CWL only names the entry point. So a tool's identity is *CWL text + image*.
 Change either and it is a new version of the tool; a workflow that inlines the
 tool (all of ours do — GoWe cannot resolve an external `run:`) has changed with it.
 
-GoWe already models this correctly. It content-hashes the registered workflow
-text and mints an immutable, deduplicated id (`wf_…`); a submission is pinned to
-that id; names and labels (`worker_group`) are mutable pointers and routing, never
+GoWe already models this correctly. It mints an immutable id (`wf_…`, a UUID)
+for each registered workflow text and **deduplicates registrations by content
+hash** — identical text returns the existing row's id — so the same text always
+resolves to the same id and an id always resolves to one text; a submission is
+pinned to that id; names and labels (`worker_group`) are mutable pointers and routing, never
 identity (GoWe#274). The id is a version. It is GoWe's to assign and ours to
 reference.
 
@@ -127,9 +129,10 @@ different artifacts that produced a circular release flow.)
 
 ### The workflow binds them
 
-4. **A workflow is CWL text that names a tools image by name.** GoWe assigns its
-   unique id as the content hash of the registered text, so the id binds *text +
-   image name* — a registered workflow is a specific pairing, and a submission
+4. **A workflow is CWL text that names a tools image by name.** GoWe mints an
+   immutable id per registered text and deduplicates registrations by content
+   hash (identical text → the existing row's id; `handler_workflows.go`, GoWe
+   v0.21.0), so the id binds *text + image name* — a registered workflow is a specific pairing, and a submission
    is pinned to that id. "The tools image must support the workflow" is the one
    real constraint, and the CWL is where it is declared: the release that writes
    `dockerPull: ragstack-tools-v1.6.5-b1.sif` into a workflow asserts that it
