@@ -2,7 +2,9 @@
 
 > **Status: never exercised end to end as of 2026-10-06. The first real
 > release will validate it.** This is a draft written from the code and
-> [ADR-0010](../adr/0010-tool-image-binding.md) on `main` at `cde401b` (#672).
+> [ADR-0010](../adr/0010-tool-image-binding.md) on `main` at `cde401b` (#672),
+> updated against `cdcf737` (#678: `--store` build numbers, the Python ≥ 3.11
+> rule, and a stamped tree with `GOWE_IMAGE_DIRS` unset is a refusal).
 > As of that date no release has gone through this flow: every `dockerPull` in
 > `cwl/*.cwl` is the bare `ragstack-worker.sif`, the newest tag is `v1.6.4`,
 > and the shared store `/scout/containers/ragstack/` does not exist. Each step
@@ -134,10 +136,14 @@ image ships the commit and never the working tree.
 ```bash
 cd ~/Development/worktrees/release-v1.6.5          # detached at v1.6.5, `git status --short` empty
 OUT=$HOME/ragstack-tools-builds                    # see "build numbers" below
+ST=/scout/containers/ragstack                      # the shared store (§ 0); must exist
 mkdir -p "$OUT"
-TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python --out "$OUT" --dry-run
-# read: version v1.6.5, build 1, image $OUT/ragstack-tools-v1.6.5-b1.sif; then drop --dry-run:
-TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python --out "$OUT"
+TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python \
+    --out "$OUT" --store "$ST" --dry-run
+# read: version v1.6.5, build N, stores: /scout/containers/ragstack,
+#       image $OUT/ragstack-tools-v1.6.5-b<N>.sif; then drop --dry-run:
+TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python \
+    --out "$OUT" --store "$ST"
 ```
 
 Flags, from `apptainer/build-tools-image.sh` (`--help` prints its header):
@@ -145,20 +151,22 @@ Flags, from `apptainer/build-tools-image.sh` (`--help` prints its header):
 | Flag | Why here |
 |---|---|
 | `--sandbox` | **Required on coconut.** `--fakeroot` does not work (no subuid/subgid; `MEMORY.md`), and without this flag the script runs `apptainer build --fakeroot`. The flag does the rootless two-step instead: `build --sandbox <tmp> <def>`, then `build <sif> <tmp>`. A sandbox two-step produced `ragstack-worker-v1.6.4-21-g6a7fe95.sif` on this host on 2026-10-04 (its labels show `deffile.from: /rag/tmp/…sbx`), but that was before the script existed. |
-| `--python /rag/envs/ragstack/bin/python` | **Required on coconut.** The default is `python` on `PATH`, and for `wilke` that is miniconda's 3.8. There `ragstack.version` fails on `from datetime import UTC` and the build stops with "refusing to build (ragstack.version exit 1)" [exercised]. `PYTHON=…` in the environment does the same thing. Neither `apptainer/README.md` nor the usage line mentions this flag. |
+| `--python /rag/envs/ragstack/bin/python` | **Required on coconut.** The interpreter rule (#678): `--python EXE`, else `$PYTHON` if set, else `python3` **only if it is ≥ 3.11**, else the script refuses with exit 2, naming `--python` and `PYTHON`. For `wilke`, `python3` is miniconda's 3.8.5, so without the flag the script stops with "no Python >= 3.11 found: `python3` is Python 3.8.5" [exercised]. `PYTHON=/rag/envs/ragstack/bin/python` in the environment works too. |
 | `--out DIR` | Where the image and receipt go. The default is `apptainer/images/` inside the worktree (gitignored). **Never point it at the shared store.** |
+| `--store DIR` | A dir where **released** builds of this version live. Read only. Repeatable or comma-separated. The build number counts builds across `--out` **and** every `--store` (below). A `--store` that is not a directory is a refusal (exit 2): today, before § 0, `--store /scout/containers/ragstack` stops with "--store /scout/containers/ragstack is not a directory" [exercised]. |
 | `TMPDIR=/rag/tmp` | The sandbox and the staged `python/` go under `$TMPDIR`. The 2026-10-04 sandbox build used `/rag/tmp`. |
 | `--dry-run` | Prints the version, build number, paths, the exact `apptainer` command(s) and the receipt with `sha256: null`. Builds nothing. [exercised] |
 
-**Build numbers come from `--out` only.** `b<N>` is one more than the highest
-`ragstack-tools-<version>-b*.sif` already in `--out`. The script never looks in
-the store. A fresh worktree's `apptainer/images/` is empty, so it **always
-starts at `b1`**. A rebuild done there would mint a second, different
-`…-b1.sif`, and it would collide with the one already in the store. So use one
-persistent build directory for every release build (above:
-`~/ragstack-tools-builds`). Keep every build in it, including bad ones, so the
-numbering keeps going up. Before any rebuild, check that `--dry-run` prints a
-number the store does not already hold.
+**Build numbers count `--out` and every `--store`** (#678). `b<N>` is one more
+than the highest build of that version found in any of them (a receipt without
+its `.sif` counts too), and the script refuses (exit 1) if the name already
+exists in `--out` or in any `--store`. So a fresh worktree no longer restarts at
+`b1` when the store already holds `b1`, **provided you pass `--store`**: without
+it only `--out` is counted. Keep one persistent build directory anyway (above:
+`~/ragstack-tools-builds`) and keep every build in it, including bad ones that
+never reached the store, so their numbers are not reused either. `--dry-run`
+prints the number and the stores it counted (`stores:` line) [exercised, against
+`/scout/containers/ragstack-dev` from a clean detached checkout of `cdcf737`].
 
 **What it produces:** `$OUT/ragstack-tools-v1.6.5-b1.sif` and
 `$OUT/ragstack-tools-v1.6.5-b1.sif.receipt.json` =
@@ -189,7 +197,9 @@ The import and `--help` checks are the post-build checks from
 **If it fails partway:**
 
 - *Refused before building* (exit 3 dirty, exit 4 no tag, exit 2 bad
-  version): fix the checkout and run it again. Nothing was written.
+  version, no Python ≥ 3.11 or a `--store` that is not a directory, exit 1
+  name already in `--out` or a `--store`): fix the checkout or the flags and
+  run it again. Nothing was written.
 - *`apptainer build` failed*: check that no partial `.sif` was left in `$OUT`
   (the script refuses to overwrite an existing name). Remove it if one was.
   Fix the environment and run again from the same tag. The build number does
@@ -363,9 +373,7 @@ name. A tagged tenant only changes images when it changes tag (ADR-0010
 > any `/`, and `STAMPED_IMAGE_RE` and `stamp_tool_image` accept only
 > `ragstack-tools-<version>-b<N>.sif`. GoWe would take an absolute path
 > (`resolveApptainerImage` uses an absolute `.sif` as is), but ragstack never
-> writes one. `apptainer/README.md` § Where images live still says "ADR-0010
-> decision 2" about the store, which is the old numbering. The store is now
-> decision 6 and Migration step 3.
+> writes one.
 
 So a worker resolves a stamped name the same way it resolves the bare name
 today, as `<--image-dir>/<name>` (single dir, GoWe `internal/toolexec/execute.go`).
@@ -412,7 +420,7 @@ shared store.** They go in the tenant's own image dir. For `dev` that is
 
 ```bash
 apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python --out /scout/containers/ragstack-dev
-#   numbering there is per version, so b<N> is computed from that dir
+#   numbering is per version and --out is counted, so b<N> is computed from that dir
 ```
 
 On an **unstamped** `main` (today), point `dev`'s bare name at it:
@@ -452,49 +460,55 @@ Two consequences for operators:
   recorded as `null`, and the boot check silently skips its
   committed-receipt comparison. Point these keys at the checkout's own `cwl/`.
 - The digest is copied from the committed receipt. It is held against the
-  store's bytes only by the boot check, and that runs only when
-  `GOWE_IMAGE_DIRS` is set. With it unset, provenance records a digest that
-  nothing on that host verified.
+  store's bytes only by the boot check. Since #678 a stamped tree with
+  `GOWE_IMAGE_DIRS` unset does not boot (`unchecked` is a refusal), so a
+  running stamped tenant has had its image checked against `GOWE_IMAGE_DIRS`
+  — which is only as good as that setting naming the dir the workers resolve
+  (§ 7).
 
 ---
 
 ## Discrepancies found while writing this (ADR vs README vs code)
 
-Where they disagree, this runbook follows the code.
+Where they disagree, this runbook follows the code. Items 2–5, 7 and 10 were
+fixed in #678 (`cdcf737`) and are kept as one line each, so the numbering
+other notes cite stays stable.
 
-1. **Absolute `dockerPull`.** The pre-#666 ADR (decision 2) had an absolute
-   path. The current ADR and the code use a bare name, so the store has to be
-   on a worker's `--image-dir`. See § 7.
-2. **`apptainer/README.md` § Where images live cites "ADR-0010 decision 2"**
-   for the store. That is stale numbering. It is decision 6 / Migration step 3.
-3. **The build number comes from `--out`, not from the store** (§ 2). The
-   README's "`N` is the next free build number for that version in `--out`" is
-   accurate, but "`b2` = a rebuild" only holds if `--out` still contains `b1`.
-4. **The default interpreter.** The script uses `python` from `PATH`, which on
-   coconut is 3.8 and fails. The README does not document `--python` (or
-   `--repo`), and the script's own usage line leaves out `--python`.
-5. **Labels compared.** ADR decision 7 says "its labels equal its receipt". The
-   code compares `org.ragstack.version`, `commit` and `build`, and **not**
-   `build-date` (`LABEL_FIELDS`). The build script itself does check
-   `build-date`.
-6. **"Boot refuses, never merely warns."** In the code, refusal applies only
-   with `INGEST_BACKEND=gowe` **and** `GOWE_IMAGE_DIRS` set. With the dirs
-   unset there is one warning (`unchecked`). With no `apptainer` on `PATH` the
-   label check is a warning and the sha256 still has to match. The ADR's
-   Migration step 4 says this ("wherever the API host can see the store"), but
-   decision 7 alone reads stricter.
-7. **`ragstack-ctl gowe render` passes when it checked nothing.** With
-   `GOWE_IMAGE_DIRS` unset, every stamped workflow comes back `unchecked` and
-   the exit code is 0. Pass `--image-dirs` until the key is set.
-8. **The installed ctl has no `gowe` verb.** `/rag/bin/ragstack-ctl` is
-   `ragstack-ctl-v1.6.2-10-g5a05168` → `unknown command "gowe"` [exercised].
-   It needs `make install-ctl` from a checkout at or after `cde401b` (#672).
-   `docs/runbooks/ctl-deploy.md` says to build the ctl from `/rag/repos/ragstack`,
-   which `STATUS.md` calls frozen (and `ctl-deploy.md` § 3a itself calls stale).
-9. **Stale "not landed yet" (fixed in this PR).** `docs/runbooks/bulk-load-throughput.md` § The gating step said the boot/render check had not landed; it landed in #672. The same wording survives in code docstrings (`ragstack/tool_image.py`, `scripts/stamp_tool_image.py`), which belong to a code PR.
-10. **Step numbering.** `stamp_tool_image.py`'s docstring calls stamping "step
-    2" of the release order. The ADR calls it (d) of decision 6, and the README
-    calls it step 4.
+1. **Store reachability (open; decision pending with the owner).** The
+   pre-#666 ADR (decision 2) had the CWL name the store by absolute path. The
+   current ADR and the code use a bare name
+   (`ragstack.tool_image.validate_tool_image`), so the store has to be on a
+   worker's `--image-dir`, and today no worker group resolves
+   `/scout/containers/ragstack/`. How the store becomes reachable is not
+   decided; § 7 lists the two options the code allows.
+2. **Fixed in #678:** `apptainer/README.md` now cites decision 6 (c) /
+   Migration step 3 for the store, not "decision 2".
+3. **Fixed in #678:** build numbers count `--out` and every `--store`, and a
+   colliding name is refused (§ 2).
+4. **Fixed in #678:** the interpreter is `--python` > `$PYTHON` > `python3`
+   only if ≥ 3.11, else exit 2; README and usage document `--python`,
+   `--repo` and `--store`.
+5. **Fixed in #678:** ADR decision 7 names the compared labels (version,
+   commit, build; `build-date` informational), as `LABEL_FIELDS` does.
+6. **Boot refusal (fixed in #678 for unset dirs).** A stamped tree with
+   `GOWE_IMAGE_DIRS` unset now refuses at boot (`verify` exit 4, `gowe render`
+   exit 3). Still true and not in ADR decision 7: refusal applies only with
+   `INGEST_BACKEND=gowe`, and with no `apptainer` on the API host the label
+   comparison is a warning (the sha256 must still match).
+7. **Fixed in #678:** `ragstack-ctl gowe render` exits 3 when a stamped
+   workflow went unchecked; it no longer passes having checked nothing.
+8. **The installed ctl has no `gowe` verb (open).** `/rag/bin/ragstack-ctl` is
+   `v1.6.2-10-g5a05168` → `unknown command "gowe"` [exercised 2026-10-06].
+   It needs `make install-ctl` from a tagged checkout at or after `cdcf737`
+   (#678; a build from `cde401b`/#672 alone still exits 0 on `unchecked`), and
+   nothing is released yet. `docs/runbooks/ctl-deploy.md` now says
+   to build from a tagged checkout and that `/rag/repos/ragstack` is frozen.
+9. **Stale "not landed yet" (partly open).** `docs/runbooks/bulk-load-throughput.md`
+   was fixed in #673 and `ragstack/tool_image.py` in #678;
+   `python/scripts/stamp_tool_image.py`'s module docstring still says "until
+   that lands, nothing at the engine verifies the image" — a code PR.
+10. **Fixed in #678:** `stamp_tool_image.py` is "Migration step 1 tooling"
+    used at release order (d); the step/decision references agree.
 
 ## Related
 

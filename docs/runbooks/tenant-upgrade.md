@@ -264,8 +264,9 @@ fails fast on some classes of stale config rather than starting wrong — see
 
 > **Never exercised as of 2026-10-06.** No tag carries a stamped CWL yet. The
 > newest tag, `v1.6.4`, names the bare `ragstack-worker.sif` in all 23
-> `dockerPull` sites, and no tag contains the boot check (#672, `cde401b`) or
-> the `GOWE_TOOL_IMAGE` refusal (#664, `0e9bbb0`). This section is written from
+> `dockerPull` sites, and no tag contains the boot check (#672, `cde401b`;
+> its refusal of unset `GOWE_IMAGE_DIRS` is #678, `cdcf737`) or the
+> `GOWE_TOOL_IMAGE` refusal (#664, `0e9bbb0`). This section is written from
 > the code. The first stamped release will validate it. How a release gets
 > stamped is in [`cut-a-release.md`](cut-a-release.md).
 
@@ -337,8 +338,9 @@ N=ragstack-tools-v1.6.5-b1.sif; G=/scout/containers/ragstack-hackathon
 ls -lL "$G/$N" "$G/$N.receipt.json"
 ```
 
-If `GOWE_IMAGE_DIRS` is unset, the API **boots with a warning** and verifies
-nothing (below). Set it as part of this upgrade.
+If `GOWE_IMAGE_DIRS` is unset on a stamped tag, the API **refuses to boot**
+(`not verified: GOWE_IMAGE_DIRS unset`, #678; below). Set it as part of this
+upgrade, before step 5.
 
 **4. Run the check: `ragstack-ctl gowe render <tenant>`.** This is read-only.
 It reads the registry row and `tenant.env`, then runs the tenant's own
@@ -364,13 +366,16 @@ store, not the receipt. Every message is listed in
 [`verifying-tools-image.md` § When it fails](verifying-tools-image.md#when-it-fails).
 Exit 1 means the check could not run. Exit 2 is a usage error.
 
-> **Exit 0 does not always mean verified.** If neither `GOWE_IMAGE_DIRS` nor
+> **`unchecked` is a refusal.** If neither `GOWE_IMAGE_DIRS` nor
 > `--image-dirs` names a dir, every stamped workflow comes back `unchecked`
-> and the exit code is still 0. Read the state column, not only the exit code.
+> and `render` exits **3**, as the boot refuses (#678; a ctl built between
+> `cde401b` and `cdcf737` still exits 0 there, so do not install one).
+> `python -m ragstack.tool_image verify` exits **4** for the same case.
 > **The installed `/rag/bin/ragstack-ctl` predates this verb**
-> (`ragstack-ctl-v1.6.2-10-g5a05168` → `unknown command "gowe"`). Until it is
-> reinstalled from a checkout at or after `cde401b`, run the same check from
-> the tenant's checkout:
+> (`v1.6.2-10-g5a05168` → `unknown command "gowe"`, as of 2026-10-06). Until
+> it is reinstalled from a tagged checkout at or after `cdcf737`
+> ([`ctl-deploy.md`](ctl-deploy.md)), run the same check from the tenant's
+> checkout:
 > `PYTHONPATH="$W/python" /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --dirs "$G" --cwl "$W/cwl/pdf-ingest-scatter.cwl" --cwl "$W/cwl/graph-extract.cwl" --cwl "$W/cwl/restore-collection.cwl"`
 > (the three paths are the defaults. Use the tenant's `GOWE_WORKFLOW_CWL` /
 > `GRAPH_EXTRACT_CWL` / `COLLECTION_RESTORE_CWL` if it sets them).
@@ -384,9 +389,9 @@ that check at startup for the three registered CWLs
 | stamped, `GOWE_IMAGE_DIRS` set, all checks pass | boots. One info line per image: `verified at <path>: sha256 ok, labels ok` |
 | stamped, `GOWE_IMAGE_DIRS` set, **any** problem (not found, no receipt, sha256 or label mismatch, committed receipt ≠ the store's) | **refuses to boot**: `tool image identity check FAILED (ADR-0010 decision 7, #655)`, naming the image, the path tried and each problem |
 | a document naming two images | **refuses** |
-| stamped, `GOWE_IMAGE_DIRS` **unset** | **warns** (`… GOWE_IMAGE_DIRS is unset … identity check is NOT run`) and boots |
+| stamped, `GOWE_IMAGE_DIRS` **unset** | **refuses to boot** (#678): `tool image identity check NOT RUN (ADR-0010 decision 7, #655): not verified: GOWE_IMAGE_DIRS unset`, naming each setting and image, and `Set GOWE_IMAGE_DIRS=<the dir the tenant's workers resolve --image-dir against>` |
 | stamped, no `apptainer` on the API's `PATH` | label check is a **warning**. The sha256 still has to match. |
-| unstamped (`ragstack-worker.sif`) | boots. Info: `unstamped tree, identity check skipped` |
+| unstamped (`ragstack-worker.sif`), with or without `GOWE_IMAGE_DIRS` | boots. Info: `unstamped tree, identity check skipped` |
 | `INGEST_BACKEND` not `gowe` | no check (the `GOWE_TOOL_IMAGE` refusal still applies) |
 
 A refusal shows up in the API log and the API never binds its port. For a

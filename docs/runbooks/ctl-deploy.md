@@ -21,17 +21,22 @@ step 6, which refuses rather than guesses.
 ## Where production code lives
 
 Plan decision (2026-09-15): **nothing in production may reference a home
-directory.** Every path below is under `/rag`; a developer's
+directory.** Every path production runs from is under `/rag`; a developer's
 `~/Development/ragstack` is where the code is *written*, never where it
-*runs from* or is *built for a deploy*.
+*runs from* or is *built for a deploy*. A deploy is built from **a tagged
+checkout** of the release (row "build checkout" below).
+
+> **`/rag/repos/ragstack` is frozen.** It is a pre-security checkout at
+> `6d6fcf6` (`STATUS.md`), 435 commits behind `main` at `cdcf737`. Nothing is built, run
+> or `make`d from it, and nothing is checked out in it.
 
 | What | Lives at | How it gets there |
 |---|---|---|
-| `ragstack-ctl` binary | `/rag/bin/ragstack-ctl-<ver>` (+ `ragstack-ctl` symlink) | `make install-ctl`, built from `/rag/repos/ragstack` |
+| `ragstack-ctl` binary | `/rag/bin/ragstack-ctl-<ver>` (+ `ragstack-ctl` symlink) | `make install-ctl`, built from a tagged checkout (row "build checkout") |
 | daemon/wrapper scripts + snapshot helper | `/rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh,render_inventory.py}` | `make install-ops` (source: `ops/coconut/` in the repo) |
-| the bare mirror | `/rag/repos/ragstack.git` | `git clone --bare` once; `git fetch` after every push — never worked in |
+| the bare mirror | `/rag/repos/ragstack.git` | `git clone --mirror` once ([PR-D § 4](#4-the-bare-mirror-wilke--done)); `git fetch` after every push — never worked in. **Hazard:** its refspec is `+refs/*:refs/*` (`remote.origin.mirror=true`), so a fetch force-overwrites local refs from origin and a `--prune` fetch (`remote update --prune`) deletes every ref origin lacks; a bare `git push` to it behaves as `--mirror` and can delete refs on GitHub. Keep no branches in it; push to GitHub with an explicit URL and refspec. |
 | tenant worktrees | `/rag/repos/tenants/<name>`, checked out **from the mirror** | `tenant create` / `tenant rebase-worktree` (§ below) |
-| operator clone | `/rag/repos/ragstack` | `git clone /rag/repos/ragstack.git /rag/repos/ragstack` — a plain, disposable checkout; builds and `make` targets run here, never in a developer's home |
+| build checkout | a fresh clone at the tag, e.g. `~/Development/worktrees/deploy-<tag>`, or `/rag/repos/tenants/<tenant>` when that tenant is already on the tag | `git clone --branch <tag> https://github.com/wilke/ragstack.git ~/Development/worktrees/deploy-<tag>` — detached at the tag, disposable; `make install-ctl install-ops` run here. Never `/rag/repos/ragstack` (frozen, above) and never a developer's working checkout |
 | prepared artifacts | `/rag/data/ctl/artifacts/<tag>-<sha>/worktree` | `fleet artifact prepare --tag <ref>` |
 | Python env(s) tenants run under | `/rag/envs/ragstack` (or a per-artifact env under `/rag/data/ctl/artifacts/…`) | `make install-python` / the artifact's own env |
 | node (for `npm ci` / frontend builds) | `/rag/tools/node/<ver>`, `/rag/tools/node/current` symlink | `make install-node NODE_VERSION=vX.Y.Z`; `ctl.env`: `CTL_NODE_BIN=/rag/tools/node/current/bin/node`, `CTL_NPM_BIN=/rag/tools/node/current/bin/npm` (already the ctl's compiled-in defaults — `drivers/real.go`'s `defaultNodeBin`/`defaultNpmBin`) |
@@ -39,9 +44,11 @@ directory.** Every path below is under `/rag`; a developer's
 **Deploy sequence**, once code is reviewed and tagged:
 
 ```bash
-git push origin <tag>                                    # from wherever the tag was cut
-git -C /rag/repos/ragstack.git fetch --all --tags         # the mirror picks it up
-cd /rag/repos/ragstack && git fetch --tags && git checkout <tag>
+git push https://github.com/wilke/ragstack.git refs/tags/<tag>:refs/tags/<tag>   # from wherever the tag was cut
+git -C /rag/repos/ragstack.git fetch --all --tags         # the mirror picks it up (tenant worktrees come from it)
+B=~/Development/worktrees/deploy-<tag>
+git clone -q --branch <tag> https://github.com/wilke/ragstack.git "$B"   # a fresh checkout AT the tag
+cd "$B" && git describe --tags --exact-match              # -> <tag>; `git status --short` empty
 make install-ctl install-ops                              # binary + daemon/wrapper scripts + render_inventory.py onto /rag/bin
 /rag/bin/ctl-daemon.sh stop && /rag/bin/ctl-daemon.sh start   # restart onto the new binary
 ```
@@ -147,21 +154,25 @@ symlinks if a generation is already published (step 6 rollback).
 ## 2. Build off-host and install
 
 Build from **a tagged checkout of the release being deployed** (today `/rag/repos/tenants/<tenant>` or a fresh clone at the tag; `/rag/repos/ragstack` is frozen)
-(see "Where production code lives" below) — not a developer's
+(see "Where production code lives" above) — not a developer's
 `~/Development/ragstack`, which is where the code is EDITED, not where a
-deploy is BUILT from. Push the tag, let the mirror pick it up, then check it
-out where the build runs:
+deploy is BUILT from. Push the tag, let the mirror pick it up, then make a
+fresh checkout at the tag where the build runs:
 
 ```bash
-# on the machine that pushes (a dev checkout, or CI): tag and push as usual
-git -C ~/Development/ragstack push origin <tag>
+# on the machine that pushes (a dev checkout, or CI): push the tag with an
+# explicit URL and refspec (a bare `git push` from a checkout whose remote is
+# the mirror would behave as --mirror)
+git -C ~/Development/ragstack push https://github.com/wilke/ragstack.git refs/tags/<tag>:refs/tags/<tag>
 
-# on coconut, as wilke: the mirror already has every ref a push updates
+# on coconut, as wilke: the mirror picks up the tag for the tenant worktrees
 # (it is a clone of the same remote, fetched — never worked in — see below)
 git -C /rag/repos/ragstack.git fetch --all --tags
 
-cd /rag/repos/ragstack
-git fetch --tags && git checkout <tag>
+# the build checkout: fresh, detached at the tag. NOT /rag/repos/ragstack (frozen at 6d6fcf6).
+B=~/Development/worktrees/deploy-<tag>
+git clone -q --branch <tag> https://github.com/wilke/ragstack.git "$B"
+cd "$B" && git describe --tags --exact-match     # -> <tag>
 make golang-sif        # once per toolchain bump: pulls golang:1.23.12 → /rag/apptainer/images/golang.sif (~290 MB)
 make go-mode           # -> GO_MODE=container  (host `go` on PATH would win: GO_MODE=host)
 make build-ctl         # go/bin/ragstack-ctl, static, -trimpath, built inside the image
@@ -221,13 +232,13 @@ Two of those directories are new and are not optional:
 
 `gateway apply --expect-bodies DIR` compares four responses byte-for-byte and is
 PR-B's go/no-go. `DIR` must be a directory that exists **on coconut and is
-readable by `svcbvbrc`**. `/rag/repos/ragstack` is a stale checkout (see
-MEMORY: "live API runs from dev checkout") and must not be used for this.
+readable by `svcbvbrc`**. `/rag/repos/ragstack` is frozen at `6d6fcf6`
+(`STATUS.md`) and must not be used for this.
 
-Copy the set out of the checkout you built from, once:
+Copy the set out of the tagged checkout you built from (`$B`, step 2), once:
 
 ```bash
-G=~/Development/ragstack/go/internal/ctl/testdata/live-2026-09-10/gateway
+G=$B/go/internal/ctl/testdata/live-2026-09-10/gateway
 CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "
     install -m 0644 -D -t /rag/data/ctl/goldens $G/root.json $G/tenants.json \
         $G/api-unknown-404.json $G/catchall-404.json
@@ -236,7 +247,7 @@ CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "
 # -> root.json tenants.json api-unknown-404.json catchall-404.json
 ```
 
-(`$HOME/Development` must be readable by `svcbvbrc` for that to work; if it is
+(`$B` must be readable by `svcbvbrc` for that to work; if it is
 not, `cp` the four files to `/tmp` first and install them from there.)
 
 From here every `gateway apply` in this runbook passes
@@ -765,7 +776,9 @@ runs.
 It exists on coconut since 2026-09-14. Before it, tenant worktrees hung off
 `~/Development/ragstack` and `doctor` reported `worktree_outside_mirror`.
 
-Keep it current: `git -C /rag/repos/ragstack.git remote update --prune`. The
+Keep it current: `git -C /rag/repos/ragstack.git remote update --prune`. That
+prune deletes every ref origin lacks, and a bare `git push` to the mirror acts
+as `--mirror` — so never keep a branch in it (see "Where production code lives"). The
 `ragstack-ctl` ansible role clones it if it is absent (section 3, check-mode
 safe: it stats first and the clone carries `creates:`).
 

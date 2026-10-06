@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668).** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset.** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1526,9 +1526,10 @@ name into every `dockerPull`/`dockerImageId` with `scripts/stamp_tool_image.py` 
 commit → tag `vS`. Nothing is stamped after a build and no tag moves. There is **no
 image override**: `GOWE_TOOL_IMAGE` is retired (decision 5). **The check at boot and
 in `ragstack-ctl gowe render`** (decision 7) is an *identity* check — each named file
-exists in the store the workers resolve, its labels equal its receipt, its sha256
-equals the receipt's — and it refuses rather than warns wherever the API host can see
-the store. Compatibility is not re-derived at boot; the release declared it. Each
+exists in the store the workers resolve, its `version`/`commit`/`build` labels equal
+its receipt's (`build-date` is informational), its sha256 equals the receipt's — and
+it refuses rather than warns, including when no store is configured to check against
+(details below). Compatibility is not re-derived at boot; the release declared it. Each
 collection version records what built it (decision 8): a `provenance` object
 `{workflow_id, tool_image, tool_image_digest, image_version, image_commit,
 image_build}` in the archive version's `manifest.json`, the shard receipt, the graph
@@ -1540,8 +1541,8 @@ step writes beside the CWL); the last three the worker reads from the image's
 provenance begins with the first stamped release; a version written before then reads
 as all-`null` ("unknown"), never as an error.
 
-**What the code does at `main` @ `33642f9`** — #655 steps 1 (#664) and 2 (#668) have landed; the rest
-has not:
+**What the code does at `main` @ `cdcf737`** — #655 steps 1 (#664), 2 (#668) and 4 (#672,
+tightened by #678) have landed; steps 3, 5 and 6 have not:
 - **Landed:** the single version derivation (`ragstack/version.py`; `ragstack.__version__`
   via `ragstack/__init__.py`; `GET /v1/version` reports it); the tools-image build
   (`apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def`, writing
@@ -1559,12 +1560,40 @@ has not:
   `load_embeddings.py`, read by `ragstack/provenance.py` (`read_provenance`), with the
   seeding (`ragstack/tool_image.py`, `provenance_inputs`) called by the three
   registrars — `ingestion/gowe_backend.py`, `graph_extract.py` and `restore.py`. Today the API seeds nothing (unstamped tree) and the deployed worker images predate #668, so a new version carries no `provenance` key and reads as all-`null`.
+- **Landed in #672 (#655 step 4) and #678:** the identity check (decision 7), one
+  implementation — `python/ragstack/tool_image.py` `verify_named_image`, wrapped per
+  CWL by `verify_cwl_file` and exposed as `python -m ragstack.tool_image verify
+  (--name|--cwl) --dirs … [--json]` (`main`). Per `dockerPull`: the file exists in the
+  dirs the workers resolve (`GOWE_IMAGE_DIRS`, first hit wins, every hit reported);
+  the receipt beside it (`<sif>.receipt.json`) names it; the file's sha256 equals the
+  receipt's; the `org.ragstack.version`/`commit`/`build` labels (`LABEL_FIELDS`, read
+  with `apptainer inspect --labels`) equal the receipt's, `build-date` informational;
+  and the committed `cwl/tool-image.receipt.json` beside the CWL, when present, agrees
+  with the store's receipt (name/sha256/version/commit/build). The boot
+  (`python/ragstack/api/deps.py`, `_verify_tool_images_at_boot`, only with
+  `INGEST_BACKEND=gowe`) runs `verify_cwl_file` on every CWL the API registers
+  (`_registered_cwl_paths`: `GOWE_WORKFLOW_CWL`, `GRAPH_EXTRACT_CWL`,
+  `COLLECTION_RESTORE_CWL`). **When the tree is stamped, boot refuses on any failure,
+  and also when `GOWE_IMAGE_DIRS` is unset** — state `unchecked`, "not verified:
+  GOWE_IMAGE_DIRS unset" is itself a refusal naming the setting (#678; #672 shipped it
+  as a warning); `verify` exits 4 for it, `gowe render` exits 3. No `apptainer` on the
+  API host turns the label comparison into a warning (`labels_checked=false`; the
+  sha256 still holds the file to its receipt); an inspect that fails on the file is a
+  problem. An **unstamped** tree (the bare `ragstack-worker.sif`) is not checked — info,
+  with or without dirs. `ragstack-ctl gowe render <tenant> [--json]`
+  (`go/cmd/ragstack-ctl/gowe.go` `cmdGowe`, `go/internal/ctl/gowe/render.go`) runs the
+  tenant's own python against its checkout and prints each workflow's text sha256,
+  its `dockerPull` and the verdict: exit 3 on a problem or `unchecked`, 1 when the
+  check could not run. Runbook: `docs/runbooks/verifying-tools-image.md`. **Nothing is
+  released yet:** the installed `/rag/bin/ragstack-ctl` (`v1.6.2-10-g5a05168`, as of
+  2026-10-06) predates `gowe` and answers `unknown command "gowe"`.
 - **Not yet:** no release has been stamped (so no `cwl/tool-image.receipt.json` yet) — every `dockerPull` is still the bare
   `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
   (on coconut, as of 2026-10-05, a per-group symlink, e.g.
   `ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
-  worker group is still the effective binding; the shared store does not exist; the
-  boot identity check and `ragstack-ctl gowe render` (decision 7) and the server image (migration step 6) are not built.
+  worker group is still the effective binding and the identity check has nothing to
+  verify on any tenant; the shared store does not exist (migration step 3); the server
+  image (migration step 6) is not built.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today the CWL names
