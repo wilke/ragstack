@@ -34,7 +34,7 @@ checkout** of the release (row "build checkout" below).
 |---|---|---|
 | `ragstack-ctl` binary | `/rag/bin/ragstack-ctl-<ver>` (+ `ragstack-ctl` symlink) | `make install-ctl`, built from a tagged checkout (row "build checkout") |
 | daemon/wrapper scripts + snapshot helper | `/rag/bin/{ctl-daemon.sh,ctl-as-svc.sh,restore.sh,pre-reboot.sh,snapshot.sh,verify.sh,render_inventory.py}` | `make install-ops` (source: `ops/coconut/` in the repo) |
-| the bare mirror | `/rag/repos/ragstack.git` | `git clone --mirror` once ([PR-D § 4](#4-the-bare-mirror-wilke--done)); `git fetch` after every push — never worked in. **Hazard:** its refspec is `+refs/*:refs/*` (`remote.origin.mirror=true`), so a fetch force-overwrites local refs from origin and a `--prune` fetch (`remote update --prune`) deletes every ref origin lacks; a bare `git push` to it behaves as `--mirror` and can delete refs on GitHub. Keep no branches in it; push to GitHub with an explicit URL and refspec. |
+| the bare mirror | `/rag/repos/ragstack.git` | `git clone --mirror` once ([PR-D § 4](#4-the-bare-mirror-wilke--done)); `git fetch` after every push — never worked in. **Hazard:** its refspec is `+refs/*:refs/*` (`remote.origin.mirror=true`), so a fetch force-overwrites local refs from origin and a `--prune` fetch (`remote update --prune`) deletes every ref origin lacks; a bare `git push` run **inside it, or inside any worktree of it** (`/rag/repos/tenants/<name>` are `git worktree add --detach` off the mirror and share its config) pushes to GitHub as `--mirror` and can delete refs there. Keep no branches in it; never `git push` from it or its worktrees — push from a clone, with an explicit URL and refspec. |
 | tenant worktrees | `/rag/repos/tenants/<name>`, checked out **from the mirror** | `tenant create` / `tenant rebase-worktree` (§ below) |
 | build checkout | a fresh clone at the tag, e.g. `~/Development/worktrees/deploy-<tag>`, or `/rag/repos/tenants/<tenant>` when that tenant is already on the tag | `git clone --branch <tag> https://github.com/wilke/ragstack.git ~/Development/worktrees/deploy-<tag>` — detached at the tag, disposable; `make install-ctl install-ops` run here. Never `/rag/repos/ragstack` (frozen, above) and never a developer's working checkout |
 | prepared artifacts | `/rag/data/ctl/artifacts/<tag>-<sha>/worktree` | `fleet artifact prepare --tag <ref>` |
@@ -161,8 +161,8 @@ fresh checkout at the tag where the build runs:
 
 ```bash
 # on the machine that pushes (a dev checkout, or CI): push the tag with an
-# explicit URL and refspec (a bare `git push` from a checkout whose remote is
-# the mirror would behave as --mirror)
+# explicit URL and refspec (never from /rag/repos/ragstack.git or one of its
+# worktrees under /rag/repos/tenants/: there a bare `git push` behaves as --mirror)
 git -C ~/Development/ragstack push https://github.com/wilke/ragstack.git refs/tags/<tag>:refs/tags/<tag>
 
 # on coconut, as wilke: the mirror picks up the tag for the tenant worktrees
@@ -777,8 +777,8 @@ It exists on coconut since 2026-09-14. Before it, tenant worktrees hung off
 `~/Development/ragstack` and `doctor` reported `worktree_outside_mirror`.
 
 Keep it current: `git -C /rag/repos/ragstack.git remote update --prune`. That
-prune deletes every ref origin lacks, and a bare `git push` to the mirror acts
-as `--mirror` — so never keep a branch in it (see "Where production code lives"). The
+prune deletes every ref origin lacks, and a bare `git push` run in the mirror or
+in one of its worktrees acts as `--mirror` — so never keep a branch in it (see "Where production code lives"). The
 `ragstack-ctl` ansible role clones it if it is absent (section 3, check-mode
 safe: it stats first and the clone carries `creates:`).
 

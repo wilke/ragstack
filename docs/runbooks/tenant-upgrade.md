@@ -355,6 +355,7 @@ ragstack-ctl gowe render "$T" --image-dirs "$G"                  # before tenant
 # before step 2: --worktree redirects only the two defaulted CWL keys and a RELATIVE
 # GOWE_WORKFLOW_CWL. dev and hackathon set it ABSOLUTE (/rag/repos/tenants/$T/cwl/…), so
 # the ingest row would still render the live, unstamped checkout. Check the tag's file directly:
+# <scratch> = a clean checkout of $TAG, e.g.: git -C "$W" worktree add --detach /tmp/$TAG-cwl $TAG
 PYTHONPATH=<scratch>/python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --dirs "$G" \
     --cwl <scratch>/cwl/pdf-ingest-scatter.cwl --cwl <scratch>/cwl/graph-extract.cwl --cwl <scratch>/cwl/restore-collection.cwl
 ```
@@ -377,7 +378,7 @@ Exit 1 means the check could not run. Exit 2 is a usage error.
 > ([`ctl-deploy.md`](ctl-deploy.md)), run the same check from the tenant's
 > checkout:
 > `PYTHONPATH="$W/python" /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --dirs "$G" --cwl "$W/cwl/pdf-ingest-scatter.cwl" --cwl "$W/cwl/graph-extract.cwl" --cwl "$W/cwl/restore-collection.cwl"`
-> (the three paths are the defaults. Use the tenant's `GOWE_WORKFLOW_CWL` /
+> (the last two are the defaults; GOWE_WORKFLOW_CWL has no default. Use the tenant's `GOWE_WORKFLOW_CWL` /
 > `GRAPH_EXTRACT_CWL` / `COLLECTION_RESTORE_CWL` if it sets them).
 
 **5. Know what the boot does now.** With `INGEST_BACKEND=gowe` the API runs

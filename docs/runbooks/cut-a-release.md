@@ -42,7 +42,7 @@ on `T` cannot move.
 
 | Step | Account | Why that account |
 |---|---|---|
-| tag `vT`, tag `vS`, push | `wilke` | Owns the GitHub repo. Push with an explicit URL and refspec (`/rag/repos/ragstack.git` is a bare mirror, so a plain `git push` can delete remote refs). |
+| tag `vT`, tag `vS`, push | `wilke` | Owns the GitHub repo. Push with an explicit URL and refspec (`/rag/repos/ragstack.git` is a bare mirror: a plain `git push` run in it or in one of its worktrees under `/rag/repos/tenants/` behaves as `--mirror` and can delete remote refs). |
 | build | `wilke`, in a fresh worktree | Rootless Apptainer. The script writes only to `--out`. It must run from a clean checkout of the tag. Never build from `/rag/repos/ragstack` (frozen) or from a peer's live checkout. |
 | create the store, copy into it | `wilke` | `/scout/containers` is `wilke:cels 755`, and every GoWe worker runs as `wilke`. ADR-0010 makes the store "the management session's, by hand". |
 | stamp, PR, merge | `wilke` (any dev session, in a worktree) | A normal code change. CI runs the pin test. |
