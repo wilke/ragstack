@@ -17,8 +17,9 @@ import (
 // describes (ADR-0010 decision 7, #655 step 4). Read-only: it reads the
 // registry row, the tenant.env, the CWL files and the image store, and runs
 // the tenant's own python against its own checkout. Exit 3 (refused) when
-// any workflow's verdict has a problem — the same decision the boot makes —
-// 1 when the check could not run, 2 on usage.
+// any workflow's verdict has a problem OR names a stamped image that went
+// unverified because GOWE_IMAGE_DIRS is unset ("unchecked", #673 F3) — the
+// same decision the boot makes — 1 when the check could not run, 2 on usage.
 func cmdGowe(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 || args[0] != "render" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl gowe render <tenant> [--json] [--python PATH] [--worktree DIR] [--image-dirs A,B]")

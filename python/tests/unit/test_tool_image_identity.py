@@ -329,14 +329,33 @@ def test_boot_refuses_on_a_committed_receipt_that_disagrees(gowe_boot, store, tm
         deps._validate_production_settings()
 
 
-def test_boot_warns_and_boots_with_dirs_unset(gowe_boot, store, tmp_path, no_apptainer, monkeypatch, caplog):
+def test_boot_refuses_a_stamped_cwl_with_dirs_unset(gowe_boot, store, tmp_path, no_apptainer, monkeypatch):
+    """#673 F3: a STAMPED name with GOWE_IMAGE_DIRS unset is an image nothing
+    verified — a misconfiguration, so the boot refuses (it used to warn and
+    boot) and says exactly what to set. Mutating the refusal back to a
+    warning fails this test."""
     cwl = _stamped_cwl(tmp_path / "cwl", store)
-    (store / (NAME + ".receipt.json")).write_text(json.dumps(_receipt("0" * 64)))  # would refuse if seen
     monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", str(cwl))
-    with caplog.at_level(logging.WARNING, logger="ragstack.api.deps"):
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", "")
+    with pytest.raises(RuntimeError) as info:
         deps._validate_production_settings()
-    warned = [r for r in caplog.records if "GOWE_IMAGE_DIRS is unset" in r.message]
-    assert warned and warned[0].levelno == logging.WARNING and NAME in warned[0].message
+    msg = str(info.value)
+    assert "not verified: GOWE_IMAGE_DIRS unset" in msg and "Refusing to boot" in msg
+    assert f"GOWE_WORKFLOW_CWL={cwl} names stamped image {NAME}" in msg
+    assert "GOWE_IMAGE_DIRS=<the dir the tenant's workers resolve --image-dir against>" in msg
+
+
+def test_boot_with_dirs_unset_still_boots_an_unstamped_cwl(gowe_boot, tmp_path, no_apptainer, monkeypatch, caplog):
+    """The other side of F3: an UNSTAMPED tree with dirs unset has nothing to
+    verify — info, boots."""
+    cwl = tmp_path / "cwl" / "pdf-ingest-scatter.cwl"
+    cwl.parent.mkdir()
+    cwl.write_text(CWL)
+    monkeypatch.setattr(deps.settings, "gowe_workflow_cwl", str(cwl))
+    monkeypatch.setattr(deps.settings, "gowe_image_dirs", "")
+    with caplog.at_level(logging.INFO, logger="ragstack.api.deps"):
+        deps._validate_production_settings()
+    assert any("unstamped tree, identity check skipped" in r.message for r in caplog.records)
 
 
 def test_boot_skips_an_unstamped_cwl(gowe_boot, store, tmp_path, no_apptainer, monkeypatch, caplog):
@@ -445,6 +464,36 @@ def test_cli_verify_name_and_cwl(store, tmp_path, no_apptainer):
     r = _cli("--cwl", str(cwl), "--dirs", str(store), env_path=path)
     assert r.returncode == 1 and "GoWe would content-hash this" in r.stdout and "problem: sha256" in r.stdout
     assert _cli("--dirs", str(store), env_path=path).returncode == 2
+
+
+def test_cli_unchecked_on_a_stamped_document_exits_4(store, tmp_path, no_apptainer):
+    """#673 F3: no --dirs on a STAMPED document is "not verified", exit 4 —
+    not the exit 0 it used to be. An unstamped document without dirs is
+    still exit 0 (nothing to verify)."""
+    path = os.environ["PATH"]
+    cwl = _stamped_cwl(tmp_path / "cwl", store)
+    r = _cli("--cwl", str(cwl), "--json", env_path=path)
+    assert r.returncode == 4, r.stderr
+    doc = json.loads(r.stdout)
+    assert doc["ok"] is False and doc["unchecked"] is True
+    assert doc["records"][0]["verdict"]["state"] == "unchecked"
+    assert doc["records"][0]["verdict"]["problems"] == []
+    r = _cli("--name", NAME, env_path=path)
+    assert r.returncode == 4
+    assert "not verified: GOWE_IMAGE_DIRS unset" in r.stdout and "NOT VERIFIED" in r.stderr
+    # A problem outranks unchecked: a stamped doc verified against a bad
+    # store in one record, unchecked elsewhere, is still exit 1.
+    (store / (NAME + ".receipt.json")).write_text(json.dumps(_receipt("0" * 64)))
+    assert _cli("--cwl", str(cwl), "--dirs", str(store), env_path=path).returncode == 1
+
+    unstamped = tmp_path / "u" / "pdf-ingest-scatter.cwl"
+    unstamped.parent.mkdir()
+    unstamped.write_text(CWL)
+    r = _cli("--cwl", str(unstamped), "--json", env_path=path)
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(r.stdout)
+    assert doc["ok"] is True and doc["unchecked"] is False
+    assert doc["records"][0]["verdict"]["state"] == "unstamped"
 
 
 def test_verify_cwl_file_on_a_document_without_an_image(tmp_path, no_apptainer):

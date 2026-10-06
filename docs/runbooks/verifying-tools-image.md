@@ -19,17 +19,21 @@ For a stamped name, in order:
    `apptainer/build-tools-image.sh` writes) must exist and name the image.
 3. **sha256** — the file's streamed sha256 must equal the receipt's.
 4. **Labels** — `apptainer inspect --labels` must say the receipt's
-   `org.ragstack.version` / `commit` / `build`. No `apptainer` on the host is a
-   *warning* (`labels_checked=false`); an inspect that fails on the file is a
-   problem (it is not a SIF).
+   `org.ragstack.version` / `commit` / `build`. Those three are the compared
+   labels; `org.ragstack.build-date` is informational and never compared. No
+   `apptainer` on the host is a *warning* (`labels_checked=false`); an inspect
+   that fails on the file is a problem (it is not a SIF).
 5. **Committed receipt** — `cwl/tool-image.receipt.json`, the copy the
    stamping step committed beside the CWL, must agree with the receipt in the
    store (`name`, `sha256`, `version`, `commit`, `build`). A disagreement
    means the store holds a different build than the release stamped.
 
-Any problem is a refusal. The bare `ragstack-worker.sif` (an unstamped tree,
-what `main` carries until the first stamped server release) is `unstamped`:
-nothing to verify, not a failure.
+Any problem is a refusal. So is a stamped name checked with **no store dirs**
+(`unchecked`, "not verified: GOWE_IMAGE_DIRS unset"): an image is named and
+nothing verified it, which is a misconfiguration, not a pass (#673). The bare
+`ragstack-worker.sif` (an unstamped tree, what `main` carries until the first
+stamped server release) is `unstamped`: nothing to verify, not a failure,
+with or without store dirs.
 
 One implementation: `ragstack.tool_image.verify_named_image`, exposed as
 `python -m ragstack.tool_image verify`. The ctl shells to it from the tenant's
@@ -47,9 +51,9 @@ against: the shared release store and/or the group's own dir.
 |---|---|
 | stamped, dirs set, all checks pass | boots; one info line per image: `verified at <path>` |
 | stamped, dirs set, any problem | **refuses**: `tool image identity check FAILED (ADR-0010 decision 7, #655)`, then per setting the image, the path tried and each problem |
-| stamped, `GOWE_IMAGE_DIRS` unset (`unchecked`) | **warns** naming the setting and boots — this host cannot see a store; verify from one that can |
+| stamped, `GOWE_IMAGE_DIRS` unset (`unchecked`) | **refuses**: `tool image identity check NOT RUN … not verified: GOWE_IMAGE_DIRS unset`, naming each setting and image, and what to set: `GOWE_IMAGE_DIRS=<the dir the tenant's workers resolve --image-dir against>` |
 | a document naming more than one image (`problem`) | **refuses** — a mixed document is a release that cannot be cut |
-| unstamped (`ragstack-worker.sif`) | boots; info: `unstamped tree, identity check skipped` |
+| unstamped (`ragstack-worker.sif`), dirs set or not | boots; info: `unstamped tree, identity check skipped` |
 | `INGEST_BACKEND=local` | no check |
 
 A refusal looks like this in the tenant's API log:
@@ -72,9 +76,11 @@ ragstack-ctl gowe render hackathon --json     # the records
 Prints, for the tenant's checkout, each registered workflow's **text sha256**
 (labelled "GoWe would content-hash this" — the id GoWe mints is the content
 hash of exactly these bytes), its `dockerPull`, and the verdict. Exit 0 when
-nothing is wrong, **3 (refused)** when any workflow has a problem — the same
-decision the boot makes — 1 when the check could not run (no interpreter, no
-checkout, no JSON back), 2 on usage.
+nothing is wrong, **3 (refused)** when any workflow has a problem *or* names a
+stamped image that went unverified because `GOWE_IMAGE_DIRS` is unset (the
+text report says `FAIL: not verified: GOWE_IMAGE_DIRS unset`; `--json` lists
+those keys under `unchecked`) — the same decision the boot makes — 1 when the
+check could not run (no interpreter, no checkout, no JSON back), 2 on usage.
 
 It reads the registry row (worktree, `python_env`) and the tenant's
 `tenant.env` (the three CWL keys, `GOWE_IMAGE_DIRS`, `INGEST_BACKEND`), then
@@ -92,6 +98,12 @@ Without the ctl, from any checkout that can see the store:
 python -m ragstack.tool_image verify --name ragstack-tools-v1.7.0-b1.sif --dirs /scout/containers/ragstack
 python -m ragstack.tool_image verify --cwl cwl/pdf-ingest-scatter.cwl --dirs /scout/containers/ragstack --json
 ```
+
+`verify` exits 0 when nothing is wrong (`ok`, or `unstamped`), 1 on any
+problem, 2 on usage, and **4** when nothing is wrong but a stamped name was
+not verified because no `--dirs` were given ("not verified: GOWE_IMAGE_DIRS
+unset"). A problem outranks 4. The JSON `ok` is true only on exit 0; its
+`unchecked` is true when any record is `unchecked`.
 
 ## When it fails
 
@@ -127,4 +139,4 @@ session that owns `/rag`, then restart the tenant.
 | `ok` | stamped name; file found, receipt beside it, sha256 and labels agree, committed receipt agrees | boots |
 | `problem` | at least one entry in `problems` (any check above failed, or the document names more than one image) | refuses |
 | `unstamped` | the bare `ragstack-worker.sif` (or a document with no `dockerPull` at all) — nothing to verify | boots, info |
-| `unchecked` | a stamped name but no store dirs (`GOWE_IMAGE_DIRS` unset): this host cannot see a store | boots, warning |
+| `unchecked` | a stamped name but no store dirs (`GOWE_IMAGE_DIRS` unset): nothing verified it — `verify` exits 4, `gowe render` 3 | refuses |

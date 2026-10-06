@@ -1492,8 +1492,11 @@ def _verify_tool_images_at_boot() -> None:
     decides: ``problem`` REFUSES the boot (the image, the path tried and each
     finding are named; a document naming more than one image is a problem
     too); ``unstamped`` (the bare ``ragstack-worker.sif``) is nothing to
-    verify, at info; ``unchecked`` (dirs unset — the host cannot see a store,
-    and the ADR refuses only where it can) is one WARNING naming the setting.
+    verify, at info; ``unchecked`` (a STAMPED name with ``GOWE_IMAGE_DIRS``
+    unset — an image is named and nothing would verify it) also REFUSES, with
+    a message naming exactly what to set (#673 F3: it used to warn and boot,
+    which let a misconfigured tenant run unverified bytes under a stamped
+    name).
     Only when ``INGEST_BACKEND=gowe`` — a local backend registers nothing.
     The sha256 and the labels are cached per image file, so three registrars
     naming one image cost one hash and one inspect; the committed receipt is
@@ -1507,6 +1510,7 @@ def _verify_tool_images_at_boot() -> None:
     # Identical findings from several registrars naming one image are
     # reported once, with every setting that led there.
     failures: dict[str, list[str]] = {}
+    unchecked: list[str] = []
     for setting_name, path in _registered_cwl_paths():
         if not path:
             continue  # make_ingest_backend refuses a missing GOWE_WORKFLOW_CWL itself
@@ -1526,13 +1530,7 @@ def _verify_tool_images_at_boot() -> None:
                      setting_name, name)
             continue
         if state == "unchecked":
-            log.warning(
-                "tool image check: %s names stamped image %s but GOWE_IMAGE_DIRS is unset, so "
-                "this host cannot see the image store and the identity check is NOT run. Set "
-                "GOWE_IMAGE_DIRS to the dir(s) the worker group resolves --image-dir against, "
-                "or verify from a host that can: ragstack-ctl gowe render <tenant>",
-                setting_name, name,
-            )
+            unchecked.append(f"{setting_name}={cwl_path} names stamped image {name}")
             continue
         for w in verdict["warnings"]:
             log.warning("tool image check: %s: %s", name, w)
@@ -1558,6 +1556,16 @@ def _verify_tool_images_at_boot() -> None:
             + "\n".join(", ".join(sources) + "\n" + summary for summary, sources in failures.items())
             + "\nFix the store (copy the image AND its receipt from the build), or check out "
             "the release whose CWL names the image that is there."
+        )
+    if unchecked:
+        raise RuntimeError(
+            "tool image identity check NOT RUN (ADR-0010 decision 7, #655): not verified: "
+            "GOWE_IMAGE_DIRS unset. A registered workflow names a stamped tools image and "
+            "nothing would verify the bytes behind that name. Refusing to boot.\n"
+            + "\n".join(unchecked)
+            + "\nSet GOWE_IMAGE_DIRS=<the dir the tenant's workers resolve --image-dir against> "
+            "in the tenant's tenant.env (comma-separated when there is more than one: the shared "
+            "release store and/or the worker group's own dir), then restart the tenant."
         )
 
 

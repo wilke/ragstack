@@ -73,6 +73,28 @@ func TestGoweRenderArgsAndExit(t *testing.T) {
 	if rc != exitRefused || !strings.Contains(out, "problem: sha256 mismatch") || !strings.Contains(out, "FAIL") {
 		t.Errorf("problem: rc %d\n%s", rc, out)
 	}
+	// #673 F3: a stamped name with no store dirs ("unchecked", Python exit 4)
+	// is a refusal (3), not a pass — the boot refuses it too.
+	unch := func(state, image string) string {
+		return `{"cwl":"/wt/a.cwl","text_sha256":"` + strings.Repeat("a", 64) + `","tool_image":"` + image + `","verdict":{"name":"` + image + `","state":"` + state + `","dirs":[],"path":null,"exists":false,"found_in":[],"receipt_found":false,"sha256":null,"sha256_ok":null,"labels":null,"labels_checked":false,"labels_ok":null,"committed_receipt_ok":null,"problems":[],"warnings":[]}}`
+	}
+	s := unch("unchecked", "ragstack-tools-v9.9.9-b1.sif")
+	uncheckedPy := stub(`{"ok":false,"unchecked":true,"records":[`+s+`,`+s+`,`+s+`]}`, "4")
+	rc, out, errs = capture(t, append(base, "--python", uncheckedPy)...)
+	if rc != exitRefused || !strings.Contains(out, "not verified: GOWE_IMAGE_DIRS unset") ||
+		!strings.Contains(out, "-> unchecked") || strings.Contains(errs, "without a JSON verdict") {
+		t.Errorf("unchecked: rc %d\n%s\n%s", rc, out, errs)
+	}
+	rc, out, _ = capture(t, append(base, "--python", uncheckedPy, "--json")...)
+	if rc != exitRefused || !strings.Contains(out, `"ok": false`) || !strings.Contains(out, `"GOWE_WORKFLOW_CWL"`) {
+		t.Errorf("unchecked json: rc %d\n%s", rc, out)
+	}
+	// ... while an UNSTAMPED tree with no dirs has nothing to verify: exit 0.
+	u := unch("unstamped", "ragstack-worker.sif")
+	unstampedPy := stub(`{"ok":true,"unchecked":false,"records":[`+u+`,`+u+`,`+u+`]}`, "0")
+	if rc, out, errs := capture(t, append(base, "--python", unstampedPy)...); rc != exitOK || !strings.Contains(out, "\nok") {
+		t.Errorf("unstamped: rc %d\n%s\n%s", rc, out, errs)
+	}
 	// the check could not run → error (1)
 	deadPy := stub("Traceback: ModuleNotFoundError", "1")
 	if rc, _, errs := capture(t, append(base, "--python", deadPy)...); rc != exitError || !strings.Contains(errs, "without a JSON verdict") {
