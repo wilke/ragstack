@@ -148,11 +148,29 @@ the vector leg never sees them; a separate sink writes them to Postgres (rows) a
 
 ## 6. Constraints that bound any design
 
-1. **`sentence_spans` is frozen.** The chunking study keys its labels by sentence
-   index and asserts `chunkers.py` has not moved (`s0_common.EXPECT_COMMIT` +
-   `pin_repo()`, plus a `git diff` assertion in the labelers). A section-aware
-   chunker that changes sentence segmentation invalidates every existing label.
-   Comments in that file are safe; behaviour is not.
+1. **`chunkers.py` is versioned, not frozen** (owner decision, 2026-10-06; this
+   item used to read "`sentence_spans` is frozen"). Section-aware chunking goes
+   **into `chunkers.py`** — not a sibling module written to dodge a freeze. What
+   bounds it is provenance: every experiment artifact embeds
+   `ragstack.provenance.experiment_provenance()` (version, raw `git describe` as
+   provenance, full commit, dirty flag, tools-image `RELEASE`, and a
+   `sentence_spans()` fingerprint), and a dirty-tree run is not citable. The
+   chunking study keeps its own pin (`s0_common.EXPECT_COMMIT` = `55a0fc2`; its
+   `provenance()` refuses another HEAD and the labelers `git diff` `chunkers.py`),
+   which governs re-running *that study* — at `55a0fc2` or in an image built from
+   it — not `main`. Its labels are keyed by sentence index at that commit: if the
+   new chunker moves where sentences split, those labels are a different
+   coordinate system and do not translate (see `section-taxonomy.md`).
+
+   **Sections must come from the XML, not from the extracted text.**
+   `jats.py::section_text` emits a markdown heading only for a `<sec>` that has a
+   non-empty `<title>`; an untitled `<sec>` contributes its paragraphs with no
+   heading, so its boundary is invisible in the body text. A chunker that
+   re-discovers sections by parsing headings out of that text silently merges every
+   untitled section into its predecessor — and untitled body is the largest
+   evidence-bearing class (§7 Stage 3, 39.1%). The section spans have to be carried
+   out of the XML walk alongside the text (the normalized record's `sections`,
+   §3), with untitled sections as first-class spans.
 2. **Chunk method is collection identity** (ADR-0002). A new method mints a new
    collection; nothing is converted in place.
 3. **The chunk-metadata contract is enforced at ingest.** A new field is not
@@ -219,9 +237,12 @@ there is no `.html` entry at all.*
 
 **Stage 2 — section-aware chunking over the normalized record.**
 A chunker that takes `sections` and cuts **at** boundaries, falling back to the
-configured method **within** a section. Stamps `section_title` per chunk. Must not
-touch `sentence_spans` (§6.1). This is the piece `CHUNK_SECTION_AWARE` named and
-never delivered.
+configured method **within** a section. Stamps `section_title` per chunk. Lives in
+`chunkers.py` (§6.1, owner decision 2026-10-06); section spans come from the XML,
+not from headings in `section_text` output (§6.1). If it changes `sentence_spans`,
+its experiment records say so through the segmentation fingerprint, and labels from
+an earlier commit are not reused against it. This is the piece `CHUNK_SECTION_AWARE`
+named and never delivered.
 *Supporting evidence from the chunking session's own confirmation run: overlap
 returned a powered null — 61,559 extra vectors for a recall@100 change of exactly
 0.0000 — so cutting at a boundary costs nothing overlap was paying for.*
@@ -241,7 +262,9 @@ eighth of the evidence.*
 
 **Stage 5 — JATS onto the same contract.**
 Largest corpus, smallest effort per document: `jats.py` already keeps section
-titles as markdown headings inline. Deliberately **not** first — the owner's
+titles as markdown headings inline — but only *titled* ones: an untitled `<sec>`
+leaves no heading in `section_text` output, so this stage emits `sections` from the
+XML walk, not by re-parsing those headings (§6.1). Deliberately **not** first — the owner's
 near-term corpus is PDF and HTML, and JATS is not blocked on any of the above.
 
 ## 8. Open questions

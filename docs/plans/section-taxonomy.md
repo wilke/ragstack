@@ -131,21 +131,29 @@ design belongs in ingest, where family A can use what `jats.py` already knows.
 
 ---
 
-## A hard constraint on any section-aware chunker (from ragstack-ui, 2026-09-22)
+## Sentence coordinates and a section-aware chunker (revised 2026-10-06)
 
-`chunkers.py` is **pinned by the chunking study's harness**: `s0_common.py` sets
-`EXPECT_COMMIT` and calls `pin_repo()`, and the labelers additionally assert that
-`git diff EXPECT_COMMIT..HEAD -- chunkers.py` is **empty**.
+*Was: "a hard constraint … `chunkers.py` is pinned by the chunking study's harness …
+a section-aware chunker must not change `sentence_spans`" (ragstack-ui, 2026-09-22).
+Superseded by owner decision 2026-10-06, approved by the study owner.*
 
-Comments in that file are safe to change on `main` — the study runs only from its pinned
-checkout, where the diff is empty by construction. **Behaviour is not.** Specifically:
+`chunkers.py` is no longer frozen, and a section-aware chunker goes **into** it. The study
+keeps its own pin: `s0_common.py` sets `EXPECT_COMMIT` (`55a0fc2`) and its `provenance()`
+refuses any other HEAD, and the labelers assert `git diff EXPECT_COMMIT..HEAD -- chunkers.py`
+is empty. That is what re-running the study requires — run it at `55a0fc2`, or in an image
+built from it — not a rule for `main`.
 
-> A section-aware chunker **must not change `sentence_spans`**.
+> A section-aware chunker **may change `sentence_spans`**. Labels from another commit are a
+> **different coordinate system**.
 
-The study's 112,140 committed labels are keyed by **sentence index**. If `sentence_spans`
-moves, every recorded span slides onto text the labeler never read, and the labels are
-silently invalidated — not at ingest, but at the next re-pin. That is a real design
-constraint on the feature, not a preference.
+The study's 112,140 committed labels are keyed by **sentence index** as `sentence_spans`
+computed it at `55a0fc2`. If a later commit moves where sentences split, those indices point
+at different text: the labels do not translate, and no translator may be improvised
+(`grading_import.py` translates renumbering only, because `segment()` yields gapped numbers;
+it does not re-map moved boundaries). Commit equality is only a proxy for "same coordinate
+system"; `experiment_provenance()` records a `sentence_spans()` fingerprint
+(`ragstack.provenance.segmentation_fingerprint`) that checks it directly, and a section- or
+unit-bounded arm fingerprints its units as well (`span_fingerprint(..., kind="units")`).
 
 ## Where the interim collection landed
 

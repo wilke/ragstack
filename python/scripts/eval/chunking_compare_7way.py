@@ -107,6 +107,7 @@ from ragstack.ingestion.enrich import ARTICLE, enrich, index_metadata
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.tokenization import HFTokenCounter, TokenCounter
 from ragstack.models import Chunk, Document
+from ragstack.provenance import experiment_provenance
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -214,6 +215,10 @@ REPORT_PATH = Path(__file__).resolve().parent / "chunking_compare_7way_report.md
 CSV_PATH = Path(__file__).resolve().parent / "chunking_compare_7way_results.csv"
 STATS_PATH = (
     Path(__file__).resolve().parent / ".chunking_compare_7way_ingest_stats.json"
+)
+#: Experiment provenance for the CSV + report above (docs/papers/README.md § Claims).
+PROVENANCE_PATH = (
+    Path(__file__).resolve().parent / "chunking_compare_7way_results.provenance.json"
 )
 
 
@@ -960,6 +965,9 @@ def _load_ingest_stats() -> dict:
 
 
 def _save_ingest_stats(key: str, stats: dict) -> None:
+    # Which code built this config's stores; a --resume run reuses the record, so
+    # the provenance travels with the stats it describes.
+    stats["provenance"] = experiment_provenance()
     all_stats = _load_ingest_stats()
     all_stats[key] = stats
     STATS_PATH.write_text(json.dumps(all_stats, indent=2), encoding="utf-8")
@@ -1462,6 +1470,32 @@ chunks/s are over {n_docs} docs.
     REPORT_PATH.write_text(body, encoding="utf-8")
 
 
+def write_provenance(
+    ingest_stats: dict, *, report_path: Path, csv_path: Path, out_path: Path,
+) -> dict:
+    """Write the run's experiment provenance next to its CSV and append it to the
+    markdown report (docs/papers/README.md § Claims). Additive: neither the CSV
+    nor the report body above the appended section changes. Returns the record.
+    ``ingest`` carries each config's own record — a ``--resume`` run may have
+    built some stores at an earlier commit, and that is what it says."""
+    prov = experiment_provenance()
+    payload = {
+        "provenance": prov,
+        "artifacts": [report_path.name, csv_path.name],
+        "ingest": {k: (s.get("provenance") if isinstance(s, dict) else None)
+                   for k, s in ingest_stats.items()},
+    }
+    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8")
+    with report_path.open("a", encoding="utf-8") as fh:
+        fh.write("\n## Provenance\n\n")
+        if not prov.get("citable"):
+            fh.write("**Not citable** — see `warnings` (dirty tree or unknown commit).\n\n")
+        fh.write(f"Full record, with per-config ingest provenance: `{out_path.name}`.\n\n")
+        fh.write("```json\n" + json.dumps(prov, indent=2, sort_keys=True) + "\n```\n")
+    return prov
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -1504,6 +1538,8 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
             live_endpoints, sig,
         )
         write_csv(ingest_stats, eval_stats, len(docs))
+        write_provenance(ingest_stats, report_path=REPORT_PATH, csv_path=CSV_PATH,
+                         out_path=PROVENANCE_PATH)
         print("\n" + "=" * 80)
         print("RESULTS")
         print("=" * 80)
@@ -1513,6 +1549,7 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
         print(build_cost_table(ingest_stats, len(docs)))
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")
+        print(f"Provenance written to {PROVENANCE_PATH}")
 
         if args.teardown:
             await teardown(client)

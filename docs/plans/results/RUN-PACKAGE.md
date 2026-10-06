@@ -300,6 +300,15 @@ One more trap: `s0_common.provenance()` **aborts** unless `git rev-parse HEAD` e
 `git diff 55a0fc2..HEAD -- python/ragstack/ingestion/chunkers.py` is **empty** — the segmenter is
 the one file whose drift moves a label.
 
+**Re-running this study, after the 2026-10-06 unfreeze.** `chunkers.py` is no longer frozen
+on `main` (owner decision 2026-10-06); its behaviour may move. These harnesses are the study's
+record and are not edited, so their pin stays valid: **re-run them at `55a0fc2`** (a worktree
+at that commit, or a tools image built from it), never at a later `main`. The same holds for
+any retrieval run that **reuses embeddings built at the pin** — `/rag/tmp/stage0-conf/emb`, the
+SFR-token chunk arms: run it at `55a0fc2` or re-embed; pairing `main`'s `chunkers.py` with
+those vectors is a silent mismatch. New experiments are governed by the provenance rule in
+`docs/papers/README.md` § Claims instead of a pin.
+
 ---
 
 ## 6. Compute sizing for a larger site
