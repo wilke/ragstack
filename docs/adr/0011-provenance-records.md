@@ -110,9 +110,11 @@ identity (#682's comparison-key rule), and is recorded in `info`.
 }
 ```
 
-The example shows every `info` key a record may carry. A shard receipt, an
-embedding-file header and an archive manifest keep a restricted `info`
-(section 5).
+The example shows every `info` key a record may carry, including
+`gowe_job_id`. A shard receipt, an embedding-file header and an archive
+manifest keep a restricted `info` of `{packages, notes}` (plus `parent_kind`
+on a child's record) that excludes `gowe_job_id`, so a re-submission's new
+GoWe job id never breaks the byte-identity promise (section 5).
 
 * **`core` is deterministic and closed.** It is the only part that is
   fingerprinted. Its JSON Schema, `contracts/schemas/provenance_record.json`,
@@ -247,11 +249,15 @@ CommandLineTool in `cwl/` — a workflow-text change, and so a new GoWe id.
 
 **Shard receipts stay byte-identical on re-run.** `ShardReceipt.to_json` is
 documented as "sorted, no timestamp" for idempotence and diff-ability; the
-record keeps that. A receipt's `info` is exactly `{gowe_job_id, packages,
-notes}` (plus `parent_kind` on a child's record, a constant): no `started_at`,
-`ended_at`, `host`, `pid` or `argv_redacted`, because argv names per-attempt
-staging paths. The same restriction holds for the embedding-file header and
-the archive manifest, whose byte-identity `archive.py` also promises.
+record keeps that. A receipt's `info` is exactly `{packages, notes}` (plus
+`parent_kind` on a child's record, a constant): no `started_at`, `ended_at`,
+`host`, `pid`, `argv_redacted` or `gowe_job_id`, because argv names
+per-attempt staging paths and a re-submission gets a new GoWe job id, which
+would otherwise make the receipt differ from its own prior write. The GoWe
+job is recoverable from where the receipt was written and from the workflow
+run, not from the receipt bytes. The same restriction holds for the
+embedding-file header and the archive manifest, whose byte-identity
+`archive.py` also promises.
 
 ### 6. Determinism, redaction, performance
 
@@ -319,9 +325,14 @@ either key reads as unknown, exactly as today (ADR-0010 migration step 2:
 #682's provisional `experiment_provenance()` block is
 **`ragstack.provenance/0-experiment`**. It has `schema: 1` and the keys
 `version` / `describe` / `commit` / `dirty` / `untracked` / `source` /
-`image` / `segmentation` / `citable`, and the three chunking harnesses write it
-as `*_results.provenance.json` once #682 lands. `read()` upgrades it too: the
-identity keys go onto `agent` and `segmentation` goes onto `params`.
+`in_image` / `image` / `installed_distribution` / `segmentation` / `python` /
+`host` / `recorded_at` / `citable` / `warnings`, and the three chunking
+harnesses write it as `*_results.provenance.json` once #682 lands. `read()`
+upgrades it too: `version`, `describe`, `commit`, `dirty`, `untracked`,
+`source` and `image` go onto `agent`; `segmentation` goes onto `params`;
+`in_image`, `installed_distribution`, `python`, `host` and `recorded_at` go
+into `info` (`recorded_at` as `info.started_at`), and `warnings` goes into
+`info.notes`; `citable` is recomputed by `citable()`, never copied.
 `comparison_key()` is subsumed by `diff()`. PR-5 renames those sidecars to
 `<name>.prov.json`. `0-experiment` labels a pre-v1 shape that only `read()`
 accepts; it is not a step in the record's version sequence.
@@ -461,8 +472,10 @@ reason for it; the owner confirms or reverses each before PR-1.
 * **Integer record versions** (`ragstack.provenance/2` for a new `core` field;
   section 2). Fingerprints compare only within one version, so a version must
   mark every change to what is hashed.
-* **The receipt `info` set `{gowe_job_id, packages, notes}`** (section 5).
-  Keeps receipts, headers and archive manifests byte-identical on re-run.
+* **The receipt `info` set `{packages, notes}`, dropping `gowe_job_id`**
+  (section 5), to keep receipts, headers and archive manifests
+  byte-identical on re-run. The GoWe job is recoverable from where the
+  receipt was written and from the workflow run, not from the receipt bytes.
 * **Basename URIs for staged inputs** (section 2). A per-attempt staging path
   would change on every retry; the `sha256` carries the identity.
 * **`citable` requires `untracked == 0`** (section 3). #682's rule: the harness
