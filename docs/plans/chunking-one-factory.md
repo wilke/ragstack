@@ -235,8 +235,9 @@ membership test. The five hand-written copies are gone: `api/deps.py`
 `_embed_fn_for` (`:485`) and `_chunker_for` call `needs_embed_fn`,
 `routers/collections.py:320` re-exports the constant, `ingest_jsonl.py:509` and
 `:1124` call `needs_embed_fn`, and `SHARD_UNSUPPORTED_METHODS` is derived from it.
-The one deliberate holdout is `chunkers.py`'s own dispatch tuple, left literal
-because that file is frozen for the study (§5).
+The one holdout is `chunkers.py`'s own dispatch tuple, left literal while that
+file was frozen for the study (§5). The freeze ended 2026-10-06 (owner decision;
+see *Deliberate exceptions*), so folding it into `SEMANTIC_METHODS` is now allowed.
 With one constant, adding a third spelling is a one-line change; without it, the
 rename is a five-site hunt in which a missed site silently drops a method to a
 different chunker. This is already part of the consolidation (§8) — it is pulled
@@ -295,7 +296,7 @@ loads chunks; it does not make them.
 ### The shape
 
 ```
-ragstack/ingestion/chunkers.py        ALGORITHMS — frozen, see below
+ragstack/ingestion/chunkers.py        ALGORITHMS — versioned by experiment provenance, see below
 ragstack/ingestion/chunker_config.py  the only place a spec becomes a chunker
 ```
 
@@ -327,13 +328,20 @@ values; defaulting happens once, inside the factory.
 
 ### Deliberate exceptions
 
-**The study stays pinned.** `docs/plans/results/stage0/` constructs
-`FixedTokenWindowChunker` directly, pins the repo (`s0_common.py:58`
-`EXPECT_COMMIT`, `pin_repo()` raises on drift) and `git diff`s `chunkers.py`
-against that commit. That is what an experiment is for. **So this work must not
-change `chunkers.py` semantics** — and it does not. Study arms are `fixed_token`
-at tok256/512/1024/2048 plus neighbour variants; semantic was deferred by owner
-decision 2026-09-06.
+**The study keeps its pin; `chunkers.py` is no longer frozen.** `docs/plans/results/stage0/`
+constructs `FixedTokenWindowChunker` directly, pins the repo (`s0_common.py:58`
+`EXPECT_COMMIT`; its `provenance()` raises on any other HEAD) and the labelers
+`git diff` `chunkers.py` against that commit. That pin stays valid for
+*re-running that study*: run it at `55a0fc2`, or in a tools image built from it.
+It no longer constrains `main`. Owner decision 2026-10-06 replaced "this work
+must not change `chunkers.py` semantics" with a provenance rule: `chunkers.py`
+may change, and every experiment artifact embeds
+`ragstack.provenance.experiment_provenance()` (version, raw `git describe` as
+provenance, full commit, dirty flag, tools-image `RELEASE`, a sentence-segmentation
+fingerprint), so a result names the code that produced it. This consolidation
+still happens not to change chunker semantics; the identity test below is how it
+proves that. Study arms are `fixed_token` at tok256/512/1024/2048 plus neighbour
+variants; semantic was deferred by owner decision 2026-09-06.
 
 **`eval/chunking_compare*.py` stay independent** — building several chunkers side
 by side is their job.

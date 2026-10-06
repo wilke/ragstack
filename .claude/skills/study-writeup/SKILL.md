@@ -42,6 +42,33 @@ This is the mechanism that keeps the tiers from drifting apart, and it is not op
 Prefer the committed **JSON** artifact as a source over a `RESULTS-*.md` file. Markdown is a
 fallback for numbers that exist nowhere else, and that situation is a defect worth fixing.
 
+## Every artifact records which code produced it
+
+Owner decision, 2026-10-06. This replaced "`chunkers.py` is frozen by the chunking study".
+The full rule is in `docs/papers/README.md` § *Every artifact records which code produced
+it*. In short:
+
+1. Every experiment artifact (results JSON, receipt, run manifest) embeds the dict from
+   `ragstack.provenance.experiment_provenance()` under `provenance`. It holds the derived
+   version, the raw `git describe` (provenance only, never a version), the full commit,
+   `dirty`, `untracked`, the tools-image `RELEASE` if any, and `segmentation`: span fingerprints, starting with
+   `sentence_spans_fingerprint()`, a hash of `sentence_spans()` offsets. It is not a chunker-spec
+   hash; that will be `chunker_spec_fingerprint`.
+   Run harnesses with `PYTHONPATH=python`. Compare runs with `comparison_key()`: host, time,
+   python, installed distribution and warnings are context, not identity.
+2. Prefer running from a versioned `ragstack-tools` image (ADR-0010). The record says
+   whether you did (`in_image`).
+3. A dirty-tree run (`dirty: true`) or a run with untracked files (`untracked` > 0) has
+   `citable: false`. You can report it, but it is **not citable as a result**. Don't point a
+   new claim at it.
+4. Differing span fingerprints mean different coordinate systems. Sentence- or
+   unit-keyed labels don't carry across, and no translator gets improvised. Unit- or
+   section-bounded arms fingerprint their units as well as their sentences.
+5. A past study's harness keeps its pin. Re-running it means running at that commit, or in
+   an image built from it. Reusing its embeddings (`/rag/tmp/stage0-conf/emb`) means the same
+   or re-embedding. Never edit a harness to make it run on `main` or to loosen its pin;
+   relocating the pinned checkout via an env var is fine.
+
 ## Citations must be verified, not recalled
 
 A citation is a factual claim about someone else's work and this project has already been

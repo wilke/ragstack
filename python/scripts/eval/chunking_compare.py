@@ -69,6 +69,7 @@ from ragstack.ingestion.tokenization import (
     resolve_max_tokens,
 )
 from ragstack.models import Chunk, Document
+from ragstack.provenance import experiment_provenance
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -182,6 +183,8 @@ CSV_PATH = Path(__file__).resolve().parent / "chunking_compare_results.csv"
 # Per-mode ingest stats are checkpointed here so a --resume run (e.g. after a
 # long ingest is interrupted) reuses already-ingested modes instead of re-paying.
 STATS_PATH = Path(__file__).resolve().parent / ".chunking_compare_ingest_stats.json"
+#: Experiment provenance for the CSV + report above (docs/papers/README.md § Claims).
+PROVENANCE_PATH = Path(__file__).resolve().parent / "chunking_compare_results.provenance.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -558,6 +561,9 @@ def _load_ingest_stats() -> dict:
 
 
 def _save_ingest_stats(mode: str, stats: dict) -> None:
+    # Which code built this mode's stores; a --resume run reuses the record, so
+    # the provenance travels with the stats it describes.
+    stats["provenance"] = experiment_provenance()
     all_stats = _load_ingest_stats()
     all_stats[mode] = stats
     STATS_PATH.write_text(json.dumps(all_stats, indent=2), encoding="utf-8")
@@ -957,6 +963,30 @@ docs and the per-mode chunk count.
     return table
 
 
+def write_provenance(ingest_stats: dict) -> dict:
+    """Write the run's experiment provenance next to the CSV and append it to the
+    markdown report (docs/papers/README.md § Claims). Additive: neither the CSV
+    nor the report body above the appended section changes. ``ingest`` carries
+    each mode's own record — a ``--resume`` run may have built some stores at an
+    earlier commit, and that is what it says."""
+    prov = experiment_provenance()
+    payload = {
+        "provenance": prov,
+        "artifacts": [REPORT_PATH.name, CSV_PATH.name],
+        "ingest": {m: (s.get("provenance") if isinstance(s, dict) else None)
+                   for m, s in ingest_stats.items()},
+    }
+    PROVENANCE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+    with REPORT_PATH.open("a", encoding="utf-8") as fh:
+        fh.write("\n## Provenance\n\n")
+        if not prov.get("citable"):
+            fh.write("**Not citable** — see `warnings` (dirty tree or unknown commit).\n\n")
+        fh.write(f"Full record, with per-mode ingest provenance: `{PROVENANCE_PATH.name}`.\n\n")
+        fh.write("```json\n" + json.dumps(prov, indent=2, sort_keys=True) + "\n```\n")
+    return prov
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -1001,12 +1031,14 @@ async def amain(args: argparse.Namespace) -> int:
             ingest_stats, eval_stats, len(docs), len(eval_docs), args
         )
         write_csv(ingest_stats, eval_stats)
+        write_provenance(ingest_stats)
         print("\n" + "=" * 80)
         print("RESULTS")
         print("=" * 80)
         print(table)
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")
+        print(f"Provenance written to {PROVENANCE_PATH}")
         for mode in MODES:
             print(
                 f"  {mode}: capped {ingest_stats[mode]['n_capped']} "

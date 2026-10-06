@@ -4,7 +4,12 @@ decision 1) and the body of ``GET /v1/version``.
 This module is the **single derivation** of the repo version. ``git describe``
 runs in exactly one place, :func:`_describe`, and its raw output never leaves
 it: callers get a parsed :class:`Described` (tag, distance, sha, dirty) and
-compose what they need from that. The build script
+compose what they need from that. **One labelled exception:**
+:func:`raw_describe_for_provenance` hands the raw string to
+:func:`ragstack.provenance.experiment_provenance`, which records it in an
+experiment's provenance block as evidence of what git said — never as a
+version, and never parsed back into one by a reader. Nothing else may call it
+(``tests/unit/test_experiment_provenance.py`` greps for callers). The build script
 (``apptainer/build-tools-image.sh`` → ``python -m ragstack.version --shell``),
 ``ragstack.__version__`` and the version endpoint all go through it. Inside the
 tools image there is no git and no repository; the build writes
@@ -130,7 +135,8 @@ Command line
 derived version (with ``--shell``/``--json`` also the full commit sha) and
 exits 3 on a dirty tree, 4 when no ``v*`` tag is reachable, 2 when the
 directory is not a repository or ``git`` is missing. This is the build's
-version step.
+version step. The experiment-provenance record (which carries the raw describe
+as well) has its own command, ``python -m ragstack.provenance --experiment``.
 """
 from __future__ import annotations
 
@@ -315,8 +321,9 @@ def cache_clear() -> None:
 
 
 def _run_git(git: str, *args: str, cwd: Path = _CHECKOUT,
-             timeout: float = GIT_TIMEOUT_S) -> str | None:
-    """One ``git`` invocation; ``None`` on any failure."""
+             timeout: float = GIT_TIMEOUT_S, empty_ok: bool = False) -> str | None:
+    """One ``git`` invocation; ``None`` on any failure. Empty output is ``None``
+    too unless ``empty_ok`` (a command whose empty answer means "none")."""
     try:
         proc = subprocess.run(  # argv list, no shell — never `shell=True` here
             [git, *args],
@@ -331,6 +338,8 @@ def _run_git(git: str, *args: str, cwd: Path = _CHECKOUT,
     if proc.returncode != 0:
         return None
     out = proc.stdout.strip()
+    if empty_ok:
+        return out
     return out or None
 
 
@@ -432,6 +441,63 @@ def describe_repo(repo_root: Path) -> Described:
     if d is None:
         raise VersionError(f"unexpected git describe output in {repo_root}")
     return d
+
+
+def raw_describe_for_provenance(repo_root: Path | None = None) -> str | None:
+    """PROVENANCE ONLY — the raw ``git describe --tags --match v* --long --dirty
+    --always`` line of the checkout at ``repo_root`` (default: this package's
+    checkout), exactly as git printed it, or ``None`` when git is missing, the
+    directory is not the top level of a working tree, or describe fails.
+
+    This is the **only** way the raw describe string leaves this module, and
+    :func:`ragstack.provenance.experiment_provenance` is its only caller. The
+    string is recorded as evidence ("this is what git said when the experiment
+    ran"), alongside — never instead of — the derived version and the full
+    commit. It is not a version (``v1.6.4-22-g17425fd-dirty`` is not one, see
+    :func:`split_version`), and nothing may parse a version back out of a
+    recorded one. Uncached and never raises: an experiment record must not
+    fail over its own metadata.
+    """
+    root = _CHECKOUT if repo_root is None else Path(repo_root)
+    git = _proven_git(root)
+    if git is None:
+        return None
+    return _run_git(git, *_DESCRIBE_ARGS, cwd=root, timeout=10.0)
+
+
+def untracked_count(repo_root: Path | None = None) -> int | None:
+    """Number of untracked, not-ignored files in the checkout at ``repo_root``
+    (default: this package's checkout) — ``git ls-files --others
+    --exclude-standard`` — or ``None`` when git is missing or the directory is
+    not a working-tree top level. Uncached; never raises.
+
+    ``git describe --dirty`` sees tracked changes only. That is right for the
+    image build, which ships ``git archive HEAD``, but not for an experiment,
+    whose harness may itself be an uncommitted file: experiment provenance
+    records this count beside ``dirty``."""
+    root = _CHECKOUT if repo_root is None else Path(repo_root)
+    git = _proven_git(root)
+    if git is None:
+        return None
+    out = _run_git(git, "ls-files", "--others", "--exclude-standard",
+                   cwd=root, timeout=10.0, empty_ok=True)
+    if out is None:
+        return None
+    return len([line for line in out.splitlines() if line])
+
+
+def _proven_git(root: Path) -> str | None:
+    """``git``'s path when ``root`` is the top level of a working tree, else ``None``."""
+    git = shutil.which("git")
+    if git is None:
+        return None
+    top = _run_git(git, "rev-parse", "--show-toplevel", cwd=root, timeout=10.0)
+    try:
+        if top is None or Path(top).resolve() != root.resolve():
+            return None
+    except OSError:
+        return None
+    return git
 
 
 def derive_version(repo_root: Path) -> str:

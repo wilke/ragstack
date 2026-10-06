@@ -61,6 +61,7 @@ import httpx
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.tokenization import HFTokenCounter
 from ragstack.models import Document
+from ragstack.provenance import experiment_provenance
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -81,6 +82,8 @@ SCIFACT_PREFIX = "scifact_m7"
 STATS_REFERENCE = c7.STATS_REFERENCE  # single source of truth: the 7-way harness
 REPORT_PATH = _HERE / "scifact_chunk_eval_report.md"
 CSV_PATH = _HERE / "scifact_chunk_eval_results.csv"
+#: Experiment provenance for the CSV + report above (docs/papers/README.md § Claims).
+PROVENANCE_PATH = _HERE / "scifact_chunk_eval_results.provenance.json"
 
 # Doc-level metric cutoffs (BEIR standard for SciFact).
 NDCG_K = 10
@@ -250,11 +253,13 @@ def select_configs(spec: str) -> list[c7.ChunkConfig]:
 def _write_metrics_json(path, eval_stats, source, n_q, *, collection=None, tenant=None):
     """Persist per-query metric arrays + means as a pinnable regression baseline.
 
-    Deterministic (no timestamp) so a re-run against an unchanged corpus diffs clean;
-    a regression gate loads this, re-runs, and fails if nDCG@10 drops below the
-    recorded mean's lower bound minus a tolerance.
+    Deterministic apart from the ``provenance`` block (which code ran, where and
+    when — docs/papers/README.md § Claims), so a re-run against an unchanged corpus
+    diffs clean everywhere else; a regression gate loads this, re-runs, and fails if
+    nDCG@10 drops below the recorded mean's lower bound minus a tolerance.
     """
     payload = {
+        "provenance": experiment_provenance(),
         "source": source,
         "n_queries": n_q,
         "collection": collection,
@@ -322,6 +327,8 @@ async def ingest_config(cfg, docs: list[Document], client: httpx.AsyncClient) ->
         "chunks_per_doc": len(all_chunks) / len(docs) if docs else 0.0,
         "chunk_time_s": chunk_time, "ingest_time_s": ingest_time,
         **chunk_size_stats(all_chunks),
+        # Which code built this config's stores (docs/papers/README.md § Claims).
+        "provenance": experiment_provenance(),
     }
 
 
@@ -744,6 +751,9 @@ async def amain(args, live_eps) -> int:
         print(sig)
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")
+        c7.write_provenance(ingest_stats, report_path=REPORT_PATH, csv_path=CSV_PATH,
+                            out_path=PROVENANCE_PATH)
+        print(f"Provenance written to {PROVENANCE_PATH}")
         if args.metrics_out:
             _write_metrics_json(args.metrics_out, eval_stats, source, len(queries))
             print(f"Per-query metrics written to {args.metrics_out}")

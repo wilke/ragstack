@@ -122,6 +122,64 @@ Run it before any commit that touches a paper and before any publish. A number t
 be pointed at a committed artifact does not go in the paper: measure it, commit the artifact,
 then write the sentence.
 
+### Every artifact records which code produced it
+
+Owner decision, 2026-10-06. This replaces the old rule that `ragstack/ingestion/chunkers.py`
+was "frozen by the chunking study": code may change, and every experiment records which code
+it ran.
+
+- **Every experiment artifact embeds `experiment_provenance()`.** Results JSON, receipts and
+  run manifests carry the dict returned by `ragstack.provenance.experiment_provenance()`
+  (or `python -m ragstack.provenance --experiment` for a shell-driven run) under a
+  `provenance` key. It records the derived `version` (`v1.6.4` / `v1.6.4+a2be96f`), the raw
+  `describe` (the `git describe` line, kept **as provenance only** and never read as a
+  version), the full `commit`, `dirty`, `untracked` (a count, because `git describe --dirty`
+  cannot see untracked files and a harness may be one), `source` (`git` | `image` |
+  `distribution`), the tools-image `RELEASE` (`image`: version/commit/build/build_date) when
+  run in one, `installed_distribution` (the environment's install metadata, which may belong
+  to a different tree), `python`, `host`, `recorded_at`, `segmentation` (a list of span fingerprints),
+  `citable` and `warnings`.
+  `python/scripts/eval/{chunking_compare,chunking_compare_7way,scifact_chunk_eval}.py` do
+  this. Run them with `PYTHONPATH=python` from the checkout you mean to record. The
+  `/rag/envs/ragstack` env carries an editable install of another checkout, and an
+  `entry point outside checkout` warning means the record may describe the wrong tree.
+- **Compare runs by `comparison_key()`, not by the whole record.** `comparison_key(rec)`
+  keeps `schema`, `commit`, `dirty`, `untracked`, `source` and the segmentation identity
+  (kind / sha256 / texts_sha256 / backend / nltk). `host`, `recorded_at`, `python`,
+  `installed_distribution` and `warnings` are context, not identity.
+- **Prefer a versioned tools image.** Run from the ADR-0010 `ragstack-tools` image when you
+  can. Its labels and `/opt/ragstack/RELEASE` carry version, commit and build, and the record
+  states whether the run used one (`in_image`, plus a `not in an image` warning when it
+  did not).
+- **A dirty tree is not citable.** A run from a tree with uncommitted tracked changes is
+  recorded with `dirty: true`, `version: null`, `citable: false` and a `dirty tree` warning.
+  A run from a tree with untracked, not-ignored files is recorded with `untracked: N`,
+  `citable: false` and an `untracked files` warning. You may report either, but neither is a
+  result. The same goes for any record with no commit.
+  From this date on, a new claim's `source` must point at an artifact whose provenance says
+  `citable: true`. Artifacts committed earlier keep the provenance blocks they were written
+  with.
+- **Same commit is not the same segmentation.** Labels keyed by sentence (or unit) index live
+  in the coordinate system of the segmenter that produced them. `segmentation` holds
+  `sentence_spans_fingerprint()`, a hash of the offsets `sentence_spans()` returns (over the run's own documents when passed `texts=`, else a canonical
+  sample), and records the backend (`punkt` vs `regex`) and `nltk` version, because commit
+  equality is only a proxy for that coordinate system. A section- or unit-bounded arm also
+  fingerprints its units: pass a `span_fingerprint(spans, kind="units")` in
+  `segmentations=`. (These hash span offsets. A fingerprint of a chunker's
+  configuration will be a separate `chunker_spec_fingerprint`.) When two fingerprints
+  differ, the segmentations differ: labels do not
+  translate between them, and no translator may be improvised. (`scripts/grading_import.py`
+  translates renumbering only, because `segment()` yields gapped numbers. It does not re-map
+  moved boundaries.)
+- **Past studies keep their pins.** The committed harnesses under `docs/plans/results/`
+  (e.g. `stage0/`, whose `s0_common.EXPECT_COMMIT` is `55a0fc2`) are that study's record.
+  Edits that change what they compute, or that loosen the pin, are not made. Making the
+  pinned checkout's location configurable (`STAGE0_REPO`, run-plan D2) is allowed, because
+  the pin (`EXPECT_COMMIT`) stays. Re-running one means running at its pinned commit, or in
+  an image built from it. A retrieval run that **reuses embeddings built at a pin**
+  (`/rag/tmp/stage0-conf/emb`, the SFR-token chunk arms) must run at that commit or
+  re-embed. Running `main`'s `chunkers.py` against those vectors is a silent mismatch.
+
 ## Bibliography
 
 `bibliography.md`. Every entry is fetched and read before it is listed, and records what the
