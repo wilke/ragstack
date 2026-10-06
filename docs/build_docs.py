@@ -66,6 +66,11 @@ PAGES = [
         blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
     ),
     dict(
+        src="CHUNKING.md", out="chunking.html", label="User guide",
+        card="Choosing a chunk method",
+        blurb="The six chunk methods, why a collection keeps its method for life, who may choose one, which tenant can run which, and what the committed measurements say.",
+    ),
+    dict(
         src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
         card="Cookbook — tasks, by audience",
         blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
