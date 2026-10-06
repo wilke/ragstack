@@ -146,7 +146,7 @@ symlinks if a generation is already published (step 6 rollback).
 
 ## 2. Build off-host and install
 
-Build from **`/rag/repos/ragstack`**, the operator clone of the bare mirror
+Build from **a tagged checkout of the release being deployed** (today `/rag/repos/tenants/<tenant>` or a fresh clone at the tag; `/rag/repos/ragstack` is frozen)
 (see "Where production code lives" below) — not a developer's
 `~/Development/ragstack`, which is where the code is EDITED, not where a
 deploy is BUILT from. Push the tag, let the mirror pick it up, then check it

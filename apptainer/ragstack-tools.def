@@ -11,7 +11,7 @@ From: python:3.12-slim-bookworm
 # staging of `../python` + PYTHONPATH hack with a real, pinned, reproducible
 # runtime. No CWL inside: workflows are registered from each tenant's checkout.
 #
-# IDENTITY (ADR-0010 decision 1). A repo version and an image build are different
+# IDENTITY (ADR-0010 decisions 1-2). A repo version and an image build are different
 # things. The build script derives the version — the only place `git describe`
 # runs — and passes it in, so the image carries its own identity:
 #
