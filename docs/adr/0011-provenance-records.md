@@ -112,7 +112,7 @@ identity (#682's comparison-key rule), and is recorded in `info`.
 
 The example shows every `info` key a record may carry, including
 `gowe_job_id`. A shard receipt, an embedding-file header and an archive
-manifest keep a restricted `info` of `{packages, notes}` (plus `parent_kind`
+manifest keep a restricted `info` of `{python, packages, notes}` (plus `parent_kind`
 on a child's record) that excludes `gowe_job_id`, so a re-submission's new
 GoWe job id never breaks the byte-identity promise (section 5).
 
@@ -249,15 +249,19 @@ CommandLineTool in `cwl/` — a workflow-text change, and so a new GoWe id.
 
 **Shard receipts stay byte-identical on re-run.** `ShardReceipt.to_json` is
 documented as "sorted, no timestamp" for idempotence and diff-ability; the
-record keeps that. A receipt's `info` is exactly `{packages, notes}` (plus
-`parent_kind` on a child's record, a constant): no `started_at`, `ended_at`,
+record keeps that. A receipt's `info` is exactly `{python, packages, notes}`
+(plus `parent_kind` on a child's record, a constant). The test for a key is
+whether it is constant for the same code, environment and input: `python` and
+`packages` are fixed per environment, so they pass. There is no `started_at`, `ended_at`,
 `host`, `pid`, `argv_redacted` or `gowe_job_id`, because argv names
 per-attempt staging paths and a re-submission gets a new GoWe job id, which
 would otherwise make the receipt differ from its own prior write. The GoWe
 job is recoverable from where the receipt was written and from the workflow
 run, not from the receipt bytes. The same restriction holds for the
 embedding-file header and the archive manifest, whose byte-identity
-`archive.py` also promises.
+`archive.py` also promises. On these three artifact kinds a writer must not
+put per-run values in `notes`; today it carries the tenant's embedding
+endpoints, which are stable.
 
 ### 6. Determinism, redaction, performance
 
@@ -472,7 +476,7 @@ reason for it; the owner confirms or reverses each before PR-1.
 * **Integer record versions** (`ragstack.provenance/2` for a new `core` field;
   section 2). Fingerprints compare only within one version, so a version must
   mark every change to what is hashed.
-* **The receipt `info` set `{packages, notes}`, dropping `gowe_job_id`**
+* **The receipt `info` set `{python, packages, notes}`, dropping `gowe_job_id`**
   (section 5), to keep receipts, headers and archive manifests
   byte-identical on re-run. The GoWe job is recoverable from where the
   receipt was written and from the workflow run, not from the receipt bytes.
@@ -481,8 +485,8 @@ reason for it; the owner confirms or reverses each before PR-1.
 * **`citable` requires `untracked == 0`** (section 3). #682's rule: the harness
   may itself be an uncommitted file.
 * **`python` in `info`** (sections 1, 2). #682's comparison-key rule treats it
-  as context, not identity. A consequence: it is absent from a receipt's
-  restricted `info` unless `packages` names it.
+  as context, not identity. It is constant per environment, so it is kept in
+  a receipt's restricted `info` (owner, 2026-10-06).
 * **The `vX` / `vX+<sha>` version spelling** (section 2). ADR-0010 d1's derived
   version, as #682 already writes it.
 * **The #682 sidecar rename in PR-5** (`*_results.provenance.json` →
