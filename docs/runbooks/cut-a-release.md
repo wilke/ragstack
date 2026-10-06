@@ -311,10 +311,14 @@ naming another image, and an unstamped tree that still carries a receipt.
 `tests/unit/test_cwl_tool_image_pin.py` runs the same check, so CI enforces it
 on the PR.
 
-Before merging, also run `ragstack-ctl gowe render <tenant> --worktree <this
-worktree> --image-dirs <dirs>` for a tenant you are about to move. That shows
-the text sha256 GoWe will content-hash and the verdict, without touching the
-tenant. See [`tenant-upgrade.md` § 4a](tenant-upgrade.md#4a-a-release-whose-cwl-is-stamped-the-tools-image-must-be-where-the-workers-look)
+Before merging, also run the `verify --cwl …` command above against the dir the
+tenant's workers resolve (`--dirs <that group's --image-dir>`). That shows the
+text sha256 GoWe will content-hash and the verdict, without touching the
+tenant. `ragstack-ctl gowe render <tenant> --worktree <this worktree>` does
+NOT do this for `dev` or `hackathon`: their `GOWE_WORKFLOW_CWL` is an
+absolute path into the live checkout, which `--worktree` does not redirect
+(`internal/ctl/gowe/render.go`, `Resolve`), so the ingest row would render
+the old CWL. Use `render` only after the tenant's checkout is on the tag. See [`tenant-upgrade.md` § 4a](tenant-upgrade.md#4a-a-release-whose-cwl-is-stamped-the-tools-image-must-be-where-the-workers-look)
 and [`verifying-tools-image.md`](verifying-tools-image.md).
 
 ---
@@ -435,8 +439,7 @@ submission inputs that the API seeds between `register_workflow` and `submit`
   because the images the bare name resolves to predate the flags.
 - `tool_image_digest` is the `sha256` from **`cwl/tool-image.receipt.json`
   beside the CWL file the API registers** (`read_committed_receipt(Path(cwl_path).parent)`).
-  If that file is missing, or names another image, the digest is `null` and a
-  warning is logged. So the receipt has to be **committed**. `--check` and the
+  If that file is missing the digest is `null` silently; if it names another image (or has no 64-hex sha256) the digest is `null` and a warning is logged. So the receipt has to be **committed**. `--check` and the
   pin test refuse a stamped tree without it.
 - `image_version` / `image_commit` / `image_build` come from the worker's own
   `/opt/ragstack/RELEASE`, so they need an image built by this script.
@@ -487,10 +490,8 @@ Where they disagree, this runbook follows the code.
    `ragstack-ctl-v1.6.2-10-g5a05168` → `unknown command "gowe"` [exercised].
    It needs `make install-ctl` from a checkout at or after `cde401b` (#672).
    `docs/runbooks/ctl-deploy.md` says to build the ctl from `/rag/repos/ragstack`,
-   which `STATUS.md` and `/rag/CLAUDE.md` call frozen.
-9. **Stale "not landed yet".** `docs/runbooks/bulk-load-throughput.md`
-   § The gating step still says the render/boot identity check "is migration
-   step 4 and has not landed yet". It landed in #672.
+   which `STATUS.md` calls frozen (and `ctl-deploy.md` § 3a itself calls stale).
+9. **Stale "not landed yet" (fixed in this PR).** `docs/runbooks/bulk-load-throughput.md` § The gating step said the boot/render check had not landed; it landed in #672. The same wording survives in code docstrings (`ragstack/tool_image.py`, `scripts/stamp_tool_image.py`), which belong to a code PR.
 10. **Step numbering.** `stamp_tool_image.py`'s docstring calls stamping "step
     2" of the release order. The ADR calls it (d) of decision 6, and the README
     calls it step 4.

@@ -75,10 +75,14 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
      and `dockerImageId` — `tests/unit/test_cwl_tool_image_pin.py` and
      `stamp_tool_image.py --check`; anything mixed fails. No comparison to
      the checkout's own version (a dev server on `main` may name a `+<sha>`
-     build). The render/boot identity check (image exists; receipt and labels
-     agree with the file) is migration step 4 and has not landed yet — until
-     then nothing at the engine verifies the image beyond its name (GoWe
-     parses `dockerImageId` and never checks it).
+     build). The render/boot identity check (image exists; receipt beside it
+     names it; sha256 and labels agree with the receipt; committed
+     `cwl/tool-image.receipt.json` agrees with the store's) is migration step 4
+     and landed in #672 (`cde401b`): `ragstack-ctl gowe render <tenant>`, and
+     the API at boot when `INGEST_BACKEND=gowe` and `GOWE_IMAGE_DIRS` is set
+     (`docs/runbooks/verifying-tools-image.md`). Nothing at the *engine*
+     verifies the image beyond its name (GoWe parses `dockerImageId` and never
+     checks it).
 
    Until the first stamped release, the bare name is resolved exactly as
    before: by each worker group's `--image-dir` (a symlink per group on

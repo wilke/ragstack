@@ -283,7 +283,7 @@ everything up to the `render` reads the tag, not the worktree.
 
 ```bash
 git -C "$W" grep -h "dockerPull:" "$TAG" -- 'cwl/*.cwl' | sed 's/^ *//' | sort | uniq -c
-#   23 dockerPull: ragstack-worker.sif                 → UNSTAMPED: skip to step 5 (see the end of this section)
+#   23 dockerPull: ragstack-worker.sif                 → UNSTAMPED: do item 1 below (GOWE_TOOL_IMAGE), then skip to step 5 (see the end of this section)
 #   23 dockerPull: ragstack-tools-v1.6.5-b1.sif        → STAMPED with that name: continue
 git -C "$W" show "$TAG":cwl/tool-image.receipt.json  # stamped tags only: the build the release named
 ```
@@ -350,7 +350,11 @@ calls, so the two cannot disagree.
 ```bash
 ragstack-ctl gowe render "$T"                                    # after step 2's checkout
 ragstack-ctl gowe render "$T" --image-dirs "$G"                  # before tenant.env carries GOWE_IMAGE_DIRS
-ragstack-ctl gowe render "$T" --worktree <a scratch checkout of $TAG> --image-dirs "$G"   # before step 2
+# before step 2: --worktree redirects only the two defaulted CWL keys and a RELATIVE
+# GOWE_WORKFLOW_CWL. dev and hackathon set it ABSOLUTE (/rag/repos/tenants/$T/cwl/…), so
+# the ingest row would still render the live, unstamped checkout. Check the tag's file directly:
+PYTHONPATH=<scratch>/python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --dirs "$G" \
+    --cwl <scratch>/cwl/pdf-ingest-scatter.cwl --cwl <scratch>/cwl/graph-extract.cwl --cwl <scratch>/cwl/restore-collection.cwl
 ```
 
 **Expect:** for each workflow, a `text sha256 (GoWe would content-hash this)`,
@@ -397,9 +401,7 @@ the usual one: check out `worktree-sha` again.
 `ragstack-worker.sif`. The worker resolves that through the group dir's
 `ragstack-worker.sif` symlink exactly as before. The boot check logs
 `unstamped` and skips, and the API seeds no provenance inputs, so collection
-manifests record only the image's own `RELEASE` (if it has one). The only new
-boot-time rule it can hit is the `GOWE_TOOL_IMAGE` refusal, and only on a tag
-that contains #664. Keep the group dir's `ragstack-worker.sif` symlink in place
+manifests record only the image's own `RELEASE` (if it has one). The only new boot-time rule it can hit is the `GOWE_TOOL_IMAGE` refusal (item 1 above), on any tag that contains #664 — which every tag after `v1.6.4` will, stamped or not. Keep the group dir's `ragstack-worker.sif` symlink in place
 while any tenant on that group is unstamped.
 
 ## 5. Restart the API by the recipe in `ops/coconut/restore.sh`
