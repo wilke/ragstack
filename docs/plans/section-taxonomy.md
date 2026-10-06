@@ -152,7 +152,7 @@ at different text: the labels do not translate, and no translator may be improvi
 (`grading_import.py` translates renumbering only, because `segment()` yields gapped numbers;
 it does not re-map moved boundaries). Commit equality is only a proxy for "same coordinate
 system"; `experiment_provenance()` records a `sentence_spans()` fingerprint
-(`ragstack.provenance.segmentation_fingerprint`) that checks it directly, and a section- or
+(`ragstack.provenance.sentence_spans_fingerprint`) that checks it directly, and a section- or
 unit-bounded arm fingerprints its units as well (`span_fingerprint(..., kind="units")`).
 
 ## Where the interim collection landed
@@ -169,6 +169,9 @@ cannot be recovered from the store. So order won, and the section boundaries wai
 
 Re-ingest will be needed regardless — **chunk strategy is fixed at collection creation and
 cannot be edited**, so a section-aware collection is a new collection by construction.
+
+Code provenance: dev tree a2be96f (v1.6.3-1-ga2be96f), 2026-09-22 19:33Z; includes
+#602/#604/#606, so boundary schema enforcement and date packing were active.
 
 ## JATS family-A preview, 2026-09-22
 
@@ -198,3 +201,6 @@ options are on the table and undecided — the exact 32,791-pmcid TREC CDS confi
 (`stage0/s0_corpus.py`'s `fetchlist.txt`; non-outcome data, not quarantined), or a hand-picked set
 of RAG/chunking-relevant articles to sit next to `chunking-study-lit`. Neither is committed by
 this run.
+
+Code provenance: python/ tree e5783a9 (main@5a05168, 2026-09-17); no packed `date` (#606) and
+no boundary schema check (#604) in that code; chunk spec and counts unaffected.

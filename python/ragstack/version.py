@@ -321,8 +321,9 @@ def cache_clear() -> None:
 
 
 def _run_git(git: str, *args: str, cwd: Path = _CHECKOUT,
-             timeout: float = GIT_TIMEOUT_S) -> str | None:
-    """One ``git`` invocation; ``None`` on any failure."""
+             timeout: float = GIT_TIMEOUT_S, empty_ok: bool = False) -> str | None:
+    """One ``git`` invocation; ``None`` on any failure. Empty output is ``None``
+    too unless ``empty_ok`` (a command whose empty answer means "none")."""
     try:
         proc = subprocess.run(  # argv list, no shell — never `shell=True` here
             [git, *args],
@@ -337,6 +338,8 @@ def _run_git(git: str, *args: str, cwd: Path = _CHECKOUT,
     if proc.returncode != 0:
         return None
     out = proc.stdout.strip()
+    if empty_ok:
+        return out
     return out or None
 
 
@@ -456,6 +459,35 @@ def raw_describe_for_provenance(repo_root: Path | None = None) -> str | None:
     fail over its own metadata.
     """
     root = _CHECKOUT if repo_root is None else Path(repo_root)
+    git = _proven_git(root)
+    if git is None:
+        return None
+    return _run_git(git, *_DESCRIBE_ARGS, cwd=root, timeout=10.0)
+
+
+def untracked_count(repo_root: Path | None = None) -> int | None:
+    """Number of untracked, not-ignored files in the checkout at ``repo_root``
+    (default: this package's checkout) — ``git ls-files --others
+    --exclude-standard`` — or ``None`` when git is missing or the directory is
+    not a working-tree top level. Uncached; never raises.
+
+    ``git describe --dirty`` sees tracked changes only. That is right for the
+    image build, which ships ``git archive HEAD``, but not for an experiment,
+    whose harness may itself be an uncommitted file: experiment provenance
+    records this count beside ``dirty``."""
+    root = _CHECKOUT if repo_root is None else Path(repo_root)
+    git = _proven_git(root)
+    if git is None:
+        return None
+    out = _run_git(git, "ls-files", "--others", "--exclude-standard",
+                   cwd=root, timeout=10.0, empty_ok=True)
+    if out is None:
+        return None
+    return len([line for line in out.splitlines() if line])
+
+
+def _proven_git(root: Path) -> str | None:
+    """``git``'s path when ``root`` is the top level of a working tree, else ``None``."""
     git = shutil.which("git")
     if git is None:
         return None
@@ -465,7 +497,7 @@ def raw_describe_for_provenance(repo_root: Path | None = None) -> str | None:
             return None
     except OSError:
         return None
-    return _run_git(git, *_DESCRIBE_ARGS, cwd=root, timeout=10.0)
+    return git
 
 
 def derive_version(repo_root: Path) -> str:

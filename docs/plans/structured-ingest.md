@@ -240,7 +240,7 @@ A chunker that takes `sections` and cuts **at** boundaries, falling back to the
 configured method **within** a section. Stamps `section_title` per chunk. Lives in
 `chunkers.py` (§6.1, owner decision 2026-10-06); section spans come from the XML,
 not from headings in `section_text` output (§6.1). If it changes `sentence_spans`,
-its experiment records say so through the segmentation fingerprint, and labels from
+its experiment records say so through `sentence_spans_fingerprint`, and labels from
 an earlier commit are not reused against it. This is the piece `CHUNK_SECTION_AWARE`
 named and never delivered.
 *Supporting evidence from the chunking session's own confirmation run: overlap

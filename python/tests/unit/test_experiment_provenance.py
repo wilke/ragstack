@@ -96,6 +96,26 @@ def test_clean_checkout_past_a_tag_records_version_describe_and_full_commit(repo
     assert rec["commit"] == _git(repo, "rev-parse", "HEAD")
 
 
+def test_untracked_file_is_not_citable(repo, no_release):
+    # `git describe --dirty` cannot see it; an uncommitted harness looks like this.
+    (repo / "harness.py").write_text("print('hi')\n")
+    rec = p.experiment_provenance(repo=repo, release_path=no_release)
+    assert rec["dirty"] is False
+    assert rec["untracked"] == 1
+    assert rec["citable"] is False
+    assert _warn(rec, p.WARN_UNTRACKED)
+    assert v.untracked_count(repo) == 1
+
+
+def test_ignored_files_are_not_untracked(repo, no_release):
+    (repo / ".gitignore").write_text("*.log\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "-m", "ignore")
+    (repo / "run.log").write_text("noise\n")
+    rec = p.experiment_provenance(repo=repo, release_path=no_release)
+    assert rec["untracked"] == 0 and rec["citable"] is True
+
+
 def test_dirty_checkout_has_no_version_and_is_not_citable(repo, no_release):
     (repo / "f").write_text("uncommitted\n")
     rec = p.experiment_provenance(repo=repo, release_path=no_release)
@@ -136,7 +156,7 @@ def test_no_git_at_all_never_raises(tmp_path, monkeypatch, no_release):
     rec = p.experiment_provenance(repo=tmp_path, release_path=no_release)
     assert rec["source"] == "distribution"
     assert rec["version"] is None and rec["describe"] is None and rec["commit"] is None
-    assert rec["dirty"] is None
+    assert rec["dirty"] is None and rec["untracked"] is None
     assert rec["citable"] is False
     assert _warn(rec, p.WARN_NO_GIT) and _warn(rec, p.WARN_NOT_IN_IMAGE)
 
@@ -146,7 +166,7 @@ def test_a_failing_lookup_is_a_warning_not_an_exception(repo, no_release, monkey
         raise RuntimeError("synthetic")
 
     monkeypatch.setattr(v, "raw_describe_for_provenance", boom)
-    monkeypatch.setattr(p, "segmentation_fingerprint", boom)
+    monkeypatch.setattr(p, "sentence_spans_fingerprint", boom)
     rec = p.experiment_provenance(repo=repo, release_path=no_release)
     assert rec["version"] is None and rec["citable"] is False
     assert any(w.startswith("provenance: git lookup failed") for w in rec["warnings"])
@@ -156,8 +176,9 @@ def test_a_failing_lookup_is_a_warning_not_an_exception(repo, no_release, monkey
 def test_record_is_json_round_trippable(repo, release):
     rec = p.experiment_provenance(repo=repo, release_path=release)
     assert json.loads(json.dumps(rec)) == rec
-    for key in ("version", "describe", "commit", "dirty", "source", "image", "python",
-                "host", "recorded_at", "warnings", "segmentation", "citable", "schema"):
+    for key in ("version", "describe", "commit", "dirty", "untracked", "source", "image",
+                "installed_distribution", "python", "host", "recorded_at", "warnings",
+                "segmentation", "citable", "schema"):
         assert key in rec
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec["recorded_at"])
 
@@ -174,9 +195,9 @@ def test_this_checkout_by_default():
 
 
 def test_sentence_fingerprint_is_deterministic_and_text_sensitive():
-    a = p.segmentation_fingerprint(["One. Two. Three."])
-    b = p.segmentation_fingerprint(["One. Two. Three."])
-    c = p.segmentation_fingerprint(["One. Two three."])
+    a = p.sentence_spans_fingerprint(["One. Two. Three."])
+    b = p.sentence_spans_fingerprint(["One. Two. Three."])
+    c = p.sentence_spans_fingerprint(["One. Two three."])
     assert a == b
     assert a["kind"] == "sentences" and a["n_docs"] == 1 and a["n_spans"] == 3
     assert a["backend"] in ("punkt", "regex")
@@ -201,8 +222,59 @@ def test_experiment_provenance_takes_run_texts_and_extra_fingerprints(repo, no_r
     kinds = [(s["kind"], s.get("sample")) for s in rec["segmentation"]]
     assert kinds == [("sentences", "run"), ("units", None)]
     canon = p.experiment_provenance(repo=repo, release_path=no_release)["segmentation"]
-    assert canon[0]["sample"] == "canonical"
+    assert canon[0]["sample"] == "canonical-1"
     assert canon[0]["n_docs"] == len(p.CANONICAL_SEGMENTATION_SAMPLE)
+
+
+def test_canonical_sample_exercises_subsplit_and_backend_disagreement():
+    from ragstack.ingestion import chunkers
+
+    sample = p.CANONICAL_SEGMENTATION_SAMPLE
+    long_ = [t for t in sample if len(t) > chunkers._LONG_SPAN_CHARS]
+    assert long_ and not any(ch in long_[0] for ch in ".!?")
+    assert all(sep in long_[0] for sep in ("\n", "\t", ";"))
+    assert len(chunkers.sentence_spans(long_[0])) > 1  # _subsplit_long_spans ran
+    if chunkers._punkt_sentence_spans("A b. C d.") is not None:
+        assert any(chunkers._punkt_sentence_spans(t) != chunkers._fallback_sentence_spans(t)
+                   for t in sample)
+
+
+# --------------------------------------------------------------------------- #
+# Comparison key and path-free warnings
+# --------------------------------------------------------------------------- #
+
+
+def test_comparison_key_ignores_context(repo, no_release):
+    a = p.experiment_provenance(repo=repo, release_path=no_release)
+    b = dict(a, host="elsewhere", recorded_at="2000-01-01T00:00:00Z", python="0.0",
+             installed_distribution="9.9", warnings=["x"])
+    assert p.comparison_key(a) == p.comparison_key(b)
+    assert set(p.comparison_key(a)) == set(p.EXPERIMENT_COMPARISON_KEYS)
+    assert set(p.comparison_key(a)["segmentation"][0]) == {
+        "kind", "sha256", "texts_sha256", "backend", "nltk"}
+    c = dict(a, commit="b" * 40)
+    assert p.comparison_key(c) != p.comparison_key(a)
+
+
+def test_warnings_never_embed_caller_paths(tmp_path):
+    secret = tmp_path / "very-private-dir"
+    secret.mkdir()
+    rec = p.experiment_provenance(repo=secret, release_path=secret / "RELEASE")
+    assert rec["warnings"]
+    assert not any(str(tmp_path) in w or "very-private-dir" in w for w in rec["warnings"])
+
+
+def test_entry_point_outside_checkout_is_warned(repo, no_release, tmp_path, monkeypatch):
+    script = tmp_path / "elsewhere.py"
+    script.write_text("")
+    monkeypatch.setattr(sys, "argv", [str(script)])
+    rec = p.experiment_provenance(repo=repo, release_path=no_release)
+    assert _warn(rec, p.WARN_ENTRY_POINT)
+    assert str(tmp_path) not in " ".join(rec["warnings"])
+    inside = repo / "f"
+    monkeypatch.setattr(sys, "argv", [str(inside)])
+    assert not _warn(p.experiment_provenance(repo=repo, release_path=no_release),
+                     p.WARN_ENTRY_POINT)
 
 
 # --------------------------------------------------------------------------- #

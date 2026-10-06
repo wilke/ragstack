@@ -307,7 +307,11 @@ at that commit, or a tools image built from it), never at a later `main`. The sa
 any retrieval run that **reuses embeddings built at the pin** — `/rag/tmp/stage0-conf/emb`, the
 SFR-token chunk arms: run it at `55a0fc2` or re-embed; pairing `main`'s `chunkers.py` with
 those vectors is a silent mismatch. New experiments are governed by the provenance rule in
-`docs/papers/README.md` § Claims instead of a pin.
+`docs/papers/README.md` § Claims instead of a pin. To check directly whether a later commit still
+segments the study's texts the same way, compare `sentence_spans_fingerprint` over the same
+files at each commit (`python -m ragstack.provenance --experiment --texts FILE...`; `55a0fc2`
+predates `ragstack.provenance`, so there hash its `sentence_spans()` output with a copy of
+`span_fingerprint`). Different hashes mean the sentence-indexed labels do not apply.
 
 ---
 

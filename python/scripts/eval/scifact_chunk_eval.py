@@ -327,6 +327,8 @@ async def ingest_config(cfg, docs: list[Document], client: httpx.AsyncClient) ->
         "chunks_per_doc": len(all_chunks) / len(docs) if docs else 0.0,
         "chunk_time_s": chunk_time, "ingest_time_s": ingest_time,
         **chunk_size_stats(all_chunks),
+        # Which code built this config's stores (docs/papers/README.md § Claims).
+        "provenance": experiment_provenance(),
     }
 
 

@@ -318,14 +318,37 @@ def provenance_from_args(args: Any) -> dict[str, str | None]:
 EXPERIMENT_PROVENANCE_SCHEMA = 1
 
 #: Warning prefixes. Each warning starts with one of these, then says why.
+#: Warnings never embed a caller-supplied path.
 WARN_DIRTY = "dirty tree"
+WARN_UNTRACKED = "untracked files"
 WARN_NOT_IN_IMAGE = "not in an image"
 WARN_NO_GIT = "no git checkout"
+WARN_ENTRY_POINT = "entry point outside checkout"
 
-#: A few short texts whose sentence segmentation is fingerprinted when a run
-#: does not pass its own documents: abbreviations, decimals, citations and a
-#: no-punctuation run are where segmenters disagree. Changing this tuple changes
-#: every canonical fingerprint, so append a new constant rather than edit it.
+#: The record keys that identify *what ran*; see :func:`comparison_key`.
+#: ``host``, ``recorded_at``, ``python``, ``installed_distribution`` and
+#: ``warnings`` are context, not identity.
+EXPERIMENT_COMPARISON_KEYS: tuple[str, ...] = (
+    "schema", "commit", "dirty", "untracked", "source", "segmentation",
+)
+
+#: The fingerprint fields that identify a segmentation (counts and labels are
+#: derivable or descriptive).
+_SEGMENTATION_IDENTITY_KEYS: tuple[str, ...] = (
+    "kind", "sha256", "texts_sha256", "backend", "nltk",
+)
+
+#: Name of the canonical sample below, recorded as the fingerprint's ``sample``.
+#: A change to the tuple is a new name (``canonical-2``), never an edit in place.
+CANONICAL_SEGMENTATION_SAMPLE_NAME = "canonical-1"
+
+#: Texts whose sentence segmentation is fingerprinted when a run does not pass
+#: its own documents. Chosen so the fingerprint can see the things that move
+#: sentence coordinates: abbreviations and decimals; a text where NLTK Punkt and
+#: the regex fallback disagree (the last one), so a missing ``nltk`` changes the
+#: hash; and a text over ``_LONG_SPAN_CHARS`` (2000) with no sentence
+#: punctuation and mixed ``\n`` / ``\t`` / ``;`` separators, so
+#: ``_subsplit_long_spans`` is exercised.
 CANONICAL_SEGMENTATION_SAMPLE: tuple[str, ...] = (
     "Dr. Smith et al. reported a 2.5-fold increase (p < 0.05). Fig. 2 shows the "
     "effect in vivo, i.e. in mice. The U.S. cohort was smaller.",
@@ -334,6 +357,12 @@ CANONICAL_SEGMENTATION_SAMPLE: tuple[str, ...] = (
     "consistent with ref. [3]. Conclusions? Resistance is spreading.",
     "Table 1 gene count length 12 34 56 78 90 abc def ghi jkl mno pqr\n"
     "row two 1 2 3 4 5 6 7 8 9 10\n\nA new paragraph starts here. It ends here.",
+    "".join(
+        f"gene{i:03d} locus{i * 7 % 1000:03d} value {i * 13 % 997}" + ("\n", "\t", "; ", " ")[i % 4]
+        for i in range(100)
+    ),
+    "We measured it twice, see Fig.3 and Tab. 2 below.The end. Mr. Jones agreed... "
+    "and left!Next one starts here? yes.",
 )
 
 
@@ -382,7 +411,7 @@ def span_fingerprint(
     return out
 
 
-def segmentation_fingerprint(
+def sentence_spans_fingerprint(
     texts: Sequence[str], *, sample: str = "run",
 ) -> dict[str, Any]:
     """:func:`span_fingerprint` of ``sentence_spans()`` over ``texts``, plus
@@ -390,8 +419,13 @@ def segmentation_fingerprint(
     the ``regex`` fallback — the two disagree, so an environment without
     ``nltk`` is a different segmentation even at the same commit) and the
     ``nltk`` version. ``sample`` says whose texts these are: ``"run"`` (the
-    experiment's own documents) or ``"canonical"``
-    (:data:`CANONICAL_SEGMENTATION_SAMPLE`)."""
+    experiment's own documents) or :data:`CANONICAL_SEGMENTATION_SAMPLE_NAME`
+    (:data:`CANONICAL_SEGMENTATION_SAMPLE`).
+
+    Named for what it hashes — the offsets :func:`chunkers.sentence_spans`
+    returns. It is **not** a fingerprint of a chunker's configuration: that is
+    a separate, future ``chunker_spec_fingerprint`` (provenance design study),
+    and the two must not be conflated."""
     from ragstack.ingestion import chunkers
 
     spans = [chunkers.sentence_spans(t) for t in texts]
@@ -408,10 +442,41 @@ def segmentation_fingerprint(
     return fp
 
 
+def comparison_key(rec: dict[str, Any]) -> dict[str, Any]:
+    """The part of an :func:`experiment_provenance` record that identifies what
+    ran: :data:`EXPERIMENT_COMPARISON_KEYS`, with each ``segmentation``
+    fingerprint reduced to kind / sha256 / texts_sha256 / backend / nltk. Two
+    runs with equal keys ran the same code over the same segmentation;
+    ``host``, ``recorded_at``, ``python``, ``installed_distribution`` and
+    ``warnings`` are context, not identity."""
+    out: dict[str, Any] = {k: rec.get(k) for k in EXPERIMENT_COMPARISON_KEYS}
+    segs = rec.get("segmentation") or []
+    out["segmentation"] = [
+        {k: s.get(k) for k in _SEGMENTATION_IDENTITY_KEYS}
+        for s in segs if isinstance(s, dict)
+    ]
+    return out
+
+
 def _utc_now() -> str:
     from datetime import datetime
 
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _entry_point_outside(root: Path) -> bool:
+    """Whether the running script (``sys.argv[0]``) is not under ``root``. False
+    when there is no script to judge (``-c``, an interactive shell)."""
+    arg0 = sys.argv[0] if sys.argv else ""
+    if not arg0 or arg0 in ("-c", "-"):
+        return False
+    try:
+        p = Path(arg0).resolve()
+        if not p.exists():
+            return False
+        return not p.is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def experiment_provenance(
@@ -437,23 +502,37 @@ def experiment_provenance(
       git said; never a version, never parsed back into one.
     * ``commit`` — the full 40-hex sha (checkout ``HEAD``, or the image's).
     * ``dirty`` — tracked changes in the checkout (``None`` when unknown).
+    * ``untracked`` — untracked, not-ignored files in the checkout
+      (:func:`ragstack.version.untracked_count`); ``git describe --dirty``
+      cannot see them, and an experiment's harness may be one. ``None`` when
+      there is no checkout.
     * ``source`` — ``git`` | ``image`` | ``distribution``: where ``version``
       and ``commit`` came from. A checkout wins over an image when both exist.
     * ``in_image`` / ``image`` — whether ``/opt/ragstack/RELEASE`` exists, and
       its ``version``/``commit``/``build``/``build_date`` (``None`` outside a
       tools image).
-    * ``distribution`` — the installed package's static version (says nothing
-      about the commit; recorded so a ``distribution``-source record is not
-      empty).
-    * ``segmentation`` — span fingerprints: ``sentence_spans()`` over ``texts``
-      when given, else over :data:`CANONICAL_SEGMENTATION_SAMPLE`, followed by
-      any precomputed ``segmentations`` (e.g. a ``kind="units"``
+    * ``installed_distribution`` — the environment's install metadata for
+      ``ragstack`` (``importlib.metadata``), **which may be a different tree**
+      from the one that ran: an editable install can point at another
+      checkout. Context only; it says nothing about the commit.
+    * ``segmentation`` — a **list** of span fingerprints of possibly several
+      kinds (offsets, not chunker settings): first
+      :func:`sentence_spans_fingerprint` (``kind="sentences"``) over ``texts``
+      when given, else over :data:`CANONICAL_SEGMENTATION_SAMPLE`; then any
+      precomputed ``segmentations`` (e.g. a ``kind="units"``
       :func:`span_fingerprint` for a unit-bounded arm).
     * ``python``, ``host``, ``recorded_at`` (UTC, RFC 3339 ``Z``).
-    * ``citable`` — the commit is known and the tree was clean. A run that is
-      not citable may be reported, never cited as a result.
-    * ``warnings`` — each starts with :data:`WARN_DIRTY`,
-      :data:`WARN_NOT_IN_IMAGE`, :data:`WARN_NO_GIT` or ``provenance:``.
+    * ``citable`` — the commit is known, the tree had no tracked changes and
+      no untracked files. A run that is not citable may be reported, never
+      cited as a result.
+    * ``warnings`` — each starts with :data:`WARN_DIRTY`, :data:`WARN_UNTRACKED`,
+      :data:`WARN_NOT_IN_IMAGE`, :data:`WARN_NO_GIT`, :data:`WARN_ENTRY_POINT` or
+      ``provenance:``. No warning embeds a caller-supplied path.
+
+    To ask "did these two runs run the same thing?", compare
+    :func:`comparison_key` of each, not the whole record: ``host``,
+    ``recorded_at``, ``python``, ``installed_distribution`` and ``warnings`` are
+    context, not identity.
 
     ``repo`` defaults to the checkout this package was imported from and must be
     a working-tree top level; ``release_path`` defaults to :data:`RELEASE_PATH`.
@@ -462,8 +541,9 @@ def experiment_provenance(
     rec: dict[str, Any] = {
         "schema": EXPERIMENT_PROVENANCE_SCHEMA,
         "version": None, "describe": None, "commit": None, "dirty": None,
+        "untracked": None,
         "source": "distribution", "in_image": False, "image": None,
-        "distribution": None, "segmentation": [],
+        "installed_distribution": None, "segmentation": [],
         "python": platform.python_version(), "host": None,
         "recorded_at": _utc_now(), "citable": False, "warnings": warnings,
     }
@@ -480,29 +560,30 @@ def experiment_provenance(
             rec["image"] = {k: _nullable(release.get(k))
                             for k in ("version", "commit", "build", "build_date")}
         else:
-            warnings.append(f"{WARN_NOT_IN_IMAGE}: no {release_path or RELEASE_PATH}; "
+            where = RELEASE_PATH if release_path is None else "the given --release-path"
+            warnings.append(f"{WARN_NOT_IN_IMAGE}: no RELEASE file at {where}; "
                             "a versioned ragstack-tools image is the preferred way to run")
     except Exception as e:  # noqa: BLE001
-        warnings.append(f"provenance: reading RELEASE failed: {e}")
+        warnings.append(f"provenance: reading RELEASE failed: {type(e).__name__}")
 
     # The checkout.
     try:
         from ragstack import version as v
 
-        root = None if repo is None else Path(repo)
+        root = v._CHECKOUT if repo is None else Path(repo)
+        which = "this package's checkout" if repo is None else "the given --repo"
         raw = v.raw_describe_for_provenance(root)
         if raw is None:
-            warnings.append(f"{WARN_NO_GIT}: git missing, or "
-                            f"{root if root is not None else 'this package'} is not "
-                            "the top level of a working tree")
+            warnings.append(f"{WARN_NO_GIT}: git missing, or {which} is not the top "
+                            "level of a working tree")
         else:
             rec["describe"] = raw
             rec["source"] = "git"
             d = v.parse_describe(raw)
             try:
-                rec["commit"] = v.commit_sha(root if root is not None else v._CHECKOUT)
-            except v.VersionError as e:
-                warnings.append(f"provenance: commit unknown: {e}")
+                rec["commit"] = v.commit_sha(root)
+            except v.VersionError:
+                warnings.append(f"provenance: commit unknown: git rev-parse HEAD failed in {which}")
             if d is not None:
                 rec["dirty"] = d.dirty
                 if d.dirty:
@@ -515,8 +596,18 @@ def experiment_provenance(
                         warnings.append(f"provenance: no version: {e}")
             else:
                 warnings.append(f"provenance: describe output not understood: {raw!r}")
+            rec["untracked"] = v.untracked_count(root)
+            if rec["untracked"] is None:
+                warnings.append("provenance: untracked files unknown (git ls-files failed)")
+            elif rec["untracked"]:
+                warnings.append(f"{WARN_UNTRACKED}: {rec['untracked']} untracked, not-ignored "
+                                "file(s) in the checkout; the harness may be one — not citable")
+            if _entry_point_outside(root):
+                warnings.append(f"{WARN_ENTRY_POINT}: the running script is not under {which}; "
+                                "the recorded commit may not describe the code that ran "
+                                "(run harnesses with PYTHONPATH=python from the same checkout)")
     except Exception as e:  # noqa: BLE001
-        warnings.append(f"provenance: git lookup failed: {e}")
+        warnings.append(f"provenance: git lookup failed: {type(e).__name__}: {e}")
 
     # No checkout: the image answers.
     if rec["source"] != "git" and rec["image"] is not None:
@@ -535,7 +626,7 @@ def experiment_provenance(
         from importlib.metadata import version as dist_version
 
         try:
-            rec["distribution"] = dist_version("ragstack")
+            rec["installed_distribution"] = dist_version("ragstack")
         except PackageNotFoundError:
             pass
     except Exception:  # noqa: BLE001
@@ -543,17 +634,20 @@ def experiment_provenance(
 
     try:
         if texts is not None:
-            rec["segmentation"].append(segmentation_fingerprint(list(texts), sample="run"))
+            rec["segmentation"].append(sentence_spans_fingerprint(list(texts), sample="run"))
         else:
-            rec["segmentation"].append(segmentation_fingerprint(
-                CANONICAL_SEGMENTATION_SAMPLE, sample="canonical"))
+            rec["segmentation"].append(sentence_spans_fingerprint(
+                CANONICAL_SEGMENTATION_SAMPLE, sample=CANONICAL_SEGMENTATION_SAMPLE_NAME))
     except Exception as e:  # noqa: BLE001
-        warnings.append(f"provenance: sentence fingerprint failed: {e}")
+        warnings.append(f"provenance: sentence fingerprint failed: {type(e).__name__}: {e}")
     for fp in segmentations or ():
         if isinstance(fp, dict):
             rec["segmentation"].append(dict(fp))
 
-    rec["citable"] = bool(rec["commit"]) and rec["dirty"] is False
+    # A git-sourced record must also show the untracked count was looked at and
+    # was zero; an image has no checkout to have untracked files in.
+    untracked_ok = (rec["untracked"] == 0) if rec["source"] == "git" else not rec["untracked"]
+    rec["citable"] = bool(rec["commit"]) and rec["dirty"] is False and untracked_ok
     return rec
 
 
@@ -562,8 +656,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m ragstack.provenance",
         description="Print a provenance record as JSON.",
     )
-    ap.add_argument("--experiment", action="store_true", required=True,
-                    help="the experiment-provenance block (the only record printed today)")
+    ap.add_argument("--experiment", action="store_true",
+                    help="the experiment-provenance block (the default, and today the "
+                         "only record this prints)")
     ap.add_argument("--repo", type=Path, default=None,
                     help="working-tree top level (default: this package's checkout)")
     ap.add_argument("--release-path", default=None,
