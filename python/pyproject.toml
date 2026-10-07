@@ -147,6 +147,7 @@ testpaths = ["tests"]
 markers = [
     "perf: performance budget tests (excluded by default)",
     "integration: needs a live service or an external runner (tests/integration; selected by path in CI)",
+    "regression: byte-exact compare against frozen snapshot goldens (tests/regression; skips unless RAGSTACK_REGRESSION_DIR exists; runs in the default gate)",
 ]
 addopts = "-m 'not perf'"
 
