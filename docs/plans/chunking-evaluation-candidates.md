@@ -19,7 +19,10 @@ the **code** needs before new methods can be added cleanly. For choosing a metho
   version, the raw `git describe` and the full commit, and should run from a versioned tools
   image (ADR-0010).
 - **Section-aware chunking goes into `chunkers.py`**, as a method beside the others. Existing
-  external libraries are surveyed before writing our own (§5).
+  external libraries were surveyed first; none fits, so it is built in-house (§5).
+- **Existing experiments re-run from frozen snapshots** (`/rag/snapshots`, `exp/*` tags), not from
+  `main`; new experiments run on the new code, and the chunking regression check (#687) shows
+  whether a code change alters existing outputs.
 
 ---
 
@@ -173,27 +176,107 @@ the loss).
 
 ## 5. External libraries for section-aware chunking
 
-**In progress (2026-10-06).** Survey of docling (`HierarchicalChunker`, `HybridChunker`),
-LangChain header splitters, LlamaIndex node parsers, unstructured `chunk_by_title`, chonkie,
-semchunk / semantic-text-splitter, GROBID and JATS parsers, against our hard requirements:
+**Decided: build in-house** (survey 2026-10-06). Every library was installed into a throwaway
+Python 3.12 venv, read at the version named below, and run on a synthetic JATS file (body-lead
+paragraphs, an untitled `<sec>`, a nested section, a table) and on `jats.py` output for
+PMC6744438, PMC3701167 and PMC10550999, with the SFR-Embedding-Mistral tokenizer. Sizes are
+installed MB in `site-packages`, net of an empty venv. Versions and release dates are from
+PyPI and GitHub on 2026-10-06.
 
-- character offsets that tile the source;
+The hard requirements:
+
+- character offsets that tile the source, so ids stay `uuid5(doc_id:start:end)`;
 - token budgeting with the collection model's own tokenizer;
 - JATS / Markdown / HTML / PDF input with untitled sections representable;
 - CPU-only and dependency weight inside the tools image;
 - licence, maintenance and determinism.
 
-The result will be added here.
+| Library (version) | Structure | Inputs | Licence | Weight | Our tokenizer / budget | Verdict |
+|---|---|---|---|---|---|---|
+| docling-slim 2.134.0 + docling-core 2.100.0 (`HierarchicalChunker`, `HybridChunker`) | heading list per item; **no char offsets** (`prov.charspan` empty for JATS, text is re-serialised Markdown). An untitled `<sec>` gets no heading node (`jats_backend.py` `_walk_linear` adds one only `if text:`), so it inherits the previous heading; body-lead paragraphs were labelled "Abstract" | JATS (needs the JATS DOCTYPE to be detected), MD, HTML; PDF only through layout models (torch via `[standard]`) | MIT | ~530 MB without torch (transformers, scipy, pandas); pins `semchunk<4` | yes (`HuggingFaceTokenizer`), but 6 table chunks in PMC10550999 reached 538–542 tokens against 512 once headings were added | don't |
+| langchain-text-splitters 1.1.3 | `MarkdownHeaderTextSplitter` rewrites lines (strip, `"  \n"` joins): 1 of 27 chunks found verbatim. `add_start_index` is `text.find(chunk, offset)` (`base.py` `create_documents`) | MD, HTML (`get_text().strip()`); no JATS | MIT | ~77 MB (langchain-core, langsmith) | `length_function` callable; header splitter has no budget | don't |
+| llama-index-core 0.14.25 (`MarkdownNodeParser`, `HTMLNodeParser`, `HierarchicalNodeParser`) | `start_char_idx` filled by `parent_doc.text.find(...)` (`node_parser/interface.py`), `None` when content was rewritten; `header_path` holds ancestors only. `HierarchicalNodeParser` is multi-size windows, not structure | MD, HTML; no JATS | MIT | ~241 MB (sqlalchemy, aiohttp, nltk, tiktoken) | `tokenizer=` callable; `MarkdownNodeParser` has no budget (chunks to 2,097 tokens) | don't |
+| unstructured 0.27.16 (`partition_*` + `chunk_by_title`) | no offsets (16 of 31 chunks verbatim). `partition_xml` is generic XML: every leaf of the JATS test file came back as `Title` | XML (not JATS-aware), MD, HTML; PDF hi_res needs `unstructured-inference` (torch) | Apache-2.0 | ~573 MB (spaCy, numba/llvmlite) | **no**: tiktoken by name only (`chunking/base.py`); 11 chunks over 512 | don't; also downloads `en_core_web_sm` at runtime (`nlp/tokenize.py`) |
+| chonkie 1.7.0 (`RecursiveChunker`, `SentenceChunker`, `TokenChunker`) | no section tree; Markdown "recipes" are delimiter lists fetched from the HF Hub. Recursive/Sentence offsets correct; `TokenChunker` 26 of 27 offsets wrong (decodes tokens back to text) | plain text | MIT | ~123 MB | accepts a `tokenizers.Tokenizer`; merged counts are summed per split | don't |
+| semchunk 4.1.1 | none; `offsets=True` correct, whitespace gaps | plain text | MIT | ~0 MB | any counter callable | don't (no gain over our packers) |
+| semantic-text-splitter 0.33.0 (Rust) | Markdown-aware packer; `chunk_indices` char offsets correct (Greek/CJK/emoji tested), `trim=False` tiles exactly. No section tree or titles, merges neighbouring sections, cannot express untitled ones | MD, text | MIT | ~18 MB, no deps | yes (`from_huggingface_tokenizer`) | not needed: would only replace the inner packer we already have |
+| pubmed-parser 0.5.1 (`parse_pubmed_paragraph`) | paragraph + immediate parent title; `//body//p` also takes paragraphs inside tables/figures; untitled is `""`; no offsets | JATS | MIT | ~141 MB, 55 MB of it test data installed into `site-packages/data` | n/a | don't; last release 2024-08 |
+| GROBID 0.9.1 (Java server) | PDF → TEI with `<div><head>` sections; not a chunker. Offsets would be into text we assemble from the TEI, as `jats.py` does from JATS | PDF | Apache-2.0 | Docker `grobid:0.9.1-crf` ≈0.5 GB (CPU), `-full` ≈15 GB | n/a | **later PDF path**; section quality, CPU throughput and determinism are **unverified** |
+
+Seen only from package metadata, not run: pymupdf4llm / pymupdf-layout 1.28.2 (AGPL, pull
+onnxruntime), marker-pdf 2.0.0 (torch), s2orc-doc2json (no push since 2024-04), chunknorris
+1.3.8 (no declared licence, hard pins `PyMuPDF==1.27.2.2`, `pandas==2.2.3`).
+
+**Why in-house.**
+
+- **No library meets the offset requirement and represents untitled sections.** The ones that
+  understand structure (docling, LangChain, unstructured) rewrite the text; the ones with exact
+  offsets (semantic-text-splitter, semchunk, chonkie's recursive path) are packers with no section
+  model.
+- **The gap is in our extractor, not in a chunker.** `jats.py` already runs the abstract into
+  body-lead paragraphs and an untitled `<sec>` into the section above it (§4, "A production
+  prerequisite"). docling reproduces the same loss from the XML. Only `jats.py` can emit the
+  spans, because only it knows the normalised text (`norm`: NFC, lookalike mapping, whitespace
+  collapse) that `doc.content` and every offset refer to. A library that parses the XML itself
+  produces a different string.
+- **The packer is small.** A 72-line throwaway prototype (markdown heading spans, then
+  `FixedTokenWindowChunker` inside each oversize section, offsets shifted back and whitespace
+  gaps closed) gave, on the three articles: exact slices, whitespace-only gaps, 0 chunks over
+  512 tokens.
+- **Zero new runtime dependencies.** `jats.py` stays stdlib-only on purpose (per-task import
+  cost across 1.4M documents); docling alone took 2.1 s to import and 227 MB peak RSS.
+
+**The plan** (production C-R1, §6 step 4):
+
+1. **`ingestion/jats.py` emits section spans** alongside the text: `(start_char, end_char,
+   title or None, depth)`, built in the same pass as `article_prose`. The abstract, body-lead
+   paragraphs and every untitled `<sec>` get their own span. The text itself can stay
+   byte-identical, so existing JATS collections are unaffected.
+2. **A `section` method in `ingestion/chunkers.py`** (owner decision: section-aware code lives in
+   the chunker module), about 150–200 lines with metadata. A section that fits the budget is one
+   chunk; an oversize section is windowed by `FixedTokenWindowChunker`. Never merge across
+   sections. Stamp `section_title` (already declared) and a heading path, `section_index`,
+   `sections_in_document` and part / parts (to declare in `chunk_metadata.json`). Ids come from
+   `_make_chunk`; `sentence_spans` is untouched.
+3. **Markdown and arXiv HTML** get span producers in `ingestion/` (a fence-aware heading parser,
+   about 40 lines; a LaTeXML `ltx_section` walker on stdlib `html.parser`, about 120 lines).
+4. **GROBID is the later PDF path** (structured-ingest Stage 3), evaluated against a PyMuPDF
+   layout heuristic; text assembled from TEI by us, so offsets stay ours.
+
+**Risks.**
+
+- **PyMuPDF is AGPL-3.0** (or commercial), and it is already in the `pdf` extra. Record that
+  before Stage 3 builds more on it; GROBID (Apache-2.0) avoids it.
+- **SFR's `tokenizer.json` carries `truncation: {max_length: 512}`.** Our `HFTokenCounter` loads
+  it through `transformers.AutoTokenizer`, which does not apply it: re-measured 2026-10-07,
+  13,427 tokens counted on PMC6744438 and `fixed_token` 2048 windows built at 2,048 tokens each.
+  Code that loads `tokenizer.json` directly through the `tokenizers` library does apply it and
+  silently under-counts: chonkie given the raw file emitted a 2,587-token chunk while reporting
+  1,975 against a 2,000 budget. Any such path needs a guard: call `no_truncation()`, or assert
+  `tokenizer.truncation is None`.
+- **Offset drift** in any `find()`-based or token-decoding library (above); only offset-native
+  packers are safe.
+- **Dependency conflicts** if a library were taken anyway: docling pins `semchunk<4` and pulls
+  pandas/scipy/transformers 5.19 (prod env has 5.12.1); unstructured adds a runtime network
+  fetch. None of the plan above adds a dependency.
+
+**Ties to the rest of this page.** §5 is the production side of **C-R1** (section-bounded
+packing, §4); the study arm can run first on `units.jsonl` without it. The chunking regression
+check (#687, `python/tests/regression/`, goldens in `/rag/snapshots/regression/v1`) guards the
+existing arms: adding `section` must leave the `fixed_tok*` and `header512` spans and
+`sentence_spans` byte-identical.
 
 ## 6. Order of work
 
-1. **Experiment provenance helper** and the rule that every experiment records it (in flight).
+1. **Experiment provenance helper** and the rule that every experiment records it: done
+   (`experiment_provenance()`, #682); the existing study is frozen in `/rag/snapshots` with the
+   #687 regression check.
 2. **Consolidate construction** (§2): one factory, one method/default declaration, the equality
    test. The prerequisite for adding methods without touching 14 places each time.
 3. **C-R0**, then **C-R1** in the study harness (no production change needed), with
    pre-registered size control.
-4. **`jats.py` section spans plus the section-aware method in `chunkers.py`** (production C-R1),
-   informed by §5.
+4. **`jats.py` section spans plus the `section` method in `chunkers.py`** (production C-R1):
+   built in-house per §5, with the #687 regression check green.
 5. **C-R2, C-R3, C-R5** as further study arms; **C-R4** only if an embedder change is on the table
    anyway.
 
