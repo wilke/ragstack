@@ -19,7 +19,10 @@ the **code** needs before new methods can be added cleanly. For choosing a metho
   version, the raw `git describe` and the full commit, and should run from a versioned tools
   image (ADR-0010).
 - **Section-aware chunking goes into `chunkers.py`**, as a method beside the others. Existing
-  external libraries are surveyed before writing our own (§5).
+  external libraries were surveyed first; none fits, so it is built in-house (§5).
+- **Existing experiments re-run from frozen snapshots** (`/rag/snapshots`, `exp/*` tags), not from
+  `main`; new experiments run on the new code, and the chunking regression check (#687) shows
+  whether a code change alters existing outputs.
 
 ---
 
@@ -265,7 +268,9 @@ existing arms: adding `section` must leave the `fixed_tok*` and `header512` span
 
 ## 6. Order of work
 
-1. **Experiment provenance helper** and the rule that every experiment records it (in flight).
+1. **Experiment provenance helper** and the rule that every experiment records it: done
+   (`experiment_provenance()`, #682); the existing study is frozen in `/rag/snapshots` with the
+   #687 regression check.
 2. **Consolidate construction** (§2): one factory, one method/default declaration, the equality
    test. The prerequisite for adding methods without touching 14 places each time.
 3. **C-R0**, then **C-R1** in the study harness (no production change needed), with
