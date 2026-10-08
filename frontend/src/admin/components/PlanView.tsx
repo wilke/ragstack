@@ -13,7 +13,7 @@
 // that.
 
 import { redactArgv, redactText, isSecretPath } from "./redact";
-import type { PlanT, PlannedStepT } from "./schemaTypes";
+import type { Plan, PlannedStep } from "../api/types";
 import { StateChip } from "./StateChip";
 
 const EYEBROW = "font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted";
@@ -46,7 +46,7 @@ function Warnings({ items, className = "" }: { items: readonly string[]; classNa
   );
 }
 
-function WouldWrite({ w }: { w: PlannedStepT["would_write"][number] }) {
+function WouldWrite({ w }: { w: PlannedStep["would_write"][number] }) {
   const secret = isSecretPath(w.path);
   return (
     <li className="mb-1">
@@ -68,7 +68,7 @@ function WouldWrite({ w }: { w: PlannedStepT["would_write"][number] }) {
   );
 }
 
-function StepRow({ s }: { s: PlannedStepT }) {
+function StepRow({ s }: { s: PlannedStep }) {
   return (
     <tr className={`border-b border-lineSoft ${s.destructive ? "bg-rustSoft/60" : ""}`}>
       <td className={`${TD} font-mono text-[11.5px] tabular-nums text-dim`}>{s.n}</td>
@@ -127,7 +127,7 @@ function StepRow({ s }: { s: PlannedStepT }) {
   );
 }
 
-export function PlanView({ plan }: { plan: PlanT }) {
+export function PlanView({ plan }: { plan: Plan }) {
   const findings = plan.doctor.findings;
   const destructive = plan.steps.filter((s) => s.destructive).length;
   return (

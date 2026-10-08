@@ -15,6 +15,15 @@
 // text is not here either — only the EXPECTED value (`confirmValue`), which the
 // server already published in the plan.
 //
+// PLANLESS flows. The job continuations (`POST /v1/jobs/{id}/resume|continue|
+// cancel`) have no dry run: the daemon answers `dry_run: true` with 409
+// `refused`, because the plan of a continuation is the plan the job already
+// recorded (go/internal/ctl/api/jobs.go `handleJobContinuation`). They enter at
+// `confirming` through the `direct` event with `plan: null`; a 428
+// `confirm_required` (cancel, when it would roll back) lands back in
+// `confirming` with the server's `confirm_value`, and a `plan_stale` (resume,
+// when the job's plan moved) fails — there is no dry run to go back to.
+//
 // The idempotency key IS here: it is chosen once, when the flow starts planning,
 // and reused for the execute (and for any re-plan after `plan_stale` or a
 // `confirm_required`), because the daemon persists it only when a job is
@@ -34,9 +43,9 @@ export type OpFlowState =
    * Key prompt (and, when `confirmValue` is non-null, the typed confirm). A
    * 428 `confirm_required` lands here with the server's `confirm_value`.
    */
-  | { kind: "confirming"; idempotencyKey: string; plan: Plan; confirmValue: string | null }
-  /** The execute call (`dry_run: false`) is in flight. */
-  | { kind: "submitting"; idempotencyKey: string; plan: Plan }
+  | { kind: "confirming"; idempotencyKey: string; plan: Plan | null; confirmValue: string | null }
+  /** The execute call (`dry_run: false`) is in flight. `plan` is null for a planless flow. */
+  | { kind: "submitting"; idempotencyKey: string; plan: Plan | null }
   /** Accepted (202); `job` is the latest body seen. */
   | { kind: "running"; idempotencyKey: string; jobId: string; job: Job; location: string | null }
   /**
@@ -56,6 +65,11 @@ export type OpFlowEvent =
   /** Start (or restart) the dry run. Pass a fresh key to begin a new mutation. */
   | { type: "plan"; idempotencyKey?: string }
   | { type: "planned"; plan: Plan }
+  /**
+   * Start a PLANLESS flow (a job continuation): straight to the key prompt,
+   * with a typed confirm first when `confirmValue` is given.
+   */
+  | { type: "direct"; idempotencyKey: string; confirmValue?: string | null }
   /** The operator accepted the plan: show the key prompt (+ typed confirm). */
   | { type: "confirm" }
   /** The operator submitted the key: the execute call is going out. */
@@ -114,19 +128,17 @@ function onError(s: OpFlowState, error: CtlError): OpFlowState {
   // Only the execute call can be stale or unconfirmed; the same codes from a
   // dry run (they do not happen) would have no plan to go back to.
   if (s.kind === "submitting" || s.kind === "confirming") {
-    if (error.code === "plan_stale") {
+    if (error.code === "plan_stale" && s.plan !== null) {
       // The registry (or a finding) moved between the plan and the execute.
       // The old plan is no longer what would run, so it is dropped and the
       // dry run is re-run under the same key — the refusal did not spend it.
       return { kind: "planning", idempotencyKey: s.idempotencyKey, stale: true };
     }
     if (error.code === "confirm_required") {
-      return {
-        kind: "confirming",
-        idempotencyKey: s.idempotencyKey,
-        plan: s.plan,
-        confirmValue: extraString(error, "confirm_value") ?? s.plan.confirm_value,
-      };
+      const confirmValue = extraString(error, "confirm_value") ?? s.plan?.confirm_value ?? null;
+      // Nothing to type: going back to the prompt would only loop on the 428.
+      if (confirmValue === null) return fail();
+      return { kind: "confirming", idempotencyKey: s.idempotencyKey, plan: s.plan, confirmValue };
     }
   }
   if (error.code === "duplicate" || error.code === "locked") {
@@ -156,6 +168,15 @@ export function opFlowReducer(s: OpFlowState, e: OpFlowEvent): OpFlowState {
       if (s.kind === "done" && !e.idempotencyKey) return s;
       return { kind: "planning", idempotencyKey: key, stale: false };
     }
+
+    case "direct":
+      if (s.kind !== "idle" && s.kind !== "done" && s.kind !== "failed") return s;
+      return {
+        kind: "confirming",
+        idempotencyKey: e.idempotencyKey,
+        plan: null,
+        confirmValue: e.confirmValue ?? null,
+      };
 
     case "planned":
       if (s.kind !== "planning") return s;

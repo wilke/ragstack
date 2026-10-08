@@ -11,6 +11,7 @@ import { ctlKeys, FLEET_POLL_MS, pollWhenVisible, useCtlQuery } from "../api/que
 import type { CtlDoctor, CtlFleet, CtlVersion, FleetRow } from "../api/types";
 import { bytes, since } from "../lib/format";
 import { ErrorBanner } from "./ErrorBanner";
+import { redactText } from "./redact";
 import { HealthDot, StateChip } from "./StateChip";
 
 /** "3 h ago" for a `dataUpdatedAt` epoch ms, the shape React Query hands back. */
@@ -124,7 +125,9 @@ export function DoctorFindings({ doctor }: { doctor: CtlDoctor }) {
               <StateChip kind="level" value={f.level} />
             </td>
             <td className="py-1.5 text-[12px] leading-snug text-body">
-              {f.detail}
+              {/* Redacted like PlanView's copy: OpFlow shows a refused plan's
+                  doctor through this table, and plan text is server text. */}
+              {redactText(f.detail)}
               {f.repair && (
                 <span className="ml-2 font-mono text-[11px] text-link">repair: {f.repair}</span>
               )}

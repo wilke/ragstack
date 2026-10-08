@@ -2,8 +2,8 @@
 //
 // Pure and props-only: `useJob` (PR-G2.1) owns the poll, and the parent owns
 // the continuation calls. The three buttons only CALL BACK; each continuation is
-// a mutation, so PR-G2.3 routes the callback through a KeyPrompt (and cancel
-// through a TypedConfirm) before anything is sent.
+// a mutation, so the parent routes the callback through OpFlow (a KeyPrompt,
+// and for cancel the TypedConfirm the daemon asks for) before anything is sent.
 //
 // Which button appears is decided by the job's state, from the contract:
 //   resume   — `interrupted` (reconcile-on-restart parked it; resources held)
@@ -16,7 +16,7 @@
 // only. Every server string goes through `redact.ts` and is printed as text.
 
 import { redactMaybe, redactText } from "./redact";
-import type { JobStateT, JobT, StepT } from "./schemaTypes";
+import type { JobState, Job, Step } from "../api/types";
 import { StateChip } from "./StateChip";
 
 const EYEBROW = "font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted";
@@ -26,20 +26,20 @@ const BUTTON =
 export type JobRole = "viewer" | "operator";
 export type JobAction = "resume" | "continue" | "cancel";
 
-const ACTIONS: Record<JobAction, readonly JobStateT[]> = {
+const ACTIONS: Record<JobAction, readonly JobState[]> = {
   resume: ["interrupted"],
   continue: ["awaiting_cutover"],
   cancel: ["queued", "running", "awaiting_cutover"],
 };
 
 /** The continuations a role may take on a job in `state`, in display order. */
-export function jobActions(state: JobStateT, role: JobRole): JobAction[] {
+export function jobActions(state: JobState, role: JobRole): JobAction[] {
   if (role !== "operator") return [];
   return (Object.keys(ACTIONS) as JobAction[]).filter((a) => ACTIONS[a].includes(state));
 }
 
 /** Whether a job in `state` is still moving (the poll's stop condition). */
-export function jobInFlight(state: JobStateT): boolean {
+export function jobInFlight(state: JobState): boolean {
   return state === "queued" || state === "running";
 }
 
@@ -76,7 +76,7 @@ function StepItem({
   role,
   log,
 }: {
-  s: StepT;
+  s: Step;
   current: boolean;
   role: JobRole;
   log: readonly string[] | undefined;
@@ -150,17 +150,31 @@ function StepItem({
 }
 
 export interface JobViewProps {
-  job: JobT;
+  job: Job;
   role: JobRole;
   onResume?: () => void;
   onContinue?: () => void;
   onCancel?: () => void;
   /** Step log lines (`StepLogResponse.lines`) by step number — operator only. */
   logs?: Readonly<Record<number, readonly string[]>>;
+  /**
+   * `false` hides the continuation buttons even for an operator — for a job
+   * shown INSIDE an OpFlow, whose continuations live on the job's own page
+   * (`#/job/<id>`) rather than as a second flow nested in the first.
+   */
+  controls?: boolean;
 }
 
-export function JobView({ job, role, onResume, onContinue, onCancel, logs }: JobViewProps) {
-  const actions = jobActions(job.state, role);
+export function JobView({
+  job,
+  role,
+  onResume,
+  onContinue,
+  onCancel,
+  logs,
+  controls = true,
+}: JobViewProps) {
+  const actions = controls ? jobActions(job.state, role) : [];
   const handlers: Record<JobAction, (() => void) | undefined> = {
     resume: onResume,
     continue: onContinue,
