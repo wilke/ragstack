@@ -52,3 +52,65 @@ export function restoreArgsProblem(a: { from: string; as: string }): string | nu
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Credentials (PR-G3.1): `x-ctl-op-args` for key-mint / key-revoke /
+// admin-add / admin-remove / sa-create / sa-disable / sa-enable. Each
+// `validate*` answers why the value would be refused, or null.
+// ---------------------------------------------------------------------------
+
+/** `key-mint.label` and `key-revoke.id`: the ledger id a key is minted and revoked by. */
+export const KEY_LABEL = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** `admin-add/remove.subject`: an `issuer:sub` identity (`bvbrc:alice`). */
+export const ADMIN_SUBJECT = /^[a-z][a-z0-9]*:[^:\s]{1,128}$/;
+
+/** `sa-*.subject`: colon-free — a service account is never an `issuer:sub` identity. */
+export const SERVICE_ACCOUNT_SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** `key-mint.tenant_string`: the `API_KEY_TENANTS` principal (`asm-ops`, `svc-asm-web`). */
+export const TENANT_STRING = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** The contract's `Role` enum. */
+export const ROLES = ["admin", "user"] as const;
+export type CredentialRole = (typeof ROLES)[number];
+
+/** `sa-create.purpose` maxLength. */
+export const PURPOSE_MAX = 256;
+
+export function validateKeyLabel(v: string): string | null {
+  return KEY_LABEL.test(v)
+    ? null
+    : "label: lowercase letters, digits and dashes, starting with a letter or digit, at most 64.";
+}
+
+/** An admin subject (`issuer:sub`). */
+export function validateSubject(v: string): string | null {
+  return ADMIN_SUBJECT.test(v)
+    ? null
+    : "subject: issuer:sub — a lowercase issuer, one colon, then up to 128 characters with no colon or space.";
+}
+
+/** A service-account subject (no colon). */
+export function validateServiceAccountSubject(v: string): string | null {
+  return SERVICE_ACCOUNT_SUBJECT.test(v)
+    ? null
+    : "subject: letters, digits, dot, underscore and dash, starting with a letter or digit, at most 64 — no colon.";
+}
+
+export function validateRole(v: string): string | null {
+  return (ROLES as readonly string[]).includes(v) ? null : "role: admin or user.";
+}
+
+/** Optional; the length is counted in characters, as JSON Schema does. */
+export function validatePurpose(v: string): string | null {
+  return Array.from(v).length <= PURPOSE_MAX ? null : `purpose: at most ${PURPOSE_MAX} characters.`;
+}
+
+/** Optional: empty means "the convention the tenant's own ledger follows". */
+export function validateTenantString(v: string): string | null {
+  if (v === "") return null;
+  return TENANT_STRING.test(v)
+    ? null
+    : "tenant string: letters, digits, dot, underscore and dash, starting with a letter or digit, at most 64.";
+}
