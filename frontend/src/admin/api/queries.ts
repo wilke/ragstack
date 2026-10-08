@@ -8,7 +8,8 @@
 import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 import { get } from "./http";
 import type { CtlError } from "./http";
-import type { LogFile } from "./types";
+import type { Job, JobsResponse, JobState, LogFile } from "./types";
+import { jobIsLive } from "../lib/opflow";
 
 export const ctlKeys = {
   version: () => ["ctl", "version"] as const,
@@ -21,12 +22,53 @@ export const ctlKeys = {
   tenantEnv: (name: string) => ["ctl", "tenant", name, "env"] as const,
   tenantLogs: (name: string, file: LogFile, lines: number) =>
     ["ctl", "tenant", name, "logs", file, lines] as const,
+  // Every filter member is spelled out (null when absent) so `{}` and
+  // `{tenant: undefined}` are one cache entry, not two.
+  jobs: (filter: JobsFilter = {}) =>
+    ["ctl", "jobs", filter.tenant ?? null, filter.state ?? null, filter.limit ?? null] as const,
+  job: (id: string) => ["ctl", "job", id] as const,
+  jobStepLog: (id: string, n: number) => ["ctl", "job", id, "steps", n, "log"] as const,
+  audit: (filter: AuditFilter = {}) =>
+    ["ctl", "audit", filter.tenant ?? null, filter.limit ?? null] as const,
+  settings: () => ["ctl", "settings"] as const,
+  artifacts: () => ["ctl", "artifacts"] as const,
+  // NO key for `/v1/jobs/{id}/secrets`: that body is a one-shot secret and
+  // must never sit in the query cache (ops.ts `fetchSecrets`, RevealOnce).
+};
+
+export interface JobsFilter {
+  tenant?: string;
+  state?: JobState;
+  limit?: number;
+}
+
+export interface AuditFilter {
+  tenant?: string;
+  limit?: number;
+}
+
+function query(params: Record<string, string | number | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") q.set(k, String(v));
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+export const ctlPaths = {
+  jobs: (f: JobsFilter = {}) => `/v1/jobs${query({ tenant: f.tenant, state: f.state, limit: f.limit })}`,
+  job: (id: string) => `/v1/jobs/${encodeURIComponent(id)}`,
+  jobStepLog: (id: string, n: number) => `/v1/jobs/${encodeURIComponent(id)}/steps/${n}/log`,
+  audit: (f: AuditFilter = {}) => `/v1/audit${query({ tenant: f.tenant, limit: f.limit })}`,
+  settings: () => "/v1/settings",
+  artifacts: () => "/v1/artifacts",
 };
 
 /** The fleet poll, and the doctor poll that rides with it. */
 export const FLEET_POLL_MS = 15000;
 /** The logs tab's opt-in refresh. */
 export const LOGS_POLL_MS = 5000;
+/** A job being followed: queued, running or parked awaiting `continue`. */
+export const JOB_POLL_MS = 2000;
 
 /**
  * Poll only while the tab is visible.
@@ -57,5 +99,32 @@ export function useCtlQuery<T>(
     queryFn: ({ signal }) => get<T>(path, signal),
     retry: false,
     ...options,
+  });
+}
+
+/**
+ * The refetch interval for one job, given its last-seen state: JOB_POLL_MS
+ * (while the tab is visible) for a live state, `false` otherwise — including
+ * before the first answer and after an error, so a 404 or 403 is not retried
+ * every two seconds.
+ */
+export function jobRefetchInterval(state: JobState | null | undefined): number | false {
+  if (!jobIsLive(state)) return false;
+  return pollWhenVisible(JOB_POLL_MS)();
+}
+
+/** One job, polled every 2 s while it is queued, running or awaiting cutover. */
+export function useJob(id: string | null, opts: { enabled?: boolean } = {}) {
+  return useCtlQuery<Job>(ctlKeys.job(id ?? ""), ctlPaths.job(id ?? ""), {
+    enabled: (opts.enabled ?? true) && !!id,
+    refetchInterval: (q) => jobRefetchInterval(q.state.data?.state),
+  });
+}
+
+/** The job list (fleet-wide, or filtered), on the fleet poll. */
+export function useJobs(filter: JobsFilter = {}, opts: { enabled?: boolean } = {}) {
+  return useCtlQuery<JobsResponse>(ctlKeys.jobs(filter), ctlPaths.jobs(filter), {
+    enabled: opts.enabled ?? true,
+    refetchInterval: pollWhenVisible(FLEET_POLL_MS),
   });
 }

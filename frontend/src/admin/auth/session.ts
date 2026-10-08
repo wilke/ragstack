@@ -22,8 +22,12 @@
 //     nobody and authenticates nothing. Preference reads/writes are permitted;
 //     credentials never. vision.ts is the ONLY localStorage in this bundle and
 //     src/admin/bundle.test.ts fails on a second one.
-//   * A session authenticates READS ONLY. Every mutation must re-present a ctl
-//     key in its body; PR-B ships no mutation, so nothing here can produce one.
+//   * A session authenticates READS ONLY. Every mutation re-presents a ctl key
+//     in its body (`ctl_api_key`), typed by the operator for that one request
+//     and passed as a function argument to src/admin/api/ops.ts — never stored
+//     here or anywhere else. The session still rides along as the request's
+//     authentication; the daemon checks the body key is bound to the session's
+//     subject (403 otherwise). Nothing in this module can produce a mutation.
 //   * Signing out revokes server-side (`DELETE /v1/session`) and then clears
 //     locally, so a copied session id is dead and not merely forgotten.
 //

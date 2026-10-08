@@ -15,10 +15,15 @@
 //   * a 401 on any read drops the session and returns the app to the login
 //     screen, because the session is the only thing that could have expired.
 //
-// MUTATIONS ARE NOT HERE. Every mutating call re-presents a ctl API key in its
-// body (`ctl_api_key`) and the daemon answers 409 until PR-C lands the job
-// engine; `post()` exists for the two viewer-allowed POSTs — creating a session
-// and rendering a gateway diff.
+// MUTATIONS go through `send()` (ops.ts is the only caller) and follow the
+// per-request key rule: the session authenticates the request as usual, and the
+// body carries `ctl_api_key` — typed by the operator for THAT call, passed in as
+// a function argument, never stored, never logged, never a header. The one
+// exception is `GET /v1/jobs/{id}/secrets`, which refuses sessions: there the
+// key is the `X-API-Key` header (`authHeaders`, which REPLACES the session
+// header rather than adding to it) and a 401 does not sign the session out.
+// `post()` remains for the viewer-allowed POSTs — creating a session and
+// rendering a gateway diff.
 
 // `api/base.ts`, never `api/config.ts`: base.ts is the BASE_URL derivations and
 // nothing else, while config.ts is the tenant UI's localStorage credential
@@ -171,8 +176,13 @@ export function lastCtlRequestId(): string | null {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
-  /** Headers that replace the session credential (sign-in presents a key/token). */
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  /**
+   * Headers that REPLACE the session credential — they are never merged with
+   * it. Sign-in presents a key/token here, and `fetchSecrets` presents the ctl
+   * key as `X-API-Key` (that endpoint refuses a session, and both at once would
+   * be 400 `both_credentials`).
+   */
   authHeaders?: Record<string, string>;
   body?: unknown;
   signal?: AbortSignal;
@@ -288,4 +298,52 @@ export async function del(
   } = {},
 ): Promise<void> {
   await request(path, { method: "DELETE", ...opts });
+}
+
+/** A mutation's answer: the status decides what the body is. */
+export interface SendResult<T> {
+  status: number;
+  /** Parsed JSON; `undefined` on 204. */
+  body: T | undefined;
+  /** The `Location` header — a 202's `/v1/jobs/{id}` — or null. */
+  location: string | null;
+}
+
+/**
+ * The low-level mutation call: POST or PUT a JSON body (or GET, for the
+ * one-shot secrets read that must present its own header) and return the status
+ * and `Location` along with the body, because for a mutation the status is the
+ * answer (200 = a Plan, 202 = a Job at `Location`). Errors throw `CtlError`
+ * exactly as every other call does.
+ *
+ * The session credential is attached unless `authHeaders` replaces it. The body
+ * is serialized and handed to fetch; this function never logs it.
+ */
+export async function send<T>(
+  path: string,
+  opts: {
+    method: "GET" | "POST" | "PUT";
+    body?: unknown;
+    authHeaders?: Record<string, string>;
+    signal?: AbortSignal;
+    skipUnauthorizedHandler?: boolean;
+  },
+): Promise<SendResult<T>> {
+  const res = await request(path, opts);
+  const location = res.headers.get("Location");
+  if (res.status === 204) return { status: res.status, body: undefined, location };
+  return { status: res.status, body: (await res.json()) as T, location };
+}
+
+/** PUT a JSON body (`/v1/settings`). Returns the parsed body; undefined on 204. */
+export async function put<T>(
+  path: string,
+  opts: {
+    body?: unknown;
+    signal?: AbortSignal;
+    skipUnauthorizedHandler?: boolean;
+  } = {},
+): Promise<T> {
+  const r = await send<T>(path, { method: "PUT", ...opts });
+  return r.body as T;
 }

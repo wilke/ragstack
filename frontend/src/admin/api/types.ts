@@ -10,7 +10,6 @@
 // (and a real response) satisfy the type.
 
 import type { components } from "./ctlSchema";
-
 type S = components["schemas"];
 
 /** A response body as it actually arrives: the schema minus its own `$defs`. */
@@ -49,3 +48,45 @@ export type CtlErrorCode = CtlErrorBody["code"];
 
 /** `viewer` sees the summary allowlist; `operator` sees everything. */
 export type CtlRole = CtlMe["role"];
+
+// ---------------------------------------------------------------------------
+// Mutations (PR-G): the envelope, what a dry run answers, what an execute
+// answers, and the reads that follow a job.
+// ---------------------------------------------------------------------------
+
+/** A dry run's 200 body: what the op WOULD do. */
+export type Plan = Body<S["plan"]>;
+export type PlannedStep = S["PlannedStep"];
+
+/** An execute's 202 body, and `GET /v1/jobs/{id}`. */
+export type Job = Body<S["job"]>;
+export type Step = S["Step"];
+export type JobState = S["JobState"];
+
+/**
+ * The mutation envelope. `args` is generated as `Record<string, never>` (the
+ * schema says only `type: object`; the per-verb shapes live in
+ * `x-ctl-op-args`, which openapi-typescript does not see), so ops.ts builds it
+ * from a plain object rather than through this alias.
+ */
+export type OpRequest = S["op_request"];
+/** Every verb the job engine knows, including `create` and `adopt`. */
+export type OpVerb = S["OpVerb"];
+/**
+ * The verbs `POST /v1/tenants/{name}/ops/{verb}` accepts — the path
+ * parameter's own enum, narrower than `OpVerb` (no `create`, no `adopt`).
+ */
+export type TenantOpVerb = components["parameters"]["Verb"];
+export type CreateArgs = S["CreateArgs"];
+
+export type JobsResponse = Body<S["jobs_response"]>;
+export type AuditResponse = Body<S["audit_response"]>;
+export type AuditRow = S["AuditRow"];
+/** The ONLY body in this API that carries a secret value. Never cache it. */
+export type SecretsResponse = Body<S["secrets_response"]>;
+export type SettingsResponse = Body<S["settings_response"]>;
+export type ArtifactsResponse = Body<S["artifacts_response"]>;
+export type ArtifactRow = ArtifactsResponse["artifacts"][number];
+
+export type KeyRecord = S["KeyRecord"];
+export type ServiceAccountRecord = S["ServiceAccountRecord"];
