@@ -337,6 +337,10 @@ var argSchemas = map[string]argSpec{
 		// defaults, so planDecommission reads it with decommissionArchiveOf.
 		{Name: "archive", Kind: argBool},
 	}},
+	"purge": {Verb: "purge", Fields: []argField{
+		// Absent means FALSE: the archive goes with everything else.
+		{Name: "keep_archive", Kind: argBool},
+	}},
 	"key-mint": {Verb: "key-mint", Fields: []argField{
 		{Name: "label", Kind: argString, Required: true, Pattern: patLabel},
 		{Name: "role", Kind: argString, Required: true, Enum: roles},
@@ -484,7 +488,7 @@ var ContractVerbs = []string{
 	"start", "stop", "restart", "backup", "restore", "handover", "migrate-local",
 	"decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
 	"sa-create", "sa-disable", "sa-enable", "env-set", "env-unset",
-	"env-normalize", "render-units", "update-code",
+	"env-normalize", "render-units", "update-code", "purge",
 }
 
 // CLIVerbs are the operations that are jobs like any other but have NO HTTP

@@ -198,3 +198,88 @@ func TestDriversOperateOnTheResolvedPathWhenTheRootItselfIsALink(t *testing.T) {
 		t.Errorf("the backup is not at the resolved path: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------- RemoveTree
+
+// RemoveTree is the one recursive delete, and the case that makes it
+// dangerous is the one every test above is about: a symlink that turns the
+// string that was checked into a different directory on disk. Three facts
+// about the REAL driver, on a real filesystem, beyond the parity table:
+//
+//   - a link INSIDE a tree being removed is removed, and what it points at is
+//     not (os.RemoveAll unlinks, it never descends through a link);
+//   - a deletion root that is itself reached through a link is a normal host
+//     (a /rag/data on another disk), and RemoveTree works through it;
+//   - a symlinked component between a root and a deletable leaf is refused,
+//     and nothing at its target moves.
+func TestRemoveTreeRemovesALinkInsideTheTreeButNeverItsTarget(t *testing.T) {
+	root, outside, _ := escapeRoot(t)
+	if err := os.WriteFile(filepath.Join(outside, "precious"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(root, "data")
+	tree := filepath.Join(data, "dev.quarantined-20260914T093000Z")
+	if err := os.MkdirAll(filepath.Join(tree, "qdrant"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tree, "qdrant", "storage")); err != nil {
+		t.Fatal(err)
+	}
+	f := &RealFiles{Roots: []string{root}, Tree: TreeRoots{DataDir: data}}
+	if err := f.RemoveTree(context.Background(), tree); err != nil {
+		t.Fatalf("RemoveTree: %v", err)
+	}
+	if _, err := os.Lstat(tree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the tree is still there: %v", err)
+	}
+	untouched(t, outside, "precious")
+}
+
+func TestRemoveTreeWorksThroughARootThatIsItselfALink(t *testing.T) {
+	realRoot := t.TempDir()
+	dir := t.TempDir()
+	linkRoot := filepath.Join(dir, "tenants")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(linkRoot, "dev.quarantined-20260914T093000Z")
+	if err := os.MkdirAll(filepath.Join(tree, "x"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	f := &RealFiles{Roots: []string{linkRoot}, Tree: TreeRoots{DataDir: linkRoot}}
+	if err := f.RemoveTree(context.Background(), tree); err != nil {
+		t.Fatalf("RemoveTree through a linked root: %v", err)
+	}
+	untouched(t, realRoot)
+	// And the root itself survives, as the link it is.
+	if st, err := os.Lstat(linkRoot); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the linked root was touched: %v", err)
+	}
+}
+
+func TestRemoveTreeRefusesASymlinkedComponentBelowTheRoot(t *testing.T) {
+	root, outside, _ := escapeRoot(t)
+	backups := filepath.Join(root, "backups")
+	if err := os.MkdirAll(filepath.Join(outside, "20260914T080000Z-backup"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backups, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// backups/dev is a link to somebody else's directory, which holds a
+	// directory with a bundle's name.
+	if err := os.Symlink(outside, filepath.Join(backups, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	f := &RealFiles{Roots: []string{root}, Tree: TreeRoots{BackupsDir: backups}}
+	err := f.RemoveTree(context.Background(), filepath.Join(backups, "dev", "20260914T080000Z-backup"))
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("RemoveTree through a symlinked tenant dir = %v, want ErrRefused", err)
+	}
+	untouched(t, outside, "20260914T080000Z-backup")
+	// And the link itself, named as a tenant, is refused too: it is a link.
+	if err := f.RemoveTree(context.Background(), filepath.Join(backups, "dev")); !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("RemoveTree of a symlinked tenant dir = %v, want ErrRefused", err)
+	}
+	untouched(t, outside, "20260914T080000Z-backup")
+}

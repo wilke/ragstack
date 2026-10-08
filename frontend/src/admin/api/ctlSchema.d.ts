@@ -2691,8 +2691,8 @@ export interface components {
         StepN: number;
         /** @description How many lines from the end. Capped at 5000. */
         Lines: number;
-        /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. */
-        Verb: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code";
+        /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
+        Verb: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "purge";
     };
     requestBodies: never;
     headers: {
@@ -3028,7 +3028,7 @@ export interface operations {
             path: {
                 /** @description Registry key of the tenant. */
                 name: components["parameters"]["TenantName"];
-                /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. */
+                /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
                 verb: components["parameters"]["Verb"];
             };
             cookie?: never;
@@ -3057,7 +3057,7 @@ export interface operations {
                 /** @description Restrict to one tenant. */
                 tenant?: components["parameters"]["TenantFilter"];
                 /** @description An operation verb (the `verb` enum) or one of `create`, `adopt`, `gateway-apply`, `settings-put`, `set-ui-mode`, `set-bind`; scopes the run to that operation's preconditions. The last two are jobs with no HTTP route (`x-ctl-cli-op-args`), and a caller may still scope a doctor run to them — that is how an operator sees, before running one, what would block it. */
-                op?: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "create" | "adopt" | "gateway-apply" | "settings-put" | "set-ui-mode" | "set-bind";
+                op?: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "purge" | "create" | "adopt" | "gateway-apply" | "settings-put" | "set-ui-mode" | "set-bind";
             };
             header?: never;
             path?: never;

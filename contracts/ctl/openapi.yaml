@@ -202,6 +202,21 @@ x-ctl-op-args:
     properties:
       archive: { description: "Archive first (default). The job takes a FENCED full backup with `secrets: require` — the tenant's secret files sealed to the ctl's age recipients — checks it (`last_backup.checked`), records it, and only then quarantines the tenant, with the API left down between the two. Refused at plan time (409 `refused`) when no backup recipient is configured: run `ragstack-ctl fleet backup-identity init`. `false` quarantines without a new bundle and requires the row's `last_backup` to be fenced and checked or verified (a selftest sandbox requires none). Either way the row records `quarantine: {dir, at, job_id, bundle}`.", type: boolean, default: true }
     additionalProperties: false
+  # purge — the ONLY destructive op in the control plane, and only on a row
+  # `decommission` has already quarantined (`state: quarantined` with a
+  # `quarantine.dir`; 409 `refused` otherwise, and on a row the ctl does not
+  # run). It deletes everything of the tenant: the quarantined data tree, the
+  # worktree, the units directory and — unless `keep_archive` — every bundle
+  # under the backup root; then the registry row, LAST. A non-sandbox block
+  # leaves a TOMBSTONE so its port block is never reused; a selftest sandbox
+  # leaves none. Nothing of the tenant remains but the tombstone and the audit
+  # rows. Confirm value: the tenant name. Not recorded in `last_ops` (the row
+  # is gone).
+  purge:
+    type: object
+    properties:
+      keep_archive: { description: "Keep `<backups>/<tenant>/` (every bundle directory and `.tar`) and delete everything else. Default false: the archive goes too.", type: boolean, default: false }
+    additionalProperties: false
   key-mint:
     type: object
     required: [label, role]
@@ -839,6 +854,7 @@ paths:
               - env-normalize
               - render-units
               - update-code
+              - purge
               - create
               - adopt
               - gateway-apply
@@ -1413,6 +1429,9 @@ components:
       description: >-
         The operation. `update-code` is v1.1 and is refused with 409 until
         then; every other verb is planned and executed by the job engine.
+        `purge` deletes a tenant `decommission` has quarantined — its trees,
+        its archive unless `keep_archive`, then its row — and is the only verb
+        that destroys data (`x-ctl-op-args.purge`).
       schema:
         type: string
         enum:
@@ -1436,6 +1455,7 @@ components:
           - env-normalize
           - render-units
           - update-code
+          - purge
 
   responses:
     PlanResponse:

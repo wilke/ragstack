@@ -138,7 +138,13 @@ func TestRegistryAnswersEveryContractVerb(t *testing.T) {
 			t.Errorf("no Op for %q", v)
 		}
 	}
-	if _, ok := r.Lookup("purge"); ok {
+	// `purge` IS a verb since PR-G1.4 — the one destructive op, on a
+	// quarantined row only. The guard that a name nobody defined is not
+	// answered stays, on a name that is not one.
+	if _, ok := r.Lookup("purge"); !ok {
+		t.Error("the registry does not answer `purge`")
+	}
+	if _, ok := r.Lookup("delete"); ok {
 		t.Error("the registry answers a verb nobody defined")
 	}
 }

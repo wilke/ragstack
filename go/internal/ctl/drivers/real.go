@@ -142,7 +142,7 @@ func NewReal(o RealOptions) *Real {
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
-		files:   &RealFiles{Roots: roots},
+		files:   &RealFiles{Roots: roots, Tree: TreeRootsOf(o.Roots)},
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
 		// `doctor` answer a port question from the same parser; the roots
@@ -340,6 +340,9 @@ func describe(res *gateway.Result, err error) (int, string, error) {
 //     about to delete deletes the link and never its target.
 type RealFiles struct {
 	Roots []string
+	// Tree are the four roots RemoveTree may delete under (drivers/
+	// removetree.go). The zero value refuses every RemoveTree.
+	Tree TreeRoots
 
 	once     sync.Once
 	approved []string // Roots, plus each root as EvalSymlinks resolves it
@@ -774,6 +777,104 @@ func (f *RealFiles) Remove(_ context.Context, path string) error {
 		return fmt.Errorf("%w: %s is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
 	}
 	return os.Remove(path)
+}
+
+// RemoveTree deletes one tree (or one bundle .tar) under the four deletion
+// roots — the only recursive delete in the control plane.
+//
+// The lexical half is treeShapeOf, shared with the fake. The filesystem half
+// is here, and every rule in it is about a symlink, because a symlink is the
+// one thing that makes the string that was checked and the thing that is
+// deleted two different objects:
+//
+//   - the PARENT is resolved with EvalSymlinks and must be the deletion root's
+//     own resolution joined with the same relative path. A root that is itself
+//     reached through a link (a /rag/data on another disk) is a normal host; a
+//     component BELOW the root that is a link is a plant, and refused;
+//   - the LEAF is lstat'ed and must not be a link, then opened with
+//     O_NOFOLLOW (and O_DIRECTORY for a tree), and the open file must be the
+//     very inode the lstat saw — so a swap between the two is refused rather
+//     than followed;
+//   - os.RemoveAll then walks with openat/unlinkat and never follows a link
+//     inside the tree: a link in there is removed, its target is not.
+//
+// Absent is success, at the leaf or anywhere above it.
+func (f *RealFiles) RemoveTree(_ context.Context, path string) error {
+	shape, err := treeShapeOf(path, f.Tree)
+	if err != nil {
+		return err
+	}
+	if !contained(path, f.Roots) {
+		return outsideRoots(path, f.Roots)
+	}
+	refuse := func(format string, a ...any) error {
+		return fmt.Errorf("%w: RemoveTree %q: %s", jobs.ErrRefused, path, fmt.Sprintf(format, a...))
+	}
+	rootReal, err := filepath.EvalSymlinks(shape.Root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // nothing can be under a root that is not there
+	}
+	if err != nil {
+		return refuse("resolving the deletion root %s: %v", shape.Root, err)
+	}
+	parentReal, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // the parent is gone, so the leaf is
+	}
+	if err != nil {
+		return refuse("resolving %s: %v", filepath.Dir(path), err)
+	}
+	if want := filepath.Join(rootReal, filepath.Dir(shape.Rel)); parentReal != want {
+		return refuse("%s resolves to %s, not %s: a component between the deletion root and the leaf is a symlink",
+			filepath.Dir(path), parentReal, want)
+	}
+	leaf := filepath.Join(parentReal, filepath.Base(path))
+	st, err := os.Lstat(leaf)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil // already gone
+	case err != nil:
+		return err
+	case st.Mode()&os.ModeSymlink != 0:
+		return refuse("it is a symlink; the ctl never deletes through one")
+	case shape.File && !st.Mode().IsRegular():
+		return refuse("a bundle .tar must be a regular file, and this is %s", st.Mode().Type())
+	case !shape.File && !st.IsDir():
+		return refuse("not a directory (%s)", st.Mode().Type())
+	}
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW
+	if !shape.File {
+		flags |= syscall.O_DIRECTORY
+	}
+	fd, err := os.OpenFile(leaf, flags, 0)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case errors.Is(err, syscall.ELOOP):
+		return refuse("it became a symlink between the lstat and the open; refusing")
+	case errors.Is(err, syscall.ENOTDIR):
+		return refuse("it stopped being a directory between the lstat and the open; refusing")
+	case err != nil:
+		return err
+	}
+	opened, err := fd.Stat()
+	_ = fd.Close()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(st, opened) {
+		return refuse("the path was replaced between the lstat and the open; refusing")
+	}
+	if shape.File {
+		err = os.Remove(leaf)
+	} else {
+		err = os.RemoveAll(leaf)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	syncDir(parentReal)
+	return nil
 }
 
 // ReadFile reads path (no root check: reading is not a mutation, and doctor

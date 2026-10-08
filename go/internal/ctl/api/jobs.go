@@ -45,7 +45,7 @@ var opVerbs = map[string]bool{
 	"key-mint": true, "key-revoke": true, "admin-add": true, "admin-remove": true,
 	"sa-create": true, "sa-disable": true, "sa-enable": true,
 	"env-set": true, "env-unset": true, "env-normalize": true,
-	"render-units": true, "update-code": true,
+	"render-units": true, "update-code": true, "purge": true,
 }
 
 // Non-tenant op names. The engine's registry is keyed by these exactly as it

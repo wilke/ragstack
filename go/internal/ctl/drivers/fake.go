@@ -42,6 +42,9 @@ type FakeOptions struct {
 	// means "no containment" — a test that wants the containment refusal
 	// asserts it by naming the roots.
 	Roots []string
+	// TreeRoots are the four roots Files.RemoveTree may delete under. The
+	// zero value refuses every RemoveTree, as the real driver's does.
+	TreeRoots TreeRoots
 	// UnitPorts links a unit to the port it makes listen, so that starting
 	// and stopping units moves the Proc driver's LISTEN set the way a real
 	// host does — a readiness probe or a fence verify against this host is
@@ -249,6 +252,7 @@ func NewFake(opts FakeOptions) *Fake {
 		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
 		Roots: append([]string(nil), opts.Roots...), Free: opts.DiskFree,
 		UID: opts.FileUID, Owners: copyMapInt(opts.FileOwners),
+		Tree: opts.TreeRoots, Links: map[string]bool{},
 	}
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
@@ -1538,6 +1542,88 @@ type FakeFiles struct {
 	// express "wilke's pgdata, svcbvbrc's postgres", so it cannot test the
 	// step that exists to fix it.
 	Owners map[string]int
+	// Tree are the four roots RemoveTree may delete under.
+	Tree TreeRoots
+	// Links are the paths that are SYMLINKS on this fake host (PutSymlink).
+	// Nothing the ctl creates is one; they exist so that RemoveTree's refusal
+	// of a planted link is a fact the fake can be asked about, and so that the
+	// parity test can hold the two drivers to the same verdict on it.
+	Links map[string]bool
+}
+
+// PutSymlink seeds a symlink at path, bypassing the call log, like Put. Stat
+// reports it as a symlink, and RemoveTree refuses it — at the leaf, or as any
+// component between a deletion root and the leaf.
+func (f *FakeFiles) PutSymlink(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Links == nil {
+		f.Links = map[string]bool{}
+	}
+	f.Links[path] = true
+}
+
+// RemoveTree deletes a tree of the in-memory host under the same lexical
+// containment as the real driver (treeShapeOf) and the same filesystem rules:
+// no symlink at the leaf or between the root and the leaf, a directory (or a
+// regular file for the `.tar` shape), and absence is success.
+func (f *FakeFiles) RemoveTree(_ context.Context, path string) error {
+	if err := f.r.record("files", "RemoveTree", path); err != nil {
+		return err
+	}
+	shape, err := treeShapeOf(path, f.Tree)
+	if err != nil {
+		return err
+	}
+	if !contained(path, f.Roots) {
+		return outsideRoots(path, f.Roots)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for p := path; p != shape.Root && p != "/" && p != "."; p = filepath.Dir(p) {
+		if !f.Links[p] {
+			continue
+		}
+		if p == path {
+			return fmt.Errorf("%w: RemoveTree %q: it is a symlink; the ctl never deletes through one", jobs.ErrRefused, path)
+		}
+		return fmt.Errorf("%w: RemoveTree %q: %s, between the deletion root and the leaf, is a symlink",
+			jobs.ErrRefused, path, p)
+	}
+	_, isFile := f.Files[path]
+	isDir := !isFile && f.hasDirLocked(path)
+	switch {
+	case !isFile && !isDir:
+		return nil // already gone
+	case shape.File && !isFile:
+		return fmt.Errorf("%w: RemoveTree %q: a bundle .tar must be a regular file, and this is a directory",
+			jobs.ErrRefused, path)
+	case !shape.File && !isDir:
+		return fmt.Errorf("%w: RemoveTree %q: not a directory", jobs.ErrRefused, path)
+	}
+	prefix := strings.TrimSuffix(path, "/") + "/"
+	under := func(p string) bool { return p == path || strings.HasPrefix(p, prefix) }
+	for p := range f.Files {
+		if under(p) {
+			delete(f.Files, p)
+		}
+	}
+	for d := range f.Dirs {
+		if under(d) {
+			delete(f.Dirs, d)
+		}
+	}
+	for l := range f.Links {
+		if under(l) {
+			delete(f.Links, l)
+		}
+	}
+	for o := range f.Owners {
+		if under(o) {
+			delete(f.Owners, o)
+		}
+	}
+	return nil
 }
 
 // ownerOf is the uid of path on this fake host: the deepest Owners entry that
@@ -1921,15 +2007,18 @@ func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
 //
 // A path that is neither a recorded file nor a recorded (or implied) directory
 // is fs.ErrNotExist, so a caller telling "not there" from "cannot be read"
-// behaves here as it does on the host. The fake has no symlinks, so IsSymlink
-// is always false — a fake that claimed one would be claiming a case nothing
-// here can create.
+// behaves here as it does on the host. The only symlinks are the ones a test
+// planted with PutSymlink; nothing a driver call does creates one.
 func (f *FakeFiles) Stat(_ context.Context, path string) (jobs.FileStat, error) {
 	if err := f.r.record("files", "Stat", path); err != nil {
 		return jobs.FileStat{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.Links[path] {
+		// lstat of a link: the link, never what it points at.
+		return jobs.FileStat{UID: f.ownerOf(path), Mode: 0o777, IsSymlink: true}, nil
+	}
 	if v, ok := f.Files[path]; ok {
 		return jobs.FileStat{UID: f.ownerOf(path), Mode: v.Mode, Size: int64(len(v.Data))}, nil
 	}

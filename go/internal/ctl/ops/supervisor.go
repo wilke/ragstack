@@ -366,9 +366,52 @@ func (instanceSupervisor) running(ctx context.Context, sc *jobs.StepContext, c c
 // renderer calls — so `--dry-run` prints the command that will actually run,
 // and a plan that cannot be rendered is a refusal before anything is touched.
 func (instanceSupervisor) startStore(p *planner, c component) error {
-	st, err := render.StoreArgv(p.t, c.Leg, p.unitConfig())
+	l, err := storeLaunchOf(p, c)
 	if err != nil {
 		return p.refuse("%s's %s store cannot be started as it is recorded: %v", p.t.Name, c.Name, err)
+	}
+	name := l.Name
+	p.addFor("instance", step{
+		Kind: "instance", Title: "start the instance " + name, Targets: []string{name},
+		WouldRun: []model.WouldRun{{Argv: l.Argv}},
+		Warnings: l.Warnings,
+		Run:      l.Run,
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			return "stopped " + name, sc.Ops.Drivers.Instances().Stop(ctx, name,
+				jobs.StopOptions{Namespace: jobs.NamespaceCtl})
+		},
+		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
+			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
+			if err != nil {
+				return jobs.ReconcileStuck, err
+			}
+			if up {
+				return jobs.ReconcileDone, nil
+			}
+			return jobs.ReconcileRedo, nil
+		},
+	})
+	return nil
+}
+
+// storeLaunch is one store instance's start, resolved from the ROW at plan
+// time: the argv the plan shows, the warnings, and the run half. It exists so
+// that there is exactly ONE store start — the start step uses it, and so does
+// the stop step's ROLLBACK (#693), which has to start the same instance the row
+// describes or it is not undoing the stop.
+type storeLaunch struct {
+	Name     string
+	Argv     []string
+	Warnings []string
+	Run      jobs.StepFunc
+}
+
+// storeLaunchOf renders the instance start of one store leg. A plan-time call:
+// it reads nothing off the host.
+func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
+	st, err := render.StoreArgv(p.t, c.Leg, p.unitConfig())
+	if err != nil {
+		return storeLaunch{}, err
 	}
 	name, sif := st.Instance, st.SIF
 	seedFrom, seedInto := "", ""
@@ -394,109 +437,90 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 			"an Elasticsearch whose config directory is empty exits before it logs why")
 	}
 
-	p.addFor("instance", step{
-		Kind: "instance", Title: "start the instance " + name, Targets: []string{name},
-		WouldRun: []model.WouldRun{{Argv: append([]string{"/usr/bin/apptainer", "instance", "run", "--no-home"},
-			append(append(st.BindArgs(), st.EnvArgs()...), append([]string{sif, name}, st.Args...)...)...)}},
-		Warnings: warnings,
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
+	run := func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+		up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
+		if err != nil {
+			return "", err
+		}
+		if up {
+			// Idempotent by design: `fleet start --all` runs over a fleet
+			// half of which is already up, and a periodic run of it is the
+			// only watchdog instance mode has.
+			sc.Logf("instance %s is already running", name)
+			return "already running: " + name, nil
+		}
+		if seedInto != "" {
+			seeded, err := seedESConfig(ctx, sc, sif, seedFrom, seedInto)
 			if err != nil {
 				return "", err
 			}
-			if up {
-				// Idempotent by design: `fleet start --all` runs over a fleet
-				// half of which is already up, and a periodic run of it is the
-				// only watchdog instance mode has.
-				sc.Logf("instance %s is already running", name)
-				return "already running: " + name, nil
+			sc.Logf("%s", seeded)
+		}
+		spec := jobs.InstanceSpec{
+			Name: name, SIF: sif, Binds: st.Binds, Env: st.Env, Args: st.Args,
+			ExtraEnv: map[string]string{},
+		}
+		for k, v := range st.ProcessEnv {
+			spec.ExtraEnv[k] = v
+		}
+		if needsPassword {
+			// The VALUE, read now and held only for the length of this
+			// call. It is never in the plan, never in a checkpoint, never
+			// in a log, and never on the argv.
+			pw, err := postgresPassword(ctx, sc, secretsEnv)
+			if err != nil {
+				return "", err
 			}
-			if seedInto != "" {
-				seeded, err := seedESConfig(ctx, sc, sif, seedFrom, seedInto)
-				if err != nil {
-					return "", err
-				}
-				sc.Logf("%s", seeded)
-			}
-			spec := jobs.InstanceSpec{
-				Name: name, SIF: sif, Binds: st.Binds, Env: st.Env, Args: st.Args,
-				ExtraEnv: map[string]string{},
-			}
-			for k, v := range st.ProcessEnv {
-				spec.ExtraEnv[k] = v
-			}
-			if needsPassword {
-				// The VALUE, read now and held only for the length of this
-				// call. It is never in the plan, never in a checkpoint, never
-				// in a log, and never on the argv.
-				pw, err := postgresPassword(ctx, sc, secretsEnv)
-				if err != nil {
-					return "", err
-				}
-				spec.ExtraEnv[render.APPTAINERENVPostgresPassword] = pw
-				// …and, when a handover recorded what the ORIGINAL cluster was
-				// encoded with, the arguments initdb must use for the new one.
-				//
-				// This is the difference between a handover and a re-encoding.
-				// The image's entrypoint runs initdb when it finds an empty
-				// PGDATA, and initdb takes its encoding and locales from its
-				// environment unless told otherwise — so without this, the
-				// encoding of a tenant's database after a handover is decided
-				// by whatever shell, cron job or unit ran the take. A UTF8 dump
-				// restored into an SQL_ASCII/C cluster exits 0 and keeps every
-				// row; only `length()`, `upper()`, `LIKE` and every index's
-				// sort order are different, and the row-count proof cannot see
-				// any of it.
-				//
-				// It goes in apptainer's OWN environment (APPTAINERENV_…, which
-				// apptainer forwards under the bare name) beside the password,
-				// rather than on the argv, only because that is where this step
-				// already builds a per-run environment. The value is public.
-				//
-				// An existing cluster ignores it: the entrypoint runs initdb
-				// only over an empty PGDATA.
-				if args := pgInitdbArgs(p.t); args != "" {
-					spec.ExtraEnv["APPTAINERENV_POSTGRES_INITDB_ARGS"] = args
-					sc.Logf("this cluster is initialised with %q, the encoding and locales the release recorded "+
-						"for the cluster it replaces", args)
-				}
-			}
-			// The instance NAME is the external ID, recorded before the call
-			// that creates it: a crash between the two leaves a record
-			// reconcile can act on.
+			spec.ExtraEnv[render.APPTAINERENVPostgresPassword] = pw
+			// …and, when a handover recorded what the ORIGINAL cluster was
+			// encoded with, the arguments initdb must use for the new one.
 			//
-			// …and, beside it, HOW LONG the instance's stderr log already is.
-			// apptainer APPENDS to that file for the life of the host, so it
-			// holds every previous run of this instance — including the ones
-			// that failed. A later step that quoted its tail would quote a line
-			// from a run that is not this one, which is worse than quoting
-			// nothing: it would report yesterday's "wrong ownership" about a
-			// postgres that died of something else today. The offset is what
-			// makes the quote honest (instanceGoneReason).
-			if err := sc.Checkpoint("instance:"+name, errLogMark(ctx, sc, name)); err != nil {
-				return "", err
+			// This is the difference between a handover and a re-encoding.
+			// The image's entrypoint runs initdb when it finds an empty
+			// PGDATA, and initdb takes its encoding and locales from its
+			// environment unless told otherwise — so without this, the
+			// encoding of a tenant's database after a handover is decided
+			// by whatever shell, cron job or unit ran the take. A UTF8 dump
+			// restored into an SQL_ASCII/C cluster exits 0 and keeps every
+			// row; only `length()`, `upper()`, `LIKE` and every index's
+			// sort order are different, and the row-count proof cannot see
+			// any of it.
+			//
+			// It goes in apptainer's OWN environment (APPTAINERENV_…, which
+			// apptainer forwards under the bare name) beside the password,
+			// rather than on the argv, only because that is where this step
+			// already builds a per-run environment. The value is public.
+			//
+			// An existing cluster ignores it: the entrypoint runs initdb
+			// only over an empty PGDATA.
+			if args := pgInitdbArgs(p.t); args != "" {
+				spec.ExtraEnv["APPTAINERENV_POSTGRES_INITDB_ARGS"] = args
+				sc.Logf("this cluster is initialised with %q, the encoding and locales the release recorded "+
+					"for the cluster it replaces", args)
 			}
-			if err := sc.Ops.Drivers.Instances().Run(ctx, spec); err != nil {
-				return "", err
-			}
-			return "started " + name, nil
-		},
-		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return "stopped " + name, sc.Ops.Drivers.Instances().Stop(ctx, name,
-				jobs.StopOptions{Namespace: jobs.NamespaceCtl})
-		},
-		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
-			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
-			if err != nil {
-				return jobs.ReconcileStuck, err
-			}
-			if up {
-				return jobs.ReconcileDone, nil
-			}
-			return jobs.ReconcileRedo, nil
-		},
-	})
-	return nil
+		}
+		// The instance NAME is the external ID, recorded before the call
+		// that creates it: a crash between the two leaves a record
+		// reconcile can act on.
+		//
+		// …and, beside it, HOW LONG the instance's stderr log already is.
+		// apptainer APPENDS to that file for the life of the host, so it
+		// holds every previous run of this instance — including the ones
+		// that failed. A later step that quoted its tail would quote a line
+		// from a run that is not this one, which is worse than quoting
+		// nothing: it would report yesterday's "wrong ownership" about a
+		// postgres that died of something else today. The offset is what
+		// makes the quote honest (instanceGoneReason).
+		if err := sc.Checkpoint("instance:"+name, errLogMark(ctx, sc, name)); err != nil {
+			return "", err
+		}
+		if err := sc.Ops.Drivers.Instances().Run(ctx, spec); err != nil {
+			return "", err
+		}
+		return "started " + name, nil
+	}
+	return storeLaunch{Name: name, Argv: append([]string{"/usr/bin/apptainer", "instance", "run", "--no-home"},
+		append(append(st.BindArgs(), st.EnvArgs()...), append([]string{sif, name}, st.Args...)...)...), Warnings: warnings, Run: run}, nil
 }
 
 func (instanceSupervisor) stopStore(p *planner, c component) error {
@@ -504,13 +528,28 @@ func (instanceSupervisor) stopStore(p *planner, c component) error {
 	if name == "" {
 		return p.refuse("%s's %s leg has no instance name, so the ctl does not know what to stop", p.t.Name, c.Name)
 	}
+	// The start this stop undoes, resolved now (a plan-time render) so the
+	// rollback starts the instance the row describes (#693).
+	launch, lerr := storeLaunchOf(p, c)
 	p.addFor("instance", step{
 		Kind: "instance", Title: "stop the instance " + name, Destructive: true, Targets: []string{name},
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/apptainer", "instance", "stop", name}}},
 		Warnings: []string{"SIGTERM to the instance, which is the graceful shutdown elasticsearch needs; an " +
-			"instance that is not running is success, so this step is safe to re-run"},
+			"instance that is not running is success, so this step is safe to re-run",
+			"rollback starts the instance again, if this step found it running"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			if err := sc.Checkpoint("instance:" + name); err != nil {
+			// Whether there was anything to stop, recorded BEFORE the stop: it
+			// is what the rollback reads, so that undoing a stop never starts
+			// an instance that was down before the job.
+			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
+			if err != nil {
+				return "", err
+			}
+			ids := []string{"instance:" + name}
+			if up {
+				ids = append(ids, wasRunningID+name)
+			}
+			if err := sc.Checkpoint(ids...); err != nil {
 				return "", err
 			}
 			if err := sc.Ops.Drivers.Instances().Stop(ctx, name,
@@ -518,6 +557,20 @@ func (instanceSupervisor) stopStore(p *planner, c component) error {
 				return "", err
 			}
 			return "stopped " + name, nil
+		},
+		// The inverse verb, as the systemd unit step has (`stop` rolls back
+		// with `start`): without it a fenced backup or an archive-decommission
+		// that failed after this step left the tenant's store down until an
+		// operator ran `tenant start` (#693).
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if !recorded(sc, wasRunningID+name) {
+				return name + " was not running before this step; nothing to start", nil
+			}
+			if lerr != nil {
+				return "", fmt.Errorf("%s cannot be rendered from the registry row (%v); start it with "+
+					"`ragstack-ctl tenant start %s`", name, lerr, p.t.Name)
+			}
+			return launch.Run(ctx, sc)
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
 			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
@@ -795,6 +848,10 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 
 func (instanceSupervisor) stopAPI(p *planner, c component) error {
 	pidfile, worktree, port := p.apiPidFile(), p.t.Worktree, c.Port
+	// The start this stop undoes (#693): resolved from the row now, the same
+	// launch startAPI spawns. An error is kept for the rollback to report — a
+	// stop must not be refused because its undo could not be rendered.
+	launch, lerr := p.apiLaunch(port)
 	p.addFor("proc", step{
 		Kind: "proc", Title: "stop the API through its pidfile (TERM, then KILL)", Destructive: true,
 		Targets: []string{pidfile},
@@ -802,6 +859,29 @@ func (instanceSupervisor) stopAPI(p *planner, c component) error {
 			"never runs pkill. TERM first, then up to " + apiStopTimeout.String() + " for the port to free, then KILL"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			return stopAPIProcess(ctx, sc, pidfile, worktree, port)
+		},
+		// The inverse of the stop, as the systemd unit step has it: spawn the
+		// API the row describes and wait for it to listen (#693). It starts
+		// only an API this step actually stopped — a pidfile naming a live
+		// process — so undoing a stop of a tenant that was already down
+		// starts nothing.
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if !stoppedALiveAPI(sc) {
+				return "the API was not running before this step; nothing to start", nil
+			}
+			if lerr != nil {
+				return "", fmt.Errorf("the API cannot be rendered from the registry row (%v); start it with "+
+					"`ragstack-ctl tenant start %s`", lerr, p.t.Name)
+			}
+			detail, err := startAPIProcess(ctx, sc, launch)
+			if err != nil {
+				return "", err
+			}
+			ready, err := awaitListening(ctx, sc, port, "the API")
+			if err != nil {
+				return "", err
+			}
+			return "the API is up again: " + detail + "; " + ready, nil
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
 			listening, err := sc.Ops.Drivers.Proc().Listening(ctx, port)
@@ -815,6 +895,33 @@ func (instanceSupervisor) stopAPI(p *planner, c component) error {
 		},
 	})
 	return nil
+}
+
+// wasRunningID prefixes the checkpoint an instance stop records when the
+// instance WAS running before it: the rollback starts only what the stop
+// stopped.
+const wasRunningID = "was-running:"
+
+// stalePidID prefixes the checkpoint stopAPIProcess records when the pidfile
+// named a process that was already gone.
+const stalePidID = "stale-pid:"
+
+// stoppedALiveAPI reports whether an API stop step found a live process to
+// stop: it checkpointed the pid (before the signal), and not as a stale one.
+func stoppedALiveAPI(sc *jobs.StepContext) bool {
+	if sc == nil || sc.Step == nil {
+		return false
+	}
+	pid, stale := false, false
+	for _, id := range sc.Step.ExternalIDs {
+		switch {
+		case strings.HasPrefix(id, stalePidID):
+			stale = true
+		case strings.HasPrefix(id, "pid:"):
+			pid = true
+		}
+	}
+	return pid && !stale
 }
 
 // apiStopTimeout is the api unit's TimeoutStopSec, kept the same here: a
@@ -859,6 +966,10 @@ func stopAPIProcess(ctx context.Context, sc *jobs.StepContext, pidfile, worktree
 		return "", err
 	} else if !alive {
 		sc.Logf("pid %d from %s is not running: a stale pidfile, nothing to signal", pid, pidfile)
+		// Recorded so a rollback of this stop knows it stopped nothing.
+		if err := sc.Checkpoint(stalePidID + strconv.Itoa(pid)); err != nil {
+			return "", err
+		}
 		if listening, err := proc.Listening(ctx, port); err != nil {
 			return "", err
 		} else if listening {

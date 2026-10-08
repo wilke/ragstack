@@ -92,6 +92,12 @@ var preconditions = map[string][]string{
 	// and an operator tidies up a tenant that was stopped first — so
 	// port_not_listening is tolerated (see below), not raised.
 	"decommission": {PortOwnerMismatch, DiskLow},
+	// Purge deletes a QUARANTINED tenant's trees, so the one thing that must
+	// be certain is whose processes are on its block: a port held by an
+	// account the row does not name is somebody else's tenant on these ports.
+	// Nothing listening is the normal input (see tolerates); the purge's own
+	// first step probes every port again at run time.
+	"purge": {PortOwnerMismatch},
 	// Credential and env edits rewrite the env files the API will reload, so
 	// the grammar must already be clean.
 	"key-mint":      {EnvNotSystemdParsable},
@@ -173,6 +179,8 @@ var tolerates = map[string][]string{
 	"restart":      {PortNotListening},
 	"stop":         {PortNotListening},
 	"decommission": {PortNotListening},
+	// A quarantined tenant is DOWN by construction: nothing of it listens.
+	"purge": {PortNotListening},
 	// `handover` is two jobs run by two accounts, and the SECOND of them acts
 	// on a tenant the first one stopped: between the release and the take
 	// nothing of the tenant is listening, by construction. Raising

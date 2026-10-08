@@ -86,7 +86,7 @@ PLAN_VERBS = [
     "start", "stop", "restart", "backup", "restore", "handover", "migrate-local",
     "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
     "sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
-    "render-units", "update-code",
+    "render-units", "update-code", "purge",
 ]
 
 METHODS = {"get", "put", "post", "delete", "patch", "options", "head", "trace"}

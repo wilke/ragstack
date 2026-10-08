@@ -154,6 +154,9 @@ func NewRegistry(d Deps) jobs.Registry {
 	add("handover", true, planHandover)
 	add("migrate-local", true, planMigrateLocal)
 	add("decommission", true, planDecommission)
+	// purge is the ONLY op that deletes a tenant's data, and only a tenant a
+	// decommission has already quarantined (ops/purge.go).
+	add("purge", true, planPurge)
 	add("key-mint", false, planKeyMint)
 	add("key-revoke", true, planKeyRevoke)
 	add("admin-add", false, planAdminAdd)

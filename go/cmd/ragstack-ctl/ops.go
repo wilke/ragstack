@@ -25,7 +25,7 @@ import (
 // `list`, `show` and `logs` are reads and stay in cmdTenant.
 var tenantOpVerbs = map[string]bool{
 	"start": true, "stop": true, "restart": true,
-	"backup": true, "restore": true, "decommission": true,
+	"backup": true, "restore": true, "decommission": true, "purge": true,
 }
 
 func tenantOpUsage(verb string) int {
@@ -86,6 +86,23 @@ succeeds. That needs the job to be followed, so --wait is implied.
              be fenced and checked or verified (a selftest sandbox needs none).
 `, opFlagSummary)
 		return exitUsage
+	case "purge":
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant purge <name> [--keep-archive] %s
+
+  DELETES a tenant `+"`decommission`"+` has quarantined — the one destructive op in the
+  control plane. Refused unless the row is at state quarantined with a
+  quarantine.dir, and on a tenant the ctl does not run. In order: proves nothing
+  listens on the tenant's port block and that the quarantined tree's
+  RECOVERY.json names it; removes the worktree (and prunes the mirror), the
+  units directory, the archive (every bundle and .tar under the backup root),
+  the quarantined data tree; then deletes the registry row. A production block
+  leaves a tombstone so its ports are never reused; a selftest sandbox leaves
+  none. Nothing of the tenant remains but the tombstone and the audit rows.
+  None of it can be undone. Confirm with --yes-destructive <name>.
+
+  --keep-archive  keep <backups>/<name>/ (every bundle and .tar); delete the rest.
+`, opFlagSummary)
+		return exitUsage
 	default:
 		return usageErr("usage: ragstack-ctl tenant %s <name> %s", verb, opFlagSummary)
 	}
@@ -93,7 +110,7 @@ succeeds. That needs the job to be followed, so --wait is implied.
 
 const opFlagSummary = "[--dry-run] [--yes|--yes-destructive NAME] [--wait] [--server URL] [--api-key-file F]"
 
-// cmdTenantOp is `tenant start|stop|restart|backup|restore|decommission`.
+// cmdTenantOp is `tenant start|stop|restart|backup|restore|decommission|purge`.
 func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tenant "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -107,6 +124,7 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		secrets             *string
 		from, as            *string
 		archive             *bool
+		keepArchive         *bool
 		wantsOnly, wantsFrm bool
 		wantsScope          bool
 	)
@@ -126,6 +144,8 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		secrets = fs.String("secrets", "", "include (default) | skip | require: whether the secret files are sealed into the bundle")
 	case "decommission":
 		archive = fs.Bool("archive", true, "archive first: a fenced, checked backup with the secrets sealed, then the quarantine (--archive=false: quarantine over the existing last_backup)")
+	case "purge":
+		keepArchive = fs.Bool("keep-archive", false, "keep the tenant's bundles under the backup root; delete everything else")
 	case "restore":
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
@@ -161,6 +181,9 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 	}
 	if archive != nil && set["archive"] {
 		opArgs["archive"] = *archive
+	}
+	if keepArchive != nil && set["keep-archive"] {
+		opArgs["keep_archive"] = *keepArchive
 	}
 	if wantsScope && len(scope) > 0 {
 		opArgs["scope"] = []string(scope)

@@ -124,7 +124,8 @@ func fixtureFull(t *testing.T, name string, mutate func(*registry.Tenant), env [
 	}
 	tp := paths.TenantPaths(roots, tenant.Name, tenant.ManifestName)
 	fopts := drivers.FakeOptions{
-		Roots: []string{"/rag"},
+		Roots:     []string{"/rag"},
+		TreeRoots: drivers.TreeRootsOf(roots),
 		// The fixture tenant is routed by the live gateway, so the fence and
 		// the quarantine have a route to publish over.
 		Routed: []string{name},
@@ -1084,6 +1085,9 @@ func TestDestructiveVerbsAreExactlyThePlansList(t *testing.T) {
 		// moves the directory nginx is serving out from under it; `set-bind`
 		// writes one registry field and touches no process, so it is not.
 		"set-ui-mode": true,
+		// purge deletes a quarantined tenant's trees and its row: the one op
+		// that destroys data.
+		"purge": true,
 	}
 	r := NewRegistry(Deps{})
 	for _, verb := range r.Verbs() {

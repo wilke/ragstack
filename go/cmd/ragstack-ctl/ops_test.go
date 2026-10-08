@@ -78,6 +78,10 @@ func TestTenantOpArgsMatchTheContract(t *testing.T) {
 			"/v1/tenants/dev/ops/decommission", map[string]any{"archive": false}},
 		{"decommission with the archive stated", []string{"tenant", "decommission", "dev", "--archive"},
 			"/v1/tenants/dev/ops/decommission", map[string]any{"archive": true}},
+		{"purge sends no keep_archive it was not given (the default, false, is the daemon's)",
+			[]string{"tenant", "purge", "dev"}, "/v1/tenants/dev/ops/purge", map[string]any{}},
+		{"purge keeping the archive", []string{"tenant", "purge", "dev", "--keep-archive"},
+			"/v1/tenants/dev/ops/purge", map[string]any{"keep_archive": true}},
 	})
 }
 

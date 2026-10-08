@@ -2003,6 +2003,98 @@ async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
 
 
 # =========================================================================== #
+# `purge` — the one destructive op (PR-G1.4)
+#
+# It acts only on a row `decommission` quarantined. The refusals run on the
+# fixture's live rows; the success path runs on the instance tenant the
+# decommission above has just quarantined — which is why it comes right after
+# it, and why nothing after it in this file may need that tenant.
+# =========================================================================== #
+async def test_purge_refuses_an_active_row_and_a_manual_row(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """Refused at PLAN time (409 ``refused``) on a tenant that is not
+    quarantined — the ctl-run active row — and on a hand-started (manual) row,
+    which the ctl never deletes whatever its state."""
+    tenant = await managed_tenant(client)
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/purge", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "not quarantined" in err["detail"] and "decommission" in err["detail"], err["detail"]
+
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/purge", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "purge deletes only what the ctl runs" in err["detail"], err["detail"]
+
+    bad = await client.post(f"/v1/tenants/{tenant}/ops/purge", json=op_body(args={"keep_archive": "yes"}))
+    assert_error(bad, 422, "validation", schemas)
+
+
+async def test_purge_of_the_quarantined_instance_tenant(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The end of the end: the instance tenant the decommission above
+    quarantined is purged. The plan is a contract document that names every
+    removal; an execute without the confirm is 428 ``confirm_required``; the
+    job succeeds; the tenant is 404 and gone from ``GET /v1/fleet``; and —
+    because ``ctlfixture-inst`` sits on a PRODUCTION block (index 10), not a
+    selftest sandbox — the job's result carries the tombstone that keeps its
+    port block from being handed out again (tombstones are not served over
+    HTTP; the registry is). ``keep_archive`` is covered by the Go tests
+    (go/internal/ctl/ops/purge_test.go): this daemon's in-memory files are not
+    readable from here."""
+    resp = await client.get("/v1/fleet")
+    assert resp.status_code == 200, resp.text
+    rows = [r for r in resp.json().get("tenants", [])
+            if r.get("supervisor") == "instance" and r.get("state") == "quarantined"]
+    if not rows:
+        pytest.skip("no quarantined instance tenant: the decommission case above did not run")
+    tenant = rows[0]["name"]
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.status_code == 200, shown.text
+    row = shown.json()["registry"]
+    ports = row["ports"]
+    assert not (26000 <= ports["base"] <= 26099), f"{tenant} is on a sandbox block: {ports}"
+
+    path = f"/v1/tenants/{tenant}/ops/purge"
+    preview = await client.post(path, json=op_body(args={}))
+    assert preview.status_code == 200, preview.text[:400]
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    assert plan["requires_confirm"] is True and plan["confirm_value"] == tenant, plan
+    titles = [s["title"] for s in plan["steps"]]
+    for needle in ("nothing listens", "RECOVERY.json", "remove the worktree", "remove the units directory",
+                   "remove the archive", "remove the quarantined data tree", "registry row"):
+        assert any(needle in t for t in titles), (needle, titles)
+    assert plan["steps"][-1]["kind"] == "registry", "the row must be the LAST thing purge deletes"
+    assert any("Nothing of the tenant remains" in w for w in plan["warnings"]), plan["warnings"]
+
+    # No confirm: 428, and nothing ran.
+    body = op_body(dry_run=False, args={})
+    body.update(await doctor_force(client, path, args={}))
+    resp = await client.post(path, json=body)
+    assert_error(resp, 428, "confirm_required", schemas)
+    assert (await client.get(f"/v1/tenants/{tenant}")).status_code == 200
+
+    job = await submit_and_settle(client, path, schemas, args={}, confirm=tenant, timeout=120.0)
+    assert job["state"] == "succeeded", json.dumps(
+        [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+         for s in job["steps"]], indent=1)
+    result = job["result"]
+    assert result["archive_kept"] is False, result
+    assert row["quarantine"]["dir"] in result["removed"], result
+    assert result["tombstone"] == {
+        "manifest_name": row["manifest_name"], "index": ports["index"], "base": ports["base"],
+        "decommissioned_at": row["quarantine"]["at"],
+    }, result
+
+    gone = await client.get(f"/v1/tenants/{tenant}")
+    assert_error(gone, 404, "not_found", schemas)
+    fleet = await client.get("/v1/fleet")
+    assert fleet.status_code == 200, fleet.text
+    assert tenant not in [r["name"] for r in fleet.json().get("tenants", [])], fleet.json()
+
+
+# =========================================================================== #
 # The handover — a TWO-ACCOUNT protocol over one HTTP verb (PR-E2)
 #
 # Two of its four phases are something a daemon can do. `release` and
