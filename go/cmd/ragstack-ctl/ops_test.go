@@ -64,6 +64,10 @@ func TestTenantOpArgsMatchTheContract(t *testing.T) {
 			"/v1/tenants/dev/ops/stop", map[string]any{"force": true}},
 		{"backup fenced and tarred", []string{"tenant", "backup", "dev", "--fence", "--tar"},
 			"/v1/tenants/dev/ops/backup", map[string]any{"fence": true, "tar": true}},
+		{"backup that must seal the secrets", []string{"tenant", "backup", "dev", "--fence", "--secrets", "require"},
+			"/v1/tenants/dev/ops/backup", map[string]any{"fence": true, "secrets": "require"}},
+		{"backup that skips the secrets", []string{"tenant", "backup", "dev", "--secrets=skip"},
+			"/v1/tenants/dev/ops/backup", map[string]any{"secrets": "skip"}},
 		{"restore names the bundle and the fresh tenant",
 			[]string{"tenant", "restore", "asm-next", "--from", "20260914T101500Z-backup", "--as", "asm-restore"},
 			"/v1/tenants/asm-next/ops/restore",
@@ -90,6 +94,9 @@ func TestTenantBackupSendsFenceOnlyWhenAsked(t *testing.T) {
 	}
 	if _, ok := args["tar"]; ok {
 		t.Errorf("an unstated --tar was sent anyway: %#v", args)
+	}
+	if _, ok := args["secrets"]; ok {
+		t.Errorf("an unstated --secrets was sent anyway: %#v", args)
 	}
 }
 

@@ -190,3 +190,58 @@ func TestEnvelopeSealerRereadsTheRecipientsFileEachTime(t *testing.T) {
 		t.Fatalf("the added recipient could not open the payload: %q %v", got, err)
 	}
 }
+
+func TestRecipientsSealerRoundTripsAndPinsTheSetItWasBuiltWith(t *testing.T) {
+	a, _ := age.GenerateX25519Identity()
+	b, _ := age.GenerateX25519Identity()
+	path := recipientsFile(t, "# the ctl's backup identity", a.Recipient().String())
+	s, err := LoadRecipientsSealer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fps := s.Fingerprints()
+	if len(fps) != 1 || !strings.HasPrefix(fps[0], "sha256:") {
+		t.Fatalf("Fingerprints = %v, want one sha256: fingerprint", fps)
+	}
+	sealed, err := s.Seal([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(sealed), "secret") {
+		t.Fatal("the payload carries the plaintext")
+	}
+	got, err := Unseal([]age.Identity{a}, sealed)
+	if err != nil || string(got) != "secret" {
+		t.Fatalf("the recipient could not open the payload: %q %v", got, err)
+	}
+
+	// Unlike EnvelopeSealer, the set is the one the engine was BUILT with: a
+	// plan names these fingerprints, and the step that runs it must seal to
+	// the same set rather than to whatever the file says by then.
+	if err := os.WriteFile(path, []byte(b.Recipient().String()+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Seal([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Unseal([]age.Identity{a}, again); err != nil {
+		t.Fatalf("a rewritten file changed the sealer's recipients: %v", err)
+	}
+	if fps2 := s.Fingerprints(); len(fps2) != 1 || fps2[0] != fps[0] {
+		t.Fatalf("Fingerprints changed with the file: %v -> %v", fps, fps2)
+	}
+}
+
+func TestLoadRecipientsSealerTellsAbsentFromMalformed(t *testing.T) {
+	if _, err := LoadRecipientsSealer(filepath.Join(t.TempDir(), "absent.txt")); !errors.Is(err, ErrNoRecipients) {
+		t.Errorf("absent file = %v, want ErrNoRecipients", err)
+	}
+	if _, err := LoadRecipientsSealer(recipientsFile(t, "not-a-key")); err == nil || errors.Is(err, ErrNoRecipients) {
+		t.Errorf("malformed file = %v, want a parse error that is NOT ErrNoRecipients", err)
+	}
+	var nilSealer *RecipientsSealer
+	if _, err := nilSealer.Seal([]byte("x")); !errors.Is(err, ErrNoRecipients) {
+		t.Errorf("nil sealer Seal = %v, want ErrNoRecipients", err)
+	}
+}

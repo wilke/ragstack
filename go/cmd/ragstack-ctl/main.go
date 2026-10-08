@@ -125,6 +125,9 @@ func usage() {
                                             account's crontab (every other line is untouched).
                                             This host's only boot hook: cron gets no logind
                                             session, so systemctl --user cannot be driven from it
+  fleet backup-identity init [--dry-run]    generate the ctl's age backup identity (0600) and add its
+                                            public recipient to backup-recipients.txt; backups then
+                                            seal tenants' secrets (restart the daemon to pick it up)
   tenant create <name> --artifact ID        allocate, provision, start and route a new tenant
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
@@ -133,11 +136,12 @@ func usage() {
 
   tenant start|restart <name> [--only api,ui,qdrant,es] [--force]
   tenant stop <name> [--only …] [--keep-enabled] [--force]
-  tenant backup <name> [--fence] [--tar] [--scope config,state]
+  tenant backup <name> [--fence] [--tar] [--scope config,state] [--secrets include|skip|require]
                                             only a FENCED bundle can be verified; --scope
                                             config,state is the LIGHT bundle (config + sealed
                                             secrets + sqlite state + the rollback descriptor,
-                                            no store snapshots, no fence, seconds)
+                                            no store snapshots, no fence, seconds); --secrets
+                                            require refuses unless a backup recipient exists
   tenant restore <name> --from <bundle-id> --as <fresh-tenant>
   tenant decommission <name>
                                             the tenant operations. Each posts one
@@ -1218,6 +1222,9 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) > 0 && args[0] == "grant" {
 		return cmdFleetGrant(args[1:], ragRoot, jsonOut)
 	}
+	if len(args) > 0 && args[0] == "backup-identity" {
+		return cmdFleetBackupIdentity(args[1:], ragRoot)
+	}
 	// The three fleet-wide lifecycle commands (PR-D2). They are CLI-only and
 	// submit one ordinary tenant job each — see cmd/ragstack-ctl/fleetops.go.
 	if len(args) > 0 && (args[0] == "start" || args[0] == "stop" || args[0] == "enable-boot") {
@@ -1229,6 +1236,7 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet grant --user NAME [--dry-run] …")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet start|stop --all [--direct]")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet enable-boot --cron|--no-cron [--dry-run]")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet backup-identity init [--dry-run]")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)

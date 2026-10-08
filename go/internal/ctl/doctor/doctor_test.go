@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
+
 	"github.com/ragstack/ragstack/internal/ctl/acl"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/model"
@@ -59,6 +61,9 @@ func newWorld(t *testing.T) *world {
 	write(t, filepath.Join(dataDir, "config", "tenant.env"), cleanEnv)
 	write(t, filepath.Join(roots.ImagesDir, "qdrant.sif"), "sif")
 	write(t, filepath.Join(roots.ImagesDir, "elasticsearch.sif"), "sif")
+	// The healthy baseline has a backup recipient: without one every bundle is
+	// written without secrets and backup_recipients_missing is a warn.
+	write(t, roots.BackupRecipients(), "# the ctl's backup identity\n"+testRecipient(t)+"\n")
 
 	tenant := registry.NewTenant("dev", "dev")
 	tenant.DataDir = dataDir
@@ -1815,6 +1820,58 @@ func TestNoCtlUIDIsNoJobStoreGuess(t *testing.T) {
 		w.opts.CtlUID = uid
 		if found := findingsForCode(w.run(t), JobEngineUnavailable); len(found) != 0 {
 			t.Errorf("CtlUID %d raised %+v; there is no account to compare against", uid, found)
+		}
+	}
+}
+
+// testRecipient is a fresh age X25519 public key (the private half is
+// discarded: doctor only asks whether the file names somebody).
+func testRecipient(t *testing.T) string {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Recipient().String()
+}
+
+// TestBackupRecipientsMissing: the fleet-level row is raised, at warn, when
+// the recipients file is absent, names nobody, or does not parse — and not
+// when it names a recipient. It gates no op.
+func TestBackupRecipientsMissing(t *testing.T) {
+	w := newWorld(t)
+	if f, ok := byCode(w.run(t))[BackupRecipientsMissing]; ok {
+		t.Fatalf("a recipients file with a key raised %+v", f)
+	}
+	path := w.roots.BackupRecipients()
+	cases := map[string]func(){
+		"absent":    func() { _ = os.Remove(path) },
+		"empty":     func() { write(t, path, "# nobody yet\n") },
+		"malformed": func() { write(t, path, "not-a-public-key\n") },
+	}
+	for name, mutate := range cases {
+		mutate()
+		resp := w.run(t)
+		f, ok := byCode(resp)[BackupRecipientsMissing]
+		if !ok {
+			t.Errorf("%s: no %s row", name, BackupRecipientsMissing)
+			continue
+		}
+		if f.Level != model.LevelWarn || f.Tenant != "" {
+			t.Errorf("%s: row = %+v, want a fleet-level warn", name, f)
+		}
+		if !strings.Contains(f.Repair, "fleet backup-identity init") {
+			t.Errorf("%s: repair = %q", name, f.Repair)
+		}
+		if strings.Contains(f.Detail, "not-a-public-key") {
+			t.Errorf("%s: the detail quotes the file's line: %q", name, f.Detail)
+		}
+	}
+	// No op raises it to an error: it is in no precondition set.
+	for _, op := range []string{"backup", "restore", "decommission", "handover", "create"} {
+		resp := w.runOpts(t, Options{Op: op, Tenant: "dev"})
+		if f, ok := byCode(resp)[BackupRecipientsMissing]; ok && f.Level != model.LevelWarn {
+			t.Errorf("op %s raised %s to %s", op, BackupRecipientsMissing, f.Level)
 		}
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/ops"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/seal"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
 )
 
@@ -119,9 +120,9 @@ const DefaultSecretsTTL = 15 * time.Minute
 // come through here, so they run the same engine over the same jobs.db and
 // the same flock files.
 //
-// The Sealer is nil in PR-C: minted secrets live only in daemon memory for
-// their TTL (age sealing to the backup recipients lands with PR-D's bundle
-// encryption).
+// Minted secrets live only in daemon memory for their TTL. The one Sealer the
+// engine holds is the BACKUP's (see backupSealer): it seals a bundle's secret
+// files to the fleet's age recipients and never unseals anything.
 func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	eng, _, err := BuildEngineAndDrivers(cfg)
 	return eng, err
@@ -390,6 +391,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
 			MountPoint: cfg.MountPoint, Owner: cfg.Owner,
 			DefaultSupervisor: cfg.DefaultSupervisor,
+			Sealer:            backupSealer(cfg.Roots, cfg.Logger),
 		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
@@ -408,6 +410,39 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	})
 	return eng, drv, nil
 }
+
+// backupSealer is the age sealer a backup seals a tenant's secret files with:
+// <CtlConfigDir>/backup-recipients.txt, read ONCE, here.
+//
+// Once, because the engine PLANS against it — `backup secrets=require`
+// refuses or proceeds on whether it names anybody, and the plan states the
+// fingerprints it will seal to — and a plan must be a function of the
+// engine's dependencies, never of a file read while planning. The daemon and
+// the --direct CLI both build their engine here, so both seal to the same
+// file; a recipient added to it reaches the daemon at its next restart, and a
+// --direct run at its next invocation.
+//
+// Nil (no Sealer) when the file is absent, names nobody, or does not parse.
+// The last is logged: a typo in the recipients file is not "nobody is
+// configured", and doctor's backup_recipients_missing says the same thing to
+// whoever looks. Fingerprints only — the file holds public keys, but the line
+// is still never quoted back.
+func backupSealer(roots paths.Roots, logger *slog.Logger) ops.Sealer {
+	path := roots.BackupRecipients()
+	s, err := seal.LoadRecipientsSealer(path)
+	if err != nil {
+		if !errors.Is(err, seal.ErrNoRecipients) && logger != nil {
+			logger.Warn("backup recipients file does not parse; backups will carry no secrets and secrets=require "+
+				"is refused until it does", "path", path, "err", err.Error())
+		}
+		return nil
+	}
+	return s
+}
+
+// The adapter is structural: seal does not import ops (ops compiles without
+// the crypto). This is where the two are held to the same shape.
+var _ ops.Sealer = (*seal.RecipientsSealer)(nil)
 
 // fixtureListening is the LISTEN set the fixture host starts with: the API
 // port of the next few port blocks.

@@ -28,13 +28,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -42,6 +46,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/ops"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/seal"
 )
 
 // bootMarker is the comment that identifies the ONE crontab line this ctl
@@ -424,4 +429,178 @@ func writeBootRecord(roots paths.Roots, cron bool) error {
 func bootDrivers(o *opFlags) (jobs.Drivers, error) {
 	_, drv, err := buildDirectEngineAndDrivers(o)
 	return drv, err
+}
+
+// ---------------------------------------------------------------- backup-identity
+
+// generateBackupIdentity is the key generator `fleet backup-identity init`
+// uses. A variable so that a test can hand it a fixed identity (the duplicate
+// refusal is otherwise untestable: two fresh keys never collide).
+var generateBackupIdentity = age.GenerateX25519Identity
+
+func backupIdentityUsage() int {
+	fmt.Fprintln(stderr, `usage: ragstack-ctl fleet backup-identity init [--dry-run] [--rag-root DIR]
+
+  Generate the ctl's age X25519 backup identity and register its public half:
+
+    <ctl config dir>/backup-identity.txt     the PRIVATE key, mode 0600; refused if it exists
+    <ctl config dir>/backup-recipients.txt   its recipient is appended (created 0640 if absent;
+                                             a recipient already listed is refused)
+
+  The ctl config dir is CTL_CONFIG_DIR, or <rag-root>/config/ctl. Run it as the
+  account the daemon runs as, then restart the daemon: it reads the recipients
+  when it starts. Backups then seal each tenant's secret files into secrets.age,
+  and `+"`backup --secrets require`"+` stops refusing. Only the public recipient is
+  printed; the private key never leaves the file, and the daemon never reads it.`)
+	return exitUsage
+}
+
+// cmdFleetBackupIdentity is `fleet backup-identity init`. CLI-only and LOCAL:
+// a private key is not something to mint inside a daemon and hand back over
+// HTTP.
+func cmdFleetBackupIdentity(args []string, ragRoot string) int {
+	if len(args) == 0 || args[0] != "init" {
+		return backupIdentityUsage()
+	}
+	fs := flag.NewFlagSet("fleet backup-identity init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("rag-root", ragRoot, "deployment root")
+	dryRun := fs.Bool("dry-run", false, "print the paths and change nothing")
+	if err := fs.Parse(args[1:]); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 {
+		return backupIdentityUsage()
+	}
+	// The same CTL_CONFIG_DIR resolution as the daemon and every --direct run,
+	// so the file this writes is the file the engine loads.
+	roots := api.RootsFromEnv(*root)
+	idPath, recPath := roots.BackupIdentity(), roots.BackupRecipients()
+
+	if _, err := os.Lstat(idPath); err == nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: %s already exists; refusing to replace a backup identity (bundles sealed "+
+			"to it would become unreadable). Remove it deliberately first if it is really to be retired\n", idPath)
+		return exitRefused
+	} else if !errors.Is(err, iofs.ErrNotExist) {
+		return failClient(fmt.Errorf("checking %s: %w", idPath, err))
+	}
+	recExists := true
+	if _, err := os.Stat(recPath); errors.Is(err, iofs.ErrNotExist) {
+		recExists = false
+	} else if err != nil {
+		return failClient(fmt.Errorf("checking %s: %w", recPath, err))
+	}
+
+	if *dryRun {
+		fmt.Fprintf(stdout, "would write a new age X25519 identity to %s (mode 0600)\n", idPath)
+		if recExists {
+			fmt.Fprintf(stdout, "would append its public recipient to %s\n", recPath)
+		} else {
+			fmt.Fprintf(stdout, "would create %s (mode 0640) with its public recipient\n", recPath)
+		}
+		fmt.Fprintln(stdout, "nothing was written")
+		return exitOK
+	}
+
+	id, err := generateBackupIdentity()
+	if err != nil {
+		return failClient(fmt.Errorf("generating the identity: %w", err))
+	}
+	recipient := id.Recipient().String()
+	if recExists {
+		body, err := os.ReadFile(recPath)
+		if err != nil {
+			return failClient(fmt.Errorf("reading %s: %w", recPath, err))
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.TrimSpace(line) == recipient {
+				fmt.Fprintf(stderr, "ragstack-ctl: %s already lists this recipient; refusing to add it twice\n", recPath)
+				return exitRefused
+			}
+		}
+	}
+
+	if err := os.MkdirAll(roots.CtlConfigDir, 0o750); err != nil {
+		return failClient(fmt.Errorf("creating %s: %w", roots.CtlConfigDir, err))
+	}
+	// O_EXCL: the existence check above is advice; this is the guarantee that
+	// a racing second init cannot overwrite the first one's key.
+	if err := writeNewFile(idPath, 0o600, []byte(fmt.Sprintf(
+		"# ragstack-ctl backup identity, created %s\n# public key: %s\n%s\n",
+		time.Now().UTC().Format(time.RFC3339), recipient, id.String()))); err != nil {
+		return failClient(fmt.Errorf("writing %s: %w", idPath, err))
+	}
+	if err := appendRecipient(recPath, recExists, recipient); err != nil {
+		// Without the recipient the identity is a key nothing is sealed to;
+		// take it back out so a re-run starts clean.
+		_ = os.Remove(idPath)
+		return failClient(fmt.Errorf("adding the recipient to %s (the identity was removed again): %w", recPath, err))
+	}
+	fps := ""
+	if _, list, err := seal.LoadRecipients(recPath); err == nil && len(list) > 0 {
+		fps = list[len(list)-1]
+	} else if err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: warning: %s does not load cleanly (%v); backups will not seal until it does\n",
+			recPath, err)
+	}
+	fmt.Fprintf(stdout, "wrote %s (mode 0600) — the private key; keep a copy somewhere other than this host\n", idPath)
+	fmt.Fprintf(stdout, "added recipient %s", recipient)
+	if fps != "" {
+		fmt.Fprintf(stdout, " (%s)", fps)
+	}
+	fmt.Fprintf(stdout, " to %s\n", recPath)
+	fmt.Fprintln(stdout, "restart the daemon so that it loads the recipient (a --direct run picks it up immediately)")
+	return exitOK
+}
+
+// writeNewFile creates path (refusing an existing one) with exactly mode.
+func writeNewFile(path string, mode os.FileMode, body []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	// Chmod: the umask may have narrowed the mode, and the contract is exact.
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
+}
+
+// appendRecipient adds one line to the recipients file, creating it 0640 when
+// it does not exist. An existing file keeps its mode, and a final line that
+// lacks a newline gets one first so the two keys do not run together.
+func appendRecipient(path string, exists bool, recipient string) error {
+	if !exists {
+		return writeNewFile(path, 0o640, []byte("# age recipients a ragstack-ctl backup seals tenants' secrets to\n"+
+			recipient+"\n"))
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	line := recipient + "\n"
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		line = "\n" + line
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
