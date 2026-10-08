@@ -44,6 +44,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -569,9 +570,9 @@ func (s *selftest) execute(ctx context.Context) error {
 		s.checks = append(s.checks, s.quarantineBlockCheck(name, archived[name]))
 	}
 
-	// The sweep is conditioned on `--keep` and on nothing else.
+	// The purge and the sweep are conditioned on `--keep` and on nothing else.
 	//
-	// It used to be suppressed by a failed CHECK as well, and that was the
+	// They used to be suppressed by a failed CHECK as well, and that was the
 	// wrong rule twice over: a run that gets this far has had every JOB
 	// succeed, so both sandboxes are decommissioned and quarantined and there
 	// is nothing live to inspect — and the five sandbox blocks are exhausted
@@ -579,20 +580,115 @@ func (s *selftest) execute(ctx context.Context) error {
 	// times"). The FAIL is still in the report and the exit code is still 4.
 	// A run whose JOB failed never reaches here: execute returns at the error,
 	// the sandbox is left in place, and main says how to remove it.
-	if !s.opts.keep {
-		removed, refused, err := s.sweep(ctx)
-		for _, r := range refused {
-			s.checks = append(s.checks, checkResult{Name: "sweep refusal", Verdict: checkFail, Detail: r})
-		}
+	if s.opts.keep {
+		return nil
+	}
+
+	// ---- purge both ------------------------------------------------------
+	//
+	// `tenant purge` (PR-G1.4) is the control plane's own deletion, and the
+	// sandboxes are the one place a selftest may prove it: every tree of the
+	// tenant goes, then the row, and a sandbox block leaves no tombstone. The
+	// rows are read FIRST — after the purge there is nothing left to read the
+	// paths off.
+	before := map[string]*registry.Tenant{}
+	for _, name := range names {
+		t, err := s.tenantRow(name)
 		if err != nil {
 			return err
 		}
-		s.checks = append(s.checks, checkResult{
-			Name: "sweep", Verdict: checkPass,
-			Detail: fmt.Sprintf("%d quarantined tree(s) and their registry rows removed", len(removed)),
-		})
+		before[name] = t
 	}
+	for _, name := range names {
+		if _, err := s.submit(ctx, "purge "+name, "purge", name, map[string]any{}, name); err != nil {
+			return err
+		}
+	}
+	for _, name := range names {
+		s.checks = append(s.checks, s.purgedChecks(ctx, before[name])...)
+	}
+
+	// The sweep stays, for strays a purge does not own (a `.failed-` tree a
+	// rolled-back create left, an orphan whose row is long gone) — and after a
+	// purge of both sandboxes it must find NOTHING of theirs.
+	removed, refused, err := s.sweep(ctx)
+	for _, r := range refused {
+		s.checks = append(s.checks, checkResult{Name: "sweep refusal", Verdict: checkFail, Detail: r})
+	}
+	if err != nil {
+		return err
+	}
+	sweep := checkResult{Name: "sweep", Verdict: checkPass,
+		Detail: "nothing left to sweep: the purge removed every tree and row of both sandboxes"}
+	var leftovers []string
+	for _, r := range removed {
+		for _, name := range names {
+			if strings.Contains(r, name) {
+				leftovers = append(leftovers, r)
+				break
+			}
+		}
+	}
+	switch {
+	case len(leftovers) > 0:
+		sweep.Verdict = checkFail
+		sweep.Detail = "the purge left these behind and the sweep removed them: " + strings.Join(leftovers, ", ")
+	case len(removed) > 0:
+		sweep.Detail = fmt.Sprintf("%d stray(s) from earlier runs removed: %s", len(removed), strings.Join(removed, ", "))
+	}
+	s.checks = append(s.checks, sweep)
 	return nil
+}
+
+// purgedChecks asks the registry and the host, through the same drivers the
+// purge ran against, whether anything of one purged sandbox is left: its row,
+// a tombstone (a sandbox block must leave none), its quarantined tree, its
+// data directory, its bundles, its worktree, its units directory.
+func (s *selftest) purgedChecks(ctx context.Context, t *registry.Tenant) []checkResult {
+	name := t.Name
+	var out []checkResult
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		return []checkResult{{Name: name + ": purged", Verdict: checkFail, Detail: "reading the registry: " + err.Error()}}
+	}
+	row := checkResult{Name: name + ": no row, no tombstone", Verdict: checkPass,
+		Detail: "the row is gone and the sandbox block left no tombstone"}
+	if _, ok := f.Tenants[name]; ok {
+		row.Verdict, row.Detail = checkFail, "the registry still has a row for "+name
+	}
+	for _, tb := range f.Tombstones {
+		if tb.ManifestName == t.ManifestName || tb.Base == t.Ports.Base {
+			row.Verdict = checkFail
+			row.Detail = fmt.Sprintf("a tombstone for %s (index %d, base %d): a sandbox purge must leave none — "+
+				"the sandbox allocator counts tombstone bases as taken", tb.ManifestName, tb.Index, tb.Base)
+		}
+	}
+	out = append(out, row)
+
+	tp := paths.TenantPaths(s.roots, name, t.ManifestName)
+	trees := []string{tp.DataDir, filepath.Join(s.roots.BackupsDir, name), filepath.Join(s.roots.ReposDir, name),
+		filepath.Join(s.roots.UnitsDir(), name)}
+	if t.Quarantine != nil && t.Quarantine.Dir != "" {
+		trees = append([]string{t.Quarantine.Dir}, trees...)
+	}
+	files := checkResult{Name: name + ": no tree left", Verdict: checkPass,
+		Detail: fmt.Sprintf("%d paths are gone", len(trees))}
+	var left []string
+	for _, p := range trees {
+		_, err := s.drv.Files().Stat(ctx, p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			files.Verdict, files.Detail = checkNA, "asking whether "+p+" is there: "+err.Error()
+			return append(out, files)
+		default:
+			left = append(left, p)
+		}
+	}
+	if len(left) > 0 {
+		files.Verdict, files.Detail = checkFail, "still there: "+strings.Join(left, ", ")
+	}
+	return append(out, files)
 }
 
 // bundleCheckedCheck asks the REGISTRY whether the bundle the backup just

@@ -1035,7 +1035,7 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		"start", "stop", "restart", "backup", "restore", "handover",
 		"migrate-local", "decommission", "key-mint", "key-revoke", "admin-add",
 		"admin-remove", "sa-create", "sa-disable", "sa-enable", "env-set",
-		"env-unset", "env-normalize", "render-units", "update-code", "create",
+		"env-unset", "env-normalize", "render-units", "update-code", "purge", "create",
 		"adopt", "gateway-apply", "settings-put",
 		// PR-E's preparation ops. They have no HTTP ROUTE (they are
 		// x-ctl-cli-op-args verbs), but they are ops a doctor run can be
@@ -1056,8 +1056,8 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		// the next one from being forgotten.
 		"artifact-prepare", "create-sandbox", "gateway-reload",
 	}
-	if len(contract) != 31 {
-		t.Fatalf("the op list has 31 entries, this copy has %d", len(contract))
+	if len(contract) != 32 {
+		t.Fatalf("the op list has 32 entries, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {

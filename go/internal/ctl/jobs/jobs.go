@@ -708,6 +708,25 @@ type Files interface {
 	// heap to answer it. A read, so not root-checked; an absent path is
 	// fs.ErrNotExist.
 	ReadHead(ctx context.Context, path string, n int) ([]byte, error)
+	// RemoveTree deletes a whole tree — the ONE recursive delete in the
+	// control plane, and the only driver call `tenant purge` makes that
+	// destroys data.
+	//
+	// Its containment is narrower than the approved roots every other write
+	// is held to (drivers/removetree.go): the path is absolute and clean, it
+	// is under EXACTLY one of four deletion roots — the tenant data root, the
+	// backup root, the tenant worktree root, the units directory — and is
+	// never a root itself, and it has the one shape that root's deletable
+	// things have: a `<manifest>.quarantined-<stamp>` tree directly under the
+	// data root (never a live tenant's), `<tenant>` or `<tenant>/<bundle-id>`
+	// or `<tenant>/<bundle-id>.tar` under the backup root, `<tenant>` under the
+	// other two. The leaf is a directory (a regular file for the `.tar`
+	// shape) and NOT a symlink, and no component between the root and the
+	// leaf is a symlink. Every refusal is ErrRefused.
+	//
+	// An absent path is success, so a purge interrupted half way completes
+	// when it is resumed.
+	RemoveTree(ctx context.Context, path string) error
 }
 
 // FileStat is Files.Stat's answer: the four facts a step may decide on. Not an

@@ -7,7 +7,7 @@ package ops
 // directory is renamed, the registry row is marked `quarantined` and keeps its
 // port block (so the allocator never hands it out again), and a
 // RECOVERY.json is left inside the renamed directory saying what this used to
-// be. A live purge is v1.x and is a separately named operation, because
+// be. Deletion is `tenant purge` (ops/purge.go), a separately named operation, because
 // "decommission" is the word an operator types when they are tidying up and
 // destruction must never be what tidying up does.
 //
@@ -197,12 +197,12 @@ func planDecommission(_ context.Context, p *planner, args map[string]any) error 
 	// counts every row, so the block is never handed out while the tree is
 	// recoverable. The tombstone — the registry's permanent record of an
 	// allocation whose row is gone — is written by the purge that removes the
-	// row (v1.x), never here: a tombstone beside a live row is the split-brain
+	// row (`tenant purge`), never here: a tombstone beside a live row is the split-brain
 	// the registry's validator refuses.
 	p.result["tombstone"] = nil
 	if !sandbox {
 		p.warn("the row stays in the registry at state quarantined and keeps its port block; the tombstone is " +
-			"written when the row is purged (v1.x), so the block is never reused either way")
+			"written when the row is purged (`tenant purge`), so the block is never reused either way")
 	}
 	p.warn("nothing is deleted: the units are removed, the data directory is renamed and a " + recoveryFile +
 		" is written into it. Bringing the tenant back is a rename, a `units apply` and a registry edit")
@@ -410,7 +410,7 @@ func (p *planner) addQuarantineRename() {
 		Kind: "fs", Title: "quarantine the data directory (rename to .quarantined-<ts>)", Destructive: true,
 		Targets: []string{t.DataDir, t.DataDir + registry.QuarantineMarker + quarantinePlaceholder},
 		Warnings: []string{"nothing is deleted: the tree is renamed, stays inside the retention-protected root and " +
-			"outside every deletion root. A live purge is v1.x and a separately named op",
+			"outside every deletion root. Deleting it is `tenant purge`, a separately named op",
 			"`" + quarantinePlaceholder + "` stands for the stamp, decided when the registry step runs and " +
 				"recorded on the row as quarantine.dir"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {

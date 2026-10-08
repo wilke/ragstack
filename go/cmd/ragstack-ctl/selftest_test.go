@@ -208,6 +208,12 @@ func TestSelftestRunsTheWholeSequenceAgainstTheFixtureHost(t *testing.T) {
 	if !restorePending {
 		want = append(want, "decommission "+fixtureRestored)
 	}
+	// PR-G1.4: both sandboxes are PURGED by the control plane's own op, and
+	// the sweep afterwards finds nothing of theirs.
+	want = append(want, "purge "+fixturePrimary)
+	if !restorePending {
+		want = append(want, "purge "+fixtureRestored)
+	}
 	var got []string
 	for _, st := range s.steps {
 		got = append(got, st.Name)
@@ -256,6 +262,42 @@ func TestSelftestRunsTheWholeSequenceAgainstTheFixtureHost(t *testing.T) {
 	}
 	if len(f.Tombstones) != 0 {
 		t.Errorf("a sandbox wrote %d tombstone(s)", len(f.Tombstones))
+	}
+	if len(f.Tenants) != 0 {
+		t.Errorf("rows left after the purge: %d", len(f.Tenants))
+	}
+	// The purge's own post-checks ran, for each sandbox, and passed; the
+	// sweep found nothing the purge should have removed.
+	purged := map[string]bool{}
+	for _, c := range s.checks {
+		switch {
+		case strings.HasSuffix(c.Name, ": no row, no tombstone"), strings.HasSuffix(c.Name, ": no tree left"):
+			purged[c.Name] = c.Verdict == checkPass
+		case c.Name == "sweep":
+			if c.Verdict != checkPass || !strings.Contains(c.Detail, "nothing left to sweep") {
+				t.Errorf("sweep after the purge = %s: %s", c.Verdict, c.Detail)
+			}
+		}
+	}
+	names := []string{fixturePrimary}
+	if !restorePending {
+		names = append(names, fixtureRestored)
+	}
+	for _, n := range names {
+		for _, suffix := range []string{": no row, no tombstone", ": no tree left"} {
+			if pass, ok := purged[n+suffix]; !ok || !pass {
+				t.Errorf("check %q: ran=%v pass=%v", n+suffix, ok, pass)
+			}
+		}
+	}
+	// And the fake host holds nothing of either sandbox: no data tree, no
+	// quarantined tree, no bundle, no worktree, no units directory.
+	for _, p := range fake.FakeFiles().Paths() {
+		for _, n := range names {
+			if strings.Contains(p, "/"+n+"/") || strings.Contains(p, "/"+n+".") {
+				t.Errorf("the purge left %s on the host", p)
+			}
+		}
 	}
 
 	// The ingest reached the sandbox's own API and carried a real path.

@@ -319,6 +319,10 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		// api port, so the readiness gate of a create would time out. The next
 		// unallocated blocks' API ports are pre-answered instead.
 		opts.Listening = append(opts.Listening, fixtureListening(loadFleet)...)
+		// The four roots `tenant purge` may delete under — the deployment's,
+		// as the real driver set takes them. Without them every RemoveTree is
+		// a containment refusal.
+		opts.TreeRoots = drivers.TreeRootsOf(cfg.Roots)
 		drv = drivers.NewFake(opts)
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
