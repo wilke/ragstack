@@ -177,9 +177,32 @@ After a successful backup the tenant's row carries:
 `bundle` is the absolute directory (registry.json types it as a path); every
 operator-facing surface — `backup list`, `restore --from`, the manifest's own
 `bundle_id` — speaks the **id**, which is that path's basename. `verified` stays
-false until a restore proves it, which is why `handover`, `migrate-local` and
-`decommission` refuse on a fresh bundle: their prerequisite is fenced **and**
-verified.
+false until a restore proves it, which is why `handover` and `migrate-local`
+refuse on a fresh bundle: their prerequisite is fenced **and** verified.
+`decommission --archive=false` accepts fenced and **checked** (the backup job's
+own deep check) or verified.
+
+### Decommission archives first — `tenant decommission <name> [--archive=false]`
+
+By default a decommission is one job that archives and then quarantines: a
+fenced full backup with `secrets=require` (the tenant's secret files sealed to
+the recipients of §3), the bundle's deep check (`last_backup.checked`), the
+registry record — and then, **without starting the API again**, today's
+quarantine: legs stopped and disabled, units removed, the row marked
+`quarantined`, a gateway generation without the tenant, the data directory
+renamed to `<data_dir>.quarantined-<stamp>` with `RECOVERY.json` inside, the
+worktree removed. It is refused at plan time when no recipient is configured
+(`ragstack-ctl fleet backup-identity init`, then restart the daemon) and when
+the row says `stopped` (the store legs snapshot running stores: start it first).
+The row then records `"quarantine": {"dir", "at", "job_id", "bundle"}` — the
+renamed tree, the job, and the archive it can be rebuilt from (with
+`--archive=false`, the `last_backup` at the time). A failure rolls back every
+step that has a rollback — the rename, the row (no `quarantine` block is left),
+the backup record, the bundle's finalize (it goes back to `.partial`) and, for a
+systemd tenant, the unit stops — so read the job's rollback block; an
+instance-supervised tenant's stopped legs and a published gateway generation are
+not undone, and `tenant start` / `gateway apply` bring them back. Nothing is
+deleted by a decommission; deletion is `purge`, a separate verb.
 
 ## 6. Restore — `ragstack-ctl tenant restore <source> --from <id> --as <new>`
 

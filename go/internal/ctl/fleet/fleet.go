@@ -218,7 +218,7 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 		r.DiskBytes = n
 	}
 	if b := t.LastBackup; b != nil {
-		r.LastBackup = &model.LastBackup{At: b.At, Fenced: b.Fenced, Verified: b.Verified}
+		r.LastBackup = &model.LastBackup{At: b.At, Fenced: b.Fenced, Verified: b.Verified, Checked: b.Checked}
 	}
 	return r
 }

@@ -334,7 +334,7 @@ func TestDecommissionAcceptsACheckedBundleAndMigrateLocalDoesNot(t *testing.T) {
 			At: "2026-09-14T09:30:00Z", Kind: "backup", Fenced: true, Checked: true, Scope: fullScope}
 	}
 	oc, _ := fixture(t, "dev", checked)
-	p := plan(t, oc, "decommission", nil)
+	p := plan(t, oc, "decommission", noArchive)
 	if !hasStep(p, "fs", "quarantine the data directory") {
 		t.Fatalf("decommission over a fenced, checked bundle did not plan the quarantine: %v", titles(p))
 	}
@@ -349,7 +349,7 @@ func TestDecommissionAcceptsACheckedBundleAndMigrateLocalDoesNot(t *testing.T) {
 		checked(tn)
 		tn.LastBackup.Checked = false
 	})
-	err = planErr(t, oc, "decommission", nil)
+	err = planErr(t, oc, "decommission", noArchive)
 	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "neither checked nor verified") ||
 		!strings.Contains(err.Error(), "backup verify dev 20260914T093000Z-backup") {
 		t.Errorf("decommission over an unchecked bundle = %v", err)
@@ -359,7 +359,7 @@ func TestDecommissionAcceptsACheckedBundleAndMigrateLocalDoesNot(t *testing.T) {
 		checked(tn)
 		tn.LastBackup.Fenced = false
 	})
-	if err := planErr(t, oc, "decommission", nil); !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "best-effort") {
+	if err := planErr(t, oc, "decommission", noArchive); !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "best-effort") {
 		t.Errorf("decommission over an unfenced, checked bundle = %v", err)
 	}
 	// Verified alone still satisfies both.
@@ -367,7 +367,7 @@ func TestDecommissionAcceptsACheckedBundleAndMigrateLocalDoesNot(t *testing.T) {
 		checked(tn)
 		tn.LastBackup.Checked, tn.LastBackup.Verified = false, true
 	})
-	plan(t, oc, "decommission", nil)
+	plan(t, oc, "decommission", noArchive)
 	if err := planErrMaybe(t, oc, "migrate-local", map[string]any{"phase": "execute"}); err != nil &&
 		strings.Contains(err.Error(), "verified") {
 		t.Errorf("migrate-local over a verified bundle = %v", err)

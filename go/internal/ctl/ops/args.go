@@ -332,7 +332,11 @@ var argSchemas = map[string]argSpec{
 	"migrate-local": {Verb: "migrate-local", Fields: []argField{
 		{Name: "phase", Kind: argString, Required: true, Enum: phases},
 	}},
-	"decommission": {Verb: "decommission"},
+	"decommission": {Verb: "decommission", Fields: []argField{
+		// Absent means TRUE (the contract's default): the daemon applies no
+		// defaults, so planDecommission reads it with decommissionArchiveOf.
+		{Name: "archive", Kind: argBool},
+	}},
 	"key-mint": {Verb: "key-mint", Fields: []argField{
 		{Name: "label", Kind: argString, Required: true, Pattern: patLabel},
 		{Name: "role", Kind: argString, Required: true, Enum: roles},

@@ -72,7 +72,7 @@ export const fleetFixture: CtlFleet = {
       health: { api: "ok", qdrant: "n/a", es: "n/a", deep: "n/a" },
       units: { target: "n/a", api: "n/a", ui: "n/a", qdrant: "n/a", es: "n/a" },
       disk_bytes: 572_685_746_176,
-      last_backup: { at: "2026-09-09T03:00:00Z", fenced: true, verified: true },
+      last_backup: { at: "2026-09-09T03:00:00Z", fenced: true, verified: true, checked: true },
     },
     {
       name: "lucid-next",
@@ -102,7 +102,7 @@ export const fleetFixture: CtlFleet = {
       health: { api: "degraded", qdrant: "n/a", es: "n/a", deep: "unknown" },
       units: { target: "n/a", api: "n/a", ui: "n/a", qdrant: "n/a", es: "n/a" },
       disk_bytes: 4_100_111_143_936,
-      last_backup: { at: "2026-08-20T03:00:00Z", fenced: false, verified: false },
+      last_backup: { at: "2026-08-20T03:00:00Z", fenced: false, verified: false, checked: false },
     },
   ],
 };

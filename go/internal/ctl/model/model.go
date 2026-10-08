@@ -279,10 +279,16 @@ type RowUnits struct {
 }
 
 // LastBackup is the summary of a row's last backup (null when there is none).
+//
+// Checked sits beside Verified: the backup job's own deep check passed
+// (registry last_backup.checked), which is the level `decommission` accepts.
+// Always emitted — a response is written fresh by this binary, so there is no
+// older document for an absent member to stay compatible with.
 type LastBackup struct {
 	At       string `json:"at"`
 	Fenced   bool   `json:"fenced"`
 	Verified bool   `json:"verified"`
+	Checked  bool   `json:"checked"`
 }
 
 // FleetRow is one tenant's dashboard row (fleet_response.json#/$defs/FleetRow).

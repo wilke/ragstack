@@ -613,7 +613,8 @@ func fakeLastBackup(t *registry.Tenant) *model.LastBackup {
 	if t.LastBackup == nil {
 		return nil
 	}
-	return &model.LastBackup{At: t.LastBackup.At, Fenced: t.LastBackup.Fenced, Verified: t.LastBackup.Verified}
+	return &model.LastBackup{At: t.LastBackup.At, Fenced: t.LastBackup.Fenced, Verified: t.LastBackup.Verified,
+		Checked: t.LastBackup.Checked}
 }
 
 func healthFor(up bool) model.HealthState {

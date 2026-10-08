@@ -102,11 +102,12 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["at", "fenced", "verified"],
+              "required": ["at", "fenced", "verified", "checked"],
               "properties": {
                 "at": { "type": "string" },
                 "fenced": { "type": "boolean" },
-                "verified": { "type": "boolean" }
+                "verified": { "type": "boolean", "description": "A `restore --as` rebuilt a tenant from this bundle." },
+                "checked": { "type": "boolean", "description": "The bundle passed the backup's deep check without a restore (hashes, manifest, snapshot structure, census counts) — registry `last_backup.checked`. `decommission --archive=false` accepts a fenced bundle that is checked or verified." }
               },
               "additionalProperties": false
             },

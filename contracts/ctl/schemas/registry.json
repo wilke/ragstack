@@ -592,6 +592,18 @@
       },
       "additionalProperties": false
     },
+    "Quarantine": {
+      "description": "What `decommission` left behind: the renamed data tree, when, by which job, and the bundle the tenant can be rebuilt from (the archive the decommission itself took, or with `--archive=false` the row's `last_backup.bundle` at the time; null for a selftest sandbox decommissioned with neither). Present only while `state` is `quarantined`, and `dir` is the row's own `data_dir` with `.quarantined-<stamp>` appended: both are cross-field rules, enforced by `ragstack-ctl`'s Go mirror on every load and save (as the `handover` block's agreement with `state` is), not by this schema.",
+      "type": "object",
+      "required": ["dir", "at", "job_id", "bundle"],
+      "properties": {
+        "dir": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]*\\.quarantined-[0-9]{8}T[0-9]{6}Z$" },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "job_id": { "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+        "bundle": { "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "null" } ] }
+      },
+      "additionalProperties": false
+    },
     "Tenant": {
       "type": "object",
       "required": [
@@ -698,6 +710,10 @@
         "handover": {
           "description": "The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight.",
           "oneOf": [ { "$ref": "#/$defs/Handover" }, { "type": "null" } ]
+        },
+        "quarantine": {
+          "description": "The decommission's record (see `$defs/Quarantine`). OPTIONAL and absent on every row that is not quarantined, and on a row quarantined before the field existed; when present, `state` must be `quarantined` (enforced by `ragstack-ctl`).",
+          "$ref": "#/$defs/Quarantine"
         },
         "last_ops": {
           "type": "object",

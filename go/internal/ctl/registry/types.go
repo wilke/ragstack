@@ -188,7 +188,17 @@ type Tenant struct {
 	// nothing. Omitted, a row written by this binary still loads under the
 	// previous one, and absent means exactly null (the contract leaves it out
 	// of `required` for the same reason `last_backup.scope` is out).
-	Handover   *Handover           `json:"handover,omitempty"`
+	Handover *Handover `json:"handover,omitempty"`
+	// Quarantine is where a decommission put the tenant's data tree, and
+	// from which bundle it can be rebuilt. Present only on a row whose state
+	// is `quarantined` (ValidateContract refuses it anywhere else); ABSENT on
+	// every other row and on a row quarantined before the block existed.
+	// omitempty for the reason Handover is: a `"quarantine": null` in every
+	// row would make the registry unreadable to the previously deployed
+	// binary on the first write. (Once a row IS quarantined the key is there
+	// and an older binary refuses it — the one-way door last_backup.checked
+	// opens too.)
+	Quarantine *Quarantine         `json:"quarantine,omitempty"`
 	LastOps    map[string]OpRecord `json:"last_ops"`
 	LastBackup *BackupRecord       `json:"last_backup"` // null until the first backup
 	AdoptedAt  NullString          `json:"adopted_at"`
@@ -412,6 +422,38 @@ type RollbackDescriptor struct {
 	Images            RollbackImages `json:"images"`
 	LaunchArgs        []LaunchArg    `json:"launch_args"`
 	GatewayGeneration int64          `json:"gateway_generation"`
+}
+
+// StateQuarantined is the state `decommission` leaves a row in: the units are
+// gone, the data tree is renamed aside (Quarantine.Dir) and the row keeps its
+// port block until a purge removes it.
+const StateQuarantined = "quarantined"
+
+// QuarantineMarker is the infix every quarantined data tree carries:
+// `<data_dir>.quarantined-<stamp>`. ValidateContract demands it, and so will
+// the purge that deletes such a tree: a directory without it is not one a
+// decommission made.
+const QuarantineMarker = ".quarantined-"
+
+// Quarantine is the record a decommission leaves on the row.
+//
+// Without it the renamed tree was recorded nowhere but in the job that made
+// it: a purge (or an operator) had to rediscover `<data_dir>.quarantined-*`
+// by listing a directory, and the bundle the tenant could be rebuilt from was
+// whatever `last_backup` happened to say by then.
+type Quarantine struct {
+	// Dir is the renamed data tree: `<data_dir>.quarantined-<stamp>`, an
+	// absolute path beside the row's data_dir.
+	Dir string `json:"dir"`
+	// At is when the row was marked quarantined (RFC 3339).
+	At string `json:"at"`
+	// JobID is the decommission job that did it.
+	JobID string `json:"job_id"`
+	// Bundle is the bundle directory the tenant can be rebuilt from: the one
+	// the decommission's own archive wrote, or — with `--archive=false` — the
+	// row's last_backup at the time. Null for a selftest sandbox
+	// decommissioned without an archive and without any backup.
+	Bundle NullString `json:"bundle"`
 }
 
 // Handover phases (Handover.Phase).

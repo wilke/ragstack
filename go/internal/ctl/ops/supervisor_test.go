@@ -305,7 +305,7 @@ func TestDecommissionOfAnInstanceTenant(t *testing.T) {
 	d := testDeps(oc)
 	d.Owner = "svcbvbrc"
 	op, _ := NewRegistry(d).Lookup("decommission")
-	planned, err := op.Plan(context.Background(), oc, nil)
+	planned, err := op.Plan(context.Background(), oc, noArchive)
 	if err != nil {
 		t.Fatalf("decommission: %v", err)
 	}

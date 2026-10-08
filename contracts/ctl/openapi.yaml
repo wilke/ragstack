@@ -199,7 +199,8 @@ x-ctl-op-args:
     additionalProperties: false
   decommission:
     type: object
-    properties: {}
+    properties:
+      archive: { description: "Archive first (default). The job takes a FENCED full backup with `secrets: require` — the tenant's secret files sealed to the ctl's age recipients — checks it (`last_backup.checked`), records it, and only then quarantines the tenant, with the API left down between the two. Refused at plan time (409 `refused`) when no backup recipient is configured: run `ragstack-ctl fleet backup-identity init`. `false` quarantines without a new bundle and requires the row's `last_backup` to be fenced and checked or verified (a selftest sandbox requires none). Either way the row records `quarantine: {dir, at, job_id, bundle}`.", type: boolean, default: true }
     additionalProperties: false
   key-mint:
     type: object

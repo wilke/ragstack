@@ -1382,21 +1382,21 @@ async def test_decommission_of_a_managed_tenant_needs_a_fenced_checked_bundle(
     which checks itself — is accepted (dry run only: nothing is quarantined)."""
     tenant = await managed_tenant(client)
     await fenced_bundle(client, schemas, tenant, fence=False)
-    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
+    no_archive = {"archive": False}
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args=no_archive))
     err = assert_error(resp, 409, "refused", schemas)
     assert "backup" in err["detail"] and "best-effort" in err["detail"], err["detail"]
 
     await fenced_bundle(client, schemas, tenant)
-    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args=no_archive))
     assert resp.status_code == 200, (
         f"a decommission dry run over a fenced, checked bundle was refused: {resp.status_code} {resp.text[:400]}"
     )
-    # Not validated against plan.json here: decommission's RECOVERY.json
-    # would_write path carries a `<ts>` placeholder the schema's path pattern
-    # refuses — a pre-existing defect this case is the first to reach (every
-    # earlier decommission conformance case stopped at the 409). G1.3 rewrites
-    # that plan.
+    # The plan is a contract document. It used not to be: its RECOVERY.json
+    # would_write path carried a `<ts>` that plan.json's path pattern refuses
+    # (fixed in PR-G1.3 with the `new-stamp` placeholder).
     plan = resp.json()
+    validate(plan, "plan", schemas)
     assert any("quarantine the data directory" in s["title"] for s in plan["steps"]), (
         [s["title"] for s in plan["steps"]]
     )
@@ -1445,6 +1445,25 @@ async def test_sa_create_is_authenticated_and_recorded_on_the_row(
     job = await submit_and_settle(client, path, schemas, args={"subject": subject}, confirm=confirm)
     assert job["state"] == "succeeded", json.dumps(job.get("error"))
     assert (await recorded())["status"] == "disabled"
+
+
+async def test_decommission_archives_by_default_and_needs_a_recipient(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`archive` defaults to true: the decommission takes its own fenced,
+    checked bundle with the tenant's secrets sealed (`secrets=require`), so it
+    is refused at PLAN time — 409 before anything is fenced — on a daemon with
+    no backup recipient, naming the command that configures one. This fixture
+    daemon deliberately carries none (the backup secrets tests depend on it);
+    the archive's success path is go/internal/ctl/api/decommission_archive_test.go
+    against the same engine construction with a real age recipient."""
+    tenant = await managed_tenant(client)
+    for args in ({}, {"archive": True}):
+        resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args=args))
+        err = assert_error(resp, 409, "refused", schemas)
+        assert "backup-identity init" in err["detail"] and "--archive=false" in err["detail"], err["detail"]
+    bad = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={"archive": "yes"}))
+    assert_error(bad, 422, "validation", schemas)
 
 
 # =========================================================================== #
@@ -1944,9 +1963,18 @@ async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
     need alive. The bundle the preceding restore verified is what makes it
     allowed at all."""
     tenant = await instance_tenant(client)
+    # `archive: false`: this fixture daemon has no backup recipient, so the
+    # default (archive first, secrets required) is refused here — that case is
+    # above, and the archive path itself is a Go engine test. The plan is
+    # validated against plan.json first.
+    preview = await client.post(
+        f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={"archive": False})
+    )
+    assert preview.status_code == 200, preview.text[:400]
+    validate(preview.json(), "plan", schemas)
     job = await submit_and_settle(
         client, f"/v1/tenants/{tenant}/ops/decommission", schemas,
-        args={}, confirm=tenant, timeout=120.0,
+        args={"archive": False}, confirm=tenant, timeout=120.0,
     )
     assert job["state"] == "succeeded", json.dumps(
         [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
@@ -1961,7 +1989,17 @@ async def test_decommission_of_an_instance_tenant_removes_no_unit_files(
 
     after = await client.get(f"/v1/tenants/{tenant}")
     assert after.status_code == 200, after.text
+    validate(after.json(), "tenant_response", schemas)
     assert after.json()["summary"]["state"] == "quarantined", after.json()["summary"]
+    # The row records the quarantine: the renamed tree beside its data_dir,
+    # this job, and the bundle it can be rebuilt from (the last_backup, since
+    # there was no archive).
+    row = after.json()["registry"]
+    quarantine = row.get("quarantine")
+    assert quarantine, row
+    assert quarantine["dir"].startswith(row["data_dir"] + ".quarantined-"), quarantine
+    assert quarantine["job_id"] == job["id"], (quarantine, job["id"])
+    assert quarantine["bundle"] == (row["last_backup"] or {}).get("bundle"), (quarantine, row["last_backup"])
 
 
 # =========================================================================== #

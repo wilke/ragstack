@@ -68,6 +68,24 @@ The restored tenant's credentials are FRESH and are printed ONCE, when the job
 succeeds. That needs the job to be followed, so --wait is implied.
 `, opFlagSummary)
 		return exitUsage
+	case "decommission":
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant decommission <name> [--archive=false] %s
+
+  Quarantines a tenant the ctl runs: its legs stopped and disabled, its units
+  removed, its row marked quarantined (with a `+"`quarantine`"+` block naming the
+  renamed tree, the job and the bundle), its data directory renamed to
+  <data_dir>.quarantined-<ts> with a RECOVERY.json inside. Nothing is deleted.
+
+  --archive  (default true) archive first, in the same job: a fenced full
+             backup with the tenant's secrets sealed (secrets=require), checked,
+             recorded as last_backup — and the API is NOT started again before
+             the quarantine. Refused unless a backup recipient is configured
+             (`+"`ragstack-ctl fleet backup-identity init`"+`).
+  --archive=false
+             quarantine without a new bundle; requires the row's last_backup to
+             be fenced and checked or verified (a selftest sandbox needs none).
+`, opFlagSummary)
+		return exitUsage
 	default:
 		return usageErr("usage: ragstack-ctl tenant %s <name> %s", verb, opFlagSummary)
 	}
@@ -88,6 +106,7 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		fence, tar          *bool
 		secrets             *string
 		from, as            *string
+		archive             *bool
 		wantsOnly, wantsFrm bool
 		wantsScope          bool
 	)
@@ -105,6 +124,8 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		wantsScope = true
 		fs.Var(&scope, "scope", "which legs to capture: config, state, stores (repeatable or a comma list; default all three)")
 		secrets = fs.String("secrets", "", "include (default) | skip | require: whether the secret files are sealed into the bundle")
+	case "decommission":
+		archive = fs.Bool("archive", true, "archive first: a fenced, checked backup with the secrets sealed, then the quarantine (--archive=false: quarantine over the existing last_backup)")
 	case "restore":
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
@@ -137,6 +158,9 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 	}
 	if tar != nil && set["tar"] {
 		opArgs["tar"] = *tar
+	}
+	if archive != nil && set["archive"] {
+		opArgs["archive"] = *archive
 	}
 	if wantsScope && len(scope) > 0 {
 		opArgs["scope"] = []string(scope)

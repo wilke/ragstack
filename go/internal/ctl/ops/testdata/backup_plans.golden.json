@@ -1,0 +1,4706 @@
+{
+ "asm-next/as-recorded/config-only/no-sealer": {
+  "plan_sha256": "1593f3a496de1e26aa3b605a17c09ab7b356e5714c458c0e7cf98e1ef37cc0b4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/as-recorded/config-only/sealer": {
+  "plan_sha256": "b5cb0d14d72b0d6d0b88ff1b11b46fbe2e70634d3ef63f9adc796043211341c6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/as-recorded/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/as-recorded/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/as-recorded/fence-tar/no-sealer": {
+  "plan_sha256": "fd4ffd8edfff9c11e4ecca87e8b870b9cb29293d54d5059658b6fd7fd247c790",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/fence-tar/sealer": {
+  "plan_sha256": "73fdf2f17c8aa6c2521ae3d9eef1e46e33de912fdb0e72a6d2dca1d39c834033",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/fence/no-sealer": {
+  "plan_sha256": "52439ce60b12ae1edc902c04773ff0027758ca62528bb76cacd272f33bc6260d",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/fence/sealer": {
+  "plan_sha256": "d2200fbaf4b7e12d77444cf3bb20bc3259887d6c00f40338b97af8b8a7e576b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/light/no-sealer": {
+  "plan_sha256": "1c8fe4e21ac55a44a457f66c86f2ad2fa75c590929a82110a685da016487b594",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/as-recorded/light/sealer": {
+  "plan_sha256": "79789a19eba89ed1a202c2624ca1a4753bc0905b70752093a289a1053947df89",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/as-recorded/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/as-recorded/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/as-recorded/none/no-sealer": {
+  "plan_sha256": "11ffafadbceccb6a7d2be3162f6652e2c483a741fdbdae123b3f8c05c1ca7990",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/none/sealer": {
+  "plan_sha256": "7390facae7102f02ed0dc54bff48aa3d451eff828a08c402befdd1a4a3219ca7",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "asm-next/as-recorded/secrets-req/sealer": {
+  "plan_sha256": "36d6bc48fbeedc57dc9ae05bf8774d20ba8e9ac9ea247871d1bc0f065cba0efd",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/secrets-skip/no-sealer": {
+  "plan_sha256": "8b76139c7cb8cc4d3c421e45e7cde175954e542e7cb39db21ea7813fc445368a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/secrets-skip/sealer": {
+  "plan_sha256": "8b76139c7cb8cc4d3c421e45e7cde175954e542e7cb39db21ea7813fc445368a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/tar-unfenced/no-sealer": {
+  "plan_sha256": "687da74612b0dc6569b6dd20f9fdcbfdab080a4f45290bc14f12e6c3db7a1d60",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/as-recorded/tar-unfenced/sealer": {
+  "plan_sha256": "f7c54924751ea11ff749c0a867ae0dd4fccd73b184263c04c6af1609a9c7178e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/config-only/no-sealer": {
+  "plan_sha256": "727908656c6e4806c8c2731dedad08936e10a60919fc8c049b1d8d4c9a38b428",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/instance/config-only/sealer": {
+  "plan_sha256": "9caf382f9ade09cdd2749229f98d0adda2f9332a0adcdbd8135d71a8a5ef4f78",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/instance/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/instance/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/instance/fence-tar/no-sealer": {
+  "plan_sha256": "585063d18b66cd0651b5c2fd969bed7fa8ff0423d8ac6f9c47ce44f81e8db27e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/fence-tar/sealer": {
+  "plan_sha256": "ed736aa398c37acb781562b6d2b3f7fcee850e36fabc4aec46e232dc7a0ec83b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/fence/no-sealer": {
+  "plan_sha256": "75c28822d549986d458708769740f3d563253e66725411c1cbdf19ce18398605",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/fence/sealer": {
+  "plan_sha256": "0d93c9c6bd8438ffa6dc122d8f2ee27f56f6d8340686aaa1f7c9ea2ecb3090e5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/light/no-sealer": {
+  "plan_sha256": "149414c51572f947ba099cfcc68030c0a5d959b1bf58527ffcc1d8b29ba16111",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/instance/light/sealer": {
+  "plan_sha256": "d0985c1f5ec56a611e411bd4e551210ee16a38ef07c7b9d0c3747e0e4c54bda7",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/instance/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/instance/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/instance/none/no-sealer": {
+  "plan_sha256": "4920402646ecd0d84c1f45b0e77369f171bf3dc3ca56f06e121b473b92bfa849",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/none/sealer": {
+  "plan_sha256": "655510b054d85efdb714d9d847f867fde1922e36abda8d197bb6f36e2543bcfc",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "asm-next/instance/secrets-req/sealer": {
+  "plan_sha256": "63ac68db2e3875c465d2cadf26bebd4c073597422c1519cd6eb1ce63aa830043",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/secrets-skip/no-sealer": {
+  "plan_sha256": "809e5564fc720ef250cc49bb0869756a3ad42f6ed29a3423fff04637b70be143",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/secrets-skip/sealer": {
+  "plan_sha256": "809e5564fc720ef250cc49bb0869756a3ad42f6ed29a3423fff04637b70be143",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/tar-unfenced/no-sealer": {
+  "plan_sha256": "2b855e0f45562efd74c2f9b1b82e0c3a6169d3c65218c255a93ce0fe6805ebd8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/instance/tar-unfenced/sealer": {
+  "plan_sha256": "5b5023986f53bbbc3bf4bec755b7b8b10ff26ca231b3b2809b245251b7b2e46c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/config-only/no-sealer": {
+  "plan_sha256": "82e78e09b9aae21f1d33dc9b823c1964dc21cf9b13498bcca7400275e1d7d52e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/managed/config-only/sealer": {
+  "plan_sha256": "6a0a10b045375331c38e8ffd8279bbafc2fb1bf8de23201df1cc0a445667ed23",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/managed/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/managed/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/managed/fence-tar/no-sealer": {
+  "plan_sha256": "cb8ae4daa261d0e34e67b39cc3f3b2296fff1ba9313269d77b654cc8cbe9e07f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/fence-tar/sealer": {
+  "plan_sha256": "c135c3524ddf0bc839a9317f0fa1909eae4aa274ee7c4adb09b5fb538f730a2f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/fence/no-sealer": {
+  "plan_sha256": "b22604f3a2e51c18d1774a821978059548117b4e40f4558e43b0ab5d6152ee7a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/fence/sealer": {
+  "plan_sha256": "888f178bbede6643bf0561132086532480640f82cbf24b623b059026da70b6c5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/light/no-sealer": {
+  "plan_sha256": "4ed05621a068d34d42394854dcb2af43ef4f0b79b277505b9e2b7a23880e0ef5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/managed/light/sealer": {
+  "plan_sha256": "5c39ecab8a9b19493903594ff618c00426369cbbc2759a29feeec94fd5ab2559",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/managed/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/managed/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/managed/none/no-sealer": {
+  "plan_sha256": "4efac51315f558057d46898a50d3b9c376c7d5351ec5ca8dc0bc6afa6dafcaec",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/none/sealer": {
+  "plan_sha256": "21559052a3de677738eddb4c881346236023568e3e791db9cea4a17c15d6eff2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "asm-next/managed/secrets-req/sealer": {
+  "plan_sha256": "58d1095da2ef861804167d2078588484827908c17ed6f62c804b25cec0e15bd9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/secrets-skip/no-sealer": {
+  "plan_sha256": "bb5a2a7f7b9f0d212da65d8c563d8a4d0f61a5b2c6f29d6b1926e79617d0d2b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/secrets-skip/sealer": {
+  "plan_sha256": "bb5a2a7f7b9f0d212da65d8c563d8a4d0f61a5b2c6f29d6b1926e79617d0d2b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/tar-unfenced/no-sealer": {
+  "plan_sha256": "2e55d09962785177b65182d64e6d19f6ff5f53a3ef5ec0afbb369eb2098fb774",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/managed/tar-unfenced/sealer": {
+  "plan_sha256": "dbe438a80b1878a9d76399593ddf5e75ee51033377fd0270c3fe38e67dd599b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/config-only/no-sealer": {
+  "plan_sha256": "82e78e09b9aae21f1d33dc9b823c1964dc21cf9b13498bcca7400275e1d7d52e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/config-only/sealer": {
+  "plan_sha256": "6a0a10b045375331c38e8ffd8279bbafc2fb1bf8de23201df1cc0a445667ed23",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/rollback-descriptor-less/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "asm-next/rollback-descriptor-less/fence-tar/no-sealer": {
+  "plan_sha256": "cb8ae4daa261d0e34e67b39cc3f3b2296fff1ba9313269d77b654cc8cbe9e07f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/fence-tar/sealer": {
+  "plan_sha256": "c135c3524ddf0bc839a9317f0fa1909eae4aa274ee7c4adb09b5fb538f730a2f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/fence/no-sealer": {
+  "plan_sha256": "b22604f3a2e51c18d1774a821978059548117b4e40f4558e43b0ab5d6152ee7a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/fence/sealer": {
+  "plan_sha256": "888f178bbede6643bf0561132086532480640f82cbf24b623b059026da70b6c5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/light/no-sealer": {
+  "plan_sha256": "4ed05621a068d34d42394854dcb2af43ef4f0b79b277505b9e2b7a23880e0ef5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/light/sealer": {
+  "plan_sha256": "5c39ecab8a9b19493903594ff618c00426369cbbc2759a29feeec94fd5ab2559",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/rollback-descriptor-less/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "asm-next/rollback-descriptor-less/none/no-sealer": {
+  "plan_sha256": "4efac51315f558057d46898a50d3b9c376c7d5351ec5ca8dc0bc6afa6dafcaec",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/none/sealer": {
+  "plan_sha256": "21559052a3de677738eddb4c881346236023568e3e791db9cea4a17c15d6eff2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "asm-next/rollback-descriptor-less/secrets-req/sealer": {
+  "plan_sha256": "58d1095da2ef861804167d2078588484827908c17ed6f62c804b25cec0e15bd9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/secrets-skip/no-sealer": {
+  "plan_sha256": "bb5a2a7f7b9f0d212da65d8c563d8a4d0f61a5b2c6f29d6b1926e79617d0d2b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/secrets-skip/sealer": {
+  "plan_sha256": "bb5a2a7f7b9f0d212da65d8c563d8a4d0f61a5b2c6f29d6b1926e79617d0d2b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/tar-unfenced/no-sealer": {
+  "plan_sha256": "2e55d09962785177b65182d64e6d19f6ff5f53a3ef5ec0afbb369eb2098fb774",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "asm-next/rollback-descriptor-less/tar-unfenced/sealer": {
+  "plan_sha256": "dbe438a80b1878a9d76399593ddf5e75ee51033377fd0270c3fe38e67dd599b8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/config-only/no-sealer": {
+  "plan_sha256": "13e73813b6abdefd9b927cb33ba445bf5857aa9fbb160461d5e055a8ea1a4d8d",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/as-recorded/config-only/sealer": {
+  "plan_sha256": "28e5a3c144312ee5083c9a9a8f3fbcce023b49d24de15df77299b4ae6f24f186",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/as-recorded/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/as-recorded/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/as-recorded/fence-tar/no-sealer": {
+  "plan_sha256": "6f20f5d927e4fff903ac713411b6077fcfb9b0d883e997ef63499e679f14b797",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/fence-tar/sealer": {
+  "plan_sha256": "3d7f7ee9d7cf986fda4372e8ad7a62bb971940c14ee0edbd6f3c178c9d558399",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/fence/no-sealer": {
+  "plan_sha256": "9a4558908ceb0a825af48a4b20e1bfa92d250f0435a5bed4846b7f396590cfda",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/fence/sealer": {
+  "plan_sha256": "b56d02b22859b5f13803099fd3a6dedce734aad543ccd28b12023504c245ca99",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/light/no-sealer": {
+  "plan_sha256": "f632a10d0a3d1ff09f6933189448313544cabf55552dd756879e8efd80771f23",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/as-recorded/light/sealer": {
+  "plan_sha256": "fc2efcff0499506313599ef2d96974485150d583e4d758ae84c49ad8af4cdb90",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/as-recorded/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/as-recorded/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/as-recorded/none/no-sealer": {
+  "plan_sha256": "ca96a9abbacbe7d55ec3ee4fe3071f0896c18dfdf7862e61a106cba2de1e7777",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/none/sealer": {
+  "plan_sha256": "b4924ab1bd33539e361c26d2871872c686b7cf9c07ccbef1d48bf88898bac2e4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "demo/as-recorded/secrets-req/sealer": {
+  "plan_sha256": "6ea3449c4028db4341bb5c1df3c294eefad36401169f1adc46f84d4302384cd4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/secrets-skip/no-sealer": {
+  "plan_sha256": "87be3a951f04ffe6265d1bbef14e82e2cafda2290c9d9ea153723cf02df028da",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/secrets-skip/sealer": {
+  "plan_sha256": "87be3a951f04ffe6265d1bbef14e82e2cafda2290c9d9ea153723cf02df028da",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/tar-unfenced/no-sealer": {
+  "plan_sha256": "37be4b4739c65265534c9d68dbb01edd9a6eab713ffafd1e22d1073a1a626801",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/as-recorded/tar-unfenced/sealer": {
+  "plan_sha256": "d2cb2dd9ca0c9aed4a0f6e39cb32df41b3514066fa6b171435293c53fd4a5943",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/config-only/no-sealer": {
+  "plan_sha256": "88d92a4abd31d614009293b45261e1fbfcbb1b3411681134c0bd3cfa2aeec01f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/instance/config-only/sealer": {
+  "plan_sha256": "5bfd21e05a55f4d91af039e20bf9f37363d17a0990f923558fd13a866bc8d696",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/instance/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/instance/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/instance/fence-tar/no-sealer": {
+  "plan_sha256": "2d56affa2667f9b90b53bf9b9a0573d32f60e3d218cc0c780bf75dca177c0515",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/fence-tar/sealer": {
+  "plan_sha256": "4e2b0ba3d44e220e9d37fee33acb9f92edcac681a4d31eed17210fafe5517637",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/fence/no-sealer": {
+  "plan_sha256": "4ce0f164858982df67b34a35fcfd167db2885a686a94e372c0ea344c25136bc5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/fence/sealer": {
+  "plan_sha256": "570d22789272eb73e5fdef17c81eb0b5c0f9dab73d882534f2fbded9fb4e280c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/light/no-sealer": {
+  "plan_sha256": "ff8e5947960ac51b8d5fc31a67aec7e5ca9b14e3be75efcb57a5dc790a0301ad",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/instance/light/sealer": {
+  "plan_sha256": "8b7c49258b128ef6dc4ea5249e07c87ac4c4c661ace4fd75b6d0c9f56540bd4a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/instance/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/instance/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/instance/none/no-sealer": {
+  "plan_sha256": "76745416b762ca5fb78935c54cd0902db66bdc8d4e0d1695c88776bee25ace06",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/none/sealer": {
+  "plan_sha256": "d63983c7d2b921c5a5509bd2c5f290d77a2f636066f6d0fae8550c678181f0d7",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "demo/instance/secrets-req/sealer": {
+  "plan_sha256": "e3f825f00bd983e05642c0b1aa005bbd1a8dc41842baf7c64f928374a6b97c41",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/secrets-skip/no-sealer": {
+  "plan_sha256": "a0feb98540f1887c1325fe76ac65411a058029118da87dab4ca3102c521a5b82",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/secrets-skip/sealer": {
+  "plan_sha256": "a0feb98540f1887c1325fe76ac65411a058029118da87dab4ca3102c521a5b82",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/tar-unfenced/no-sealer": {
+  "plan_sha256": "dac046f01f5bb0ec84d361caef6192969fd6f26f09e5c8f58b10c73b07dd0687",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/instance/tar-unfenced/sealer": {
+  "plan_sha256": "7619e7d6385304d2ada0a7b5f9866cd77a80f4df9a208bacfcb8f87125596f9a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/config-only/no-sealer": {
+  "plan_sha256": "5448c3cb96d03c9bfbbb6e43467a799ccd5bb94c5fbe154b25dd6790125db8e8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/managed/config-only/sealer": {
+  "plan_sha256": "7b81b0f84ac6fdf075ca98ae026f56919344726d22d0e7bf4baaac8faf18075a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/managed/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/managed/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/managed/fence-tar/no-sealer": {
+  "plan_sha256": "6553f6b3e4734dbb63faf7ed0b321371fb07c38bb8662d3846848d1a835560ee",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/fence-tar/sealer": {
+  "plan_sha256": "ba36c62470e576f49e50c28ad08ed2d463f3adad63afb4bf211a33d6eebf9576",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/fence/no-sealer": {
+  "plan_sha256": "c949930fd333f981c6b1a1e902e0684d5b5b12bfa9d7f814115be9c57db47d97",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/fence/sealer": {
+  "plan_sha256": "0532f994330c0356ba10392c3a4e314784fd223c729f0fe19176e71bd93fd52f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/light/no-sealer": {
+  "plan_sha256": "2226a5de6d43636026737688a670ace3a9e4bb2302653ff86c2d55833330fa5c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/managed/light/sealer": {
+  "plan_sha256": "70c1120d3b6815b5c113b0bc87a26b3a0650cd8395814b0280688245aa18b159",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/managed/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/managed/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/managed/none/no-sealer": {
+  "plan_sha256": "c45ad0ccbb2e0602a099e513f5838517a16f2ccf41ef5b1aa158f475406c9afc",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/none/sealer": {
+  "plan_sha256": "5baea960a5dc300cb33b0d16cb1fc490b38012b1e640a178f4d21d2e803fa5a4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "demo/managed/secrets-req/sealer": {
+  "plan_sha256": "942398a1c67222f2063ab95098ec2f74972f7797462f47b404b32a5bef4b0020",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/secrets-skip/no-sealer": {
+  "plan_sha256": "a7dbcf7ab38350b158ade3000dd35c8e5987dbfcf105a577f2ab4fd399b3b920",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/secrets-skip/sealer": {
+  "plan_sha256": "a7dbcf7ab38350b158ade3000dd35c8e5987dbfcf105a577f2ab4fd399b3b920",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/tar-unfenced/no-sealer": {
+  "plan_sha256": "73a88caecfa3692b653b6516d8f29550de6f728fdf6e47048538b43b26b37bbf",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/managed/tar-unfenced/sealer": {
+  "plan_sha256": "e445d88c8a2b57c6421c6b334be3222aa79e3373c86aab195f2244724f044f5e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/config-only/no-sealer": {
+  "plan_sha256": "5448c3cb96d03c9bfbbb6e43467a799ccd5bb94c5fbe154b25dd6790125db8e8",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/config-only/sealer": {
+  "plan_sha256": "7b81b0f84ac6fdf075ca98ae026f56919344726d22d0e7bf4baaac8faf18075a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/rollback-descriptor-less/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "demo/rollback-descriptor-less/fence-tar/no-sealer": {
+  "plan_sha256": "6553f6b3e4734dbb63faf7ed0b321371fb07c38bb8662d3846848d1a835560ee",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/fence-tar/sealer": {
+  "plan_sha256": "ba36c62470e576f49e50c28ad08ed2d463f3adad63afb4bf211a33d6eebf9576",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/fence/no-sealer": {
+  "plan_sha256": "c949930fd333f981c6b1a1e902e0684d5b5b12bfa9d7f814115be9c57db47d97",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/fence/sealer": {
+  "plan_sha256": "0532f994330c0356ba10392c3a4e314784fd223c729f0fe19176e71bd93fd52f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/light/no-sealer": {
+  "plan_sha256": "2226a5de6d43636026737688a670ace3a9e4bb2302653ff86c2d55833330fa5c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/light/sealer": {
+  "plan_sha256": "70c1120d3b6815b5c113b0bc87a26b3a0650cd8395814b0280688245aa18b159",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/rollback-descriptor-less/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "demo/rollback-descriptor-less/none/no-sealer": {
+  "plan_sha256": "c45ad0ccbb2e0602a099e513f5838517a16f2ccf41ef5b1aa158f475406c9afc",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/none/sealer": {
+  "plan_sha256": "5baea960a5dc300cb33b0d16cb1fc490b38012b1e640a178f4d21d2e803fa5a4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "demo/rollback-descriptor-less/secrets-req/sealer": {
+  "plan_sha256": "942398a1c67222f2063ab95098ec2f74972f7797462f47b404b32a5bef4b0020",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/secrets-skip/no-sealer": {
+  "plan_sha256": "a7dbcf7ab38350b158ade3000dd35c8e5987dbfcf105a577f2ab4fd399b3b920",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/secrets-skip/sealer": {
+  "plan_sha256": "a7dbcf7ab38350b158ade3000dd35c8e5987dbfcf105a577f2ab4fd399b3b920",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/tar-unfenced/no-sealer": {
+  "plan_sha256": "73a88caecfa3692b653b6516d8f29550de6f728fdf6e47048538b43b26b37bbf",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "demo/rollback-descriptor-less/tar-unfenced/sealer": {
+  "plan_sha256": "e445d88c8a2b57c6421c6b334be3222aa79e3373c86aab195f2244724f044f5e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/config-only/no-sealer": {
+  "plan_sha256": "311d902fe57c866e42b5288a9627dead6b4da390d4094cfa2c9a9c9b64dcb637",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/as-recorded/config-only/sealer": {
+  "plan_sha256": "93e9752aa6e64bb111fe5f2ce51496a2078d484398ae6ef5777256a79761a5ae",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/as-recorded/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/as-recorded/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/as-recorded/fence-tar/no-sealer": {
+  "plan_sha256": "cf9106610484a3fb73ab00061c47e2d659958ad5ac3daa2eef28ddbbd713cda7",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/fence-tar/sealer": {
+  "plan_sha256": "c65c63a2ab285b217ff3bc04d3333bcd6a2c8711d799341653e38ab146bff6e0",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/fence/no-sealer": {
+  "plan_sha256": "57d8cbf27d436e448d36aab3902275493203e30b0d7eebbff9638446572f2094",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/fence/sealer": {
+  "plan_sha256": "4ebf1e691b5a43443f731c62cf989d274be9dde720cc742b3a028837b1effabd",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/light/no-sealer": {
+  "plan_sha256": "716c19e1a80b2a075e589cbc617f799275d7c0efb167297946a143e2b7b2ed2a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/as-recorded/light/sealer": {
+  "plan_sha256": "e20464aa197ff11853352aadee6ad48fa730b439f4245ae001ae938d9553e3ec",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/as-recorded/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/as-recorded/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/as-recorded/none/no-sealer": {
+  "plan_sha256": "18d5aad9c4fe221787a9d1103b42b6bbe299e44b456445f75915240f3065a051",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/none/sealer": {
+  "plan_sha256": "ab568e70b0b334b82e7e6bf4359670aa61f8d2892d99c31efd0822fa90e96c9b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "dev/as-recorded/secrets-req/sealer": {
+  "plan_sha256": "93de7d62a72f5483bceef2b62ba9a9ca1621e177380a0d805d92ba9a5115b1ba",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/secrets-skip/no-sealer": {
+  "plan_sha256": "ce9633bff8237c597b93ff95edd776340db5a770de46f41ca9ff6dbe9ec2cb77",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/secrets-skip/sealer": {
+  "plan_sha256": "ce9633bff8237c597b93ff95edd776340db5a770de46f41ca9ff6dbe9ec2cb77",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/tar-unfenced/no-sealer": {
+  "plan_sha256": "06be4c49a9a78f9577111299ff1accd052151a0a25c31a78cb9ee7040fc30843",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/as-recorded/tar-unfenced/sealer": {
+  "plan_sha256": "b9ee98c103871d30ecfbd2c2b7b740d3d45dfb6b98dc38e9c2bde52f4bfca790",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/config-only/no-sealer": {
+  "plan_sha256": "ef018edfba4ce627f65f54ebcd673cec7f5a3f5853f75769c5314ca2820c421e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/instance/config-only/sealer": {
+  "plan_sha256": "084a6a0b170e41e628245c41d2314b09511eedce36855f17150e9b18495f81fa",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/instance/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/instance/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/instance/fence-tar/no-sealer": {
+  "plan_sha256": "b8903bcf2f7923a8492f4d1f6d3f33a31cf0b19bcdd800be4205e9bc5e5ba053",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/fence-tar/sealer": {
+  "plan_sha256": "7b0351a17813631c912ba9b3ace4a40c8290ec55f68ab76568cd1c627fe69626",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/fence/no-sealer": {
+  "plan_sha256": "c5c1fd176b1255f09e48a67f60dc370aa8c8aff8f88d3912a4aaae1ddcba525e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/fence/sealer": {
+  "plan_sha256": "8c185a020f6302713a619de6fdd9d9d25ec791b1e6035c602cd25c2b73f3e6f9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/light/no-sealer": {
+  "plan_sha256": "442ecf2e5493c00a2471dc347fb6dadbc0800331648e11d541f3e2dfcee8b5e5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/instance/light/sealer": {
+  "plan_sha256": "183c6e5441c4ab9014ca80b72eb7be1a7880643d9f6524e142f684efffa5d0f5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/instance/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/instance/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/instance/none/no-sealer": {
+  "plan_sha256": "3fcd09d9eff16188b0acc0f0d1c1322c8fd31c13920b08a67762b49b244f3d9d",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/none/sealer": {
+  "plan_sha256": "de651abb6bd2fca88f957f94956cedd775d4314eb76ec0acfaa4914dad77a63a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "dev/instance/secrets-req/sealer": {
+  "plan_sha256": "9e070656cffe9a0588a6634bfe5614a63b67525fd084ab799db5acef79ecec37",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/secrets-skip/no-sealer": {
+  "plan_sha256": "4d04a33b0e4176b1f0fecc57fbcfd7fef94d346bdeb03f92bcf36b0229cf806e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/secrets-skip/sealer": {
+  "plan_sha256": "4d04a33b0e4176b1f0fecc57fbcfd7fef94d346bdeb03f92bcf36b0229cf806e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/tar-unfenced/no-sealer": {
+  "plan_sha256": "6b8139372265c5824e674f4b8b7494b1018c316acd1a02caef21126759b689f2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/instance/tar-unfenced/sealer": {
+  "plan_sha256": "cb786786490b1d06dad3a288fc0b427f19c0c4b5cea594115f3e27e761600ade",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/config-only/no-sealer": {
+  "plan_sha256": "16b3454badb4912804bde354c08d53750d45a740aac2ded6071a4b807d98c452",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/managed/config-only/sealer": {
+  "plan_sha256": "3017e27ca884730d113671dcc2ec54ca159d5043cfdb789e7ad4f303380be7de",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/managed/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/managed/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/managed/fence-tar/no-sealer": {
+  "plan_sha256": "6e81f86cbbb1055562e6071797205562599bb6632e3fc79eef4a39124baaca4f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/fence-tar/sealer": {
+  "plan_sha256": "c8aa6733cdae1113ec698f07511fe933b78f951ac7acb99c915e3e0e05ba6f5e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/fence/no-sealer": {
+  "plan_sha256": "5fdffb50bbe21c28dc1fabda70c30c86361b9e043f8f7eb481e3d4d95fd01446",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/fence/sealer": {
+  "plan_sha256": "92a4d6f482599984bb14f09cb55f240d0c5f5896950255ca7ddf2db7f6f55124",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/light/no-sealer": {
+  "plan_sha256": "90c5dc433c843a7d1a930c76d701af167d744b29556c57ae83fe7e7421770221",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/managed/light/sealer": {
+  "plan_sha256": "57609dec6ce79df6be7d772f17a7b488ec3efb9a693b4292d852656184f78c7b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/managed/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/managed/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/managed/none/no-sealer": {
+  "plan_sha256": "7d953462954c1cfbee8b382425b5089edd18a08f88bee92abbeec1e28eebcc09",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/none/sealer": {
+  "plan_sha256": "8f38c0c2dc0bafaadfede913985953c196b230f4106d1b3223bfd14e160e5a77",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "dev/managed/secrets-req/sealer": {
+  "plan_sha256": "fde92c26b5d77d9adf83cbbe8d1109161fb8f259a49d21c41d8a55c65226e534",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/secrets-skip/no-sealer": {
+  "plan_sha256": "3479d42c2588c0edf3a895949d1bc7eb883d4ecd1bf1cd7b18b17f5db95d8c68",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/secrets-skip/sealer": {
+  "plan_sha256": "3479d42c2588c0edf3a895949d1bc7eb883d4ecd1bf1cd7b18b17f5db95d8c68",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/tar-unfenced/no-sealer": {
+  "plan_sha256": "b837c7a1f420921d7811b02e00e5459c1ee9b6cacca6249e22b0be6bae4d5396",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/managed/tar-unfenced/sealer": {
+  "plan_sha256": "7bc167aa3131c887b6ad274193b7c15170c4da8ae75efc9e20ab8f04b97a5470",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/config-only/no-sealer": {
+  "plan_sha256": "16b3454badb4912804bde354c08d53750d45a740aac2ded6071a4b807d98c452",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/config-only/sealer": {
+  "plan_sha256": "3017e27ca884730d113671dcc2ec54ca159d5043cfdb789e7ad4f303380be7de",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/rollback-descriptor-less/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "dev/rollback-descriptor-less/fence-tar/no-sealer": {
+  "plan_sha256": "6e81f86cbbb1055562e6071797205562599bb6632e3fc79eef4a39124baaca4f",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/fence-tar/sealer": {
+  "plan_sha256": "c8aa6733cdae1113ec698f07511fe933b78f951ac7acb99c915e3e0e05ba6f5e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/fence/no-sealer": {
+  "plan_sha256": "5fdffb50bbe21c28dc1fabda70c30c86361b9e043f8f7eb481e3d4d95fd01446",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/fence/sealer": {
+  "plan_sha256": "92a4d6f482599984bb14f09cb55f240d0c5f5896950255ca7ddf2db7f6f55124",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/light/no-sealer": {
+  "plan_sha256": "90c5dc433c843a7d1a930c76d701af167d744b29556c57ae83fe7e7421770221",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/light/sealer": {
+  "plan_sha256": "57609dec6ce79df6be7d772f17a7b488ec3efb9a693b4292d852656184f78c7b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/rollback-descriptor-less/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "dev/rollback-descriptor-less/none/no-sealer": {
+  "plan_sha256": "7d953462954c1cfbee8b382425b5089edd18a08f88bee92abbeec1e28eebcc09",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/none/sealer": {
+  "plan_sha256": "8f38c0c2dc0bafaadfede913985953c196b230f4106d1b3223bfd14e160e5a77",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "dev/rollback-descriptor-less/secrets-req/sealer": {
+  "plan_sha256": "fde92c26b5d77d9adf83cbbe8d1109161fb8f259a49d21c41d8a55c65226e534",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/secrets-skip/no-sealer": {
+  "plan_sha256": "3479d42c2588c0edf3a895949d1bc7eb883d4ecd1bf1cd7b18b17f5db95d8c68",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/secrets-skip/sealer": {
+  "plan_sha256": "3479d42c2588c0edf3a895949d1bc7eb883d4ecd1bf1cd7b18b17f5db95d8c68",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/tar-unfenced/no-sealer": {
+  "plan_sha256": "b837c7a1f420921d7811b02e00e5459c1ee9b6cacca6249e22b0be6bae4d5396",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "dev/rollback-descriptor-less/tar-unfenced/sealer": {
+  "plan_sha256": "7bc167aa3131c887b6ad274193b7c15170c4da8ae75efc9e20ab8f04b97a5470",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/config-only/no-sealer": {
+  "plan_sha256": "62f066104a678e4fcea0cf191c8e6204d75f808db3a5e23dbf65c79e460984e4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/config-only/sealer": {
+  "plan_sha256": "fc00f182de9af155c30033797a362c7e155a962f62a16b9270ffc08ba15fbfac",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/as-recorded/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/as-recorded/fence-tar/no-sealer": {
+  "plan_sha256": "69666525906b7e1a517102967264e6ac35da56bfec4cd9c2e9f4f941ee828016",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/fence-tar/sealer": {
+  "plan_sha256": "432f7cee74dcea1b9b99efc8ce26bad7409a46ae5ecf6187d8bfe1f3a113ab13",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/fence/no-sealer": {
+  "plan_sha256": "3d375e9cf9e49e1153fc24fb46ffb1dab8f0d913d221b2f7ecd5fdc7abe8dca9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/fence/sealer": {
+  "plan_sha256": "5aba10936e50481cb3d12ce0e724212c10a53ad8cc356d078e690b7437267e95",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/light/no-sealer": {
+  "plan_sha256": "47265c6921dd3a66b93c36d68423a79ccf1cb7a1c661df6fec113e1f5a288e99",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/light/sealer": {
+  "plan_sha256": "fca7eaf77e9c6a5d937e478a2e91a87cdc53361573f9a2de8bfb3cf41a010e7c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/as-recorded/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/as-recorded/none/no-sealer": {
+  "plan_sha256": "0e47191ab8626d5037fa59be74cf673d87f187c2915bfe90a22c93c146dcd67d",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/none/sealer": {
+  "plan_sha256": "d96cb2bbe72bbac778444fb0637c5589f46853d8dec225bb04a994991d6ae0bc",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "lucid-next/as-recorded/secrets-req/sealer": {
+  "plan_sha256": "41b4bb4e4df3beb8b3b8c3276f990f3f9a2e669dd273ac14df740914eda3d684",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/secrets-skip/no-sealer": {
+  "plan_sha256": "92396f52502fdc405101f8243816fea85548d91ae8c983325a730a21f48e2f64",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/secrets-skip/sealer": {
+  "plan_sha256": "92396f52502fdc405101f8243816fea85548d91ae8c983325a730a21f48e2f64",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/tar-unfenced/no-sealer": {
+  "plan_sha256": "f4f662595aa412fcde34525beade43b6ece05e9f825456e416cf0bc12cbf6922",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/as-recorded/tar-unfenced/sealer": {
+  "plan_sha256": "b74907435109475911c7a16261ef8a70967c6dffad129ec6b4fa7a7a0f312d4e",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/config-only/no-sealer": {
+  "plan_sha256": "f17b96683cc2c2050c30acaa1853856e3f0702f4b4cf8592c148037f338612f3",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/instance/config-only/sealer": {
+  "plan_sha256": "697c7f12b8498cf23dea8b9a6f1d5d344aa1c24fc82fbaf59100e9e2c8d45f63",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/instance/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/instance/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/instance/fence-tar/no-sealer": {
+  "plan_sha256": "96a6ccfc55ef22c84555eb66e02f3ef744f09273a6cf16c052567956d3ac7de9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/fence-tar/sealer": {
+  "plan_sha256": "377b012a6c698a04c3416d2b0e119838d7c2e63ebab9085466fae1dda87342c1",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/fence/no-sealer": {
+  "plan_sha256": "2d36f88627c11a21d9b65790913689495c922465a90d548e62c017009dd29aa2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/fence/sealer": {
+  "plan_sha256": "2e0941c7c8c48e74842db87d1cddaa2098950010c9659131c8fd4e81c93059c1",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/light/no-sealer": {
+  "plan_sha256": "69df5cf26a297d0e2deaba8348a51257eb176a0addae17cd7ad3b6760b234c0b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/instance/light/sealer": {
+  "plan_sha256": "bed7b82c4b98f98af7a449bfa13cac46e46beb50ea229a60a028def28f05a6b4",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/instance/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/instance/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/instance/none/no-sealer": {
+  "plan_sha256": "9e753715dd33ec38a5b5b58cde7c843e06a0273bb6a049a25a51aea28ba86eab",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/none/sealer": {
+  "plan_sha256": "29847f0d373d2657ec116a2fdf938cc56f5f1e5f08f554fee20e0fa79a165bf3",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "lucid-next/instance/secrets-req/sealer": {
+  "plan_sha256": "9186ed821ad256e3b6aa9587baf51d98fc7f367d60f1833397395d763c399962",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/secrets-skip/no-sealer": {
+  "plan_sha256": "9c2cda1b562735c1e794c4cea79d01972d8fb4d9ae2c5247bc1325d5ea3376ca",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/secrets-skip/sealer": {
+  "plan_sha256": "9c2cda1b562735c1e794c4cea79d01972d8fb4d9ae2c5247bc1325d5ea3376ca",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/tar-unfenced/no-sealer": {
+  "plan_sha256": "177ce2c2616e0c3f0fceb63be35bc136b16ab22513916dcb45b31910afea13b3",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/instance/tar-unfenced/sealer": {
+  "plan_sha256": "31968bd88ce5e89486bbe99a1ef5c973341251329cbe969166f47f50d8f633e5",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/config-only/no-sealer": {
+  "plan_sha256": "aa83f8f4728700afd4a58fad31e69359d59bc7c2816bb2952c5b24d5f1d8c0d2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/managed/config-only/sealer": {
+  "plan_sha256": "ee61cbba765cd3451db1b13fb601984f1f33dc4c602ad6b6ac7e9a49428734d2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/managed/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/managed/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/managed/fence-tar/no-sealer": {
+  "plan_sha256": "f651669403fe9b4675d65f9554dcda9a559fcac741d1df19a20b2ee933d68115",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/fence-tar/sealer": {
+  "plan_sha256": "d403158c248ecbbe5f416c43fa50a71f8149bad7b6d3c075f6f67a54beab5296",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/fence/no-sealer": {
+  "plan_sha256": "6339b94bd5a6b4908eebbeb04957ca5ddda0e9ab40cb3a838459402ffdc81b32",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/fence/sealer": {
+  "plan_sha256": "ef2cea82c0d05c64007c027833d911b1a561735eb44bcbcbd9ce2939b1d7af51",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/light/no-sealer": {
+  "plan_sha256": "405c19a9aa9a5ae46d4b751db7f4eb65babb9826d82a2860725d46af832ff215",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/managed/light/sealer": {
+  "plan_sha256": "3e7744ac19e99c6acff0bba05deecfab3a507aae514a5167e05fdf33db13be00",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/managed/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/managed/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/managed/none/no-sealer": {
+  "plan_sha256": "abdd124ebca32257dd1cc6837768f6fbb72f69c425bc1cd27f07b24a8c4a2345",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/none/sealer": {
+  "plan_sha256": "94bc8e4fad66d8026f059a628130fe307650b5613df48b7464124003947254e6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "lucid-next/managed/secrets-req/sealer": {
+  "plan_sha256": "f8fc1bb8718baf0390fd452ba280589db1012145796fbc1249ac900ecda27aad",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/secrets-skip/no-sealer": {
+  "plan_sha256": "ea2d275f8b26945b317e4ee6eed318e1c4c3358c7bd882b40c97b984e4df6bd6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/secrets-skip/sealer": {
+  "plan_sha256": "ea2d275f8b26945b317e4ee6eed318e1c4c3358c7bd882b40c97b984e4df6bd6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/tar-unfenced/no-sealer": {
+  "plan_sha256": "6aa01cf06bd60decdcf882625a9df2c8e3e9a486c90bb18c99d315a76e567b5c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/managed/tar-unfenced/sealer": {
+  "plan_sha256": "e94506d8f0b8d919fb33dcdbfb5b67137a23edcc34e29d2c4bd80f2ba06bca60",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/config-only/no-sealer": {
+  "plan_sha256": "aa83f8f4728700afd4a58fad31e69359d59bc7c2816bb2952c5b24d5f1d8c0d2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/config-only/sealer": {
+  "plan_sha256": "ee61cbba765cd3451db1b13fb601984f1f33dc4c602ad6b6ac7e9a49428734d2",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/fence-light/no-sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/rollback-descriptor-less/fence-light/sealer": {
+  "error": "refused: `fence` stops the tenant API so that the STORES hold still while they are snapshotted, and this scope takes no store snapshots: it would be an outage for nothing. Take the light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope"
+ },
+ "lucid-next/rollback-descriptor-less/fence-tar/no-sealer": {
+  "plan_sha256": "f651669403fe9b4675d65f9554dcda9a559fcac741d1df19a20b2ee933d68115",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/fence-tar/sealer": {
+  "plan_sha256": "d403158c248ecbbe5f416c43fa50a71f8149bad7b6d3c075f6f67a54beab5296",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/fence/no-sealer": {
+  "plan_sha256": "6339b94bd5a6b4908eebbeb04957ca5ddda0e9ab40cb3a838459402ffdc81b32",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/fence/sealer": {
+  "plan_sha256": "ef2cea82c0d05c64007c027833d911b1a561735eb44bcbcbd9ce2939b1d7af51",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/light/no-sealer": {
+  "plan_sha256": "405c19a9aa9a5ae46d4b751db7f4eb65babb9826d82a2860725d46af832ff215",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/light/sealer": {
+  "plan_sha256": "3e7744ac19e99c6acff0bba05deecfab3a507aae514a5167e05fdf33db13be00",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/no-config/no-sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/rollback-descriptor-less/no-config/sealer": {
+  "error": "refused: a bundle without `config` in its scope carries no tenant.env, no registry row and no secrets, so nothing could be restored from it; asked for state,stores"
+ },
+ "lucid-next/rollback-descriptor-less/none/no-sealer": {
+  "plan_sha256": "abdd124ebca32257dd1cc6837768f6fbb72f69c425bc1cd27f07b24a8c4a2345",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/none/sealer": {
+  "plan_sha256": "94bc8e4fad66d8026f059a628130fe307650b5613df48b7464124003947254e6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/secrets-req/no-sealer": {
+  "error": "refused: backup with secrets=require needs an age recipient in /rag/config/ctl/backup-recipients.txt; run `fleet backup-identity init`"
+ },
+ "lucid-next/rollback-descriptor-less/secrets-req/sealer": {
+  "plan_sha256": "f8fc1bb8718baf0390fd452ba280589db1012145796fbc1249ac900ecda27aad",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/secrets-skip/no-sealer": {
+  "plan_sha256": "ea2d275f8b26945b317e4ee6eed318e1c4c3358c7bd882b40c97b984e4df6bd6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/secrets-skip/sealer": {
+  "plan_sha256": "ea2d275f8b26945b317e4ee6eed318e1c4c3358c7bd882b40c97b984e4df6bd6",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/tar-unfenced/no-sealer": {
+  "plan_sha256": "6aa01cf06bd60decdcf882625a9df2c8e3e9a486c90bb18c99d315a76e567b5c",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ },
+ "lucid-next/rollback-descriptor-less/tar-unfenced/sealer": {
+  "plan_sha256": "e94506d8f0b8d919fb33dcdbfb5b67137a23edcc34e29d2c4bd80f2ba06bca60",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": true,
+   "bundle": "new-bundle",
+   "fenced": false,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ]
+  }
+ }
+}

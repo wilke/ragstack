@@ -72,8 +72,12 @@ func TestTenantOpArgsMatchTheContract(t *testing.T) {
 			[]string{"tenant", "restore", "asm-next", "--from", "20260914T101500Z-backup", "--as", "asm-restore"},
 			"/v1/tenants/asm-next/ops/restore",
 			map[string]any{"from": "20260914T101500Z-backup", "as": "asm-restore"}},
-		{"decommission takes nothing", []string{"tenant", "decommission", "dev"},
-			"/v1/tenants/dev/ops/decommission", map[string]any{}},
+		{"decommission sends no archive it was not given (the default, true, is the daemon's)",
+			[]string{"tenant", "decommission", "dev"}, "/v1/tenants/dev/ops/decommission", map[string]any{}},
+		{"decommission without the archive", []string{"tenant", "decommission", "dev", "--archive=false"},
+			"/v1/tenants/dev/ops/decommission", map[string]any{"archive": false}},
+		{"decommission with the archive stated", []string{"tenant", "decommission", "dev", "--archive"},
+			"/v1/tenants/dev/ops/decommission", map[string]any{"archive": true}},
 	})
 }
 

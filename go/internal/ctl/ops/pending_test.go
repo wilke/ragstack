@@ -89,7 +89,7 @@ var planCases = []planCase{
 	{"restore", map[string]any{"from": "20260914T093000Z-backup", "as": "copy"}, managed},
 	{"handover", map[string]any{"phase": "execute"}, handoverReady},
 	{"migrate-local", map[string]any{"phase": "execute"}, backedUp},
-	{"decommission", nil, backedUp},
+	{"decommission", noArchive, backedUp},
 	{"key-mint", map[string]any{"label": "ops", "role": "user"}, managed},
 	{"admin-add", map[string]any{"subject": "bvbrc:alice"}, managed},
 	{"sa-create", map[string]any{"subject": "newsa", "role": "user"}, backedUp},
