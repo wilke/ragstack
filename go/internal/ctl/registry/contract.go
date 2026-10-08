@@ -18,6 +18,7 @@ package registry
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -52,6 +53,9 @@ var (
 	// admitted anything else would be a grammar in which a value from
 	// somewhere else could be mistaken for one of these.
 	reHandoverToken = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	// A quarantined data tree: an absolute path whose basename ends in the
+	// marker and a stamp in the ctl's one stamp format (ops.stampFormat).
+	reQuarantineDir = regexp.MustCompile(`^/[A-Za-z0-9._/-]*\.quarantined-[0-9]{8}T[0-9]{6}Z$`)
 )
 
 // Enums, byte-identical to the schema's.
@@ -62,7 +66,7 @@ var (
 	enumUIMode        = []string{UIModeStatic, UIModeDev, UIModeExternal}
 	enumSupervisor    = []string{"systemd", "manual", "instance"}
 	enumOwner         = []string{"svcbvbrc", "wilke"}
-	enumState         = []string{"provisioned", "active", "stopped", "migrating", StateHandover, "quarantined", "decommissioned"}
+	enumState         = []string{"provisioned", "active", "stopped", "migrating", StateHandover, StateQuarantined, "decommissioned"}
 	enumDesiredBoot   = []string{"enabled", "disabled"}
 	enumEnvLayout     = []string{"legacy", "managed"}
 	enumRole          = []string{"admin", "user"}
@@ -503,6 +507,9 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 				h.Phase, t.State, StateHandover)
 		}
 	}
+	if q := t.Quarantine; q != nil {
+		c.quarantine(ptr, t, q)
+	}
 	for _, verb := range sortedOpKeys(t.LastOps) {
 		op := t.LastOps[verb]
 		lp := ptr + "/last_ops/" + verb
@@ -527,6 +534,28 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 			seen[leg] = true
 		}
 	}
+}
+
+// quarantine checks the decommission's record. The schema states the shape
+// and the state rule (registry.json's `if quarantine then state ==
+// quarantined`); the Go mirror adds what JSON Schema cannot say: the tree is
+// THIS row's data_dir renamed in place — beside it, with the marker — and not
+// some other directory a hand-edited row could point a later purge at.
+func (c *contractCheck) quarantine(ptr string, t *Tenant, q *Quarantine) {
+	qp := ptr + "/quarantine"
+	if t.State != StateQuarantined {
+		c.failf(qp, "is present but state is %q; only a %q row records a quarantine", t.State, StateQuarantined)
+	}
+	c.pattern(qp+"/dir", q.Dir, reQuarantineDir)
+	if clean := path.Clean(q.Dir); clean != q.Dir {
+		c.failf(qp+"/dir", "%q is not a clean path (it cleans to %q)", q.Dir, clean)
+	} else if !strings.HasPrefix(q.Dir, t.DataDir+QuarantineMarker) {
+		c.failf(qp+"/dir", "%q is not this row's data_dir renamed aside: it must be %s%s<stamp>",
+			q.Dir, t.DataDir, QuarantineMarker)
+	}
+	c.minLen1(qp+"/at", q.At)
+	c.pattern(qp+"/job_id", q.JobID, reJobID)
+	c.nullable(qp+"/bundle", q.Bundle, reAbsPath)
 }
 
 func (c *contractCheck) code(ptr string, code Code) {

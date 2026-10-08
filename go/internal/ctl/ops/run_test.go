@@ -571,7 +571,7 @@ func TestDecommissionRenamesTheTreeAndCanPutItBack(t *testing.T) {
 		tn.LastBackup = &registry.BackupRecord{Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup",
 			At: "2026-09-14T09:30:00Z", Kind: "backup", Fenced: true, Verified: true, Scope: fullScope}
 	})
-	p := plan(t, oc, "decommission", nil)
+	p := plan(t, oc, "decommission", noArchive)
 	r := newRunner(oc, fake)
 	r.runAll(t, p)
 

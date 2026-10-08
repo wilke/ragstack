@@ -556,7 +556,7 @@ func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 		managed(tn)
 		tn.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: true, Scope: fullScope}
 	})
-	p := plan(t, oc, "decommission", nil)
+	p := plan(t, oc, "decommission", noArchive)
 	for _, want := range [][2]string{
 		{"fs", "quarantine the data directory"},
 		{"fs", "remove the rendered unit files"},
@@ -573,7 +573,7 @@ func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 	// renamed and left exactly as it was.
 	allowed := map[string]bool{
 		oc.Roots.Registry(): true,
-		oc.Tenant.DataDir + ".quarantined-<ts>/" + recoveryFile: true,
+		oc.Tenant.DataDir + ".quarantined-" + quarantinePlaceholder + "/" + recoveryFile: true,
 	}
 	for _, s := range p.Steps {
 		for _, w := range s.Plan.WouldWrite {

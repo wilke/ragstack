@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
+
 	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
@@ -31,6 +33,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/render"
+	"github.com/ragstack/ragstack/internal/ctl/seal"
 )
 
 // selftestClock is the pinned clock. It makes the sandbox names deterministic,
@@ -55,11 +58,26 @@ func newFixtureSelftest(t *testing.T) (*selftest, *drivers.Fake, *bytes.Buffer) 
 // newFixtureSelftestWith is the same run under a chosen supervisor.
 func newFixtureSelftestWith(t *testing.T, supervisor string) (*selftest, *drivers.Fake, *bytes.Buffer) {
 	t.Helper()
+	return newFixtureSelftestRecipients(t, supervisor, "")
+}
+
+// newFixtureSelftestRecipients is the run with `recipients` as the scratch
+// tree's backup-recipients.txt, so `decommission --archive` can seal.
+func newFixtureSelftestRecipients(t *testing.T, supervisor, recipients string) (*selftest, *drivers.Fake, *bytes.Buffer) {
+	t.Helper()
 	root := t.TempDir()
 	roots := paths.NewRoots(root, paths.Overrides{})
 	for _, d := range []string{roots.DataDir, roots.ReposDir, roots.BackupsDir, roots.UnitsDir(),
 		roots.CtlStateDir, roots.ImagesDir, filepath.Join(root, "documents")} {
 		if err := os.MkdirAll(d, 0o770); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recipients != "" {
+		if err := os.MkdirAll(roots.CtlConfigDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(roots.BackupRecipients(), []byte(recipients), 0o640); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -840,4 +858,76 @@ func TestSelftestRefusesAnUnknownSupervisor(t *testing.T) {
 	if rc, _, _ := capture(t, "selftest", "--supervisor", "sysvinit"); rc != exitUsage {
 		t.Errorf("rc %d, want %d", rc, exitUsage)
 	}
+}
+
+// With a backup recipient in the run's own config dir, the RESTORED sandbox
+// (running) is decommissioned through the archive: a fenced, checked bundle
+// with the secrets sealed, then the quarantine — and the row records both. The
+// primary (stopped by then) takes --archive=false. Both supervisors.
+func TestSelftestArchivesTheRestoredSandboxWhenARecipientExists(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sup := range []string{"systemd", "instance"} {
+		t.Run(sup, func(t *testing.T) {
+			s, fake, out := newFixtureSelftestRecipients(t, sup, "# throwaway selftest recipient\n"+
+				id.Recipient().String()+"\n")
+			s.opts.keep = true // leave the rows, so the record can be read back
+			if err := s.execute(context.Background()); err != nil {
+				s.report()
+				t.Fatalf("selftest.execute: %v\n%s", err, out.String())
+			}
+			s.report()
+			if s.failedChecks() > 0 {
+				t.Fatalf("%d check(s) failed:\n%s", s.failedChecks(), out.String())
+			}
+			var sawArchive bool
+			for _, c := range s.checks {
+				if c.Name == fixtureRestored+": archived and quarantine recorded" && c.Verdict == checkPass {
+					sawArchive = true
+				}
+			}
+			if !sawArchive {
+				t.Fatalf("no passing archive check for %s:\n%s", fixtureRestored, out.String())
+			}
+			row, err := s.tenantRow(fixtureRestored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sealed, err := fake.Files().ReadFile(context.Background(),
+				filepath.Join(string(row.Quarantine.Bundle), "secrets.age"))
+			if err != nil {
+				t.Fatalf("the archive has no secrets.age: %v", err)
+			}
+			if _, err := seal.Unseal([]age.Identity{id}, sealed); err != nil {
+				t.Fatalf("the throwaway identity cannot open the archive: %v", err)
+			}
+			primary, err := s.tenantRow(fixturePrimary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if primary.Quarantine == nil || primary.State != registry.StateQuarantined {
+				t.Errorf("the primary's row = %s / %+v", primary.State, primary.Quarantine)
+			}
+		})
+	}
+}
+
+// Without a recipient the run stays green and says the archive was not
+// exercised.
+func TestSelftestSaysWhenTheArchiveWasNotExercised(t *testing.T) {
+	s, _, out := newFixtureSelftest(t)
+	if err := s.execute(context.Background()); err != nil {
+		t.Fatalf("selftest.execute: %v\n%s", err, out.String())
+	}
+	for _, c := range s.checks {
+		if c.Name == "decommission --archive" {
+			if c.Verdict != checkNA || !strings.Contains(c.Detail, "backup-identity init") {
+				t.Errorf("archive check = %+v", c)
+			}
+			return
+		}
+	}
+	t.Errorf("the report does not say the archive was skipped")
 }

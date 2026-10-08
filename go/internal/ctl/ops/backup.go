@@ -391,7 +391,6 @@ type secretsPart struct {
 
 func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	fence := argBoolOf(args, "fence")
-	tarIt := argBoolOf(args, "tar")
 	scope, err := backupScopeOf(p, args, fence)
 	if err != nil {
 		return err
@@ -400,6 +399,39 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	if err != nil {
 		return err
 	}
+	_, err = p.addBackupSteps(backupPlanArgs{Fence: fence, Tar: argBoolOf(args, "tar"), Scope: scope,
+		Secrets: secrets, RestartAPI: true})
+	return err
+}
+
+// backupPlanArgs is what addBackupSteps plans a bundle from: `backup`'s
+// arguments, already judged (backupScopeOf, backupSecretsOf), plus the one
+// thing only a COMPOSITE job decides.
+type backupPlanArgs struct {
+	Fence   bool
+	Tar     bool
+	Scope   scopeSet
+	Secrets string // secretsInclude | secretsSkip | secretsRequire
+	// RestartAPI ends a fenced bundle by starting the API again and waiting
+	// for it to answer — what `backup --fence` has always done. False leaves
+	// the API DOWN after the registry record, for a caller whose next steps
+	// keep it down: `decommission --archive` takes the bundle and then
+	// quarantines the tenant, and an API started between the two would be an
+	// outage's worth of writes the archive does not hold.
+	RestartAPI bool
+}
+
+// addBackupSteps plans one bundle into p: the precheck, the fence, every leg
+// in scope, the manifest, the finalize, the deep check, the optional tar and
+// the registry record — and, with RestartAPI, the fence's release. It returns
+// the PLANNED bundle directory (the `new-bundle` placeholder: the real id is
+// stamped at run time, and a later step reads it back with p.bundleID(sc)).
+//
+// It is `backup`'s whole plan, and `planBackup` is now this plus argument
+// parsing; TestBackupPlansAreUnchanged holds the two byte-identical to the
+// planBackup that existed before the extraction.
+func (p *planner) addBackupSteps(a backupPlanArgs) (string, error) {
+	fence, tarIt, scope, secrets := a.Fence, a.Tar, a.Scope, a.Secrets
 	// The registry lock as well as the tenant's: the last step records
 	// `last_backup` and `last_ops.backup`, and the manifest projection is
 	// derived from the registry, so the same two locks a settings write takes.
@@ -443,7 +475,7 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 			"has nothing to render one from, so a fence is an outage for this tenant, not a degraded service. " +
 			"Read-only serving is v1.x")
 		if err := p.addAPIStop(); err != nil {
-			return err
+			return "", err
 		}
 		p.addFenceVerify()
 	}
@@ -499,12 +531,12 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	}
 	p.addBackupRecord(fence, scope)
 
-	if fence {
+	if fence && a.RestartAPI {
 		if err := p.addAPIStart(); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return bundleDir, nil
 }
 
 // backupScopeOf reads and judges `scope`.

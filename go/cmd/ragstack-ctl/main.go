@@ -143,7 +143,11 @@ func usage() {
                                             no store snapshots, no fence, seconds); --secrets
                                             require refuses unless a backup recipient exists
   tenant restore <name> --from <bundle-id> --as <fresh-tenant>
-  tenant decommission <name>
+  tenant decommission <name> [--archive=false]
+                                            quarantine (rename, never delete). Archives first by
+                                            default: a fenced, checked backup with the secrets
+                                            sealed (needs a backup recipient), API left down;
+                                            --archive=false uses the existing fenced bundle
                                             the tenant operations. Each posts one
                                             op_request to the daemon and is answered
                                             with a Plan (--dry-run) or a Job.

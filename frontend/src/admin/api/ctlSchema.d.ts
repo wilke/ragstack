@@ -696,7 +696,10 @@ export interface components {
             last_backup: {
                 at: string;
                 fenced: boolean;
+                /** @description A `restore --as` rebuilt a tenant from this bundle. */
                 verified: boolean;
+                /** @description The bundle passed the backup's deep check without a restore (hashes, manifest, snapshot structure, census counts) — registry `last_backup.checked`. `decommission --archive=false` accepts a fenced bundle that is checked or verified. */
+                checked: boolean;
             } | null;
         };
         /**
@@ -782,7 +785,10 @@ export interface components {
                     last_backup: {
                         at: string;
                         fenced: boolean;
+                        /** @description A `restore --as` rebuilt a tenant from this bundle. */
                         verified: boolean;
+                        /** @description The bundle passed the backup's deep check without a restore (hashes, manifest, snapshot structure, census counts) — registry `last_backup.checked`. `decommission --archive=false` accepts a fenced bundle that is checked or verified. */
+                        checked: boolean;
                     } | null;
                 };
             };
@@ -1057,6 +1063,13 @@ export interface components {
                 migrated_at: components["schemas"]["Timestamp"] | string;
             } | null;
         };
+        /** @description What `decommission` left behind: the renamed data tree, when, by which job, and the bundle the tenant can be rebuilt from (the archive the decommission itself took, or with `--archive=false` the row's `last_backup.bundle` at the time; null for a selftest sandbox decommissioned with neither). Present only while `state` is `quarantined`, and `dir` is the row's own `data_dir` with `.quarantined-<stamp>` appended: both are cross-field rules, enforced by `ragstack-ctl`'s Go mirror on every load and save (as the `handover` block's agreement with `state` is), not by this schema. */
+        Quarantine: {
+            dir: string;
+            at: components["schemas"]["Timestamp"];
+            job_id: string;
+            bundle: components["schemas"]["AbsPath"] | null;
+        };
         /** @enum {string} */
         OpVerb: "adopt" | "create" | "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "set-ui-mode" | "set-bind" | "set-supervisor";
         LastOp: {
@@ -1162,6 +1175,8 @@ export interface components {
             rollback_descriptor: components["schemas"]["RollbackDescriptor"] | null;
             /** @description The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight. */
             handover?: components["schemas"]["Handover"] | null;
+            /** @description The decommission's record (see `$defs/Quarantine`). OPTIONAL and absent on every row that is not quarantined, and on a row quarantined before the field existed; when present, `state` must be `quarantined` (enforced by `ragstack-ctl`). */
+            quarantine?: components["schemas"]["Quarantine"];
             last_ops: {
                 [key: string]: components["schemas"]["LastOp"];
             };
@@ -2293,6 +2308,13 @@ export interface components {
                      */
                     scope?: ("config" | "state" | "stores")[];
                 };
+                /** @description What `decommission` left behind: the renamed data tree, when, by which job, and the bundle the tenant can be rebuilt from (the archive the decommission itself took, or with `--archive=false` the row's `last_backup.bundle` at the time; null for a selftest sandbox decommissioned with neither). Present only while `state` is `quarantined`, and `dir` is the row's own `data_dir` with `.quarantined-<stamp>` appended: both are cross-field rules, enforced by `ragstack-ctl`'s Go mirror on every load and save (as the `handover` block's agreement with `state` is), not by this schema. */
+                Quarantine: {
+                    dir: string;
+                    at: components["schemas"]["Timestamp"];
+                    job_id: string;
+                    bundle: components["schemas"]["AbsPath"] | null;
+                };
                 Tenant: {
                     name: components["schemas"]["TenantName"];
                     /** @description The `manifest.tsv` row name = data-dir basename = apptainer instance suffix. Usually equal to `name`; differs for tenants adopted from a renamed directory. */
@@ -2365,6 +2387,8 @@ export interface components {
                     rollback_descriptor: components["schemas"]["RollbackDescriptor"] | null;
                     /** @description The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight. */
                     handover?: components["schemas"]["Handover"] | null;
+                    /** @description The decommission's record (see `$defs/Quarantine`). OPTIONAL and absent on every row that is not quarantined, and on a row quarantined before the field existed; when present, `state` must be `quarantined` (enforced by `ragstack-ctl`). */
+                    quarantine?: components["schemas"]["Quarantine"];
                     last_ops: {
                         [key: string]: components["schemas"]["LastOp"];
                     };

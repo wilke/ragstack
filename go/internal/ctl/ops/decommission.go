@@ -37,7 +37,35 @@ import (
 // they will not find.
 const recoveryFile = "RECOVERY.json"
 
-func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
+// quarantinePlaceholder stands for the stamp in a PLAN's quarantine path, as
+// bundlePlaceholder does for the bundle id: the stamp is a run-time clock
+// reading, and plan.json's would_write path admits only [A-Za-z0-9._/-] — the
+// `<ts>` this plan used to carry made every decommission plan a document its
+// own contract refused.
+const quarantinePlaceholder = "new-stamp"
+
+// quarantineDirID prefixes the external ID under which the registry step
+// records the quarantine directory it DECIDED, before it writes the row. The
+// rename reads it back rather than reading the clock again: the row's
+// `quarantine.dir` and the directory on disk are the same string by
+// construction.
+const quarantineDirID = "quarantine-dir:"
+
+// prevQuarantineRowID prefixes the external ID that carries the row's fields
+// the registry step is about to overwrite, so its Rollback can put them back
+// after a restart.
+const prevQuarantineRowID = "prev-quarantine-row:"
+
+// decommissionArchiveOf is `archive` with the contract's default applied:
+// absent means true. The daemon applies no defaults, so this is where it is.
+func decommissionArchiveOf(args map[string]any) bool {
+	if v, ok := args["archive"].(bool); ok {
+		return v
+	}
+	return true
+}
+
+func planDecommission(_ context.Context, p *planner, args map[string]any) error {
 	p.need(model.LockRegistry, model.LockManifest, model.LockTenant, model.LockGateway)
 	t := p.t
 	// v1 quarantines; it never purges. And it quarantines only what the ctl
@@ -60,6 +88,26 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 		return p.refuse("%s is supervised by %q, which is not something the ctl can stop; there is nothing for "+
 			"`decommission` to take down", t.Name, t.Supervisor)
 	}
+	archive := decommissionArchiveOf(args)
+	if archive && !p.op.deps.hasRecipients() {
+		// Refused HERE, before a fence stops anything: an archive whose
+		// secrets were silently left out is an archive a restore cannot finish
+		// from, and that is exactly what an operator decommissioning a tenant
+		// would not discover until the day they needed it.
+		return p.refuse("decommission archives %s first, and the archive must carry the tenant's secrets "+
+			"(backup secrets=require): no age recipient is configured in %s. Run `ragstack-ctl fleet "+
+			"backup-identity init` (then restart the daemon), or decommission with --archive=false over an "+
+			"existing fenced bundle that is checked or verified", t.Name, p.recipientsPath())
+	}
+	if archive && t.State == "stopped" {
+		// The archive's store legs snapshot RUNNING stores over their HTTP
+		// APIs; a tenant whose row says stopped would fail at the first leg,
+		// after the fence. Said here, from the row, rather than discovered
+		// there.
+		return p.refuse("%s is stopped, and the archive snapshots its stores through their running APIs: start it "+
+			"first (`ragstack-ctl tenant start %s`), or decommission with --archive=false over its last fenced "+
+			"bundle that is checked or verified", t.Name, t.Name)
+	}
 	if sandbox {
 		// A sandbox needs no recovery point. It was created by the selftest
 		// minutes ago, its contents are a fixture, and the bundle a
@@ -69,8 +117,31 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 		p.warn("this is a selftest sandbox (ports " + strconv.Itoa(paths.SelftestBase) + "–" +
 			strconv.Itoa(paths.SelftestEnd) + "): no fenced backup is required, and the allocator reuses sandbox blocks once the row is gone, " +
 			"or the selftest would exhaust them")
-	} else if err := p.requireFencedBackup("decommission"); err != nil {
-		return err
+	} else if !archive {
+		if err := p.requireFencedBackup("decommission"); err != nil {
+			return err
+		}
+	}
+
+	if archive {
+		// The archive IS the precondition, taken inside this job: a fenced,
+		// full bundle with the secrets sealed, deep-checked by its own check
+		// step and recorded as last_backup — and then NOT released. The API
+		// stays down from the fence to the quarantine, so nothing is written
+		// to the tenant that the archive does not hold.
+		p.warn("--archive (the default): this job first takes a fenced full backup with the tenant's secrets " +
+			"sealed (secrets=require), checks it and records it as last_backup; the API is NOT started again " +
+			"afterwards — the quarantine follows directly. A failure rolls back every step that has a rollback " +
+			"(the rename, the row, the backup record, the bundle's finalize); read the job's rollback block, and " +
+			"`tenant start` what it leaves stopped")
+		full := scopeSet{}
+		for _, leg := range fullScope {
+			full[leg] = true
+		}
+		if _, err := p.addBackupSteps(backupPlanArgs{Fence: true, Scope: full, Secrets: secretsRequire,
+			RestartAPI: false}); err != nil {
+			return err
+		}
 	}
 
 	legs, _ := p.legs(nil)
@@ -95,7 +166,7 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	// The registry step comes BEFORE the publish: the gateway renders routes
 	// for active rows only, so the generation without this tenant can only be
 	// rendered once the row says quarantined.
-	p.addQuarantineRegistry(sandbox)
+	p.addQuarantineRegistry(archive)
 	p.add(step{
 		Kind: "nginx", Title: "publish a generation without " + t.Name, Destructive: true, Targets: []string{t.Name},
 		Warnings: []string{"the gateway renders only ACTIVE tenants, so a quarantined row drops out of the map by " +
@@ -197,14 +268,25 @@ func (p *planner) addUnitFileRemoval() {
 	})
 }
 
-// addQuarantineRegistry marks the row quarantined. The block stays the row's.
+// addQuarantineRegistry marks the row quarantined and records the quarantine
+// block. The block stays the row's, and so does the port block.
 //
 // It runs BEFORE the directory moves: the registry is the source of truth, and
 // a crash between the two leaves a row that says `quarantined` over a directory
 // that is still in place — which an operator can read and fix. The other order
 // leaves a tenant the registry calls active over a directory that is not there,
 // which is the state every reader of the fleet then reports as a failure.
-func (p *planner) addQuarantineRegistry(sandbox bool) {
+//
+// It DECIDES the quarantine directory (checkpointed as quarantineDirID before
+// the row is written) and the rename reads that decision back, so the row's
+// `quarantine.dir` names the directory the rename makes. `bundle` is the
+// archive this job wrote — checked against the row's last_backup, which the
+// archive's record step set — or, without an archive, the row's last_backup.
+//
+// Its Rollback puts back every field it changed, so a quarantine that fails
+// later (the rename above all) leaves no `quarantine` block on a row whose tree
+// never moved.
+func (p *planner) addQuarantineRegistry(archive bool) {
 	t := p.t
 	p.add(step{
 		Kind: "registry", Title: "mark " + t.Name + " quarantined (the row keeps its port block)",
@@ -219,9 +301,46 @@ func (p *planner) addQuarantineRegistry(sandbox bool) {
 			if row == nil {
 				return "", fmt.Errorf("%w: %s is no longer in the registry", jobs.ErrRefused, t.Name)
 			}
+			var bundle registry.NullString
+			if archive {
+				want := filepath.Join(sc.Ops.Roots.BackupsDir, t.Name, p.bundleID(sc))
+				if row.LastBackup == nil || row.LastBackup.Bundle != want {
+					got := "none"
+					if row.LastBackup != nil {
+						got = row.LastBackup.Bundle
+					}
+					return "", fmt.Errorf("%w: the archive this job wrote is %s but the row's last_backup is %s; "+
+						"refusing to record a quarantine whose bundle is not the archive", jobs.ErrRefused, want, got)
+				}
+				bundle = registry.NullString(want)
+			} else if row.LastBackup != nil {
+				bundle = registry.NullString(row.LastBackup.Bundle)
+			}
+			dir := p.quarantineDirOf(sc)
+			prev, err := json.Marshal(quarantineRowFields{State: row.State, DesiredBoot: row.DesiredBoot,
+				Quarantine: row.Quarantine, LastDecommission: lastOp(row, "decommission")})
+			if err != nil {
+				return "", fmt.Errorf("recording %s's row before the quarantine: %w", t.Name, err)
+			}
+			// Both checkpoints BEFORE the write: the rollback needs the old
+			// fields, and the rename needs the decided directory, whichever
+			// way this step ends.
+			var ids []string
+			if !recorded(sc, quarantineDirID+dir) {
+				ids = append(ids, quarantineDirID+dir)
+			}
+			if _, ok := externalIDValue(sc.Step.ExternalIDs, prevQuarantineRowID); !ok {
+				ids = append(ids, prevQuarantineRowID+string(prev))
+			}
+			if len(ids) > 0 {
+				if err := sc.Checkpoint(ids...); err != nil {
+					return "", err
+				}
+			}
 			at := p.stampRFC3339(sc)
-			row.State = "quarantined"
+			row.State = registry.StateQuarantined
 			row.DesiredBoot = "disabled"
+			row.Quarantine = &registry.Quarantine{Dir: dir, At: at, JobID: jobIDOf(sc), Bundle: bundle}
 			if row.LastOps == nil {
 				row.LastOps = map[string]registry.OpRecord{}
 			}
@@ -229,9 +348,59 @@ func (p *planner) addQuarantineRegistry(sandbox bool) {
 			if err := p.op.deps.SaveFleet(cur); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("state=quarantined, index %d kept by the row", row.Ports.Index), nil
+			p.result["quarantine_dir"] = dir
+			if bundle != "" {
+				p.result["archive_bundle"] = string(bundle)
+			}
+			return fmt.Sprintf("state=quarantined, index %d kept by the row, quarantine.dir=%s", row.Ports.Index, dir), nil
+		},
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			save := p.op.deps.SaveFleet
+			raw, ok := externalIDValue(sc.Step.ExternalIDs, prevQuarantineRowID)
+			if save == nil || !ok {
+				return "nothing was written", nil
+			}
+			var prev quarantineRowFields
+			if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+				return "", fmt.Errorf("reading the recorded row of %s: %w", t.Name, err)
+			}
+			cur := sc.Ops.Fleet
+			row := cur.Tenants[t.Name]
+			if row == nil {
+				return "the registry row is gone; nothing to restore", nil
+			}
+			row.State, row.DesiredBoot, row.Quarantine = prev.State, prev.DesiredBoot, prev.Quarantine
+			if prev.LastDecommission != nil {
+				if row.LastOps == nil {
+					row.LastOps = map[string]registry.OpRecord{}
+				}
+				row.LastOps["decommission"] = *prev.LastDecommission
+			} else {
+				delete(row.LastOps, "decommission")
+			}
+			if err := save(cur); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("state=%s again, no quarantine recorded", prev.State), nil
 		},
 	})
+}
+
+// quarantineRowFields are the row fields addQuarantineRegistry overwrites,
+// recorded before it does so.
+type quarantineRowFields struct {
+	State            string               `json:"state"`
+	DesiredBoot      string               `json:"desired_boot"`
+	Quarantine       *registry.Quarantine `json:"quarantine"`
+	LastDecommission *registry.OpRecord   `json:"last_decommission"`
+}
+
+// lastOp is row.LastOps[verb] as a pointer, nil when absent.
+func lastOp(row *registry.Tenant, verb string) *registry.OpRecord {
+	if op, ok := row.LastOps[verb]; ok {
+		return &op
+	}
+	return nil
 }
 
 // addQuarantineRename is the rename itself.
@@ -239,11 +408,13 @@ func (p *planner) addQuarantineRename() {
 	t := p.t
 	p.addFor("files", step{
 		Kind: "fs", Title: "quarantine the data directory (rename to .quarantined-<ts>)", Destructive: true,
-		Targets: []string{t.DataDir, t.DataDir + ".quarantined-<ts>"},
+		Targets: []string{t.DataDir, t.DataDir + registry.QuarantineMarker + quarantinePlaceholder},
 		Warnings: []string{"nothing is deleted: the tree is renamed, stays inside the retention-protected root and " +
-			"outside every deletion root. A live purge is v1.x and a separately named op"},
+			"outside every deletion root. A live purge is v1.x and a separately named op",
+			"`" + quarantinePlaceholder + "` stands for the stamp, decided when the registry step runs and " +
+				"recorded on the row as quarantine.dir"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			dst := t.DataDir + ".quarantined-" + p.stampOf(sc)
+			dst := p.quarantineDirOf(sc)
 			if err := sc.Checkpoint("dir:" + dst); err != nil {
 				return "", err
 			}
@@ -256,6 +427,15 @@ func (p *planner) addQuarantineRename() {
 			for _, id := range sc.Step.ExternalIDs {
 				if strings.HasPrefix(id, "dir:") {
 					dst := strings.TrimPrefix(id, "dir:")
+					// The id is recorded BEFORE the rename, so a rename that
+					// failed leaves it behind with nothing renamed: then there
+					// is nothing to put back, and saying so is a successful
+					// rollback rather than a second failure.
+					if moved, err := pathExists(ctx, sc.Ops.Drivers.Files(), dst); err != nil {
+						return "", err
+					} else if !moved {
+						return "nothing was renamed (" + dst + " does not exist)", nil
+					}
 					return "restored " + t.DataDir, sc.Ops.Drivers.Files().Rename(ctx, dst, t.DataDir)
 				}
 			}
@@ -269,8 +449,9 @@ func (p *planner) addRecoveryNote() {
 	t := p.t
 	p.addFor("files", step{
 		Kind: "fs", Title: "write " + recoveryFile + " into the quarantined directory",
-		Targets:    []string{t.DataDir + ".quarantined-<ts>/" + recoveryFile},
-		WouldWrite: []model.WouldWrite{{Path: t.DataDir + ".quarantined-<ts>/" + recoveryFile, Mode: "0640", Preview: ""}},
+		Targets: []string{t.DataDir + registry.QuarantineMarker + quarantinePlaceholder + "/" + recoveryFile},
+		WouldWrite: []model.WouldWrite{{Path: t.DataDir + registry.QuarantineMarker + quarantinePlaceholder + "/" +
+			recoveryFile, Mode: "0640", Preview: ""}},
 		Warnings: []string{"the registry row, the last bundle, the unit names and the ports — everything needed to " +
 			"decide, later, whether this tree can go"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -315,17 +496,32 @@ func (p *planner) addRecoveryNote() {
 // (the unit runner, a test harness): with the engine's pinned clock it is the
 // same string the rename step built.
 func (p *planner) quarantineDirOf(sc *jobs.StepContext) string {
-	prefix := "dir:" + p.t.DataDir + ".quarantined-"
-	if sc != nil && sc.Job != nil {
-		for _, st := range sc.Job.Steps {
-			for _, id := range st.ExternalIDs {
-				if strings.HasPrefix(id, prefix) {
-					return strings.TrimPrefix(id, "dir:")
+	// The registry step's decision first (it runs before the rename and is
+	// what the row records), then the rename's own record, then — for a step
+	// with neither — the clock.
+	for _, prefix := range []string{quarantineDirID, "dir:"} {
+		want := prefix + p.t.DataDir + registry.QuarantineMarker
+		if sc == nil {
+			break
+		}
+		if sc.Step != nil {
+			for _, id := range sc.Step.ExternalIDs {
+				if strings.HasPrefix(id, want) {
+					return strings.TrimPrefix(id, prefix)
+				}
+			}
+		}
+		if sc.Job != nil {
+			for _, st := range sc.Job.Steps {
+				for _, id := range st.ExternalIDs {
+					if strings.HasPrefix(id, want) {
+						return strings.TrimPrefix(id, prefix)
+					}
 				}
 			}
 		}
 	}
-	return p.t.DataDir + ".quarantined-" + p.stampOf(sc)
+	return p.t.DataDir + registry.QuarantineMarker + p.stampOf(sc)
 }
 
 // addWorktreeRemoval gives the mirror's administrative entry back.

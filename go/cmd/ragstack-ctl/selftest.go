@@ -62,6 +62,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/render"
+	"github.com/ragstack/ragstack/internal/ctl/seal"
 )
 
 const (
@@ -536,14 +537,37 @@ func (s *selftest) execute(ctx context.Context) error {
 	if restored {
 		names = append(names, s.restored)
 	}
+	//
+	// `decommission` archives first by default (a fenced, checked bundle with
+	// the secrets sealed, then the quarantine), and that needs a backup
+	// recipient. The run exercises the archive on the RESTORED sandbox — it
+	// is running, and an archive snapshots running stores — whenever this
+	// engine has a recipient, and says so in the report when it has none. The
+	// primary is stopped by now, which an archive refuses, so it takes the
+	// --archive=false path over the fenced bundle it already has.
+	archive := s.archiveAvailable()
+	archived := map[string]bool{}
 	for _, name := range names {
-		if _, err := s.submit(ctx, "decommission "+name, "decommission", name, map[string]any{}, name); err != nil {
+		args := map[string]any{"archive": false}
+		if archive && name != s.primary {
+			args = map[string]any{"archive": true}
+			archived[name] = true
+		}
+		if _, err := s.submit(ctx, "decommission "+name, "decommission", name, args, name); err != nil {
 			return err
 		}
+	}
+	if restored && !archive {
+		s.checks = append(s.checks, checkResult{Name: "decommission --archive", Verdict: checkNA,
+			Detail: "no backup recipient in " + s.roots.BackupRecipients() + " (`ragstack-ctl fleet backup-identity " +
+				"init`): both sandboxes were decommissioned with --archive=false"})
 	}
 
 	// ---- the host is clean -------------------------------------------------
 	s.checks = append(s.checks, s.quarantineChecks(ctx, names)...)
+	for _, name := range names {
+		s.checks = append(s.checks, s.quarantineBlockCheck(name, archived[name]))
+	}
 
 	// The sweep is conditioned on `--keep` and on nothing else.
 	//
@@ -1239,6 +1263,50 @@ func (s *selftest) quarantinedDirCheck(ctx context.Context, name string) checkRe
 	check.Detail = fmt.Sprintf("no %s.quarantined-* under %s: decommission renames the tree, it never deletes it",
 		name, s.roots.DataDir)
 	return check
+}
+
+// archiveAvailable reports whether this engine can seal a bundle's secrets:
+// the same recipients file, read the same way, as the engine's own sealer
+// (api.BuildEngineAndDrivers reads <CtlConfigDir>/backup-recipients.txt once).
+func (s *selftest) archiveAvailable() bool {
+	_, err := seal.LoadRecipientsSealer(s.roots.BackupRecipients())
+	return err == nil
+}
+
+// quarantineBlockCheck reads the decommission's record on the row: the
+// `quarantine` block names the renamed tree and the job, and — after an
+// archive — the bundle the job itself wrote, which the row's last_backup
+// names too, fenced and checked.
+func (s *selftest) quarantineBlockCheck(name string, archived bool) checkResult {
+	c := checkResult{Name: name + ": quarantine recorded"}
+	if archived {
+		c.Name = name + ": archived and quarantine recorded"
+	}
+	t, err := s.tenantRow(name)
+	if err != nil {
+		c.Verdict, c.Detail = checkFail, err.Error()
+		return c
+	}
+	q := t.Quarantine
+	switch {
+	case t.State != registry.StateQuarantined:
+		c.Verdict, c.Detail = checkFail, "state is "+t.State
+	case q == nil:
+		c.Verdict, c.Detail = checkFail, "the row has no quarantine block"
+	case !strings.HasPrefix(q.Dir, t.DataDir+registry.QuarantineMarker):
+		c.Verdict, c.Detail = checkFail, "quarantine.dir "+q.Dir+" is not "+t.DataDir+" renamed aside"
+	case archived && (t.LastBackup == nil || string(q.Bundle) != t.LastBackup.Bundle || !t.LastBackup.Fenced ||
+		!t.LastBackup.Checked):
+		c.Verdict, c.Detail = checkFail, fmt.Sprintf("quarantine.bundle %q is not a fenced, checked last_backup (%+v)",
+			string(q.Bundle), t.LastBackup)
+	default:
+		c.Verdict = checkPass
+		c.Detail = "dir " + q.Dir + ", job " + q.JobID
+		if q.Bundle != "" {
+			c.Detail += ", bundle " + filepath.Base(string(q.Bundle))
+		}
+	}
+	return c
 }
 
 // tenantRow reads one row out of the registry file the run is allocating from.

@@ -56,16 +56,16 @@ func TestBackupPlansAreUnchanged(t *testing.T) {
 		},
 	}
 	argSets := map[string]map[string]any{
-		"none":          nil,
-		"fence":         {"fence": true},
-		"fence-tar":     {"fence": true, "tar": true},
-		"light":         {"scope": []any{"config", "state"}},
-		"secrets-skip":  {"fence": true, "secrets": "skip"},
-		"secrets-req":   {"fence": true, "secrets": "require"},
-		"fence-light":   {"fence": true, "scope": []any{"config", "state"}},
-		"config-only":   {"scope": []any{"config"}},
-		"no-config":     {"scope": []any{"state", "stores"}},
-		"tar-unfenced":  {"tar": true},
+		"none":         nil,
+		"fence":        {"fence": true},
+		"fence-tar":    {"fence": true, "tar": true},
+		"light":        {"scope": []any{"config", "state"}},
+		"secrets-skip": {"fence": true, "secrets": "skip"},
+		"secrets-req":  {"fence": true, "secrets": "require"},
+		"fence-light":  {"fence": true, "scope": []any{"config", "state"}},
+		"config-only":  {"scope": []any{"config"}},
+		"no-config":    {"scope": []any{"state", "stores"}},
+		"tar-unfenced": {"tar": true},
 	}
 	sealers := map[string]Sealer{"no-sealer": nil, "sealer": fakeSealer{fps: []string{"sha256:0123456789abcdef"}}}
 
