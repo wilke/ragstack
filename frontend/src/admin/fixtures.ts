@@ -32,6 +32,7 @@ import type {
 } from "./api/types";
 import type {
   ArtifactsResponse,
+  CreateArgsInput,
   JobState,
   JobsResponse,
   Job,
@@ -952,4 +953,51 @@ export const hostileCredentialsTenantFixture: CtlTenant = {
     keys: hostileKeysFixture,
     service_accounts: hostileServiceAccountsFixture,
   },
+};
+
+// ---------------------------------------------------------------------------
+// PR-G3.3: the create wizard.
+//
+// `createArgsFixture` is a create that sets every member to a NON-default
+// value (so `createArgs` cannot pass by omitting things), and is checked
+// against contracts/ctl/schemas/create_request.json member by member in
+// wizard.test.tsx. `hostileArtifactsFixture` is a server that put markup and a
+// secret-named assignment in the free-text fields of GET /v1/artifacts: the
+// tag is not secret-named, so it RENDERS (escaped); the `GOWE_TOKEN=` value
+// behind it is withheld by the client's redaction.
+// ---------------------------------------------------------------------------
+
+export const createArgsFixture: CreateArgsInput = {
+  name: "lab-west",
+  artifact_id: "v1.6.4-12-gabc1234",
+  es_heap: "2g",
+  postgres: "local",
+  identity_provider: "bvbrc",
+  admin_subjects: ["bvbrc:alice@patricbrc.org", "bvbrc:bob@patricbrc.org"],
+  keys: [
+    { label: "ops", role: "admin" },
+    { label: "reader", role: "user" },
+  ],
+  service_accounts: [{ subject: "gowe", role: "user", purpose: "workflows" }],
+  template_from: "dev",
+  settings: { CHUNK_MAX_TOKENS: "512", LOG_LEVEL: "debug" },
+  supervisor: "instance",
+  ui_mode: "external",
+  start: false,
+  gateway: false,
+};
+
+export const hostileArtifactsFixture: ArtifactsResponse = {
+  artifacts: [
+    {
+      id: "leaked-tag-0001",
+      sha: "fedcba9876543210fedcba9876543210fedcba98",
+      tag: "leaked-tag-<img src=x onerror=alert(1)>",
+      prepared_at: "2026-10-08T09:00:00Z",
+      prepared_by: "GOWE_TOKEN=leaked-token-value-0301",
+      schema_compatible: false,
+      tenants: ["dev"],
+    },
+    ...artifactsFixture.artifacts,
+  ],
 };

@@ -114,3 +114,123 @@ export function validateTenantString(v: string): string | null {
     ? null
     : "tenant string: letters, digits, dot, underscore and dash, starting with a letter or digit, at most 64.";
 }
+
+// ---------------------------------------------------------------------------
+// PR-G3.3: the create wizard's arguments (schemas/create_request.json
+// `CreateArgs`; the daemon's checks in go/internal/ctl/ops/create.go
+// `planCreateWith` and go/internal/ctl/paths/paths.go `ValidateName`).
+// ---------------------------------------------------------------------------
+
+/**
+ * `paths.Reserved` (go/internal/ctl/paths/paths.go), copied verbatim: names
+ * that collide with a shared instance, a gateway route or a built-in.
+ */
+export const RESERVED_TENANT_NAMES: readonly string[] = [
+  "qdrant", "elasticsearch", "neo4j", "postgres", "redis", "embedding",
+  "crossencoder", "faiss", "tenants", "manifest", "default", "public",
+  "admin", "services", "health", "ragstack", "api", "ui", "gowe", "vaxpipe",
+  "grafana", "sfr", "ctl",
+];
+
+/** `ops.sandboxPrefix`: selftest names, which `create` refuses (they belong to `create-sandbox`). */
+export const SANDBOX_PREFIX = "ctltest-";
+
+/**
+ * Why `name` cannot be a new tenant's name, or null. `paths.ValidateName`
+ * (empty, grammar, reserved), then `planCreate`'s sandbox-prefix refusal, then
+ * — when the caller knows the fleet — a name the registry already holds.
+ */
+export function validateTenantName(name: string, existing: readonly string[] = []): string | null {
+  if (name === "") return "The tenant name is empty.";
+  if (!TENANT_NAME.test(name)) {
+    return "Lowercase letters, digits and dashes, starting with a letter, at most 32 characters (^[a-z][a-z0-9-]{0,31}$).";
+  }
+  if (RESERVED_TENANT_NAMES.includes(name)) {
+    return `"${name}" is reserved: it collides with a shared instance, a gateway route or a built-in.`;
+  }
+  if (name.startsWith(SANDBOX_PREFIX)) {
+    return `"${SANDBOX_PREFIX}…" names are selftest sandboxes; create allocates production blocks.`;
+  }
+  if (existing.includes(name)) return `A tenant named "${name}" already exists.`;
+  return null;
+}
+
+/* `CreateArgs.admin_subjects[]` uses ADMIN_SUBJECT above (`issuer:sub`). */
+
+/**
+ * Why a create's admin subjects would be refused, or null: none at all when
+ * the provider is `none`; each one `issuer:sub` with the issuer equal to the
+ * provider; no duplicates (`uniqueItems`).
+ */
+export function validateAdminSubjects(subjects: readonly string[], provider: "bvbrc" | "none"): string | null {
+  if (provider === "none") {
+    return subjects.length > 0
+      ? "Admin subjects need an identity provider: with none there are no bearer subjects to admit."
+      : null;
+  }
+  const seen = new Set<string>();
+  for (const s of subjects) {
+    if (!ADMIN_SUBJECT.test(s)) {
+      return `"${s}" is not issuer:subject (e.g. ${provider}:alice@patricbrc.org).`;
+    }
+    const issuer = s.slice(0, s.indexOf(":"));
+    if (issuer !== provider) return `"${s}" is issued by ${issuer}, but the identity provider is ${provider}.`;
+    if (seen.has(s)) return `"${s}" is listed twice.`;
+    seen.add(s);
+  }
+  return null;
+}
+
+/** `CreateArgs.es_heap`. */
+export const ES_HEAP = /^[1-9][0-9]*[mg]$/;
+
+/** Why an ES heap would be refused, or null (e.g. `1g`, `512m`). */
+export function validateESHeap(heap: string): string | null {
+  if (heap === "") return "The Elasticsearch heap is empty (the default is 1g).";
+  if (!ES_HEAP.test(heap)) return "A size in m or g with no leading zero, e.g. 1g or 512m.";
+  return null;
+}
+
+/** `PublicSettingKey`'s grammar (and `x-ctl-op-args.env-set.key`). */
+export const SETTING_KEY = /^[A-Z][A-Z0-9_]{0,127}$/;
+
+/** `settings.go` `secretPattern`: a secret-shaped NAME. */
+const SECRET_SHAPED = /(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)/i;
+
+/** `settings.go` `publicDespitePattern`: secret-shaped names that are public. */
+const PUBLIC_DESPITE_PATTERN: readonly string[] = [
+  "CHUNK_MAX_TOKENS",
+  "CHUNK_TOKEN_COUNTER",
+  "EMBEDDING_MAX_BATCH_TOKENS",
+  "EMBEDDING_CHARS_PER_TOKEN",
+  "GOWE_RECEIPTS_OUTPUT_KEY",
+  "GOWE_SHARDS_INPUT_KEY",
+];
+
+export interface SettingCheck {
+  /** The contract would refuse it outright: the row cannot be sent. */
+  problem: string | null;
+  /**
+   * Sendable, but the daemon will probably refuse it. The UI warns and does
+   * NOT enforce the classification — the daemon's table (public / secret /
+   * executable-surface) is the authority, and a copy here would drift.
+   */
+  warning: string | null;
+}
+
+/** One `settings` row of a create. */
+export function validateSetting(key: string, value: string): SettingCheck {
+  if (key === "") return { problem: "The setting name is empty.", warning: null };
+  if (!SETTING_KEY.test(key)) {
+    return { problem: `"${key}" is not a setting name (^[A-Z][A-Z0-9_]{0,127}$).`, warning: null };
+  }
+  if (/[\r\n]/.test(value)) return { problem: `${key}: the value must be one line.`, warning: null };
+  if (value.length > 4096) return { problem: `${key}: the value is longer than 4096 characters.`, warning: null };
+  if (SECRET_SHAPED.test(key) && !PUBLIC_DESPITE_PATTERN.includes(key)) {
+    return {
+      problem: null,
+      warning: `${key} looks like a secret: create accepts public settings only and will refuse it. Secrets are minted by the ctl or set on the CLI.`,
+    };
+  }
+  return { problem: null, warning: null };
+}

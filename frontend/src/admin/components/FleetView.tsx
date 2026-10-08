@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { ctlKeys, FLEET_POLL_MS, pollWhenVisible, useCtlQuery } from "../api/queries";
-import type { CtlDoctor, CtlFleet, CtlVersion, FleetRow } from "../api/types";
+import type { CtlDoctor, CtlFleet, CtlRole, CtlVersion, FleetRow } from "../api/types";
 import { bytes, since } from "../lib/format";
 import { ErrorBanner } from "./ErrorBanner";
 import { redactText } from "./redact";
@@ -142,7 +142,17 @@ export function DoctorFindings({ doctor }: { doctor: CtlDoctor }) {
 const TH = "py-2 pr-3 font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted";
 const TD = "py-2 pr-3 align-middle";
 
-export function FleetView({ onSelectTenant }: { onSelectTenant: (name: string) => void }) {
+export function FleetView({
+  onSelectTenant,
+  role = "viewer",
+  onCreate,
+}: {
+  onSelectTenant: (name: string) => void;
+  /** Gates the Create button: operators only, absent (not disabled) for a viewer. */
+  role?: CtlRole;
+  /** Opens the create wizard (`#/create`). */
+  onCreate?: () => void;
+}) {
   const [showFindings, setShowFindings] = useState(false);
 
   const fleet = useCtlQuery<CtlFleet>(ctlKeys.fleet(), "/v1/fleet", {
@@ -218,6 +228,18 @@ export function FleetView({ onSelectTenant }: { onSelectTenant: (name: string) =
             expanded={showFindings}
             onToggle={() => setShowFindings((v) => !v)}
           />
+          {role === "operator" && onCreate && (
+            <a
+              href="#/create"
+              onClick={(e) => {
+                e.preventDefault();
+                onCreate();
+              }}
+              className="ml-auto rounded-panel bg-ink-900 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90"
+            >
+              Create tenant
+            </a>
+          )}
         </div>
 
         {doctor.error && <ErrorBanner error={doctor.error} onRetry={() => void doctor.refetch()} />}
