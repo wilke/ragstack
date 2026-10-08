@@ -291,6 +291,9 @@ func (d *run) heapSum() {
 	var sum int64
 	shared := map[string]bool{}
 	for _, t := range d.fleet.Tenants {
+		if notLive(t) {
+			continue // a quarantined tenant runs no Elasticsearch
+		}
 		es := t.Stores.Elasticsearch
 		switch es.Ownership {
 		case registry.OwnershipExclusive:
@@ -351,6 +354,14 @@ func (d *run) gatewayChecks() {
 		if !routed {
 			continue // an unrouted tenant is PR-B's business, not a mismatch
 		}
+		if notLive(t) {
+			// The renderer drops quarantined rows, so a route here is a
+			// gateway nobody re-applied after the decommission.
+			d.add(model.LevelWarn, QuarantinedButRouted, t.Name, fmt.Sprintf(
+				"%s still routes %s (state %s) to :%d; nothing serves it — run `ragstack-ctl gateway apply`",
+				maps.Source, t.Name, t.State, port))
+			continue
+		}
 		if port != t.Ports.API {
 			d.add(model.LevelError, GatewayMapMismatch, t.Name, fmt.Sprintf("%s routes %s to :%d, the registry allocates :%d", maps.Source, t.Name, port, t.Ports.API))
 		}
@@ -359,7 +370,18 @@ func (d *run) gatewayChecks() {
 
 // ---------------------------------------------------------- tenant checks
 
+// tenantChecks is the per-tenant dispatcher, and the one place a row's state
+// decides WHICH checks apply. A quarantined or decommissioned row has no live
+// tree to check — decommission renamed <data_dir> aside and removed the
+// worktree — so every check below would fail by construction (ui_dist_missing
+// was an error, which made the fleet red for as long as such a row existed and
+// refused `purge`, the op that removes it). Such a row gets quarantineChecks
+// instead, and nothing else.
 func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
+	if notLive(t) {
+		d.quarantineChecks(t)
+		return
+	}
 	api, listening := d.ports[t.Ports.API]
 	switch {
 	case t.State == string(model.StateActive) && !listening:
@@ -399,6 +421,94 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.homePathCheck(t)
 	d.capabilityChecks(t)
 }
+
+// notLive reports a row whose tenant no longer exists as a running tree:
+// `quarantined` (what decommission leaves) and `decommissioned` (in the enum;
+// nothing sets it yet, but it can only mean less than quarantined).
+func notLive(t *registry.Tenant) bool {
+	return t.State == registry.StateQuarantined || t.State == string(model.StateDecommissioned)
+}
+
+// quarantineChecks is everything doctor asks of a quarantined (or
+// decommissioned) row, and it asks only what is still true of such a row:
+//
+//   - nothing listens on any port of its block (error otherwise: the row runs
+//     nothing, so a listener is somebody else's process on reserved ports —
+//     the same condition purge's run-time port probe refuses on);
+//   - quarantine.dir exists and holds RECOVERY.json (warn: purge treats an
+//     absent tree as already removed);
+//   - the bundle the row names, if any, is on disk (warn).
+//
+// The gateway half (the route is gone) is in gatewayChecks.
+func (d *run) quarantineChecks(t *registry.Tenant) {
+	since := ""
+	if q := t.Quarantine; q != nil && q.At != "" {
+		since = " since " + q.At
+	}
+	d.add(model.LevelInfo, TenantQuarantined, t.Name, fmt.Sprintf(
+		"state is %s%s: the live-tree checks (ui, env files, snapshots dir, worktree, stores, permissions) do not apply and were skipped",
+		t.State, since))
+
+	seen := map[int]bool{}
+	for _, port := range []int{t.Ports.API, t.Ports.QdrantHTTP, t.Ports.QdrantGRPC, t.Ports.ESHTTP, t.Ports.ESTransport, t.Ports.PG} {
+		if port <= 0 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		if l, ok := d.ports[port]; ok {
+			who := l.User
+			if who == "" {
+				who = "an unreadable owner"
+			}
+			d.add(model.LevelError, QuarantinedButListening, t.Name, fmt.Sprintf(
+				":%d is in %s's port block and %s is %s, which runs nothing — but pid %d (%s, %s) listens on it: somebody else's process is on its ports",
+				port, t.Name, t.Name, t.State, l.Pid, firstArg(l.Cmdline), who))
+		}
+	}
+
+	q := t.Quarantine
+	switch {
+	case q == nil || q.Dir == "":
+		if t.State == registry.StateQuarantined {
+			d.add(model.LevelWarn, QuarantineTreeMissing, t.Name,
+				"the row is quarantined but records no quarantine.dir: purge deletes only a tree the registry names")
+		}
+	default:
+		if st, err := os.Stat(q.Dir); err != nil || !st.IsDir() {
+			d.add(model.LevelWarn, QuarantineTreeMissing, t.Name, fmt.Sprintf(
+				"quarantine.dir %s is not there: purge treats it as already removed", q.Dir))
+		} else if !fileExists(filepath.Join(q.Dir, quarantineNote)) {
+			d.add(model.LevelWarn, QuarantineTreeMissing, t.Name, fmt.Sprintf(
+				"quarantine.dir %s holds no %s: purge refuses a tree decommission did not label", q.Dir, quarantineNote))
+		}
+	}
+
+	bundles := map[string]string{}
+	if q != nil && q.Bundle != "" {
+		bundles[string(q.Bundle)] = "quarantine.bundle"
+	}
+	if b := t.LastBackup; b != nil && b.Bundle != "" {
+		if _, dup := bundles[b.Bundle]; !dup {
+			bundles[b.Bundle] = "last_backup.bundle"
+		}
+	}
+	names := make([]string, 0, len(bundles))
+	for b := range bundles {
+		names = append(names, b)
+	}
+	sort.Strings(names)
+	for _, b := range names {
+		if _, err := os.Stat(b); err != nil {
+			d.add(model.LevelWarn, ArchiveMissing, t.Name, fmt.Sprintf(
+				"%s %s is not on disk: the tenant cannot be rebuilt from what its row names", bundles[b], b))
+		}
+	}
+}
+
+// quarantineNote is the file decommission writes into the quarantined tree
+// (ops/decommission.go's recoveryFile; ops imports doctor, so the spelling is
+// repeated here rather than imported).
+const quarantineNote = "RECOVERY.json"
 
 // capabilityChecks reports what the ctl may and may not do to this tenant's
 // stores.

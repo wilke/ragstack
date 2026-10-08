@@ -1875,3 +1875,142 @@ func TestBackupRecipientsMissing(t *testing.T) {
 		}
 	}
 }
+
+// quarantine turns the world's tenant into what `decommission` leaves on a
+// real host: units gone, <data_dir> renamed aside with RECOVERY.json in it,
+// the worktree removed, nothing listening, an archive bundle on disk. The
+// tenant is a static-UI systemd tenant, so a doctor that still ran the live
+// checks over it would raise ui_dist_missing and env_not_systemd_parsable as
+// ERRORS — the coconut symptom (PR-G selftest, purge refused doctor_red).
+func (w *world) quarantine(t *testing.T, state string) {
+	t.Helper()
+	w.confirmStores() // the live baseline is green, so any colour is the row's
+	w.tenant.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/dev/ui/"}
+	w.tenant.Supervisor, w.tenant.Owner = "systemd", DefaultCtlUser
+	qdir := w.tenant.DataDir + registry.QuarantineMarker + "20261008T230542Z"
+	if err := os.Rename(w.tenant.DataDir, qdir); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(qdir, quarantineNote), `{"tenant":"dev","manifest_name":"dev"}`)
+	if err := os.RemoveAll(w.tenant.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	delete(w.host.Gitdirs, w.tenant.Worktree)
+	bundle := filepath.Join(w.roots.BackupsDir, "dev", "20261008T230542Z-backup")
+	if err := os.MkdirAll(bundle, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	w.tenant.LastBackup = &registry.BackupRecord{Bundle: bundle, At: "2026-10-08T23:05:42Z", Kind: "backup", Fenced: true, Checked: true}
+	w.tenant.State = state
+	w.tenant.Quarantine = &registry.Quarantine{Dir: qdir, At: "2026-10-08T23:05:42Z", JobID: "job-1", Bundle: registry.NullString(bundle)}
+	w.host.Ports = nil
+}
+
+// TestAQuarantinedRowIsCheckedAsQuarantined is the PR-G regression: a
+// quarantined row raises nothing above info, the fleet is not red because of
+// it, and purge's op-scoped gate passes.
+func TestAQuarantinedRowIsCheckedAsQuarantined(t *testing.T) {
+	for _, state := range []string{registry.StateQuarantined, string(model.StateDecommissioned)} {
+		t.Run(state, func(t *testing.T) {
+			w := newWorld(t)
+			w.quarantine(t, state)
+			resp := w.run(t)
+			for _, f := range resp.Findings {
+				if f.Tenant == "dev" && f.Level != model.LevelInfo {
+					t.Errorf("a %s row raised %s/%s: %s", state, f.Level, f.Code, f.Detail)
+				}
+			}
+			if f, ok := byCode(resp)[TenantQuarantined]; !ok || f.Level != model.LevelInfo {
+				t.Errorf("tenant_quarantined = %+v, want an info row", f)
+			}
+			if resp.Status == model.StatusRed {
+				t.Errorf("fleet status = red with only a %s row on it", state)
+			}
+			for _, scope := range []Options{{Op: "purge"}, {Op: "purge", Tenant: "dev"}} {
+				if got := w.runOpts(t, scope); got.Status == model.StatusRed {
+					t.Errorf("doctor --op purge %+v is red: %+v", scope, got.Findings)
+				}
+			}
+		})
+	}
+}
+
+// TestSomethingListeningOnAQuarantinedBlockIsRed: the row runs nothing, so a
+// listener anywhere in its block is somebody else's — red, and purge refuses.
+func TestSomethingListeningOnAQuarantinedBlockIsRed(t *testing.T) {
+	for _, port := range []int{devAPI, devES} {
+		w := newWorld(t)
+		w.quarantine(t, registry.StateQuarantined)
+		w.host.Ports = []hostfacts.Listener{{Port: port, Pid: 31, User: "wilke", Cmdline: []string{"python"}}}
+		resp := w.run(t)
+		f := byCode(resp)[QuarantinedButListening]
+		if f.Level != model.LevelError || f.Tenant != "dev" || !strings.Contains(f.Detail, fmt.Sprint(port)) {
+			t.Errorf(":%d — quarantined_but_listening = %+v, want red on dev", port, f)
+		}
+		if got := w.runOpts(t, Options{Op: "purge", Tenant: "dev"}); got.Status != model.StatusRed {
+			t.Errorf(":%d — doctor --op purge = %s, want red", port, got.Status)
+		}
+	}
+}
+
+// TestAQuarantineWithoutItsTreeOrArchiveWarns: an absent tree is what an
+// interrupted purge leaves (purge treats it as done), and a missing archive
+// is a lost recovery point — both worth naming, neither a reason to refuse.
+func TestAQuarantineWithoutItsTreeOrArchiveWarns(t *testing.T) {
+	t.Run("tree gone", func(t *testing.T) {
+		w := newWorld(t)
+		w.quarantine(t, registry.StateQuarantined)
+		if err := os.RemoveAll(w.tenant.Quarantine.Dir); err != nil {
+			t.Fatal(err)
+		}
+		if f := byCode(w.run(t))[QuarantineTreeMissing]; f.Level != model.LevelWarn {
+			t.Errorf("quarantine_tree_missing = %+v, want warn", f)
+		}
+		if got := w.runOpts(t, Options{Op: "purge", Tenant: "dev"}); got.Status == model.StatusRed {
+			t.Errorf("purge gate red over an absent tree: %+v", got.Findings)
+		}
+	})
+	t.Run("no RECOVERY.json", func(t *testing.T) {
+		w := newWorld(t)
+		w.quarantine(t, registry.StateQuarantined)
+		if err := os.Remove(filepath.Join(w.tenant.Quarantine.Dir, quarantineNote)); err != nil {
+			t.Fatal(err)
+		}
+		if f := byCode(w.run(t))[QuarantineTreeMissing]; f.Level != model.LevelWarn || !strings.Contains(f.Detail, quarantineNote) {
+			t.Errorf("quarantine_tree_missing = %+v, want a warn naming %s", f, quarantineNote)
+		}
+	})
+	t.Run("archive gone", func(t *testing.T) {
+		w := newWorld(t)
+		w.quarantine(t, registry.StateQuarantined)
+		if err := os.RemoveAll(string(w.tenant.Quarantine.Bundle)); err != nil {
+			t.Fatal(err)
+		}
+		if f := byCode(w.run(t))[ArchiveMissing]; f.Level != model.LevelWarn {
+			t.Errorf("archive_missing = %+v, want warn", f)
+		}
+		if got := w.runOpts(t, Options{Op: "purge", Tenant: "dev"}); got.Status == model.StatusRed {
+			t.Errorf("purge gate red over a missing archive: %+v", got.Findings)
+		}
+	})
+}
+
+// TestARoutedQuarantinedRowIsAWarning: the renderer drops quarantined rows, so
+// a route is a gateway nobody re-applied — not a port mismatch.
+func TestARoutedQuarantinedRowIsAWarning(t *testing.T) {
+	w := newWorld(t)
+	w.quarantine(t, registry.StateQuarantined)
+	write(t, filepath.Join(w.roots.ProxyDir, "conf.d", "00-maps.conf"), `
+map $tenant $tenant_api {
+    default  "";
+    dev      "127.0.0.1:8020";
+}
+`)
+	got := byCode(w.run(t))
+	if f := got[QuarantinedButRouted]; f.Level != model.LevelWarn {
+		t.Errorf("quarantined_but_routed = %+v, want warn", f)
+	}
+	if f, ok := got[GatewayMapMismatch]; ok {
+		t.Errorf("a quarantined row's route is not a port mismatch: %+v", f)
+	}
+}

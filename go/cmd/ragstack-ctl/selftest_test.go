@@ -26,6 +26,7 @@ import (
 	"filippo.io/age"
 
 	"github.com/ragstack/ragstack/internal/ctl/api"
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -112,13 +113,28 @@ func newFixtureSelftestRecipients(t *testing.T, supervisor, recipients string) (
 		Mirror:      filepath.Join(root, "repos", "ragstack.git"),
 		MountPoint:  "/rag",
 		Now:         now,
-		// A GREEN doctor, injected. BuildEngine's default doctor reads THIS
-		// host's facts — real listeners, real /proc, real mounts — which is
-		// right for a daemon and meaningless for a scratch tree under
-		// t.TempDir(): every op would be gated on findings about the machine
-		// running `go test`. What the doctor gate itself does (red never runs,
-		// yellow needs its hash quoted) is tested in the jobs package.
-		Doctor: func(context.Context, string, string) (model.DoctorResponse, error) {
+		// A GREEN doctor, injected — except for `purge`. BuildEngine's
+		// default doctor reads THIS host's facts — real listeners, real
+		// /proc, real mounts — which is right for a daemon and meaningless
+		// for a scratch tree under t.TempDir(): every op would be gated on
+		// findings about the machine running `go test`. What the doctor gate
+		// itself does (red never runs, yellow needs its hash quoted) is
+		// tested in the jobs package.
+		//
+		// `purge` is the exception, and the reason is a bug this fixture hid:
+		// an always-green doctor never evaluated the QUARANTINED row, and the
+		// real doctor did — as if it were live (ui_dist_missing on the
+		// renamed-aside data dir, missing tenant.env, missing worktree). The
+		// fleet was red for as long as a quarantined row existed, so on
+		// coconut purge was refused doctor_red every time while this test
+		// passed. So purge's gate runs the REAL doctor over the scratch tree
+		// and the registry the run wrote, scoped to the sandbox, with a fake
+		// host on which nothing listens (what decommission leaves). Host-level
+		// findings are dropped: they are about the scratch host, not the row.
+		Doctor: func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
+			if op == "purge" {
+				return realTenantDoctor(t, ctx, roots, regPath, tenant, op)
+			}
 			return model.DoctorResponse{
 				Status: model.StatusGreen, Hash: "sha256:" + strings.Repeat("0", 64),
 				GeneratedAt: selftestClock.Format(time.RFC3339), Findings: []model.Finding{},
@@ -150,6 +166,41 @@ func newFixtureSelftestRecipients(t *testing.T, supervisor, recipients string) (
 		out:          out,
 	}
 	return s, fake, out
+}
+
+// realTenantDoctor is doctor.Run over the scratch tree, keeping only the
+// findings about `tenant` (and recomputing the status and hash over them).
+func realTenantDoctor(t *testing.T, ctx context.Context, roots paths.Roots, regPath, tenant, op string) (model.DoctorResponse, error) {
+	fleet, err := registry.Load(regPath)
+	if err != nil {
+		return model.DoctorResponse{}, err
+	}
+	resp := doctor.Run(ctx, roots, fleet, doctor.Options{
+		Tenant: tenant, Op: op, RegistryPath: regPath,
+		Host:        &hostfacts.Fake{Self: "wilke", MaxMapCount: doctor.MinVMMaxMapCount},
+		Now:         func() time.Time { return selftestClock },
+		CtlEnv:      map[string]string{},
+		ImportCheck: func(string, string) (string, error) { return "", nil },
+	})
+	var mine []model.Finding
+	for _, f := range resp.Findings {
+		if string(f.Tenant) == tenant {
+			mine = append(mine, f)
+		}
+	}
+	if mine == nil {
+		mine = []model.Finding{}
+	}
+	resp.Findings, resp.Status, resp.Hash = mine, model.StatusFor(mine), doctor.Hash(mine)
+	// Red is the bug. Yellow is expected here and is not this test's
+	// business: the fake drivers keep the renamed tree and the archive in
+	// memory, so the real doctor (which stats the real disk) reports
+	// quarantine_tree_missing / archive_missing — warnings, which the
+	// selftest quotes the hash of exactly as it does on coconut.
+	if resp.Status == model.StatusRed {
+		t.Errorf("the real doctor --op %s over quarantined %s is %s: %+v", op, tenant, resp.Status, mine)
+	}
+	return *resp, nil
 }
 
 // fixtureBindPorts tells the in-memory manager which port each sandbox's units

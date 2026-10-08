@@ -404,6 +404,42 @@ const (
 	// do is be forgotten — it is a second copy of a database on a shared
 	// filesystem — so doctor names it until somebody removes it.
 	PreHandoverCopyPresent = "pre_handover_copy_present"
+
+	// TenantQuarantined: the row's state is `quarantined` (or
+	// `decommissioned`) — its units are gone, its data tree was renamed to
+	// quarantine.dir and its worktree removed. Info. It says that the
+	// live-tree checks (ui dist, env files, snapshots dir, worktree, stores,
+	// permissions, capabilities, port_not_listening) were NOT run for this
+	// row: every one of them would fail by construction, and before this
+	// finding existed they did — ui_dist_missing alone made the fleet red
+	// for as long as a quarantined row existed, and `purge` (whose gate is
+	// the op-scoped doctor) could never pass on a real host. Only the
+	// quarantine checks below run instead.
+	TenantQuarantined = "tenant_quarantined"
+
+	// QuarantinedButListening: something listens on a port of a quarantined
+	// (or decommissioned) row's block. Such a row runs nothing, so this is
+	// somebody else's process on ports the registry still reserves for it —
+	// and purge's own run-time probe refuses for exactly this reason. Error.
+	QuarantinedButListening = "quarantined_but_listening"
+
+	// QuarantineTreeMissing: the row's quarantine.dir is not there, holds no
+	// RECOVERY.json, or the row records no quarantine.dir at all. Warn, not
+	// error: purge treats an absent tree as already removed (an interrupted
+	// earlier purge), and a tree without its note is refused by purge's own
+	// run-time probe; doctor names the condition so it is seen first.
+	QuarantineTreeMissing = "quarantine_tree_missing"
+
+	// ArchiveMissing: the bundle a quarantined row names — quarantine.bundle
+	// or last_backup.bundle — is not on disk. Warn: the tenant can no longer
+	// be rebuilt from what its row says it can be rebuilt from.
+	ArchiveMissing = "archive_missing"
+
+	// QuarantinedButRouted: the live gateway still routes a quarantined (or
+	// decommissioned) row. The renderer drops such rows, so this means the
+	// gateway was not re-applied after the decommission: the route answers
+	// 502. Warn; `ragstack-ctl gateway apply` is the repair.
+	QuarantinedButRouted = "quarantined_but_routed"
 )
 
 // The two names a handover's postgres migration leaves in
