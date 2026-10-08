@@ -324,7 +324,7 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 
 // requireHandoverBackup is the release's safety net: a bundle of ANY scope.
 //
-// Not the fenced, verified bundle `decommission` demands, and deliberately so
+// Not the fenced, checked-or-verified bundle `decommission` demands, and deliberately so
 // (plan decision D4): a handover moves no data — the same directories serve
 // the same processes under another account — so what has to be recoverable is
 // the tenant's CONFIGURATION and its SQLite state, which the light bundle

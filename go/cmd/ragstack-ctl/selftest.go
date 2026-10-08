@@ -504,6 +504,7 @@ func (s *selftest) execute(ctx context.Context) error {
 		return fmt.Errorf("the backup job %s named no bundle, so there is nothing to restore from", backup.ID)
 	}
 	fmt.Fprintf(s.out, "selftest: bundle %s\n", bundle)
+	s.checks = append(s.checks, s.bundleCheckedCheck(backup.ID, bundle))
 
 	// ---- stop, and how Elasticsearch took it ------------------------------
 	if _, err := s.submit(ctx, "stop", "stop", s.primary, map[string]any{}, s.primary); err != nil {
@@ -568,6 +569,34 @@ func (s *selftest) execute(ctx context.Context) error {
 		})
 	}
 	return nil
+}
+
+// bundleCheckedCheck asks the REGISTRY whether the bundle the backup just
+// took is `checked` — the backup job's own check step (hashes, manifest,
+// snapshot structure, census counts) passed and the record step said so. It is
+// the fact `decommission` gates on, so it is read where decommission reads it
+// rather than from the job's result.
+func (s *selftest) bundleCheckedCheck(jobID, bundle string) checkResult {
+	c := checkResult{Name: "bundle checked"}
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		c.Verdict, c.Detail = checkFail, "reading the registry: "+err.Error()
+		return c
+	}
+	row := f.Tenants[s.primary]
+	switch {
+	case row == nil || row.LastBackup == nil:
+		c.Verdict, c.Detail = checkFail, s.primary+" has no last_backup after backup job "+jobID
+	case filepath.Base(row.LastBackup.Bundle) != bundle:
+		c.Verdict, c.Detail = checkFail, fmt.Sprintf("%s's last_backup is %s, not the bundle %s the job reported",
+			s.primary, filepath.Base(row.LastBackup.Bundle), bundle)
+	case !row.LastBackup.Fenced || !row.LastBackup.Checked:
+		c.Verdict, c.Detail = checkFail, fmt.Sprintf("%s's last_backup is fenced=%v checked=%v; a fenced backup "+
+			"must check its own bundle", s.primary, row.LastBackup.Fenced, row.LastBackup.Checked)
+	default:
+		c.Verdict, c.Detail = checkPass, bundle+" is fenced and checked (hashes, manifest, snapshot structure, counts)"
+	}
+	return c
 }
 
 // credentials is the creds phase: a key minted into the sandbox's ledger, the

@@ -699,6 +699,15 @@ type Files interface {
 	// dump step does.
 	Sync(ctx context.Context, path string) error
 	SelfUID(ctx context.Context) (int, error)
+	// ReadHead is the first n bytes of one file (fewer when the file is
+	// shorter), read without following a final symlink.
+	//
+	// It exists for the bundle check: a postgres dump is gigabytes, and the
+	// question asked of it — "does it begin with pg_dump's custom-format magic"
+	// — is five bytes. ReadFile would load the whole archive into the daemon's
+	// heap to answer it. A read, so not root-checked; an absent path is
+	// fs.ErrNotExist.
+	ReadHead(ctx context.Context, path string, n int) ([]byte, error)
 }
 
 // FileStat is Files.Stat's answer: the four facts a step may decide on. Not an
@@ -1008,6 +1017,14 @@ type SQLite interface {
 	// VACUUM INTO rather than a file copy: copying a database with a live WAL
 	// beside it produces a file that opens and is missing the last writes.
 	Backup(ctx context.Context, src, dst string) (integrity string, err error)
+	// IntegrityCheck runs `PRAGMA integrity_check` on a database opened
+	// READ-ONLY and IMMUTABLE — no checkpoint, no journal, no -wal or -shm
+	// file created beside it. It is how a bundle's state copies are checked
+	// after the fact: a check that wrote a sidecar file into a bundle would
+	// leave a file no SHA256SUMS line covers, and the next check would fail on
+	// it. The verdict is "ok" or the error names what SQLite reported; an
+	// absent file is fs.ErrNotExist.
+	IntegrityCheck(ctx context.Context, path string) (integrity string, err error)
 }
 
 // ArchiveLimits bound what an extraction may produce. A bundle is operator
@@ -1027,6 +1044,12 @@ type Archive interface {
 	// entry names, symlinks, hardlinks, device and other special entries, and
 	// anything over limits.
 	Extract(ctx context.Context, tarPath, dest string, limits ArchiveLimits) error
+	// Entries reads every header of tarPath (streaming, writing nothing) and
+	// returns how many entries it holds. A file that is not a readable tar —
+	// truncated, or not a tar at all — is an error. It is the bundle check's
+	// question of a qdrant snapshot: "is this an archive with something in
+	// it", answered without unpacking gigabytes.
+	Entries(ctx context.Context, tarPath string) (int, error)
 }
 
 // ---------------------------------------------------------------- store

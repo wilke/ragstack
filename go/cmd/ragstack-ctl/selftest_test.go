@@ -212,6 +212,16 @@ func TestSelftestRunsTheWholeSequenceAgainstTheFixtureHost(t *testing.T) {
 	if s.failedChecks() > 0 {
 		t.Errorf("%d check(s) failed:\n%s", s.failedChecks(), out.String())
 	}
+	// The fenced backup checked its own bundle, and the registry says so.
+	sawChecked := false
+	for _, c := range s.checks {
+		if c.Name == "bundle checked" {
+			sawChecked = c.Verdict == checkPass
+		}
+	}
+	if !sawChecked {
+		t.Errorf("no passing `bundle checked` check after backup --fence:\n%s", out.String())
+	}
 
 	// The tenant it created was on a SANDBOX block, and the production
 	// allocator never moved.

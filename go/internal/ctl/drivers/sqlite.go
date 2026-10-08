@@ -98,6 +98,39 @@ func (s *RealSQLite) Backup(ctx context.Context, src, dst string) (string, error
 	return integrity, nil
 }
 
+// IntegrityCheck asks SQLite whether the database at path is sound, without
+// writing anything.
+//
+// `mode=ro&immutable=1`: read-only, and immutable so that SQLite takes no lock
+// and creates no -wal, -shm or journal file beside it. The file it is asked
+// about is a copy inside a bundle (VACUUM INTO's output), which nothing else
+// has open; a check that left a sidecar there would leave a file the bundle's
+// SHA256SUMS does not cover, and the next check of the same bundle would fail
+// on it. The verdict is integrityCheck's: "ok", or an error naming what SQLite
+// reported.
+func (s *RealSQLite) IntegrityCheck(ctx context.Context, path string) (string, error) {
+	if _, err := paths.SafePath("/", path); err != nil {
+		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
+	// sqlite opens (and so CREATES) a database for a path that is not there,
+	// which would make "the bundle lost its state file" read as an empty,
+	// perfectly sound database.
+	st, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("opening the database to check: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: %s is not a regular file", jobs.ErrRefused, path)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	return integrityCheck(ctx, db, path)
+}
+
 // checkpoint folds the WAL back into the main database file.
 //
 // TRUNCATE rather than PASSIVE: PASSIVE gives up the moment a reader holds the

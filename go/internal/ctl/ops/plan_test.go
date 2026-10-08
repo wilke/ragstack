@@ -142,6 +142,7 @@ func fixtureFull(t *testing.T, name string, mutate func(*registry.Tenant), env [
 		// Where this store's snapshots land on the host, so the backup's move
 		// into the bundle is moving a file rather than a name.
 		QdrantSnapshotDirs: map[string]string{tenant.Stores.Qdrant.URL: tp.QdrantSnapshots},
+		ESSnapshotDirs:     map[string]string{tenant.Stores.Elasticsearch.URL: tp.ESSnapshots},
 		QdrantCounts: map[string]int64{
 			tenant.Stores.Qdrant.URL + "/docs": 1200, tenant.Stores.Qdrant.URL + "/chunks": 88_000,
 		},
@@ -454,6 +455,7 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 		// The rename is the LAST write: until it happens the directory is
 		// `.partial` and no reader mistakes it for a finished bundle.
 		"fs: rename the bundle into place (drop the .partial suffix)",
+		"backup: check the bundle: hashes, manifest, snapshot structure, counts",
 		"registry: record the bundle as this tenant's last backup",
 		"systemd: start ragstack-dev-api.service",
 		"probe: wait for the API to listen on 24040",

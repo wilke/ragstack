@@ -1231,3 +1231,82 @@ func firstTenantSnippet(b []byte) string {
 	}
 	return string(b[from:to])
 }
+
+// `last_backup.checked` (PR-G1.2): optional in the contract, absent while
+// false, a boolean when present.
+//
+// Absent-while-false is the rollback guarantee, the one Handover's omitempty
+// gives: Load decodes with DisallowUnknownFields, so a registry that carried
+// `"checked": false` in every row would be unreadable to the previously
+// deployed binary the moment this one wrote it.
+func TestLastBackupCheckedIsOptionalAndBoolean(t *testing.T) {
+	f := LiveFixture()
+	f.Tenants["dev"].LastBackup = &BackupRecord{
+		Bundle: "/rag/backups/tenants/dev/20260914T093000Z-backup", At: "2026-09-14T09:30:00Z",
+		Kind: "backup", Fenced: true, Scope: []string{"config", "state", "stores"},
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(`"checked"`)) {
+		t.Fatal("an unchecked backup record serialises `checked`; an older ragstack-ctl would refuse the registry")
+	}
+
+	f.Tenants["dev"].LastBackup.Checked = true
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.json")
+	// Save runs ValidateContract: the Go mirror of the contract takes it.
+	if err := Save(path, f, "local:1000"); err != nil {
+		t.Fatalf("a checked record was refused: %v", err)
+	}
+	back, err := LoadNoRepair(path)
+	if err != nil {
+		t.Fatalf("a registry with a checked backup does not load strictly: %v", err)
+	}
+	if !back.Tenants["dev"].LastBackup.Checked {
+		t.Error("`checked` did not survive the round trip")
+	}
+
+	// A non-boolean is refused at load (and by the schema, below).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := bytes.Replace(raw, []byte(`"checked": true`), []byte(`"checked": "yes"`), 1)
+	if bytes.Equal(bad, raw) {
+		t.Fatalf("test setup: no `\"checked\": true` in the saved registry")
+	}
+	badPath := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(badPath, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadNoRepair(badPath); err == nil {
+		t.Error(`a registry with "checked": "yes" loaded`)
+	}
+
+	// The JSON schema agrees on both documents, where python can say so.
+	schema := "../../../../contracts/ctl/schemas/registry.json"
+	py := ""
+	for _, c := range []string{"/rag/envs/ragstack/bin/python", "python3"} {
+		if p, err := exec.LookPath(c); err == nil && exec.Command(p, "-c", "import jsonschema").Run() == nil {
+			py = p
+			break
+		}
+	}
+	if py == "" {
+		t.Skip("no python with jsonschema")
+	}
+	script := `
+import json, sys
+from jsonschema import Draft202012Validator
+schema = json.load(open(sys.argv[1])); doc = json.load(open(sys.argv[2]))
+sys.exit(1 if list(Draft202012Validator(schema).iter_errors(doc)) else 0)
+`
+	if out, err := exec.Command(py, "-c", script, schema, path).CombinedOutput(); err != nil {
+		t.Errorf("a registry with a checked backup does not validate against registry.json: %v\n%s", err, out)
+	}
+	if err := exec.Command(py, "-c", script, schema, badPath).Run(); err == nil {
+		t.Error(`registry.json accepted "checked": "yes"`)
+	}
+}

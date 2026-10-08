@@ -1,9 +1,12 @@
 package drivers
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -67,6 +70,11 @@ type FakeOptions struct {
 	ESRepos map[string]Repo
 	// ESCounts maps "<baseURL>/<index>" to its document count.
 	ESCounts map[string]int64
+	// ESSnapshotDirs maps an elasticsearch base URL to the HOST directory its
+	// `path.repo` is bound from, so a snapshot writes the repository files a
+	// real one would (index-N, the per-index directories) where the backup
+	// moves them from. See FakeElasticsearch.Snapshot for the fallback.
+	ESSnapshotDirs map[string]string
 	// Versions maps a tenant origin to what GET /v1/version answers.
 	Versions map[string]map[string]any
 	// CollectionsByOrigin maps a tenant origin to what GET /v1/collections
@@ -261,6 +269,7 @@ func NewFake(opts FakeOptions) *Fake {
 	f.es = &FakeElasticsearch{
 		r: &f.recorder, ByURL: copyMapSlice(opts.Indices), Taken: map[string][]string{},
 		Repos: copyMapRepo(opts.ESRepos), Counts: copyMapInt64(opts.ESCounts),
+		files: f.files, SnapshotDirs: copyMapString(opts.ESSnapshotDirs),
 	}
 	f.api = &FakeTenantAPI{
 		r: &f.recorder, Versions: copyMapAny(opts.Versions), qdrant: f.qdrant, files: f.files,
@@ -1872,6 +1881,26 @@ func (f *FakeFiles) Sha256(_ context.Context, path string) (string, int64, error
 	return hex.EncodeToString(sum[:]), int64(len(v.Data)), nil
 }
 
+// ReadHead is the first n bytes of one in-memory file.
+func (f *FakeFiles) ReadHead(_ context.Context, path string, n int) ([]byte, error) {
+	if err := f.r.record("files", "ReadHead", path, strconv.Itoa(n)); err != nil {
+		return nil, err
+	}
+	if n <= 0 || n > maxReadHead {
+		return nil, fmt.Errorf("%w: ReadHead of %d bytes (want 1..%d)", jobs.ErrRefused, n, maxReadHead)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.Files[path]
+	if !ok {
+		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+	}
+	if len(v.Data) < n {
+		n = len(v.Data)
+	}
+	return append([]byte(nil), v.Data[:n]...), nil
+}
+
 // DiskFree answers Free, defaulting to a terabyte: the ordinary fixture is a
 // host with room, and a fake that answered zero would make every test which
 // runs a backup seed a number in order to say nothing.
@@ -2053,7 +2082,8 @@ func (q *FakeQdrant) Snapshot(_ context.Context, base, collection string) (strin
 	// snapshot into its bundle, and a fake that only returned a name would let
 	// a step which never checked the move pass its tests.
 	if dir := q.SnapshotDirs[base]; dir != "" && q.files != nil {
-		q.files.Put(filepath.Join(dir, collection, name), []byte("fake qdrant snapshot of "+collection+"\n"), 0o640)
+		q.files.Put(filepath.Join(dir, collection, name), fakeTar("config.json",
+			[]byte(`{"fake qdrant snapshot of":"`+collection+`"}`+"\n")), 0o640)
 	}
 	return name, nil
 }
@@ -2147,6 +2177,10 @@ type FakeElasticsearch struct {
 	SnapshotIndices []string
 	// Counts maps "<baseURL>/<index>" to its document count.
 	Counts map[string]int64
+	// SnapshotDirs maps a base URL to the host directory its path.repo is
+	// bound from (FakeOptions.ESSnapshotDirs).
+	SnapshotDirs map[string]string
+	files        *FakeFiles
 }
 
 // Indices lists the indices of base, sorted.
@@ -2173,7 +2207,80 @@ func (e *FakeElasticsearch) Snapshot(_ context.Context, base, repo, name string,
 	defer e.mu.Unlock()
 	e.Taken[repo] = append(e.Taken[repo], name)
 	e.SnapshotIndices = append(e.SnapshotIndices, repo+" "+name+" "+strings.Join(indices, ","))
+	e.writeRepoFiles(base, repo, name, indices)
 	return nil
+}
+
+// writeRepoFiles lays down the smallest honest model of what elasticsearch
+// writes into an fs repository: `index-<gen>` (the repository's JSON root,
+// whose `indices` map names each index's directory id), `index.latest`, the
+// snapshot's own blob, and one non-empty file under `indices/<id>/`. The
+// bundle check reads exactly these; a fake that wrote nothing would make a
+// check of the elasticsearch leg pass or fail on a fixture rather than on the
+// step.
+//
+// The HOST directory is the container location's bind: SnapshotDirs[base]
+// joined with the location's last segment (the backup registers
+// `<path.repo>/<bundle-id>` and creates `<host snapshots>/<bundle-id>`). For
+// a store the fixture did not describe — a tenant created during the run —
+// it is the one directory the files driver holds with that last segment, and
+// nothing is written when there is not exactly one. Caller holds e.mu.
+func (e *FakeElasticsearch) writeRepoFiles(base, repo, name string, indices []string) {
+	if e.files == nil {
+		return
+	}
+	loc := e.Repos[repo].Location
+	if loc == "" {
+		return
+	}
+	leaf := filepath.Base(loc)
+	host := ""
+	if dir := e.SnapshotDirs[base]; dir != "" {
+		host = filepath.Join(dir, leaf)
+	} else {
+		var found []string
+		e.files.mu.Lock()
+		for d := range e.files.Dirs {
+			if filepath.Base(d) == leaf {
+				found = append(found, d)
+			}
+		}
+		e.files.mu.Unlock()
+		if len(found) != 1 {
+			return
+		}
+		host = found[0]
+	}
+	gen := 0
+	for r, have := range e.Repos {
+		if have.Location == loc {
+			gen += len(e.Taken[r])
+		}
+	}
+	gen--
+	type idx struct {
+		ID        string   `json:"id"`
+		Snapshots []string `json:"snapshots"`
+	}
+	root := map[string]any{
+		"snapshots": []map[string]string{{"name": name, "uuid": name}},
+		"indices":   map[string]idx{},
+	}
+	for _, i := range indices {
+		id := "fakeidx-" + i
+		root["indices"].(map[string]idx)[i] = idx{ID: id, Snapshots: []string{name}}
+		e.files.Put(filepath.Join(host, "indices", id, "0", "__"+name), []byte("fake segment of "+i+"\n"), 0o640)
+		e.files.Put(filepath.Join(host, "indices", id, "meta-"+name+".dat"), []byte("fake index metadata\n"), 0o640)
+	}
+	body, _ := json.Marshal(root)
+	if gen > 0 {
+		e.files.mu.Lock()
+		delete(e.files.Files, filepath.Join(host, "index-"+strconv.Itoa(gen-1)))
+		e.files.mu.Unlock()
+	}
+	e.files.Put(filepath.Join(host, "index-"+strconv.Itoa(gen)), body, 0o640)
+	e.files.Put(filepath.Join(host, "index.latest"), []byte{0, 0, 0, 0, 0, 0, 0, byte(gen)}, 0o640)
+	e.files.Put(filepath.Join(host, "snap-"+name+".dat"), []byte("fake snapshot info\n"), 0o640)
 }
 
 // Ready is the readiness probe; a test makes a cluster un-ready through the
@@ -2835,7 +2942,9 @@ func (p *FakePostgres) Dump(_ context.Context, spec jobs.PostgresSpec, out strin
 	// another cluster. A real custom-format dump carries the rows themselves;
 	// this is the smallest model of that which lets a test prove a handover
 	// moved everything.
-	body := "fake pg_dump -Fc of " + spec.DB + "\n"
+	// PGDMP first: it is pg_dump's custom-format magic, and the bundle check
+	// reads it to tell a dump from a file that merely has the right name.
+	body := pgDumpMagic + " fake pg_dump -Fc of " + spec.DB + "\n"
 	c := p.Contents[spec.RunDir]
 	body += dumpCensusPrefix + "=size==" + strconv.FormatInt(c.SizeBytes, 10) + "\n"
 	for _, name := range sortedKeys(c.Tables) {
@@ -3008,6 +3117,19 @@ func (s *FakeSQLite) Backup(_ context.Context, src, dst string) (string, error) 
 	return "ok", nil
 }
 
+// IntegrityCheck answers "ok" for a file that exists and fs.ErrNotExist for
+// one that does not. A damaged database is reproduced through the failure
+// table ("sqlite.IntegrityCheck:<path>"): the fake has no pages to corrupt.
+func (s *FakeSQLite) IntegrityCheck(_ context.Context, path string) (string, error) {
+	if err := s.r.record("sqlite", "IntegrityCheck", path); err != nil {
+		return "", err
+	}
+	if s.files.Content(path) == nil {
+		return "", fmt.Errorf("opening the database to check: open %s: %w", path, fs.ErrNotExist)
+	}
+	return "ok", nil
+}
+
 // ---------------------------------------------------------------- archive
 
 // FakeArchive is tar without a tar.
@@ -3039,6 +3161,20 @@ func (a *FakeArchive) Create(_ context.Context, dir, out string) error {
 	return nil
 }
 
+// Entries reads the in-memory file as a tar, with the real driver's loop: a
+// fake answer here would let a bundle check pass over a snapshot that is not
+// an archive at all.
+func (a *FakeArchive) Entries(ctx context.Context, tarPath string) (int, error) {
+	if err := a.r.record("archive", "Entries", tarPath); err != nil {
+		return 0, err
+	}
+	body := a.files.Content(tarPath)
+	if body == nil {
+		return 0, fmt.Errorf("open %s: %w", tarPath, fs.ErrNotExist)
+	}
+	return countEntries(ctx, tar.NewReader(bytes.NewReader(body)), tarPath)
+}
+
 // Extract records the extraction and writes NOTHING: the real driver's whole
 // job is deciding which entries it refuses, and a fake that invented files
 // would be asserting on a policy it does not implement.
@@ -3054,6 +3190,22 @@ func (a *FakeArchive) Extract(_ context.Context, tarPath, dest string, limits jo
 }
 
 // ---------------------------------------------------------------- helpers
+
+// pgDumpMagic is the five bytes every pg_dump custom-format archive begins
+// with ("PGDMP"); the fake dump carries them so the bundle check has a header
+// to read.
+const pgDumpMagic = "PGDMP"
+
+// fakeTar is a one-entry tar: the smallest thing that IS an archive, which is
+// what a fake store snapshot has to be for a check that reads it as one.
+func fakeTar(name string, body []byte) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o640, Size: int64(len(body)), Typeflag: tar.TypeReg})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
+	return buf.Bytes()
+}
 
 func setOf(ks []string) map[string]bool {
 	m := make(map[string]bool, len(ks))

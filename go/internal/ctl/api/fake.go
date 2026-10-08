@@ -366,7 +366,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		Files:       fixtureFiles(roots, f),
 		Collections: map[string][]string{}, Indices: map[string][]string{},
 		QdrantCounts: map[string]int64{}, ESCounts: map[string]int64{},
-		QdrantSnapshotDirs: map[string]string{}, UnitPorts: map[string]int{},
+		QdrantSnapshotDirs: map[string]string{}, ESSnapshotDirs: map[string]string{}, UnitPorts: map[string]int{},
 		CollectionsByOrigin: map[string][]string{}, InstancePorts: map[string]int{},
 	}
 	for name, t := range f.Tenants {
@@ -446,6 +446,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 			url := t.Stores.Elasticsearch.URL
 			opts.Indices[url] = []string{name + "-chunks"}
 			opts.ESCounts[url+"/"+name+"-chunks"] = 34000
+			opts.ESSnapshotDirs[url] = tp.ESSnapshots
 		}
 	}
 	fixtureRestoreTargets(f, &opts)

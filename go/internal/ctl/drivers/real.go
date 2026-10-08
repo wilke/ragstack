@@ -822,6 +822,30 @@ func (f *RealFiles) Sha256(_ context.Context, path string) (string, int64, error
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// maxReadHead bounds ReadHead: it is for a file's magic number, not a way
+// around Sha256's streaming or ReadFile's size.
+const maxReadHead = 1 << 20
+
+// ReadHead is the first n bytes of path, opened without following a final
+// symlink: a bundle is operator input, and a link planted where a dump should
+// be must not answer with the first bytes of whatever it points at.
+func (f *RealFiles) ReadHead(_ context.Context, path string, n int) ([]byte, error) {
+	if n <= 0 || n > maxReadHead {
+		return nil, fmt.Errorf("%w: ReadHead of %d bytes (want 1..%d)", jobs.ErrRefused, n, maxReadHead)
+	}
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+	buf := make([]byte, n)
+	got, err := io.ReadFull(fh, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buf[:got], nil
+}
+
 // DiskFree is the bytes available to THIS account on the filesystem holding
 // path — statfs f_bavail, not f_bfree: the difference is the reserved blocks
 // only root may use, and a precheck that counted those would approve a backup
