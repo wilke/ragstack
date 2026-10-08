@@ -1001,3 +1001,40 @@ export const hostileArtifactsFixture: ArtifactsResponse = {
     ...artifactsFixture.artifacts,
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Settings (PR-G3.4). settings_response.json has NO secret-named member
+// (`additionalProperties: false` all the way down), so the leaked values sit
+// in its free-text members behind secret NAMES inside the text — an env
+// assignment in a version, a query-string key in a path, a URL password in
+// the recipients file, a `--token` flag in a fingerprint — plus markup that
+// must render escaped. The daemon would never send any of it.
+// ---------------------------------------------------------------------------
+
+export const hostileSettingsFixture: SettingsResponse = {
+  ...settingsFixture,
+  images: {
+    qdrant: {
+      sif: "/rag/apptainer/images/qdrant.sif?api_key=leaked-api-key-value-0401",
+      version: "1.12.4 QDRANT__SERVICE__API_KEY=leaked-api-key-value-0402",
+      digest: settingsFixture.images.qdrant.digest,
+    },
+    elasticsearch: {
+      sif: "/rag/apptainer/images/elasticsearch.sif",
+      version: "8.15.2 <img src=x onerror=alert(1)> ELASTIC_PASSWORD=leaked-password-value-0403",
+      digest: "GOWE_TOKEN=leaked-token-value-0404",
+    },
+  },
+  python_env_default: "/rag/envs/ragstack PG_DSN=leaked-dsn-value-0405",
+  ctl: {
+    port: 24100,
+    ui_dist: "/rag/data/ctl/ui/dist secret: leaked-secret-value-0406",
+    gateway_enabled: true,
+  },
+  recipients: {
+    file: "https://ops:leaked-password-value-0407@vault.example/backup-recipients.txt",
+    count: 2,
+    fingerprints: ["sha256:0a1b2c3d4e5f6071", "--token leaked-token-value-0408"],
+    read_only: true,
+  },
+};
