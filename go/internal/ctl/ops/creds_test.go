@@ -8,6 +8,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -498,5 +499,103 @@ func TestProveCatchesAKeyThatAuthenticatesAndSeesNothing(t *testing.T) {
 	}
 	if vis["collections"] == 0 {
 		t.Errorf("visibility = %+v", vis)
+	}
+}
+
+// ---------------------------------------------------------------- service accounts
+
+// The sa-* calls are key routes on the tenant API. Before PR-G1.5 the planner
+// passed "" and only the fake (which ignored the key) ever accepted it; the
+// key is now read at STEP time from the tenant's own ledger, and it must be an
+// ADMIN key — the fixture's testSecret, which the ledger maps to `admin`.
+func TestServiceAccountCallsPresentTheTenantsAdminKey(t *testing.T) {
+	oc, fake := fixture(t, "dev", instanceManaged)
+	p := plan(t, oc, "sa-create", map[string]any{"subject": "gowe", "role": "user", "purpose": "workflow engine"})
+	// The plan carries no credential: it is computed before any is read.
+	if strings.Contains(strings.Join(titles(p), "|"), testSecret) {
+		t.Fatal("the admin key is in a step title")
+	}
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	api := fake.FakeTenantAPI()
+	origin := "http://127.0.0.1:" + itoa(oc.Tenant.Ports.API)
+	want := origin + " " + fingerprint(testSecret)
+	if len(api.AccountKeys) != 1 || api.AccountKeys[0] != want {
+		// Fingerprints only: a failure message must not print the value.
+		t.Fatalf("the sa-create call presented %v, want the fixture admin key's fingerprint %q", api.AccountKeys, want)
+	}
+	tn := oc.Fleet.Tenants["dev"]
+	if len(tn.ServiceAccounts) != 1 || tn.ServiceAccounts[0].Subject != "gowe" ||
+		tn.ServiceAccounts[0].Status != "active" || tn.ServiceAccounts[0].Role != "user" {
+		t.Fatalf("the service account is not on the row: %+v", tn.ServiceAccounts)
+	}
+
+	// The round trip the registry row exists for: a ctl-created account can be
+	// ctl-disabled, and that call is authenticated too.
+	oc.Tenant = tn
+	p2 := plan(t, oc, "sa-disable", map[string]any{"subject": "gowe"})
+	newRunner(oc, fake).runAll(t, p2)
+	if len(api.AccountKeys) != 2 || api.AccountKeys[1] != want {
+		t.Fatalf("the sa-disable call presented %v, want %q", api.AccountKeys, want)
+	}
+	if got := oc.Fleet.Tenants["dev"].ServiceAccounts[0].Status; got != "disabled" {
+		t.Errorf("status after sa-disable = %q", got)
+	}
+
+	// The value is in no checkpoint, no result and no call-log entry.
+	for _, pl := range []*jobs.Planned{p, p2} {
+		for k, v := range pl.Result() {
+			if strings.Contains(fmt.Sprint(v), testSecret) {
+				t.Errorf("the admin key is in the result member %q", k)
+			}
+		}
+	}
+	for n := range r.steps {
+		for _, id := range r.externalIDs(n) {
+			if strings.Contains(id, testSecret) {
+				t.Errorf("the admin key is in a checkpoint of step %d", n)
+			}
+		}
+	}
+	for _, c := range fake.CallKeys() {
+		if strings.Contains(c, testSecret) {
+			t.Error("the admin key reached the call log")
+		}
+	}
+}
+
+func TestServiceAccountWithoutAnAdminKeyIsRefusedAtStepTime(t *testing.T) {
+	oc, fake := fixture(t, "dev", instanceManaged)
+	// A ledger with a USER key only: there is a credential, and it is not one
+	// the service-account routes accept.
+	userOnly := []byte("" +
+		"API_KEYS='[\"" + secondSecret + "\"]'\n" +
+		"API_KEY_TENANTS='{\"" + secondSecret + "\":\"dev\"}'\n" +
+		"API_KEY_ROLES='{\"" + secondSecret + "\":\"user\"}'\n")
+	tp := paths.TenantPaths(oc.Roots, "dev", "dev")
+	fake.FakeFiles().Put(tp.TenantEnv, []byte("LOG_LEVEL=INFO\n"), 0o640)
+	fake.FakeFiles().Put(tp.SecretsEnv, userOnly, 0o640)
+
+	// Planning still succeeds: the plan is pure and does not read the ledger.
+	p := plan(t, oc, "sa-create", map[string]any{"subject": "gowe", "role": "user"})
+	r := newRunner(oc, fake)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "no admin API key") {
+		t.Fatalf("err = %v, want a refusal naming the missing admin key", err)
+	}
+	if strings.Contains(err.Error(), secondSecret) {
+		t.Error("the refusal carries a credential")
+	}
+	if n := len(fake.FakeTenantAPI().Accounts); n != 0 {
+		t.Errorf("%d service-account call(s) reached the tenant API without a key", n)
+	}
+	if sa := oc.Fleet.Tenants["dev"].ServiceAccounts; len(sa) != 0 {
+		t.Errorf("a refused sa-create recorded %+v", sa)
 	}
 }

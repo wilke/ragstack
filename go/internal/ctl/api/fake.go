@@ -166,6 +166,19 @@ func FixtureFleet() *registry.Fleet {
 	return f
 }
 
+// fixtureAdminKey is the ledger row of a fixture tenant's admin key. Its
+// fingerprint is that of the placeholder value fixtureSecret renders for it,
+// so the ledger and the file agree the way they do on a host.
+func fixtureAdminKey(tenant string) registry.Key {
+	const id = "fixture-admin"
+	sum := sha256.Sum256([]byte("fixture-" + id))
+	return registry.Key{
+		ID: id, Label: id, Role: "admin", TenantString: tenant,
+		Fingerprint: fmt.Sprintf("sha256:%x", sum[:])[:len("sha256:")+16],
+		CreatedAt:   "2026-09-14T00:00:00Z", CreatedBy: "local:0", Effective: true,
+	}
+}
+
 // managedFixtureArtifactID is the artifact `ctlfixture` records.
 const managedFixtureArtifactID = "v1.5.3-abababababab"
 
@@ -192,6 +205,11 @@ func addManagedFixture(f *registry.Fleet) {
 		{Key: "API_KEY_ROLES", File: "secrets.env"},
 		{Key: "TENANT_PG_PASSWORD", File: "secrets.env"},
 	}
+	// One ADMIN key in the ledger. fixtureFiles renders it into secrets.env as
+	// the placeholder `fixture-<id>`, which is what the sa-* ops present to the
+	// fake tenant API: a managed tenant without an admin key is not one whose
+	// service accounts the ctl can manage (PR-G1.5).
+	t.Keys = []registry.Key{fixtureAdminKey(managedFixtureName)}
 	// Capabilities all true: this is a tenant whose stores an operator has
 	// CONFIRMED are its own, which is what lets backup snapshot them.
 	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}

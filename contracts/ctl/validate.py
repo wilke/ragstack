@@ -78,6 +78,7 @@ PLAN_PATHS: dict[str, set[str]] = {
     "/v1/jobs/{id}/continue": {"post"},
     "/v1/jobs/{id}/cancel": {"post"},
     "/v1/settings": {"get", "put"},
+    "/v1/artifacts": {"get"},
 }
 
 #: The plan's verb list, in the plan's order.

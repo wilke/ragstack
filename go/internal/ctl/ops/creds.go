@@ -701,15 +701,19 @@ func (p *planner) planSA(args map[string]any, action string, destructive bool) e
 	// that already exists — so they are empty there rather than guessed from
 	// the registry row, which can disagree with the tenant's own ledger.
 	role, purpose := argStringOf(args, "role"), argStringOf(args, "purpose")
-	// The admin credential this call presents is read from the tenant's
-	// secrets.env by the real client (PR-D). The planner does not read secrets,
-	// so it passes none and the pending driver refuses before any request is
-	// made.
-	apiKey := ""
+	tenantEnv, secretsEnv := p.tpaths.TenantEnv, p.tpaths.SecretsEnv
 	p.addFor("tenantapi", step{
 		Kind: "tenantapi", Title: fmt.Sprintf("%s the service account %q through the tenant API", action, subject),
 		Destructive: destructive, Targets: []string{subject, origin},
+		Warnings: []string{"the admin credential this call presents is read from the tenant's own env files at RUN " +
+			"time; it is never in the plan, the log, a checkpoint or the result"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// Read BEFORE the checkpoint: a tenant with no admin key is refused
+			// without leaving a marker that says the call was attempted.
+			apiKey, err := saAdminKey(ctx, sc, tenantEnv, secretsEnv)
+			if err != nil {
+				return "", err
+			}
 			if err := sc.Checkpoint("sa:" + action + ":" + subject); err != nil {
 				return "", err
 			}
@@ -721,13 +725,106 @@ func (p *planner) planSA(args map[string]any, action string, destructive bool) e
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			inverse := map[string]string{"create": "disable", "disable": "enable", "enable": "disable"}[action]
+			// Read again rather than carried over from Run: a rollback after a
+			// daemon restart has no memory of the run half, and a credential
+			// held across the two would be one more place a value lives.
+			apiKey, err := saAdminKey(ctx, sc, tenantEnv, secretsEnv)
+			if err != nil {
+				return "", err
+			}
 			return "rolled back to " + inverse, sc.Ops.Drivers.TenantAPI().ServiceAccount(
 				ctx, origin, apiKey, subject, role, purpose, inverse)
 		},
 	})
+	p.addSALedgerRow(subject, role, purpose, action)
 	p.result["subject"] = subject
 	p.result["service_account_status"] = map[string]string{"create": "active", "enable": "active", "disable": "disabled"}[action]
 	return nil
+}
+
+// saAdminKey is the credential an sa-* call presents: an ADMIN key from the
+// tenant's own env files, resolved exactly as `--prove` resolves it
+// (adminKeyFromEnvFiles: the ledger's admin-role key, tenant.env then
+// secrets.env, later wins). It is read at STEP time because a plan is pure and
+// is hashed, logged and shown; and the value goes to exactly one place, the
+// X-API-Key header of the call.
+//
+// A tenant with no admin key is refused here, by name: the tenant API answers
+// 401 to an unauthenticated service-account route, and saying "no admin key"
+// is the actionable form of that.
+func saAdminKey(ctx context.Context, sc *jobs.StepContext, tenantEnv, secretsEnv string) (string, error) {
+	key, err := adminKeyFromEnvFiles(ctx, sc, tenantEnv, secretsEnv)
+	if err != nil {
+		return "", err
+	}
+	if key == "" {
+		return "", fmt.Errorf("%w: the tenant has no admin API key in its env files (API_KEYS with an `admin` role "+
+			"in API_KEY_ROLES, or TENANT_API_KEY_ADMIN), so the tenant API's service-account routes cannot be "+
+			"called; mint one first (`ragstack-ctl key mint --role admin --restart`)", jobs.ErrRefused)
+	}
+	return key, nil
+}
+
+// addSALedgerRow records what the tenant API was just told on the registry
+// row's `service_accounts[]`. Without it a ctl-created service account could
+// never be ctl-disabled: sa-disable and sa-enable look the subject up on the
+// row and refuse one they do not find.
+func (p *planner) addSALedgerRow(subject, role, purpose, action string) {
+	name := p.tenant
+	status := map[string]string{"create": "active", "enable": "active", "disable": "disabled"}[action]
+	// The status this step replaced, for the rollback (disable/enable only).
+	var previous string
+	p.add(step{
+		Kind: "registry", Title: fmt.Sprintf("record the service account %q as %s in the registry", subject, status),
+		Targets:    []string{name, subject},
+		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			err := p.saveTenant(sc, "sa-"+action, func(t *registry.Tenant) error {
+				for i := range t.ServiceAccounts {
+					if t.ServiceAccounts[i].Subject != subject {
+						continue
+					}
+					// A create re-run after a crash finds its own row: idempotent.
+					previous = t.ServiceAccounts[i].Status
+					t.ServiceAccounts[i].Status = status
+					return nil
+				}
+				if action != "create" {
+					return fmt.Errorf("%w: %s has no service account %q on its row any more", jobs.ErrRefused, name, subject)
+				}
+				t.ServiceAccounts = append(t.ServiceAccounts, registry.ServiceAccount{
+					Subject: subject, Role: role, Purpose: purpose, Status: status, CreatedAt: p.stampRFC3339(sc),
+				})
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			return subject + " is " + status + " in the registry", nil
+		},
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
+				kept := t.ServiceAccounts[:0:0]
+				for _, sa := range t.ServiceAccounts {
+					if sa.Subject == subject {
+						if action == "create" && previous == "" {
+							continue
+						}
+						if previous != "" {
+							sa.Status = previous
+						}
+					}
+					kept = append(kept, sa)
+				}
+				t.ServiceAccounts = kept
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			return subject + " is back to what the registry held before", nil
+		},
+	})
 }
 
 // ---------------------------------------------------------------- env edits

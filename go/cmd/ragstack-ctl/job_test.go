@@ -13,6 +13,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -360,3 +361,133 @@ func (e *scriptedEngine) Audit(context.Context, int) ([]model.AuditRow, bool, er
 	return nil, false, nil
 }
 func (e *scriptedEngine) Reconcile(context.Context) ([]string, error) { return nil, nil }
+
+// ---------------------------------------------------------------- secrets
+
+// secretsScript is a fake daemon whose job succeeds on the first poll and whose
+// envelope is delivered ONCE: the second read is the contract's 410.
+func secretsScript(t *testing.T, value string) *fakeCtl {
+	t.Helper()
+	fastPolling(t)
+	var mu sync.Mutex
+	taken := false
+	return newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		job := sampleJob(model.JobSucceeded)
+		switch {
+		case rec.Method == http.MethodPost:
+			replyJob(w, sampleJob(model.JobRunning))
+		case strings.HasSuffix(rec.Path, "/secrets"):
+			mu.Lock()
+			first := !taken
+			taken = true
+			mu.Unlock()
+			if !first {
+				replyError(w, http.StatusGone, "not_found", "already delivered", nil)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(model.SecretsResponse{
+				JobID: job.ID, DeliveredAt: "2026-10-08T10:00:00Z", ExpiresAt: "2026-10-08T10:15:00Z",
+				Secrets: []model.Secret{{ID: "ci-runner", Label: "ci-runner", Role: "user", Value: value}},
+			})
+		default:
+			job.Steps[0].State = model.StepSucceeded
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(job)
+		}
+	})
+}
+
+// `key mint` used to submit, print the accepted job and exit — and the value
+// it minted was readable exactly once, by somebody who knew to ask. It now
+// waits (implied, as for `tenant create`) and collects the envelope itself,
+// presenting the ctl key as X-API-Key because the route is `session: false`.
+func TestKeyMintWaitsAndPrintsTheMintedValueOnce(t *testing.T) {
+	minted := strings.Repeat("5e", 32)
+	f := secretsScript(t, minted)
+	keyFile := writeKeyFile(t)
+	rc, out, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes")
+	if rc != exitOK {
+		t.Fatalf("rc %d (want 0) %s", rc, errs)
+	}
+	if n := strings.Count(out, minted); n != 1 {
+		t.Errorf("the minted value was printed %d times, want once", n)
+	}
+	if !strings.Contains(out, "SHOWN ONCE") {
+		t.Errorf("the once-only wording is missing:\n%s", out)
+	}
+	var reads []recorded
+	for _, r := range f.requests() {
+		if strings.HasSuffix(r.Path, "/secrets") {
+			reads = append(reads, r)
+		}
+	}
+	if len(reads) != 1 {
+		t.Fatalf("%d envelope reads, want exactly one", len(reads))
+	}
+	if reads[0].Method != http.MethodGet || reads[0].Path != "/v1/jobs/"+sampleJob(model.JobSucceeded).ID+"/secrets" {
+		t.Errorf("%s %s", reads[0].Method, reads[0].Path)
+	}
+	if reads[0].APIKey != strings.Repeat("a", 64) {
+		t.Error("the envelope read did not carry the ctl key as X-API-Key")
+	}
+	if strings.Contains(errs, minted) {
+		t.Error("the minted value reached stderr")
+	}
+}
+
+// A dry-run mint plans and mints nothing, so there is nothing to collect.
+func TestKeyMintDryRunCollectsNothing(t *testing.T) {
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("key-mint", "dev")) })
+	rc, _, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user", "--server", f.srv.URL, "--dry-run")
+	if rc != exitOK {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if n := len(f.requests()); n != 1 {
+		t.Errorf("%d requests for a dry run, want the one POST", n)
+	}
+}
+
+// `job secrets <id>` is the recovery path: the first read prints the value
+// once, the second is the contract's 410, said in words an operator can act on.
+func TestJobSecretsPrintsOnceAndSaysWhenTheEnvelopeIsGone(t *testing.T) {
+	value := strings.Repeat("7c", 32)
+	f := secretsScript(t, value)
+	keyFile := writeKeyFile(t)
+	id := sampleJob(model.JobSucceeded).ID
+
+	rc, out, errs := capture(t, "job", "secrets", id, "--server", f.srv.URL, "--api-key-file", keyFile)
+	if rc != exitOK {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if strings.Count(out, value) != 1 || !strings.Contains(out, "SHOWN ONCE") {
+		t.Errorf("the envelope was not printed once with the once-only wording:\n%s", strings.ReplaceAll(out, value, "<value>"))
+	}
+	last := f.last(t)
+	if last.Method != http.MethodGet || last.Path != "/v1/jobs/"+id+"/secrets" {
+		t.Errorf("%s %s", last.Method, last.Path)
+	}
+	if last.APIKey != strings.Repeat("a", 64) {
+		t.Error("job secrets did not send the ctl key as X-API-Key")
+	}
+
+	rc, out, errs = capture(t, "job", "secrets", id, "--server", f.srv.URL, "--api-key-file", keyFile)
+	if rc != exitError {
+		t.Fatalf("second read rc %d, want %d", rc, exitError)
+	}
+	if !strings.Contains(errs, "already delivered or expired (15 min)") {
+		t.Errorf("the 410 is not explained: %s", errs)
+	}
+	if strings.Contains(out+errs, value) {
+		t.Error("the value was printed on the 410")
+	}
+}
+
+func TestJobSecretsNeedsExactlyOneID(t *testing.T) {
+	if rc, _, _ := capture(t, "job", "secrets"); rc != exitUsage {
+		t.Errorf("rc %d, want usage", rc)
+	}
+}

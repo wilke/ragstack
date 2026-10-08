@@ -1377,6 +1377,51 @@ async def test_decommission_of_a_managed_tenant_needs_a_verified_bundle(
     assert "backup" in err["detail"], err["detail"]
 
 
+async def test_sa_create_is_authenticated_and_recorded_on_the_row(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """``sa-create`` calls the tenant API's service-account route, which is a
+    KEY route: the admin credential is read from the tenant's own env files
+    when the step runs (PR-G1.5 — it used to be an empty string, so the op only
+    ever worked on a fake that ignored the key; the fake now refuses one too).
+    The fixture tenant carries one admin key in its ledger, so the create
+    succeeds; what the job records is the account on the registry row, never
+    the credential it presented. The round trip — ``sa-disable`` on the account
+    just created — is what the row exists for."""
+    tenant = await managed_tenant(client)
+    subject = f"conf-sa-{uuid.uuid4().hex[:8]}"
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/sa-create", schemas,
+        args={"subject": subject, "role": "user", "purpose": "conformance"},
+    )
+    assert job["state"] == "succeeded", json.dumps(
+        [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+         for s in job["steps"]], indent=1)
+    assert job["result"]["service_account_status"] == "active", job["result"]
+    # The fixture's placeholder admin value (api/fake.go fixtureSecret) is in
+    # no part of the job document.
+    assert "fixture-fixture-admin" not in json.dumps(job), "the admin credential reached the job"
+
+    async def recorded() -> dict[str, Any]:
+        show = await client.get(f"/v1/tenants/{tenant}")
+        assert show.status_code == 200, show.text
+        rows = {sa["subject"]: sa for sa in show.json()["registry"]["service_accounts"]}
+        assert subject in rows, f"{subject} is not on the row: {sorted(rows)}"
+        return rows[subject]
+
+    row = await recorded()
+    assert row["status"] == "active" and row["role"] == "user", row
+
+    path = f"/v1/tenants/{tenant}/ops/sa-disable"
+    preview = await client.post(path, json=op_body(args={"subject": subject}))
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    confirm = plan["confirm_value"] if plan["requires_confirm"] else None
+    job = await submit_and_settle(client, path, schemas, args={"subject": subject}, confirm=confirm)
+    assert job["state"] == "succeeded", json.dumps(job.get("error"))
+    assert (await recorded())["status"] == "disabled"
+
+
 # =========================================================================== #
 # `tenant create` — the verb that makes a tenant (#537)
 #

@@ -138,6 +138,7 @@ x-ctl-authorization-matrix:
   - { operationId: ctlJobCancel,       method: POST,   path: "/v1/jobs/{id}/cancel",               role: operator,  session: true,  viewer_fields: n/a }
   - { operationId: ctlSettingsGet,     method: GET,    path: /v1/settings,                       role: viewer,    session: true,  viewer_fields: "all except recipients.fingerprints (empty for a viewer)" }
   - { operationId: ctlSettingsPut,     method: PUT,    path: /v1/settings,                       role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlArtifactsList,   method: GET,    path: /v1/artifacts,                      role: viewer,    session: true,  viewer_fields: all }
 
 # ---------------------------------------------------------------------------
 # Typed `args` per verb of POST /v1/tenants/{name}/ops/{verb}. Each value is
@@ -1271,6 +1272,35 @@ paths:
         "428": { $ref: "#/components/responses/ConfirmRequired" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /v1/artifacts:
+    get:
+      operationId: ctlArtifactsList
+      summary: Prepared artifacts
+      description: >-
+        The prepared artifacts in the registry's `artifacts{}`, newest
+        `prepared_at` first, each with the tenants whose `artifact_id` names
+        it. This is the list `tenant create` picks an `artifact_id` from;
+        preparing an artifact stays CLI-only (`fleet artifact prepare`).
+        Paths are not part of the answer.
+      tags: [Fleet]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Prepared artifacts
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /v1/settings:
     get:
       operationId: ctlSettingsGet
@@ -1582,6 +1612,7 @@ components:
     GatewayStatus: { $ref: "./schemas/gateway_status.json" }
     GatewayRenderResponse: { $ref: "./schemas/gateway_render_response.json" }
     SettingsResponse: { $ref: "./schemas/settings_response.json" }
+    ArtifactsResponse: { $ref: "./schemas/artifacts_response.json" }
     OpRequest: { $ref: "./schemas/op_request.json" }
     CreateRequest: { $ref: "./schemas/create_request.json" }
     BundleManifest: { $ref: "./schemas/bundle_manifest.json" }

@@ -10,6 +10,7 @@ package authz
 // operation, keyed by (METHOD, chi route pattern).
 var Matrix = []Row{
 	{OperationID: "ctlHealth", Method: "GET", Path: "/health", Role: "anonymous", Session: true, Mutating: false, ViewerFields: "all"},
+	{OperationID: "ctlArtifactsList", Method: "GET", Path: "/v1/artifacts", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all"},
 	{OperationID: "ctlAudit", Method: "GET", Path: "/v1/audit", Role: "operator", Session: true, Mutating: false, ViewerFields: "n/a"},
 	{OperationID: "ctlDoctor", Method: "GET", Path: "/v1/doctor", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all; findings[].detail is path-redacted for a viewer"},
 	{OperationID: "ctlFleet", Method: "GET", Path: "/v1/fleet", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all"},

@@ -163,6 +163,7 @@ func usage() {
                                             tenant BEFORE its handover.
 
   key mint <tenant> <label> --role admin|user [--restart]
+                                            waits, and prints the minted value ONCE
   key revoke <tenant> <id> [--restart]
   admin add|remove <tenant> <subject>
   sa create <tenant> <subject> --role admin|user [--purpose TEXT]
@@ -175,6 +176,7 @@ func usage() {
   job list [--tenant T] [--state S] [--limit N]
   job show <id>
   job log <id> <n> [--lines N]
+  job secrets <id>                          a job's minted credentials, once (15-minute window)
   job resume|continue|cancel <id>
 
 flags every operation accepts:
