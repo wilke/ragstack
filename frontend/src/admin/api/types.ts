@@ -15,6 +15,20 @@ type S = components["schemas"];
 /** A response body as it actually arrives: the schema minus its own `$defs`. */
 type Body<T> = Omit<T, "$defs">;
 
+/**
+ * `Body<T>` all the way down, for the bodies that NEST another schema file's
+ * type: `plan.doctor` is a whole `doctor_response` and `jobs_response.jobs[]`
+ * is a whole `job`, and each of those carries its own emitted `$defs` member.
+ * A one-level `Omit` leaves those in place, and then neither a fixture nor a
+ * real response satisfies the type. Arrays are mapped element-wise; scalars
+ * pass through.
+ */
+type DeepBody<T> = T extends readonly (infer U)[]
+  ? DeepBody<U>[]
+  : T extends object
+    ? { [K in keyof T as K extends "$defs" ? never : K]: DeepBody<T[K]> }
+    : T;
+
 export type CtlVersion = Body<S["version_response"]>;
 export type CtlMe = Body<S["me_response"]>;
 export type CtlSessionResponse = Body<S["session_response"]>;
@@ -55,13 +69,39 @@ export type CtlRole = CtlMe["role"];
 // ---------------------------------------------------------------------------
 
 /** A dry run's 200 body: what the op WOULD do. */
-export type Plan = Body<S["plan"]>;
+export type Plan = DeepBody<S["plan"]>;
 export type PlannedStep = S["PlannedStep"];
 
 /** An execute's 202 body, and `GET /v1/jobs/{id}`. */
 export type Job = Body<S["job"]>;
 export type Step = S["Step"];
 export type JobState = S["JobState"];
+export type StepState = Step["state"];
+/** `GET /v1/jobs/{id}/steps/{n}/log` — a step's log LINES (the step's `log` is a path). */
+export type StepLogResponse = S["StepLogResponse"];
+
+/** Every JobState, in lifecycle order — for filters, fixtures and tests. */
+export const JOB_STATES: readonly JobState[] = [
+  "queued",
+  "running",
+  "awaiting_cutover",
+  "succeeded",
+  "failed",
+  "rolled_back",
+  "interrupted",
+  "cancelled",
+];
+
+/** Every Step.state, in lifecycle order. */
+export const STEP_STATES: readonly StepState[] = [
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "skipped",
+  "rolled_back",
+  "interrupted",
+];
 
 /**
  * The mutation envelope. `args` is generated as `Record<string, never>` (the
@@ -79,7 +119,7 @@ export type OpVerb = S["OpVerb"];
 export type TenantOpVerb = components["parameters"]["Verb"];
 export type CreateArgs = S["CreateArgs"];
 
-export type JobsResponse = Body<S["jobs_response"]>;
+export type JobsResponse = DeepBody<S["jobs_response"]>;
 export type AuditResponse = Body<S["audit_response"]>;
 export type AuditRow = S["AuditRow"];
 /** The ONLY body in this API that carries a secret value. Never cache it. */

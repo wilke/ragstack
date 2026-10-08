@@ -5,10 +5,10 @@
 // against a recorded control-plane body with no network. A key typo would make
 // those tests pass against an empty view, so there is exactly one spelling.
 
-import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
+import { useQueries, useQuery, type UseQueryOptions } from "@tanstack/react-query";
 import { get } from "./http";
 import type { CtlError } from "./http";
-import type { Job, JobsResponse, JobState, LogFile } from "./types";
+import type { Job, JobsResponse, JobState, LogFile, StepLogResponse } from "./types";
 import { jobIsLive } from "../lib/opflow";
 
 export const ctlKeys = {
@@ -127,4 +127,34 @@ export function useJobs(filter: JobsFilter = {}, opts: { enabled?: boolean } = {
     enabled: opts.enabled ?? true,
     refetchInterval: pollWhenVisible(FLEET_POLL_MS),
   });
+}
+
+/**
+ * The log LINES of every step of `job` that has a log, by step number — for
+ * JobView's `logs` prop. A step's `log` field is a PATH (and null for a
+ * viewer, whose body the daemon strips); the lines come from
+ * `GET /v1/jobs/{id}/steps/{n}/log`, an OPERATOR read. So `enabled` must be
+ * the role gate: a viewer fires none of these requests. Refetched on the job
+ * poll while the job is live, so a running step's log grows on screen.
+ */
+export function useStepLogs(
+  job: Job | undefined,
+  enabled: boolean,
+): Readonly<Record<number, readonly string[]>> {
+  const steps = enabled && job ? job.steps.filter((s) => s.log !== null && s.state !== "pending") : [];
+  const live = jobIsLive(job?.state);
+  const results = useQueries({
+    queries: steps.map((s) => ({
+      queryKey: ctlKeys.jobStepLog(job!.id, s.n),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        get<StepLogResponse>(ctlPaths.jobStepLog(job!.id, s.n), signal),
+      retry: false,
+      refetchInterval: live ? pollWhenVisible(JOB_POLL_MS) : (false as const),
+    })),
+  });
+  const logs: Record<number, readonly string[]> = {};
+  results.forEach((r, i) => {
+    if (r.data) logs[steps[i].n] = r.data.lines;
+  });
+  return logs;
 }

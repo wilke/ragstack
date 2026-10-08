@@ -31,16 +31,16 @@ import type {
   FleetRow,
 } from "./api/types";
 import type {
-  ArtifactsT,
-  JobStateT,
-  JobsT,
-  JobT,
-  PlanT,
-  SecretsT,
-  SettingsT,
-  StepT,
-} from "./components/schemaTypes";
-import { JOB_STATES } from "./components/schemaTypes";
+  ArtifactsResponse,
+  JobState,
+  JobsResponse,
+  Job,
+  Plan,
+  SecretsResponse,
+  SettingsResponse,
+  Step,
+} from "./api/types";
+import { JOB_STATES } from "./api/types";
 
 const AT = "2026-09-10T12:00:00Z";
 
@@ -453,7 +453,7 @@ export const logsFixture: CtlLogs = {
 
 const H = (c: string) => `sha256:${c.repeat(64).slice(0, 64)}`;
 
-export const planFixture: PlanT = {
+export const planFixture: Plan = {
   plan_hash: H("3f9a"),
   op: "decommission",
   tenant: "dev",
@@ -560,7 +560,7 @@ export const planFixture: PlanT = {
   warnings: ["dev has 1 drift row; the archive records it as found"],
 };
 
-export const hostilePlanFixture: PlanT = {
+export const hostilePlanFixture: Plan = {
   ...planFixture,
   doctor: {
     ...planFixture.doctor,
@@ -605,7 +605,7 @@ export const hostilePlanFixture: PlanT = {
   ],
 };
 
-const JOB_IDS: Record<JobStateT, string> = {
+const JOB_IDS: Record<JobState, string> = {
   queued: "01J9Z3K7Q8M4N5P6R7S8T9V0W0",
   running: "01J9Z3K7Q8M4N5P6R7S8T9V0W1",
   awaiting_cutover: "01J9Z3K7Q8M4N5P6R7S8T9V0W2",
@@ -619,7 +619,7 @@ const JOB_IDS: Record<JobStateT, string> = {
 const T0 = "2026-10-08T12:00:00Z";
 const at = (s: number) => new Date(Date.parse(T0) + s * 1000).toISOString().replace(".000Z", "Z");
 
-function step(n: number, title: string, kind: string, state: StepT["state"], extra: Partial<StepT> = {}): StepT {
+function step(n: number, title: string, kind: string, state: Step["state"], extra: Partial<Step> = {}): Step {
   const started = state === "pending" || state === "skipped" ? null : at(n * 10);
   const finished = state === "pending" || state === "running" || state === "skipped" ? null : at(n * 10 + 7);
   return {
@@ -647,7 +647,7 @@ const STEP_SPECS: [string, string][] = [
 ];
 
 /** Step states per job state: mixed on purpose, so every chip renders. */
-const STEP_STATES_FOR: Record<JobStateT, StepT["state"][]> = {
+const STEP_STATES_FOR: Record<JobState, Step["state"][]> = {
   queued: ["pending", "pending", "pending", "pending", "pending"],
   running: ["succeeded", "succeeded", "running", "pending", "pending"],
   awaiting_cutover: ["succeeded", "succeeded", "succeeded", "pending", "pending"],
@@ -663,7 +663,7 @@ const STEP_STATES_FOR: Record<JobStateT, StepT["state"][]> = {
  * shape: same schema, `worker`/`lock`/`reservations`/`steps[].log`/
  * `steps[].external_ids` nulled or emptied, as the daemon serves it.
  */
-export function jobFixture(state: JobStateT, opts: { viewer?: boolean } = {}): JobT {
+export function jobFixture(state: JobState, opts: { viewer?: boolean } = {}): Job {
   const states = STEP_STATES_FOR[state];
   const steps = STEP_SPECS.map(([title, kind], i) => {
     const s = step(i + 1, title, kind, states[i]);
@@ -678,7 +678,7 @@ export function jobFixture(state: JobStateT, opts: { viewer?: boolean } = {}): J
   const live = state === "running" || parked;
   const current = steps.find((s) => s.state === "running" || s.state === "failed" || s.state === "interrupted");
   const failedRun = state === "failed" || state === "rolled_back";
-  const job: JobT = {
+  const job: Job = {
     id: JOB_IDS[state],
     op: state === "awaiting_cutover" ? "handover" : "decommission",
     tenant: "dev",
@@ -724,14 +724,14 @@ export const stepLogsFixture: Record<number, string[]> = {
   3: ["apptainer: stopping qdrant-dev", "apptainer: stopping es-dev", "FATAL: exit status 255"],
 };
 
-export const jobsFixture: JobsT = {
+export const jobsFixture: JobsResponse = {
   jobs: JOB_STATES.map((s) => jobFixture(s)),
   limit: 50,
   truncated: false,
 };
 
 /** A failed job whose every server string carries a leaked value behind a secret name. */
-export const hostileJobFixture: JobT = (() => {
+export const hostileJobFixture: Job = (() => {
   const base = jobFixture("failed");
   return {
     ...base,
@@ -763,7 +763,7 @@ export const hostileStepLogsFixture: Record<number, string[]> = {
  * The one body whose values MUST render — after the explicit reveal only. The
  * canary asserts they are absent from the pre-click render and present after.
  */
-export const secretsFixture: SecretsT = {
+export const secretsFixture: SecretsResponse = {
   job_id: JOB_IDS.succeeded,
   delivered_at: "2026-10-08T12:01:00Z",
   expires_at: "2026-10-08T12:16:00Z",
@@ -773,7 +773,7 @@ export const secretsFixture: SecretsT = {
   ],
 };
 
-export const settingsFixture: SettingsT = {
+export const settingsFixture: SettingsResponse = {
   registry_generation: 3,
   retention: { keep_last: { backup: 7, pre_update: 3 }, keep_partial_hours: 24, auto_delete: false },
   images: {
@@ -790,7 +790,7 @@ export const settingsFixture: SettingsT = {
   },
 };
 
-export const artifactsFixture: ArtifactsT = {
+export const artifactsFixture: ArtifactsResponse = {
   artifacts: [
     {
       id: "v1.6.4-12-gabc1234",

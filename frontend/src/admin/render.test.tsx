@@ -119,8 +119,13 @@ describe("admin login", () => {
     expect(html).toContain("Control plane");
     expect(html).toContain("Control-plane key");
     expect(html).toContain("BV-BRC account");
-    // The promise this bundle is built around, stated on the screen that makes it.
-    expect(html).toContain("read-only session");
+    // The promise this bundle is built around, stated on the screen that makes
+    // it: the session reads, and every change asks for the key again.
+    expect(html).toContain("every change asks for your control-plane key again");
+    expect(html).toContain("each change you make asks for it again");
+    // The PR-G2.3 copy sweep: no screen still says writes "land later".
+    expect(html).not.toContain("PR-C");
+    expect(html).not.toContain("read-only session");
   });
 
   // Regression: the sign-in fields carried no `name`, so a password manager had
@@ -545,9 +550,24 @@ describe("GatewayView", () => {
     expect(html).toContain("ui mode");
   });
 
-  it("offers a diff and never an apply", () => {
+  it("apply appears only for an operator", () => {
+    // A viewer (the default role): the diff, and no Apply anywhere — absent,
+    // not disabled.
     expect(html).toContain("Show diff");
     expect(html).not.toContain("Apply");
+    expect(html).not.toContain("ctl API key");
+
+    const operator = render(createElement(GatewayView, { role: "operator" }), (qc) =>
+      qc.setQueryData(ctlKeys.gateway(), gatewayFixture),
+    );
+    expect(operator).toContain("Show diff");
+    expect(operator).toContain("Apply the next gateway generation");
+    expect(operator).toContain("Apply…");
+    // Diff first: until a render has been shown, Apply cannot start, and says why.
+    expect(operator).toContain("Show the diff first");
+    expect(operator).toMatch(/<button type="button" disabled=""[^>]*>Apply…<\/button>/);
+    // Nothing has asked for a key yet: the flow is idle.
+    expect(operator).not.toContain('type="password"');
   });
 
   // The diff `<pre>` only appears after a mutation succeeds, which a string

@@ -1,4 +1,4 @@
-// One tenant, read-only.
+// One tenant: what it is, and — for an operator — what can be done to it.
 //
 // The section rail is the Ops dashboard's device (src/components/OpsDashboard.tsx):
 // a fixed list of sections, each a heading the rail links to. Here it is a real
@@ -7,9 +7,12 @@
 // them because the user scrolled past would mean a viewer's dashboard firing a
 // 403 on every visit.
 //
-// NOTHING on this screen mutates. The contract answers 409 for every op verb
-// until PR-C lands the job engine, and a disabled button that will work "later"
-// is a worse thing to ship than no button.
+// The one section that mutates is Actions (TenantActions.tsx): every verb is an
+// OpFlow — dry run, plan, a ctl key typed for that request, the job. It is an
+// OPERATOR section and is ABSENT for a viewer, not disabled: a viewer's rail
+// does not list it, and reaching it anyway renders the 403 panel. Jobs is
+// readable by both roles (a viewer gets the stripped job shape; step logs are
+// operator-only reads).
 
 import { useState } from "react";
 import { ctlKeys, LOGS_POLL_MS, pollWhenVisible, useCtlQuery } from "../api/queries";
@@ -21,6 +24,8 @@ import { ErrorBanner } from "./ErrorBanner";
 import { SecretSafeValue } from "./SecretSafeValue";
 import { HealthDot, StateChip } from "./StateChip";
 import { CtlError } from "../api/http";
+import { OperatorRequired, TenantJobs } from "./JobsView";
+import { TenantActions } from "./TenantActions";
 
 const SECTIONS = [
   { id: "overview", label: "Overview" },
@@ -28,9 +33,16 @@ const SECTIONS = [
   { id: "drift", label: "Drift" },
   { id: "doctor", label: "Doctor" },
   { id: "logs", label: "Logs" },
+  { id: "jobs", label: "Jobs" },
+  { id: "actions", label: "Actions" },
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
+
+/** The rail for a role: Actions is an operator section and is absent for a viewer. */
+export function sectionsFor(role: CtlRole): readonly (typeof SECTIONS)[number][] {
+  return role === "operator" ? SECTIONS : SECTIONS.filter((s) => s.id !== "actions");
+}
 
 const LOG_FILES: LogFile[] = ["api", "qdrant", "es", "ui"];
 const LOG_LINES = 200;
@@ -265,8 +277,8 @@ function Overview({ tenant }: { tenant: CtlTenant }) {
       </h3>
       {tenant.registry ? (
         <p className="text-[12.5px] text-body">
-          The full registry row is available to this credential. It is not rendered here in PR-B —
-          the fields on this page are its summary projection.
+          The full registry row is available to this credential. It is not rendered here — the
+          fields on this page are its summary projection.
         </p>
       ) : (
         <p className="text-[12.5px] text-dim">
@@ -507,13 +519,23 @@ export function TenantSection({
   section,
   name,
   role,
+  onOpenJob,
 }: {
   section: SectionId;
   name: string;
   role: CtlRole;
+  onOpenJob?: (id: string) => void;
 }) {
   const tenant = useCtlQuery<CtlTenant>(ctlKeys.tenant(name), `/v1/tenants/${name}`);
 
+  if (section === "actions") {
+    return role === "operator" ? (
+      <TenantActions name={name} onOpenJob={onOpenJob} />
+    ) : (
+      <OperatorRequired what="Starting, stopping, backing up and restoring a tenant are operator actions." />
+    );
+  }
+  if (section === "jobs") return <TenantJobs name={name} role={role} onOpenJob={onOpenJob} />;
   if (section === "config") return <Config name={name} />;
   if (section === "logs") return <Logs name={name} role={role} />;
   if (section === "doctor") return <Doctor name={name} />;
@@ -528,10 +550,12 @@ export function TenantView({
   name,
   role,
   onBack,
+  onOpenJob,
 }: {
   name: string;
   role: CtlRole;
   onBack: () => void;
+  onOpenJob?: (id: string) => void;
 }) {
   const [section, setSection] = useState<SectionId>("overview");
   const tenant = useCtlQuery<CtlTenant>(ctlKeys.tenant(name), `/v1/tenants/${name}`);
@@ -597,7 +621,7 @@ export function TenantView({
               Sections
             </div>
             <div className="flex items-center gap-1 md:flex-col md:items-stretch md:gap-[3px]">
-              {SECTIONS.map((s) => (
+              {sectionsFor(role).map((s) => (
                 <button
                   key={s.id}
                   type="button"
@@ -620,7 +644,12 @@ export function TenantView({
         </div>
 
         <div className="min-w-0 flex-1 px-5 py-6 md:px-8">
-          <TenantSection section={section} name={name} role={role} />
+          <TenantSection
+            section={section === "actions" && role !== "operator" ? "overview" : section}
+            name={name}
+            role={role}
+            onOpenJob={onOpenJob}
+          />
         </div>
       </div>
     </div>

@@ -3,13 +3,17 @@
 //
 // "Show diff" calls `POST /v1/gateway/render`, which a VIEWER may call — it
 // renders the next generation into a scratch dir and diffs it, publishing
-// nothing. There is deliberately no Apply next to it: `POST /v1/gateway/apply`
-// is an operator mutation with a ctl key in its body and lands in PR-C.
+// nothing. Apply (`POST /v1/gateway/apply`) is an OPERATOR mutation: it is
+// absent for a viewer, and for an operator it opens only after the diff has
+// been shown — then it is an OpFlow like every other change (dry run → plan →
+// a ctl key typed for that request → the job).
 
 import { useState } from "react";
 import { ctlKeys, useCtlQuery } from "../api/queries";
 import { post } from "../api/http";
-import type { CtlGateway, CtlGatewayRender, GatewayRoute } from "../api/types";
+import { applyGateway } from "../api/ops";
+import type { CtlGateway, CtlGatewayRender, CtlRole, GatewayRoute } from "../api/types";
+import { OpFlow } from "./OpFlow";
 import { since } from "../lib/format";
 import { ErrorBanner } from "./ErrorBanner";
 import { StateChip } from "./StateChip";
@@ -111,7 +115,13 @@ export function GatewayDiff({ render }: { render: CtlGatewayRender }) {
   );
 }
 
-export function GatewayView() {
+export function GatewayView({
+  role = "viewer",
+  onOpenJob,
+}: {
+  role?: CtlRole;
+  onOpenJob?: (id: string) => void;
+}) {
   const [showDiff, setShowDiff] = useState(false);
   const gw = useCtlQuery<CtlGateway>(ctlKeys.gateway(), "/v1/gateway");
 
@@ -126,7 +136,8 @@ export function GatewayView() {
       <div className="bg-ink-900 px-5 py-4 md:px-8">
         <h1 className="font-display text-[20px] font-extrabold text-white">Gateway</h1>
         <span className="font-mono text-[11px] text-ink-dim">
-          generated includes published by pointer switch · nothing here applies anything
+          generated includes published by pointer switch ·{" "}
+          {role === "operator" ? "review the diff, then publish it" : "a viewer can review the next generation"}
         </span>
       </div>
 
@@ -204,6 +215,24 @@ export function GatewayView() {
             {render.error && <ErrorBanner error={render.error} />}
 
             {showDiff && render.data && <GatewayDiff render={render.data} />}
+
+            {role === "operator" && (
+              <div className="mt-6">
+                <OpFlow
+                  op="gateway"
+                  title="Apply the next gateway generation"
+                  previewLabel="Apply…"
+                  run={(req) => applyGateway(req)}
+                  disabled={!(showDiff && render.data)}
+                  disabledReason="Show the diff first: Apply publishes exactly what it renders."
+                  onOpenJob={onOpenJob}
+                  onDone={() => {
+                    setShowDiff(false);
+                    render.reset();
+                  }}
+                />
+              </div>
+            )}
           </>
         )}
       </div>

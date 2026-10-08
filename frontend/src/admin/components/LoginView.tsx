@@ -119,8 +119,9 @@ export function LoginView({
       </h1>
       <p className="mb-6 text-[13px] leading-relaxed text-body">
         Sign in with a control-plane API key, or with your BV-BRC account. Either
-        one is exchanged for a read-only session that lives in this tab only —
-        nothing is written to this browser's persistent storage.
+        one is exchanged for a session that lives in this tab only and reads —
+        every change asks for your control-plane key again, for that one request.
+        Nothing is written to this browser's persistent storage.
       </p>
 
       <div role="tablist" aria-label="Sign-in method" className="mb-5 flex gap-1">
@@ -174,7 +175,7 @@ export function LoginView({
           />
           <p className="mt-2 text-[11.5px] leading-relaxed text-dim">
             Presented once to <code className="font-mono">POST /v1/session</code>. The key is not
-            stored; a mutation (from PR-C onwards) will ask for it again.
+            stored; each change you make asks for it again.
           </p>
           <button
             type="submit"

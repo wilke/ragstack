@@ -10,9 +10,10 @@ import { KeyPrompt, KeyPromptView, spendKey } from "./components/KeyPrompt";
 import { PlanView, shortHash } from "./components/PlanView";
 import { isSecretPath, redactArgv, redactText } from "./components/redact";
 import { ownSecrets, RevealOnce, wipeSecrets } from "./components/RevealOnce";
-import { JOB_STATES, STEP_STATES, type JobStateT } from "./components/schemaTypes";
+import { JOB_STATES, STEP_STATES, type JobState } from "./api/types";
 import { chipTone } from "./components/StateChip";
-import { TypedConfirm, TypedConfirmView, typedConfirmed } from "./components/TypedConfirm";
+import { TypedConfirm, TypedConfirmView } from "./components/TypedConfirm";
+import { typedConfirmed } from "./lib/confirm";
 import {
   artifactsFixture,
   jobFixture,
@@ -265,7 +266,7 @@ describe("PlanView", () => {
 
 describe("JobView", () => {
   const BUTTONS = ["Resume", "Continue to cutover", "Cancel job"];
-  const expected: Record<JobStateT, string[]> = {
+  const expected: Record<JobState, string[]> = {
     queued: ["Cancel job"],
     running: ["Cancel job"],
     awaiting_cutover: ["Continue to cutover", "Cancel job"],

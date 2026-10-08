@@ -260,6 +260,41 @@ describe("OpFlow — guards and restarts", () => {
   });
 });
 
+describe("OpFlow — planless (job continuations)", () => {
+  const direct = (confirmValue?: string | null): OpFlowEvent => ({ type: "direct", idempotencyKey: KEY, confirmValue });
+
+  it("direct → confirming with no plan → submitting → running", () => {
+    const s = run([direct(), { type: "submit" }, { type: "accepted", job: job("running"), location: null }]);
+    expect(s).toMatchObject({ kind: "running", idempotencyKey: KEY });
+    expect(run([direct()])).toEqual({ kind: "confirming", idempotencyKey: KEY, plan: null, confirmValue: null });
+    expect(run([direct("yes")])).toMatchObject({ confirmValue: "yes" });
+  });
+
+  it("confirm_required (a cancel that would roll back) → confirming with the server's value", () => {
+    const s = run([direct(), { type: "submit" }, { type: "error", error: err("confirm_required", 428, { confirm_value: "dev" }) }]);
+    expect(s).toEqual({ kind: "confirming", idempotencyKey: KEY, plan: null, confirmValue: "dev" });
+  });
+
+  it("confirm_required with nothing to type fails instead of looping", () => {
+    const s = run([direct(), { type: "submit" }, { type: "error", error: err("confirm_required", 428) }]);
+    expect(s.kind).toBe("failed");
+  });
+
+  it("plan_stale with no plan to go back to fails", () => {
+    const s = run([direct(), { type: "submit" }, { type: "error", error: err("plan_stale") }]);
+    expect(s).toMatchObject({ kind: "failed", plan: null });
+  });
+
+  it("direct starts only from idle, done or failed", () => {
+    const planned = run(toPlanned);
+    expect(opFlowReducer(planned, direct())).toBe(planned);
+    const submitting = run(toSubmitting);
+    expect(opFlowReducer(submitting, direct())).toBe(submitting);
+    const failed = run([direct(), { type: "submit" }, { type: "error", error: err("refused") }]);
+    expect(opFlowReducer(failed, direct()).kind).toBe("confirming");
+  });
+});
+
 describe("typedConfirmed", () => {
   it("is exact apart from surrounding whitespace", () => {
     expect(typedConfirmed("dev", "dev")).toBe(true);

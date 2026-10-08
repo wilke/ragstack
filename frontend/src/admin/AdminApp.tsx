@@ -1,8 +1,7 @@
-// The admin shell: who you are, which of the three screens you are on, and
-// nothing else.
+// The admin shell: who you are, which screen you are on, and nothing else.
 //
-// No router. Three views and two deep links (`#/tenant/<name>`, `#/gateway`)
-// do not justify a dependency, and the hash is what an operator pastes into a
+// No router. Five views and four deep links (`#/tenant/<name>`, `#/gateway`,
+// `#/jobs`, `#/job/<id>`) do not justify a dependency, and the hash is what an operator pastes into a
 // ticket. The hash is the single source of truth for the view: a click writes
 // `location.hash` and the listener below turns it back into state, so Back
 // works without any extra bookkeeping.
@@ -14,6 +13,8 @@ import { FleetView } from "./components/FleetView";
 import { GatewayView } from "./components/GatewayView";
 import { LoginView } from "./components/LoginView";
 import { TenantView } from "./components/TenantView";
+import { JobPage, JobsView } from "./components/JobsView";
+import { JOB_ID, TENANT_NAME } from "./lib/validate";
 import { StateChip } from "./components/StateChip";
 import { ctlKeys, useCtlQuery } from "./api/queries";
 import type { CtlMe, CtlRole, CtlVersion } from "./api/types";
@@ -21,21 +22,36 @@ import type { CtlMe, CtlRole, CtlVersion } from "./api/types";
 // auth/session.ts. It is the only localStorage this bundle contains.
 import { getAccessibleVision, setAccessibleVision } from "../lib/vision";
 
-export type View = { kind: "fleet" } | { kind: "tenant"; name: string } | { kind: "gateway" };
+export type View =
+  | { kind: "fleet" }
+  | { kind: "tenant"; name: string }
+  | { kind: "gateway" }
+  | { kind: "jobs" }
+  | { kind: "job"; id: string };
 
-/** Tenant names are `^[a-z][a-z0-9-]{0,31}$` — anything else is not a deep link. */
-const TENANT_HASH = /^#\/tenant\/([a-z][a-z0-9-]{0,31})$/;
-
+/**
+ * Tenant names are `^[a-z][a-z0-9-]{0,31}$` and job ids are ULIDs — anything
+ * else is not a deep link (lib/validate.ts holds both patterns).
+ */
 export function parseHash(hash: string): View {
   if (hash === "#/gateway") return { kind: "gateway" };
-  const m = TENANT_HASH.exec(hash);
-  if (m) return { kind: "tenant", name: m[1] };
+  if (hash === "#/jobs") return { kind: "jobs" };
+  if (hash.startsWith("#/tenant/")) {
+    const name = hash.slice("#/tenant/".length);
+    if (TENANT_NAME.test(name)) return { kind: "tenant", name };
+  }
+  if (hash.startsWith("#/job/")) {
+    const id = hash.slice("#/job/".length);
+    if (JOB_ID.test(id)) return { kind: "job", id };
+  }
   return { kind: "fleet" };
 }
 
 export function hashFor(view: View): string {
   if (view.kind === "gateway") return "#/gateway";
   if (view.kind === "tenant") return `#/tenant/${view.name}`;
+  if (view.kind === "jobs") return "#/jobs";
+  if (view.kind === "job") return `#/job/${view.id}`;
   return "#/";
 }
 
@@ -164,6 +180,7 @@ export function AdminApp() {
   const go = useCallback((next: View) => {
     window.location.hash = hashFor(next);
   }, []);
+  const openJob = useCallback((id: string) => go({ kind: "job", id }), [go]);
 
   // A sign-out (or an expired session) must not leave the previous operator's
   // fleet in the cache for whoever signs in next on this tab.
@@ -197,6 +214,7 @@ export function AdminApp() {
         </div>
         <nav aria-label="Views" className="flex items-end gap-4">
           {tab("Fleet", view.kind === "fleet" || view.kind === "tenant", () => go({ kind: "fleet" }))}
+          {tab("Jobs", view.kind === "jobs" || view.kind === "job", () => go({ kind: "jobs" }))}
           {tab("Gateway", view.kind === "gateway", () => go({ kind: "gateway" }))}
         </nav>
         <div className="ml-auto flex items-center gap-2.5 pb-2">
@@ -209,13 +227,17 @@ export function AdminApp() {
         <FleetView onSelectTenant={(name) => go({ kind: "tenant", name })} />
       )}
       {view.kind === "tenant" && (
-        <TenantView name={view.name} role={role} onBack={() => go({ kind: "fleet" })} />
+        <TenantView name={view.name} role={role} onBack={() => go({ kind: "fleet" })} onOpenJob={openJob} />
       )}
-      {view.kind === "gateway" && <GatewayView />}
+      {view.kind === "gateway" && <GatewayView role={role} onOpenJob={openJob} />}
+      {view.kind === "jobs" && <JobsView role={role} onOpenJob={openJob} />}
+      {view.kind === "job" && (
+        <JobPage id={view.id} role={role} onBack={() => go({ kind: "jobs" })} onOpenJob={openJob} />
+      )}
 
       <footer className="px-5 py-6 text-[11px] text-faint md:px-8">
-        Read-only. Mutations re-present a control-plane key per request and land with the job engine
-        (PR-C).
+        Your session reads. Every change is planned first and asks for your control-plane key for
+        that one request; the key is never kept.
       </footer>
     </div>
   );

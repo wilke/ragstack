@@ -29,7 +29,7 @@ import { CtlError } from "../api/http";
 import { clipboardAvailable, copyToClipboard } from "../lib/clipboard";
 import { ErrorBanner } from "./ErrorBanner";
 import { KeyPrompt } from "./KeyPrompt";
-import type { SecretsT } from "./schemaTypes";
+import type { SecretsResponse } from "../api/types";
 
 const EYEBROW = "font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted";
 
@@ -74,7 +74,7 @@ function RevealError({ error }: { error: CtlError | null }) {
 
 export interface RevealOnceProps {
   /** null until the explicit reveal has fetched them. */
-  secrets: SecretsT | null;
+  secrets: SecretsResponse | null;
   onReveal: () => void;
   revealing?: boolean;
   error?: CtlError | null;
@@ -157,14 +157,14 @@ export function RevealOnce({
  * in JS; what can be done is to leave no reachable reference, so the rows are
  * blanked and the array emptied in place.
  */
-export function wipeSecrets(owned: SecretsT | null): void {
+export function wipeSecrets(owned: SecretsResponse | null): void {
   if (!owned) return;
   for (const s of owned.secrets) s.value = "";
   owned.secrets.length = 0;
 }
 
 /** A deep-enough copy that `wipeSecrets` never touches the caller's object. */
-export function ownSecrets(res: SecretsT): SecretsT {
+export function ownSecrets(res: SecretsResponse): SecretsResponse {
   return { ...res, secrets: res.secrets.map((s) => ({ ...s })) };
 }
 
@@ -179,14 +179,14 @@ export function RevealOnceCard({
   load,
   expiresAt,
 }: {
-  load: (key: string) => Promise<SecretsT>;
+  load: (key: string) => Promise<SecretsResponse>;
   expiresAt?: string;
 }) {
   const [asking, setAsking] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [error, setError] = useState<CtlError | null>(null);
-  const [secrets, setSecrets] = useState<SecretsT | null>(null);
-  const owned = useRef<SecretsT | null>(null);
+  const [secrets, setSecrets] = useState<SecretsResponse | null>(null);
+  const owned = useRef<SecretsResponse | null>(null);
 
   useEffect(
     () => () => {

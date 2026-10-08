@@ -12,18 +12,8 @@
 // `confirm`. The button stays disabled until the typed text matches.
 
 import { useState } from "react";
+import { typedConfirmed } from "../lib/confirm";
 import { redactText } from "./redact";
-
-/**
- * Whether `typed` confirms `expected`.
- *
- * Surrounding whitespace is forgiven (a paste); case and content are not. An
- * empty `expected` confirms nothing. Local until PR-G2.3 dedupes it with
- * `lib/confirm.ts`.
- */
-export function typedConfirmed(typed: string, expected: string): boolean {
-  return expected.length > 0 && typed.trim() === expected;
-}
 
 export interface TypedConfirmProps {
   expected: string;
