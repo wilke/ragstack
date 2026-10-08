@@ -1038,3 +1038,218 @@ export const hostileSettingsFixture: SettingsResponse = {
     read_only: true,
   },
 };
+
+// ---------------------------------------------------------------------------
+// PR-G3.2: the Lifecycle section — decommission (archive + quarantine), purge.
+//
+// Every tenant here is hackathon as the ctl runs it after its handover
+// (supervisor `instance`, owner svcbvbrc), in the state the test needs:
+// active, stopped, quarantined. `manualTenantFixture` is demo (supervisor
+// `manual`), which both verbs refuse. The plans follow the step order
+// go/internal/ctl/ops/decommission.go and purge.go build.
+// ---------------------------------------------------------------------------
+
+const HACK_DATA = "/rag/data/tenants/hackathon";
+const HACK_BUNDLE = "/rag/backups/tenants/hackathon/20261001T030000Z-backup";
+const HACK_ARCHIVE = "/rag/backups/tenants/hackathon/20261008T120000Z-backup";
+const HACK_QUARANTINE = `${HACK_DATA}.quarantined-20261008T120500Z`;
+/** The decommission job that quarantined hackathon (a ULID, so it links). */
+export const QUARANTINE_JOB_ID = "01JA2B3C4D5E6F7G8H9J0K1M2N";
+
+const managedRegistry = {
+  ...postgresTenantFixture.registry!,
+  data_dir: HACK_DATA,
+  supervisor: "instance" as const,
+  owner: "svcbvbrc" as const,
+  desired_boot: "enabled" as const,
+  last_backup: {
+    bundle: HACK_BUNDLE,
+    at: "2026-10-01T03:00:00Z",
+    kind: "backup" as const,
+    fenced: true,
+    verified: false,
+    checked: true,
+  },
+};
+
+/** hackathon in service, run by the ctl: decommission is offered and enabled. */
+export const activeManagedTenantFixture: CtlTenant = {
+  ...postgresTenantFixture,
+  summary: {
+    ...postgresTenantFixture.summary,
+    owner: "svcbvbrc",
+    supervisor: "instance",
+    state: "active",
+    last_backup: { at: "2026-10-01T03:00:00Z", fenced: true, verified: false, checked: true },
+  },
+  registry: { ...managedRegistry, state: "active" },
+};
+
+/** hackathon deliberately stopped, with no backup: archive is gated, and archive=false has nothing to stand on. */
+export const stoppedTenantFixture: CtlTenant = {
+  ...activeManagedTenantFixture,
+  summary: { ...activeManagedTenantFixture.summary, state: "stopped", last_backup: null, health: { api: "down", qdrant: "down", es: "down", deep: "unknown" } },
+  registry: { ...managedRegistry, state: "stopped", desired_boot: "disabled", last_backup: null },
+  status: { ...activeManagedTenantFixture.status, api_pid: null, api_pid_owner: null, listening: { api: false, qdrant_http: false, es_http: false, pg: false, ui: false } },
+};
+
+/** demo: supervisor `manual` — the ctl decommissions and purges only what it runs. */
+export const manualTenantFixture: CtlTenant = demoTenantFixture;
+
+/** hackathon after `decommission --archive`: quarantined, with the archive it took recorded and checked. */
+export const quarantinedTenantFixture: CtlTenant = {
+  ...stoppedTenantFixture,
+  summary: {
+    ...stoppedTenantFixture.summary,
+    state: "quarantined",
+    last_backup: { at: "2026-10-08T12:00:00Z", fenced: true, verified: false, checked: true },
+  },
+  registry: {
+    ...managedRegistry,
+    state: "quarantined",
+    desired_boot: "disabled",
+    quarantine: { dir: HACK_QUARANTINE, at: "2026-10-08T12:05:00Z", job_id: QUARANTINE_JOB_ID, bundle: HACK_ARCHIVE },
+    last_backup: { bundle: HACK_ARCHIVE, at: "2026-10-08T12:00:00Z", kind: "backup", fenced: true, verified: false, checked: true },
+  },
+};
+
+/** The fleet with hackathon quarantined: it stays listed until it is purged. */
+export const quarantinedFleetFixture: CtlFleet = {
+  ...fleetFixture,
+  tenants: [...fleetFixture.tenants, quarantinedTenantFixture.summary],
+};
+
+function planStep(n: number, kind: string, title: string, destructive: boolean, extra: Partial<Plan["steps"][number]> = {}) {
+  return { n, kind, title, destructive, targets: [], would_write: [], would_run: [], warnings: [], ...extra };
+}
+
+const ARCHIVE_WARNING =
+  "--archive (the default): this job first takes a fenced full backup with the tenant's secrets sealed (secrets=require), checks it and records it as last_backup; the API is NOT started again afterwards — the quarantine follows directly.";
+
+/** `decommission hackathon {archive: true}`: the fenced archive, the fence stop, then the quarantine and the rename. */
+export const decommissionPlanFixture: Plan = {
+  plan_hash: H("d3c0"),
+  op: "decommission",
+  tenant: "hackathon",
+  registry_generation: 12,
+  schema_version: 1,
+  doctor: { status: "green", hash: H("9e11"), generated_at: AT, scope: { tenant: "hackathon", op: "decommission" }, findings: [] },
+  requires_confirm: true,
+  confirm_value: "hackathon",
+  steps: [
+    planStep(1, "nginx", "gateway: hackathon read-only for the fence", false, { targets: ["hackathon"] }),
+    planStep(2, "apptainer", "stop the API for the fence", true, {
+      targets: ["ragstack-hackathon-api"],
+      warnings: ["the API is not started again: decommission leaves it stopped"],
+    }),
+    planStep(3, "qdrant", "snapshot every collection", false, { targets: ["http://127.0.0.1:24081"] }),
+    planStep(4, "es", "snapshot every index", false, { targets: ["http://127.0.0.1:24083"] }),
+    planStep(5, "tar", "copy config and state into the bundle", false, { targets: ["/rag/backups/tenants/hackathon/new-bundle"] }),
+    planStep(6, "fs", "seal the tenant's secrets to the backup recipients (secrets=require)", false, {
+      would_write: [{ path: "/rag/backups/tenants/hackathon/new-bundle/secrets.age", mode: "0640", preview: null }],
+    }),
+    planStep(7, "probe", "check the bundle (hashes, manifest, snapshots, census)", false),
+    planStep(8, "registry", "record the bundle as hackathon's last_backup (checked)", false),
+    planStep(9, "apptainer", "stop and disable qdrant, es, postgres", true, { targets: ["qdrant-hackathon", "es-hackathon", "postgres-hackathon"] }),
+    planStep(10, "fs", "remove the rendered unit files", true, { targets: ["/rag/config/ctl/units/hackathon"] }),
+    planStep(11, "registry", "mark hackathon quarantined (the row keeps its port block)", false),
+    planStep(12, "nginx", "publish a generation without hackathon", true, {
+      targets: ["hackathon"],
+      warnings: ["the gateway renders only ACTIVE tenants, so a quarantined row drops out of the map by itself"],
+    }),
+    planStep(13, "fs", "quarantine the data directory (rename to .quarantined-<ts>)", true, {
+      targets: [HACK_DATA, `${HACK_DATA}.quarantined-new-stamp`],
+      warnings: ["nothing is deleted: `tenant purge` is the separate step that does"],
+    }),
+    planStep(14, "fs", "write RECOVERY.json into the quarantined directory", false, {
+      would_write: [{ path: `${HACK_DATA}.quarantined-new-stamp/RECOVERY.json`, mode: "0640", preview: '{\n  "tenant": "hackathon"\n}' }],
+    }),
+    planStep(15, "git", "remove the tenant's git worktree", true, { targets: ["/rag/repos/hackathon"] }),
+  ],
+  warnings: [ARCHIVE_WARNING],
+};
+
+const IRREVERSIBLE =
+  "IRREVERSIBLE: there is no rollback for this step. A failure part way leaves the row quarantined over whatever is left, and running `tenant purge` again finishes the job (an absent path is done)";
+
+/** `purge hackathon {keep_archive: false}`: two probes, then every removal IRREVERSIBLE, the row last. */
+export const purgePlanFixture: Plan = {
+  plan_hash: H("90e6"),
+  op: "purge",
+  tenant: "hackathon",
+  registry_generation: 13,
+  schema_version: 1,
+  doctor: { status: "green", hash: H("9e12"), generated_at: AT, scope: { tenant: "hackathon", op: "purge" }, findings: [] },
+  requires_confirm: true,
+  confirm_value: "hackathon",
+  steps: [
+    planStep(1, "probe", "nothing listens on any port of the block", false, { targets: ["24080-24089"] }),
+    planStep(2, "probe", "the quarantined tree's RECOVERY.json names hackathon", false, { targets: [`${HACK_QUARANTINE}/RECOVERY.json`] }),
+    planStep(3, "fs", "remove the worktree", true, { targets: ["/rag/repos/hackathon"], warnings: [IRREVERSIBLE] }),
+    planStep(4, "fs", "remove the units directory and any rendered unit file", true, { targets: ["/rag/config/ctl/units/hackathon"], warnings: [IRREVERSIBLE] }),
+    planStep(5, "fs", "remove the archive (every bundle of hackathon)", true, { targets: ["/rag/backups/tenants/hackathon"], warnings: [IRREVERSIBLE] }),
+    planStep(6, "fs", "remove the quarantined data tree", true, { targets: [HACK_QUARANTINE], warnings: [IRREVERSIBLE] }),
+    planStep(7, "registry", "delete hackathon's registry row (a tombstone keeps its port block)", true, { warnings: [IRREVERSIBLE] }),
+  ],
+  warnings: ["purge deletes everything of hackathon; only the tombstone and the audit log remain"],
+};
+
+/** The purge job that succeeded: hackathon is gone. */
+export const purgeResultJobFixture: Job = {
+  ...jobFixture("succeeded"),
+  id: "01JA2B3C4D5E6F7G8H9J0K1M2P",
+  op: "purge",
+  tenant: "hackathon",
+  result: {
+    removed: ["/rag/repos/hackathon", "/rag/config/ctl/units/hackathon", "/rag/backups/tenants/hackathon", HACK_QUARANTINE],
+    bytes_freed: 128_849_018_880,
+    tombstone: { manifest_name: "hackathon", index: 4, base: 24080, decommissioned_at: "2026-10-09T09:00:00Z" },
+    archive_kept: false,
+  } as unknown as Job["result"],
+};
+
+/** The decommission job that quarantined hackathon. */
+export const decommissionResultJobFixture: Job = {
+  ...jobFixture("succeeded"),
+  id: QUARANTINE_JOB_ID,
+  op: "decommission",
+  tenant: "hackathon",
+  result: { state: "quarantined", quarantine_dir: HACK_QUARANTINE, archive_bundle: HACK_ARCHIVE, tombstone: null } as unknown as Job["result"],
+};
+
+/**
+ * A server that leaked into the lifecycle paths. The quarantine dir, bundles
+ * and removed paths are PATHS, not secret-named fields: they render (escaped)
+ * — the `leaked-path-*`/`leaked-bundle-*` markers are asserted PRESENT. The
+ * members no record has (`api_key`, `password`) and the result's `secret` are
+ * secret-named: never rendered.
+ */
+export const hostileQuarantinedTenantFixture: CtlTenant = {
+  ...quarantinedTenantFixture,
+  registry: {
+    ...quarantinedTenantFixture.registry!,
+    quarantine: {
+      dir: `${HACK_DATA}.quarantined-leaked-path-value-0401<img src=x onerror=alert(1)>`,
+      at: "2026-10-08T12:05:00Z",
+      job_id: "leaked-job-value-0405<script>",
+      bundle: "/rag/backups/tenants/hackathon/leaked-bundle-value-0402",
+      api_key: "leaked-key-value-0404",
+    } as NonNullable<NonNullable<CtlTenant["registry"]>["quarantine"]>,
+    last_backup: {
+      ...quarantinedTenantFixture.registry!.last_backup!,
+      bundle: "/rag/backups/tenants/hackathon/leaked-bundle-value-0403",
+      password: "leaked-password-value-0406",
+    } as NonNullable<NonNullable<CtlTenant["registry"]>["last_backup"]>,
+  },
+};
+
+export const hostilePurgeResultJobFixture: Job = {
+  ...purgeResultJobFixture,
+  result: {
+    removed: ["/rag/repos/leaked-path-value-0407<b>bold</b>", 42, { api_key: "leaked-key-value-0408" }],
+    bytes_freed: "leaked-token-value-0409",
+    tombstone: { manifest_name: "hackathon", base: 24080, secret: "leaked-secret-value-0410" },
+    archive_kept: false,
+    api_key: "leaked-key-value-0411",
+  } as unknown as Job["result"],
+};

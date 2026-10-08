@@ -7,9 +7,10 @@
 // them because the user scrolled past would mean a viewer's dashboard firing a
 // 403 on every visit.
 //
-// The sections that mutate are Actions (TenantActions.tsx) and Credentials
-// (CredentialsSection.tsx): every verb is an OpFlow — dry run, plan, a ctl key
-// typed for that request, the job. Both are OPERATOR sections and ABSENT for a
+// The sections that mutate are Actions (TenantActions.tsx), Credentials
+// (CredentialsSection.tsx) and Lifecycle (LifecycleSection.tsx — decommission
+// and purge): every verb is an OpFlow — dry run, plan, a ctl key typed for
+// that request, the job. All three are OPERATOR sections and ABSENT for a
 // viewer, not disabled: a viewer's rail
 // does not list it, and reaching it anyway renders the 403 panel. Jobs is
 // readable by both roles (a viewer gets the stripped job shape; step logs are
@@ -28,6 +29,7 @@ import { CtlError } from "../api/http";
 import { OperatorRequired, TenantJobs } from "./JobsView";
 import { TenantActions } from "./TenantActions";
 import { CredentialsSection } from "./CredentialsSection";
+import { LifecycleSection } from "./LifecycleSection";
 
 const SECTIONS = [
   { id: "overview", label: "Overview" },
@@ -38,12 +40,13 @@ const SECTIONS = [
   { id: "jobs", label: "Jobs" },
   { id: "actions", label: "Actions" },
   { id: "credentials", label: "Credentials" },
+  { id: "lifecycle", label: "Lifecycle" },
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
 
 /** The operator sections: absent from a viewer's rail, not disabled. */
-const OPERATOR_SECTIONS: readonly SectionId[] = ["actions", "credentials"];
+const OPERATOR_SECTIONS: readonly SectionId[] = ["actions", "credentials", "lifecycle"];
 
 /** The rail for a role: the operator sections are absent for a viewer. */
 export function sectionsFor(role: CtlRole): readonly (typeof SECTIONS)[number][] {
@@ -526,11 +529,14 @@ export function TenantSection({
   name,
   role,
   onOpenJob,
+  onPurged,
 }: {
   section: SectionId;
   name: string;
   role: CtlRole;
   onOpenJob?: (id: string) => void;
+  /** A purge of this tenant succeeded: it no longer exists. */
+  onPurged?: (name: string) => void;
 }) {
   const tenant = useCtlQuery<CtlTenant>(ctlKeys.tenant(name), `/v1/tenants/${name}`);
 
@@ -543,6 +549,9 @@ export function TenantSection({
   }
   if (section === "credentials") {
     return <CredentialsSection name={name} role={role} onOpenJob={onOpenJob} />;
+  }
+  if (section === "lifecycle") {
+    return <LifecycleSection name={name} role={role} onOpenJob={onOpenJob} onPurged={onPurged} />;
   }
   if (section === "jobs") return <TenantJobs name={name} role={role} onOpenJob={onOpenJob} />;
   if (section === "config") return <Config name={name} />;
@@ -560,13 +569,16 @@ export function TenantView({
   role,
   onBack,
   onOpenJob,
+  initialSection = "overview",
 }: {
   name: string;
   role: CtlRole;
   onBack: () => void;
   onOpenJob?: (id: string) => void;
+  /** The section shown first (a deep link may name one; Overview otherwise). */
+  initialSection?: SectionId;
 }) {
-  const [section, setSection] = useState<SectionId>("overview");
+  const [section, setSection] = useState<SectionId>(initialSection);
   const tenant = useCtlQuery<CtlTenant>(ctlKeys.tenant(name), `/v1/tenants/${name}`);
 
   // This header renders off the SAME `tenant` read no matter which tab is
@@ -613,6 +625,23 @@ export function TenantView({
             </span>
           )}
         </div>
+        {/* A quarantined tenant is stopped and unrouted; what is left to do
+            with it (purge, or recover by hand) is the Lifecycle section's. */}
+        {tenant.data?.summary.state === "quarantined" && (
+          <div role="note" className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-ink-dim">
+            <StateChip kind="state" value="quarantined" />
+            <span>stopped and unrouted; recoverable until purged.</span>
+            {role === "operator" && (
+              <button
+                type="button"
+                onClick={() => setSection("lifecycle")}
+                className="font-mono text-[11px] font-medium text-white underline-offset-2 hover:underline"
+              >
+                Lifecycle →
+              </button>
+            )}
+          </div>
+        )}
         {showHeaderError && (
           <div className="mt-1">
             <ErrorBanner error={tenant.error} onRetry={() => void tenant.refetch()} />
@@ -658,6 +687,8 @@ export function TenantView({
             name={name}
             role={role}
             onOpenJob={onOpenJob}
+            // The tenant is gone: its page has nothing left to show.
+            onPurged={() => onBack()}
           />
         </div>
       </div>
