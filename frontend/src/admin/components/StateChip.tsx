@@ -23,7 +23,10 @@ export type ChipKind =
   | "txn" // gateway txn_state
   | "route" // route status
   | "class" // env key class
-  | "role"; // viewer / operator
+  | "role" // viewer / operator
+  | "job" // JobState
+  | "step" // Step.state
+  | "rollback"; // job.rollback.state
 
 const TONES: Record<ChipKind, Record<string, ChipTone>> = {
   state: {
@@ -58,6 +61,32 @@ const TONES: Record<ChipKind, Record<string, ChipTone>> = {
     unsupported: "bad",
   },
   role: { operator: "info", viewer: "neutral" },
+  // A job in flight is information, not a verdict; a parked job
+  // (`awaiting_cutover`) is still in flight — it holds its locks and waits for
+  // an explicit `continue`. `interrupted` and `cancelled` are warn, not bad:
+  // nothing failed, and an interrupted job resumes.
+  job: {
+    queued: "info",
+    running: "info",
+    awaiting_cutover: "info",
+    succeeded: "ok",
+    failed: "bad",
+    rolled_back: "bad",
+    interrupted: "warn",
+    cancelled: "warn",
+  },
+  // A rolled-back STEP is warn: its effect was undone as designed. The job it
+  // belongs to is what reads bad (`rolled_back` above).
+  step: {
+    pending: "neutral",
+    running: "info",
+    succeeded: "ok",
+    failed: "bad",
+    skipped: "neutral",
+    rolled_back: "warn",
+    interrupted: "warn",
+  },
+  rollback: { not_needed: "neutral", succeeded: "ok", partial: "warn", failed: "bad" },
 };
 
 export function chipTone(kind: ChipKind, value: string): ChipTone {

@@ -10,6 +10,11 @@ import { GatewayDiff, GatewayView } from "./components/GatewayView";
 import { LoginView } from "./components/LoginView";
 import { TenantSection, TenantView } from "./components/TenantView";
 import { isSecretName } from "./components/SecretSafeValue";
+import { ErrorBanner } from "./components/ErrorBanner";
+import { JobView } from "./components/JobView";
+import { PlanView } from "./components/PlanView";
+import { RevealOnce } from "./components/RevealOnce";
+import { TypedConfirmView } from "./components/TypedConfirm";
 import {
   demoTenantFixture,
   postgresTenantFixture,
@@ -19,6 +24,11 @@ import {
   gatewayFixture,
   gatewayRenderFixture,
   hostileEnvFixture,
+  hostileJobFixture,
+  hostilePlanFixture,
+  hostileStepLogsFixture,
+  jobFixture,
+  secretsFixture,
   hostileTenantFixture,
   logsFixture,
   managedUnitsFixture,
@@ -634,5 +644,115 @@ describe("no rendered value comes from a secret-named field", () => {
     const config = render(section("config", "operator"), seedHostile);
     expect(config).toContain("sha256:1a2b3c4d5e6f7a8b");
     expect(config).toContain("&lt;redacted&gt;");
+  });
+  // ------------------------------------------------------------------------
+  // PR-G2.2: the mutation views print server TEXT (previews, argv, step logs,
+  // errors), so the rule is applied inside the text: a value next to a secret
+  // name is withheld, wherever in the string it sits.
+  // ------------------------------------------------------------------------
+
+  const LEAKED = /leaked-[a-z-]+-value-\d{4}/;
+
+  it("withholds leaked values in a plan: previews, argv, targets, warnings, doctor", () => {
+    const markup = [
+      render(createElement(PlanView, { plan: hostilePlanFixture })),
+      render(
+        createElement(TypedConfirmView, {
+          expected: "dev",
+          typed: "",
+          onTypedChange: () => {},
+          onConfirm: () => {},
+          onCancel: () => {},
+          destructive: true,
+          warnings: hostilePlanFixture.warnings,
+        }),
+      ),
+    ].join("\n");
+    expect(markup).not.toMatch(LEAKED);
+    // Not vacuous: the redacted rows are on screen, with their public neighbours.
+    expect(markup).toContain("&lt;redacted&gt;");
+    expect(markup).toContain("LOG_LEVEL=info");
+    expect(markup).toContain("/rag/data/tenants/dev/secrets.env");
+    expect(markup).toContain("content withheld (credential file)");
+  });
+
+  it("withholds leaked values in a job: titles, errors, rollback, external ids, logs", () => {
+    const markup = [
+      render(
+        createElement(JobView, {
+          job: hostileJobFixture,
+          role: "operator",
+          logs: hostileStepLogsFixture,
+          onResume: () => {},
+          onContinue: () => {},
+          onCancel: () => {},
+        }),
+      ),
+      render(createElement(JobView, { job: hostileJobFixture, role: "viewer" })),
+    ].join("\n");
+    expect(markup).not.toMatch(LEAKED);
+    expect(markup).toContain("&lt;redacted&gt;");
+    expect(markup).toContain("driver_failed");
+  });
+
+  it("ErrorBanner prints no server string for any code, whatever detail and extra carry", () => {
+    const codes = [
+      "auth_required",
+      "forbidden",
+      "both_credentials",
+      "not_found",
+      "validation",
+      "locked",
+      "plan_stale",
+      "duplicate",
+      "doctor_red",
+      "confirm_required",
+      "refused",
+      "rate_limited",
+      "internal",
+    ] as const;
+    const markup = codes
+      .map((code) =>
+        render(
+          createElement(ErrorBanner, {
+            error: new CtlError({
+              status: 409,
+              code,
+              detail: "API_KEYS=leaked-api-key-value-0201",
+              requestId: "0123456789abcdef",
+              extra: {
+                job_id: "leaked-token-value-0202",
+                principal: "leaked password-value-0203",
+                fields: ["password=leaked-password-value-0204"],
+                confirm_value: "leaked-secret-value-0205",
+              },
+            }),
+            onOpenJob: () => {},
+          }),
+        ),
+      )
+      .join("\n");
+    expect(markup).not.toMatch(LEAKED);
+    expect(markup).not.toContain("password-value-0203");
+    expect(markup.match(/Reference: 0123456789abcdef/g)?.length).toBe(codes.length);
+  });
+
+  it("RevealOnce shows no value before the click, and the values only after it", () => {
+    const before = [
+      render(createElement(RevealOnce, { secrets: null, onReveal: () => {} })),
+      render(createElement(RevealOnce, { secrets: null, onReveal: () => {}, revealing: true })),
+      // A finished job that delivers secrets, rendered next to the button: the
+      // job body never carries a value either.
+      render(createElement(JobView, { job: jobFixture("succeeded"), role: "operator" })),
+    ].join("\n");
+    for (const s of secretsFixture.secrets) expect(before).not.toContain(s.value);
+    expect(before).not.toMatch(LEAKED);
+
+    // The ONE render in this suite where a secret value must appear: after the
+    // explicit reveal. Asserting presence here is what keeps the absence above
+    // from being "the component renders nothing at all".
+    const after = render(createElement(RevealOnce, { secrets: secretsFixture, onReveal: () => {} }));
+    expect(after).toContain("leaked-secret-value-0001");
+    expect(after).toContain("leaked-secret-value-0002");
   });
 });
