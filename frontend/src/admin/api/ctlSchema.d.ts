@@ -531,6 +531,13 @@ export interface components {
             status: "ok";
             /** @description The build version (`git describe --tags --always --dirty` at build time), the same value `GET /v1/version` reports as `version`. */
             version: string;
+            /**
+             * @description Whether a mutation submitted right now would reach a job engine at all.
+             *
+             *     `status` cannot carry this: the schema pins it to `ok`, and an engineless daemon IS up — it serves every read and refuses every mutation with 409 `refused`. On 2026-09-17 a daemon ran in exactly that state for a day, because the only place it said so was one WARN line at start-up (a `--direct` run by another account had left wilke-owned `jobs.db-wal`/`jobs.db-shm` beside svcbvbrc's store, and SQLite could not write them). The daemon now retries opening the store in the background, and this field is where the answer is visible without a credential; `doctor` raises `job_engine_unavailable` for the same fact.
+             * @enum {string}
+             */
+            engine: "available" | "unavailable";
         };
         /**
          * CtlError
@@ -619,8 +626,20 @@ export interface components {
         FleetRow: {
             name: string;
             manifest_name: string;
-            /** @enum {string} */
-            state: "provisioned" | "active" | "stopped" | "migrating" | "quarantined" | "decommissioned";
+            /**
+             * @description Which half of a two-account handover this tenant is in — `released` (the owner has stopped it and nothing is running) or `taken` (the service account has started it again and still owes a `--commit` or a `--abandon`) — and ABSENT when none is in flight.
+             *
+             *     It exists because `state` alone cannot say: a released tenant reads `handover`, but a taken one reads `active`. The handover block itself is never returned by a read surface — it carries the hand-off token, and no read surface of this control plane carries a token — so this field is how an operator sees the protocol's state.
+             *
+             *     Optional, so that a response this daemon writes stays readable by a client that predates the field.
+             * @enum {string}
+             */
+            handover_phase?: "released" | "taken";
+            /**
+             * @description `handover` is the transitional state of the two-account handover: between `handover --release` and `handover --take` nothing of the tenant is running. Probes expect 502 for it.
+             * @enum {string}
+             */
+            state: "provisioned" | "active" | "stopped" | "migrating" | "handover" | "quarantined" | "decommissioned";
             /** @enum {string} */
             owner: "svcbvbrc" | "wilke";
             /** @enum {string} */
@@ -693,8 +712,20 @@ export interface components {
                 FleetRow: {
                     name: string;
                     manifest_name: string;
-                    /** @enum {string} */
-                    state: "provisioned" | "active" | "stopped" | "migrating" | "quarantined" | "decommissioned";
+                    /**
+                     * @description Which half of a two-account handover this tenant is in — `released` (the owner has stopped it and nothing is running) or `taken` (the service account has started it again and still owes a `--commit` or a `--abandon`) — and ABSENT when none is in flight.
+                     *
+                     *     It exists because `state` alone cannot say: a released tenant reads `handover`, but a taken one reads `active`. The handover block itself is never returned by a read surface — it carries the hand-off token, and no read surface of this control plane carries a token — so this field is how an operator sees the protocol's state.
+                     *
+                     *     Optional, so that a response this daemon writes stays readable by a client that predates the field.
+                     * @enum {string}
+                     */
+                    handover_phase?: "released" | "taken";
+                    /**
+                     * @description `handover` is the transitional state of the two-account handover: between `handover --release` and `handover --take` nothing of the tenant is running. Probes expect 502 for it.
+                     * @enum {string}
+                     */
+                    state: "provisioned" | "active" | "stopped" | "migrating" | "handover" | "quarantined" | "decommissioned";
                     /** @enum {string} */
                     owner: "svcbvbrc" | "wilke";
                     /** @enum {string} */
@@ -940,15 +971,84 @@ export interface components {
             }[];
             gateway_generation: number;
         };
+        /** @description The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`. */
+        Handover: {
+            /**
+             * @description `released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.
+             * @enum {string}
+             */
+            phase: "released" | "taken";
+            /** @description A one-shot nonce the release prints and the take must quote. It is not a credential — it grants nothing — it is the proof that the take is acting on THIS release rather than on a row left behind by an older, abandoned one. */
+            token: string;
+            started_at: components["schemas"]["Timestamp"];
+            /** @description The account that ran the release (the tenant's pre-handover owner). */
+            released_by: string;
+            released_at: components["schemas"]["Timestamp"] | null;
+            taken_at: components["schemas"]["Timestamp"] | null;
+            taken_by: string | null;
+            /** @description `captured_at` of the `rollback_descriptor` this handover is reversible against, so a descriptor rewritten under a parked handover is visible as a disagreement rather than silently trusted. */
+            descriptor_ref: components["schemas"]["Timestamp"] | null;
+            /** @description What the tenant held at the moment of the release: one row per collection/index of each EXCLUSIVE store, plus the API's own `/v1/collections?counts=true`. The take compares its own reading against it and refuses a store that came back with fewer rows than it went down with. */
+            census: {
+                /** @enum {string} */
+                store: "qdrant" | "elasticsearch" | "api";
+                name: string;
+                count: number;
+            }[];
+            /**
+             * @description How this handover is moving the tenant's postgres, and null for a tenant that runs none of its own.
+             *
+             *     A handover moves no data — except here, and it cannot move it the obvious way. postgres refuses a data directory whose `st_uid` is not its own uid ("data directory has wrong ownership"), and the taking account cannot COPY one either: a POSIX ACL's named-user entry is filtered by the mask, the mask is the directory's group mode bits, and a PGDATA postgres accepts has none — so `user:svcbvbrc:rwx` on a 0700 pgdata has an effective permission of `---` and no ACL can change that.
+             *
+             *     So the migration is LOGICAL. The RELEASE — API already stopped, postgres still running — writes `pg_dump -Fc` to `handover-<ts>.dump` at 0640 (a plain file has no ownership check, and the group both accounts are in can read it) and records its sha256 and the exact row count of every table. The TAKE verifies the checksum, puts an EMPTY directory where the cluster was (the original is renamed to `pre_handover`, which nothing opens again), lets the postgres instance initialise a cluster of its own in it, restores the dump and checks every table's count back.
+             *
+             *     The release fills `dump`, `dump_sha256`, `dumped_at` and `tables`; the take fills `pre_handover`, `copy` and `migrated_at`, which are empty strings until it does. `--abandon` renames the two directories back; `--commit` leaves the original cluster and the dump on disk and doctor reports `pre_handover_copy_present` until an operator removes them.
+             */
+            postgres_data: {
+                /** @description The release's `pg_dump -Fc` archive, `<data_dir>/postgres/handover-<ts>.dump`, mode 0640. */
+                dump: components["schemas"]["AbsPath"];
+                /** @description That file's digest. The take checks it before it moves anything: the archive crosses a job boundary, an account boundary and an unbounded amount of wall-clock time. */
+                dump_sha256: components["schemas"]["Sha256Hex"];
+                dumped_at: components["schemas"]["Timestamp"];
+                /** @description The exact row count of every ordinary table at the moment of the dump (`count(*)`, never `n_live_tup` — an estimate is reset by the restore and proves nothing). A dump and a restore cannot be compared byte for byte; this is what the take proves the migration against, and it refuses on ANY difference. */
+                tables: {
+                    /** @description `<schema>.<table>`. */
+                    name: string;
+                    rows: number;
+                }[];
+                /**
+                 * @description The SOURCE database's character encoding (`pg_encoding_to_char(encoding)`), and `collate`/`ctype` its two locales (`datcollate`, `datctype`).
+                 *
+                 *     They are recorded because a dump and a restore do NOT carry them: the take's cluster is initialised by the image's entrypoint, and initdb takes its encoding from its environment unless told otherwise — so without these the encoding of a tenant's database after a handover is decided by whichever shell, cron job or unit ran the take. A UTF8 dump restored into an SQL_ASCII/C cluster exits 0 and keeps every row; `length()`, `upper()`, `LIKE` and every index's sort order are different, and the row counts cannot see it. The take passes them to initdb (POSTGRES_INITDB_ARGS) and refuses the restore if the new cluster came out any other way.
+                 */
+                encoding: string;
+                collate: string;
+                ctype: string;
+                /** @description Databases in the tenant's cluster BESIDE its own (and initdb's `postgres`), as the release found them — non-empty only when an operator passed `accept_extra_databases`. A single-database dump does not carry them: they stay in the pre-handover cluster, which is the copy a commit invites the operator to delete. */
+                extra_databases: string[];
+                /** @description Login roles in that cluster beside the tenant's own, on the same terms as `extra_databases`. */
+                extra_roles: string[];
+                /** @description Where the take renamed the ORIGINAL cluster: `<data_dir>/postgres/data.pre-handover-<ts>`. Empty until the take has run; nothing opens it again once it has. */
+                pre_handover: components["schemas"]["AbsPath"] | string;
+                /** @description The name the take's own cluster directory was created under, `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into place. An abandon renames the live directory back to it. Empty until the take has run. */
+                copy: components["schemas"]["AbsPath"] | string;
+                /** @description When the two renames happened; empty until the take has run. */
+                migrated_at: components["schemas"]["Timestamp"] | string;
+            } | null;
+        };
         /** @enum {string} */
-        OpVerb: "adopt" | "create" | "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code";
+        OpVerb: "adopt" | "create" | "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "set-ui-mode" | "set-bind" | "set-supervisor";
         LastOp: {
             job_id: string;
             at: components["schemas"]["Timestamp"];
             /** @enum {string} */
             outcome: "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled";
         };
-        /** @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible. */
+        /**
+         * @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.
+         *
+         *     `scope` says WHAT the bundle holds. A full bundle carries every leg (`["config", "state", "stores"]`); a light one, taken with `tenant backup --scope config,state`, carries only the tenant's configuration allowlist and its SQLite state and is deliberately cheap enough to run seconds before a handover. A light bundle is never a restore prerequisite — `fenced` is false for it by construction — and the field exists so that `last_backup` cannot be read as a claim the bundle does not make.
+         */
         LastBackup: {
             bundle: components["schemas"]["AbsPath"];
             at: components["schemas"]["Timestamp"];
@@ -956,6 +1056,12 @@ export interface components {
             kind: "backup" | "pre-update" | "recovery";
             fenced: boolean;
             verified: boolean;
+            /**
+             * @description The legs this bundle carries, sorted. `stores` present means the qdrant / elasticsearch / postgres legs were attempted.
+             *
+             *     OPTIONAL, and absent means the full bundle: the field arrived after records without it had been written, and a reader that refused those would refuse the whole registry over one row. `ragstack-ctl` backfills an absent scope to all three legs at load.
+             */
+            scope?: ("config" | "state" | "stores")[];
         };
         Tenant: {
             name: components["schemas"]["TenantName"];
@@ -991,8 +1097,11 @@ export interface components {
             supervisor: "systemd" | "manual" | "instance";
             /** @enum {string} */
             owner: "svcbvbrc" | "wilke";
-            /** @enum {string} */
-            state: "provisioned" | "active" | "stopped" | "migrating" | "quarantined" | "decommissioned";
+            /**
+             * @description `handover` is the TRANSITIONAL value of the two-account handover: between `handover --release` (the owner stopped the tenant) and `handover --take` (the service account started it again) nothing of this tenant is running and neither account owns it. It is a state rather than a flag so that every reader — the gateway probe, `fleet status`, the reboot scripts — sees one value meaning "down on purpose, mid-move" instead of inferring it from a row that still claims `active`.
+             * @enum {string}
+             */
+            state: "provisioned" | "active" | "stopped" | "migrating" | "handover" | "quarantined" | "decommissioned";
             /**
              * @description `enabled` ⇔ the target is `WantedBy=default.target`. `stop` flips it to `disabled` unless `--keep-enabled`, so a deliberately stopped tenant stays down across a reboot.
              * @enum {string}
@@ -1013,6 +1122,7 @@ export interface components {
                 /** @description How many `ADMIN_SUBJECTS` entries — the subjects themselves are identities, not counted as secrets, but they are not carried here either. */
                 admin_subjects_count: number;
             };
+            /** @description The API-key ledger: fingerprints, never values. At most ONE entry per `id` may have `revoked_at: null` — the id is what `key revoke` withdraws by, so two effective rows sharing one would make "the key called ops" ambiguous. Revoked rows may repeat an id freely: mint → revoke → mint is the ordinary rotation and the history is why the rows are kept. (JSON Schema cannot express "unique among the entries that satisfy a predicate"; `ragstack-ctl`'s Go mirror enforces it on every load, and registry_test.go proves the two agree.) */
             keys: components["schemas"]["KeyRecord"][];
             service_accounts: components["schemas"]["ServiceAccountRecord"][];
             external_refs: components["schemas"]["ExternalRef"][];
@@ -1023,6 +1133,8 @@ export interface components {
             restart_pending: boolean;
             release_generation: components["schemas"]["ReleaseGeneration"] | null;
             rollback_descriptor: components["schemas"]["RollbackDescriptor"] | null;
+            /** @description The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight. */
+            handover?: components["schemas"]["Handover"] | null;
             last_ops: {
                 [key: string]: components["schemas"]["LastOp"];
             };
@@ -1823,7 +1935,7 @@ export interface components {
                 /** @enum {string} */
                 Role: "admin" | "user";
                 /** @enum {string} */
-                OpVerb: "adopt" | "create" | "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code";
+                OpVerb: "adopt" | "create" | "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "set-ui-mode" | "set-bind" | "set-supervisor";
                 /**
                  * @description An env key that may be stored in the registry: shell-identifier shaped AND not of a secret class. The `anyOf` is the guard — `propertyNames` on `PublicSettings` applies it to every key, so ONE forbidden name fails the whole registry.
                  *
@@ -2036,6 +2148,71 @@ export interface components {
                     }[];
                     gateway_generation: number;
                 };
+                /** @description The in-flight two-account handover of this tenant, and null at every other moment. Handover cannot be one job: the daemon (svcbvbrc) can neither signal the hand-started API (`/proc/<pid>/cwd` is unreadable across accounts) nor see wilke's apptainer instances (each account has its own instance registry). So `handover --release` runs as the OWNER, stops the tenant and leaves this block behind with a one-shot token; `handover --take --token T` runs as the service account, starts the tenant under `supervisor: instance` and records `owner` and `phase: taken`; `handover --commit` (the same account, after the soak) sets `desired_boot: enabled` and clears the block. None of them parks: a phase that waited at a cutover would hold the fleet's registry lock for the length of the soak, so this block is what carries the state between four ordinary jobs. `handover --abandon` (the account in `released_by`) clears the block and hands the tenant back to `restore.sh --tenant <n>`. */
+                Handover: {
+                    /**
+                     * @description `released`: the owner has stopped everything and nothing of this tenant is running; the row's `owner` is still the owner's. `taken`: the service account has started it again and `owner` is that account's, but `desired_boot` has not moved — the soak is running and a `--commit` or a `--abandon` is still owed.
+                     * @enum {string}
+                     */
+                    phase: "released" | "taken";
+                    /** @description A one-shot nonce the release prints and the take must quote. It is not a credential — it grants nothing — it is the proof that the take is acting on THIS release rather than on a row left behind by an older, abandoned one. */
+                    token: string;
+                    started_at: components["schemas"]["Timestamp"];
+                    /** @description The account that ran the release (the tenant's pre-handover owner). */
+                    released_by: string;
+                    released_at: components["schemas"]["Timestamp"] | null;
+                    taken_at: components["schemas"]["Timestamp"] | null;
+                    taken_by: string | null;
+                    /** @description `captured_at` of the `rollback_descriptor` this handover is reversible against, so a descriptor rewritten under a parked handover is visible as a disagreement rather than silently trusted. */
+                    descriptor_ref: components["schemas"]["Timestamp"] | null;
+                    /** @description What the tenant held at the moment of the release: one row per collection/index of each EXCLUSIVE store, plus the API's own `/v1/collections?counts=true`. The take compares its own reading against it and refuses a store that came back with fewer rows than it went down with. */
+                    census: {
+                        /** @enum {string} */
+                        store: "qdrant" | "elasticsearch" | "api";
+                        name: string;
+                        count: number;
+                    }[];
+                    /**
+                     * @description How this handover is moving the tenant's postgres, and null for a tenant that runs none of its own.
+                     *
+                     *     A handover moves no data — except here, and it cannot move it the obvious way. postgres refuses a data directory whose `st_uid` is not its own uid ("data directory has wrong ownership"), and the taking account cannot COPY one either: a POSIX ACL's named-user entry is filtered by the mask, the mask is the directory's group mode bits, and a PGDATA postgres accepts has none — so `user:svcbvbrc:rwx` on a 0700 pgdata has an effective permission of `---` and no ACL can change that.
+                     *
+                     *     So the migration is LOGICAL. The RELEASE — API already stopped, postgres still running — writes `pg_dump -Fc` to `handover-<ts>.dump` at 0640 (a plain file has no ownership check, and the group both accounts are in can read it) and records its sha256 and the exact row count of every table. The TAKE verifies the checksum, puts an EMPTY directory where the cluster was (the original is renamed to `pre_handover`, which nothing opens again), lets the postgres instance initialise a cluster of its own in it, restores the dump and checks every table's count back.
+                     *
+                     *     The release fills `dump`, `dump_sha256`, `dumped_at` and `tables`; the take fills `pre_handover`, `copy` and `migrated_at`, which are empty strings until it does. `--abandon` renames the two directories back; `--commit` leaves the original cluster and the dump on disk and doctor reports `pre_handover_copy_present` until an operator removes them.
+                     */
+                    postgres_data: {
+                        /** @description The release's `pg_dump -Fc` archive, `<data_dir>/postgres/handover-<ts>.dump`, mode 0640. */
+                        dump: components["schemas"]["AbsPath"];
+                        /** @description That file's digest. The take checks it before it moves anything: the archive crosses a job boundary, an account boundary and an unbounded amount of wall-clock time. */
+                        dump_sha256: components["schemas"]["Sha256Hex"];
+                        dumped_at: components["schemas"]["Timestamp"];
+                        /** @description The exact row count of every ordinary table at the moment of the dump (`count(*)`, never `n_live_tup` — an estimate is reset by the restore and proves nothing). A dump and a restore cannot be compared byte for byte; this is what the take proves the migration against, and it refuses on ANY difference. */
+                        tables: {
+                            /** @description `<schema>.<table>`. */
+                            name: string;
+                            rows: number;
+                        }[];
+                        /**
+                         * @description The SOURCE database's character encoding (`pg_encoding_to_char(encoding)`), and `collate`/`ctype` its two locales (`datcollate`, `datctype`).
+                         *
+                         *     They are recorded because a dump and a restore do NOT carry them: the take's cluster is initialised by the image's entrypoint, and initdb takes its encoding from its environment unless told otherwise — so without these the encoding of a tenant's database after a handover is decided by whichever shell, cron job or unit ran the take. A UTF8 dump restored into an SQL_ASCII/C cluster exits 0 and keeps every row; `length()`, `upper()`, `LIKE` and every index's sort order are different, and the row counts cannot see it. The take passes them to initdb (POSTGRES_INITDB_ARGS) and refuses the restore if the new cluster came out any other way.
+                         */
+                        encoding: string;
+                        collate: string;
+                        ctype: string;
+                        /** @description Databases in the tenant's cluster BESIDE its own (and initdb's `postgres`), as the release found them — non-empty only when an operator passed `accept_extra_databases`. A single-database dump does not carry them: they stay in the pre-handover cluster, which is the copy a commit invites the operator to delete. */
+                        extra_databases: string[];
+                        /** @description Login roles in that cluster beside the tenant's own, on the same terms as `extra_databases`. */
+                        extra_roles: string[];
+                        /** @description Where the take renamed the ORIGINAL cluster: `<data_dir>/postgres/data.pre-handover-<ts>`. Empty until the take has run; nothing opens it again once it has. */
+                        pre_handover: components["schemas"]["AbsPath"] | string;
+                        /** @description The name the take's own cluster directory was created under, `<data_dir>/postgres/data.<account>-<ts>`, before it was renamed into place. An abandon renames the live directory back to it. Empty until the take has run. */
+                        copy: components["schemas"]["AbsPath"] | string;
+                        /** @description When the two renames happened; empty until the take has run. */
+                        migrated_at: components["schemas"]["Timestamp"] | string;
+                    } | null;
+                };
                 Code: {
                     /** @description `git describe --tags` at the worktree; `unknown` when the gitdir is unreadable (svcbvbrc before handover). */
                     tag: string;
@@ -2048,7 +2225,11 @@ export interface components {
                     /** @enum {string} */
                     outcome: "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled";
                 };
-                /** @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible. */
+                /**
+                 * @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.
+                 *
+                 *     `scope` says WHAT the bundle holds. A full bundle carries every leg (`["config", "state", "stores"]`); a light one, taken with `tenant backup --scope config,state`, carries only the tenant's configuration allowlist and its SQLite state and is deliberately cheap enough to run seconds before a handover. A light bundle is never a restore prerequisite — `fenced` is false for it by construction — and the field exists so that `last_backup` cannot be read as a claim the bundle does not make.
+                 */
                 LastBackup: {
                     bundle: components["schemas"]["AbsPath"];
                     at: components["schemas"]["Timestamp"];
@@ -2056,6 +2237,12 @@ export interface components {
                     kind: "backup" | "pre-update" | "recovery";
                     fenced: boolean;
                     verified: boolean;
+                    /**
+                     * @description The legs this bundle carries, sorted. `stores` present means the qdrant / elasticsearch / postgres legs were attempted.
+                     *
+                     *     OPTIONAL, and absent means the full bundle: the field arrived after records without it had been written, and a reader that refused those would refuse the whole registry over one row. `ragstack-ctl` backfills an absent scope to all three legs at load.
+                     */
+                    scope?: ("config" | "state" | "stores")[];
                 };
                 Tenant: {
                     name: components["schemas"]["TenantName"];
@@ -2091,8 +2278,11 @@ export interface components {
                     supervisor: "systemd" | "manual" | "instance";
                     /** @enum {string} */
                     owner: "svcbvbrc" | "wilke";
-                    /** @enum {string} */
-                    state: "provisioned" | "active" | "stopped" | "migrating" | "quarantined" | "decommissioned";
+                    /**
+                     * @description `handover` is the TRANSITIONAL value of the two-account handover: between `handover --release` (the owner stopped the tenant) and `handover --take` (the service account started it again) nothing of this tenant is running and neither account owns it. It is a state rather than a flag so that every reader — the gateway probe, `fleet status`, the reboot scripts — sees one value meaning "down on purpose, mid-move" instead of inferring it from a row that still claims `active`.
+                     * @enum {string}
+                     */
+                    state: "provisioned" | "active" | "stopped" | "migrating" | "handover" | "quarantined" | "decommissioned";
                     /**
                      * @description `enabled` ⇔ the target is `WantedBy=default.target`. `stop` flips it to `disabled` unless `--keep-enabled`, so a deliberately stopped tenant stays down across a reboot.
                      * @enum {string}
@@ -2113,6 +2303,7 @@ export interface components {
                         /** @description How many `ADMIN_SUBJECTS` entries — the subjects themselves are identities, not counted as secrets, but they are not carried here either. */
                         admin_subjects_count: number;
                     };
+                    /** @description The API-key ledger: fingerprints, never values. At most ONE entry per `id` may have `revoked_at: null` — the id is what `key revoke` withdraws by, so two effective rows sharing one would make "the key called ops" ambiguous. Revoked rows may repeat an id freely: mint → revoke → mint is the ordinary rotation and the history is why the rows are kept. (JSON Schema cannot express "unique among the entries that satisfy a predicate"; `ragstack-ctl`'s Go mirror enforces it on every load, and registry_test.go proves the two agree.) */
                     keys: components["schemas"]["KeyRecord"][];
                     service_accounts: components["schemas"]["ServiceAccountRecord"][];
                     external_refs: components["schemas"]["ExternalRef"][];
@@ -2123,6 +2314,8 @@ export interface components {
                     restart_pending: boolean;
                     release_generation: components["schemas"]["ReleaseGeneration"] | null;
                     rollback_descriptor: components["schemas"]["RollbackDescriptor"] | null;
+                    /** @description The in-flight handover, null otherwise. OPTIONAL rather than required, and deliberately so: the field arrived after the deployed binary had already written rows without it, and a registry an older `ragstack-ctl` wrote must keep loading. Absent and null mean the same thing — no handover is in flight. */
+                    handover?: components["schemas"]["Handover"] | null;
                     last_ops: {
                         [key: string]: components["schemas"]["LastOp"];
                     };
@@ -2155,6 +2348,12 @@ export interface components {
             schema_version: 1;
             /** @enum {string} */
             kind: "backup" | "pre-update" | "recovery";
+            /**
+             * @description WHICH legs this bundle was asked for, sorted. OPTIONAL: a bundle written before the field existed carries no `scope`, and a `backup verify` that refused those would condemn every bundle already on disk. Absent means the full bundle, the only kind that existed then. A full bundle is `["config", "state", "stores"]`; `tenant backup --scope config,state` writes a LIGHT bundle — the config allowlist, the SQLite state files, the rendered units, the registry row and the rollback descriptor, no store snapshots and no fence — which is what a handover's safety net needs and takes seconds rather than hours.
+             *
+             *     It is a statement about the REQUEST, not about what each leg then managed to capture: a leg that was in scope and was skipped for want of a capability still says so in `stores.*.included` and in `warnings`. A bundle without `stores` in its scope is never `consistent` and never satisfies a restore prerequisite.
+             */
+            scope?: ("config" | "state" | "stores")[];
             /** @description `<ts>-<kind>`, the directory basename. */
             bundle_id: string;
             created_at: string;
@@ -2782,8 +2981,8 @@ export interface operations {
             query?: {
                 /** @description Restrict to one tenant. */
                 tenant?: components["parameters"]["TenantFilter"];
-                /** @description An operation verb (the `verb` enum) or one of `create`, `adopt`, `gateway-apply`, `settings-put`; scopes the run to that operation's preconditions. */
-                op?: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "create" | "adopt" | "gateway-apply" | "settings-put";
+                /** @description An operation verb (the `verb` enum) or one of `create`, `adopt`, `gateway-apply`, `settings-put`, `set-ui-mode`, `set-bind`; scopes the run to that operation's preconditions. The last two are jobs with no HTTP route (`x-ctl-cli-op-args`), and a caller may still scope a doctor run to them — that is how an operator sees, before running one, what would block it. */
+                op?: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "create" | "adopt" | "gateway-apply" | "settings-put" | "set-ui-mode" | "set-bind";
             };
             header?: never;
             path?: never;
