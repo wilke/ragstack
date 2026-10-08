@@ -35,7 +35,9 @@ import type {
   JobState,
   JobsResponse,
   Job,
+  KeyRecord,
   Plan,
+  ServiceAccountRecord,
   SecretsResponse,
   SettingsResponse,
   Step,
@@ -811,4 +813,143 @@ export const artifactsFixture: ArtifactsResponse = {
       tenants: ["hackathon"],
     },
   ],
+};
+
+// ---------------------------------------------------------------------------
+// Credentials (PR-G3.1): the ledger an operator's tenant body carries.
+// ---------------------------------------------------------------------------
+
+/** One key in each state: effective, revoked (proven), revoke pending, minted but pending. */
+export const keysFixture: KeyRecord[] = [
+  {
+    id: "asm-ops",
+    label: "asm-ops",
+    role: "admin",
+    tenant_string: "asm-ops",
+    fingerprint: "sha256:0a1b2c3d4e5f6071",
+    created_at: "2026-08-01T00:00:00Z",
+    created_by: "adopt",
+    revoked_at: null,
+    effective: true,
+  },
+  {
+    id: "old-worker",
+    label: "old-worker",
+    role: "user",
+    tenant_string: "svc-asm-web",
+    fingerprint: "sha256:1122334455667788",
+    created_at: "2026-08-02T00:00:00Z",
+    created_by: "wilke",
+    revoked_at: "2026-09-01T00:00:00Z",
+    effective: false,
+  },
+  {
+    id: "leaving-key",
+    label: "leaving-key",
+    role: "user",
+    tenant_string: "asm-ro",
+    fingerprint: "sha256:99aabbccddeeff00",
+    created_at: "2026-08-03T00:00:00Z",
+    created_by: "wilke",
+    revoked_at: "2026-10-08T11:00:00Z",
+    effective: true,
+  },
+  {
+    id: "ingest-worker",
+    label: "ingest-worker",
+    role: "user",
+    tenant_string: "asm-ops",
+    fingerprint: "sha256:abcdef0123456789",
+    created_at: "2026-10-08T11:30:00Z",
+    created_by: "svcbvbrc",
+    revoked_at: null,
+    effective: false,
+  },
+];
+
+export const serviceAccountsFixture: ServiceAccountRecord[] = [
+  { subject: "svc-asm-web", role: "user", purpose: "the ASM web front end", status: "active", created_at: "2026-08-01T00:00:00Z" },
+  { subject: "svc-old-batch", role: "admin", purpose: "retired batch loader", status: "disabled", created_at: "2026-08-05T00:00:00Z" },
+];
+
+/** `ADMIN_SUBJECTS` as the env endpoint returns it: a PUBLIC key, a JSON list. */
+export const adminSubjectsEnvFixture: CtlEnv = {
+  tenant: "demo",
+  env_layout: "legacy",
+  source: "live",
+  note: null,
+  keys: [
+    { key: "IDENTITY_PROVIDER", value_redacted: "bvbrc", source: "tenant.env", class: "public", drift: null },
+    { key: "ADMIN_SUBJECTS", value_redacted: '["bvbrc:wilke","bvbrc:isingh"]', source: "tenant.env", class: "public", drift: null },
+  ],
+};
+
+/** demo (supervisor: manual) with a populated ledger. */
+export const credentialsTenantFixture: CtlTenant = {
+  ...demoTenantFixture,
+  registry: {
+    ...demoTenantFixture.registry!,
+    identity: { provider: "bvbrc", admin_subjects_count: 2 },
+    keys: keysFixture,
+    service_accounts: serviceAccountsFixture,
+  },
+};
+
+/** The same ledger on a supervised tenant, where restart is offered. */
+export const supervisedCredentialsTenantFixture: CtlTenant = {
+  ...credentialsTenantFixture,
+  summary: { ...credentialsTenantFixture.summary, supervisor: "instance" },
+  registry: { ...credentialsTenantFixture.registry!, supervisor: "instance" },
+};
+
+/**
+ * A server that leaked. The free-text fields (label, tenant string,
+ * created_by, purpose) carry `leaked-*-value-000N` markers and markup: they
+ * are NOT secret-named, so they render — escaped. The `api_key` member is a
+ * field no KeyRecord has; it must never reach the screen.
+ */
+export const hostileKeysFixture: KeyRecord[] = [
+  {
+    id: "hostile-key",
+    label: "leaked-label-value-0001<img src=x onerror=alert(1)>",
+    role: "admin",
+    tenant_string: "leaked-tenant-value-0002",
+    fingerprint: "sha256:feedfacecafebeef",
+    created_at: "2026-10-08T11:00:00Z",
+    created_by: "leaked-creator-value-0003<script>alert(1)</script>",
+    revoked_at: null,
+    effective: true,
+    api_key: "leaked-key-value-0009",
+  } as KeyRecord,
+  {
+    id: "bad-fingerprint",
+    label: "bad-fingerprint",
+    role: "user",
+    tenant_string: "asm-ops",
+    // A value where a fingerprint belongs: only the fingerprint shape renders.
+    fingerprint: "leaked-key-value-0008",
+    created_at: "2026-10-08T11:00:00Z",
+    created_by: "wilke",
+    revoked_at: null,
+    effective: true,
+  },
+];
+
+export const hostileServiceAccountsFixture: ServiceAccountRecord[] = [
+  {
+    subject: "svc-hostile",
+    role: "user",
+    purpose: "leaked-purpose-value-0004<b>bold</b>",
+    status: "active",
+    created_at: "2026-10-08T11:00:00Z",
+  },
+];
+
+export const hostileCredentialsTenantFixture: CtlTenant = {
+  ...credentialsTenantFixture,
+  registry: {
+    ...credentialsTenantFixture.registry!,
+    keys: hostileKeysFixture,
+    service_accounts: hostileServiceAccountsFixture,
+  },
 };

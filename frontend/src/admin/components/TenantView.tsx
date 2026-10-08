@@ -7,9 +7,10 @@
 // them because the user scrolled past would mean a viewer's dashboard firing a
 // 403 on every visit.
 //
-// The one section that mutates is Actions (TenantActions.tsx): every verb is an
-// OpFlow — dry run, plan, a ctl key typed for that request, the job. It is an
-// OPERATOR section and is ABSENT for a viewer, not disabled: a viewer's rail
+// The sections that mutate are Actions (TenantActions.tsx) and Credentials
+// (CredentialsSection.tsx): every verb is an OpFlow — dry run, plan, a ctl key
+// typed for that request, the job. Both are OPERATOR sections and ABSENT for a
+// viewer, not disabled: a viewer's rail
 // does not list it, and reaching it anyway renders the 403 panel. Jobs is
 // readable by both roles (a viewer gets the stripped job shape; step logs are
 // operator-only reads).
@@ -26,6 +27,7 @@ import { HealthDot, StateChip } from "./StateChip";
 import { CtlError } from "../api/http";
 import { OperatorRequired, TenantJobs } from "./JobsView";
 import { TenantActions } from "./TenantActions";
+import { CredentialsSection } from "./CredentialsSection";
 
 const SECTIONS = [
   { id: "overview", label: "Overview" },
@@ -35,13 +37,17 @@ const SECTIONS = [
   { id: "logs", label: "Logs" },
   { id: "jobs", label: "Jobs" },
   { id: "actions", label: "Actions" },
+  { id: "credentials", label: "Credentials" },
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
 
-/** The rail for a role: Actions is an operator section and is absent for a viewer. */
+/** The operator sections: absent from a viewer's rail, not disabled. */
+const OPERATOR_SECTIONS: readonly SectionId[] = ["actions", "credentials"];
+
+/** The rail for a role: the operator sections are absent for a viewer. */
 export function sectionsFor(role: CtlRole): readonly (typeof SECTIONS)[number][] {
-  return role === "operator" ? SECTIONS : SECTIONS.filter((s) => s.id !== "actions");
+  return role === "operator" ? SECTIONS : SECTIONS.filter((s) => !OPERATOR_SECTIONS.includes(s.id));
 }
 
 const LOG_FILES: LogFile[] = ["api", "qdrant", "es", "ui"];
@@ -535,6 +541,9 @@ export function TenantSection({
       <OperatorRequired what="Starting, stopping, backing up and restoring a tenant are operator actions." />
     );
   }
+  if (section === "credentials") {
+    return <CredentialsSection name={name} role={role} onOpenJob={onOpenJob} />;
+  }
   if (section === "jobs") return <TenantJobs name={name} role={role} onOpenJob={onOpenJob} />;
   if (section === "config") return <Config name={name} />;
   if (section === "logs") return <Logs name={name} role={role} />;
@@ -645,7 +654,7 @@ export function TenantView({
 
         <div className="min-w-0 flex-1 px-5 py-6 md:px-8">
           <TenantSection
-            section={section === "actions" && role !== "operator" ? "overview" : section}
+            section={OPERATOR_SECTIONS.includes(section) && role !== "operator" ? "overview" : section}
             name={name}
             role={role}
             onOpenJob={onOpenJob}
