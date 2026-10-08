@@ -1142,6 +1142,44 @@ async def test_without_recipients_the_secrets_are_excluded_and_the_plan_says_so(
             assert not write["path"].endswith("secrets.age"), step["title"]
 
 
+async def test_secrets_require_is_refused_without_a_recipient(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`secrets: require` is the fail-closed mode an archive asks for. This
+    daemon has no age recipient configured, so it is refused at PLAN time —
+    409 `refused`, before anything is fenced — with the file and the command
+    that fixes it named. `skip` on the same daemon plans the skip step, and an
+    unknown mode is a 422 from the args schema.
+
+    The success case (a recipient configured, the payload sealed and opened
+    with the identity) is covered against the same engine construction in
+    go/internal/ctl/api/sealer_wiring_test.go: this fixture daemon carries no
+    recipient, and the existing exclusion test above depends on that."""
+    tenant = await managed_tenant(client)
+    resp = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True, "secrets": "require"})
+    )
+    assert resp.status_code == 409, resp.text
+    err = resp.json()
+    validate(err, "error", schemas)
+    assert err["code"] == "refused", err
+    assert "secrets=require" in err["detail"] and "backup-identity init" in err["detail"], err
+
+    skipped = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True, "secrets": "skip"})
+    )
+    assert skipped.status_code == 200, skipped.text
+    plan = skipped.json()
+    assert step_titled(plan, "skip the encrypted secrets payload") is not None, [s["title"] for s in plan["steps"]]
+    assert any("secrets=skip" in w for w in plan["warnings"]), plan["warnings"]
+
+    bad = await client.post(
+        f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"secrets": "plaintext"})
+    )
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["code"] == "validation", bad.text
+
+
 async def test_the_postgres_leg_is_planned_only_for_a_postgres_local_tenant(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
 ) -> None:

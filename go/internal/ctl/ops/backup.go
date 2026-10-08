@@ -396,6 +396,10 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	if err != nil {
 		return err
 	}
+	secrets, err := backupSecretsOf(p, args)
+	if err != nil {
+		return err
+	}
 	// The registry lock as well as the tenant's: the last step records
 	// `last_backup` and `last_ops.backup`, and the manifest projection is
 	// derived from the registry, so the same two locks a settings write takes.
@@ -479,7 +483,7 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	if scope.has(scopeConfig) {
 		p.addConfigCopies(bundleDir)
 		p.addRollbackDescriptor(bundleDir)
-		p.addSecrets(bundleDir)
+		p.addSecrets(bundleDir, secrets)
 	}
 	p.addMigrateMD(bundleDir)
 	p.addBundleManifest(bundleDir, fence, scope)
@@ -529,6 +533,39 @@ func backupScopeOf(p *planner, args map[string]any, fence bool) (scopeSet, error
 			"light bundle unfenced (it is what the pre-handover safety net is), or add `stores` to the scope")
 	}
 	return scope, nil
+}
+
+// The three values of `backup.secrets`.
+const (
+	secretsInclude = "include"
+	secretsSkip    = "skip"
+	secretsRequire = "require"
+)
+
+// backupSecretsOf reads and judges `secrets`.
+//
+// Absent is `include`, which is what `backup` meant before the argument
+// existed: seal when a recipient is configured, otherwise exclude and say so.
+// `require` is the fail-closed mode an archive asks for, and it is decided
+// HERE, at plan time, from the injected Sealer alone — never from a read of
+// the recipients file, because a plan is a function of the registry and its
+// dependencies, not of the host. The daemon loads the recipients when it
+// starts (api.BuildEngineAndDrivers), so the plan and the run agree on them.
+func backupSecretsOf(p *planner, args map[string]any) (string, error) {
+	mode := argStringOf(args, "secrets")
+	if mode == "" {
+		mode = secretsInclude
+	}
+	if mode == secretsRequire && !p.op.deps.hasRecipients() {
+		return "", p.refuse("backup with secrets=require needs an age recipient in %s; run `fleet backup-identity init`",
+			p.recipientsPath())
+	}
+	return mode, nil
+}
+
+// hasRecipients is "a Sealer is wired and it names at least one recipient".
+func (d Deps) hasRecipients() bool {
+	return d.Sealer != nil && len(d.Sealer.Fingerprints()) > 0
 }
 
 // skipOutOfScope records a leg the SCOPE left out — as a step, not a warning,
@@ -1246,9 +1283,30 @@ func (p *planner) addConfigCopies(bundleDir string) {
 // configured an age key would be the single worst artefact this tool can
 // produce — every credential of a tenant, on a shared filesystem, inside a
 // directory whose whole purpose is to be copied elsewhere.
-func (p *planner) addSecrets(bundleDir string) {
+func (p *planner) addSecrets(bundleDir, mode string) {
 	sealer := p.op.deps.Sealer
-	if sealer == nil || len(sealer.Fingerprints()) == 0 {
+	if mode == secretsSkip {
+		p.warn("secrets=skip: the secret files are EXCLUDED from the bundle on request, which is recorded as " +
+			"`secrets.included: false`. A restore from it mints fresh credentials; the tenant's current keys are " +
+			"not recoverable from this bundle")
+		p.add(step{
+			Kind: "fs", Title: "skip the encrypted secrets payload", Targets: []string{p.recipientsPath()},
+			Warnings: []string{"excluded on request (secrets=skip), whatever recipients are configured"},
+			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				part := secretsPart{Included: false, RecipientsFile: p.relToRoot(p.recipientsPath()),
+					Fingerprints: []string{}, Warnings: []string{"the secrets were excluded on request (secrets=skip)"}}
+				if err := p.writePart(ctx, sc, "secrets", part); err != nil {
+					return "", err
+				}
+				sc.Logf("secrets=skip: the bundle carries no secrets")
+				return "excluded on request (secrets=skip)", nil
+			},
+		})
+		return
+	}
+	if !p.op.deps.hasRecipients() {
+		// backupSecretsOf has already refused `require` here; this is
+		// `include` with nobody to seal to.
 		p.warn("no age recipient is configured (" + p.recipientsPath() + "): the secret files are EXCLUDED from the " +
 			"bundle, which is recorded as `secrets.included: false`. A restore from it mints fresh credentials; the " +
 			"tenant's current keys are not recoverable from this bundle")
@@ -1334,7 +1392,10 @@ func (p *planner) addSecrets(bundleDir string) {
 			}
 			sealed, err := sealer.Seal(buf.Bytes())
 			if err != nil {
-				if errors.Is(err, ErrNoRecipients) || noRecipients(err) {
+				// `require` was promised a sealed payload at plan time; a
+				// sealer that has lost its recipients since is a failure, not
+				// a quiet exclusion.
+				if mode != secretsRequire && (errors.Is(err, ErrNoRecipients) || noRecipients(err)) {
 					part := secretsPart{Included: false, RecipientsFile: p.relToRoot(p.recipientsPath()),
 						Fingerprints: []string{},
 						Warnings:     []string{"no age recipient was configured when this bundle was written"}}
@@ -1378,7 +1439,7 @@ func (p *planner) addSecrets(bundleDir string) {
 // recipientsPath is where the age recipients live: one CLI-managed file for
 // the whole fleet, under the ctl's config root.
 func (p *planner) recipientsPath() string {
-	return filepath.Join(p.oc.Roots.CtlConfigDir, "backup-recipients.txt")
+	return p.oc.Roots.BackupRecipients()
 }
 
 // keyFingerprints are the ledger fingerprints of the keys whose VALUES are

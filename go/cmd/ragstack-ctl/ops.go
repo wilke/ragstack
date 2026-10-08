@@ -35,7 +35,7 @@ func tenantOpUsage(verb string) int {
 	case "stop":
 		return usageErr("usage: ragstack-ctl tenant stop <name> [--only api,ui,qdrant,es] [--keep-enabled] [--force] %s", opFlagSummary)
 	case "backup":
-		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant backup <name> [--fence] [--tar] [--scope config,state] %s
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant backup <name> [--fence] [--tar] [--scope config,state] [--secrets include|skip|require] %s
 
   --fence   stop the API for the duration so the stores hold still. Only a
             fenced bundle can be verified and count toward a prerequisite.
@@ -46,6 +46,11 @@ func tenantOpUsage(verb string) int {
             store snapshots, no fence, and the API keeps serving. It runs in
             seconds and is the safety net a handover takes; it is never a
             restore prerequisite. --fence with a light scope is refused.
+  --secrets what happens to the tenant's secret files. include (default):
+            sealed with age to <ctl config dir>/backup-recipients.txt when it
+            names a recipient, otherwise left out with a warning. skip: never
+            sealed. require: refused unless a recipient is configured (`+"`ragstack-ctl fleet backup-identity init`"+`).
+            Secrets are never written in the clear.
 `, opFlagSummary)
 		return exitUsage
 	case "restore":
@@ -81,6 +86,7 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		scope               multiFlag
 		force, keepEnabled  *bool
 		fence, tar          *bool
+		secrets             *string
 		from, as            *string
 		wantsOnly, wantsFrm bool
 		wantsScope          bool
@@ -98,6 +104,7 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		tar = fs.Bool("tar", false, "tar the bundle")
 		wantsScope = true
 		fs.Var(&scope, "scope", "which legs to capture: config, state, stores (repeatable or a comma list; default all three)")
+		secrets = fs.String("secrets", "", "include (default) | skip | require: whether the secret files are sealed into the bundle")
 	case "restore":
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
@@ -133,6 +140,11 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 	}
 	if wantsScope && len(scope) > 0 {
 		opArgs["scope"] = []string(scope)
+	}
+	if secrets != nil && set["secrets"] {
+		// Passed through as given: the args schema owns the enum, so a typo is
+		// the same 422 `validation` the HTTP surface answers.
+		opArgs["secrets"] = *secrets
 	}
 	if wantsFrm {
 		if *from == "" || *as == "" {

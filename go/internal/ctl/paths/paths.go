@@ -166,6 +166,17 @@ func (r Roots) Manifest() string { return filepath.Join(r.DataDir, "manifest.tsv
 // UnitsDir holds the canonical per-tenant systemd unit files (SYSTEMD_UNIT_PATH).
 func (r Roots) UnitsDir() string { return filepath.Join(r.CtlConfigDir, "units") }
 
+// BackupRecipients is the fleet's age recipients file: the public keys a
+// backup seals a tenant's secret files to. `fleet backup-identity init`
+// appends to it; the engine loads it when it is built.
+func (r Roots) BackupRecipients() string {
+	return filepath.Join(r.CtlConfigDir, "backup-recipients.txt")
+}
+
+// BackupIdentity is the private half `fleet backup-identity init` writes
+// (0600). Nothing in the daemon reads it: the ctl seals, it never unseals.
+func (r Roots) BackupIdentity() string { return filepath.Join(r.CtlConfigDir, "backup-identity.txt") }
+
 // CtlUIDist is the built admin UI served by the gateway.
 func (r Roots) CtlUIDist() string { return filepath.Join(r.CtlStateDir, "ui", "dist") }
 

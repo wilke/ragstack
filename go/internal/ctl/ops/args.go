@@ -273,6 +273,9 @@ var (
 	// `config`, because a bundle carrying a tenant's configuration and not its
 	// credentials is a bundle a restore cannot finish from.
 	backupScopes = []string{"config", "state", "stores"}
+	// backupSecretsModes is `backup.secrets`' enum: what happens to the
+	// sealed payload. `include` is the default and today's behaviour.
+	backupSecretsModes = []string{secretsInclude, secretsSkip, secretsRequire}
 	// uiModes is set-ui-mode's enum. It is NARROWER than the registry's
 	// (static|dev|external): `dev` is a Vite server the CTL would have to
 	// supervise, which `supervisor: instance` refuses outright, so there is no
@@ -314,6 +317,7 @@ var argSchemas = map[string]argSpec{
 		{Name: "fence", Kind: argBool},
 		{Name: "tar", Kind: argBool},
 		{Name: "scope", Kind: argStringArray, ItemEnum: backupScopes, Unique: true},
+		{Name: "secrets", Kind: argString, Enum: backupSecretsModes},
 	}},
 	"restore": {Verb: "restore", Fields: []argField{
 		{Name: "from", Kind: argString, Required: true, Pattern: patBundleID},

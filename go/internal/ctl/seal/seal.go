@@ -11,11 +11,12 @@
 // The asymmetry is the point and it is deliberate. The ctl SEALS with public
 // recipients it reads out of a file; it holds no identity, so it cannot unseal
 // what it wrote. Unseal is here for the operator-side tooling and for this
-// package's own tests, not for the daemon. That is also why
-// NewEnvelopeSealer is not wired into the job engine: envelopes of minted
-// credentials stay in daemon memory for the length of a job, and giving the
-// daemon a way to write them to disk would turn a value that currently cannot
-// outlive a process into one that can.
+// package's own tests, not for the daemon.
+//
+// What the job engine is given is a RecipientsSealer (LoadRecipientsSealer),
+// for ONE purpose: the backup's sealed secrets payload. The engine's
+// envelopes of minted credentials are a different thing and stay in daemon
+// memory for their TTL; nothing here writes those to disk.
 package seal
 
 import (
@@ -166,10 +167,9 @@ func Unseal(identities []age.Identity, sealed []byte) ([]byte, error) {
 // and a sealer that cached the list at daemon start would keep sealing to the
 // old set until somebody restarted the service.
 //
-// It is NOT wired into the job engine. See the package comment: the engine's
-// envelopes of minted credentials stay in memory, and this type is here for
-// the backup's secrets payload, which is a different thing that happens to use
-// the same primitive.
+// It is NOT what the job engine is given — that is RecipientsSealer, which
+// loads the list once so that a plan and the step that runs it seal to the
+// same set. See the package comment.
 type EnvelopeSealer struct{ RecipientsPath string }
 
 // NewEnvelopeSealer returns a sealer for the recipients file at path.
@@ -190,4 +190,52 @@ func (s *EnvelopeSealer) Seal(plaintext []byte) (payload []byte, fingerprints []
 		return nil, nil, err
 	}
 	return payload, fps, nil
+}
+
+// RecipientsSealer is the backup's sealer as the job engine holds it: the
+// recipients file read ONCE, when the engine is built, and every Seal after
+// that encrypting to exactly that set.
+//
+// Once rather than per call (EnvelopeSealer's choice) because the engine
+// PLANS against it: a plan says "age-encrypted to <fingerprints>" and
+// `secrets=require` refuses or proceeds on whether there are any, and both
+// answers have to come from the process's dependencies rather than from a
+// file read at plan time. A step that re-read the file could seal to a set the
+// plan never named. The cost is stated: a recipient added to the file reaches
+// the daemon at its next restart (a --direct run builds a fresh engine, so it
+// sees the file as it is).
+//
+// It satisfies ops.Sealer structurally; this package does not import ops.
+type RecipientsSealer struct {
+	recipients   []age.Recipient
+	fingerprints []string
+}
+
+// LoadRecipientsSealer parses the recipients file at path. It answers an
+// error wrapping ErrNoRecipients when the file is absent or names nobody, and
+// any other error for a file that exists and does not parse — which the
+// caller must not mistake for "no recipients configured".
+func LoadRecipientsSealer(path string) (*RecipientsSealer, error) {
+	recipients, fps, err := LoadRecipients(path)
+	if err != nil {
+		return nil, err
+	}
+	return &RecipientsSealer{recipients: recipients, fingerprints: fps}, nil
+}
+
+// Seal encrypts plaintext to the recipients loaded at construction.
+func (s *RecipientsSealer) Seal(plaintext []byte) ([]byte, error) {
+	if s == nil {
+		return nil, ErrNoRecipients
+	}
+	return Seal(s.recipients, plaintext)
+}
+
+// Fingerprints are the `sha256:<16 hex>` identifiers of the recipient lines,
+// in file order — public, and what a plan and a manifest name.
+func (s *RecipientsSealer) Fingerprints() []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), s.fingerprints...)
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/seal"
 )
 
 // Defaults for the host-level checks.
@@ -269,6 +270,7 @@ func (d *run) hostChecks() {
 	d.heapSum()
 	d.bootHook()
 	d.jobStoreCheck()
+	d.backupRecipients()
 	d.aclManagedRoots()
 	d.writable("", d.opts.CtlBinary)
 	if units, err := filepath.Glob(filepath.Join(d.roots.UnitsDir(), "*")); err == nil {
@@ -631,6 +633,38 @@ func (d *run) jobStoreCheck() {
 		"as the owner of those files: chmod g+w "+store+"*  # (or chown them to "+d.opts.CtlUser+
 			"). NEVER delete a -wal: SQLite recovers it into the database on the next open, and removing one "+
 			"from under a live connection loses every committed transaction it still holds")
+}
+
+// backupRecipients asks whether a backup taken now could carry the tenant's
+// secrets: is there at least one age recipient the ctl can seal to?
+//
+// It reads the same file, with the same parser, the engine loads at start-up
+// (api.backupSealer), so a typo is reported here as what it is rather than as
+// "nobody is configured". The parser never quotes a line back, and the file
+// holds only public keys in any case.
+func (d *run) backupRecipients() {
+	path := d.roots.BackupRecipients()
+	_, _, err := seal.LoadRecipients(path)
+	if err == nil {
+		return
+	}
+	why := "names no age recipient"
+	switch {
+	case !errors.Is(err, seal.ErrNoRecipients):
+		why = fmt.Sprintf("cannot be used (%v)", err)
+	case !fileExists(path):
+		why = "does not exist"
+	}
+	d.addRepair(model.LevelWarn, BackupRecipientsMissing, "", fmt.Sprintf(
+		"%s %s: every backup is written WITHOUT the tenants' secret files (never with them in the clear), so a "+
+			"restore from it mints fresh credentials, and `backup --secrets require` is refused. A running daemon "+
+			"reads this file when it starts", path, why),
+		"ragstack-ctl fleet backup-identity init  # then restart the daemon")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // writableByUID answers whether the account with this uid (and primary gid)

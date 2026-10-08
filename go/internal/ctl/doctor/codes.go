@@ -384,6 +384,15 @@ const (
 	// finding is the second net rather than the first.
 	JobEngineUnavailable = "job_engine_unavailable"
 
+	// BackupRecipientsMissing: <CtlConfigDir>/backup-recipients.txt is
+	// absent, names no recipient, or does not parse. Every backup is then
+	// written WITHOUT the tenant's secret files (never with them in the
+	// clear), and `backup --secrets require` is refused at plan time. Warn,
+	// fleet-level, and deliberately in no op's precondition set: a backup
+	// without secrets is still a backup, and the refusal that matters is the
+	// plan's own. The repair is `ragstack-ctl fleet backup-identity init`.
+	BackupRecipientsMissing = "backup_recipients_missing"
+
 	// PreHandoverCopyPresent: a `data.pre-handover-<ts>` directory is sitting
 	// beside a tenant's postgres data directory — the ORIGINAL, from the
 	// handover take that had to copy it because postgres refuses a data
