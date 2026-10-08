@@ -17,6 +17,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/logs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
+	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/session"
 )
 
@@ -425,7 +426,7 @@ func TestNoSecretShapedNamesOrValues(t *testing.T) {
 
 	for _, path := range []string{
 		"/v1/fleet", "/v1/tenants", "/v1/tenants/dev", "/v1/tenants/dev/env",
-		"/v1/tenants/dev/logs?file=api", "/v1/doctor", "/v1/gateway", "/v1/settings",
+		"/v1/tenants/dev/logs?file=api", "/v1/doctor", "/v1/gateway", "/v1/settings", "/v1/artifacts",
 		"/v1/jobs", "/v1/audit",
 	} {
 		w := asOperator(t, h, http.MethodGet, path)
@@ -760,5 +761,63 @@ func TestEnvKeysAreDocumentedOnce(t *testing.T) {
 		if !seen[k] {
 			t.Errorf("%s is a secret variable that EnvKeys() does not list", k)
 		}
+	}
+}
+
+// GET /v1/artifacts is a viewer read of the registry's artifacts{}: newest
+// first, each with the tenants built from it, and no host path anywhere.
+func TestArtifactsListsThePreparedArtifactsNewestFirst(t *testing.T) {
+	h := newTestServer(t)
+	w := do(t, h, http.MethodGet, "/v1/artifacts", map[string]string{auth.HeaderAPIKey: viewerKey}, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("viewer: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/rag/") {
+		t.Errorf("a host path reached the artifacts list: %s", w.Body.String())
+	}
+	var body model.ArtifactsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]model.ArtifactRow{}
+	for i, a := range body.Artifacts {
+		byID[a.ID] = a
+		if i > 0 && body.Artifacts[i-1].PreparedAt < a.PreparedAt {
+			t.Errorf("row %d (%s) is newer than the row before it", i, a.ID)
+		}
+		if a.Tenants == nil {
+			t.Errorf("%s: tenants is null, want a list", a.ID)
+		}
+	}
+	managed, ok := byID[managedFixtureArtifactID]
+	if !ok {
+		t.Fatalf("the managed fixture's artifact is not listed: %+v", body.Artifacts)
+	}
+	for _, want := range []string{managedFixtureName, instanceFixtureName} {
+		found := false
+		for _, n := range managed.Tenants {
+			found = found || n == want
+		}
+		if !found {
+			t.Errorf("%s is not among the users of %s: %v", want, managedFixtureArtifactID, managed.Tenants)
+		}
+	}
+	if conf, ok := byID[ConformanceArtifactID]; !ok || len(conf.Tenants) != 0 {
+		t.Errorf("the unused conformance artifact = %+v, %v", conf, ok)
+	}
+}
+
+func TestArtifactsOrderIsDeterministic(t *testing.T) {
+	f := &registry.Fleet{Tenants: map[string]*registry.Tenant{}, Artifacts: map[string]*registry.Artifact{
+		"b": {SHA: strings.Repeat("b", 40), Tag: "b", PreparedAt: "2026-09-01T00:00:00Z", PreparedBy: "x"},
+		"a": {SHA: strings.Repeat("a", 40), Tag: "a", PreparedAt: "2026-09-01T00:00:00Z", PreparedBy: "x"},
+		"c": {SHA: strings.Repeat("c", 40), Tag: "c", PreparedAt: "2026-10-01T00:00:00Z", PreparedBy: "x"},
+	}}
+	got := []string{}
+	for _, r := range artifactsResponse(f).Artifacts {
+		got = append(got, r.ID)
+	}
+	if strings.Join(got, ",") != "c,a,b" {
+		t.Errorf("order = %v, want newest first, ties by id", got)
 	}
 }

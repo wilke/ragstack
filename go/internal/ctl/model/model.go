@@ -604,6 +604,23 @@ type SettingsResponse struct {
 	Recipients         SettingsRecipients `json:"recipients"`
 }
 
+// ArtifactsResponse is GET /v1/artifacts (artifacts_response.json).
+type ArtifactsResponse struct {
+	Artifacts []ArtifactRow `json:"artifacts"`
+}
+
+// ArtifactRow is one prepared artifact and the tenants built from it. The
+// registry's paths are deliberately absent: a viewer reads this.
+type ArtifactRow struct {
+	ID               string   `json:"id"`
+	SHA              string   `json:"sha"`
+	Tag              string   `json:"tag"`
+	PreparedAt       string   `json:"prepared_at"`
+	PreparedBy       string   `json:"prepared_by"`
+	SchemaCompatible bool     `json:"schema_compatible"`
+	Tenants          []string `json:"tenants"`
+}
+
 // JobsResponse is GET /v1/jobs (jobs_response.json).
 //
 // Jobs is a TYPED list, not []json.RawMessage as it was while the engine was

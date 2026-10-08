@@ -189,8 +189,10 @@ the minted key answers 200 AND can see the tenant's collections, the revoked
 key answers 401. The credentials are read from the tenant's own env files; the
 job records fingerprints and status codes, never a value.
 
-The minted value is NEVER printed by the mint itself: collect it once with
-`+"`ragstack-ctl job show <id>`"+` and the daemon's secrets envelope.
+An executed mint waits for its job (--wait is implied) and prints the minted
+value ONCE, from the job's one-time secrets envelope; nothing stores it. If the
+command was interrupted before it could collect it, `+"`ragstack-ctl job secrets <id>`"+`
+reads the envelope within its 15-minute window.
 `, opFlagSummary)
 	return exitUsage
 }
@@ -232,6 +234,15 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		}
 		if *tenantString != "" {
 			opArgs["tenant_string"] = *tenantString
+		}
+		// The minted value exists for exactly one read of the job's secrets
+		// envelope, so the command has to still be there when the job ends:
+		// --wait is implied for an execute, exactly as it is for `tenant
+		// create`, and the value is collected and printed once. A dry run
+		// prints a plan and mints nothing.
+		if !*o.dryRun {
+			*o.wait = true
+			o.wantSecrets = true
 		}
 		return submitOp(o, tenantOpTarget(pos[0], "key-mint"), opArgs)
 	case "revoke":

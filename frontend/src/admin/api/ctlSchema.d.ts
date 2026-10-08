@@ -460,6 +460,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prepared artifacts
+         * @description The prepared artifacts in the registry's `artifacts{}`, newest `prepared_at` first, each with the tenants whose `artifact_id` names it. This is the list `tenant create` picks an `artifact_id` from; preparing an artifact stays CLI-only (`fleet artifact prepare`). Paths are not part of the answer.
+         */
+        get: operations["ctlArtifactsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/settings": {
         parameters: {
             query?: never;
@@ -508,6 +528,7 @@ export interface components {
         GatewayStatus: components["schemas"]["gateway_status"];
         GatewayRenderResponse: components["schemas"]["gateway_render_response"];
         SettingsResponse: components["schemas"]["settings_response"];
+        ArtifactsResponse: components["schemas"]["artifacts_response"];
         OpRequest: components["schemas"]["op_request"];
         CreateRequest: components["schemas"]["create_request"];
         BundleManifest: components["schemas"]["bundle_manifest"];
@@ -1811,6 +1832,22 @@ export interface components {
                 role: "admin" | "user";
                 /** @description The minted key, `token_hex(32)` shaped. Delivered once; `Cache-Control: no-store`. */
                 value: string;
+            }[];
+        };
+        /**
+         * CtlArtifactsResponse
+         * @description `GET /v1/artifacts` — the prepared artifacts the registry's `artifacts{}` holds, newest `prepared_at` first (ties by id), each with the tenants whose `artifact_id` names it. It is what `tenant create` consumes by id; preparing one stays CLI-only (`fleet artifact prepare`). Paths (worktree, ui_dist, python_env) are deliberately absent: a viewer reads this, and the host layout is not a viewer fact.
+         */
+        artifacts_response: {
+            artifacts: {
+                id: components["schemas"]["ArtifactId"];
+                sha: components["schemas"]["GitSha"];
+                tag: string;
+                prepared_at: components["schemas"]["Timestamp"];
+                prepared_by: string;
+                schema_compatible: boolean;
+                /** @description Registry names of the tenants whose `artifact_id` is this artifact, sorted. Empty when nothing uses it. */
+                tenants: components["schemas"]["TenantName"][];
             }[];
         };
         /**
@@ -3385,6 +3422,31 @@ export interface operations {
             409: components["responses"]["Conflict"];
             422: components["responses"]["Validation"];
             428: components["responses"]["ConfirmRequired"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    ctlArtifactsList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prepared artifacts */
+            200: {
+                headers: {
+                    "X-Request-Id": components["headers"]["XRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["artifacts_response"];
+                };
+            };
+            400: components["responses"]["BothCredentials"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
         };
     };

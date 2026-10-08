@@ -661,6 +661,19 @@ func TestFakeElasticsearchRepoAndRestoreRules(t *testing.T) {
 	}
 }
 
+// The fake refuses a keyless service-account call exactly as the real client
+// does: a fake that accepted "" is how sa-* came to work only against it.
+func TestFakeTenantAPIRefusesAKeylessServiceAccountCall(t *testing.T) {
+	f := seededFake(t)
+	err := f.TenantAPI().ServiceAccount(context.Background(), origin, "", "gowe", "user", "", "create")
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("err = %v, want ErrRefused", err)
+	}
+	if n := len(f.FakeTenantAPI().Accounts); n != 0 {
+		t.Errorf("a keyless call was recorded as an account change (%d)", n)
+	}
+}
+
 func TestFakeTenantAPIRecordsTheRoleAndNeverTheKey(t *testing.T) {
 	ctx := context.Background()
 	f := seededFake(t)

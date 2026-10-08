@@ -263,6 +263,16 @@ func TestResponsesValidateAgainstContract(t *testing.T) {
 		},
 	})
 
+	validate(t, py, "artifacts_response", ArtifactsResponse{Artifacts: []ArtifactRow{
+		{ID: "v1.6.4-abababababab", SHA: strings.Repeat("ab", 20), Tag: "v1.6.4",
+			PreparedAt: "2026-09-18T10:00:00Z", PreparedBy: "local:3581", SchemaCompatible: true,
+			Tenants: []string{"dev", "hackathon"}},
+		{ID: "unused", SHA: strings.Repeat("cd", 20), Tag: "v1.6.3",
+			PreparedAt: "2026-09-01T10:00:00Z", PreparedBy: "local:3581", SchemaCompatible: false,
+			Tenants: []string{}},
+	}})
+	validate(t, py, "artifacts_response", ArtifactsResponse{Artifacts: []ArtifactRow{}})
+
 	validate(t, py, "jobs_response", JobsResponse{Jobs: []Job{}, Limit: 50, Truncated: false})
 	validate(t, py, "audit_response", AuditResponse{Rows: []AuditRow{}, Limit: 100, Truncated: false})
 
@@ -315,6 +325,7 @@ func TestEveryContractResponseSchemaHasAGoType(t *testing.T) {
 		"gateway_status":          GatewayStatus{},
 		"gateway_render_response": GatewayRenderResponse{},
 		"settings_response":       SettingsResponse{},
+		"artifacts_response":      ArtifactsResponse{},
 		"jobs_response":           JobsResponse{},
 		"audit_response":          AuditResponse{},
 		"error":                   Error{},

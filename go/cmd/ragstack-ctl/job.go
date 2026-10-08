@@ -1,7 +1,7 @@
 package main
 
-// `ragstack-ctl job …` — the job surface: three reads (list, show, log) and
-// the three continuations (resume, continue, cancel).
+// `ragstack-ctl job …` — the job surface: four reads (list, show, log,
+// secrets) and the three continuations (resume, continue, cancel).
 //
 // The continuations go through the SAME envelope as an operation, because the
 // contract gives them the same body: an idempotency key on a resume is what
@@ -26,6 +26,7 @@ func jobUsage() int {
   list [--tenant T] [--state S] [--limit N]   jobs, newest first
   show <id>                                   one job, its steps and its outcome
   log  <id> <n> [--lines N]                   the redacted tail of step n's log
+  secrets  <id>                               the job's minted credentials, printed ONCE (15-minute window)
   resume   <id>                               re-run an interrupted job from its last checkpoint
   continue <id>                               release a job waiting in awaiting_cutover
   cancel   <id>                               stop a job, rolling back what can be rolled back
@@ -66,13 +67,15 @@ func cmdJob(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return cmdJobShow(rest, jsonOut)
 	case "log":
 		return cmdJobLog(rest, jsonOut)
+	case "secrets":
+		return cmdJobSecrets(rest, jsonOut)
 	case "resume", "continue", "cancel":
 		return cmdJobContinuation(verb, rest, registryPath, ragRoot, jsonOut)
 	case "help", "-h", "--help":
 		jobUsage()
 		return exitOK
 	default:
-		return usageErr("job: unknown verb %q (list|show|log|resume|continue|cancel)", verb)
+		return usageErr("job: unknown verb %q (list|show|log|secrets|resume|continue|cancel)", verb)
 	}
 }
 
@@ -188,6 +191,53 @@ func printJobDetail(j *model.Job) {
 	if j.Rollback != nil && j.Rollback.Attempted {
 		fmt.Fprintf(stdout, "rollback %s %s\n", j.Rollback.State, orNone(string(j.Rollback.Detail)))
 	}
+}
+
+// cmdJobSecrets reads a job's one-time secrets envelope: GET
+// /v1/jobs/{id}/secrets, printed once by the same code `tenant create` and
+// `key mint` use on their own wait.
+//
+// It is the recovery path for a mint whose command did not live to collect
+// the value (a killed terminal, a --wait timeout). The route is `session:
+// false`, so the ctl key goes as X-API-Key exactly as for every other call of
+// this client; the first successful read destroys the envelope, and it expires
+// 15 minutes after the job minted it. HTTP only: an envelope the daemon holds
+// in memory is not one a --direct engine in another process could read.
+func cmdJobSecrets(args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("job secrets", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	r := addReadFlags(fs, jsonOut)
+	pos, rest := takePositionals(args, 1)
+	if err := fs.Parse(rest); err != nil {
+		return exitUsage
+	}
+	pos = append(pos, fs.Args()...)
+	if len(pos) != 1 {
+		return usageErr("usage: ragstack-ctl job secrets <id>")
+	}
+	c, err := r.client()
+	if err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
+		return exitUsage
+	}
+	resp, err := c.get(context.Background(), "/v1/jobs/"+pos[0]+"/secrets", nil)
+	if err != nil {
+		return failClient(err)
+	}
+	switch resp.Status {
+	case http.StatusOK:
+	case http.StatusGone:
+		fmt.Fprintf(stderr, "ragstack-ctl: the credentials of job %s were already delivered or expired (15 min); "+
+			"they cannot be shown again — mint replacements with `ragstack-ctl key mint`\n", pos[0])
+		return exitError
+	default:
+		return reportHTTPError(resp)
+	}
+	var out model.SecretsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		return failClient(fmt.Errorf("the envelope of job %s is not secrets_response.json: %w", pos[0], err))
+	}
+	return printSecrets(&out, *r.asJSON)
 }
 
 func cmdJobLog(args []string, jsonOut bool) int {

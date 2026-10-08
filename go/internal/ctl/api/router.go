@@ -39,6 +39,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -210,6 +211,7 @@ func NewRouter(s *Server) http.Handler {
 	s.route(r, http.MethodGet, "/v1/gateway", s.handleGatewayStatus)
 	s.route(r, http.MethodPost, "/v1/gateway/render", s.handleGatewayRender)
 	s.route(r, http.MethodGet, "/v1/settings", s.handleSettings)
+	s.route(r, http.MethodGet, "/v1/artifacts", s.handleArtifacts)
 	s.route(r, http.MethodGet, "/v1/audit", s.handleAudit)
 	s.route(r, http.MethodGet, "/v1/jobs", s.handleJobs)
 	s.route(r, http.MethodGet, "/v1/jobs/{id}", s.handleJob)
@@ -912,6 +914,53 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ReadOnly:     true,
 		},
 	})
+}
+
+// handleArtifacts is GET /v1/artifacts: the registry's prepared artifacts,
+// newest first, each with the tenants whose artifact_id names it. A projection
+// of Backend.Registry like /v1/settings, so the fake and the live backend
+// answer it the same way.
+func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
+	f, err := s.Backend.Registry(r.Context())
+	if err != nil {
+		s.backendError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, artifactsResponse(f))
+}
+
+// artifactsResponse projects the registry onto artifacts_response.json.
+func artifactsResponse(f *registry.Fleet) model.ArtifactsResponse {
+	users := map[string][]string{}
+	for name, t := range f.Tenants {
+		if t != nil && t.ArtifactID != "" {
+			users[string(t.ArtifactID)] = append(users[string(t.ArtifactID)], name)
+		}
+	}
+	rows := make([]model.ArtifactRow, 0, len(f.Artifacts))
+	for id, a := range f.Artifacts {
+		if a == nil {
+			continue
+		}
+		tenants := users[id]
+		sort.Strings(tenants)
+		if tenants == nil {
+			tenants = []string{}
+		}
+		rows = append(rows, model.ArtifactRow{
+			ID: id, SHA: a.SHA, Tag: a.Tag, PreparedAt: a.PreparedAt, PreparedBy: a.PreparedBy,
+			SchemaCompatible: a.SchemaCompatible, Tenants: tenants,
+		})
+	}
+	// Newest first. RFC 3339 UTC timestamps order as strings; the id breaks
+	// a tie so two reads of one registry answer the same list.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].PreparedAt != rows[j].PreparedAt {
+			return rows[i].PreparedAt > rows[j].PreparedAt
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	return model.ArtifactsResponse{Artifacts: rows}
 }
 
 // pythonEnvDefault is <rag-root>/envs/ragstack, the shared env the deployment

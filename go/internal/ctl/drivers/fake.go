@@ -2404,6 +2404,10 @@ type FakeTenantAPI struct {
 	mu       sync.Mutex
 	Healths  []string
 	Accounts []string // "<origin> <action> <subject> <role>"
+	// AccountKeys records the credential each ServiceAccount call presented,
+	// as "<origin> <fingerprint>" in call order — the fingerprint, never the
+	// value — so a test can tell an authenticated call from an empty one.
+	AccountKeys []string
 	// DeepHealths records every deep health check, by origin.
 	DeepHealths []string
 	// Versions maps an origin to what GET /v1/version answers; an origin with
@@ -2458,13 +2462,21 @@ func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
 // is a secret, and a fake that recorded it would put a live credential into
 // every test's failure output and into the golden files that are read from
 // them.
-func (a *FakeTenantAPI) ServiceAccount(_ context.Context, origin, _, subject, role, purpose, action string) error {
+//
+// Like the real client, it refuses a call with no key: the service-account
+// routes are key routes, and a fake that accepted "" is how sa-* came to work
+// only against the fake (PR-G1.5).
+func (a *FakeTenantAPI) ServiceAccount(_ context.Context, origin, apiKey, subject, role, purpose, action string) error {
 	if err := a.r.record("tenantapi", "ServiceAccount", subject, action, role, purpose, origin); err != nil {
 		return err
+	}
+	if apiKey == "" {
+		return fmt.Errorf("%w: /v1/admin/service-accounts needs an API key and none was supplied", jobs.ErrRefused)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Accounts = append(a.Accounts, origin+" "+action+" "+subject+" "+role)
+	a.AccountKeys = append(a.AccountKeys, origin+" "+fingerprintFake(apiKey))
 	return nil
 }
 

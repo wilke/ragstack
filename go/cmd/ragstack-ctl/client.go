@@ -752,7 +752,14 @@ func deliverSecrets(o *opFlags, jobID string) int {
 			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)
 		return exitError
 	}
-	if *o.asJSON {
+	return printSecrets(resp, *o.asJSON)
+}
+
+// printSecrets prints one delivered envelope. It is the ONLY place this binary
+// writes a secret value, shared by the commands that collect one on their own
+// wait (`tenant create`, `tenant restore`, `key mint`) and by `job secrets`.
+func printSecrets(resp *model.SecretsResponse, asJSON bool) int {
+	if asJSON {
 		return encode(resp)
 	}
 	fmt.Fprintf(stdout, "\ncredentials for job %s — SHOWN ONCE, they are not stored anywhere and cannot be shown again:\n",
