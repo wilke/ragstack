@@ -30,6 +30,17 @@ import type {
   CtlVersion,
   FleetRow,
 } from "./api/types";
+import type {
+  ArtifactsT,
+  JobStateT,
+  JobsT,
+  JobT,
+  PlanT,
+  SecretsT,
+  SettingsT,
+  StepT,
+} from "./components/schemaTypes";
+import { JOB_STATES } from "./components/schemaTypes";
 
 const AT = "2026-09-10T12:00:00Z";
 
@@ -422,4 +433,382 @@ export const logsFixture: CtlLogs = {
   returned: 3,
   truncated: false,
   redacted: true,
+};
+
+// ---------------------------------------------------------------------------
+// PR-G2.2: the mutation views — a plan, a job in every state, a jobs list, a
+// secrets envelope, settings and artifacts, and their hostile variants.
+//
+// Shapes follow `contracts/ctl/schemas/*` (plan, job, secrets_response,
+// settings_response, artifacts_response). Like `hostileEnvFixture` above, the
+// hostile variants are bodies the daemon would never send: every free-text
+// field carries a `leaked-*-value-000N` behind a secret NAME (an env
+// assignment, a `--token` flag, a URL password, a `secrets.env` preview), so a
+// test can assert that the client's own redaction holds whatever the server
+// sent.
+//
+// `secretsFixture` is the exception that proves the rule: its two values are
+// what `RevealOnce` MUST show — but only after the explicit reveal.
+// ---------------------------------------------------------------------------
+
+const H = (c: string) => `sha256:${c.repeat(64).slice(0, 64)}`;
+
+export const planFixture: PlanT = {
+  plan_hash: H("3f9a"),
+  op: "decommission",
+  tenant: "dev",
+  registry_generation: 3,
+  schema_version: 1,
+  doctor: {
+    status: "yellow",
+    hash: H("71c0"),
+    generated_at: AT,
+    scope: { tenant: "dev", op: "decommission" },
+    findings: [
+      {
+        level: "warn",
+        code: "supervisor_manual",
+        tenant: "dev",
+        detail: "tenant dev is hand-started (owner wilke); nothing restarts it at boot",
+        repair: "render-units",
+      },
+    ],
+  },
+  requires_confirm: true,
+  confirm_value: "dev",
+  steps: [
+    {
+      n: 1,
+      kind: "probe",
+      title: "Check the decommission preconditions",
+      destructive: false,
+      targets: ["dev"],
+      would_write: [],
+      would_run: [],
+      warnings: [],
+    },
+    {
+      n: 2,
+      kind: "tar",
+      title: "Write a fenced archive bundle with secrets",
+      destructive: false,
+      targets: ["/rag/backups/dev/2026-10-08T120000Z.tar.zst"],
+      would_write: [
+        {
+          path: "/rag/backups/dev/2026-10-08T120000Z.manifest.json",
+          mode: "0640",
+          preview: '{\n  "tenant": "dev",\n  "fenced": true,\n  "secrets": "sealed"\n}',
+        },
+        // The daemon sends null for a secret file's content; the path still shows.
+        { path: "/rag/backups/dev/2026-10-08T120000Z/secrets.env.age", mode: "0600", preview: null },
+      ],
+      would_run: [
+        {
+          argv: [
+            "/usr/bin/tar",
+            "--zstd",
+            "-cf",
+            "/rag/backups/dev/2026-10-08T120000Z.tar.zst",
+            "-C",
+            "/rag/data/tenants/dev",
+            ".",
+          ],
+        },
+      ],
+      warnings: [],
+    },
+    {
+      n: 3,
+      kind: "apptainer",
+      title: "Stop the tenant's API and store instances",
+      destructive: true,
+      targets: ["manual:api", "qdrant-dev", "es-dev"],
+      would_write: [],
+      would_run: [
+        { argv: ["/usr/bin/apptainer", "instance", "stop", "qdrant-dev"] },
+        { argv: ["/usr/bin/apptainer", "instance", "stop", "es-dev"] },
+      ],
+      warnings: ["open sessions on dev end when the API stops"],
+    },
+    {
+      n: 4,
+      kind: "fs",
+      title: "Move the data directory into quarantine",
+      destructive: true,
+      targets: ["/rag/data/tenants/dev"],
+      would_write: [
+        {
+          path: "/rag/data/tenants/.quarantined-dev-20261008/RECOVERY.json",
+          mode: "0640",
+          preview: '{\n  "tenant": "dev",\n  "bundle": "/rag/backups/dev/2026-10-08T120000Z.tar.zst"\n}',
+        },
+      ],
+      would_run: [],
+      warnings: ["nothing is deleted; purge is a separate, later operation"],
+    },
+    {
+      n: 5,
+      kind: "registry",
+      title: "Mark dev quarantined",
+      destructive: false,
+      targets: ["registry.json"],
+      would_write: [],
+      would_run: [],
+      warnings: [],
+    },
+  ],
+  warnings: ["dev has 1 drift row; the archive records it as found"],
+};
+
+export const hostilePlanFixture: PlanT = {
+  ...planFixture,
+  doctor: {
+    ...planFixture.doctor,
+    findings: [
+      {
+        level: "error",
+        code: "env_grammar",
+        tenant: "dev",
+        detail: "line 4: ADMIN_PASSWORD=leaked-password-value-0001 is not KEY=value",
+      },
+    ],
+  },
+  warnings: ["GOWE_TOKEN=leaked-token-value-0002 will be rotated"],
+  steps: [
+    {
+      n: 1,
+      kind: "envfile",
+      title: "Write API_KEYS=leaked-api-key-value-0003",
+      destructive: true,
+      targets: ["USER_STORE_DSN=postgresql://u:leaked-dsn-value-0004@localhost/db"],
+      would_write: [
+        // A secret file whose preview the daemon failed to null.
+        { path: "/rag/data/tenants/dev/secrets.env", mode: "0600", preview: "API_KEYS=leaked-api-key-value-0005" },
+        {
+          path: "/rag/data/tenants/dev/tenant.env",
+          mode: "0640",
+          preview:
+            'LOG_LEVEL=info\nNEO4J_PASSWORD=leaked-password-value-0006\n{"client_secret": "leaked-secret-value-0007"}\nDSN=postgresql://ragstack:leaked-dsn-value-0008@127.0.0.1:24085/ragstack',
+        },
+        {
+          path: "/etc/systemd/user/ragstack-dev-api.service",
+          mode: "0644",
+          preview: "Environment=GOWE_TOKEN=leaked-token-value-0009",
+        },
+      ],
+      would_run: [
+        { argv: ["/usr/bin/curl", "--api-key", "leaked-api-key-value-0010", "http://127.0.0.1:24040/v1/health"] },
+        { argv: ["/usr/bin/ragstack-admin", "--token=leaked-token-value-0011"] },
+      ],
+      warnings: ["password: leaked-password-value-0012"],
+    },
+  ],
+};
+
+const JOB_IDS: Record<JobStateT, string> = {
+  queued: "01J9Z3K7Q8M4N5P6R7S8T9V0W0",
+  running: "01J9Z3K7Q8M4N5P6R7S8T9V0W1",
+  awaiting_cutover: "01J9Z3K7Q8M4N5P6R7S8T9V0W2",
+  succeeded: "01J9Z3K7Q8M4N5P6R7S8T9V0W3",
+  failed: "01J9Z3K7Q8M4N5P6R7S8T9V0W4",
+  rolled_back: "01J9Z3K7Q8M4N5P6R7S8T9V0W5",
+  interrupted: "01J9Z3K7Q8M4N5P6R7S8T9V0W6",
+  cancelled: "01J9Z3K7Q8M4N5P6R7S8T9V0W7",
+};
+
+const T0 = "2026-10-08T12:00:00Z";
+const at = (s: number) => new Date(Date.parse(T0) + s * 1000).toISOString().replace(".000Z", "Z");
+
+function step(n: number, title: string, kind: string, state: StepT["state"], extra: Partial<StepT> = {}): StepT {
+  const started = state === "pending" || state === "skipped" ? null : at(n * 10);
+  const finished = state === "pending" || state === "running" || state === "skipped" ? null : at(n * 10 + 7);
+  return {
+    n,
+    kind,
+    title,
+    state,
+    attempts: started ? 1 : 0,
+    started_at: started,
+    finished_at: finished,
+    error: null,
+    log: started ? `steps/${n}.log` : null,
+    checkpoint: state === "succeeded",
+    external_ids: [],
+    ...extra,
+  };
+}
+
+const STEP_SPECS: [string, string][] = [
+  ["Check the preconditions", "probe"],
+  ["Write a fenced archive bundle", "tar"],
+  ["Stop the tenant's instances", "apptainer"],
+  ["Move the data directory into quarantine", "fs"],
+  ["Mark the tenant quarantined", "registry"],
+];
+
+/** Step states per job state: mixed on purpose, so every chip renders. */
+const STEP_STATES_FOR: Record<JobStateT, StepT["state"][]> = {
+  queued: ["pending", "pending", "pending", "pending", "pending"],
+  running: ["succeeded", "succeeded", "running", "pending", "pending"],
+  awaiting_cutover: ["succeeded", "succeeded", "succeeded", "pending", "pending"],
+  succeeded: ["succeeded", "succeeded", "succeeded", "skipped", "succeeded"],
+  failed: ["succeeded", "succeeded", "failed", "pending", "pending"],
+  rolled_back: ["succeeded", "rolled_back", "failed", "pending", "pending"],
+  interrupted: ["succeeded", "succeeded", "interrupted", "pending", "pending"],
+  cancelled: ["succeeded", "skipped", "skipped", "skipped", "skipped"],
+};
+
+/**
+ * An OPERATOR body for a job in `state`. `{ viewer: true }` gives the viewer's
+ * shape: same schema, `worker`/`lock`/`reservations`/`steps[].log`/
+ * `steps[].external_ids` nulled or emptied, as the daemon serves it.
+ */
+export function jobFixture(state: JobStateT, opts: { viewer?: boolean } = {}): JobT {
+  const states = STEP_STATES_FOR[state];
+  const steps = STEP_SPECS.map(([title, kind], i) => {
+    const s = step(i + 1, title, kind, states[i]);
+    if (s.n === 2 && s.state !== "pending") s.external_ids = ["bundle:2026-10-08T120000Z"];
+    if (s.state === "failed") {
+      s.error = "apptainer instance stop es-dev: exit status 255";
+      s.attempts = 2;
+    }
+    return s;
+  });
+  const parked = state === "awaiting_cutover" || state === "interrupted";
+  const live = state === "running" || parked;
+  const current = steps.find((s) => s.state === "running" || s.state === "failed" || s.state === "interrupted");
+  const failedRun = state === "failed" || state === "rolled_back";
+  const job: JobT = {
+    id: JOB_IDS[state],
+    op: state === "awaiting_cutover" ? "handover" : "decommission",
+    tenant: "dev",
+    principal: "wilke@patricbrc.org",
+    auth_method: "api_key",
+    sudo_user: null,
+    state,
+    plan_hash: planFixture.plan_hash,
+    request_id: "a1b2c3d4e5f60718",
+    idempotency_key: `idem-${state}`,
+    created_at: T0,
+    started_at: state === "queued" ? null : at(5),
+    finished_at: live || state === "queued" ? null : at(60),
+    worker: live ? { pid: 424242, host: "coconut", mode: "daemon" } : null,
+    lock: live ? { order: ["registry", "tenant"], since: at(5) } : null,
+    reservations: live ? [{ resource: "dir:/rag/data/tenants/.quarantined-dev-20261008", until: null }] : [],
+    current_step: state === "awaiting_cutover" ? 4 : (current?.n ?? null),
+    steps,
+    result: null,
+    error: failedRun
+      ? { step: 3, code: "driver_failed", detail: "apptainer instance stop es-dev: exit status 255" }
+      : null,
+    rollback:
+      state === "failed"
+        ? { attempted: true, state: "partial", detail: "the archive bundle is kept; es-dev is still running" }
+        : state === "rolled_back"
+          ? { attempted: true, state: "succeeded", detail: "the bundle step was undone; the tenant is as it was" }
+          : null,
+  };
+  if (!opts.viewer) return job;
+  return {
+    ...job,
+    worker: null,
+    lock: null,
+    reservations: [],
+    steps: job.steps.map((s) => ({ ...s, log: null, external_ids: [] })),
+  };
+}
+
+/** Step log lines by step number, as `GET /v1/jobs/{id}/steps/{n}/log` returns them. */
+export const stepLogsFixture: Record<number, string[]> = {
+  2: ["tar: writing /rag/backups/dev/2026-10-08T120000Z.tar.zst", "tar: 1.2 GiB, sha256 ok"],
+  3: ["apptainer: stopping qdrant-dev", "apptainer: stopping es-dev", "FATAL: exit status 255"],
+};
+
+export const jobsFixture: JobsT = {
+  jobs: JOB_STATES.map((s) => jobFixture(s)),
+  limit: 50,
+  truncated: false,
+};
+
+/** A failed job whose every server string carries a leaked value behind a secret name. */
+export const hostileJobFixture: JobT = (() => {
+  const base = jobFixture("failed");
+  return {
+    ...base,
+    steps: base.steps.map((s) =>
+      s.n === 3
+        ? {
+            ...s,
+            title: "Rotate GOWE_TOKEN=leaked-token-value-0101",
+            error: "curl --api-key leaked-api-key-value-0102 failed; API_KEYS=leaked-api-key-value-0103",
+            external_ids: ["dsn=postgresql://u:leaked-dsn-value-0104@h/db"],
+            log: "steps/3.log",
+          }
+        : s,
+    ),
+    error: { step: 3, code: "driver_failed", detail: "NEO4J_PASSWORD=leaked-password-value-0105 rejected" },
+    rollback: { attempted: true, state: "failed", detail: "client_secret: leaked-secret-value-0106 left on disk" },
+  };
+})();
+
+export const hostileStepLogsFixture: Record<number, string[]> = {
+  3: [
+    "env: API_KEYS=leaked-api-key-value-0107",
+    "exec /usr/bin/curl --token=leaked-token-value-0108",
+    '{"password": "leaked-password-value-0109"}',
+  ],
+};
+
+/**
+ * The one body whose values MUST render — after the explicit reveal only. The
+ * canary asserts they are absent from the pre-click render and present after.
+ */
+export const secretsFixture: SecretsT = {
+  job_id: JOB_IDS.succeeded,
+  delivered_at: "2026-10-08T12:01:00Z",
+  expires_at: "2026-10-08T12:16:00Z",
+  secrets: [
+    { id: "k-01", label: "bootstrap admin", role: "admin", value: "leaked-secret-value-0001" },
+    { id: "k-02", label: "ingest worker", role: "user", value: "leaked-secret-value-0002" },
+  ],
+};
+
+export const settingsFixture: SettingsT = {
+  registry_generation: 3,
+  retention: { keep_last: { backup: 7, pre_update: 3 }, keep_partial_hours: 24, auto_delete: false },
+  images: {
+    qdrant: { sif: "/rag/apptainer/images/qdrant.sif", version: "1.12.4", digest: H("9d") },
+    elasticsearch: { sif: "/rag/apptainer/images/elasticsearch.sif", version: "8.15.2", digest: H("e4") },
+  },
+  python_env_default: "/rag/envs/ragstack",
+  ctl: { port: 24100, ui_dist: "/rag/data/ctl/ui/dist", gateway_enabled: true },
+  recipients: {
+    file: "/rag/config/ctl/backup-recipients.txt",
+    count: 1,
+    fingerprints: ["sha256:0a1b2c3d4e5f6071"],
+    read_only: true,
+  },
+};
+
+export const artifactsFixture: ArtifactsT = {
+  artifacts: [
+    {
+      id: "v1.6.4-12-gabc1234",
+      sha: "abc1234def5678901234567890abcdef12345678",
+      tag: "v1.6.4-12-gabc1234",
+      prepared_at: "2026-10-07T09:00:00Z",
+      prepared_by: "svcbvbrc",
+      schema_compatible: true,
+      tenants: [],
+    },
+    {
+      id: "v1.6.2",
+      sha: "0123456789abcdef0123456789abcdef01234567",
+      tag: "v1.6.2",
+      prepared_at: "2026-09-17T09:00:00Z",
+      prepared_by: "wilke",
+      schema_compatible: true,
+      tenants: ["hackathon"],
+    },
+  ],
 };
