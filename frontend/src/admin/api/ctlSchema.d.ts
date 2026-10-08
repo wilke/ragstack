@@ -1045,7 +1045,7 @@ export interface components {
             outcome: "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled";
         };
         /**
-         * @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.
+         * @description Only a `fenced` bundle satisfies the restore / handover / decommission prerequisites, and an unfenced one is `best_effort` and never eligible. `migrate-local` additionally requires `verified` (a `restore --as` proved it); `decommission` accepts `verified` OR `checked` (the backup's own deep check passed).
          *
          *     `scope` says WHAT the bundle holds. A full bundle carries every leg (`["config", "state", "stores"]`); a light one, taken with `tenant backup --scope config,state`, carries only the tenant's configuration allowlist and its SQLite state and is deliberately cheap enough to run seconds before a handover. A light bundle is never a restore prerequisite — `fenced` is false for it by construction — and the field exists so that `last_backup` cannot be read as a claim the bundle does not make.
          */
@@ -1056,6 +1056,12 @@ export interface components {
             kind: "backup" | "pre-update" | "recovery";
             fenced: boolean;
             verified: boolean;
+            /**
+             * @description The bundle passed the deep check without a restore (hashes, manifest, snapshot structure, counts — see bundle_manifest.json `checked`), set by the backup job's check step or by `ragstack-ctl backup verify`. `decommission` accepts `fenced` AND (`verified` OR `checked`); `migrate-local` still requires `verified`.
+             *
+             *     OPTIONAL, and absent means false: the field arrived after records without it had been written, and `ragstack-ctl` omits it while it is false so a registry it writes stays readable by the previous binary until a bundle is actually checked.
+             */
+            checked?: boolean;
             /**
              * @description The legs this bundle carries, sorted. `stores` present means the qdrant / elasticsearch / postgres legs were attempted.
              *
@@ -2226,7 +2232,7 @@ export interface components {
                     outcome: "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled";
                 };
                 /**
-                 * @description Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.
+                 * @description Only a `fenced` bundle satisfies the restore / handover / decommission prerequisites, and an unfenced one is `best_effort` and never eligible. `migrate-local` additionally requires `verified` (a `restore --as` proved it); `decommission` accepts `verified` OR `checked` (the backup's own deep check passed).
                  *
                  *     `scope` says WHAT the bundle holds. A full bundle carries every leg (`["config", "state", "stores"]`); a light one, taken with `tenant backup --scope config,state`, carries only the tenant's configuration allowlist and its SQLite state and is deliberately cheap enough to run seconds before a handover. A light bundle is never a restore prerequisite — `fenced` is false for it by construction — and the field exists so that `last_backup` cannot be read as a claim the bundle does not make.
                  */
@@ -2237,6 +2243,12 @@ export interface components {
                     kind: "backup" | "pre-update" | "recovery";
                     fenced: boolean;
                     verified: boolean;
+                    /**
+                     * @description The bundle passed the deep check without a restore (hashes, manifest, snapshot structure, counts — see bundle_manifest.json `checked`), set by the backup job's check step or by `ragstack-ctl backup verify`. `decommission` accepts `fenced` AND (`verified` OR `checked`); `migrate-local` still requires `verified`.
+                     *
+                     *     OPTIONAL, and absent means false: the field arrived after records without it had been written, and `ragstack-ctl` omits it while it is false so a registry it writes stays readable by the previous binary until a bundle is actually checked.
+                     */
+                    checked?: boolean;
                     /**
                      * @description The legs this bundle carries, sorted. `stores` present means the qdrant / elasticsearch / postgres legs were attempted.
                      *
@@ -2341,7 +2353,7 @@ export interface components {
         };
         /**
          * CtlBundleManifest
-         * @description `manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`), NEVER in the clear; with no recipient configured the bundle is still written and `secrets.included` is false, so the data is backed up and the credentials are honestly declared missing. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.
+         * @description `manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the migrate-local prerequisite; `decommission` also accepts `fenced: true` AND `checked: true`; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`), NEVER in the clear; with no recipient configured the bundle is still written and `secrets.included` is false, so the data is backed up and the credentials are honestly declared missing. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.
          */
         bundle_manifest: {
             /** @constant */
@@ -2478,8 +2490,10 @@ export interface components {
             migrate_md: components["schemas"]["RelPath"];
             /** @description Every inventory entry is accounted for and every `_before`/`_after` pair agrees — only possible when fenced. */
             consistent: boolean;
-            /** @description Set by the isolated restore verification (`restore --as` into a scratch tenant, counts + fixture query) or by `backup verify`. */
+            /** @description Set ONLY by the isolated restore verification (`restore --as` into a scratch tenant, counts + fixture query): a restore is the one thing that proves a bundle restores. */
             verified: boolean;
+            /** @description The bundle passed the deep check WITHOUT a restore: every file re-hashes to `SHA256SUMS`, this manifest validates against this schema, every `parts/*.json` record that says `included` names files that exist and are non-empty, each qdrant snapshot is a readable tar with entries and its `points_after` equals the census, the elasticsearch repository holds `index-*` and a directory per included index, a local postgres dump begins with pg_dump's custom-format magic, and every SQLite copy passes `PRAGMA integrity_check`. Written `false` by the backup and set by the backup job's own check step and by `ragstack-ctl backup verify`. A level BELOW `verified`: `decommission` accepts a fenced bundle that is checked or verified; `migrate-local` requires verified. OPTIONAL: bundles written before the field existed carry none, and absent means false. */
+            checked?: boolean;
             warnings: string[];
             /** @description sha256 of the bundle's `SHA256SUMS` file, which lists every other file. */
             sha256sums: components["schemas"]["Sha256Hex"];

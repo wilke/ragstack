@@ -109,21 +109,41 @@ func (p *planner) addUnitsWrite(units map[string][]byte) {
 	}
 }
 
-// requireFencedBackup is the prerequisite handover, migrate-local and
-// decommission share: a bundle that a fence made consistent and a restore
-// proved. An unfenced bundle is a copy of a moving target.
+// requireFencedBackup is the prerequisite migrate-local and decommission
+// share: a bundle that a fence made consistent, and evidence that it is sound.
+// An unfenced bundle is a copy of a moving target.
+//
+// The evidence differs by verb (PR-G1.2). `decommission` renames a tenant
+// aside and destroys nothing, so a bundle the backup's own deep check passed
+// (`checked`: hashes, manifest, snapshot structure, census counts) is enough;
+// a full `restore --as` of a production tenant is a drill, not a gate.
+// `migrate-local` moves the live data tree and keeps `verified`: only a
+// restore has proved the bundle restores.
 func (p *planner) requireFencedBackup(verb string) error {
 	b := p.t.LastBackup
+	acceptsChecked := verb == "decommission"
+	want := "a fenced, verified bundle"
+	if acceptsChecked {
+		want = "a fenced bundle that is checked or verified"
+	}
 	switch {
 	case b == nil:
-		return p.refuse("%s has no backup: `%s` needs a fenced, verified bundle to be reversible "+
-			"(`ragstack-ctl tenant backup %s --fence`)", p.t.Name, verb, p.t.Name)
+		return p.refuse("%s has no backup: `%s` needs %s to be reversible "+
+			"(`ragstack-ctl tenant backup %s --fence`)", p.t.Name, verb, want, p.t.Name)
 	case !b.Fenced:
 		return p.refuse("%s's last bundle (%s) is best-effort: nothing stopped the tenant writing while it was taken, "+
 			"so it cannot be the recovery point for `%s`", p.t.Name, b.Bundle, verb)
-	case !b.Verified:
-		return p.refuse("%s's last bundle (%s) was never verified; verify it (a restore `--as` proves it) before `%s`",
-			p.t.Name, b.Bundle, verb)
+	case acceptsChecked && !b.Verified && !b.Checked:
+		return p.refuse("%s's last bundle (%s) is neither checked nor verified; check it (`ragstack-ctl backup verify "+
+			"%s %s`) or take a new fenced backup, whose job checks it, before `%s`",
+			p.t.Name, b.Bundle, p.t.Name, filepath.Base(b.Bundle), verb)
+	case !acceptsChecked && !b.Verified:
+		why := "verify it (a restore `--as` proves it)"
+		if b.Checked {
+			why = "it is checked (hashes, manifest, structure and counts), and `" + verb + "` needs more: verify it " +
+				"(a restore `--as` proves it)"
+		}
+		return p.refuse("%s's last bundle (%s) was never verified; %s before `%s`", p.t.Name, b.Bundle, why, verb)
 	}
 	return nil
 }

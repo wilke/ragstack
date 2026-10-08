@@ -561,7 +561,7 @@ type OpRecord struct {
 // "stores"], or the ["config","state"] of a light one (`tenant backup --scope
 // config,state`). It is not redundant with Fenced — a light bundle is
 // unfenced by construction, but so is a full best-effort one, and only Scope
-// tells them apart. Nothing reads it as a prerequisite (Fenced+Verified do
+// tells them apart. Nothing reads it as a prerequisite (Fenced+Verified/Checked do
 // that); it exists so that `last_backup` cannot be read as a claim the bundle
 // does not make.
 type BackupRecord struct {
@@ -570,7 +570,21 @@ type BackupRecord struct {
 	Kind     string `json:"kind"` // backup|pre-update|recovery
 	Fenced   bool   `json:"fenced"`
 	Verified bool   `json:"verified"`
-	// Scope is the ONE omitempty in this file, and it is deliberate. The field
+	// Checked is the level BELOW Verified: the bundle passed the deep check
+	// (every file re-hashed, the manifest valid against its schema, each store
+	// leg structurally sound and its counts the census) without a restore. The
+	// backup job's own check step sets it, and so does `backup verify`.
+	// `decommission` accepts Fenced && (Verified || Checked); `migrate-local`
+	// still wants Verified.
+	//
+	// omitempty for the reason Handover is: registry.Load decodes with
+	// DisallowUnknownFields, so a `"checked": false` written into every row
+	// would make the registry unreadable to the previously deployed binary on
+	// the first write. Absent means false. (Once a bundle IS checked the key is
+	// there, and an older binary refuses it — the same one-way door every new
+	// non-false member opens.)
+	Checked bool `json:"checked,omitempty"`
+	// Scope is omitempty too, and it is deliberate. The field
 	// arrived after the deployed binary had already written records without it,
 	// so it is optional in the contract and ABSENT means the full bundle —
 	// the only kind that existed before. The loader backfills it

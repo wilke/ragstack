@@ -512,7 +512,7 @@ func (p *planner) addBundleVerify(bundleDir, id, artifactID, pgKind string) {
 			if err := checkBundleImages(sc, man, images); err != nil {
 				return "", err
 			}
-			n, err := verifyBundleChecksums(ctx, files, bundleDir, id, man)
+			n, err := verifyBundleChecksums(ctx, files, bundleDir, id, man.SHA256Sums)
 			if err != nil {
 				return "", err
 			}
@@ -594,15 +594,15 @@ func checkBundleImages(sc *jobs.StepContext, man restoreManifest, have registry.
 //   - SHA256SUMS itself must hash to the manifest's `sha256sums`, which is what
 //     makes the manifest the single root of trust rather than one of two
 //     documents that can be edited independently.
-func verifyBundleChecksums(ctx context.Context, files jobs.Files, dir, id string, man restoreManifest) (int, error) {
+func verifyBundleChecksums(ctx context.Context, files jobs.Files, dir, id, sumsDigest string) (int, error) {
 	body, err := files.ReadFile(ctx, filepath.Join(dir, "SHA256SUMS"))
 	if err != nil {
 		return 0, fmt.Errorf("%w: bundle %s has no SHA256SUMS: there is nothing to check it against",
 			jobs.ErrRefused, id)
 	}
-	if got := sha256Hex(body); got != man.SHA256Sums {
+	if got := sha256Hex(body); got != sumsDigest {
 		return 0, fmt.Errorf("%w: bundle %s's SHA256SUMS hashes to %s and its manifest says %s: the checksum list "+
-			"has been edited since the manifest was written", jobs.ErrRefused, id, shortHex(got), shortHex(man.SHA256Sums))
+			"has been edited since the manifest was written", jobs.ErrRefused, id, shortHex(got), shortHex(sumsDigest))
 	}
 	want := map[string]string{}
 	for _, line := range strings.Split(string(body), "\n") {
@@ -1209,21 +1209,7 @@ func (p *planner) addBundleVerifiedFlag(bundleDir, id string) {
 // struct, because a manifest written by a later version must survive being
 // marked by this one.
 func setManifestVerified(ctx context.Context, sc *jobs.StepContext, path string, verified bool) (string, error) {
-	files := sc.Ops.Drivers.Files()
-	body, err := files.ReadFile(ctx, path)
-	if err != nil {
-		return "", err
-	}
-	var man map[string]any
-	if err := json.Unmarshal(body, &man); err != nil {
-		return "", fmt.Errorf("%w: %s is not readable as JSON: %v", jobs.ErrRefused, path, err)
-	}
-	man["verified"] = verified
-	out, err := json.MarshalIndent(man, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := files.WriteAtomic(ctx, path, append(out, '\n'), 0o640); err != nil {
+	if err := setManifestFlag(ctx, sc.Ops.Drivers.Files(), path, "verified", verified); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%s verified=%v", path, verified), nil

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +16,10 @@ import (
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/ops"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
+	"github.com/ragstack/ragstack/internal/ctl/registry"
+
+	_ "modernc.org/sqlite"
 )
 
 // writeBundle lays a bundle down on disk the way the backup op does: the
@@ -35,47 +42,120 @@ type bundleOpts struct {
 func writeBundle(t *testing.T, root, tenant, id string, o bundleOpts) string {
 	t.Helper()
 	dir := filepath.Join(root, "backups", "tenants", tenant, id)
-	files := map[string]string{
-		"MIGRATE.md":              "# " + tenant + "\n",
-		"registry-row.json":       `{"name":"` + tenant + `"}`,
-		"config/tenant.env":       "LOG_LEVEL=INFO\n",
-		"state/ragstack_users.db": "sqlite\n",
+	stamp, _, _ := strings.Cut(id, "-")
+	esDir := filepath.Join("elasticsearch", "snapshots", id)
+	files := map[string][]byte{
+		"MIGRATE.md":        []byte("# " + tenant + "\n"),
+		"registry-row.json": []byte(`{"name":"` + tenant + `"}`),
+		"config/tenant.env": []byte("LOG_LEVEL=INFO\n"),
+		// A snapshot that IS a tar with entries, and a repository that IS one:
+		// `backup verify` reads both structurally.
+		"qdrant/docs/docs-1.snapshot":                       tarOfOne(t, "config.json", []byte(`{"collection":"docs"}`)),
+		filepath.Join(esDir, "index-0"):                     []byte(`{"snapshots":[{"name":"s","uuid":"u"}],"indices":{"dev-chunks":{"id":"Xyz1","snapshots":["u"]}}}`),
+		filepath.Join(esDir, "index.latest"):                {0, 0, 0, 0, 0, 0, 0, 0},
+		filepath.Join(esDir, "indices", "Xyz1", "0", "__a"): []byte("segment bytes"),
+	}
+	parts := map[string]any{
+		"qdrant": map[string]any{"ownership": "exclusive", "url": "http://127.0.0.1:24041",
+			"collections": []map[string]any{{"name": "docs", "points_before": 12, "points_after": 12,
+				"included": true, "file": "qdrant/docs/docs-1.snapshot", "sha256": nil}},
+			"inventory": []string{"docs"}, "warnings": []string{}},
+		"elasticsearch": map[string]any{"ownership": "exclusive", "repo": "ctl-" + stamp, "complete": true,
+			"files": []string{filepath.Join(esDir, "index-0")}},
+		"sqlite-ragstack_users.db": map[string]any{"present": true, "entry": map[string]any{"file": "state/ragstack_users.db"}},
+		"config":                   map[string]any{"files": []map[string]any{{"file": "config/tenant.env"}}},
+	}
+	for name, v := range parts {
+		b, _ := json.Marshal(v)
+		files[filepath.Join("parts", name+".json")] = b
 	}
 	for rel, body := range files {
 		path := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		if err := os.WriteFile(path, body, 0o640); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rels := make([]string, 0, len(files))
-	for rel := range files {
+	// A REAL SQLite copy: the check runs PRAGMA integrity_check on it.
+	dbPath := filepath.Join(dir, "state", "ragstack_users.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('a'), ('b')"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	rels := []string{}
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
 		rels = append(rels, rel)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	sort.Strings(rels)
 	var sums strings.Builder
 	for _, rel := range rels {
-		sum := sha256.Sum256([]byte(files[rel]))
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(b)
 		fmt.Fprintf(&sums, "%s  %s\n", hex.EncodeToString(sum[:]), rel)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(sums.String()), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(sums.String()))
+	zero := strings.Repeat("0", 64)
+	img := map[string]any{"version": "unpinned", "digest": "sha256:" + zero}
 
-	man := map[string]any{"sha256sums": hex.EncodeToString(digest[:])}
-	for _, key := range ops.BundleManifestRequired {
-		if _, ok := man[key]; !ok {
-			man[key] = nil
-		}
+	// A manifest the CONTRACT accepts: `backup verify` validates it against
+	// bundle_manifest.json, not merely for its required keys.
+	man := map[string]any{
+		"schema_version": 1, "kind": o.kind, "scope": []string{"config", "state", "stores"},
+		"bundle_id": id, "created_at": o.created, "created_by": "local:1000", "ctl_version": "test",
+		"fenced": o.fenced, "best_effort": !o.fenced,
+		"tenant":            map[string]any{"name": tenant, "manifest_name": tenant, "ports": map[string]any{}},
+		"artifact":          map[string]any{"id": nil, "sha": nil, "tag": "untracked"},
+		"python_env":        map[string]any{"path_rel": "envs/ragstack", "lockhash": zero},
+		"images":            map[string]any{"qdrant": img, "elasticsearch": img},
+		"paths_relative_to": "RAG_ROOT",
+		"inventory": map[string]any{"collections": []string{"docs"}, "indices": []string{"dev-chunks"},
+			"aliases": []string{}, "sqlite": []string{"ragstack_users.db"}},
+		"stores": map[string]any{
+			"qdrant": map[string]any{"ownership": "exclusive", "url": "http://127.0.0.1:24041",
+				"collections": []map[string]any{{"name": "docs", "points_before": 12, "points_after": 12,
+					"included": true, "file": "qdrant/docs/docs-1.snapshot", "sha256": nil}}},
+			"elasticsearch": map[string]any{"ownership": "exclusive", "repo_type": "fs", "repo": "ctl-" + stamp,
+				"snapshot": strings.ToLower(id), "complete": true, "files": []string{filepath.Join(esDir, "index-0")},
+				"indices": []map[string]any{{"name": "dev-chunks", "docs_before": 3, "docs_after": 3, "included": true}}},
+			"neo4j":    map[string]any{"ownership": "external", "included": false},
+			"postgres": map[string]any{"kind": "sqlite", "ownership": "exclusive", "included": false, "file": nil, "sha256": nil},
+		},
+		"sqlite": []map[string]any{{"env_key": "USER_STORE_PATH", "path_rel": "data/tenants/" + tenant + "/state/ragstack_users.db",
+			"file": "state/ragstack_users.db", "bytes": 1, "sha256": zero, "integrity_check": "ok"}},
+		"files":    []map[string]any{},
+		"external": []map[string]any{},
+		"secrets": map[string]any{"encrypted": true, "included": false, "file": nil, "recipients_file": nil,
+			"key_fingerprints": []string{}},
+		"units":        []map[string]any{},
+		"registry_row": map[string]any{"name": tenant},
+		"migrate_md":   "MIGRATE.md",
+		"consistent":   o.fenced, "verified": o.verified, "checked": false,
+		"warnings":   []string{},
+		"sha256sums": hex.EncodeToString(digest[:]),
 	}
-	man["bundle_id"] = id
-	man["kind"] = o.kind
-	man["fenced"] = o.fenced
-	man["verified"] = o.verified
-	man["created_at"] = o.created
 	if o.dropManifestKey != "" {
 		delete(man, o.dropManifestKey)
 	}
@@ -89,11 +169,33 @@ func writeBundle(t *testing.T, root, tenant, id string, o bundleOpts) string {
 		}
 	}
 	if o.corrupt != "" {
-		if err := os.WriteFile(filepath.Join(dir, o.corrupt), []byte("tampered\n"), 0o640); err != nil {
+		b, err := os.ReadFile(filepath.Join(dir, o.corrupt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b[len(b)/2] ^= 0x01 // one byte
+		if err := os.WriteFile(filepath.Join(dir, o.corrupt), b, 0o640); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return dir
+}
+
+// tarOfOne is a one-entry tar.
+func tarOfOne(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o640, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestBackupListShowsEveryBundleNewestFirst(t *testing.T) {
@@ -176,8 +278,10 @@ func TestBackupVerifyFailsOnEveryWayABundleCanBeWrong(t *testing.T) {
 		opts bundleOpts
 		want string
 	}{
-		{"a changed file", bundleOpts{kind: "backup", fenced: true, corrupt: "MIGRATE.md"}, "has changed since the bundle was written"},
-		{"an uncovered file", bundleOpts{kind: "backup", fenced: true, extraFile: "surprise.txt"}, "in no checksum line"},
+		{"a changed file", bundleOpts{kind: "backup", fenced: true, corrupt: "MIGRATE.md"}, "MIGRATE.md hashes to"},
+		{"a changed snapshot", bundleOpts{kind: "backup", fenced: true, corrupt: "qdrant/docs/docs-1.snapshot"},
+			"qdrant/docs/docs-1.snapshot hashes to"},
+		{"an uncovered file", bundleOpts{kind: "backup", fenced: true, extraFile: "surprise.txt"}, "surprise.txt, which SHA256SUMS does not cover"},
 		{"a missing member", bundleOpts{kind: "backup", fenced: true, dropManifestKey: "external"}, "missing 1 required member"},
 	}
 	for _, c := range cases {
@@ -335,5 +439,171 @@ func TestBackupReadsRefuseANameThatIsNotATenant(t *testing.T) {
 	// …and a real name still works: the check is a grammar, not a whitelist.
 	if rc, _, errs := capture(t, "backup", "list", "dev", "--rag-root", root); rc != exitOK {
 		t.Errorf("listing a tenant with no bundles = %d (%s)", rc, errs)
+	}
+}
+
+// seedRegistry writes a registry under root whose dev row names bundle id as
+// its last backup, fenced and neither checked nor verified.
+func seedRegistry(t *testing.T, root, id string) string {
+	t.Helper()
+	roots := paths.NewRoots(root, paths.Overrides{})
+	if err := os.MkdirAll(filepath.Dir(roots.Registry()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := registry.LiveFixture()
+	f.Tenants["dev"].LastBackup = &registry.BackupRecord{
+		Bundle: filepath.Join(roots.BackupsDir, "dev", id), At: "2026-09-14T09:30:00Z", Kind: "backup",
+		Fenced: true, Scope: []string{"config", "state", "stores"},
+	}
+	if err := registry.Save(roots.Registry(), f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	return roots.Registry()
+}
+
+func manifestChecked(t *testing.T, dir string) any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man map[string]any
+	if err := json.Unmarshal(b, &man); err != nil {
+		t.Fatal(err)
+	}
+	return man["checked"]
+}
+
+func TestBackupVerifyMarksTheBundleAndTheRegistryChecked(t *testing.T) {
+	root := t.TempDir()
+	id := "20260914T093000Z-backup"
+	dir := writeBundle(t, root, "dev", id, bundleOpts{kind: "backup", fenced: true, created: "2026-09-14T09:30:00Z"})
+	reg := seedRegistry(t, root, id)
+
+	rc, out, errs := capture(t, "--rag-root", root, "backup", "verify", "dev", id)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s\n%s", rc, errs, out)
+	}
+	// Every leg is printed with its verdict.
+	for _, leg := range []string{ops.CheckLegManifest, ops.CheckLegChecksums, ops.CheckLegParts, ops.CheckLegQdrant,
+		ops.CheckLegElasticsearch, ops.CheckLegPostgres, ops.CheckLegSQLite} {
+		if !strings.Contains(out, "ok    "+leg) {
+			t.Errorf("no verdict for the %s leg:\n%s", leg, out)
+		}
+	}
+	if manifestChecked(t, dir) != true {
+		t.Errorf("manifest checked = %v after a passing verify", manifestChecked(t, dir))
+	}
+	f, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lb := f.Tenants["dev"].LastBackup; !lb.Checked || lb.Verified {
+		t.Errorf("last_backup = %+v, want checked and not verified", lb)
+	}
+	if !strings.Contains(out, "dev's last_backup is checked") {
+		t.Errorf("the output does not say the registry was marked:\n%s", out)
+	}
+	// The SHA256SUMS still hold: marking the manifest changed nothing they cover.
+	if rc, _, errs := capture(t, "--rag-root", root, "backup", "verify", "dev", id); rc != exitOK {
+		t.Errorf("a second verify of the marked bundle failed: %s", errs)
+	}
+	// And `backup list` shows it.
+	_, out, _ = capture(t, "--rag-root", root, "--json", "backup", "list", "dev")
+	if !strings.Contains(out, `"checked": true`) {
+		t.Errorf("backup list does not show the bundle checked:\n%s", out)
+	}
+}
+
+func TestBackupVerifyLeavesAnotherBundlesRowAlone(t *testing.T) {
+	root := t.TempDir()
+	old := "20260901T000000Z-backup"
+	dir := writeBundle(t, root, "dev", old, bundleOpts{kind: "backup", fenced: true, created: "2026-09-01T00:00:00Z"})
+	reg := seedRegistry(t, root, "20260914T093000Z-backup")
+	rc, out, errs := capture(t, "--rag-root", root, "backup", "verify", "dev", old)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if manifestChecked(t, dir) != true {
+		t.Error("the older bundle's manifest was not marked")
+	}
+	f, _ := registry.LoadNoRepair(reg)
+	if f.Tenants["dev"].LastBackup.Checked {
+		t.Error("verifying an OLDER bundle marked the row's newer last_backup checked")
+	}
+	if !strings.Contains(out, "left alone") {
+		t.Errorf("the output does not say the row was left alone:\n%s", out)
+	}
+}
+
+func TestBackupVerifyOfATamperedBundleMarksNothing(t *testing.T) {
+	root := t.TempDir()
+	id := "20260914T093000Z-backup"
+	dir := writeBundle(t, root, "dev", id, bundleOpts{kind: "backup", fenced: true, corrupt: "state/ragstack_users.db"})
+	reg := seedRegistry(t, root, id)
+	rc, _, errs := capture(t, "--rag-root", root, "--json", "backup", "verify", "dev", id)
+	if rc != exitError {
+		t.Fatalf("rc %d, want %d", rc, exitError)
+	}
+	_ = errs
+	if manifestChecked(t, dir) != false {
+		t.Errorf("a tampered bundle's manifest says checked = %v", manifestChecked(t, dir))
+	}
+	f, _ := registry.LoadNoRepair(reg)
+	if f.Tenants["dev"].LastBackup.Checked {
+		t.Error("a tampered bundle marked the registry checked")
+	}
+}
+
+// A structural failure the hashes cannot see: a snapshot that was never a tar,
+// checksummed as it is.
+func TestBackupVerifyReadsTheSnapshotAsATar(t *testing.T) {
+	root := t.TempDir()
+	id := "20260914T093000Z-backup"
+	dir := writeBundle(t, root, "dev", id, bundleOpts{kind: "backup", fenced: true})
+	snap := filepath.Join(dir, "qdrant", "docs", "docs-1.snapshot")
+	if err := os.WriteFile(snap, []byte(strings.Repeat("not a tar ", 200)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// Re-seal the bundle around the bad file, so only the structure leg objects.
+	resealBundle(t, dir)
+	rc, _, errs := capture(t, "--rag-root", root, "backup", "verify", "dev", id)
+	if rc != exitError || !strings.Contains(errs, "collection docs") {
+		t.Fatalf("rc %d, stderr %q; want a failure naming collection docs", rc, errs)
+	}
+}
+
+// resealBundle recomputes SHA256SUMS and the manifest's digest of it.
+func resealBundle(t *testing.T, dir string) {
+	t.Helper()
+	var rels []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if rel != "SHA256SUMS" && rel != "manifest.json" {
+			rels = append(rels, rel)
+		}
+		return nil
+	})
+	sort.Strings(rels)
+	var sums strings.Builder
+	for _, rel := range rels {
+		b, _ := os.ReadFile(filepath.Join(dir, rel))
+		sum := sha256.Sum256(b)
+		fmt.Fprintf(&sums, "%s  %s\n", hex.EncodeToString(sum[:]), rel)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(sums.String()), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	var man map[string]any
+	_ = json.Unmarshal(b, &man)
+	digest := sha256.Sum256([]byte(sums.String()))
+	man["sha256sums"] = hex.EncodeToString(digest[:])
+	out, _ := json.MarshalIndent(man, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), out, 0o640); err != nil {
+		t.Fatal(err)
 	}
 }

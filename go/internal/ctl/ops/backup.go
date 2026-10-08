@@ -488,6 +488,12 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	p.addMigrateMD(bundleDir)
 	p.addBundleManifest(bundleDir, fence, scope)
 	p.addBundleFinalize(bundleDir)
+	// The deep check, after the rename (it checks the FINISHED bundle) and
+	// before the tar (so the tar carries the manifest that says `checked`)
+	// and the registry record (so `last_backup.checked` is a fact the step
+	// before it established). Still inside the fence: the qdrant census it
+	// compares with is only a census while nothing writes.
+	p.addBundleCheck(bundleDir, fence, scope)
 	if tarIt {
 		p.addBundleTar(bundleDir)
 	}
@@ -1665,7 +1671,11 @@ func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence
 		// A bundle is verified by a restore that rebuilt from it, never by the
 		// job that wrote it: a writer that marked its own output verified would
 		// be attesting to work nobody did.
-		"verified":   false,
+		"verified": false,
+		// `checked` is written false and set by the check step that reads the
+		// FINISHED bundle back (addBundleCheck) — the same rule one level
+		// down: nothing marks a bundle checked before the check has run.
+		"checked":    false,
 		"warnings":   warnings,
 		"sha256sums": sumsDigest,
 	}
@@ -1786,7 +1796,7 @@ func (p *planner) addBackupRecord(fence bool, scope scopeSet) {
 		Kind: "registry", Title: "record the bundle as this tenant's last backup", Targets: []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: ""}},
 		Warnings: []string{"`verified` stays false until a `restore --as` has rebuilt a tenant from this bundle: " +
-			"only a restore can prove a backup"},
+			"only a restore can prove a backup. `checked` is true: the check step before it read the bundle back"},
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
 			if p.op.deps.SaveFleet == nil {
 				return "", fmt.Errorf("%w: the registry writer is not wired", jobs.ErrRefused)
@@ -1822,8 +1832,11 @@ func (p *planner) addBackupRecord(fence bool, scope scopeSet) {
 			// every operator-facing surface — `backup list`, `restore --from`,
 			// the manifest's own bundle_id — speaks the id. The two differ by
 			// a basename, and this is the one place that has to know it.
+			// Checked: true because the check step, which every backup plans
+			// directly before this one, passed — a job whose check failed
+			// never reaches here.
 			row.LastBackup = &registry.BackupRecord{Bundle: dir, At: at, Kind: bundleKind, Fenced: fence,
-				Verified: false, Scope: scope.list()}
+				Verified: false, Checked: true, Scope: scope.list()}
 			if row.LastOps == nil {
 				row.LastOps = map[string]registry.OpRecord{}
 			}
@@ -1837,7 +1850,8 @@ func (p *planner) addBackupRecord(fence bool, scope scopeSet) {
 			// job's result is a value no caller can do anything with.
 			p.result["bundle"] = id
 			p.result["bundle_dir"] = dir
-			return fmt.Sprintf("last_backup = %s (scope %s, fenced=%v, verified=false)", id,
+			p.result["checked"] = true
+			return fmt.Sprintf("last_backup = %s (scope %s, fenced=%v, checked=true, verified=false)", id,
 				strings.Join(scope.list(), ","), fence), nil
 		},
 		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {

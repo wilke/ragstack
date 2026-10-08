@@ -957,6 +957,9 @@ async def test_a_fenced_backup_runs_every_leg_to_succeeded(
                       for s in job["steps"]])
     )
     assert job["result"]["fenced"] is True and job["result"]["best_effort"] is False, job["result"]
+    # The job read its own bundle back before the fence lifted (PR-G1.2):
+    # hashes, manifest, snapshot structure and the census counts.
+    assert job["result"].get("checked") is True, job["result"]
 
     # The fence is the API unit stopping and NOTHING else. There is no
     # read-only mode: the registry carries no read-only flag, so a "publish a
@@ -978,6 +981,12 @@ async def test_a_fenced_backup_runs_every_leg_to_succeeded(
     # manifest: that ordering is what makes `<id>.partial` mean "unfinished".
     rename = step_titled(job, "rename the bundle into place")
     assert rename is not None and rename["n"] > manifest["n"], [s["title"] for s in job["steps"]]
+
+    # The check reads the FINISHED bundle, and the record that follows it is
+    # what carries `checked` into the registry.
+    check = step_titled(job, "check the bundle: hashes, manifest, snapshot structure, counts")
+    assert check is not None and check["state"] == "succeeded", check
+    assert check["n"] > rename["n"], [s["title"] for s in job["steps"]]
 
     # And the registry learned its recovery point, unverified.
     record = step_titled(job, "record the bundle as this tenant's last backup")
@@ -1364,17 +1373,33 @@ async def test_decommission_refuses_a_tenant_the_ctl_does_not_run(
     )
 
 
-async def test_decommission_of_a_managed_tenant_needs_a_verified_bundle(
+async def test_decommission_of_a_managed_tenant_needs_a_fenced_checked_bundle(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
 ) -> None:
-    """The prerequisite that makes quarantine reversible: a fenced bundle a
-    restore has PROVED. The fixture tenant's bundles are unverified (only a
-    `restore --as` sets that flag), so the refusal names the bundle and what to
-    do with it rather than proceeding."""
+    """The prerequisite that makes quarantine reversible: a FENCED bundle that
+    is checked (the backup job's own deep check passed) or verified (a restore
+    proved it). A best-effort bundle is refused by name; a fenced backup —
+    which checks itself — is accepted (dry run only: nothing is quarantined)."""
     tenant = await managed_tenant(client)
+    await fenced_bundle(client, schemas, tenant, fence=False)
     resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
     err = assert_error(resp, 409, "refused", schemas)
-    assert "backup" in err["detail"], err["detail"]
+    assert "backup" in err["detail"] and "best-effort" in err["detail"], err["detail"]
+
+    await fenced_bundle(client, schemas, tenant)
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
+    assert resp.status_code == 200, (
+        f"a decommission dry run over a fenced, checked bundle was refused: {resp.status_code} {resp.text[:400]}"
+    )
+    # Not validated against plan.json here: decommission's RECOVERY.json
+    # would_write path carries a `<ts>` placeholder the schema's path pattern
+    # refuses — a pre-existing defect this case is the first to reach (every
+    # earlier decommission conformance case stopped at the 409). G1.3 rewrites
+    # that plan.
+    plan = resp.json()
+    assert any("quarantine the data directory" in s["title"] for s in plan["steps"]), (
+        [s["title"] for s in plan["steps"]]
+    )
 
 
 # =========================================================================== #

@@ -217,9 +217,10 @@ flags every operation accepts:
   gateway rollback [--to N]                 switch back + HUP + probe
   gateway repair                            put the current pointer back on the last verified generation
 
-  backup list [<tenant>]                    every bundle on this host: id, kind, fenced, verified, size
-  backup verify <tenant> <bundle-id>        re-hash every file against SHA256SUMS + check the manifest
-                                            (the SHALLOW check; the deep one is "tenant restore --as")
+  backup list [<tenant>]                    every bundle on this host: id, kind, fenced, checked, verified, size
+  backup verify <tenant> <bundle-id>        the deep check without a restore: hashes, manifest schema, leg
+                                            records, snapshot structure; marks it "checked" (manifest + the
+                                            row's last_backup). "verified" is still only "tenant restore --as"
   backup prune <tenant> --dry-run           what a retention pass WOULD remove. v1 removes nothing:
                                             --dry-run is required and deletion is an operator's own rm
 
@@ -329,7 +330,7 @@ func run(args []string) int {
 	case "job":
 		return cmdJob(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "backup":
-		return cmdBackup(rest[1:], *globalRagRoot, *jsonOut)
+		return cmdBackup(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "selftest":
 		return cmdSelftest(rest[1:], *registryPath, *globalRagRoot)
 	case "help", "-h", "--help":

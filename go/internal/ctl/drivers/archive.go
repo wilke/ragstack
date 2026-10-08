@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
@@ -251,6 +252,46 @@ func (a *RealArchive) Extract(ctx context.Context, tarPath, dest string, limits 
 	}
 	committed = true
 	return os.Remove(staging) // empty now; every top-level entry moved out
+}
+
+// Entries counts the entries of tarPath by reading its headers.
+//
+// Nothing is written and no entry is unpacked: tar.Reader skips each body by
+// seeking (an *os.File is an io.Seeker), so a snapshot of many gigabytes costs
+// a read of its headers. The file is opened without following a final
+// symlink, for the reason CopyFile's source is. A truncated or malformed
+// archive is an error — that is the answer the bundle check is asking for.
+func (a *RealArchive) Entries(ctx context.Context, tarPath string) (int, error) {
+	if _, err := paths.SafePath("/", tarPath); err != nil {
+		return 0, fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
+	f, err := os.OpenFile(tarPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return countEntries(ctx, tar.NewReader(f), tarPath)
+}
+
+// countEntries is Entries' loop, shared with the fake so that the two read a
+// tar the same way.
+func countEntries(ctx context.Context, tr *tar.Reader, name string) (int, error) {
+	n := 0
+	for {
+		if n%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return n, err
+			}
+		}
+		_, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return n, fmt.Errorf("%s is not a readable tar (after %d entries): %w", name, n, err)
+		}
+		n++
+	}
 }
 
 // unpack reads every entry into staging and returns the top-level names it
