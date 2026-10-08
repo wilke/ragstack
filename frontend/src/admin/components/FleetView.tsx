@@ -298,6 +298,18 @@ export function FleetView({
                   <td className={`${TD} font-mono text-[11.5px] text-dim`}>{r.manifest_name}</td>
                   <td className={TD}>
                     <StateChip kind="state" value={r.state} />
+                    {/* A quarantined tenant stays listed until it is purged; the
+                        purge itself is its Lifecycle section's (operators only). */}
+                    {r.state === "quarantined" && role === "operator" && (
+                      <a
+                        href={`#/tenant/${r.name}`}
+                        onClick={(e) => e.stopPropagation()}
+                        title={`Purge ${r.name}: open its Lifecycle section`}
+                        className="ml-2 font-mono text-[11px] font-medium text-rust underline-offset-2 hover:underline"
+                      >
+                        Purge…
+                      </a>
+                    )}
                   </td>
                   <td className={`${TD} font-mono text-[11.5px] text-body`}>{r.owner}</td>
                   <td className={`${TD} font-mono text-[11.5px] text-body`}>{r.supervisor}</td>
