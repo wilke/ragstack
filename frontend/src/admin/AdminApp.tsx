@@ -1,7 +1,7 @@
 // The admin shell: who you are, which screen you are on, and nothing else.
 //
-// No router. Five views and four deep links (`#/tenant/<name>`, `#/gateway`,
-// `#/jobs`, `#/job/<id>`) do not justify a dependency, and the hash is what an operator pastes into a
+// No router. Six views and five deep links (`#/tenant/<name>`, `#/gateway`,
+// `#/jobs`, `#/job/<id>`, `#/create`) do not justify a dependency, and the hash is what an operator pastes into a
 // ticket. The hash is the single source of truth for the view: a click writes
 // `location.hash` and the listener below turns it back into state, so Back
 // works without any extra bookkeeping.
@@ -14,6 +14,7 @@ import { GatewayView } from "./components/GatewayView";
 import { LoginView } from "./components/LoginView";
 import { TenantView } from "./components/TenantView";
 import { JobPage, JobsView } from "./components/JobsView";
+import { CreateTenantWizard } from "./components/CreateTenantWizard";
 import { JOB_ID, TENANT_NAME } from "./lib/validate";
 import { StateChip } from "./components/StateChip";
 import { ctlKeys, useCtlQuery } from "./api/queries";
@@ -27,7 +28,8 @@ export type View =
   | { kind: "tenant"; name: string }
   | { kind: "gateway" }
   | { kind: "jobs" }
-  | { kind: "job"; id: string };
+  | { kind: "job"; id: string }
+  | { kind: "create" };
 
 /**
  * Tenant names are `^[a-z][a-z0-9-]{0,31}$` and job ids are ULIDs — anything
@@ -36,6 +38,7 @@ export type View =
 export function parseHash(hash: string): View {
   if (hash === "#/gateway") return { kind: "gateway" };
   if (hash === "#/jobs") return { kind: "jobs" };
+  if (hash === "#/create") return { kind: "create" };
   if (hash.startsWith("#/tenant/")) {
     const name = hash.slice("#/tenant/".length);
     if (TENANT_NAME.test(name)) return { kind: "tenant", name };
@@ -52,6 +55,7 @@ export function hashFor(view: View): string {
   if (view.kind === "tenant") return `#/tenant/${view.name}`;
   if (view.kind === "jobs") return "#/jobs";
   if (view.kind === "job") return `#/job/${view.id}`;
+  if (view.kind === "create") return "#/create";
   return "#/";
 }
 
@@ -216,6 +220,9 @@ export function AdminApp() {
           {tab("Fleet", view.kind === "fleet" || view.kind === "tenant", () => go({ kind: "fleet" }))}
           {tab("Jobs", view.kind === "jobs" || view.kind === "job", () => go({ kind: "jobs" }))}
           {tab("Gateway", view.kind === "gateway", () => go({ kind: "gateway" }))}
+          {/* Operators only: a viewer is not offered what it cannot do (and
+              `#/create` reached anyway renders the 403 panel). */}
+          {role === "operator" && tab("Create tenant", view.kind === "create", () => go({ kind: "create" }))}
         </nav>
         <div className="ml-auto flex items-center gap-2.5 pb-2">
           <VisionToggle />
@@ -224,13 +231,25 @@ export function AdminApp() {
       </header>
 
       {view.kind === "fleet" && (
-        <FleetView onSelectTenant={(name) => go({ kind: "tenant", name })} />
+        <FleetView
+          onSelectTenant={(name) => go({ kind: "tenant", name })}
+          role={role}
+          onCreate={() => go({ kind: "create" })}
+        />
       )}
       {view.kind === "tenant" && (
         <TenantView name={view.name} role={role} onBack={() => go({ kind: "fleet" })} onOpenJob={openJob} />
       )}
       {view.kind === "gateway" && <GatewayView role={role} onOpenJob={openJob} />}
       {view.kind === "jobs" && <JobsView role={role} onOpenJob={openJob} />}
+      {view.kind === "create" && (
+        <CreateTenantWizard
+          role={role}
+          onDone={(job) => go(job.tenant ? { kind: "tenant", name: job.tenant } : { kind: "fleet" })}
+          onCancel={() => go({ kind: "fleet" })}
+          onOpenJob={openJob}
+        />
+      )}
       {view.kind === "job" && (
         <JobPage id={view.id} role={role} onBack={() => go({ kind: "jobs" })} onOpenJob={openJob} />
       )}

@@ -118,6 +118,15 @@ export type OpVerb = S["OpVerb"];
  */
 export type TenantOpVerb = components["parameters"]["Verb"];
 export type CreateArgs = S["CreateArgs"];
+/**
+ * `CreateArgs` as a request SENDS it. openapi-typescript marks every member
+ * with a schema `default` as required, but the contract only requires `name`
+ * and `artifact_id` — and `supervisor` in particular must be ABSENT unless the
+ * operator chose one (absent = the deployment's `CTL_DEFAULT_SUPERVISOR`,
+ * which is not the schema's `systemd` on coconut).
+ */
+export type CreateArgsInput = Pick<CreateArgs, "name" | "artifact_id"> &
+  Partial<Omit<CreateArgs, "name" | "artifact_id">>;
 
 export type JobsResponse = DeepBody<S["jobs_response"]>;
 export type AuditResponse = Body<S["audit_response"]>;

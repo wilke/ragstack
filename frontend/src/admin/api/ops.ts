@@ -25,7 +25,7 @@
 
 import { CtlError, get, send } from "./http";
 import type {
-  CreateArgs,
+  CreateArgsInput,
   Job,
   Plan,
   SecretsResponse,
@@ -130,7 +130,7 @@ export function submitOp(
 }
 
 /** `POST /v1/tenants` — commission a tenant (`create_request`, typed `CreateArgs`). */
-export function createTenant(req: MutationRequest<CreateArgs>): Promise<MutationOutcome> {
+export function createTenant(req: MutationRequest<CreateArgsInput>): Promise<MutationOutcome> {
   return mutate("POST", "/v1/tenants", req);
 }
 
