@@ -943,7 +943,7 @@ func (instanceSupervisor) stopAPI(p *planner, c component) error {
 			if err != nil {
 				return "", err
 			}
-			ready, err := awaitListening(ctx, sc, port, "the API")
+			ready, err := awaitAPIReady(ctx, sc, launch)
 			if err != nil {
 				return "", err
 			}

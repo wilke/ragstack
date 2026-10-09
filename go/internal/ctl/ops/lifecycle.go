@@ -507,9 +507,16 @@ func (p *planner) stampRFC3339(sc *jobs.StepContext) string {
 // "systemctl start returned" is not "the tenant answers".
 func (p *planner) addReadyStep(legs []component) {
 	port := 0
+	api := apiLaunch{Mode: apiModeWorktree}
 	for _, c := range legs {
 		if c.Name == "api" && c.Managed {
 			port = c.Port
+			api.Port = port
+			if c.Instance != "" {
+				// Image mode: readiness is the instance holding the port,
+				// not a listener (awaitAPIReady).
+				api.Mode, api.Instance = apiModeImage, c.Instance
+			}
 		}
 		// The postgres leg is a TCP probe rather than pg_isready: the api unit
 		// runs `wait-ready` before it starts and the socket auth that pg_isready
@@ -533,7 +540,7 @@ func (p *planner) addReadyStep(legs []component) {
 		Kind: "probe", Title: fmt.Sprintf("wait for the API to listen on %d", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return awaitListening(ctx, sc, port, "the API")
+			return awaitAPIReady(ctx, sc, api)
 		},
 	})
 }

@@ -929,7 +929,12 @@ func (p *planner) addReadyGate(spec createSpec) {
 			return sc.Ops.Drivers.Postgres().Ready(c, pgSpec)
 		}})
 	}
+	api := apiReadyTarget(t, t.Ports.API)
 	checks = append(checks, readyCheck{"api", func(c context.Context, sc *jobs.StepContext) error {
+		if api.Mode == apiModeImage {
+			// The instance holding the port, not merely a listener.
+			return apiReadyProbe(c, sc, api)
+		}
 		listening, err := sc.Ops.Drivers.Proc().Listening(c, t.Ports.API)
 		if err != nil {
 			return err
@@ -954,6 +959,9 @@ func (p *planner) addReadyGate(spec createSpec) {
 					err := c.probe(ctx, sc)
 					if err == nil {
 						break
+					}
+					if errors.Is(err, errAPINotComing) {
+						return "", fmt.Errorf("%s is not coming up: %w", c.what, err)
 					}
 					if time.Now().After(deadline) {
 						return "", fmt.Errorf("%s did not become ready within %s: %w", c.what, createReadyTimeout, err)

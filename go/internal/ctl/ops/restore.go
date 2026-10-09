@@ -910,6 +910,21 @@ func (p *planner) addStoreReadyGate(spec createSpec) {
 // addAPIReadyGate waits for the restored tenant's API to bind its port.
 func (p *planner) addAPIReadyGate(t *registry.Tenant) {
 	port := t.Ports.API
+	if t.ImageMode() {
+		// Image mode: the restored API instance holding its port, not merely
+		// a listener on it (awaitAPIReady). The worktree step below is
+		// unchanged.
+		api := apiReadyTarget(t, port)
+		p.addFor("proc", step{
+			Kind: "probe", Title: fmt.Sprintf("wait for the restored API instance %s to hold %d (up to %s)",
+				api.Instance, port, createReadyTimeout),
+			Targets: []string{strconv.Itoa(port)},
+			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				return awaitAPIReady(ctx, sc, api)
+			},
+		})
+		return
+	}
 	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("wait for the restored API to listen on %d (up to %s)", port, createReadyTimeout),
 		Targets: []string{strconv.Itoa(port)},

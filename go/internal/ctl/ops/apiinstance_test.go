@@ -670,3 +670,113 @@ func TestRestoreAsInheritsImageMode(t *testing.T) {
 		t.Errorf("a static-UI image source with no artifact = %v", err)
 	}
 }
+
+// ---------------------------------------------------------------- readiness
+
+// runWithRollback runs a plan as the engine does: in order, and on the first
+// failure the steps that ran are rolled back in reverse.
+func runWithRollback(t *testing.T, r *runner, p *jobs.Planned) (failed int, runErr error, rolled []string) {
+	t.Helper()
+	var done []jobs.Step
+	for _, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			failed, runErr = s.Plan.N, err
+			break
+		}
+		done = append(done, s)
+	}
+	if runErr == nil {
+		return 0, nil, nil
+	}
+	for i := len(done) - 1; i >= 0; i-- {
+		if done[i].Rollback == nil {
+			continue
+		}
+		detail, err := r.rollback(done[i])
+		if err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", done[i].Plan.N, done[i].Plan.Title, err)
+		}
+		rolled = append(rolled, detail)
+	}
+	return failed, runErr, rolled
+}
+
+// A port held by a process this account cannot attribute lets the start go
+// ahead (the doctor gates that case) — and the readiness is then the
+// INSTANCE's: its uvicorn cannot bind, the instance exits, and the job FAILS
+// at readiness instead of reporting "started" because the foreign process
+// answers the port. It fails at once, not after the readiness bound.
+func TestImageStartFailsAtReadinessWhenAForeignProcessKeepsThePort(t *testing.T) {
+	oc, fake := imageRowFixture(t, devImageEnv())
+	port := oc.Tenant.Ports.API
+	fake.FakeProc().SetOwner(port, 0, 4242)
+	fake.FakeInstances().ExitOnRun = map[string]string{"api-dev": "[Errno 98] error while attempting to bind on " +
+		"address ('127.0.0.1', " + strconv.Itoa(port) + "): address already in use"}
+	p := plan(t, oc, "start", map[string]any{"only": []string{"api"}})
+	r := newRunner(oc, fake)
+	failed, err, rolled := runWithRollback(t, r, p)
+	if err == nil {
+		t.Fatalf("the start succeeded over a foreign listener")
+	}
+	if !strings.Contains(p.Steps[failed-1].Plan.Title, "wait for the API") || !strings.Contains(err.Error(),
+		"instance gone") || !strings.Contains(err.Error(), "address already in use") {
+		t.Errorf("failed at step %d: %v", failed, err)
+	}
+	if fake.Count("instances.Run") != 1 {
+		t.Errorf("the instance was not run once")
+	}
+	if names := fake.FakeInstances().Names(); len(names) != 0 {
+		t.Errorf("instances left running after the rollback: %v", names)
+	}
+	if !strings.Contains(strings.Join(rolled, "\n"), "api-dev is not running: nothing to undo") {
+		t.Errorf("rollbacks = %q", rolled)
+	}
+}
+
+// The instance is running but the API port is held by a process outside it:
+// readiness fails, naming the holder and the instance, and the start's
+// rollback stops the instance.
+func TestImageReadinessRefusesAListenerThatIsNotTheInstance(t *testing.T) {
+	oc, fake := imageRowFixture(t, devImageEnv())
+	port := oc.Tenant.Ports.API
+	// The instance binds somewhere else, so the API port is free for the
+	// foreign holder below.
+	fake.FakeInstances().BindInstancePort("api-dev", 29999)
+	p := plan(t, oc, "start", map[string]any{"only": []string{"api"}})
+	start := apiInstanceStep(t, p, "start the API instance")
+	ready := apiInstanceStep(t, p, "wait for the API")
+	r := newRunner(oc, fake)
+	if _, err := r.run(start); err != nil {
+		t.Fatal(err)
+	}
+	fake.FakeProc().SetInstancePortHolder(9000, 9001, port)
+	_, err := r.run(ready)
+	if err == nil || !strings.Contains(err.Error(), "held by pid 9001 which is not the instance api-dev") {
+		t.Fatalf("readiness = %v", err)
+	}
+	if _, err := r.rollback(start); err != nil {
+		t.Fatal(err)
+	}
+	if fake.Count("instances.Stop") != 1 || len(fake.FakeInstances().Names()) != 0 {
+		t.Errorf("the rollback did not stop the instance: %v", fake.FakeInstances().Names())
+	}
+	// A listener alone, with no instance and nothing to attribute it to, is
+	// "no instance" rather than ready.
+	sc := r.ctx(jobs.Step{Plan: model.PlannedStep{N: 998}})
+	if err := apiReadyProbe(context.Background(), sc, apiReadyTarget(oc.Tenant, port)); err == nil ||
+		!strings.Contains(err.Error(), "instance gone") {
+		t.Errorf("probe = %v", err)
+	}
+}
+
+// And the happy path: the instance holds the port, readiness says so.
+func TestImageReadinessPassesWhenTheInstanceHoldsThePort(t *testing.T) {
+	oc, fake := imageRowFixture(t, devImageEnv())
+	p := plan(t, oc, "start", nil)
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+	detail, err := r.run(apiInstanceStep(t, p, "wait for the API"))
+	if err != nil || !strings.Contains(detail, "held by the instance api-dev") {
+		t.Errorf("readiness = %q, %v", detail, err)
+	}
+}

@@ -31,6 +31,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -167,13 +168,17 @@ func (p *planner) addAPIInstanceStart(l apiLaunch) {
 				l.ServerImage.Version + ", commit " + l.ServerImage.Commit + ", build " + fmt.Sprint(l.ServerImage.Build) +
 				") and its bytes must hash to sha256 " + l.ServerImage.SHA256 + "; every path-valued setting must be " +
 				"absolute and inside one of the binds above",
+			"the binds are derived from tenant.env as it was read while planning, and the plan hash covers them: a " +
+				"tenant.env changed between the plan and the run makes the job plan_stale, not a start with stale binds",
+			"readiness is the instance's: something listening on " + fmt.Sprint(port) + " is not enough — the " +
+				"listener must descend from " + name + ", or the start fails and is rolled back",
 			"there is no pidfile in image mode: the API is found by the instance table and the process holding " +
 				fmt.Sprint(port) + "; there is no restart-on-failure either — `fleet start --all` is the watchdog"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			return startAPIProcess(ctx, sc, l)
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return stopAPIProcess(ctx, sc, l)
+			return rollbackAPIInstanceStart(ctx, sc, l)
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
 			up, _, err := apiInstanceRunning(ctx, sc, name, port)
@@ -215,7 +220,7 @@ func (p *planner) addAPIInstanceStop(launch apiLaunch, lerr error) {
 			if err != nil {
 				return "", err
 			}
-			ready, err := awaitListening(ctx, sc, port, "the API")
+			ready, err := awaitAPIReady(ctx, sc, launch)
 			if err != nil {
 				return "", err
 			}
@@ -541,4 +546,135 @@ func envKeys(kvs []string) []string {
 		}
 	}
 	return out
+}
+
+// ---------------------------------------------------------------- readiness
+
+// errAPINotComing marks a readiness answer that waiting cannot change: the API
+// instance is gone (its uvicorn exited, typically because it could not bind),
+// or the port is held by a process this account CAN attribute that does not
+// descend from the instance. The readiness loops stop at it instead of serving
+// out the bound.
+var errAPINotComing = errors.New("the API is not coming up")
+
+// apiReadyTarget is the identity a readiness wait needs: the mode, the
+// instance name (image mode) and the port. Built from a launch or a row.
+func apiReadyTarget(t *registry.Tenant, port int) apiLaunch {
+	l := apiLaunch{Mode: apiModeWorktree, Port: port}
+	if t != nil && t.ImageMode() {
+		l.Mode, l.Instance = apiModeImage, render.APIImageInstanceName(t)
+	}
+	return l
+}
+
+// apiReadyProbe is ONE readiness question about the API: nil when it is up.
+//
+// Worktree mode: something listens on the port (unchanged — the pidfile
+// identity is the start's business). Image mode: something listens AND the
+// instance is in the ctl's table AND the listener descends from it. A listener
+// alone proves nothing there: a foreign process on the API port makes the
+// instance's uvicorn fail to bind, the instance exits, and the foreign process
+// goes on answering the port.
+func apiReadyProbe(ctx context.Context, sc *jobs.StepContext, l apiLaunch) error {
+	proc := sc.Ops.Drivers.Proc()
+	listening, err := proc.Listening(ctx, l.Port)
+	if err != nil {
+		return err
+	}
+	if l.Mode != apiModeImage {
+		if !listening {
+			return fmt.Errorf("no listener on %d", l.Port)
+		}
+		return nil
+	}
+	in, listed, err := instanceIn(ctx, sc, l.Instance, jobs.NamespaceCtl)
+	if err != nil {
+		return err
+	}
+	if !listed {
+		reason, _, _ := instanceGoneReason(ctx, sc, l.Instance)
+		if listening {
+			owner, _, _ := proc.Owner(ctx, l.Port)
+			return fmt.Errorf("%w: instance gone — %s; %d is held by %s, which is not the API", errAPINotComing,
+				reason, l.Port, describePid(owner))
+		}
+		return fmt.Errorf("%w: instance gone — %s", errAPINotComing, reason)
+	}
+	if !listening {
+		return fmt.Errorf("no listener on %d (the instance %s, pid %d, is running)", l.Port, l.Instance, in.PID)
+	}
+	owns := false
+	if in.PID > 1 {
+		if owns, err = proc.InstanceOwnsPort(ctx, in.PID, l.Port); err != nil {
+			return err
+		}
+	}
+	if owns {
+		return nil
+	}
+	owner, _, err := proc.Owner(ctx, l.Port)
+	if err != nil {
+		return err
+	}
+	err = fmt.Errorf("port %d held by %s which is not the instance %s (pid %d)", l.Port, describePid(owner),
+		l.Instance, in.PID)
+	if owner > 0 {
+		// An attributable holder outside the instance's tree will not become
+		// the instance's by waiting.
+		return fmt.Errorf("%w: %v", errAPINotComing, err)
+	}
+	return err
+}
+
+func describePid(pid int) string {
+	if pid > 0 {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	return "a process this account cannot attribute"
+}
+
+// awaitAPIReady is the API's readiness after a start: apiReadyProbe polled
+// under the readiness bound, stopping early on an answer waiting cannot
+// change. In worktree mode it is exactly awaitListening's question.
+func awaitAPIReady(ctx context.Context, sc *jobs.StepContext, l apiLaunch) (string, error) {
+	deadline := time.Now().Add(createReadyTimeout)
+	for {
+		err := apiReadyProbe(ctx, sc, l)
+		if err == nil {
+			if l.Mode == apiModeImage {
+				return fmt.Sprintf("port %d is listening and held by the instance %s", l.Port, l.Instance), nil
+			}
+			return fmt.Sprintf("port %d is listening", l.Port), nil
+		}
+		if errors.Is(err, errAPINotComing) {
+			return "", fmt.Errorf("the API did not come up: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("the API did not come up within %s: %w", createReadyTimeout, err)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(createReadyPoll):
+		}
+	}
+}
+
+// rollbackAPIInstanceStart undoes an image-mode START: the instance this job
+// ran is stopped if it is still there. Unlike a stop, it does not demand the
+// port be free — a start that failed because something ELSE holds the port
+// leaves that process alone, and "our instance is not running" is the whole
+// undo.
+func rollbackAPIInstanceStart(ctx context.Context, sc *jobs.StepContext, l apiLaunch) (string, error) {
+	_, listed, err := instanceIn(ctx, sc, l.Instance, jobs.NamespaceCtl)
+	if err != nil {
+		return "", err
+	}
+	if !listed {
+		return l.Instance + " is not running: nothing to undo", nil
+	}
+	if err := sc.Ops.Drivers.Instances().Stop(ctx, l.Instance, jobs.StopOptions{Namespace: jobs.NamespaceCtl}); err != nil {
+		return "", err
+	}
+	return "stopped " + l.Instance, nil
 }
