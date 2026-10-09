@@ -1267,3 +1267,134 @@ export const hostilePurgeResultJobFixture: Job = {
     api_key: "leaked-key-value-0411",
   } as unknown as Job["result"],
 };
+
+// ---------------------------------------------------------------------------
+// PR-F F6: image mode — the prepared server images, a worktree-mode and an
+// image-mode ctl-run tenant, and a settled `update-code` job.
+// ---------------------------------------------------------------------------
+
+/** The commit `-b1` and `-b2` were built from (v1.6.6), and v1.6.7's. */
+export const IMAGE_COMMIT_166 = "4c1322e1430f7ae1d1d869c2917fa01fe1d98fa6";
+export const IMAGE_COMMIT_167 = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d";
+
+export const imageArtifactsFixture: ArtifactsResponse = {
+  artifacts: [
+    {
+      id: "v1.6.6",
+      sha: IMAGE_COMMIT_166,
+      tag: "v1.6.6",
+      prepared_at: "2026-10-09T08:00:00Z",
+      prepared_by: "wilke",
+      schema_compatible: true,
+      tenants: ["hackathon"],
+    },
+    ...artifactsFixture.artifacts,
+  ],
+  server_images: [
+    {
+      name: "ragstack-server-v1.6.6-b1.sif",
+      version: "v1.6.6",
+      commit: IMAGE_COMMIT_166,
+      build: 1,
+      sha256: "3fe461f9e64cbe6d6dd229ced558704eb399dcc51639ccf1976c3fa5f004e7fb",
+      prepared_at: "2026-10-09T09:00:00Z",
+      prepared_by: "wilke",
+      tenants: ["hackathon"],
+    },
+    {
+      name: "ragstack-server-v1.6.6-b2.sif",
+      version: "v1.6.6",
+      commit: IMAGE_COMMIT_166,
+      build: 2,
+      sha256: "4fe461f9e64cbe6d6dd229ced558704eb399dcc51639ccf1976c3fa5f004e7fb",
+      prepared_at: "2026-10-09T10:00:00Z",
+      prepared_by: "wilke",
+      tenants: [],
+    },
+    {
+      // No artifact is prepared at this commit: the rebuild picker's empty state.
+      name: "ragstack-server-v1.6.7-b1.sif",
+      version: "v1.6.7",
+      commit: IMAGE_COMMIT_167,
+      build: 1,
+      sha256: "5fe461f9e64cbe6d6dd229ced558704eb399dcc51639ccf1976c3fa5f004e7fb",
+      prepared_at: "2026-10-09T11:00:00Z",
+      prepared_by: "wilke",
+      tenants: [],
+    },
+  ],
+};
+
+/** hackathon, ctl-run, active, static UI, API still from its worktree: an upgrade MIGRATES it. */
+export const worktreeManagedTenantFixture: CtlTenant = {
+  ...activeManagedTenantFixture,
+  summary: { ...activeManagedTenantFixture.summary, api_mode: "worktree", code_tag: "v1.6.6" },
+  registry: { ...activeManagedTenantFixture.registry!, code: { tag: "v1.6.6", sha: IMAGE_COMMIT_166, previous_artifact_id: null } },
+};
+
+/** hackathon after its first upgrade: image mode on `-b1`, which replaced `-b0`. */
+export const imageTenantFixture: CtlTenant = {
+  ...activeManagedTenantFixture,
+  summary: {
+    ...activeManagedTenantFixture.summary,
+    api_mode: "image",
+    server_image: "ragstack-server-v1.6.6-b1.sif",
+    code_tag: "v1.6.6",
+  },
+  registry: {
+    ...activeManagedTenantFixture.registry!,
+    artifact_id: "v1.6.6",
+    code: {
+      tag: "v1.6.6",
+      sha: IMAGE_COMMIT_166,
+      previous_artifact_id: "v1.6.2",
+      previous_image: "ragstack-server-v1.6.6-b0.sif",
+    },
+    server_image: {
+      name: "ragstack-server-v1.6.6-b1.sif",
+      version: "v1.6.6",
+      commit: IMAGE_COMMIT_166,
+      build: 1,
+      sha256: "3fe461f9e64cbe6d6dd229ced558704eb399dcc51639ccf1976c3fa5f004e7fb",
+      path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif",
+    },
+  },
+};
+
+/** The same image tenant with an `external` UI: no rebuild is possible. */
+export const imageExternalUiTenantFixture: CtlTenant = {
+  ...imageTenantFixture,
+  registry: { ...imageTenantFixture.registry!, ui: { mode: "external", port: null, base: "/ragstack/hackathon/ui/" } },
+};
+
+/** A viewer's body for the image tenant: the summary only. */
+export const imageTenantViewerFixture: CtlTenant = { ...imageTenantFixture, registry: null };
+
+/** A settled worktree→image upgrade (the migration). `version` is the /v1/version body the post-check recorded. */
+export const upgradeJobFixture: Job = {
+  ...jobFixture("succeeded"),
+  op: "update-code",
+  tenant: "hackathon",
+  result: {
+    image: "ragstack-server-v1.6.6-b1.sif",
+    previous_image: null,
+    version: { version: "1.6.6", git_sha: IMAGE_COMMIT_166, git_tag: "v1.6.6" },
+    commit: IMAGE_COMMIT_166,
+    rebuild_ui: true,
+    artifact_id: "v1.6.6",
+    migration: true,
+    bundle: "20261009T120000Z-pre-update",
+  } as unknown as Job["result"],
+};
+
+/** The hostile shape: secret-named assignments inside server image strings. */
+export const hostileImageArtifactsFixture: ArtifactsResponse = {
+  artifacts: imageArtifactsFixture.artifacts,
+  server_images: [
+    {
+      ...imageArtifactsFixture.server_images[0],
+      version: "API_KEY=leaked-api-key-value-0601",
+      prepared_by: "x PASSWORD=leaked-password-value-0602",
+    },
+  ],
+};

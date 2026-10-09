@@ -1,6 +1,7 @@
 // TenantView's Actions section: start / stop / restart / backup / restore, each
 // a form whose arguments are `x-ctl-op-args[verb]` and whose submission is one
-// OpFlow (dry run → plan → key → job).
+// OpFlow (dry run → plan → key → job) — and upgrade (`update-code`, PR-F),
+// whose form lives in UpgradeAction.tsx.
 //
 // OPERATOR ONLY, and absent rather than disabled for a viewer: TenantView does
 // not put this section in a viewer's rail, and `TenantSection` answers the
@@ -24,9 +25,18 @@ import {
   type Service,
 } from "../lib/validate";
 import { OpFlow } from "./OpFlow";
+import { UpgradeAction } from "./UpgradeAction";
 
 export const ACTION_VERBS = ["start", "stop", "restart", "backup", "restore"] as const;
 export type ActionVerb = (typeof ACTION_VERBS)[number];
+
+/**
+ * The tabs: the five form verbs, then `upgrade` (PR-F) — `update-code`, whose
+ * form needs the tenant's registry row and the prepared images, so it is its
+ * own component (UpgradeAction.tsx) rather than another `ActionFields` case.
+ */
+export const ACTION_TABS = [...ACTION_VERBS, "upgrade"] as const;
+export type ActionTab = (typeof ACTION_TABS)[number];
 
 export interface ActionForm {
   only: Service[];
@@ -236,19 +246,20 @@ export function TenantActions({
 }: {
   name: string;
   onOpenJob?: (id: string) => void;
-  initialVerb?: ActionVerb;
+  initialVerb?: ActionTab;
 }) {
-  const [verb, setVerb] = useState<ActionVerb>(initialVerb);
+  const [verb, setVerb] = useState<ActionTab>(initialVerb);
   const [form, setForm] = useState<ActionForm>(EMPTY_FORM);
   // Bumped on every finished or abandoned flow, so the next one starts clean.
   const [round, setRound] = useState(0);
-  const args = actionArgs(verb, form);
-  const problem = actionProblem(verb, form);
+  const formVerb: ActionVerb | null = verb === "upgrade" ? null : verb;
+  const args = formVerb ? actionArgs(formVerb, form) : {};
+  const problem = formVerb ? actionProblem(formVerb, form) : null;
 
   return (
     <div className="space-y-4">
       <div role="tablist" aria-label="Action" className="flex flex-wrap gap-1">
-        {ACTION_VERBS.map((v) => (
+        {ACTION_TABS.map((v) => (
           <button
             key={v}
             type="button"
@@ -267,18 +278,22 @@ export function TenantActions({
           </button>
         ))}
       </div>
-      <OpFlow
-        key={`${verb}-${round}`}
-        op={verb}
-        title={`${verb} ${name}`}
-        run={(req) => submitOp(name, verb, { ...req, args })}
-        disabled={problem !== null}
-        disabledReason={problem ?? undefined}
-        onOpenJob={onOpenJob}
-        onClose={() => setRound((r) => r + 1)}
-      >
-        <ActionFields verb={verb} form={form} onChange={setForm} />
-      </OpFlow>
+      {formVerb === null ? (
+        <UpgradeAction key={`upgrade-${round}`} name={name} onOpenJob={onOpenJob} />
+      ) : (
+        <OpFlow
+          key={`${formVerb}-${round}`}
+          op={formVerb}
+          title={`${formVerb} ${name}`}
+          run={(req) => submitOp(name, formVerb, { ...req, args })}
+          disabled={problem !== null}
+          disabledReason={problem ?? undefined}
+          onOpenJob={onOpenJob}
+          onClose={() => setRound((r) => r + 1)}
+        >
+          <ActionFields verb={formVerb} form={form} onChange={setForm} />
+        </OpFlow>
+      )}
     </div>
   );
 }

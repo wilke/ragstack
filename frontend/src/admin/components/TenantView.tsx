@@ -21,6 +21,8 @@ import { ctlKeys, LOGS_POLL_MS, pollWhenVisible, useCtlQuery } from "../api/quer
 import type { CtlDoctor, CtlEnv, CtlLogs, CtlTenant, LogFile } from "../api/types";
 import type { CtlRole } from "../api/types";
 import { bytes, since } from "../lib/format";
+import { shortSha } from "../lib/validate";
+import { redactText } from "./redact";
 import { DoctorFindings } from "./FleetView";
 import { ErrorBanner } from "./ErrorBanner";
 import { SecretSafeValue } from "./SecretSafeValue";
@@ -151,6 +153,31 @@ function listeningRows(tenant: CtlTenant): ListeningRow[] {
   ];
 }
 
+/**
+ * How the API runs (PR-F): `image <name> (version · commit)` or `worktree
+ * <tag>`. An operator's registry row carries the whole `server_image`; a
+ * viewer has the summary's `api_mode` and image name only.
+ */
+export function ApiModeValue({ tenant }: { tenant: CtlTenant }) {
+  const img = tenant.registry?.server_image;
+  if (img) {
+    return (
+      <span className="font-mono text-[11.5px]">
+        image {redactText(img.name)}{" "}
+        <span className="text-dim">
+          ({redactText(img.version)} · <span title={img.commit}>{shortSha(img.commit)}</span>)
+        </span>
+      </span>
+    );
+  }
+  const s = tenant.summary;
+  if (s.api_mode === "image") {
+    return <span className="font-mono text-[11.5px]">image {s.server_image ? redactText(s.server_image) : "—"}</span>;
+  }
+  const tag = tenant.registry?.code.tag ?? s.code_tag;
+  return <span className="font-mono text-[11.5px]">worktree {redactText(tag)}</span>;
+}
+
 function Overview({ tenant }: { tenant: CtlTenant }) {
   const s = tenant.summary;
   const st = tenant.status;
@@ -175,6 +202,14 @@ function Overview({ tenant }: { tenant: CtlTenant }) {
         <Field label="code tag">
           <span className="font-mono text-[11.5px]">{s.code_tag}</span>
         </Field>
+        <Field label="api">
+          <ApiModeValue tenant={tenant} />
+        </Field>
+        {tenant.registry?.code.previous_image && (
+          <Field label="previous image">
+            <span className="font-mono text-[11.5px]">{redactText(tenant.registry.code.previous_image)}</span>
+          </Field>
+        )}
         <Field label="ports api/qdrant/es">
           <span className="font-mono text-[11.5px] tabular-nums">
             {s.ports.api} · {s.ports.qdrant_http} · {s.ports.es_http}
