@@ -160,3 +160,31 @@ export type UpdateCodeArgs = {
   rebuild_ui?: boolean;
   artifact_id?: string;
 };
+
+/** The `/v1/version` body the update-code post-check read (`result.observed_version`). */
+export type ObservedVersion = {
+  version?: string;
+  git_sha?: string;
+  git_tag?: string;
+  [k: string]: unknown;
+};
+
+/**
+ * A settled `update-code` job's `result` (the job schema types `result` only as
+ * an object, so this is written by hand from `ops/update.go`). `version` is the
+ * receipt's version STRING; `observed_version` is the `/v1/version` object the
+ * post-check read. Jobs recorded before that split carry the object in
+ * `version` and no `observed_version`, so `version` stays tolerant of both.
+ */
+export type UpdateCodeResult = {
+  image?: string;
+  previous_image?: string | null;
+  version?: string | ObservedVersion;
+  observed_version?: ObservedVersion;
+  commit?: string;
+  rebuild_ui?: boolean;
+  artifact_id?: string | null;
+  migration?: boolean;
+  bundle?: string;
+  [k: string]: unknown;
+};

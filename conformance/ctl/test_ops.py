@@ -1968,8 +1968,12 @@ async def test_update_code_migrates_a_worktree_tenant_and_dedupes_its_key(
     assert job["state"] == "succeeded", json.dumps(
         [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
          for s in job["steps"] if s["state"] not in ("succeeded", "pending")])[:3000]
-    version = (job["result"] or {}).get("version") or {}
-    assert version.get("git_sha") == CONFORMANCE_SHA, job["result"]
+    # `version` stays the receipt's version string; the post-check's
+    # /v1/version answer is recorded beside it as `observed_version` (X3).
+    result = job["result"] or {}
+    assert isinstance(result.get("version"), str) and result["version"], result
+    observed = result.get("observed_version") or {}
+    assert observed.get("git_sha") == CONFORMANCE_SHA, result
     assert (job["result"] or {}).get("kind") == "pre-update", job["result"]
 
     shown = await client.get(f"/v1/tenants/{name}")

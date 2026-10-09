@@ -210,9 +210,7 @@ func TestUpdateCodeMigratesAWorktreeTenantOntoAnImage(t *testing.T) {
 		oc.Fleet.Artifacts[testArtifactID].Worktree) {
 		t.Errorf("dist/index.html = %q, want the artifact's build", got)
 	}
-	if v, _ := p.Result()["version"].(map[string]any); v["git_sha"] != si.Commit || v["version"] != "1.6.6" {
-		t.Errorf("result.version = %v", p.Result()["version"])
-	}
+	assertUpdateResultVersion(t, p.Result(), "v1.6.6", "1.6.6", si.Commit)
 	log := strings.Join(fake.CallKeys(), "\n")
 	// The worktree API was stopped through its pidfile, never started again.
 	if fake.Count("proc.Spawn") != spawnedBefore || !strings.Contains(log, "proc.Signal(") {
@@ -239,9 +237,7 @@ func TestUpdateCodeMovesAnImageTenantToAnotherImage(t *testing.T) {
 	if spec := apiSpec(t, fake); spec.SIF != si2.Path {
 		t.Errorf("api-dev runs %s, want %s", spec.SIF, si2.Path)
 	}
-	if v, _ := p.Result()["version"].(map[string]any); v["version"] != "1.6.7" {
-		t.Errorf("result.version = %v", p.Result()["version"])
-	}
+	assertUpdateResultVersion(t, p.Result(), "v1.6.7", "1.6.7", si2.Commit)
 	if fake.Count("proc.Spawn") != 0 {
 		t.Errorf("an image→image upgrade spawned a worktree API")
 	}
@@ -530,5 +526,23 @@ func TestUpdateCodeSkipsTheUIProbeOfAnUnroutedTenant(t *testing.T) {
 	}
 	if oc.Fleet.Tenants["dev"].ServerImage.Name != testImage2Name {
 		t.Errorf("the upgrade did not complete")
+	}
+}
+
+// assertUpdateResultVersion: a succeeded update-code keeps `result.version` the
+// receipt's version STRING and records the /v1/version body the post-check
+// read under `result.observed_version` (X3) — the probe never overwrites the
+// plan's string with an object.
+func assertUpdateResultVersion(t *testing.T, res map[string]any, wantReceipt, wantVersion, wantSHA string) {
+	t.Helper()
+	if v, ok := res["version"].(string); !ok || v != wantReceipt {
+		t.Errorf("result.version = %#v, want the receipt's string %q", res["version"], wantReceipt)
+	}
+	ov, ok := res["observed_version"].(map[string]any)
+	if !ok {
+		t.Fatalf("result.observed_version = %#v, want the /v1/version object", res["observed_version"])
+	}
+	if ov["git_sha"] != wantSHA || ov["version"] != wantVersion {
+		t.Errorf("result.observed_version = %v, want version %q at %s", ov, wantVersion, wantSHA)
 	}
 }

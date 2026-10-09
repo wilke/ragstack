@@ -1627,7 +1627,7 @@ export interface components {
             }[];
             current_step: number | null;
             steps: components["schemas"]["Step"][];
-            /** @description Op-specific typed summary on success (e.g. backup → `{bundle, fenced, verified, bytes}`; create → `{tenant, ports, secrets_available}`); null otherwise. Never a secret value — minted secrets go through the delivery envelope. */
+            /** @description Op-specific typed summary on success (e.g. backup → `{bundle, fenced, verified, bytes}`; create → `{tenant, ports, secrets_available}`; update-code → `{image, previous_image, version, commit, …}` where `version` is always the receipt's version string and `observed_version`, when present, is the `/v1/version` object the post-check read); null otherwise. Never a secret value — minted secrets go through the delivery envelope. */
             result: Record<string, never> | null;
             error: {
                 step: number | null;
