@@ -139,3 +139,24 @@ export type ArtifactRow = ArtifactsResponse["artifacts"][number];
 
 export type KeyRecord = S["KeyRecord"];
 export type ServiceAccountRecord = S["ServiceAccountRecord"];
+
+// ---------------------------------------------------------------------------
+// PR-F: server images (image mode) and `update-code`.
+// ---------------------------------------------------------------------------
+
+/** One prepared server image, as `GET /v1/artifacts` lists it under `server_images`. */
+export type ServerImageRow = ArtifactsResponse["server_images"][number];
+/** The image a tenant's API runs from (registry `server_image`; absent = worktree mode). */
+export type TenantServerImage = S["ServerImage"];
+
+/**
+ * `x-ctl-op-args.update-code` as a request SENDS it. openapi-typescript does
+ * not see `x-ctl-op-args`, so this is written by hand from the contract:
+ * `image` required; `rebuild_ui` absent = "the tenant's `ui.mode` is static";
+ * `artifact_id` only with a rebuild (its sha must be the image's commit).
+ */
+export type UpdateCodeArgs = {
+  image: string;
+  rebuild_ui?: boolean;
+  artifact_id?: string;
+};

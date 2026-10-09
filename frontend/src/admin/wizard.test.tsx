@@ -130,6 +130,9 @@ function schemaProblems(args: Record<string, unknown>): string[] {
   const def = schema.$defs.CreateArgs;
   const out: string[] = [];
   for (const r of def.required as string[]) if (!(r in args)) out.push(`missing ${r}`);
+  // CreateArgs' `$comment` (F4 #713): artifact_id OR image — the op enforces
+  // it with a 422 rather than an anyOf the type generator would flatten.
+  if (!("artifact_id" in args) && !("image" in args)) out.push("missing artifact_id or image");
   const checkScalar = (path: string, v: unknown, s: Record<string, unknown>) => {
     if (s.type === "string") {
       if (typeof v !== "string") return out.push(`${path} not a string`);
@@ -179,7 +182,7 @@ describe("the assembled args match create_request.json", () => {
   it("the checker itself catches a wrong member name (the brief's `artifact`, `identity`, `set`, `no_start`)", () => {
     const wrong = { name: "x", artifact: "v1", identity: "bvbrc", set: {}, no_start: true };
     const p = schemaProblems(wrong);
-    expect(p).toContain("missing artifact_id");
+    expect(p).toContain("missing artifact_id or image");
     expect(p).toContain("unknown member artifact");
     expect(p).toContain("unknown member identity");
     expect(p).toContain("unknown member set");
@@ -548,5 +551,160 @@ describe("operator only", () => {
     expect(hashFor(v)).toBe("#/create");
     expect(parseHash(hashFor(v))).toEqual(v);
     expect(parseHash("#/create/x")).toEqual({ kind: "fleet" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-F F6: the Code step's server-image option (`CreateArgs.image`)
+// ---------------------------------------------------------------------------
+
+import { createImageProblem } from "./lib/validate";
+import { IMAGE_COMMIT_167, imageArtifactsFixture } from "./fixtures";
+
+describe("the Code step's server image option", () => {
+  const B1 = "ragstack-server-v1.6.6-b1.sif";
+  const N1 = "ragstack-server-v1.6.7-b1.sif";
+  const ICTX = {
+    fleetNames: FLEET_NAMES,
+    artifacts: imageArtifactsFixture.artifacts,
+    serverImages: imageArtifactsFixture.server_images,
+  };
+  const IMAGE_FORM: WizardForm = { ...MINIMAL_FORM, codeSource: "image", image: B1, artifactId: "v1.6.6" };
+  const imageView = (form: WizardForm) =>
+    view("code", form, {
+      artifacts: imageArtifactsFixture.artifacts,
+      serverImages: imageArtifactsFixture.server_images,
+    });
+
+  it("offers both sources; the artifact picker stays the default", () => {
+    const html = view("code", MINIMAL_FORM);
+    expect(html).toMatch(/<input[^>]*name="code_source"[^>]*checked=""[^>]*value="artifact"/);
+    expect(html).toContain('name="code_source" value="image"');
+    expect(html).toContain('name="artifact"');
+    expect(html).not.toContain('name="create-image"');
+  });
+
+  it("image source: the images, and the artifacts at the chosen image's commit only", () => {
+    const html = imageView(IMAGE_FORM);
+    expect(html).toMatch(/<input[^>]*name="code_source"[^>]*checked=""[^>]*value="image"/);
+    expect(html).toContain('name="create-image"');
+    expect(html).toContain("required: the UI mode is static");
+    expect(html).toMatch(/<input[^>]*name="create-image-artifact"[^>]*checked=""[^>]*value="v1\.6\.6"/);
+    expect(html).not.toContain('value="v1.6.2"');
+    expect(html).not.toContain('name="artifact"');
+  });
+
+  it("image source with no artifact at its commit: the empty state names the commit", () => {
+    const html = imageView({ ...IMAGE_FORM, image: N1, artifactId: "" });
+    expect(html).toContain("No prepared artifact is at commit");
+    expect(html).toContain(IMAGE_COMMIT_167.slice(0, 12));
+  });
+
+  it("createArgs sends image (+ the artifact when chosen) and no stray artifact_id", () => {
+    expect(createArgs(IMAGE_FORM)).toEqual({
+      name: "lab-west",
+      image: B1,
+      artifact_id: "v1.6.6",
+      identity_provider: "bvbrc",
+    });
+    const external = createArgs({ ...IMAGE_FORM, artifactId: "", uiMode: "external" });
+    expect(external).toEqual({ name: "lab-west", image: B1, identity_provider: "bvbrc", ui_mode: "external" });
+    expect(external).not.toHaveProperty("artifact_id");
+    expect(schemaProblems(createArgs(IMAGE_FORM) as Record<string, unknown>)).toEqual([]);
+    expect(schemaProblems(external as Record<string, unknown>)).toEqual([]);
+    // The artifact source never sends `image`.
+    expect(createArgs({ ...MINIMAL_FORM, image: B1 })).not.toHaveProperty("image");
+  });
+
+  it("validates the Code step and the image-only Options rules", () => {
+    expect(stepProblem("code", IMAGE_FORM, ICTX)).toBeNull();
+    expect(stepProblem("code", { ...IMAGE_FORM, image: "" }, ICTX)).toMatch(/Choose a prepared server image/);
+    expect(stepProblem("code", { ...IMAGE_FORM, artifactId: "" }, ICTX)).toMatch(/static UI/);
+    expect(stepProblem("code", { ...IMAGE_FORM, artifactId: "", uiMode: "external" }, ICTX)).toBeNull();
+    expect(stepProblem("code", { ...IMAGE_FORM, artifactId: "v1.6.2" }, ICTX)).toMatch(/different code/);
+    expect(stepProblem("options", { ...IMAGE_FORM, supervisor: "systemd" }, ICTX)).toMatch(/instance/);
+    expect(stepProblem("options", { ...IMAGE_FORM, uiMode: "dev" }, ICTX)).toMatch(/dev/);
+    expect(stepProblem("options", { ...IMAGE_FORM, supervisor: "instance" }, ICTX)).toBeNull();
+    // The same rule the Code step applies.
+    expect(createImageProblem({ image: B1, artifactId: "v1.6.6", uiMode: "static" }, ICTX.serverImages, ICTX.artifacts)).toBeNull();
+    // Review re-checks: a static UI chosen after an artifact-less image create is caught.
+    expect(firstInvalidStep({ ...IMAGE_FORM, artifactId: "" }, ICTX)?.step).toBe("code");
+  });
+
+  it("the review summary shows the image and an absent artifact as —", () => {
+    const html = render(
+      createElement(CreateArgsSummary, { args: createArgs({ ...IMAGE_FORM, artifactId: "", uiMode: "external" }) }),
+    );
+    expect(html).toContain(B1);
+    expect(html).toMatch(/artifact_id<\/th><td[^>]*><span class="text-dim">—<\/span>/);
+  });
+
+  it("no rendered field name matches *_key or *password*", () => {
+    const names = [...imageView(IMAGE_FORM).matchAll(/name="([^"]+)"/g)].map((m) => m[1]);
+    expect(names.length).toBeGreaterThan(3);
+    for (const n of names) expect(n).not.toMatch(/_key$|password/i);
+  });
+});
+
+describe("createTenant sends the image args", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    const store = () =>
+      ({ getItem: () => null, setItem: () => {}, removeItem: () => {}, clear: () => {}, key: () => null, length: 0 }) as unknown as Storage;
+    vi.stubGlobal("sessionStorage", store());
+    vi.stubGlobal("localStorage", store());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("POSTs /v1/tenants with image + artifact_id", async () => {
+    const json = (status: number, body: unknown) =>
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json(201, { session_id: "b".repeat(64), principal: "key:operator", role: "operator", expires_at: "2026-10-09T23:00:00Z", reads_only: true }),
+      )
+      .mockResolvedValueOnce(
+        json(200, {
+          plan_hash: "sha256:" + "0".repeat(64),
+          op: "create",
+          tenant: "lab-west",
+          registry_generation: 7,
+          schema_version: 1,
+          doctor: { status: "green", findings: [] },
+          requires_confirm: false,
+          confirm_value: null,
+          steps: [],
+          warnings: [],
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const session = await import("./auth/session");
+    await session.signInWithApiKey("sign-in-key-0000");
+    const { createRun } = await import("./components/CreateTenantWizard");
+    const form: WizardForm = {
+      ...MINIMAL_FORM,
+      codeSource: "image",
+      image: "ragstack-server-v1.6.6-b1.sif",
+      artifactId: "v1.6.6",
+      supervisor: "instance",
+    };
+    await createRun(createArgs(form))({
+      ctlKey: "ctl-key-0123456789abcdef-SECRET",
+      dryRun: true,
+      idempotencyKey: "ui-create-00000000-0000-4000-8000-000000000000",
+    });
+    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url).toMatch(/\/v1\/tenants$/);
+    expect(JSON.parse(init.body as string).args).toEqual({
+      name: "lab-west",
+      image: "ragstack-server-v1.6.6-b1.sif",
+      artifact_id: "v1.6.6",
+      identity_provider: "bvbrc",
+      supervisor: "instance",
+    });
   });
 });

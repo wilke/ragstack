@@ -234,3 +234,134 @@ export function validateSetting(key: string, value: string): SettingCheck {
   }
   return { problem: null, warning: null };
 }
+
+// ---------------------------------------------------------------------------
+// PR-F: server images — `x-ctl-op-args.update-code` and `CreateArgs.image`
+// (go/internal/ctl/ops/update.go `planUpdateCode`, ops/create.go). Each rule
+// is the planner's own refusal, mirrored so a form can hold Preview back; the
+// daemon decides.
+// ---------------------------------------------------------------------------
+
+/** `ServerImageName` (registry.json): `apptainer/build-image.sh --kind server`'s file name. */
+export const SERVER_IMAGE_NAME = /^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\.sif$/;
+
+/** `ArtifactId` (create_request.json / x-ctl-op-args.update-code.artifact_id). */
+export const ARTIFACT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+
+type UIMode = "static" | "dev" | "external";
+interface ImageLike {
+  name: string;
+  commit: string;
+}
+interface ArtifactLike {
+  id: string;
+  sha: string;
+}
+
+/** A commit as the UI names it: the first 12 hex digits. */
+export function shortSha(sha: string): string {
+  return sha.slice(0, 12);
+}
+
+/** The prepared artifacts whose `sha` is `commit` — the only ones a UI rebuild for that image may use. */
+export function artifactsAtCommit<A extends ArtifactLike>(artifacts: readonly A[], commit: string): A[] {
+  return artifacts.filter((a) => a.sha === commit);
+}
+
+/** Why an image name would be refused before the registry is consulted, or null. */
+function imageNameProblem(image: string, images: readonly ImageLike[] | null): string | null {
+  if (image === "") return "Choose a prepared server image.";
+  if (!SERVER_IMAGE_NAME.test(image)) return `"${image}" is not a server image name (ragstack-server-<version>-b<N>.sif).`;
+  if (images && !images.some((i) => i.name === image)) {
+    return `"${image}" is not prepared on this host (ragstack-ctl fleet image prepare --sif …).`;
+  }
+  return null;
+}
+
+/** An artifact chosen for `image` must exist and sit at the image's commit. */
+function artifactForImageProblem(
+  artifactId: string,
+  image: ImageLike | undefined,
+  artifacts: readonly ArtifactLike[] | null,
+): string | null {
+  if (!ARTIFACT_ID.test(artifactId)) return `"${artifactId}" is not an artifact id.`;
+  const a = artifacts?.find((x) => x.id === artifactId);
+  if (artifacts && !a) return `"${artifactId}" is not a prepared artifact.`;
+  if (a && image && a.sha !== image.commit) {
+    return `Artifact ${artifactId} is at commit ${shortSha(a.sha)}, but ${image.name} was built at ${shortSha(image.commit)}: the UI and the API would come from different code.`;
+  }
+  return null;
+}
+
+export interface UpdateCodeInput {
+  image: string;
+  /** The EFFECTIVE choice (the form's, or the default `uiMode === "static"`). */
+  rebuildUi: boolean;
+  /** "" = none. */
+  artifactId: string;
+  /** The tenant's registry `ui.mode`. */
+  uiMode: UIMode;
+  /** The image the tenant runs now (registry `server_image.name`), or null in worktree mode. */
+  currentImage: string | null;
+}
+
+/**
+ * Why an `update-code` would be refused at plan time, or null. `images` /
+ * `artifacts` null = not loaded yet (the membership checks are skipped).
+ */
+export function updateCodeArgsProblem(
+  a: UpdateCodeInput,
+  images: readonly ImageLike[] | null,
+  artifacts: readonly ArtifactLike[] | null,
+): string | null {
+  const nameProblem = imageNameProblem(a.image, images);
+  if (nameProblem) return nameProblem;
+  const image = images?.find((i) => i.name === a.image);
+  if (a.rebuildUi && a.uiMode !== "static") {
+    return `Rebuild UI asks for a static build, and this tenant's UI is ${a.uiMode}: turn it off (or set the UI mode to static first).`;
+  }
+  if (a.rebuildUi) {
+    if (a.artifactId === "") {
+      return image
+        ? `Rebuilding the UI needs a prepared artifact at the image's commit ${shortSha(image.commit)}: choose one, or turn Rebuild UI off.`
+        : "Rebuilding the UI needs a prepared artifact at the image's commit: choose one, or turn Rebuild UI off.";
+    }
+    const p = artifactForImageProblem(a.artifactId, image, artifacts);
+    if (p) return p;
+  } else if (a.artifactId !== "") {
+    return "An artifact is the source of a UI rebuild, and Rebuild UI is off: nothing would read it.";
+  }
+  if (!a.rebuildUi && a.currentImage === a.image) {
+    return `The tenant already runs ${a.image}: without a UI rebuild this would be a restart, not an upgrade (restart --only api).`;
+  }
+  return null;
+}
+
+export interface CreateImageInput {
+  image: string;
+  /** "" = none. */
+  artifactId: string;
+  uiMode: UIMode;
+}
+
+/**
+ * Why a create in image mode would be refused, or null: a prepared image; an
+ * artifact at the image's commit when the UI is static (it is built from
+ * that artifact); any artifact given must sit at that commit.
+ */
+export function createImageProblem(
+  a: CreateImageInput,
+  images: readonly ImageLike[] | null,
+  artifacts: readonly ArtifactLike[] | null,
+): string | null {
+  const nameProblem = imageNameProblem(a.image, images);
+  if (nameProblem) return nameProblem;
+  const image = images?.find((i) => i.name === a.image);
+  if (a.artifactId === "") {
+    if (a.uiMode !== "static") return null;
+    return image
+      ? `A static UI is built from a prepared artifact at the image's commit ${shortSha(image.commit)}: choose one (or choose ui_mode external under Options).`
+      : "A static UI is built from a prepared artifact at the image's commit: choose one (or choose ui_mode external under Options).";
+  }
+  return artifactForImageProblem(a.artifactId, image, artifacts);
+}

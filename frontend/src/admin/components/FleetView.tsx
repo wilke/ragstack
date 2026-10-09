@@ -14,6 +14,13 @@ import { ErrorBanner } from "./ErrorBanner";
 import { redactText } from "./redact";
 import { HealthDot, StateChip } from "./StateChip";
 
+/** `ragstack-server-v1.6.6-b2.sif` → `v1.6.6-b2`: the badge's short form (the title has the full name). */
+export function imageBuild(name: string | undefined): string {
+  if (!name) return "";
+  const m = /^ragstack-server-(.+)\.sif$/.exec(name);
+  return m ? m[1] : name;
+}
+
 /** "3 h ago" for a `dataUpdatedAt` epoch ms, the shape React Query hands back. */
 function sinceMs(ms: number, now: number): string {
   return since(ms ? new Date(ms).toISOString() : null, now);
@@ -316,7 +323,20 @@ export function FleetView({
                   <td className={TD}>
                     <StateChip kind="mode" value={r.stores_mode} />
                   </td>
-                  <td className={`${TD} font-mono text-[11.5px] text-body`}>{r.code_tag}</td>
+                  <td className={`${TD} font-mono text-[11.5px] text-body`}>
+                    {r.code_tag}
+                    {/* PR-F: how the API runs, as a badge under the tag (no extra column). */}
+                    {r.api_mode && (
+                      <span
+                        title={r.api_mode === "image" ? `API from server image ${redactText(r.server_image ?? "?")}` : "API from the worktree"}
+                        className={`mt-0.5 block w-fit rounded-chip px-1.5 py-[1px] text-[10px] font-medium ${
+                          r.api_mode === "image" ? "bg-mossSoft text-moss" : "bg-paper text-dim"
+                        }`}
+                      >
+                        {r.api_mode === "image" ? `image ${redactText(imageBuild(r.server_image))}` : "worktree"}
+                      </span>
+                    )}
+                  </td>
                   <td className={TD}>
                     {r.drift_count > 0 ? (
                       <StateChip kind="level" value="warn" title={`${r.drift_count} drift rows`} />

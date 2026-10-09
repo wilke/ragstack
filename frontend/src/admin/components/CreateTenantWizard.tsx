@@ -4,7 +4,9 @@
 // keys revealed once.
 //
 //   1 Name        `name`             — live validation, the reserved list
-//   2 Code        `artifact_id`      — a PREPARED artifact from GET /v1/artifacts
+//   2 Code        `artifact_id`      — a PREPARED artifact from GET /v1/artifacts,
+//                 or `image` (+ `artifact_id` at its commit for a static UI) —
+//                 a PREPARED server image, image mode from birth (PR-F)
 //   3 Identity    `identity_provider`, `admin_subjects[]`
 //   4 Stores      `postgres`, `es_heap`
 //   5 Settings    `template_from`, `settings{}` (public keys only)
@@ -32,10 +34,19 @@ import { useState, type ReactNode } from "react";
 import type { CtlError } from "../api/http";
 import { createTenant, type MutationOutcome } from "../api/ops";
 import { ctlKeys, useCtlQuery } from "../api/queries";
-import type { ArtifactRow, ArtifactsResponse, CreateArgsInput, CtlFleet, CtlRole, Job } from "../api/types";
+import type {
+  ArtifactRow,
+  ArtifactsResponse,
+  CreateArgsInput,
+  CtlFleet,
+  CtlRole,
+  Job,
+  ServerImageRow,
+} from "../api/types";
 import { since } from "../lib/format";
 import {
   TENANT_NAME,
+  createImageProblem,
   validateAdminSubjects,
   validateESHeap,
   validateSetting,
@@ -45,6 +56,7 @@ import { ErrorBanner } from "./ErrorBanner";
 import { OperatorRequired } from "./JobsView";
 import { OpFlow, type OpRunRequest } from "./OpFlow";
 import { redactText } from "./redact";
+import { MatchingArtifacts, ServerImageTable } from "./ServerImagePicker";
 
 // ---------------------------------------------------------------------------
 // The form and its mapping onto CreateArgs
@@ -105,6 +117,19 @@ export interface WizardForm {
   gateway: boolean;
   /** "" = the deployment's default (the member is omitted). */
   supervisor: "" | "systemd" | "instance";
+  /**
+   * PR-F: what the API runs from. Absent = `artifact` (worktree mode, the
+   * pre-PR-F form); `image` = a prepared server image (`image`), with
+   * `artifactId` the static UI's source at the image's commit.
+   */
+  codeSource?: "artifact" | "image";
+  /** The chosen server image's name; "" = none. Sent only with `codeSource: "image"`. */
+  image?: string;
+}
+
+/** Whether the form creates an image-mode tenant. */
+export function viaImage(f: WizardForm): boolean {
+  return f.codeSource === "image";
 }
 
 export const EMPTY_WIZARD: WizardForm = {
@@ -122,6 +147,8 @@ export const EMPTY_WIZARD: WizardForm = {
   start: true,
   gateway: true,
   supervisor: "",
+  codeSource: "artifact",
+  image: "",
 };
 
 /** The label `create` always mints (ops/create.go `bootstrapAdminLabel`). */
@@ -137,7 +164,15 @@ const SA_SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * differs from the contract default (or, for `supervisor`, when chosen).
  */
 export function createArgs(f: WizardForm): CreateArgsInput {
-  const a: CreateArgsInput = { name: f.name.trim(), artifact_id: f.artifactId };
+  const a: CreateArgsInput = { name: f.name.trim() };
+  if (viaImage(f)) {
+    // Image mode: `image`, and the artifact only when one was chosen (the
+    // static UI's source; optional for a non-static UI).
+    a.image = f.image ?? "";
+    if (f.artifactId !== "") a.artifact_id = f.artifactId;
+  } else {
+    a.artifact_id = f.artifactId;
+  }
   const esHeap = f.esHeap.trim();
   if (esHeap !== "" && esHeap !== "1g") a.es_heap = esHeap;
   if (f.postgres !== "sqlite") a.postgres = f.postgres;
@@ -171,6 +206,8 @@ export interface WizardContext {
   fleetNames: readonly string[];
   /** The prepared artifacts, or null while the list has not loaded. */
   artifacts: readonly ArtifactRow[] | null;
+  /** The prepared server images, or null/absent while the list has not loaded. */
+  serverImages?: readonly ServerImageRow[] | null;
 }
 
 function credentialsProblem(f: WizardForm): string | null {
@@ -221,6 +258,13 @@ export function stepProblem(step: WizardStep, f: WizardForm, ctx: WizardContext)
     case "name":
       return validateTenantName(f.name.trim(), ctx.fleetNames);
     case "code":
+      if (viaImage(f)) {
+        return createImageProblem(
+          { image: f.image ?? "", artifactId: f.artifactId, uiMode: f.uiMode },
+          ctx.serverImages ?? null,
+          ctx.artifacts,
+        );
+      }
       if (f.artifactId === "") return "Choose a prepared artifact.";
       if (ctx.artifacts && !ctx.artifacts.some((a) => a.id === f.artifactId)) {
         return `"${f.artifactId}" is not a prepared artifact.`;
@@ -238,6 +282,12 @@ export function stepProblem(step: WizardStep, f: WizardForm, ctx: WizardContext)
     case "credentials":
       return credentialsProblem(f);
     case "options":
+      if (viaImage(f) && f.supervisor === "systemd") {
+        return "A server image runs as an apptainer instance: the supervisor must be instance (or the deployment's default, when that is instance).";
+      }
+      if (viaImage(f) && f.uiMode === "dev") {
+        return "ui_mode dev cannot run with a server image: the image needs the instance supervisor, which does not run a Vite dev server.";
+      }
       if (f.uiMode === "dev" && f.supervisor === "instance") {
         return "ui_mode dev cannot run under the instance supervisor: a Vite dev server is not supervised there.";
       }
@@ -283,6 +333,8 @@ export interface CreateTenantWizardViewProps {
   form: WizardForm;
   /** The prepared artifacts (any order; the view sorts newest first), or null while loading. */
   artifacts: readonly ArtifactRow[] | null;
+  /** The prepared server images, or null/absent while loading. */
+  serverImages?: readonly ServerImageRow[] | null;
   artifactsError?: CtlError | null;
   fleetNames: readonly string[];
   /**
@@ -435,6 +487,104 @@ function ArtifactPicker({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Code step: a prepared artifact (worktree mode) or a prepared server
+ * image (image mode, PR-F). Switching the source clears the artifact choice —
+ * an artifact picked for one source is not a choice made for the other.
+ */
+function CodeStep({
+  form,
+  set,
+  artifacts,
+  serverImages,
+  error,
+  onRetry,
+}: {
+  form: WizardForm;
+  set: (p: Partial<WizardForm>) => void;
+  artifacts: readonly ArtifactRow[] | null;
+  serverImages: readonly ServerImageRow[] | null;
+  error?: CtlError | null;
+  onRetry?: () => void;
+}) {
+  const image = viaImage(form);
+  const chosen = serverImages?.find((i) => i.name === form.image);
+  return (
+    <div className="space-y-3">
+      <div role="radiogroup" aria-label="code source" className="flex flex-wrap gap-4">
+        <label className={LABEL}>
+          <input
+            type="radio"
+            name="code_source"
+            value="artifact"
+            checked={!image}
+            onChange={() => set({ codeSource: "artifact", artifactId: "" })}
+          />
+          <span>Prepared artifact — the API runs from the tenant&apos;s worktree</span>
+        </label>
+        <label className={LABEL}>
+          <input
+            type="radio"
+            name="code_source"
+            value="image"
+            checked={image}
+            onChange={() => set({ codeSource: "image", artifactId: "" })}
+          />
+          <span>Server image — the API runs as an apptainer instance of the image</span>
+        </label>
+      </div>
+      {!image ? (
+        <ArtifactPicker form={form} set={set} artifacts={artifacts} error={error} onRetry={onRetry} />
+      ) : (
+        <div className="space-y-3">
+          <p className={HELP}>
+            A PREPARED server image (<code className="font-mono">ragstack-ctl fleet image prepare --sif …</code>):
+            the tenant is in image mode from birth, its worktree is checked out at the image&apos;s commit,
+            and it needs the <code className="font-mono">instance</code> supervisor. A static UI is built
+            from a prepared artifact at that same commit.
+          </p>
+          {error && <ErrorBanner error={error} onRetry={onRetry} />}
+          {!serverImages && !error && <p className="text-[12.5px] text-dim">Loading the prepared server images…</p>}
+          {serverImages && (
+            <ServerImageTable
+              images={serverImages}
+              selected={form.image ?? ""}
+              radioName="create-image"
+              onSelect={(name) => {
+                const next = serverImages.find((i) => i.name === name);
+                const art = artifacts?.find((a) => a.id === form.artifactId);
+                set({ image: name, artifactId: next && art && art.sha === next.commit ? form.artifactId : "" });
+              }}
+            />
+          )}
+          <div>
+            <div className={EYEBROW}>
+              artifact at the image&apos;s commit (
+              {form.uiMode === "static" ? "required: the UI mode is static" : `optional: the UI mode is ${form.uiMode}`})
+            </div>
+            {artifacts ? (
+              <MatchingArtifacts
+                artifacts={artifacts}
+                image={chosen}
+                selected={form.artifactId}
+                radioName="create-image-artifact"
+                onSelect={(id) => set({ artifactId: id })}
+              />
+            ) : (
+              !error && <p className="text-[12.5px] text-dim">Loading the prepared artifacts…</p>
+            )}
+            {form.uiMode !== "static" && form.artifactId !== "" && (
+              <button type="button" className={`${SMALL} mt-1.5`} onClick={() => set({ artifactId: "" })}>
+                Clear the artifact
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -798,6 +948,11 @@ function OptionsStep({ form, set }: { form: WizardForm; set: (p: Partial<WizardF
           systemd.
         </p>
       )}
+      {viaImage(form) && (
+        <p role="note" className="text-[11.5px] text-accent-text">
+          This tenant runs a server image: it needs the instance supervisor, and ui_mode dev is not available.
+        </p>
+      )}
       <label className={LABEL}>
         <input type="checkbox" name="start" checked={form.start} onChange={(e) => set({ start: e.target.checked })} />
         <span>Start the tenant once provisioned (readiness-gated)</span>
@@ -835,7 +990,10 @@ export function CreateArgsSummary({ args }: { args: CreateArgsInput }) {
     <table aria-label="create arguments" className="w-full border-collapse text-left">
       <tbody>
         <SummaryRow k="name">{args.name}</SummaryRow>
-        <SummaryRow k="artifact_id">{args.artifact_id}</SummaryRow>
+        {args.image !== undefined && <SummaryRow k="image">{redactText(args.image)}</SummaryRow>}
+        <SummaryRow k="artifact_id">
+          {args.artifact_id !== undefined ? args.artifact_id : <span className="text-dim">—</span>}
+        </SummaryRow>
         <SummaryRow k="identity_provider">{args.identity_provider ?? <>none {DEFAULT}</>}</SummaryRow>
         <SummaryRow k="admin_subjects">
           {args.admin_subjects?.length ? args.admin_subjects.join(", ") : <span className="text-dim">—</span>}
@@ -898,7 +1056,7 @@ export function CreateArgsSummary({ args }: { args: CreateArgsInput }) {
 export function CreateTenantWizardView(p: CreateTenantWizardViewProps) {
   const { step, form } = p;
   const set = (patch: Partial<WizardForm>) => p.onChange({ ...p.form, ...patch });
-  const ctx: WizardContext = { fleetNames: p.fleetNames, artifacts: p.artifacts };
+  const ctx: WizardContext = { fleetNames: p.fleetNames, artifacts: p.artifacts, serverImages: p.serverImages };
   const problem = stepProblem(step, form, ctx);
   // Name validates live once something is typed; the rest after a Next.
   const showProblem = Boolean(p.showProblem) || (step === "name" && form.name !== "");
@@ -918,10 +1076,11 @@ export function CreateTenantWizardView(p: CreateTenantWizardViewProps) {
       <fieldset disabled={p.locked} className="disabled:opacity-60">
         {step === "name" && <NameStep form={form} set={set} problem={showProblem ? problem : null} />}
         {step === "code" && (
-          <ArtifactPicker
+          <CodeStep
             form={form}
             set={set}
             artifacts={p.artifacts}
+            serverImages={p.serverImages ?? null}
             error={p.artifactsError}
             onRetry={p.onRetryArtifacts}
           />
@@ -1039,7 +1198,11 @@ function OperatorWizard(props: CreateTenantWizardProps) {
   const artifacts = useCtlQuery<ArtifactsResponse>(ctlKeys.artifacts(), "/v1/artifacts");
   const fleet = useCtlQuery<CtlFleet>(ctlKeys.fleet(), "/v1/fleet");
   const fleetNames = (fleet.data?.tenants ?? []).map((t) => t.name);
-  const ctx: WizardContext = { fleetNames, artifacts: artifacts.data?.artifacts ?? null };
+  const ctx: WizardContext = {
+    fleetNames,
+    artifacts: artifacts.data?.artifacts ?? null,
+    serverImages: artifacts.data?.server_images ?? null,
+  };
 
   const go = (to: WizardStep) => {
     setTried(false);
@@ -1087,6 +1250,7 @@ function OperatorWizard(props: CreateTenantWizardProps) {
         step={step}
         form={form}
         artifacts={artifacts.data?.artifacts ?? null}
+        serverImages={artifacts.data?.server_images ?? null}
         artifactsError={artifacts.error}
         fleetNames={fleetNames}
         showProblem={tried}
