@@ -346,8 +346,8 @@ func engineRetryBackoff(n int) time.Duration {
 //   - published is err with the full-path explanation appended: it is what a
 //     refused mutation (operator-only) quotes;
 //   - logDetail is that explanation, for the log line;
-//   - healthDetail is the same with base names only, for the anonymous
-//     GET /health `engine_detail`.
+//   - healthDetail is healthSidecarDetail — no owner, uid, size or path —
+//     for the anonymous GET /health `engine_detail`.
 //
 // With no foreign sidecar, published is err unchanged and both details are "".
 func explainEngineFailure(storePath string, err error, probe doctor.SidecarProbe) (published error, logDetail, healthDetail string) {
@@ -356,8 +356,15 @@ func explainEngineFailure(storePath string, err error, probe doctor.SidecarProbe
 		return err, "", ""
 	}
 	logDetail = doctor.DescribeForeignSidecars(foreign, true)
-	return fmt.Errorf("%w; %s", err, logDetail), logDetail, doctor.DescribeForeignSidecars(foreign, false)
+	return fmt.Errorf("%w; %s", err, logDetail), logDetail, healthSidecarDetail
 }
+
+// healthSidecarDetail is all GET /health says about foreign sidecars. The
+// endpoint is anonymous and reachable through the public gateway, so it names
+// no account, uid, size or path: those are in the log line and the
+// operator-only 409.
+const healthSidecarDetail = "the job store cannot be opened: foreign-owned SQLite sidecar(s) beside it — see the " +
+	"daemon log and `ragstack-ctl doctor` (" + doctor.JobEngineUnavailable + "); the daemon keeps retrying"
 
 // retryEngine keeps trying to build the engine, and publishes it on the
 // serving Server the moment one opens.

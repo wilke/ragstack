@@ -76,13 +76,24 @@ func TestEngineFailureNamesForeignSidecars(t *testing.T) {
 			t.Errorf("the published (refusal) error lacks %q", want)
 		}
 	}
-	// /health is anonymous: base names, no directory.
-	if strings.Contains(healthDetail, filepath.Dir(store)) {
-		t.Errorf("health detail leaks the state dir:\n%s", healthDetail)
+	assertHealthDetailIsAnonymousSafe(t, healthDetail, store)
+	if healthDetail != healthSidecarDetail {
+		t.Errorf("health detail = %q, want the fixed %q", healthDetail, healthSidecarDetail)
 	}
-	for _, want := range []string{"jobs.db-shm owned by wilke (uid 4242, 32768 bytes)", "rm jobs.db-shm jobs.db-wal"} {
-		if !strings.Contains(healthDetail, want) {
-			t.Errorf("health detail lacks %q:\n%s", want, healthDetail)
+}
+
+// assertHealthDetailIsAnonymousSafe: /health is anonymous and reachable through
+// the public gateway, so its detail names no account, uid, size or path.
+func assertHealthDetailIsAnonymousSafe(t *testing.T, d, store string) {
+	t.Helper()
+	for _, leak := range []string{"wilke", "4242", "uid", "32768", "bytes", filepath.Dir(store), "rm "} {
+		if strings.Contains(d, leak) {
+			t.Errorf("anonymous /health engine_detail leaks %q:\n%s", leak, d)
+		}
+	}
+	for _, want := range []string{"foreign-owned SQLite sidecar", doctor.JobEngineUnavailable, "keeps retrying"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("health detail lacks %q:\n%s", want, d)
 		}
 	}
 }
@@ -149,9 +160,8 @@ func TestRetryPublishesTheSidecarDiagnosisOnHealth(t *testing.T) {
 		t.Fatal("retryEngine did not return")
 	}
 	got := <-seen
-	if !strings.Contains(got, "jobs.db-shm owned by wilke") || strings.Contains(got, cfg.StorePath) {
-		t.Errorf("engine_detail while unavailable = %q", got)
-	}
+	// Read off the HTTP body: no owner, uid, size or path reaches /health.
+	assertHealthDetailIsAnonymousSafe(t, got, cfg.StorePath)
 	if d := healthDetail(t, h); d != "" {
 		t.Errorf("engine_detail after recovery = %q, want absent", d)
 	}

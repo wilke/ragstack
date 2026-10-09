@@ -110,9 +110,9 @@ type Server struct {
 	// rather than "not wired".
 	EngineErr error
 	// EngineDetail is the path-free explanation GET /health carries as
-	// `engine_detail` while Engine is nil (#716: foreign-owned SQLite
-	// sidecars, named with their owner, size and recovery). Empty means the
-	// generic pointer at the log and `doctor`.
+	// `engine_detail` while Engine is nil (#716: "foreign-owned SQLite
+	// sidecar(s)" — never an account, uid, size or path; /health is
+	// anonymous). Empty means the generic pointer at the log and `doctor`.
 	EngineDetail string
 	Resolver     *auth.Resolver
 	Sessions     session.Store

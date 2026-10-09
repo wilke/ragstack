@@ -91,8 +91,9 @@ func ForeignSidecars(store string, wantUID int, probe SidecarProbe) []ForeignSid
 
 // DescribeForeignSidecars renders what a "job engine unavailable" report says
 // about them: each file, its owner and its size, then the recovery. With
-// fullPaths false the files are named by their base name only — that is the
-// form the anonymous `GET /health` carries.
+// fullPaths false the files are named by their base name only. Neither form is
+// for the anonymous `GET /health`: both name the owner, uid and sizes, which
+// stay in the log, the operator-only 409 and doctor.
 //
 // The recovery depends on the WAL. An EMPTY (or absent) `-wal` holds no
 // transaction, so removing the pair as their owner — once nothing holds the

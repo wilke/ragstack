@@ -655,8 +655,9 @@ pair was `jobs.db-shm` 32 KiB + `jobs.db-wal` 0 B, `wilke:cels 0644`.
 
 The daemon says so itself: when a sidecar's owner differs from its own uid,
 the WARN line carries `sidecars="…jobs.db-shm owned by wilke (uid …, 32768
-bytes); … Recovery: …"`, `/health` carries the same text path-free as
-`engine_detail`, and `ragstack-ctl doctor` raises `job_engine_unavailable`
+bytes); … Recovery: …"` (so does the operator-only 409), `/health` says
+only "foreign-owned SQLite sidecar(s)" in `engine_detail` (it is anonymous:
+no account, uid, size or path), and `ragstack-ctl doctor` raises `job_engine_unavailable`
 with the files, owner, sizes and recovery.
 
 Recovery:

@@ -532,8 +532,8 @@ type HealthResponse struct {
 	Engine string `json:"engine"`
 	// EngineDetail is present only while Engine is `unavailable`: why, in
 	// words an operator can act on without a credential — and therefore
-	// without paths (#716: the foreign-owned `jobs.db-shm`/`-wal` by base
-	// name, their owner and size, and the recovery).
+	// without paths, accounts, uids or sizes (#716: "foreign-owned SQLite
+	// sidecar(s)" plus a pointer at the log and doctor, which carry the rest).
 	EngineDetail string `json:"engine_detail,omitempty"`
 }
 
