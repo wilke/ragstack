@@ -142,10 +142,28 @@ func (p *planner) bundleID(sc *jobs.StepContext) string {
 			}
 		}
 		if t, err := time.Parse(time.RFC3339, sc.Job.CreatedAt); err == nil {
-			return t.UTC().Format(stampFormat) + bundleSuffix
+			return t.UTC().Format(stampFormat) + p.bundleSuffix()
 		}
 	}
-	return p.stampOf(sc) + bundleSuffix
+	return p.stampOf(sc) + p.bundleSuffix()
+}
+
+// bundleKind is the manifest `kind` (and the id's suffix) of the bundle this
+// plan writes: `backup` for the backup verb and every composite that reuses
+// its steps, `pre-update` for the safety net `update-code` takes first.
+func (p *planner) bundleKind() string {
+	if p.bundleKindName != "" {
+		return p.bundleKindName
+	}
+	return bundleKind
+}
+
+// bundleSuffix is the kind half of the id: `-backup`, `-pre-update`.
+func (p *planner) bundleSuffix() string {
+	if p.bundleKindName != "" {
+		return "-" + p.bundleKindName
+	}
+	return bundleSuffix
 }
 
 // bundleStamp is the `<ts>` half of a bundle id — the elasticsearch repository
@@ -209,7 +227,7 @@ func (p *planner) chooseBundleID(ctx context.Context, sc *jobs.StepContext) erro
 		taken[strings.TrimSuffix(e.Name, partialSuffix)] = true
 	}
 	for i := 0; i < 60; i++ {
-		id := at.Add(time.Duration(i)*time.Second).UTC().Format(stampFormat) + bundleSuffix
+		id := at.Add(time.Duration(i)*time.Second).UTC().Format(stampFormat) + p.bundleSuffix()
 		if !taken[id] {
 			if i > 0 {
 				sc.Logf("bundle id %s: the job's own second was taken by an earlier bundle", id)
@@ -419,6 +437,10 @@ type backupPlanArgs struct {
 	// quarantines the tenant, and an API started between the two would be an
 	// outage's worth of writes the archive does not hold.
 	RestartAPI bool
+	// Kind is the bundle's manifest kind; empty is `backup`. `update-code`
+	// takes its light safety net as `pre-update` (bundle_manifest.json's
+	// second kind), so `backup list` and a restore can tell the two apart.
+	Kind string
 }
 
 // addBackupSteps plans one bundle into p: the precheck, the fence, every leg
@@ -432,6 +454,9 @@ type backupPlanArgs struct {
 // planBackup that existed before the extraction.
 func (p *planner) addBackupSteps(a backupPlanArgs) (string, error) {
 	fence, tarIt, scope, secrets := a.Fence, a.Tar, a.Scope, a.Secrets
+	if a.Kind != "" && a.Kind != bundleKind {
+		p.bundleKindName = a.Kind
+	}
 	// The registry lock as well as the tenant's: the last step records
 	// `last_backup` and `last_ops.backup`, and the manifest projection is
 	// derived from the registry, so the same two locks a settings write takes.
@@ -449,7 +474,7 @@ func (p *planner) addBackupSteps(a backupPlanArgs) (string, error) {
 	bundleDir := filepath.Join(p.oc.Roots.BackupsDir, t.Name, bundlePlaceholder)
 	p.result["fenced"] = fence
 	p.result["best_effort"] = !fence
-	p.result["kind"] = bundleKind
+	p.result["kind"] = p.bundleKind()
 	p.result["scope"] = scope.list()
 
 	if scope.light() {
@@ -1507,7 +1532,7 @@ func (p *planner) addMigrateMD(bundleDir string) {
 				return "", err
 			}
 			info := render.MigrateInfo{
-				BundleID: p.bundleID(sc), Kind: bundleKind,
+				BundleID: p.bundleID(sc), Kind: p.bundleKind(),
 				CreatedAt: p.stampRFC3339(sc), CtlVersion: version.Version,
 				Fenced: p.result["fenced"] == true, ArtifactID: string(p.t.ArtifactID),
 				Collections: parts.qdrant.Inventory, Indices: parts.es.Inventory,
@@ -1632,7 +1657,7 @@ func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence
 	}
 	m := map[string]any{
 		"schema_version": version.SchemaVersion,
-		"kind":           bundleKind,
+		"kind":           p.bundleKind(),
 		"scope":          scope.list(),
 		"bundle_id":      id,
 		"created_at":     createdAt,
@@ -1875,7 +1900,7 @@ func (p *planner) addBackupRecord(fence bool, scope scopeSet) {
 			// Checked: true because the check step, which every backup plans
 			// directly before this one, passed — a job whose check failed
 			// never reaches here.
-			row.LastBackup = &registry.BackupRecord{Bundle: dir, At: at, Kind: bundleKind, Fenced: fence,
+			row.LastBackup = &registry.BackupRecord{Bundle: dir, At: at, Kind: p.bundleKind(), Fenced: fence,
 				Verified: false, Checked: true, Scope: scope.list()}
 			if row.LastOps == nil {
 				row.LastOps = map[string]registry.OpRecord{}

@@ -20,6 +20,15 @@ import (
 // any workflow's verdict has a problem OR names a stamped image that went
 // unverified because GOWE_IMAGE_DIRS is unset ("unchecked", #673 F3) — the
 // same decision the boot makes — 1 when the check could not run, 2 on usage.
+//
+// On an IMAGE-mode row (server_image set, PR-F) the API runs from the image's
+// staged tree and its unit environment points the three CWL keys at
+// /opt/ragstack/cwl inside the container, which this host-side check cannot
+// read. It reads the WORKTREE instead, and that is the same code:
+// `tenant update-code` (and `create --image`) keep the worktree checked out at
+// the image's commit, so <worktree>/cwl and /opt/ragstack/cwl are one tree at
+// one commit. The text output says so in a note line; `--json` puts the note on
+// stderr so the document stays the report.
 func cmdGowe(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 || args[0] != "render" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl gowe render <tenant> [--json] [--python PATH] [--worktree DIR] [--image-dirs A,B]")
@@ -84,6 +93,13 @@ func cmdGowe(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if *imageDirs != "" {
 		in.ImageDirs = *imageDirs
 	}
+	if note := imageModeNote(t, *worktree != ""); note != "" {
+		w := stdout
+		if *asJSON {
+			w = stderr
+		}
+		fmt.Fprintln(w, note)
+	}
 	rep, err := gowe.Run(context.Background(), in, stderr)
 	if err != nil {
 		return fail(err)
@@ -101,4 +117,21 @@ func cmdGowe(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return exitRefused
 	}
 	return exitOK
+}
+
+// imageModeNote is the one line `gowe render` prints for an image-mode row:
+// the check reads the worktree, which update-code keeps at the image's
+// commit. Empty for a worktree-mode row.
+func imageModeNote(t *registry.Tenant, overridden bool) string {
+	if !t.ImageMode() {
+		return ""
+	}
+	si := t.ServerImage
+	if overridden {
+		return fmt.Sprintf("note: %s runs its API from server image %s (commit %s); this check read --worktree %s "+
+			"instead of the tenant's own checkout", t.Name, si.Name, si.Commit, t.Worktree)
+	}
+	return fmt.Sprintf("note: %s runs its API from server image %s; this check reads the worktree %s, which "+
+		"`tenant update-code` keeps at the image's commit %s (the image's /opt/ragstack/cwl is the same tree)",
+		t.Name, si.Name, t.Worktree, si.Commit)
 }

@@ -151,6 +151,13 @@ type selftestOptions struct {
 	// server image, and the restored twin inherits it. Needs supervisor
 	// instance, and an artifact at the image's commit for the static UI.
 	image string
+	// updateCode are the server images the run moves the sandbox onto with
+	// `tenant update-code`, in order, after the credentials leg and before the
+	// backup (PR-F F5): from a worktree sandbox the first one is the
+	// MIGRATION, every later one (or every one, after --image) is image →
+	// image. The rest of the sequence — backup, stop, restore --as,
+	// decommission, purge — then runs on the upgraded, image-mode sandbox.
+	updateCode []string
 }
 
 // selftest is one run. Everything it talks to is a field, so the test builds
@@ -199,6 +206,7 @@ type selftest struct {
 func selftestUsage() int {
 	fmt.Fprint(stderr, `usage: ragstack-ctl selftest [--keep] [--with-gateway] [--artifact ID] [--postgres local]
                              [--fixture PATH] [--rag-root R] [--image NAME]
+                             [--update-code NAME]...
        ragstack-ctl selftest --boot
        ragstack-ctl selftest --sweep
 
@@ -224,6 +232,16 @@ the sandbox range is read, written, started or stopped.
                     proved (labels, sha256) before every start; needs
                     --supervisor instance and an --artifact at the image's
                     commit (default: the newest prepared one at that commit)
+  --update-code NAME
+                    after the credentials leg, move the sandbox onto this
+                    prepared server image with "tenant update-code" and prove
+                    it (row in image mode, api-<sandbox> holding the port,
+                    /v1/version = the image's version and commit). Repeatable,
+                    in order: a worktree sandbox's first one is the migration,
+                    the next one image → image. Needs --supervisor instance;
+                    the static UI is rebuilt from an artifact at each image's
+                    commit (none prepared: the UI is left alone and the report
+                    says so)
   --boot            run the BOOT CHECKLIST only and exit: linger, the user@
                     drop-in, is-enabled and default.target's dependencies for
                     every tenant whose row says desired_boot enabled
@@ -259,10 +277,13 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 		fixture     = fs.String("fixture", "", "the document to ingest")
 		supervisor  = fs.String("supervisor", "", "systemd|instance (default $CTL_DEFAULT_SUPERVISOR, else systemd)")
 		image       = fs.String("image", "", "create the sandbox in image mode from this prepared server image")
+		updateCode  multiFlag
 		root        = fs.String("rag-root", ragRoot, "deployment root")
 		reg         = fs.String("registry", registryPath, "registry.json path")
 		server      = fs.String("server", "", "refused: a selftest runs on the host it tests")
 	)
+	fs.Var(&updateCode, "update-code", "move the sandbox onto this prepared server image with update-code "+
+		"(repeatable, in order)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -297,11 +318,15 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 		return usageErr("--image runs the API as an apptainer instance, which only --supervisor instance supervises "+
 			"(this run would use %q)", sup)
 	}
+	if len(updateCode) > 0 && sup != "instance" {
+		return usageErr("--update-code moves the API onto a server image, which only --supervisor instance "+
+			"supervises (this run would use %q)", sup)
+	}
 
 	s, err := newSelftest(selftestOptions{
 		keep: *keep, withGateway: *withGateway, boot: *boot, sweepOnly: *sweep,
 		artifact: *artifact, postgres: *postgres, ragRoot: *root, fixture: *fixture,
-		supervisor: sup, image: *image,
+		supervisor: sup, image: *image, updateCode: []string(updateCode),
 	}, *reg)
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
@@ -518,6 +543,13 @@ func (s *selftest) execute(ctx context.Context) error {
 		return err
 	}
 
+	// ---- update-code: worktree → image, image → image ---------------------
+	for _, image := range s.opts.updateCode {
+		if err := s.updateCode(ctx, image); err != nil {
+			return err
+		}
+	}
+
 	// ---- backup --fence --------------------------------------------------
 	backup, err := s.submit(ctx, "backup --fence", "backup", s.primary, map[string]any{"fence": true}, "")
 	if err != nil {
@@ -660,6 +692,129 @@ func (s *selftest) execute(ctx context.Context) error {
 	}
 	s.checks = append(s.checks, sweep)
 	return nil
+}
+
+// updateCode is one `tenant update-code` leg: the sandbox moved onto image,
+// then three proofs of where it landed — the registry row, the instance table
+// and the API's own /v1/version.
+func (s *selftest) updateCode(ctx context.Context, image string) error {
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		return err
+	}
+	rec, ok := f.ServerImages[image]
+	if !ok || rec == nil {
+		return fmt.Errorf("%w: --update-code %s: the image is not prepared on this host (`ragstack-ctl fleet image "+
+			"prepare --sif …`)", jobs.ErrRefused, image)
+	}
+	before, err := s.tenantRow(s.primary)
+	if err != nil {
+		return err
+	}
+	from := "worktree"
+	if before.ImageMode() {
+		from = before.ServerImage.Name
+	}
+	args := map[string]any{"image": image}
+	label := fmt.Sprintf("update-code %s → %s", from, image)
+	if before.UI.Mode == registry.UIModeStatic {
+		// The static UI is rebuilt from an artifact at the image's commit:
+		// --artifact when it is at that commit, else the newest one there.
+		artifact := ""
+		if a, ok := f.Artifacts[s.opts.artifact]; ok && a.SHA == rec.Commit {
+			artifact = s.opts.artifact
+		} else {
+			bestAt := ""
+			for id, a := range f.Artifacts {
+				if a.SHA == rec.Commit && (a.PreparedAt > bestAt || (a.PreparedAt == bestAt && id > artifact)) {
+					artifact, bestAt = id, a.PreparedAt
+				}
+			}
+		}
+		if artifact != "" {
+			args["artifact_id"] = artifact
+		} else {
+			args["rebuild_ui"] = false
+			s.checks = append(s.checks, checkResult{Name: label + ": UI rebuild", Verdict: checkNA,
+				Detail: "no artifact is prepared at " + image + "'s commit " + rec.Commit + ": the upgrade ran " +
+					"--no-rebuild-ui and the served UI was left alone"})
+		}
+	}
+	fmt.Fprintf(s.out, "selftest: %s\n", label)
+	if _, err := s.submit(ctx, label, "update-code", s.primary, args, s.primary); err != nil {
+		return err
+	}
+	s.checks = append(s.checks, s.updateCodeChecks(ctx, label, image, rec)...)
+	return nil
+}
+
+// updateCodeChecks proves an update-code leg landed: the row names the image
+// (and its code), api-<sandbox> is in the ctl's instance table holding the API
+// port, and the API answers /v1/version with the image's commit and version.
+func (s *selftest) updateCodeChecks(ctx context.Context, label, image string,
+	rec *registry.ServerImageRecord) []checkResult {
+	var out []checkResult
+	row, err := s.tenantRow(s.primary)
+	if err != nil {
+		return []checkResult{{Name: label + ": registry", Verdict: checkFail, Detail: err.Error()}}
+	}
+	reg := checkResult{Name: label + ": registry", Verdict: checkPass,
+		Detail: fmt.Sprintf("server_image %s, code %s @ %s", image, rec.Version, shortCommit(rec.Commit))}
+	if row.ServerImage == nil || row.ServerImage.Name != image || string(row.Code.SHA) != rec.Commit ||
+		row.Code.Tag != rec.Version {
+		reg.Verdict = checkFail
+		reg.Detail = fmt.Sprintf("the row says server_image %s, code %s @ %s", serverImageOf(row), row.Code.Tag,
+			row.Code.SHA)
+	}
+	out = append(out, reg)
+
+	name := render.APIImageInstancePrefix + row.ManifestName
+	inst := checkResult{Name: label + ": API instance", Verdict: checkFail,
+		Detail: name + " is not in the ctl's instance table"}
+	if list, err := s.drv.Instances().List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceCtl}); err != nil {
+		inst.Detail = "listing the instances: " + err.Error()
+	} else {
+		for _, in := range list {
+			if in.Name != name {
+				continue
+			}
+			owns, err := s.drv.Proc().InstanceOwnsPort(ctx, in.PID, row.Ports.API)
+			switch {
+			case err != nil:
+				inst.Detail = fmt.Sprintf("%s (pid %d) is listed; who holds %d: %v", name, in.PID, row.Ports.API, err)
+			case !owns:
+				inst.Detail = fmt.Sprintf("%s (pid %d) is listed but does not hold %d", name, in.PID, row.Ports.API)
+			default:
+				inst.Verdict = checkPass
+				inst.Detail = fmt.Sprintf("%s (pid %d) holds %d", name, in.PID, row.Ports.API)
+			}
+		}
+	}
+	out = append(out, inst)
+
+	want := ops.Pep440(rec.Version)
+	ver := checkResult{Name: label + ": /v1/version", Verdict: checkFail}
+	origin := fmt.Sprintf("http://127.0.0.1:%d", row.Ports.API)
+	if v, err := s.tenantAPI.Version(ctx, origin, s.adminKey); err != nil {
+		ver.Detail = err.Error()
+	} else {
+		gotSHA, _ := v["git_sha"].(string)
+		gotVersion, _ := v["version"].(string)
+		ver.Detail = fmt.Sprintf("version %q at %q (want %q at %s)", gotVersion, gotSHA, want, rec.Commit)
+		if gotSHA == rec.Commit && gotVersion == want {
+			ver.Verdict = checkPass
+			ver.Detail = fmt.Sprintf("version %s at %s", gotVersion, shortCommit(gotSHA))
+		}
+	}
+	return append(out, ver)
+}
+
+// shortCommit is a commit as the report prints it.
+func shortCommit(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // purgedChecks asks the registry and the host, through the same drivers the

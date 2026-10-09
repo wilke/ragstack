@@ -387,9 +387,14 @@ var argSchemas = map[string]argSpec{
 	"render-units": {Verb: "render-units", Fields: []argField{
 		{Name: "apply", Kind: argBool},
 	}},
+	// update-code (ops/update.go): the image is the request; rebuild_ui has
+	// no default HERE (absent means "ui.mode == static", which only the row
+	// can answer, and a value nobody chose must not land in the plan hash);
+	// the artifact is the UI's source and only that.
 	"update-code": {Verb: "update-code", Fields: []argField{
-		{Name: "artifact_id", Kind: argString, Required: true, Pattern: patArtifactID},
-		{Name: "restart", Kind: argBool},
+		{Name: "image", Kind: argString, Required: true, Pattern: patServerImage},
+		{Name: "rebuild_ui", Kind: argBool},
+		{Name: "artifact_id", Kind: argString, Pattern: patArtifactID},
 	}},
 
 	// Not in x-ctl-op-args: `create` has its own body schema

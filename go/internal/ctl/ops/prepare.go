@@ -162,9 +162,47 @@ func planSetUIModeStatic(p *planner) error {
 		},
 	})
 
+	p.addUIStagingBuild(t.Worktree, base, staging, "vite build --base "+base+" into "+stagingDist, frontend)
+
+	// The dev server, if there is one. It is stopped BEFORE the swap, so the
+	// window in which the gateway's $tenant_ui row still points at a port and
+	// the alias is not published yet is as short as the two steps after it.
+	if prevPort != 0 {
+		p.addDevServerStop(prevPort, frontend)
+	} else {
+		p.skip("proc", "stop the tenant's Vite dev server",
+			"the registry records no UI port for this tenant, so there is no dev server to stop", t.Name)
+	}
+
+	p.addDistSwap(dist, staging)
+
+	if prevPort != 0 {
+		p.warn(fmt.Sprintf("the Vite dev server on %d is STOPPED and is not restarted by a rollback: the ctl does "+
+			"not know its command line. If this job rolls back, start it again the way you started it before "+
+			"(the registry row and the gateway will be pointing at %d again)", prevPort, prevPort))
+	}
+	p.addUIRegistryStep("record ui.mode static (the port is cleared: nginx serves a directory)",
+		registry.UIModeStatic, 0, prevMode, prevPort)
+	p.addGatewayPublishFor("the static alias for " + base + " replaces this tenant's $tenant_ui row")
+	p.addUIProbe(base)
+
+	p.result["ui_mode"] = registry.UIModeStatic
+	p.result["ui_dist"] = dist
+	p.result["ui_base"] = base
+	return nil
+}
+
+// addUIStagingBuild plans `vite build --base <base>` of src's frontend into the
+// fixed staging directory. `set-ui-mode static` builds from the tenant's own
+// worktree; `update-code` (ops/update.go) builds from the ARTIFACT's, exactly as
+// `create` does. Both then swap it into place with addDistSwap.
+//
+// targetDir is the first of the step's targets: the frontend the build reads.
+func (p *planner) addUIStagingBuild(src, base, staging, title, targetDir string) {
+	dist := filepath.Join(filepath.Dir(staging), "dist")
 	p.addFor("build", step{
-		Kind: "apptainer", Title: "vite build --base " + base + " into " + stagingDist,
-		Targets:    []string{frontend, staging},
+		Kind: "apptainer", Title: title,
+		Targets:    []string{targetDir, staging},
 		WouldWrite: []model.WouldWrite{{Path: staging, Mode: "0640", Preview: ""}},
 		Warnings: []string{"the bundle hard-codes " + base + " into every asset URL, so it serves from that " +
 			"gateway path and no other; the live " + dist + " is not touched by this step"},
@@ -180,7 +218,7 @@ func planSetUIModeStatic(p *planner) error {
 			if err := sc.Checkpoint("dir:" + staging); err != nil {
 				return "", err
 			}
-			if err := sc.Ops.Drivers.Build().UI(ctx, t.Worktree, base, staging); err != nil {
+			if err := sc.Ops.Drivers.Build().UI(ctx, src, base, staging); err != nil {
 				return "", err
 			}
 			return staging, nil
@@ -197,17 +235,14 @@ func planSetUIModeStatic(p *planner) error {
 			return "left the staged build at " + staging, nil
 		},
 	})
+}
 
-	// The dev server, if there is one. It is stopped BEFORE the swap, so the
-	// window in which the gateway's $tenant_ui row still points at a port and
-	// the alias is not published yet is as short as the two steps after it.
-	if prevPort != 0 {
-		p.addDevServerStop(prevPort, frontend)
-	} else {
-		p.skip("proc", "stop the tenant's Vite dev server",
-			"the registry records no UI port for this tenant, so there is no dev server to stop", t.Name)
-	}
-
+// addDistSwap plans the one-rename install of a staged UI build: the serving
+// dist is moved aside as dist.prev-<ts> (checkpointed under prevDistPrefix
+// BEFORE the rename), the staging directory becomes dist, and the rollback
+// moves the new build back to staging and the previous one back into place.
+// `set-ui-mode static` and `update-code` share it.
+func (p *planner) addDistSwap(dist, staging string) {
 	p.addFor("files", step{
 		Kind: "fs", Title: "swap the new build into place, keeping the previous one as dist.prev-<ts>",
 		Targets:    []string{dist},
@@ -256,20 +291,6 @@ func planSetUIModeStatic(p *planner) error {
 		},
 	})
 
-	if prevPort != 0 {
-		p.warn(fmt.Sprintf("the Vite dev server on %d is STOPPED and is not restarted by a rollback: the ctl does "+
-			"not know its command line. If this job rolls back, start it again the way you started it before "+
-			"(the registry row and the gateway will be pointing at %d again)", prevPort, prevPort))
-	}
-	p.addUIRegistryStep("record ui.mode static (the port is cleared: nginx serves a directory)",
-		registry.UIModeStatic, 0, prevMode, prevPort)
-	p.addGatewayPublishFor("the static alias for " + base + " replaces this tenant's $tenant_ui row")
-	p.addUIProbe(base)
-
-	p.result["ui_mode"] = registry.UIModeStatic
-	p.result["ui_dist"] = dist
-	p.result["ui_base"] = base
-	return nil
 }
 
 // addDevServerStop stops the tenant's OWN Vite dev server and nothing else.
@@ -464,17 +485,23 @@ func (p *planner) addUIProbe(base string) {
 		Kind: "probe", Title: "GET " + base + " through the live gateway (expect 200)",
 		Targets: []string{base},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			status, err := sc.Ops.Drivers.Gateway().Probe(ctx, base)
-			if err != nil {
-				return "", fmt.Errorf("GET %s through the gateway: %w", base, err)
-			}
-			if status != 200 {
-				return "", fmt.Errorf("%w: GET %s answered %d, want 200: the generation is published but the "+
-					"static build is not being served from it", jobs.ErrRefused, base, status)
-			}
-			return fmt.Sprintf("GET %s = 200", base), nil
+			return probeUI(ctx, sc, base)
 		},
 	})
+}
+
+// probeUI is addUIProbe's question, asked once: GET base through the live
+// gateway answers 200.
+func probeUI(ctx context.Context, sc *jobs.StepContext, base string) (string, error) {
+	status, err := sc.Ops.Drivers.Gateway().Probe(ctx, base)
+	if err != nil {
+		return "", fmt.Errorf("GET %s through the gateway: %w", base, err)
+	}
+	if status != 200 {
+		return "", fmt.Errorf("%w: GET %s answered %d, want 200: the generation is published but the "+
+			"static build is not being served from it", jobs.ErrRefused, base, status)
+	}
+	return fmt.Sprintf("GET %s = 200", base), nil
 }
 
 // dirPresent reports whether path is a directory this account can list.

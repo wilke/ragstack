@@ -25,6 +25,9 @@ release order is linear (ADR-0010 decision 6; [`apptainer/README.md`
 4. stamp               (wilke, PR)   stamp_tool_image.py <receipt> → cwl/*.cwl + cwl/tool-image.receipt.json
 5. --check + tests     (wilke, CI)   the tree is stamped with exactly one name
 6. commit, merge, tag vS (wilke)     the server release
+7. server image        (wilke)       ragstack-server-vS-b1.sif + receipt, from vS's own commit   (§ 9)
+8. fleet image prepare (ctl account) admitted to /rag/data/ctl/images/server/                     (§ 9)
+9. tenant update-code  (ctl account) dev first, then hackathon after a soak                        (§ 9)
 ```
 
 Two rules hold at every step. **A tag never moves**: if something is wrong
@@ -468,6 +471,62 @@ Two consequences for operators:
 
 ---
 
+## 9. Build and prepare the server image from `vS`, then upgrade [never exercised]
+
+Since PR-F a ctl-run tenant runs its API from a **server image**
+(`ragstack-server-<version>-b<N>.sif`, ADR-0010 Migration step 6), not from its
+worktree. A server release therefore ends with the server image built from the
+`vS` checkout, admitted into the ctl's image store, and the tenants moved onto
+it with `tenant update-code`.
+
+**Deploy order (PR-F D6, binding).** The first `fleet image prepare` writes
+`fleet.server_images` into the registry, which an older ctl binary cannot read.
+Before the first one ever: install and restart the ctl that carries
+`update-code`, and see `ragstack-ctl selftest --supervisor instance` green as
+the ctl account (`tenant-upgrade.md` Part 1, D6).
+
+```bash
+S=v1.6.6
+cd ~/Development/worktrees/rel-$S                  # a CLEAN checkout at the tag
+export PYTHON=/rag/envs/ragstack/bin/python        # >= 3.11
+apptainer/build-image.sh --kind server --dry-run   # name, version, commit, build number
+apptainer/build-image.sh --kind server --sandbox --out "$OUT" --store /rag/data/ctl/images/server
+#   → $OUT/ragstack-server-$S-b<N>.sif + .receipt.json
+#   checks: server-image.md § "Checks after a build" (labels role server, RELEASE,
+#   /v1/version from a boot smoke == the tag's commit)
+
+# Admit it (CLI-only; the receipt must sit beside the image; the commit must
+# resolve in the bare mirror — push a `+sha` dev build's commit first):
+ragstack-ctl --direct fleet image prepare --sif "$OUT/ragstack-server-$S-b<N>.sif"
+ragstack-ctl fleet image list
+```
+
+A tag older than `ragstack-server.def` is built with the def from a newer tree
+(`server-image.md` § "Building an older tag").
+
+For a STATIC-UI tenant the upgrade also rebuilds the UI, from a prepared
+**artifact at the same commit** — prepare one if there is none:
+`ragstack-ctl --direct fleet artifact prepare --tag $S`.
+
+Then upgrade, dev first, hackathon after a soak (plan decision D4):
+
+```bash
+ragstack-ctl tenant update-code dev --image ragstack-server-$S-b<N>.sif --artifact <id> --dry-run
+ragstack-ctl tenant update-code dev --image ragstack-server-$S-b<N>.sif --artifact <id> --yes-destructive dev --wait
+```
+
+`tenant-upgrade.md` Part 1 is the procedure (what each step does, the
+rollback, the interrupted-job recovery). A rebuild of the same tag (`-b2`,
+environmental) is upgraded to the same way — image → image — with
+`--no-rebuild-ui` when the UI did not change.
+
+**If it fails partway:** a failed `update-code` rolls itself back (old UI, old
+image or worktree launch, the old API running). A bad image is never patched:
+build `b<N+1>`, prepare it, upgrade again. A prepared name is never re-pointed
+at other bytes (`fleet image prepare` refuses it).
+
+---
+
 ## Discrepancies found while writing this (ADR vs README vs code)
 
 Where they disagree, this runbook follows the code. Items 2–5, 7 and 10 were
@@ -515,5 +574,6 @@ other notes cite stays stable.
 - [ADR-0010](../adr/0010-tool-image-binding.md): decisions 1–8 and the Migration (#655).
 - [`apptainer/README.md`](../../apptainer/README.md): version vs build, identity, the receipt, stamping.
 - [`verifying-tools-image.md`](verifying-tools-image.md): the boot check and `ragstack-ctl gowe render`, and every failure message.
-- [`tenant-upgrade.md` § 4a](tenant-upgrade.md#4a-a-release-whose-cwl-is-stamped-the-tools-image-must-be-where-the-workers-look): moving a tenant onto a stamped release.
+- [`tenant-upgrade.md`](tenant-upgrade.md): Part 1, `tenant update-code` (a ctl-run tenant onto a server image); Part 2 § 4a, moving a hand-run tenant onto a stamped release.
+- [`server-image.md`](server-image.md): building the server image.
 - [`cwl/README.md`](../../cwl/README.md): `dockerPull` and `dockerImageId`, post-build checks, worker image dirs.

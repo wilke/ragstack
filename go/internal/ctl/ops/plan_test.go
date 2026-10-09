@@ -778,11 +778,17 @@ func TestPlanSADisableRefusesWhileAKeyCarriesTheSubject(t *testing.T) {
 
 // ---------------------------------------------------------------- the rest
 
-func TestPlanUpdateCodeIsRefusedUntilV11(t *testing.T) {
+// update-code is no longer a v1.1 stub (PR-F F5): the old args shape is a
+// validation error, and a systemd-supervised row is refused by name — an image
+// API runs as an apptainer instance. The planner's own tests are update_test.go.
+func TestPlanUpdateCodeIsNoLongerAStub(t *testing.T) {
 	oc, _ := fixture(t, "dev", managed)
-	err := planErr(t, oc, "update-code", map[string]any{"artifact_id": "v1.5.3"})
-	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "v1.1") {
-		t.Fatalf("error = %v, want the v1.1 refusal the contract promises", err)
+	if err := planErr(t, oc, "update-code", map[string]any{"artifact_id": "v1.5.3"}); !errors.Is(err, jobs.ErrValidation) {
+		t.Errorf("the pre-F5 args = %v, want a validation error", err)
+	}
+	err := planErr(t, oc, "update-code", map[string]any{"image": "ragstack-server-v1.6.6-b1.sif", "rebuild_ui": false})
+	if !errors.Is(err, jobs.ErrRefused) || strings.Contains(err.Error(), "v1.1") {
+		t.Fatalf("error = %v, want the supervisor refusal and no v1.1 stub", err)
 	}
 }
 
@@ -1067,7 +1073,7 @@ func TestValidateEnforcesTheArgsSchema(t *testing.T) {
 		"handover": {"phase": "release"}, "decommission": {}, "env-normalize": nil,
 		"key-mint": {"label": "ops", "role": "user"}, "admin-add": {"subject": "bvbrc:alice"},
 		"sa-create": {"subject": "gowe", "role": "user"}, "render-units": {"apply": true},
-		"update-code": {"artifact_id": "v1.5.3"},
+		"update-code": {"image": "ragstack-server-v1.6.6-b1.sif"},
 	} {
 		op, _ := r.Lookup(verb)
 		if err := op.Validate(args); err != nil {

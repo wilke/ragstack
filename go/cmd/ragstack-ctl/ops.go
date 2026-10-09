@@ -26,6 +26,7 @@ import (
 var tenantOpVerbs = map[string]bool{
 	"start": true, "stop": true, "restart": true,
 	"backup": true, "restore": true, "decommission": true, "purge": true,
+	"update-code": true,
 }
 
 func tenantOpUsage(verb string) int {
@@ -103,6 +104,33 @@ succeeds. That needs the job to be followed, so --wait is implied.
   --keep-archive  keep <backups>/<name>/ (every bundle and .tar); delete the rest.
 `, opFlagSummary)
 		return exitUsage
+	case "update-code":
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant update-code <name> --image NAME [--artifact ID] [--no-rebuild-ui|--rebuild-ui] %s
+
+  Moves a ctl-run tenant's API onto a PREPARED server image in one job
+  (`+"`ragstack-ctl fleet image list`"+`). A worktree-mode tenant is migrated by it:
+  its API becomes the apptainer instance api-<name>. In order: a light
+  pre-update bundle (config + state), the image proved (sha256, labels, its
+  commit in the mirror), the worktree checked out at the image's commit, the
+  static UI rebuilt from --artifact and swapped in (dist.prev-<ts> kept), the
+  API stopped, the registry pointed at the image, the API started from it, and
+  post-checks (/health, /v1/health/deep, /v1/version == the image's version
+  and commit, the UI through the gateway). Any failure rolls all of it back:
+  the old UI, the old image (or the worktree launch) and the OLD API running.
+
+  --image NAME      the prepared server image (required)
+  --artifact ID     the prepared artifact the static UI is rebuilt from; its
+                    commit must be the image's. Required when the UI is rebuilt
+  --no-rebuild-ui   an API-only patch: the served UI is left alone and no
+                    artifact is needed (the default for a non-static UI)
+  --rebuild-ui      rebuild the UI (the default for a static UI)
+
+  A job interrupted between the registry swap and the new start (the daemon
+  died) cannot be resumed: recover with `+"`ragstack-ctl tenant start <name>`"+`
+  — the row already names the new image — or run update-code again.
+  Destructive: confirm with --yes-destructive <name>.
+`, opFlagSummary)
+		return exitUsage
 	default:
 		return usageErr("usage: ragstack-ctl tenant %s <name> %s", verb, opFlagSummary)
 	}
@@ -127,6 +155,9 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		keepArchive         *bool
 		wantsOnly, wantsFrm bool
 		wantsScope          bool
+		image, artifact     *string
+		noRebuildUI         *bool
+		rebuildUI           *bool
 	)
 	switch verb {
 	case "start", "restart", "stop":
@@ -146,6 +177,11 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		archive = fs.Bool("archive", true, "archive first: a fenced, checked backup with the secrets sealed, then the quarantine (--archive=false: quarantine over the existing last_backup)")
 	case "purge":
 		keepArchive = fs.Bool("keep-archive", false, "keep the tenant's bundles under the backup root; delete everything else")
+	case "update-code":
+		image = fs.String("image", "", "the prepared server image to move the API onto (required)")
+		artifact = fs.String("artifact", "", "the prepared artifact the static UI is rebuilt from (at the image's commit)")
+		noRebuildUI = fs.Bool("no-rebuild-ui", false, "leave the served UI alone (an API-only patch)")
+		rebuildUI = fs.Bool("rebuild-ui", false, "rebuild the static UI from --artifact (the default for a static UI)")
 	case "restore":
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
@@ -192,6 +228,26 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		// Passed through as given: the args schema owns the enum, so a typo is
 		// the same 422 `validation` the HTTP surface answers.
 		opArgs["secrets"] = *secrets
+	}
+	if verb == "update-code" {
+		if *image == "" {
+			return tenantOpUsage(verb)
+		}
+		if set["no-rebuild-ui"] && set["rebuild-ui"] && *noRebuildUI && *rebuildUI {
+			return usageErr("usage: --rebuild-ui and --no-rebuild-ui say opposite things; pass one")
+		}
+		opArgs["image"] = *image
+		if *artifact != "" {
+			opArgs["artifact_id"] = *artifact
+		}
+		// Absent is "the row decides" (rebuild a static UI): only a flag the
+		// operator wrote lands in args, for the reason the file comment gives.
+		switch {
+		case set["no-rebuild-ui"]:
+			opArgs["rebuild_ui"] = !*noRebuildUI
+		case set["rebuild-ui"]:
+			opArgs["rebuild_ui"] = *rebuildUI
+		}
 	}
 	if wantsFrm {
 		if *from == "" || *as == "" {

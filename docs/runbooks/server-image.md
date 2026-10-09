@@ -11,7 +11,7 @@ migration step 6. Two images, one build script, one identity mechanism:
 | `org.ragstack.role` | `worker` | `server` |
 | staged from the commit | `python/` → `/opt/ragstack/python` | `python/` + `cwl/` → `/opt/ragstack/{python,cwl}` |
 | runs as | `apptainer exec` by a GoWe worker | `apptainer run` (the `%runscript`), an instance owned by the ctl |
-| lives in | `/scout/containers/ragstack/` (GoWe's placement; released builds only, copied by hand — ADR-0010 decision 6 (c)) | `/rag/data/ctl/images/server/`, entered only through `ragstack-ctl fleet image prepare --sif` (PR-F F3, forthcoming) |
+| lives in | `/scout/containers/ragstack/` (GoWe's placement; released builds only, copied by hand — ADR-0010 decision 6 (c)) | `/rag/data/ctl/images/server/`, entered only through `ragstack-ctl fleet image prepare --sif` (PR-F F3) |
 
 Both carry the same extras (`vector,pdf,text,tokenization,graph,postgres` +
 sentencepiece/protobuf; no torch) and read the HF tokenizer from a bound
@@ -35,7 +35,7 @@ The flags (`--out`, `--store`, `--repo`, `--python`, `--dry-run`, `--sandbox`)
 are documented in the script header and in `apptainer/README.md`. Pass
 `--store` with every directory that already holds released builds of the
 kind, or the build number restarts at `b1`. For the server image that is
-`--store /rag/data/ctl/images/server` once F3 exists.
+`--store /rag/data/ctl/images/server`.
 
 **Building an older tag.** A tag that predates `ragstack-server.def` (v1.6.6
 and earlier) has no server def in its tree. Build it from a checkout at the
@@ -128,6 +128,8 @@ kill %1; grep -c uvicorn "$T/api.log"
 
 ## Not here
 
-Registering a server image (`fleet image prepare`, F3), running a tenant's
-API from one (F4) and `tenant update-code` (F5) — see the PR-F brief and,
-once they land, `tenant-upgrade.md`.
+Admitting a built server image is `ragstack-ctl --direct fleet image prepare
+--sif <path>` (F3); moving a tenant's API onto it is `ragstack-ctl tenant
+update-code <t> --image <name>` (F5) — the procedure, its rollback and the
+interrupted-job recovery are [`tenant-upgrade.md`](tenant-upgrade.md) Part 1,
+and the release side is [`cut-a-release.md`](cut-a-release.md) § 9.

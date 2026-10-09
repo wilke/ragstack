@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -313,6 +314,9 @@ func NewFake(opts FakeOptions) *Fake {
 	for path, labels := range opts.ImageLabels {
 		f.instances.SetLabels(path, labels)
 	}
+	// GET /v1/version of an origin nobody seeded answers from the API
+	// INSTANCE serving it, when there is one (FakeTenantAPI.Version).
+	f.api.instances = f.instances
 	for pid, port := range opts.AlivePIDs {
 		if f.proc.alive == nil {
 			f.proc.alive = map[int]bool{}
@@ -2696,6 +2700,11 @@ type FakeTenantAPI struct {
 	// files is the fake filesystem the tenant's key ledger lives on, so that
 	// KeyStatus can answer from the ledger rather than from a fixture.
 	files *FakeFiles
+	// instances is the instance table an unseeded GET /v1/version answers
+	// from: the API instance holding the origin's port says what the image
+	// would — RAGSTACK_GIT_TAG / RAGSTACK_GIT_SHA from the environment it was
+	// started with (PR-F F5's post-check compares exactly those).
+	instances *FakeInstances
 }
 
 func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
@@ -2746,7 +2755,51 @@ func (a *FakeTenantAPI) Version(_ context.Context, origin, _ string) (map[string
 		}
 		return out, nil
 	}
+	if v, ok := a.instances.versionOf(origin); ok {
+		return v, nil
+	}
 	return map[string]any{"version": "fake"}, nil
+}
+
+// versionOf is what the API instance serving origin's port answers on GET
+// /v1/version: the server image's runscript exports RAGSTACK_GIT_TAG and
+// RAGSTACK_GIT_SHA (the ctl passes them as APPTAINERENV_*), and
+// python/ragstack/version.py answers `version` as the tag without its
+// leading `v` (pep440), `git_tag`/`git_sha` verbatim. False when no running
+// api-* instance holds the port. Safe on a nil receiver.
+func (i *FakeInstances) versionOf(origin string) (map[string]any, bool) {
+	if i == nil {
+		return nil, false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return nil, false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return nil, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for name := range i.Running {
+		if !strings.HasPrefix(name, "api-") || i.ports[name] != port {
+			continue
+		}
+		// The LAST spec run under the name is the running one.
+		for k := len(i.Specs) - 1; k >= 0; k-- {
+			spec := i.Specs[k]
+			if spec.Name != name {
+				continue
+			}
+			tag := spec.ExtraEnv["APPTAINERENV_RAGSTACK_GIT_TAG"]
+			sha := spec.ExtraEnv["APPTAINERENV_RAGSTACK_GIT_SHA"]
+			return map[string]any{
+				"version": strings.TrimPrefix(tag, "v"), "git_tag": tag, "git_sha": sha,
+				"started_at": "2026-09-14T12:00:00Z", "python": "3.12.4", "impl": "python",
+			}, true
+		}
+	}
+	return nil, false
 }
 
 func (a *FakeTenantAPI) DeepHealth(_ context.Context, origin, _ string) error {

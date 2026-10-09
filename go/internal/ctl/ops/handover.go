@@ -470,6 +470,12 @@ func (p *planner) addHandoverPGPasswordCheck(legs []component) {
 // the API is gone and whatever that job was in the middle of — a collection
 // half its chunks, a manifest not yet written — is what the take will find.
 func (p *planner) addNoRunningIngest(origin, secretsEnv string) {
+	p.addNoRunningIngestBefore(origin, secretsEnv, "a release stops the API under them")
+}
+
+// addNoRunningIngestBefore is the running-ingest probe for any op that is
+// about to stop the API; why ends the refusal's first sentence.
+func (p *planner) addNoRunningIngestBefore(origin, secretsEnv, why string) {
 	p.addFor("tenantapi", step{
 		Kind: "probe", Title: "check that no ingest job is still running", Targets: []string{origin},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -486,9 +492,9 @@ func (p *planner) addNoRunningIngest(origin, secretsEnv string) {
 				return "", fmt.Errorf("asking %s for its running ingest jobs: %w", origin, err)
 			}
 			if len(running) > 0 {
-				return "", fmt.Errorf("%w: %d ingest job(s) are still running on %s (%s); a release stops the API "+
-					"under them. Wait for them, or cancel them through the tenant, and run this again",
-					jobs.ErrRefused, len(running), p.tenant, strings.Join(running, ", "))
+				return "", fmt.Errorf("%w: %d ingest job(s) are still running on %s (%s); %s. Wait for them, "+
+					"or cancel them through the tenant, and run this again",
+					jobs.ErrRefused, len(running), p.tenant, strings.Join(running, ", "), why)
 			}
 			return "no ingest job is running", nil
 		},
