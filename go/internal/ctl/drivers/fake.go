@@ -192,6 +192,11 @@ type FakeOptions struct {
 	// PostgresRestoreDrops makes a restore lose rows (table name → how many),
 	// which is the one failure the handover's row counts exist to catch.
 	PostgresRestoreDrops map[string]int64
+	// ImageLabels are the labels `apptainer inspect` answers for an image,
+	// by path — FakeInstances.SetLabels at construction, for a fixture host
+	// (the --fake-drivers daemon) that has to answer for a prepared server
+	// image before any test could reach in and seed it.
+	ImageLabels map[string]map[string]string
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -304,6 +309,9 @@ func NewFake(opts FakeOptions) *Fake {
 	}
 	for _, name := range opts.AccountRunningInstances {
 		f.instances.start(jobs.NamespaceAccountDefault, name, "fixture.sif")
+	}
+	for path, labels := range opts.ImageLabels {
+		f.instances.SetLabels(path, labels)
 	}
 	for pid, port := range opts.AlivePIDs {
 		if f.proc.alive == nil {

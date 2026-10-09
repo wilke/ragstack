@@ -1,0 +1,352 @@
+{
+ "instance/create-instance": {
+  "plan_sha256": "ef34c40d2eb69c3b3b207954190cffbbe3587a5e6267647db30f2b7729f0f7b3",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "local"
+  }
+ },
+ "instance/create-systemd": {
+  "plan_sha256": "09c08cdaefd37e0a05c32dd75f2dd3c207fbb990c2af217b3e3c1d61f2ce274b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "sqlite"
+  }
+ },
+ "instance/decommission": {
+  "plan_sha256": "cabbb05a831eb8edd8401a63dd95ef1096a31213a6ad6330d3e89f71e2dfb490",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "state": "quarantined",
+   "tombstone": null
+  }
+ },
+ "instance/decommission-arc": {
+  "plan_sha256": "58ad247530848f8304402106a3a72d8a7393f489c12750cd5fbd4f0ccf1ea8f9",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway",
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ],
+   "state": "quarantined",
+   "tombstone": null
+  }
+ },
+ "instance/restart": {
+  "plan_sha256": "4946eff8ba278643fca52f4a313ac8490cb9dd19c89441d84da3045fc58a25fd",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "state": "active"
+  }
+ },
+ "instance/restore-as": {
+  "plan_sha256": "bb15ec66a3f57cbb0ba82caf4f2342002a8f204aa81e1bb89cfbce7d2cf8983a",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "bundle": "20260914T080000Z-backup",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "local",
+   "restored_as": "golden",
+   "source": "dev"
+  }
+ },
+ "instance/start": {
+  "plan_sha256": "1769de7ecf61bdbfc55a019928e4fc9abb3f821a061c31f23b1913a3a036c74e",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "enabled",
+   "state": "active"
+  }
+ },
+ "instance/start-api": {
+  "plan_sha256": "8ccc44c98271267af654c48add4825214cb12ab051ee7e069d3e72dd01280b2c",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {}
+ },
+ "instance/stop": {
+  "plan_sha256": "bb8319ee8d8d0bd00fe87e358ac0a896f8b481908af3e9977f64307affb42cea",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "disabled",
+   "state": "stopped"
+  }
+ },
+ "instance/stop-force": {
+  "plan_sha256": "d19d04f21afb18f57dcf9f13e559ce892efc477a1b6558ac2fa3f3087ae3ceff",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "disabled",
+   "state": "stopped"
+  }
+ },
+ "systemd/create-instance": {
+  "plan_sha256": "ef34c40d2eb69c3b3b207954190cffbbe3587a5e6267647db30f2b7729f0f7b3",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "local"
+  }
+ },
+ "systemd/create-systemd": {
+  "plan_sha256": "09c08cdaefd37e0a05c32dd75f2dd3c207fbb990c2af217b3e3c1d61f2ce274b",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "sqlite"
+  }
+ },
+ "systemd/decommission": {
+  "plan_sha256": "8f7481a550ed8f92567eac6fc4d165f546ee895c814a4c1161de93511e8edd65",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "state": "quarantined",
+   "tombstone": null
+  }
+ },
+ "systemd/decommission-arc": {
+  "plan_sha256": "18cd7252ced1d55003f597bc14c0ee595e231ec7dc5fc864f20561c4da7048e0",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway",
+   "registry",
+   "manifest",
+   "tenant"
+  ],
+  "result": {
+   "best_effort": false,
+   "bundle": "new-bundle",
+   "fenced": true,
+   "kind": "backup",
+   "scope": [
+    "config",
+    "state",
+    "stores"
+   ],
+   "state": "quarantined",
+   "tombstone": null
+  }
+ },
+ "systemd/restart": {
+  "plan_sha256": "9bb09ed61dc48fd5703305df34034b6373aee4766177eecffe24d9c275686ce1",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "state": "active"
+  }
+ },
+ "systemd/restore-as": {
+  "plan_sha256": "57ce16bd609fef06e10541f7a887ee806dcf972a7abd5be9aca2868163f9a142",
+  "locks": [
+   "registry",
+   "manifest",
+   "tenant",
+   "gateway"
+  ],
+  "result": {
+   "artifact_id": "v1.5.3-abababababab",
+   "bundle": "20260914T080000Z-backup",
+   "index": 4,
+   "keys": [],
+   "name": "golden",
+   "ports": {
+    "index": 4,
+    "base": 24080,
+    "api": 24080,
+    "qdrant_http": 24081,
+    "qdrant_grpc": 24082,
+    "es_http": 24083,
+    "es_transport": 24084,
+    "pg": 24085
+   },
+   "postgres": "sqlite",
+   "restored_as": "golden",
+   "source": "dev"
+  }
+ },
+ "systemd/start": {
+  "plan_sha256": "a4d4c7fb61016372a127125c1c5d9120364d478967db6ea27f45cd58a6a16f3d",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "enabled",
+   "state": "active"
+  }
+ },
+ "systemd/start-api": {
+  "plan_sha256": "3b36428be7d0b688077706d61bb8c1271bbb2247e37a092b8c545de7016c9151",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {}
+ },
+ "systemd/stop": {
+  "plan_sha256": "701ff3046a83c81b4b579b3f5cc3c0514feed08352a40a326c2c43d783903fef",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "disabled",
+   "state": "stopped"
+  }
+ },
+ "systemd/stop-force": {
+  "plan_sha256": "4ffbb012ad937052703b69a87a607c6de88c3024b7e31fb47b03fc6e1ad16584",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest"
+  ],
+  "result": {
+   "desired_boot": "disabled",
+   "state": "stopped"
+  }
+ }
+}

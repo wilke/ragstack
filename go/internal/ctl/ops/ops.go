@@ -284,6 +284,12 @@ type planner struct {
 	locks    []model.LockName
 	secrets  func() []model.Secret
 	result   map[string]any
+	// pendingEnv is the PUBLIC tenant.env a create (or `restore --as`) is
+	// about to write for pendingEnvTenant: an image-mode API launch planned in
+	// the same job derives its binds from it, because the file does not exist
+	// yet when the plan is made (apiPublicEnv).
+	pendingEnv       map[string]string
+	pendingEnvTenant string
 }
 
 func newPlanner(o *op, oc jobs.Context, args map[string]any) *planner {

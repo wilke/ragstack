@@ -146,6 +146,11 @@ type selftestOptions struct {
 	// CTL_DEFAULT_SUPERVISOR, else the contract's `systemd`: a selftest must
 	// prove the path THIS deployment takes, and on coconut that is `instance`.
 	supervisor string
+	// image, when set, creates the sandbox in IMAGE mode (`create --image`):
+	// its API runs as the apptainer instance api-<sandbox> of this prepared
+	// server image, and the restored twin inherits it. Needs supervisor
+	// instance, and an artifact at the image's commit for the static UI.
+	image string
 }
 
 // selftest is one run. Everything it talks to is a field, so the test builds
@@ -193,7 +198,7 @@ type selftest struct {
 
 func selftestUsage() int {
 	fmt.Fprint(stderr, `usage: ragstack-ctl selftest [--keep] [--with-gateway] [--artifact ID] [--postgres local]
-                             [--fixture PATH] [--rag-root R]
+                             [--fixture PATH] [--rag-root R] [--image NAME]
        ragstack-ctl selftest --boot
        ragstack-ctl selftest --sweep
 
@@ -214,6 +219,11 @@ the sandbox range is read, written, started or stopped.
                     instance the post-checks read the instance table and the
                     pidfile instead of systemctl show, and the journal check
                     is n/a (there is no unit to have a journal)
+  --image NAME      create the sandbox in IMAGE mode from this prepared server
+                    image: its API is the apptainer instance api-<sandbox>,
+                    proved (labels, sha256) before every start; needs
+                    --supervisor instance and an --artifact at the image's
+                    commit (default: the newest prepared one at that commit)
   --boot            run the BOOT CHECKLIST only and exit: linger, the user@
                     drop-in, is-enabled and default.target's dependencies for
                     every tenant whose row says desired_boot enabled
@@ -248,6 +258,7 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 		postgres    = fs.String("postgres", "", "`local` gives the sandbox its own postgres")
 		fixture     = fs.String("fixture", "", "the document to ingest")
 		supervisor  = fs.String("supervisor", "", "systemd|instance (default $CTL_DEFAULT_SUPERVISOR, else systemd)")
+		image       = fs.String("image", "", "create the sandbox in image mode from this prepared server image")
 		root        = fs.String("rag-root", ragRoot, "deployment root")
 		reg         = fs.String("registry", registryPath, "registry.json path")
 		server      = fs.String("server", "", "refused: a selftest runs on the host it tests")
@@ -282,11 +293,15 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 	if !ops.KnownSupervisor(sup) {
 		return usageErr("--supervisor %q is not systemd or instance", sup)
 	}
+	if *image != "" && sup != "instance" {
+		return usageErr("--image runs the API as an apptainer instance, which only --supervisor instance supervises "+
+			"(this run would use %q)", sup)
+	}
 
 	s, err := newSelftest(selftestOptions{
 		keep: *keep, withGateway: *withGateway, boot: *boot, sweepOnly: *sweep,
 		artifact: *artifact, postgres: *postgres, ragRoot: *root, fixture: *fixture,
-		supervisor: sup,
+		supervisor: sup, image: *image,
 	}, *reg)
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
@@ -451,6 +466,10 @@ func (s *selftest) execute(ctx context.Context) error {
 	s.primary, s.restored = "ctltest-"+stamp, "ctltest-"+stamp+"-r"
 	fmt.Fprintf(s.out, "selftest: artifact %s, supervisor %s, sandbox %s (restored into %s)\n",
 		artifact, s.supervisorKind(), s.primary, s.restored)
+	if s.opts.image != "" {
+		fmt.Fprintf(s.out, "selftest: image mode: the API runs from server image %s as the instance api-%s\n",
+			s.opts.image, s.primary)
+	}
 
 	fixture := s.opts.fixture
 	if fixture == "" {
@@ -475,6 +494,9 @@ func (s *selftest) execute(ctx context.Context) error {
 	}
 	if s.opts.postgres != "" {
 		createArgs["postgres"] = s.opts.postgres
+	}
+	if s.opts.image != "" {
+		createArgs["image"] = s.opts.image
 	}
 	job, err := s.submit(ctx, "create-sandbox", "create-sandbox", s.primary, createArgs, "")
 	if err != nil {
@@ -831,14 +853,32 @@ func (s *selftest) pickArtifact() (string, error) {
 		}
 		return s.opts.artifact, nil
 	}
+	// Image mode: the sandbox's static UI is built from an artifact at the
+	// IMAGE's commit, so the newest prepared one at that commit.
+	commit := ""
+	if s.opts.image != "" {
+		rec, ok := f.ServerImages[s.opts.image]
+		if !ok || rec == nil {
+			return "", fmt.Errorf("%w: server image %q is not prepared on this host (`ragstack-ctl fleet image "+
+				"prepare --sif …`)", jobs.ErrRefused, s.opts.image)
+		}
+		commit = rec.Commit
+	}
 	best, bestAt := "", ""
 	for id, a := range f.Artifacts {
+		if commit != "" && a.SHA != commit {
+			continue
+		}
 		// Newest by prepared_at, ties broken by id so the choice is stable:
 		// two artifacts prepared in the same second must not make two runs of
 		// the same command create from different code.
 		if a.PreparedAt > bestAt || (a.PreparedAt == bestAt && id > best) {
 			best, bestAt = id, a.PreparedAt
 		}
+	}
+	if best == "" && commit != "" {
+		return "", fmt.Errorf("%w: no artifact is prepared at server image %s's commit %s, and the sandbox's static UI "+
+			"is built from one. Prepare one at that commit first", jobs.ErrRefused, s.opts.image, commit)
 	}
 	if best == "" {
 		return "", fmt.Errorf("%w: no artifact is prepared on this host, and a selftest creates a tenant from one. "+
@@ -1207,6 +1247,7 @@ func (s *selftest) compareSummaries() checkResult {
 		{"stores.elasticsearch.ownership", a.Stores.Elasticsearch.Ownership, b.Stores.Elasticsearch.Ownership},
 		{"supervisor", a.Supervisor, b.Supervisor},
 		{"owner", a.Owner, b.Owner},
+		{"server_image", serverImageOf(a), serverImageOf(b)},
 	}
 	var bad []string
 	for _, f := range fields {
@@ -1219,6 +1260,14 @@ func (s *selftest) compareSummaries() checkResult {
 	}
 	return checkResult{Name: name, Verdict: checkPass,
 		Detail: fmt.Sprintf("%d fields agree", len(fields))}
+}
+
+// serverImageOf is the row's server image name, "" in worktree mode.
+func serverImageOf(t *registry.Tenant) string {
+	if t.ServerImage == nil {
+		return ""
+	}
+	return t.ServerImage.Name
 }
 
 // quarantineChecks are the post-conditions of a decommission, asked of the
@@ -1318,6 +1367,9 @@ func (s *selftest) instancesGoneCheck(ctx context.Context, name string, t *regis
 		"qdrant-" + t.ManifestName:        true,
 		"elasticsearch-" + t.ManifestName: true,
 		"postgres-" + t.ManifestName:      true,
+		// The API instance of an image-mode sandbox (PR-F); a worktree-mode
+		// one has none, and the name is then simply never listed.
+		render.APIImageInstancePrefix + t.ManifestName: true,
 	}
 	var alive []string
 	for _, in := range list {
@@ -1336,7 +1388,8 @@ func (s *selftest) instancesGoneCheck(ctx context.Context, name string, t *regis
 		check.Verdict, check.Detail = checkFail, "still there: "+strings.Join(alive, ", ")
 		return check
 	}
-	check.Verdict, check.Detail = checkPass, "3 instance names are unknown to apptainer and "+pidfile+" is gone"
+	check.Verdict, check.Detail = checkPass, fmt.Sprintf("%d instance names are unknown to apptainer and %s is gone",
+		len(want), pidfile)
 	return check
 }
 

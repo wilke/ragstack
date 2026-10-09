@@ -1314,7 +1314,10 @@ export interface components {
         "$defs-PublicSettingKey": string | ("CHUNK_MAX_TOKENS" | "CHUNK_TOKEN_COUNTER" | "EMBEDDING_MAX_BATCH_TOKENS" | "EMBEDDING_CHARS_PER_TOKEN" | "GOWE_RECEIPTS_OUTPUT_KEY" | "GOWE_SHARDS_INPUT_KEY") | unknown;
         CreateArgs: {
             name: string;
-            artifact_id: string;
+            /** @description A PREPARED artifact (`fleet artifact prepare`). Required unless `image` is given; with `image` it is required when `ui_mode` is `static` (the UI is built from it) and its commit must be the image's. */
+            artifact_id?: string;
+            /** @description A PREPARED server image (`fleet image prepare`, listed under `GET /v1/artifacts` `server_images`): the tenant's API runs as the apptainer instance `api-<name>` of it from birth (image mode), the row records it as `server_image`, `code` is its version and commit, and the worktree is checked out at that commit. Requires `supervisor: instance`. */
+            image?: string;
             /**
              * @description JVM heap for the dedicated Elasticsearch, e.g. `1g`. Admission checks the fleet heap sum against host memory.
              * @default 1g
@@ -1395,7 +1398,10 @@ export interface components {
                 PublicSettingKey: string | ("CHUNK_MAX_TOKENS" | "CHUNK_TOKEN_COUNTER" | "EMBEDDING_MAX_BATCH_TOKENS" | "EMBEDDING_CHARS_PER_TOKEN" | "GOWE_RECEIPTS_OUTPUT_KEY" | "GOWE_SHARDS_INPUT_KEY") | unknown;
                 CreateArgs: {
                     name: string;
-                    artifact_id: string;
+                    /** @description A PREPARED artifact (`fleet artifact prepare`). Required unless `image` is given; with `image` it is required when `ui_mode` is `static` (the UI is built from it) and its commit must be the image's. */
+                    artifact_id?: string;
+                    /** @description A PREPARED server image (`fleet image prepare`, listed under `GET /v1/artifacts` `server_images`): the tenant's API runs as the apptainer instance `api-<name>` of it from birth (image mode), the row records it as `server_image`, `code` is its version and commit, and the worktree is checked out at that commit. Requires `supervisor: instance`. */
+                    image?: string;
                     /**
                      * @description JVM heap for the dedicated Elasticsearch, e.g. `1g`. Admission checks the fleet heap sum against host memory.
                      * @default 1g

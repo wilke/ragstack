@@ -196,16 +196,34 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 
 	// ---- what the PLAN must commit to, and the bundle must agree with -------
 	artifactID := string(src.ArtifactID)
-	if artifactID == "" {
+	// The SOURCE's API mode is the copy's: an image-mode source is restored
+	// into an image-mode twin of the same server image, which has to be
+	// prepared on this host (the image is not IN the bundle).
+	serverImage, err := restoreServerImage(p, f, src, as)
+	if err != nil {
+		return err
+	}
+	needsArtifact := serverImage == nil || src.UI.Mode == "" || src.UI.Mode == registry.UIModeStatic
+	if artifactID == "" && needsArtifact {
+		if serverImage != nil {
+			return p.refuse("%s runs from server image %s with a STATIC UI, and has no artifact_id: the UI of %s is "+
+				"built from a prepared artifact at the image's commit (%s), and there is none to build it from. "+
+				"Prepare one (`ragstack-ctl fleet artifact prepare --tag %s`) and record it on %s", srcName,
+				serverImage.Name, as, serverImage.Commit, serverImage.Version, srcName)
+		}
 		return p.refuse("%s has no artifact_id, so there is no reviewed checkout to build %s from. `restore --as` "+
 			"lays the fresh tenant down exactly as `tenant create` does, and that needs a prepared artifact: "+
 			"`ragstack-ctl fleet artifact prepare --tag <tag>`, then record it on %s", srcName, as, srcName)
 	}
-	artifact, ok := f.Artifacts[artifactID]
-	if !ok {
-		return p.refuse("%s's artifact %q is not prepared on this host: the fresh tenant %s would have no worktree to "+
-			"check out. Prepare it (`ragstack-ctl fleet artifact prepare --tag %s`) and restore again",
-			srcName, artifactID, as, orDefault(src.Code.Tag, artifactID))
+	var artifact *registry.Artifact
+	if artifactID != "" {
+		a, ok := f.Artifacts[artifactID]
+		if !ok {
+			return p.refuse("%s's artifact %q is not prepared on this host: the fresh tenant %s would have no worktree "+
+				"to check out. Prepare it (`ragstack-ctl fleet artifact prepare --tag %s`) and restore again",
+				srcName, artifactID, as, orDefault(src.Code.Tag, artifactID))
+		}
+		artifact = a
 	}
 	storeKind, err := restoreStoreKind(p, src)
 	if err != nil {
@@ -234,6 +252,12 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 		Start: false, Gateway: false,
 		Verb:   "restore",
 		Mirror: p.op.deps.Mirror, Owner: p.op.deps.owner(),
+		// And the source's API mode, for the same reason.
+		ServerImage: serverImage,
+	}
+	if serverImage != nil && spec.Supervisor != supervisorInstance {
+		return p.refuse("%s runs its API from server image %s, which only `supervisor: instance` supervises, and "+
+			"%s would be laid down under %q", srcName, serverImage.Name, as, spec.Supervisor)
 	}
 	// A sandbox is restored into a SANDBOX. `registry.Allocate` ignores
 	// selftest rows and hands out the next production block, so a selftest that
@@ -385,6 +409,30 @@ func restoreStoreKind(p *planner, src *registry.Tenant) (string, error) {
 	default:
 		return paths.StoreSQLite, nil
 	}
+}
+
+// restoreServerImage is the server image a restored twin of src runs from:
+// nil for a worktree-mode source; for an image-mode one, the source's image as
+// it is PREPARED on this host — refused when it is not, or when the prepared
+// record's bytes are not the ones the source row recorded.
+func restoreServerImage(p *planner, f *registry.Fleet, src *registry.Tenant, as string) (*registry.ServerImage, error) {
+	if !src.ImageMode() {
+		return nil, nil
+	}
+	si := src.ServerImage
+	rec, ok := f.ServerImages[si.Name]
+	if !ok || rec == nil {
+		return nil, p.refuse("%s runs its API from server image %s, which is not prepared on this host: the image is "+
+			"not in a bundle, so %s would have nothing to run. Prepare it (`ragstack-ctl fleet image prepare --sif "+
+			"…`) and restore again", src.Name, si.Name, as)
+	}
+	if rec.SHA256 != si.SHA256 || rec.Commit != si.Commit {
+		return nil, p.refuse("%s records server image %s as sha256 %s at %s, but the image prepared under that name "+
+			"is sha256 %s at %s: a name is never re-pointed at other bytes, so one of the two records is wrong",
+			src.Name, si.Name, si.SHA256, si.Commit, rec.SHA256, rec.Commit)
+	}
+	return &registry.ServerImage{Name: si.Name, Version: rec.Version, Commit: rec.Commit, Build: rec.Build,
+		SHA256: rec.SHA256, Path: rec.Path}, nil
 }
 
 // restoreSupervisor is the source's, or the deployment's default when the
@@ -862,6 +910,21 @@ func (p *planner) addStoreReadyGate(spec createSpec) {
 // addAPIReadyGate waits for the restored tenant's API to bind its port.
 func (p *planner) addAPIReadyGate(t *registry.Tenant) {
 	port := t.Ports.API
+	if t.ImageMode() {
+		// Image mode: the restored API instance holding its port, not merely
+		// a listener on it (awaitAPIReady). The worktree step below is
+		// unchanged.
+		api := apiReadyTarget(t, port)
+		p.addFor("proc", step{
+			Kind: "probe", Title: fmt.Sprintf("wait for the restored API instance %s to hold %d (up to %s)",
+				api.Instance, port, createReadyTimeout),
+			Targets: []string{strconv.Itoa(port)},
+			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				return awaitAPIReady(ctx, sc, api)
+			},
+		})
+		return
+	}
 	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("wait for the restored API to listen on %d (up to %s)", port, createReadyTimeout),
 		Targets: []string{strconv.Itoa(port)},

@@ -234,6 +234,9 @@ const (
 	patEnvKey     = `^[A-Z][A-Z0-9_]{0,127}$`
 	patArtifactID = `^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`
 	patESHeap     = `^[1-9][0-9]*[mg]$`
+	// patServerImage is registry.json's ServerImageName: a prepared server
+	// image's file name (`create --image`).
+	patServerImage = `^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\.sif$`
 	// patGitRef is what `fleet artifact prepare --tag` accepts. Deliberately
 	// narrow: the value is handed to `git rev-parse` as one argv element, and a
 	// ref grammar that admitted spaces, `-` prefixes or shell metacharacters
@@ -394,7 +397,10 @@ var argSchemas = map[string]argSpec{
 	// entry points are fleet-scoped verbs with no arguments at all.
 	"create": {Verb: "create", Fields: []argField{
 		{Name: "name", Kind: argString, Required: true, Pattern: patTenantName},
-		{Name: "artifact_id", Kind: argString, Required: true, Pattern: patArtifactID},
+		// Not required on its own: `create --image` with a non-static UI needs
+		// no artifact. The op requires one of the two (planCreateWith).
+		{Name: "artifact_id", Kind: argString, Pattern: patArtifactID},
+		{Name: "image", Kind: argString, Pattern: patServerImage},
 		{Name: "es_heap", Kind: argString, Pattern: patESHeap},
 		{Name: "postgres", Kind: argString, Enum: []string{"sqlite", "local"}},
 		{Name: "identity_provider", Kind: argString, Enum: []string{"bvbrc", "none"}},
@@ -423,7 +429,8 @@ var argSchemas = map[string]argSpec{
 	// in which allocator they take a port block from.
 	"create-sandbox": {Verb: "create-sandbox", Fields: []argField{
 		{Name: "name", Kind: argString, Required: true, Pattern: patSandboxName},
-		{Name: "artifact_id", Kind: argString, Required: true, Pattern: patArtifactID},
+		{Name: "artifact_id", Kind: argString, Pattern: patArtifactID},
+		{Name: "image", Kind: argString, Pattern: patServerImage},
 		{Name: "es_heap", Kind: argString, Pattern: patESHeap},
 		{Name: "postgres", Kind: argString, Enum: []string{"sqlite", "local"}},
 		{Name: "identity_provider", Kind: argString, Enum: []string{"bvbrc", "none"}},

@@ -193,9 +193,15 @@ func artifactTenants(f *registry.Fleet, id string) []string {
 
 func createUsage() int {
 	fmt.Fprintf(stderr, `usage: ragstack-ctl tenant create <name> --artifact ID [options] %s
+       ragstack-ctl tenant create <name> --image NAME [--artifact ID] [options]
 
   --artifact ID          a PREPARED artifact (fleet artifact prepare) — never a
                          git ref and never a path
+  --image NAME           a PREPARED server image (fleet image prepare): the API
+                         runs as the apptainer instance api-<name> of it (image
+                         mode; needs supervisor instance). --artifact is then
+                         required for a static UI and must be at the image's
+                         commit
   --postgres local       give the tenant its own postgres instance on the
                          block's +5 port (default: sqlite files under state/)
   --es-heap 1g           JVM heap for the dedicated Elasticsearch
@@ -221,7 +227,8 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 	fs.SetOutput(stderr)
 	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
 	var (
-		artifact   = fs.String("artifact", "", "a prepared artifact id (required)")
+		artifact   = fs.String("artifact", "", "a prepared artifact id (required unless --image)")
+		image      = fs.String("image", "", "a prepared server image name (image-mode API)")
 		postgres   = fs.String("postgres", "", "sqlite|local — where the ACL/job/collection state lives")
 		esHeap     = fs.String("es-heap", "", "JVM heap for the dedicated Elasticsearch, e.g. 1g")
 		identity   = fs.String("identity", "", "bvbrc|none")
@@ -244,13 +251,19 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 		return exitUsage
 	}
 	pos = append(pos, fs.Args()...)
-	if len(pos) != 1 || *artifact == "" {
+	if len(pos) != 1 || (*artifact == "" && *image == "") {
 		return createUsage()
 	}
 	name := pos[0]
 	set := setFlags(fs)
 
-	opArgs := map[string]any{"name": name, "artifact_id": *artifact}
+	opArgs := map[string]any{"name": name}
+	if *artifact != "" {
+		opArgs["artifact_id"] = *artifact
+	}
+	if *image != "" {
+		opArgs["image"] = *image
+	}
 	if *postgres != "" {
 		opArgs["postgres"] = *postgres
 	}
