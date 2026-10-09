@@ -382,6 +382,7 @@ coconut's node does, which is the reason these exist.
 | `CTL_MIRROR` | `<rag-root>/repos/ragstack.git` | the BARE mirror artifacts are prepared from. The ctl never creates it — see the root items. |
 | `CTL_NPM_CACHE` | `<rag-root>/cache/npm` | the npm cache an artifact install writes through (never `~/.npm`). |
 | `CTL_API_BIND_ROOTS` | `/rag/cache:rw,/scout/containers:ro,/rag/config:ro` | extra directories an apptainer instance (a server-image API, PR-F) may bind beyond the approved roots. Comma-separated `<path>[:ro\|:rw]`, a bare path is read-only; a read-only root refuses a writable bind under it. Absolute, no `..`, not `/`; a malformed value refuses the daemon's start. |
+| `CTL_ALLOWED_ENDPOINT_HOSTS` | `127.0.0.1,::1,localhost,<hostname>` | the hosts an executable-surface URL may name (#714: `env set-surface`, `tenant create --set` under `--direct`, doctor's `endpoint_host_not_allowed`). Comma-separated host names or IP literals — no scheme, port or wildcard; a configured list REPLACES the default (list loopback again if you want it). A malformed value refuses the start. A `--direct` run with the variable unset reads it out of `ctl.env` (ctl-as-svc.sh does not load that file). On coconut: `CTL_ALLOWED_ENDPOINT_HOSTS=127.0.0.1,::1,localhost,coconut,mango.cels.anl.gov,p3.theseed.org`. |
 
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.
 `ctl-daemon.sh` PARSES both files (`KEY=VALUE`, one pair of surrounding quotes
@@ -1300,6 +1301,63 @@ Run it only once a `fleet start --all` by hand has been seen to be clean.
 
 If any of those matter for a tenant, that tenant belongs on units — which is
 what the sysadmin migration is for.
+
+---
+
+## Executable-surface keys — `env set-surface` (#714)
+
+`env set` takes PUBLIC keys only, for every caller. The keys that decide where a
+tenant's API connects or which files it loads — `LLM_ENDPOINT`, `GOWE_URL`,
+`WORKSPACE_URL`, the store URLs (`QDRANT_URL`, `ELASTICSEARCH_URL`, `NEO4J_URI`,
+`REDIS_URL`, the sidecars, `OTEL_EXPORTER_OTLP_ENDPOINT`), `EMBEDDING_ENDPOINTS`,
+`MODEL_URL_ALLOWLIST`, the two `*_COLLECTION_ROUTES` tables, the path settings
+(`COLLECTIONS_FILE`, `PROMPT_TEMPLATES_FILE`, `INGEST_ROOT`, the `*_STORE_PATH`s, …),
+`GOWE_IMAGE_DIRS` and, on a worktree row, the three CWL paths — go through
+`env set-surface`, which runs **only on the host, with `--direct`** (implied; `--server`
+is refused, the daemon answers 422 for the verb, and its planner refuses any engine but a
+direct one):
+
+```bash
+# plan first: the preview shows the new tenant.env, KEY=VALUE in the clear
+ops/coconut/ctl-as-svc.sh env set-surface clark \
+    LLM_ENDPOINT=http://mango.cels.anl.gov:8003 --dry-run
+ops/coconut/ctl-as-svc.sh env set-surface clark LLM_ENDPOINT=http://mango.cels.anl.gov:8003 --yes
+ops/coconut/ctl-as-svc.sh tenant restart clark --yes-destructive clark   # it is pending until then
+
+ops/coconut/ctl-as-svc.sh env unset-surface clark LLM_ENDPOINT --yes-destructive clark
+```
+
+What is refused, and why (the table is `go/internal/ctl/settings/surface.go`):
+
+| Key class | Rule |
+|---|---|
+| `PYTHONPATH` `PATH` `HF_HOME` `PORT` `ROOT_PATH` | never — the unit, the argv or the gateway owns them. On an image row also the three CWL keys (the image's unit environment overrides them). `unset-surface` may still remove them. |
+| URL keys | absolute; `http`/`https` (`NEO4J_URI`: `bolt`, `neo4j`, `+s`/`+ssc`; `REDIS_URL`: `redis`/`rediss`); **no `user:password@`** (credentials belong in the secret key in `secrets.env`); no `#fragment`; the host (case-folded, port ignored) in `CTL_ALLOWED_ENDPOINT_HOSTS`. Empty is refused — use `unset-surface`. |
+| `EMBEDDING_ENDPOINTS` `MODEL_URL_ALLOWLIST` | comma list or JSON array, every element a URL as above; written back as a comma list. |
+| path keys (+ CWL on a worktree row) | absolute, clean, `[A-Za-z0-9._/-]`; strictly under the tenant's data dir or a `CTL_API_BIND_ROOTS` entry (CWL: its worktree or data dir); never named `secrets.env`/`ctl-secrets.env`; never inside — or containing — the ctl config dir, the ctl state dir, the backups dir or another tenant's data dir. On an image row the API instance's bind derivation and start-time path probe must pass (a sqlite `*_STORE_PATH` in a read-only bind is refused). |
+| `GOWE_IMAGE_DIRS` | comma list, each absolute and under a `CTL_API_BIND_ROOTS` entry. |
+| `QDRANT_COLLECTION_ROUTES` `ES_COLLECTION_ROUTES` | a JSON object; keys are physical store names (`^[a-z0-9][a-z0-9._-]*$`), values URLs as above. |
+
+The job is `env set`'s: the tenant lock, `tenant.env.bak-env-set-surface-<ts>` beside the
+file, an atomic rewrite, and a registry step that sets `restart_pending: true` and the new
+`env_file_sha256` (since #714 `env set` / `env unset` do that too, so the job's own edit is
+no longer reported as `env_file_changed`). Surface keys never enter the row's `settings{}`.
+
+`tenant create --set KEY=VALUE` accepts the same keys under the same rules when run with
+`--direct`; without it (and over HTTP) a surface key is refused as before.
+`--template-from` and `restore --as` stay public-only.
+
+**The idempotency key is derived from the request.** Re-running the same `set-surface`
+returns the EARLIER job — even when a hand edit has since reverted what it did. Pass
+`--new-key` to run it again on purpose.
+
+**An interrupted job is resumed on the CLI**: `ragstack-ctl job resume <id> --direct` (as
+the ctl account). Over HTTP, `POST /v1/jobs/<id>/resume|continue|cancel` answers 409
+`refused` for a job of any CLI-only verb.
+
+**Doctor** reports `endpoint_host_not_allowed` (warn) for every existing URL setting whose
+host is outside the allowlist, so put the hosts the fleet already uses into `ctl.env`
+before relying on the verb.
 
 ---
 

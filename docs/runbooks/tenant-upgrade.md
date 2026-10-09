@@ -450,7 +450,9 @@ files, under the stamped name, in the group's `--image-dir`, either directly or
 as symlinks into the store. The check opens the receipt beside the path it
 finds. `GOWE_IMAGE_DIRS` must name that same dir, because it is what the boot
 check searches (first hit wins). The key is executable-surface, so
-`ragstack-ctl env set` refuses it. Edit `tenant.env` directly, as the
+`ragstack-ctl env set` refuses it; on a ctl-owned tenant use
+`ragstack-ctl env set-surface` on the host (`ctl-deploy.md` § *Executable-surface
+keys*). Otherwise edit `tenant.env` directly, as the
 management session that owns `/rag`
 ([`verifying-tools-image.md`](verifying-tools-image.md)):
 

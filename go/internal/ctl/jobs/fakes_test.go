@@ -26,6 +26,9 @@ type fakeOp struct {
 	locks       []model.LockName
 	validate    func(args map[string]any) error
 	planFn      func(oc Context, args map[string]any) *Planned
+	// planErr, when set, may refuse the plan from what the Context says —
+	// the shape of a planner that gates on oc.Mode (#714).
+	planErr func(oc Context) error
 }
 
 func (o *fakeOp) Verb() string      { return o.verb }
@@ -39,6 +42,11 @@ func (o *fakeOp) Validate(args map[string]any) error {
 }
 
 func (o *fakeOp) Plan(ctx context.Context, oc Context, args map[string]any) (*Planned, error) {
+	if o.planErr != nil {
+		if err := o.planErr(oc); err != nil {
+			return nil, err
+		}
+	}
 	p := o.planFn(oc, args)
 	p.Locks = o.locks
 	p.Plan.RequiresConfirm = o.confirm

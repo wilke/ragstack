@@ -244,3 +244,20 @@ rehearsal; **E** legacy-script fencing and the rehearsed `dev` handover (handove
 retirement of the script tenant groups are v1.1; the final proof is a reboot drill with four
 `/health` 200s before any human acts. Throughout, a tenant is restorable by exactly one
 supervisor: `restore.sh` until its handover commits, `ragstack-ctl start --all` after.
+
+## Amendment — 2026-10-09: executable-surface keys on the CLI (#714)
+
+The split above left one gap: the env API refuses every executable-surface key for every
+caller, so a ctl-created tenant could get `LLM_ENDPOINT`, `GOWE_URL`, `COLLECTIONS_FILE`,
+`GOWE_IMAGE_DIRS` and the rest only by a hand edit of `tenant.env`. They are now set through
+a **typed, validated, audited CLI verb** — `ragstack-ctl env set-surface` / `unset-surface`,
+and the surface half of `tenant create --set` — that is a job like any other (tenant lock,
+`.bak-env-set-surface-<ts>`, atomic write, `restart_pending` + `env_file_sha256` on the row,
+audit subject `local:<uid>[:sudo:<user>]`). The **HTTP boundary is unchanged**: the verbs
+are not in the ops endpoint's verb enum (422), their planners refuse unless the *engine*
+runs `--direct` (the daemon cannot plan them, so it cannot resume one either), and the job
+continuation routes answer 409 for every CLI-only verb. Each value passes the table in
+`go/internal/ctl/settings/surface.go`: unit- and gateway-owned keys are refused always; a URL
+must be absolute, carry no userinfo and name a host in `CTL_ALLOWED_ENDPOINT_HOSTS`
+(default loopback and this host); a path must be under the tenant's data dir or a
+`CTL_API_BIND_ROOTS` entry and never overlap the ctl's own dirs or another tenant's.

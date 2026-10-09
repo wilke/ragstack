@@ -100,6 +100,12 @@ type createSpec struct {
 	Accounts  []serviceAccountArg
 	Settings  map[string]string
 	UIMode    string
+	// SurfaceSettings are the executable-surface keys of `create --set`
+	// (#714), accepted ONLY from a --direct run and only in the shapes
+	// settings/surface.go allows. They are written into tenant.env and NEVER
+	// into the row's settings{}, which records public keys only (adopt keeps
+	// them out the same way); the launch sees them through the file.
+	SurfaceSettings map[string]string
 
 	Start   bool
 	Gateway bool
@@ -248,15 +254,26 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 			}
 		}
 	}
+	surface := map[string]any{}
 	if raw, ok := args["settings"].(map[string]any); ok {
 		for _, k := range sortedKeys(raw) {
-			if settings.Classify(k) != settings.Public {
+			class := settings.Classify(k)
+			// Executable-surface keys are accepted from a --direct run and from
+			// nothing else: the ENGINE's mode, never the request's. Over HTTP
+			// create_request.json already refuses them; this is the gate that
+			// does not depend on the schema.
+			surfaceOK := class == settings.ExecutableSurface && p.oc.Mode == model.WorkerDirect
+			if class != settings.Public && !surfaceOK {
 				return p.refuse("settings.%s is %s-class; `create` accepts public settings only", k,
-					settings.Classify(k).String())
+					class.String())
 			}
 			v, ok := raw[k].(string)
 			if !ok {
 				return fmt.Errorf("%w: settings.%s must be a string", jobs.ErrValidation, k)
+			}
+			if class == settings.ExecutableSurface {
+				surface[k] = v
+				continue
 			}
 			set[k] = v
 		}
@@ -329,6 +346,16 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 			"would be a row no later load accepts", spec.Owner, registry.Owners())
 	}
 	spec.Tenant = prospectiveTenant(p.oc.Roots, f, spec)
+	if len(surface) > 0 {
+		// Validated against the row this job is about to create: its data
+		// dir, its worktree, its mode. The same table `env set-surface` uses,
+		// so a refused-always key cannot be smuggled in at birth either.
+		values, _, err := p.validateSurfaceValues(spec.Tenant, surface)
+		if err != nil {
+			return err
+		}
+		spec.SurfaceSettings = values
+	}
 	return planCreateSteps(p, spec)
 }
 
@@ -415,6 +442,15 @@ func planCreateSteps(p *planner, spec createSpec) error {
 		pending[a.Key] = a.Value
 	}
 	p.pendingEnv, p.pendingEnvTenant = pending, name
+	if len(spec.SurfaceSettings) > 0 && t.ServerImage != nil {
+		// The image row's bind derivation and path probe over the file this
+		// job will write, surface keys included: a sqlite store path in a
+		// read-only bind is refused here, not at the start.
+		if err := p.imageSurfaceCheck(t, tp, nil, nil); err != nil {
+			return p.refuse("%s would run its API from a server image, and with these settings it could not "+
+				"start: %v", name, err)
+		}
+	}
 	units, err := render.Units(t, render.UnitConfig{
 		RagRoot: p.oc.Roots.RagRoot, CtlStateDir: p.oc.Roots.CtlStateDir,
 		// Empty is RagRoot (render's own default). It is non-empty only for a
@@ -1014,9 +1050,15 @@ func composeEnv(spec createSpec, tp paths.Tenant, secrets render.Secrets) (publi
 		}
 	}
 	// The operator's settings last: they are the request's own overrides, and
-	// they are public-class by construction (planCreate refuses anything else).
+	// they are public-class by construction (planCreate refuses anything else)
+	// — except the executable-surface keys a --direct create validated.
 	for _, k := range sortedStringKeys(spec.Settings) {
 		if err := f.Set(k, spec.Settings[k]); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, k := range sortedStringKeys(spec.SurfaceSettings) {
+		if err := f.Set(k, spec.SurfaceSettings[k]); err != nil {
 			return nil, nil, err
 		}
 	}

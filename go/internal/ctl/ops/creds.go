@@ -840,6 +840,10 @@ type envEdit struct {
 	Destructive bool
 	// Mutate applies the change to the parsed file and returns the log line.
 	Mutate func(f *envfile.File) (string, error)
+	// Written, when set, receives the bytes the run half wrote, so a later
+	// step (the registry's env_file_sha256) records the file this job made
+	// rather than re-reading one somebody may have edited since.
+	Written *[]byte
 }
 
 // addEnvEdit plans the edit and, when the file is not secret-bearing, shows
@@ -897,8 +901,12 @@ func (p *planner) addEnvEdit(ctx context.Context, e envEdit) {
 			if err := files.WriteAtomic(ctx, bak, b, 0o640); err != nil {
 				return "", fmt.Errorf("writing the backup %s: %w", bak, err)
 			}
-			if err := files.WriteAtomic(ctx, e.Path, f.Render(), 0o640); err != nil {
+			body := f.Render()
+			if err := files.WriteAtomic(ctx, e.Path, body, 0o640); err != nil {
 				return "", err
+			}
+			if e.Written != nil {
+				*e.Written = body
 			}
 			sc.Logf("%s (backup %s)", log, filepath.Base(bak))
 			return log, nil

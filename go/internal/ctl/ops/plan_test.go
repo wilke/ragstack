@@ -332,7 +332,7 @@ func TestPlanStartOrdersStoresThenAPIAndGatesOnReadiness(t *testing.T) {
 		"systemd: start ragstack-dev-api.service",
 		"systemd: skip ui",
 		"probe: wait for the API to listen on 24040",
-		"registry: record dev as active (desired_boot enabled) in the registry",
+		"registry: record dev as active (desired_boot enabled, restart_pending cleared) in the registry",
 	}
 	if got := titles(p); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
@@ -605,7 +605,9 @@ func TestPlanEnvSetEditsPublicKeysOnly(t *testing.T) {
 		}
 	}
 	p := plan(t, oc, "env-set", map[string]any{"key": "LOG_LEVEL", "value": "DEBUG"})
-	if len(p.Steps) != 1 || p.Steps[0].Plan.Kind != "envfile" {
+	// The edit, then (#714) the registry step that records restart_pending
+	// and the new env_file_sha256.
+	if len(p.Steps) != 2 || p.Steps[0].Plan.Kind != "envfile" || p.Steps[1].Plan.Kind != "registry" {
 		t.Fatalf("steps = %v", titles(p))
 	}
 	preview := string(p.Steps[0].Plan.WouldWrite[0].Preview)
@@ -1087,6 +1089,8 @@ func TestDestructiveVerbsAreExactlyThePlansList(t *testing.T) {
 		"stop": true, "restart": true, "restore": true, "handover": true, "migrate-local": true,
 		"decommission": true, "key-revoke": true, "admin-remove": true, "sa-disable": true,
 		"env-unset": true, "update-code": true,
+		// env-unset-surface removes keys like env-unset does (#714).
+		"env-unset-surface": true,
 		// set-ui-mode's `static` direction stops a running Vite dev server and
 		// moves the directory nginx is serving out from under it; `set-bind`
 		// writes one registry field and touches no process, so it is not.

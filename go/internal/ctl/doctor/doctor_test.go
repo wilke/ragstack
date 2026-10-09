@@ -1058,9 +1058,11 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		"artifact-prepare", "create-sandbox", "gateway-reload",
 		// PR-F F3: admitting a server image into the ctl's store.
 		"image-prepare",
+		// #714: the executable-surface env verbs (CLI-only, --direct only).
+		"env-set-surface", "env-unset-surface",
 	}
-	if len(contract) != 33 {
-		t.Fatalf("the op list has 33 entries, this copy has %d", len(contract))
+	if len(contract) != 35 {
+		t.Fatalf("the op list has 35 entries, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {

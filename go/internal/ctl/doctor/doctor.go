@@ -116,6 +116,11 @@ type Options struct {
 	// falls back to DefaultAPIBindRoots. image_dir_outside_bind_roots is
 	// raised for a GOWE_IMAGE_DIRS entry outside all of them.
 	APIBindRoots []string
+	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (#714).
+	// Nil reads the process environment, then <ctl config dir>/ctl.env, then
+	// the default (loopback and this host). endpoint_host_not_allowed is
+	// raised for a URL setting whose host is outside it.
+	AllowedEndpointHosts []string
 	// ImageHashes caches server-image hashes by (path, size, mtime). Nil uses
 	// one cache per process.
 	ImageHashes *ImageHashCache
@@ -438,6 +443,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.homePathCheck(t)
 	d.capabilityChecks(t)
 	d.serverImageChecks(t)
+	d.endpointHostCheck(t)
 }
 
 // notLive reports a row whose tenant no longer exists as a running tree:

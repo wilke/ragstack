@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
+	"github.com/ragstack/ragstack/internal/ctl/envfile"
+	"github.com/ragstack/ragstack/internal/ctl/settings"
 )
 
 // Every CTL_* environment variable the daemon reads, in one place.
@@ -154,6 +156,17 @@ const (
 	// DefaultAPIBindRoots. ctl.env, optional; a malformed value refuses the
 	// daemon's (and a --direct run's) start rather than being half-applied.
 	EnvAPIBindRoots = "CTL_API_BIND_ROOTS"
+
+	// EnvAllowedEndpointHosts is the allowlist of hosts an executable-surface
+	// URL may name (#714: `env set-surface`, `create --set` under --direct,
+	// and doctor's endpoint_host_not_allowed). A comma list of host names or
+	// IP literals — no scheme, no port, no wildcard; compared case-folded and
+	// exactly against a URL's host. Unset or blank is loopback and this host
+	// (127.0.0.1, ::1, localhost, <hostname>). ctl.env, optional; a malformed
+	// value refuses the start. A --direct run with the variable unset reads it
+	// out of <ctl config dir>/ctl.env, because ctl-as-svc.sh does not load
+	// that file and the allowlist must not depend on the entry point.
+	EnvAllowedEndpointHosts = settings.EnvAllowedEndpointHosts
 )
 
 // DefaultAPIBindRoots is CTL_API_BIND_ROOTS when the variable is unset: the
@@ -233,8 +246,37 @@ func SetAPIBindRootsFromEnv(cfg *EngineConfig) error {
 func HostToolEnvKeys() []string {
 	return []string{
 		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
-		EnvCrontabBin, EnvMirror, EnvNpmCache, EnvAPIBindRoots,
+		EnvCrontabBin, EnvMirror, EnvNpmCache, EnvAPIBindRoots, EnvAllowedEndpointHosts,
 	}
+}
+
+// SetAllowedEndpointHostsFromEnv fills cfg.AllowedEndpointHosts: the process
+// environment's CTL_ALLOWED_ENDPOINT_HOSTS, else the value in
+// <CtlConfigDir>/ctl.env (only that key is read; the file is public, 0640),
+// else the default. The daemon and the --direct CLI both call it. A malformed
+// value is an error: a typo in an allowlist must refuse the start.
+func SetAllowedEndpointHostsFromEnv(cfg *EngineConfig) error {
+	hosts, err := settings.AllowedHostsFrom(CtlEnvValue(cfg.Roots.CtlConfigDir, EnvAllowedEndpointHosts))
+	if err != nil {
+		return err
+	}
+	cfg.AllowedEndpointHosts = hosts
+	return nil
+}
+
+// CtlEnvValue reads ONE key out of <dir>/ctl.env, leniently; "" when the file
+// cannot be read or does not set it. Never ctl-secrets.env.
+func CtlEnvValue(dir, key string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "ctl.env"))
+	if err != nil {
+		return ""
+	}
+	f, _, err := envfile.ParseLenient(b)
+	if err != nil {
+		return ""
+	}
+	v, _ := f.Get(key)
+	return v
 }
 
 // EnvKeys returns every CTL_* variable the daemon reads, sorted the way this

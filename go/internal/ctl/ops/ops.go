@@ -85,6 +85,14 @@ type Deps struct {
 	// port_owner_mismatch red for its own processes, and refused the
 	// decommission that would have removed it. Empty means svcbvbrc.
 	Owner string
+	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved: the hosts
+	// an executable-surface URL (`env set-surface`, `create --set`) may name.
+	// Nil means settings.DefaultAllowedHosts — loopback and this host.
+	AllowedEndpointHosts []string
+	// APIBindRoots are CTL_API_BIND_ROOTS' paths (mode dropped): the roots,
+	// beside the tenant's data dir, a surface PATH may be under. Nil means
+	// none — only the data dir — which fails closed; the engine always sets it.
+	APIBindRoots []string
 }
 
 // Sealer is the age half of internal/ctl/seal behind a two-method seam, so
@@ -172,6 +180,14 @@ func NewRegistry(d Deps) jobs.Registry {
 	// ACL and nothing more), and it is a preparation op for a tenant the
 	// daemon cannot supervise yet.
 	add("env-pg-password", false, planEnvPGPassword)
+	// env-set-surface / env-unset-surface are CLI-only AND --direct-only
+	// (#714): they edit the executable-surface keys — where the process
+	// connects, which files it loads — that the env API refuses for every
+	// caller. Out of the ops endpoint's verb enum (POST …/ops/env-set-surface
+	// is 422), and their planners refuse unless the ENGINE runs in direct
+	// mode, so neither a request nor a daemon-side resume can reach them.
+	add("env-set-surface", false, planEnvSetSurface)
+	add("env-unset-surface", true, planEnvUnsetSurface)
 	add("render-units", false, planRenderUnits)
 	add("update-code", true, planUpdateCode)
 	add("create", false, planCreate)

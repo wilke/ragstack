@@ -19,6 +19,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // tenantOpVerbs are the `tenant <verb>` subcommands that submit an operation.
@@ -472,7 +474,8 @@ func envUsage() int {
 	fmt.Fprintf(stderr, `usage: ragstack-ctl env <verb> <tenant> … %s
 
   set       <tenant> KEY VALUE   a PUBLIC-class key only; secret and
-                                 executable-surface keys are refused (409)
+                                 executable-surface keys are refused (409) —
+                                 the latter go through set-surface below
   unset     <tenant> KEY
   normalize <tenant>             rewrite the env files into canonical form,
                                  split the secrets into secrets.env, and record
@@ -486,8 +489,81 @@ func envUsage() int {
                                  such name — so without this its handover stops
                                  everything and then cannot start its postgres.
                                  Idempotent, backed up, never printed. CLI-only.
+  set-surface <tenant> KEY=VALUE…
+                                 an EXECUTABLE-SURFACE key (LLM_ENDPOINT, GOWE_URL,
+                                 COLLECTIONS_FILE, GOWE_IMAGE_DIRS, the store URLs
+                                 and routing tables, …). CLI-only and --direct
+                                 only (implied; --server is refused): run it on
+                                 the host as the ctl account, e.g.
+                                   ops/coconut/ctl-as-svc.sh env set-surface clark \
+                                     LLM_ENDPOINT=http://mango.cels.anl.gov:8003 --dry-run
+                                 Every value is validated (settings/surface.go):
+                                 a URL's host must be in CTL_ALLOWED_ENDPOINT_HOSTS
+                                 and carry no user:password@; a path must be under
+                                 the tenant's data dir or CTL_API_BIND_ROOTS and
+                                 never the ctl's dirs or another tenant's.
+                                 PYTHONPATH PATH HF_HOME PORT ROOT_PATH are refused.
+                                 Backed up as tenant.env.bak-env-set-surface-<ts>;
+                                 the registry records restart_pending and the new
+                                 env_file_sha256; effective at the next restart.
+  unset-surface <tenant> KEY…    remove executable-surface keys (same rules).
+
+  The idempotency key is derived from the request, so re-running the same
+  set-surface/set command returns the EARLIER job — even after a hand edit
+  reverted what it did. Pass --new-key to run it again on purpose.
 `, opFlagSummary)
 	return exitUsage
+}
+
+// cmdEnvSurface is `env set-surface` / `env unset-surface` (#714). Variadic
+// positionals, so it does not go through cmdEnv's fixed-arity parse.
+func cmdEnvSurface(verb string, args []string, registryPath, ragRoot string, jsonOut bool) int {
+	fs := flag.NewFlagSet("env "+verb, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
+	pos, rest := takePositionals(args, 1<<16)
+	if err := fs.Parse(rest); err != nil {
+		return exitUsage
+	}
+	pos = append(pos, fs.Args()...)
+	if len(pos) < 2 {
+		return envUsage()
+	}
+	// CLI-only AND --direct-only, as `env pg-password`: the verbs are not on
+	// the daemon's HTTP surface at all, and their planners refuse any engine
+	// that is not a --direct one.
+	if code := refuseServerFlag(fs, "env "+verb, "it edits executable-surface keys, which ADR-0007 keeps off every "+
+		"HTTP surface; the daemon refuses the verb (422) and its planner refuses any engine but a --direct one"); code != exitOK {
+		return code
+	}
+	*o.direct = true
+	tenant := pos[0]
+	switch verb {
+	case "set-surface":
+		values := map[string]any{}
+		for _, kv := range pos[1:] {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || k == "" {
+				return usageErr("env set-surface: %q is not KEY=VALUE", kv)
+			}
+			if _, dup := values[k]; dup {
+				return usageErr("env set-surface: %s is given twice", k)
+			}
+			values[k] = v
+		}
+		return submitOp(o, tenantOpTarget(tenant, "env-set-surface"), map[string]any{"values": values})
+	default:
+		keys := append([]string(nil), pos[1:]...)
+		// Sorted, so the derived idempotency key does not depend on the order
+		// the keys were typed in (the op sorts them again).
+		sort.Strings(keys)
+		for i := 1; i < len(keys); i++ {
+			if keys[i] == keys[i-1] {
+				return usageErr("env unset-surface: %s is given twice", keys[i])
+			}
+		}
+		return submitOp(o, tenantOpTarget(tenant, "env-unset-surface"), map[string]any{"keys": keys})
+	}
 }
 
 func cmdEnv(args []string, registryPath, ragRoot string, jsonOut bool) int {
@@ -508,11 +584,13 @@ func cmdEnv(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		op, want = "env-normalize", 1
 	case "pg-password":
 		op, want = "env-pg-password", 1
+	case "set-surface", "unset-surface":
+		return cmdEnvSurface(verb, args, registryPath, ragRoot, jsonOut)
 	case "help", "-h", "--help":
 		envUsage()
 		return exitOK
 	default:
-		return usageErr("env: unknown verb %q (set|unset|normalize|pg-password)", verb)
+		return usageErr("env: unknown verb %q (set|unset|normalize|pg-password|set-surface|unset-surface)", verb)
 	}
 	fs := flag.NewFlagSet("env "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
