@@ -410,7 +410,9 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 					"the API on %d is not the image this job started", jobs.ErrRefused, gotVersion, gotSHA, image,
 					wantVersion, commit, port)
 			}
-			p.result["version"] = v
+			// `version` stays the receipt's version string the plan recorded;
+			// the probe's own answer is a separate fact (X3).
+			p.result["observed_version"] = v
 			return ready + "; health, deep health ok; version " + gotVersion + " at " + commit[:12], nil
 		},
 	})

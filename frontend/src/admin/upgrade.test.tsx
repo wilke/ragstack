@@ -13,6 +13,7 @@ import {
   upgradeProblem,
   UpgradeFields,
   UpgradeResult,
+  upgradeVersionOf,
   upgradeTenant,
   type UpgradeFieldsProps,
   type UpgradeForm,
@@ -31,6 +32,7 @@ import {
   jobFixture,
   stoppedTenantFixture,
   upgradeJobFixture,
+  upgradeJobLegacyFixture,
   versionFixture,
   worktreeManagedTenantFixture,
 } from "./fixtures";
@@ -316,7 +318,7 @@ describe("UpgradeResult", () => {
     const html = render(createElement(UpgradeResult, { job: upgradeJobFixture }));
     expect(html).toContain("Migrated to image mode");
     expect(html).toContain(B1);
-    expect(html).toContain(">1.6.6<"); // from the /v1/version body the post-check recorded
+    expect(html).toContain(">1.6.6<"); // from observed_version, the /v1/version body the post-check read
     expect(html).toContain(IMAGE_COMMIT_166.slice(0, 12));
     expect(html).toContain("none (was worktree mode)");
     expect(html).toContain("rebuilt from v1.6.6");
@@ -326,13 +328,32 @@ describe("UpgradeResult", () => {
   it("image → image: previous image shown, no migration line; plain version string accepted", () => {
     const job = {
       ...upgradeJobFixture,
-      result: { ...(upgradeJobFixture.result as object), previous_image: B1, image: B2, migration: false, version: "v1.6.6", rebuild_ui: false, artifact_id: null },
+      result: { ...(upgradeJobFixture.result as object), previous_image: B1, image: B2, migration: false, version: "v1.6.6", observed_version: undefined, rebuild_ui: false, artifact_id: null },
     } as unknown as typeof upgradeJobFixture;
     const html = render(createElement(UpgradeResult, { job }));
     expect(html).not.toContain("Migrated");
     expect(html).toContain(B1);
     expect(html).toContain(">v1.6.6<");
     expect(html).toContain(">kept<");
+  });
+
+  it("a job recorded before observed_version: the object in `version` is still read", () => {
+    const html = render(createElement(UpgradeResult, { job: upgradeJobLegacyFixture }));
+    expect(html).toContain(">1.6.6<");
+    expect(html).toContain(IMAGE_COMMIT_166.slice(0, 12));
+    expect(html).not.toContain("[object Object]");
+  });
+
+  it("observed_version wins over the receipt string, its git_sha over the plan's commit", () => {
+    expect(
+      upgradeVersionOf({ version: "v1.6.6", commit: "a".repeat(40), observed_version: { version: "1.6.6", git_sha: "b".repeat(40) } }),
+    ).toEqual({ version: "1.6.6", commit: "b".repeat(40) });
+    expect(upgradeVersionOf({ version: { version: "1.6.5", git_sha: "c".repeat(40) }, commit: "a".repeat(40) })).toEqual({
+      version: "1.6.5",
+      commit: "c".repeat(40),
+    });
+    expect(upgradeVersionOf({ version: "v1.6.6", commit: "a".repeat(40) })).toEqual({ version: "v1.6.6", commit: "a".repeat(40) });
+    expect(upgradeVersionOf({})).toEqual({ version: null, commit: null });
   });
 
   it("renders nothing for another op or an unsettled job", () => {

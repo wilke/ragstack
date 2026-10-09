@@ -29,8 +29,10 @@ import type {
   CtlTenant,
   Job,
   ServerImageRow,
+  ObservedVersion,
   TenantServerImage,
   UpdateCodeArgs,
+  UpdateCodeResult,
 } from "../api/types";
 import { shortSha, updateCodeArgsProblem } from "../lib/validate";
 import { ErrorBanner } from "./ErrorBanner";
@@ -257,25 +259,30 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
 
+function observedOf(v: unknown): ObservedVersion | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as ObservedVersion) : null;
+}
+
 /**
- * `result.version`: the receipt's version string in the plan. The post-check
- * step also records the `/v1/version` body under the same key, so a settled
- * job may carry that object instead; its `version` member is the same fact.
+ * What the API answered, from a settled update-code result: the post-check's
+ * `/v1/version` body is `observed_version`; jobs recorded before that split
+ * carry the same object in `version`; failing both, `version` is the
+ * receipt's version string and the plan's `commit` the sha.
  */
-function versionOf(v: unknown): string | null {
-  if (typeof v === "string") return v || null;
-  if (v && typeof v === "object") return str((v as Record<string, unknown>).version);
-  return null;
+export function upgradeVersionOf(r: UpdateCodeResult): { version: string | null; commit: string | null } {
+  const observed = observedOf(r.observed_version) ?? observedOf(r.version);
+  const version = str(observed?.version) ?? str(r.version);
+  const commit = str(observed?.git_sha) ?? str(r.commit);
+  return { version, commit };
 }
 
 /** The success panel of an `update-code` job; null for anything else. */
 export function UpgradeResult({ job }: { job: Job }) {
-  const r = (job.result ?? null) as Record<string, unknown> | null;
+  const r = (job.result ?? null) as UpdateCodeResult | null;
   if (!r || job.op !== "update-code" || job.state !== "succeeded") return null;
   const image = str(r.image);
   const previous = str(r.previous_image);
-  const version = versionOf(r.version);
-  const commit = str(r.commit);
+  const { version, commit } = upgradeVersionOf(r);
   const artifact = str(r.artifact_id);
   const bundle = str(r.bundle);
   const migration = r.migration === true;

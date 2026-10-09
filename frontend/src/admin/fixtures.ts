@@ -1370,7 +1370,10 @@ export const imageExternalUiTenantFixture: CtlTenant = {
 /** A viewer's body for the image tenant: the summary only. */
 export const imageTenantViewerFixture: CtlTenant = { ...imageTenantFixture, registry: null };
 
-/** A settled worktree→image upgrade (the migration). `version` is the /v1/version body the post-check recorded. */
+/**
+ * A settled worktree→image upgrade (the migration). `version` is the receipt's
+ * version string; `observed_version` is the /v1/version body the post-check read.
+ */
 export const upgradeJobFixture: Job = {
   ...jobFixture("succeeded"),
   op: "update-code",
@@ -1378,12 +1381,26 @@ export const upgradeJobFixture: Job = {
   result: {
     image: "ragstack-server-v1.6.6-b1.sif",
     previous_image: null,
-    version: { version: "1.6.6", git_sha: IMAGE_COMMIT_166, git_tag: "v1.6.6" },
+    version: "v1.6.6",
+    observed_version: { version: "1.6.6", git_sha: IMAGE_COMMIT_166, git_tag: "v1.6.6" },
     commit: IMAGE_COMMIT_166,
     rebuild_ui: true,
     artifact_id: "v1.6.6",
     migration: true,
     bundle: "20261009T120000Z-pre-update",
+  } as unknown as Job["result"],
+};
+
+/**
+ * The same upgrade as a job recorded BEFORE the observed_version split: the
+ * post-check overwrote `version` with the /v1/version object.
+ */
+export const upgradeJobLegacyFixture: Job = {
+  ...upgradeJobFixture,
+  result: {
+    ...(upgradeJobFixture.result as Record<string, unknown>),
+    observed_version: undefined,
+    version: { version: "1.6.6", git_sha: IMAGE_COMMIT_166, git_tag: "v1.6.6" },
   } as unknown as Job["result"],
 };
 
