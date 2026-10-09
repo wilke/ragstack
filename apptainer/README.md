@@ -69,6 +69,12 @@ minting an unlabelled image.
 
 ## Building
 
+`apptainer/build-tools-image.sh` is `apptainer/build-image.sh --kind tools`;
+the same script builds the **server image** with `--kind server`
+(`ragstack-server.def`, the Python API — see
+[docs/runbooks/server-image.md](../docs/runbooks/server-image.md)). Every flag
+below applies to both kinds.
+
 ```bash
 apptainer/build-tools-image.sh --dry-run        # prints the command, name and receipt; builds nothing
 apptainer/build-tools-image.sh                  # → apptainer/images/ragstack-tools-<version>-b<N>.sif
