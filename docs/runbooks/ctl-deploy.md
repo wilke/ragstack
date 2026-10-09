@@ -635,6 +635,62 @@ executable is this binary and whose `argv[1]` is `serve`; never `pkill`, and
 never a pid that merely has "ragstack-ctl" somewhere in its command line.
 Nothing else depends on the daemon: every CLI verb works without it.
 
+### Job engine unavailable (#716)
+
+Symptom: `GET /health` answers `"engine": "unavailable"`, every mutation is
+refused with 409 `refused`, reads keep working, and `ctl.log` has
+
+```
+job engine unavailable; … err="job store /rag/data/ctl/jobs.db: jobs: migrating: attempt to write a readonly database (8)"
+```
+
+The usual cause: **some other account opened `jobs.db` with SQLite**
+(`sqlite3`, a python one-liner, a diagnostic agent "just reading"). SQLite in
+WAL mode leaves its own `jobs.db-shm`/`jobs.db-wal` beside the database, owned
+by that account; the daemon (`svcbvbrc`) cannot write them, so it cannot open
+its own store read-write. `--direct` cannot cause this — it refuses another
+account's state dir before opening anything (`api.CheckStateDirOwnership`) —
+and nothing in the ctl can stop a foreign SQLite client. On 2026-10-09 the
+pair was `jobs.db-shm` 32 KiB + `jobs.db-wal` 0 B, `wilke:cels 0644`.
+
+The daemon says so itself: when a sidecar's owner differs from its own uid,
+the WARN line carries `sidecars="…jobs.db-shm owned by wilke (uid …, 32768
+bytes); … Recovery: …"` (so does the operator-only 409), `/health` says
+only "foreign-owned SQLite sidecar(s)" in `engine_detail` (it is anonymous:
+no account, uid, size or path), and `ragstack-ctl doctor` raises `job_engine_unavailable`
+with the files, owner, sizes and recovery.
+
+Recovery:
+
+```bash
+ls -ln /rag/data/ctl/jobs.db*                  # who owns the sidecars, and is the -wal empty?
+fuser /rag/data/ctl/jobs.db* 2>&1              # nothing but the daemon may hold them (it does not, here)
+# WAL is 0 bytes: remove both, AS THE ACCOUNT THAT OWNS THEM (e.g. wilke)
+rm /rag/data/ctl/jobs.db-shm /rag/data/ctl/jobs.db-wal
+# WAL is NOT empty: it holds committed transactions — copy it aside first
+d=~/jobs-sidecars-$(date +%s) && mkdir -p "$d" && cp -p /rag/data/ctl/jobs.db-shm /rag/data/ctl/jobs.db-wal "$d"/ \
+  && rm /rag/data/ctl/jobs.db-shm /rag/data/ctl/jobs.db-wal
+# alternative that keeps everything: as the owner, chmod g+w /rag/data/ctl/jobs.db-*
+curl -s localhost:23990/health | jq '.engine, .engine_detail'
+```
+
+**No restart is needed.** Since #716 the daemon retries opening the store
+indefinitely (logging every attempt up to the 9th, then one line saying it now
+retries every 2m0s, then only when the error changes or every 30 attempts) and
+opens the mutation surface the moment the store is writable. Never delete a
+`-wal` the daemon has open; here it has none open, because it never opened
+the store.
+
+**The rule: never open `jobs.db` with `sqlite3`/python as any account but
+the daemon's** — not even "read-only" (a read-only open still creates the
+sidecars). The sanctioned reads are:
+
+```bash
+ragstack-ctl job list [--tenant T] [--state S] [--limit N]
+ragstack-ctl job show <id>
+ragstack-ctl audit list [--tenant T] [--since 2026-10-09T09:00:00-05:00] [--limit N]   # operator key; args redacted
+```
+
 ---
 
 ### Running the conformance suite against the deployed daemon

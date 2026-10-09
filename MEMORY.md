@@ -79,6 +79,7 @@ These bit us once. Don't repeat them.
 
 - **The collection registry lives in a different filename per tenant.** `lucid` and `asm` use `state/collections.db`; `dev` and `demo` use `state/ragstack_collections.db`. Both filenames *exist* in some tenants, and querying the wrong one returns `Error: no such table: collections` — which reads like a failed health gate rather than a wrong query, and once nearly caused a rollback of two healthy deploys. Derive the expectation from the tenant's own registry immediately before a restart; never hardcode another tenant's value.
 - **A tenant's boot log line can legitimately disagree with its registry.** `asm`'s last boot line said `4 collections` while its registry held 6 — two were created through the API since that boot, so the line changed 4 → 6 across a restart with nothing wrong. Capture the pre-stop registry state, not the previous boot line.
+- **Never open the ctl's `jobs.db` with `sqlite3`/python as any account but the daemon's** (#716). Even a read-only open leaves that account's `jobs.db-shm`/`-wal` beside the store; the daemon (svcbvbrc) cannot write them and its job engine stays "unavailable" (`attempt to write a readonly database (8)`, every mutation 409). Read through `ragstack-ctl job list|show` / `audit list`. Recovery: as the sidecars' owner remove them when the WAL is 0 bytes (copy aside first otherwise); the daemon retries forever and recovers without a restart. See `docs/runbooks/ctl-deploy.md` § Job engine unavailable.
 
 ### Evaluation corpora
 

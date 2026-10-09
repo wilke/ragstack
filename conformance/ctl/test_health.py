@@ -41,6 +41,10 @@ async def test_health_says_whether_the_job_engine_is_available(
     assert body["engine"] == "available", (
         f"the fixture daemon reports engine={body['engine']!r}: its job store could not be opened"
     )
+    # ``engine_detail`` explains an UNAVAILABLE engine (#716: foreign-owned
+    # SQLite sidecars, named path-free with owner, size and recovery); an
+    # available one carries none.
+    assert "engine_detail" not in body, body
 
 
 async def test_request_id_differs_between_requests(anon_client: httpx.AsyncClient) -> None:

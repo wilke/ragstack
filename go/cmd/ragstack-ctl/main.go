@@ -237,6 +237,11 @@ flags every operation accepts:
   gateway rollback [--to N]                 switch back + HUP + probe
   gateway repair                            put the current pointer back on the last verified generation
 
+  audit list [--tenant T] [--since RFC3339] [--limit N]
+                                            audit rows over GET /v1/audit (operator, redacted), newest
+                                            first. The sanctioned read: never open jobs.db with
+                                            sqlite3/python (#716)
+
   backup list [<tenant>]                    every bundle on this host: id, kind, fenced, checked, verified, size
   backup verify <tenant> <bundle-id>        the deep check without a restore: hashes, manifest schema, leg
                                             records, snapshot structure; marks it "checked" (manifest + the
@@ -349,6 +354,8 @@ func run(args []string) int {
 		return cmdUnits(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "job":
 		return cmdJob(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "audit":
+		return cmdAudit(rest[1:], *jsonOut)
 	case "backup":
 		return cmdBackup(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "selftest":

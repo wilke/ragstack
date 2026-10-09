@@ -530,6 +530,11 @@ type HealthResponse struct {
 	// its own, where a probe, a dashboard and `curl … | jq .engine` can all
 	// see it without a credential.
 	Engine string `json:"engine"`
+	// EngineDetail is present only while Engine is `unavailable`: why, in
+	// words an operator can act on without a credential — and therefore
+	// without paths, accounts, uids or sizes (#716: "foreign-owned SQLite
+	// sidecar(s)" plus a pointer at the log and doctor, which carry the rest).
+	EngineDetail string `json:"engine_detail,omitempty"`
 }
 
 // HealthOKStatus is the only `status` health_response.json permits.
