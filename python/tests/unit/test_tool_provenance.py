@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -358,7 +359,10 @@ async def test_restorer_submits_provenance_only_when_stamped(tmp_path: Path, sta
 
     cwl_dir = tmp_path / "cwl"
     cwl_dir.mkdir()
-    text = (CWL_DIR / "restore-collection.cwl").read_text(encoding="utf-8")
+    # The tree itself may be stamped (it is, since the v1.6.6 server release),
+    # so derive the UNSTAMPED baseline instead of assuming the checkout is one.
+    text = re.sub(r"(dockerPull|dockerImageId):\s*\S+", r"\1: " + DEFAULT_TOOL_IMAGE,
+                  (CWL_DIR / "restore-collection.cwl").read_text(encoding="utf-8"))
     if stamped:
         text = stamp_tool_image(text, NAME)
         _write_receipt(cwl_dir)
