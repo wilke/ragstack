@@ -23,6 +23,15 @@ upper bound of 0.749286267 after two units with one accepted identity seen twice
 recomputes that state first and prints both numbers; a mismatch would mean the reimplementation
 is not the shipped statistic and the rest is void.
 
+SCOPE OF THAT CHECK: at the recorded state f1 = 0, so the Chao1 point and variance are identically
+zero (stop_statistic(1, 2, 0, 1) == stop_statistic(1, 2, 0, 0)). A match pins only the Wilson x
+Jeffreys-gamma conditional next-yield x projection chain. The Chao1 term, which drives every
+coverage result, is verified by line-by-line comparison against _remaining_richness in
+numeric_control_library/rarefaction.py at 98d74fb, not by the recorded number.
+
+The 'premature_stop_rate_gt10pct' below divides by the replicates that STOPPED at that theta,
+not by all replicates.
+
 NOT reimplemented: multi-channel conjunction, hypervolume over several columns, nano-graphrag's
 separate 'preferential_incidence_estimator_v2'. Pre-registration: PREREG-R0-stopping-statistic-calibration.json.
 """
