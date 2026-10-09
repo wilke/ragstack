@@ -42,8 +42,8 @@ Finite population of K distinct identities; each unit draws a Poisson(5)-sized s
 equal (**even**), log-normal σ = 1 (**mild**) or log-normal σ = 2 (**heavy** — a few sources easy to hit, many nearly
 unreachable: the web-search regime). True remaining richness is known after every unit. Cap 50·K/5 units.
 
-Coverage is averaged over (replicate, unit) pairs only up to the unit at which the last of θ ∈ {0.01, 0.02, 0.05}
-fired, or the cap — the simulation of a replicate stops there — so the horizon coverage is measured over differs by
+Coverage is each replicate's hit rate over its units, averaged across replicates with equal weight; a replicate's
+units run only up to the one at which the last of θ ∈ {0.01, 0.02, 0.05} fired, or the cap — the simulation of a replicate stops there — so the horizon coverage is measured over differs by
 condition.
 
 **Definitions as computed** (two differ from the pre-registration's wording):
@@ -69,7 +69,7 @@ condition.
 
 Stops at n ≤ 2 under θ = 0.01: **0 of 2,700 trajectories** in every condition.
 
-At θ = 0.05: even conditions always terminate and mild ones in ≥ 98.7 % of replicates (K=1000 mild: median 3,308 units, 2.2 % undiscovered);
+At θ = 0.05: even conditions always terminate and mild ones in all but ≤ 4 of 300 replicates (≥ 98.6 %) (K=1000 mild: median 3,308 units, 2.2 % undiscovered);
 K=200 heavy terminated in ≤ 1 of 300 replicates; K=1000 heavy in none.
 
 ## 3. Predictions scored
