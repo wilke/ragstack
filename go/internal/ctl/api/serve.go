@@ -159,6 +159,12 @@ func RunServe(args []string) int {
 		Now:        time.Now,
 	}
 	SetHostToolsFromEnv(&cfg)
+	// A malformed CTL_API_BIND_ROOTS refuses the start: a containment list
+	// half-applied is worse than a daemon that says which entry is wrong.
+	if err := SetAPIBindRootsFromEnv(&cfg); err != nil {
+		logger.Error("bind roots", "err", err.Error())
+		return exitUsage
+	}
 	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		d, err := backend.Doctor(ctx, tenant, op)
 		if err != nil {

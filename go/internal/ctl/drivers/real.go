@@ -75,6 +75,13 @@ type RealOptions struct {
 	// Empty means the two roots every op needs — the tenant data tree and the
 	// ctl config tree — never "everything".
 	ApprovedRoots []string
+	// ExtraBindRoots widen the INSTANCE driver's bind containment, and only
+	// that (PR-F): the directories a server-image API instance has to see that
+	// no op writes under. Each root carries its own mode — a read-only one
+	// refuses a writable bind under it. Daemon configuration
+	// (CTL_API_BIND_ROOTS, parsed in internal/ctl/api); never a registry row.
+	// Fixed at construction, like ApprovedRoots.
+	ExtraBindRoots []BindRoot
 	// StoreLongTimeout is the ceiling on a store call that can legitimately
 	// take a long time (a snapshot, a restore, a recover, an exact count, a
 	// pg_dump). Zero takes LongTimeout.
@@ -164,7 +171,9 @@ func NewReal(o RealOptions) *Real {
 		// the same approved roots the drivers that write under them do.
 		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
 			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
-			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir)},
+			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir),
+			// Copied: the extra bind roots are fixed at construction too.
+			ExtraRoots: append([]BindRoot(nil), o.ExtraBindRoots...)},
 		crontab: &RealCrontab{run: run, Bin: orDefault(o.CrontabBin, defaultCrontabBin)},
 	}
 }
@@ -184,6 +193,12 @@ func (r *Real) Mirror() string { return r.opts.Mirror }
 
 // NpmCache is the npm cache directory, as NewReal resolved it.
 func (r *Real) NpmCache() string { return r.opts.NpmCache }
+
+// ExtraBindRoots are the instance driver's extra bind roots, as NewReal fixed
+// them (a copy). The daemon and `--direct` wiring tests read it.
+func (r *Real) ExtraBindRoots() []BindRoot {
+	return append([]BindRoot(nil), r.instances.ExtraRoots...)
+}
 
 func (r *Real) Systemd() jobs.Systemd             { return r.systemd }
 func (r *Real) Proc() jobs.Proc                   { return r.proc }

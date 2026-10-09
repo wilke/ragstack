@@ -360,6 +360,16 @@ type Proc interface {
 	// why that one is the OWNER's to run. A pid (or an ancestor) that is gone
 	// mid-walk is (false, nil): the process ended, which is an answer.
 	Descends(ctx context.Context, pid, ancestor int) (bool, error)
+	// InstanceOwnsPort reports whether the process holding the LISTEN socket
+	// on port IS instancePID or descends from it — Owner then Descends, the
+	// identity an apptainer instance has (its starter pid is in `instance
+	// list`; the server on the port is a child or grandchild of it).
+	//
+	// A port nobody holds, or one whose holder this account cannot attribute
+	// (Owner's pid 0), is (false, nil): "this instance does not visibly hold
+	// that port" is the answer either way, and a caller deciding whether the
+	// API is running must not read an unattributable socket as its own.
+	InstanceOwnsPort(ctx context.Context, instancePID, port int) (bool, error)
 }
 
 // SpawnSpec is one detached process, as Proc.Spawn starts it.
@@ -459,8 +469,9 @@ type Instance struct {
 // InstanceSpec is one `apptainer instance run`.
 type InstanceSpec struct {
 	// Name is the instance name (see Instance.Name). The real driver holds it
-	// to `^(qdrant|elasticsearch|postgres)-[a-z][a-z0-9-]{0,31}$`: the ctl
-	// supervises a tenant's three stores and nothing else on this host.
+	// to `^(qdrant|elasticsearch|postgres|api)-[a-z][a-z0-9-]{0,31}$`: the ctl
+	// supervises a tenant's three stores and, from PR-F, its API when that
+	// runs from a server image — and nothing else on this host.
 	Name string
 	// SIF is the absolute path of the image.
 	SIF string
@@ -484,6 +495,14 @@ type InstanceSpec struct {
 	// It may therefore carry a secret, and like SpawnSpec.Env it must not be
 	// logged, audited or recorded on a call.
 	ExtraEnv map[string]string
+	// CleanEnv puts `--cleanenv` on the argv (right after `--no-home`): the
+	// container starts from an EMPTY environment plus the image's own
+	// %environment and the APPTAINERENV_* entries of ExtraEnv, which apptainer
+	// keeps and lets win over %environment (verified on 1.5.3). It is what an
+	// API instance runs with — the daemon's environment carries the ctl's own
+	// credentials and a host PYTHONPATH that would hijack the image's tree.
+	// False (every store) leaves the argv exactly as it was before PR-F.
+	CleanEnv bool
 	// Namespace is the instance registry this run is recorded in. The zero
 	// value is the ctl's own. A release's ROLLBACK is the one caller that sets
 	// it to NamespaceAccountDefault: it puts back an instance it stopped in
@@ -507,10 +526,20 @@ type Instances interface {
 	// it meant (see InstanceNamespace).
 	List(ctx context.Context, opts ListOptions) ([]Instance, error)
 	// Run is
-	// `apptainer instance run --no-home <--bind …> <--env …> <sif> <name> <args…>`
+	// `apptainer instance run --no-home [--cleanenv] <--bind …> <--env …> <sif> <name> <args…>`
 	// with spec.ExtraEnv in the child's environment. It returns when apptainer
 	// has started the instance; readiness is the caller's gate, not this one's.
 	Run(ctx context.Context, spec InstanceSpec) error
+	// Labels is `apptainer inspect --json --labels <sif>`: the image's labels
+	// as one flat map (`org.ragstack.role`, `org.ragstack.version`,
+	// `org.ragstack.commit`, `org.ragstack.build`, … and whatever else the
+	// build put there). It reads the SIF's metadata and runs nothing.
+	//
+	// It is how the ctl checks a server image's identity at a step's run time
+	// (PR-F, ADR-0010 step 6/7): inside the image there is no apptainer to read
+	// its own labels, so the label half of the boot check is the ctl's. It is a
+	// STEP-TIME probe — plans are pure and never call it.
+	Labels(ctx context.Context, sif string) (map[string]string, error)
 	// Stop is `apptainer instance stop <name>` in opts.Namespace — SIGTERM to
 	// the instance, so elasticsearch gets the graceful shutdown its units'
 	// TimeoutStopSec=120 exists for.
@@ -905,6 +934,14 @@ type Git interface {
 	// still names the old path and `git worktree list` shows it prunable;
 	// repair rewrites both back-pointers from the directory's own .git file.
 	RepairWorktree(ctx context.Context, mirror, path string) error
+	// Checkout is `git -C <worktree> checkout --detach <sha>`: an EXISTING
+	// worktree moved to another resolved commit (PR-F `tenant update-code`
+	// keeps a server-image tenant's worktree at the image's commit). The
+	// worktree is held to the same approved roots as AddWorktree, sha must be
+	// 40-hex, and a DIRTY tree (`git status --porcelain` non-empty, untracked
+	// files included) is refused: a checkout that carried somebody's local edit
+	// across would leave a tree that is neither the old commit nor the new one.
+	Checkout(ctx context.Context, worktree, sha string) error
 }
 
 // Build is the node/vite surface. It is split from Git because the two fail

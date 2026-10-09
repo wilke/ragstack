@@ -560,3 +560,35 @@ func (p *RealProc) Descends(_ context.Context, pid, ancestor int) (bool, error) 
 	return false, fmt.Errorf("%w: the ancestry of pid %d is more than %d deep; /proc is not answering a question "+
 		"this driver can use", jobs.ErrRefused, pid, maxProcAncestry)
 }
+
+// InstanceOwnsPort reports whether the process on port's LISTEN socket is
+// instancePID or one of its descendants: Owner, then Descends.
+//
+// It is the identity of an apptainer instance, and the reason it is one call
+// rather than two at every caller. `apptainer instance list` names the
+// starter (for an API instance, apptainer's own `appinit`); the server on the
+// port is a child or grandchild, and its cwd is inside the container — so the
+// pidfile identity (`checkIdentity`: cwd under the worktree, `uvicorn` in the
+// cmdline) and apiRunningPID's "port owner == pidfile pid" both answer "not
+// ours" about every instance this host runs.
+//
+// A free port, or one whose holder this account cannot attribute (Owner's
+// pid 0 — another account's socket), is (false, nil). Neither is THIS
+// instance holding it, and a caller deciding "the API is running" must not
+// read an unattributable socket as its own.
+func (p *RealProc) InstanceOwnsPort(ctx context.Context, instancePID, port int) (bool, error) {
+	if instancePID <= 1 {
+		return false, fmt.Errorf("%w: %d is not an instance pid the ctl asks about", jobs.ErrRefused, instancePID)
+	}
+	if port <= 0 || port > 65535 {
+		return false, fmt.Errorf("%w: %d is not a port", jobs.ErrRefused, port)
+	}
+	owner, _, err := p.Owner(ctx, port)
+	if err != nil {
+		return false, err
+	}
+	if owner <= 0 {
+		return false, nil
+	}
+	return p.Descends(ctx, owner, instancePID)
+}
