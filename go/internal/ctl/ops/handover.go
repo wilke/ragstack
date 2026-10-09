@@ -192,6 +192,16 @@ func planHandoverRelease(ctx context.Context, p *planner, args map[string]any) e
 		return p.refuse("%s is already supervised by `%s`: there is nothing to release. A row that disagrees with "+
 			"the host is corrected with `ragstack-ctl tenant set-supervisor %s manual`", t.Name, t.Supervisor, t.Name)
 	}
+	if t.ImageMode() {
+		// A hand-started API is a host uvicorn with a pidfile; an image-mode
+		// API is an instance in the CTL's registry. The release would stop the
+		// first and its rollback start the second — two different processes
+		// under one row. Hand-run tenants are handed over in worktree mode and
+		// moved to an image afterwards (`update-code`), never the other way.
+		return p.refuse("%s's row records server_image %s, but it is a hand-started tenant: a handover takes a "+
+			"worktree-mode API (pidfile, host uvicorn) and the image belongs on the row only once the ctl runs it. "+
+			"Correct the row first", t.Name, t.ServerImage.Name)
+	}
 	// A row already at `released` is RE-ENTRANT, not a refusal.
 	//
 	// That is the state a failed release leaves behind — and the state
@@ -711,7 +721,7 @@ func descriptorRef(t *registry.Tenant) registry.NullString {
 // the pidfile, the identity check, TERM, proof that the port is free, KILL if
 // it is not.
 func (p *planner) addReleaseAPIStop() {
-	pidfile, worktree, port := p.apiPidFile(), p.t.Worktree, p.t.Ports.API
+	pidfile, port := p.apiPidFile(), p.t.Ports.API
 	name := p.tenant
 	// The launch the rollback puts back. It is resolved HERE, at plan time,
 	// from the same row the instance supervisor's start reads — so a row that
@@ -727,7 +737,7 @@ func (p *planner) addReleaseAPIStop() {
 				"launch `supervisor: instance` uses. `ops/coconut/restore.sh --tenant " + name + "` remains the " +
 				"answer when that start cannot be made"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return stopAPIProcess(ctx, sc, pidfile, worktree, port)
+			return stopAPIProcess(ctx, sc, launch)
 		},
 		// The rollback RESTARTS the API.
 		//

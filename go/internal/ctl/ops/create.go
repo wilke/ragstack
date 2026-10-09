@@ -126,6 +126,30 @@ type createSpec struct {
 
 	// Mirror is the bare repository the worktree is checked out of.
 	Mirror string
+
+	// ServerImage, when set, puts the new tenant's API in IMAGE mode from
+	// birth (`create --image`): the row records it, `code` is the image's
+	// version and commit, the worktree is checked out at that commit, and the
+	// API starts as an apptainer instance of it. Artifact may then be nil
+	// (ui_mode external); when it is not, its SHA is the image's commit.
+	ServerImage *registry.ServerImage
+}
+
+// codeSHA is the commit the tenant's worktree is checked out at: the image's
+// in image mode, the artifact's otherwise.
+func (s createSpec) codeSHA() string {
+	if s.ServerImage != nil {
+		return s.ServerImage.Commit
+	}
+	return s.Artifact.SHA
+}
+
+// codeLabel names where the code comes from, for a step title.
+func (s createSpec) codeLabel() string {
+	if s.ServerImage != nil {
+		return "server image " + s.ServerImage.Name
+	}
+	return "artifact " + s.ArtifactID
 }
 
 // postgresLocal reports whether this tenant runs its own postgres instance.
@@ -179,10 +203,19 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 		return p.refuse("%s already exists", name)
 	}
 	artifactID := argStringOf(args, "artifact_id")
-	artifact, ok := f.Artifacts[artifactID]
-	if !ok {
-		return p.refuse("artifact %q is not prepared: `create` takes an artifact ID — a worktree at a reviewed SHA with "+
-			"a built UI — never a git ref or a path (`ragstack-ctl fleet artifact prepare --tag …`)", artifactID)
+	imageName := argStringOf(args, "image")
+	if artifactID == "" && imageName == "" {
+		return fmt.Errorf("%w: create needs an artifact_id (a worktree-mode API) or an image (a server-image API), "+
+			"and the request names neither", jobs.ErrValidation)
+	}
+	var artifact *registry.Artifact
+	if artifactID != "" || imageName == "" {
+		a, ok := f.Artifacts[artifactID]
+		if !ok {
+			return p.refuse("artifact %q is not prepared: `create` takes an artifact ID — a worktree at a reviewed SHA "+
+				"with a built UI — never a git ref or a path (`ragstack-ctl fleet artifact prepare --tag …`)", artifactID)
+		}
+		artifact = a
 	}
 	provider := argStringOf(args, "identity_provider")
 	if provider == "" {
@@ -275,11 +308,19 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 			"supervised in instance mode. Use ui_mode `static` (nginx serves <data_dir>/ui/dist) or create the " +
 			"tenant on systemd units")
 	}
+	var serverImage *registry.ServerImage
+	if imageName != "" {
+		si, err := p.createServerImage(f, imageName, artifactID, artifact, sup, uiMode)
+		if err != nil {
+			return err
+		}
+		serverImage = si
+	}
 	spec := createSpec{
 		Name: name, ArtifactID: artifactID, Artifact: artifact, Index: index, Base: base,
 		StoreKind: storeKind, ESHeap: esHeap, Provider: provider, Subjects: subjects,
 		Keys: keys, Accounts: serviceAccountArgs(args), Settings: set,
-		UIMode: uiMode, Supervisor: sup,
+		UIMode: uiMode, Supervisor: sup, ServerImage: serverImage,
 		Start: boolArgOrDefault(args, "start", true), Gateway: boolArgOrDefault(args, "gateway", true),
 		Mirror: p.op.deps.Mirror, Owner: p.op.deps.owner(),
 	}
@@ -293,6 +334,44 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 
 // defaultESHeap is create_request.json's default.
 const defaultESHeap = "1g"
+
+// createServerImage resolves `create --image NAME [--artifact ID]` against the
+// registry alone (a plan reads no image file; the start proves it):
+//
+//   - the image is a PREPARED one (fleet.server_images);
+//   - the tenant is `supervisor: instance` — an image-mode API is an apptainer
+//     instance, and there is no systemd unit for one (brief §1.4);
+//   - a static UI needs an artifact (it is built from the artifact's
+//     node_modules, as for every create), and that artifact's commit IS the
+//     image's: a UI built from other code than the API runs is a tenant whose
+//     two halves disagree about the contract between them.
+func (p *planner) createServerImage(f *registry.Fleet, name, artifactID string, artifact *registry.Artifact,
+	sup, uiMode string) (*registry.ServerImage, error) {
+	rec, ok := f.ServerImages[name]
+	if !ok || rec == nil {
+		return nil, p.refuse("server image %q is not prepared on this host: `create --image` takes the name of an "+
+			"image `ragstack-ctl fleet image prepare --sif …` has verified and recorded (`GET /v1/artifacts` lists "+
+			"them under server_images)", name)
+	}
+	if sup != supervisorInstance {
+		return nil, p.refuse("--image runs the API as an apptainer instance, which only `supervisor: instance` "+
+			"supervises; this create would use %q. Pass supervisor `instance`", sup)
+	}
+	if uiMode == "" || uiMode == registry.UIModeStatic {
+		if artifact == nil {
+			return nil, p.refuse("ui_mode `static` builds the tenant's UI from a prepared ARTIFACT at the image's "+
+				"commit (%s), and none was given: pass --artifact <id> for an artifact prepared at that commit, or "+
+				"ui_mode `external`", rec.Commit)
+		}
+	}
+	if artifact != nil && artifact.SHA != rec.Commit {
+		return nil, p.refuse("artifact %s is at commit %s but server image %s was built at %s: the UI and the API "+
+			"would come from different code. Prepare an artifact at %s", artifactID, artifact.SHA, name, rec.Commit,
+			rec.Commit)
+	}
+	return &registry.ServerImage{Name: name, Version: rec.Version, Commit: rec.Commit, Build: rec.Build,
+		SHA256: rec.SHA256, Path: rec.Path}, nil
+}
 
 // planCreateSteps is the create step builder, and the SEAM `restore --as`
 // reuses: it calls this with Start:false and Gateway:false to lay a fresh
@@ -329,6 +408,13 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	if err != nil {
 		return p.refuse("%s's tenant.env cannot be rendered as requested: %v", name, err)
 	}
+	// The PUBLIC env this job is about to write is what an image-mode API
+	// start in the same job derives its binds from: the file is not there yet.
+	pending := map[string]string{}
+	for _, a := range envPreview.Assignments() {
+		pending[a.Key] = a.Value
+	}
+	p.pendingEnv, p.pendingEnvTenant = pending, name
 	units, err := render.Units(t, render.UnitConfig{
 		RagRoot: p.oc.Roots.RagRoot, CtlStateDir: p.oc.Roots.CtlStateDir,
 		// Empty is RagRoot (render's own default). It is non-empty only for a
@@ -626,9 +712,10 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	})
 
 	// ---- 5. git: the tenant's own checkout --------------------------------
+	codeSHA := spec.codeSHA()
 	p.addFor("git", step{
-		Kind: "git", Title: "check the worktree out at artifact " + spec.ArtifactID + "'s commit",
-		Targets: []string{t.Worktree, spec.Artifact.SHA},
+		Kind: "git", Title: "check the worktree out at " + spec.codeLabel() + "'s commit",
+		Targets: []string{t.Worktree, codeSHA},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			if spec.Mirror == "" {
 				return "", fmt.Errorf("%w: no mirror is configured, so there is nothing to check %s out of "+
@@ -637,10 +724,10 @@ func planCreateSteps(p *planner, spec createSpec) error {
 			if err := sc.Checkpoint("worktree:" + t.Worktree); err != nil {
 				return "", err
 			}
-			if err := sc.Ops.Drivers.Git().AddWorktree(ctx, spec.Mirror, spec.Artifact.SHA, t.Worktree); err != nil {
+			if err := sc.Ops.Drivers.Git().AddWorktree(ctx, spec.Mirror, codeSHA, t.Worktree); err != nil {
 				return "", err
 			}
-			return t.Worktree + " @ " + spec.Artifact.SHA[:12], nil
+			return t.Worktree + " @ " + codeSHA[:12], nil
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			return "removed " + t.Worktree, sc.Ops.Drivers.Git().RemoveWorktree(ctx, spec.Mirror, t.Worktree)
@@ -799,6 +886,12 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	p.result["index"] = spec.Index
 	p.result["ports"] = t.Ports
 	p.result["artifact_id"] = spec.ArtifactID
+	if spec.ServerImage != nil {
+		p.result["server_image"] = spec.ServerImage.Name
+		p.warn("the API runs from server image %s (version %s, commit %s) as the apptainer instance %s; the "+
+			"worktree is checked out at the same commit and python_env is recorded but unused", spec.ServerImage.Name,
+			spec.ServerImage.Version, spec.ServerImage.Commit, render.APIImageInstanceName(t))
+	}
 	p.result["postgres"] = t.Stores.Postgres.Kind
 	p.result["keys"] = []any{}
 	p.warn("rollback is bounded to the paths this job created; nothing outside them is touched")
@@ -1123,9 +1216,21 @@ func prospectiveTenant(roots paths.Roots, f *registry.Fleet, spec createSpec) *r
 	tp := paths.TenantPaths(roots, name, name)
 	a := spec.Artifact
 	t := registry.NewTenant(name, name)
-	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, a.PythonEnv
+	t.DataDir, t.Worktree = tp.DataDir, tp.Worktree
 	t.ArtifactID = registry.NullString(spec.ArtifactID)
-	t.Code = registry.Code{Tag: a.Tag, SHA: registry.NullString(a.SHA)}
+	if a != nil {
+		t.PythonEnv = a.PythonEnv
+		t.Code = registry.Code{Tag: a.Tag, SHA: registry.NullString(a.SHA)}
+	} else {
+		// No artifact: an image-mode tenant with an external UI. python_env is
+		// recorded as for every row (render.prepare requires it) and unused.
+		t.PythonEnv = defaultPythonEnv(roots)
+	}
+	if si := spec.ServerImage; si != nil {
+		cp := *si
+		t.ServerImage = &cp
+		t.Code = registry.Code{Tag: si.Version, SHA: registry.NullString(si.Commit)}
+	}
 	t.Ports = paths.BlockAt(f.PortBase, f.PortStride, spec.Index)
 	if paths.IsSelftestBlock(spec.Base) {
 		// A sandbox's ports come from the selftest range, not from the

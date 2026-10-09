@@ -365,10 +365,11 @@ x-ctl-cli-op-args:
     additionalProperties: false
   create-sandbox:
     type: object
-    required: [artifact_id, name]
+    required: [name]
     properties:
       name: { description: "The sandbox tenant name; must start with `ctltest-` (the selftest spells it `ctltest-<stamp>`).", type: string, pattern: "^ctltest-[a-z0-9-]{1,23}$" }
-      artifact_id: { description: "A PREPARED artifact (`fleet artifact prepare`).", type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+      artifact_id: { description: "A PREPARED artifact (`fleet artifact prepare`). Required unless `image` is given (the op refuses a request naming neither).", type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+      image: { description: "A PREPARED server image: the sandbox's API runs as an apptainer instance of it (image mode), as create_request.json's `image`.", type: string, pattern: "^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\\.sif$" }
       es_heap: { description: "JVM heap for the sandbox's own Elasticsearch.", type: string, pattern: "^[1-9][0-9]*[mg]$" }
       postgres: { description: "Where the ACL/job/collection state lives.", type: string, enum: [sqlite, local] }
       identity_provider: { type: string, enum: [bvbrc, none] }

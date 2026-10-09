@@ -328,8 +328,10 @@ type FleetRow struct {
 	// ServerImage is the image file an image-mode row runs from; absent in
 	// worktree mode.
 	ServerImage NullString `json:"server_image,omitempty"`
-	// TODO(PR-F F4): the API instance's pid (instance table + Descends) once
-	// the instance API leg exists; status.api_pid still reports the port owner.
+	// TODO(PR-F): the API instance's pid (instance table + Descends). F4 left
+	// it out: the fleet view reads hostfacts, which has no instance-table
+	// seam, and status.api_pid already reports the port's owner (the uvicorn
+	// inside the instance, a host pid).
 }
 
 // The two API modes a FleetRow reports.

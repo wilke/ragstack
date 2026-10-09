@@ -48,7 +48,7 @@ func (p *planner) legs(only []string) ([]component, error) {
 		storeLeg(t, "qdrant", render.LegQdrant, qdrantUnit, t.Stores.Qdrant.Ownership, t.Stores.Qdrant.Capabilities, t.Ports.QdrantHTTP),
 		storeLeg(t, "es", render.LegES, esUnit, t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities, t.Ports.ESHTTP),
 		postgresLeg(t, pgUnit),
-		{Name: "api", Unit: apiUnit, Port: t.Ports.API, PidFile: p.apiPidFile(), Managed: true},
+		apiLeg(p, apiUnit),
 		uiLeg(t, uiUnit),
 	}
 	if len(only) == 0 {
@@ -68,6 +68,20 @@ func (p *planner) legs(only []string) ([]component, error) {
 		}
 	}
 	return out, nil
+}
+
+// apiLeg is the API component. In worktree mode it is found through its
+// pidfile; in image mode (`server_image` on the row) through its instance,
+// `api-<manifest>`, and it has no pidfile at all.
+func apiLeg(p *planner, unit string) component {
+	t := p.t
+	c := component{Name: "api", Unit: unit, Port: t.Ports.API, Managed: true}
+	if t.ImageMode() {
+		c.Instance = render.APIImageInstanceName(t)
+		return c
+	}
+	c.PidFile = p.apiPidFile()
+	return c
 }
 
 func storeLeg(t *registry.Tenant, name, leg, unit, ownership string, caps registry.Capabilities, port int) component {

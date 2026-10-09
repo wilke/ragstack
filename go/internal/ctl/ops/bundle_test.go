@@ -806,14 +806,11 @@ func TestBackupWithNoScopeIsTheFullBundle(t *testing.T) {
 // name and digest, never the store path, valid against the contract. A
 // worktree tenant's bundle carries no such member at all.
 func TestTheBundleNamesTheServerImageOfAnImageModeTenant(t *testing.T) {
-	sha := strings.Repeat("cd", 32)
-	imageRow := func(tn *registry.Tenant) {
-		managed(tn)
-		tn.ServerImage = &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6",
-			Commit: strings.Repeat("ab", 20), Build: 1, SHA256: sha,
-			Path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif"}
-	}
-	oc, fake := fixture(t, "dev", imageRow)
+	// An image-mode row is `supervisor: instance` (there is no systemd unit
+	// for an API instance), with its image and labels on the fake host so the
+	// fence's restart of the API can prove it (PR-F F4).
+	oc, fake := imageRowFixture(t, devImageEnv())
+	sha := oc.Tenant.ServerImage.SHA256
 	seedState(fake, "dev")
 	runBackup(t, oc, fake, map[string]any{"fence": true})
 	var man map[string]any

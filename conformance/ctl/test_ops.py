@@ -1834,6 +1834,74 @@ async def test_create_with_supervisor_instance_plans_instances_not_units(
     assert any("--bind" in a for a in inst), inst
 
 
+#: The server image the fixture daemon has prepared (go/internal/ctl/api/fake.go
+#: ConformanceServerImage), at CONFORMANCE_ARTIFACT's commit.
+CONFORMANCE_IMAGE = "ragstack-server-conformance-b1.sif"
+
+
+async def test_create_with_image_runs_the_api_as_an_instance(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`create --image` (PR-F F4) lays the tenant down in IMAGE mode from
+    birth: the plan starts the API as the apptainer instance `api-<name>` of
+    the prepared server image with `--cleanenv` and NO `--env` on the argv (the
+    environment reaches apptainer through its own environment only), there is
+    no detached uvicorn and no pidfile, and the row the read surface serves
+    records the image."""
+    name = new_tenant_name()
+    args = {"name": name, "image": CONFORMANCE_IMAGE, "artifact_id": CONFORMANCE_ARTIFACT,
+            "supervisor": "instance"}
+    resp = await client.post("/v1/tenants", json=op_body(dry_run=True, args=args))
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    titles = [s["title"] for s in plan["steps"]]
+    assert any(t.startswith(f"start the API instance api-{name}") for t in titles), titles
+    assert not any("start the API detached" in t for t in titles), titles
+    runs = [r["argv"] for s in plan["steps"] for r in s["would_run"]]
+    api = [a for a in runs if f"api-{name}" in a and "run" in a]
+    assert api, runs
+    argv = api[0]
+    assert argv[:5] == ["/usr/bin/apptainer", "instance", "run", "--no-home", "--cleanenv"], argv
+    assert "--env" not in argv, argv
+    assert not any("PYTHONPATH" in a for a in argv), argv
+    for step in plan["steps"]:
+        for write in step["would_write"]:
+            assert not write["path"].endswith(".pid"), write["path"]
+
+    job = await submit_and_settle(client, "/v1/tenants", schemas, args=args, timeout=60.0)
+    assert job["state"] == "succeeded", json.dumps(job)[:1500]
+    assert (job["result"] or {}).get("server_image") == CONFORMANCE_IMAGE, job["result"]
+    shown = await client.get(f"/v1/tenants/{name}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["registry"]["server_image"]["name"] == CONFORMANCE_IMAGE, body["registry"].get("server_image")
+
+
+@pytest.mark.parametrize(
+    ("extra", "why"),
+    [
+        ({"image": "ragstack-server-not-prepared-b1.sif", "artifact_id": CONFORMANCE_ARTIFACT,
+          "supervisor": "instance"}, "an image nobody prepared"),
+        ({"image": CONFORMANCE_IMAGE, "artifact_id": CONFORMANCE_ARTIFACT, "supervisor": "systemd"},
+         "an image on systemd units"),
+        ({"image": CONFORMANCE_IMAGE, "supervisor": "instance"}, "a static UI with no artifact"),
+    ],
+)
+async def test_create_with_image_refusals_are_409(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict],
+    extra: dict[str, Any], why: str,
+) -> None:
+    """What `create --image` refuses is decided from the registry alone, at
+    plan time: a 409 with the reason, and nothing created."""
+    name = new_tenant_name()
+    resp = await client.post("/v1/tenants", json=op_body(dry_run=True, args={"name": name, **extra}))
+    assert_error(resp, 409, "refused", schemas)
+    after = await client.get(f"/v1/tenants/{name}")
+    assert after.status_code == 404, f"{why}: the refused create left a tenant behind"
+
+
 async def test_create_default_supervisor_is_the_contracts(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
 ) -> None:

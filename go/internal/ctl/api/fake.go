@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -484,9 +485,36 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 			opts.ESSnapshotDirs[url] = tp.ESSnapshots
 		}
 	}
+	// Every prepared server image is ON this host, as `fleet image prepare`
+	// leaves it: the file (whose sha256 the record holds — the conformance
+	// image's bytes are conformanceImageBytes) and the labels its receipt
+	// describes. An image-mode create or start proves both before it runs the
+	// instance, so a record with nothing behind it would be a fixture on which
+	// no image-mode verb could succeed. A record whose digest is not of the
+	// fixture's bytes is left without a file: it is a record of an image this
+	// host does not have, and the probe says so.
+	for _, rec := range f.ServerImages {
+		if rec == nil {
+			continue
+		}
+		if sum := sha256.Sum256(conformanceImageBytes); hex.EncodeToString(sum[:]) == rec.SHA256 {
+			opts.Files[rec.Path] = conformanceImageBytes
+		}
+		if opts.ImageLabels == nil {
+			opts.ImageLabels = map[string]map[string]string{}
+		}
+		opts.ImageLabels[rec.Path] = map[string]string{
+			"org.ragstack.version": rec.Version, "org.ragstack.commit": rec.Commit,
+			"org.ragstack.build": strconv.Itoa(rec.Build), "org.ragstack.role": "server",
+		}
+	}
 	fixtureRestoreTargets(f, &opts)
 	return opts
 }
+
+// conformanceImageBytes are the fixture server image's bytes:
+// conformanceImageSHA256 is their digest.
+var conformanceImageBytes = []byte("conformance server image")
 
 // fixtureRestoreTargets pre-answers, for the port blocks a `restore --as`
 // would ALLOCATE, the one fact a tenant that has just been restored cannot

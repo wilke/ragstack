@@ -279,6 +279,13 @@ func TestTenantCreateArgsMatchTheContract(t *testing.T) {
 			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "start": false, "gateway": false}},
 		{"a ui mode", []string{"tenant", "create", "conf", "--artifact", "a1", "--ui-mode", "dev"},
 			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "ui_mode": "dev"}},
+		// PR-F F4: image mode from birth. --artifact rides along for the UI.
+		{"a server image and its artifact", []string{"tenant", "create", "conf", "--image",
+			"ragstack-server-v1.6.6-b1.sif", "--artifact", "a1"},
+			"/v1/tenants", map[string]any{"name": "conf", "image": "ragstack-server-v1.6.6-b1.sif", "artifact_id": "a1"}},
+		{"a server image alone", []string{"tenant", "create", "conf", "--image", "ragstack-server-v1.6.6-b1.sif",
+			"--ui-mode", "external"},
+			"/v1/tenants", map[string]any{"name": "conf", "image": "ragstack-server-v1.6.6-b1.sif", "ui_mode": "external"}},
 	})
 }
 
@@ -287,7 +294,7 @@ func TestTenantCreateRefusesMalformedFlagsBeforeTheNetwork(t *testing.T) {
 		name string
 		argv []string
 	}{
-		{"no artifact", []string{"tenant", "create", "conf"}},
+		{"no artifact and no image", []string{"tenant", "create", "conf"}},
 		{"no name", []string{"tenant", "create", "--artifact", "a1"}},
 		{"a name outside the grammar", []string{"tenant", "create", "Not_Valid", "--artifact", "a1"}},
 		{"a reserved name", []string{"tenant", "create", "qdrant", "--artifact", "a1"}},

@@ -13,9 +13,11 @@ package ops
 //   - `instance`: the ctl supervises the tenant ITSELF. The stores run as
 //     named apptainer instances (`qdrant-<manifest>`, the names the
 //     hand-started tenants already use) and the API is a detached uvicorn with
-//     a pidfile. It exists because svcbvbrc on coconut has no linger, no user
-//     manager and no logind session under cron, so `systemctl --user` cannot
-//     be driven from boot at all.
+//     a pidfile — or, for a row with `server_image` (PR-F), the apptainer
+//     instance `api-<manifest>` of that image, with no pidfile at all
+//     (ops/apiinstance.go). It exists because svcbvbrc on coconut has no
+//     linger, no user manager and no logind session under cron, so
+//     `systemctl --user` cannot be driven from boot at all.
 //
 // `manual` is the third value of the registry enum and has NO supervisor here
 // on purpose: it describes a tenant somebody else started, which the ctl may
@@ -147,6 +149,12 @@ func (systemdSupervisor) preStart(p *planner) error {
 }
 
 func (systemdSupervisor) startLeg(p *planner, c component) error {
+	if c.Name == "api" && p.t.ImageMode() {
+		return p.refuse("%s runs its API from a server image (%s), and an image-mode API is supervised as an "+
+			"apptainer instance by `supervisor: instance` only — there is no systemd unit for it (PR-F §1.4). "+
+			"Put the tenant on `instance` (`ragstack-ctl tenant set-supervisor %s instance`)",
+			p.t.Name, p.t.ServerImage.Name, p.t.Name)
+	}
 	p.addUnitStep("start", c)
 	return nil
 }
@@ -709,6 +717,24 @@ func readEnvFile(ctx context.Context, sc *jobs.StepContext, path string) (map[st
 // The account is whoever runs the job: the release runs as the tenant's owner,
 // which is the account whose uvicorn it stopped.
 type apiLaunch struct {
+	// Mode is apiModeWorktree (a detached uvicorn under python_env, with a
+	// pidfile) or apiModeImage (an apptainer instance of server_image, with
+	// NO pidfile). It is decided by the ROW the launch was rendered from, and
+	// startAPIProcess/stopAPIProcess switch on it — which is why every caller
+	// of those two (start, stop, their rollbacks, the handover release, the
+	// backup fence, decommission, `fleet start --all`) gets image mode without
+	// knowing it exists.
+	Mode string
+	// Instance is the API instance name (`api-<manifest>`) in image mode,
+	// empty in worktree mode. It is filled even when the launch could not be
+	// rendered, because a STOP needs only the name.
+	Instance string
+	// Image is the rendered instance launch, image mode only.
+	Image *render.APIImage
+	// ServerImage is the row's server_image the launch was rendered from: what
+	// the step-time probe holds the file and its labels to.
+	ServerImage *registry.ServerImage
+
 	Program string
 	Args    []string
 	// UnitEnv is the api unit's `Environment=` lines — the third and lowest
@@ -730,32 +756,64 @@ type apiLaunch struct {
 	SharedStores []storeProbe
 }
 
-// apiLaunch resolves the launch from the row. It is a plan-time call: it
-// renders an argv and reads nothing off the host.
-func (p *planner) apiLaunch(port int) (apiLaunch, error) {
-	program, args, unitEnv, err := render.APIArgv(p.t, p.unitConfig())
-	if err != nil {
-		return apiLaunch{}, err
-	}
+// The two API launch modes.
+const (
+	apiModeWorktree = "worktree"
+	apiModeImage    = "image"
+)
+
+// apiLaunch resolves the launch from the planner's row. It is apiLaunchFor(p.t).
+func (p *planner) apiLaunch(port int) (apiLaunch, error) { return p.apiLaunchFor(p.t, port) }
+
+// apiLaunchFor resolves the API launch of ANY row of this planner's tenant —
+// the current one, or (update-code) the row as it will be after a swap. It is
+// a plan-time call: it renders an argv and, for an image row, reads the
+// tenant's PUBLIC tenant.env through the planner's file reader to derive the
+// binds (the same reader the env ops use for their previews; secrets.env is
+// never read at plan time).
+//
+// On an error the identity fields (Mode, Instance, PidFile, Worktree, Port)
+// are still filled: a stop needs nothing more, and "the undo of this stop
+// cannot be rendered" must not become "this stop is refused".
+func (p *planner) apiLaunchFor(row *registry.Tenant, port int) (apiLaunch, error) {
 	tp := p.tpaths
-	return apiLaunch{
-		Program: program, Args: args, UnitEnv: unitEnv,
-		Dir: filepath.Join(p.t.Worktree, "python"), Worktree: p.t.Worktree,
-		PidFile: p.apiPidFile(), LogPath: tp.APILog,
+	if p.t == nil || row.Name != p.t.Name {
+		tp = paths.TenantPaths(p.oc.Roots, row.Name, orDefault(row.ManifestName, row.Name))
+	}
+	pidfile := row.API.PidFile
+	if pidfile == "" {
+		pidfile = tp.PidFile
+	}
+	l := apiLaunch{
+		Mode: apiModeWorktree,
+		Dir:  filepath.Join(row.Worktree, "python"), Worktree: row.Worktree,
+		PidFile: pidfile, LogPath: tp.APILog,
 		TenantEnv: tp.TenantEnv, SecretsEnv: tp.SecretsEnv, Port: port,
 		// The supervisor this plan is being made AGAINST, not the one the row
 		// happens to say: a take plans every leg against instanceSupervisor
 		// before the registry step has written it (handover.go), and the
 		// readiness wait of that very job is the one that needs the fast-fail.
-		OwnStores:    ownStoreProbes(p.t, tp, p.sup != nil && p.sup.kind() == supervisorInstance),
-		SharedStores: sharedStoreProbes(p.t, tp),
-	}, nil
+		OwnStores:    ownStoreProbes(row, tp, p.sup != nil && p.sup.kind() == supervisorInstance),
+		SharedStores: sharedStoreProbes(row, tp),
+	}
+	if row.ImageMode() {
+		return p.apiImageLaunch(row, tp, l)
+	}
+	program, args, unitEnv, err := render.APIArgv(row, p.unitConfig())
+	if err != nil {
+		return l, err
+	}
+	l.Program, l.Args, l.UnitEnv = program, args, unitEnv
+	return l, nil
 }
 
 // startAPIProcess is the whole start: the already-running check, the store
 // waits, the environment read at RUN time, and the pidfile checkpointed before
 // the spawn that writes it.
 func startAPIProcess(ctx context.Context, sc *jobs.StepContext, l apiLaunch) (string, error) {
+	if l.Mode == apiModeImage {
+		return startAPIInstance(ctx, sc, l)
+	}
 	up, pid, err := apiRunningPID(ctx, sc, l.PidFile, l.Port)
 	if err != nil {
 		return "", err
@@ -813,6 +871,10 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 	if err != nil {
 		return p.refuse("%s's API cannot be started as it is recorded: %v", p.t.Name, err)
 	}
+	if l.Mode == apiModeImage {
+		p.addAPIInstanceStart(l)
+		return nil
+	}
 	pidfile, port := l.PidFile, l.Port
 
 	p.addFor("proc", step{
@@ -830,7 +892,7 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 			return startAPIProcess(ctx, sc, l)
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return stopAPIProcess(ctx, sc, pidfile, l.Worktree, port)
+			return stopAPIProcess(ctx, sc, l)
 		},
 		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
 			up, _, err := apiRunningPID(ctx, sc, pidfile, port)
@@ -847,18 +909,22 @@ func (instanceSupervisor) startAPI(p *planner, c component) error {
 }
 
 func (instanceSupervisor) stopAPI(p *planner, c component) error {
-	pidfile, worktree, port := p.apiPidFile(), p.t.Worktree, c.Port
+	pidfile, port := p.apiPidFile(), c.Port
 	// The start this stop undoes (#693): resolved from the row now, the same
 	// launch startAPI spawns. An error is kept for the rollback to report — a
 	// stop must not be refused because its undo could not be rendered.
 	launch, lerr := p.apiLaunch(port)
+	if launch.Mode == apiModeImage {
+		p.addAPIInstanceStop(launch, lerr)
+		return nil
+	}
 	p.addFor("proc", step{
 		Kind: "proc", Title: "stop the API through its pidfile (TERM, then KILL)", Destructive: true,
 		Targets: []string{pidfile},
 		Warnings: []string{"the ctl signals a pid it has verified is this tenant's (pidfile, cwd and cmdline); it " +
 			"never runs pkill. TERM first, then up to " + apiStopTimeout.String() + " for the port to free, then KILL"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return stopAPIProcess(ctx, sc, pidfile, worktree, port)
+			return stopAPIProcess(ctx, sc, launch)
 		},
 		// The inverse of the stop, as the systemd unit step has it: spawn the
 		// API the row describes and wait for it to listen (#693). It starts
@@ -938,7 +1004,14 @@ const apiStopPoll = 500 * time.Millisecond
 // The pidfile goes LAST because it is the ctl's only record of what it
 // started: removing it before the process is gone would leave a running
 // uvicorn nothing can find.
-func stopAPIProcess(ctx context.Context, sc *jobs.StepContext, pidfile, worktree string, port int) (string, error) {
+//
+// In image mode there is no pidfile at all: the stop is the instance's
+// (stopAPIInstance), and the stale-pid branch below does not apply.
+func stopAPIProcess(ctx context.Context, sc *jobs.StepContext, l apiLaunch) (string, error) {
+	if l.Mode == apiModeImage {
+		return stopAPIInstance(ctx, sc, l)
+	}
+	pidfile, worktree, port := l.PidFile, l.Worktree, l.Port
 	pid, err := readPidFile(ctx, sc, pidfile)
 	if errors.Is(err, fs.ErrNotExist) {
 		// No pidfile is a stop with nothing to stop. It is SUCCESS for the
@@ -1038,6 +1111,11 @@ func readPidFile(ctx context.Context, sc *jobs.StepContext, pidfile string) (int
 
 // apiRunning is the `running` answer for the api leg.
 func apiRunning(ctx context.Context, sc *jobs.StepContext, c component) (bool, error) {
+	if c.Instance != "" {
+		// Image mode: the instance table and the port, never a pidfile.
+		up, _, err := apiInstanceRunning(ctx, sc, c.Instance, c.Port)
+		return up, err
+	}
 	pidfile := c.PidFile
 	up, _, err := apiRunningPID(ctx, sc, pidfile, c.Port)
 	return up, err
