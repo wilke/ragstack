@@ -321,13 +321,15 @@ func NginxStatic(f *registry.Fleet, cfg NginxConfig) ([]byte, error) {
 location = %[1]s {
     return 301 %[2]s;
 }
-
-location ^~ %[2]s {
-    include %[3]s;
-    alias %[4]s/;
-    try_files $uri $uri/ %[2]sindex.html;
+`, strings.TrimSuffix(base, "/"), base)
+		b.WriteString(staticCacheLocations(base, cors, dist, "index.html"))
+		fmt.Fprintf(&b, `
+location ^~ %[1]s {
+    include %[2]s;
+    alias %[3]s/;
+    try_files $uri $uri/ %[1]sindex.html;
 }
-`, strings.TrimSuffix(base, "/"), base, cors, dist)
+`, base, cors, dist)
 	}
 	if f.Ctl.GatewayEnabled {
 		if cfg.CtlPort <= 0 || cfg.CtlPort > 65535 {
@@ -348,11 +350,13 @@ location ^~ %[2]s {
 		// The slashless `/ragstack/admin/api` gets its own 301 next to the UI
 		// one: without it the path falls through to the tenant regex in
 		// routes.conf and is answered as if `admin` were a tenant.
-		fmt.Fprintf(&b, `
+		b.WriteString(`
 location = /ragstack/admin/ui {
     return 301 /ragstack/admin/ui/;
 }
-
+`)
+		b.WriteString(staticCacheLocations("/ragstack/admin/ui/", cors, cfg.CtlUIDist, "admin.html"))
+		fmt.Fprintf(&b, `
 location ^~ /ragstack/admin/ui/ {
     include %[1]s;
     alias %[2]s/;
@@ -372,4 +376,41 @@ location ^~ /ragstack/admin/api/ {
 `, cors, cfg.CtlUIDist, common, cfg.CtlPort)
 	}
 	return b.Bytes(), nil
+}
+
+// staticCacheLocations returns the two cache-policy locations rendered in
+// front of every static UI's `^~ <base>` block (#712). The arguments are
+// values the caller has already vetted (base by reUIBase, cors and dist by
+// paths.SafePath, entry a literal); nothing new is interpolated.
+//
+//   - `= <base><entry>`: the HTML entry (tenant index.html, admin admin.html)
+//     is not content-hashed, so it is always revalidated (`no-cache`).
+//     Without a Cache-Control, browsers applied heuristic freshness and kept a
+//     weeks-old bundle alive across a dist swap. The `^~ <base>` block's
+//     try_files fallback is an internal redirect that re-runs location
+//     matching, so SPA deep links land here too.
+//   - `^~ <base>assets/`: Vite's content-hashed bundles never change under a
+//     name, so they are cached for a year and marked immutable. Deliberately
+//     WITHOUT `always`: nginx then adds it to 2xx/3xx only, so a 404 for a
+//     hashed name that is briefly missing during a dist swap is not cached
+//     for a year. The HTML entry keeps `always` — no-cache is safe on any
+//     status.
+//
+// `include cors.conf` is repeated in both: an add_header in a location
+// replaces EVERY add_header inherited from outer levels, but directives at the
+// same level (the include's and ours) combine.
+func staticCacheLocations(base, cors, dist, entry string) string {
+	return `
+location = ` + base + entry + ` {
+    include ` + cors + `;
+    alias ` + dist + `/` + entry + `;
+    add_header Cache-Control "no-cache" always;
+}
+
+location ^~ ` + base + `assets/ {
+    include ` + cors + `;
+    alias ` + dist + `/assets/;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+}
+`
 }
