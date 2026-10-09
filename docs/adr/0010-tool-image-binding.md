@@ -153,7 +153,17 @@ different artifacts that produced a circular release flow.)
 6. **The release order is linear.** (a) `git tag vT`; (b) build the tools image
    from that checkout → `ragstack-tools-vT-b1.sif` + receipt; (c) ops copies
    image and receipt to the shared store `/scout/containers/ragstack/`
-   (release versions only; `+sha` builds live in a tenant's own image dir);
+   (release versions only; `+sha` builds live in a tenant's own image dir) and
+   makes them **reachable** from each worker group: GoWe resolves a bare
+   `dockerPull` name against a worker's single `--image-dir` (no search path;
+   tested on v0.21.0), so each group's directory carries a **same-named
+   symlink** to the image and to its receipt (the check reads the receipt beside
+   the resolved path). The link is reachability, not indirection — the version
+   is in the name, and a link pointing a versioned name at other bytes fails the
+   identity check. Absolute paths in `dockerPull` are ruled out: they would
+   commit this host's filesystem layout into git. (First done 2026-10-08:
+   `ragstack-tools-v1.6.5-b1.sif` in the store, linked into
+   `/scout/containers/ragstack-dev/`, dev on v1.6.6.)
    (d) a server release runs the stamping step with the receipt, which writes
    the name into every `dockerPull`/`dockerImageId` and refuses a partially
    rewritten tree; commit; `git tag vS`. Nothing is stamped after a build, no
