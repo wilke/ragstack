@@ -274,3 +274,91 @@ def test_pep440_local_segment_does_not_order_commits():
     # Two commits: lexicographic on the sha, which says nothing about history.
     assert Version("1.6.4+abc") < Version("1.6.4+abd")
     assert Version("1.6.4+abc") != Version("1.6.4+abd")
+
+
+# --------------------------------------------------------------------------- #
+# git_tag / git_sha: env → git → generated _release.py → null (PR-F F1)
+# --------------------------------------------------------------------------- #
+
+_FULL_SHA = "4c1322e" + "0" * 33
+
+
+def _fake_release(monkeypatch, **values: str) -> None:
+    """Install a generated ``ragstack._release`` (what the image build writes)
+    — or, with no values, make sure there is none."""
+    import types
+
+    import ragstack
+
+    monkeypatch.delattr(ragstack, "_release", raising=False)
+    if not values:
+        # A None entry in sys.modules makes the import raise ImportError.
+        monkeypatch.setitem(sys.modules, "ragstack._release", None)
+        return
+    mod = types.ModuleType("ragstack._release")
+    for k, val in values.items():
+        setattr(mod, k, val)
+    monkeypatch.setitem(sys.modules, "ragstack._release", mod)
+
+
+def _fake_git_run(toplevel: str | Path, out: str = "v1.2.3-4-gabc1234"):
+    def fake_run(argv, *args, **kwargs):
+        text = str(toplevel) if "--show-toplevel" in argv else out
+        return subprocess.CompletedProcess(argv, 0, stdout=text + "\n", stderr="")
+
+    return fake_run
+
+
+@pytest.fixture
+def _clean_identity(monkeypatch):
+    monkeypatch.delenv("RAGSTACK_GIT_TAG", raising=False)
+    monkeypatch.delenv("RAGSTACK_GIT_SHA", raising=False)
+    v.cache_clear()
+    yield
+    v.cache_clear()
+
+
+def test_env_override_beats_git_and_release(monkeypatch, _clean_identity):
+    _fake_release(monkeypatch, VERSION="v1.6.6", COMMIT=_FULL_SHA)
+    monkeypatch.setenv("RAGSTACK_GIT_TAG", "v9.9.9")
+    monkeypatch.setenv("RAGSTACK_GIT_SHA", "deadbeef")
+    monkeypatch.setattr(v.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert v.git_tag() == "v9.9.9"
+    assert v.git_sha() == "deadbeef"
+
+
+def test_a_proven_checkout_beats_release(monkeypatch, _clean_identity):
+    """A checkout that also carries a stray _release.py answers from git."""
+    _fake_release(monkeypatch, VERSION="v1.6.6", COMMIT=_FULL_SHA)
+    monkeypatch.setattr(v.subprocess, "run", _fake_git_run(v._CHECKOUT))
+    assert v.git_tag() == "v1.2.3-4-gabc1234"
+    assert v.git_sha() == "v1.2.3-4-gabc1234"  # the fake answers every git call alike
+
+
+@pytest.mark.parametrize("why", ["no-git", "not-a-checkout"])
+def test_no_checkout_falls_back_to_release(monkeypatch, _clean_identity, why):
+    """Inside the server image: no git binary, and /opt/ragstack is no
+    repository. git_sha is the FULL commit the labels and the receipt carry."""
+    _fake_release(monkeypatch, VERSION="v1.6.6", COMMIT=_FULL_SHA, BUILD="1")
+    if why == "no-git":
+        monkeypatch.setattr(v, "_GIT", None)
+        monkeypatch.setattr(v.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    else:
+        monkeypatch.setattr(v.subprocess, "run", _fake_git_run("/somewhere/else"))
+    assert v.git_tag() == "v1.6.6"
+    assert v.git_sha() == _FULL_SHA
+    info = v.version_info()
+    assert (info["version"], info["git_tag"], info["git_sha"]) == ("1.6.6", "v1.6.6", _FULL_SHA)
+
+
+def test_release_with_empty_values_is_null(monkeypatch, _clean_identity):
+    _fake_release(monkeypatch, VERSION="", COMMIT="  ")
+    monkeypatch.setattr(v, "_GIT", None)
+    assert v.git_tag() is None and v.git_sha() is None
+
+
+def test_no_checkout_and_no_release_is_null(monkeypatch, _clean_identity):
+    _fake_release(monkeypatch)
+    monkeypatch.setattr(v, "_GIT", None)
+    monkeypatch.setattr(v.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert v.git_tag() is None and v.git_sha() is None

@@ -10,9 +10,9 @@ compose what they need from that. **One labelled exception:**
 experiment's provenance block as evidence of what git said — never as a
 version, and never parsed back into one by a reader. Nothing else may call it
 (``tests/unit/test_experiment_provenance.py`` greps for callers). The build script
-(``apptainer/build-tools-image.sh`` → ``python -m ragstack.version --shell``),
+(``apptainer/build-image.sh`` → ``python -m ragstack.version --shell``),
 ``ragstack.__version__`` and the version endpoint all go through it. Inside the
-tools image there is no git and no repository; the build writes
+tools and server images there is no git and no repository; the build writes
 ``ragstack/_release.py`` and that is read instead.
 
 The repo version
@@ -103,6 +103,11 @@ of trust:
   ``git rev-parse --short HEAD``. Argv list only, never a shell; bounded
   timeout; any failure is ``null``, never an exception — a version endpoint
   must not be the thing that 500s.
+* no checkout (or no ``git``) — the server and tools images, whose staged tree
+  is not a repository: the generated ``ragstack/_release.py``. ``git_tag`` is
+  its ``VERSION`` (``vX`` / ``vX+<shortsha>``) and ``git_sha`` its ``COMMIT``,
+  the **full** sha the image labels and receipt carry. Without that file
+  either: ``null``.
 
 **Which git, and which repository.** ``git`` is resolved once at import with
 :func:`shutil.which` (``None`` → every git-derived field is null and no
@@ -525,14 +530,22 @@ def commit_sha(repo_root: Path) -> str:
     return out
 
 
-def _release_file_version() -> str | None:
-    """Resolution step 2: the generated ``ragstack/_release.py``, if the build wrote one."""
+def _release_attr(name: str) -> str | None:
+    """One value of the generated ``ragstack/_release.py`` (``VERSION``,
+    ``COMMIT``, ``BUILD``, ``BUILD_DATE``), or ``None`` when the build wrote no
+    such file or left the value empty. Never raises."""
     try:
         from ragstack import _release  # type: ignore[attr-defined]
     except ImportError:
         return None
-    value = getattr(_release, "VERSION", "")
-    return pep440(str(value)) if value else None
+    value = str(getattr(_release, name, "") or "").strip()
+    return value or None
+
+
+def _release_file_version() -> str | None:
+    """Resolution step 2: the generated ``ragstack/_release.py``, if the build wrote one."""
+    value = _release_attr("VERSION")
+    return pep440(value) if value else None
 
 
 def _distribution_version() -> str:
@@ -584,7 +597,8 @@ def _env(env_var: str) -> str | None:
 
 
 def git_tag(*, arm_backoff: bool = True) -> str | None:
-    """``RAGSTACK_GIT_TAG``, else the describe spelling of this checkout, else null."""
+    """``RAGSTACK_GIT_TAG``, else the describe spelling of this checkout, else
+    the generated ``_release.VERSION`` (``vX`` / ``vX+<sha>``), else null."""
     override = _env("RAGSTACK_GIT_TAG")
     if override:
         return override
@@ -595,16 +609,22 @@ def git_tag(*, arm_backoff: bool = True) -> str | None:
         # contract is "what describe printed".
         if git_is_this_checkout(arm_backoff=arm_backoff):
             return _git(*_DESCRIBE_ARGS, arm_backoff=arm_backoff)
-        return None
+        # No checkout (an image's staged tree, an installed wheel) or no git:
+        # the build's own word, if it wrote one.
+        return _release_attr("VERSION")
     return d.legacy_spelling
 
 
 def git_sha(*, arm_backoff: bool = True) -> str | None:
+    """``RAGSTACK_GIT_SHA``, else ``rev-parse --short HEAD`` of this checkout,
+    else the generated ``_release.COMMIT`` (full sha), else null."""
     override = _env("RAGSTACK_GIT_SHA")
     if override:
         return override
     if not git_is_this_checkout(arm_backoff=arm_backoff):
-        return None
+        # No checkout or no git: the image build's COMMIT (the full sha the
+        # labels and the receipt carry), else null.
+        return _release_attr("COMMIT")
     return _git("rev-parse", "--short", "HEAD", arm_backoff=arm_backoff)
 
 

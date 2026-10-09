@@ -1,4 +1,6 @@
-"""``apptainer/build-tools-image.sh`` — the logic, without a real build.
+"""``apptainer/build-image.sh`` (and its ``build-tools-image.sh`` wrapper) —
+the logic, without a real build. Most cases go through the wrapper
+(``--kind tools``); the ``--kind server`` cases are at the end.
 
 Each case runs the script with ``--repo`` pointing at a temporary git
 repository that carries just enough of the tree (``python/ragstack/version.py``
@@ -31,8 +33,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-SCRIPT = REPO / "apptainer" / "build-tools-image.sh"
+SCRIPT = REPO / "apptainer" / "build-tools-image.sh"   # the wrapper: --kind tools
+BUILD_IMAGE = REPO / "apptainer" / "build-image.sh"
 DEF = REPO / "apptainer" / "ragstack-tools.def"
+SERVER_DEF = REPO / "apptainer" / "ragstack-server.def"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -48,6 +52,9 @@ def repo(tmp_path: Path) -> Path:
     for f in ("__init__.py", "version.py"):
         shutil.copy(REPO / "python" / "ragstack" / f, r / "python" / "ragstack" / f)
     shutil.copy(DEF, r / "apptainer" / "ragstack-tools.def")
+    shutil.copy(SERVER_DEF, r / "apptainer" / "ragstack-server.def")
+    (r / "cwl").mkdir()
+    (r / "cwl" / "x.cwl").write_text("cwlVersion: v1.2\n")
     (r / ".gitignore").write_text("__pycache__/\n*.env\n")  # as the real tree ignores caches/env
     _git(r, "init", "-q")
     _git(r, "config", "user.email", "t@example.invalid")
@@ -58,7 +65,8 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def _run(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run(repo: Path, *args: str, env: dict[str, str] | None = None,
+         script: Path = SCRIPT) -> subprocess.CompletedProcess[str]:
     # PYTHON pins the interpreter to the test's own (>= 3.11): the script's
     # default-interpreter rule has its own tests below, which drop it.
     e = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"),
@@ -66,7 +74,7 @@ def _run(repo: Path, *args: str, env: dict[str, str] | None = None) -> subproces
     if env:
         e.update(env)
     e = {k: v for k, v in e.items() if v is not None}
-    return subprocess.run(["bash", str(SCRIPT), "--repo", str(repo), *args],
+    return subprocess.run(["bash", str(script), "--repo", str(repo), *args],
                           capture_output=True, text=True, env=e)
 
 
@@ -165,7 +173,7 @@ def test_build_names_never_reuse_a_store_entry_of_any_kind(repo, tmp_path):
     out = _run(repo, "--dry-run", "--out", str(tmp_path / "images"), "--store", str(store))
     assert out.returncode == 0, out.stdout + out.stderr
     assert "build:      4\n" in out.stdout
-    assert 'refusing: $dir/$NAME (or its receipt) already exists' in SCRIPT.read_text()
+    assert 'refusing: $dir/$NAME (or its receipt) already exists' in BUILD_IMAGE.read_text()
 
 
 def _stub_python3(tmp_path: Path, ok: bool) -> Path:
@@ -266,7 +274,7 @@ def test_real_build_of_a_tiny_def_verifies_and_writes_the_receipt(repo, tmp_path
         "    mkdir -p /opt/ragstack\n"
         "    printf 'version=%s\\ncommit=%s\\nbuild=%s\\nbuild_date=%s\\n' "
         "'{{ VERSION }}' '{{ COMMIT }}' '{{ BUILD }}' '{{ BUILD_DATE }}' > /opt/ragstack/RELEASE\n\n"
-        "%labels\n    org.ragstack.version {{ VERSION }}\n    org.ragstack.commit {{ COMMIT }}\n"
+        "%labels\n    org.ragstack.role worker\n    org.ragstack.version {{ VERSION }}\n    org.ragstack.commit {{ COMMIT }}\n"
         "    org.ragstack.build {{ BUILD }}\n    org.ragstack.build-date {{ BUILD_DATE }}\n")
     _git(repo, "commit", "-q", "-am", "tiny def")
     _git(repo, "tag", "-f", "v3.2.1")
@@ -299,3 +307,94 @@ def test_real_build_of_a_tiny_def_verifies_and_writes_the_receipt(repo, tmp_path
     # A second build of the same version is b2.
     out2 = _run(repo, "--dry-run", "--out", str(out_dir))
     assert "ragstack-tools-v3.2.1-b2.sif" in out2.stdout
+
+
+# --------------------------------------------------------------------------- #
+# --kind server (PR-F F1) and the --kind contract
+# --------------------------------------------------------------------------- #
+
+
+def _server(repo: Path, *args: str, **kw) -> subprocess.CompletedProcess[str]:
+    return _run(repo, "--kind", "server", *args, script=BUILD_IMAGE, **kw)
+
+
+def test_kind_is_required_and_closed(repo, tmp_path):
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "i"), script=BUILD_IMAGE)
+    assert out.returncode == 2 and "--kind tools|server is required" in out.stderr
+    out = _run(repo, "--kind", "go", "--dry-run", script=BUILD_IMAGE)
+    assert out.returncode == 2 and "unknown --kind go" in out.stderr
+
+
+def test_the_wrapper_is_kind_tools(repo, tmp_path):
+    a = _run(repo, "--dry-run", "--out", str(tmp_path / "i"))
+    b = _run(repo, "--kind", "tools", "--dry-run", "--out", str(tmp_path / "i"), script=BUILD_IMAGE)
+    assert a.returncode == b.returncode == 0, a.stderr + b.stderr
+    def strip(t: str) -> str:  # the build date and the staging pid differ per run
+        return re.sub(r"(src|sbx)\.\d+", r"\1.P", re.sub(r"\d{4}-\d\d-\d\dT[\d:]+Z", "D", t))
+
+    assert strip(a.stdout) == strip(b.stdout)
+    assert "kind:       tools (role worker)" in a.stdout
+
+
+def test_server_dry_run_names_stages_python_and_cwl(repo, tmp_path):
+    out = _server(repo, "--dry-run", "--out", str(tmp_path / "images"))
+    assert out.returncode == 0, out.stderr
+    assert "kind:       server (role server)" in out.stdout
+    assert f"image:      {tmp_path}/images/ragstack-server-v3.2.1-b1.sif\n" in out.stdout
+    assert re.search(r"^stage: .*archive --format=tar HEAD python cwl \| tar -x", out.stdout, re.M)
+    cmd = next(line for line in out.stdout.splitlines() if line.startswith("command:"))
+    assert re.search(r"--build-arg SRC=\S+/python ", cmd) and re.search(r"--build-arg CWL=\S+/cwl ", cmd)
+    assert cmd.rstrip().endswith("apptainer/ragstack-server.def")
+    receipt = json.loads(out.stdout[out.stdout.index("{"):])
+    assert list(receipt) == ["name", "version", "commit", "build", "build_date", "sha256"]
+    assert receipt["name"] == "ragstack-server-v3.2.1-b1.sif" and receipt["sha256"] is None
+
+
+def test_server_build_numbers_are_their_own(repo, tmp_path):
+    """A tools b1 does not move the server count, and vice versa."""
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "ragstack-tools-v3.2.1-b5.sif").write_bytes(b"")
+    (store / "ragstack-server-v3.2.1-b2.sif.receipt.json").write_text("{}")
+    out = _server(repo, "--dry-run", "--out", str(tmp_path / "i"), "--store", str(store))
+    assert "build:      3\n" in out.stdout, out.stdout + out.stderr
+    out = _run(repo, "--dry-run", "--out", str(tmp_path / "i"), "--store", str(store))
+    assert "build:      6\n" in out.stdout, out.stdout + out.stderr
+
+
+def test_def_override_builds_an_older_tree(repo, tmp_path):
+    """A tag that predates ragstack-server.def: --def names the recipe, the
+    identity stays the --repo commit."""
+    _git(repo, "rm", "-q", "apptainer/ragstack-server.def")
+    _git(repo, "commit", "-q", "-m", "no server def")
+    _git(repo, "tag", "-f", "v3.2.1")
+    out = _server(repo, "--dry-run", "--out", str(tmp_path / "i"))
+    assert out.returncode == 2 and "no def file" in out.stderr
+    out = _server(repo, "--dry-run", "--out", str(tmp_path / "i"), "--def", str(SERVER_DEF))
+    assert out.returncode == 0, out.stderr
+    assert f"def:        {SERVER_DEF}\n" in out.stdout
+    assert "ragstack-server-v3.2.1-b1.sif" in out.stdout
+
+
+def test_server_def_shape():
+    """The differences from the tools def that the PR-F brief (§1.1) fixes."""
+    text = SERVER_DEF.read_text()
+    sect = lambda name: text[re.search(rf"^%{name}\b", text, re.M).start():].split("\n%", 1)[0]  # noqa: E731
+    files, post, envs, run, labels = (sect(n) for n in ("files", "post", "environment", "runscript", "labels"))
+    assert "{{ SRC }} /opt/ragstack/python" in files and "{{ CWL }} /opt/ragstack/cwl" in files
+    assert "org.ragstack.role server" in labels
+    for k in ("version", "commit", "build", "build-date"):
+        assert f"org.ragstack.{k} {{{{ " in labels, k
+    assert "export PYTHONPATH=/opt/ragstack/python" in envs
+    assert "export HF_HOME=/rag/cache" in envs and "export PYTHONUNBUFFERED=1" in envs
+    # RELEASE and _release.py are written into the staged tree BEFORE pip copies it.
+    assert post.index("/opt/ragstack/python/ragstack/_release.py") < post.index("python -m pip install \"/opt/ragstack/python[")
+    # The same extras as the tools image.
+    extras = re.compile(r'pip install "/opt/ragstack/python\[([^\]]+)\]"')
+    assert extras.search(post).group(1) == extras.search(DEF.read_text()).group(1)
+    # The version assertion runs twice: site-packages, then the staged tree.
+    assert post.count("assert ragstack.__version__ == expected") == 2
+    assert "PYTHONPATH=/opt/ragstack/python python -" in post
+    assert "umask 0002" in run and "cd /opt/ragstack" in run
+    assert 'exec python -m uvicorn ragstack.api.main:app "$@" >>"$RAGSTACK_API_LOG" 2>&1' in run
+    assert run.count("exec python -m uvicorn ragstack.api.main:app") == 2

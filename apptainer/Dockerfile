@@ -4,7 +4,9 @@
 # Parallel to apptainer/ragstack-tools.def: same package + same CPU-only extras,
 # so a site with Docker/Podman can build the identical image. On the coconut dev
 # host the .def / SIF is the build GoWe + cwltool use; this Dockerfile is for
-# portability / other hosts / CI registries.
+# portability / other hosts / CI registries. It has no counterpart for
+# apptainer/ragstack-server.def (the API image, PR-F): that image is built only
+# as a SIF, with apptainer/build-image.sh --kind server.
 #
 # IDENTITY (ADR-0010): the same four values the SIF build stamps into its
 # labels are passed as build args and land in OCI labels, /opt/ragstack/RELEASE
