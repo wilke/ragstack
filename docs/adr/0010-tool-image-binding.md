@@ -1,6 +1,6 @@
 # 0010. A tool is bound to its image at release time, not at registration or by worker group
 
-Status: Proposed (2026-09-24; amended 2026-10-04 (rename/retire; versions vs builds) and 2026-10-05 (the three-artifact model, replacing the earlier decisions 1–5); issues #609, #613, #614; PR #642; GoWe#273, GoWe#274)
+Status: Proposed (2026-09-24; amended 2026-10-04 (rename/retire; versions vs builds), 2026-10-05 (the three-artifact model, replacing the earlier decisions 1–5) and 2026-10-09 (PR-F: the server image — decision 7's label check split between the boot and the ctl, Migration step 6); issues #609, #613, #614; PR #642; GoWe#273, GoWe#274)
 
 ## Context
 
@@ -175,6 +175,21 @@ different artifacts that produced a circular release flow.)
    passes the same check as hackathon on a tag; there is no branch-tenant
    special case.
 
+   *Amended 2026-10-09 (PR-F): where the label half runs.* An API that runs
+   from a **server image** (Migration step 6) has no `apptainer` inside the
+   container, so its boot check covers the tools image's **sha256 and
+   receipt** and logs the labels as "not checked" (`tool_image.py`,
+   `api/deps.py`). The label comparison is not dropped: it moves to the
+   control plane, which reads the server image's own labels through
+   `Instances().Labels` (`apptainer inspect --labels`) and holds them to the
+   receipt the registry copied — as a step-time probe before **every** image
+   start (`start`, `restart`, the rollback of a stop, `fleet start --all`) and
+   in `tenant update-code` (its image proof, and again at the new instance's
+   start). Enforcement is **split, not downgraded**: the boot refuses a tools
+   image whose bytes or receipt are wrong; the ctl refuses to run a server
+   image whose labels, bytes or receipt are wrong; and `fleet image prepare`
+   refused all three disagreements before the image could be named at all.
+
 8. **Every collection version records what built it**: the GoWe `workflow_id`,
    the tools image name and its digest, in the version manifest and the ingest
    receipt. Provenance runs from a chunk to the exact tool without a log.
@@ -255,6 +270,22 @@ tenant or only for production ones (an ops decision once the build exists).
    directories when no tenant depends on them.
 6. **The server image**: build tenants' API from the same script, deploy via
    ctl; `GET /v1/version` reads `RELEASE`. Supersedes "dev runs a checkout".
+   *Shipped as PR-F (2026-10-09), F1–F5:* `apptainer/build-image.sh --kind
+   server` builds `ragstack-server-<version>-b<N>.sif` (label `role server`,
+   `python/` and `cwl/` staged to `/opt/ragstack`); `version.py` falls back to
+   the image's `_release.py` for `git_tag`/`git_sha` (full commit) when there
+   is no checkout; `ragstack-ctl fleet image prepare --sif` admits an image
+   into `/rag/data/ctl/images/server/` only when its sha256, receipt and labels
+   agree and its commit is in the mirror; a row with `server_image` runs its
+   API as the apptainer instance `api-<manifest>` (`--cleanenv`, the
+   environment as `APPTAINERENV_*` only, identity binds derived from the row);
+   and `ragstack-ctl tenant update-code <t> --image NAME` moves a tenant — a
+   worktree-mode one included — onto an image in one job with post-checks
+   (`/v1/version` == the image's version and commit) and a full rollback
+   (`docs/runbooks/tenant-upgrade.md`). The worktree **stays**, kept at the
+   image's commit by every upgrade: it is the source of the static UI build,
+   `gowe render` and `env`. Decision 7's label check runs in the ctl for these
+   images (decision 7, amendment).
 
 Supersedes the group-as-version-knob framing of #614, the override framing of
 #642, and this ADR's own earlier "image version == checkout version" check.

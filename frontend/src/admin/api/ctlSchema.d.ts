@@ -200,7 +200,7 @@ export interface paths {
         put?: never;
         /**
          * Plan or run a tenant operation
-         * @description OPERATOR. The one mutation entry point for tenant lifecycle, credentials and configuration. `verb` selects the operation; `args` is validated against `x-ctl-op-args[verb]` before planning. `dry_run: true` → 200 Plan (nothing locked, nothing written). `dry_run: false` → 202 Job, after: the persisted idempotency key is checked (same request → the original job; different request under the same key → 409 `duplicate`), the locks are taken in the fleet lock order, the plan is recomputed and compared (409 `plan_stale`), the op-scoped doctor is consulted (409 `doctor_red`; a yellow needs `force_with_doctor_diff`), and `confirm` is checked against the plan's `confirm_value` (428 `confirm_required`). A held lock is 409 `locked` with the holder in `extra`. A capability, fencing, ownership or containment refusal is 409 `refused`. `update-code` is v1.1 and answers 409 `refused` until then, with `detail` saying so.
+         * @description OPERATOR. The one mutation entry point for tenant lifecycle, credentials and configuration. `verb` selects the operation; `args` is validated against `x-ctl-op-args[verb]` before planning. `dry_run: true` → 200 Plan (nothing locked, nothing written). `dry_run: false` → 202 Job, after: the persisted idempotency key is checked (same request → the original job; different request under the same key → 409 `duplicate`), the locks are taken in the fleet lock order, the plan is recomputed and compared (409 `plan_stale`), the op-scoped doctor is consulted (409 `doctor_red`; a yellow needs `force_with_doctor_diff`), and `confirm` is checked against the plan's `confirm_value` (428 `confirm_required`). A held lock is 409 `locked` with the holder in `extra`. A capability, fencing, ownership or containment refusal is 409 `refused`. `update-code` moves a ctl-run tenant onto a prepared server image in one job (pre-update bundle, image proof, worktree at the image's commit, optional UI rebuild, API stop, registry swap, API start, post-checks) and rolls all of it back on a failure.
          */
         post: operations["ctlTenantOp"];
         delete?: never;
@@ -2786,7 +2786,7 @@ export interface components {
         StepN: number;
         /** @description How many lines from the end. Capped at 5000. */
         Lines: number;
-        /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
+        /** @description The operation; every verb is planned and executed by the job engine. `update-code` moves the tenant's API onto a prepared server image (`x-ctl-op-args.update-code`). `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
         Verb: "start" | "stop" | "restart" | "backup" | "restore" | "handover" | "migrate-local" | "decommission" | "key-mint" | "key-revoke" | "admin-add" | "admin-remove" | "sa-create" | "sa-disable" | "sa-enable" | "env-set" | "env-unset" | "env-normalize" | "render-units" | "update-code" | "purge";
     };
     requestBodies: never;
@@ -3123,7 +3123,7 @@ export interface operations {
             path: {
                 /** @description Registry key of the tenant. */
                 name: components["parameters"]["TenantName"];
-                /** @description The operation. `update-code` is v1.1 and is refused with 409 until then; every other verb is planned and executed by the job engine. `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
+                /** @description The operation; every verb is planned and executed by the job engine. `update-code` moves the tenant's API onto a prepared server image (`x-ctl-op-args.update-code`). `purge` deletes a tenant `decommission` has quarantined — its trees, its archive unless `keep_archive`, then its row — and is the only verb that destroys data (`x-ctl-op-args.purge`). */
                 verb: components["parameters"]["Verb"];
             };
             cookie?: never;

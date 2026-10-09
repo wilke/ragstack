@@ -155,6 +155,12 @@ func usage() {
                                             the tenant operations. Each posts one
                                             op_request to the daemon and is answered
                                             with a Plan (--dry-run) or a Job.
+  tenant update-code <name> --image NAME [--artifact ID] [--no-rebuild-ui]
+                                            move the API onto a prepared server image in ONE
+                                            job (a worktree tenant is migrated by it): pre-update
+                                            bundle, image proof, worktree at the image's commit,
+                                            UI rebuilt from --artifact, stop, registry swap, start,
+                                            /v1/version proved; any failure rolls it all back
   tenant purge <name> [--keep-archive]      DELETE a quarantined tenant: its data tree, worktree,
                                             units dir and (unless --keep-archive) its bundles,
                                             then its row; a production block leaves a tombstone.
@@ -1295,7 +1301,7 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|ui [--lines N]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
-		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission|purge <name> [op args]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission|purge|update-code <name> [op args]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")

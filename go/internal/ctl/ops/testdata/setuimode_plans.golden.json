@@ -1,0 +1,72 @@
+{
+ "external": {
+  "plan_sha256": "f16f1a495e9f428d70ecf2c273d5bac4502b5d89d7f82299c097b2e774247379",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest",
+   "gateway"
+  ],
+  "result": {
+   "pending_until_restart": false,
+   "ui_mode": "external",
+   "ui_port": 8092
+  }
+ },
+ "static-from-dev": {
+  "plan_sha256": "65f3a875f2414d59f86ee1ab7faeab2f715ef5a9841796c1b0cb67e3619b6762",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest",
+   "gateway"
+  ],
+  "result": {
+   "ui_base": "/ragstack/dev/ui/",
+   "ui_dist": "/rag/data/tenants/dev/ui/dist",
+   "ui_mode": "static"
+  }
+ },
+ "static-from-external": {
+  "plan_sha256": "9cd9ab3d83e8e6b3dbf1bde2dbfc0ff51ec30a36d3cfc021ba23d1c8170ab5b2",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest",
+   "gateway"
+  ],
+  "result": {
+   "ui_base": "/ragstack/dev/ui/",
+   "ui_dist": "/rag/data/tenants/dev/ui/dist",
+   "ui_mode": "static"
+  }
+ },
+ "static-instance": {
+  "plan_sha256": "30a8b57ff47855b8340f500cfe8aaeb708dc9a933376602e7fdc6b73add944a8",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest",
+   "gateway"
+  ],
+  "result": {
+   "ui_base": "/ragstack/dev/ui/",
+   "ui_dist": "/rag/data/tenants/dev/ui/dist",
+   "ui_mode": "static"
+  }
+ },
+ "static-no-port": {
+  "plan_sha256": "30a8b57ff47855b8340f500cfe8aaeb708dc9a933376602e7fdc6b73add944a8",
+  "locks": [
+   "tenant",
+   "registry",
+   "manifest",
+   "gateway"
+  ],
+  "result": {
+   "ui_base": "/ragstack/dev/ui/",
+   "ui_dist": "/rag/data/tenants/dev/ui/dist",
+   "ui_mode": "static"
+  }
+ }
+}

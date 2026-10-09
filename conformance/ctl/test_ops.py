@@ -751,21 +751,19 @@ async def test_an_unknown_argument_is_422(
     assert_error(resp, 422, "validation", schemas)
 
 
-async def test_update_code_is_refused_until_v1_1(
+async def test_update_code_on_a_hand_started_tenant_is_refused(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
 ) -> None:
-    """``update-code`` is contracted for v1.1 and answers 409 ``refused`` with a
-    detail saying so. It is in the verb enum on purpose: a client that can see
-    the verb and gets a 422 would conclude the verb does not exist."""
+    """``update-code`` is a real verb since PR-F F5 — no longer the v1.1 stub —
+    and on a hand-started tenant (the fixture's first row) it is refused at plan
+    time, 409 ``refused``, with a reason that is not an unwired engine. Its own
+    tests are further down (``test_update_code_*``)."""
     resp = await client.post(
         f"/v1/tenants/{some_tenant}/ops/update-code",
-        json=op_body(args={"artifact_id": "conformance-none"}),
+        json=op_body(args={"image": "ragstack-server-conformance-b1.sif", "rebuild_ui": False}),
     )
     err = assert_error(resp, 409, "refused", schemas)
-    assert "not wired" not in err["detail"], (
-        "update-code must be refused as a v1.1 operation, not as an unwired "
-        f"engine: {err['detail']}"
-    )
+    assert "not wired" not in err["detail"] and "v1.1" not in err["detail"], err["detail"]
 
 
 async def test_a_viewer_sees_a_reduced_job(
@@ -1838,6 +1836,9 @@ async def test_create_with_supervisor_instance_plans_instances_not_units(
 #: ConformanceServerImage), at CONFORMANCE_ARTIFACT's commit.
 CONFORMANCE_IMAGE = "ragstack-server-conformance-b1.sif"
 
+#: The commit the conformance artifact and image pin (api/fake.go conformanceSHA).
+CONFORMANCE_SHA = "c0f0" * 10
+
 
 async def test_create_with_image_runs_the_api_as_an_instance(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
@@ -1900,6 +1901,161 @@ async def test_create_with_image_refusals_are_409(
     assert_error(resp, 409, "refused", schemas)
     after = await client.get(f"/v1/tenants/{name}")
     assert after.status_code == 404, f"{why}: the refused create left a tenant behind"
+
+
+# =========================================================================== #
+# `tenant update-code` (PR-F F5): one job from a worktree launch (or an older
+# image) onto a prepared server image, with post-checks and a full rollback.
+# =========================================================================== #
+async def fresh_worktree_tenant(client: httpx.AsyncClient, schemas: dict[str, dict]) -> str:
+    """A tenant this test owns: created in WORKTREE mode under the instance
+    supervisor from the conformance artifact (static UI, so the upgrade
+    rebuilds it). Fresh, so the upgrade it receives cannot disturb a fixture
+    row another test reads."""
+    name = new_tenant_name()
+    job = await submit_and_settle(client, "/v1/tenants", schemas, timeout=60.0, args={
+        "name": name, "artifact_id": CONFORMANCE_ARTIFACT, "supervisor": "instance",
+    })
+    assert job["state"] == "succeeded", json.dumps(job)[:1500]
+    return name
+
+
+async def test_update_code_dry_run_is_the_briefs_plan(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The dry run of an upgrade is a valid Plan in the order that keeps the
+    running API's tree still: the pre-update bundle, the image proof, the UI
+    BUILD (before the stop), the stop, then the worktree checkout and the dist
+    swap, the registry swap, the start, the post-checks. It is destructive (confirm is
+    the tenant's name), and it never runs `npm ci` — the op is HTTP-reachable."""
+    name = await fresh_worktree_tenant(client, schemas)
+    args = {"image": CONFORMANCE_IMAGE, "artifact_id": CONFORMANCE_ARTIFACT}
+    resp = await client.post(f"/v1/tenants/{name}/ops/update-code", json=op_body(dry_run=True, args=args))
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    assert plan["requires_confirm"] is True and plan["confirm_value"] == name, plan
+    titles = [s["title"] for s in plan["steps"]]
+    order = [
+        "record the bundle as this tenant's last backup",
+        f"prove server image {CONFORMANCE_IMAGE}",
+        "vite build --base",
+        "stop the API",
+        "check the worktree out at",
+        "swap the new build into place",
+        f"record server_image {CONFORMANCE_IMAGE}",
+        f"start the API instance api-{name}",
+        "post-checks:",
+        f"record update-code on {name}",
+    ]
+    at = [next((i for i, t in enumerate(titles) if needle in t), -1) for needle in order]
+    assert -1 not in at and at == sorted(at), list(zip(order, at, strict=True))
+    assert not any("npm ci" in t or "install the frontend" in t for t in titles), titles
+
+
+async def test_update_code_migrates_a_worktree_tenant_and_dedupes_its_key(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Executed, the upgrade leaves the tenant in IMAGE mode on the prepared
+    image, its API answering /v1/version with the image's commit. Repeating it
+    under the same idempotency key is 409 `duplicate` naming the job that ran,
+    and so is the same key with another request."""
+    name = await fresh_worktree_tenant(client, schemas)
+    path = f"/v1/tenants/{name}/ops/update-code"
+    args = {"image": CONFORMANCE_IMAGE, "artifact_id": CONFORMANCE_ARTIFACT}
+    key = idem()
+    job = await submit_and_settle(client, path, schemas, args=args, confirm=name, key=key, timeout=60.0)
+    assert job["state"] == "succeeded", json.dumps(
+        [{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+         for s in job["steps"] if s["state"] not in ("succeeded", "pending")])[:3000]
+    version = (job["result"] or {}).get("version") or {}
+    assert version.get("git_sha") == CONFORMANCE_SHA, job["result"]
+    assert (job["result"] or {}).get("kind") == "pre-update", job["result"]
+
+    shown = await client.get(f"/v1/tenants/{name}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["registry"]["server_image"]["name"] == CONFORMANCE_IMAGE, body["registry"].get("server_image")
+    assert body["summary"]["api_mode"] == "image", body["summary"]
+    assert body["registry"]["code"]["sha"] == CONFORMANCE_SHA, body["registry"]["code"]
+
+    # The REPEAT of the finished upgrade under its key is 409 `duplicate`,
+    # naming the job that ran: the key is bound to the plan it approved, and
+    # the upgrade moved the registry, so the same args no longer plan the same
+    # thing. A client retrying a dropped response learns which job ran instead
+    # of running a second upgrade.
+    retry = {**op_body(dry_run=False, idempotency_key=key, args=args), "confirm": name,
+             **await doctor_force(client, path, args=args)}
+    err = assert_error(await client.post(path, json=retry), 409, "duplicate", schemas)
+    assert (err.get("extra") or {}).get("job_id") == job["id"], err
+    # The same key with ANOTHER request that plans (the UI rebuilt again at the
+    # same image, the flag now stated) is `duplicate` too. (A request that is
+    # REFUSED at plan time joins the prior job instead — the engine's replay
+    # rule for retries of ops that already ran.)
+    other = {**retry, "args": {**args, "rebuild_ui": True}}
+    assert_error(await client.post(path, json=other), 409, "duplicate", schemas)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"artifact_id": CONFORMANCE_ARTIFACT},
+        {"artifact_id": CONFORMANCE_ARTIFACT, "restart": True},
+        {"image": "not-a-server-image.sif"},
+        {"image": CONFORMANCE_IMAGE, "rebuild_ui": "yes"},
+        {"image": CONFORMANCE_IMAGE, "surprise": 1},
+    ],
+)
+async def test_update_code_bad_args_are_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict], args: dict[str, Any]
+) -> None:
+    """`x-ctl-op-args.update-code` is `{image (required), rebuild_ui,
+    artifact_id}`, closed: the v1.0 `{artifact_id, restart}` shape is gone."""
+    name = await instance_tenant(client)
+    resp = await client.post(f"/v1/tenants/{name}/ops/update-code", json=op_body(args=args))
+    assert_error(resp, 422, "validation", schemas)
+
+
+async def test_update_code_refuses_from_the_registry(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Plan-time refusals, 409 `refused`: an image nobody prepared, a static UI
+    with no artifact to rebuild it from, a hand-started tenant."""
+    name = await instance_tenant(client)
+    path = f"/v1/tenants/{name}/ops/update-code"
+    for args in (
+        {"image": "ragstack-server-not-prepared-b1.sif", "rebuild_ui": False},
+        {"image": CONFORMANCE_IMAGE},
+    ):
+        assert_error(await client.post(path, json=op_body(args=args)), 409, "refused", schemas)
+    fleet = (await client.get("/v1/fleet")).json()["tenants"]
+    manual = next(r["name"] for r in fleet if r.get("supervisor") == "manual")
+    resp = await client.post(f"/v1/tenants/{manual}/ops/update-code",
+                             json=op_body(args={"image": CONFORMANCE_IMAGE, "rebuild_ui": False}))
+    assert_error(resp, 409, "refused", schemas)
+
+
+async def test_update_code_is_doctor_red_when_the_current_image_is_missing(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """An image-mode tenant whose CURRENT server image file is gone is refused
+    with 409 `doctor_red`: that image is what a failed upgrade's rollback
+    starts again, so `server_image_missing` is red under `--op update-code` and
+    is never forced. The fixture carries one such row."""
+    fleet = (await client.get("/v1/fleet")).json()["tenants"]
+    rows = [r for r in fleet if r.get("api_mode") == "image" and r.get("state") == "active"
+            and r.get("server_image") != CONFORMANCE_IMAGE]
+    if not rows:
+        pytest.skip("the fixture fleet has no image-mode tenant with a missing image")
+    name = rows[0]["name"]
+    doc = await client.get(f"/v1/doctor?tenant={name}&op=update-code")
+    assert doc.status_code == 200, doc.text
+    red = [f for f in doc.json()["findings"] if f["code"] == "server_image_missing"]
+    assert red and red[0]["level"] == "error", doc.json()
+    body = {**op_body(dry_run=False, args={"image": CONFORMANCE_IMAGE}), "confirm": name}
+    resp = await client.post(f"/v1/tenants/{name}/ops/update-code", json=body)
+    assert_error(resp, 409, "doctor_red", schemas)
 
 
 async def test_create_default_supervisor_is_the_contracts(

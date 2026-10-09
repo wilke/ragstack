@@ -82,6 +82,21 @@ func TestTenantOpArgsMatchTheContract(t *testing.T) {
 			[]string{"tenant", "purge", "dev"}, "/v1/tenants/dev/ops/purge", map[string]any{}},
 		{"purge keeping the archive", []string{"tenant", "purge", "dev", "--keep-archive"},
 			"/v1/tenants/dev/ops/purge", map[string]any{"keep_archive": true}},
+		// update-code (PR-F F5): rebuild_ui is sent only when a flag said so —
+		// absent means "the row decides" (rebuild a static UI).
+		{"update-code with an image and the UI's artifact",
+			[]string{"tenant", "update-code", "dev", "--image", "ragstack-server-v1.6.6-b1.sif", "--artifact", "v1.6.6-ab"},
+			"/v1/tenants/dev/ops/update-code",
+			map[string]any{"image": "ragstack-server-v1.6.6-b1.sif", "artifact_id": "v1.6.6-ab"}},
+		{"update-code as an API-only patch",
+			[]string{"tenant", "update-code", "dev", "--image", "ragstack-server-v1.6.6-b2.sif", "--no-rebuild-ui"},
+			"/v1/tenants/dev/ops/update-code",
+			map[string]any{"image": "ragstack-server-v1.6.6-b2.sif", "rebuild_ui": false}},
+		{"update-code with the rebuild stated",
+			[]string{"tenant", "update-code", "dev", "--image", "ragstack-server-v1.6.6-b1.sif", "--rebuild-ui",
+				"--artifact", "a1"},
+			"/v1/tenants/dev/ops/update-code",
+			map[string]any{"image": "ragstack-server-v1.6.6-b1.sif", "rebuild_ui": true, "artifact_id": "a1"}},
 	})
 }
 
@@ -211,6 +226,8 @@ func TestUnknownSubverbsAndMissingArgumentsAreUsageErrors(t *testing.T) {
 		{"tenant", "restore", "dev"}, // no --from/--as
 		{"tenant", "restore", "dev", "--from", "20260914T101500Z-backup"}, // no --as
 		{"tenant", "backup"},
+		{"tenant", "update-code", "dev"}, // no --image
+		{"tenant", "update-code", "dev", "--image", "x.sif", "--rebuild-ui", "--no-rebuild-ui"},
 		{"job", "bogus"},
 		{"job", "show"},
 		{"job", "log", "01JB0000000000000000000000"},

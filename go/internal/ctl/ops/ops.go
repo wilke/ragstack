@@ -290,6 +290,9 @@ type planner struct {
 	// yet when the plan is made (apiPublicEnv).
 	pendingEnv       map[string]string
 	pendingEnvTenant string
+	// bundleKindName is the kind of the bundle this plan's backup steps write
+	// (backupPlanArgs.Kind); empty is `backup`.
+	bundleKindName string
 }
 
 func newPlanner(o *op, oc jobs.Context, args map[string]any) *planner {

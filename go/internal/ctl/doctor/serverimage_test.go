@@ -223,6 +223,30 @@ func TestImageDirOutsideBindRoots(t *testing.T) {
 	}
 }
 
+// GOWE_IMAGE_DIRS is read from tenant.env — the file the API instance's
+// environment is built from — not only from settings{}, which never carries
+// it on a host (it is an executable-surface key). The file's value wins.
+func TestImageDirOutsideBindRootsReadsTenantEnv(t *testing.T) {
+	w, _ := imageWorld(t)
+	delete(w.tenant.Settings, "GOWE_IMAGE_DIRS")
+	envPath := filepath.Join(w.tenant.DataDir, "config", "tenant.env")
+	write(t, envPath, cleanEnv+"GOWE_IMAGE_DIRS=/scout/containers/ragstack-dev,/home/wilke/images\n")
+	found := findingsForCode(w.run(t), ImageDirOutsideBindRoots)
+	if len(found) != 1 || !strings.Contains(found[0].Detail, `"/home/wilke/images"`) {
+		t.Errorf("findings = %+v; want the /home entry tenant.env names", found)
+	}
+	// settings{} saying something else does not override the file.
+	w.tenant.Settings["GOWE_IMAGE_DIRS"] = "/elsewhere/a,/elsewhere/b"
+	if found := findingsForCode(w.run(t), ImageDirOutsideBindRoots); len(found) != 1 {
+		t.Errorf("with a different settings{} value: %d findings, want the file's 1", len(found))
+	}
+	// A tenant.env that does not name the key falls back to settings{}.
+	write(t, envPath, cleanEnv)
+	if found := findingsForCode(w.run(t), ImageDirOutsideBindRoots); len(found) != 2 {
+		t.Errorf("falling back to settings{}: %d findings, want 2", len(found))
+	}
+}
+
 // python_env is recorded and unused in image mode: where `import ragstack`
 // resolves under it, and whether it is under /home, say nothing about the code
 // that runs.

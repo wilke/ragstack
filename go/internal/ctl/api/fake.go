@@ -155,6 +155,7 @@ func FixtureFleet() *registry.Fleet {
 	addManagedFixture(f)
 	addInstanceFixture(f)
 	addHandoverFixture(f)
+	addImageFixture(f)
 	// One prepared artifact, so `tenant create` has something to create from.
 	f.Artifacts[ConformanceArtifactID] = &registry.Artifact{
 		SHA: conformanceSHA, Tag: "conformance",
@@ -383,6 +384,73 @@ func addInstanceFixture(f *registry.Fleet) {
 	f.DisplayOrder = append(f.DisplayOrder, instanceFixtureName)
 }
 
+// imageFixtureName is an IMAGE-mode tenant (PR-F) whose server image is GONE
+// from the host: its row names `ragstack-server-conformance-old-b1.sif`, an
+// image the fleet no longer has a record or a file for. It is the fixture's
+// one `server_image_missing`, and so the shape `update-code` and `start` are
+// refused over (409 doctor_red): the CURRENT image is what an upgrade's
+// rollback would start again. Its API is up as the instance api-<name>, its
+// UI external, its stores exclusive with no snapshot capability (nothing in
+// the suite backs it up or restores it).
+const imageFixtureName = "ctlfixture-img"
+
+// imageFixtureGoneImage is the server image ctlfixture-img's row names.
+const imageFixtureGoneImage = "ragstack-server-conformance-old-b1.sif"
+
+func addImageFixture(f *registry.Fleet) {
+	r := paths.NewRoots(f.RagRoot, paths.Overrides{})
+	tp := paths.TenantPaths(r, imageFixtureName, imageFixtureName)
+	t := registry.NewTenant(imageFixtureName, imageFixtureName)
+	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
+	t.ServerImage = &registry.ServerImage{Name: imageFixtureGoneImage, Version: "conformance-old",
+		Commit: strings.Repeat("cd", 20), Build: 1, SHA256: strings.Repeat("cd", 32),
+		Path: "/rag/data/ctl/images/server/" + imageFixtureGoneImage}
+	t.Code = registry.Code{Tag: "conformance-old", SHA: registry.NullString(strings.Repeat("cd", 20))}
+	t.Ports = paths.Block(12)
+	t.API = registry.API{Bind: "127.0.0.1", PidFile: tp.PidFile, Log: tp.APILog}
+	t.UI = registry.UI{Mode: registry.UIModeExternal, Port: registry.NullPort(t.Ports.Base + 9),
+		Base: "/ragstack/" + imageFixtureName + "/ui/"}
+	t.Supervisor, t.Owner, t.State = string(model.SupervisorInstance), "svcbvbrc", "active"
+	t.DesiredBoot, t.EnvLayout = "enabled", "managed"
+	t.EnvFileSHA256, t.SecretsFileSHA256 = emptySHA256Hex, emptySHA256Hex
+	t.Identity = registry.Identity{Provider: "bvbrc", AdminSubjectsCount: 1}
+	t.SecretRefs = []registry.SecretRef{
+		{Key: "API_KEYS", File: "secrets.env"},
+		{Key: "API_KEY_TENANTS", File: "secrets.env"},
+		{Key: "API_KEY_ROLES", File: "secrets.env"},
+	}
+	caps := registry.Capabilities{Stop: true}
+	t.Stores.Qdrant = registry.Qdrant{
+		URL:      fmt.Sprintf("http://localhost:%d", t.Ports.QdrantHTTP),
+		Instance: registry.NullString("qdrant-" + imageFixtureName),
+		SIF:      "/rag/apptainer/images/qdrant.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		ExtraEnv: map[string]string{},
+	}
+	t.Stores.Elasticsearch = registry.Elasticsearch{
+		URL:      fmt.Sprintf("http://localhost:%d", t.Ports.ESHTTP),
+		Instance: registry.NullString("elasticsearch-" + imageFixtureName),
+		SIF:      "/rag/apptainer/images/elasticsearch.sif", Ownership: registry.OwnershipExclusive, Capabilities: caps,
+		Heap: "1g", ProvisionHeap: "1g", PathRepo: "/usr/share/elasticsearch/snapshots", ExtraEnv: map[string]string{},
+	}
+	t.Stores.Postgres = registry.SQLiteStore()
+	f.Tenants[imageFixtureName] = t
+	f.DisplayOrder = append(f.DisplayOrder, imageFixtureName)
+}
+
+// fixtureImagePresent is whether the fake host has the server image a row
+// names: exactly the files FixtureDrivers seeds — a prepared record at that
+// path whose digest is of conformanceImageBytes. The fake doctor and the fake
+// host answer the same question the same way.
+func fixtureImagePresent(f *registry.Fleet, si *registry.ServerImage) bool {
+	sum := sha256.Sum256(conformanceImageBytes)
+	for _, rec := range f.ServerImages {
+		if rec != nil && rec.Path == si.Path && rec.SHA256 == hex.EncodeToString(sum[:]) && si.SHA256 == rec.SHA256 {
+			return true
+		}
+	}
+	return false
+}
+
 // emptySHA256Hex is the digest of nothing — the fixture's stand-in for a file
 // hash, and a value that can never be mistaken for a credential.
 const emptySHA256Hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -440,6 +508,16 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 			case string(model.SupervisorSystemd):
 				opts.Active = append(opts.Active, apiUnit)
 			case string(model.SupervisorInstance):
+				if t.ImageMode() {
+					// An IMAGE-mode tenant that is up is its API instance
+					// holding the API port (there is no pidfile in image mode),
+					// beside its store instances.
+					api := "api-" + t.ManifestName
+					opts.InstancePorts[api] = t.Ports.API
+					opts.RunningInstances = append(opts.RunningInstances, api,
+						"qdrant-"+t.ManifestName, "elasticsearch-"+t.ManifestName)
+					break
+				}
 				// An instance-supervised tenant that is UP is one whose
 				// pidfile names a live process and whose stores are running
 				// instances: that is what `running` reads, and without it a
@@ -942,6 +1020,25 @@ func (b *FakeBackend) Doctor(_ context.Context, tenant, op string) (*model.Docto
 				Tenant: registry.NullString(t.Name),
 				Detail: fmt.Sprintf("tenant %s is hand-started (owner %s); nothing restarts it at boot", t.Name, t.Owner),
 				Repair: "render-units",
+			})
+		}
+		if t.ImageMode() && !fixtureImagePresent(b.f(), t.ServerImage) {
+			// doctor/serverimage.go's server_image_missing, answered from the
+			// same fact the fake host is built from. Raised to an error for the
+			// ops that would run the image, as the real doctor's precondition
+			// table raises it.
+			level := model.LevelWarn
+			for _, c := range doctor.RedCodes(op) {
+				if c == doctor.ServerImageMissing {
+					level = model.LevelError
+				}
+			}
+			findings = append(findings, model.Finding{
+				Level:  level,
+				Code:   doctor.ServerImageMissing,
+				Tenant: registry.NullString(t.Name),
+				Detail: fmt.Sprintf("server_image %s: %s does not exist; the API instance cannot start from it",
+					t.ServerImage.Name, t.ServerImage.Path),
 			})
 		}
 		for _, d := range t.Drift {

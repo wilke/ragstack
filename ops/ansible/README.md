@@ -72,7 +72,7 @@ ansible-playbook -i inventory/coconut.yml site.yml --tags root -K -e proxy_switc
 # 2. log out and back in (ragops is a new supplementary group), then as wilke:
 ansible-playbook -i inventory/coconut.yml site.yml --check --diff --tags ctl
 ansible-playbook -i inventory/coconut.yml site.yml --tags ctl \
-    -e ctl_bin_src=$HOME/Development/ragstack/go/ragstack-ctl -e ctl_version=$(…/ragstack-ctl version) \
+    -e ctl_bin_src=$HOME/Development/ragstack/go/bin/ragstack-ctl -e ctl_version=$(…/ragstack-ctl version) \
     -e @vault.yml --ask-vault-pass
 
 # 3. hardening (open decision; before PR-D), root:

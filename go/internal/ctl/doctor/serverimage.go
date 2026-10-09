@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -184,8 +185,19 @@ func (d *run) serverImageFileCheck(tenant string, si *registry.ServerImage) {
 
 // imageDirsCheck reports every GOWE_IMAGE_DIRS entry of an image-mode row
 // that falls outside the API bind roots.
+//
+// The value is read from the tenant's tenant.env — the file the API instance's
+// environment is assembled from — through the same reader envCheck uses.
+// settings{} is only the fallback for a file that cannot be read or does not
+// name the key: GOWE_IMAGE_DIRS is an executable-surface key, which adopt and
+// the env API keep OUT of settings{}, so reading settings alone missed dev's
+// real value (PR-F F4's note).
 func (d *run) imageDirsCheck(t *registry.Tenant) {
-	raw := strings.TrimSpace(t.Settings["GOWE_IMAGE_DIRS"])
+	raw, ok := tenantEnvValue(t, "GOWE_IMAGE_DIRS")
+	if !ok {
+		raw = t.Settings["GOWE_IMAGE_DIRS"]
+	}
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return
 	}
@@ -211,4 +223,19 @@ func (d *run) imageDirsCheck(t *registry.Tenant) {
 					"tool-image boot check would not find the image there", dir, strings.Join(roots, " ")))
 		}
 	}
+}
+
+// tenantEnvValue is one key of t's tenant.env (<data_dir>/config/tenant.env),
+// parsed leniently as envCheck parses it. ok is false when the file cannot be
+// read or parsed, or does not assign the key.
+func tenantEnvValue(t *registry.Tenant, key string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(t.DataDir, "config", "tenant.env"))
+	if err != nil {
+		return "", false
+	}
+	f, _, err := envfile.ParseLenient(b)
+	if err != nil {
+		return "", false
+	}
+	return f.Get(key)
 }

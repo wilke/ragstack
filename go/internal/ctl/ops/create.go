@@ -1420,18 +1420,6 @@ func serviceAccountArgs(args map[string]any) []serviceAccountArg {
 	return out
 }
 
-// ---------------------------------------------------------------- update-code
-
-func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
-	// The contract says so, and the reason is in the plan: swapping the
-	// worktree under a running API needs the schema-compatibility assertion,
-	// the pre-update bundle and the rollback descriptor that v1.1 introduces.
-	// Refusing is the honest answer; pretending would be a code change with no
-	// way back.
-	return p.refuse("update-code is v1.1 and is not implemented yet (requested artifact %q). Until then: prepare the "+
-		"artifact, `backup --fence`, and hand the swap to an operator", argStringOf(args, "artifact_id"))
-}
-
 // ---------------------------------------------------------------- gateway
 
 func planGatewayApply(_ context.Context, p *planner, _ map[string]any) error {

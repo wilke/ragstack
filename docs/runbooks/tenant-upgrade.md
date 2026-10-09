@@ -1,72 +1,194 @@
-# Upgrading a tenant to a new tagged release
+# Upgrading a tenant
 
-**This procedure is manual and operator-run.** There is no
-`ragstack-ctl tenant update` verb — do not go looking for one. The control
-plane's verb list is printed by `ragstack-ctl` with no arguments — the `usage`
-block at `go/cmd/ragstack-ctl/main.go:71-232`. It lists
-`tenant create|list|show|logs|start|restart|stop|backup|restore|decommission`
-(`main.go:121-131`) and **no** `update`, `upgrade` or `deploy` verb. A grep of
-the repo for `tenant update` returns nothing.
+There are two procedures, and which one applies is a fact about the tenant's
+registry row, not a choice:
 
-> **The usage block is not the complete verb list.** `tenant rebase-worktree`
-> exists and is dispatched (`main.go:1054`, implemented in
-> `go/cmd/ragstack-ctl/rebase.go`) with its own usage line at `main.go:1037`,
-> but it is **absent from the top-level `usage()` block** — so `ragstack-ctl`
-> with no arguments does not mention it. That is a gap in `usage()`, not a
-> missing command. Read the block as the printed summary, not as the complete
-> verb list.
+| the row says | the tenant is | upgrade with |
+|---|---|---|
+| `supervisor: instance` (ctl-run) | started and stopped by the control plane | **Part 1** — `ragstack-ctl tenant update-code`, one job |
+| `supervisor: manual` (hand-run) | started by an operator (`ops/coconut/restore.sh`) | **Part 2** — the manual procedure; or hand it over first ([`ctl-handover.md`](ctl-handover.md)) and use Part 1 |
+| `supervisor: systemd` | units the ctl renders | not supported by `update-code` (a server image runs as an apptainer instance, and there are no units for one): `ragstack-ctl tenant set-supervisor <t> instance` first, or Part 2 |
 
-So moving a tenant to a new tag is five steps you run yourself, and one `adopt
---readopt` at the end so the registry stops describing the code that *used* to
-be there. The recipe below is what was actually performed on 2026-09-15, twice:
-first for the **v1.6.0** upgrade of `hackathon` and `dev`
-(`/rag/backups/tenants/*/20260915T11*-pre-v1.6.0/`), then for the **v1.6.1**
-upgrade of the same two (`/rag/backups/tenants/*/20260915T12*-pre-v1.6.1/`).
-Those backup trees are the worked example; **`v1.6.1` is where the fleet is
-now**, so that is the tag the commands below use.
-
-> **Tracked as a future control-plane feature.** The brief this runbook was
-> written from names a "PR-F / v1.1" for the `tenant update` verb.
-> **Unverified:** no `PR-F` appears anywhere in this repository. What *is* in
-> the repo is PR-E — the **handover**, after which `svcbvbrc` owns the tenant
-> units (`docs/runbooks/ctl-deploy.md:1135`, `ctl-quickstart.md:143`). Treat
-> the automated upgrade as "not scheduled in a document I can cite".
+`ragstack-ctl --json tenant show <t>` prints the row; `fleet status` shows
+the API mode (`worktree` or `image`) and the server image per tenant.
 
 ---
 
-### How to read a citation
+## Part 1 — `tenant update-code` (ctl-run tenants)
 
-Code references are `file:line` against the tree at the tag named above.
+`update-code` moves a ctl-run tenant's API onto a **prepared server image**
+in one job (PR-F F5, brief `plan-tenant-control-plane-2026-09-10.pr-f.md`
+§1.3). A tenant whose API still runs from its worktree (`api_mode:
+worktree`) is **migrated** by the same op: afterwards its API is the
+apptainer instance `api-<manifest>` of the image. A tenant already in image
+mode is moved from one image to another.
 
-- A path starting `python/`, `go/`, `ops/coconut/`, `frontend/` or `contracts/`
-  is relative to the **repository root** — `python/ragstack/tenancy.py:36`. This
-  form is always unambiguous and is the one to prefer.
-- Any other path is relative to **`python/ragstack/`** — `api/security.py:990`,
-  `ops/evict.py:158` (which is `python/ragstack/ops/evict.py`, not the repo's
-  `ops/`).
-- A **bare filename** — `collections.py:1569` — means the file the surrounding
-  section is about.
-- **Documentation is cited too**, and differently: a bare `ctl-quickstart.md:143`
-  is a sibling in `docs/runbooks/`, while anything else is repo-root
-  (`CLAUDE.md:102`, `docs/runbooks/ctl-deploy.md:1135`). Prose renumbers far
-  faster than code, so read a doc line number as a hint and the surrounding
-  heading as the real anchor.
+### D6 — the deploy order (binding)
 
-That last form is the one to watch. Several of these basenames exist more than
-once in the tree (`collections.py` and `documents.py` both do), so a bare
-citation resolves from its section, not from a search. **Anything checking these
-mechanically needs that rule, or it will resolve to the wrong file and report
-correct citations as broken** — which is worse than not checking, because the
-next person edits good citations to satisfy a bad resolver. If such a check is
-ever written, qualify the citations first or give the checker the convention.
+The new fields an image-mode registry carries (`fleet.server_images`,
+`tenant.server_image`, `code.previous_image`) cannot be read by an older
+ctl binary: `registry.Load` refuses unknown fields. The **first** `fleet
+image prepare` is therefore a one-way door. In order:
 
-One exception is called out where it appears: `/rag/config/proxy/snippets/…` is a
-**live-host path**, not a repo file. Nothing here can pin it, and it drifts with
-the gateway.
+1. Build, install and restart the new ctl (`make install-ctl`, the daemon
+   restart in [`ctl-deploy.md`](ctl-deploy.md)), then run **both**
+   selftests as the ctl account, on coconut, and see them green:
+   ```bash
+   ragstack-ctl selftest --supervisor instance
+   ragstack-ctl selftest --supervisor instance --update-code <image-b1> --update-code <image-b2>
+   ```
+   The second one creates a worktree sandbox, migrates it onto `<image-b1>`
+   and moves it on to `<image-b2>` (each leg proved: the row, the
+   `api-<sandbox>` instance holding the port, `/v1/version`), then runs the
+   whole backup/stop/restore/decommission/purge sequence on the image-mode
+   sandbox. It needs the two images prepared — which is why it comes after
+   step 2 the first time. Until step 2, run the first selftest only.
+2. Only then build the server image ([`server-image.md`](server-image.md))
+   and admit it: `ragstack-ctl --direct fleet image prepare --sif <path>`.
+3. Upgrade **dev** first, then hackathon after a soak (plan decision D4).
 
-## Two rules before anything starts
+Rolling the ctl back after step 2 means removing the new fields from
+`registry.json` by hand. Do not plan on it.
 
-### Never stop a service by process-name pattern
+### Before you start
+
+```bash
+T=dev
+IMAGE=ragstack-server-v1.6.6-b1.sif
+ragstack-ctl fleet image list                 # the image is prepared (name, version, commit)
+ragstack-ctl fleet artifact list              # static UI: an artifact AT THE IMAGE'S COMMIT
+ragstack-ctl doctor $T --op update-code       # must not be red
+```
+
+The doctor gate for `update-code` (`doctor/preconditions.go`) is red on:
+`env_not_systemd_parsable`, `port_not_listening` (a tenant whose API is DOWN
+is repaired by `tenant start`, never by an upgrade), `worktree_outside_mirror`,
+`worktree_gitdir_unreadable`, and — for an image-mode tenant —
+`server_image_missing` / `server_image_mismatch` of its CURRENT image (that
+image is what a failed upgrade's rollback starts again).
+
+The plan refuses, from the registry alone: a hand-started tenant or one with a
+handover in flight; a tenant that is not `active`; an image that is not
+prepared; a static UI with no `--artifact`, or an artifact whose commit is not
+the image's; `--artifact` with `--no-rebuild-ui`; and the tenant's own
+image again without a UI rebuild (that is `tenant restart <t> --only api`).
+An env file that defines `PYTHONPATH`, `PATH`, `LD_*`, `APPTAINER*`,
+`PREPEND_PATH` or `APPEND_PATH` is refused for an image row (it would hijack
+the container) — remove the key first.
+
+### Run it
+
+```bash
+# a static-UI tenant: the UI is rebuilt from the artifact, at the image's commit
+ragstack-ctl tenant update-code $T --image $IMAGE --artifact <artifact-id> --dry-run
+ragstack-ctl tenant update-code $T --image $IMAGE --artifact <artifact-id> --yes-destructive $T --wait
+
+# an API-only patch (or an external/dev UI): the served UI is left alone
+ragstack-ctl tenant update-code $T --image $IMAGE --no-rebuild-ui --yes-destructive $T --wait
+```
+
+Read the dry run: it is the approval document. Over HTTP it is
+`POST /v1/tenants/<t>/ops/update-code` with `args: {image, rebuild_ui?,
+artifact_id?}` (`x-ctl-op-args.update-code`); `rebuild_ui` absent means
+"rebuild when `ui.mode` is static". The op never runs `npm ci` — the UI is
+built from the artifact's own `node_modules`, as `create` does — which is
+why it can be an HTTP verb.
+
+### What the job does, in order
+
+| # | step | kind | rollback |
+|---|---|---|---|
+| 1 | a LIGHT bundle, kind `pre-update` (config + sealed secrets + SQLite state, no store snapshots, no fence; the backup planner's own steps) → `last_backup` | backup steps | the backup's own (the bundle goes back to `<id>.partial`, `last_backup` is restored) |
+| 2 | prove the image: file sha256 == the prepared record; `apptainer inspect --labels` == the receipt (version, commit, build, role server); the commit resolves in the mirror to itself | probe | none (changes nothing) |
+| 3 | (`rebuild_ui`) `vite build` from the artifact's worktree into `ui/dist.building` — the slow part, while the API still serves; nothing that is served changes | build | the staged build is left in `dist.building` |
+| 4 | refuse over a running ingest job; stop the API with the CURRENT launch (worktree: pidfile, TERM, port free; image: `apptainer instance stop api-<m>`, port free) | probe, proc/instance | starts that same launch again and waits for it — on the tree it started from, which steps 5–6 have already put back |
+| 5 | check the worktree out at the image's commit — always, so `gowe render`, `env`, drift and the next static build read the code the API runs; the previous HEAD is checkpointed; a dirty tree is refused | git | checks the previous HEAD out again |
+| 6 | (`rebuild_ui`) one rename pair: `dist` → `dist.prev-<ts>`, `dist.building` → `dist` (the steps `set-ui-mode static` uses) | fs | swaps back: the new build returns to `dist.building`, the previous one to `dist` |
+| 7 | registry: `server_image` ← the record, `code.tag/sha` ← its version/commit, `code.previous_image` ← the old image (if any), `artifact_id` ← `--artifact` (old → `code.previous_artifact_id`). **Moves the registry generation.** | registry | restores the four fields from the checkpoint |
+| 8 | start the API instance `api-<m>` from the image (labels and sha256 proved again, binds derived from tenant.env, environment as `APPTAINERENV_*` only) | instance | stops it |
+| 9 | post-checks: the instance holds the port; `/health` 200; `/v1/health/deep` 200 (the tenant's own admin key, read at run time); `/v1/version` `git_sha` == the image's full commit and `version` == pep440 of its version (`v1.6.6` → `1.6.6`); then, with `rebuild_ui` and when the live gateway routes the tenant, `GET /ragstack/<t>/ui/` = 200 | probe | none — a failure here unwinds 8…1 |
+| 10 | registry: `last_ops.update-code`, `restart_pending = false` | registry | — |
+
+**Nothing the running API reads changes on disk while it runs.** A worktree
+API imports modules lazily (graph extraction, restore, the tool-image check
+load on first use), so the checkout (5) and the dist swap (6) come only after
+the stop (4); the slow UI build (3) comes before it, so the downtime is the
+checkout, a rename, and the new instance's start — seconds to a minute,
+mostly the image's import time.
+
+### When it fails
+
+**Inside the job** (a step returns an error, the daemon is alive): the engine
+rolls back in reverse. You end with the old UI served, the old image recorded
+(or, for a migration, a worktree-mode row again), the worktree at its
+previous HEAD, and **the OLD API running** — the worktree uvicorn for a
+migrating tenant, the old `api-<m>` instance otherwise. The order makes the
+last point safe: steps 6 and 5 roll back (UI, then worktree) before step 4's
+rollback restarts the old API, so it starts on exactly the tree it was
+stopped on. The job is `rolled_back`; `ragstack-ctl job show <id>` says which
+step failed and why. The pre-update bundle is left as `<id>.partial` (its
+finalize step rolls back with the rest); it is still readable.
+
+**Interrupted** (the daemon died mid-job): the engine resumes a job only when
+its re-plan has the same hash, and the plan hash includes
+`registry_generation` (`jobs/hash.go`, refused at `jobs/engine.go`'s
+rebuild). Step 1's `last_backup` record already moves the generation, so in
+practice an interrupted upgrade is **not resumed** — it is recovered by hand,
+and where it stopped decides how (`ragstack-ctl job show <id>`):
+
+| stopped in | the row names | what is running | recover with |
+|---|---|---|---|
+| steps 1–3 | the old code | the old API, untouched | nothing the API reads moved: run `update-code` again |
+| step 4 | the old code | the old API, or nothing | `tenant start $T` (the tree is still the old one), or `update-code` again |
+| steps 5–6 | the old code | **nothing** (the API was stopped in step 4) | an image row: `tenant start $T` (the old image; the worktree does not feed it). A **migrating** worktree row: its checkout may already be at the new commit — put it back first (`git -C <worktree> checkout <sha>`, the sha is step 5's `worktree-prev:` checkpoint in `job show`), and the UI if step 6 swapped it (`dist` ↔ the `dist.prev-<ts>` step 6 checkpointed), then `tenant start $T`; or simply run `update-code` again |
+| **after step 7** | the NEW image | nothing (step 8 had not run) | `tenant start $T` — it starts what the row says, the new image — or `update-code` again to finish (UI probe, post-checks, `last_ops`) |
+
+```bash
+ragstack-ctl job show <id>                    # which step it stopped in, and its checkpoints
+ragstack-ctl tenant start $T                  # after step 7: starts the NEW image the row names
+ragstack-ctl tenant update-code $T --image $IMAGE [--artifact …] --yes-destructive $T   # or finish it
+```
+
+To go back to the previous image after an interrupted job, upgrade to it:
+`update-code --image <code.previous_image>`. For a migration interrupted after
+step 7 there is no worktree launch to return to by op; `tenant start` (the
+image) is the recovery.
+
+### Verify
+
+```bash
+ragstack-ctl --json tenant show $T | jq '.registry | {server_image, code, last_ops: .last_ops["update-code"]}'
+ragstack-ctl fleet status                     # API mode image, server image, health
+curl -s -H "X-API-Key: $KEY" http://127.0.0.1:<api>/v1/version   # git_sha == the image's commit
+ragstack-ctl gowe render $T                   # reads the worktree, now at the image's commit (note line)
+ls -l <data_dir>/logs/api-$T.log              # the runscript appends here
+```
+
+`gowe render` on an image-mode row checks the **worktree**, which step 5
+keeps at the image's commit, so `<worktree>/cwl` and the image's
+`/opt/ragstack/cwl` are the same tree; it prints a note line saying so.
+
+### Old builds and the previous UI
+
+`dist.prev-<ts>` directories accumulate, one per UI swap; remove old ones by
+hand once the tenant has soaked. Old images stay in the store
+(`/rag/data/ctl/images/server/`) while any row or `code.previous_image`
+names them.
+
+---
+
+## Part 2 — the manual procedure (hand-run tenants)
+
+This is the procedure that moved `hackathon`, `dev` and `asm-next` to v1.6.0
+and v1.6.1 on 2026-09-15, before the control plane ran them. It applies to a
+tenant whose row says `supervisor: manual` — one the ctl does not start or
+stop. A ctl-run tenant never takes it: use Part 1. Line citations are against
+the tree at that date; read a doc line number as a hint and the heading as the
+anchor.
+
+### Two rules before anything starts
+
+#### Never stop a service by process-name pattern
 
 Verbatim from this repo's `CLAUDE.md:102`:
 
@@ -102,7 +224,7 @@ before killing anything:
 ss -ltnpH | awk '$4 ~ /:24080$/' | grep -o 'pid=[0-9]*'
 ```
 
-### Write the plan first
+#### Write the plan first
 
 `CLAUDE.md:101`: *"any operation that touches live infrastructure gets a Fable
 plan before it starts."* A tenant upgrade stops a live API, replaces the code
@@ -112,7 +234,7 @@ right now. Do not start from this runbook alone.
 
 ---
 
-## 0. Establish the tenant's UI mode — this changes the procedure
+### 0. Establish the tenant's UI mode — this changes the procedure
 
 A tenant is a **static-UI** tenant if nginx serves a built bundle off disk, and
 a **dev-UI** tenant if nginx proxies to a running Vite dev server. The test is
@@ -149,7 +271,7 @@ edits them; `adopt --readopt` in step 5 changes the registry, and the next
 
 ---
 
-## 1. Back up `state/` and `tenant.env` — first, always
+### 1. Back up `state/` and `tenant.env` — first, always
 
 The convention already on disk, which this runbook adopts:
 
@@ -188,7 +310,7 @@ backup of record.** Use `ragstack-ctl tenant backup <t> --fence` for that where
 the tenant is eligible — see the caveat in §"What the ctl verbs do and do not
 cover".
 
-## 2. Move the worktree to the tag
+### 2. Move the worktree to the tag
 
 ```bash
 git -C "$W" fetch --tags
@@ -201,7 +323,7 @@ Tenant worktrees are **always detached** — `git status -sb` reads
 `## HEAD (no branch)` on all five. That is the intended state; a tenant sitting
 on a branch would silently move under you on someone else's `git pull`.
 
-## 3. Rebuild the UI — static-UI tenants only
+### 3. Rebuild the UI — static-UI tenants only
 
 Skip this whole step for a dev-UI tenant.
 
@@ -243,7 +365,7 @@ The destination is the `alias` path nginx already serves:
 `snippets/tenants-ui-static.generated.conf`. No nginx reload is needed for a
 content-only swap.
 
-## 4. Check whether the release wants new `tenant.env` keys
+### 4. Check whether the release wants new `tenant.env` keys
 
 A tagged release can add a setting whose absence is silent. **v1.6.0 did**: the
 `hackathon` upgrade added `PROMPT_TEMPLATES_FILE` plus a new
@@ -260,7 +382,7 @@ fails fast on some classes of stale config rather than starting wrong — see
 `docs/runbooks/upgrade-407-remove-gowe-store-urls.md` for a release that
 *refuses to boot* until an inert key is removed.
 
-## 4a. A release whose CWL is stamped: the tools image must be where the workers look
+### 4a. A release whose CWL is stamped: the tools image must be where the workers look
 
 > **Never exercised as of 2026-10-06.** No tag carries a stamped CWL yet. The
 > newest tag, `v1.6.4`, names the bare `ragstack-worker.sif` in all 23
@@ -410,7 +532,7 @@ the usual one: check out `worktree-sha` again.
 manifests record only the image's own `RELEASE` (if it has one). The only new boot-time rule it can hit is the `GOWE_TOOL_IMAGE` refusal (item 1 above), on any tag that contains #664 — which every tag after `v1.6.4` will, stamped or not. Keep the group dir's `ragstack-worker.sif` symlink in place
 while any tenant on that group is unstamped.
 
-## 5. Restart the API by the recipe in `ops/coconut/restore.sh`
+### 5. Restart the API by the recipe in `ops/coconut/restore.sh`
 
 **First check who supervises the tenant** —
 `ragstack-ctl --json fleet status`. A `supervisor: instance` tenant is restarted
@@ -475,7 +597,7 @@ will hot-reload or want a restart of its own; restart it with
 `/rag/config/proxy/ui-dev.sh <tenant> <port> <worktree>/frontend`, the same
 launcher `ops/coconut/restore.sh:344` uses.
 
-## 6. Re-adopt so the registry records the new code
+### 6. Re-adopt so the registry records the new code
 
 ```bash
 /rag/bin/ragstack-ctl adopt hackathon \
@@ -506,7 +628,7 @@ the dist exists.
 
 ---
 
-## Verify the upgrade landed
+### Verify the upgrade landed
 
 Four independent checks. Do all four — each can pass while another fails.
 
@@ -565,7 +687,7 @@ For anything deeper than "is it up", `GET /v1/health/deep` and
 `GET /v1/stats/stores` are the per-leg views — see
 [`tenant-admin.md`](tenant-admin.md).
 
-## Rollback
+### Rollback
 
 Rollback is the same five steps run backwards against `worktree-sha`. There is
 no ctl rollback verb for an adopted tenant.
@@ -593,139 +715,17 @@ change their schema. `registry.json` marks prepared artifacts with
 I did not trace what consumes that flag, so do not read `false` as a
 prohibition on rolling back; verify it against the release notes.
 
----
-
-## Current fleet state
-
-Verified 2026-09-15 against `/rag/data/tenants/registry.json` (generation 205),
-the five tenant worktrees, `05-tenants.generated.conf` (generation 198), and a
-live `/health` + `/v1/version` probe of each API. **Re-verify before you rely on
-it — this table drifts with every upgrade.**
-
-| Tenant | Registry `code.tag` | Worktree HEAD | API port | UI | Data dir |
-|---|---|---|---|---|---|
-| `hackathon` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24080 | **static** (`<data_dir>/ui/dist`) | `/rag/data/tenants/hackathon` |
-| `dev` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24040 | dev, Vite `:8090` | `/rag/data/tenants/dev` |
-| `asm-next` | `v1.6.1` | `4ea2e38` (= `v1.6.1`) | 24020 | dev, Vite `:5212` | `/rag/data/tenants/asm` |
-| `demo` | `v1.5.3` | `652be18` (= `v1.5.3`) | 24060 | dev, Vite `:5210` | `/rag/data/tenants/demo` |
-| `lucid-next` | `v1.5.3` | `652be18` (= `v1.5.3`) | 24000 | dev, Vite `:5211` | `/rag/data/tenants/lucid` |
-
-All five answered `/health` `200` at the time of writing. `/v1/version` answered
-`401` (i.e. the route exists) on `hackathon`, `dev` and `asm-next`, and `404`
-(the route does not exist) on `demo` and `lucid-next` — which is exactly the
-v1.6.x / v1.5.3 split.
-
-**Note the data-dir names.** `asm-next` → `/rag/data/tenants/asm` and
-`lucid-next` → `/rag/data/tenants/lucid`: the data dirs **drop the `-next`
-suffix**, which is what `--manifest-name` exists for. Getting this wrong points
-an upgrade at the wrong tenant's state.
-
-### About `asm-next`
-
-`asm-next` ran on `2f0bafc` — **`v1.6.0`'s immediate parent**, not a separate line
-of development — until it was moved to **`v1.6.1` (`4ea2e38`)** and re-adopted on
-2026-09-15. All three of `dev`, `hackathon` and `asm-next` are now on `v1.6.1`
-with the v2 templates; `demo` and `lucid-next` remain on `v1.5.3`.
-
-The detail is worth keeping because it is the shape of every "is this tenant
-current?" question:
-
-- While it sat on `2f0bafc` the registry recorded `code.tag` as
-  `v1.5.3-60-g2f0bafc` (a `git describe`), **not** the literal string `main` —
-  a registry tag only becomes a release tag when the worktree is checked out at
-  that tag and re-adopted.
-- **The API code was already identical.** `git diff --stat 2f0bafc f779d0c --
-  python/` is empty; the whole v1.6.0 delta was the ctl control plane
-  (`go/internal/ctl/**`), `contracts/ctl/**`, `ops/`, `docs/`, `conformance/`,
-  `Makefile`, and **one** frontend file — `frontend/src/admin/api/ctlSchema.d.ts`,
-  generated typings for the ctl admin UI that no tenant UI imports.
-- So "functionally current" and "reads as current in the registry" are different
-  claims. Check `code.tag`, not just behaviour.
 
 ---
-
-## Reboot recovery
-
-The host reboot scripts cover every registry tenant **that is still
-operator-supervised**, as of **`eb9803f`** (PR #559, installed to `/rag/bin` with
-`make install-ops`).
-
-> **A handed-over tenant is deliberately skipped.** Once a tenant belongs to the
-> control plane (`supervisor: instance`), `restore.sh` leaves it alone — the
-> service account's own `@reboot` crontab line starts it. `reg_rows` is the one
-> place that skip lives. So "it is not in restore.sh" means *handed over*, not
-> *forgotten*; check `ragstack-ctl --json fleet status` before concluding a
-> tenant was missed. `hackathon` moved into this category on 2026-09-17.
-> Procedure: [`ctl-handover.md`](ctl-handover.md).
-
-Before that commit they did not, and a reboot would have returned every tenant
-*except* the one the hackathon runs on — with nothing to indicate why. What the fix
-put in place:
-
-- `restore.sh` starts hackathon's three stores through the tenant's generated
-  `bin/up.sh`, and waits on `:24081`, `:24083` and `pg_isready :24085`. The Postgres
-  wait is **fatal**: that instance holds the tenant's users, ACL rows and collection
-  registry, so an API without it has no authorization store.
-- `hackathon` is in both API loops, and deliberately **not** in the UI loops — its UI
-  is a static build nginx serves from `/rag/data/tenants/hackathon/ui/dist`, so there
-  is no dev server to start.
-- Every tenant API launch now exports `RAGSTACK_GIT_TAG` / `RAGSTACK_GIT_SHA` from its
-  own worktree, so `/v1/version` stays truthful after a `restore.sh` restart. It did
-  not before, which is why a hand-started API and a script-started one could report
-  differently.
-- `pre-reboot.sh` stops the hackathon API (pidfile plus cwd check) and its three stores
-  ahead of the shared ones, so its "no apptainer instances left" check is no longer
-  reporting success while they are still up.
-- `snapshot.sh` lists the two hackathon HTTP stores and the API health row.
-  `verify.sh` needed no change.
-
-Check the loops include what you expect:
-
-```bash
-/rag/bin/restore.sh --dry-run --only apis     # the hackathon row is listed
-```
-
-A regression test fails if a registry tenant is missing from those loops:
-`python/tests/unit/test_coconut_reboot_tenants.py`.
-
-> These lists are **interim**. The ctl registry is the source of truth; the scripts
-> stop carrying hand-maintained tenant lists at PR-E.
-
-## What the ctl verbs do and do not cover
-
-`ragstack-ctl` has real lifecycle verbs — `tenant create --artifact ID`,
-`tenant backup <t> [--fence] [--tar]`, `tenant restore <t> --from <bundle-id>
---as <fresh-tenant>`, `tenant decommission <t>`
-(`go/cmd/ragstack-ctl/main.go:121-131`). **They apply to tenants the ctl
-created.** Every tenant on this host today was *adopted* — read into a registry
-row from a hand-started deployment — and `registry.json` records
-`supervisor: "manual"` for all five. Adopted tenants get handover in **PR-E**
-(`docs/runbooks/ctl-deploy.md:1135`, `ctl-quickstart.md:143`); until then their
-units are not the ctl's to drive, which is why this runbook restarts the API by
-hand rather than with `tenant restart`.
-
-Two consequences worth stating plainly:
-
-- `tenant backup --fence` is the verified backup — `backup verify` re-hashes
-  against `SHA256SUMS`, and the deep check is a `tenant restore --as` into a
-  fresh tenant (`go/cmd/ragstack-ctl/main.go:182-183`). The `cp -a` in step 1 is
-  an *unfenced* copy of a live tree. It is the right tool for a five-minute
-  code-only upgrade and the wrong one for anything that touches data.
-- `adopt` / `adopt-all` / `doctor` / `fleet status` / `tenant list|show|logs`
-  are read-or-registry-only and are safe against an adopted tenant
-  (`go/cmd/ragstack-ctl/main.go:650`).
-
-For adopt and deploy detail — installing the binary, the `svcbvbrc` wrapper,
-gateway generations, and what each `adopt` finding means — read
-[`ctl-quickstart.md`](ctl-quickstart.md) (the eight-step short form) and
-[`ctl-deploy.md`](ctl-deploy.md) (the full runbook). This runbook deliberately
-does not restate them.
 
 ## Related
 
+- [`server-image.md`](server-image.md) — building the server image (and the
+  tools image) the upgrade runs.
 - [`cut-a-release.md`](cut-a-release.md) — how a release gets its tools image
-  and stamped CWL (tag `vT` → build → store → stamp → tag `vS`); § 4a above is
-  the tenant side of it.
+  and stamped CWL (tag `vT` → build → store → stamp → tag `vS`), then the
+  server image built and prepared from `vS` (§ 9); Part 2 § 4a above is the
+  hand-run tenant's side of it.
 - [`verifying-tools-image.md`](verifying-tools-image.md) — the boot identity
   check and `ragstack-ctl gowe render`, every failure message.
 - [`tenant-admin.md`](tenant-admin.md) — running the tenant after the upgrade:

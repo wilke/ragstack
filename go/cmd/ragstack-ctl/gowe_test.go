@@ -101,3 +101,48 @@ func TestGoweRenderArgsAndExit(t *testing.T) {
 		t.Errorf("dead: rc %d %q", rc, errs)
 	}
 }
+
+// An image-mode row gets one note line: the check reads the worktree, which
+// update-code keeps at the image's commit. A worktree row gets none.
+func TestGoweRenderNotesAnImageModeRow(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	f := registry.LiveFixture()
+	dev := f.Tenants["dev"]
+	dev.DataDir = filepath.Join(dir, "data", "tenants", "dev")
+	dev.Worktree = dir
+	if err := os.MkdirAll(filepath.Join(dev.DataDir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dev.DataDir, "config", "tenant.env"),
+		[]byte("INGEST_BACKEND=gowe\nGOWE_WORKFLOW_CWL=/wt/a.cwl\nGOWE_IMAGE_DIRS=/store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	py := filepath.Join(dir, "py")
+	if err := os.WriteFile(py, []byte("#!/bin/sh\necho '{\"ok\":true,\"records\":[]}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"gowe", "render", "dev", "--registry", reg, "--rag-root", dir, "--python", py}
+	if err := registry.Save(reg, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := capture(t, argv...); strings.Contains(out, "server image") {
+		t.Errorf("a worktree row got the image note:\n%s", out)
+	}
+	commit := strings.Repeat("ab", 20)
+	dev.ServerImage = &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6", Commit: commit,
+		Build: 1, SHA256: strings.Repeat("0", 64), Path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif"}
+	dev.Code = registry.Code{Tag: "v1.6.6", SHA: registry.NullString(commit)}
+	if err := registry.Save(reg, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := capture(t, argv...)
+	if !strings.Contains(out, "note: dev runs its API from server image ragstack-server-v1.6.6-b1.sif") ||
+		!strings.Contains(out, "keeps at the image's commit "+commit) {
+		t.Errorf("no image-mode note:\n%s", out)
+	}
+	_, out, errs := capture(t, append(argv, "--json")...)
+	if strings.Contains(out, "note:") || !strings.Contains(errs, "note: dev runs its API") {
+		t.Errorf("--json: the note belongs on stderr (out %q, err %q)", out, errs)
+	}
+}
