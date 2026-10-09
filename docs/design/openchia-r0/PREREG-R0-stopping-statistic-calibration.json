@@ -1,0 +1,86 @@
+{
+  "experiment_id": "openchia-R0-stopping-statistic-calibration-v1",
+  "written": "2026-10-05, BEFORE any simulation was run",
+  "status": "pre-registered",
+
+  "why_this_comes_first": [
+    "OpenChia's Episode controller stops when the upper uncertainty bound of the predicted next-unit yield falls to a tolerance.",
+    "Neither chian/OpenChia (98d74fb) nor chian/nano-graphrag (546526a) publishes a calibration of that statistic: no coverage,",
+    "bias or simulation record exists in either repository, and nano-graphrag's experiments/log and experiments/runs are not committed.",
+    "The one passed live acceptance (epistemic_yield_acceptance.md, 2026-10-02) stopped after two units under a bound that was",
+    "'not the shipped default' (projected upper bound ~0.749 vs default tolerance 0.01). Before our experiments lean on this rule,",
+    "its behaviour on populations with KNOWN richness must be measured. This is a method-level test on synthetic truth; the",
+    "implementation-level test (the same inputs through OpenChia's numeric_control_library) follows and requires executing",
+    "external code, which the owner performs."
+  ],
+
+  "what_is_tested": {
+    "estimators_reimplemented_independently": [
+      "Wilson interval on the per-unit incidence probability (rarefaction.py _wilson_probability)",
+      "Jeffreys-gamma posterior on the singleton rate for the conditional next-unit yield (rarefaction.py _conditional_next_yield)",
+      "bias-corrected Chao1 remaining richness: ((n-1)/n) * f1*(f1-1) / (2*(f2+1)) with its delta-method variance (rarefaction.py _remaining_richness)",
+      "stop rule: upper bound of predicted next-unit yield <= theta (continuation.py predicted_credit_upper_bound), with theta in {0.01, 0.02, 0.05}"
+    ],
+    "deliberately_not_reimplemented": [
+      "the relaxed geometric hypervolume normalisation and channel conjunction in credit_assignment.py (one channel is simulated; credit = fraction of distinct identities, so hypervolume reduces to it)",
+      "nano-graphrag's larger 'preferential_incidence_estimator_v2' (a different, undocumented estimator; out of scope for a documented-formula test)"
+    ],
+    "ground_truth": "a finite population of K distinct identities; each unit draws a set of identities; detection probabilities are known, so remaining richness after any unit is known exactly"
+  },
+
+  "conditions": {
+    "K": [50, 200, 1000],
+    "units_per_draw": "Poisson-sized sets, mean 5, from the detection distribution",
+    "homogeneous": "equal detection probability",
+    "heterogeneous_mild": "log-normal detection weights, sigma 1.0",
+    "heterogeneous_heavy": "log-normal detection weights, sigma 2.0 (the web-search regime: a few sources very easy to hit, many nearly unreachable)",
+    "replicates": 300,
+    "alpha": 0.05,
+    "seed": 20261005
+  },
+
+  "measures": {
+    "coverage": "fraction of (replicate, unit) pairs in which the remaining-richness band contains the true remaining count; nominal 0.95",
+    "stop_unit": "first unit at which upper(next-yield) <= theta",
+    "undiscovered_at_stop": "true fraction of K not yet seen at the stop unit",
+    "premature_stop_rate": "fraction of replicates stopping with > 10% of K undiscovered",
+    "never_stop_rate": "fraction of replicates that do not stop within 50*K/5 units"
+  },
+
+  "predictions": {
+    "P1_homogeneous_calibrated": {
+      "claim": "Under equal detection, the band is approximately calibrated and the stop is safe.",
+      "prediction": "coverage >= 0.90 for every K; undiscovered_at_stop median <= 0.02 at theta = 0.01",
+      "falsified_if": "coverage < 0.90 at any K, or median undiscovered at stop > 0.02"
+    },
+    "P2_heterogeneous_premature": {
+      "claim": "Chao1's known downward bias under unequal detection makes the stop fire early.",
+      "prediction": "at sigma = 2.0 and theta = 0.01, premature_stop_rate >= 0.25 and coverage <= 0.80 for K = 1000",
+      "falsified_if": "premature_stop_rate < 0.25 or coverage > 0.80"
+    },
+    "P3_tolerance_matters_more_than_K": {
+      "claim": "The tolerance theta, not the population size, governs how much is left undiscovered.",
+      "prediction": "undiscovered_at_stop at theta = 0.05 is at least 2x that at theta = 0.01 in every condition",
+      "falsified_if": "ratio < 2 in any condition"
+    },
+    "P4_two_units_cannot_stop_at_default": {
+      "claim": "Reproducing the acceptance record's situation: after two observed units, the default tolerance cannot fire.",
+      "prediction": "for every condition, upper(next-yield) after 2 units > 0.5, so the default 0.01 never stops at n = 2",
+      "falsified_if": "any replicate stops at n <= 2 under theta = 0.01"
+    }
+  },
+
+  "what_a_result_means": {
+    "P1_holds_P2_holds": "the rule is sound where sampling is even and unsafe where it is uneven; for literature search and candidate generation the heterogeneity regime is the realistic one, so the stop must be read as 'nothing EASY remains', not 'nothing remains'",
+    "P1_fails": "the statistic is miscalibrated even in the favourable case; do not build on it without an upstream fix",
+    "P2_fails": "heterogeneity is handled better than Chao1 theory predicts; investigate why before trusting it",
+    "P4_fails": "my reading of the acceptance record is wrong"
+  },
+
+  "next_rungs_after_R0": {
+    "R0b": "same inputs through OpenChia's numeric_control_library at 98d74fb (owner executes; implementation vs method, two independent routes)",
+    "R1": "reproduce the one passed acceptance (scheduling, epistemic_yield_acceptance.md) on the Mac under BOTH the recorded bound and the default; record whether the default stops",
+    "R2": "reproduce OUR deterministic results inside their structure: the span-filter Episode must return 0.9205 / delta -0.0013 and filtered counts Scout 1,050 / Qwen 9; then a dev-subset labeling Episode at temperature 0 with the seeded presentation, pre-registered agreement with the recorded dev labels",
+    "R3": "only then the survey pilot against the 39-entry ground truth, and only then any Architecture for a confirmatory stage"
+  }
+}
