@@ -147,7 +147,7 @@ different artifacts that produced a circular release flow.)
 5. **There is no image override.** Images are pinned through the CWL. The
    `GOWE_TOOL_IMAGE` setting (#642) is retired: boot refuses if it is set; its
    substitution code is removed once the first stamped release ships
-   (substitution code removed PR#TBD, 2026-10-08). Its *checks* survive as
+   (substitution code removed #706, 2026-10-08). Its *checks* survive as
    release-time checks on the stamped tree.
 
 6. **The release order is linear.** (a) `git tag vT`; (b) build the tools image
