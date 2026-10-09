@@ -125,8 +125,10 @@ def make_ingest_backend(
 # stamping step (python/scripts/stamp_tool_image.py) writes it in, and the
 # tree-wide pin test (tests/unit/test_cwl_tool_image_pin.py) holds it there.
 # #614's per-tenant substitution (``GOWE_TOOL_IMAGE``) is retired — the API
-# refuses to boot while it is set (deps._validate_production_settings) — and
-# its checks live on in ragstack.tool_image for the stamping step.
+# refuses to boot while it is set (deps._validate_production_settings). The
+# #642 substitution code that used to run here was removed after v1.6.6
+# shipped (ADR-0010 Migration step 5); its checks live on in
+# ragstack.tool_image for the stamping step.
 
 # Workflow inputs the API owns and seeds per run (#407). An operator setting
 # these in GOWE_WORKFLOW_INPUTS_JSON is refused at boot — see _make_gowe_backend.

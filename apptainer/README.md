@@ -193,7 +193,8 @@ dir. Nothing in this directory writes to `/scout` or `/rag`.
 ## There is no image override
 
 `GOWE_TOOL_IMAGE` (#614/#642) is retired: the API refuses to boot while it is
-set (naming ADR-0010 and #655), `ragstack-ctl adopt` warns on it, and the
-substitution no longer runs on the registration path. A tenant changes its
-tool image by checking out a different tag. What survives of #642 is its
-checks, in `ragstack/tool_image.py`, run by the stamping step.
+set (naming ADR-0010 and #655), `ragstack-ctl adopt` warns on it, and #642's
+substitution code was removed from the registration path after v1.6.6 shipped
+(ADR-0010 Migration step 5). A tenant changes its tool image by checking out
+a different tag. What survives of #642 is its checks, in
+`ragstack/tool_image.py`, run by the stamping step.

@@ -157,10 +157,29 @@ def test_stamp_refuses_a_bad_name():
     "a:\n  dockerPull: ragstack-worker.sif\nb:\n  dockerPull : ragstack-worker.sif\n",
     "a:\n  dockerPull: ragstack-worker.sif\nb:\n  DockerPull: ragstack-worker.sif\n",
     "a:\n  dockerPull: ragstack-worker.sif\nb:\n  dockerPull: other\n",  # no .sif
-], ids=["flow", "list", "next-line", "space-colon", "case", "no-sif"])
+    'a:\n  dockerPull: ragstack-worker.sif\nb: {"dockerPull": "ragstack-worker.sif"}\n',
+], ids=["flow", "list", "next-line", "space-colon", "case", "no-sif", "quoted-flow"])
 def test_stamp_refuses_on_partial(doc):
+    """``quoted-flow`` is ported from #642's adversarial suite
+    (test_gowe_tool_image.py, removed after v1.6.6 shipped — ADR-0010
+    Migration step 5): a site the rewrite regex cannot see must refuse the
+    whole document, not run one step on the unstamped image with nothing in
+    the logs to connect it to."""
     with pytest.raises(ToolImageError):
         stamp_tool_image(doc, stamped_image_name("v1.0.0", 1))
+
+
+def test_stamp_handles_crlf_documents():
+    """Ported from #642's adversarial suite: the anchored rewrite must match
+    on a CRLF document (``\\r?$`` in the site regex) and leave the line
+    endings alone."""
+    doc = ("a:\r\n  DockerRequirement:\r\n    dockerPull: ragstack-worker.sif\r\n"
+           "b:\r\n  dockerPull: ragstack-worker.sif\r\n")
+    name = stamped_image_name("v1.0.0", 1)
+    out = stamp_tool_image(doc, name)
+    assert out.count(f"dockerPull: {name}\r\n") == 2
+    assert DEFAULT_TOOL_IMAGE not in out
+    assert "\n" not in out.replace("\r\n", "")  # no bare LF introduced
 
 
 def test_stamp_leaves_comments_and_prose_alone():
