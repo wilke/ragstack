@@ -22,11 +22,11 @@ neither is knowable by the worker), and the image's own ``RELEASE`` identity
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-import re
 from types import SimpleNamespace
 
 import pytest
