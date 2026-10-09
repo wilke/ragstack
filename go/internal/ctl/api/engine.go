@@ -97,6 +97,10 @@ type EngineConfig struct {
 	// DefaultAPIBindRoots. SetAPIBindRootsFromEnv fills it; the daemon and the
 	// --direct CLI both call it.
 	APIBindRoots []drivers.BindRoot
+	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (#714).
+	// Nil takes settings.DefaultAllowedHosts. SetAllowedEndpointHostsFromEnv
+	// fills it; the daemon and the --direct CLI both call it.
+	AllowedEndpointHosts []string
 	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
 	// Empty means Roots.RagRoot. Only a run against a SANDBOX root sets it —
 	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
@@ -294,6 +298,26 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	// was built without it.
 	redactor := newEngineRedactor(cfg.Roots, loadFleet, cfg.Logger)
 
+	// The instance bind roots (CTL_API_BIND_ROOTS). A caller that built its
+	// config without the environment (a test, a tool) gets the same default
+	// the daemon would, not "no API instance can see its HF cache". The real
+	// instance driver binds through them, and the surface verbs (#714) take
+	// their paths as the roots a path setting may be under.
+	bindRoots := cfg.APIBindRoots
+	if bindRoots == nil {
+		if bindRoots, err = ParseAPIBindRoots(""); err != nil {
+			return nil, nil, err
+		}
+	}
+	bindRootPaths := make([]string, 0, len(bindRoots))
+	for _, r := range bindRoots {
+		bindRootPaths = append(bindRootPaths, r.Path)
+	}
+	allowedHosts := cfg.AllowedEndpointHosts
+	if allowedHosts == nil {
+		host, _ := os.Hostname()
+		allowedHosts = settings.DefaultAllowedHosts(host)
+	}
 	var drv jobs.Drivers
 	if cfg.FakeDrivers {
 		// The fake files driver honours the same approved roots the real one
@@ -330,15 +354,6 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		opts.TreeRoots = drivers.TreeRootsOf(cfg.Roots)
 		drv = drivers.NewFake(opts)
 	} else {
-		bindRoots := cfg.APIBindRoots
-		if bindRoots == nil {
-			// A caller that built its config without the environment (a test,
-			// a tool) gets the same default the daemon would, not "no API
-			// instance can see its HF cache".
-			if bindRoots, err = ParseAPIBindRoots(""); err != nil {
-				return nil, nil, err
-			}
-		}
 		drv = drivers.NewReal(drivers.RealOptions{
 			Roots:        cfg.Roots,
 			Fleet:        loadFleet,
@@ -412,8 +427,10 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Ops: ops.NewRegistry(ops.Deps{
 			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
 			MountPoint: cfg.MountPoint, Owner: cfg.Owner,
-			DefaultSupervisor: cfg.DefaultSupervisor,
-			Sealer:            backupSealer(cfg.Roots, cfg.Logger),
+			DefaultSupervisor:    cfg.DefaultSupervisor,
+			Sealer:               backupSealer(cfg.Roots, cfg.Logger),
+			AllowedEndpointHosts: allowedHosts,
+			APIBindRoots:         bindRootPaths,
 		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,

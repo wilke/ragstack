@@ -211,7 +211,14 @@ func createUsage() int {
                          labelled bootstrap-admin is ALWAYS minted.
   --sa subject:role:purpose   a service account to register, repeatable
   --template-from T      copy T's PUBLIC settings as a starting point
-  --set KEY=VALUE        a public setting, repeatable
+  --set KEY=VALUE        a public setting, repeatable. Under --direct (run on
+                         the host as the ctl account) also an executable-
+                         surface key, validated exactly as 'env set-surface'
+                         validates it and written to tenant.env only (never
+                         the registry's settings{}); without --direct such a
+                         key is refused. --set splits on commas, so a list
+                         value (EMBEDDING_ENDPOINTS, GOWE_IMAGE_DIRS) is set
+                         afterwards with 'env set-surface'
   --ui-mode static|dev|external
   --no-start             provision and enable, but do not start
   --no-gateway           do not publish a gateway generation
@@ -244,7 +251,7 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 	fs.Var(&subjects, "admin-subject", "an admin subject (issuer:sub), repeatable or a comma list")
 	fs.Var(&keyFlags, "key", "label:role of a key to mint, repeatable")
 	fs.Var(&saFlags, "sa", "subject:role:purpose of a service account, repeatable")
-	fs.Var(&setFlagsIn, "set", "KEY=VALUE public setting, repeatable")
+	fs.Var(&setFlagsIn, "set", "KEY=VALUE setting, repeatable (executable-surface keys under --direct only)")
 
 	pos, rest := takePositionals(args, 1)
 	if err := fs.Parse(rest); err != nil {

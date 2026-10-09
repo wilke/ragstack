@@ -983,3 +983,42 @@ func TestMutationRefusalNamesTheEngineError(t *testing.T) {
 		t.Errorf("the refusal does not name the cause: %s", w.Body.String())
 	}
 }
+
+// TestAContinuationOfACLIOnlyJobIsRefused is #714's layer (b): a job of a verb
+// that has no HTTP route — `env-set-surface`, `artifact-prepare`,
+// `image-prepare`, … — is continued only on the CLI. Over HTTP each of the
+// three continuations answers 409 `refused` naming the --direct command, and
+// the engine's Resume/Continue/Cancel is never called, so neither the job's
+// steps nor its rollbacks can run in the daemon's account.
+func TestAContinuationOfACLIOnlyJobIsRefused(t *testing.T) {
+	for _, verb := range ops.CLIVerbs {
+		for _, op := range []string{"resume", "continue", "cancel"} {
+			job := sampleJob()
+			job.Op = verb
+			job.State = model.JobInterrupted
+			job.Worker = &model.JobWorker{PID: 4242, Host: "coconut", Mode: model.WorkerDirect}
+			eng := &fakeEngine{job: job}
+			h := newEngineServer(t, eng)
+			body := assertError(t, do(t, h, http.MethodPost, "/v1/jobs/"+job.ID+"/"+op, opHeaders(), opBody("")),
+				409, "refused")
+			detail, _ := body["detail"].(string)
+			if !strings.Contains(detail, "ragstack-ctl job "+op+" "+job.ID+" --direct") {
+				t.Errorf("%s %s: detail %q does not name the --direct command", op, verb, detail)
+			}
+			if eng.continuation != "" {
+				t.Errorf("%s of a %s job reached the engine's %s", op, verb, eng.continuation)
+			}
+		}
+	}
+	// A routed verb's job is still continued: the guard is about the verb.
+	eng := &fakeEngine{job: sampleJob()}
+	h := newEngineServer(t, eng)
+	if w := do(t, h, http.MethodPost, "/v1/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/resume", opHeaders(), opBody("")); w.Code != http.StatusAccepted {
+		t.Fatalf("resume of a start job = %d: %s", w.Code, w.Body.String())
+	}
+	// And an unknown job is the engine's answer, not the guard's.
+	eng = &fakeEngine{err: jobs.ErrNotFound}
+	h = newEngineServer(t, eng)
+	assertError(t, do(t, h, http.MethodPost, "/v1/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/resume", opHeaders(), opBody("")),
+		404, "not_found")
+}

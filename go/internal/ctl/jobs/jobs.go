@@ -120,6 +120,13 @@ type Context struct {
 	Drivers  Drivers
 	Now      func() time.Time
 	Redactor Redactor
+	// Mode is the ENGINE's mode — daemon or direct — never the request's. An
+	// op whose plan is only allowed from the CLI (`env set-surface`, the
+	// surface half of `create --set`) refuses unless it is WorkerDirect, and
+	// because the engine sets it on every plan, the re-plan a continuation
+	// runs (rebuild) refuses the same way under the daemon: a job submitted
+	// with --direct cannot be resumed into the daemon's account.
+	Mode model.WorkerMode
 }
 
 // Redactor replaces every secret-class value in text or args before anything

@@ -478,6 +478,16 @@ var argSchemas = map[string]argSpec{
 	// is already on disk, and a value passed in would be a credential on a
 	// command line.
 	"env-pg-password": {Verb: "env-pg-password"},
+	// The surface verbs (#714). `values` is an OBJECT of KEY -> VALUE so the
+	// stored args — and so the derived idempotency key and the plan hash — do
+	// not depend on the order the operator typed them in; its keys and values
+	// are checked by the op (planEnvSetSurface), like create's `settings`.
+	"env-set-surface": {Verb: "env-set-surface", Fields: []argField{
+		{Name: "values", Kind: argObject, Required: true},
+	}},
+	"env-unset-surface": {Verb: "env-unset-surface", Fields: []argField{
+		{Name: "keys", Kind: argStringArray, Required: true, Unique: true, ItemPattern: patEnvKey},
+	}},
 	"artifact-prepare": {Verb: "artifact-prepare", Fields: []argField{
 		{Name: "tag", Kind: argString, Required: true, Pattern: patGitRef},
 		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
@@ -516,7 +526,7 @@ var ContractVerbs = []string{
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
 var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind", "set-supervisor",
-	"env-pg-password", "image-prepare"}
+	"env-pg-password", "image-prepare", "env-set-surface", "env-unset-surface"}
 
 // ---------------------------------------------------------------- helpers
 

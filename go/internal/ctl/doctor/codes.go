@@ -473,6 +473,16 @@ const (
 	// it cannot see. Warn; the repair is widening CTL_API_BIND_ROOTS or moving
 	// the directory.
 	ImageDirOutsideBindRoots = "image_dir_outside_bind_roots"
+
+	// EndpointHostNotAllowed: a URL-valued executable-surface setting in the
+	// tenant's tenant.env (LLM_ENDPOINT, GOWE_URL, a QDRANT_COLLECTION_ROUTES
+	// value, an EMBEDDING_ENDPOINTS element, …) names a host outside
+	// CTL_ALLOWED_ENDPOINT_HOSTS (#714). Warn: the tenant runs, but
+	// `env set-surface` would refuse that value today — either the host is
+	// one the operator meant to allow (add it to ctl.env) or the setting
+	// predates the allowlist and points somewhere nobody decided on. Empty
+	// values are skipped.
+	EndpointHostNotAllowed = "endpoint_host_not_allowed"
 )
 
 // The two names a handover's postgres migration leaves in

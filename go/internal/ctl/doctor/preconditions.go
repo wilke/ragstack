@@ -87,6 +87,11 @@ var preconditions = map[string][]string{
 	// env-pg-password` a known op rather than a typo that silently disables
 	// the gate.
 	"env-pg-password": {},
+	// The surface verbs (#714) rewrite tenant.env like `env set`, so the
+	// grammar must already be clean. endpoint_host_not_allowed is
+	// deliberately NOT here: `env set-surface` is how such a value is fixed.
+	"env-set-surface":   {EnvNotSystemdParsable},
+	"env-unset-surface": {EnvNotSystemdParsable},
 	// A local migration is a handover's barrier plus disk for the copy, and
 	// it copies a tree the tenant is supposed to be serving from.
 	"migrate-local": {DiskLow, PortOwnerMismatch, EnvNotSystemdParsable, PortNotListening},

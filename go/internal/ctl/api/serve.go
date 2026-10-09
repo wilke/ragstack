@@ -166,6 +166,11 @@ func RunServe(args []string) int {
 		logger.Error("bind roots", "err", err.Error())
 		return exitUsage
 	}
+	// The endpoint allowlist (#714), with the same rule: malformed refuses.
+	if err := SetAllowedEndpointHostsFromEnv(&cfg); err != nil {
+		logger.Error("endpoint allowlist", "err", err.Error())
+		return exitUsage
+	}
 	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		d, err := backend.Doctor(ctx, tenant, op)
 		if err != nil {

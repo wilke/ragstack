@@ -922,6 +922,12 @@ func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) 
 	if err := api.SetAPIBindRootsFromEnv(&cfg); err != nil {
 		return nil, nil, err
 	}
+	// …and the same endpoint allowlist (CTL_ALLOWED_ENDPOINT_HOSTS, #714),
+	// read out of ctl.env when the environment does not carry it: a run
+	// through ctl-as-svc.sh does not load that file.
+	if err := api.SetAllowedEndpointHostsFromEnv(&cfg); err != nil {
+		return nil, nil, err
+	}
 	return api.BuildEngineAndDrivers(cfg)
 }
 

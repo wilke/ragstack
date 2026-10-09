@@ -1746,6 +1746,7 @@ async def test_create_refuses_a_name_that_is_taken(
     [
         "artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind",
         "set-supervisor", "env-pg-password", "image-prepare",
+        "env-set-surface", "env-unset-surface",
     ],
 )
 async def test_a_cli_only_op_has_no_http_route(
@@ -1763,7 +1764,10 @@ async def test_a_cli_only_op_has_no_http_route(
     supervise at all until its handover; ``set-supervisor`` is the repair for a
     row that disagrees with the host, which only the account in front of it can
     judge; ``env-pg-password`` rewrites a ``secrets.env`` the daemon may only
-    READ. All of them are trusted-operator, ``--direct`` operations. The router refuses them as verbs outside the enum,
+    READ; ``env-set-surface`` / ``env-unset-surface`` (#714) edit the
+    executable-surface keys — where the tenant connects, which files it loads —
+    that ADR-0007 keeps off every HTTP surface, and their planners also refuse
+    any engine that is not a ``--direct`` one. All of them are trusted-operator, ``--direct`` operations. The router refuses them as verbs outside the enum,
     which is the same answer a name nobody defined gets: a CLI-only op must not
     be half-reachable.
 

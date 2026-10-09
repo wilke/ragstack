@@ -20,19 +20,26 @@ import (
 // ---------------------------------------------------------------- env set/unset
 
 func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because the job ends in a registry write
+	// (#714): restart_pending and the new env_file_sha256. Before it, the row
+	// kept the old checksum, so doctor reported the job's own edit as
+	// `env_file_changed`, and restart_pending stayed false over an API that
+	// was still running with the old value.
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant)
 	key, value := argStringOf(args, "key"), argStringOf(args, "value")
 	if err := p.requirePublicKey(key); err != nil {
 		return err
 	}
+	var written []byte
 	p.addEnvEdit(ctx, envEdit{
 		Path: p.tpaths.TenantEnv, Op: "env-set",
 		Title:   fmt.Sprintf("set %s in tenant.env", key),
-		Targets: []string{key},
+		Targets: []string{key}, Written: &written,
 		Mutate: func(f *envfile.File) (string, error) {
 			return fmt.Sprintf("%s=%s", key, value), f.Set(key, value)
 		},
 	})
+	p.addEnvRegistryStep("env-set", &written)
 	p.result["key"] = key
 	p.result["pending_until_restart"] = true
 	p.warn("the API reads its environment at start-up: this setting is `pending` until the tenant restarts")
@@ -40,15 +47,16 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 }
 
 func planEnvUnset(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant) // see planEnvSet
 	key := argStringOf(args, "key")
 	if err := p.requirePublicKey(key); err != nil {
 		return err
 	}
+	var written []byte
 	p.addEnvEdit(ctx, envEdit{
 		Path: p.tpaths.TenantEnv, Op: "env-unset", Destructive: true,
 		Title:   fmt.Sprintf("unset %s in tenant.env", key),
-		Targets: []string{key},
+		Targets: []string{key}, Written: &written,
 		Mutate: func(f *envfile.File) (string, error) {
 			if !f.Unset(key) {
 				return "", fmt.Errorf("%w: %s is not set in tenant.env", jobs.ErrRefused, key)
@@ -56,6 +64,7 @@ func planEnvUnset(ctx context.Context, p *planner, args map[string]any) error {
 			return "unset " + key, nil
 		},
 	})
+	p.addEnvRegistryStep("env-unset", &written)
 	p.result["key"] = key
 	p.result["pending_until_restart"] = true
 	p.warn("the setting falls back to its default when the tenant restarts")
@@ -80,7 +89,9 @@ func (p *planner) requirePublicKey(key string) error {
 			"(use `key mint` / `key revoke`, or edit secrets.env on the CLI)", key)
 	case settings.ExecutableSurface:
 		return p.refuse("%s is an executable-surface key — it decides what code runs or where the process connects — "+
-			"so it is CLI-only for trusted operators, never the env API", key)
+			"so it is CLI-only for trusted operators, never the env API: on the host, as the ctl account, "+
+			"`ragstack-ctl env set-surface %s %s=…` or `env unset-surface %s %s` (validated, --direct only)",
+			key, p.t.Name, key, p.t.Name, key)
 	default:
 		if reason, retired := settings.Retired(key); retired {
 			return p.refuse("%s is %s", key, reason)

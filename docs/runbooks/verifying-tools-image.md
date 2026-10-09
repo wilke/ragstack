@@ -127,8 +127,16 @@ unset"). A problem outranks 4. The JSON `ok` is true only on exit 0; its
 
 `GOWE_IMAGE_DIRS` is an executable-surface key, like the three CWL path keys:
 `ragstack-ctl env set` refuses it (that verb takes public-class keys only).
-Set it by editing the tenant's `tenant.env` directly, from the management
-session that owns `/rag`, then restart the tenant.
+On a ctl-owned tenant set it with `env set-surface` on the host (each entry
+must be under `CTL_API_BIND_ROOTS`), then restart the tenant:
+
+```bash
+ops/coconut/ctl-as-svc.sh env set-surface <tenant> \
+  GOWE_IMAGE_DIRS=/scout/containers/ragstack --dry-run
+```
+
+A tenant the ctl does not own yet is still edited by hand, from the management
+session that owns `/rag`. See `ctl-deploy.md` § *Executable-surface keys*.
 
 ## The JSON `state` values
 

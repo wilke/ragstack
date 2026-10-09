@@ -14,6 +14,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/ops"
 	"github.com/ragstack/ragstack/internal/observability"
 )
 
@@ -46,6 +47,17 @@ var opVerbs = map[string]bool{
 	"sa-create": true, "sa-disable": true, "sa-enable": true,
 	"env-set": true, "env-unset": true, "env-normalize": true,
 	"render-units": true, "update-code": true, "purge": true,
+}
+
+// isCLIVerb reports whether op is one of ops.CLIVerbs — a job verb with no
+// HTTP route, whose jobs the continuation routes refuse.
+func isCLIVerb(op string) bool {
+	for _, v := range ops.CLIVerbs {
+		if v == op {
+			return true
+		}
+	}
+	return false
 }
 
 // Non-tenant op names. The engine's registry is keyed by these exactly as it
@@ -427,6 +439,23 @@ func (s *Server) handleJobContinuation(op string) http.HandlerFunc {
 		eng, _ := s.engine()
 		if eng == nil {
 			s.engineNotWired(w, r)
+			return
+		}
+		// A CLI-only operation's job is continued only where it was submitted:
+		// on the CLI, with --direct. Without this, a job of a verb that has no
+		// HTTP route (env-set-surface, artifact-prepare, image-prepare, …) that
+		// a --direct run left `interrupted` could be resumed, continued or
+		// cancelled — its steps or its rollbacks run — in the DAEMON's account
+		// by anybody holding an operator key. The surface planners also refuse
+		// a daemon-side re-plan (jobs.Context.Mode); this is the gate that does
+		// not depend on each planner remembering to.
+		if cur, err := eng.Get(r.Context(), id); err != nil {
+			s.jobsError(w, r, nil, err)
+			return
+		} else if cur != nil && isCLIVerb(cur.Op) {
+			writeError(w, r, model.CodeRefused, fmt.Sprintf("job %s is a `%s` job, a CLI-only operation with no "+
+				"HTTP route: %s it on the host with `ragstack-ctl job %s %s --direct`", id, cur.Op, op, op, id),
+				map[string]any{"op": cur.Op})
 			return
 		}
 		p := jobPrincipal(r)

@@ -415,6 +415,35 @@ x-ctl-cli-op-args:
     type: object
     properties: {}
     additionalProperties: false
+  # env-set-surface / env-unset-surface (#714) edit the EXECUTABLE-SURFACE keys
+  # of tenant.env — LLM_ENDPOINT, GOWE_URL, the store URLs and routing tables,
+  # COLLECTIONS_FILE and the other path settings, GOWE_IMAGE_DIRS — which the
+  # env API refuses for every caller (ADR-0007). They have no HTTP route, and
+  # their planners refuse unless the ENGINE runs --direct, so a daemon-side
+  # resume of such a job refuses too (and the continuation routes answer 409
+  # for every verb in this block). Each value is validated by the table in
+  # go/internal/ctl/settings/surface.go: PYTHONPATH PATH HF_HOME PORT ROOT_PATH
+  # are refused always (and the three CWL keys on an image row); a URL is
+  # absolute, http(s) (NEO4J_URI bolt/neo4j[+s|+ssc], REDIS_URL redis[s]), has
+  # no userinfo and no fragment, and its host is in CTL_ALLOWED_ENDPOINT_HOSTS;
+  # a path is absolute and clean, under the tenant's data dir or a
+  # CTL_API_BIND_ROOTS entry, never a credential file and never overlapping the
+  # ctl's config/state/backups or another tenant's data dir; on an image row
+  # the API instance's bind derivation and path probe must pass. The job backs
+  # tenant.env up (`.bak-env-set-surface-<ts>`), rewrites it atomically, and
+  # records restart_pending and the new env_file_sha256 on the row.
+  env-set-surface:
+    type: object
+    required: [values]
+    properties:
+      values: { description: "KEY -> VALUE, every key an executable-surface key (at most 32). An object rather than a list so the stored args — and the plan hash and the derived idempotency key — do not depend on the order the keys were typed in. A URL list (EMBEDDING_ENDPOINTS, MODEL_URL_ALLOWLIST) is accepted as a comma list or a JSON array and written back in the comma form.", type: object }
+    additionalProperties: false
+  env-unset-surface:
+    type: object
+    required: [keys]
+    properties:
+      keys: { description: "The executable-surface keys to remove from tenant.env; every one must be set there (at most 32).", type: array, uniqueItems: true, items: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,127}$" } }
+    additionalProperties: false
   set-supervisor:
     type: object
     required: [supervisor]

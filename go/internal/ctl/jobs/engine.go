@@ -388,6 +388,9 @@ func (e *engine) plan(ctx context.Context, op Op, req Request) (*model.Plan, *Pl
 	oc := Context{
 		Roots: e.o.Roots, Fleet: fleet, Tenant: tenant, Doctor: doctor,
 		Drivers: e.o.Drivers, Now: e.o.Now, Redactor: e.o.Redactor,
+		// The engine's own mode, NOT req.Mode: a request cannot claim to be
+		// a --direct run, and a rebuild under the daemon must see `daemon`.
+		Mode: e.o.Mode,
 	}
 	planned, err := op.Plan(ctx, oc, req.Args)
 	if err != nil {
