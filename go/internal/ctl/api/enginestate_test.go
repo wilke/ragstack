@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,11 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
@@ -328,7 +332,7 @@ func TestTheDaemonRecoversItsEngineWithoutARestart(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		retryEngine(context.Background(), srv, cfg, cfg.StorePath, discardLogger(), backoff)
+		retryEngine(context.Background(), srv, cfg, cfg.StorePath, discardLogger(), backoff, doctor.SidecarProbe{})
 	}()
 	select {
 	case <-done:
@@ -347,44 +351,82 @@ func TestTheDaemonRecoversItsEngineWithoutARestart(t *testing.T) {
 	}
 }
 
-// TestTheRetryGivesUpAndSaysSo. Bounded is a decision, not an oversight: a
-// genuinely broken store retried every two minutes forever is a log nobody
-// reads and a daemon that never tells anyone it needs a human. The loop must
-// RETURN — a goroutine still spinning after the bound would also hold the
-// EngineConfig and its fake driver set for the life of the process.
-func TestTheRetryGivesUpAndSaysSo(t *testing.T) {
+// TestTheRetryKeepsGoingPastTheOldBoundAndSaysSo is #716. The loop used to
+// give up after engineRetryAttempts and leave the daemon refusing every
+// mutation until a restart; the cause is fixed on the filesystem long after
+// ten minutes as often as not, so it now retries indefinitely at the capped
+// backoff — and says so ONCE, at the old bound.
+func TestTheRetryKeepsGoingPastTheOldBoundAndSaysSo(t *testing.T) {
 	cfg, _ := blockedStoreConfig(t) // never repaired
 	srv, _ := engineStateServer(t, nil, errors.New("job store: not a directory"))
 
-	var attempts int
-	backoff := func(int) time.Duration { attempts++; return time.Millisecond }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target := 3 * engineRetryAttempts
+	var attempts atomic.Int64
+	backoff := func(n int) time.Duration {
+		attempts.Store(int64(n))
+		if n > target {
+			cancel()
+		}
+		return time.Millisecond
+	}
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		retryEngine(context.Background(), srv, cfg, cfg.StorePath, discardLogger(), backoff)
+		retryEngine(ctx, srv, cfg, cfg.StorePath, logger, backoff, doctor.SidecarProbe{})
 	}()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("retryEngine never gave up; the bound does not hold")
+	case <-time.After(60 * time.Second):
+		t.Fatal("retryEngine did not end on cancel")
 	}
 
-	if attempts != engineRetryAttempts {
-		t.Errorf("the loop ran %d attempts, want the bounded %d", attempts, engineRetryAttempts)
+	if got := attempts.Load(); got <= int64(engineRetryAttempts) {
+		t.Fatalf("the loop stopped after %d attempts; it must keep going past %d", got, engineRetryAttempts)
 	}
 	if srv.EngineAvailable() {
 		t.Error("a store that never opened left the mutation surface claiming to be available")
 	}
-	// The LATEST reason is what a mutation quotes, so a failed attempt has to
-	// republish it rather than leave the start-up error standing.
+	// The LATEST reason is what a mutation quotes.
 	_, why := srv.engine()
-	if why == nil {
-		t.Fatal("the server carries no reason the engine is missing")
-	}
-	if !strings.Contains(why.Error(), "jobs.db") {
+	if why == nil || !strings.Contains(why.Error(), "jobs.db") {
 		t.Errorf("the published reason does not name the store: %v", why)
 	}
+	log := buf.String()
+	if n := strings.Count(log, "no longer gives up here"); n != 1 {
+		t.Errorf("the behaviour change was logged %d times, want exactly once:\n%s", n, log)
+	}
+	if strings.Contains(log, "could not be opened after every retry") {
+		t.Error("the old give-up line is still logged")
+	}
+	// Unchanged failures past the bound are thinned: attempts 10..27 with the
+	// same error log nothing (27 < engineRetryLogEvery).
+	if n := strings.Count(log, "job engine still unavailable\""); n != engineRetryAttempts {
+		t.Errorf("logged %d per-attempt WARN lines, want %d (one per attempt up to the bound, then thinned):\n%s",
+			n, engineRetryAttempts, log)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the retry goroutine and the test.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 // TestACancelledContextEndsTheRetry: the retry runs under the same context
@@ -404,7 +446,7 @@ func TestACancelledContextEndsTheRetry(t *testing.T) {
 		defer close(done)
 		// An hour of backoff: if the cancellation were not honoured, the only
 		// way out of the first iteration would be the test's own timeout.
-		retryEngine(ctx, srv, cfg, cfg.StorePath, discardLogger(), func(int) time.Duration { return time.Hour })
+		retryEngine(ctx, srv, cfg, cfg.StorePath, discardLogger(), func(int) time.Duration { return time.Hour }, doctor.SidecarProbe{})
 	}()
 	select {
 	case <-done:

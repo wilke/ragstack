@@ -523,6 +523,31 @@ async def test_audit_is_operator_only_and_conforms(
     assert_request_id(resp)
 
 
+async def test_audit_honours_limit_and_is_newest_first(
+    client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """``ragstack-ctl audit list`` (#716 — the sanctioned read of the audit
+    rows, instead of opening ``jobs.db`` with sqlite3) relies on two things
+    this endpoint promises: ``limit`` bounds the page and is echoed back, and
+    rows come newest first, which is what lets ``--since`` stop at the first
+    older row and warn when a truncated page never reached it."""
+    resp = await client.get("/v1/audit", params={"limit": 1})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    validate(body, "audit_response", schemas)
+    assert body["limit"] == 1, body["limit"]
+    assert len(body["rows"]) <= 1, len(body["rows"])
+
+    resp = await client.get("/v1/audit", params={"limit": 1000})
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()["rows"]
+    ids = [row["id"] for row in rows]
+    assert ids == sorted(ids, reverse=True), f"audit rows are not newest first: {ids[:20]}"
+
+    resp = await client.get("/v1/audit", params={"limit": 1001})
+    assert_error(resp, 422, "validation", schemas)
+
+
 @pytest.mark.parametrize("opid,method,path,body", MUTATIONS, ids=MUTATION_IDS)
 async def test_every_mutation_answers_in_the_contract_envelope(
     client: httpx.AsyncClient, schemas: dict[str, dict],

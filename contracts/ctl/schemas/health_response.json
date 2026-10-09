@@ -15,6 +15,11 @@
       "description": "Whether a mutation submitted right now would reach a job engine at all.\n\n`status` cannot carry this: the schema pins it to `ok`, and an engineless daemon IS up — it serves every read and refuses every mutation with 409 `refused`. On 2026-09-17 a daemon ran in exactly that state for a day, because the only place it said so was one WARN line at start-up (a `--direct` run by another account had left wilke-owned `jobs.db-wal`/`jobs.db-shm` beside svcbvbrc's store, and SQLite could not write them). The daemon now retries opening the store in the background, and this field is where the answer is visible without a credential; `doctor` raises `job_engine_unavailable` for the same fact.",
       "type": "string",
       "enum": ["available", "unavailable"]
+    },
+    "engine_detail": {
+      "description": "Present only while `engine` is `unavailable`: why, in words an operator can act on. Path-free, because this endpoint is anonymous. When the cause is the one #716 documents — another account opened `jobs.db` with SQLite and left its own `jobs.db-shm`/`jobs.db-wal` beside the store — it names those files by base name, their owner, their sizes and the recovery (remove them as that owner when the WAL is empty; copy aside first otherwise). Otherwise it points at the daemon log and the `job_engine_unavailable` doctor row. The daemon retries indefinitely, so the field disappears on its own once the store opens.",
+      "type": "string",
+      "minLength": 1
     }
   },
   "additionalProperties": false

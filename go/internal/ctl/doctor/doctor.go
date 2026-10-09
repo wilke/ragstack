@@ -97,6 +97,10 @@ type Options struct {
 	// ImportCheck resolves `import ragstack` under a tenant's python env and
 	// PYTHONPATH; nil ⇒ the real argv-only probe. Return ("", nil) to skip.
 	ImportCheck func(pythonEnv, worktree string) (string, error)
+	// SidecarProbe is how jobStoreCheck reads the owner and size of the job
+	// store's SQLite sidecars; the zero value is the real filesystem and
+	// os/user. A test injects a uid so a "foreign owner" needs no chown.
+	SidecarProbe SidecarProbe
 	// CtlEnv is the CTL_* host-tool/directory values HomePathInProduction
 	// checks for a home-directory path — the same names
 	// api.SetHostToolsFromEnv reads into the engine's driver config (kept
@@ -748,15 +752,24 @@ func (d *run) jobStoreCheck() {
 	if len(blocked) == 0 {
 		return
 	}
-	d.addRepair(model.LevelWarn, JobEngineUnavailable, "", fmt.Sprintf(
+	detail := fmt.Sprintf(
 		"%s cannot be written by %s (uid %d), the account this daemon runs as: SQLite opens a WAL database "+
 			"read-write only when it can write the database AND both sidecars, so the daemon's whole mutation "+
 			"surface would answer 409 refused while its reads keep working. `GET /health` reports the daemon's "+
-			"own verdict as `engine`",
-		strings.Join(blocked, ", "), d.opts.CtlUser, d.opts.CtlUID),
+			"own verdict as `engine` (and `engine_detail`)",
+		strings.Join(blocked, ", "), d.opts.CtlUser, d.opts.CtlUID)
+	// #716: name the sidecars' owner and size, and the recovery that fits the
+	// WAL actually there — the same text the daemon logs when it cannot open
+	// the store, so the two reports cannot disagree.
+	if foreign := ForeignSidecars(store, d.opts.CtlUID, d.opts.SidecarProbe); len(foreign) > 0 {
+		detail += ". " + DescribeForeignSidecars(foreign, true)
+	}
+	d.addRepair(model.LevelWarn, JobEngineUnavailable, "", detail,
 		"as the owner of those files: chmod g+w "+store+"*  # (or chown them to "+d.opts.CtlUser+
-			"). NEVER delete a -wal: SQLite recovers it into the database on the next open, and removing one "+
-			"from under a live connection loses every committed transaction it still holds")
+			"). Or, with nothing holding the store open (fuser), remove the foreign -shm and an EMPTY -wal; a "+
+			"NON-empty -wal is copied aside first. NEVER delete a -wal from under a live connection: SQLite "+
+			"recovers it into the database on the next open, and removing it loses every committed transaction "+
+			"it still holds")
 }
 
 // backupRecipients asks whether a backup taken now could carry the tenant's

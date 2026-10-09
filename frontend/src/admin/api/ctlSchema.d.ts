@@ -559,6 +559,8 @@ export interface components {
              * @enum {string}
              */
             engine: "available" | "unavailable";
+            /** @description Present only while `engine` is `unavailable`: why, in words an operator can act on. Path-free, because this endpoint is anonymous. When the cause is the one #716 documents — another account opened `jobs.db` with SQLite and left its own `jobs.db-shm`/`jobs.db-wal` beside the store — it names those files by base name, their owner, their sizes and the recovery (remove them as that owner when the WAL is empty; copy aside first otherwise). Otherwise it points at the daemon log and the `job_engine_unavailable` doctor row. The daemon retries indefinitely, so the field disappears on its own once the store opens. */
+            engine_detail?: string;
         };
         /**
          * CtlError

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
@@ -185,10 +186,17 @@ func RunServe(args []string) int {
 	storePath := filepath.Join(roots.CtlStateDir, "jobs.db")
 	engine, err := BuildEngine(cfg)
 	var engineErr error
+	var engineDetail string
 	if err != nil {
-		logger.Warn("job engine unavailable; the mutation surface will refuse, and this daemon keeps trying",
-			"store", storePath, "err", err.Error(), "retries", engineRetryAttempts)
-		engine, engineErr = nil, err
+		var sidecars string
+		engineErr, sidecars, engineDetail = explainEngineFailure(storePath, err, doctor.SidecarProbe{})
+		attrs := []any{"store", storePath, "err", err.Error()}
+		if sidecars != "" {
+			attrs = append(attrs, "sidecars", sidecars)
+		}
+		logger.Warn("job engine unavailable; the mutation surface will refuse, and this daemon keeps retrying "+
+			"until the store opens", attrs...)
+		engine = nil
 	} else {
 		reconcileJobs(engine, logger)
 	}
@@ -198,6 +206,8 @@ func RunServe(args []string) int {
 		Backend:   backend,
 		Engine:    engine,
 		EngineErr: engineErr,
+		// The path-free half of the explanation, for GET /health.
+		EngineDetail: engineDetail,
 		Resolver: &auth.Resolver{
 			Keys:     keys,
 			Verifier: verifier,
@@ -220,7 +230,7 @@ func RunServe(args []string) int {
 	// daemon serves, under the same context the requests run under: a
 	// shutdown ends the retries with everything else. See retryEngine.
 	if engineErr != nil {
-		go retryEngine(requestCtx, srv, cfg, storePath, logger, engineRetryBackoff)
+		go retryEngine(requestCtx, srv, cfg, storePath, logger, engineRetryBackoff, doctor.SidecarProbe{})
 	}
 
 	handler := NewRouter(srv)
@@ -293,24 +303,60 @@ func RunServe(args []string) int {
 
 // ---------------------------------------------------------------- the engine retry
 
-// engineRetryAttempts and engineRetryBackoff are how hard, and for how long,
-// the daemon tries to open a job store it could not open at start.
+// engineRetryAttempts is the number of attempts the daemon logs one by one
+// before it settles into the capped backoff, and the attempt at which it says
+// so.
 //
-// Bounded rather than forever, and the bound is the point: this is a repair for
-// a transient cause — a permission fixed by hand, a filesystem that came back,
-// the `jobs.db-wal` another account left behind and somebody chmods — and a
-// daemon retrying a genuinely broken store every thirty seconds until the heat
-// death of the host is a log nobody reads. Roughly ten minutes of increasing
-// backoff, then it stops and says so, and the operator restarts it.
+// It used to be the END: nine attempts (~ten minutes), then an ERROR and a
+// daemon that refused every mutation until somebody restarted it. #716 showed
+// what that costs — the cause (foreign-owned SQLite sidecars) is fixed on the
+// filesystem in seconds, but only after somebody reads the log, which is
+// usually long after ten minutes. So the loop now never gives up: after
+// attempt 9 it keeps trying every engineRetryBackoffCap, logs that change of
+// behaviour once, and from then on logs only when the error changes or every
+// engineRetryLogEvery attempts — a broken store is a line an hour, not a line
+// every two minutes.
 const engineRetryAttempts = 9
+
+// engineRetryBackoffCap is the steady-state delay between attempts.
+const engineRetryBackoffCap = 2 * time.Minute
+
+// engineRetryLogEvery thins the steady-state log: an unchanged failure past
+// attempt engineRetryAttempts is logged once every this many attempts.
+const engineRetryLogEvery = 30
 
 // engineRetryBackoff is the delay BEFORE attempt n (1-based), capped.
 func engineRetryBackoff(n int) time.Duration {
 	d := time.Duration(1<<uint(min(n, 6))) * 5 * time.Second
-	if d > 2*time.Minute {
-		d = 2 * time.Minute
+	if d > engineRetryBackoffCap {
+		d = engineRetryBackoffCap
 	}
 	return d
+}
+
+// explainEngineFailure turns a failed BuildEngine into what the daemon
+// publishes about it (#716).
+//
+// When a `jobs.db-shm`/`jobs.db-wal` beside the store belongs to an account
+// other than the daemon's, that is almost certainly the cause — another
+// account opened the database with SQLite and left its own sidecars — and the
+// raw SQLite error ("attempt to write a readonly database (8)") says nothing
+// of it. Then:
+//
+//   - published is err with the full-path explanation appended: it is what a
+//     refused mutation (operator-only) quotes;
+//   - logDetail is that explanation, for the log line;
+//   - healthDetail is the same with base names only, for the anonymous
+//     GET /health `engine_detail`.
+//
+// With no foreign sidecar, published is err unchanged and both details are "".
+func explainEngineFailure(storePath string, err error, probe doctor.SidecarProbe) (published error, logDetail, healthDetail string) {
+	foreign := doctor.ForeignSidecars(storePath, os.Geteuid(), probe)
+	if len(foreign) == 0 {
+		return err, "", ""
+	}
+	logDetail = doctor.DescribeForeignSidecars(foreign, true)
+	return fmt.Errorf("%w; %s", err, logDetail), logDetail, doctor.DescribeForeignSidecars(foreign, false)
 }
 
 // retryEngine keeps trying to build the engine, and publishes it on the
@@ -323,26 +369,28 @@ func engineRetryBackoff(n int) time.Duration {
 // a `chmod` corrected in seconds while the daemon went on refusing. A control
 // plane whose only recovery from a transient filesystem fault is "an operator
 // notices and restarts it" is a control plane that is down whenever nobody is
-// looking.
+// looking. Since #716 it retries until the store opens or the daemon stops;
+// see engineRetryAttempts.
 //
-// Every attempt is logged — at INFO on success, at WARN with the attempt number
-// otherwise — because a silent retry loop is a worse answer than the original
-// warning: the operator has to be able to see that it is still trying, and to
-// see it give up.
+// Every failed attempt republishes the latest reason (with the foreign-sidecar
+// explanation, when that is the cause) so a refused mutation and GET /health
+// quote what the daemon sees now. Logging: every attempt up to
+// engineRetryAttempts, one line at that attempt saying the loop now continues
+// indefinitely, then only on a changed error or every engineRetryLogEvery
+// attempts.
 //
 // The reconcile-on-start a successful build owes is run here too, before the
 // engine is published: a mutation must not reach an engine whose interrupted
 // jobs have not been decided yet.
 //
-// `backoff` is a parameter rather than a direct call to engineRetryBackoff so
-// that a test can run the whole loop without waiting out the real schedule —
-// nine attempts of production backoff is over ten minutes, and a retry loop
-// nothing exercises is a retry loop that quietly stops retrying. `serve`
-// passes engineRetryBackoff, which is still where the real schedule lives; a
-// package-level variable would have been the same size of change and a data
-// race between the test that rewrites it and the goroutine that reads it.
-func retryEngine(ctx context.Context, srv *Server, cfg EngineConfig, storePath string, logger *slog.Logger, backoff func(attempt int) time.Duration) {
-	for attempt := 1; attempt <= engineRetryAttempts; attempt++ {
+// `backoff` and `probe` are parameters so a test can run the loop without
+// waiting out the real schedule and can simulate a foreign sidecar owner
+// without chown. `serve` passes engineRetryBackoff and the zero probe (the
+// real filesystem).
+func retryEngine(ctx context.Context, srv *Server, cfg EngineConfig, storePath string, logger *slog.Logger,
+	backoff func(attempt int) time.Duration, probe doctor.SidecarProbe) {
+	lastErr := ""
+	for attempt := 1; ; attempt++ {
 		select {
 		case <-ctx.Done():
 			return
@@ -350,12 +398,27 @@ func retryEngine(ctx context.Context, srv *Server, cfg EngineConfig, storePath s
 		}
 		engine, err := BuildEngine(cfg)
 		if err != nil {
+			published, sidecars, healthDetail := explainEngineFailure(storePath, err, probe)
 			// The LATEST reason, published as it is learned: a mutation
 			// refused an hour in should quote the error the daemon is actually
 			// seeing now, not the one it saw at start-up.
-			srv.SetEngine(nil, err)
-			logger.Warn("job engine still unavailable",
-				"store", storePath, "attempt", attempt, "of", engineRetryAttempts, "err", err.Error())
+			srv.SetEngineUnavailable(published, healthDetail)
+			msg := published.Error()
+			if attempt <= engineRetryAttempts || msg != lastErr || attempt%engineRetryLogEvery == 0 {
+				attrs := []any{"store", storePath, "attempt", attempt, "err", err.Error()}
+				if sidecars != "" {
+					attrs = append(attrs, "sidecars", sidecars)
+				}
+				logger.Warn("job engine still unavailable", attrs...)
+			}
+			if attempt == engineRetryAttempts {
+				logger.Warn("job engine still unavailable after "+strconv.Itoa(engineRetryAttempts)+
+					" attempts; this daemon no longer gives up here (#716): it keeps retrying every "+
+					engineRetryBackoffCap.String()+" until the store opens, so fixing the store needs no "+
+					"restart; further failures are logged when the error changes or every "+
+					strconv.Itoa(engineRetryLogEvery)+" attempts", "store", storePath)
+			}
+			lastErr = msg
 			continue
 		}
 		reconcileJobs(engine, logger)
@@ -364,8 +427,6 @@ func retryEngine(ctx context.Context, srv *Server, cfg EngineConfig, storePath s
 			"store", storePath, "attempt", attempt)
 		return
 	}
-	logger.Error("job engine could not be opened after every retry; mutations stay refused until this daemon is "+
-		"restarted", "store", storePath, "attempts", engineRetryAttempts)
 }
 
 // reconcileJobs is reconcile-on-start: a job whose worker died becomes

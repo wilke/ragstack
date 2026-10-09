@@ -109,9 +109,14 @@ type Server struct {
 	// answers with it, so an operator learns "the job store is read-only"
 	// rather than "not wired".
 	EngineErr error
-	Resolver  *auth.Resolver
-	Sessions  session.Store
-	Logger    *slog.Logger
+	// EngineDetail is the path-free explanation GET /health carries as
+	// `engine_detail` while Engine is nil (#716: foreign-owned SQLite
+	// sidecars, named with their owner, size and recovery). Empty means the
+	// generic pointer at the log and `doctor`.
+	EngineDetail string
+	Resolver     *auth.Resolver
+	Sessions     session.Store
+	Logger       *slog.Logger
 
 	// swapped is the engine a LATER build produced, once one has.
 	//
@@ -134,6 +139,7 @@ type Server struct {
 type engineState struct {
 	engine jobs.Engine
 	err    error
+	detail string
 }
 
 // engine is what every handler asks instead of reading the field: the swapped
@@ -152,6 +158,31 @@ func (s *Server) engine() (jobs.Engine, error) {
 // listener.
 func (s *Server) SetEngine(e jobs.Engine, err error) {
 	s.swapped.Store(&engineState{engine: e, err: err})
+}
+
+// SetEngineUnavailable publishes the latest reason there is no engine together
+// with the path-free detail GET /health shows for it.
+func (s *Server) SetEngineUnavailable(err error, detail string) {
+	s.swapped.Store(&engineState{err: err, detail: detail})
+}
+
+// engineDetail is `engine_detail` for GET /health: "" while an engine is
+// available, else the published detail or, when there is none, a generic
+// pointer at where the reason is.
+func (s *Server) engineDetail() string {
+	eng, _ := s.engine()
+	if eng != nil {
+		return ""
+	}
+	d := s.EngineDetail
+	if st := s.swapped.Load(); st != nil {
+		d = st.detail
+	}
+	if d == "" {
+		d = "the job store could not be opened; the daemon log names the error, `ragstack-ctl doctor` checks " +
+			"the store (" + doctor.JobEngineUnavailable + "), and the daemon keeps retrying without a restart"
+	}
+	return d
 }
 
 // EngineAvailable is `engine` in GET /health: whether a mutation submitted
@@ -409,6 +440,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, model.HealthResponse{
 		Status: model.HealthOKStatus, Version: version.Version, Engine: engine,
+		EngineDetail: s.engineDetail(),
 	})
 }
 
