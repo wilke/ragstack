@@ -1021,3 +1021,110 @@ func sortedKeysOf(m map[string][]byte) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestNginxStaticCacheHeaders is #712: an operator's browser kept a weeks-old
+// admin bundle alive after a dist swap because nginx sent no Cache-Control on
+// admin.html and heuristic freshness filled the gap. Every static UI (each
+// static tenant and the admin mount) gets, in front of its `^~ <base>` block,
+//   - `= <base><entry>` with `no-cache` (the try_files fallback is an
+//     internal redirect, so SPA deep links land here too), and
+//   - `^~ <base>assets/` with a year-long immutable lifetime (Vite hashes
+//     the names).
+//
+// An add_header in a location replaces every inherited one, so each of these
+// must repeat the cors include or the CORS headers silently disappear.
+func TestNginxStaticCacheHeaders(t *testing.T) {
+	f := registry.LiveFixture()
+	f.Ctl.GatewayEnabled = true
+	f.Tenants["dev"].UI.Mode = registry.UIModeStatic
+	f.Tenants["dev"].UI.Port = 0
+	f.Tenants["sandbox"] = managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	out, err := NginxStatic(f, NginxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	const cors = "include /rag/config/proxy/snippets/cors.conf;"
+
+	// (a) both new locations, per static UI and for admin, before the ^~ block.
+	for _, ui := range []struct{ base, dist, entry string }{
+		{"/ragstack/dev/ui/", "/rag/data/tenants/dev/ui/dist", "index.html"},
+		{"/ragstack/sandbox/ui/", "/rag/data/tenants/sandbox/ui/dist", "index.html"},
+		{"/ragstack/admin/ui/", "/rag/data/ctl/ui/dist", "admin.html"},
+	} {
+		entry := "location = " + ui.base + ui.entry + " {\n    " + cors +
+			"\n    alias " + ui.dist + "/" + ui.entry + ";\n    add_header Cache-Control \"no-cache\" always;\n}"
+		assets := "location ^~ " + ui.base + "assets/ {\n    " + cors +
+			"\n    alias " + ui.dist + "/assets/;\n    add_header Cache-Control \"public, max-age=31536000, immutable\" always;\n}"
+		main := "location ^~ " + ui.base + " {"
+		ie, ia, im := strings.Index(s, entry), strings.Index(s, assets), strings.Index(s, main)
+		if ie < 0 || ia < 0 {
+			t.Errorf("%s: missing cache locations (entry %d, assets %d):\n%s", ui.base, ie, ia, s)
+			continue
+		}
+		if im < 0 || ie > im || ia > im {
+			t.Errorf("%s: cache locations must precede the ^~ block (entry %d, assets %d, main %d)", ui.base, ie, ia, im)
+		}
+		// The ^~ block itself is unchanged: no cache header, same fallback.
+		if strings.Contains(namedBlock(t, s, main), "add_header") {
+			t.Errorf("%s: the ^~ block grew an add_header", ui.base)
+		}
+		if !strings.Contains(namedBlock(t, s, main), "try_files $uri ") ||
+			!strings.Contains(namedBlock(t, s, main), ui.base+ui.entry+";") {
+			t.Errorf("%s: the ^~ block no longer falls back to %s", ui.base, ui.entry)
+		}
+	}
+
+	// (b) every location with an add_header also carries the cors include.
+	blocks := nginxLocations(t, s)
+	if len(blocks) == 0 {
+		t.Fatal("no locations parsed")
+	}
+	for _, blk := range blocks {
+		if strings.Contains(blk, "add_header") && !strings.Contains(blk, cors) {
+			t.Errorf("location sets add_header without the cors include (it would drop CORS):\n%s", blk)
+		}
+	}
+}
+
+// nginxLocations is the structural sanity check the render package can do
+// without an nginx binary (the gateway's staged `nginx -t` is the real one):
+// braces balance, nothing sits outside a top-level `location … {}` but
+// comments and blank lines, and every directive line ends in `;`. It returns
+// each top-level location block.
+func nginxLocations(t *testing.T, conf string) []string {
+	t.Helper()
+	var blocks []string
+	var cur strings.Builder
+	depth := 0
+	for n, line := range strings.Split(conf, "\n") {
+		l := strings.TrimSpace(line)
+		switch {
+		case depth == 0 && (l == "" || strings.HasPrefix(l, "#")):
+			continue
+		case depth == 0 && !(strings.HasPrefix(l, "location ") && strings.HasSuffix(l, " {")):
+			t.Fatalf("line %d outside a location block: %q", n+1, line)
+		}
+		cur.WriteString(line + "\n")
+		switch {
+		case strings.HasSuffix(l, "{"):
+			depth++
+		case l == "}":
+			depth--
+			if depth < 0 {
+				t.Fatalf("line %d: unbalanced }", n+1)
+			}
+			if depth == 0 {
+				blocks = append(blocks, cur.String())
+				cur.Reset()
+			}
+		case l == "" || strings.HasPrefix(l, "#"):
+		case !strings.HasSuffix(l, ";"):
+			t.Fatalf("line %d: directive not terminated by ';': %q", n+1, line)
+		}
+	}
+	if depth != 0 {
+		t.Fatalf("unbalanced braces: depth %d at EOF", depth)
+	}
+	return blocks
+}
