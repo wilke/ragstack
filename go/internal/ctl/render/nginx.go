@@ -390,7 +390,11 @@ location ^~ /ragstack/admin/api/ {
 //     try_files fallback is an internal redirect that re-runs location
 //     matching, so SPA deep links land here too.
 //   - `^~ <base>assets/`: Vite's content-hashed bundles never change under a
-//     name, so they are cached for a year and marked immutable.
+//     name, so they are cached for a year and marked immutable. Deliberately
+//     WITHOUT `always`: nginx then adds it to 2xx/3xx only, so a 404 for a
+//     hashed name that is briefly missing during a dist swap is not cached
+//     for a year. The HTML entry keeps `always` — no-cache is safe on any
+//     status.
 //
 // `include cors.conf` is repeated in both: an add_header in a location
 // replaces EVERY add_header inherited from outer levels, but directives at the
@@ -406,7 +410,7 @@ location = ` + base + entry + ` {
 location ^~ ` + base + `assets/ {
     include ` + cors + `;
     alias ` + dist + `/assets/;
-    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header Cache-Control "public, max-age=31536000, immutable";
 }
 `
 }

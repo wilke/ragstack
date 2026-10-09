@@ -1055,7 +1055,7 @@ func TestNginxStaticCacheHeaders(t *testing.T) {
 		entry := "location = " + ui.base + ui.entry + " {\n    " + cors +
 			"\n    alias " + ui.dist + "/" + ui.entry + ";\n    add_header Cache-Control \"no-cache\" always;\n}"
 		assets := "location ^~ " + ui.base + "assets/ {\n    " + cors +
-			"\n    alias " + ui.dist + "/assets/;\n    add_header Cache-Control \"public, max-age=31536000, immutable\" always;\n}"
+			"\n    alias " + ui.dist + "/assets/;\n    add_header Cache-Control \"public, max-age=31536000, immutable\";\n}"
 		main := "location ^~ " + ui.base + " {"
 		ie, ia, im := strings.Index(s, entry), strings.Index(s, assets), strings.Index(s, main)
 		if ie < 0 || ia < 0 {
