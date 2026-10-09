@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset.** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution.** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1541,8 +1541,9 @@ step writes beside the CWL); the last three the worker reads from the image's
 provenance begins with the first stamped release; a version written before then reads
 as all-`null` ("unknown"), never as an error.
 
-**What the code does at `main` @ `cdcf737`** — #655 steps 1 (#664), 2 (#668) and 4 (#672,
-tightened by #678) have landed; steps 3, 5 and 6 have not:
+**What the code does at `main` @ `a730cc9`** — #655 steps 1 (#664), 2 (#668), 3 (the shared
+store, ops), 4 (#672, tightened by #678) and 5 (the v1.6.6 release, then #706) have landed;
+step 6 has not, and step 5's retirement of the per-group image directories is still open:
 - **Landed:** the single version derivation (`ragstack/version.py`; `ragstack.__version__`
   via `ragstack/__init__.py`; `GET /v1/version` reports it); the tools-image build
   (`apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def`, writing
@@ -1553,13 +1554,21 @@ tightened by #678) have landed; steps 3, 5 and 6 have not:
   **byte-for-byte** (`ingestion/backends.py`); `GOWE_TOOL_IMAGE` makes boot **refuse**
   (`api/deps.py`, `_validate_production_settings`); `ragstack-ctl adopt` warns
   `retired_env_key` on a tenant.env that still carries it (`adopt.go`; the code lives in
-  `doctor/codes.go`), and the ctl env API refuses to set it (`ops/env.go`). #642's substitution survives only as a tested function in
-  `ragstack/tool_image.py` that nothing calls at runtime.
+  `doctor/codes.go`), and the ctl env API refuses to set it (`ops/env.go`). #706 removed
+  #642's substitution (`substitute_tool_image` and its helpers, uncalled since #664) and
+  ported its refuse-on-partial cases to the stamping tests (`test_cwl_tool_image_pin.py`);
+  kept by design are the boot refusal (`deps._refuse_retired_tool_image_override`), the
+  `config.gowe_tool_image` field it reads, and the ctl `Retired()` classification
+  (`settings/settings.go`), so a stale tenant.env cannot revive the override.
 - **Landed in #668 (#655 step 2):** the provenance fields above, written by
   `scripts/archive_version.py`, `ingest_shard.py`, `extract_graph.py` and
   `load_embeddings.py`, read by `ragstack/provenance.py` (`read_provenance`), with the
   seeding (`ragstack/tool_image.py`, `provenance_inputs`) called by the three
-  registrars — `ingestion/gowe_backend.py`, `graph_extract.py` and `restore.py`. Today the API seeds nothing (unstamped tree) and the deployed worker images predate #668, so a new version carries no `provenance` key and reads as all-`null`.
+  registrars — `ingestion/gowe_backend.py`, `graph_extract.py` and `restore.py`. Since
+  v1.6.6 the tree is stamped, so all three seed `workflow_id`/`tool_image`/
+  `tool_image_digest` (the digest from the committed receipt) and a new version carries
+  the full `provenance` block (shown end to end on dev, job `0aba2935`, per #655); a
+  version written before v1.6.6 still reads as all-`null`.
 - **Landed in #672 (#655 step 4) and #678:** the identity check (decision 7), one
   implementation — `python/ragstack/tool_image.py` `verify_named_image`, wrapped per
   CWL by `verify_cwl_file` and exposed as `python -m ragstack.tool_image verify
@@ -1584,23 +1593,32 @@ tightened by #678) have landed; steps 3, 5 and 6 have not:
   (`go/cmd/ragstack-ctl/gowe.go` `cmdGowe`, `go/internal/ctl/gowe/render.go`) runs the
   tenant's own python against its checkout and prints each workflow's text sha256,
   its `dockerPull` and the verdict: exit 3 on a problem or `unchecked`, 1 when the
-  check could not run. Runbook: `docs/runbooks/verifying-tools-image.md`. **Nothing is
-  released yet:** the installed `/rag/bin/ragstack-ctl` (`v1.6.2-10-g5a05168`, as of
-  2026-10-06) predates `gowe` and answers `unknown command "gowe"`.
-- **Not yet:** no release has been stamped (so no `cwl/tool-image.receipt.json` yet) — every `dockerPull` is still the bare
-  `ragstack-worker.sif`, which each worker resolves against its group's `--image-dir`
-  (on coconut, as of 2026-10-05, a per-group symlink, e.g.
-  `ragstack-hackathon/ragstack-worker.sif -> ragstack-worker-v1.6.4.sif`), so the
-  worker group is still the effective binding and the identity check has nothing to
-  verify on any tenant; the shared store does not exist (migration step 3); the server
-  image (migration step 6) is not built.
+  check could not run. Runbook: `docs/runbooks/verifying-tools-image.md`. The installed
+  `/rag/bin/ragstack-ctl` (`v1.6.4-60-gcef1aeb`, as of 2026-10-08) carries `gowe render`.
+- **Landed in v1.6.6 and #706 (#655 steps 3 and 5):** the first tools tag, v1.6.5
+  (`d5c970e`), built `ragstack-tools-v1.6.5-b1.sif`, which sits with its receipt in the
+  shared store `/scout/containers/ragstack/`. v1.6.6 (tag at `4c1322e`; the stamping
+  commit is `e6467fa`) is the first stamped server release: `stamp_tool_image.py` wrote
+  that name into every `dockerPull`/`dockerImageId` of the twelve workflows that declare
+  one (`eval-scifact-chunking.cwl` declares none) and committed
+  `cwl/tool-image.receipt.json` (version `v1.6.5`, commit `d5c970e`, build 1); `--check`
+  reports the tree stamped. Dev and hackathon run v1.6.6 (both checkouts at `4c1322e`, as
+  of 2026-10-08) with `GOWE_IMAGE_DIRS=/scout/containers/ragstack-<group>,/scout/containers/ragstack`.
+  Each group's workers take one `--image-dir`, the group dir, which holds same-named
+  symlinks to the store's image and receipt; the boot check verifies the first hit (the
+  link), warns that the name is in two dirs, and logs "sha256 ok, labels ok" for all three
+  registered workflows. Writing that link into decision 6 as the way the store is reached
+  is proposed in #707 (open). #706 then removed the substitution (above).
+- **Not yet:** retiring the per-group image directories (the rest of step 5; they still
+  hold the pre-ADR `ragstack-worker*.sif` builds and the links above), and the server
+  image (step 6): tenants still run from tagged checkouts.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
-`WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — today the CWL names
-the bare `ragstack-worker.sif` (images built before #664 from the retired
-`ragstack-worker.def`); since #664 builds come from `apptainer/build-tools-image.sh` +
-`apptainer/ragstack-tools.def` as `ragstack-tools-<version>-b<N>.sif` with a receipt,
-and the CWL names one once a release is stamped (ADR-0010, `cwl/README.md`) — the receipt
+`WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — since #664 builds
+come from `apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def` as
+`ragstack-tools-<version>-b<N>.sif` with a receipt, and since v1.6.6 the CWL names one,
+`ragstack-tools-v1.6.5-b1.sif` (before it, the bare `ragstack-worker.sif` built from the
+retired `ragstack-worker.def`; ADR-0010, `cwl/README.md`) — the receipt
 contract `ragstack.ingestion.receipts` (`ShardReceipt` / `DocRow`), and the archive
 format `ragstack.ingestion.archive` (`FORMAT = "ragstack-archive/1"`).
 
@@ -2677,7 +2695,7 @@ flowchart TD
 
 **What it is:** The physical stores of a collection are **reconstructible from a Workspace archive**, which is what makes eviction (§9.7) safe. The archive is written by the GoWe ingest workflow, not by the API process; the API only reserves versions, records them on the registry row, and submits replays.
 
-**Layout** (`python/ragstack/ingestion/archive.py`): `<subject>/home/.ragstack/collections/<id>/versions/<n>/` holding `manifest.json` (format `ragstack-archive/1`; identity `collection_id / tenant / spec_hash / version / job_id`; since #668 a `provenance` object naming the GoWe workflow and tools image that built it, all-`null` until the first stamped release — §5.2), `chunks.jsonl.gz`, `vectors.f32`, `receipt.json`, optionally `tombstone.json` (deletes) and, after graph extraction, `triples.jsonl.gz` with `graph: true`. The Workspace folder itself is stamped `ragstack_format / collection_id / tenant / spec_hash` (`workspace.py`).
+**Layout** (`python/ragstack/ingestion/archive.py`): `<subject>/home/.ragstack/collections/<id>/versions/<n>/` holding `manifest.json` (format `ragstack-archive/1`; identity `collection_id / tenant / spec_hash / version / job_id`; since #668 a `provenance` object naming the GoWe workflow and tools image that built it, all-`null` on a version written before the first stamped release, v1.6.6 — §5.2), `chunks.jsonl.gz`, `vectors.f32`, `receipt.json`, optionally `tombstone.json` (deletes) and, after graph extraction, `triples.jsonl.gz` with `graph: true`. The Workspace folder itself is stamped `ragstack_format / collection_id / tenant / spec_hash` (`workspace.py`).
 
 **Algorithm / workflow:**
 1. **Version reservation** — `_reserve_version` → `CollectionStore.next_version` (atomic `UPDATE … RETURNING` on `archive_version`; the JSON backend raises `NotImplementedError`, surfaced as 503 — a GoWe-backed tenant needs sqlite/postgres). `_gowe_inputs` carries `version, collection_id, spec_hash (record.spec_hash), job_id, tenant, collection, es_index, store URLs, build spec`. Output destination is `ws://…/<caller subject>/…/<id>/versions/`.
