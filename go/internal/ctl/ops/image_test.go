@@ -356,3 +356,19 @@ func TestImagePrepareStoresAPlusShaDevBuild(t *testing.T) {
 		t.Errorf("a colliding name: %v", err)
 	}
 }
+
+// An image-mode row whose image file is gone must still be stoppable and
+// backed up: neither planner refuses it (the doctor gate for these ops does not
+// list the server_image_* codes — doctor/serverimage_test.go).
+func TestStopAndBackupPlanForAnImageRow(t *testing.T) {
+	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		tn.ServerImage = &registry.ServerImage{Name: testImg, Version: "v1.6.6", Commit: testImgCommit, Build: 1,
+			SHA256: testImgSHA(), Path: testImgDst} // not on the fake host
+	})
+	for _, verb := range []string{"stop", "backup"} {
+		if p := plan(t, oc, verb, nil); len(p.Steps) == 0 {
+			t.Errorf("%s planned no steps", verb)
+		}
+	}
+}

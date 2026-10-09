@@ -115,6 +115,13 @@ func hashFile(path string) (string, error) {
 }
 
 // serverImageChecks are the image-mode findings of one row.
+//
+// Every finding here is a WARNING on its own. server_image_missing and
+// server_image_mismatch are raised to errors by the precondition table for
+// exactly the two ops that are about to run the image (`start`,
+// `update-code`), so those are red and cannot be forced; every other op —
+// `stop`, `backup`, `decommission`, `purge`, `handover`, the ones an operator
+// needs on a tenant whose image file is gone — is not blocked by it.
 func (d *run) serverImageChecks(t *registry.Tenant) {
 	si := t.ServerImage
 	if si == nil {
@@ -135,15 +142,15 @@ func (d *run) serverImageFileCheck(tenant string, si *registry.ServerImage) {
 	st, err := os.Stat(si.Path)
 	switch {
 	case err != nil && os.IsNotExist(err):
-		d.add(model.LevelError, ServerImageMissing, tenant, fmt.Sprintf(
+		d.add(model.LevelWarn, ServerImageMissing, tenant, fmt.Sprintf(
 			"server_image %s: %s does not exist; the API instance cannot start from it", si.Name, si.Path))
 		return
 	case err != nil:
-		d.add(model.LevelError, ServerImageMissing, tenant, fmt.Sprintf(
+		d.add(model.LevelWarn, ServerImageMissing, tenant, fmt.Sprintf(
 			"server_image %s: %s cannot be read: %v", si.Name, si.Path, err))
 		return
 	case !st.Mode().IsRegular():
-		d.add(model.LevelError, ServerImageMissing, tenant, fmt.Sprintf(
+		d.add(model.LevelWarn, ServerImageMissing, tenant, fmt.Sprintf(
 			"server_image %s: %s is not a regular file", si.Name, si.Path))
 		return
 	}
@@ -161,7 +168,7 @@ func (d *run) serverImageFileCheck(tenant string, si *registry.ServerImage) {
 		var herr error
 		sum, herr = hash(si.Path)
 		if herr != nil {
-			d.add(model.LevelError, ServerImageMissing, tenant, fmt.Sprintf(
+			d.add(model.LevelWarn, ServerImageMissing, tenant, fmt.Sprintf(
 				"server_image %s: %s cannot be hashed: %v", si.Name, si.Path, herr))
 			return
 		}
@@ -169,7 +176,7 @@ func (d *run) serverImageFileCheck(tenant string, si *registry.ServerImage) {
 		cached = true
 	}
 	if cached && sum != si.SHA256 {
-		d.add(model.LevelError, ServerImageMismatch, tenant, fmt.Sprintf(
+		d.add(model.LevelWarn, ServerImageMismatch, tenant, fmt.Sprintf(
 			"server_image %s: %s hashes to %s, the registry records %s (size %d, modified %s)",
 			si.Name, si.Path, sum, si.SHA256, st.Size(), st.ModTime().UTC().Format(time.RFC3339)))
 	}

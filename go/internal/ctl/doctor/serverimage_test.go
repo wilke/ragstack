@@ -84,7 +84,9 @@ func TestServerImageIsHashedOnlyForStartAndUpdateCode(t *testing.T) {
 	}
 }
 
-func TestServerImageMismatchIsRedAndCached(t *testing.T) {
+// A swapped image is a warning on its own and red for the two ops that would
+// run it; the hash is only computed by those two and cached for the rest.
+func TestServerImageMismatchIsGatedAndCached(t *testing.T) {
 	w, hashes := imageWorld(t)
 	w.tenant.ServerImage.SHA256 = strings.Repeat("0", 64) // the file is not what the row records
 	w.fleet.ServerImages[testServerImage].SHA256 = strings.Repeat("0", 64)
@@ -94,38 +96,71 @@ func TestServerImageMismatchIsRedAndCached(t *testing.T) {
 		t.Fatalf("unscoped, cold cache: %v after %d hashes; want nothing and no hash", got, *hashes)
 	}
 	// The gate hashes and refuses.
-	w.opts.Op = "update-code"
-	resp := w.run(t)
-	if lvl := imageCodes(resp)[ServerImageMismatch]; lvl != model.LevelError || resp.Status != model.StatusRed {
-		t.Fatalf("--op update-code over a swapped image: %v, status %s; want server_image_mismatch error, red",
-			imageCodes(resp), resp.Status)
+	for _, op := range []string{"update-code", "start"} {
+		w.opts.Op = op
+		resp := w.run(t)
+		if lvl := imageCodes(resp)[ServerImageMismatch]; lvl != model.LevelError || resp.Status != model.StatusRed {
+			t.Fatalf("--op %s over a swapped image: %v, status %s; want server_image_mismatch error, red",
+				op, imageCodes(resp), resp.Status)
+		}
 	}
-	// Now cached: an unscoped run reports it without hashing again.
+	// Now cached: an unscoped run reports it, as a warning, without hashing.
 	w.opts.Op = ""
 	n := *hashes
-	if lvl := imageCodes(w.run(t))[ServerImageMismatch]; lvl != model.LevelError || *hashes != n {
-		t.Errorf("unscoped, warm cache: mismatch=%s after %d new hashes; want error from the cache", lvl, *hashes-n)
+	resp := w.run(t)
+	if lvl := imageCodes(resp)[ServerImageMismatch]; lvl != model.LevelWarn || *hashes != n {
+		t.Errorf("unscoped, warm cache: mismatch=%s after %d new hashes; want warn from the cache", lvl, *hashes-n)
+	}
+	if resp.Status == model.StatusRed {
+		t.Errorf("unscoped run over a swapped image is red: %v", byCode(resp))
+	}
+	// The ops an operator needs on such a tenant are not blocked by it.
+	for _, op := range []string{"stop", "backup", "decommission"} {
+		w.opts.Op = op
+		if lvl := imageCodes(w.run(t))[ServerImageMismatch]; lvl != model.LevelWarn {
+			t.Errorf("--op %s: server_image_mismatch = %q, want warn", op, lvl)
+		}
 	}
 	// A rewritten file (different size) misses the cache.
+	w.opts.Op = ""
 	write(t, w.tenant.ServerImage.Path, "a different, longer set of bytes")
 	if got := imageCodes(w.run(t)); len(got) != 0 {
 		t.Errorf("a rewritten file was judged from a stale cache entry: %v", got)
 	}
 }
 
-func TestServerImageMissingIsRedAndGatesStart(t *testing.T) {
+// A missing image: yellow with no op, red for start / update-code, and stop,
+// backup, decommission, purge and handover are NOT refused by it — those are
+// the ops an operator needs on a tenant whose image file is gone.
+func TestServerImageMissingGatesOnlyStartAndUpdateCode(t *testing.T) {
 	w, _ := imageWorld(t)
+	w.confirmStores() // the healthy baseline's only other warning
 	if err := os.Remove(w.tenant.ServerImage.Path); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []string{"", "start", "update-code"} {
+	resp := w.run(t)
+	if lvl := imageCodes(resp)[ServerImageMissing]; lvl != model.LevelWarn {
+		t.Fatalf("unscoped: server_image_missing = %q, want warn", lvl)
+	}
+	if resp.Status != model.StatusYellow {
+		t.Errorf("unscoped: status %s, want yellow; findings %v", resp.Status, byCode(resp))
+	}
+	for _, op := range []string{"start", "update-code"} {
 		w.opts.Op = op
 		resp := w.run(t)
-		if lvl := imageCodes(resp)[ServerImageMissing]; lvl != model.LevelError {
-			t.Errorf("--op %q: server_image_missing = %q, want error", op, lvl)
+		if lvl := imageCodes(resp)[ServerImageMissing]; lvl != model.LevelError || resp.Status != model.StatusRed {
+			t.Errorf("--op %s: server_image_missing = %q, status %s; want error, red", op, lvl, resp.Status)
 		}
-		if resp.Status != model.StatusRed {
-			t.Errorf("--op %q: status %s, want red", op, resp.Status)
+	}
+	for _, op := range []string{"stop", "backup", "decommission", "purge", "handover"} {
+		w.opts.Op = op
+		if lvl := imageCodes(w.run(t))[ServerImageMissing]; lvl != model.LevelWarn {
+			t.Errorf("--op %s: server_image_missing = %q, want warn (not this op's gate)", op, lvl)
+		}
+		for _, c := range GateCodes(op, "") {
+			if c == ServerImageMissing || c == ServerImageMismatch {
+				t.Errorf("%s gates on %s", op, c)
+			}
 		}
 	}
 	// A directory where the file should be is not an image either.
@@ -133,7 +168,7 @@ func TestServerImageMissingIsRedAndGatesStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.opts.Op = ""
-	if lvl := imageCodes(w.run(t))[ServerImageMissing]; lvl != model.LevelError {
+	if lvl := imageCodes(w.run(t))[ServerImageMissing]; lvl != model.LevelWarn {
 		t.Errorf("a directory: server_image_missing = %q", lvl)
 	}
 }

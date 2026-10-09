@@ -443,13 +443,15 @@ const (
 
 	// ServerImageMissing: the row is in image mode (`server_image` present)
 	// and the image file it names is not there (or is not a regular file).
-	// Error: the API instance cannot start from a file that does not exist,
-	// and `start` / `update-code` gate on it.
+	// Warn on its own; `start` and `update-code` — the ops that would run the
+	// file — raise it to error. Every other op (stop, backup, decommission,
+	// purge, handover) stays available on such a tenant.
 	ServerImageMissing = "server_image_missing"
 
 	// ServerImageMismatch: the image file a row runs from hashes to something
 	// other than the sha256 its server_image records — rebuilt, truncated or
-	// swapped in place. Error.
+	// swapped in place. Warn on its own, raised to error for `start` and
+	// `update-code` (the same reasoning as server_image_missing).
 	//
 	// Hashing a SIF is a quarter of a gigabyte of reading, so it is cached per
 	// (path, size, mtime) for the life of the process and RECOMPUTED only under
