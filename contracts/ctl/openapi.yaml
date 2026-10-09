@@ -356,6 +356,13 @@ x-ctl-cli-op-args:
       python_env: { description: "The Python env tenants created from this artifact run under. Defaults to `<rag_root>/envs/ragstack`.", type: string, pattern: "^/[A-Za-z0-9._/-]{0,255}$" }
       schema_compatible: { description: "Operator assertion from the release notes: `update-code` to this artifact needs no store/DB migration.", type: boolean, default: false }
     additionalProperties: false
+  image-prepare:
+    type: object
+    required: [sif]
+    properties:
+      sif: { description: "The built server image on this host (`ragstack-server-<version>-b<N>.sif`, as `apptainer/build-image.sh --kind server` names it), with its receipt beside it as `<sif>.receipt.json`. The job verifies sha256(file) == receipt.sha256, the image's labels (`org.ragstack.version/commit/build`, `org.ragstack.role == server`) == the receipt, and that receipt.commit resolves to itself in the mirror; then copies both files into `<ctl_state_dir>/images/server/` (0640) and records `server_images[<name>]` in the registry. A name already recorded is refused: a prepared image is immutable. The labels are read from the stored copy, so a disagreement there removes the copy before anything is recorded. A `+sha` dev build is stored with every `+` spelled `-plus-` (the charset of paths the ctl writes has no `+`). The FIRST prepare is a one-way door — a ctl binary older than PR-F cannot load a registry carrying `server_images` (PR-F D6).", type: string, pattern: "^/[A-Za-z0-9._+/-]{0,255}$" }
+      mirror: { description: "The bare mirror the image's commit must resolve in. Defaults to the daemon's configured mirror (`CTL_MIRROR`).", type: string, pattern: "^/[A-Za-z0-9._/-]{0,255}$" }
+    additionalProperties: false
   create-sandbox:
     type: object
     required: [artifact_id, name]
@@ -1298,6 +1305,10 @@ paths:
         `prepared_at` first, each with the tenants whose `artifact_id` names
         it. This is the list `tenant create` picks an `artifact_id` from;
         preparing an artifact stays CLI-only (`fleet artifact prepare`).
+        `server_images` is the registry's prepared API server images
+        (`server_images{}`), sorted by name, each with the tenants whose
+        `server_image` names it — what an image-mode upgrade picks from;
+        preparing one is CLI-only too (`fleet image prepare --sif`).
         Paths are not part of the answer.
       tags: [Fleet]
       x-ctl-role: viewer

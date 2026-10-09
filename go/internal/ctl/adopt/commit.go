@@ -394,4 +394,34 @@ func keepCtlSupervised(next, prev *registry.Tenant) {
 	if prev.API.PidFile != "" {
 		next.API.PidFile = prev.API.PidFile
 	}
+	carryServerImage(next, prev)
+}
+
+// carryServerImage keeps a ctl-supervised row's API MODE across a re-adoption
+// (PR-F): its `server_image` and `code.previous_image` are decisions an
+// `update-code` (or a create) made, and nothing a probe of the host can
+// re-derive — the image's identity is in its receipt, not in the worktree.
+//
+// When the row runs from an image, its code IS the image's: `code.tag` and
+// `code.sha` are the receipt's version and full commit, never the worktree's
+// `git describe`, which cannot reproduce a receipt version (a `+sha` dev build,
+// or a worktree that drifted). The drift between the two is the doctor's and
+// the dashboard's to report (fleet.LiveDrift compares HEAD with code.sha).
+//
+// Without this, `adopt --readopt` silently put an image-mode tenant back into
+// worktree mode on paper while its instance kept running the image.
+func carryServerImage(next, prev *registry.Tenant) {
+	if !CtlSupervised(prev) {
+		return
+	}
+	if prev.Code.PreviousImage != "" {
+		next.Code.PreviousImage = prev.Code.PreviousImage
+	}
+	if prev.ServerImage == nil {
+		return
+	}
+	si := *prev.ServerImage
+	next.ServerImage = &si
+	next.Code.Tag = si.Version
+	next.Code.SHA = registry.NullString(si.Commit)
 }

@@ -1722,7 +1722,7 @@ async def test_create_refuses_a_name_that_is_taken(
     "verb",
     [
         "artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind",
-        "set-supervisor", "env-pg-password",
+        "set-supervisor", "env-pg-password", "image-prepare",
     ],
 )
 async def test_a_cli_only_op_has_no_http_route(

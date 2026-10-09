@@ -209,6 +209,11 @@ type Host interface {
 	Gitdir(worktree string) (Gitdir, error)
 	// GitDescribe runs `git -C <worktree> describe --tags --always`.
 	GitDescribe(worktree string) (string, error)
+	// GitHeadSHA runs `git -C <worktree> rev-parse --verify HEAD^{commit}`:
+	// the full sha the worktree is sitting at. An image-mode tenant's drift
+	// compares it with code.sha (the image's commit) rather than comparing a
+	// describe with a tag.
+	GitHeadSHA(worktree string) (string, error)
 	// Username returns the account this process runs as.
 	Username() string
 }

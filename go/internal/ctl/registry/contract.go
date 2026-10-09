@@ -56,7 +56,27 @@ var (
 	// A quarantined data tree: an absolute path whose basename ends in the
 	// marker and a stamp in the ctl's one stamp format (ops.stampFormat).
 	reQuarantineDir = regexp.MustCompile(`^/[A-Za-z0-9._/-]*\.quarantined-[0-9]{8}T[0-9]{6}Z$`)
+	// A server image's file name: what `apptainer/build-image.sh --kind
+	// server` names it (`ragstack-server-<version>-b<N>.sif`).
+	reServerImageName = regexp.MustCompile(`^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\.sif$`)
 )
+
+// ServerImageFileName is the file a server image named name is STORED under in
+// the ctl's image store: the name itself, with every `+` spelled `-plus-`.
+//
+// A `+sha` dev build (`ragstack-server-v1.6.6+c1e7d46-b1.sif`) is a legal
+// image NAME, but `+` is outside the charset every path the ctl writes,
+// binds or renders is held to (paths.SafePath: unit files, nginx config and
+// shell wrappers all read them). So the store spells it out instead of
+// widening that charset. The mapping is not injective — `…+x…` and `…-plus-x…`
+// are both legal names — so the Go mirror refuses two records sharing a path,
+// and `fleet image prepare` refuses the second name before it copies anything.
+func ServerImageFileName(name string) string { return strings.ReplaceAll(name, "+", "-plus-") }
+
+// ServerImageNamePattern is the contract's server-image file-name pattern,
+// exported for the one place a name is accepted from an operator
+// (`fleet image prepare`) so it refuses with the same rule Load does.
+func ServerImageNamePattern() *regexp.Regexp { return reServerImageName }
 
 // Enums, byte-identical to the schema's.
 var (
@@ -287,6 +307,24 @@ func (f *Fleet) ValidateContract() error {
 		c.minLen1(ptr+"/prepared_by", a.PreparedBy)
 	}
 
+	imagePaths := map[string]string{}
+	for _, name := range sortedServerImageKeys(f.ServerImages) {
+		ptr := "/server_images/" + name
+		c.pattern(ptr, name, reServerImageName)
+		im := f.ServerImages[name]
+		if im == nil {
+			c.failf(ptr, "is null")
+			continue
+		}
+		c.serverImageFields(ptr, name, im.Version, im.Commit, im.Build, im.SHA256, im.Path)
+		if other, dup := imagePaths[im.Path]; dup {
+			c.failf(ptr+"/path", "%q is already the file of server image %q; two names never share one stored file", im.Path, other)
+		}
+		imagePaths[im.Path] = name
+		c.minLen1(ptr+"/prepared_at", im.PreparedAt)
+		c.minLen1(ptr+"/prepared_by", im.PreparedBy)
+	}
+
 	for _, name := range sortedTenantKeys(f.Tenants) {
 		c.tenant("/tenants/"+name, name, f.Tenants[name])
 	}
@@ -329,6 +367,11 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 	c.pattern(ptr+"/python_env", t.PythonEnv, reAbsPath)
 	c.nullable(ptr+"/artifact_id", t.ArtifactID, reArtifactID)
 	c.code(ptr+"/code", t.Code)
+	if si := t.ServerImage; si != nil {
+		sp := ptr + "/server_image"
+		c.pattern(sp+"/name", si.Name, reServerImageName)
+		c.serverImageFields(sp, si.Name, si.Version, si.Commit, si.Build, si.SHA256, si.Path)
+	}
 
 	c.nonNegative(ptr+"/ports/index", int64(t.Ports.Index))
 	for label, p := range map[string]int{
@@ -562,6 +605,35 @@ func (c *contractCheck) code(ptr string, code Code) {
 	c.minLen1(ptr+"/tag", code.Tag)
 	c.nullable(ptr+"/sha", code.SHA, reGitSHA)
 	c.nullable(ptr+"/previous_artifact_id", code.PreviousArtifactID, reArtifactID)
+	if code.PreviousImage != "" {
+		c.pattern(ptr+"/previous_image", code.PreviousImage, reServerImageName)
+	}
+}
+
+// serverImageFields checks the members a fleet image record and a tenant's
+// server_image share. Two rules are the Go mirror's alone (JSON Schema cannot
+// relate one member to another): the file name's `-b<N>` IS the build number,
+// and the path's basename IS the name (as ServerImageFileName stores it) — so
+// a hand-edited row cannot name one image and point the instance at another
+// file.
+func (c *contractCheck) serverImageFields(ptr, name, version, commit string, build int, sha, p string) {
+	c.minLen1(ptr+"/version", version)
+	c.pattern(ptr+"/commit", commit, reGitSHA)
+	if build < 1 {
+		c.failf(ptr+"/build", "%d is below the minimum 1", build)
+	}
+	c.pattern(ptr+"/sha256", sha, reSHA256Hex)
+	c.pattern(ptr+"/path", p, reAbsPath)
+	if reServerImageName.MatchString(name) && build >= 1 && !strings.HasSuffix(name, fmt.Sprintf("-b%d.sif", build)) {
+		c.failf(ptr+"/build", "%d is not the build %q names (its -b<N> suffix)", build, name)
+	}
+	if reAbsPath.MatchString(p) {
+		if clean := path.Clean(p); clean != p {
+			c.failf(ptr+"/path", "%q is not a clean path (it cleans to %q)", p, clean)
+		} else if want := ServerImageFileName(name); path.Base(p) != want {
+			c.failf(ptr+"/path", "%q is not the file %q names (its basename must be %q)", p, name, want)
+		}
+	}
 }
 
 // Owners returns the contract's `owner` enum. It is exported because adopt
@@ -592,6 +664,15 @@ func sortedTenantKeys(m map[string]*Tenant) []string {
 }
 
 func sortedArtifactKeys(m map[string]*Artifact) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedServerImageKeys(m map[string]*ServerImageRecord) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

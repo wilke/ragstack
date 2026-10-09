@@ -53,6 +53,16 @@
           "type": "string",
           "enum": ["released", "taken"]
         },
+        "api_mode": {
+          "description": "How the tenant's API is run: `image` — an apptainer instance of the server image named by `server_image` (the registry row's `server_image` is present); `worktree` — a host uvicorn from the tenant's worktree under its python env. Optional, so that a response this daemon writes stays readable by a client that predates the field; this daemon always sends it.",
+          "type": "string",
+          "enum": ["image", "worktree"]
+        },
+        "server_image": {
+          "description": "The server image file name an image-mode tenant runs its API from (`ragstack-server-<version>-b<N>.sif`); ABSENT in worktree mode.",
+          "type": "string",
+          "pattern": "^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\\.sif$"
+        },
         "state": { "description": "`handover` is the transitional state of the two-account handover: between `handover --release` and `handover --take` nothing of the tenant is running. Probes expect 502 for it.", "type": "string", "enum": ["provisioned", "active", "stopped", "migrating", "handover", "quarantined", "decommissioned"] },
         "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
         "supervisor": { "type": "string", "enum": ["systemd", "manual", "instance"] },

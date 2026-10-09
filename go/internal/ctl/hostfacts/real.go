@@ -1014,6 +1014,19 @@ func (r *Real) GitDescribe(worktree string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// GitHeadSHA returns the 40-hex commit a worktree's HEAD resolves to.
+func (r *Real) GitHeadSHA(worktree string) (string, error) {
+	out, err := runArgv(binGit, "-c", "safe.directory=*", "-C", worktree, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(out)
+	if len(sha) != 40 {
+		return "", fmt.Errorf("hostfacts: %s HEAD resolved to %q, not a full sha", worktree, sha)
+	}
+	return sha, nil
+}
+
 // -------------------------------------------------------------- disk usage
 
 // CachedDU is the DiskUsage implementation: `du -s -B1 -- <path>`, ONE

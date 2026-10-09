@@ -1,0 +1,512 @@
+{
+  "schema_version": 1,
+  "generation": 42,
+  "updated_at": "2026-10-08T00:00:00Z",
+  "updated_by": "local:1000",
+  "rag_root": "/rag",
+  "port_base": 24000,
+  "port_stride": 20,
+  "display_order": [
+    "dev",
+    "demo",
+    "lucid-next",
+    "asm-next"
+  ],
+  "legacy_routes": [
+    {
+      "name": "lucid",
+      "api": 8010,
+      "ui": 5175,
+      "readonly": true,
+      "status": "active",
+      "note": "customer org, isolated qdrant2 (:6343); no process listening as of 2026-08-25 (502)"
+    },
+    {
+      "name": "asm",
+      "api": 8000,
+      "ui": 5173,
+      "readonly": true,
+      "status": "active",
+      "note": "ragstack_sfr_tok256, the long-running prod explorer; no process listening as of 2026-08-25 (502)"
+    }
+  ],
+  "ctl": {
+    "port": 23990,
+    "ui_dist": "/rag/data/ctl/ui/dist",
+    "gateway_enabled": false
+  },
+  "images": {
+    "qdrant": {
+      "sif": "/rag/apptainer/images/qdrant.sif",
+      "version": "unpinned",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "elasticsearch": {
+      "sif": "/rag/apptainer/images/elasticsearch.sif",
+      "version": "unpinned",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "artifacts": {
+    "v1.6.6": {
+      "sha": "a730cc9a730cc9a730cc9a730cc9a730cc9a730c",
+      "tag": "v1.6.6",
+      "worktree": "/rag/data/ctl/artifacts/v1.6.6/worktree",
+      "ui_dist": "/rag/data/ctl/artifacts/v1.6.6/ui/dist",
+      "python_env": "/rag/envs/ragstack",
+      "prepared_at": "2026-10-08T00:00:00Z",
+      "prepared_by": "local:1000",
+      "schema_compatible": false
+    }
+  },
+  "tenants": {
+    "asm-next": {
+      "name": "asm-next",
+      "manifest_name": "asm",
+      "data_dir": "/rag/data/tenants/asm",
+      "worktree": "/rag/repos/tenants/asm-next",
+      "artifact_id": null,
+      "code": {
+        "tag": "untracked",
+        "sha": null,
+        "previous_artifact_id": null
+      },
+      "python_env": "/rag/envs/ragstack",
+      "ports": {
+        "index": 1,
+        "base": 24020,
+        "api": 24020,
+        "qdrant_http": 24021,
+        "qdrant_grpc": 24022,
+        "es_http": 24023,
+        "es_transport": 24024,
+        "pg": 24025
+      },
+      "api": {
+        "bind": "0.0.0.0",
+        "pidfile": "/rag/data/tenants/asm/api-asm-next.pid",
+        "log": "/rag/data/tenants/asm/logs/api-asm-next.log"
+      },
+      "stores": {
+        "qdrant": {
+          "ownership": "shared",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:6333",
+          "instance": "qdrant",
+          "sif": null,
+          "extra_env": {}
+        },
+        "elasticsearch": {
+          "ownership": "shared",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:9200",
+          "instance": "elasticsearch",
+          "sif": null,
+          "heap": null,
+          "provision_heap": null,
+          "path_repo": null,
+          "extra_env": {}
+        },
+        "neo4j": {
+          "ownership": "external",
+          "url": null
+        },
+        "postgres": {
+          "kind": "sqlite",
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": null,
+          "port": null,
+          "instance": null,
+          "sif": null,
+          "data_dir": null
+        },
+        "dormant_provisioned_dirs": false
+      },
+      "ui": {
+        "mode": "external",
+        "port": 5212,
+        "base": "/ragstack/asm-next/ui/"
+      },
+      "supervisor": "manual",
+      "owner": "wilke",
+      "state": "active",
+      "desired_boot": "disabled",
+      "env_layout": "legacy",
+      "settings": {},
+      "secret_refs": [],
+      "env_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "secrets_file_sha256": null,
+      "identity": {
+        "provider": "bvbrc",
+        "admin_subjects_count": 3
+      },
+      "keys": [],
+      "service_accounts": [],
+      "external_refs": [],
+      "unmanaged_files": [],
+      "drift": [],
+      "restart_pending": false,
+      "release_generation": null,
+      "rollback_descriptor": null,
+      "last_ops": {},
+      "last_backup": null,
+      "adopted_at": null
+    },
+    "demo": {
+      "name": "demo",
+      "manifest_name": "demo",
+      "data_dir": "/rag/data/tenants/demo",
+      "worktree": "/rag/repos/tenants/demo",
+      "artifact_id": null,
+      "code": {
+        "tag": "untracked",
+        "sha": null,
+        "previous_artifact_id": null
+      },
+      "python_env": "/rag/envs/ragstack",
+      "ports": {
+        "index": 3,
+        "base": 24060,
+        "api": 24060,
+        "qdrant_http": 24061,
+        "qdrant_grpc": 24062,
+        "es_http": 24063,
+        "es_transport": 24064,
+        "pg": 24065
+      },
+      "api": {
+        "bind": "0.0.0.0",
+        "pidfile": "/rag/data/tenants/demo/api-demo.pid",
+        "log": "/rag/data/tenants/demo/logs/api-demo.log"
+      },
+      "stores": {
+        "qdrant": {
+          "ownership": "shared",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:6333",
+          "instance": "qdrant",
+          "sif": null,
+          "extra_env": {}
+        },
+        "elasticsearch": {
+          "ownership": "shared",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:9200",
+          "instance": "elasticsearch",
+          "sif": null,
+          "heap": null,
+          "provision_heap": null,
+          "path_repo": null,
+          "extra_env": {}
+        },
+        "neo4j": {
+          "ownership": "external",
+          "url": null
+        },
+        "postgres": {
+          "kind": "sqlite",
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": null,
+          "port": null,
+          "instance": null,
+          "sif": null,
+          "data_dir": null
+        },
+        "dormant_provisioned_dirs": true
+      },
+      "ui": {
+        "mode": "external",
+        "port": 5210,
+        "base": "/ragstack/demo/ui/"
+      },
+      "supervisor": "manual",
+      "owner": "wilke",
+      "state": "active",
+      "desired_boot": "disabled",
+      "env_layout": "legacy",
+      "settings": {},
+      "secret_refs": [],
+      "env_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "secrets_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "identity": {
+        "provider": "bvbrc",
+        "admin_subjects_count": 1
+      },
+      "keys": [],
+      "service_accounts": [],
+      "external_refs": [
+        {
+          "key": "COLLECTIONS_FILE",
+          "path": "/rag/config/demo.collections.json"
+        }
+      ],
+      "unmanaged_files": [],
+      "drift": [],
+      "restart_pending": false,
+      "release_generation": null,
+      "rollback_descriptor": null,
+      "last_ops": {},
+      "last_backup": null,
+      "adopted_at": null
+    },
+    "dev": {
+      "name": "dev",
+      "manifest_name": "dev",
+      "data_dir": "/rag/data/tenants/dev",
+      "worktree": "/rag/repos/tenants/dev",
+      "artifact_id": null,
+      "code": {
+        "tag": "v1.6.6",
+        "sha": "a730cc9a730cc9a730cc9a730cc9a730cc9a730c",
+        "previous_artifact_id": null
+      },
+      "python_env": "/rag/envs/ragstack",
+      "ports": {
+        "index": 2,
+        "base": 24040,
+        "api": 24040,
+        "qdrant_http": 24041,
+        "qdrant_grpc": 24042,
+        "es_http": 24043,
+        "es_transport": 24044,
+        "pg": 24045
+      },
+      "api": {
+        "bind": "0.0.0.0",
+        "pidfile": "/rag/data/tenants/dev/api-dev.pid",
+        "log": "/rag/data/tenants/dev/logs/api-dev.log"
+      },
+      "stores": {
+        "qdrant": {
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:24041",
+          "instance": "qdrant-dev",
+          "sif": "/rag/apptainer/images/qdrant.sif",
+          "extra_env": {}
+        },
+        "elasticsearch": {
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:24043",
+          "instance": "elasticsearch-dev",
+          "sif": "/rag/apptainer/images/elasticsearch.sif",
+          "heap": "1g",
+          "provision_heap": "512m",
+          "path_repo": "/usr/share/elasticsearch/snapshots",
+          "extra_env": {}
+        },
+        "neo4j": {
+          "ownership": "external",
+          "url": "bolt://localhost:24047"
+        },
+        "postgres": {
+          "kind": "sqlite",
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": null,
+          "port": null,
+          "instance": null,
+          "sif": null,
+          "data_dir": null
+        },
+        "dormant_provisioned_dirs": false
+      },
+      "ui": {
+        "mode": "external",
+        "port": 8090,
+        "base": "/ragstack/dev/ui/"
+      },
+      "supervisor": "manual",
+      "owner": "wilke",
+      "state": "active",
+      "desired_boot": "disabled",
+      "env_layout": "legacy",
+      "settings": {},
+      "secret_refs": [],
+      "env_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "secrets_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "identity": {
+        "provider": "bvbrc",
+        "admin_subjects_count": 2
+      },
+      "keys": [],
+      "service_accounts": [],
+      "external_refs": [],
+      "unmanaged_files": [],
+      "drift": [
+        {
+          "code": "es_heap_drift",
+          "level": "warn",
+          "field": "ES_JAVA_OPTS",
+          "expected": "512m",
+          "actual": "1g",
+          "observed_at": "2026-09-10T00:00:00Z",
+          "note": "live heap differs from provision.env"
+        }
+      ],
+      "restart_pending": false,
+      "release_generation": null,
+      "rollback_descriptor": null,
+      "last_ops": {},
+      "last_backup": null,
+      "adopted_at": null
+    },
+    "lucid-next": {
+      "name": "lucid-next",
+      "manifest_name": "lucid",
+      "data_dir": "/rag/data/tenants/lucid",
+      "worktree": "/rag/repos/tenants/lucid-next",
+      "artifact_id": null,
+      "code": {
+        "tag": "untracked",
+        "sha": null,
+        "previous_artifact_id": null
+      },
+      "python_env": "/rag/envs/ragstack",
+      "ports": {
+        "index": 0,
+        "base": 24000,
+        "api": 24000,
+        "qdrant_http": 24001,
+        "qdrant_grpc": 24002,
+        "es_http": 24003,
+        "es_transport": 24004,
+        "pg": 24005
+      },
+      "api": {
+        "bind": "0.0.0.0",
+        "pidfile": "/rag/data/tenants/lucid/api-lucid-next.pid",
+        "log": "/rag/data/tenants/lucid/logs/api-lucid-next.log"
+      },
+      "stores": {
+        "qdrant": {
+          "ownership": "shared",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:6343",
+          "instance": "qdrant2",
+          "sif": null,
+          "extra_env": {}
+        },
+        "elasticsearch": {
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "http://localhost:24003",
+          "instance": "elasticsearch-lucid",
+          "sif": "/rag/apptainer/images/elasticsearch.sif",
+          "heap": "2g",
+          "provision_heap": "2g",
+          "path_repo": "/usr/share/elasticsearch/snapshots",
+          "extra_env": {}
+        },
+        "neo4j": {
+          "ownership": "external",
+          "url": null
+        },
+        "postgres": {
+          "kind": "sqlite",
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": null,
+          "port": null,
+          "instance": null,
+          "sif": null,
+          "data_dir": null
+        },
+        "dormant_provisioned_dirs": false
+      },
+      "ui": {
+        "mode": "external",
+        "port": 5211,
+        "base": "/ragstack/lucid-next/ui/"
+      },
+      "supervisor": "manual",
+      "owner": "wilke",
+      "state": "active",
+      "desired_boot": "disabled",
+      "env_layout": "legacy",
+      "settings": {},
+      "secret_refs": [],
+      "env_file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "secrets_file_sha256": null,
+      "identity": {
+        "provider": "bvbrc",
+        "admin_subjects_count": 2
+      },
+      "keys": [],
+      "service_accounts": [],
+      "external_refs": [],
+      "unmanaged_files": [],
+      "drift": [],
+      "restart_pending": false,
+      "release_generation": null,
+      "rollback_descriptor": null,
+      "last_ops": {},
+      "last_backup": null,
+      "adopted_at": null
+    }
+  },
+  "tombstones": []
+}

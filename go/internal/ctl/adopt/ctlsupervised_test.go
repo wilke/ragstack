@@ -368,3 +368,69 @@ func TestCommitKeepsCtlSupervisionWithoutAPreview(t *testing.T) {
 		t.Errorf("handover = %+v, want the parked take", next.Handover)
 	}
 }
+
+// A ctl-supervised row in IMAGE mode (PR-F) keeps its server image across a
+// `--readopt`, and its code is the image's (receipt version and full commit),
+// not the worktree's describe — preview and commit alike.
+func TestReadoptKeepsTheServerImageAndDerivesCodeFromIt(t *testing.T) {
+	roots, h, prev := seedHandedOver(t)
+	commit := strings.Repeat("4c", 20)
+	prev.ServerImage = &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6",
+		Commit: commit, Build: 1, SHA256: strings.Repeat("cd", 32),
+		Path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif"}
+	prev.Code = registry.Code{Tag: "v1.6.6", SHA: registry.NullString(commit), PreviousImage: "ragstack-server-v1.6.5-b2.sif"}
+	// The registry on disk is what the commit carries from.
+	f0, err := registry.LoadNoRepair(roots.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f0.Tenants["dev"] = prev
+	if err := registry.Save(roots.Registry(), f0, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	next, _ := devReadopt(t, roots, h, prev)
+	check := func(stage string, row *registry.Tenant) {
+		t.Helper()
+		if row.ServerImage == nil || *row.ServerImage != *prev.ServerImage {
+			t.Errorf("%s: server_image = %+v, want the recorded image", stage, row.ServerImage)
+		}
+		if row.ServerImage == prev.ServerImage {
+			t.Errorf("%s: server_image aliases the previous row's block", stage)
+		}
+		if row.Code.Tag != "v1.6.6" || string(row.Code.SHA) != commit {
+			t.Errorf("%s: code = %+v, want the receipt's version and full commit", stage, row.Code)
+		}
+		if row.Code.PreviousImage != "ragstack-server-v1.6.5-b2.sif" {
+			t.Errorf("%s: previous_image = %q", stage, row.Code.PreviousImage)
+		}
+	}
+	check("preview", next)
+
+	// Commit applies it again even when the row reaching it lost the block
+	// (CommitAll is reachable with rows a caller built without Existing).
+	next.ServerImage, next.Code = nil, registry.Code{Tag: "v1.6.5-3-gdeadbee"}
+	if err := Commit(roots.Registry(), next, CommitOptions{Roots: roots, UpdatedBy: "test", Readopt: true}); err != nil {
+		t.Fatalf("--readopt refused: %v", err)
+	}
+	f, err := registry.LoadNoRepair(roots.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("commit", f.Tenants["dev"])
+}
+
+// A HAND-RUN row is not the ctl's to carry: no server_image is invented, and
+// its code stays the worktree's describe.
+func TestCarryServerImageIgnoresAManualRow(t *testing.T) {
+	prev := registry.NewTenant("hack", "hack")
+	prev.Supervisor = string(model.SupervisorManual)
+	prev.ServerImage = &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6"}
+	prev.Code.PreviousImage = "ragstack-server-v1.6.5-b1.sif"
+	next := registry.NewTenant("hack", "hack")
+	next.Code = registry.Code{Tag: "v1.6.5"}
+	carryServerImage(next, prev)
+	if next.ServerImage != nil || next.Code.Tag != "v1.6.5" || next.Code.PreviousImage != "" {
+		t.Errorf("a manual row was carried: %+v %+v", next.ServerImage, next.Code)
+	}
+}

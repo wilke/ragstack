@@ -85,8 +85,46 @@ type Fleet struct {
 	Ctl           Ctl                  `json:"ctl"`
 	Images        Images               `json:"images"`
 	Artifacts     map[string]*Artifact `json:"artifacts"`
-	Tenants       map[string]*Tenant   `json:"tenants"`
-	Tombstones    []Tombstone          `json:"tombstones"`
+	// ServerImages are the prepared API server images (`fleet image prepare
+	// --sif`), keyed by the image's file name. ABSENT until the first prepare
+	// — omitempty for the reason Tenant.Handover is: registry.Load decodes
+	// with DisallowUnknownFields, so an empty `"server_images": {}` written by
+	// every save would make the registry unreadable to the previously deployed
+	// binary on the first write of ANY op. Once an image is prepared the key is
+	// there and an older binary refuses the registry: that first prepare is the
+	// one-way door (PR-F D6), and the new ctl is installed before it.
+	ServerImages map[string]*ServerImageRecord `json:"server_images,omitempty"`
+	Tenants      map[string]*Tenant            `json:"tenants"`
+	Tombstones   []Tombstone                   `json:"tombstones"`
+}
+
+// ServerImageRecord is one prepared server image in the ctl's image store
+// (<CtlStateDir>/images/server/<name>), copied there by `fleet image prepare`
+// after its file hash, its receipt and its labels agreed and its commit
+// resolved in the mirror. The key in Fleet.ServerImages is the file name.
+type ServerImageRecord struct {
+	Version    string `json:"version"` // receipt.version (the tag the image was built at)
+	Commit     string `json:"commit"`  // receipt.commit, 40-hex
+	Build      int    `json:"build"`   // receipt.build, the -b<N> of the name
+	SHA256     string `json:"sha256"`  // the file's sha256, 64-hex
+	Path       string `json:"path"`    // absolute path in the image store
+	PreparedAt string `json:"prepared_at"`
+	PreparedBy string `json:"prepared_by"`
+}
+
+// ServerImage is the API server image a tenant runs from. Its presence on a
+// row is what puts the API leg in IMAGE mode (an apptainer instance of this
+// SIF) instead of the host uvicorn under python_env; the worktree stays and
+// is kept at Commit. The fields are copied from the fleet's ServerImageRecord
+// at the moment the row was pointed at it, so a row still says what it runs
+// after the record is gone.
+type ServerImage struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Build   int    `json:"build"`
+	SHA256  string `json:"sha256"`
+	Path    string `json:"path"`
 }
 
 // LegacyRoute is a gateway row that is not a registry tenant (the
@@ -153,10 +191,16 @@ type Tenant struct {
 	ArtifactID   NullString `json:"artifact_id"`
 	Code         Code       `json:"code"`
 	PythonEnv    string     `json:"python_env"`
-	Ports        Ports      `json:"ports"`
-	API          API        `json:"api"`
-	Stores       Stores     `json:"stores"`
-	UI           UI         `json:"ui"`
+	// ServerImage, when present, is the API server image the tenant runs its
+	// API from (image mode); absent is the worktree launch under python_env.
+	// omitempty for the reason Handover is: a `"server_image": null` on every
+	// row would make the registry unreadable to the previously deployed binary
+	// on the first write.
+	ServerImage *ServerImage `json:"server_image,omitempty"`
+	Ports       Ports        `json:"ports"`
+	API         API          `json:"api"`
+	Stores      Stores       `json:"stores"`
+	UI          UI           `json:"ui"`
 
 	Supervisor  string `json:"supervisor"`   // systemd|manual|instance
 	Owner       string `json:"owner"`        // svcbvbrc|wilke
@@ -209,7 +253,14 @@ type Code struct {
 	Tag                string     `json:"tag"`
 	SHA                NullString `json:"sha"` // 40-hex or null
 	PreviousArtifactID NullString `json:"previous_artifact_id"`
+	// PreviousImage is the server image name the tenant ran before the last
+	// `update-code` moved it (empty: none). omitempty, like every member added
+	// after a deployed binary already wrote rows without it.
+	PreviousImage string `json:"previous_image,omitempty"`
 }
+
+// ImageMode reports whether the tenant's API runs from a server image.
+func (t *Tenant) ImageMode() bool { return t != nil && t.ServerImage != nil }
 
 // Ports is the tenant's port block (same shape as paths.Ports).
 type Ports = paths.Ports

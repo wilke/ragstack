@@ -440,6 +440,39 @@ const (
 	// gateway was not re-applied after the decommission: the route answers
 	// 502. Warn; `ragstack-ctl gateway apply` is the repair.
 	QuarantinedButRouted = "quarantined_but_routed"
+
+	// ServerImageMissing: the row is in image mode (`server_image` present)
+	// and the image file it names is not there (or is not a regular file).
+	// Warn on its own; `start` and `update-code` — the ops that would run the
+	// file — raise it to error. Every other op (stop, backup, decommission,
+	// purge, handover) stays available on such a tenant.
+	ServerImageMissing = "server_image_missing"
+
+	// ServerImageMismatch: the image file a row runs from hashes to something
+	// other than the sha256 its server_image records — rebuilt, truncated or
+	// swapped in place. Warn on its own, raised to error for `start` and
+	// `update-code` (the same reasoning as server_image_missing).
+	//
+	// Hashing a SIF is a quarter of a gigabyte of reading, so it is cached per
+	// (path, size, mtime) for the life of the process and RECOMPUTED only under
+	// `--op update-code` or `--op start` — the two ops that are about to run
+	// the file. Any other run reports a mismatch only from a cached hash; with
+	// no cached hash it says nothing.
+	ServerImageMismatch = "server_image_mismatch"
+
+	// ServerImageUnregistered: the row's server_image names an image that is
+	// not in the fleet's `server_images` (prepared and since removed, or a
+	// hand-edited row). Warn: the row still records what it runs, but no
+	// prepare vouches for it.
+	ServerImageUnregistered = "server_image_unregistered"
+
+	// ImageDirOutsideBindRoots: an image-mode row's GOWE_IMAGE_DIRS names a
+	// directory outside the daemon's approved API bind roots
+	// (CTL_API_BIND_ROOTS). The API instance sees only the paths bound into
+	// it, so its tool-image boot check would look for the image in a directory
+	// it cannot see. Warn; the repair is widening CTL_API_BIND_ROOTS or moving
+	// the directory.
+	ImageDirOutsideBindRoots = "image_dir_outside_bind_roots"
 )
 
 // The two names a handover's postgres migration leaves in

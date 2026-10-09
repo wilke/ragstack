@@ -27,9 +27,13 @@ var preconditions = map[string][]string{
 	// directory its units BIND has to exist, because apptainer refuses a bind
 	// whose source is missing — an absent path.repo (es_snapshots_dir_missing)
 	// is an ES service that cannot start, caught before the attempt.
+	//
+	// An image-mode row (PR-F) starts its API from a server image, so the file
+	// must be there and be the bytes the row records.
 	"start": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
+		ServerImageMissing, ServerImageMismatch,
 	},
 	// Stopping needs to be sure it is stopping THIS tenant's processes.
 	"stop": {PortOwnerMismatch},
@@ -148,9 +152,21 @@ var preconditions = map[string][]string{
 	// point: an op absent from this table has NO gate at all (RedCodes
 	// returns nil), which is not the same statement as "nothing blocks it".
 	"settings-put": {},
-	// update-code swaps the worktree under a running API — which has to BE
-	// running for "swap it under" to mean anything.
-	"update-code": {WorktreeOutsideMirror, WorktreeGitdirUnreadable, EnvNotSystemdParsable, PortNotListening},
+	// update-code swaps the code under a running API — which has to BE
+	// running for "swap it under" to mean anything (a tenant whose API is down
+	// is repaired by `tenant start`, never by an upgrade). It keeps the
+	// worktree at the image's commit, so the worktree must be the mirror's;
+	// and the CURRENT image of an image-mode row is what its rollback restarts,
+	// so that file must be present and intact before anything moves.
+	"update-code": {
+		EnvNotSystemdParsable, PortNotListening, WorktreeOutsideMirror, WorktreeGitdirUnreadable,
+		ServerImageMissing, ServerImageMismatch,
+	},
+	// image-prepare copies a quarter-gigabyte image into the ctl's own store:
+	// a host without room produces a short copy (refused by the copy's re-hash,
+	// but only after filling the disk), and the ctl account has to be able to
+	// write the store. It names no tenant.
+	"image-prepare": {DiskLow, CtlAccountNoAccess},
 }
 
 // tolerates is the inverse table: for each operation, the findings whose

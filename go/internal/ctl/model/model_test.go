@@ -270,8 +270,12 @@ func TestResponsesValidateAgainstContract(t *testing.T) {
 		{ID: "unused", SHA: strings.Repeat("cd", 20), Tag: "v1.6.3",
 			PreparedAt: "2026-09-01T10:00:00Z", PreparedBy: "local:3581", SchemaCompatible: false,
 			Tenants: []string{}},
+	}, ServerImages: []ServerImageRow{
+		{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6", Commit: strings.Repeat("ab", 20), Build: 1,
+			SHA256: strings.Repeat("cd", 32), PreparedAt: "2026-10-09T00:00:00Z", PreparedBy: "local:3581",
+			Tenants: []string{"dev"}},
 	}})
-	validate(t, py, "artifacts_response", ArtifactsResponse{Artifacts: []ArtifactRow{}})
+	validate(t, py, "artifacts_response", ArtifactsResponse{Artifacts: []ArtifactRow{}, ServerImages: []ServerImageRow{}})
 
 	validate(t, py, "jobs_response", JobsResponse{Jobs: []Job{}, Limit: 50, Truncated: false})
 	validate(t, py, "audit_response", AuditResponse{Rows: []AuditRow{}, Limit: 100, Truncated: false})

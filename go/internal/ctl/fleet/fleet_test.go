@@ -67,6 +67,9 @@ func build(t *testing.T) (*model.FleetResponse, map[string]model.FleetRow) {
 	t.Helper()
 	f := registry.LiveFixture()
 	f.Generation = 3
+	// dev runs its API from a server image (PR-F), so the fleet view carries
+	// both API modes and the contract test sees both.
+	f.Tenants["dev"].ServerImage = testServerImage()
 	resp := Build(context.Background(), paths.NewRoots("/rag", paths.Overrides{}), f, probes(t))
 	rows := map[string]model.FleetRow{}
 	for _, r := range resp.Tenants {
@@ -629,5 +632,71 @@ func TestListeningPGFollowsTheStoreKind(t *testing.T) {
 				t.Errorf("listening.pg = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func testServerImage() *registry.ServerImage {
+	return &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6",
+		Commit: strings.Repeat("4c", 20), Build: 1, SHA256: strings.Repeat("cd", 32),
+		Path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif"}
+}
+
+// Every row says how its API runs and, in image mode, from which image.
+func TestRowsShowTheAPIModeAndServerImage(t *testing.T) {
+	_, rows := build(t)
+	if r := rows["dev"]; r.APIMode != model.APIModeImage || r.ServerImage != "ragstack-server-v1.6.6-b1.sif" {
+		t.Errorf("dev: mode %q image %q", r.APIMode, r.ServerImage)
+	}
+	if r := rows["demo"]; r.APIMode != model.APIModeWorktree || r.ServerImage != "" {
+		t.Errorf("demo: mode %q image %q", r.APIMode, r.ServerImage)
+	}
+	b, err := json.Marshal(rows["demo"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "server_image") || !strings.Contains(string(b), `"api_mode":"worktree"`) {
+		t.Errorf("a worktree row: %s", b)
+	}
+}
+
+// In image mode the code drift is HEAD vs code.sha (the image's commit), not
+// describe vs tag: the receipt version is not something a describe reproduces.
+func TestImageModeCodeDriftComparesHeadWithTheImageCommit(t *testing.T) {
+	f := registry.LiveFixture()
+	dev := f.Tenants["dev"]
+	dev.ServerImage = testServerImage()
+	dev.Code = registry.Code{Tag: "v1.6.6", SHA: registry.NullString(dev.ServerImage.Commit)}
+	p := probes(t)
+	h := p.Host.(*hostfacts.Fake)
+	// A describe that disagrees with the tag is NOT drift in image mode.
+	h.Describes = map[string]string{dev.Worktree: "v1.6.6-0-g4c4c4c4"}
+	h.HeadSHAs = map[string]string{dev.Worktree: dev.ServerImage.Commit}
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	listeners := listenerPorts(p.Host)
+	for _, d := range LiveDrift(dev, p, listeners, now) {
+		if d.Code == "code_tag" {
+			t.Errorf("a worktree at the image's commit drifted: %+v", d)
+		}
+	}
+	h.HeadSHAs[dev.Worktree] = strings.Repeat("ab", 20)
+	var got *registry.Drift
+	for _, d := range LiveDrift(dev, p, listeners, now) {
+		if d.Code == "code_tag" {
+			d := d
+			got = &d
+		}
+	}
+	if got == nil || got.Field != "code.sha" || got.Expected != dev.ServerImage.Commit || got.Actual != strings.Repeat("ab", 20) {
+		t.Errorf("drift = %+v, want code.sha expected the image commit", got)
+	}
+	// A worktree row still compares describe with the tag.
+	dev.ServerImage = nil
+	dev.Code = registry.Code{Tag: "v1.6.5"}
+	found := false
+	for _, d := range LiveDrift(dev, p, listeners, now) {
+		found = found || (d.Code == "code_tag" && d.Field == "code.tag")
+	}
+	if !found {
+		t.Error("worktree mode lost the describe-vs-tag drift")
 	}
 }
