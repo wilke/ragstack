@@ -213,6 +213,48 @@ func (g *RealGit) HeadSHA(ctx context.Context, dir string) (string, error) {
 	return sha, nil
 }
 
+// Checkout moves an EXISTING worktree to sha, detached.
+//
+// It is `tenant update-code`'s step 3 (PR-F): a server-image tenant's worktree
+// is kept at the image's commit, because `gowe render`, `env`, drift and the
+// next static UI build all read it. Its refusals, in order:
+//
+//   - sha must be a resolved 40-hex commit, as for AddWorktree — a checkout of
+//     a branch name would leave the tree following whatever moves it;
+//   - the worktree is held to the approved roots exactly as AddWorktree's dest
+//     is (resolved parent, no symlink at the leaf), and must be a directory;
+//   - the tree must be CLEAN: `git status --porcelain` prints nothing,
+//     untracked files included. git itself carries a local modification across
+//     a checkout when it can, and the result is a tree that is neither commit;
+//     a ctl that cannot tell an operator's hot-fix from its own debris refuses
+//     both and says so.
+//
+// Hooks are off and the ownership check is scoped to the argv, as for every
+// call this driver makes (see git()).
+func (g *RealGit) Checkout(ctx context.Context, worktree, sha string) error {
+	if !shaRE.MatchString(sha) {
+		return fmt.Errorf("%w: %q is not a 40-hex commit; a worktree is only ever checked out at a resolved sha", jobs.ErrRefused, sha)
+	}
+	wt, err := g.checkDest(worktree)
+	if err != nil {
+		return err
+	}
+	if st, err := os.Stat(wt); err != nil || !st.IsDir() {
+		return fmt.Errorf("%w: the worktree %s is not a directory on this host", jobs.ErrRefused, wt)
+	}
+	out, err := g.git(ctx, "-C", wt, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if dirty := strings.TrimSpace(string(out)); dirty != "" {
+		lines := strings.Split(dirty, "\n")
+		return fmt.Errorf("%w: the worktree %s has local changes (%d path(s), first: %q); the ctl never checks out over "+
+			"them — commit, stash or discard them first", jobs.ErrRefused, wt, len(lines), strings.TrimSpace(lines[0]))
+	}
+	_, err = g.git(ctx, "-C", wt, "checkout", "--detach", sha)
+	return err
+}
+
 // checkDest bounds the two methods that create and delete directory trees,
 // and returns the RESOLVED path they must name to git.
 //

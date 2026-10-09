@@ -43,6 +43,17 @@ type RealInstances struct {
 	// so `--bind /etc:/qdrant/storage` out of a mangled registry row is not a
 	// misconfiguration, it is a store with /etc in it.
 	Roots []string
+	// ExtraRoots widen Roots for BINDS only, by daemon configuration
+	// (CTL_API_BIND_ROOTS; PR-F): the directories an API instance needs that
+	// no op writes under — the shared HF cache, GoWe's image directories,
+	// /rag/config. Each carries its own mode, and a read-only one REFUSES a
+	// bind under it that is not `:ro`. Unlike Roots, the root ITSELF may be
+	// bound (`/rag/cache:/rag/cache`), because binding the whole directory is
+	// what these roots are for. A path under both a Roots entry and an extra
+	// root is judged by the MOST SPECIFIC of the two, so an extra root can
+	// never loosen a bind Roots already governs. They never reach the files,
+	// git, build or proc drivers: being bindable is not being writable by the ctl.
+	ExtraRoots []BindRoot
 	// Env is apptainer's OWN environment for a call in jobs.NamespaceCtl:
 	// APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR under the ctl's state dir.
 	// The instance registry lives under the config dir, so a `list` or a
@@ -196,7 +207,7 @@ func parseInstanceList(stdout []byte) ([]jobs.Instance, error) {
 }
 
 // Run is
-// `apptainer instance run --no-home <--bind …> <--env …> <sif> <name> <args…>`.
+// `apptainer instance run --no-home [--cleanenv] <--bind …> <--env …> <sif> <name> <args…>`.
 //
 // spec.ExtraEnv goes into the CHILD's environment and onto no argv, which is
 // how APPTAINERENV_POSTGRES_PASSWORD reaches the container (apptainer forwards
@@ -241,8 +252,11 @@ func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 		}
 	}
 
-	argv := make([]string, 0, 4+len(binds)+len(envArgs)+len(spec.Args))
+	argv := make([]string, 0, 5+len(binds)+len(envArgs)+len(spec.Args))
 	argv = append(argv, "instance", "run", "--no-home")
+	if spec.CleanEnv {
+		argv = append(argv, "--cleanenv")
+	}
 	argv = append(argv, binds...)
 	argv = append(argv, envArgs...)
 	argv = append(argv, sif, spec.Name)
@@ -280,6 +294,72 @@ func (i *RealInstances) SeedConfigDir(ctx context.Context, sif, containerDir, ho
 	_, _, err = i.run.Run(ctx, Spec{Program: i.Bin, Args: argv,
 		ExtraEnv: i.env(jobs.NamespaceCtl, nil), Timeout: instanceRunTimeout})
 	return err
+}
+
+// instanceInspectTimeout bounds `apptainer inspect`: it reads the SIF's
+// metadata partition and runs nothing, so a minute is a host in trouble.
+const instanceInspectTimeout = 60 * time.Second
+
+// Labels is `apptainer inspect --json --labels <sif>`, flattened to one map.
+//
+// The document, verified against apptainer 1.5.3 on coconut
+// (ragstack-tools-v1.6.5-b1.sif):
+//
+//	{"data":{"attributes":{"labels":{"org.ragstack.role":"worker",
+//	  "org.ragstack.version":"v1.6.5","org.ragstack.commit":"d5c9…",…}}},
+//	 "type":"container"}
+//
+// Every label is returned, not only `org.ragstack.*`: which ones a caller
+// compares is policy, and the build's own `org.label-schema.*` rows are what
+// an operator reads when two images disagree. A label whose value is not a
+// JSON string (no build here writes one) is returned as its JSON text, so it
+// can never compare equal to a receipt's string by accident.
+//
+// It runs in the ctl's namespace with the ctl's APPTAINER_CACHEDIR, like
+// every other call, and puts nothing in the image's way: inspect does not
+// start a container.
+func (i *RealInstances) Labels(ctx context.Context, sif string) (map[string]string, error) {
+	sif, err := checkSIF(sif)
+	if err != nil {
+		return nil, err
+	}
+	stdout, _, err := i.run.Run(ctx, Spec{
+		Program:  i.Bin,
+		Args:     []string{"inspect", "--json", "--labels", sif},
+		ExtraEnv: i.env(jobs.NamespaceCtl, nil),
+		Timeout:  instanceInspectTimeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseInspectLabels(sif, stdout)
+}
+
+// inspectLabelsJSON is the part of `apptainer inspect --json --labels` this
+// driver reads.
+type inspectLabelsJSON struct {
+	Data struct {
+		Attributes struct {
+			Labels map[string]json.RawMessage `json:"labels"`
+		} `json:"attributes"`
+	} `json:"data"`
+}
+
+func parseInspectLabels(sif string, stdout []byte) (map[string]string, error) {
+	var doc inspectLabelsJSON
+	if err := json.Unmarshal(stdout, &doc); err != nil {
+		return nil, fmt.Errorf("%w: apptainer inspect --json --labels %s did not print the document this driver parses: %v",
+			jobs.ErrRefused, sif, err)
+	}
+	out := make(map[string]string, len(doc.Data.Attributes.Labels))
+	for k, raw := range doc.Data.Attributes.Labels {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			v = string(raw)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // LogPaths is where apptainer writes <name>'s stdout and stderr in
@@ -474,7 +554,8 @@ func (i *RealInstances) bindArgs(binds []string) ([]string, error) {
 		if !filepath.IsAbs(host) {
 			return nil, fmt.Errorf("%w: the host path %q of bind %q must be absolute", jobs.ErrRefused, host, b)
 		}
-		resolved, err := resolvedContainedNoLeafLink(host, i.Roots)
+		readOnly := len(parts) == 3 && parts[2] == "ro"
+		resolved, err := i.containBind(host, readOnly)
 		if err != nil {
 			return nil, err
 		}

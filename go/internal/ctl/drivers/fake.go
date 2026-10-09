@@ -892,6 +892,67 @@ func (p *FakeProc) Descends(_ context.Context, pid, ancestor int) (bool, error) 
 	return false, fmt.Errorf("%w: this fixture's process ancestry is a loop", jobs.ErrRefused)
 }
 
+// InstanceOwnsPort is the real driver's rule on the fixture: the port's owner
+// (Owners), then the recorded ancestry (the parent map Descends walks). An
+// unbound port or an unattributable owner (pid 0) is (false, nil).
+//
+// It records ONE call, `proc.InstanceOwnsPort(<pid>,<port>)`, and not the
+// Owner and Descends it is made of: a trace is what a step asked, and the step
+// asked this.
+func (p *FakeProc) InstanceOwnsPort(_ context.Context, instancePID, port int) (bool, error) {
+	if err := p.r.record("proc", "InstanceOwnsPort", strconv.Itoa(instancePID), strconv.Itoa(port)); err != nil {
+		return false, err
+	}
+	if instancePID <= 1 {
+		return false, fmt.Errorf("%w: %d is not an instance pid the ctl asks about", jobs.ErrRefused, instancePID)
+	}
+	if port <= 0 || port > 65535 {
+		return false, fmt.Errorf("%w: %d is not a port", jobs.ErrRefused, port)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	owner := p.Owners[port].PID
+	if !p.Ports[port] || owner <= 0 {
+		return false, nil
+	}
+	pid := owner
+	for i := 0; i < 64; i++ {
+		if pid == instancePID {
+			return true, nil
+		}
+		next, ok := p.parents[pid]
+		if !ok || next == 0 {
+			return false, nil
+		}
+		pid = next
+	}
+	return false, fmt.Errorf("%w: this fixture's process ancestry is a loop", jobs.ErrRefused)
+}
+
+// SetInstancePortHolder makes holderPID — a CHILD of instancePID — the process
+// on port's LISTEN socket: the fixture form of an API instance, whose starter
+// (`appinit`) is what `instance list` names and whose uvicorn, further down,
+// holds the port. holderPID == instancePID is allowed and means the starter
+// holds it itself.
+func (p *FakeProc) SetInstancePortHolder(instancePID, holderPID, port int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Ports == nil {
+		p.Ports = map[int]bool{}
+	}
+	if p.Owners == nil {
+		p.Owners = map[int]PortOwner{}
+	}
+	if p.parents == nil {
+		p.parents = map[int]int{}
+	}
+	p.Ports[port] = true
+	p.Owners[port] = PortOwner{PID: holderPID, UID: os.Getuid()}
+	if holderPID != instancePID {
+		p.parents[holderPID] = instancePID
+	}
+}
+
 // SetParent records that pid's parent is ppid — the fixture form of a process
 // tree, for a test that needs one the instances fake did not build.
 func (p *FakeProc) SetParent(pid, ppid int) {
@@ -978,6 +1039,17 @@ type FakeInstances struct {
 	// instances either start or fail to start cannot produce the three minutes
 	// of waiting that followed on coconut.
 	ExitOnRun map[string]string
+	// Specs is every InstanceSpec Run got past the name and image checks with,
+	// in order (an already-running name included), like Spawned. It is inspectable STATE, not a call
+	// record: a spec's ExtraEnv carries secrets (the postgres password, an
+	// API's secrets.env), so it is deliberately not what `instances.Run` puts
+	// in the call log.
+	Specs []jobs.InstanceSpec
+	// labels are the fixture labels Labels answers, by image path
+	// (SetLabels). A path with no entry is REFUSED: a fake that invented
+	// labels for an image it was never told about would let an identity check
+	// pass against nothing.
+	labels map[string]map[string]string
 }
 
 // fakeInstanceLogRoot is the fixture's instance-log directory. It mirrors the
@@ -1106,6 +1178,21 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.Specs = append(i.Specs, copyInstanceSpec(spec))
+	// An API instance's port is on its ARGV (`--port <n>`, the runscript's
+	// uvicorn argument), exactly as a spawned API's is: reading it there means
+	// a test never states twice which port the tenant is on. A port the
+	// fixture already bound for the name (BindInstancePort) wins.
+	if strings.HasPrefix(spec.Name, "api-") {
+		if _, bound := i.ports[spec.Name]; !bound {
+			if port, ok := portFromArgs(spec.Args); ok {
+				if i.ports == nil {
+					i.ports = map[string]int{}
+				}
+				i.ports[spec.Name] = port
+			}
+		}
+	}
 	// apptainer's own refusal, modelled exactly: a name that is taken is an
 	// error, not a no-op. An instance-mode `start` that treated it as success
 	// would report a tenant started from the artifact it just checked out
@@ -1307,6 +1394,74 @@ func (i *FakeInstances) SeedConfigDir(_ context.Context, sif, containerDir, host
 		}
 	}
 	return nil
+}
+
+// Labels answers the fixture labels SetLabels gave sif, as a fresh map. The
+// real driver's refusals come first — an empty, relative or unclean path —
+// and then the fake's own: an image nobody gave it labels for is REFUSED
+// rather than answered empty, because "no labels" would read to a caller as
+// "an image that does not claim to be anything", and a check that compares a
+// receipt against that must fail loudly, not quietly.
+func (i *FakeInstances) Labels(_ context.Context, sif string) (map[string]string, error) {
+	if err := i.r.record("instances", "Labels", sif); err != nil {
+		return nil, err
+	}
+	if sif == "" {
+		return nil, fmt.Errorf("%w: this instance has no image to run", jobs.ErrRefused)
+	}
+	if _, err := paths.SafePath("/", sif); err != nil {
+		return nil, fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	l, ok := i.labels[sif]
+	if !ok {
+		return nil, fmt.Errorf("%w: the image %s is not usable: this fake host has no image at that path "+
+			"(FakeInstances.SetLabels)", jobs.ErrRefused, sif)
+	}
+	out := make(map[string]string, len(l))
+	for k, v := range l {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// SetLabels puts an image at path whose `apptainer inspect --labels` answers
+// labels. A nil map is an image with no labels at all (which a real SIF built
+// with no %labels is); DeleteLabels takes the image away again.
+func (i *FakeInstances) SetLabels(path string, labels map[string]string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.labels == nil {
+		i.labels = map[string]map[string]string{}
+	}
+	cp := make(map[string]string, len(labels))
+	for k, v := range labels {
+		cp[k] = v
+	}
+	i.labels[path] = cp
+}
+
+// DeleteLabels removes the image at path, so Labels refuses it again — the
+// fixture form of an image that was deleted or never copied into the store.
+func (i *FakeInstances) DeleteLabels(path string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delete(i.labels, path)
+}
+
+// copyInstanceSpec copies a spec's slices and maps, so a caller that reuses
+// its spec cannot rewrite what this fake says it was given.
+func copyInstanceSpec(s jobs.InstanceSpec) jobs.InstanceSpec {
+	s.Binds = append([]string(nil), s.Binds...)
+	s.Args = append([]string(nil), s.Args...)
+	if s.Env != nil {
+		s.Env = copyMapString(s.Env)
+	}
+	if s.ExtraEnv != nil {
+		s.ExtraEnv = copyMapString(s.ExtraEnv)
+	}
+	return s
 }
 
 // BindInstancePort tells this fake that running name binds port and stopping
@@ -2783,6 +2938,55 @@ type FakeGit struct {
 	Worktrees map[string]string
 	// Removed records every worktree removal, in order.
 	Removed []string
+	// Dirty marks worktrees with local changes: Checkout refuses them, as the
+	// real driver refuses a non-empty `git status --porcelain`. SetDirty.
+	Dirty map[string]bool
+	// CheckedOut records every SUCCESSFUL Checkout as "<worktree>@<sha>", in
+	// order.
+	CheckedOut []string
+}
+
+// SetDirty marks (or clears) local changes in the worktree at dir.
+func (g *FakeGit) SetDirty(dir string, dirty bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.Dirty == nil {
+		g.Dirty = map[string]bool{}
+	}
+	if dirty {
+		g.Dirty[dir] = true
+	} else {
+		delete(g.Dirty, dir)
+	}
+}
+
+// Checkout moves a known worktree to sha, refusing what the real driver
+// refuses: a sha that is not 40-hex, a path that is not absolute and clean, a
+// worktree this fake does not know (the real one: not a directory), and a
+// dirty tree. HeadSHA and Describe answer the new sha afterwards.
+func (g *FakeGit) Checkout(_ context.Context, worktree, sha string) error {
+	if err := g.r.record("git", "Checkout", worktree, sha); err != nil {
+		return err
+	}
+	if !isSHA(sha) {
+		return fmt.Errorf("%w: %q is not a 40-hex commit; a worktree is only ever checked out at a resolved sha",
+			jobs.ErrRefused, sha)
+	}
+	if !filepath.IsAbs(worktree) || filepath.Clean(worktree) != worktree {
+		return fmt.Errorf("%w: the worktree path %q must be absolute and clean", jobs.ErrRefused, worktree)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, ok := g.Worktrees[worktree]; !ok {
+		return fmt.Errorf("%w: the worktree %s is not a directory on this host", jobs.ErrRefused, worktree)
+	}
+	if g.Dirty[worktree] {
+		return fmt.Errorf("%w: the worktree %s has local changes; the ctl never checks out over them — "+
+			"commit, stash or discard them first", jobs.ErrRefused, worktree)
+	}
+	g.Worktrees[worktree] = sha
+	g.CheckedOut = append(g.CheckedOut, worktree+"@"+sha)
+	return nil
 }
 
 // ResolveRef resolves a ref through the table. A 40-hex ref resolves to

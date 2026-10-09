@@ -917,6 +917,11 @@ func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) 
 	// mirror and the npm cache identically, or an operator would be debugging
 	// two different driver sets.
 	api.SetHostToolsFromEnv(&cfg)
+	// …and the same instance bind roots (CTL_API_BIND_ROOTS), or an API
+	// instance would bind through one entry point and refuse through the other.
+	if err := api.SetAPIBindRootsFromEnv(&cfg); err != nil {
+		return nil, nil, err
+	}
 	return api.BuildEngineAndDrivers(cfg)
 }
 

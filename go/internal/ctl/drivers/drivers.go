@@ -144,7 +144,8 @@ func (f *Fake) Pending() []string { return nil }
 // ---------------------------------------------------------------- instances
 
 // instanceNameRE is the ONLY shape an instance name the ctl starts or stops
-// may have: `<kind>-<tenant>`, for the three store kinds a tenant owns.
+// may have: `<kind>-<tenant>`, for the three store kinds a tenant owns and —
+// from PR-F — `api`, the tenant's API running from a server image.
 //
 // It is the same class of allowlist as systemd.go's checkUnit, for the same
 // reason. `apptainer instance stop` takes a name, coconut's account runs
@@ -152,14 +153,14 @@ func (f *Fake) Pending() []string { return nil }
 // them), and a stop of an unconstrained name is one registry typo away from
 // taking down something nobody asked about. The tenant half is the tenant-name
 // grammar, so an instance name is derivable from a row and nothing else.
-var instanceNameRE = regexp.MustCompile(`^(qdrant|elasticsearch|postgres)-[a-z][a-z0-9-]{0,31}$`)
+var instanceNameRE = regexp.MustCompile(`^(qdrant|elasticsearch|postgres|api)-[a-z][a-z0-9-]{0,31}$`)
 
 // checkInstanceName applies that allowlist. Shared by the fake and the real
 // driver so the refusal a test sees is the refusal the host gives.
 func checkInstanceName(name string) error {
 	if !instanceNameRE.MatchString(name) {
 		return fmt.Errorf("%w: %q is not an instance this control plane manages "+
-			"(want <qdrant|elasticsearch|postgres>-<tenant>)", jobs.ErrRefused, name)
+			"(want <qdrant|elasticsearch|postgres|api>-<tenant>)", jobs.ErrRefused, name)
 	}
 	return nil
 }

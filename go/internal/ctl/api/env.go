@@ -1,5 +1,14 @@
 package api
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/ragstack/ragstack/internal/ctl/drivers"
+)
+
 // Every CTL_* environment variable the daemon reads, in one place.
 //
 // This list is the reconciliation point for `ops/ansible/roles/ragstack-ctl`'s
@@ -136,9 +145,84 @@ const (
 	// Default <rag-root>/cache/npm — never ~/.npm, which is shared with
 	// whatever else the account runs and is in no backup.
 	EnvNpmCache = "CTL_NPM_CACHE"
+
+	// EnvAPIBindRoots widens the directories an apptainer instance may bind
+	// beyond the approved roots — what a server-image API instance has to see
+	// and no op writes under (PR-F). Comma-separated; each entry is `<path>`,
+	// `<path>:ro` or `<path>:rw`, and a bare path is READ-ONLY. A read-only
+	// root refuses a writable bind under it. Unset or blank takes
+	// DefaultAPIBindRoots. ctl.env, optional; a malformed value refuses the
+	// daemon's (and a --direct run's) start rather than being half-applied.
+	EnvAPIBindRoots = "CTL_API_BIND_ROOTS"
 )
 
-// HostToolEnvKeys are the PR-D host-program variables.
+// DefaultAPIBindRoots is CTL_API_BIND_ROOTS when the variable is unset: the
+// shared HF cache the API writes (HF_HOME), GoWe's image tree it reads
+// (GOWE_IMAGE_DIRS), and /rag/config, where a tenant's COLLECTIONS_FILE may
+// live — the last two read-only.
+const DefaultAPIBindRoots = "/rag/cache:rw,/scout/containers:ro,/rag/config:ro"
+
+// ParseAPIBindRoots parses a CTL_API_BIND_ROOTS value. Blank is the default.
+//
+// Every entry must be an ABSOLUTE path with no `..` component; a trailing
+// slash or a doubled one is normalised away (filepath.Clean), so `/rag/cache/`
+// and `/rag/cache` are the same root and listing both is a duplicate. `/` is
+// refused (it would approve every path), and so is an empty entry, an unknown
+// mode and a path listed twice: each is an operator's typo, and a typo in a
+// containment list must be loud.
+func ParseAPIBindRoots(v string) ([]drivers.BindRoot, error) {
+	if strings.TrimSpace(v) == "" {
+		v = DefaultAPIBindRoots
+	}
+	var out []drivers.BindRoot
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(v, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			return nil, fmt.Errorf("%s=%q has an empty entry", EnvAPIBindRoots, v)
+		}
+		path, mode := entry, "ro"
+		if i := strings.LastIndex(entry, ":"); i >= 0 {
+			path, mode = entry[:i], entry[i+1:]
+		}
+		if mode != "ro" && mode != "rw" {
+			return nil, fmt.Errorf("%s entry %q: the mode must be ro or rw", EnvAPIBindRoots, entry)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("%s entry %q: the path must be absolute", EnvAPIBindRoots, entry)
+		}
+		for _, part := range strings.Split(path, "/") {
+			if part == ".." {
+				return nil, fmt.Errorf("%s entry %q: the path may not contain ..", EnvAPIBindRoots, entry)
+			}
+		}
+		root := drivers.BindRoot{Path: filepath.Clean(path), ReadOnly: mode == "ro"}
+		if err := drivers.CheckBindRoot(root); err != nil {
+			return nil, fmt.Errorf("%s entry %q: %v", EnvAPIBindRoots, entry, err)
+		}
+		if seen[root.Path] {
+			return nil, fmt.Errorf("%s lists %s twice", EnvAPIBindRoots, root.Path)
+		}
+		seen[root.Path] = true
+		out = append(out, root)
+	}
+	return out, nil
+}
+
+// SetAPIBindRootsFromEnv fills cfg.APIBindRoots from CTL_API_BIND_ROOTS. The
+// daemon and the --direct CLI both call it, beside SetHostToolsFromEnv, so the
+// two build an instance driver with the same bind containment.
+func SetAPIBindRootsFromEnv(cfg *EngineConfig) error {
+	roots, err := ParseAPIBindRoots(os.Getenv(EnvAPIBindRoots))
+	if err != nil {
+		return err
+	}
+	cfg.APIBindRoots = roots
+	return nil
+}
+
+// HostToolEnvKeys are the PR-D host-program variables, plus PR-F's
+// CTL_API_BIND_ROOTS (a host fact of the same kind, with a correct default).
 //
 // They are kept out of the Ansible-template reconciliation for now: the
 // `ragstack-ctl` role's ctl.env template is another agent's file in this PR
@@ -149,7 +233,7 @@ const (
 func HostToolEnvKeys() []string {
 	return []string{
 		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
-		EnvCrontabBin, EnvMirror, EnvNpmCache,
+		EnvCrontabBin, EnvMirror, EnvNpmCache, EnvAPIBindRoots,
 	}
 }
 

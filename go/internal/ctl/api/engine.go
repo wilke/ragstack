@@ -92,6 +92,11 @@ type EngineConfig struct {
 	GatewayBaseURL string
 	Mirror         string
 	NpmCache       string
+	// APIBindRoots are the extra directories the instance driver may bind
+	// (CTL_API_BIND_ROOTS, PR-F), each with its own ro/rw. Nil takes
+	// DefaultAPIBindRoots. SetAPIBindRootsFromEnv fills it; the daemon and the
+	// --direct CLI both call it.
+	APIBindRoots []drivers.BindRoot
 	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
 	// Empty means Roots.RagRoot. Only a run against a SANDBOX root sets it —
 	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
@@ -325,6 +330,15 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		opts.TreeRoots = drivers.TreeRootsOf(cfg.Roots)
 		drv = drivers.NewFake(opts)
 	} else {
+		bindRoots := cfg.APIBindRoots
+		if bindRoots == nil {
+			// A caller that built its config without the environment (a test,
+			// a tool) gets the same default the daemon would, not "no API
+			// instance can see its HF cache".
+			if bindRoots, err = ParseAPIBindRoots(""); err != nil {
+				return nil, nil, err
+			}
+		}
 		drv = drivers.NewReal(drivers.RealOptions{
 			Roots:        cfg.Roots,
 			Fleet:        loadFleet,
@@ -349,6 +363,10 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			// just because it arrived as a program's output rather than as an
 			// op's string.
 			Redact: redactor.Redact,
+			// The directories an API instance binds beyond the approved
+			// roots (PR-F). Instance binds ONLY: the files, git, build and
+			// proc drivers keep the approved roots and nothing else.
+			ExtraBindRoots: bindRoots,
 		})
 	}
 

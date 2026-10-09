@@ -381,6 +381,7 @@ coconut's node does, which is the reason these exist.
 | `CTL_APPTAINER_BIN` | `/usr/bin/apptainer` | the apptainer the gateway and the store drivers exec. |
 | `CTL_MIRROR` | `<rag-root>/repos/ragstack.git` | the BARE mirror artifacts are prepared from. The ctl never creates it — see the root items. |
 | `CTL_NPM_CACHE` | `<rag-root>/cache/npm` | the npm cache an artifact install writes through (never `~/.npm`). |
+| `CTL_API_BIND_ROOTS` | `/rag/cache:rw,/scout/containers:ro,/rag/config:ro` | extra directories an apptainer instance (a server-image API, PR-F) may bind beyond the approved roots. Comma-separated `<path>[:ro\|:rw]`, a bare path is read-only; a read-only root refuses a writable bind under it. Absolute, no `..`, not `/`; a malformed value refuses the daemon's start. |
 
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.
 `ctl-daemon.sh` PARSES both files (`KEY=VALUE`, one pair of surrounding quotes
