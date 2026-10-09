@@ -100,56 +100,58 @@ why it can be an HTTP verb.
 |---|---|---|---|
 | 1 | a LIGHT bundle, kind `pre-update` (config + sealed secrets + SQLite state, no store snapshots, no fence; the backup planner's own steps) → `last_backup` | backup steps | the backup's own (the bundle goes back to `<id>.partial`, `last_backup` is restored) |
 | 2 | prove the image: file sha256 == the prepared record; `apptainer inspect --labels` == the receipt (version, commit, build, role server); the commit resolves in the mirror to itself | probe | none (changes nothing) |
-| 3 | check the worktree out at the image's commit — always, so `gowe render`, `env`, drift and the next static build read the code the API runs; the previous HEAD is checkpointed; a dirty tree is refused | git | checks the previous HEAD out again |
-| 4 | (`rebuild_ui`) `vite build` from the artifact's worktree into `ui/dist.building`, then one rename: `dist` → `dist.prev-<ts>`, `dist.building` → `dist` (the steps `set-ui-mode static` uses) | build, fs | swaps back: the new build returns to `dist.building`, the previous one to `dist` |
-| 5 | refuse over a running ingest job; stop the API with the CURRENT launch (worktree: pidfile, TERM, port free; image: `apptainer instance stop api-<m>`, port free) | probe, proc/instance | starts that same launch again and waits for it (a migrating tenant's worktree is put back at its previous HEAD first) |
-| 6 | registry: `server_image` ← the record, `code.tag/sha` ← its version/commit, `code.previous_image` ← the old image (if any), `artifact_id` ← `--artifact` (old → `code.previous_artifact_id`). **Moves the registry generation.** | registry | restores the four fields from the checkpoint |
-| 7 | start the API instance `api-<m>` from the image (labels and sha256 proved again, binds derived from tenant.env, environment as `APPTAINERENV_*` only) | instance | stops it |
-| 8 | post-checks: the instance holds the port; `/health` 200; `/v1/health/deep` 200 (the tenant's own admin key, read at run time); `/v1/version` `git_sha` == the image's full commit and `version` == pep440 of its version (`v1.6.6` → `1.6.6`); then, with `rebuild_ui` and when the live gateway routes the tenant, `GET /ragstack/<t>/ui/` = 200 | probe | none — a failure here unwinds 7…1 |
-| 9 | registry: `last_ops.update-code`, `restart_pending = false` | registry | — |
+| 3 | (`rebuild_ui`) `vite build` from the artifact's worktree into `ui/dist.building` — the slow part, while the API still serves; nothing that is served changes | build | the staged build is left in `dist.building` |
+| 4 | refuse over a running ingest job; stop the API with the CURRENT launch (worktree: pidfile, TERM, port free; image: `apptainer instance stop api-<m>`, port free) | probe, proc/instance | starts that same launch again and waits for it — on the tree it started from, which steps 5–6 have already put back |
+| 5 | check the worktree out at the image's commit — always, so `gowe render`, `env`, drift and the next static build read the code the API runs; the previous HEAD is checkpointed; a dirty tree is refused | git | checks the previous HEAD out again |
+| 6 | (`rebuild_ui`) one rename pair: `dist` → `dist.prev-<ts>`, `dist.building` → `dist` (the steps `set-ui-mode static` uses) | fs | swaps back: the new build returns to `dist.building`, the previous one to `dist` |
+| 7 | registry: `server_image` ← the record, `code.tag/sha` ← its version/commit, `code.previous_image` ← the old image (if any), `artifact_id` ← `--artifact` (old → `code.previous_artifact_id`). **Moves the registry generation.** | registry | restores the four fields from the checkpoint |
+| 8 | start the API instance `api-<m>` from the image (labels and sha256 proved again, binds derived from tenant.env, environment as `APPTAINERENV_*` only) | instance | stops it |
+| 9 | post-checks: the instance holds the port; `/health` 200; `/v1/health/deep` 200 (the tenant's own admin key, read at run time); `/v1/version` `git_sha` == the image's full commit and `version` == pep440 of its version (`v1.6.6` → `1.6.6`); then, with `rebuild_ui` and when the live gateway routes the tenant, `GET /ragstack/<t>/ui/` = 200 | probe | none — a failure here unwinds 8…1 |
+| 10 | registry: `last_ops.update-code`, `restart_pending = false` | registry | — |
 
-The API is down from step 5 to step 7's readiness — seconds to a minute,
+**Nothing the running API reads changes on disk while it runs.** A worktree
+API imports modules lazily (graph extraction, restore, the tool-image check
+load on first use), so the checkout (5) and the dist swap (6) come only after
+the stop (4); the slow UI build (3) comes before it, so the downtime is the
+checkout, a rename, and the new instance's start — seconds to a minute,
 mostly the image's import time.
 
 ### When it fails
 
 **Inside the job** (a step returns an error, the daemon is alive): the engine
 rolls back in reverse. You end with the old UI served, the old image recorded
-(or, for a migration, a worktree-mode row again) and **the OLD API running**
-— the worktree uvicorn for a migrating tenant, the old `api-<m>` instance
-otherwise. The job is `rolled_back`; `ragstack-ctl job show <id>` says
-which step failed and why. The pre-update bundle is left as `<id>.partial`
-(its finalize step rolls back with the rest); it is still readable.
-
-Worth knowing about step 5's rollback for a **migration**: the worktree launch
-runs *from* the worktree, which step 3 moved. The rollback checks the previous
-HEAD out again before it restarts the uvicorn, so the old API runs the code it
-was running. Between step 3 and step 5 of a migration the running worktree API
-already sits on the new checkout: a module it imports for the first time in
-that window comes from the new commit (the plan warns about it).
+(or, for a migration, a worktree-mode row again), the worktree at its
+previous HEAD, and **the OLD API running** — the worktree uvicorn for a
+migrating tenant, the old `api-<m>` instance otherwise. The order makes the
+last point safe: steps 6 and 5 roll back (UI, then worktree) before step 4's
+rollback restarts the old API, so it starts on exactly the tree it was
+stopped on. The job is `rolled_back`; `ragstack-ctl job show <id>` says which
+step failed and why. The pre-update bundle is left as `<id>.partial` (its
+finalize step rolls back with the rest); it is still readable.
 
 **Interrupted** (the daemon died mid-job): the engine resumes a job only when
 its re-plan has the same hash, and the plan hash includes
-\`registry_generation\` (\`jobs/hash.go\`, refused at \`jobs/engine.go\`'s
-rebuild). Step 1's \`last_backup\` record already moves the generation, so in
+`registry_generation` (`jobs/hash.go`, refused at `jobs/engine.go`'s
+rebuild). Step 1's `last_backup` record already moves the generation, so in
 practice an interrupted upgrade is **not resumed** — it is recovered by hand,
-and where it stopped decides how (\`ragstack-ctl job show <id>\`):
+and where it stopped decides how (`ragstack-ctl job show <id>`):
 
 | stopped in | the row names | what is running | recover with |
 |---|---|---|---|
-| steps 1–2 | the old code | the old API | nothing moved: run \`update-code\` again |
-| steps 3–5 | the old code | the old API, or nothing after step 5 | an image row: \`tenant start \$T\` (the old image). A **migrating** worktree row: its checkout is already at the new commit — put it back first (\`git -C <worktree> checkout <sha>\`, the sha is step 3's \`worktree-prev:\` checkpoint in \`job show\`), then \`tenant start \$T\`; or simply run \`update-code\` again |
-| **after step 6** | the NEW image | nothing (step 7 had not run) | \`tenant start \$T\` — it starts what the row says, the new image — or \`update-code\` again to finish (UI probe, post-checks, \`last_ops\`) |
+| steps 1–3 | the old code | the old API, untouched | nothing the API reads moved: run `update-code` again |
+| step 4 | the old code | the old API, or nothing | `tenant start $T` (the tree is still the old one), or `update-code` again |
+| steps 5–6 | the old code | **nothing** (the API was stopped in step 4) | an image row: `tenant start $T` (the old image; the worktree does not feed it). A **migrating** worktree row: its checkout may already be at the new commit — put it back first (`git -C <worktree> checkout <sha>`, the sha is step 5's `worktree-prev:` checkpoint in `job show`), and the UI if step 6 swapped it (`dist` ↔ the `dist.prev-<ts>` step 6 checkpointed), then `tenant start $T`; or simply run `update-code` again |
+| **after step 7** | the NEW image | nothing (step 8 had not run) | `tenant start $T` — it starts what the row says, the new image — or `update-code` again to finish (UI probe, post-checks, `last_ops`) |
 
-\`\`\`bash
+```bash
 ragstack-ctl job show <id>                    # which step it stopped in, and its checkpoints
-ragstack-ctl tenant start \$T                  # after step 6: starts the NEW image the row names
-ragstack-ctl tenant update-code \$T --image \$IMAGE [--artifact …] --yes-destructive \$T   # or finish it
-\`\`\`
+ragstack-ctl tenant start $T                  # after step 7: starts the NEW image the row names
+ragstack-ctl tenant update-code $T --image $IMAGE [--artifact …] --yes-destructive $T   # or finish it
+```
 
 To go back to the previous image after an interrupted job, upgrade to it:
 `update-code --image <code.previous_image>`. For a migration interrupted after
-step 6 there is no worktree launch to return to by op; `tenant start` (the
+step 7 there is no worktree launch to return to by op; `tenant start` (the
 image) is the recovery.
 
 ### Verify
@@ -162,7 +164,7 @@ ragstack-ctl gowe render $T                   # reads the worktree, now at the i
 ls -l <data_dir>/logs/api-$T.log              # the runscript appends here
 ```
 
-`gowe render` on an image-mode row checks the **worktree**, which step 3
+`gowe render` on an image-mode row checks the **worktree**, which step 5
 keeps at the image's commit, so `<worktree>/cwl` and the image's
 `/opt/ragstack/cwl` are the same tree; it prints a note line saying so.
 

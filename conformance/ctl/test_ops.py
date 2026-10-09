@@ -1923,9 +1923,10 @@ async def fresh_worktree_tenant(client: httpx.AsyncClient, schemas: dict[str, di
 async def test_update_code_dry_run_is_the_briefs_plan(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
 ) -> None:
-    """The dry run of an upgrade is a valid Plan in the order the brief fixes:
-    the pre-update bundle, the image proof, the worktree, the UI, the stop, the
-    registry swap, the start, the post-checks. It is destructive (confirm is
+    """The dry run of an upgrade is a valid Plan in the order that keeps the
+    running API's tree still: the pre-update bundle, the image proof, the UI
+    BUILD (before the stop), the stop, then the worktree checkout and the dist
+    swap, the registry swap, the start, the post-checks. It is destructive (confirm is
     the tenant's name), and it never runs `npm ci` — the op is HTTP-reachable."""
     name = await fresh_worktree_tenant(client, schemas)
     args = {"image": CONFORMANCE_IMAGE, "artifact_id": CONFORMANCE_ARTIFACT}
@@ -1938,9 +1939,10 @@ async def test_update_code_dry_run_is_the_briefs_plan(
     order = [
         "record the bundle as this tenant's last backup",
         f"prove server image {CONFORMANCE_IMAGE}",
+        "vite build --base",
+        "stop the API",
         "check the worktree out at",
         "swap the new build into place",
-        "stop the API",
         f"record server_image {CONFORMANCE_IMAGE}",
         f"start the API instance api-{name}",
         "post-checks:",

@@ -101,3 +101,7 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 docs/adr/*.html
+
+# A stray `go build ./cmd/ragstack-ctl` run from go/ (make build-ctl writes go/bin/ragstack-ctl).
+# It was tracked from PR-A (eb41858) until #715.
+/go/ragstack-ctl

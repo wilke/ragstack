@@ -112,8 +112,10 @@ func updateArgs(image, artifact string) map[string]any {
 	return map[string]any{"image": image, "artifact_id": artifact}
 }
 
-// The plan's order is the brief's: bundle, image proof, worktree, UI, stop,
-// registry swap, start, post-checks, registry effect.
+// The plan's order: bundle, image proof, UI BUILD (slow, while the API still
+// serves), stop, worktree checkout, dist swap, registry swap, start,
+// post-checks, registry effect. Nothing the running API reads changes on disk
+// before it is stopped.
 func TestUpdateCodePlansTheStepsInTheBriefsOrder(t *testing.T) {
 	oc, _ := updateFixture(t, false)
 	p := plan(t, oc, "update-code", updateArgs(testImageName, testArtifactID))
@@ -121,11 +123,11 @@ func TestUpdateCodePlansTheStepsInTheBriefsOrder(t *testing.T) {
 		{"fs", "create the bundle directory"},
 		{"registry", "record the bundle as this tenant's last backup"},
 		{"probe", "prove server image " + testImageName},
-		{"git", "check the worktree out at v1.6.6"},
 		{"apptainer", "vite build --base /ragstack/dev/ui/ from artifact " + testArtifactID},
-		{"fs", "swap the new build into place"},
 		{"probe", "check that no ingest job is still running"},
 		{"proc", "stop the API through its pidfile"},
+		{"git", "check the worktree out at v1.6.6"},
+		{"fs", "swap the new build into place"},
 		{"registry", "record server_image " + testImageName},
 		{"instance", "start the API instance api-dev from " + testImageName},
 		{"probe", "post-checks: the instance holds"},
@@ -151,7 +153,7 @@ func TestUpdateCodePlansTheStepsInTheBriefsOrder(t *testing.T) {
 		t.Errorf("bundle kind = %v, want pre-update", got)
 	}
 	warned := strings.Join(p.Plan.Warnings, "\n")
-	for _, want := range []string{"cannot be resumed", "tenant start dev", "MIGRATION", "change ON DISK"} {
+	for _, want := range []string{"cannot be resumed", "tenant start dev", "MIGRATION", "only after the API is stopped"} {
 		if !strings.Contains(warned, want) {
 			t.Errorf("no plan warning mentions %q:\n%s", want, warned)
 		}
@@ -324,6 +326,50 @@ func TestUpdateCodeRollsAMigrationBackToTheWorktreeLaunch(t *testing.T) {
 	}
 	if head, _ := fake.Git().HeadSHA(context.Background(), tn.Worktree); head != oldWorktreeSHA {
 		t.Errorf("the worktree is at %s, want %s", head, oldWorktreeSHA)
+	}
+	if got := fileAt(fake, distDir(tn)+"/index.html"); got != "the UI that was serving\n" {
+		t.Errorf("dist/index.html = %q, want the old UI back", got)
+	}
+}
+
+// The running worktree API never sees a changed tree: the worktree checkout
+// and the dist swap happen only after the stop, and on a rollback the
+// worktree is back at its old HEAD before the old API is spawned again.
+func TestUpdateCodeChangesNothingOnDiskUnderARunningAPI(t *testing.T) {
+	oc, fake := updateFixture(t, false)
+	tn := oc.Tenant
+	fake.FakeTenantAPI().Versions = map[string]map[string]any{
+		"http://127.0.0.1:" + itoa(tn.Ports.API): {"version": "1.6.5", "git_sha": oldWorktreeSHA},
+	}
+	p := plan(t, oc, "update-code", updateArgs(testImageName, testArtifactID))
+	_, runErr, _ := runWithRollback(t, newRunner(oc, fake), p)
+	if runErr == nil {
+		t.Fatalf("the upgrade did not fail")
+	}
+	log := fake.CallKeys()
+	first := func(prefix string, after int) int {
+		for i := after + 1; i < len(log); i++ {
+			if strings.HasPrefix(log[i], prefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	signal := first("proc.Signal(", -1)
+	forward := first("git.Checkout("+tn.Worktree+","+testServerImage().Commit, -1)
+	swap := first("files.Rename("+distDir(tn)+",", -1)
+	build := first("build.UI(", -1)
+	if build < 0 || signal < 0 || build > signal {
+		t.Errorf("the UI build must run BEFORE the stop (build %d, stop %d)", build, signal)
+	}
+	if forward < signal || swap < signal {
+		t.Errorf("the tree changed under the running API: stop %d, checkout %d, dist swap %d:\n%s",
+			signal, forward, swap, strings.Join(log, "\n"))
+	}
+	back := first("git.Checkout("+tn.Worktree+","+oldWorktreeSHA, forward)
+	respawn := first("proc.Spawn(", signal)
+	if back < 0 || respawn < back {
+		t.Errorf("the old API was respawned before its worktree was back (checkout %d, spawn %d)", back, respawn)
 	}
 }
 

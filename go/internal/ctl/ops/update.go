@@ -10,34 +10,40 @@ package ops
 //  2. probe the image: sha256 == the prepared record == the row-to-be, the
 //     labels (`Instances().Labels`) == the receipt the record copied, the
 //     commit resolves in the mirror (no rollback: it changes nothing);
-//  3. check the worktree out at the image's commit — ALWAYS, so `gowe render`,
+//  3. (rebuild_ui) build the static UI from the ARTIFACT's worktree into
+//     dist.building — the slow part, while the API still serves; no swap yet;
+//  4. stop the API with the launch rendered from the CURRENT row (worktree or
+//     image); rollback starts that same launch again and waits for it. The
+//     tree is still the one it started from: everything that changes it
+//     comes after this step and rolls back before this rollback runs;
+//  5. check the worktree out at the image's commit — ALWAYS, so `gowe render`,
 //     `env`, the drift check and the next static build read the code the API
-//     runs; the previous HEAD is checkpointed and checked out again on rollback;
-//  4. (rebuild_ui) build the static UI from the ARTIFACT's worktree into
-//     dist.building and swap it in, keeping dist.prev-<ts> — the steps
+//     runs; the previous HEAD is checkpointed and checked out again on
+//     rollback. After the stop, because a running worktree API imports
+//     modules lazily and must never load one from a tree it did not start on;
+//  6. (rebuild_ui) swap dist.building in, keeping dist.prev-<ts> — the steps
 //     `set-ui-mode static` uses (prepare.go); rollback swaps back;
-//  5. stop the API with the launch rendered from the CURRENT row (worktree or
-//     image); rollback starts that same launch again and waits for it;
-//  6. the registry swap: server_image, code.{tag,sha}, code.previous_image
+//  7. the registry swap: server_image, code.{tag,sha}, code.previous_image
 //     (and artifact_id when one was given), the previous values checkpointed
 //     and restored by the rollback. This write moves the registry generation;
-//  7. start the API with the NEW launch (an `api-<manifest>` instance of the
+//  8. start the API with the NEW launch (an `api-<manifest>` instance of the
 //     image); rollback stops it;
-//  8. post-checks: the instance holds the port, /health, /v1/health/deep and
+//  9. post-checks: the instance holds the port, /health, /v1/health/deep and
 //     /v1/version (git_sha == the image's commit, version == pep440 of its
-//     version), then the UI through the gateway when it was rebuilt (no
-//     rollback: a probe changes nothing — a failure here unwinds 7…1);
-//  9. the registry effect: last_ops.update-code, restart_pending=false.
+//     version), then the UI through the gateway when it was rebuilt and the
+//     gateway routes the tenant (no rollback: a probe changes nothing — a
+//     failure here unwinds 8…1);
+//  10. the registry effect: last_ops.update-code, restart_pending=false.
 //
 // A failure anywhere is the engine's reverse rollback: the old UI is back,
 // the old image (or the worktree launch, for a tenant this job was
-// migrating) is the one recorded, and the OLD API is running. What cannot be
-// rolled back by the engine is an INTERRUPTED job: step 1's last_backup record
-// and step 6's swap move the registry generation, which the plan hash covers,
-// so a daemon that dies after them leaves a job `rebuild` refuses as moved
-// (jobs/engine.go). Between 6 and 7 the row already names the new image and
-// nothing runs — the recovery is `tenant start <t>` or this op again. The plan
-// and the runbook say so.
+// migrating) is the one recorded, the worktree is at its previous HEAD, and
+// the OLD API is running. What cannot be rolled back by the engine is an
+// INTERRUPTED job: step 1's last_backup record and step 7's swap move the
+// registry generation, which the plan hash covers, so a daemon that dies after
+// them leaves a job `rebuild` refuses as moved (jobs/engine.go). The runbook
+// has the recovery by stop point; after step 7 the row already names the new
+// image and nothing runs — `tenant start <t>` or this op again.
 //
 // Plans are pure: the image file, its labels, the mirror, the worktree's HEAD
 // and the running ingest jobs are all step-time probes.
@@ -59,10 +65,8 @@ import (
 // bundleKindPreUpdate is the manifest kind of update-code's safety net.
 const bundleKindPreUpdate = "pre-update"
 
-// worktreePrevID prefixes the checkpoint of the worktree's HEAD before step 3
-// moved it: step 3's rollback checks it out again, and step 5's rollback of a
-// MIGRATING tenant does so first, because the worktree launch it restarts runs
-// from that checkout.
+// worktreePrevID prefixes the checkpoint of the worktree's HEAD before step 5
+// moved it; step 5's rollback checks it out again.
 const worktreePrevID = "worktree-prev:"
 
 // updatePrevID prefixes the checkpoint of the row's code fields before step 6
@@ -232,14 +236,46 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 		},
 	})
 
-	// ---- 3. the worktree at the image's commit ---------------------------
+	// ---- 3. the static UI, built from the artifact (no swap yet) ---------
+	//
+	// The slow half runs while the API still serves; the swap waits for the
+	// stop (step 6), so nothing the running tenant reads changes under it.
+	dist := distDir(t)
+	base := uiBase(t)
+	staging := filepath.Join(filepath.Dir(dist), stagingDist)
+	if rebuild {
+		p.addUIStagingBuild(artifact.Worktree, base, staging,
+			"vite build --base "+base+" from artifact "+artifactID+" into "+stagingDist,
+			filepath.Join(artifact.Worktree, "frontend"))
+	} else {
+		why := "rebuild_ui is false: the UI being served is left exactly as it is"
+		if t.UI.Mode != registry.UIModeStatic {
+			why = "the UI is `" + orNone(t.UI.Mode) + "`, not static: there is no dist to build"
+		}
+		p.skip("apptainer", "skip the UI rebuild", why, dist)
+	}
+
+	// ---- 4. stop the API (the CURRENT launch, on the tree it started from) -
+	//
+	// Its rollback restarts that launch; the worktree is still the one it ran
+	// from, because the checkout (5) comes after it and rolls back before it.
+	origin := fmt.Sprintf("http://127.0.0.1:%d", port)
+	p.addNoRunningIngestBefore(origin, p.tpaths.SecretsEnv, "the upgrade stops the API under them")
+	_, _, _, _, apiUnit, _ := render.UnitNames(name)
+	if err := (instanceSupervisor{}).stopAPI(p, apiLeg(p, apiUnit)); err != nil {
+		return err
+	}
+
+	// ---- 5. the worktree at the image's commit (the API is stopped) -------
 	worktree := t.Worktree
 	p.addFor("git", step{
 		Kind: "git", Title: "check the worktree out at " + rec.Version + " (" + commit[:12] + ")",
 		Targets: []string{worktree, commit},
 		Warnings: []string{"ALWAYS, in image mode: gowe render, env, the code drift check and the next static build " +
 			"read the worktree, so it is kept at the commit the API runs. A worktree with local changes is refused, " +
-			"never overwritten; the previous HEAD is recorded and checked out again by the rollback"},
+			"never overwritten; the previous HEAD is recorded and checked out again by the rollback. It runs AFTER the " +
+			"stop: a running worktree API imports modules lazily (graph extraction, restore, tool checks), and none of " +
+			"them may come from a tree it was not started on"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			git := sc.Ops.Drivers.Git()
 			prev, err := git.HeadSHA(ctx, worktree)
@@ -266,54 +302,12 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 		},
 	})
 
-	// ---- 4. the static UI, from the artifact ----------------------------
-	dist := distDir(t)
-	base := uiBase(t)
+	// ---- 6. the dist swap ------------------------------------------------
 	if rebuild {
-		staging := filepath.Join(filepath.Dir(dist), stagingDist)
-		p.addUIStagingBuild(artifact.Worktree, base, staging,
-			"vite build --base "+base+" from artifact "+artifactID+" into "+stagingDist,
-			filepath.Join(artifact.Worktree, "frontend"))
 		p.addDistSwap(dist, staging)
-	} else {
-		why := "rebuild_ui is false: the UI being served is left exactly as it is"
-		if t.UI.Mode != registry.UIModeStatic {
-			why = "the UI is `" + orNone(t.UI.Mode) + "`, not static: there is no dist to build"
-		}
-		p.skip("apptainer", "skip the UI rebuild", why, dist)
 	}
 
-	// ---- 5. stop the API (the CURRENT launch) ----------------------------
-	origin := fmt.Sprintf("http://127.0.0.1:%d", port)
-	p.addNoRunningIngestBefore(origin, p.tpaths.SecretsEnv, "the upgrade stops the API under them")
-	_, _, _, _, apiUnit, _ := render.UnitNames(name)
-	if err := (instanceSupervisor{}).stopAPI(p, apiLeg(p, apiUnit)); err != nil {
-		return err
-	}
-	if migrating {
-		// The worktree launch runs FROM the worktree, which step 3 moved: its
-		// restart (this step's rollback) has to see the code it was running,
-		// so the previous HEAD goes back first. Step 3's own rollback then
-		// finds the worktree already there.
-		stop := &p.steps[len(p.steps)-1]
-		orig := stop.Rollback
-		stop.Plan.Warnings = append(stop.Plan.Warnings, "this tenant is being MIGRATED off its worktree launch: "+
-			"the rollback checks the worktree out at its previous HEAD before it starts that launch again")
-		stop.Rollback = func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			restored := ""
-			if prev, ok := jobExternalIDValue(sc, worktreePrevID); ok && stoppedALiveAPI(sc) {
-				if err := sc.Ops.Drivers.Git().Checkout(ctx, worktree, prev); err != nil {
-					return "", fmt.Errorf("putting %s back at %s before restarting its API: %w", worktree,
-						shortSHA(prev), err)
-				}
-				restored = worktree + " is at " + shortSHA(prev) + " again; "
-			}
-			detail, err := orig(ctx, sc)
-			return restored + detail, err
-		}
-	}
-
-	// ---- 6. the registry swap --------------------------------------------
+	// ---- 7. the registry swap --------------------------------------------
 	p.add(step{
 		Kind: "registry", Title: "record server_image " + image + " and code " + rec.Version + " on " + name,
 		Targets:    []string{name},
@@ -371,10 +365,10 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 		},
 	})
 
-	// ---- 7. start the API (the NEW launch) -------------------------------
+	// ---- 8. start the API (the NEW launch) -------------------------------
 	p.addAPIInstanceStart(next)
 
-	// ---- 8. post-checks ---------------------------------------------------
+	// ---- 9. post-checks ---------------------------------------------------
 	wantVersion := Pep440(rec.Version)
 	p.addFor("tenantapi", step{
 		Kind: "probe", Title: "post-checks: the instance holds " + strconv.Itoa(port) + ", /health, /v1/health/deep, " +
@@ -443,7 +437,7 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 		})
 	}
 
-	// ---- 9. the registry effect -------------------------------------------
+	// ---- 10. the registry effect -------------------------------------------
 	p.addRegistryEffect("update-code", fmt.Sprintf("record update-code on %s (restart_pending cleared)", name),
 		func(row *registry.Tenant) { row.RestartPending = false })
 
@@ -465,13 +459,13 @@ func planUpdateCode(_ context.Context, p *planner, args map[string]any) error {
 	p.result["migration"] = migrating
 	p.warn("%s moves from %s to server image %s (version %s, commit %s): the API is DOWN from step %d's stop "+
 		"until the new instance answers", name, from, image, rec.Version, commit[:12], stopStepN(p))
-	p.warn("the worktree (step 3) and, with rebuild_ui, the served UI (the swap) change ON DISK before the API is " +
-		"stopped; a rollback puts both back, keeping the new build as dist.building and the old one as dist")
+	p.warn("the worktree and, with rebuild_ui, the served UI change ON DISK only after the API is stopped (the " +
+		"UI is BUILT before the stop, into dist.building); a rollback puts both back, keeping the new build as " +
+		"dist.building and the old one as dist")
 	if migrating {
 		p.warn("this is the MIGRATION of a worktree-mode tenant: server_image is set for the first time, python_env " +
-			"stays recorded and unused, and a rollback returns the API to today's worktree launch")
-		p.warn("between step 3 and the stop the running worktree API's checkout is already at the new commit: a " +
-			"module it imports for the first time in that window comes from the new code")
+			"stays recorded and unused, and a rollback returns the API to today's worktree launch, on its previous " +
+			"checkout")
 	}
 	p.warn("a job INTERRUPTED (the daemon died) cannot be resumed once the pre-update bundle is recorded: that "+
 		"write and the registry swap both move the registry generation, which the plan hash covers. Interrupted "+
@@ -500,18 +494,4 @@ func shortSHA(s string) string {
 		return s[:12]
 	}
 	return s
-}
-
-// jobExternalIDValue is externalIDValue over EVERY step of the job, for a
-// rollback that needs what an EARLIER step checkpointed.
-func jobExternalIDValue(sc *jobs.StepContext, prefix string) (string, bool) {
-	if sc == nil || sc.Job == nil {
-		return "", false
-	}
-	for _, st := range sc.Job.Steps {
-		if v, ok := externalIDValue(st.ExternalIDs, prefix); ok {
-			return v, true
-		}
-	}
-	return "", false
 }
