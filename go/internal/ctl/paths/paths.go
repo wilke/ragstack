@@ -180,6 +180,14 @@ func (r Roots) BackupIdentity() string { return filepath.Join(r.CtlConfigDir, "b
 // CtlUIDist is the built admin UI served by the gateway.
 func (r Roots) CtlUIDist() string { return filepath.Join(r.CtlStateDir, "ui", "dist") }
 
+// ServerImagesDir is the ctl's server-image store: `fleet image prepare`
+// copies a verified `ragstack-server-*.sif` and its receipt here, and an
+// image-mode tenant's API instance runs from it. It is INSIDE CtlStateDir on
+// purpose — already an approved root of the Files and Instances drivers and
+// already ACL-granted to the daemon's account — so the store needs no new root
+// (and /rag/apptainer/images, which is neither, is not where it goes).
+func (r Roots) ServerImagesDir() string { return filepath.Join(r.CtlStateDir, "images", "server") }
+
 // Tenant is every path of one tenant, spelled once. name is the registry key
 // (gateway segment, worktree, pidfile/log suffix); manifestName is the
 // manifest row and data-dir basename (equal to name for tenants the ctl

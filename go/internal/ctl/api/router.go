@@ -960,7 +960,36 @@ func artifactsResponse(f *registry.Fleet) model.ArtifactsResponse {
 		}
 		return rows[i].ID < rows[j].ID
 	})
-	return model.ArtifactsResponse{Artifacts: rows}
+	return model.ArtifactsResponse{Artifacts: rows, ServerImages: serverImageRows(f)}
+}
+
+// serverImageRows projects the registry's server_images onto
+// artifacts_response.json's server_images: sorted by name, each with the
+// tenants whose server_image names it, and without the store path.
+func serverImageRows(f *registry.Fleet) []model.ServerImageRow {
+	users := map[string][]string{}
+	for name, t := range f.Tenants {
+		if t != nil && t.ServerImage != nil {
+			users[t.ServerImage.Name] = append(users[t.ServerImage.Name], name)
+		}
+	}
+	rows := make([]model.ServerImageRow, 0, len(f.ServerImages))
+	for name, im := range f.ServerImages {
+		if im == nil {
+			continue
+		}
+		tenants := users[name]
+		sort.Strings(tenants)
+		if tenants == nil {
+			tenants = []string{}
+		}
+		rows = append(rows, model.ServerImageRow{
+			Name: name, Version: im.Version, Commit: im.Commit, Build: im.Build, SHA256: im.SHA256,
+			PreparedAt: im.PreparedAt, PreparedBy: im.PreparedBy, Tenants: tenants,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows
 }
 
 // pythonEnvDefault is <rag-root>/envs/ragstack, the shared env the deployment

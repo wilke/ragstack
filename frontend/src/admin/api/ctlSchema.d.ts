@@ -469,7 +469,7 @@ export interface paths {
         };
         /**
          * Prepared artifacts
-         * @description The prepared artifacts in the registry's `artifacts{}`, newest `prepared_at` first, each with the tenants whose `artifact_id` names it. This is the list `tenant create` picks an `artifact_id` from; preparing an artifact stays CLI-only (`fleet artifact prepare`). Paths are not part of the answer.
+         * @description The prepared artifacts in the registry's `artifacts{}`, newest `prepared_at` first, each with the tenants whose `artifact_id` names it. This is the list `tenant create` picks an `artifact_id` from; preparing an artifact stays CLI-only (`fleet artifact prepare`). `server_images` is the registry's prepared API server images (`server_images{}`), sorted by name, each with the tenants whose `server_image` names it — what an image-mode upgrade picks from; preparing one is CLI-only too (`fleet image prepare --sif`). Paths are not part of the answer.
          */
         get: operations["ctlArtifactsList"];
         put?: never;
@@ -657,6 +657,13 @@ export interface components {
              */
             handover_phase?: "released" | "taken";
             /**
+             * @description How the tenant's API is run: `image` — an apptainer instance of the server image named by `server_image` (the registry row's `server_image` is present); `worktree` — a host uvicorn from the tenant's worktree under its python env. Optional, so that a response this daemon writes stays readable by a client that predates the field; this daemon always sends it.
+             * @enum {string}
+             */
+            api_mode?: "image" | "worktree";
+            /** @description The server image file name an image-mode tenant runs its API from (`ragstack-server-<version>-b<N>.sif`); ABSENT in worktree mode. */
+            server_image?: string;
+            /**
              * @description `handover` is the transitional state of the two-account handover: between `handover --release` and `handover --take` nothing of the tenant is running. Probes expect 502 for it.
              * @enum {string}
              */
@@ -746,6 +753,13 @@ export interface components {
                      */
                     handover_phase?: "released" | "taken";
                     /**
+                     * @description How the tenant's API is run: `image` — an apptainer instance of the server image named by `server_image` (the registry row's `server_image` is present); `worktree` — a host uvicorn from the tenant's worktree under its python env. Optional, so that a response this daemon writes stays readable by a client that predates the field; this daemon always sends it.
+                     * @enum {string}
+                     */
+                    api_mode?: "image" | "worktree";
+                    /** @description The server image file name an image-mode tenant runs its API from (`ragstack-server-<version>-b<N>.sif`); ABSENT in worktree mode. */
+                    server_image?: string;
+                    /**
                      * @description `handover` is the transitional state of the two-account handover: between `handover --release` and `handover --take` nothing of the tenant is running. Probes expect 502 for it.
                      * @enum {string}
                      */
@@ -798,11 +812,25 @@ export interface components {
         AbsPath: string;
         ArtifactId: string;
         GitSha: string;
+        /** @description A server image's file name as `apptainer/build-image.sh --kind server` writes it. */
+        ServerImageName: string;
         Code: {
             /** @description `git describe --tags` at the worktree; `unknown` when the gitdir is unreadable (svcbvbrc before handover). */
             tag: string;
             sha: components["schemas"]["GitSha"] | null;
             previous_artifact_id: components["schemas"]["ArtifactId"] | null;
+            /** @description The server image the tenant ran before the last `update-code` moved it. OPTIONAL and absent when there was none (`ragstack-ctl` omits it while empty, so a registry it writes stays readable by the previous binary). */
+            previous_image?: components["schemas"]["ServerImageName"];
+        };
+        Sha256Hex: string;
+        /** @description The server image a tenant's API runs from (image mode). Copied from the fleet's `server_images` record when the row was pointed at it, so the row keeps saying what it runs after the record is gone. The first two cross-field rules of `ServerImageRecord` apply. */
+        ServerImage: {
+            name: components["schemas"]["ServerImageName"];
+            version: string;
+            commit: components["schemas"]["GitSha"];
+            build: number;
+            sha256: components["schemas"]["Sha256Hex"];
+            path: components["schemas"]["AbsPath"];
         };
         Port: number;
         /** @description `base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. ONE exception: a SANDBOX block — a tenant `ragstack-ctl selftest` created — takes its base from the fixed selftest range 26000–26099 rather than from the production sequence, and therefore carries the synthetic index `1000 + (base - 26000) / port_stride` (1000–1004 at the default stride of 20). The allocator skips sandbox rows and their tombstones entirely, so a selftest never advances the production index. A row with an index ≥ 1000 whose base is NOT in the selftest range is refused, and so is a selftest-range base whose index is not the synthetic one for it. */
@@ -916,7 +944,6 @@ export interface components {
             /** @enum {string} */
             file: "tenant.env" | "secrets.env" | "provision.env";
         };
-        Sha256Hex: string;
         /** @enum {string} */
         Role: "admin" | "user";
         /** @description `"sha256:" + hex(sha256(value))[:16]` — enough to recognise a key, never enough to reconstruct it. */
@@ -1113,6 +1140,8 @@ export interface components {
             artifact_id: components["schemas"]["ArtifactId"] | null;
             code: components["schemas"]["Code"];
             python_env: components["schemas"]["AbsPath"];
+            /** @description Present ⇒ the API runs in IMAGE mode: an apptainer instance of this server image rather than a host uvicorn under `python_env`. `worktree`, `artifact_id`, `python_env` and `code` stay (the worktree is kept at the image's commit; `code.tag`/`code.sha` are the receipt's version/commit). OPTIONAL and absent for a worktree-mode tenant; `ragstack-ctl` never writes it as null. */
+            server_image?: components["schemas"]["ServerImage"];
             ports: components["schemas"]["Ports"];
             api: {
                 bind: string;
@@ -1851,7 +1880,7 @@ export interface components {
         };
         /**
          * CtlArtifactsResponse
-         * @description `GET /v1/artifacts` — the prepared artifacts the registry's `artifacts{}` holds, newest `prepared_at` first (ties by id), each with the tenants whose `artifact_id` names it. It is what `tenant create` consumes by id; preparing one stays CLI-only (`fleet artifact prepare`). Paths (worktree, ui_dist, python_env) are deliberately absent: a viewer reads this, and the host layout is not a viewer fact.
+         * @description `GET /v1/artifacts` — the prepared artifacts the registry's `artifacts{}` holds, and the prepared server images its `server_images{}` holds, newest `prepared_at` first (ties by id), each with the tenants whose `artifact_id` names it. It is what `tenant create` consumes by id; preparing one stays CLI-only (`fleet artifact prepare`). Paths (worktree, ui_dist, python_env) are deliberately absent: a viewer reads this, and the host layout is not a viewer fact.
          */
         artifacts_response: {
             artifacts: {
@@ -1862,6 +1891,18 @@ export interface components {
                 prepared_by: string;
                 schema_compatible: boolean;
                 /** @description Registry names of the tenants whose `artifact_id` is this artifact, sorted. Empty when nothing uses it. */
+                tenants: components["schemas"]["TenantName"][];
+            }[];
+            /** @description The prepared API server images the registry's `server_images{}` holds (`fleet image prepare --sif`, CLI-only), sorted by name, each with the tenants whose `server_image` names it. What `tenant update-code --image` and `tenant create --image` consume by name. The store path is deliberately absent, as the artifacts' paths are. Empty until the first prepare. */
+            server_images: {
+                name: components["schemas"]["ServerImageName"];
+                version: string;
+                commit: components["schemas"]["GitSha"];
+                build: number;
+                sha256: components["schemas"]["Sha256Hex"];
+                prepared_at: components["schemas"]["Timestamp"];
+                prepared_by: string;
+                /** @description Registry names of the tenants whose `server_image.name` is this image, sorted. Empty when nothing runs it. */
                 tenants: components["schemas"]["TenantName"][];
             }[];
         };
@@ -1924,6 +1965,16 @@ export interface components {
             /** @description Operator-asserted from the release notes at prepare time: `update-code` to this artifact needs no store/DB migration and can be rolled back as a whole generation. */
             schema_compatible: boolean;
         };
+        /** @description One prepared server image in the ctl's image store. The values are the receipt's (`version`, `commit`, `build`) and the file's (`sha256`, `path`). Three cross-field rules are enforced by `ragstack-ctl`'s Go mirror, not this schema: the name's `-b<N>` equals `build`; `path`'s basename equals the name with every `+` spelled `-plus-` (a `+sha` dev build's name is legal, but `+` is outside the charset of every path the ctl writes or binds, so the store spells it out); and no two records share a `path`. */
+        ServerImageRecord: {
+            version: string;
+            commit: components["schemas"]["GitSha"];
+            build: number;
+            sha256: components["schemas"]["Sha256Hex"];
+            path: components["schemas"]["AbsPath"];
+            prepared_at: components["schemas"]["Timestamp"];
+            prepared_by: string;
+        };
         Tombstone: {
             manifest_name: components["schemas"]["TenantName"];
             index: number;
@@ -1972,6 +2023,14 @@ export interface components {
             /** @description Prepared artifacts, keyed by id. Prepared ONLY by the CLI (`fleet artifact prepare --tag`); the HTTP API consumes ids and never a git ref or path. */
             artifacts: {
                 [key: string]: components["schemas"]["Artifact"];
+            };
+            /**
+             * @description Prepared API SERVER images, keyed by file name (`ragstack-server-<version>-b<N>.sif`). Prepared ONLY by the CLI (`fleet image prepare --sif PATH`), which verifies the file's sha256 against its receipt, the image's labels against the receipt and the receipt's commit against the mirror before copying both into `<ctl_state_dir>/images/server/`; the HTTP API consumes names and never a path.
+             *
+             *     OPTIONAL, and absent until the first prepare: `ragstack-ctl` omits it while empty so a registry it writes stays readable by the previous binary. Once present, an older binary refuses the registry — the first prepare is a one-way door (PR-F D6), so the new ctl is installed and selftested before it.
+             */
+            server_images?: {
+                [key: string]: components["schemas"]["ServerImageRecord"];
             };
             tenants: {
                 [key: string]: components["schemas"]["Tenant"];
@@ -2030,6 +2089,27 @@ export interface components {
                     prepared_by: string;
                     /** @description Operator-asserted from the release notes at prepare time: `update-code` to this artifact needs no store/DB migration and can be rolled back as a whole generation. */
                     schema_compatible: boolean;
+                };
+                /** @description A server image's file name as `apptainer/build-image.sh --kind server` writes it. */
+                ServerImageName: string;
+                /** @description One prepared server image in the ctl's image store. The values are the receipt's (`version`, `commit`, `build`) and the file's (`sha256`, `path`). Three cross-field rules are enforced by `ragstack-ctl`'s Go mirror, not this schema: the name's `-b<N>` equals `build`; `path`'s basename equals the name with every `+` spelled `-plus-` (a `+sha` dev build's name is legal, but `+` is outside the charset of every path the ctl writes or binds, so the store spells it out); and no two records share a `path`. */
+                ServerImageRecord: {
+                    version: string;
+                    commit: components["schemas"]["GitSha"];
+                    build: number;
+                    sha256: components["schemas"]["Sha256Hex"];
+                    path: components["schemas"]["AbsPath"];
+                    prepared_at: components["schemas"]["Timestamp"];
+                    prepared_by: string;
+                };
+                /** @description The server image a tenant's API runs from (image mode). Copied from the fleet's `server_images` record when the row was pointed at it, so the row keeps saying what it runs after the record is gone. The first two cross-field rules of `ServerImageRecord` apply. */
+                ServerImage: {
+                    name: components["schemas"]["ServerImageName"];
+                    version: string;
+                    commit: components["schemas"]["GitSha"];
+                    build: number;
+                    sha256: components["schemas"]["Sha256Hex"];
+                    path: components["schemas"]["AbsPath"];
                 };
                 Tombstone: {
                     manifest_name: components["schemas"]["TenantName"];
@@ -2276,6 +2356,8 @@ export interface components {
                     tag: string;
                     sha: components["schemas"]["GitSha"] | null;
                     previous_artifact_id: components["schemas"]["ArtifactId"] | null;
+                    /** @description The server image the tenant ran before the last `update-code` moved it. OPTIONAL and absent when there was none (`ragstack-ctl` omits it while empty, so a registry it writes stays readable by the previous binary). */
+                    previous_image?: components["schemas"]["ServerImageName"];
                 };
                 LastOp: {
                     job_id: string;
@@ -2325,6 +2407,8 @@ export interface components {
                     artifact_id: components["schemas"]["ArtifactId"] | null;
                     code: components["schemas"]["Code"];
                     python_env: components["schemas"]["AbsPath"];
+                    /** @description Present ⇒ the API runs in IMAGE mode: an apptainer instance of this server image rather than a host uvicorn under `python_env`. `worktree`, `artifact_id`, `python_env` and `code` stay (the worktree is kept at the image's commit; `code.tag`/`code.sha` are the receipt's version/commit). OPTIONAL and absent for a worktree-mode tenant; `ragstack-ctl` never writes it as null. */
+                    server_image?: components["schemas"]["ServerImage"];
                     ports: components["schemas"]["Ports"];
                     api: {
                         bind: string;
@@ -2438,6 +2522,11 @@ export interface components {
                 name: components["schemas"]["TenantName"];
                 manifest_name: components["schemas"]["TenantName"];
                 ports: components["schemas"]["Ports"];
+            };
+            /** @description The API server image the tenant ran from when the bundle was taken (PR-F image mode): its file name and sha256, copied from the registry row's `server_image`. OPTIONAL and ABSENT for a tenant in worktree mode — and absent in every bundle written before the field existed, so `backup verify` does not condemn them. The image itself is NOT in the bundle; a restore needs the same image prepared on its host (`fleet image prepare`), and this pair is how it knows which. */
+            server_image?: {
+                name: components["schemas"]["ServerImageName"];
+                sha256: components["schemas"]["Sha256Hex"];
             };
             artifact: {
                 id: components["schemas"]["ArtifactId"] | null;

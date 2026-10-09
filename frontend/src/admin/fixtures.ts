@@ -814,6 +814,19 @@ export const artifactsFixture: ArtifactsResponse = {
       tenants: ["hackathon"],
     },
   ],
+  // PR-F: the prepared server images (`fleet image prepare --sif`).
+  server_images: [
+    {
+      name: "ragstack-server-v1.6.6-b1.sif",
+      version: "v1.6.6",
+      commit: "4c1322e1430f7ae1d1d869c2917fa01fe1d98fa6",
+      build: 1,
+      sha256: "3fe461f9e64cbe6d6dd229ced558704eb399dcc51639ccf1976c3fa5f004e7fb",
+      prepared_at: "2026-10-09T09:00:00Z",
+      prepared_by: "wilke",
+      tenants: [],
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -1000,6 +1013,7 @@ export const hostileArtifactsFixture: ArtifactsResponse = {
     },
     ...artifactsFixture.artifacts,
   ],
+  server_images: artifactsFixture.server_images,
 };
 
 // ---------------------------------------------------------------------------

@@ -200,6 +200,7 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 		// commit or an abandon — and an operator looking at a fleet has to be
 		// able to see that.
 		HandoverPhase: HandoverPhase(t),
+		APIMode:       APIMode(t),
 		CodeTag:       orDefault(t.Code.Tag, "unknown"),
 		DriftCount:    len(t.Drift),
 		Ports: model.FleetPorts{
@@ -214,6 +215,7 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 		DiskBytes:  0,
 		LastBackup: nil,
 	}
+	r.ServerImage = ServerImageName(t)
 	if n, err := p.Disk.Usage(ctx, t.DataDir); err == nil && n > 0 {
 		r.DiskBytes = n
 	}
@@ -221,6 +223,23 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 		r.LastBackup = &model.LastBackup{At: b.At, Fenced: b.Fenced, Verified: b.Verified, Checked: b.Checked}
 	}
 	return r
+}
+
+// APIMode is the row's API mode word: `image` when it runs its API from a
+// server image, `worktree` otherwise.
+func APIMode(t *registry.Tenant) string {
+	if t.ImageMode() {
+		return model.APIModeImage
+	}
+	return model.APIModeWorktree
+}
+
+// ServerImageName is the image file an image-mode row runs from, or null.
+func ServerImageName(t *registry.Tenant) model.NullString {
+	if !t.ImageMode() {
+		return ""
+	}
+	return model.NullString(t.ServerImage.Name)
 }
 
 // StoresMode collapses the two store ownerships into the dashboard's word.

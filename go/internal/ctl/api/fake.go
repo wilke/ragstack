@@ -118,6 +118,17 @@ const ConformanceMirror = "/rag/repos/ragstack.git"
 // so it matches the contract's GitSha, and recognisably not a real commit.
 const conformanceSHA = "c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0"
 
+// ConformanceServerImage is the prepared server image the fixture fleet
+// carries (PR-F), so that `GET /v1/artifacts` answers a non-empty
+// `server_images` on the fake host and the image-mode verbs have a name to
+// consume. No fixture tenant runs it: nothing in the fixture is in image mode.
+const ConformanceServerImage = "ragstack-server-conformance-b1.sif"
+
+// conformanceImageSHA256 is that image's recorded digest: sha256 of the bytes
+// "conformance server image", so a fake host that seeds the file with them
+// agrees with the record.
+const conformanceImageSHA256 = "72da2fe3835d88ff4d49d45f2d4ba94cc855c07f9a7010b053274669ac23805f"
+
 // NewFakeBackend returns the fixture backend.
 func NewFakeBackend() *FakeBackend {
 	return &FakeBackend{fleet: FixtureFleet(), now: time.Now}
@@ -163,6 +174,12 @@ func FixtureFleet() *registry.Fleet {
 		PythonEnv:  "/rag/envs/ragstack",
 		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
 	}
+	// One prepared server image, at the conformance artifact's commit.
+	f.ServerImages = map[string]*registry.ServerImageRecord{ConformanceServerImage: {
+		Version: "conformance", Commit: conformanceSHA, Build: 1, SHA256: conformanceImageSHA256,
+		Path:       "/rag/data/ctl/images/server/" + ConformanceServerImage,
+		PreparedAt: "2026-10-09T00:00:00Z", PreparedBy: "local:0",
+	}}
 	return f
 }
 
@@ -598,8 +615,11 @@ func (b *FakeBackend) row(t *registry.Tenant) model.FleetRow {
 		// fleet.Row's projection, so the dashboard shows the same thing with
 		// fake drivers as it does on a host.
 		HandoverPhase: fleet.HandoverPhase(t),
-		Units:         rowUnits(t),
-		DiskBytes:     fakeDisk(t.Name),
+		// The API mode and image, fleet.Row's projection again (PR-F).
+		APIMode:     fleet.APIMode(t),
+		ServerImage: fleet.ServerImageName(t),
+		Units:       rowUnits(t),
+		DiskBytes:   fakeDisk(t.Name),
 		// The bundle the backup verb recorded, if one has run against this
 		// fixture: the projection is fleet.Row's, so what the dashboard shows
 		// with fake drivers is what it shows on a host.

@@ -237,3 +237,21 @@ func TestIsSelftestBlock(t *testing.T) {
 		t.Errorf("production block 99 (%d) reaches the selftest range at %d", Block(99).Base, SelftestBase)
 	}
 }
+
+func TestServerImagesDirIsInsideTheCtlStateDir(t *testing.T) {
+	for _, r := range []Roots{
+		NewRoots("/rag", Overrides{}),
+		NewRoots("/tmp/x", Overrides{CtlStateDir: "/srv/ctl-state"}),
+	} {
+		got := r.ServerImagesDir()
+		if want := filepath.Join(r.CtlStateDir, "images", "server"); got != want {
+			t.Errorf("ServerImagesDir = %q, want %q", got, want)
+		}
+		if !strings.HasPrefix(got, r.CtlStateDir+"/") {
+			t.Errorf("%q is not under the approved root %q", got, r.CtlStateDir)
+		}
+	}
+	if got := NewRoots("/rag", Overrides{}).ServerImagesDir(); got != "/rag/data/ctl/images/server" {
+		t.Errorf("standard layout: %q", got)
+	}
+}

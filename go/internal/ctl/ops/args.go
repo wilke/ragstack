@@ -240,6 +240,9 @@ const (
 	// would be a ref grammar in which an option could be smuggled.
 	patGitRef  = `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`
 	patAbsPath = `^/[A-Za-z0-9._/-]{0,255}$`
+	// patImageSourcePath is patAbsPath plus `+`: a `+sha` dev build's image
+	// file carries one, and the source is only ever READ (ops/image.go).
+	patImageSourcePath = `^/[A-Za-z0-9._+/-]{0,255}$`
 	// patSandboxName is patTenantName narrowed to the selftest's own names.
 	//
 	// The prefix is part of the GRAMMAR rather than a check further down,
@@ -469,6 +472,12 @@ var argSchemas = map[string]argSpec{
 		{Name: "python_env", Kind: argString, Pattern: patAbsPath},
 		{Name: "schema_compatible", Kind: argBool},
 	}},
+	// image-prepare is CLI-only for artifact-prepare's reason: its argument
+	// is a PATH to a file the ctl will later run (ops/image.go).
+	"image-prepare": {Verb: "image-prepare", Fields: []argField{
+		{Name: "sif", Kind: argString, Required: true, Pattern: patImageSourcePath},
+		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
+	}},
 	"gateway-apply":  {Verb: "gateway-apply"},
 	"gateway-reload": {Verb: "gateway-reload"},
 	// PUT /v1/settings: the HTTP layer validates the writable subset of
@@ -495,7 +504,7 @@ var ContractVerbs = []string{
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
 var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind", "set-supervisor",
-	"env-pg-password"}
+	"env-pg-password", "image-prepare"}
 
 // ---------------------------------------------------------------- helpers
 

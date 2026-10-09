@@ -723,6 +723,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
 		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,
 		BootCronMissing, BootCronPresent, StoresUnconfirmed,
+		ServerImageMissing, ServerImageMismatch, ServerImageUnregistered, ImageDirOutsideBindRoots,
 	} {
 		known[c] = true
 	}
@@ -1055,9 +1056,11 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		// cannot write. `ops.TestEveryVerbHasAPreconditionRow` is what keeps
 		// the next one from being forgotten.
 		"artifact-prepare", "create-sandbox", "gateway-reload",
+		// PR-F F3: admitting a server image into the ctl's store.
+		"image-prepare",
 	}
-	if len(contract) != 32 {
-		t.Fatalf("the op list has 32 entries, this copy has %d", len(contract))
+	if len(contract) != 33 {
+		t.Fatalf("the op list has 33 entries, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {

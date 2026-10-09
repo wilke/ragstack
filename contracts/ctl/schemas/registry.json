@@ -76,6 +76,12 @@
       "propertyNames": { "$ref": "#/$defs/ArtifactId" },
       "additionalProperties": { "$ref": "#/$defs/Artifact" }
     },
+    "server_images": {
+      "description": "Prepared API SERVER images, keyed by file name (`ragstack-server-<version>-b<N>.sif`). Prepared ONLY by the CLI (`fleet image prepare --sif PATH`), which verifies the file's sha256 against its receipt, the image's labels against the receipt and the receipt's commit against the mirror before copying both into `<ctl_state_dir>/images/server/`; the HTTP API consumes names and never a path.\n\nOPTIONAL, and absent until the first prepare: `ragstack-ctl` omits it while empty so a registry it writes stays readable by the previous binary. Once present, an older binary refuses the registry — the first prepare is a one-way door (PR-F D6), so the new ctl is installed and selftested before it.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/ServerImageName" },
+      "additionalProperties": { "$ref": "#/$defs/ServerImageRecord" }
+    },
     "tenants": {
       "type": "object",
       "propertyNames": { "$ref": "#/$defs/TenantName" },
@@ -181,6 +187,40 @@
           "description": "Operator-asserted from the release notes at prepare time: `update-code` to this artifact needs no store/DB migration and can be rolled back as a whole generation.",
           "type": "boolean"
         }
+      },
+      "additionalProperties": false
+    },
+    "ServerImageName": {
+      "description": "A server image's file name as `apptainer/build-image.sh --kind server` writes it.",
+      "type": "string",
+      "pattern": "^ragstack-server-[A-Za-z0-9._+-]+-b[0-9]+\\.sif$"
+    },
+    "ServerImageRecord": {
+      "description": "One prepared server image in the ctl's image store. The values are the receipt's (`version`, `commit`, `build`) and the file's (`sha256`, `path`). Three cross-field rules are enforced by `ragstack-ctl`'s Go mirror, not this schema: the name's `-b<N>` equals `build`; `path`'s basename equals the name with every `+` spelled `-plus-` (a `+sha` dev build's name is legal, but `+` is outside the charset of every path the ctl writes or binds, so the store spells it out); and no two records share a `path`.",
+      "type": "object",
+      "required": ["version", "commit", "build", "sha256", "path", "prepared_at", "prepared_by"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "commit": { "$ref": "#/$defs/GitSha" },
+        "build": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "path": { "$ref": "#/$defs/AbsPath" },
+        "prepared_at": { "$ref": "#/$defs/Timestamp" },
+        "prepared_by": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ServerImage": {
+      "description": "The server image a tenant's API runs from (image mode). Copied from the fleet's `server_images` record when the row was pointed at it, so the row keeps saying what it runs after the record is gone. The first two cross-field rules of `ServerImageRecord` apply.",
+      "type": "object",
+      "required": ["name", "version", "commit", "build", "sha256", "path"],
+      "properties": {
+        "name": { "$ref": "#/$defs/ServerImageName" },
+        "version": { "type": "string", "minLength": 1 },
+        "commit": { "$ref": "#/$defs/GitSha" },
+        "build": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "path": { "$ref": "#/$defs/AbsPath" }
       },
       "additionalProperties": false
     },
@@ -555,7 +595,11 @@
       "properties": {
         "tag": { "description": "`git describe --tags` at the worktree; `unknown` when the gitdir is unreadable (svcbvbrc before handover).", "type": "string", "minLength": 1 },
         "sha": { "oneOf": [ { "$ref": "#/$defs/GitSha" }, { "type": "null" } ] },
-        "previous_artifact_id": { "oneOf": [ { "$ref": "#/$defs/ArtifactId" }, { "type": "null" } ] }
+        "previous_artifact_id": { "oneOf": [ { "$ref": "#/$defs/ArtifactId" }, { "type": "null" } ] },
+        "previous_image": {
+          "description": "The server image the tenant ran before the last `update-code` moved it. OPTIONAL and absent when there was none (`ragstack-ctl` omits it while empty, so a registry it writes stays readable by the previous binary).",
+          "$ref": "#/$defs/ServerImageName"
+        }
       },
       "additionalProperties": false
     },
@@ -628,6 +672,10 @@
         },
         "code": { "$ref": "#/$defs/Code" },
         "python_env": { "$ref": "#/$defs/AbsPath" },
+        "server_image": {
+          "description": "Present ⇒ the API runs in IMAGE mode: an apptainer instance of this server image rather than a host uvicorn under `python_env`. `worktree`, `artifact_id`, `python_env` and `code` stay (the worktree is kept at the image's commit; `code.tag`/`code.sha` are the receipt's version/commit). OPTIONAL and absent for a worktree-mode tenant; `ragstack-ctl` never writes it as null.",
+          "$ref": "#/$defs/ServerImage"
+        },
         "ports": { "$ref": "#/$defs/Ports" },
         "api": {
           "type": "object",

@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "artifacts_response.json",
   "title": "CtlArtifactsResponse",
-  "description": "`GET /v1/artifacts` — the prepared artifacts the registry's `artifacts{}` holds, newest `prepared_at` first (ties by id), each with the tenants whose `artifact_id` names it. It is what `tenant create` consumes by id; preparing one stays CLI-only (`fleet artifact prepare`). Paths (worktree, ui_dist, python_env) are deliberately absent: a viewer reads this, and the host layout is not a viewer fact.",
+  "description": "`GET /v1/artifacts` — the prepared artifacts the registry's `artifacts{}` holds, and the prepared server images its `server_images{}` holds, newest `prepared_at` first (ties by id), each with the tenants whose `artifact_id` names it. It is what `tenant create` consumes by id; preparing one stays CLI-only (`fleet artifact prepare`). Paths (worktree, ui_dist, python_env) are deliberately absent: a viewer reads this, and the host layout is not a viewer fact.",
   "type": "object",
-  "required": ["artifacts"],
+  "required": ["artifacts", "server_images"],
   "properties": {
     "artifacts": {
       "type": "array",
@@ -20,6 +20,30 @@
           "schema_compatible": { "type": "boolean" },
           "tenants": {
             "description": "Registry names of the tenants whose `artifact_id` is this artifact, sorted. Empty when nothing uses it.",
+            "type": "array",
+            "items": { "$ref": "registry.json#/$defs/TenantName" },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "server_images": {
+      "description": "The prepared API server images the registry's `server_images{}` holds (`fleet image prepare --sif`, CLI-only), sorted by name, each with the tenants whose `server_image` names it. What `tenant update-code --image` and `tenant create --image` consume by name. The store path is deliberately absent, as the artifacts' paths are. Empty until the first prepare.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "commit", "build", "sha256", "prepared_at", "prepared_by", "tenants"],
+        "properties": {
+          "name": { "$ref": "registry.json#/$defs/ServerImageName" },
+          "version": { "type": "string", "minLength": 1 },
+          "commit": { "$ref": "registry.json#/$defs/GitSha" },
+          "build": { "type": "integer", "minimum": 1 },
+          "sha256": { "$ref": "registry.json#/$defs/Sha256Hex" },
+          "prepared_at": { "$ref": "registry.json#/$defs/Timestamp" },
+          "prepared_by": { "type": "string", "minLength": 1 },
+          "tenants": {
+            "description": "Registry names of the tenants whose `server_image.name` is this image, sorted. Empty when nothing runs it.",
             "type": "array",
             "items": { "$ref": "registry.json#/$defs/TenantName" },
             "uniqueItems": true

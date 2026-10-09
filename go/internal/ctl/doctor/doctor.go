@@ -106,6 +106,19 @@ type Options struct {
 	// there for the daemon; a test passes an explicit map instead of
 	// mutating its own environment.
 	CtlEnv map[string]string
+	// APIBindRoots are the host roots an image-mode API instance may have
+	// bound into it (the daemon's CTL_API_BIND_ROOTS; a `:ro`/`:rw` suffix is
+	// ignored). Nil reads CTL_API_BIND_ROOTS from the process environment and
+	// falls back to DefaultAPIBindRoots. image_dir_outside_bind_roots is
+	// raised for a GOWE_IMAGE_DIRS entry outside all of them.
+	APIBindRoots []string
+	// ImageHashes caches server-image hashes by (path, size, mtime). Nil uses
+	// one cache per process.
+	ImageHashes *ImageHashCache
+	// HashImage is the sha256 of an image file; nil streams the file. A test
+	// seam (and a counter: the hash is recomputed only under `--op start` and
+	// `--op update-code`).
+	HashImage func(path string) (string, error)
 }
 
 // Run diagnoses fleet against the host and returns the contract's response.
@@ -420,6 +433,7 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 	d.permissionChecks(t)
 	d.homePathCheck(t)
 	d.capabilityChecks(t)
+	d.serverImageChecks(t)
 }
 
 // notLive reports a row whose tenant no longer exists as a running tree:
@@ -951,6 +965,13 @@ func (d *run) codeChecks(t *registry.Tenant) {
 		d.addRepair(model.LevelWarn, WorktreeOutsideMirror, t.Name,
 			fmt.Sprintf("%s: gitdir %s is neither in the bare mirror nor in a prepared artifact", t.Worktree, g.Path), "handover")
 	}
+	if t.ImageMode() {
+		// The API imports ragstack from the IMAGE (/opt/ragstack/python),
+		// not from python_env + the worktree: python_env is recorded and
+		// unused in image mode, so where it would resolve the package says
+		// nothing about the code that runs.
+		return
+	}
 	resolved, err := d.opts.ImportCheck(t.PythonEnv, t.Worktree)
 	if err != nil || resolved == "" {
 		return
@@ -1037,7 +1058,11 @@ func (d *run) homePathCheck(t *registry.Tenant) {
 	}
 	check("data_dir", t.DataDir)
 	check("worktree", t.Worktree)
-	check("python_env", t.PythonEnv)
+	if !t.ImageMode() {
+		// Recorded and unused in image mode (the API runs the image's own
+		// interpreter), so a home path there is not a production dependency.
+		check("python_env", t.PythonEnv)
+	}
 	if l, ok := d.ports[t.Ports.API]; ok {
 		check("live api process cwd", l.Cwd)
 		if len(l.Cmdline) > 0 {

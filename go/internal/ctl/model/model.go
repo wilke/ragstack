@@ -321,7 +321,22 @@ type FleetRow struct {
 	// fact: a response this binary writes must stay readable by a client that
 	// predates the field.
 	HandoverPhase NullString `json:"handover_phase,omitempty"`
+	// APIMode is how the API is run: APIModeImage (an apptainer instance of
+	// ServerImage) or APIModeWorktree (a host uvicorn from the worktree).
+	// Always set by this daemon; omitempty for the reason HandoverPhase is.
+	APIMode string `json:"api_mode,omitempty"`
+	// ServerImage is the image file an image-mode row runs from; absent in
+	// worktree mode.
+	ServerImage NullString `json:"server_image,omitempty"`
+	// TODO(PR-F F4): the API instance's pid (instance table + Descends) once
+	// the instance API leg exists; status.api_pid still reports the port owner.
 }
+
+// The two API modes a FleetRow reports.
+const (
+	APIModeImage    = "image"
+	APIModeWorktree = "worktree"
+)
 
 // Listening reports which of a tenant's allocated ports have a listener.
 type Listening struct {
@@ -612,7 +627,21 @@ type SettingsResponse struct {
 
 // ArtifactsResponse is GET /v1/artifacts (artifacts_response.json).
 type ArtifactsResponse struct {
-	Artifacts []ArtifactRow `json:"artifacts"`
+	Artifacts    []ArtifactRow    `json:"artifacts"`
+	ServerImages []ServerImageRow `json:"server_images"`
+}
+
+// ServerImageRow is one prepared server image and the tenants running it. The
+// store path is deliberately absent, as the artifacts' paths are.
+type ServerImageRow struct {
+	Name       string   `json:"name"`
+	Version    string   `json:"version"`
+	Commit     string   `json:"commit"`
+	Build      int      `json:"build"`
+	SHA256     string   `json:"sha256"`
+	PreparedAt string   `json:"prepared_at"`
+	PreparedBy string   `json:"prepared_by"`
+	Tenants    []string `json:"tenants"`
 }
 
 // ArtifactRow is one prepared artifact and the tenants built from it. The

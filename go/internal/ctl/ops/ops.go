@@ -183,6 +183,10 @@ func NewRegistry(d Deps) jobs.Registry {
 	// `--direct` decisions and neither belongs on an HTTP surface a session can
 	// reach.
 	add("artifact-prepare", false, planArtifactPrepare)
+	// image-prepare is CLI-ONLY for the same reason: it takes the PATH of an
+	// image the ctl will later run, and it decides which server images a
+	// tenant may be moved onto (ops/image.go).
+	add("image-prepare", false, planImagePrepare)
 	// create-sandbox is CLI-only for the same reason and for one more: it is
 	// the verb that allocates out of the SELFTEST port range, and nothing
 	// reachable over the network should be able to do that (ops/sandbox.go).

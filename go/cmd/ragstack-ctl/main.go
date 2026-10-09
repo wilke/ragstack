@@ -111,6 +111,10 @@ func usage() {
   fleet status [--json]                     the dashboard view: host band + one row per tenant
   fleet artifact prepare --tag REF          resolve, check out and npm ci a release (CLI-only)
   fleet artifact list [--json]              the prepared artifacts
+  fleet image prepare --sif PATH            verify (sha256, receipt, labels, mirror) and store a built
+                                            server image (CLI-only; the first one is a one-way door:
+                                            older ctl binaries cannot read the registry after it)
+  fleet image list [--json]                 the prepared server images
   fleet grant --user NAME [--roots A,B,C] [--recursive] [--revoke] [--dry-run]
                                             POSIX-ACL access to the managed roots for a service
                                             account. LOCAL action, run as the path OWNER — only an
@@ -1230,6 +1234,9 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) > 0 && args[0] == "artifact" {
 		return cmdFleetArtifact(args[1:], registryPath, ragRoot, jsonOut)
 	}
+	if len(args) > 0 && args[0] == "image" {
+		return cmdFleetImage(args[1:], registryPath, ragRoot, jsonOut)
+	}
 	if len(args) > 0 && args[0] == "grant" {
 		return cmdFleetGrant(args[1:], ragRoot, jsonOut)
 	}
@@ -1244,6 +1251,7 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 || args[0] != "status" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl fleet status [--json]")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet artifact prepare|list …")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet image prepare|list …")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet grant --user NAME [--dry-run] …")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet start|stop --all [--direct]")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet enable-boot --cron|--no-cron [--dry-run]")
@@ -1271,13 +1279,14 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	fmt.Fprintf(stdout, "host: %.1f GiB free · linger %v · ctl unit active %v · vm.max_map_count %d · %s [%s]\n\n",
 		float64(h.DiskFreeBytes)/(1<<30), h.Linger, h.CtlUnitActive, h.VMMaxMapCount,
 		doctor.DefaultSudoersGroup, strings.Join(h.SudoersGroup, " "))
-	fmt.Fprintf(stdout, "%-12s %-8s %-9s %-10s %-9s %-22s %-6s %s\n",
-		"TENANT", "STATE", "OWNER", "STORES", "API", "HEALTH api/qdrant/es", "DRIFT", "DISK")
+	fmt.Fprintf(stdout, "%-12s %-8s %-9s %-10s %-9s %-22s %-6s %-11s %-8s %s\n",
+		"TENANT", "STATE", "OWNER", "STORES", "API", "HEALTH api/qdrant/es", "DRIFT", "DISK", "MODE", "IMAGE")
 	for _, r := range resp.Tenants {
-		fmt.Fprintf(stdout, "%-12s %-8s %-9s %-10s %-9d %-22s %-6d %.1f GiB\n",
+		fmt.Fprintf(stdout, "%-12s %-8s %-9s %-10s %-9d %-22s %-6d %-11s %-8s %s\n",
 			r.Name, r.State, r.Owner, r.StoresMode, r.Ports.API,
 			fmt.Sprintf("%s/%s/%s", r.Health.API, r.Health.Qdrant, r.Health.ES),
-			r.DriftCount, float64(r.DiskBytes)/(1<<30))
+			r.DriftCount, fmt.Sprintf("%.1f GiB", float64(r.DiskBytes)/(1<<30)),
+			orNone(r.APIMode), orNone(string(r.ServerImage)))
 	}
 	return exitOK
 }
@@ -1385,6 +1394,7 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		}
 		s := view.Summary
 		fmt.Fprintf(stdout, "%s (manifest %s) %s · owner %s · supervisor %s · code %s\n", s.Name, s.ManifestName, s.State, s.Owner, s.Supervisor, s.CodeTag)
+		fmt.Fprintf(stdout, "api mode %s · server image %s\n", orNone(s.APIMode), orNone(string(s.ServerImage)))
 		fmt.Fprintf(stdout, "ports api %d · qdrant %d · es %d   stores %s\n", s.Ports.API, s.Ports.QdrantHTTP, s.Ports.ESHTTP, s.StoresMode)
 		fmt.Fprintf(stdout, "health api %s · qdrant %s · es %s · deep %s\n", s.Health.API, s.Health.Qdrant, s.Health.ES, s.Health.Deep)
 		fmt.Fprintf(stdout, "api pid %v owner %v · listening api=%v qdrant=%v es=%v ui=%v\n",

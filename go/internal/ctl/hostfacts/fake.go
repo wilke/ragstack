@@ -38,7 +38,9 @@ type Fake struct {
 	ACLs        map[string]FakeACL // path → the two POSIX ACLs it carries
 	Gitdirs     map[string]Gitdir
 	Describes   map[string]string
-	Errs        map[string]error // "describe:<worktree>", "listeners", "maxmapcount", …
+	// HeadSHAs is GitHeadSHA's answer per worktree.
+	HeadSHAs map[string]string
+	Errs     map[string]error // "describe:<worktree>", "listeners", "maxmapcount", …
 
 	ProbeStatus map[string]int          // url → status code
 	Collections map[string]StoreListing // qdrant base url → listing
@@ -217,6 +219,18 @@ func (f *Fake) GitDescribe(worktree string) (string, error) {
 		return "", fmt.Errorf("hostfacts: no recorded describe for %s", worktree)
 	}
 	return d, nil
+}
+
+// GitHeadSHA returns the recorded HEAD sha or error.
+func (f *Fake) GitHeadSHA(worktree string) (string, error) {
+	if err := f.Errs["head:"+worktree]; err != nil {
+		return "", err
+	}
+	sha, ok := f.HeadSHAs[worktree]
+	if !ok {
+		return "", fmt.Errorf("hostfacts: no recorded HEAD for %s", worktree)
+	}
+	return sha, nil
 }
 
 // Usage returns the recorded du size.

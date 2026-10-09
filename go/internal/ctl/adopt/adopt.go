@@ -518,6 +518,10 @@ func (p *previewer) keepCtlSupervision(t *registry.Tenant, observed string, attr
 	t.Stores.Qdrant.Capabilities = prev.Stores.Qdrant.Capabilities
 	t.Stores.Elasticsearch.Capabilities = prev.Stores.Elasticsearch.Capabilities
 	t.Stores.Postgres.Capabilities = prev.Stores.Postgres.Capabilities
+	// The API mode (server_image, code.previous_image, and the code an image
+	// row runs) is carried here too, for the same reason: `--preview` shows
+	// the row `--commit` writes.
+	carryServerImage(t, prev)
 }
 
 // handoverPhaseOf renders a row's handover for a message: the phase, or

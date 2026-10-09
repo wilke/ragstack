@@ -202,6 +202,21 @@ func LiveDrift(t *registry.Tenant, p Probes, listeners map[int]hostfacts.Listene
 			Note: fmt.Sprintf(":%d %s", t.Ports.API, listeningWord(up)),
 		})
 	}
+	if t.ImageMode() {
+		// In image mode code.tag is the RECEIPT's version (v1.6.6, or a
+		// `+sha` dev build), which no describe of the worktree reproduces;
+		// what has to hold is that the worktree sits at the image's commit
+		// (gowe render, env and the static UI build read it), so the drift
+		// compares HEAD with code.sha.
+		if head, err := p.Host.GitHeadSHA(t.Worktree); err == nil && head != "" && t.Code.SHA != "" && head != string(t.Code.SHA) {
+			out = append(out, registry.Drift{
+				Code: "code_tag", Level: string(model.LevelWarn), Field: "code.sha",
+				Expected: string(t.Code.SHA), Actual: head, ObservedAt: at,
+				Note: "the worktree is not at the server image's commit (" + t.ServerImage.Name + ")",
+			})
+		}
+		return out
+	}
 	if tag, err := p.Host.GitDescribe(t.Worktree); err == nil && tag != "" && t.Code.Tag != "" && tag != t.Code.Tag {
 		out = append(out, registry.Drift{
 			Code: "code_tag", Level: string(model.LevelWarn), Field: "code.tag",

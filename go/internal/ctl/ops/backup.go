@@ -1630,7 +1630,7 @@ func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence
 	if sc != nil && sc.Job != nil && sc.Job.Principal != "" {
 		principal = sc.Job.Principal
 	}
-	return map[string]any{
+	m := map[string]any{
 		"schema_version": version.SchemaVersion,
 		"kind":           bundleKind,
 		"scope":          scope.list(),
@@ -1711,6 +1711,14 @@ func (p *planner) manifestFrom(sc *jobs.StepContext, id, createdAt string, fence
 		"warnings":   warnings,
 		"sha256sums": sumsDigest,
 	}
+	// The image an image-mode tenant runs from, by name and digest (PR-F).
+	// Absent in worktree mode, which keeps every worktree bundle exactly the
+	// document it was, and a bundle readable by a ctl that predates the field.
+	// The image is not IN the bundle: a restore needs it prepared on its host.
+	if si := t.ServerImage; si != nil {
+		m["server_image"] = map[string]any{"name": si.Name, "sha256": si.SHA256}
+	}
+	return m
 }
 
 // externalRefs is what the bundle does NOT contain, so a recovery knows what

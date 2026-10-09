@@ -35,6 +35,16 @@
       },
       "additionalProperties": false
     },
+    "server_image": {
+      "description": "The API server image the tenant ran from when the bundle was taken (PR-F image mode): its file name and sha256, copied from the registry row's `server_image`. OPTIONAL and ABSENT for a tenant in worktree mode — and absent in every bundle written before the field existed, so `backup verify` does not condemn them. The image itself is NOT in the bundle; a restore needs the same image prepared on its host (`fleet image prepare`), and this pair is how it knows which.",
+      "type": "object",
+      "required": ["name", "sha256"],
+      "properties": {
+        "name": { "$ref": "registry.json#/$defs/ServerImageName" },
+        "sha256": { "$ref": "registry.json#/$defs/Sha256Hex" }
+      },
+      "additionalProperties": false
+    },
     "artifact": {
       "type": "object",
       "required": ["id", "sha", "tag"],

@@ -807,6 +807,47 @@ func TestArtifactsListsThePreparedArtifactsNewestFirst(t *testing.T) {
 	}
 }
 
+// The same viewer read lists the prepared SERVER images, sorted by name, with
+// the tenants running each — and without the store path.
+func TestArtifactsListsThePreparedServerImages(t *testing.T) {
+	h := newTestServer(t)
+	w := do(t, h, http.MethodGet, "/v1/artifacts", map[string]string{auth.HeaderAPIKey: viewerKey}, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("viewer: %d %s", w.Code, w.Body.String())
+	}
+	var body model.ArtifactsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.ServerImages) != 1 || body.ServerImages[0].Name != ConformanceServerImage ||
+		body.ServerImages[0].Build != 1 || body.ServerImages[0].Tenants == nil {
+		t.Fatalf("server_images = %+v", body.ServerImages)
+	}
+	if strings.Contains(w.Body.String(), "/images/server") {
+		t.Errorf("the image store path reached a viewer: %s", w.Body.String())
+	}
+
+	f := &registry.Fleet{
+		Tenants: map[string]*registry.Tenant{
+			"b": {Name: "b", ServerImage: &registry.ServerImage{Name: "ragstack-server-x-b1.sif"}},
+			"a": {Name: "a", ServerImage: &registry.ServerImage{Name: "ragstack-server-x-b1.sif"}},
+			"c": {Name: "c"},
+		},
+		ServerImages: map[string]*registry.ServerImageRecord{
+			"ragstack-server-x-b2.sif": {Version: "x", Build: 2},
+			"ragstack-server-x-b1.sif": {Version: "x", Build: 1},
+		},
+	}
+	rows := artifactsResponse(f).ServerImages
+	if len(rows) != 2 || rows[0].Name != "ragstack-server-x-b1.sif" || strings.Join(rows[0].Tenants, ",") != "a,b" ||
+		len(rows[1].Tenants) != 0 || rows[1].Tenants == nil {
+		t.Errorf("rows = %+v", rows)
+	}
+	if got := artifactsResponse(&registry.Fleet{}).ServerImages; got == nil || len(got) != 0 {
+		t.Errorf("no images: %#v, want an empty list (never null)", got)
+	}
+}
+
 func TestArtifactsOrderIsDeterministic(t *testing.T) {
 	f := &registry.Fleet{Tenants: map[string]*registry.Tenant{}, Artifacts: map[string]*registry.Artifact{
 		"b": {SHA: strings.Repeat("b", 40), Tag: "b", PreparedAt: "2026-09-01T00:00:00Z", PreparedBy: "x"},

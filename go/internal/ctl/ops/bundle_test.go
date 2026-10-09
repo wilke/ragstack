@@ -801,3 +801,41 @@ func TestBackupWithNoScopeIsTheFullBundle(t *testing.T) {
 		t.Errorf("last_backup.scope = %q", got)
 	}
 }
+
+// An image-mode tenant's bundle names the server image it ran from (PR-F):
+// name and digest, never the store path, valid against the contract. A
+// worktree tenant's bundle carries no such member at all.
+func TestTheBundleNamesTheServerImageOfAnImageModeTenant(t *testing.T) {
+	sha := strings.Repeat("cd", 32)
+	imageRow := func(tn *registry.Tenant) {
+		managed(tn)
+		tn.ServerImage = &registry.ServerImage{Name: "ragstack-server-v1.6.6-b1.sif", Version: "v1.6.6",
+			Commit: strings.Repeat("ab", 20), Build: 1, SHA256: sha,
+			Path: "/rag/data/ctl/images/server/ragstack-server-v1.6.6-b1.sif"}
+	}
+	oc, fake := fixture(t, "dev", imageRow)
+	seedState(fake, "dev")
+	runBackup(t, oc, fake, map[string]any{"fence": true})
+	var man map[string]any
+	if err := json.Unmarshal(fake.FakeFiles().Content(bundlePath("dev", "manifest.json")), &man); err != nil {
+		t.Fatal(err)
+	}
+	for _, problem := range validateAgainstSchema(t, man) {
+		t.Errorf("manifest: %s", problem)
+	}
+	si, ok := man["server_image"].(map[string]any)
+	if !ok || si["name"] != "ragstack-server-v1.6.6-b1.sif" || si["sha256"] != sha || len(si) != 2 {
+		t.Errorf("server_image = %v", man["server_image"])
+	}
+
+	oc2, fake2 := fixture(t, "dev", managed)
+	seedState(fake2, "dev")
+	runBackup(t, oc2, fake2, map[string]any{"fence": true})
+	var plain map[string]any
+	if err := json.Unmarshal(fake2.FakeFiles().Content(bundlePath("dev", "manifest.json")), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := plain["server_image"]; present {
+		t.Errorf("a worktree tenant's manifest carries server_image: %v", plain["server_image"])
+	}
+}
