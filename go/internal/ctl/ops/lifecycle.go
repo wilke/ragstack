@@ -190,8 +190,14 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 	}
 	p.result["state"] = "active"
 	p.result["desired_boot"] = "enabled"
-	p.addRegistryEffect("start", fmt.Sprintf("record %s as active (desired_boot enabled) in the registry", p.tenant),
-		func(t *registry.Tenant) { t.State, t.DesiredBoot = "active", "enabled" })
+	p.addRegistryEffect("start", fmt.Sprintf("record %s as active (desired_boot enabled, restart_pending cleared) in the registry", p.tenant),
+		func(t *registry.Tenant) {
+			t.State, t.DesiredBoot = "active", "enabled"
+			// The API has just been started and passed the readiness gate,
+			// so it read tenant.env as it is now: an env edit that was
+			// pending a restart has been picked up.
+			t.RestartPending = false
+		})
 	return nil
 }
 
@@ -363,8 +369,11 @@ func planRestart(ctx context.Context, p *planner, args map[string]any) error {
 		return nil
 	}
 	p.result["state"] = "active"
-	p.addRegistryEffect("restart", fmt.Sprintf("record %s as active in the registry", p.tenant),
-		func(t *registry.Tenant) { t.State = "active" })
+	p.addRegistryEffect("restart", fmt.Sprintf("record %s as active (restart_pending cleared) in the registry", p.tenant),
+		func(t *registry.Tenant) {
+			t.State = "active"
+			t.RestartPending = false // see planStart: the edit has been picked up
+		})
 	return nil
 }
 

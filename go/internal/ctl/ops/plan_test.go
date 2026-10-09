@@ -332,7 +332,7 @@ func TestPlanStartOrdersStoresThenAPIAndGatesOnReadiness(t *testing.T) {
 		"systemd: start ragstack-dev-api.service",
 		"systemd: skip ui",
 		"probe: wait for the API to listen on 24040",
-		"registry: record dev as active (desired_boot enabled) in the registry",
+		"registry: record dev as active (desired_boot enabled, restart_pending cleared) in the registry",
 	}
 	if got := titles(p); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))

@@ -364,3 +364,32 @@ func TestTemplateFromStaysPublicOnly(t *testing.T) {
 	}
 	_ = registry.Tenant{}
 }
+
+// restart_pending means "an env edit the running API has not read yet". An env
+// edit sets it (#714's registry step); a successful full `start` or `restart`
+// — the API started and past the readiness gate — clears it in the same final
+// registry effect that records the state.
+func TestRestartClearsRestartPendingAfterAnEnvEdit(t *testing.T) {
+	for _, verb := range []string{"restart", "start"} {
+		oc, fake := fixture(t, "dev", managed)
+		oc.Tenant.RestartPending = false
+		r := newRunner(oc, fake)
+		r.runAll(t, plan(t, oc, "env-set", map[string]any{"key": "LOG_LEVEL", "value": "DEBUG"}))
+		if !oc.Fleet.Tenants["dev"].RestartPending {
+			t.Fatalf("%s: env set did not set restart_pending", verb)
+		}
+		if verb == "start" {
+			// A stopped tenant: start's readiness gate needs the port free first.
+			fake.FakeProc().FreePort(oc.Tenant.Ports.API)
+		}
+		p := plan(t, oc, verb, nil)
+		last := p.Steps[len(p.Steps)-1]
+		if last.Plan.Kind != "registry" || !strings.Contains(last.Plan.Title, "restart_pending cleared") {
+			t.Fatalf("%s: the final step is %s %q", verb, last.Plan.Kind, last.Plan.Title)
+		}
+		newRunner(oc, fake).runAll(t, p)
+		if oc.Fleet.Tenants["dev"].RestartPending {
+			t.Errorf("%s: restart_pending is still true after the API was started", verb)
+		}
+	}
+}
