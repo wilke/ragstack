@@ -46,9 +46,9 @@ be *derived*; two reproducible routes:
 | route | definition | what it buys | what it costs |
 |---|---|---|---|
 | **M** (MeSH allowlist) | `esearch (bacteria[MeSH] OR viruses[MeSH]) AND "open access"[filter]` → PMCID list, committed with sha256; intersect with the local harvest | the production definition itself | the PMCID allowlist has not been materialised on this host (oa-full-ingest reports esearch *counts*, 2026-08-30, not a list); its local intersection is unknown; ASM journals absent locally |
-| **J** (journal proxy) | 15 microbiology / virology / infectious-disease journals already harvested, matched by **ISSN** (`/rag/oa/corpus/journals.tsv`) or case-folded title — exact title strings drop the `PLOS`/`PLoS` variants (2,510 + 2,836) | zero fetch; JATS on disk | over-includes clinical ID (OFID, BMC ID), under-includes micro papers in megajournals |
+| **J** (journal proxy) | 15 microbiology / virology / infectious-disease journals already harvested, matched by **ISSN** (per-record ISSN in `/rag/oa/corpus/discovery.jsonl`; `journals.tsv` maps ISSN → title) or case-folded title — exact title strings drop the `PLOS`/`PLoS` variants (2,510 + 2,836). The 15 ISSNs: 1664-302X, 2328-8957, 2076-2607, 1999-4915, 1471-2334, 1080-6040, 1935-2735, 1553-7366, 2235-2988, 2076-393X (*Vaccines*), 2079-6382 (*Antibiotics*), 2076-0817, 1471-2180, 1743-422X, 1742-4690 — whether *Vaccines* and *Antibiotics* belong in a single-field slice is part of decision 1 | zero fetch; JATS on disk | over-includes clinical ID (OFID, BMC ID), under-includes micro papers in megajournals |
 
-Route J's size **(counted, not committed)**: 209,247 records across the 15 journals, e.g. Frontiers in
+Route J's size **(counted, not committed)**: 209,247 records by case-folded title (208,162 by ISSN through `discovery.jsonl`; step 2 picks one rule for the committed manifest), e.g. Frontiers in
 Microbiology 38,602, Viruses 17,340, Microorganisms 17,512, PLoS Pathogens 11,687, BMC Microbiology 7,127,
 Virology Journal 5,423 — but **18,016 have `body_chars = 0` and 20,680 are under 2,000 chars** (Open Forum
 Infectious Diseases 73 % of its 24,661, Retrovirology 38 %; Emerging Infectious Diseases median 10,021),
@@ -72,7 +72,7 @@ documents.** Stage 0's anchor is 1.93 fleet-hours for 1.132 B SFR tokens over 32
 ([`../RUN-PACKAGE.md`](../RUN-PACKAGE.md) §3, §6), ≈ 5,782 SFR tokens/doc on the 256 arm (737,698 × 256 /
 32,663). This slice's documents are longer **(counted, not committed, `body_chars`)**: J (≥ 2,000 chars)
 median 31,148 / mean 33,463 against 23,286 / 24,565 for the 3,701 Stage 0 docs in the harvest → **≈ 1.35×**;
-the harvest-wide mean 38,688 gives 1.66× as an upper bound. So **16,384 docs ≈ 1.3–1.6 fleet-h, ~26–32 GB;
+the harvest-wide mean 38,688 over the Stage 0 median gives 1.66× as a conservative upper bound (mean over mean: 1.57). The 3,701 are a self-selected 11 % of Stage 0, so the true ratio may sit higher than 1.35×; step 2's Σ-tokens recompute settles it. So **16,384 docs ≈ 1.3–1.6 fleet-h, ~26–32 GB;
 32,663 ≈ 2.6–3.2 fleet-h, ~53–65 GB** (estimates; tokens/char for this slice is not measured). Step 2
 computes Σ SFR tokens from the committed manifest before any GPU is touched. Owner decision 2 (§11).
 
@@ -171,7 +171,7 @@ answerability are the point. The experts read 20–30 accepted pairs.
 questions rated realistic or plausible; ≥ 85 % answerable from gold alone; the other-valid-location rate is
 measured and ≤ 25 % (above that, rule F's judge is re-specified before dev generation). Stop when realism
 < 50 % — then the pass B prompt, not the corpus, is the problem, and §12 returns to step 1. **The pilot reads
-direction, not rates:** on 20–30 pairs a Wilson interval is ± 15–18 pp, so every threshold above is a
+direction, not rates:** on 20–30 pairs a Wilson interval is up to ± 20 pp, so every threshold above is a
 go/stop heuristic, not a measurement to quote. The pilot says nothing about guard 1 (20 documents have no
 distractors) and is not read as evidence about it.
 
@@ -225,8 +225,9 @@ unknown fields. Before the first embed the #687 regression check runs
 1. **Guard 1, window half, on the 10 arms scored under `hybrid` + rerank** (6 index + `parent256`,
    `nbr1_512`, `nbr1_256`, `nbr2_512`; 0b′ §6 counts the same ten): with rules A–G at df ≥ 20 on a
    single-field corpus, `ERET@16k` lands inside [0.15, 0.90] for all 10, and `EPACK∩@16k` inside for
-   **≥ 8 of 10**, with `fixed_tok2048_ov0pct` and `nbr2_512` the likely exceptions (highest above the
-   ceiling on the easy set: `stats.json` `window_demotions` 0.988 and 1.0 on `EPACK | reach`). **Under
+   **≥ 8 of 10**, with the coarsest delivered spans the likely exceptions (on the easy set the top `EPACK | reach`
+   were `nbr2_512` 1.000, `nbr1_512` 0.994, `fixed_tok2048_ov0pct` 0.988: `stats.json`
+   `window_demotions`). **Under
    the gate as written (every arm) that is a narrow FAIL**; my probability of a clean pass is ≈ 0.35
    (estimate). Reason: pointed-at-scale §1 and §6 say the ceiling is key uniqueness, and a field corpus
    makes the shared-entity condition bite harder than CDS does; but the coarsest arms contain almost
@@ -274,7 +275,7 @@ unknown fields. Before the first embed the #687 regression check runs
     to sit above the ceiling. Options: keep every-arm (a near-miss is a FAIL and the population is
     descriptive); amend r3 §11 to a count-based window (e.g. ≥ 8 of 10 scored arms, the demoted arms
     descriptive for their contrasts under r3 §3.1's existing demotion rule). *Recommendation:* decide
-    **before** step 6 is read, in the step 8 amendment's draft; the plan does not pick.
+    at step 0, or at the latest **before** step 6 is read, and write it into the step 8 amendment; the plan does not pick.
 
 ## 12. Steps, in order, with gates
 
@@ -289,7 +290,7 @@ unknown fields. Before the first embed the #687 regression check runs
 | 6 | dev calibration: 0b′-shaped scoring on all 10 scored arms, both windows (`EPACK∩` per r3 §11; `ERET` per hard-set §5 step 2), guard 3 sizing | **guard 1 pass (every arm, or the count rule if decision 11 amended it first) → confirmatory track; fail → descriptive, report, stop here** |
 | 7 | expert pointed-read on ≈ 50 dev pairs (§5) | other-valid-location rate recorded; rule F re-specified if > 25 % (proposal) |
 | 8 | **r3 §11 amendment**: rule, threshold, population, which primary (decision 6) — owner sign-off, dated before step 9 | signed |
-| 9 | confirmation generation on the quarantined half to guard 3's count, cap 600; no retrieval, only screen counts read | counts logged; `QUARANTINE` intact |
+| 9 | confirmation generation on the quarantined half to guard 3's count, cap 600; no arm is run and no outcome read (rule F's competitor screen runs and is recorded, §4), only screen counts read | counts logged; `QUARANTINE` intact |
 | 10 | expert read on ≈ 50 confirmation pairs, blind; label freeze (G3) | κ and exclusion list committed |
 | 11 | owner lifts quarantine (G4); confirmation scoring; contrasts read with projected power printed beside each | — |
 
