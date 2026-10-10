@@ -1,0 +1,457 @@
+# The chunking study: goal, sub-goals, experiments
+
+**Status, 2026-10-09:** `BLOCKED` on the two-reader human read. No experiment is running. This
+page **consolidates** the study plan. The plan was spread across six documents, and the
+decision table in [chunking-evaluation.md](chunking-evaluation.md) § *Pre-registration* is
+dated 2026-09-04. This page does not make new decisions or measurements. Every number on it
+links to the committed record file it comes from. Where a question is still open, the page
+lists the options that the record lists.
+
+**Summary.** The study exists to decide how the production index should chunk the
+~500k-article PMC Open Access load. The served path is hybrid retrieval plus rerank. The
+study asks how coarse and cheap that index can be while it still delivers evidence for
+*pointed* questions as well as the fine index does. Phase 0 (2026-09-04/05) settled one axis,
+overlap, and showed that document-level metrics answer a different question. It also showed
+that chunk size can only be read at matched realised size and matched delivered budget. The
+passage-level confirmation run (revision 3) splits its endpoint into reach (`ERET`) and
+containment (`EPACK`). Its development-set calibration (Stage 0b′) found three things:
+
+- The 80 CDS confirmation topics cannot power the size contrasts.
+- The pointed population sits at its ceiling.
+- Growing the corpus does not fix the ceiling.
+
+The confirmation topics were nevertheless retrieved and labeled under quarantine, finishing
+on 2026-09-14. **The critical path is now the two-reader human read**, followed by label
+freeze, unblinding and Stage 2. No machine step on that path is outstanding except the second
+implementation of the analysis code (gate G2, §5), which has to exist before unblinding. In
+parallel, the population that could carry the size question (the hard pointed set, #526)
+waits on the owner's go.
+
+**Contents:** [1 Goal](#1-goal) · [2 Sub-goals](#2-sub-goals) · [3 Experiments](#3-experiments) ·
+[4 Dependencies and critical path](#4-dependencies-and-the-critical-path) ·
+[5 Gates](#5-gates) · [6 Open decisions](#6-open-decisions-for-the-owner) ·
+[7 Proposed next steps](#7-proposed-next-steps) · [8 What this is not](#8-what-this-document-is-not)
+
+---
+
+## 1. Goal
+
+**The decision.** How should the production index chunk full-length scientific articles for
+the PMC OA load (~500k articles, [oa-full-ingest.md](oa-full-ingest.md))? Two sub-questions
+follow from it: which chunk size and overlap to use, and whether structure-aware chunking or
+neighbour delivery should be built or turned on. The served path is fixed as the frame:
+`hybrid` (dense + BM25, RRF) followed by `bge-reranker-v2-m3`
+([SPEC-confirmation-run-r3.md](results/design/SPEC-confirmation-run-r3.md) §3.4).
+
+**The population**, as the owner declared it on 2026-09-06 (r3 §1): pointed, evidence-seeking
+questions of the kind a research agent asks while building an argument (a specific finding,
+number, method or claim). The consumer is a research agent, so delivery budgets are agent-sized:
+the primary budget is B = 16,384 tokens (r3 §3.2). Broad topical questions are not what the
+index is optimised for. **Limitation that carries through:** the CDS confirmation queries are
+clinical narratives, not pointed questions, so on CDS the pointed property is carried by the
+endpoint rather than by the query (r3 §1.1).
+
+**The decision rule** (r3 §1, §3.6): the coarser or cheaper index must be **non-inferior** to
+the fine reference. The test is one-sided at α = 0.025 per endpoint, **conjunctive on `ERET`
+and `EPACK`**, with **ε = 0.05 absolute, unchanged**. Under r3 §11 the rule applies on both
+populations. Delivery mechanisms are tested for superiority under Holm, read conjunctively with
+`ERET` non-inferiority (r3 §3.5). Two more owner rules bind: the production index does not
+change until the experiments are done, and the knowledge graph is out of scope (r3 §1).
+
+**What the study feeds** ([docs/papers/README.md](../papers/README.md)):
+
+| paper | what it needs from the study | state per the roster |
+|---|---|---|
+| A: *Reliable but not canonical* (evidence-localisation judges) | the labeler measurements (E1 below), all of them already on the record | drafting, data complete ([OUTLINE](../papers/paper-a-evidence-localisation/OUTLINE.md)). It does not wait for the chunking verdict, but its validity section waits for the human read |
+| B: chunking full-length scientific articles | the confirmatory verdicts (SG1–SG4) | not started; blocked on the human read |
+
+---
+
+## 2. Sub-goals
+
+There is one sub-goal per decision (SG1–SG6) and four enabling sub-goals (E1–E4). Every
+evidence line carries one status from this vocabulary, and the statuses are never merged:
+
+- **resolved**: the reading clears its pre-registered bar.
+- **powered null**: nothing found, at a power floor below the bar.
+- **unresolved**: the design could not have seen the effect, which is different from a null.
+- **GATE-NOT-EVALUABLE**: the instrument failed its own precondition.
+- **calibration**: development topics only, used to size or gate a test, never to decide.
+- **descriptive**: pre-registered but not confirmatory, or demoted by a window rule.
+
+Stage 0b′ numbers are all **calibration**.
+
+### SG1: Chunk size
+
+**Question.** Is a 1024- or 2048-token index non-inferior to the 512/64 shipping index for
+pointed evidence delivery at 16k? **Decision informed:** the storage lever. Measured on the
+Stage 0 corpus, 512→1024/0 means 2.157× fewer vectors and 512→2048/0 means 3.98× fewer
+(r3 §3.6). **Contrasts:** N1 `fixed_tok512` − `fixed_tok1024_ov0pct`, N3 `fixed_tok512` −
+`fixed_tok2048_ov0pct`, R1 `fixed_tok256_ov0pct` − `fixed_tok2048_ov0pct` (r3 §3.5–3.6).
+**Predictions on record:** Q4 (N1 non-inferior on `EPACK`, a contest on `ERET`) and Q5 (N3
+non-inferior on `EPACK`, fails `ERET`) (r3 §7).
+
+| evidence | status | source |
+|---|---|---|
+| Leg A grid: the size effect on nDCG@10 spans zero. On recall@100 it reads +0.0432, which sits *at* its δ80 (0.0466), not above it | unresolved | [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §4.5; revision 6 in [results/README.md](results/README.md) |
+| Legs A and B disagree at the 512→1024 step, and each leg's query construction favours the direction it reports | unresolved; gates pruning (no config may be pruned on either leg) | [stage1-legB/RESULTS-stage1-legB.md](results/stage1-legB/RESULTS-stage1-legB.md); [long-doc-judged-set.md](long-doc-judged-set.md) §14.5 |
+| No size contrast resolves on either leg behind the reranker | unresolved | [stage1-legB/RESULTS-stage1-legB.md](results/stage1-legB/RESULTS-stage1-legB.md) |
+| At a matched 4,096-token budget `tok256` leads `tok2048` (2.2× at m=1, 3.8× at m=16). The fixed-k reading points the other way. Budget-matched *recall* `R_B@4096` does not resolve | direction consistent on two corpora; primary recall unresolved; both constructions favour fine chunks | [breadth-k/RESULTS-breadth-k.md](results/breadth-k/RESULTS-breadth-k.md) §7; [rescore/RESULTS-rescore-small-corpora.md](results/rescore/RESULTS-rescore-small-corpora.md) §4.4 |
+| Stage 0 (revision 2, `EUC@4096`) | GATE-NOT-EVALUABLE | [stage0/RESULTS-stage0-calibration.md](results/stage0/RESULTS-stage0-calibration.md) |
+| From 256 to 2048 tokens, reach falls 0.277 → 0.112 and containment rises 0.188 → 0.696. Size moves evidence between the two factors | calibration | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §3 |
+| Joint power at n = 80: N1 0.560, N3 0.369, R1 0.513 | calibration: fails the 80 % gate | same, §4; [stats.json](results/stage0/artifacts/stage0b-prime/stats.json) `cds_sizing` |
+| The 2048 arm's `ERET@16k` is below the 0.15 floor, so **N3 cannot be read as a decision at 16k** | descriptive on `ERET` (window demotion) | same, §3 and §11 item 2; `stats.json` `window_demotions` |
+| The pointed population is non-inferior on every contrast, at its ceiling | descriptive (guard 1 failed) | same, §4, §6 |
+
+**Settling test.** Confirmation run (a) on CDS, read with its projected power printed. The
+record expects N1/N3/R1 to come out UNRESOLVED (r3 §10 item 5(a)). The size question can
+become confirmatory only on a pointed population that clears guard 1, which is what the hard
+pointed set is for (r3 §10 items 5(b) and 6;
+[PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md)). **Status:** open.
+**Blocked on:** the human read for CDS, and the owner's go on #526 for the hard set.
+
+### SG2: Overlap
+
+**Question.** Is the 64-token (12.5 %) overlap worth its storage? **Decision informed:** drop
+overlap. The record treats the axis as **settled**: r3 §3.6 drops N2 and gives its α to N3.
+
+| evidence | status | source |
+|---|---|---|
+| Leg A: 12.5 % − 0 % = −0.0210, δ80 0.046 below the 0.05 bar. recall@100 \|Δ\| ≤ 0.0033 at every size | powered null | [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §4.4 |
+| Leg B: −0.0040, δ80 0.0081 below the 0.010 bar | powered null | [stage1-legB/RESULTS-stage1-legB.md](results/stage1-legB/RESULTS-stage1-legB.md) |
+| Stage 0 N2: σ_d = 0 at 1.7 % coverage | GATE-NOT-EVALUABLE; neither supports nor undermines the null | [stage0/RESULTS-stage0-calibration.md](results/stage0/RESULTS-stage0-calibration.md) §4 |
+
+**Caveats.** Both nulls are *document*-metric results. The `sentence`/`words` rows carry
+≈ 8.9 % effective overlap, not 12.5 % (revision 4 in [results/README.md](results/README.md)).
+**Status:** decided by the record. It has not reached a production default: under the owner's
+rule above, the index does not change until the study is done.
+
+### SG3: Structure-aware chunking
+
+**Question.** Does chunking that respects document structure (contextual headers,
+section-bounded packing) deliver more evidence than fixed windows at the same realised size?
+**Decision informed:** build and ship a `section` method
+([chunking-evaluation-candidates.md](chunking-evaluation-candidates.md) §5: built in-house,
+owner decision 2026-10-06). The prediction on record is that structure-aware chunking improves
+**reranked** metrics at similar chunk counts
+([chunking-evaluation.md](chunking-evaluation.md) § *Pre-registration*).
+
+| evidence | status | source |
+|---|---|---|
+| `sentence_tok512` − `fixed_tok512` = +0.0606, Holm-adjusted p 0.097 | unresolved (closest signal in the grid) | [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §4.2 |
+| Leg B `words512` − `fixed512` has a CI that excludes 0, but it sits below δ80 on a leg whose method readings are construction artefacts | unresolved | candidates §3 |
+| R2 `header512` − `fixed_tok512_ov0pct`: joint power at n = 80 is 0.948 on CDS, **the only powered contrast** | calibration: passes the gate | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §4 |
+| C-R1 section-bounded packing (512 / 1024 / 2048 caps plus a whole-section variant), with C-R0 length-yoked random boundaries as its control | not designed, not built | candidates §4, §6 |
+
+**Settling test.** R2 in confirmation run (a): the one contrast the record expects to resolve
+(r3 §10 item 5(a)). C-R1 needs its own pre-registration with size control. Candidates §4
+proposes re-running `header512` with the header counted inside the 512 tokens. **Status:** R2
+is waiting on the read. C-R0 and C-R1 are not designed, and candidates §6 orders them after
+the construction consolidation.
+
+### SG4: Delivery and neighbour context
+
+**Question.** Does delivering surrounding text recover the containment that chunk boundaries
+cut, without losing reach? The surrounding text can be the enclosing section (`parent256`) or
+the previous and next chunk (`nbr1_512`, which is production's `context_window = 1`).
+**Decision informed:** turn on `context_window = 1` by default (R4), or adopt section expansion
+(R3) (r3 §1, §3.5). **Predictions on record:** Q6 (R4 clears the 0.05 superiority bar on
+`EPACK`) and Q7 (R4's `ERET` is non-inferior) (r3 §7).
+
+| evidence | status | source |
+|---|---|---|
+| Joint power at n = 80: R3 0.495, R4 0.529 | calibration: fails the gate | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §4 |
+| `nbr1_512` and `nbr2_512` fall below the 0.15 reach floor at 16k | descriptive on `ERET` (window demotion) | same, §3 |
+| `parent256` changes sign between 4k (Stage 0) and 16k (Stage 0b′), and its CI spans zero at 16k | calibration | candidates §3, citing the Stage 0 and Stage 0b′ records |
+| C-R5 auto-merge (expand only where retrieval votes for a section) | not designed | candidates §4 |
+
+**Product caveat on the record:** production's `llm_max_context_chars = 8000` caps the
+generator's context at about 2k tokens, so the served path does not deliver a 16k context today
+(#519, open; [SPEC-synthesis-stage.md](results/design/SPEC-synthesis-stage.md) §8). **Status:**
+open, underpowered on CDS.
+
+### SG5: Semantic chunking
+
+**Question.** Does a semantic chunker beat fixed windows *at matched realised size*?
+**Decision informed:** whether to revisit semantic for the OA load. **Status: deferred by the
+owner** to a follow-up after the size answer (r3 §1, §6).
+
+| evidence | status | source |
+|---|---|---|
+| Worst-scoring kind on Leg A, about 7× the embedding cost, 3.4× the index. Its realised size is pinned near 350 tokens whatever the cap says | descriptive; never compared at matched realised size | [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §5, §7.1; revision 3 in [results/README.md](results/README.md) |
+| `semantic` and `semantic_pooled` are **two different chunkers**: boundary Jaccard 0.0025 on 20 papers. No retrieval comparison exists | measured (boundaries and cost only) | [salmonella-amr-semantic-vs-pooled-2026-09-24.md](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md) |
+
+**Open within the deferral:** which semantic chunker the arm would be (Paper B must name
+one), and C-R0 as the control that makes "method at matched size" a paired contrast.
+
+### SG6: Separability of retrieval modes
+
+**Question.** How does chunk size act under `vector`, `bm25` and `hybrid`, with and without
+the reranker? **Decision informed:** none directly. The owner required that the three modes be
+separable (r3 §1), and the answer bounds how much the size decision matters on the served path.
+**Predictions:** Q8 (BM25 favours coarser chunks) and Q9 (rerank-off reverses at least one sign).
+
+| evidence | status | source |
+|---|---|---|
+| The reranker reorders the 24-config grid (r = +0.553). In step 3 it reverses a first-stage verdict | resolved (step 3 MRR reversal); exploratory (grid correlation) | [step3/RESULTS-step3-real-experiment.md](results/step3/RESULTS-step3-real-experiment.md); [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §6 |
+| `hybrid` flattens the size contrast relative to either leg. Q8 supported; Q9 supported | calibration; pre-registered descriptive table | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §5 |
+| In-process BM25 against the dev tenant's Elasticsearch: overlap@50 0.9469 against a 0.90 bar | resolved (concordance check passes) | same, §7; [es_concordance.json](results/stage0/artifacts/stage0b-prime/es_concordance.json) |
+
+**Status:** measured on dev. The confirmation run reports the modes as pre-registered
+secondaries. Stage 2 serving-path concordance is not run.
+
+### E1: A reliable *and valid* evidence gold
+
+**Question.** Can the "where" of evidence be labeled reproducibly, and is it right?
+
+| evidence | status | source |
+|---|---|---|
+| Stage 0 span self-consistency is 0.323 against ≥ 0.90 | gate failed | [label_gates.json](results/stage0/artifacts/label_gates.json) |
+| Quote-primary relabel: neither judge passes | gate failed | [stage0/RESULTS-stage0b-relabel.md](results/stage0/RESULTS-stage0b-relabel.md) |
+| Whole-sentence anchors (r3.1): the copy gate passes for both judges, self-consistency still fails, and the union does not saturate | copy gate resolved; span gates failed | [stage0/RESULTS-stage0b-relabel-r31.md](results/stage0/RESULTS-stage0b-relabel-r31.md) |
+| Graded per-sentence support reaches Spearman–Brown 0.9205 at 30 pooled readings | resolved against the 0.90 labeler bar (reliability only) | [gates-r31ext.json](results/stage0/artifacts/r31ext/gates-r31ext.json); [RESULTS-stage0b-relabel-r31ext.md](results/stage0/RESULTS-stage0b-relabel-r31ext.md) |
+| The two judges' graded support correlates at r = 0.2976 per pair: **reliable is not valid** | measured | same |
+| Claude judges (one reading each) pass the copy gate; self-consistency is absent | partial; absent, not passed | [stage0/RESULTS-stage0b-claude-judges.md](results/stage0/RESULTS-stage0b-claude-judges.md) |
+| Two-reader human read, κ, enumeration recall | **`PENDING-HUMAN`**: not started | [stage0/README.md](results/stage0/README.md) § *Item 8* |
+
+Two more items on the record: the human-read draw found only 3 of the 20 wanted deep-section
+pairs, and no reader has signed the rubric, which r2 §6.6.1 requires before labeling (a
+recorded deviation, same README). **Open:** whether graded support becomes confirmatory on CDS
+after the read (r3 §10 item 4).
+
+### E2: A query population that discriminates
+
+**Question.** Is there a population of the declared shape on which arms can actually differ?
+
+| evidence | status | source |
+|---|---|---|
+| The pointed set: 177 queries on dev, 44.2 % yield | done | [stage0/RESULTS-stage0b-pointed-gen.md](results/stage0/RESULTS-stage0b-pointed-gen.md) |
+| Guard 1 fails at the ceiling: `ERET` 0.904–0.955 for every arm | descriptive population | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §6 |
+| **Corpus size is not the lever.** 161 of 177 queries are reached in every cell, and σ_d grows faster than the between-arm spread | resolved (step 1); step 2, the 5× corpus, was not run | [stage0/RESULTS-pointed-at-scale.md](results/stage0/RESULTS-pointed-at-scale.md); [difficulty.json](results/stage0/artifacts/pointed-scale/difficulty.json) |
+| Hard pointed set: no unique lexical key, deixis and single-source screens, two-stage selection | planned, awaiting the owner's go | [PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md) (#526) |
+| Leg C (citances): the tiebreak that long-doc §14.5 called the highest-value unrun measurement | never run against the grid, and not scheduled | [long-doc-judged-set.md](long-doc-judged-set.md) §14.3, §14.5 |
+| Real agent queries (opt-in query logging on dev/demo) | issue open (#502) | r3 §11 |
+
+**A tooling note on generating the hard set:** the OpenChia R0 calibration found its Episode
+stopping statistic trustworthy only under even sampling. Under heavy heterogeneity it rarely
+fires, so a generation Episode would end on its declared bound and not on convergence
+([openchia-r0/RESULTS](../design/openchia-r0/RESULTS-R0-stopping-statistic-calibration.md);
+[episodes-as-experiments](../design/openchia-episodes-as-experiments.html)).
+
+### E3: Measurement infrastructure that can be trusted twice
+
+The pieces, and where each stands:
+
+- **The analysis code (`ERET`/`EPACK`/NI) has a single implementation.** A second,
+  independent implementation, validated on the dev labels, is gate **G2** of the 2026-10-04 run
+  plan, and it must precede unblinding. *That run plan is working notes, not yet on the record*
+  (§5). Per the owner's 2026-10-06 rule it lives outside `stage0/` and reads the
+  pinned-checkout labels ([docs/papers/README.md](../papers/README.md) § *Every artifact
+  records which code produced it*).
+- **Provenance.** `experiment_provenance()` is on main (#682). A past study keeps its pin:
+  re-runs execute at `55a0fc2` (Stage 0) or `d225cea` (Phase 0), or re-embed.
+- **Snapshots** (not in git). `/rag/snapshots/` holds read-only clones tagged
+  `exp/phase0-d225cea` and `exp/stage0-55a0fc2`, the runners `run_stage0.sh`/`run_phase0.sh`,
+  and the dev-10 pipeline regression check `check_dev10_dense.py`. Its README describes them.
+- **Library-level regression goldens** (`/rag/snapshots/regression/v1`, test in
+  [`python/tests/regression/`](../../python/tests/regression/), #687, merged). Adding a method
+  must leave the existing arms' spans byte-identical.
+- **A rule learned (snapshots README):** `s0_retrieve` overwrote `dev_queries.npy` on
+  re-invocation, so four of the six arms reproduce only to set equality, not bit-identically.
+  **A new harness must never overwrite a golden input.**
+- **Chunker construction** is not yet consolidated: five builders, three token-budget policies,
+  and about 14 places to touch per method. This is the prerequisite before new methods
+  (candidates §2, §6 step 2).
+- **The confirmation run is on SFR tokens, not the generator's tokenizer.** This is a recorded
+  deviation from r3 §3.3 that must be stated in the analysis
+  ([RESULTS-confirmation-run-a-setup.md](results/stage0/RESULTS-confirmation-run-a-setup.md) §5).
+
+### E4: Answer quality (the synthesis stage)
+
+The record treats the synthesis stage as a stage *after* the evidence study, not as part of the
+confirmatory family ([SPEC-synthesis-stage.md](results/design/SPEC-synthesis-stage.md), reviewed
+in [REVIEW-synthesis-stage.md](results/design/REVIEW-synthesis-stage.md)). It measures whether
+the answer is correct and faithful, whether citations are precise, whether the generator
+abstains when it should, and what generation costs, across generator × configuration.
+**Status:** proposed, not started. **Blocked on:**
+
+- an `answer-read` grading kind in the contract;
+- #519 (the 8,000-character context cap);
+- a pointed population admitted by guard 1, needed for any confirmatory reading.
+
+Stage 0b′ §11 item 3 proposes repurposing the ceiling-bound pointed set for it.
+
+---
+
+## 3. Experiments
+
+States:
+
+- **done**: on the record.
+- **quarantined**: data exists and may not be read until unblinding.
+- **planned**: designed, awaiting a go or an upstream step.
+- **not designed**: named only.
+
+| id | what | serves | state | record |
+|---|---|---|---|---|
+| P0-1 | TREC CDS coverage gate | E2 | done (PASS) | [step1](results/step1/RESULTS-step1-cds-gate.md) |
+| P0-2 | BM25 lead-only ablation | SG6 | done; inference revised by P0-3 | [step2](results/step2/RESULTS-step2-lead-ablation.md) |
+| P0-3 | real dense contrast, reranker reversal | SG1, SG6 | done | [step3](results/step3/RESULTS-step3-real-experiment.md) |
+| P0-4 | Stage 1 Leg A, 24-config grid, n = 10 topics | SG1–SG3, SG5 | done | [stage1](results/stage1/RESULTS-stage1-legA.md) |
+| P0-5 | Stage 1 Leg B grid, two rungs | SG1, SG2 | done | [stage1-legB](results/stage1-legB/RESULTS-stage1-legB.md) |
+| P0-6 | §7a oracle; Leg B and Leg C pilots; Leg B re-run | E2 | done | [pilots](results/pilots/RESULTS-legBC-pilots.md), [re-run](results/pilots/RESULTS-legB-rerun.md) |
+| P0-7 | small-corpus chunk-granularity re-score | SG1, SG2 | done | [rescore](results/rescore/RESULTS-rescore-small-corpora.md) |
+| P0-8 | breadth × k | SG1 | done | [breadth-k](results/breadth-k/RESULTS-breadth-k.md) |
+| S0 | Stage 0, revision 2 calibration (`EUC@4096`) | all | done: GATE-NOT-EVALUABLE | [RESULTS-stage0-calibration](results/stage0/RESULTS-stage0-calibration.md) |
+| S0-r3 | r3 §5 step 2: quote-primary relabel, two judges | E1 | done: stop | [RESULTS-stage0b-relabel](results/stage0/RESULTS-stage0b-relabel.md) |
+| S0-r31 | r3.1 whole-sentence anchors, ×5 | E1 | done | [RESULTS-stage0b-relabel-r31](results/stage0/RESULTS-stage0b-relabel-r31.md) |
+| S0-r31ext | Scout ×20, Qwen ×10; graded support | E1 | done | [RESULTS-stage0b-relabel-r31ext](results/stage0/RESULTS-stage0b-relabel-r31ext.md) |
+| S0-claude | Sonnet 5, Opus 5, Fable 5.1, one reading each | E1 | done (Fable n = 251) | [RESULTS-stage0b-claude-judges](results/stage0/RESULTS-stage0b-claude-judges.md) |
+| S0-pg | pointed population, dev, 177 queries | E2 | done | [RESULTS-stage0b-pointed-gen](results/stage0/RESULTS-stage0b-pointed-gen.md) |
+| S0b′ | r3 §5 step 4: split endpoints, three modes, both populations, BM25 concordance | SG1–SG4, SG6, E2 | done: gate fails on power | [RESULTS-stage0b-prime](results/stage0/RESULTS-stage0b-prime.md) |
+| S0-scale | option (b): pointed reach versus corpus size | E2 | done; step 2 (5×) not run | [RESULTS-pointed-at-scale](results/stage0/RESULTS-pointed-at-scale.md) |
+| CR-a | option (a): confirmation retrieval, pooling (3,738 pairs), 30-reading labeling, #513 filter | SG1–SG4, SG6 | **quarantined**: labels complete 2026-09-14 | [RESULTS-confirmation-run-a-setup](results/stage0/RESULTS-confirmation-run-a-setup.md) |
+| HR-dev | two-reader human read, 100 CDS pairs (item 8 / R-dev), plus about 50 pointed pairs | E1, gates all | planned: **critical path, not started** | [stage0/README](results/stage0/README.md) § *Item 8*; r3 §11 guard 2 |
+| HR-conf | R-conf, ≥ 100 confirmation pairs, blind, before freeze | E1 | **unclear whether still required** (§6, D4) | [SPEC-confirmation-run.md](results/design/SPEC-confirmation-run.md) §6.6.2, P.9 |
+| G2 | second implementation of `ERET`/`EPACK`/NI, matched on dev | E3 | not built; *working notes, not on the record* | — |
+| CR-read | freeze → unblinding → confirmatory analysis with projected power printed | SG1–SG4 | planned, blocked | r3 §5 step 6; P.9 |
+| ST2 | Stage 2: serving-path concordance on the dev tenant (blocking) | SG1–SG4, SG6 | planned, blocked | r2 §9; r3 §5 step 7 |
+| HPS | hard pointed set, steps 0–6 | E2, then SG1/SG4 | planned: awaiting the owner's go | [PLAN-hard-pointed-set](results/design/PLAN-hard-pointed-set.md) |
+| SYN | synthesis stage | E4 | planned (proposed), blocked | [SPEC-synthesis-stage](results/design/SPEC-synthesis-stage.md) |
+| C-R0 … C-R5 | new method arms: yoked control, section packing, PIC, TextTiling, late chunking, auto-merge | SG3–SG5 | not designed | [candidates](chunking-evaluation-candidates.md) §4 |
+| hdr-in | `header512` re-run with the header counted inside the 512 | SG3 | not designed | candidates §4 |
+| LegC | Leg C citances against the grid | E2 | not run, not scheduled | [long-doc-judged-set.md](long-doc-judged-set.md) §14.5 |
+| REG | snapshot re-runs and regression subset (#687 library goldens; dev-10 dense check) | E3 | done for the existing arms; re-run on every code change | `/rag/snapshots/README.md`; [`python/tests/regression/`](../../python/tests/regression/) |
+
+---
+
+## 4. Dependencies and the critical path
+
+```mermaid
+flowchart TD
+  R1[G1: readers named, rubric signed] --> HR[HR-dev two-reader read: κ]
+  HR --> FZ[G3: label freeze, exclusion list]
+  G2[G2: second implementation matched on dev] --> UB
+  FZ --> UB[G4: owner lifts quarantine, unblinding]
+  D5c{r3 §10 item 5c re-scope?} -. "before any confirmation label is read" .-> FZ
+  UB --> CR[CR-read: confirmatory contrasts on CDS]
+  CR --> ST2[Stage 2 serving concordance]
+  HPS0[Owner go on PR 526] --> HPS[Hard pointed set steps 0–2 on dev]
+  HPS --> AM[Amendment to r3 §11: owner sign-off]
+  AM --> HPS4[Confirmation generation, quarantined]
+  HPS4 --> HRp[Pointed human read, same readers]
+  HRp --> FZ
+  HPS -->|guard 1 passes| SIZE[Size contrasts confirmatory on pointed]
+  HPS -->|guard 1 fails| DESC[Pointed descriptive; item 5c applies]
+  CONS[Chunker consolidation] --> NEW[C-R0/C-R1 pre-registration]
+  CR --> SYN[Synthesis stage]
+  I519[Issue 519 context cap; answer-read kind] --> SYN
+```
+
+**The critical path is the human read.** No machine step remains between the quarantined
+labels and the read (handoff §2). **G2 must precede unblinding**, and it can be built while the
+read happens. The hard pointed set runs in parallel on dev, and its confirmation generation
+needs no retrieval before freeze ([PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md)
+§5). New method arms (C-R*) sit off the critical path. They need consolidation first, then their
+own pre-registration.
+
+## 5. Gates
+
+The 2026-10-04 run plan, which defines roles (Owner / Experimenter / Supervisor / two Readers)
+and gates G1–G7, is a working note and **not yet on the record**. Its definitions are visible
+only through an OpenChia architecture sketch under `/rag/tmp/openchia-pilot/`, and that sketch
+names four of them:
+
+| gate | meaning as named in the sketch | owner approval |
+|---|---|---|
+| G1 | rubric signed by the readers (the human-read node's approval) | yes |
+| G2 | second implementation of the analysis matched on dev labels; the analysis may not be *built* before it | — |
+| G3 | label freeze: κ, exclusion list, freeze hash | — |
+| G4 | the owner lifts the quarantine in writing; the analysis may not be *run* before it | yes |
+| G5–G7 | not described in any file this page could read (G6 and G7 are owner approvals) | — |
+
+Putting the run plan on the record would let this table cite it.
+
+## 6. Open decisions for the owner
+
+Each item points at where the record already lays out the options. **OPEN — OWNER** throughout.
+
+| # | decision | options as recorded | record's recommendation | where |
+|---|---|---|---|---|
+| D1 | Hard pointed set: go or no-go on step 0 (about 1 h, reversible) | go / no-go | none explicit; the plan proposes step 0 as the cheap test of the idea | [PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md) §8.1 |
+| D2 | Accept the estimand narrowing to "pointed questions without a unique lexical key" | accept / keep one mixed set (guard 3's count roughly doubles) | the plan's step 3 is written assuming accept | same, §8.2, §5 step 3 |
+| D3 | Rule F's single-source judge | Scout (free) / Opus via the CLI (about $500 projected) | Scout | same, §8.3 |
+| D4 | Is the R-conf read (≥ 100 confirmation pairs, two readers) still required before freeze? | r2 P.9 step 3 requires it. Later documents cost and gate only the R-dev read | none stated | §8 of this page, contradiction 1 |
+| D5 | Graded support on CDS: confirmatory after the read, or descriptive under item 4(b) | (a) confirmatory / (b) containment primary moves to pointed, CDS keeps `ERET` plus descriptive graded `EPACK` | (b), with (a) as CDS's descriptive containment | r3 §10 item 4 |
+| D6 | Re-scope fallback (item 5(c)): R2 alone confirmatory on CDS, the rest descriptive | apply / do not apply | planned as the fallback if the hard set does not clear guard 1 | r3 §10 item 5. The amendment must be dated **before any confirmation label is read**, which constrains its timing relative to D4 |
+| D7 | Readers: who, and when (32–48 person-hours for CDS plus 10–15 for pointed); rubric sign-off first (G1) | — | — | r3 §4; r3 §11 cost |
+| D8 | New method arms: whether and when to pre-register C-R0/C-R1 (and C-R2/3/5) as a follow-up study, on which population | candidates §6 order: consolidate → C-R0 → C-R1 → production `section` | that order | [candidates](chunking-evaluation-candidates.md) §6 |
+| D9 | Synthesis stage: go, and on which population | spec as reviewed; Stage 0b′ suggests the ceiling pointed set | none beyond the spec | [SPEC-synthesis-stage.md](results/design/SPEC-synthesis-stage.md) §3, §7; Stage 0b′ §11.3 |
+| D10 | #519: should the served path deliver a 16k context? This is a product decision, not a study one | — | "the one that most needs the product owner's decision" | SPEC-synthesis §8 |
+| D11 | Leg C: run it as a tiebreak, or retire it explicitly | — | none since r3 | long-doc §14.5; r3 §1.1 |
+| D12 | Off-host backup of the quarantined labels (`work/conf`, about 6 GB recommended set) | postponed by the owner on 2026-10-06 | make it | `/rag/snapshots/README.md` § *Data* |
+
+## 7. Proposed next steps
+
+**Proposal. None of this is decided.** Ordered by what unblocks the most.
+
+1. **Owner:** name the two readers and have them sign the rubric (G1, D7). Settle D4 and D6 at
+   the same sitting, because both have to happen before any confirmation label is read.
+2. **Readers:** the R-dev read of 100 CDS pairs in the Grading view, then about 50 pointed
+   pairs. Score it with `s0_rdev_score.py` (it exists and is tested).
+3. **Agent, in parallel with 2:** build G2 outside `stage0/`, run from the `55a0fc2` snapshot,
+   and match it on the dev labels against Stage 0b′'s committed outputs. It writes to new paths
+   only, never over a golden. Then give it an independent review.
+4. **Owner:** D1–D3. **Agent:** if the answer is go, run hard-set step 0 on dev (about 1 h),
+   then steps 1–2. **Owner:** sign the r3 §11 amendment.
+5. **Owner:** D12, the off-host backup, before anything else touches `work/conf`.
+6. **Owner and agent:** freeze (G3) → unblinding (G4) → confirmatory analysis with projected
+   power printed beside every contrast → Stage 2.
+7. **Agent, off the critical path:** chunker construction consolidation (candidates §6 step 2),
+   then a pre-registration for C-R0/C-R1 for owner review (D8).
+8. **Owner:** D9/D10 before any synthesis-stage work.
+9. **Owner:** put the 2026-10-04 run plan on the record, so §5 can cite it.
+
+## 8. What this document is not
+
+- **Not the record.** The numbers here point to `docs/plans/results/` and are not restated
+  claims. Quote from the record file, not from this page.
+- **Not a decision.** Every OPEN item stays the owner's.
+- **Not a replacement for the specification.**
+  [SPEC-confirmation-run-r3.md](results/design/SPEC-confirmation-run-r3.md), amending r2, is
+  authoritative for design. Where this page and r3 disagree, r3 wins.
+- **It supersedes the 2026-09-04 decision table** in
+  [chunking-evaluation.md](chunking-evaluation.md) § *Pre-registration* **as the place to read
+  status**. That table is left unedited.
+
+### Contradictions between sources, reported and not resolved
+
+1. **The scope of the human read.** r2 requires two two-reader reads (R-dev and R-conf), costed
+   together at 32–48 person-hours (§6.6.2, §11, P.9). r3, RUN-PACKAGE, the handoff and the
+   conf-a write-up cost 32–48 person-hours for the R-dev read alone and say freeze waits "only
+   on the human read's κ". R-conf is not mentioned after r2. (D4.)
+2. **The confirmation run's tokenizer.** r3 §3.3 and §5 step 6 specify a re-embed in the
+   generator's tokenizer. Run (a) reused the SFR-token arms and records this as deviation 1.
+   r3 was not amended.
+3. **The pointed-at-scale projection.** r3 §10 item 5(b) and HANDOFF-2026-09-09 quote "0.89–0.93
+   at 500k". The record gives 0.909–0.932 at 150k and 0.885–0.915 at 500k on the linear link,
+   and 0.721–0.838 at 500k on the logit link. It also says the two links disagree about the
+   gate. `stage0/README.md` lists that run twice, once with "0.032–0.046" per decade and once
+   with "0.031–0.046".
+4. **The meaning of "Stage 0b′".** r3 §5 uses it for step 4. `stage0/README.md` also calls the
+   step 2 relabels "Stage 0b′" and gives them `stage0b-relabel*` file names.
+5. **The synthesis stage's dependencies are stale.** SPEC-synthesis §7 says Stage 0b′ "has not
+   run". It has, and it failed guard 1 for the pointed population that the stage's confirmatory
+   reading requires.
+6. **The 2026-09-04 decision table versus r3.** The table says overlap is "pending Leg B" (Leg B
+   has since confirmed the null, and r3 calls it settled). It proposes "TOST at 0.02" for size;
+   r3 uses ε = 0.05, a different margin on a different endpoint.
+7. **Leg B sizing.** The [plans index](README.md) says "Leg B needs ~1,500 queries not 1,000".
+   Revision 7 in [results/README.md](results/README.md) says 1,000 would already meet δ = 0.02.
+8. **Overlap and the shipping default.** The record calls overlap settled (cut it), but the
+   default chosen for new collections on 2026-10-06 is `fixed_token`/512/**64** (candidates §1).
+   This is consistent with "production does not change until the experiments are done", but
+   nothing records that the default was chosen with the study's overlap result in view.
+9. **The whether-agreement figure cited for `ERET`.** r3 §10 item 4(b) cites 0.92–0.98, which is
+   r3.1 at five readings. At twenty readings Scout's whether-agreement is 0.8539
+   ([gates-r31ext.json](results/stage0/artifacts/r31ext/gates-r31ext.json)), below the 0.90 gate.

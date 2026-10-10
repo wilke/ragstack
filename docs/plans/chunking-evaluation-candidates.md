@@ -5,6 +5,8 @@
 [`docs/papers/bib-inbox/04-chunking-segmentation-wide.md`](../papers/bib-inbox/04-chunking-segmentation-wide.md).
 Nothing here is built yet.
 
+> **The consolidated study plan — goal, sub-goals, experiments, open decisions — lives in [chunking-study-plan.md](chunking-study-plan.md) (2026-10-09).**
+
 Companion to [chunking-evaluation.md](chunking-evaluation.md), which plans *how* the evaluation
 is run (ground truth, grid, cost). This page answers which **methods** belong in it, and what
 the **code** needs before new methods can be added cleanly. For choosing a method today, see
