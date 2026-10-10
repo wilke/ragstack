@@ -47,7 +47,7 @@ neighbour delivery should be built or turned on. The served path is fixed as the
 **The population**, as the owner declared it on 2026-09-06 (r3 §1): pointed, evidence-seeking
 questions of the kind a research agent asks while building an argument (a specific finding,
 number, method or claim). The consumer is a research agent, so delivery budgets are agent-sized:
-the primary budget is B = 16,384 SFR tokens (r3 §3.2, §3.3). Broad topical questions are not what the
+the primary budget is B = 16,384 tokens in the generator's tokenizer (r3 §3.2, §3.3); run (a) read it in SFR tokens, a recorded deviation (D13). Broad topical questions are not what the
 index is optimised for. **Limitation that carries through:** the CDS confirmation queries are
 clinical narratives, not pointed questions, so on CDS the pointed property is carried by the
 endpoint rather than by the query (r3 §1.1).
@@ -71,7 +71,7 @@ change until the experiments are done, and the knowledge graph is out of scope (
 ## 2. Sub-goals
 
 There is one sub-goal per decision (SG1–SG6) and four enabling sub-goals (E1–E4). Every
-evidence line carries one status from this vocabulary, and the statuses are never merged:
+evidence line takes its status from this vocabulary where it applies, and the statuses are never merged. Gate, process and prediction lines (*gate passed/failed*, *measured*, *P3 holds*, *done*) are labelled as such:
 
 - **resolved**: the reading clears its pre-registered bar.
 - **powered null**: nothing found, at a power floor below the bar.
@@ -79,6 +79,7 @@ evidence line carries one status from this vocabulary, and the statuses are neve
 - **GATE-NOT-EVALUABLE**: the instrument failed its own precondition.
 - **calibration**: development topics only, used to size or gate a test, never to decide.
 - **descriptive**: pre-registered but not confirmatory, or demoted by a window rule.
+- **exploratory**: not pre-registered; may suggest a test, never settles one.
 
 Stage 0b′ numbers are all **calibration**.
 
@@ -185,7 +186,7 @@ owner** to a follow-up after the size answer (r3 §1, §6).
 | evidence | status | source |
 |---|---|---|
 | Worst-scoring kind on Leg A, about 7× the embedding cost, 3.4× the index. Its realised size is pinned near 350 tokens whatever the cap says | exploratory (not pre-registered); never compared at matched realised size | [stage1/RESULTS-stage1-legA.md](results/stage1/RESULTS-stage1-legA.md) §5, §7.1; item 3 of *Conclusions that were later revised* in [results/README.md](results/README.md) |
-| `semantic` and `semantic_pooled` are **two different chunkers**: boundary Jaccard 0.0025 on 20 papers. No retrieval comparison exists | measured (boundaries and cost only) | [semantic-vs-pooled-2026-09-18.md](results/semantic-vs-pooled-2026-09-18.md) (shard); [salmonella-amr-semantic-vs-pooled-2026-09-24.md](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md) (corpus scale) |
+| `semantic` and `semantic_pooled` are **two different chunkers**: boundary Jaccard 0.0025 on 20 papers (the 09-24 corpus-scale record; the 09-18 shard record reports a different statistic). No retrieval comparison exists | measured (boundaries and cost only) | [semantic-vs-pooled-2026-09-18.md](results/semantic-vs-pooled-2026-09-18.md) (shard); [salmonella-amr-semantic-vs-pooled-2026-09-24.md](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md) (corpus scale) |
 
 **Open within the deferral:** which semantic chunker the arm would be (Paper B must name
 one), and C-R0 as the control that makes "method at matched size" a paired contrast.
@@ -305,7 +306,7 @@ States:
 
 | id | what | serves | state | record |
 |---|---|---|---|---|
-| pre | 7-way known-item and SciFact chunking evals (the evidence #677's `fixed_token` default rests on; known-item queries are insensitive to chunking) | SG1, SG3, SG5 | done | `python/scripts/eval/chunking_compare_7way_report.md`, `scifact_chunk_eval_report.md`; candidates §3 |
+| pre | 7-way known-item and SciFact chunking evals (#677's `fixed_token` default rests on the 7-way result; SciFact is the other committed harness; known-item queries are insensitive to chunking) | SG1, SG3, SG5 | done | `python/scripts/eval/chunking_compare_7way_report.md`, `scifact_chunk_eval_report.md`; candidates §3 |
 | P0-1 | TREC CDS coverage gate | E2 | done (PASS) | [step1](results/step1/RESULTS-step1-cds-gate.md) |
 | P0-2 | BM25 lead-only ablation | SG6 | done; inference revised by P0-3 | [step2](results/step2/RESULTS-step2-lead-ablation.md) |
 | P0-3 | real dense contrast, reranker reversal | SG1, SG6 | done | [step3](results/step3/RESULTS-step3-real-experiment.md) |
@@ -494,7 +495,8 @@ Each item points at where the record already lays out the options. **OPEN — OW
     it. But three default specs coexist (candidates §2 item 3): `fixed_token`/512/64 in
     `Settings`, `fixed`/512/64 (characters) in `ingest_jsonl.py` and for the settings-derived
     default collection, and `fixed_token`/256/32 in the shard tools and every CWL workflow, the
-    bulk path. The asm tenant's default collection is `ragstack_sfr_tok256`
-    ([asm-tenant-metadata-audit-2026-09-15.md](results/asm-tenant-metadata-audit-2026-09-15.md);
-    item verified by collection name only, not by its stored chunk spec). The shipping control for
+    bulk path. The legacy asm API (:8000) serves `ragstack_sfr_tok256` as its explicit collection
+    (`QDRANT_COLLECTION_EXPLICIT`, [production-restore.md](../production-restore.md) §3; the collection is listed in
+    [asm-tenant-metadata-audit-2026-09-15.md](results/asm-tenant-metadata-audit-2026-09-15.md);
+    its chunk spec is inferred from the name, not read from the stored spec). The shipping control for
     the OA load is therefore not a single settled spec.
