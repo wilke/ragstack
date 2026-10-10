@@ -1,6 +1,8 @@
 # Redoing the chunking evaluation
 
 > **Which methods to add as arms, and what the code needs first:** see [chunking-evaluation-candidates.md](chunking-evaluation-candidates.md) (2026-10-06).
+>
+> **The consolidated study plan — goal, sub-goals, experiments, open decisions, current status — lives in [chunking-study-plan.md](chunking-study-plan.md) (2026-10-09).** It supersedes the 2026-09-04 decision table below as the place to read status; the table is left as written.
 
 **Status:** `PROPOSED`. The existing comparison cannot answer the questions we are about to
 spend a corpus on, and the reason is the ground truth rather than the configurations.
