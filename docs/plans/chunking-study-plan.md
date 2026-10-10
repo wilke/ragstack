@@ -1,6 +1,6 @@
 # The chunking study: goal, sub-goals, experiments
 
-**Status, 2026-10-09:** `BLOCKED` on the two-reader human read. No experiment is running. This
+**Status, 2026-10-10:** `BLOCKED` on the two-reader human read. No experiment is running. This
 page **consolidates** the study plan. The plan was spread across six documents, and the
 decision table in [chunking-evaluation.md](chunking-evaluation.md) § *Pre-registration* is
 dated 2026-09-04. This page does not make new decisions or measurements. Every number on it
@@ -58,6 +58,10 @@ and `EPACK`**, with **ε = 0.05 absolute, unchanged**. Under r3 §11 the rule ap
 populations. A superiority family under Holm (R1 size extremes, R2 headers, R3 `parent256`,
 R4 `nbr1_512`) is read conjunctively with `ERET` non-inferiority (r3 §3.5). Two more owner rules bind: the production index does not
 change until the experiments are done, and the knowledge graph is out of scope (r3 §1).
+That is r3 as written. **D4(i)** (owner, 2026-10-10, in force once r3 is amended) makes CDS
+`ERET`-only for confirmation and moves containment, and with it the superiority family's
+`EPACK` bar, to the pointed population — where guard 1 currently fails (0b′ §6), so that bar
+has no confirmatory reading until a pointed population clears it (D4).
 
 **What the study feeds** ([docs/papers/README.md](../papers/README.md)):
 
@@ -103,12 +107,14 @@ non-inferior on `EPACK`, fails `ERET`) (r3 §7).
 | Stage 0 (revision 2, `EUC@4096`) | GATE-NOT-EVALUABLE | [stage0/RESULTS-stage0-calibration.md](results/stage0/RESULTS-stage0-calibration.md) |
 | From 256 to 2048 tokens, reach falls 0.277 → 0.112 and containment rises 0.188 → 0.696. Size moves evidence between the two factors | calibration | [stage0/RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §3 |
 | Joint power at n = 80: N1 0.560, N3 0.369, R1 0.513 | calibration: fails the 80 % gate | same, §4; [stats.json](results/stage0/artifacts/stage0b-prime/stats.json) `cds_sizing` |
-| The 2048 arm's `ERET@16k` is below the 0.15 floor, so **N3 cannot be read as a decision at 16k** | descriptive on `ERET` (window demotion) | same, §3 and §11 item 2; `stats.json` `window_demotions` |
+| The 2048 arm's `ERET@16k` is below the 0.15 floor, so **N3 (and R1, which also contains the 2048 arm) cannot be read as a decision at 16k** | descriptive on `ERET` (window demotion) | same, §3 and §11 item 2; `stats.json` `window_demotions` |
 | The pointed population is non-inferior on every contrast, at its ceiling | descriptive (guard 1 failed) | same, §4, §6 |
 
-**Settling test.** Confirmation run (a) on CDS, read with its projected power printed. The
-record expects N1/N3/R1 to come out UNRESOLVED (r3 §10 item 5(a)). The size question can
-become confirmatory only on a pointed population that clears guard 1, which is what the hard
+**Settling test.** Confirmation run (a) on CDS, read with its projected power printed. Under r3
+as written, the record expects N1/N3/R1 to come out UNRESOLVED (r3 §10 item 5(a)). Under
+D4(i), N1's reach half is confirmatory on CDS (N3 and R1 stay `ERET`-demoted), and the
+containment side of the size question waits on a pointed population that clears guard 1.
+Either way, the full size question can become confirmatory only on such a population, which is what the hard
 pointed set is for (r3 §10 items 5(b) and 6;
 [PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md)). **Status:** open.
 **Blocked on:** the human read for CDS, and the owner's go on #526 for the hard set.
@@ -151,7 +157,8 @@ C-R0/C-R1 study arms. Whether it *ships* is open (D8). The prediction on record 
 | C-R1 section-bounded packing (512 / 1024 / 2048 caps plus a whole-section variant), with C-R0 length-yoked random boundaries as its control | not designed, not built | candidates §4, §6 |
 
 **Settling test.** R2 in confirmation run (a): the one contrast the record expects to resolve
-(r3 §10 item 5(a)). C-R1 needs its own pre-registration with size control. Candidates §4
+(r3 §10 item 5(a)) — under r3 as written. Under D4(i) R2's `EPACK` bar moves to the pointed
+population and R2 is descriptive on CDS until a pointed population clears guard 1 (D4, D6). C-R1 needs its own pre-registration with size control. Candidates §4
 proposes re-running `header512` with the header counted inside the 512 tokens. **Status:** R2
 is waiting on the read. C-R0 and C-R1 are not designed, and candidates §6 orders them after
 the construction consolidation.
@@ -223,8 +230,8 @@ secondaries. Stage 2 serving-path concordance is not run.
 
 Two more items on the record: the human-read draw found only 3 of the 20 wanted deep-section
 pairs, and no reader has signed the rubric, which r2 §6.6.1 requires before labeling (a
-recorded deviation, same README). **Open:** whether graded support becomes confirmatory on CDS
-after the read (r3 §10 item 4).
+recorded deviation, same README). **Decided in principle 2026-10-10 (D4(i), D5):** CDS containment is
+descriptive; the containment primary moves to the pointed population, pending the r3 amendment.
 
 ### E2: A query population that discriminates
 
@@ -324,7 +331,7 @@ States:
 | S0b′ | r3 §5 step 4: split endpoints, three modes, both populations, BM25 concordance | SG1–SG4, SG6, E2 | done: gate fails on power | [RESULTS-stage0b-prime](results/stage0/RESULTS-stage0b-prime.md) |
 | S0-scale | option (b): pointed reach versus corpus size | E2 | done; step 2 (5×) not run (owner may overrule, D14) | [RESULTS-pointed-at-scale](results/stage0/RESULTS-pointed-at-scale.md) |
 | CR-a | option (a): confirmation retrieval, pooling (3,738 pairs), 30-reading labeling, #513 filter | SG1–SG4, SG6 | **quarantined**: labels complete (Scout 09-09, Qwen 09-11); #513 filter 09-14 | [RESULTS-confirmation-run-a-setup](results/stage0/RESULTS-confirmation-run-a-setup.md) |
-| HR-dev | two-reader human read, 100 CDS pairs (item 8 / R-dev), plus about 50 pointed pairs | E1, gates all | planned: **critical path, not started**. The draw (`rdev_sample.json`), the pilot sheet (`stage0/artifacts/rdev-pilot-read/`) and the scorer exist | [stage0/README](results/stage0/README.md) § *Item 8*; r3 §11 guard 2; [RUN-PACKAGE.md](results/RUN-PACKAGE.md) §3 |
+| HR-dev | two-reader human read, 100 CDS pairs (item 8 / R-dev), plus about 50 pointed pairs; plus one expert on a stratified subset of the same CDS pairs (D4(ii); size open) | E1, gates all | planned: **critical path, not started**. The draw (`rdev_sample.json`), the pilot sheet (`stage0/artifacts/rdev-pilot-read/`) and the scorer exist | [stage0/README](results/stage0/README.md) § *Item 8*; r3 §11 guard 2; [RUN-PACKAGE.md](results/RUN-PACKAGE.md) §3 |
 | HR-conf | R-conf, ≥ 100 confirmation pairs, blind, before freeze | E1 | **unclear whether still required** (§6, D4) | [SPEC-confirmation-run.md](results/design/SPEC-confirmation-run.md) §6.6.2, P.9 |
 | REEMB | re-chunk and re-embed the arms in the generator's tokenizer (≈ 1.93 fleet-hours) | E3, SG1 | not run; run (a) used SFR tokens (recorded deviation); r3 not amended | r3 §3.3, §4, §5 step 6; [RUN-PACKAGE.md](results/RUN-PACKAGE.md) §6 |
 | G2 | second implementation of `ERET`/`EPACK`/NI, matched on dev | E3 | not built; *working notes, not on the record* | — |
@@ -348,7 +355,8 @@ flowchart TD
   HR --> FZ[G3: label freeze, exclusion list]
   G2[G2: second implementation matched on dev] --> UB
   FZ --> UB[G4: owner lifts quarantine, unblinding]
-  D6{D6: CDS frozen with power printed, or re-scope to R2?} -. "dated before any confirmation label is read" .-> FZ
+  D4A{D4: r3 amendment putting option 1 in force} -. "dated before any confirmation label is read" .-> FZ
+  D6{D6: CDS frozen with power printed, or re-scope — to be re-stated under D4} -. "dated before any confirmation label is read" .-> FZ
   UB --> CR[CR-read: confirmatory contrasts on CDS]
   CR --> ST2[Stage 2 serving concordance]
   HPS0[Owner go on step 0 of the 526 plan] --> HPS[Hard pointed set steps 0–2 on dev]
@@ -356,7 +364,7 @@ flowchart TD
   AM --> HPS4[Confirmation generation, quarantined]
   HPS4 --> HRp[Pointed human read, same readers]
   HRp --> FZ
-  HPS -->|guard 1 passes| SIZE[Size contrasts confirmatory on pointed]
+  HPS -->|guard 1 passes| SIZE[Size and delivery contrasts confirmatory on pointed]
   HPS -->|guard 1 fails| DESC[Pointed stays descriptive]
   CONS[Chunker consolidation] --> NEW[C-R0/C-R1 pre-registration]
   CR --> SYN[Synthesis stage]
@@ -390,16 +398,16 @@ Putting the run plan on the record would let this table cite it.
 
 ## 6. Open decisions for the owner
 
-Each item points at where the record already lays out the options. **OPEN — OWNER** throughout.
+Each item points at where the record already lays out the options. **OPEN — OWNER** unless a row says *decided*.
 
 | # | decision | options as recorded | record's recommendation | where |
 |---|---|---|---|---|
 | D1 | Hard pointed set: go or no-go on step 0 (about 1 h, reversible). This decides whether *size* can become confirmatory on the pointed population; it does not decide the CDS family (D6) | go / no-go | none explicit; the plan proposes step 0 as the cheap test of the idea | [PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md) §8.1 |
 | D2 | Accept the estimand narrowing to "pointed questions without a unique lexical key" | accept / keep one mixed set (guard 3's count roughly doubles) | the plan's step 3 is written assuming accept | same, §8.2, §5 step 3 |
 | D3 | Rule F's single-source judge | Scout (free) / Opus via the CLI (about $500 projected) | Scout | same, §8.3 |
-| D4 | Is the R-conf read (≥ 100 confirmation pairs, two readers) still required before freeze? | r2 P.9 step 3 requires it; [grading-ui.md](grading-ui.md) §1 and the frozen [RUBRIC-evidence.md](results/design/RUBRIC-evidence.md) §4 still assume it. r3, RUN-PACKAGE, the handoff and conf-a cost and gate only R-dev; [REVIEW-synthesis](results/design/REVIEW-synthesis-stage.md) N4 counts reads without it | none stated | §8 of this page, contradiction 1 |
-| D5 | Graded support on CDS: confirmatory after the read, or descriptive under item 4(b) | (a) confirmatory / (b) containment primary moves to pointed, CDS keeps `ERET` plus descriptive graded `EPACK` | (b), with (a) as CDS's descriptive containment | r3 §10 item 4 |
-| D6 | The CDS confirmatory family: (a) run it under the frozen procedure with projected power printed, or (c) re-scope it to R2 (headers) and read N1/N3/R1/R3/R4 as descriptive | (a) / (c). Recorded as (a) and (b) started, (c) planned as the fallback. (c) applies to CDS **regardless of the hard set** ([PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md) §6: "item 5(c) still applies to CDS") | (a)+(b), with (c) the fallback | r3 §10 item 5. A (c) amendment must be dated **before any confirmation label is read**, which constrains its timing relative to D4 |
+| D4 | Human reading, and which population carries containment ("where") | r2 P.9 step 3 requires R-conf; [grading-ui.md](grading-ui.md) §1 and the frozen [RUBRIC-evidence.md](results/design/RUBRIC-evidence.md) §4 still assume it. r3, RUN-PACKAGE, the handoff and conf-a cost and gate only R-dev; [REVIEW-synthesis](results/design/REVIEW-synthesis-stage.md) N4 counts reads without it. Options put to the owner 2026-10-10: (1) r3 §10 item 4(b) as worded; (2) the same, with R2 keeping a confirmatory containment bar on CDS; (3) r3 unchanged | **Decided in principle, 2026-10-10 (owner: "stick with option 1 for now"): option (1).** (i) The containment primary moves to the pointed population, whose gold is the construction passage and needs no labeler (r3 §10 item 4(b)); CDS keeps reach (`ERET`) confirmatory and containment descriptive. (ii) One expert reads a stratified subset (≈ 20–30 as proposed in the 2026-10-10 session, not on the record; exact size and strata open) of the same CDS pairs, so the reliability of the non-expert read is measured rather than assumed. The available experts are in microbiology, genomics and metagenomics (owner: "not really biomedical"), so on CDS's clinical topics (ii) measures expert-versus-non-expert agreement, not clinical correctness. More readers may be added later (owner: "we can try"). **Consequences, shown to the owner before the choice:** CDS's power shortfall is on `EPACK`, not `ERET` (0b′ §4: `ERET` marginals 0.95–1.00, `EPACK` 0.38–0.56 except R2 0.99), so N1 becomes decidable on CDS on reach, while N3 — and, in the superiority family, R1 and R4 — stay window-demoted on `ERET` on CDS (0b′ §3, §11 item 2; `stats.json` `window_demotions`: `fixed_tok2048_ov0pct`, `nbr1_512`, `nbr2_512`). The superiority family R1–R4 has its bar on confirmatory `EPACK@16k` read on CDS (r3 §3.5, §11), so under (i) R2 — the one contrast CDS powers — and R1/R3/R4 become descriptive on CDS and wait for a pointed population that clears guard 1 (the current one fails it, 0b′ §6; D1, D15). **Still open:** the whether-gate at the k the `ERET` gold is read at, now the only confirmatory CDS instrument (contradiction 9); the dated amendment to r3 §3.1/§3.5/§3.6/§11 that puts (i) into force, **before any confirmation label is read** (as for D6); whether R-conf survives in any form; any change to the two-reader protocol for more readers (a pre-registered amendment, before freeze) | §8 of this page, contradiction 1; [r3](results/design/SPEC-confirmation-run-r3.md) §10 item 4; [RESULTS-stage0b-prime.md](results/stage0/RESULTS-stage0b-prime.md) §4 |
+| D5 | Graded support on CDS: confirmatory after the read, or descriptive under item 4(b) | (a) confirmatory / (b) containment primary moves to pointed, CDS keeps `ERET` plus descriptive graded `EPACK` | **Decided in principle with D4(i), 2026-10-10: (b).** Remaining detail: whether (a)'s graded support is reported as CDS's descriptive containment | r3 §10 item 4 |
+| D6 | The CDS confirmatory family: (a) run it under the frozen procedure with projected power printed, or (c) re-scope it | (a) / (c). Recorded as (a) and (b) started, (c) planned as the fallback. (c) applies to CDS **regardless of the hard set** ([PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md) §6: "item 5(c) still applies to CDS"). **D4(i) changes the premise:** with CDS containment descriptive, the CDS family is read on `ERET`, where N1 is powered and R2's superiority bar (on `EPACK`) no longer applies — so (c) as recorded ("re-scope to R2") must be re-stated against D4(i) | (a)+(b), with (c) the fallback; to be re-stated after D4's amendment | r3 §10 item 5. A (c) amendment must be dated **before any confirmation label is read**, and is best written together with D4's |
 | D7 | Readers: who, and when (32–48 person-hours for CDS plus 10–15 for pointed); rubric sign-off first (G1) | — | — | r3 §4; r3 §11 cost |
 | D8 | New method arms: whether and when to pre-register C-R0/C-R1 (and C-R2/3/5) as a follow-up study, on which population | candidates §6 order: consolidate → C-R0 → C-R1 → production `section` | that order | [candidates](chunking-evaluation-candidates.md) §6 |
 | D9 | Synthesis stage: go, and on which population; the judge transport and spend (≈ $250 at list to ≈ $1,000 at #514's CLI rate; the CLI could not complete 867 calls, so API key or Batches; review B9); the prompt format (production `[n]` formatting with two named deviations, review B7) | spec as reviewed; Stage 0b′ suggests the ceiling pointed set | none beyond the spec | [SPEC-synthesis-stage.md](results/design/SPEC-synthesis-stage.md) §3, §5, §7; [REVIEW](results/design/REVIEW-synthesis-stage.md) B7, B9; Stage 0b′ §11.3 |
@@ -408,16 +416,19 @@ Each item points at where the record already lays out the options. **OPEN — OW
 | D12 | Off-host backup: the recommended set (about 6 GB in total: `work/conf`, `dev10-goldens`, the Phase-0 tarball, code and harness repos, env lock, `hf/`), plus a second copy of `emb/` (34 GB) on another volume group | postponed by the owner on 2026-10-06 | make it | `/rag/snapshots/README.md` § *Data* |
 | D13 | The generator-tokenizer re-embed (r3 §3.3, §5 step 6): run it (≈ 1.93 fleet-hours) or amend r3 to accept run (a)'s SFR-token deviation, before freeze | run / amend | none; conf-a says the deviation must be stated in the analysis | [RESULTS-confirmation-run-a-setup.md](results/stage0/RESULTS-confirmation-run-a-setup.md) §5 item 1; [RUN-PACKAGE.md](results/RUN-PACKAGE.md) §6 |
 | D14 | The 5× / 500k corpus step for the pointed population: the record did not run it and left the overrule to the owner ("if the owner wants the pointed population as a gate … 500k is the size worth buying") | buy 500k / leave it (query hardness, D1, as the lever) | leave it; the separation argument does not depend on corpus size | [RESULTS-pointed-at-scale.md](results/stage0/RESULTS-pointed-at-scale.md) §5, deviation D2; [stage0/README](results/stage0/README.md) |
+| D15 | Where to build the pointed population the experts can read. The OA load is the bacteria ∪ viruses subset (~498k, [oa-full-ingest.md](oa-full-ingest.md)); the readers available are microbiology, genomics and metagenomics experts; CDS topics are clinical cases, and the hard pointed set ([PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md)) is drawn on the CDS corpus | build the pointed set on CDS as planned / on a microbiology-virology corpus matching the OA load and the readers / both | **Owner leaning 2026-10-10: both** (not yet decided). Costs of a new corpus: new embeddings for every arm (of the order of the REEMB row's ≈ 1.93 fleet-hours for a corpus the size of the 32,663-document Stage 0 corpus), a new population, the loss of the hard-set plan's "no new corpus embeddings" property and of r3 §11's one-index-per-arm design across populations, and no reuse of the 0b′ or pointed-at-scale calibrations; interacts with D1 and D14. A cheap first step: pilot question generation on the 20 Salmonella-AMR papers already ingested ([salmonella-amr-semantic-vs-pooled-2026-09-24.md](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md)) and have the experts judge whether the questions are realistic | this page, D1, D14 |
 
 ## 7. Proposed next steps
 
 **Proposal. None of this is decided.** Ordered by what unblocks the most.
 
-1. **Owner:** name the two readers and have them sign the rubric (G1, D7). Settle D4, D6 and D13
-   at the same sitting, because all have to happen before freeze, and D6 before any confirmation
+1. **Owner:** name the readers (microbiology / genomics / metagenomics experts are available,
+   2026-10-10) and have them sign the rubric (G1, D7). Settle D4's open parts, D6, D13 and D15 at
+   the same sitting, because all have to happen before freeze, and D6 before any confirmation
    label is read.
-2. **Readers:** the R-dev read of 100 CDS pairs in the Grading view, then about 50 pointed
-   pairs. Score it with `s0_rdev_score.py` (it exists and is tested).
+2. **Readers:** the R-dev read of 100 CDS pairs in the Grading view by two readers, plus one
+   expert on a stratified subset of the same pairs (D4(ii); size open), then about 50 pointed
+   pairs. Who the two readers are, and whether they come from the same expert pool, is open (D7). Score it with `s0_rdev_score.py` (it exists and is tested).
 3. **Agent, in parallel with 2:** build G2 outside `stage0/`, run from the `55a0fc2` snapshot,
    and match it on the dev labels against Stage 0b′'s committed outputs. It writes to new paths
    only, never over a golden. Then give it an independent review.
@@ -451,7 +462,7 @@ Each item points at where the record already lays out the options. **OPEN — OW
    alone and say freeze waits "only on the human read's κ". Yet [grading-ui.md](grading-ui.md) §1
    and the frozen [RUBRIC-evidence.md](results/design/RUBRIC-evidence.md) (audience, §4) still
    assume R-conf, and [REVIEW-synthesis](results/design/REVIEW-synthesis-stage.md) N4 counts the
-   reads without it. (D4.)
+   reads without it. (D4: decided in principle 2026-10-10; R-conf's survival still open.)
 2. **The confirmation run's tokenizer.** r3 §3.3 and §5 step 6 specify a re-embed in the
    generator's tokenizer. Run (a) reused the SFR-token arms and records this as deviation 1.
    r3 was not amended. (D13.)
