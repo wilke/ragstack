@@ -89,8 +89,8 @@ Three parts of it are not settled:
   stays conjunctive across all of them, or one population leads and the others replicate (D17).
 
 E stops at delivered evidence. Answer quality is the synthesis stage (E4). The system-level objective,
-in which R and the other components also vary, belongs to a system-level study plan (not yet
-written), not to this page.
+in which R and the other components also vary, belongs to the system-level study plan
+([system-study-plan.md](system-study-plan.md), first version 2026-10-10), not to this page.
 
 **What the study feeds** ([docs/papers/README.md](../papers/README.md)):
 
