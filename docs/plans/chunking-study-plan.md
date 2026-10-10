@@ -500,3 +500,6 @@ Each item points at where the record already lays out the options. **OPEN — OW
     [asm-tenant-metadata-audit-2026-09-15.md](results/asm-tenant-metadata-audit-2026-09-15.md);
     its chunk spec is inferred from the name, not read from the stored spec). The shipping control for
     the OA load is therefore not a single settled spec.
+    **Owner decision 2026-10-10:** settle on one spec, but only after the initial experiments and
+    their data have been repeated and verified (the snapshot re-runs, E3); until then no default is
+    treated as the study's baseline.
