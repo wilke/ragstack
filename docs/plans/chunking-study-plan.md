@@ -66,16 +66,21 @@ has no confirmatory reading until a pointed population clears it (D4).
 **The objective, stated as an optimisation problem.** The framing max over C of E(C | Q, R, B) —
 chunking and delivery strategy C, query population Q, retrieval and reranking pipeline R, delivered
 token budget B, evidence delivered E — was proposed in an external review the owner shared on
-2026-09-21. It is not on the record. The decision rule above is its constrained form:
+2026-09-21. It is not on the record. The decision rule above is its cost-minimising counterpart:
 
-> choose the cheapest C such that E(C | Q, R, B) ≥ E(C_ref | Q, R, B) − ε, on each of `ERET` and
-> `EPACK`, for every declared population Q, with R the served path and B = 16,384 tokens.
+> choose the cheapest C such that E(C | Q, R, B) ≥ E(C_ref | Q, R, B) − ε — read as the one-sided
+> non-inferiority test above — on `ERET` for every declared population Q, and on `EPACK` for the
+> population that carries containment, with R the served path and B = 16,384 tokens.
+
+Under r3 as written, `EPACK` is read on every population; under D4(i) it is read on the pointed
+population only, and CDS is constrained on `ERET` alone.
 
 Three parts of it are not settled:
 
 - **"Cheapest" has no defined cost term.** The record uses vector count as the storage lever
-  (2.157× for 512→1024/0, r3 §3.6). Embedding compute, index disk and query latency are reported in
-  places but never combined (D16).
+  (2.157× for 512→1024/0, r3 §3.6). Embedding compute (r3 §4) and an index-disk estimate (r3 §3.6)
+  are on the record; query latency is planned for Stage 2 (SPEC-synthesis §2) but not measured; none
+  is combined (D16).
 - **C_ref is not settled.** r3 names `fixed_tok512` (512/64); the owner's 2026-10-10 decision on
   contradiction 11 holds any default back until the initial experiments are re-run and verified.
 - **"Every declared population" now has up to three members.** r3 §11 requires non-inferiority on
@@ -84,7 +89,8 @@ Three parts of it are not settled:
   stays conjunctive across all of them, or one population leads and the others replicate (D17).
 
 E stops at delivered evidence. Answer quality is the synthesis stage (E4). The system-level objective,
-in which R and the other components also vary, belongs to the system study plan, not to this page.
+in which R and the other components also vary, belongs to a system-level study plan (not yet
+written), not to this page.
 
 **What the study feeds** ([docs/papers/README.md](../papers/README.md)):
 
@@ -441,16 +447,16 @@ Each item points at where the record already lays out the options. **OPEN — OW
 | D14 | The 5× / 500k corpus step for the pointed population: the record did not run it and left the overrule to the owner ("if the owner wants the pointed population as a gate … 500k is the size worth buying") | buy 500k / leave it (query hardness, D1, as the lever) | leave it; the separation argument does not depend on corpus size | [RESULTS-pointed-at-scale.md](results/stage0/RESULTS-pointed-at-scale.md) §5, deviation D2; [stage0/README](results/stage0/README.md) |
 | D15 | Where to build the pointed population the experts can read. The OA load is the bacteria ∪ viruses subset (~498k, [oa-full-ingest.md](oa-full-ingest.md)); the readers available are microbiology, genomics and metagenomics experts; CDS topics are clinical cases, and the hard pointed set ([PLAN-hard-pointed-set.md](results/design/PLAN-hard-pointed-set.md)) is drawn on the CDS corpus | build the pointed set on CDS as planned / on a microbiology-virology corpus matching the OA load and the readers / both | **Owner leaning 2026-10-10: both** (not yet decided). Costs of a new corpus: new embeddings for every arm (of the order of the REEMB row's ≈ 1.93 fleet-hours for a corpus the size of the 32,663-document Stage 0 corpus), a new population, the loss of the hard-set plan's "no new corpus embeddings" property and of r3 §11's one-index-per-arm design across populations, and no reuse of the 0b′ or pointed-at-scale calibrations; interacts with D1 and D14. A cheap first step: pilot question generation on the 20 Salmonella-AMR papers already ingested ([salmonella-amr-semantic-vs-pooled-2026-09-24.md](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md)) and have the experts judge whether the questions are realistic | this page, D1, D14 |
 | D16 | The cost term in the objective: what "cheapest" means | vectors stored (the record's storage lever) / embedding compute (fleet-hours) / index disk / query latency / a weighted combination | none on the record; the decision rule has used vector count implicitly | §1 *The objective*; r3 §3.6 |
-| D17 | How the rule treats several populations (CDS, CDS hard pointed set, microbiology set) | conjunctive across all (as r3 §11 does for two) / one population primary, others replication (PLAN-micro-pointed-set decision 6 recommends the microbiology set as the containment primary, the CDS hard set as replication) / a separate spec per collection | none beyond r3 §11's two-population conjunction | §1 *The objective*; r3 §11; [PLAN-micro-pointed-set.md](results/design/PLAN-micro-pointed-set.md) §11 |
+| D17 | How the rule treats several populations (CDS, CDS hard pointed set, microbiology set) | conjunctive across all (as r3 §11 does for two) / one population primary, others replication — for the containment primary when both pointed sets pass guard 1, this is PLAN-micro-pointed-set §11 item 6 / a separate spec per collection (this page's addition, not on the record) | r3 §11: conjunctive over its two populations. For the containment primary, PLAN-micro-pointed-set §11 item 6 recommends the microbiology set primary and the CDS hard set as replication, the owner deciding in the r3 §11 amendment | §1 *The objective*; r3 §11; [PLAN-micro-pointed-set.md](results/design/PLAN-micro-pointed-set.md) §11 |
 
 ## 7. Proposed next steps
 
 **Proposal. None of this is decided.** Ordered by what unblocks the most.
 
 1. **Owner:** name the readers (microbiology / genomics / metagenomics experts are available,
-   2026-10-10) and have them sign the rubric (G1, D7). Settle D4's open parts, D6, D13, D15, D16 and D17 at
+   2026-10-10) and have them sign the rubric (G1, D7). Settle D4's open parts, D6, D13, D15 and D17 at
    the same sitting, because all have to happen before freeze, and D6 before any confirmation
-   label is read.
+   label is read. D16 before unblinding, so the cost ordering is not chosen after the verdicts are read.
 2. **Readers:** the R-dev read of 100 CDS pairs in the Grading view by two readers, plus one
    expert on a stratified subset of the same pairs (D4(ii); size open), then about 50 pointed
    pairs. Who the two readers are, and whether they come from the same expert pool, is open (D7). Score it with `s0_rdev_score.py` (it exists and is tested).
