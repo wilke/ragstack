@@ -10,19 +10,24 @@ wait on the chunking verdict.
 model, which is now most people building retrieval evaluations over long documents. The result
 is not specific to chunking, to biomedicine, or to our retrieval stack.
 
-**The one-sentence claim.** A language model asked to locate evidence inside a document agrees
-with itself about *whether* the document contains evidence and disagrees about *where*; what
-converges under more readings depends on how coarsely you ask — the family of distinct span
-*sets* saturates, the set of *sentences* ever marked does not, and pooling readings into a
-union does not yield a stable span set either; but a graded per-sentence support score over the
-same readings does reproduce itself, clears a usable reliability bar, and is not one model
-family's artefact.
+**The one-sentence claim.** A language model asked to locate evidence inside a document agrees with
+itself about *whether* the document contains evidence and disagrees about *where*; within twenty to
+thirty readings neither the union of evidence sets nor the union of evidence sentences converges, but a
+graded per-sentence support score built from the readings becomes reliable with depth — k-rater
+reliability 0.9205 pooled across two families at thirty readings, and, in an exploratory per-judge
+reading, 0.9142 for one judge at twenty — which makes it a reproducible, though not a validated, gold
+object.
 
-**The thesis in two numbers, from the same thirty readings of the same pairs.** Graded
-per-sentence support reaches Spearman-Brown 0.9205 (`graded-support-reliability-at-30`). The
-span-set union built from those same readings reproduces itself on 0.4708 of pairs
-(`r31-scout-union-as-labeler-unstable`). One object is reliable and the other is not, and the
-difference is the object scored, not the data.
+**The thesis in two numbers, with their depths stated.** Graded per-sentence support reaches k-rater
+reliability 0.9205 at thirty pooled readings (`graded-support-reliability-at-30`); in an exploratory
+per-judge reading, Scout alone reaches 0.9142 at twenty (`judge-scout-support-reliability-curve`). Span
+agreement read one reading against one reading is 0.3831 / 0.5617 (`r31-scout-span-self-consistency`,
+`r31-qwen-span-self-consistency`). These are not the same depth: at five or six readings the union
+split-half (0.4708 Scout, 0.5779 Qwen; `r31-scout-union-as-labeler-unstable`,
+`r31-qwen-union-as-labeler-unstable`) and the graded score (0.4738 at k = 6,
+`graded-support-reliability-at-6`) are no different, and a deep union split-half was never measured.
+The finding is that graded support is the object whose reliability grows with depth to a usable,
+measurable level — not that it beats the union at equal depth.
 
 **What this paper does not claim.** That the graded score is *correct*. Reliability is not
 validity, the human read has not happened, and the paper says so in its own voice.
@@ -53,9 +58,10 @@ span-set disagreement and then **worked around it**: FEVER scores against any on
 and concedes completeness "is not feasible"; WiCE keeps multiple sets and declines the union;
 ERASER went back to collect "comprehensive" rationales precisely because the originals were
 known to be incomplete. Nobody has measured how bad it is **as a function of effort**, and
-nobody has reported **a reliability coefficient** for evidence-span selection at all. We do
-both, and we show that the workaround the field reaches for — the union — is the wrong object,
-while a graded per-sentence score is the right one.
+nobody has reported **a repeated-measures reliability coefficient** for evidence-span selection at
+all. We do both: neither the union of sets nor the union of sentences converges within thirty
+readings, and a graded per-sentence score is the object whose reliability can be measured and
+grows with depth to a usable level.
 
 Four things the survey looked for and did not find, which is what the contribution now rests on:
 
@@ -139,92 +145,34 @@ restating it.
 
 ### 5. Results
 
-Each subsection cites claim ids from `claims.json`; no bare numbers.
+`DRAFT.md` §5 is the authoritative text; every number there cites a claim id. The skeleton, with the
+point each subsection must make:
 
-**5.1 Whether is easy, where is not.** The same model, the same pair, twice: agreement on the
-binary verdict against agreement on the span set. This is the paper's hook.
+**5.1 Whether is easy, where is not.** Whether-agreement passes the gate; one-reading-against-one
+span self-consistency fails it. Like-for-like on the 31 pairs; base-rate caveat on Qwen's whether;
+cross-judge location agreement, exploratory.
 
-**5.2 Quote anchoring hallucinates, and whole sentences fix it.** Hallucinated-span rates before
-and after the anchor change, for both local judges and all three of the third family. Report the
-failure mode that motivated it: the closing anchor. This is a clean, transferable protocol
-result that others can adopt directly.
+**5.2 Quote anchoring hallucinates, and whole sentences fix it.** First-reading and all-presentation
+rates; the closing-anchor failure mode; the third family has no ten-word "before".
 
-**5.3 What converges, and what does not.** This is the section a reviewer will attack, so it
-must be precise about granularity. Three objects, one data set:
+**5.3 Neither union converges within thirty readings.** Report marginal gain *and* fitted fraction of
+the asymptote for both the set union and the sentence union; by the first they are indistinguishable,
+by the second neither is near its asymptote. Union split-half is a five-reading figure; compare it
+only with the matched-depth graded value (k = 6); the deep union split-half is absent. The
+pre-registered fit scored mechanically and on the exploratory blow-up-excluded reading. Partial credit,
+exploratory.
 
-- The family of distinct span *sets*, merged at Jaccard ≥ 0.5, **does** saturate:
-  `r31ext-scout-set-union-marginal-gain` (0.0274 at twenty readings) and
-  `r31ext-qwen-set-union-marginal-gain` (0.0461 at ten), both under the 0.05 bar, after failing
-  it at five readings (`r31-scout-union-not-saturating-at-5`).
-- The set of distinct *sentences* ever marked does **not**:
-  `r31ext-pooled-sentence-union-still-growing` puts thirty pooled readings at 0.7816 of the
-  fitted asymptote and still gaining.
-- Pooling readings into a union does **not** produce a stable span set either:
-  `r31-scout-union-as-labeler-unstable`, 0.4708.
+**5.4 Graded support becomes reliable with depth.** Pooled curve; per-judge curves, exploratory; the
+inverted single-reading reliability shows the pooled shape is judge composition, and within Scout the
+readings behave as exchangeable from k = 14 to 20. Degenerate halves; sensitivities; the
+pre-registered bet.
 
-The pre-registered fit is the asset. `prereg-p-ext-2-fit-parameters` was committed before the
-first new label and predicted its own primary would fail and said why. The mechanical scoring
-passed for the wrong reason, on one blow-up in 6,160 readings (`prereg-p-ext-2-scored`,
-`locator-blowup-dev`). On the honest reading the primary fails as predicted **and** the
-secondary lands at a relative error of 0.0024 — a five-point curve extrapolated four-fold to
-within a quarter of a percent (`prereg-p-ext-2-excluding-blowups`). Report both readings and
-say which is which.
+**5.5 Third-family judges land on supported sentences.** Point-biserial r and Spearman ρ,
+exploratory; the lift comparison, exploratory, with Fable's different baseline; agreement between
+single readings of different models is not agreement with truth.
 
-Do not quote the degenerate unfiltered fits: `r31ext-scout-sentence-fit-degenerate-unfiltered`
-and `r31ext-pooled-fit-degenerate-unfiltered` have no identifiable asymptote, and the artifacts
-say so.
-
-**Pre-empt the metric-artefact objection, in this section, before a reviewer raises it.**
-HotpotQA's Table 8 shows a whether/where gap that lives almost entirely in *exact set match* —
-supporting-fact EM 61.50 against F1 90.04. So a reader will ask whether our 0.47-against-0.92
-contrast is just set equality being a harsh measure. It is not, and our own data settles it:
-under partial credit the raw mean pairwise span-union Jaccard is **0.4350** for Scout
-(`r31-scout-partial-credit-jaccard`) and **0.5430** for Qwen
-(`r31-qwen-partial-credit-jaccard`), against graded-support reliability of **0.9205** on the same
-readings. The contrast survives partial credit. Report Qwen's median of 0.7518 beside its mean,
-because that distribution is bimodal and the mean alone misrepresents it.
-
-**5.4 Graded support does converge — and report the curve, never the endpoint.** The constructive
-half, and the section most exposed to a methodological objection. `wong-2022` gives the
-established name for what we are computing (**k-rater reliability**, ICC(k), equivalent to
-Spearman-Brown) and a precedent of the same shape (ICC(1) 0.590 to ICC(13) 0.950). Which invites
-the obvious attack: a high coefficient at thirty readings is arithmetically implied by
-Spearman-Brown from any moderate single-reading value, so 0.9205 on its own says nothing.
-
-**Answer it with the curve, which we have** (`graded-support-reliability-at-4` through `-at-30`). Inverting
-Spearman-Brown at each k, the implied single-reading reliability is not constant — it rises from
-0.1929 at ten readings to 0.2785 at thirty. If the readings were exchangeable it would be flat.
-Because it rises, the observed curve beats every projection from an earlier anchor: +0.0429 from
-k = 10, +0.0320 from k = 14, +0.0193 from k = 20. Pooling buys more than the prophecy formula
-predicts, and that is the finding rather than the endpoint.
-
-Two honesties belong in the same paragraph. The **single-reading reliability is low**, around
-0.19 to 0.28, and saying so is what makes the thirty-reading number meaningful. And the small-k
-points are **attenuated by halves with no variance** — 47 such pairs at k = 4 against 1 at k = 30
-(`graded-support-degenerate-halves-at-4`) — so k ≥ 10 is the honest range; the 44 % rise survives
-there, where the degeneracy difference is two pairs against one out of about 306.
-
-Reliability against readings: `graded-support-reliability-at-10` (0.7050), `-at-20` (0.8588),
-`-at-30` (0.9205), against the 0.90 bar the pre-registration had written for the span gate. Ten readings do not suffice and
-twenty do not either, which is worth stating because it is the cost of the method.
-`graded-support-reliability-sensitivities` shows the result does not rest on estimator choices,
-and `prereg-p-ext-1-scored` shows the bet was registered below the projection and above what ten
-readings bought, so it was a genuine bet in both directions.
-
-**5.5 It is not one family's artefact.** Three models from a separate family, one reading each,
-land on sentences carrying several times the pooled support of an average touched sentence.
-Report this as agreement between models, never as truth.
-
-**5.6 At scale, and a defect the development set could not surface.**
-`span-filter-dev-counts` against `span-filter-conf-counts`: Qwen filtered **zero** of 3,080
-development readings and **nine** of 37,380 at scale, and those nine carry more dropped spans
-(1,653) than Scout's 1,050 filtered records do (1,441). Scout's rate is the control that says
-the filter did not drift: 1.33 % to 1.40 %. `span-filter-instrument-unchanged` (Δ −0.0013)
-proves the instrument is the same on both sets, which is what makes the comparison legitimate.
-
-The general lesson is the transferable one: a defect invisible at development scale and
-load-bearing at confirmation scale, caught because the fix was written as a post-filter applied
-identically to both sets rather than as a change to the locator between them.
+**5.6 At scale, and a defect the development set could not surface.** The locator post-filter applied
+identically to both sets; Qwen's zero in development against nine at scale; the instrument unchanged.
 
 ### 6. Threats to validity
 
@@ -300,7 +248,7 @@ than an API, and what that means for exact reproduction.
 
 ## Working rules for this draft
 
-- Every number cites a claim id from `claims.json` (79 entries, all verified). Run
+- Every number cites a claim id from `claims.json` (105 entries, all verified). Run
   `../check_claims.py` before any commit that touches the draft.
 - Read the `note` field before writing the sentence. Several claims carry a caveat that changes
   what may be said: differing `n`, a key name in `gates-r31ext.json` that says `k5` but holds the
