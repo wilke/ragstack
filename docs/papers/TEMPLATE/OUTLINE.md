@@ -65,7 +65,7 @@ not in a limitations paragraph.]
 nulls and underpowered contrasts as unresolved, never as the same thing. Preserve
 GATE-NOT-EVALUABLE as its own outcome. Quote the power floor beside every null.]
 
-**5.1 [first finding].** <claims: `[claim-id]`>
+**5.1 [first finding].** [claims: `claim-id`]
 
 ### 6. Threats to validity
 
