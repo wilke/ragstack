@@ -312,6 +312,7 @@ def main(argv=None) -> int:
     if args.paths:
         paths = [Path(p).resolve() for p in args.paths]
     else:
+        # TEMPLATE/claims.json (0 claims) is picked up here on purpose; that entry is expected.
         paths = sorted(PAPERS_DIR.rglob("claims.json"))
 
     if not paths:
