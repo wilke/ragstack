@@ -29,7 +29,7 @@
   {
    "id": "s0-span-index-agreement",
    "section": "1",
-   "statement": "Only 0.64496 of the judge's verified spans were actually at the character indices it claimed; 140 of 476 verified spans had to be relocated to where their own quote resolved.",
+   "statement": "Only 0.64496 of the judge's attempted spans were at the indices it claimed; 140 of 476 attempted spans had to be relocated to where their own quote resolved.",
    "value": 0.64496,
    "source": "docs/plans/results/stage0/artifacts/label_gates.json",
    "pointer": "index_agreement.rate",
@@ -431,12 +431,12 @@
    "pointer": "judges.qwen.union_saturation",
    "kind": "json",
    "verified": true,
-   "note": "Same D3 merge rule. At ten readings this falls to 0.0461, i.e. the SET-level union does eventually saturate for Qwen (see r31ext-set-union-saturates); the sentence-level union does not."
+   "note": "Same D3 merge rule. At ten readings this falls to 0.0461 (r31ext-qwen-set-union-marginal-gain), under the 0.05 bar. CORRECTED (review of #730): falling under the marginal-gain bar is not convergence -- the set union is at 0.7094 of its fitted asymptote at k = 10 -- and the sentence union behaves comparably; do not read this as 'sets saturate, sentences do not'."
   },
   {
    "id": "r31ext-set-union-saturates",
    "section": "3",
-   "statement": "Measured deeper, the union of distinct evidence *sets* does saturate under the merge rule \u2014 Scout's marginal gain is 0.0274 at twenty readings and Qwen's 0.0461 at ten, both below the 0.05 bar.",
+   "statement": "Measured deeper, the marginal gain of the union of distinct evidence *sets* falls below the 0.05 bar -- Scout 0.0274 at twenty readings, Qwen 0.0461 at ten.",
    "value": {
     "scout.union_saturation.marginal_gain_at_k5": 0.0274,
     "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
@@ -447,29 +447,29 @@
    "pointer": "judges",
    "kind": "json",
    "verified": true,
-   "note": "THE KEY NAME LIES. In gates-r31ext.json the field `union_saturation.marginal_gain_at_k5` holds the gain at the judge's FULL depth \u2014 k = 20 for Scout, k = 10 for Qwen \u2014 not at k = 5. The k = 5 values are 0.1022 and 0.1127 and live in gates-r31.json. Never quote a 'k5' field from the extension file as a five-reading number. Sets, merged at Jaccard >= 0.5; the SENTENCE-level union does not saturate."
+   "note": "THE KEY NAME LIES. In gates-r31ext.json the field `union_saturation.marginal_gain_at_k5` holds the gain at the judge's FULL depth -- k = 20 for Scout, k = 10 for Qwen -- not at k = 5. The k = 5 values are 0.1022 and 0.1127 and live in gates-r31.json. Never quote a 'k5' field from the extension file as a five-reading number. CORRECTED (review of #730): a marginal gain under 0.05 is the artifact's own SATURATING verdict, but it is NOT convergence. On the same criteria the sentence union is no different: Scout's sentence gain at k = 20 is 0.0272 (r31ext-scout-sentence-fit-excluding-blowups) against 0.0274 for sets, and the set union stands at only 0.6949 (Scout) and 0.7094 (Qwen) of its fitted asymptote against 0.8118 for Scout's sentences (r31ext-scout-set-union-fraction-of-asymptote, r31ext-qwen-set-union-fraction-of-asymptote). Neither object has converged by 20-30 readings; do not write 'sets saturate, sentences do not'."
   },
   {
    "id": "r31ext-scout-set-union-marginal-gain",
    "section": "3",
-   "statement": "Scout's set-level union gains only 0.0274 of its size at the twentieth reading \u2014 below the 0.05 saturation bar.",
+   "statement": "Scout's set-level union gains 0.0274 of its size at the twentieth reading, under the 0.05 marginal-gain bar.",
    "value": 0.0274,
    "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
    "pointer": "judges.scout.set_saturation_incremental.marginal_gain_at_n",
    "kind": "json",
    "verified": true,
-   "note": "This is the honest home for the number: `set_saturation_incremental.marginal_gain_at_n` is explicitly at n = 20, whereas the sibling `union_saturation.marginal_gain_at_k5` holds the same 0.0274 under a key named for k = 5. Sets, merged at Jaccard >= 0.5 \u2014 NOT sentences, which do not saturate."
+   "note": "The honest home for the number: `set_saturation_incremental.marginal_gain_at_n` is explicitly at n = 20, whereas the sibling `union_saturation.marginal_gain_at_k5` holds the same 0.0274 under a key named for k = 5. Sets, merged at Jaccard >= 0.5, over the 300 pairs positive somewhere. CORRECTED (review of #730): the sentence union has an essentially identical marginal gain at the same depth (0.0272), and the set union is FURTHER from its fitted asymptote (0.6949) than the sentence union (0.8118). The marginal-gain bar does not distinguish the two objects; neither has converged."
   },
   {
    "id": "r31ext-qwen-set-union-marginal-gain",
    "section": "3",
-   "statement": "Qwen's set-level union gains 0.0461 of its size at the tenth reading, also below the bar.",
+   "statement": "Qwen's set-level union gains 0.0461 of its size at the tenth reading, under the 0.05 marginal-gain bar.",
    "value": 0.0461,
    "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
    "pointer": "judges.qwen.set_saturation_incremental.marginal_gain_at_n",
    "kind": "json",
    "verified": true,
-   "note": "n = 10, Qwen's full depth. Read with the sentence-level result: the coarse object (a set, merged at Jaccard >= 0.5) converges while the fine object (which sentences) does not."
+   "note": "n = 10, Qwen's full depth, over 307 pairs positive somewhere. CORRECTED (review of #730): this does not show that sets converge while sentences do not. The set union is at 0.7094 of its fitted asymptote at k = 10 (r31ext-qwen-set-union-fraction-of-asymptote), about where Qwen's sentence union is (0.7098, r31ext-qwen-sentence-fit-excluding-blowups)."
   },
   {
    "id": "prereg-p-ext-2-fit-parameters",
@@ -535,7 +535,8 @@
     "mm_fit.r2": 0.988735,
     "mm_fit.DEGENERATE": false,
     "frac_of_asymptote_at_n": 0.8118,
-    "marginal_gain_at_n": 0.0272
+    "marginal_gain_at_n": 0.0272,
+    "n_pairs_positive_somewhere": 299
    },
    "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
    "pointer": "judges.scout.sentence_saturation_excluding_blowups",
@@ -601,7 +602,7 @@
    "pointer": "judges.scout.split_half_union_stability",
    "kind": "json",
    "verified": true,
-   "note": "This is the direct test of whether pooling readings produces a stable span set: it does not. It is the counterpart to the graded-support result, which uses the same readings and IS stable \u2014 the difference is the object scored, not the data."
+   "note": "Union of presentations 0-2 against union of 3-4: halves 3 and 2 readings deep, over five readings in total. CORRECTED (review of #730): it is NOT on the same readings as the 30-reading graded figure. At matched depth the pooled graded instrument gives 0.4738 at six readings (graded-support-reliability-at-6), about the same. A deeper union split-half was never measured: ABSENT."
   },
   {
    "id": "r31-cross-judge-span-jaccard",
@@ -650,12 +651,12 @@
    "pointer": "pooled.support_reliability[5]",
    "kind": "json",
    "verified": true,
-   "note": "0.8588 is below both the 0.9 labeler bar and, marginally, above the 0.85 pre-registered threshold \u2014 the paper should not claim twenty readings suffice."
+   "note": "0.8588 is below the 0.9 labeler bar for the POOLED instrument. Scout alone reaches 0.9142 at twenty readings (judge-scout-support-reliability-curve), clearing the bar, because pooling with a weakly correlated second judge lowers the pooled coefficient."
   },
   {
    "id": "graded-support-reliability-at-30",
    "section": "4",
-   "statement": "At thirty pooled readings the split-half reliability is 0.8527 and the Spearman-Brown full-instrument reliability 0.9205, clearing the >= 0.9 labeler bar the span gates never came near.",
+   "statement": "At thirty pooled readings the split-half reliability is 0.8527 and the Spearman-Brown full-instrument reliability 0.9205, clearing the >= 0.9 labeler bar.",
    "value": {
     "n_readings": 30,
     "split_half_r": 0.8527,
@@ -669,7 +670,7 @@
    "pointer": "pooled.support_reliability[6]",
    "kind": "json",
    "verified": true,
-   "note": "Thirty readings = Scout k = 0..19 plus Qwen k = 0..9, pooled across two model families, on 308 dev pairs. The bar is r3's labeler bar of >= 0.90 applied to the graded instrument. The reliability is of the GRADED score, not of any span set: the same 30 readings give a span-set union that is stable on only 0.4708 of pairs."
+   "note": "Thirty readings = Scout k = 0..19 plus Qwen k = 0..9, pooled in interleaved order, on 308 dev pairs; 20 of the 30 are Scout's. The bar is r3's labeler bar of >= 0.90 applied to the graded instrument -- but the span gate it was written for is read on ONE reading against ONE reading, while this is a 30-reading instrument. CORRECTED (review of #730): the span-set union's split-half stability (0.4708 Scout, 0.5779 Qwen) is over FIVE readings (3 vs 2), not these thirty; the matched-depth graded value is 0.4738 at k = 6 (graded-support-reliability-at-6). Never write 'the same thirty readings'. A deep union split-half (10 vs 10, 15 vs 15) was never measured: ABSENT."
   },
   {
    "id": "graded-support-bar",
@@ -808,13 +809,15 @@
     "span_union_jaccard_where_both_positive.median": 0.4545,
     "whether_kappa.kappa": 0.7981,
     "whether_kappa.observed_agreement": 0.996,
-    "co_labeled_pairs": 251
+    "co_labeled_pairs": 251,
+    "span_union_jaccard_where_both_positive.n": 248,
+    "whether_kappa.n": 251
    },
    "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
    "pointer": "within_family[\"opus5 vs fable51\"]",
    "kind": "json",
    "verified": true,
-   "note": "n = 251 co-labeled pairs (Fable's limit). 0.5041 is roughly three times the Scout-vs-Qwen span Jaccard (0.2123 at k = 0, 0.1613 at the five-reading unions) and above a local judge against ITSELF (0.3831-0.5617). One reading each, so this is agreement between single readings, not between converged sets."
+   "note": "Span Jaccard over 248 pairs both call positive; whether-kappa over 251 co-labeled pairs (Fable's limit). One reading each, so this is agreement between single readings, not between converged sets. EXPLORATORY."
   },
   {
    "id": "cross-family-sonnet-opus-jaccard",
@@ -901,7 +904,7 @@
   {
    "id": "claude-total-cost",
    "section": "5",
-   "statement": "The whole three-model Claude pass \u2014 867 judge calls, one reading per pair \u2014 cost $195.32.",
+   "statement": "The whole three-model Claude pass -- 867 pair readings (308 + 308 + 251), one reading per pair -- cost $195.32.",
    "value": 195.32,
    "source": "docs/plans/results/stage0/RESULTS-stage0b-claude-judges.md",
    "pointer": "867 calls | **$195.32**",
@@ -1195,7 +1198,7 @@
    "pointer": "judges.scout.self_consistency.reading_ii_all_ten_presentation_pairs.mean_pairwise_span_union_jaccard.mean",
    "kind": "json",
    "verified": true,
-   "note": "THE ANSWER TO THE METRIC-ARTEFACT OBJECTION (HotpotQA Table 8 shows a whether/where gap that lives almost entirely in exact set match). Here the contrast survives partial credit: the raw Jaccard is 0.4350 against a graded-support reliability of 0.9205 on the SAME readings. Raw value, not the >= 0.5 indicator; pairs where both presentations returned nothing are excluded (their Jaccard is 0/0)."
+   "note": "Answers the metric-artefact objection (HotpotQA Table 8 shows a whether/where gap that lives almost entirely in exact set match). Single reading against single reading over the five r3.1 presentations, so it is a 1-vs-1 statistic like the span gate, not a pooled one. Raw value, not the >= 0.5 indicator; pairs where both presentations returned nothing are excluded (0/0). EXPLORATORY: not a pre-registered gate."
   },
   {
    "id": "r31-qwen-partial-credit-jaccard",
@@ -1217,7 +1220,7 @@
    "pointer": "pooled.support_reliability[0].spearman_brown_full_n",
    "kind": "json",
    "verified": true,
-   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=4, 47 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+   "note": "Part of the pooled reliability CURVE. CORRECTED (review of #730): the implied single-reading reliability of the POOLED instrument rises with k mainly because the interleaved order changes the judge mix (Scout's share of readings is 1/2 up to k = 20 and 2/3 at k = 30) and the two judges' maps correlate at only ~0.30; within Scout alone it is flat from k = 14 to k = 20 (graded-support-implied-single-reading-scout). Do not read the rise as non-exchangeability or as pooling beating Spearman-Brown. Small-k points are attenuated by pairs with no variance in a half; k >= 10 is the honest range."
   },
   {
    "id": "graded-support-reliability-at-6",
@@ -1228,7 +1231,7 @@
    "pointer": "pooled.support_reliability[1].spearman_brown_full_n",
    "kind": "json",
    "verified": true,
-   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=6, 12 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+   "note": "Part of the pooled reliability CURVE. CORRECTED (review of #730): the implied single-reading reliability of the POOLED instrument rises with k mainly because the interleaved order changes the judge mix (Scout's share of readings is 1/2 up to k = 20 and 2/3 at k = 30) and the two judges' maps correlate at only ~0.30; within Scout alone it is flat from k = 14 to k = 20 (graded-support-implied-single-reading-scout). Do not read the rise as non-exchangeability or as pooling beating Spearman-Brown. Small-k points are attenuated by pairs with no variance in a half; k >= 10 is the honest range."
   },
   {
    "id": "graded-support-reliability-at-8",
@@ -1239,7 +1242,7 @@
    "pointer": "pooled.support_reliability[2].spearman_brown_full_n",
    "kind": "json",
    "verified": true,
-   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=8, 5 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+   "note": "Part of the pooled reliability CURVE. CORRECTED (review of #730): the implied single-reading reliability of the POOLED instrument rises with k mainly because the interleaved order changes the judge mix (Scout's share of readings is 1/2 up to k = 20 and 2/3 at k = 30) and the two judges' maps correlate at only ~0.30; within Scout alone it is flat from k = 14 to k = 20 (graded-support-implied-single-reading-scout). Do not read the rise as non-exchangeability or as pooling beating Spearman-Brown. Small-k points are attenuated by pairs with no variance in a half; k >= 10 is the honest range."
   },
   {
    "id": "graded-support-reliability-at-14",
@@ -1250,7 +1253,7 @@
    "pointer": "pooled.support_reliability[4].spearman_brown_full_n",
    "kind": "json",
    "verified": true,
-   "note": "Part of the reliability CURVE, which is the result \u2014 0.9205 alone invites the objection that a high coefficient at k = 30 is Spearman-Brown arithmetic. Inverting SB at each k gives an implied single-reading reliability that RISES (0.1929 at k=10 to 0.2785 at k=30) rather than staying constant, so the readings are not exchangeable and the curve beats every projection from an earlier anchor. At k=14, 2 pairs had no variance in a half, which attenuates small-k points; k >= 10 is the honest range."
+   "note": "Part of the pooled reliability CURVE. CORRECTED (review of #730): the implied single-reading reliability of the POOLED instrument rises with k mainly because the interleaved order changes the judge mix (Scout's share of readings is 1/2 up to k = 20 and 2/3 at k = 30) and the two judges' maps correlate at only ~0.30; within Scout alone it is flat from k = 14 to k = 20 (graded-support-implied-single-reading-scout). Do not read the rise as non-exchangeability or as pooling beating Spearman-Brown. Small-k points are attenuated by pairs with no variance in a half; k >= 10 is the honest range."
   },
   {
    "id": "graded-support-degenerate-halves-at-4",
@@ -1262,6 +1265,348 @@
    "kind": "json",
    "verified": true,
    "note": "Why k = 4 and k = 6 must not be used as Spearman-Brown anchors. The k = 30 value is 1."
+  },
+  {
+   "id": "r31ext-scout-set-union-fraction-of-asymptote",
+   "section": "3",
+   "statement": "Scout's set-level union at twenty readings stands at 0.6949 of the asymptote of a Michaelis-Menten fit to its own twenty-point curve.",
+   "value": {
+    "set_saturation_incremental.mm_fit.Vmax": 16.5552,
+    "set_saturation_incremental.mm_fit.Km": 8.7824,
+    "set_saturation_incremental.mm_fit.r2": 0.992232,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 300,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.20": 11.91
+   },
+   "derived": {
+    "formula": "n / (Km + n), n = 20 -- the fitted fraction of the asymptote, the same definition the artifact uses for frac_of_asymptote_at_n on the sentence curves",
+    "result": 0.6949,
+    "alternative": {
+     "formula": "observed U(20) / Vmax = 11.91 / 16.5552",
+     "result": 0.7194
+    }
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout",
+   "kind": "json",
+   "verified": true,
+   "note": "DERIVED: the artifact stores the set fit but no frac_of_asymptote for sets; the inputs are checked, the result is arithmetic on them. The review of #730 computed the observed-over-Vmax version (0.7194); both say the set union is not converged at k = 20, and it is further from its asymptote than the sentence union (0.8118)."
+  },
+  {
+   "id": "r31ext-qwen-set-union-fraction-of-asymptote",
+   "section": "3",
+   "statement": "Qwen's set-level union at ten readings stands at 0.7094 of its fitted asymptote.",
+   "value": {
+    "set_saturation_incremental.mm_fit.Vmax": 5.1908,
+    "set_saturation_incremental.mm_fit.Km": 4.0961,
+    "set_saturation_incremental.mm_fit.r2": 0.994567,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 307,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.10": 3.7492
+   },
+   "derived": {
+    "formula": "n / (Km + n), n = 10",
+    "result": 0.7094,
+    "alternative": {
+     "formula": "observed U(10) / Vmax = 3.7492 / 5.1908",
+     "result": 0.7223
+    }
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen",
+   "kind": "json",
+   "verified": true,
+   "note": "DERIVED, as for Scout. 307 pairs positive somewhere."
+  },
+  {
+   "id": "r31ext-qwen-sentence-fit-excluding-blowups",
+   "section": "3",
+   "statement": "Qwen's distinct-sentence union at ten readings, blow-up excluded, stands at 0.7098 of its fitted asymptote and gains 0.0694 of its size per reading.",
+   "value": {
+    "frac_of_asymptote_at_n": 0.7098,
+    "marginal_gain_at_n": 0.0694,
+    "mm_fit.Vmax": 6.3123,
+    "mm_fit.Km": 4.088,
+    "mm_fit.r2": 0.990467,
+    "mm_fit.DEGENERATE": false,
+    "n_pairs_positive_somewhere": 306
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.sentence_saturation_excluding_blowups",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 306 pairs positive somewhere. Qwen's full depth is 10."
+  },
+  {
+   "id": "r31-qwen-union-as-labeler-unstable",
+   "section": "3",
+   "statement": "The union of Qwen's first three presentations reproduces the union of its last two on 0.5779 of pairs (178 of 308), at a mean Jaccard of 0.5919.",
+   "value": {
+    "rate": 0.5779,
+    "consistent": 178,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5919,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.split_half_union_stability",
+   "kind": "json",
+   "verified": true,
+   "note": "Halves 3 and 2 readings deep, five readings in total; the artifact says explicitly this is NOT the >= 0.90 gate re-read. Matched-depth graded value: 0.4738 at k = 6."
+  },
+  {
+   "id": "judge-scout-support-reliability-curve",
+   "section": "4",
+   "statement": "Scout's own graded-support reliability is 0.8338 at ten readings, 0.8821 at fourteen and 0.9142 at twenty, clearing the 0.9 bar alone.",
+   "value": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142,
+    "[3].n_readings": 10,
+    "[4].n_readings": 14,
+    "[5].n_readings": 20,
+    "[5].pairs_without_variance_in_a_half": 4
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "Same estimator as the pooled curve, Scout's readings only. EXPLORATORY: the per-judge curve was computed by the pre-registered module but is not a scored prediction."
+  },
+  {
+   "id": "judge-qwen-support-reliability-curve",
+   "section": "4",
+   "statement": "Qwen's own graded-support reliability is 0.7216 at ten readings, its full depth.",
+   "value": {
+    "[3].spearman_brown_full_n": 0.7216,
+    "[3].n_readings": 10,
+    "[3].pairs_without_variance_in_a_half": 8
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "Qwen was read ten times; no value exists beyond k = 10 (absent). EXPLORATORY."
+  },
+  {
+   "id": "graded-support-implied-single-reading-pooled",
+   "section": "4",
+   "statement": "Inverting Spearman-Brown, the pooled instrument's implied single-reading reliability is 0.1929 at k = 10, 0.2098 at 14, 0.2332 at 20 and 0.2785 at 30.",
+   "value": {
+    "[3].spearman_brown_full_n": 0.705,
+    "[4].spearman_brown_full_n": 0.788,
+    "[5].spearman_brown_full_n": 0.8588,
+    "[6].spearman_brown_full_n": 0.9205
+   },
+   "derived": {
+    "formula": "rho1 = R_k / (k - (k - 1) * R_k)",
+    "result": {
+     "10": 0.1929,
+     "14": 0.2098,
+     "20": 0.2332,
+     "30": 0.2785
+    }
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "DERIVED from the checked inputs. EXPLORATORY. The rise is mostly judge composition: the interleaved order gives Scout 1/2 of the readings up to k = 20 and 2/3 at k = 30, and the pooled value sits below each judge alone because the two judges' maps correlate at ~0.30."
+  },
+  {
+   "id": "graded-support-implied-single-reading-scout",
+   "section": "4",
+   "statement": "Within Scout alone the implied single-reading reliability is 0.3341 at k = 10, 0.3483 at 14 and 0.3476 at 20 -- flat from fourteen to twenty readings.",
+   "value": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142
+   },
+   "derived": {
+    "formula": "rho1 = R_k / (k - (k - 1) * R_k)",
+    "result": {
+     "10": 0.3341,
+     "14": 0.3483,
+     "20": 0.3476
+    }
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "DERIVED. The exchangeability test: for one judge, readings beyond k = 14 behave as Spearman-Brown predicts. EXPLORATORY."
+  },
+  {
+   "id": "graded-support-implied-single-reading-qwen",
+   "section": "4",
+   "statement": "Within Qwen alone the implied single-reading reliability at k = 10 is 0.2058.",
+   "value": {
+    "[3].spearman_brown_full_n": 0.7216
+   },
+   "derived": {
+    "formula": "rho1 = R_k / (k - (k - 1) * R_k)",
+    "result": {
+     "10": 0.2058
+    }
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "DERIVED. EXPLORATORY."
+  },
+  {
+   "id": "graded-support-pooled-order",
+   "section": "4",
+   "statement": "The pooled estimator takes readings in interleaved order s0, q0, s1, q1, ..., then the remaining Scout readings, so Scout supplies half of the first twenty readings and two thirds of thirty.",
+   "value": "s0, q0, s1, q1",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/PREDICTIONS.md",
+   "pointer": "order (s0, q0, s1, q1, \u2026, then the remaining Scout readings)",
+   "kind": "text",
+   "verified": true,
+   "note": "Pre-registered estimator text. The 1/2 and 2/3 shares follow from Scout 20 and Qwen 10 readings."
+  },
+  {
+   "id": "graded-support-degenerate-halves-curve",
+   "section": "4",
+   "statement": "Pairs with no variance in a half number 2 at k = 10, 2 at 14, 1 at 20 and 1 at 30 on the pooled instrument.",
+   "value": {
+    "[3].pairs_without_variance_in_a_half": 2,
+    "[4].pairs_without_variance_in_a_half": 2,
+    "[5].pairs_without_variance_in_a_half": 1,
+    "[6].pairs_without_variance_in_a_half": 1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability",
+   "kind": "json",
+   "verified": true,
+   "note": "Against 47 at k = 4 (graded-support-degenerate-halves-at-4). The number of pairs entering the estimator is not recorded as a field."
+  },
+  {
+   "id": "dev-set-composition",
+   "section": "4",
+   "statement": "The 308 development pairs are 208 pooled from retrieval and 100 drawn as a bias bound.",
+   "value": "208",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/PREDICTIONS.md",
+   "pointer": "308 development pairs (208 pooled + 100 bias-bound)",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the pre-registration's own description of the population."
+  },
+  {
+   "id": "r31-cross-judge-whether-kappa",
+   "section": "1",
+   "statement": "On the whether verdict at the first reading, Scout and Qwen agree on 0.9286 of 308 pairs but kappa is only 0.29.",
+   "value": {
+    "kappa": 0.29,
+    "observed_agreement": 0.9286,
+    "n": 308,
+    "b_positive_rate": 0.9805
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_presentation_0.pair_level_binary_kappa",
+   "kind": "json",
+   "verified": true,
+   "note": "Base-rate artefact: Qwen (b) calls 0.9805 of pairs positive."
+  },
+  {
+   "id": "r31-cross-judge-span-jaccard-five-reading-unions",
+   "section": "1",
+   "statement": "Between the two judges' five-reading unions, mean span Jaccard where both are positive falls to 0.1613 over 295 pairs.",
+   "value": {
+    "n": 295,
+    "mean": 0.1613,
+    "median": 0.1012
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_k5_unions.span_union_jaccard_where_both_positive",
+   "kind": "json",
+   "verified": true,
+   "note": "Chosen over the extension file's 0.1622 (n = 299, gates-r31ext.json cross_judge.at_k5_unions), which despite its key name is read at the common depth of TEN readings (cross_judge.note_depth); more pairs are positive at depth ten, hence the larger n. EXPLORATORY."
+  },
+  {
+   "id": "r31-scout-span-self-consistency-all-ten-pairs",
+   "section": "3",
+   "statement": "Averaged over all ten pairs of Scout's five presentations, span self-consistency is 0.4201 (range 0.3766-0.4675).",
+   "value": {
+    "mean_rate": 0.4201,
+    "min_rate": 0.3766,
+    "max_rate": 0.4675,
+    "n_pairs": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency.reading_ii_all_ten_presentation_pairs.union",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 308."
+  },
+  {
+   "id": "r31-span-self-consistency-on-the-31",
+   "section": "3",
+   "statement": "On the 31 pairs the earlier protocol re-presented, whole-sentence anchors give span self-consistency of 0.2903 (9/31) for Scout and 0.5484 (17/31) for Qwen.",
+   "value": {
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.2903,
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 9,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.5484,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 17
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges",
+   "kind": "json",
+   "verified": true,
+   "note": "n = 31; the like-for-like comparison with the quote-primary protocol's 0.6452 and 0.4194."
+  },
+  {
+   "id": "r31-scout-hallucinated-span-rate-all-presentations",
+   "section": "2",
+   "statement": "Over all five presentations Scout's whole-sentence-anchor hallucinated-span rate is 0.01957 (85 of 4,344 spans).",
+   "value": {
+    "rate": 0.01957,
+    "failed_spans": 85,
+    "attempted_spans": 4344,
+    "wilson95_upper": 0.02413
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate_all_presentations",
+   "kind": "json",
+   "verified": true,
+   "note": "The k = 0 figure (0.02517) is the first reading only, read as the earlier gate was."
+  },
+  {
+   "id": "cross-family-support-correlation",
+   "section": "5",
+   "statement": "Over every sentence the local pool supported or the judge picked, the pooled point-biserial r between a third-family pick and pooled support is 0.2353 (Sonnet 5), 0.2758 (Opus 5) and 0.2383 (Fable 5.1); Spearman rho is 0.1353, 0.1279 and 0.1238.",
+   "value": {
+    "sonnet5.pooled_point_biserial_r": 0.2353,
+    "opus5.pooled_point_biserial_r": 0.2758,
+    "fable51.pooled_point_biserial_r": 0.2383,
+    "sonnet5.pooled_spearman_rho": 0.1353,
+    "opus5.pooled_spearman_rho": 0.1279,
+    "fable51.pooled_spearman_rho": 0.1238,
+    "sonnet5.n_sentences_pooled": 40667,
+    "opus5.n_sentences_pooled": 40876,
+    "fable51.n_sentences_pooled": 15044
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.correlation",
+   "kind": "json",
+   "verified": true,
+   "note": "Positive but modest: the third-family picks land on supported sentences more often than not, and the association is weak. Fable is over its 251 pairs. EXPLORATORY."
+  },
+  {
+   "id": "instrument-hashes-conf",
+   "section": "7",
+   "statement": "The scale run's instrument is prompt sha256 ba09e122... and rubric sha256 2e11f368..., asserted equal to the development run's, at temperature 0.",
+   "value": {
+    "prompt_sha256": "ba09e122553833219a999f8a99c496fd2926b2b341f77026dfe7c6ab2f5131c7",
+    "rubric_sha256": "2e11f3688de916da8bfc8b5b0a788050bf9d077960d616d33490c6ecf747363b",
+    "system_sha256": "f758cbf4d74bf3d419eb263678a5bd436b24454c61cc50a758f421771dcae166",
+    "temperature": 0.0,
+    "presentation_seed_formula": "SEED_LABELDUP + 100*k + pair_index"
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/label-manifest-conf.json",
+   "pointer": "instrument",
+   "kind": "json",
+   "verified": true,
+   "note": "Committed manifest of the scale run; the labels themselves are not committed."
   }
  ]
 }

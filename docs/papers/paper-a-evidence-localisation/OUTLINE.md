@@ -10,19 +10,23 @@ wait on the chunking verdict.
 model, which is now most people building retrieval evaluations over long documents. The result
 is not specific to chunking, to biomedicine, or to our retrieval stack.
 
-**The one-sentence claim.** A language model asked to locate evidence inside a document agrees
-with itself about *whether* the document contains evidence and disagrees about *where*; what
-converges under more readings depends on how coarsely you ask — the family of distinct span
-*sets* saturates, the set of *sentences* ever marked does not, and pooling readings into a
-union does not yield a stable span set either; but a graded per-sentence support score over the
-same readings does reproduce itself, clears a usable reliability bar, and is not one model
-family's artefact.
+**The one-sentence claim.** A language model asked to locate evidence inside a document agrees with
+itself about *whether* the document contains evidence and disagrees about *where*; within twenty to
+thirty readings neither the union of evidence sets nor the union of evidence sentences converges, but a
+graded per-sentence support score built from the readings becomes reliable with depth — k-rater
+reliability 0.9142 for one judge at twenty readings and 0.9205 pooled across two families at thirty —
+which makes it a reproducible, though not a validated, gold object.
 
-**The thesis in two numbers, from the same thirty readings of the same pairs.** Graded
-per-sentence support reaches Spearman-Brown 0.9205 (`graded-support-reliability-at-30`). The
-span-set union built from those same readings reproduces itself on 0.4708 of pairs
-(`r31-scout-union-as-labeler-unstable`). One object is reliable and the other is not, and the
-difference is the object scored, not the data.
+**The thesis in two numbers, with their depths stated.** Graded per-sentence support reaches
+k-rater reliability 0.9205 at thirty pooled readings (`graded-support-reliability-at-30`) and 0.9142 for
+Scout alone at twenty (`judge-scout-support-reliability-curve`). Span agreement read one reading
+against one reading is 0.3831 / 0.5617 (`r31-scout-span-self-consistency`,
+`r31-qwen-span-self-consistency`). These are NOT the same depth: at five or six readings the union
+split-half (0.4708 Scout, 0.5779 Qwen; `r31-scout-union-as-labeler-unstable`,
+`r31-qwen-union-as-labeler-unstable`) and the graded score (0.4738 at k = 6,
+`graded-support-reliability-at-6`) are no different, and a deep union split-half was never measured.
+The finding is that graded support is the object whose reliability grows with depth to a usable,
+measurable level — not that it beats the union at equal depth. (Revised after the review of #730.)
 
 **What this paper does not claim.** That the graded score is *correct*. Reliability is not
 validity, the human read has not happened, and the paper says so in its own voice.
@@ -152,7 +156,11 @@ result that others can adopt directly.
 **5.3 What converges, and what does not.** This is the section a reviewer will attack, so it
 must be precise about granularity. Three objects, one data set:
 
-- The family of distinct span *sets*, merged at Jaccard ≥ 0.5, **does** saturate:
+- (Superseded by the review of #730: by the same criteria the set and sentence unions are
+  indistinguishable — marginal gain 0.0274 vs 0.0272 for Scout at k = 20, and the set union is
+  further from its fitted asymptote, 0.6949 vs 0.8118. Neither converges by 20–30 readings. See
+  DRAFT.md §5.3.) The family of distinct span *sets*, merged at Jaccard ≥ 0.5, falls under the
+  marginal-gain bar:
   `r31ext-scout-set-union-marginal-gain` (0.0274 at twenty readings) and
   `r31ext-qwen-set-union-marginal-gain` (0.0461 at ten), both under the 0.05 bar, after failing
   it at five readings (`r31-scout-union-not-saturating-at-5`).
@@ -191,7 +199,9 @@ Spearman-Brown) and a precedent of the same shape (ICC(1) 0.590 to ICC(13) 0.950
 the obvious attack: a high coefficient at thirty readings is arithmetically implied by
 Spearman-Brown from any moderate single-reading value, so 0.9205 on its own says nothing.
 
-**Answer it with the curve, which we have** (`graded-support-reliability-at-4` through `-at-30`). Inverting
+**(Superseded by the review of #730 — the pooled rise is mostly judge composition; within Scout the
+implied single-reading reliability is flat from k = 14 to 20. See DRAFT.md §5.4.) Answer it with the
+curve, which we have** (`graded-support-reliability-at-4` through `-at-30`). Inverting
 Spearman-Brown at each k, the implied single-reading reliability is not constant — it rises from
 0.1929 at ten readings to 0.2785 at thirty. If the readings were exchangeable it would be flat.
 Because it rises, the observed curve beats every projection from an earlier anchor: +0.0429 from
@@ -300,7 +310,7 @@ than an API, and what that means for exact reproduction.
 
 ## Working rules for this draft
 
-- Every number cites a claim id from `claims.json` (79 entries, all verified). Run
+- Every number cites a claim id from `claims.json` (105 entries, all verified). Run
   `../check_claims.py` before any commit that touches the draft.
 - Read the `note` field before writing the sentence. Several claims carry a caveat that changes
   what may be said: differing `n`, a key name in `gates-r31ext.json` that says `k5` but holds the
