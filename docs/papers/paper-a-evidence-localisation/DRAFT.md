@@ -19,9 +19,9 @@ a canonical location set within the depth we measured. By twenty readings neithe
 distinct evidence sets nor the union of distinct sentences has reached its fitted asymptote (0.6949
 and 0.8118 for one judge; `r31ext-scout-set-union-fraction-of-asymptote`,
 `r31ext-scout-sentence-fit-excluding-blowups`). A graded per-sentence support score is the object
-that gains from depth: one judge's twenty readings reach a k-rater reliability of 0.9142
-(`judge-scout-support-reliability-curve`), and thirty readings pooled across two model families reach
-0.9205 (`graded-support-reliability-at-30`). At shallow depth the graded score is no more stable than
+that gains from depth: thirty readings pooled across two model families reach a k-rater reliability
+of 0.9205 (`graded-support-reliability-at-30`), and in an exploratory per-judge reading, one judge's
+twenty readings reach 0.9142 (`judge-scout-support-reliability-curve`). At shallow depth the graded score is no more stable than
 a union of readings, so the result is about what depth buys. The pooled curve's shape mostly reflects
 the mix of judges, and within one judge the readings behave as Spearman-Brown predicts. Three
 proprietary judges from a third family, read once each, pick sentences that the pooled local readings
@@ -55,11 +55,11 @@ questions of a language-model evidence locator:
 2. If it reads the document many times, do its readings converge on a canonical set of locations?
 3. If they do not, is there an object built from the readings that does reproduce itself?
 
-The answers are no; not within thirty readings; and yes, given enough readings. Neither the union of
+The answers are not reliably; not within thirty readings; and yes, given enough readings. Neither the union of
 distinct evidence sets nor the union of distinct sentences reaches its asymptote at the depth we
-measured. A graded per-sentence support score clears a reliability bar
-of 0.9 at twenty readings of one judge (`judge-scout-support-reliability-curve`) and at thirty readings
-pooled across two (`graded-support-reliability-at-30`). At five or six readings it is no more stable than a
+measured. A graded per-sentence support score clears a reliability bar of 0.9
+at thirty readings pooled across two judges (`graded-support-reliability-at-30`) and, in an
+exploratory per-judge reading, at twenty readings of one judge (`judge-scout-support-reliability-curve`). At five or six readings it is no more stable than a
 union. Its value is that its reliability grows with depth to a usable level, which we can measure. A
 deep union split-half was not measured, so we do not claim the union would stay unstable at that depth.
 
@@ -193,8 +193,8 @@ It is the strongest published case that fine-grained support judgment is unstabl
 ### 2.4 Repeated readings, pooling, and graded objects
 
 Pooling repeated LLM runs to recover reliability is published. Reiss repeats a document-level binary
-classification and reports Krippendorff's α rising from 0.75 without pooling to 0.91 when ten repeats
-at temperature 1.0 are pooled by majority (`reiss-2023`). Barrie and colleagues define an intra-prompt
+classification and reports Krippendorff's α between its two temperature settings rising from 0.75 to 0.91 when ten
+repeats are pooled by majority within each setting (`reiss-2023`). Barrie and colleagues define an intra-prompt
 stability score over 30 repetitions of an identical prompt (`barrie-2024-pss`). Both pool to a hard
 label over whole documents. Neither works on location.
 
@@ -390,8 +390,8 @@ is and is not committed. We do not restate it here.
 The same judge, shown the same document twice, agrees with itself about whether it contains evidence
 and disagrees about where. Table 2 traces this across the three protocols.
 
-> **Table 2: Whether-agreement against span self-consistency, same judge, same pairs.** Rows: ten-word
-> quote anchors, quote-primary ten-word anchors, whole-sentence anchors. Columns: whether-agreement,
+> **Table 2: Whether-agreement against span self-consistency, same judge, same pairs.** Rows: index-primary
+> localisation with ten-word quotes, quote-primary ten-word anchors, whole-sentence anchors. Columns: whether-agreement,
 > span self-consistency, n. Claim ids: `s0-whether-self-agreement`,
 > `s0-span-self-consistency-quote-anchored`, `r3-scout-whether-agreement`, `r3-qwen-whether-agreement`,
 > `r3-scout-span-self-consistency`, `r3-qwen-span-self-consistency`,
@@ -416,10 +416,10 @@ pair, span self-consistency is 0.3831 for Scout and 0.5617 for Qwen (`r31-scout-
 The fall from 0.6452 to 0.3831 for Scout is not a like-for-like comparison, because the earlier figure
 is on 31 pairs and the later one on 308 (`r3-scout-span-self-consistency`,
 `r31-scout-span-self-consistency`). On the same 31 pairs, the final protocol gives 0.2903 for Scout, 9 of
-31, and 0.5484 for Qwen, 17 of 31 (`r31-span-self-consistency-on-the-31`). Whole-sentence anchors made
-Scout's spans smaller [NEEDS CLAIM: median span length in characters under ten-word and whole-sentence
-anchors], and a Jaccard criterion penalises a small target more heavily for the same absolute
-disagreement. Averaged over all ten pairs of the five readings, Scout's rate is 0.4201, with a range of
+31, and 0.5484 for Qwen, 17 of 31 (`r31-span-self-consistency-on-the-31`). If whole-sentence anchors made
+Scout's spans smaller, that would explain the drop, because a Jaccard criterion penalises a small
+target more heavily for the same absolute disagreement. Span length under the two anchor protocols
+was not measured in a committed artifact and is absent. Averaged over all ten pairs of the five readings, Scout's rate is 0.4201, with a range of
 0.3766 to 0.4675, so the comparison of the first two readings is not an unlucky draw
 (`r31-scout-span-self-consistency-all-ten-pairs`).
 
@@ -437,7 +437,7 @@ judges call a document positive on their first readings, their spans overlap at 
 five-reading union, the exploratory mean falls to 0.1613 over 295 pairs
 (`r31-cross-judge-span-jaccard-five-reading-unions`). The extension's recomputation at ten readings per
 judge covers more pairs, because more pairs are positive somewhere at that depth, and gives a similar
-value; the claim note records both. More readings make the two judges agree less about where, not more.
+value; the claim note records both. At the five-reading unions the two judges agree less about where than at a single reading.
 
 ### 5.2 Quote anchoring hallucinates, and whole sentences fix it
 
@@ -512,14 +512,14 @@ pairs (`r31ext-qwen-sentence-fit-excluding-blowups`). Pooling both judges' thirt
 sentence union gains 0.0264 over 306 pairs (`r31ext-pooled-sentence-union-still-growing`). By the
 marginal-gain criterion the two objects are not distinguishable.
 
-On the fitted curves, neither object is near its asymptote. In an exploratory reading of fits that
-were not pre-registered for sets, Scout's set union stands at 0.6949 of its asymptote at twenty
+On the fitted curves, neither object is near its asymptote. None of the fits in this paragraph was pre-registered; the pre-registered fit is scored below.
+Exploratorily, Scout's set union stands at 0.6949 of its asymptote at twenty
 readings (`r31ext-scout-set-union-fraction-of-asymptote`). Qwen's stands at 0.7094 at ten
 (`r31ext-qwen-set-union-fraction-of-asymptote`). Scout's sentence union stands at 0.8118
 (`r31ext-scout-sentence-fit-excluding-blowups`), Qwen's at 0.7098
 (`r31ext-qwen-sentence-fit-excluding-blowups`), and the pooled sentence union at 0.7816 after thirty
-readings (`r31ext-pooled-sentence-union-still-growing`). None is within the 10 % of its asymptote that
-the pre-registration used as its convergence criterion (`prereg-p-ext-2-fit-parameters`). Neither the
+readings (`r31ext-pooled-sentence-union-still-growing`). None is within 10 % of its asymptote, a criterion the pre-registration set for the five-point
+sentence fit and that we borrow here (`prereg-p-ext-2-fit-parameters`). Neither the
 coarse nor the fine object has converged by twenty to thirty readings. This is the repeated-measures
 counterpart of FEVER's finding that more effort finds more evidence (`thorne-2018-fever`), measured as
 a curve.
@@ -649,7 +649,7 @@ It scored PASS at 0.9205 (`prereg-p-ext-1-scored`).
 ### 5.5 Third-family judges land on supported sentences
 
 We asked whether the pooled map is only the local judges' idiosyncrasy by checking it against three
-judges from a separate family, each read once. Over every sentence the local pool supported or the
+judges from a separate family, each read once. In an exploratory comparison over every sentence the local pool supported or the
 judge picked, a pick by the judge correlates with pooled support at a point-biserial r of 0.2353 for
 Sonnet 5, 0.2758 for Opus 5 and 0.2383 for Fable 5.1 (`cross-family-support-correlation`). The
 Spearman ρ values are 0.1353, 0.1279 and 0.1238 (`cross-family-support-correlation`). The association

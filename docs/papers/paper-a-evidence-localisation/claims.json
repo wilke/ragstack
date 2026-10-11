@@ -542,7 +542,7 @@
    "pointer": "judges.scout.sentence_saturation_excluding_blowups",
    "kind": "json",
    "verified": true,
-   "note": "The twenty-point refit (Vmax 68.33) lands within 5.5 % of the five-point pre-registered Vmax (72.33), which is the real vindication of the fit. This is SENTENCES, the fine-grained object; the SET-level union does saturate (claim r31ext-scout-set-union-marginal-gain)."
+   "note": "The twenty-point refit (Vmax 68.33) lands within 5.5 % of the five-point pre-registered Vmax (72.33), which is the real vindication of the fit. This is SENTENCES, the fine-grained object; the set-level union has the same marginal gain (0.0274) and is further from its asymptote (0.6949); neither has converged (claims r31ext-scout-set-union-marginal-gain, r31ext-scout-set-union-fraction-of-asymptote)."
   },
   {
    "id": "r31ext-scout-sentence-fit-degenerate-unfiltered",
