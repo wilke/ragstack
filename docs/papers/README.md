@@ -29,6 +29,8 @@ book. If a sentence needs the word *currently*, *still* or *next*, it is in the 
 
 Target for both: **arXiv preprint first**, venue-neutral, venue chosen afterwards.
 
+Starting a new paper: copy `TEMPLATE/` (outline, draft and empty claims file).
+
 ### Naming decisions, settled 2026-09-22 — adopt, do not coin
 
 The surveys were asked whether the field already has names for things we were about to invent.

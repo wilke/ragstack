@@ -1,0 +1,7 @@
+{
+ "paper": "[working title]",
+ "generated_utc": "[YYYY-MM-DDT00:00:00Z]",
+ "checker": "docs/papers/check_claims.py",
+ "population_note": "[which population every number is over unless a claim says otherwise]",
+ "claims": []
+}
