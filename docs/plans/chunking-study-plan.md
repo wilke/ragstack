@@ -373,6 +373,7 @@ States:
 | LegC | Leg C citances against the grid | E2 | not run, not scheduled | [long-doc-judged-set.md](long-doc-judged-set.md) §14.5 |
 | SEM | `semantic` vs `semantic_pooled` boundaries and cost (shard 09-18; corpus scale 09-24); no retrieval | SG5 | done | [09-18](results/semantic-vs-pooled-2026-09-18.md), [09-24](results/salmonella-amr-semantic-vs-pooled-2026-09-24.md) |
 | REG | snapshot re-runs and regression subset (#687 library goldens; dev-10 dense check; three pinned clones incl. `exp/g1-pilot-200-60482e3`) | E3 | done for the existing arms; re-run on every code change | `/rag/snapshots/README.md`; [`python/tests/regression/`](../../python/tests/regression/) |
+| IDENS | *(added 2026-10-13)* candidate sub-study: information density and context dependency (decontextualization) as covariates of the size and delivery contrasts; first step is expert-marked minimal sufficient context, no retrieval; open items ID-1–ID-6, no D-number | SG1, SG4, E2 | not designed; candidate, gated on the human read (E1) | [PLAN-information-density](results/design/PLAN-information-density.md); [bib-inbox 11](../papers/bib-inbox/11-information-density-and-context.md) |
 
 ---
 
