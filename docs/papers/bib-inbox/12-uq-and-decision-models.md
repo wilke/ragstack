@@ -111,7 +111,7 @@ Each UQ paper gets three columns, matching our three questions:
 - **Fisch, Schuster, Jaakkola, Barzilay**, *Efficient Conformal Prediction via Cascaded Inference with Expanded Admission*. ICLR 2021. arXiv 2007.03114. `api` (claim details from the red-team reading)
   - Conformal *sets* of evidence sentences drawn from ~40K Wikipedia sentences (FEVER retrieval), plus QA answer spans in passages, with coverage guaranteed against human-annotated evidence.
   - Set-valued UQ over **source-document sentences**, validated against human evidence annotation. Not an LLM; the annotators are not domain experts; no repeated readings. **The nearest set-valued precedent.**
-- **Chakraborty, Yang, Khashabi, Lawrie, Duh**, *Principled Context Engineering for RAG: Statistical Guarantees via Conformal Prediction*. ECIR 2026 (arXiv comment). arXiv 2511.17908. `api` `abstract`
+- **Chakraborty, Yang, Khashabi, Lawrie, Duh**, *Principled Context Engineering for RAG: Statistical Guarantees via Conformal Prediction*. ECIR 2026 (arXiv comment). arXiv 2511.17908. `api` `full text`
   - Conformal filtering with embedding- and LLM-based scoring keeps a *set of retrieved snippets* with a target recall of relevant snippets, on NeuCLIR and RAGTIME. The full text (checked in PR review, 2026-10-13) says relevance labels come from a model labeler treated as an annotation function, with a 10% subsample manually reviewed for consistency with human judgments. So its validation is against model labels, not collection assessor judgments.
   - The closest LLM-era set-valued precedent over source content.
 - **Jagannatha & Yu**, *Calibrating Structured Output Predictors for NLP*. ACL 2020. arXiv 2004.04361. `api` `abstract`

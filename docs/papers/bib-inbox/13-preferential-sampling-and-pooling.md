@@ -363,7 +363,7 @@ selected by an unequal-probability design. A draft sentence:
 The stratum is available: `trec.nist.gov/data/clinical/qrels-sampleval-2014.txt` has the format
 `topic 0 docid stratum grade`, with stratum 1 (all judged) or 2 (sampled) and grade −1 for unjudged
 (PR review, 2026-10-13: 23,105 stratum-1 documents, all judged; 72,922 stratum-2 documents, of which
-14,844, i.e. 0.204, judged). Weighting Paper A's pairs by stratum is therefore mechanical; the 2015 and
+14,844, i.e. 0.204, judged). The weighted results do not exist yet, so the sentence must not enter the paper until they are a committed artifact. Weighting Paper A's pairs by stratum is mechanical; the 2015 and
 2016 files should be checked for the same column before it is done. The count of rankings in the
 development pools is not in the confirmation artifact (`conf-a/pool_counts.json` gives 76 for the
 confirmation run), so the sentence does not quote it.
