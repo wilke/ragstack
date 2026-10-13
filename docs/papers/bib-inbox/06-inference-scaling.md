@@ -86,8 +86,8 @@ https://arxiv.org/abs/2410.04707 · **verified** · **read** (§3).
 
 Worth it: **must cite**. It is the closest precedent for per-item, pre-hoc budget prediction.
 
-### `wang-2024-dsc`: Make Every Penny Count: Difficulty-Adaptive Self-Consistency for Cost-Efficient Reasoning
-Xinglin Wang, Shaoxiong Feng, Yiwei Li, Peiwen Yuan, et al. (9 authors). arXiv:2408.13457; NAACL 2025 Findings (per the arXiv comment).
+### `wang-2025-dsc`: Make Every Penny Count: Difficulty-Adaptive Self-Consistency for Cost-Efficient Reasoning
+Xinglin Wang, Shaoxiong Feng, Yiwei Li, Peiwen Yuan, et al. (9 authors). arXiv:2408.13457; Findings of NAACL 2025, doi:10.18653/v1/2025.findings-naacl.383 (OpenAlex).
 https://arxiv.org/abs/2408.13457 · **verified** · **skimmed**.
 
 - (a) No law, but sample counts are allocated from a **prior** difficulty estimate. An LLM batch-ranks the questions' difficulty before solving, and posterior agreement is used afterwards.
@@ -324,7 +324,7 @@ Worth it: **must cite in H4**.
 Daeyoung Roh, Donghee Han. arXiv:2609.26086 (2026, under review).
 https://arxiv.org/abs/2609.26086 · **verified** (arXiv /abs/) · **abstract**.
 
-- (a) A cheap embedding-coverage gate decides when to call an LLM verifier in agentic retrieval. Verifier calls fall 62–68% at matched EM. The evaluation protocol was fixed before the full run.
+- (a) A cheap embedding-coverage gate decides when to call an LLM verifier in agentic retrieval. Verifier calls fall 62–68% while answer accuracy stays "within a fraction of an EM point" of the full-budget and always-verify agents. The evaluation protocol was fixed before the full run.
 - (b) Per state. (c) The verifier is assumed reliable. Their closing line is useful: "matching a claim is far easier than deciding the claim is supported", which parallels our whether/where split.
 - (d) H2 (cheap features) and H4 in the same RAG setting. Cite it.
 
@@ -341,7 +341,7 @@ https://arxiv.org/abs/2610.05547 · **verified** · **abstract**.
 Worth it: cite, and distinguish.
 
 ### `zhu-2026-judge-panels`: Stopping and Routing LLM Judge Panels
-Bin Zhu, Yi Xie, Yanghui Rao. arXiv:2608.19802 (2026) *(venue unverified)*.
+Bin Zhu, Yi Xie, Yanghui Rao. arXiv:2608.19802 (2026). Accepted at WISE 2026 (arXiv comments field).
 https://arxiv.org/abs/2608.19802 · **verified** (OpenAlex record with arXiv DOI) · **abstract**.
 
 - (a) From a labelled audit set, it decides which judges to call and when to stop adding judges ("stop when validation gain falls below a threshold"). It compares against reliability juries and frugal cascades.
@@ -399,7 +399,7 @@ Clause by clause:
 3. **"predict before observing, per item" exists for task reward:**
    - `damani-2024-hard-to-think` (marginal reward per input and budget, predicted from x alone);
    - `zhao-2026-roi-reasoning`;
-   - `wang-2024-dsc` (prior difficulty);
+   - `wang-2025-dsc` (prior difficulty);
    - `han-2024-tale`.
 
    H2 is new only in its target (verifier reliability) and its feature set (document structure).
@@ -462,7 +462,7 @@ Not searched: the cascade/routing literature beyond FrugalGPT and AutoMix, and c
 ## Established names for what we are describing
 
 - **Spearman–Brown prophecy formula.** Psychometrics, for reliability vs. number of readings. In ML the per-item analogue is **pass_i@k = 1 − (1 − p_i)^k**, and the population analogue is the **beta-binomial** over items (`schaeffer-2025`, `kazdan-2025`). Use both names and map them onto each other.
-- **Adaptive self-consistency / early-stopping self-consistency / adaptive sampling.** The established names for "read again or stop, per item, from agreement so far" (`aggarwal-2023`, `li-2024-esc`, `wang-2024-dsc`). Our H4 policy is an instance aimed at verification. Do not coin a new name.
+- **Adaptive self-consistency / early-stopping self-consistency / adaptive sampling.** The established names for "read again or stop, per item, from agreement so far" (`aggarwal-2023`, `li-2024-esc`, `wang-2025-dsc`). Our H4 policy is an instance aimed at verification. Do not coin a new name.
 - **Input-adaptive (or difficulty-adaptive) compute allocation; compute-optimal test-time scaling.** For H2 (`damani-2024`, `snell-2024`).
 - **Generation–verification gap** (`saad-falcon-2025`) and **imperfect verifier / verifier ROC** (`dorner-2025`). For the motivation.
 - **Condorcet jury theorem.** For H3's correlated-errors condition, and for the result that majority vote converges to the wrong answer when per-item accuracy is below 0.5 (`chen-2024-more-calls`). Recent LLM-specific instances, metadata verified: Lefort et al. 2024, arXiv:2409.00094, independence fails across LLMs; Sasahara et al. 2026, arXiv:2609.14438.

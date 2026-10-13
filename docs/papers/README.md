@@ -97,13 +97,19 @@ for A's repositioning; for B the essentials are:
 
 ### Survey coverage, for the record
 
-287 verified entries across five areas, each file ending with a "searched and did not find"
+287 verified entries across five areas (files 01–05), each file ending with a "searched and did not find"
 section so coverage is evidenced rather than asserted. Two operational notes for whoever runs the
 next one: the 200-call WebSearch budget is shared across concurrent agents and was exhausted
 partway, after which the agents fell back to the **arXiv API** and **OpenAlex**, which are better
 defaults for this work anyway. Publisher access that fails: ACM DL (403), dblp (Anubis), Springer
 (IdP bounce), OpenReview (bot wall), Semantic Scholar (429). Access that works: ACL Anthology,
 arXiv `/abs/`, PMLR, CEUR, sigir.org, institutional repositories, OpenAlex.
+
+Files 06–10 were added 2026-10-12 for the FY27 LDRD pre-proposal (inference scaling, judge
+reliability vs. budget, adaptive budget and escalation, science agents, crowdsourcing label
+budgets). They add 166 entries, counted as keyed `###` headings plus keyed short-form rows:
+06: 34 + 11 leads, 07: 32, 08: 39, 09: 16 + 17 table rows (plus 7 programme notes), 10: 17.
+These are entries, not unique works; several papers recur across files.
 
 Paper A is first because it is self-contained, general beyond chunking, and its data is
 complete. Paper B's confirmatory verdict cannot be written until the human read produces κ

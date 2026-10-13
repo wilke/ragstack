@@ -535,7 +535,8 @@ say whether it is a reliability model (G-theory) or an aggregation model (this p
 ### `jung-2024-trust-escalate` ★★ Trust or Escalate: LLM Judges with Provable Guarantees for Human Agreement
 Jaehun Jung, Faeze Brahman, Yejin Choi. arXiv 2407.18370 (25 Jul 2024).
 <https://arxiv.org/abs/2407.18370> · **verified (arXiv)**; cited as Jung et al. 2025 by
-`zhu-2026-stopping`, which suggests ICLR 2025, but **that venue was not confirmed**. Read: abstract,
+`zhu-2026-stopping`. **Venue: ICLR 2025 (oral)**, confirmed 2026-10-12 on the ICLR proceedings page;
+see `08-adaptive-budget-escalation.md` (`jung-2025-trust-or-escalate`) for the URLs. Read: abstract,
 method, ablations.
 
 Selective evaluation trusts a judge only when its confidence clears a calibrated threshold, which
@@ -550,7 +551,7 @@ model, or stop" with a guarantee. H4's distinct contribution is the *per-item bu
 before reading*, the human-escalation arm, and localisation. Say so explicitly.
 
 ### `zhu-2026-stopping` Stopping and Routing LLM Judge Panels
-Bin Zhu, Yi Xie, Yanghui Rao. arXiv 2608.19802 (20 Aug 2026); *"Accepted at WISE 2026"*.
+Bin Zhu, Yi Xie, Yanghui Rao. arXiv 2608.19802 (20 Aug 2026). Accepted at WISE 2026 (arXiv comments field).
 <https://arxiv.org/abs/2608.19802> · **verified, read** (§2, related work, discussion)
 
 Panel design as role-conditioned allocation, fitted from a labelled audit set. Judges are copies
@@ -827,7 +828,7 @@ run 2026-10-12. OpenAlex was unavailable (quota). The counts are arXiv's hit cou
   - `zhu-2026-*`: WISE 2026
   - `rouillard-2026`: AI in Medicine 2026
 - Venue unknown:
-  - `jung-2024-trust-escalate`: possibly ICLR 2025, inferred from a "Jung et al., 2025" citation.
+  - ~~`jung-2024-trust-escalate`~~: resolved 2026-10-12, ICLR 2025 (oral); see `08` (`jung-2025-trust-or-escalate`).
   - `goel-2025-capa`: possibly ICML 2025, from recall only.
   - `verga-2024-poll`: no venue found.
 

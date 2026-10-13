@@ -41,7 +41,7 @@ Evidence*. Surveyed 2026-10-12.
 | 7 | Kosmos (Mitchener 2025) | Every statement is cited, but **no automated check**. Human graders afterwards. | 79.4% of statements accurate overall; 57.9% for synthesis statements. | No. Authors state no automated method exists. |
 | 8 | Biomni (Huang 2025) | Not described in the abstract. | None in the abstract. | No. |
 | 9 | Elicit vs ChatGPT (Helms Andersen 2025) | Human double extraction used as gold. | 92% F1; confabulations in 4% of data points. | Recommends AI in place of the second human (a budget decision, made by hand). |
-| 10 | SourceCheckup (Wu, Nat Comm 2025) | Automated **GPT-4** verifier, **one call** per statement–source pair. | Verifier agrees 88% with a panel of physicians. 50–90% of responses are not fully supported. | No. |
+| 10 | SourceCheckup (Wu, Nat Comm 2025) | Automated **GPT-4o** verifier (Nature Comms version; GPT-4 in the arXiv preprint), **one call** per statement–source pair. | Verifier agrees 88.7% with a three-doctor consensus (89% in the introduction). 50–90% of responses are not fully supported. | No. |
 | 11 | Liu et al. 2023 (verifiability) | Human audit. | 51.5% of sentences fully supported; 74.5% of citations support their sentence. | No. |
 | 12 | ALCE (Gao 2023) | One NLI (TRUE) call per citation. | See bib-inbox/03. | No. |
 | 13 | AttributionBench (Li 2024) | Benchmark *of* verifiers. | Best fine-tuned verifier ≈80% macro-F1. | No. |
@@ -56,11 +56,11 @@ Evidence*. Surveyed 2026-10-12.
 | 22 | CiteGuard (Gangwani, NeurIPS 2025 workshop) | Retrieval scoring, then escalation of uncertain cases to a small LM (18% escalated). | $0.0028/review; 11.7 s/paper. | **Yes, a calibrated escalation cascade.** It checks reference metadata, not claim support. |
 | 23 | Adaptive-Consistency / ESC / DSC (2023–2025) | Not verification: answer sampling for reasoning. | Up to 7.9× fewer samples. | **Yes: a per-item stopping rule; DSC adds a prior difficulty estimate.** |
 | 24 | LLM-as-Judge on a Budget (Saha 2026) | Repeated judge queries. | Bound of Õ(√(Σσᵢ²/B)). | **Yes: variance-adaptive allocation across items.** |
-| 25 | Coin Flip Judge (Yagubyan 2026) | 50 repeated trials per item. | Empirical reliability curve: 11 trials to reach 95% (15 for high-variance items). | Empirical, no law. |
+| 25 | Coin Flip Judge (Yagubyan 2026) | 50 repeated trials per item. | Empirical reliability curve: 11 trials to reach 95% on average (abstract; Table 6 gives 15 for 90%, >50 for 95% on high-variance items; see `07` `yagubyan-2026`). | Empirical, no law. |
 | 26 | Reliability without Validity (Norman 2026) | 21 judges, ~541k judgments. | Test–retest >0.95 alongside position bias >0.10. | No. |
 | 27 | Calibrate-Then-Act (Ding 2026) | Cost-aware stop/act for agents. | — | **Yes: explicit cost–uncertainty trade-off, including on RAG QA.** |
 | 28 | AI Agents That Matter (Kapoor 2024) | n/a | Argues for cost-controlled agent evaluation. | Methodological. |
-| 29 | EAIRA (Cappello 2025, Argonne) | Methodology for evaluating LLMs as research assistants. | Abstract does not address verification of evidence. | No. |
+| 29 | EAIRA (Cappello 2025, Argonne) | Methodology for evaluating LLMs as research assistants. LLM-as-judge: one reading per item (Llama-3.3-70B on 125 transcripts; Mistral Large 2 on MCQs). | Judge reliability named as "still the subject of research", not measured. No evidence verification. | No. |
 | P1–P7 | IDeA, BV-BRC Copilot, Genesis/EO 14363, DE-FOA-0003612, ModCon, AmSC, FORUM-AI | See § E. | None of them funds the reliability or budget of evidence checking, as far as the public text shows. | — |
 
 ---
@@ -247,13 +247,13 @@ Jacqueline He, Rulin Shao, Weijia Shi, Amanpreet Singh, et al. (28 authors).
 ### `wu-2025-sourcecheckup`
 **An automated framework for assessing how well LLMs cite relevant medical references.** Kevin Z. L. Wu, Eric Qiong Wu, Kevin Wei, Angela Zhang, …, Daniel E. Ho, James Zou. *Nature Communications* (2025), doi:10.1038/s41467-025-58551-6. Preprint arXiv:2402.02008.
 
-- **(a)** SourceCheckup uses GPT-4 as the verifier, with one judgment per statement–source pair, over more than 40k pairs.
+- **(a)** SourceCheckup uses GPT-4o as the verifier (GPT-4 in the arXiv v1 preprint), with one judgment per statement–source pair, over 58,000 statement–source pairs from 800 questions and seven LLMs (Nature Communications full text, PMC12003634; the preprint's figure was "more than 40k").
 - **(b)**
   - 50–90% of responses from five top LLMs are not fully supported.
-  - GPT-4 with RAG still leaves about 30% of statements unsupported.
-  - The verifier agrees with a panel of medical doctors **88%** of the time.
+  - GPT-4o with web search still leaves about 30% of statements unsupported.
+  - The verifier agrees with the consensus of three US-licensed doctors **88.7%** of the time on 400 expert-annotated pairs ("89%" in the introduction); average inter-doctor agreement is 86.1%. Same figures as `07` (`wu-2025-sourcecheckup`).
 - **(c)** No.
-- **(d)** **Must cite**, as a biomedical analogue of our problem. They validate the verifier once against experts, at one reading. We would ask what that 88% becomes as a function of readings and items.
+- **(d)** **Must cite**, as a biomedical analogue of our problem. They validate the verifier once against experts, at one reading. We would ask what that 88.7% becomes as a function of readings and items.
 
 ### `liu-2023-verifiability`
 Already in bib-inbox/03. *Findings of EMNLP 2023*, pp. 7001–7025.
@@ -342,7 +342,7 @@ This is the closest prior art to H1, H2 and H4. Only one item here verifies *evi
 | `li-2024-esc` | Li, Yuan, Feng, Pan, et al. "Escape Sky-high Cost: Early-stopping Self-Consistency for Multi-step Reasoning." arXiv:2401.10480 (2024). OpenAlex record only. | Early stopping for self-consistency. | H4 |
 | `wang-2025-dsc` | Wang, Feng, Li, Yuan, Zhang, Tan, Pan, Hu, Li. "Make Every Penny Count: Difficulty-Adaptive Self-Consistency for Cost-Efficient Reasoning." Findings of NAACL 2025, pp. 6919–6932. | Allocates samples using **prior** (pre-sampling) as well as posterior difficulty, batch-wise. | **H2.** "Predict per-item budget from difficulty before reading" exists for reasoning answers. Our novelty must rest on *verification of evidence*, on *validity*, and on a *pre-registered law*. |
 | `saha-2026-judge-on-a-budget` | Saha, Wagde, Kveton. "LLM-as-Judge on a Budget." arXiv:2602.15481 (2026). | Variance-adaptive allocation of a fixed budget of judge queries across items, with a bandit bound of Õ(√(Σσᵢ²/B)). Variance is estimated adaptively, not from features. | **H2/H4.** Budgeted allocation of repeated judgments is published. |
-| `yagubyan-2026-coin-flip-judge` | Yagubyan. "The Coin Flip Judge? Reliability and Bias in LLM-as-a-Judge Evaluation." arXiv:2606.13685 (2026). | 50 trials per item. Majority vote needs 11 trials on average (15 for high-variance items) to reach 95% recovery of the 50-trial verdict. Pairwise verdicts flip 13.6% of the time. | **H1.** An empirical reliability-vs-trials curve exists. As far as the abstract shows, it has no parametric law, does not predict out of sample, and does not test evidence support. |
+| `yagubyan-2026-coin-flip-judge` | Yagubyan. "The Coin Flip Judge? Reliability and Bias in LLM-as-a-Judge Evaluation." arXiv:2606.13685 (2026). | 50 trials per item. Majority vote needs 11 trials on average to reach 95% recovery of the 50-trial verdict (abstract; Table 6 gives 15 for 90%, >50 for 95% on high-variance items; see `07` `yagubyan-2026`). Pairwise verdicts flip 13.6% of the time. | **H1.** An empirical reliability-vs-trials curve exists. As far as the abstract shows, it has no parametric law, does not predict out of sample, and does not test evidence support. |
 | `norman-2026-reliability-without-validity` | Norman, Rivera, Hughes. "Reliability without Validity: A Systematic, Large-Scale Evaluation of LLM-as-a-Judge Models Across Agreement, Consistency, and Bias." arXiv:2606.19544 (2026). | 21 judges, ~541k judgments. Test–retest >0.95 coexists with position bias >0.10. | **Our framing sentence.** "Reliability does not imply validity" is now a published title. Cite it; do not present the point as ours. |
 | `ding-2026-calibrate-then-act` | Ding, Tomlin, Durrett. "Calibrate-Then-Act: Cost-Aware Exploration in LLM Agents." arXiv:2602.16699 (2026, v3). | Formalises when to stop gathering information as sequential decisions under uncertainty with explicit cost, including on a RAG QA task. | **H4 framing.** The "read again / escalate / stop" decision under cost is an established agent-decision framing. |
 | `gangwani-2025-citeguard` | Gangwani, Bansal. "CiteGuard: Retrieval-Augmented Citation Verification for LLM-Powered Peer Review." NeurIPS 2025 workshop (AI for Science), spotlight. | Calibrated score (isotonic regression), then escalation of uncertain cases to a small LM (18% escalated); $0.0028 per review. | H4, as a cascade/escalation pattern. It verifies reference metadata, not claim support. |
@@ -453,9 +453,17 @@ None states a verification-reliability or budget aim. Name FORUM-AI in the non-d
 
 ### EAIRA, Argonne's own evaluation programme
 
-`cappello-2025-eaira`: Cappello, Madireddy, Underwood, Getty, … Ian Foster, Rick Stevens (26 authors, Argonne). "EAIRA: Establishing a Methodology for Evaluating AI Models as Scientific Research Assistants." arXiv:2502.20309 (2025). Journal version: "EAIRA: Establishing a methodology for evaluating LLMs as scientific research assistants", *Int. J. High Performance Computing Applications* (2026), doi:10.1177/10943420261467786 (OpenAlex).
+`cappello-2025-eaira`: Cappello, Madireddy, Underwood, Getty, … Ian Foster, Rick Stevens (26 authors, Argonne). "EAIRA: Establishing a Methodology for Evaluating AI Models as Scientific Research Assistants." arXiv:2502.20309 (2025). Journal version: "EAIRA: Establishing a methodology for evaluating LLMs as scientific research assistants", *The International Journal of High Performance Computing Applications*, published online 2026-09-08, doi:10.1177/10943420261467786 (verified via Crossref 2026-10-12; SAGE, paywalled, not read). The notes below are from the arXiv PDF (<https://arxiv.org/pdf/2502.20309>), read 2026-10-12.
 
-- **(a)–(c)** Four evaluation classes: MCQ, open response, lab-style experiments, and field-style experiments. The abstract does not address evidence verification, repeated judgments, or the cost of evaluation.
+- **(a)–(c)** Four evaluation classes: MCQ, open response, lab-style experiments, and field-style experiments. None verifies that a source supports a claim.
+- **(a) LLM-as-judge use.** It has two uses, both one reading per item:
+  - **Field-style analysis.** One Llama-3.3-70B-Instruct pass over 125 JAM-session transcripts, scoring 29 scientific criteria. It is offered as a proof of concept: *"The presented results need human validation."*
+  - **Automatic MCQ validation.** Mistral Large 2 scores each MCQ on eight criteria; *"All criteria were evaluated in a single prompt."* A model trained on these judgements predicts acceptance with 72% accuracy; human reviewers agreed on 61% of 144 multiply-reviewed questions.
+- **(b) Reliability of the judge.** The methods section says *"the reliability of such evaluations is still the subject of research."* It is named as open and not measured.
+  - §IV, "Reliability and UQ of evaluations", is about uncertainty in the *assistant's task answers*, not the judge or verifier. It uses Question Rephrasing (input uncertainty) and repeated sampling with entropy-based metrics (output uncertainty) on GPT-3.5/GPT-4 chemistry tasks.
+  - Repeated readings are never treated as a budget.
+- **(c) Cost.** Cost appears as model performance-to-cost ratios (the Astronomy Benchmark) and as the expert and proctor effort of lab-style experiments. It is never a verification budget.
+- **Overlap verdict: low substantive overlap.** EAIRA names judge reliability as an open problem, which supports the proposal rather than duplicating it.
 - **(d)** **Must cite.** It is Argonne's existing evaluation line, led by the ModCon lead's group. We are a component it lacks: the reliability and budget of the verification step, per item. **It is also the most likely home-lab reviewer objection** ("isn't this EAIRA?"). Differentiate explicitly.
 
 ---

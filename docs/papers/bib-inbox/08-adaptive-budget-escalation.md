@@ -194,7 +194,7 @@ Every entry answers the same five questions:
 ## 4. Selective evaluation, abstention and escalation for LLM *judges* (H4's closest neighbours)
 
 ### `jung-2025-trust-or-escalate`
-**Trust or Escalate: LLM Judges with Provable Guarantees for Human Agreement.** Jaehun Jung, Faeze Brahman, Yejin Choi. ICLR 2025, oral (verified via the iclr.cc proceedings and oral/poster pages). arXiv:2407.18370. **read.**
+**Trust or Escalate: LLM Judges with Provable Guarantees for Human Agreement.** Jaehun Jung, Faeze Brahman, Yejin Choi. ICLR 2025, oral, pp. 3101–3125 (re-verified 2026-10-12: <https://proceedings.iclr.cc/paper_files/paper/2025/hash/08dabd5345b37fffcbe335bd578b15a0-Abstract-Conference.html>; oral listed at <https://iclr.cc/virtual/2025/oral/31838>). arXiv:2407.18370. **read.**
 - **(a)** **Verification/judgment.** This is pairwise preference evaluation. The judge abstains when its confidence is below a threshold calibrated for a guaranteed human-agreement level. **Cascaded Selective Evaluation** escalates from cheap judges (e.g. Mistral-7B) to stronger ones (GPT-4) only when needed.
 - **(b)** **No.** The paper states that confidence comes from the judge's own outputs at inference time. "Simulated Annotators" ensembles N ≤ 5 prompts with different in-context examples, i.e. repeated readings that vary the prompt. Length ratio and token overlap are checked only post hoc, to show that abstention is not driven by them.
 - **(c)** It reports **relative API cost** (GPT-4-only = 1), with savings up to 78.5% and 87.4%, compared at **matched target agreement, not matched cost**. Baselines are GPT-4 without abstention, heuristic selection and point-estimate calibration. There is no fixed-k-readings baseline.
@@ -223,7 +223,7 @@ Every entry answers the same five questions:
 - **(e)** Cite as "repeated readings → conformal stop/abstain". Differentiate: k is fixed, not adaptive per item.
 
 ### `lail-markham-2026-cost-effective-judge`
-**On Cost-Effective LLM-as-a-Judge Improvement Techniques.** Ryan Lail, Luke Markham. ICML 2026 Workshop on Statistical Frameworks for Uncertainty in Agentic Systems (verified, page header). arXiv:2604.13717. **read.**
+**On Cost-Effective LLM-as-a-Judge Improvement Techniques.** Ryan Lail, Luke Markham. ICML 2026 Workshop on Statistical Frameworks for Uncertainty in Agentic Systems (verified, page header). The arXiv comments field lists two ICML 2026 workshops: this one and "Combining Theory and Benchmarks: Towards a Virtuous Cycle to Understand and Guarantee Foundation Model Performance". arXiv:2604.13717. **read.**
 - **(a)** **Judgment** (RewardBench 2). It compares ensemble scoring ("Monte Carlo averaging over per-call noise"), criteria injection, calibration context, and **adaptive model escalation** that uses per-response score variance as the uncertainty signal.
 - **(b)** No.
 - **(c)** **Yes: cost–accuracy Pareto frontier**, across GPT and Claude families, with ensemble sizes up to k = 8.
@@ -231,7 +231,7 @@ Every entry answers the same five questions:
 - **(e)** **Challenging result:** *adaptive model escalation "improve[s] over baseline but [is] dominated by criteria + ensembling on the cost–accuracy Pareto frontier."* That is a published case in which a judge escalation policy **loses** to fixed-k ensembling at matched cost, which is the opposite of H4. It is workshop-level, uses short items (about 576 tokens) and does not predict anything per item, but H4 must engage with it. Its limitations list document-length inputs as untested, which is exactly our regime.
 
 ### `zhu-2026-stopping-routing-judge-panels`
-**Stopping and Routing LLM Judge Panels.** Bin Zhu, Yi Xie, Yanghui Rao. arXiv:2608.19802 (2026), preprint. **read** (abstract and experimental matrix).
+**Stopping and Routing LLM Judge Panels.** Bin Zhu, Yi Xie, Yanghui Rao. arXiv:2608.19802 (2026). Accepted at WISE 2026 (arXiv comments field). **read** (abstract and experimental matrix).
 - **(a)** **Judgment.** This is panel design. From a labelled audit set, it classifies judges as copies, complements or specialists, then drops copies, routes specialists to slices, and **stops adding judges when validation gain falls below a threshold**.
 - **(b)** **Partly yes.** Routing uses **slices declared from metadata available before routing** (problem level, subset, unit-test result). That is "cheap pre-read features select the verification spend", at slice level rather than per item.
 - **(c)** Compared to single judges, flat panels, reliability juries and **frugal cascades**, with declared judge costs.
