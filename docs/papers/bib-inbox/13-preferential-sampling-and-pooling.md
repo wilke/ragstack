@@ -345,18 +345,28 @@ recorded inclusion probabilities**, not a hand-picked or threshold-escalated gol
    kind of response-adjacent selection can distort the dependence estimate. Pool them with the random
    strata and use the design weights. Never let a human screener's "this looks wrong" choose items.
 
-**(ii) Threats-to-validity sentence for Paper A (pooled qrels).**
-> *TREC CDS relevance judgments are a stratified sample of the submitted runs' top-ranked documents
-> (all documents ranked 1–20, or 1–15 in 2016, by any run, plus a 20 % sample of the rest to depth 100).
-> Documents outside that pool were never judged and are scored non-relevant. Our pooled pairs (top 20
-> from 76 rankings per topic) therefore inherit an incomplete, system-dependent notion of relevance
-> (Zobel 1998; Buckley et al. 2007), and the 20 % stratum makes the official qrels an unequal-probability
-> sample. We bound the first effect with pairs drawn outside the pools ("bias bound", 100 of 308
-> development pairs and 776 of 3,738 confirmation pairs) and treat unjudged documents as unknown rather
-> than non-relevant wherever a claim depends on relevance.*
-Before using it, check whether Paper A's pairs inherit TREC labels from the 20 % stratum. If they do,
-weight those pairs by 1/0.2 or state that they are unweighted. Check too whether the distributed
-`sample_eval` qrels carry the stratum column (not verified here).
+**(ii) Threats-to-validity sentence for Paper A (pooled qrels).** *Corrected in review.* Every Paper A
+pair is a TREC-judged-relevant document (grade ≥ 1). The pre-registration (`docs/plans/results/design/SPEC-confirmation-run.md`
+§6.3) defines *pooled* pairs as every grade ≥ 1 document in the union of the top 20 of Paper A's own
+scoring arms, and *bias-bound* pairs as up to 10 further grade ≥ 1 documents per topic drawn from
+outside **those** pools. So the bias bound measures how much judged evidence Paper A's retrieval pools
+miss; it says nothing about documents TREC never judged, and Paper A contains no unjudged documents.
+The inherited threat is that the population is restricted to TREC-judged-relevant documents, which TREC
+selected by an unequal-probability design. A draft sentence:
+> *Every pair uses a document TREC CDS assessors judged relevant. Those judgments cover a stratified
+> sample of the submitted runs' top-ranked documents: every document ranked 1–20 (1–15 in 2016) by any
+> run, plus a 20 % sample of the rest to depth 100. Our population is therefore the judged-relevant
+> documents, not all relevant documents, and documents from the 20 % stratum entered it with probability
+> 0.2 (Zobel 1998; Buckley et al. 2007). We report results unweighted and weighted by the inverse of the
+> stratum probability.*
+
+The stratum is available: `trec.nist.gov/data/clinical/qrels-sampleval-2014.txt` has the format
+`topic 0 docid stratum grade`, with stratum 1 (all judged) or 2 (sampled) and grade −1 for unjudged
+(PR review, 2026-10-13: 23,105 stratum-1 documents, all judged; 72,922 stratum-2 documents, of which
+14,844, i.e. 0.204, judged). Weighting Paper A's pairs by stratum is therefore mechanical; the 2015 and
+2016 files should be checked for the same column before it is done. The count of rankings in the
+development pools is not in the confirmation artifact (`conf-a/pool_counts.json` gives 76 for the
+confirmation run), so the sentence does not quote it.
 
 **(iii) Is presence-only/presence-absence fusion a viable H2 method?** **Not as the primary analysis.**
 Gelfand & Shirota's coherent fusion needs a point-process model for the presence-only source and a

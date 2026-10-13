@@ -21,7 +21,8 @@
 > **Hypothesis numbering.** This file follows the current draft: H1 per-item budget forecast, H2
 > reliability vs expert correctness, H3 cascade with deferral, H4 error correlation between readers.
 > Bib inbox [06](06-inference-scaling.md)–[10](10-crowdsourcing-label-budget.md) were written against an
-> earlier numbering in which H4 is the stop/escalate policy (now H3).
+> earlier numbering: old H1 reliability law; old H2 per-item budget before reading (now H1); old H3
+> mixing model families and correlated errors (now H4); old H4 stop/escalate policy (now H3).
 >
 > **What was not re-checked.** Venues marked "not confirmed" (OpenAlex's free budget ran out during
 > the red-team pass and dblp did not respond). The full text of any paper added in revision; their
@@ -111,7 +112,7 @@ Each UQ paper gets three columns, matching our three questions:
   - Conformal *sets* of evidence sentences drawn from ~40K Wikipedia sentences (FEVER retrieval), plus QA answer spans in passages, with coverage guaranteed against human-annotated evidence.
   - Set-valued UQ over **source-document sentences**, validated against human evidence annotation. Not an LLM; the annotators are not domain experts; no repeated readings. **The nearest set-valued precedent.**
 - **Chakraborty, Yang, Khashabi, Lawrie, Duh**, *Principled Context Engineering for RAG: Statistical Guarantees via Conformal Prediction*. ECIR 2026 (arXiv comment). arXiv 2511.17908. `api` `abstract`
-  - Conformal filtering with embedding- and LLM-based scoring keeps a *set of retrieved snippets* with a target recall of relevant snippets, on NeuCLIR and RAGTIME. The abstract states the coverage is of "relevant snippets"; it does not itself say how relevance was judged. The red-team pass reports that relevance comes from the collections' assessor judgments. We did not confirm that in the paper.
+  - Conformal filtering with embedding- and LLM-based scoring keeps a *set of retrieved snippets* with a target recall of relevant snippets, on NeuCLIR and RAGTIME. The full text (checked in PR review, 2026-10-13) says relevance labels come from a model labeler treated as an annotation function, with a 10% subsample manually reviewed for consistency with human judgments. So its validation is against model labels, not collection assessor judgments.
   - The closest LLM-era set-valued precedent over source content.
 - **Jagannatha & Yu**, *Calibrating Structured Output Predictors for NLP*. ACL 2020. arXiv 2004.04361. `api` `abstract`
   - Calibrated confidence for extracted entity spans (NER, POS, QA), motivated by safety-critical healthcare use. Pre-LLM; gold spans from annotated benchmarks.
@@ -327,7 +328,6 @@ All entries below are `api`; the tag after each says how the claim was checked.
 - **The RLCD reward being a Brier / proper scoring rule.** It appears in secondary explainers (eesel.ai, theneuron.ai) but not in the primary blog or docs.
 - **OpenAI's "Decisions API"** (TechCrunch, 30 Sep 2026) and **The Register's report of a Microsoft model to challenge Jev** (≈10 Oct): not re-verified.
 - **Whether Jev is still early-access with a waitlist** on 2026-10-13.
-- **Chakraborty et al. 2511.17908's relevance labels**: the red-team pass reports assessor judgments on NeuCLIR and RAGTIME; the abstract does not say so, and we did not read the paper.
 - **Venues** for FrugalGPT, RouteLLM, Gupta et al. 2024, Abbasi Yadkori et al. 2024 and Mohri & Hashimoto 2024 (OpenAlex lists them as arXiv only); the Lin, Hilton, Evans 2022 TMLR venue; the RAGTruth ACL 2024 venue. Do not quote these venues without checking further.
 - **The full text of papers added in revision** (Tang & Zheng, Madrid-García, Shankaranarayana, Zhong, Rafe & Das 2610.00346, Huang, Xu, Li & Chen, Nandakishore, Rao & Callison-Burch). Their entries rest on the abstract only.
 - **Queries tried:**
