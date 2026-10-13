@@ -985,7 +985,9 @@ Measurement*, 2026. doi:10.1177/00131644261418138 · **verified (metadata via Op
 publisher page and PubMed both cookie-gated to automated fetch — re-confirm before citing)**
 
 Intra- and inter-LLM consistency scoring constructed responses (ASAP) across five model families
-and several temperatures. Reports "almost perfect" intra-LLM consistency regardless of
+at exactly two temperatures, T = 0 and T = 1, with five repeated scorings per response at each
+(corrected 2026-10-12 from "several temperatures", per the authors' OSF repository as read in
+`07-judge-reliability-budget.md` §0). Reports "almost perfect" intra-LLM consistency regardless of
 temperature, with intra-LLM consistency **not** correlating with accuracy, while inter-LLM
 consistency was only moderate and did correlate.
 **Weight: moderate, and it contradicts us if taken at face value.** The strongest published claim
@@ -1191,6 +1193,10 @@ four delegated sweeps, all of which reported their own dead ends.)
   needed* — found Spearman-Brown used to project *ensembles of different judges* (`yang-2026`,
   and a capability-transfer paper), never to project repeated readings of one judge at span level.
   No paper was found applying generalizability theory with rater facets to LLM judges.
+  *Superseded 2026-10-12:* that negative is now false. `07-judge-reliability-budget.md` §2 lists
+  G-theory / D-study applications to LLM raters — `song-2025-gtheory`, `anand-2026`,
+  `sunkavalli-2026`, `zatuchin-2026` — and `messing-2026` (in `02-annotator-disagreement-reliability.md`).
+  The narrower claim, that none projects repeated readings of one judge at span level, still stands.
 - *evidence sentence selection LLM agreement "where" versus "whether" localisation reliability
   biomedical* — returned clinical-annotation and fact-checking work; no paper posing the
   whether/where contrast as such.
