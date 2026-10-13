@@ -1,0 +1,277 @@
+{
+ "script": "recompute_agreement",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:05Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "results": {
+  "s0.whether_self_agreement": {
+   "n": 31,
+   "agree": 27,
+   "rate": 0.8709677419354839
+  },
+  "s0.span_self_consistency": {
+   "n": 31,
+   "consistent": 10,
+   "rate": 0.3225806451612903
+  },
+  "s0.minimality": {
+   "n_audited": 29,
+   "shrank": 29,
+   "rate": 1.0,
+   "audit_returned_empty": 29
+  },
+  "s0.deep_section_pairs": {
+   "positive_pairs": 259,
+   "every_span_unit_ge_2": 3
+  },
+  "r3.scout": {
+   "n": 31,
+   "whether_agree": 30,
+   "whether_rate": 0.967741935483871,
+   "span_consistent": 20,
+   "span_rate": 0.6451612903225806
+  },
+  "r3.qwen": {
+   "n": 31,
+   "whether_agree": 30,
+   "whether_rate": 0.967741935483871,
+   "span_consistent": 13,
+   "span_rate": 0.41935483870967744
+  },
+  "r31.scout": {
+   "whether_all5": {
+    "n_pairs": 308,
+    "all_agree": 283,
+    "rate": 0.9188311688311688,
+    "mean_pairwise": 0.961038961038961
+   },
+   "whether_all5_dropped_counted_positive": {
+    "n_pairs": 308,
+    "all_agree": 285,
+    "rate": 0.9253246753246753,
+    "mean_pairwise": 0.9636363636363636
+   },
+   "dropped_readings": 2,
+   "self_consistency_0v1": {
+    "n": 308,
+    "consistent": 118,
+    "rate": 0.38311688311688313
+   },
+   "self_consistency_0v1_on_the_31": {
+    "n": 31,
+    "consistent": 9,
+    "rate": 0.2903225806451613
+   },
+   "all_ten_presentation_pairs": {
+    "mean_rate": 0.42012987012987013,
+    "min_rate": 0.37662337662337664,
+    "max_rate": 0.4675324675324675,
+    "partial_credit_jaccard": {
+     "mean": 0.43499193022220217,
+     "median": 0.35342368045649075,
+     "n": 2898
+    }
+   },
+   "split_half_union_0to2_vs_3to4": {
+    "n_pairs": 308,
+    "consistent": 145,
+    "rate": 0.4707792207792208,
+    "mean_jaccard_where_both_positive": 0.5066625188737148,
+    "sensitivity_raw_span_union_rate": 0.4837662337662338
+   },
+   "positive_rate_k0": 0.9155844155844156
+  },
+  "r31.qwen": {
+   "whether_all5": {
+    "n_pairs": 308,
+    "all_agree": 302,
+    "rate": 0.9805194805194806,
+    "mean_pairwise": 0.990909090909091
+   },
+   "whether_all5_dropped_counted_positive": {
+    "n_pairs": 308,
+    "all_agree": 302,
+    "rate": 0.9805194805194806,
+    "mean_pairwise": 0.9902597402597403
+   },
+   "dropped_readings": 2,
+   "self_consistency_0v1": {
+    "n": 308,
+    "consistent": 173,
+    "rate": 0.5616883116883117
+   },
+   "self_consistency_0v1_on_the_31": {
+    "n": 31,
+    "consistent": 17,
+    "rate": 0.5483870967741935
+   },
+   "all_ten_presentation_pairs": {
+    "mean_rate": 0.5399350649350649,
+    "min_rate": 0.487012987012987,
+    "max_rate": 0.577922077922078,
+    "partial_credit_jaccard": {
+     "mean": 0.543028106815816,
+     "median": 0.7517899761336515,
+     "n": 3056
+    }
+   },
+   "split_half_union_0to2_vs_3to4": {
+    "n_pairs": 308,
+    "consistent": 178,
+    "rate": 0.577922077922078,
+    "mean_jaccard_where_both_positive": 0.5919485216977358,
+    "sensitivity_raw_span_union_rate": 0.5876623376623377
+   },
+   "positive_rate_k0": 0.9805194805194806
+  },
+  "r31.cross_judge": {
+   "kappa_k0": {
+    "n": 308,
+    "observed_agreement": 0.9285714285714286,
+    "kappa": 0.29002514668901885,
+    "a_positive_rate": 0.9155844155844156,
+    "b_positive_rate": 0.9805194805194806
+   },
+   "jaccard_k0": {
+    "n": 281,
+    "mean": 0.21228310259373256,
+    "median": 0.08050436469447139,
+    "frac_ge_0.5": 0.14590747330960854
+   },
+   "jaccard_unions_5_5": {
+    "n": 295,
+    "mean": 0.16130735895173667,
+    "median": 0.10120513152779577
+   },
+   "jaccard_raw_span_unions_5_5": {
+    "n": 295,
+    "mean": 0.1607020995947534,
+    "median": 0.0998719590268886,
+    "note": "sensitivity: union of ALL spans rather than of D3-distinct sets"
+   }
+  },
+  "r31ext.first_five_identical_to_r31": true,
+  "r31ext.scout.whether_curve": {
+   "2": 0.961038961038961,
+   "5": 0.9188311688311688,
+   "10": 0.8733766233766234,
+   "20": 0.8538961038961039
+  },
+  "r31ext.scout.whether_curve_dropped_counted_positive": {
+   "2": 0.961038961038961,
+   "5": 0.9253246753246753,
+   "10": 0.8798701298701299,
+   "20": 0.8603896103896104
+  },
+  "r31ext.qwen.whether_curve": {
+   "2": 0.9902597402597403,
+   "5": 0.9805194805194806,
+   "10": 0.961038961038961
+  },
+  "r31ext.qwen.whether_curve_dropped_counted_positive": {
+   "2": 0.9902597402597403,
+   "5": 0.9805194805194806,
+   "10": 0.974025974025974
+  },
+  "r31ext.cross_judge_at_depth_10": {
+   "kappa_k0": {
+    "n": 308,
+    "observed_agreement": 0.9285714285714286,
+    "kappa": 0.29002514668901885,
+    "a_positive_rate": 0.9155844155844156,
+    "b_positive_rate": 0.9805194805194806
+   },
+   "jaccard_k0": {
+    "n": 281,
+    "mean": 0.21228310259373256,
+    "median": 0.08050436469447139,
+    "frac_ge_0.5": 0.14590747330960854
+   },
+   "jaccard_unions_10_10": {
+    "n": 299,
+    "mean": 0.16216540783718425,
+    "median": 0.10223110223110222
+   },
+   "jaccard_raw_span_unions_10_10": {
+    "n": 299,
+    "mean": 0.16089252855131164,
+    "median": 0.10035211267605634,
+    "note": "sensitivity: union of ALL spans rather than of D3-distinct sets"
+   }
+  },
+  "claude.sonnet5_vs_opus5": {
+   "co_labeled": 308,
+   "kappa": {
+    "n": 308,
+    "observed_agreement": 0.9058441558441559,
+    "kappa": 0.1103585657370529,
+    "a_positive_rate": 0.8993506493506493,
+    "b_positive_rate": 0.9935064935064936
+   },
+   "jaccard": {
+    "n": 277,
+    "mean": 0.41794253747032,
+    "median": 0.39312567132116005
+   }
+  },
+  "claude.sonnet5_vs_fable51": {
+   "co_labeled": 251,
+   "kappa": {
+    "n": 251,
+    "observed_agreement": 0.9282868525896414,
+    "kappa": 0.23397761953204374,
+    "a_positive_rate": 0.9163346613545816,
+    "b_positive_rate": 0.9880478087649402
+   },
+   "jaccard": {
+    "n": 230,
+    "mean": 0.45682625780704966,
+    "median": 0.4198631056424709
+   }
+  },
+  "claude.opus5_vs_fable51": {
+   "co_labeled": 251,
+   "kappa": {
+    "n": 251,
+    "observed_agreement": 0.9960159362549801,
+    "kappa": 0.798069187449719,
+    "a_positive_rate": 0.9920318725099602,
+    "b_positive_rate": 0.9880478087649402
+   },
+   "jaccard": {
+    "n": 248,
+    "mean": 0.5040516835617072,
+    "median": 0.4544957093876787
+   }
+  }
+ }
+}

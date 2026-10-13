@@ -1,0 +1,180 @@
+{
+ "script": "recompute_crossfamily",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:11Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "results": {
+  "sonnet5": {
+   "pairs_labeled": 308,
+   "pairs_positive": 277,
+   "pairs_with_local_support": 307,
+   "lift_a_all_labeled_pairs": {
+    "mean_support_picked": 10.784345047923322,
+    "baseline": 2.8634325416379225,
+    "lift": 7.9209125062854,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support_and_picks": 277,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_support_0": 0.12619808306709265
+   },
+   "lift_b_positive_pairs_only": {
+    "mean_support_picked": 10.784345047923322,
+    "baseline": 2.789505534683174,
+    "lift": 7.994839513240148,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support_and_picks": 277,
+    "n_locally_touched_sentences": 39659,
+    "frac_picked_support_0": 0.12619808306709265
+   },
+   "lift_c_excluding_blowup_pair": {
+    "mean_support_picked": 11.152823920265782,
+    "baseline": 5.190053087454596,
+    "lift": 5.962770832811185,
+    "n_sentences_picked": 602,
+    "n_pairs_with_local_support_and_picks": 276,
+    "n_locally_touched_sentences": 17895,
+    "frac_picked_support_0": 0.11794019933554817
+   },
+   "point_biserial_r": 0.23531459298383775,
+   "spearman_rho": 0.1352771111339757,
+   "n_sentences_pooled": 40667,
+   "point_biserial_r_excluding_blowup_pair": 0.20166747917422795,
+   "spearman_rho_excluding_blowup_pair": 0.11615050710335398,
+   "n_sentences_pooled_excluding_blowup_pair": 17966,
+   "cost_total_usd": 40.827779,
+   "cost_mean_per_pair": 0.13255772402597402,
+   "n_pairs_costed": 308
+  },
+  "opus5": {
+   "pairs_labeled": 308,
+   "pairs_positive": 306,
+   "pairs_with_local_support": 307,
+   "lift_a_all_labeled_pairs": {
+    "mean_support_picked": 9.177091183119819,
+    "baseline": 2.8634325416379225,
+    "lift": 6.313658641481896,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support_and_picks": 306,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_support_0": 0.21703089675960813
+   },
+   "lift_b_positive_pairs_only": {
+    "mean_support_picked": 9.177091183119819,
+    "baseline": 2.8637752587481518,
+    "lift": 6.3133159243716666,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support_and_picks": 306,
+    "n_locally_touched_sentences": 40580,
+    "frac_picked_support_0": 0.21703089675960813
+   },
+   "lift_c_excluding_blowup_pair": {
+    "mean_support_picked": 9.62132060461416,
+    "baseline": 5.190053087454596,
+    "lift": 4.431267517159564,
+    "n_sentences_picked": 1257,
+    "n_pairs_with_local_support_and_picks": 305,
+    "n_locally_touched_sentences": 17895,
+    "frac_picked_support_0": 0.20843277645186953
+   },
+   "point_biserial_r": 0.2758487009167056,
+   "spearman_rho": 0.1279479913335493,
+   "n_sentences_pooled": 40876,
+   "point_biserial_r_excluding_blowup_pair": 0.22261736241937913,
+   "spearman_rho_excluding_blowup_pair": 0.09480154693075654,
+   "n_sentences_pooled_excluding_blowup_pair": 18157,
+   "cost_total_usd": 93.117153,
+   "cost_mean_per_pair": 0.30232841883116884,
+   "n_pairs_costed": 308
+  },
+  "fable51": {
+   "pairs_labeled": 251,
+   "pairs_positive": 248,
+   "pairs_with_local_support": 250,
+   "lift_a_all_labeled_pairs": {
+    "mean_support_picked": 10.802424242424243,
+    "baseline": 5.346884014221507,
+    "lift": 5.455540228202736,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support_and_picks": 248,
+    "n_locally_touched_sentences": 14907,
+    "frac_picked_support_0": 0.16606060606060605
+   },
+   "lift_b_positive_pairs_only": {
+    "mean_support_picked": 10.802424242424243,
+    "baseline": 5.34966771833255,
+    "lift": 5.452756524091693,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support_and_picks": 248,
+    "n_locally_touched_sentences": 14897,
+    "frac_picked_support_0": 0.16606060606060605
+   },
+   "lift_c_excluding_blowup_pair": {
+    "mean_support_picked": 10.802424242424243,
+    "baseline": 5.346884014221507,
+    "lift": 5.455540228202736,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support_and_picks": 248,
+    "n_locally_touched_sentences": 14907,
+    "frac_picked_support_0": 0.16606060606060605
+   },
+   "point_biserial_r": 0.2382913471803317,
+   "spearman_rho": 0.12376267390068897,
+   "n_sentences_pooled": 15044,
+   "point_biserial_r_excluding_blowup_pair": 0.2382913471803317,
+   "spearman_rho_excluding_blowup_pair": 0.12376267390068897,
+   "n_sentences_pooled_excluding_blowup_pair": 15044,
+   "cost_total_usd": 61.374292,
+   "cost_mean_per_pair": 0.24451909163346613,
+   "n_pairs_costed": 251
+  },
+  "total_cost_usd": 195.319224,
+  "total_pair_readings": 867,
+  "self_reference.scout": {
+   "mean_support_picked": 10.97199564980968,
+   "baseline": 2.8634325416379225,
+   "lift": 8.108563108171758,
+   "n_sentences_picked": 3678,
+   "n_pairs_with_local_support_and_picks": 282,
+   "n_locally_touched_sentences": 40588,
+   "frac_picked_support_0": 0.0
+  },
+  "self_reference.qwen": {
+   "mean_support_picked": 15.28080808080808,
+   "baseline": 2.8634325416379225,
+   "lift": 12.417375539170159,
+   "n_sentences_picked": 495,
+   "n_pairs_with_local_support_and_picks": 302,
+   "n_locally_touched_sentences": 40588,
+   "frac_picked_support_0": 0.0
+  }
+ }
+}

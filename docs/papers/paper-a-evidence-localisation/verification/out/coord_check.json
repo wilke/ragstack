@@ -1,0 +1,90 @@
+{
+ "script": "coord_check",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:20Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "pin_commit": "55a0fc2f6bf64e592c2c65d8825524216c423e2b",
+ "main_commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+ "nltk": [
+  "3.9.4",
+  "3.9.4"
+ ],
+ "n_docs": 306,
+ "n_unit_texts": 5232,
+ "fingerprint_main_sentence_spans_fingerprint": {
+  "kind": "sentences",
+  "producer": "ragstack.ingestion.chunkers.sentence_spans",
+  "sha256": "1f674ec5f262fc0ed471da61d94f2ec3497141d711da680ca4850a42e32b9553",
+  "n_docs": 5232,
+  "n_spans": 114537,
+  "texts_sha256": "20b083ff8e6c67b52d5b1e7ebc958a37d2d1392d36b2372a77bc394879415dd7",
+  "sample": "run",
+  "backend": "punkt",
+  "nltk": "3.9.4"
+ },
+ "fingerprint_pin_offsets": {
+  "kind": "sentences",
+  "producer": "ragstack.ingestion.chunkers.sentence_spans @ 55a0fc2",
+  "sha256": "1f674ec5f262fc0ed471da61d94f2ec3497141d711da680ca4850a42e32b9553",
+  "n_docs": 5232,
+  "n_spans": 114537,
+  "texts_sha256": "20b083ff8e6c67b52d5b1e7ebc958a37d2d1392d36b2372a77bc394879415dd7"
+ },
+ "fingerprint_main_offsets_dump": {
+  "kind": "sentences",
+  "producer": "dump @ main",
+  "sha256": "1f674ec5f262fc0ed471da61d94f2ec3497141d711da680ca4850a42e32b9553",
+  "n_docs": 5232,
+  "n_spans": 114537,
+  "texts_sha256": "20b083ff8e6c67b52d5b1e7ebc958a37d2d1392d36b2372a77bc394879415dd7"
+ },
+ "EQUAL": true,
+ "docs_with_moved_offsets": {},
+ "label_spans_vs_main_offsets": {
+  "s0": {
+   "label_spans_checked": 466,
+   "not_on_main_sentence_offsets": 0
+  },
+  "r3": {
+   "label_spans_checked": 1024,
+   "not_on_main_sentence_offsets": 0
+  },
+  "r31ext": {
+   "label_spans_checked": 21441,
+   "not_on_main_sentence_offsets": 0
+  },
+  "claude": {
+   "label_spans_checked": 2119,
+   "not_on_main_sentence_offsets": 0
+  }
+ }
+}

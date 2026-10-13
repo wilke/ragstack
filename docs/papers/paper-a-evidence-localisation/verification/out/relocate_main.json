@@ -1,0 +1,114 @@
+{
+ "script": "relocate_main",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": "0.1.0",
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:04Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "locator_source": "/home/wilke/Development/worktrees/paper-a-recompute/docs/plans/results/stage0",
+ "ragstack_imported_from": "/home/wilke/Development/ragstack/python/ragstack/__init__.py",
+ "ragstack_checkout_head": "c2d63c2638b6471c6b75eb36d0f49272e091bcd5",
+ "ragstack_checkout_chunkers_diff_vs_this_commit": "EMPTY",
+ "ragstack_checkout_python_status": "CLEAN",
+ "results": {
+  "s0.scout": {
+   "records": 308,
+   "sets_identical": 308,
+   "problems_identical": 308,
+   "vstats_identical": 308,
+   "relocated_spans_seen": 476,
+   "relocated_hallucinated": 24,
+   "first_differences": []
+  },
+  "r3.scout": {
+   "records": 308,
+   "sets_identical": 308,
+   "problems_identical": 308,
+   "vstats_identical": 308,
+   "relocated_spans_seen": 707,
+   "relocated_hallucinated": 58,
+   "first_differences": []
+  },
+  "r3.qwen": {
+   "records": 308,
+   "sets_identical": 308,
+   "problems_identical": 308,
+   "vstats_identical": 308,
+   "relocated_spans_seen": 356,
+   "relocated_hallucinated": 9,
+   "first_differences": []
+  },
+  "r31ext.scout": {
+   "records": 6160,
+   "sets_identical": 6160,
+   "problems_identical": 6160,
+   "vstats_identical": 6160,
+   "relocated_spans_seen": 17635,
+   "relocated_hallucinated": 345,
+   "first_differences": []
+  },
+  "r31ext.qwen": {
+   "records": 3080,
+   "sets_identical": 3080,
+   "problems_identical": 3080,
+   "vstats_identical": 3080,
+   "relocated_spans_seen": 3593,
+   "relocated_hallucinated": 35,
+   "first_differences": []
+  },
+  "claude.sonnet5": {
+   "records": 308,
+   "sets_identical": 308,
+   "problems_identical": 308,
+   "vstats_identical": 308,
+   "relocated_spans_seen": 525,
+   "relocated_hallucinated": 1,
+   "first_differences": []
+  },
+  "claude.opus5": {
+   "records": 308,
+   "sets_identical": 308,
+   "problems_identical": 308,
+   "vstats_identical": 308,
+   "relocated_spans_seen": 955,
+   "relocated_hallucinated": 1,
+   "first_differences": []
+  },
+  "claude.fable51": {
+   "records": 251,
+   "sets_identical": 251,
+   "problems_identical": 251,
+   "vstats_identical": 251,
+   "relocated_spans_seen": 645,
+   "relocated_hallucinated": 0,
+   "first_differences": []
+  }
+ }
+}

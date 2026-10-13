@@ -1,0 +1,228 @@
+{
+ "script": "recompute_hallucination",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:04Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "results": {
+  "s0": {
+   "failed_spans": 24,
+   "attempted_spans": 476,
+   "rate": 0.05042016806722689,
+   "wilson95_upper": 0.07392539376929443,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 4,
+    "last_quote_not_in_document": 20,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 24,
+   "problems_agree_with_vstats": true,
+   "index_agreement": {
+    "index_ok": 307,
+    "misindexed_relocated": 140,
+    "rate": 0.6449579831932774,
+    "misindexed_from_problems": 140
+   }
+  },
+  "r3.scout": {
+   "failed_spans": 58,
+   "attempted_spans": 707,
+   "rate": 0.08203677510608204,
+   "wilson95_upper": 0.10459492432285247,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 4,
+    "last_quote_not_in_document": 54,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 58,
+   "problems_agree_with_vstats": true,
+   "duplicate_presentation": {
+    "failed": 7,
+    "attempted": 62
+   },
+   "including_duplicates_rate": 0.08452535760728218,
+   "spans_per_positive_pair": 2.498233215547703
+  },
+  "r3.qwen": {
+   "failed_spans": 9,
+   "attempted_spans": 356,
+   "rate": 0.025280898876404494,
+   "wilson95_upper": 0.04734119860479639,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 2,
+    "last_quote_not_in_document": 7,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 9,
+   "problems_agree_with_vstats": true,
+   "duplicate_presentation": {
+    "failed": 0,
+    "attempted": 31
+   },
+   "including_duplicates_rate": 0.023255813953488372,
+   "spans_per_positive_pair": 1.1710526315789473
+  },
+  "r31.scout.k0": {
+   "failed_spans": 22,
+   "attempted_spans": 874,
+   "rate": 0.02517162471395881,
+   "wilson95_upper": 0.03781814577538471,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 16,
+    "last_quote_not_in_document": 6,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 22,
+   "problems_agree_with_vstats": true
+  },
+  "r31.scout.all5": {
+   "failed_spans": 85,
+   "attempted_spans": 4344,
+   "rate": 0.01956721915285451,
+   "wilson95_upper": 0.024130558073800306,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 58,
+    "last_quote_not_in_document": 27,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 85,
+   "problems_agree_with_vstats": true
+  },
+  "r31.qwen.k0": {
+   "failed_spans": 1,
+   "attempted_spans": 358,
+   "rate": 0.002793296089385475,
+   "wilson95_upper": 0.01565044121209347,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 0,
+    "last_quote_not_in_document": 1,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 1,
+   "problems_agree_with_vstats": true
+  },
+  "r31.qwen.all5": {
+   "failed_spans": 16,
+   "attempted_spans": 1802,
+   "rate": 0.008879023307436182,
+   "wilson95_upper": 0.014374775438187642,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 12,
+    "last_quote_not_in_document": 4,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 16,
+   "problems_agree_with_vstats": true
+  },
+  "p_ext_3.scout.k5_19": {
+   "failed_spans": 260,
+   "attempted_spans": 13291,
+   "rate": 0.019562109698292078,
+   "wilson95_upper": 0.02205911586141192,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 180,
+    "last_quote_not_in_document": 80,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 260,
+   "problems_agree_with_vstats": true
+  },
+  "p_ext_3.qwen.k5_9": {
+   "failed_spans": 19,
+   "attempted_spans": 1791,
+   "rate": 0.01060859854829704,
+   "wilson95_upper": 0.01651006016779295,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 15,
+    "last_quote_not_in_document": 4,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 19,
+   "problems_agree_with_vstats": true
+  },
+  "p_ext_3.qwen.k0_4": {
+   "failed_spans": 16,
+   "attempted_spans": 1802,
+   "rate": 0.008879023307436182,
+   "wilson95_upper": 0.014374775438187642,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 12,
+    "last_quote_not_in_document": 4,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 16,
+   "problems_agree_with_vstats": true
+  },
+  "p_ext_3.SCORED": "PASS",
+  "claude.sonnet5": {
+   "failed_spans": 1,
+   "attempted_spans": 525,
+   "rate": 0.0019047619047619048,
+   "wilson95_upper": 0.0107094492356656,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 1,
+    "last_quote_not_in_document": 0,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 1,
+   "problems_agree_with_vstats": true,
+   "pairs": 308
+  },
+  "claude.opus5": {
+   "failed_spans": 1,
+   "attempted_spans": 955,
+   "rate": 0.0010471204188481676,
+   "wilson95_upper": 0.005907338708726325,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 1,
+    "last_quote_not_in_document": 0,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 1,
+   "problems_agree_with_vstats": true,
+   "pairs": 308
+  },
+  "claude.fable51": {
+   "failed_spans": 0,
+   "attempted_spans": 645,
+   "rate": 0.0,
+   "wilson95_upper": 0.005920489155665534,
+   "by_anchor_from_problems": {
+    "quote_not_in_document": 0,
+    "last_quote_not_in_document": 0,
+    "no_first_words": 0
+   },
+   "failures_from_problems": 0,
+   "problems_agree_with_vstats": true,
+   "pairs": 251
+  }
+ }
+}
