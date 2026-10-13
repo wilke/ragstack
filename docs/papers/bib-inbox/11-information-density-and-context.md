@@ -1,6 +1,6 @@
 # Bib inbox 11 — Information density and context dependency: a citation check and a short gap survey
 
-> **Provenance.** Produced 2026-10-13 for the chunking study. Its input was an LLM-written analysis plus
+> **Provenance.** Produced 2026-10-12 for the chunking study. Its input was an LLM-written analysis plus
 > a "literature review" (research date given as 2026-10-12) that the owner pasted into a session. That
 > text is not in this repo. It proposed information density and "contextual dependency" as variables
 > for choosing chunk size, and it cited 16 works. §0 checks every one of those citations. §1–§5 are a
@@ -41,7 +41,7 @@ mis-stated); **ALREADY-IN-SURVEY** (already in `04` or `05`, cross-checked again
 | 6 | de Moura Júnior et al., Adaptive Chunking, LREC 2026 | **VERIFIED-CLAIM-WRONG** (also ALREADY-IN-SURVEY, `04` `demoura-2026`) | The five metrics and the legal/technical/social-science corpus are right. **"Answer correctness rose from 62–64% to 72%" is wrong**, and the error starts in the paper's own abstract. Table 5 gives three rows. Answer Correctness is **78.01** (Adaptive) vs 70.11 / 73.33. Retrieval Completeness is 67.68 vs 58.08 / 59.09. **The 71.77 vs 62.07 / 63.80 figures are the mean of those two rows.** Answer Correctness also skips unanswered queries, so its denominators differ (65 vs 49 answered of 99). Only the Retrieval Completeness differences were significance-tested. The scale is 33 documents and 99 GPT-4.1-generated questions, with GPT-4.1 as judge. Our `04` entry does not quote the 62–64 → 72 figure and disagrees with nothing. It should gain the corpus size and this correction. |
 | 7 | Günther et al. 2024, Late Chunking | **ALREADY-IN-SURVEY** (`04` `gunther-2024`) | arXiv 2409.04701 v3 still says "3rd draft"; it is not peer-reviewed. Our entry stands. |
 | 8 | Sarthi et al. 2024, RAPTOR | **ALREADY-IN-SURVEY** (`04` `sarthi-2024-raptor`) | Published at ICLR 2024 (the external text gives no venue). Our entry stands. |
-| 9 | Wang & Han, PropRAG, EMNLP 2025 | **VERIFIED** | EMNLP 2025 main, pp. 6224–6239 (2025.emnlp-main.317). The paper evaluates on **2Wiki**, HotpotQA and MuSiQue; the text omits 2Wiki. |
+| 9 | Wang & Han, PropRAG, EMNLP 2025 | **VERIFIED** | EMNLP 2025 main, pp. 6212–6227 (2025.emnlp-main.317). The paper evaluates on **2Wiki**, HotpotQA and MuSiQue; the text omits 2Wiki. |
 | 10 | Zhu et al., IB for noise filtering, ACL 2024 | **VERIFIED**; objective stated loosely | 2024.acl-long.59. The paper writes the objective as a **minimisation conditioned on the query**: min L_IB = I(X̃; X \| Q) − β I(X̃; Y \| Q) (§3). The text's "max I(Z;Y) − β I(Z;X)" is the same trade-off up to a reparametrised β, but it drops the conditioning on Q. The method is post-retrieval compression (2.5 % compression rate), not chunking. |
 | 11 | Jiang et al., LongLLMLingua, ACL 2024 | **VERIFIED** | ACL 2024 (2024.acl-long.91; arXiv 2310.06839). The abstract says LLM performance "hinges on the density and position of key information in the input prompt", which motivates the method; the paper does not measure density as a text property. |
 | 12 | Liu et al., Lost in the Middle, TACL 2024 | **ALREADY-IN-SURVEY** (`05` `liu-2024-lost-in-middle`) | TACL 12:157–173 (2024.tacl-1.9). Our entry stands. |
@@ -66,7 +66,9 @@ Degaetano-Ortlieb, Elke Teich, Josef van Genabith. COLING 2016, pp. 750–761.
 
 Surprisal-based ("information density") features at lexical, POS and syntactic levels classify
 sentences of 19th- vs 20th-century scientific abstracts (Royal Society corpus). Best combination 99.18 %
-accuracy (n-gram frequency + ID features). ID features are compact (216 features) but not the single
+accuracy, from n-gram frequency + ID features combined: 216 features, 72 per level (Table 2). The ID
+set alone is 120 sentence-level features in total (§3, "15 features per individual LM resource … and
+type of language model"). That is compact next to the bag-of-n-gram sets, but ID is not the single
 best set at two of three levels.
 **(Q) Before retrieval: yes, density is a text property. Related to retrieval: no.** Useful only as
 evidence that per-token surprisal separates registers of scientific prose, so it is a candidate
@@ -101,7 +103,7 @@ for the construct's lineage.
 
 ### `wang-han-2025-proprag`
 **PropRAG: Guiding Retrieval with Beam Search over Proposition Paths.** Jingjin Wang, Jiawei Han. EMNLP
-2025 (main), pp. 6224–6239. arXiv 2504.18070. <https://aclanthology.org/2025.emnlp-main.317/> ·
+2025 (main), pp. 6212–6227. arXiv 2504.18070. <https://aclanthology.org/2025.emnlp-main.317/> ·
 **verified (page)** · **abstract**.
 Propositions instead of triples as the knowledge unit; LLM-free beam search over proposition paths;
 2Wiki, HotpotQA, MuSiQue.
@@ -280,9 +282,15 @@ uses, so Q3 cannot stand in for Q4. This adds to `jin-2025` and Yu et al. (inver
 
 This is the gap the external text claims. **The claim does not survive intact.** One paper chooses the
 chunking **method** per document using, among other things, a coreference-based context-dependency
-metric. No paper found chooses chunk **size** per document from a density measure.
+metric. One chunker sets chunk **size** from a density measure (`shaukat-2026-cdac`), but per
+*segment*, not per document, and its effect on retrieval is not characterised. No paper found sets
+size **per document** from a pre-chunking density or dependency measure **at a matched budget**.
 
 ### `demoura-2026` — already in `04`; **CHALLENGE (pre-emption, partial)**
+LREC 2026 proceedings, pp. 11535–11551, Anthology id **`2026.lrec-1.903`**
+(<https://aclanthology.org/2026.lrec-1.903/>; the id `2026.lrec-main.903` redirects there),
+doi:10.63317/3n8eu2phsvmc · **verified (page: Anthology bib)**. `04` is left unedited; add this at
+promotion.
 Re-read for this question (full PDF, §2.3.1, §3.5, Table 5, Limitations).
 **References Completeness (RC)** = 1 − (fraction of entity–pronoun pairs, from the Maverick coreference
 model, that a chunk boundary splits). It is computed **before retrieval**, per document and per
@@ -304,7 +312,30 @@ and the selection is related to retrieval and answer outcomes (Table 5).
 ### `zhong-2025-mog` — already in `04`
 Re-read for this question (§3). The router picks granularity **per query**, from the query, trained on
 soft labels from TF-IDF/RoBERTa relevance. **(Q) No:** no text-density or dependency feature of the
-document is used.
+document is used. Its motivation (§1) does name density: "an optimal chunking size needs to be
+determined for each knowledge database due to their dissimilar data structures and information
+densities". That is an argument for per-source granularity, not a measure.
+
+### `shaukat-2026-cdac` — **CHALLENGE (density→size exists as a chunker)**
+**A Systematic Investigation of Document Chunking Strategies and Embedding Sensitivity.** Muhammad
+Arslan Shaukat, Muntasir Adnan, Carlos C. N. Kuhn. arXiv 2603.06976 (7 March 2026), preprint, no venue
+· **verified (page: arXiv)** · **read** (Table 1, Table 2 definitions, Table 3, the resource table).
+Benchmarks 36 chunking strategies across six domains and five embedding models (nDCG@5 from an LLM
+grader). One strategy is **Content Density Adaptive Chunking (CDAC)**: "Chunk sizes are adjusted
+inversely to local lexical density, producing smaller chunks in information-dense regions". The
+density is ρ(x) = |V(x)| / |x|, unique tokens over length, i.e. a **type-token ratio**, and
+K_i ∝ ρ(x)⁻¹ (base_size = 1000). A hybrid variant, HCDC, follows it with fixed 200-token chunking.
+**(Q) Yes, before retrieval: density is computed from the text and sets size. Related to a retrieval
+outcome: not reported in what could be read.** Neither CDAC nor HCDC appears in the paper's text or
+tables except in the configuration and resource-cost tables. Its nDCG may sit only in the Figure 4
+heatmap, which is not readable from the PDF text. The paper's conclusions attribute the
+"adapting dynamically to content density" result to DFC (dynamic token sizing within 50–200 tokens),
+which is not a density method.
+**What it is not:** per **segment** (local windows), not per document; no budget matching (top-5
+chunks of differing size); the density is lexical diversity, not evidence or propositional density.
+**Why it matters:** "density → size" exists as a published chunker. Any claim of ours has to be the
+narrower one: a per-document rule, a validated density measure, budget-matched, behind a reranker,
+with the effect characterised.
 
 ### `bhat-2025` — already in `04` and `05`
 Optimal fixed size differs by **dataset** (64–128 tokens for short factual answers; 512–1,024 for
@@ -404,23 +435,27 @@ Work that contradicts us, pre-empts us, or limits what the external text propose
    Otherwise it is their paper again.
 2. **The headline number of that pre-emption is mislabelled in its own abstract** (§0, #6). Cite
    Table 5, never the abstract.
-3. **`dettori-2026`: denser delivered context can hurt the generator.** Maximising evidence per
+3. **`shaukat-2026-cdac`: density → size exists as a chunker, uncharacterised.** CDAC sets chunk
+   size ∝ (type-token ratio)⁻¹ per **segment**, not per document, with no budget matching. Its own
+   retrieval effect is not reported in the text or tables. We cannot claim "nobody sets size from
+   density", only the per-document, budget-matched, validated version.
+4. **`dettori-2026`: denser delivered context can hurt the generator.** Maximising evidence per
    delivered token (Q3) is therefore not monotone in answer quality. Together with `jin-2025` / Yu et
    al. in `05`, Q3 must not be read as a proxy for Q4.
-4. **`pan-2024-llmlingua2`: surprisal is a weak density measure**, because it is unidirectional and
+5. **`pan-2024-llmlingua2`: surprisal is a weak density measure**, because it is unidirectional and
    not aligned with the objective. This weakens the external text's first density measure (mean
    −log₂ P per token) as a predictor of what is retrievable.
-5. **`choi-2021`: dependency is genre-dependent and partly infeasible to remove**, and their rates come
+6. **`choi-2021`: dependency is genre-dependent and partly infeasible to remove**, and their rates come
    from a filtered encyclopedic sample. Scientific prose is untested there, and `newman-2023` shows
    that cross-document references are a dependency type within-document coreference cannot see.
-6. **`bhat-2025`: the optimum chunk size is already known to vary by dataset**, attributed to answer
+7. **`bhat-2025`: the optimum chunk size is already known to vary by dataset**, attributed to answer
    type. A density effect must be shown to add to the answer-type (query) effect, not to restate it.
-7. **CPIDR (`brown-2008`) was validated on narrative language in aging research.** Using it on
+8. **CPIDR (`brown-2008`) was validated on narrative language in aging research.** Using it on
    scientific full text would be a new, unvalidated use, not a borrowed measure.
 
 ## Searched and did not find
 
-All run 2026-10-13. OpenAlex `filter=title_and_abstract.search:…` over 2015–2026 unless stated. A
+All run 2026-10-12. OpenAlex `filter=title_and_abstract.search:…` over 2015–2026 unless stated. A
 query listed here returned nothing relevant to *our question*. Any partial hits are named.
 
 **(a) density on scientific text / for retrieval**
@@ -446,7 +481,11 @@ not here.
 **(d) density/dependency → granularity**
 - `"information density" chunking`: 39; top 8 read by title. None selects size per document by
   density. One is a Zenodo deposit ("Dynamic Semantic Chunking for Optimal Context Window Utilization")
-  without peer review, not opened.
+  without peer review, not opened. **This query missed `shaukat-2026-cdac`**: a re-run of all 39
+  hits on 2026-10-12 does not include it, because its abstract never says "information density"
+  (CDAC appears only in its tables). It was found by the PR review and verified afterwards. A
+  density→size chunker can therefore hide behind a benchmark's method list. Searching abstracts is
+  not enough here.
 - `"chunk size" "information density"`: 3; none relevant (RTL code completion; the Zenodo deposit; a
   synthetic-data paper).
 - `chunk size adaptive per document density`: 0.
@@ -486,8 +525,9 @@ not here.
   **corpus** richness (MATTR, MTLD, hapax) for **embedding fine-tuning data**, not chunking. Not an entry.
 
 **Coverage statement.** No paper found **chooses chunk size per document from a pre-chunking density or
-context-dependency measure and relates that choice to a retrieval outcome at a matched budget.** That
-rests on ~35 queries, with the arXiv API leg missing. Treat it as "not found by this search", not as
+context-dependency measure and relates that choice to a retrieval outcome at a matched budget.** A
+per-segment density→size chunker exists (`shaukat-2026-cdac`), with no reported effect. That
+statement rests on ~35 queries plus one review-found paper, with the arXiv API leg missing. Treat it as "not found by this search", not as
 "does not exist".
 
 ## Established names
@@ -500,7 +540,7 @@ rests on ~35 queries, with the arXiv API leg missing. Treat it as "not found by 
 | "Scientific Information Density" (units / tokens) | **atomic facts** (FActScore), **propositions** (Dense X), **nuggets** (TREC). Per token: **propositional idea density** (CPIDR) | `min-2023-factscore` (`03`); `chen-2024-densex` (`04`); CPIDR |
 | "task-relevant density" | **evidence per delivered token at a budget**: `EM @ l tokens` and "recall within the initial l retrieved words" | `chen-2024-densex`; our naming decision in `docs/papers/README.md` |
 | density vs dependency trade-off of the unit | **decontextuality vs minimality** (molecular facts) | `gunjal-durrett-2024-molecular-facts` |
-| "lexical density" | **ambiguous; specify which.** Content-word ratio (Lingua 2024) ≠ lexical diversity (MATTR/MTLD, `dettori-2026` calls it "lexical density") | §0 #2; §3 |
+| "lexical density" | **ambiguous; specify which.** Three meanings in this file: content-word ratio (Lingua 2024); lexical diversity (MATTR/MTLD, which `dettori-2026` calls "lexical density"); **type-token ratio** \|V(x)\|/\|x\| (`shaukat-2026-cdac` calls it "lexical density") | §0 #2; §3; §4 |
 | "uniform information density" as a text measure | a **speaker-production hypothesis** (UID); the measure is **surprisal** | `levy-jaeger-2007-uid`, `jaeger-2010-redundancy` |
 
 **Adopt, do not coin:** use *decontextualization* (and the Choi feasibility labels) for a_i, and

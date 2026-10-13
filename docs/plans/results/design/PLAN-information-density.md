@@ -1,13 +1,13 @@
 # PLAN — information density and context dependency as chunking variables (a candidate sub-study)
 
-**Status: proposed 2026-10-13. Nothing has run, nothing is measured, nothing is decided.** Every
+**Status: proposed 2026-10-12. Nothing has run, nothing is measured, nothing is decided.** Every
 quantity this note defines is a **proposal**. Every number it quotes is from the committed record,
 with its source. **Sits beside:** [`../../chunking-study-plan.md`](../../chunking-study-plan.md) (SG1–SG6,
 E1–E4, D1–D17) and [`../../system-study-plan.md`](../../system-study-plan.md) (§2.3 Q3, §2.5).
 **Literature:** [`docs/papers/bib-inbox/11-information-density-and-context.md`](../../../papers/bib-inbox/11-information-density-and-context.md),
 written for this note. It checks every citation in the input and searches five areas.
 
-**Input.** On 2026-10-13 the owner pasted an LLM-written analysis and "literature review" proposing
+**Input.** On 2026-10-12 the owner pasted an LLM-written analysis and "literature review" proposing
 information density and contextual dependency as the variables that should set chunk size. That text
 is not in the repo. Its citations were checked one by one (bib-inbox 11 §0): of 16, 11 verify, 4 are
 already in our surveys, and **one claim is wrong**. That is the "62–64 % → 72 % answer correctness"
@@ -63,8 +63,13 @@ Three things the study does not have, each tied to verified literature:
    `brown-2008-cpidr`: r(80) = .97 against two-rater consensus, but validated on narrative language,
    not scientific prose); content-word lexical density (`zhu-2024-lingua`: varies by discipline);
    per-token surprisal (`rubino-2016`, and UID as its theory, `levy-jaeger-2007`). All are computable
-   at ingest without a model call or with a small one. **None has been related to a retrieval outcome.**
-   Two cautions come from the same search. LLMLingua-2 argues that surprisal is a poor proxy for what
+   at ingest without a model call or with a small one. **None of these has been related to a retrieval
+   outcome.** A cruder density does already set chunk size in one published chunker:
+   `shaukat-2026-cdac`'s CDAC sizes chunks ∝ (type-token ratio)⁻¹. It works per **segment**, not per
+   document, has no budget matching, and its own retrieval effect is not reported (bib-inbox 11 §4,
+   *CHALLENGES* 3). So "density → size" is not new as a mechanism. What would be new is a
+   per-document rule from a validated density measure, read at a matched budget. Two cautions come
+   from the same search. LLMLingua-2 argues that surprisal is a poor proxy for what
    matters. `dettori-2026` shows that denser delivered context can *hurt* the generator, and it uses
    "lexical density" to mean lexical *diversity*, a name collision.
 3. **Task-relevant density per document**, as opposed to per arm. The record reads delivered evidence
