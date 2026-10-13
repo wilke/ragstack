@@ -526,7 +526,7 @@
      "distinct_sentences_removed": 0
     }
    },
-   "source": "/rag/tmp/stage0-conf/work/r31ext-filtered"
+   "source": "$STAGE0_DEV_WORK/r31ext-filtered"
   }
  }
 }

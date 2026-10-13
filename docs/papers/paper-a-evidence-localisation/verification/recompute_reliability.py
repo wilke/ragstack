@@ -219,7 +219,7 @@ def main() -> None:
             "filtered_split_half_r": filt["split_half_r"],
             "filtered_sb30": filt["spearman_brown_full_n"],
             "delta": filt["spearman_brown_full_n"] - res["pooled"][-1]["spearman_brown_full_n"],
-            "counts": counts, "source": str(V.FILTERED_DEV)}
+            "counts": counts, "source": V.portable(V.FILTERED_DEV)}
     else:
         res["span_filter_dev"] = {"ABSENT": f"{V.FILTERED_DEV} not on disk"}
 

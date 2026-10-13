@@ -3,7 +3,8 @@
 the pinned harness (Layer A), the value from the same harness on main (CURRENT-CODE DELTA),
 the independently recomputed value (Layer B), and a status.
 
-    python3 build_results.py --a <OUT of reproduce_pinned.sh> --b <dir of recompute_*.json>
+    python3 build_results.py --a <OUT of reproduce_pinned.sh> --b <dir of recompute_*.json> \
+        --out <scratch>/RESULTS-recompute.json
 
 Layer A and main values are resolved with the claim's own pointer against the re-run
 artifact (check_claims.resolve), so A means exactly 'the same pointer, in the re-run file'.
@@ -480,6 +481,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--a", required=True, help="OUT of reproduce_pinned.sh")
     ap.add_argument("--b", required=True, help="directory holding recompute_*.json")
+    ap.add_argument("--out", required=True,
+                    help="where to write RESULTS-recompute.json. Required, so a re-run cannot "
+                         "overwrite the committed file by accident; pass a scratch path and "
+                         "diff it against the committed one")
     args = ap.parse_args()
     a_dir = pathlib.Path(args.a)
     bdir = pathlib.Path(args.b)
@@ -539,7 +544,7 @@ def main() -> None:
                "NEEDS_RELABEL": [] if coord["EQUAL"] else ["see README"]},
            "layer_c": B["recompute_derived"],
            "claims": rows}
-    (V.HERE / "RESULTS-recompute.json").write_text(json.dumps(out, indent=1, default=str) + "\n")
+    pathlib.Path(args.out).write_text(json.dumps(out, indent=1, default=str) + "\n")
     print(json.dumps(counts, indent=1))
 
 

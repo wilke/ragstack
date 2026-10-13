@@ -28,10 +28,10 @@ import sys
 
 import vcommon as V
 
-assert os.environ.get("STAGE0_BIG") and "/rag/tmp" not in os.environ["STAGE0_BIG"], \
-    "set STAGE0_BIG to a scratch directory"
+assert os.environ.get("STAGE0_BIG") and not os.path.realpath(os.environ["STAGE0_BIG"]).startswith(
+    os.path.realpath(V.DEV_WORK.parent)), "set STAGE0_BIG to a scratch directory"
 sys.path.insert(0, str(V.STAGE0))
-WORK = pathlib.Path("/rag/tmp/stage0-conf/work")       # docs/units of the DEV corpus
+WORK = V.DEV_WORK                                   # docs/units of the DEV corpus
 
 
 def reassemble(raws, parse, fail, seg, text):
@@ -80,7 +80,7 @@ def key_sets(sets):
 
 def main() -> None:
     # the harness's pin_repo() insists on importing ragstack from the primary checkout
-    # (/home/wilke/Development/ragstack/python, hard-coded); import the harness first, then
+    # (stage1_common.REPO_PY, hard-coded in the helper); import the harness first, then
     # take provenance of THIS checkout, and record which ragstack the segmenter came from.
     import s0_label as L0
     import s0_label_r3 as L3
@@ -148,7 +148,7 @@ def main() -> None:
                 print(run, j, {k: v for k, v in out[f"{run}.{j}"].items()
                                if k != "first_differences"}, flush=True)
     V.write("relocate_main", prov, {
-        "locator_source": str(V.STAGE0), "ragstack_imported_from": rs_file,
+        "locator_source": V.portable(V.STAGE0), "ragstack_imported_from": V.portable(rs_file),
         "ragstack_checkout_head": rs_head,
         "ragstack_checkout_chunkers_diff_vs_this_commit": rs_seg_diff or "EMPTY",
         "ragstack_checkout_python_status": rs_status or "CLEAN",

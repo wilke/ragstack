@@ -33,9 +33,24 @@ F = {
     "claude": {j: ART / "claude" / f"labels-claude-{j}.jsonl"
                for j in ("sonnet5", "opus5", "fable51")},
 }
-FILTERED_DEV = pathlib.Path(os.environ.get(
-    "PAPER_A_FILTERED_DEV", "/rag/tmp/stage0-conf/work/r31ext-filtered"))
-assert "/conf/" not in str(FILTERED_DEV) + "/", "quarantine: never read under work/conf"
+# The Stage 0 DEV work directory on coconut (docs.jsonl, units.jsonl, r31ext-filtered/).
+# One env var relocates it; never point it at, or read anything under, work/conf.
+DEV_WORK = pathlib.Path(os.environ.get("STAGE0_DEV_WORK", "/rag/tmp/stage0-conf/work"))
+FILTERED_DEV = pathlib.Path(os.environ.get("PAPER_A_FILTERED_DEV",
+                                           str(DEV_WORK / "r31ext-filtered")))
+for _p in (DEV_WORK, FILTERED_DEV):
+    assert "/conf/" not in str(_p) + "/", "quarantine: never read under work/conf"
+
+
+def portable(path) -> str:
+    """A path as it is RECORDED in an output: $STAGE0_DEV_WORK and ~ instead of host paths."""
+    s = str(path)
+    if s.startswith(str(DEV_WORK)):
+        s = "$STAGE0_DEV_WORK" + s[len(str(DEV_WORK)):]
+    home = os.path.expanduser("~")
+    if s.startswith(home + "/"):
+        s = "~" + s[len(home):]
+    return s
 
 JACCARD_BAR = 0.5
 

@@ -13,12 +13,11 @@ at this checkout), and on main computes:
 from __future__ import annotations
 
 import json
-import pathlib
 import sys
 
 import vcommon as V
 
-WORK = pathlib.Path("/rag/tmp/stage0-conf/work")
+WORK = V.DEV_WORK
 
 
 def main() -> None:

@@ -32,8 +32,8 @@
    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
   ]
  },
- "locator_source": "/home/wilke/Development/worktrees/paper-a-recompute/docs/plans/results/stage0",
- "ragstack_imported_from": "/home/wilke/Development/ragstack/python/ragstack/__init__.py",
+ "locator_source": "~/Development/worktrees/paper-a-recompute/docs/plans/results/stage0",
+ "ragstack_imported_from": "~/Development/ragstack/python/ragstack/__init__.py",
  "ragstack_checkout_head": "c2d63c2638b6471c6b75eb36d0f49272e091bcd5",
  "ragstack_checkout_chunkers_diff_vs_this_commit": "EMPTY",
  "ragstack_checkout_python_status": "CLEAN",

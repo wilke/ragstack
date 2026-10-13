@@ -12,9 +12,9 @@
 set -euo pipefail
 : "${OUT:?set OUT to a scratch directory}"
 PY=${PY:-/rag/envs/ragstack/bin/python3}
-REPO=${REPO:-/home/wilke/Development/ragstack}
-SRC_WORK=${SRC_WORK:-/rag/tmp/stage0-conf/work}
-HELPERS=${STAGE0_HELPERS:-/home/wilke/Development/worktrees/phase0-rescue/phase0}
+REPO=${REPO:-$HOME/Development/ragstack}
+SRC_WORK=${SRC_WORK:-${STAGE0_DEV_WORK:-/rag/tmp/stage0-conf/work}}
+HELPERS=${STAGE0_HELPERS:-$HOME/Development/worktrees/phase0-rescue/phase0}
 HERE=$(cd "$(dirname "$0")" && pwd)
 MAIN_ROOT=$(git -C "$HERE" rev-parse --show-toplevel)
 

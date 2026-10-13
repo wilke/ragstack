@@ -22,11 +22,17 @@ listed below is a proposal for the owner.
 
 No endpoint, model, GPU or store is contacted. Inputs are the committed label files under
 `docs/plans/results/stage0/artifacts/`, plus three things that exist only on `coconut`, all
-outside any `work/conf` path: `/rag/tmp/stage0-conf/work/{docs,units}.jsonl` (the DEV
+outside any `work/conf` path, under the Stage 0 DEV work directory. One env var,
+`STAGE0_DEV_WORK` (default `/rag/tmp/stage0-conf/work`), relocates it for every script here;
+`reproduce_pinned.sh` reads it too, and takes `REPO` / `STAGE0_HELPERS` (default
+`$HOME/Development/...`). The inputs are `$STAGE0_DEV_WORK/{docs,units}.jsonl` (the DEV
 corpus text and unit boundaries, for D2/D3), `work/claude/raw-*.jsonl` (read by the pinned
 Claude gate script for its cost accounting) and `work/r31ext-filtered/` (the #513 filter's
 output on the DEV labels; its sha256 equals the `sha256_out` recorded in
 `artifacts/conf-a/span-filter-dev-verification.json`).
+
+Use `/rag/envs/ragstack/bin/python3`: the recompute scripts need `numpy`, which
+`python3.11` on this host lacks.
 
 ```bash
 cd docs/papers/paper-a-evidence-localisation/verification
@@ -40,9 +46,37 @@ $PY coord_spans.py --repo ~/Development/worktrees/paper-a-pin-55a0fc2 --out $S/p
 $PY coord_spans.py --repo "$(git rev-parse --show-toplevel)"     --out $S/main.json
 PAPER_A_VERIFY_OUT=$S/B PYTHONPATH=../../../../python $PY coord_check.py $S/pin.json $S/main.json
 STAGE0_BIG=$S/big-main PAPER_A_VERIFY_OUT=$S/B $PY relocate_main.py   # ~10 min, 32 procs
-PYTHONPATH=../../../../python $PY build_results.py --a $S/A --b $S/B
+PYTHONPATH=../../../../python $PY build_results.py --a $S/A --b $S/B --out $S/RESULTS-recompute.json
+diff <(jq .claims $S/RESULTS-recompute.json) <(jq .claims RESULTS-recompute.json)   # expect no diff
 $PY ../../check_claims.py                                       # must still pass
 ```
+
+`build_results.py` requires `--out`, so a re-run never overwrites the committed
+`RESULTS-recompute.json`; compare the `claims` rows, not the file (its `provenance` differs per
+run).
+
+`reproduce_pinned.sh` creates six detached worktrees,
+`~/Development/worktrees/paper-a-pin-{55a0fc2,b1f9ead,0886ddc,bd9db86,fc1ace4,9696d41}` (the
+first is made by hand for `coord_spans.py`: `git worktree add --detach
+~/Development/worktrees/paper-a-pin-55a0fc2 55a0fc2`). Remove them when done; the script
+recreates its five on the next run:
+
+```bash
+for c in 55a0fc2 b1f9ead 0886ddc bd9db86 fc1ace4 9696d41; do
+  git worktree remove ~/Development/worktrees/paper-a-pin-$c; done
+```
+
+**Provenance of the committed outputs.** Every `out/*.json` was produced from the clean tree
+at `d4db0c4` (the scripts' commit), so each carries `citable: true` and
+`coordinate_check.main_commit` / `provenance.commit` read `d4db0c4`, not the PR's head or
+the eventual merge commit — the code those runs used is byte-identical at both. Host paths in
+two outputs (`out/relocate_main.json`: `locator_source`, `ragstack_imported_from`;
+`out/recompute_reliability.json`: `span_filter_dev.source`) were rewritten after the run to
+`~` / `$STAGE0_DEV_WORK`, as the scripts now record them; no other byte changed and every
+number is identical (checked: same values at every non-string leaf). The assembled
+`RESULTS-recompute.json` was built with the outputs still uncommitted, so its own
+`provenance` block says `citable: false`; that block describes the assembly, not a
+measurement, and the per-script provenance it summarises is citable.
 
 `PAPER_A_SEEDS=1` shortens the reliability seed-sensitivity loop for a quick run.
 

@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
-WORK = pathlib.Path("/rag/tmp/stage0-conf/work")      # the DEV corpus; never work/conf
+# the DEV corpus (docs.jsonl, units.jsonl); never work/conf. Same env var as vcommon.DEV_WORK.
+WORK = pathlib.Path(os.environ.get("STAGE0_DEV_WORK", "/rag/tmp/stage0-conf/work"))
+assert "/conf/" not in str(WORK) + "/", "quarantine: never read under work/conf"
 LABELS = pathlib.Path(__file__).resolve().parents[4] / "docs/plans/results/stage0/artifacts"
 
 
