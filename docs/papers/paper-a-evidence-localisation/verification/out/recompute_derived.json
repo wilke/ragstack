@@ -1,0 +1,627 @@
+{
+ "script": "recompute_derived",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:25:12Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "results": {
+  "r31ext-scout-set-union-fraction-of-asymptote": {
+   "stated": 0.6949,
+   "recomputed": 0.6949,
+   "stated_alternative": 0.7194,
+   "recomputed_alternative": 0.7194,
+   "check_inputs_same_curve": true
+  },
+  "r31ext-qwen-set-union-fraction-of-asymptote": {
+   "stated": 0.7094,
+   "recomputed": 0.7094,
+   "stated_alternative": 0.7223,
+   "recomputed_alternative": 0.7223,
+   "check_inputs_same_curve": true
+  },
+  "graded-support-implied-single-reading-pooled": {
+   "stated": {
+    "10": 0.1929,
+    "14": 0.2098,
+    "20": 0.2332,
+    "30": 0.2785
+   },
+   "recomputed": {
+    "10": 0.1929,
+    "14": 0.2098,
+    "20": 0.2332,
+    "30": 0.2785
+   }
+  },
+  "graded-support-implied-single-reading-scout": {
+   "stated": {
+    "10": 0.3341,
+    "14": 0.3483,
+    "20": 0.3476
+   },
+   "recomputed": {
+    "10": 0.3341,
+    "14": 0.3483,
+    "20": 0.3476
+   }
+  },
+  "graded-support-implied-single-reading-qwen": {
+   "stated": {
+    "10": 0.2058
+   },
+   "recomputed": {
+    "10": 0.2058
+   }
+  },
+  "arithmetic": {
+   "projected_U20 = Vmax*20/(Km+20)": {
+    "stated": 58.7603,
+    "recomputed": 58.760251686780755
+   },
+   "projected_U20/Vmax = 20/(Km+20)": {
+    "stated": 0.8124,
+    "recomputed": 0.8124169811397398
+   },
+   "threshold_U20 = 0.9*Vmax": {
+    "stated": 65.0949,
+    "recomputed": 65.09492999999999
+   },
+   "observed_over_prereg_Vmax = 133.8267/72.3277": {
+    "stated": 1.8503,
+    "recomputed": 1.8502828100437316
+   },
+   "relative_error = |133.8267-58.7603|/58.7603": {
+    "stated": 1.2775,
+    "recomputed": 1.2775019868857032
+   },
+   "relative_error_excluding = |58.6187-58.7603|/58.7603": {
+    "stated": 0.0024,
+    "recomputed": 0.0024097902835758826
+   },
+   "SB(2) at 10: 2r/(1+r), r=0.5444": {
+    "stated": 0.705,
+    "recomputed": 0.704998704998705
+   },
+   "SB(2) at 20: 2r/(1+r), r=0.7526": {
+    "stated": 0.8588,
+    "recomputed": 0.8588382973867397
+   },
+   "SB(2) at 30: 2r/(1+r), r=0.8527": {
+    "stated": 0.9205,
+    "recomputed": 0.9204944135585902
+   },
+   "P-ext-1 projected from reviewer r=0.556 at n=10 to 30 (m=6 on the half)": {
+    "stated": 0.8826,
+    "recomputed": 0.8825396825396825
+   },
+   "P-ext-1 projected from SB10=0.714 tripled": {
+    "stated": 0.8826,
+    "recomputed": 0.8822075782537068
+   },
+   "PREDICTIONS.md: 0.705 tripled -> stated 0.877": {
+    "stated": 0.877,
+    "recomputed": 0.8775933609958505
+   },
+   "s0 index agreement 307/476": {
+    "stated": 0.64496,
+    "recomputed": 0.6449579831932774
+   },
+   "s0 whether 27/31": {
+    "stated": 0.871,
+    "recomputed": 0.8709677419354839
+   },
+   "claude total = sum of three": {
+    "stated": 195.32,
+    "recomputed": 195.3193
+   },
+   "867 = 308+308+251": {
+    "stated": 867,
+    "recomputed": 867
+   },
+   "112,140 = 3,738*20 + 3,738*10": {
+    "stated": 112140,
+    "recomputed": 112140
+   },
+   "74,760 = 3,738*20": {
+    "stated": 74760,
+    "recomputed": 74760
+   },
+   "37,380 = 3,738*10": {
+    "stated": 37380,
+    "recomputed": 37380
+   },
+   "3,738 = 2,962 + 776": {
+    "stated": 3738,
+    "recomputed": 3738
+   },
+   "46.73 = 3,738/80": {
+    "stated": 46.73,
+    "recomputed": 46.725
+   },
+   "dev 308 = 208 + 100": {
+    "stated": 308,
+    "recomputed": 308
+   },
+   "Qwen resumed: 33,238 + 4,142 = 37,380": {
+    "stated": 37380,
+    "recomputed": 37380
+   },
+   "filter dev Scout 82/6,160 = 1.33 %": {
+    "stated": 1.33,
+    "recomputed": 1.3311688311688312
+   },
+   "filter conf Scout 1,050/74,760 = 1.40 %": {
+    "stated": 1.4,
+    "recomputed": 1.404494382022472
+   },
+   "filter conf Qwen 1,653/9 = 'about 184 each'": {
+    "stated": 184,
+    "recomputed": 183.66666666666666
+   },
+   "span filter delta 0.9192-0.9205": {
+    "stated": -0.0013,
+    "recomputed": -0.0012999999999999678
+   },
+   "sentence refit Vmax within 5.5 % of prereg": {
+    "stated": 5.5,
+    "recomputed": 5.526928134034386
+   },
+   "refit 20 readings at 0.8118 => '19 % short'": {
+    "stated": 19,
+    "recomputed": 18.820000000000004
+   },
+   "r3 scout closing-anchor share 54/58 = 93 %": {
+    "stated": 93,
+    "recomputed": 93.10344827586206
+   },
+   "r31 scout closing-anchor share 6/22 = 27 %": {
+    "stated": 27,
+    "recomputed": 27.272727272727273
+   },
+   "Scout share of pooled readings at 20 = 1/2, at 30 = 2/3": {
+    "stated": [
+     0.5,
+     0.6666666666666666
+    ],
+    "recomputed": [
+     0.5,
+     0.6666666666666666
+    ]
+   },
+   "lift sonnet 10.7843-2.8634": {
+    "stated": 7.9209,
+    "recomputed": 7.9209
+   },
+   "lift opus 9.1771-2.8634": {
+    "stated": 6.3137,
+    "recomputed": 6.313699999999999
+   },
+   "lift fable 10.8024-5.3469": {
+    "stated": 5.4555,
+    "recomputed": 5.455500000000001
+   },
+   "Sonnet ancillary Haiku $5.44 = 13.3 % of $40.83": {
+    "stated": 13.3,
+    "recomputed": 13.324254552045419
+   },
+   "Opus picks ~ twice Sonnet's (1,327 vs 626)": {
+    "stated": 2,
+    "recomputed": 2.119808306709265
+   },
+   "unfiltered degenerate slope 3810.7637/500.0409": {
+    "stated": 7.62,
+    "recomputed": 7.620904010051977
+   },
+   "pooled degenerate slope 2169.7085/500.0409": {
+    "stated": 4.3391,
+    "recomputed": 4.339062064723106
+   }
+  },
+  "draft_numeral_audit": {
+   "n_numerals": 483,
+   "n_untraceable": 62,
+   "untraceable": [
+    {
+     "token": "2.1",
+     "line_in_code_stripped_body": 94,
+     "traceable_to_a_claim_value": false,
+     "context": "hat it is meant to.  ---  ## 2. Related work  ### 2.1 Disagreement about evidence l"
+    },
+    {
+     "token": "95.42",
+     "line_in_code_stripped_body": 102,
+     "traceable_to_a_claim_value": false,
+     "context": "h, regular annotators reach evidence precision of 95.42 % but recall of 72.36 % (). T"
+    },
+    {
+     "token": "72.36",
+     "line_in_code_stripped_body": 102,
+     "traceable_to_a_claim_value": false,
+     "context": "reach evidence precision of 95.42 % but recall of 72.36 % (). The scoring rule asks f"
+    },
+    {
+     "token": "56.1",
+     "line_in_code_stripped_body": 106,
+     "traceable_to_a_claim_value": false,
+     "context": "ds the same set of supporting sentences chosen on 56.1 % of supported and 34.4 % of "
+    },
+    {
+     "token": "34.4",
+     "line_in_code_stripped_body": 106,
+     "traceable_to_a_claim_value": false,
+     "context": "rting sentences chosen on 56.1 % of supported and 34.4 % of partially supported case"
+    },
+    {
+     "token": "25",
+     "line_in_code_stripped_body": 109,
+     "traceable_to_a_claim_value": false,
+     "context": " identical information\" (). Natural Questions ran 25-way annotation on a sample of"
+    },
+    {
+     "token": "61.50",
+     "line_in_code_stripped_body": 115,
+     "traceable_to_a_claim_value": false,
+     "context": "he first and finds supporting-fact exact match of 61.50 against answer exact match of"
+    },
+    {
+     "token": "83.60",
+     "line_in_code_stripped_body": 115,
+     "traceable_to_a_claim_value": false,
+     "context": "xact match of 61.50 against answer exact match of 83.60, with supporting-fact F1 at 9"
+    },
+    {
+     "token": "90.04",
+     "line_in_code_stripped_body": 116,
+     "traceable_to_a_claim_value": false,
+     "context": " exact match of 83.60, with supporting-fact F1 at 90.04 (). Medical experts annotatin"
+    },
+    {
+     "token": "0.357",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "n biomedical abstracts reach exact-boundary F1 of 0.357 to 0.576 and relaxed token-ov"
+    },
+    {
+     "token": "0.576",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "cal abstracts reach exact-boundary F1 of 0.357 to 0.576 and relaxed token-overlap F1 "
+    },
+    {
+     "token": "0.713",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "of 0.357 to 0.576 and relaxed token-overlap F1 of 0.713 to 0.758 (). Rationale annota"
+    },
+    {
+     "token": "0.758",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "to 0.576 and relaxed token-overlap F1 of 0.713 to 0.758 (). Rationale annotation show"
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 129,
+     "traceable_to_a_claim_value": false,
+     "context": "the positional component of agreement (). Section 3.4 explains why we do not use it"
+    },
+    {
+     "token": "2.2",
+     "line_in_code_stripped_body": 131,
+     "traceable_to_a_claim_value": false,
+     "context": "why we do not use it as our primary measure.  ### 2.2 What was not measured  Each o"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 141,
+     "traceable_to_a_claim_value": false,
+     "context": "d colleagues report test-retest reliability above 0.95 over about 541,000 whole judg"
+    },
+    {
+     "token": "541,000",
+     "line_in_code_stripped_body": 141,
+     "traceable_to_a_claim_value": false,
+     "context": "ort test-retest reliability above 0.95 over about 541,000 whole judgments (). Neither g"
+    },
+    {
+     "token": "40",
+     "line_in_code_stripped_body": 164,
+     "traceable_to_a_claim_value": false,
+     "context": "cinate quoted spans\", with exact extraction below 40 % in technical domains, and c"
+    },
+    {
+     "token": "2.3",
+     "line_in_code_stripped_body": 171,
+     "traceable_to_a_claim_value": false,
+     "context": "ed anchor granularity and measures fidelity.  ### 2.3 LLM judges for relevance  Our"
+    },
+    {
+     "token": "0.950",
+     "line_in_code_stripped_body": 204,
+     "traceable_to_a_claim_value": false,
+     "context": "ed example rises from ICC(1) = 0.590 to ICC(13) = 0.950 (). That shape, a modest sing"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 216,
+     "traceable_to_a_claim_value": false,
+     "context": "n LLM judges is documented too: test-retest above 0.95 sits alongside position bias "
+    },
+    {
+     "token": "3.1",
+     "line_in_code_stripped_body": 229,
+     "traceable_to_a_claim_value": false,
+     "context": "gold.  ---  ## 3. Design and what was frozen  ### 3.1 The task and the instrument  "
+    },
+    {
+     "token": "3.2",
+     "line_in_code_stripped_body": 245,
+     "traceable_to_a_claim_value": false,
+     "context": "usses what this does and does not attribute.  ### 3.2 Three anchor protocols, each "
+    },
+    {
+     "token": "140",
+     "line_in_code_stripped_body": 252,
+     "traceable_to_a_claim_value": false,
+     "context": " spans were at the indices the judge claimed, and 140 had to be relocated to where "
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 263,
+     "traceable_to_a_claim_value": false,
+     "context": "nces within one unit. All results in Sections 5.3\u20135.6 use this protocol.  ### 3.3 G"
+    },
+    {
+     "token": "3.3",
+     "line_in_code_stripped_body": 266,
+     "traceable_to_a_claim_value": false,
+     "context": "sults in Sections 5.3\u20135.6 use this protocol.  ### 3.3 Gates, predictions and the pr"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 276,
+     "traceable_to_a_claim_value": false,
+     "context": "te compares one reading with one reading. Section 5.4 reads the graded instrument, "
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 296,
+     "traceable_to_a_claim_value": false,
+     "context": "y, and the sentence that reports it says so.  ### 3.4 Statistics, and why not \u03ba  Fo"
+    },
+    {
+     "token": "3.5",
+     "line_in_code_stripped_body": 324,
+     "traceable_to_a_claim_value": false,
+     "context": " is computed on each judge's readings alone.  ### 3.5 Constraints, which are result"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 358,
+     "traceable_to_a_claim_value": false,
+     "context": ": Claude Sonnet 5, Claude Opus 5 and Claude Fable 5.1.  **Readings.** Table 1 gives"
+    },
+    {
+     "token": "867",
+     "line_in_code_stripped_body": 374,
+     "traceable_to_a_claim_value": false,
+     "context": "ss the three proprietary judges cost $195.32 over 867 pair readings (). Sonnet's 30"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 388,
+     "traceable_to_a_claim_value": false,
+     "context": " do not restate it here.  ---  ## 5. Results  ### 5.1 Whether is easy; where is not"
+    },
+    {
+     "token": "95",
+     "line_in_code_stripped_body": 446,
+     "traceable_to_a_claim_value": false,
+     "context": "ated-span rate by protocol and judge, with Wilson 95 % upper bounds.** Ten-word > "
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 475,
+     "traceable_to_a_claim_value": false,
+     "context": ". Opus 5 hallucinated 1 of 955, 0.00105 (). Fable 5.1 hallucinated none of 645 span"
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 556,
+     "traceable_to_a_claim_value": false,
+     "context": "as later formalised as the post-filter of Section 5.6, which was applied identicall"
+    },
+    {
+     "token": "61.50",
+     "line_in_code_stripped_body": 571,
+     "traceable_to_a_claim_value": false,
+     "context": "n exact set match. Supporting-fact exact match is 61.50 while supporting-fact F1 is 9"
+    },
+    {
+     "token": "90.04",
+     "line_in_code_stripped_body": 572,
+     "traceable_to_a_claim_value": false,
+     "context": " exact match is 61.50 while supporting-fact F1 is 90.04 (). Our one-reading-against-o"
+    },
+    {
+     "token": "0.3534",
+     "line_in_code_stripped_body": 574,
+     "traceable_to_a_claim_value": false,
+     "context": "ading pairs is 0.4350 for Scout, with a median of 0.3534 over 2,898 comparisons (). Fo"
+    },
+    {
+     "token": "2,898",
+     "line_in_code_stripped_body": 574,
+     "traceable_to_a_claim_value": false,
+     "context": "is 0.4350 for Scout, with a median of 0.3534 over 2,898 comparisons (). For Qwen it i"
+    },
+    {
+     "token": "0.7518",
+     "line_in_code_stripped_body": 575,
+     "traceable_to_a_claim_value": false,
+     "context": "isons (). For Qwen it is 0.5430, with a median of 0.7518 over 3,056 (). Qwen's distrib"
+    },
+    {
+     "token": "3,056",
+     "line_in_code_stripped_body": 575,
+     "traceable_to_a_claim_value": false,
+     "context": "r Qwen it is 0.5430, with a median of 0.7518 over 3,056 (). Qwen's distribution is bi"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 580,
+     "traceable_to_a_claim_value": false,
+     "context": "anywhere near HotpotQA's supporting-fact F1.  ### 5.4 Graded support becomes reliab"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 654,
+     "traceable_to_a_claim_value": false,
+     "context": " Sonnet 5, 0.2758 for Opus 5 and 0.2383 for Fable 5.1 (). The Spearman \u03c1 values are"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 669,
+     "traceable_to_a_claim_value": false,
+     "context": "aseline, a lift of +6.31 over 306 pairs (). Fable 5.1's 825 picks carry 10.80 again"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 683,
+     "traceable_to_a_claim_value": false,
+     "context": " local judges do. Exploratorily, Opus 5 and Fable 5.1 overlap at a mean span Jaccar"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 685,
+     "traceable_to_a_claim_value": false,
+     "context": "Opus 5 at 0.4179 over 277 pairs () and with Fable 5.1 at 0.4568 over 230 (). These "
+    },
+    {
+     "token": "230",
+     "line_in_code_stripped_body": 686,
+     "traceable_to_a_claim_value": false,
+     "context": "er 277 pairs () and with Fable 5.1 at 0.4568 over 230 (). These are agreements betw"
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 689,
+     "traceable_to_a_claim_value": false,
+     "context": "onverged sets, and not agreement with truth.  ### 5.6 At scale, a defect the develo"
+    },
+    {
+     "token": "1.33",
+     "line_in_code_stripped_body": 699,
+     "traceable_to_a_claim_value": false,
+     "context": " the filter rewrote 82 of Scout's 6,160 readings, 1.33 %, and none of Qwen's 3,080 ("
+    },
+    {
+     "token": "1.40",
+     "line_in_code_stripped_body": 703,
+     "traceable_to_a_claim_value": false,
+     "context": " filter rewrote 1,050 of Scout's 74,760 readings, 1.40 %, and 9 of Qwen's 37,380 ()."
+    },
+    {
+     "token": "1.33",
+     "line_in_code_stripped_body": 707,
+     "traceable_to_a_claim_value": false,
+     "context": "ong enough to trigger it for Qwen. Scout's rates, 1.33 % of 6,160 in development and"
+    },
+    {
+     "token": "1.40",
+     "line_in_code_stripped_body": 707,
+     "traceable_to_a_claim_value": false,
+     "context": "Scout's rates, 1.33 % of 6,160 in development and 1.40 % of 74,760 at scale, are sim"
+    },
+    {
+     "token": "0.0013",
+     "line_in_code_stripped_body": 712,
+     "traceable_to_a_claim_value": false,
+     "context": "ves thirty-reading graded-support reliability by \u22120.0013, from 0.9205 to 0.9192, insid"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 730,
+     "traceable_to_a_claim_value": false,
+     "context": "olleagues show that test-retest reliability above 0.95 can coexist with large, syste"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 748,
+     "traceable_to_a_claim_value": false,
+     "context": "ooled coefficient sits below Scout's own (Section 5.4).  **Pooling and exchangeabil"
+    },
+    {
+     "token": "51.62",
+     "line_in_code_stripped_body": 782,
+     "traceable_to_a_claim_value": false,
+     "context": "arison in the same experiment. Self-agreement was 51.62 % against between-participant"
+    },
+    {
+     "token": "44.80",
+     "line_in_code_stripped_body": 782,
+     "traceable_to_a_claim_value": false,
+     "context": " 51.62 % against between-participant agreement of 44.80 %, so a person agrees with th"
+    },
+    {
+     "token": "0.357",
+     "line_in_code_stripped_body": 785,
+     "traceable_to_a_claim_value": false,
+     "context": ". Medical experts reach exact-boundary PICO F1 of 0.357 to 0.576 (). Our one-reading-"
+    },
+    {
+     "token": "0.576",
+     "line_in_code_stripped_body": 785,
+     "traceable_to_a_claim_value": false,
+     "context": " experts reach exact-boundary PICO F1 of 0.357 to 0.576 (). Our one-reading-against-o"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 818,
+     "traceable_to_a_claim_value": false,
+     "context": "ly.  **Reduced and differing samples.** The Fable 5.1 run stopped at 251 of 308 pai"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 820,
+     "traceable_to_a_claim_value": false,
+     "context": "r its own pairs. Several early figures in Section 5.1 rest on 31 re-presented pairs"
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 835,
+     "traceable_to_a_claim_value": false,
+     "context": "d for location, not \u03ba, for the reasons in Section 3.4 (, ). We have not shown that "
+    }
+   ]
+  }
+ }
+}

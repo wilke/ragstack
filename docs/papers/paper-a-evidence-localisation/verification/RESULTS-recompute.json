@@ -1,0 +1,3467 @@
+{
+ "what": "Paper A \u2014 independent recomputation of every claim (Layers A, B, C) and the CURRENT-CODE DELTA",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.6+d4db0c4",
+  "describe": "v1.6.6-24-gd4db0c4",
+  "commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+  "dirty": false,
+  "untracked": 9,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "9b4c7fcc4c3b87677a131ed1688dd3f3e50da1214414652203a21c6e80b37c51",
+    "n_docs": 5,
+    "n_spans": 48,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-10-13T04:32:49Z",
+  "citable": false,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run",
+   "untracked files: 9 untracked, not-ignored file(s) in the checkout; the harness may be one \u2014 not citable"
+  ]
+ },
+ "status_counts": {
+  "MATCH": 67,
+  "AMBIGUOUS DEFINITION": 10,
+  "NOT RECOMPUTED (pre-registered threshold (a constant of the design))": 1,
+  "MATCH-ROUNDING": 7,
+  "MISMATCH": 8,
+  "NOT RECOMPUTED (the bar's text (a constant of the design))": 1,
+  "NOT RECOMPUTED (pre-registered threshold and projection (constants))": 1,
+  "NOT RECOMPUTED (statement about the record, not a measurement)": 1,
+  "NOT RECOMPUTED (quarantine)": 9
+ },
+ "current_code_delta": {
+  "coordinate_check": {
+   "EQUAL": true,
+   "pin_commit": "55a0fc2f6bf64e592c2c65d8825524216c423e2b",
+   "main_commit": "d4db0c4394637f9c507d5b3b88948ca2f1505ec5",
+   "n_docs": 306,
+   "n_unit_texts": 5232,
+   "nltk": [
+    "3.9.4",
+    "3.9.4"
+   ],
+   "label_spans_vs_main_offsets": {
+    "s0": {
+     "label_spans_checked": 466,
+     "not_on_main_sentence_offsets": 0
+    },
+    "r3": {
+     "label_spans_checked": 1024,
+     "not_on_main_sentence_offsets": 0
+    },
+    "r31ext": {
+     "label_spans_checked": 21441,
+     "not_on_main_sentence_offsets": 0
+    },
+    "claude": {
+     "label_spans_checked": 2119,
+     "not_on_main_sentence_offsets": 0
+    }
+   },
+   "fingerprint_sha256": "1f674ec5f262fc0ed471da61d94f2ec3497141d711da680ca4850a42e32b9553",
+   "texts_sha256": "20b083ff8e6c67b52d5b1e7ebc958a37d2d1392d36b2372a77bc394879415dd7"
+  },
+  "relocate_main": {
+   "s0.scout": {
+    "records": 308,
+    "sets_identical": 308,
+    "problems_identical": 308,
+    "vstats_identical": 308,
+    "relocated_spans_seen": 476,
+    "relocated_hallucinated": 24,
+    "first_differences": []
+   },
+   "r3.scout": {
+    "records": 308,
+    "sets_identical": 308,
+    "problems_identical": 308,
+    "vstats_identical": 308,
+    "relocated_spans_seen": 707,
+    "relocated_hallucinated": 58,
+    "first_differences": []
+   },
+   "r3.qwen": {
+    "records": 308,
+    "sets_identical": 308,
+    "problems_identical": 308,
+    "vstats_identical": 308,
+    "relocated_spans_seen": 356,
+    "relocated_hallucinated": 9,
+    "first_differences": []
+   },
+   "r31ext.scout": {
+    "records": 6160,
+    "sets_identical": 6160,
+    "problems_identical": 6160,
+    "vstats_identical": 6160,
+    "relocated_spans_seen": 17635,
+    "relocated_hallucinated": 345,
+    "first_differences": []
+   },
+   "r31ext.qwen": {
+    "records": 3080,
+    "sets_identical": 3080,
+    "problems_identical": 3080,
+    "vstats_identical": 3080,
+    "relocated_spans_seen": 3593,
+    "relocated_hallucinated": 35,
+    "first_differences": []
+   },
+   "claude.sonnet5": {
+    "records": 308,
+    "sets_identical": 308,
+    "problems_identical": 308,
+    "vstats_identical": 308,
+    "relocated_spans_seen": 525,
+    "relocated_hallucinated": 1,
+    "first_differences": []
+   },
+   "claude.opus5": {
+    "records": 308,
+    "sets_identical": 308,
+    "problems_identical": 308,
+    "vstats_identical": 308,
+    "relocated_spans_seen": 955,
+    "relocated_hallucinated": 1,
+    "first_differences": []
+   },
+   "claude.fable51": {
+    "records": 251,
+    "sets_identical": 251,
+    "problems_identical": 251,
+    "vstats_identical": 251,
+    "relocated_spans_seen": 645,
+    "relocated_hallucinated": 0,
+    "first_differences": []
+   }
+  },
+  "NEEDS_RELABEL": []
+ },
+ "layer_c": {
+  "r31ext-scout-set-union-fraction-of-asymptote": {
+   "stated": 0.6949,
+   "recomputed": 0.6949,
+   "stated_alternative": 0.7194,
+   "recomputed_alternative": 0.7194,
+   "check_inputs_same_curve": true
+  },
+  "r31ext-qwen-set-union-fraction-of-asymptote": {
+   "stated": 0.7094,
+   "recomputed": 0.7094,
+   "stated_alternative": 0.7223,
+   "recomputed_alternative": 0.7223,
+   "check_inputs_same_curve": true
+  },
+  "graded-support-implied-single-reading-pooled": {
+   "stated": {
+    "10": 0.1929,
+    "14": 0.2098,
+    "20": 0.2332,
+    "30": 0.2785
+   },
+   "recomputed": {
+    "10": 0.1929,
+    "14": 0.2098,
+    "20": 0.2332,
+    "30": 0.2785
+   }
+  },
+  "graded-support-implied-single-reading-scout": {
+   "stated": {
+    "10": 0.3341,
+    "14": 0.3483,
+    "20": 0.3476
+   },
+   "recomputed": {
+    "10": 0.3341,
+    "14": 0.3483,
+    "20": 0.3476
+   }
+  },
+  "graded-support-implied-single-reading-qwen": {
+   "stated": {
+    "10": 0.2058
+   },
+   "recomputed": {
+    "10": 0.2058
+   }
+  },
+  "arithmetic": {
+   "projected_U20 = Vmax*20/(Km+20)": {
+    "stated": 58.7603,
+    "recomputed": 58.760251686780755
+   },
+   "projected_U20/Vmax = 20/(Km+20)": {
+    "stated": 0.8124,
+    "recomputed": 0.8124169811397398
+   },
+   "threshold_U20 = 0.9*Vmax": {
+    "stated": 65.0949,
+    "recomputed": 65.09492999999999
+   },
+   "observed_over_prereg_Vmax = 133.8267/72.3277": {
+    "stated": 1.8503,
+    "recomputed": 1.8502828100437316
+   },
+   "relative_error = |133.8267-58.7603|/58.7603": {
+    "stated": 1.2775,
+    "recomputed": 1.2775019868857032
+   },
+   "relative_error_excluding = |58.6187-58.7603|/58.7603": {
+    "stated": 0.0024,
+    "recomputed": 0.0024097902835758826
+   },
+   "SB(2) at 10: 2r/(1+r), r=0.5444": {
+    "stated": 0.705,
+    "recomputed": 0.704998704998705
+   },
+   "SB(2) at 20: 2r/(1+r), r=0.7526": {
+    "stated": 0.8588,
+    "recomputed": 0.8588382973867397
+   },
+   "SB(2) at 30: 2r/(1+r), r=0.8527": {
+    "stated": 0.9205,
+    "recomputed": 0.9204944135585902
+   },
+   "P-ext-1 projected from reviewer r=0.556 at n=10 to 30 (m=6 on the half)": {
+    "stated": 0.8826,
+    "recomputed": 0.8825396825396825
+   },
+   "P-ext-1 projected from SB10=0.714 tripled": {
+    "stated": 0.8826,
+    "recomputed": 0.8822075782537068
+   },
+   "PREDICTIONS.md: 0.705 tripled -> stated 0.877": {
+    "stated": 0.877,
+    "recomputed": 0.8775933609958505
+   },
+   "s0 index agreement 307/476": {
+    "stated": 0.64496,
+    "recomputed": 0.6449579831932774
+   },
+   "s0 whether 27/31": {
+    "stated": 0.871,
+    "recomputed": 0.8709677419354839
+   },
+   "claude total = sum of three": {
+    "stated": 195.32,
+    "recomputed": 195.3193
+   },
+   "867 = 308+308+251": {
+    "stated": 867,
+    "recomputed": 867
+   },
+   "112,140 = 3,738*20 + 3,738*10": {
+    "stated": 112140,
+    "recomputed": 112140
+   },
+   "74,760 = 3,738*20": {
+    "stated": 74760,
+    "recomputed": 74760
+   },
+   "37,380 = 3,738*10": {
+    "stated": 37380,
+    "recomputed": 37380
+   },
+   "3,738 = 2,962 + 776": {
+    "stated": 3738,
+    "recomputed": 3738
+   },
+   "46.73 = 3,738/80": {
+    "stated": 46.73,
+    "recomputed": 46.725
+   },
+   "dev 308 = 208 + 100": {
+    "stated": 308,
+    "recomputed": 308
+   },
+   "Qwen resumed: 33,238 + 4,142 = 37,380": {
+    "stated": 37380,
+    "recomputed": 37380
+   },
+   "filter dev Scout 82/6,160 = 1.33 %": {
+    "stated": 1.33,
+    "recomputed": 1.3311688311688312
+   },
+   "filter conf Scout 1,050/74,760 = 1.40 %": {
+    "stated": 1.4,
+    "recomputed": 1.404494382022472
+   },
+   "filter conf Qwen 1,653/9 = 'about 184 each'": {
+    "stated": 184,
+    "recomputed": 183.66666666666666
+   },
+   "span filter delta 0.9192-0.9205": {
+    "stated": -0.0013,
+    "recomputed": -0.0012999999999999678
+   },
+   "sentence refit Vmax within 5.5 % of prereg": {
+    "stated": 5.5,
+    "recomputed": 5.526928134034386
+   },
+   "refit 20 readings at 0.8118 => '19 % short'": {
+    "stated": 19,
+    "recomputed": 18.820000000000004
+   },
+   "r3 scout closing-anchor share 54/58 = 93 %": {
+    "stated": 93,
+    "recomputed": 93.10344827586206
+   },
+   "r31 scout closing-anchor share 6/22 = 27 %": {
+    "stated": 27,
+    "recomputed": 27.272727272727273
+   },
+   "Scout share of pooled readings at 20 = 1/2, at 30 = 2/3": {
+    "stated": [
+     0.5,
+     0.6666666666666666
+    ],
+    "recomputed": [
+     0.5,
+     0.6666666666666666
+    ]
+   },
+   "lift sonnet 10.7843-2.8634": {
+    "stated": 7.9209,
+    "recomputed": 7.9209
+   },
+   "lift opus 9.1771-2.8634": {
+    "stated": 6.3137,
+    "recomputed": 6.313699999999999
+   },
+   "lift fable 10.8024-5.3469": {
+    "stated": 5.4555,
+    "recomputed": 5.455500000000001
+   },
+   "Sonnet ancillary Haiku $5.44 = 13.3 % of $40.83": {
+    "stated": 13.3,
+    "recomputed": 13.324254552045419
+   },
+   "Opus picks ~ twice Sonnet's (1,327 vs 626)": {
+    "stated": 2,
+    "recomputed": 2.119808306709265
+   },
+   "unfiltered degenerate slope 3810.7637/500.0409": {
+    "stated": 7.62,
+    "recomputed": 7.620904010051977
+   },
+   "pooled degenerate slope 2169.7085/500.0409": {
+    "stated": 4.3391,
+    "recomputed": 4.339062064723106
+   }
+  },
+  "draft_numeral_audit": {
+   "n_numerals": 483,
+   "n_untraceable": 62,
+   "untraceable": [
+    {
+     "token": "2.1",
+     "line_in_code_stripped_body": 94,
+     "traceable_to_a_claim_value": false,
+     "context": "hat it is meant to.  ---  ## 2. Related work  ### 2.1 Disagreement about evidence l"
+    },
+    {
+     "token": "95.42",
+     "line_in_code_stripped_body": 102,
+     "traceable_to_a_claim_value": false,
+     "context": "h, regular annotators reach evidence precision of 95.42 % but recall of 72.36 % (). T"
+    },
+    {
+     "token": "72.36",
+     "line_in_code_stripped_body": 102,
+     "traceable_to_a_claim_value": false,
+     "context": "reach evidence precision of 95.42 % but recall of 72.36 % (). The scoring rule asks f"
+    },
+    {
+     "token": "56.1",
+     "line_in_code_stripped_body": 106,
+     "traceable_to_a_claim_value": false,
+     "context": "ds the same set of supporting sentences chosen on 56.1 % of supported and 34.4 % of "
+    },
+    {
+     "token": "34.4",
+     "line_in_code_stripped_body": 106,
+     "traceable_to_a_claim_value": false,
+     "context": "rting sentences chosen on 56.1 % of supported and 34.4 % of partially supported case"
+    },
+    {
+     "token": "25",
+     "line_in_code_stripped_body": 109,
+     "traceable_to_a_claim_value": false,
+     "context": " identical information\" (). Natural Questions ran 25-way annotation on a sample of"
+    },
+    {
+     "token": "61.50",
+     "line_in_code_stripped_body": 115,
+     "traceable_to_a_claim_value": false,
+     "context": "he first and finds supporting-fact exact match of 61.50 against answer exact match of"
+    },
+    {
+     "token": "83.60",
+     "line_in_code_stripped_body": 115,
+     "traceable_to_a_claim_value": false,
+     "context": "xact match of 61.50 against answer exact match of 83.60, with supporting-fact F1 at 9"
+    },
+    {
+     "token": "90.04",
+     "line_in_code_stripped_body": 116,
+     "traceable_to_a_claim_value": false,
+     "context": " exact match of 83.60, with supporting-fact F1 at 90.04 (). Medical experts annotatin"
+    },
+    {
+     "token": "0.357",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "n biomedical abstracts reach exact-boundary F1 of 0.357 to 0.576 and relaxed token-ov"
+    },
+    {
+     "token": "0.576",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "cal abstracts reach exact-boundary F1 of 0.357 to 0.576 and relaxed token-overlap F1 "
+    },
+    {
+     "token": "0.713",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "of 0.357 to 0.576 and relaxed token-overlap F1 of 0.713 to 0.758 (). Rationale annota"
+    },
+    {
+     "token": "0.758",
+     "line_in_code_stripped_body": 117,
+     "traceable_to_a_claim_value": false,
+     "context": "to 0.576 and relaxed token-overlap F1 of 0.713 to 0.758 (). Rationale annotation show"
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 129,
+     "traceable_to_a_claim_value": false,
+     "context": "the positional component of agreement (). Section 3.4 explains why we do not use it"
+    },
+    {
+     "token": "2.2",
+     "line_in_code_stripped_body": 131,
+     "traceable_to_a_claim_value": false,
+     "context": "why we do not use it as our primary measure.  ### 2.2 What was not measured  Each o"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 141,
+     "traceable_to_a_claim_value": false,
+     "context": "d colleagues report test-retest reliability above 0.95 over about 541,000 whole judg"
+    },
+    {
+     "token": "541,000",
+     "line_in_code_stripped_body": 141,
+     "traceable_to_a_claim_value": false,
+     "context": "ort test-retest reliability above 0.95 over about 541,000 whole judgments (). Neither g"
+    },
+    {
+     "token": "40",
+     "line_in_code_stripped_body": 164,
+     "traceable_to_a_claim_value": false,
+     "context": "cinate quoted spans\", with exact extraction below 40 % in technical domains, and c"
+    },
+    {
+     "token": "2.3",
+     "line_in_code_stripped_body": 171,
+     "traceable_to_a_claim_value": false,
+     "context": "ed anchor granularity and measures fidelity.  ### 2.3 LLM judges for relevance  Our"
+    },
+    {
+     "token": "0.950",
+     "line_in_code_stripped_body": 204,
+     "traceable_to_a_claim_value": false,
+     "context": "ed example rises from ICC(1) = 0.590 to ICC(13) = 0.950 (). That shape, a modest sing"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 216,
+     "traceable_to_a_claim_value": false,
+     "context": "n LLM judges is documented too: test-retest above 0.95 sits alongside position bias "
+    },
+    {
+     "token": "3.1",
+     "line_in_code_stripped_body": 229,
+     "traceable_to_a_claim_value": false,
+     "context": "gold.  ---  ## 3. Design and what was frozen  ### 3.1 The task and the instrument  "
+    },
+    {
+     "token": "3.2",
+     "line_in_code_stripped_body": 245,
+     "traceable_to_a_claim_value": false,
+     "context": "usses what this does and does not attribute.  ### 3.2 Three anchor protocols, each "
+    },
+    {
+     "token": "140",
+     "line_in_code_stripped_body": 252,
+     "traceable_to_a_claim_value": false,
+     "context": " spans were at the indices the judge claimed, and 140 had to be relocated to where "
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 263,
+     "traceable_to_a_claim_value": false,
+     "context": "nces within one unit. All results in Sections 5.3\u20135.6 use this protocol.  ### 3.3 G"
+    },
+    {
+     "token": "3.3",
+     "line_in_code_stripped_body": 266,
+     "traceable_to_a_claim_value": false,
+     "context": "sults in Sections 5.3\u20135.6 use this protocol.  ### 3.3 Gates, predictions and the pr"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 276,
+     "traceable_to_a_claim_value": false,
+     "context": "te compares one reading with one reading. Section 5.4 reads the graded instrument, "
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 296,
+     "traceable_to_a_claim_value": false,
+     "context": "y, and the sentence that reports it says so.  ### 3.4 Statistics, and why not \u03ba  Fo"
+    },
+    {
+     "token": "3.5",
+     "line_in_code_stripped_body": 324,
+     "traceable_to_a_claim_value": false,
+     "context": " is computed on each judge's readings alone.  ### 3.5 Constraints, which are result"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 358,
+     "traceable_to_a_claim_value": false,
+     "context": ": Claude Sonnet 5, Claude Opus 5 and Claude Fable 5.1.  **Readings.** Table 1 gives"
+    },
+    {
+     "token": "867",
+     "line_in_code_stripped_body": 374,
+     "traceable_to_a_claim_value": false,
+     "context": "ss the three proprietary judges cost $195.32 over 867 pair readings (). Sonnet's 30"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 388,
+     "traceable_to_a_claim_value": false,
+     "context": " do not restate it here.  ---  ## 5. Results  ### 5.1 Whether is easy; where is not"
+    },
+    {
+     "token": "95",
+     "line_in_code_stripped_body": 446,
+     "traceable_to_a_claim_value": false,
+     "context": "ated-span rate by protocol and judge, with Wilson 95 % upper bounds.** Ten-word > "
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 475,
+     "traceable_to_a_claim_value": false,
+     "context": ". Opus 5 hallucinated 1 of 955, 0.00105 (). Fable 5.1 hallucinated none of 645 span"
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 556,
+     "traceable_to_a_claim_value": false,
+     "context": "as later formalised as the post-filter of Section 5.6, which was applied identicall"
+    },
+    {
+     "token": "61.50",
+     "line_in_code_stripped_body": 571,
+     "traceable_to_a_claim_value": false,
+     "context": "n exact set match. Supporting-fact exact match is 61.50 while supporting-fact F1 is 9"
+    },
+    {
+     "token": "90.04",
+     "line_in_code_stripped_body": 572,
+     "traceable_to_a_claim_value": false,
+     "context": " exact match is 61.50 while supporting-fact F1 is 90.04 (). Our one-reading-against-o"
+    },
+    {
+     "token": "0.3534",
+     "line_in_code_stripped_body": 574,
+     "traceable_to_a_claim_value": false,
+     "context": "ading pairs is 0.4350 for Scout, with a median of 0.3534 over 2,898 comparisons (). Fo"
+    },
+    {
+     "token": "2,898",
+     "line_in_code_stripped_body": 574,
+     "traceable_to_a_claim_value": false,
+     "context": "is 0.4350 for Scout, with a median of 0.3534 over 2,898 comparisons (). For Qwen it i"
+    },
+    {
+     "token": "0.7518",
+     "line_in_code_stripped_body": 575,
+     "traceable_to_a_claim_value": false,
+     "context": "isons (). For Qwen it is 0.5430, with a median of 0.7518 over 3,056 (). Qwen's distrib"
+    },
+    {
+     "token": "3,056",
+     "line_in_code_stripped_body": 575,
+     "traceable_to_a_claim_value": false,
+     "context": "r Qwen it is 0.5430, with a median of 0.7518 over 3,056 (). Qwen's distribution is bi"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 580,
+     "traceable_to_a_claim_value": false,
+     "context": "anywhere near HotpotQA's supporting-fact F1.  ### 5.4 Graded support becomes reliab"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 654,
+     "traceable_to_a_claim_value": false,
+     "context": " Sonnet 5, 0.2758 for Opus 5 and 0.2383 for Fable 5.1 (). The Spearman \u03c1 values are"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 669,
+     "traceable_to_a_claim_value": false,
+     "context": "aseline, a lift of +6.31 over 306 pairs (). Fable 5.1's 825 picks carry 10.80 again"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 683,
+     "traceable_to_a_claim_value": false,
+     "context": " local judges do. Exploratorily, Opus 5 and Fable 5.1 overlap at a mean span Jaccar"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 685,
+     "traceable_to_a_claim_value": false,
+     "context": "Opus 5 at 0.4179 over 277 pairs () and with Fable 5.1 at 0.4568 over 230 (). These "
+    },
+    {
+     "token": "230",
+     "line_in_code_stripped_body": 686,
+     "traceable_to_a_claim_value": false,
+     "context": "er 277 pairs () and with Fable 5.1 at 0.4568 over 230 (). These are agreements betw"
+    },
+    {
+     "token": "5.6",
+     "line_in_code_stripped_body": 689,
+     "traceable_to_a_claim_value": false,
+     "context": "onverged sets, and not agreement with truth.  ### 5.6 At scale, a defect the develo"
+    },
+    {
+     "token": "1.33",
+     "line_in_code_stripped_body": 699,
+     "traceable_to_a_claim_value": false,
+     "context": " the filter rewrote 82 of Scout's 6,160 readings, 1.33 %, and none of Qwen's 3,080 ("
+    },
+    {
+     "token": "1.40",
+     "line_in_code_stripped_body": 703,
+     "traceable_to_a_claim_value": false,
+     "context": " filter rewrote 1,050 of Scout's 74,760 readings, 1.40 %, and 9 of Qwen's 37,380 ()."
+    },
+    {
+     "token": "1.33",
+     "line_in_code_stripped_body": 707,
+     "traceable_to_a_claim_value": false,
+     "context": "ong enough to trigger it for Qwen. Scout's rates, 1.33 % of 6,160 in development and"
+    },
+    {
+     "token": "1.40",
+     "line_in_code_stripped_body": 707,
+     "traceable_to_a_claim_value": false,
+     "context": "Scout's rates, 1.33 % of 6,160 in development and 1.40 % of 74,760 at scale, are sim"
+    },
+    {
+     "token": "0.0013",
+     "line_in_code_stripped_body": 712,
+     "traceable_to_a_claim_value": false,
+     "context": "ves thirty-reading graded-support reliability by \u22120.0013, from 0.9205 to 0.9192, insid"
+    },
+    {
+     "token": "0.95",
+     "line_in_code_stripped_body": 730,
+     "traceable_to_a_claim_value": false,
+     "context": "olleagues show that test-retest reliability above 0.95 can coexist with large, syste"
+    },
+    {
+     "token": "5.4",
+     "line_in_code_stripped_body": 748,
+     "traceable_to_a_claim_value": false,
+     "context": "ooled coefficient sits below Scout's own (Section 5.4).  **Pooling and exchangeabil"
+    },
+    {
+     "token": "51.62",
+     "line_in_code_stripped_body": 782,
+     "traceable_to_a_claim_value": false,
+     "context": "arison in the same experiment. Self-agreement was 51.62 % against between-participant"
+    },
+    {
+     "token": "44.80",
+     "line_in_code_stripped_body": 782,
+     "traceable_to_a_claim_value": false,
+     "context": " 51.62 % against between-participant agreement of 44.80 %, so a person agrees with th"
+    },
+    {
+     "token": "0.357",
+     "line_in_code_stripped_body": 785,
+     "traceable_to_a_claim_value": false,
+     "context": ". Medical experts reach exact-boundary PICO F1 of 0.357 to 0.576 (). Our one-reading-"
+    },
+    {
+     "token": "0.576",
+     "line_in_code_stripped_body": 785,
+     "traceable_to_a_claim_value": false,
+     "context": " experts reach exact-boundary PICO F1 of 0.357 to 0.576 (). Our one-reading-against-o"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 818,
+     "traceable_to_a_claim_value": false,
+     "context": "ly.  **Reduced and differing samples.** The Fable 5.1 run stopped at 251 of 308 pai"
+    },
+    {
+     "token": "5.1",
+     "line_in_code_stripped_body": 820,
+     "traceable_to_a_claim_value": false,
+     "context": "r its own pairs. Several early figures in Section 5.1 rest on 31 re-presented pairs"
+    },
+    {
+     "token": "3.4",
+     "line_in_code_stripped_body": 835,
+     "traceable_to_a_claim_value": false,
+     "context": "d for location, not \u03ba, for the reasons in Section 3.4 (, ). We have not shown that "
+    }
+   ]
+  }
+ },
+ "claims": {
+  "s0-span-self-consistency-quote-anchored": {
+   "committed": 0.3226,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "self_consistency.rate",
+   "reproduced_A": 0.3226,
+   "main_recomputed": 0.3226,
+   "recomputed_B": 0.3225806451612903,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "s0-whether-self-agreement": {
+   "committed": 0.871,
+   "source": "docs/plans/results/stage0/RESULTS-stage0-calibration.md",
+   "pointer": "evidence on **27 / 31** duplicated pairs (0.871)",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": 0.8709677419354839,
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "s0-span-index-agreement": {
+   "committed": 0.64496,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "index_agreement.rate",
+   "reproduced_A": 0.64496,
+   "main_recomputed": 0.64496,
+   "recomputed_B": 0.6449579831932774,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "denominator: the artifact's own definition says 'fraction of verified spans' but the rate is 307/476 over ALL attempted spans (24 hallucinated + 5 unresolvable included); over verified spans it is 307/447 = 0.6868. DRAFT \u00a73.2 says 'of 476 attempted spans', matching the computation."
+  },
+  "s0-minimality-unmeasurable": {
+   "committed": 1.0,
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "minimality_shrinkage.rate",
+   "reproduced_A": 1.0,
+   "main_recomputed": 1.0,
+   "recomputed_B": 1.0,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-scout-whether-agreement": {
+   "committed": 0.9677,
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.whether_agreement.rate",
+   "reproduced_A": 0.9677,
+   "main_recomputed": 0.9677,
+   "recomputed_B": 0.967741935483871,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-qwen-whether-agreement": {
+   "committed": 0.9677,
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.whether_agreement.rate",
+   "reproduced_A": 0.9677,
+   "main_recomputed": 0.9677,
+   "recomputed_B": 0.967741935483871,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "s0-hallucinated-span-rate-ten-word-anchor": {
+   "committed": {
+    "rate": 0.05042,
+    "failed_spans": 24,
+    "attempted_spans": 476,
+    "wilson95_upper": 0.07393,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/label_gates.json",
+   "pointer": "hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.05042,
+    "failed_spans": 24,
+    "attempted_spans": 476,
+    "wilson95_upper": 0.07393,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.05042,
+    "failed_spans": 24,
+    "attempted_spans": 476,
+    "wilson95_upper": 0.07393,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.05042016806722689,
+    "failed_spans": 24,
+    "attempted_spans": 476,
+    "PASS": false,
+    "wilson95_upper": 0.07392539376929443
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-scout-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.08204,
+    "failed_spans": 58,
+    "attempted_spans": 707,
+    "wilson95_upper": 0.10459,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.08204,
+    "failed_spans": 58,
+    "attempted_spans": 707,
+    "wilson95_upper": 0.10459,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.08204,
+    "failed_spans": 58,
+    "attempted_spans": 707,
+    "wilson95_upper": 0.10459,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.08203677510608204,
+    "failed_spans": 58,
+    "attempted_spans": 707,
+    "PASS": false,
+    "wilson95_upper": 0.10459492432285247
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-scout-closing-anchor-failures": {
+   "committed": {
+    "last_quote_not_in_document": 54,
+    "quote_not_in_document": 4
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
+   "reproduced_A": {
+    "last_quote_not_in_document": 54,
+    "quote_not_in_document": 4
+   },
+   "main_recomputed": {
+    "last_quote_not_in_document": 54,
+    "quote_not_in_document": 4
+   },
+   "recomputed_B": {
+    "last_quote_not_in_document": 54,
+    "quote_not_in_document": 4
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-qwen-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.02528,
+    "failed_spans": 9,
+    "attempted_spans": 356,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.02528,
+    "failed_spans": 9,
+    "attempted_spans": 356,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.02528,
+    "failed_spans": 9,
+    "attempted_spans": 356,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.025280898876404494,
+    "failed_spans": 9,
+    "attempted_spans": 356,
+    "PASS": true
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.02517,
+    "failed_spans": 22,
+    "attempted_spans": 874,
+    "wilson95_upper": 0.03782,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.02517,
+    "failed_spans": 22,
+    "attempted_spans": 874,
+    "wilson95_upper": 0.03782,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.02517,
+    "failed_spans": 22,
+    "attempted_spans": 874,
+    "wilson95_upper": 0.03782,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.02517162471395881,
+    "failed_spans": 22,
+    "attempted_spans": 874,
+    "PASS": true,
+    "wilson95_upper": 0.03781814577538471
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-closing-anchor-failures": {
+   "committed": {
+    "first_sentence_quote": 16,
+    "last_sentence_quote": 6,
+    "empty_first_quote": 0
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate.by_anchor",
+   "reproduced_A": {
+    "first_sentence_quote": 16,
+    "last_sentence_quote": 6,
+    "empty_first_quote": 0
+   },
+   "main_recomputed": {
+    "first_sentence_quote": 16,
+    "last_sentence_quote": 6,
+    "empty_first_quote": 0
+   },
+   "recomputed_B": {
+    "first_sentence_quote": 16,
+    "last_sentence_quote": 6,
+    "empty_first_quote": 0
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-qwen-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.00279,
+    "failed_spans": 1,
+    "attempted_spans": 358,
+    "wilson95_upper": 0.01565,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.00279,
+    "failed_spans": 1,
+    "attempted_spans": 358,
+    "wilson95_upper": 0.01565,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.00279,
+    "failed_spans": 1,
+    "attempted_spans": 358,
+    "wilson95_upper": 0.01565,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.002793296089385475,
+    "failed_spans": 1,
+    "attempted_spans": 358,
+    "PASS": true,
+    "wilson95_upper": 0.01565044121209347
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-sonnet5-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.0019,
+    "failed_spans": 1,
+    "attempted_spans": 525,
+    "wilson95_upper": 0.01071,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.sonnet5.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.0019,
+    "failed_spans": 1,
+    "attempted_spans": 525,
+    "wilson95_upper": 0.01071,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.0019,
+    "failed_spans": 1,
+    "attempted_spans": 525,
+    "wilson95_upper": 0.01071,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.0019047619047619048,
+    "failed_spans": 1,
+    "attempted_spans": 525,
+    "PASS": true,
+    "wilson95_upper": 0.0107094492356656
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-opus5-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.00105,
+    "failed_spans": 1,
+    "attempted_spans": 955,
+    "wilson95_upper": 0.00591,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.00105,
+    "failed_spans": 1,
+    "attempted_spans": 955,
+    "wilson95_upper": 0.00591,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.00105,
+    "failed_spans": 1,
+    "attempted_spans": 955,
+    "wilson95_upper": 0.00591,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.0010471204188481676,
+    "failed_spans": 1,
+    "attempted_spans": 955,
+    "PASS": true,
+    "wilson95_upper": 0.005907338708726325
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-fable51-hallucinated-span-rate": {
+   "committed": {
+    "rate": 0.0,
+    "failed_spans": 0,
+    "attempted_spans": 645,
+    "wilson95_upper": 0.00592,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51.hallucinated_span_rate",
+   "reproduced_A": {
+    "rate": 0.0,
+    "failed_spans": 0,
+    "attempted_spans": 645,
+    "wilson95_upper": 0.00592,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.0,
+    "failed_spans": 0,
+    "attempted_spans": 645,
+    "wilson95_upper": 0.00592,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.0,
+    "failed_spans": 0,
+    "attempted_spans": 645,
+    "PASS": true,
+    "wilson95_upper": 0.005920489155665534
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "fable51-incomplete-n": {
+   "committed": {
+    "pairs_labeled": 251,
+    "pairs_expected": 308,
+    "stopped_by_usage_limit": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51",
+   "reproduced_A": {
+    "pairs_labeled": 251,
+    "pairs_expected": 308,
+    "stopped_by_usage_limit": true
+   },
+   "main_recomputed": {
+    "pairs_labeled": 251,
+    "pairs_expected": 308,
+    "stopped_by_usage_limit": true
+   },
+   "recomputed_B": {
+    "pairs_labeled": 251,
+    "pairs_expected": 308,
+    "stopped_by_usage_limit": true
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "prereg-p-ext-3-hallucination-holds": {
+   "committed": {
+    "threshold": 0.05,
+    "scout.rate": 0.01956,
+    "scout.failed": 260,
+    "scout.attempted": 13291,
+    "qwen.rate": 0.01061,
+    "qwen.failed": 19,
+    "qwen.attempted": 1791,
+    "SCORED": "PASS"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_3",
+   "reproduced_A": {
+    "threshold": 0.05,
+    "scout.rate": 0.01956,
+    "scout.failed": 260,
+    "scout.attempted": 13291,
+    "qwen.rate": 0.01061,
+    "qwen.failed": 19,
+    "qwen.attempted": 1791,
+    "SCORED": "PASS"
+   },
+   "main_recomputed": {
+    "threshold": 0.05,
+    "scout.rate": 0.01956,
+    "scout.failed": 260,
+    "scout.attempted": 13291,
+    "qwen.rate": 0.01061,
+    "qwen.failed": 19,
+    "qwen.attempted": 1791,
+    "SCORED": "PASS"
+   },
+   "recomputed_B": {
+    "threshold": 0.05,
+    "scout.rate": 0.019562109698292078,
+    "scout.failed": 260,
+    "scout.attempted": 13291,
+    "qwen.rate": 0.01060859854829704,
+    "qwen.failed": 19,
+    "qwen.attempted": 1791,
+    "SCORED": "PASS"
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "prereg-p-ext-3-as-written": {
+   "committed": 0.05,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_3.threshold",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "pre-registered constant: not produced by any script",
+   "status": "NOT RECOMPUTED (pre-registered threshold (a constant of the design))"
+  },
+  "r3-scout-span-self-consistency": {
+   "committed": {
+    "rate": 0.6452,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.scout.self_consistency",
+   "reproduced_A": {
+    "rate": 0.6452,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.6452,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.6451612903225806,
+    "PASS": false
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r3-qwen-span-self-consistency": {
+   "committed": {
+    "rate": 0.4194,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r3/gates-r3.json",
+   "pointer": "judges.qwen.self_consistency",
+   "reproduced_A": {
+    "rate": 0.4194,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.4194,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.41935483870967744,
+    "PASS": false
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-span-self-consistency": {
+   "committed": {
+    "rate": 0.3831,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency",
+   "reproduced_A": {
+    "rate": 0.3831,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
+   },
+   "main_recomputed": {
+    "rate": 0.3831,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
+   },
+   "recomputed_B": {
+    "rate": 0.38311688311688313,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 118
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-qwen-span-self-consistency": {
+   "committed": {
+    "rate": 0.5617,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.self_consistency",
+   "reproduced_A": {
+    "rate": 0.5617,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
+   },
+   "main_recomputed": {
+    "rate": 0.5617,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
+   },
+   "recomputed_B": {
+    "rate": 0.5616883116883117,
+    "PASS": false,
+    "reading_i_presentation_0_vs_1.union.all_pairs.n": 308,
+    "reading_i_presentation_0_vs_1.union.all_pairs.consistent": 173
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-whether-agreement-five-presentations": {
+   "committed": {
+    "rate": 0.9188,
+    "all_five_agree": 283,
+    "n_pairs": 308,
+    "mean_pairwise": 0.961,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.whether_agreement",
+   "reproduced_A": {
+    "rate": 0.9188,
+    "all_five_agree": 283,
+    "n_pairs": 308,
+    "mean_pairwise": 0.961,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.9188,
+    "all_five_agree": 283,
+    "n_pairs": 308,
+    "mean_pairwise": 0.961,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.9188311688311688,
+    "all_five_agree": 283,
+    "n_pairs": 308,
+    "mean_pairwise": 0.961038961038961,
+    "PASS": true
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "a reading whose every span failed verification (`dropped`) is scored 'no evidence' though the judge claimed evidence. Counting it positive: 0.9253 (285/308), mean pairwise 0.9636."
+  },
+  "r31-qwen-whether-agreement-five-presentations": {
+   "committed": {
+    "rate": 0.9805,
+    "all_five_agree": 302,
+    "n_pairs": 308,
+    "mean_pairwise": 0.9909,
+    "PASS": true
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.whether_agreement",
+   "reproduced_A": {
+    "rate": 0.9805,
+    "all_five_agree": 302,
+    "n_pairs": 308,
+    "mean_pairwise": 0.9909,
+    "PASS": true
+   },
+   "main_recomputed": {
+    "rate": 0.9805,
+    "all_five_agree": 302,
+    "n_pairs": 308,
+    "mean_pairwise": 0.9909,
+    "PASS": true
+   },
+   "recomputed_B": {
+    "rate": 0.9805194805194806,
+    "all_five_agree": 302,
+    "n_pairs": 308,
+    "mean_pairwise": 0.990909090909091,
+    "PASS": true
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "same `dropped` reading: rate unchanged (0.9805) but mean pairwise 0.9909 -> 0.9903."
+  },
+  "r31ext-scout-whether-agreement-curve": {
+   "committed": {
+    "2": 0.961,
+    "5": 0.9188,
+    "10": 0.8734,
+    "20": 0.8539
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.whether_agreement_curve",
+   "reproduced_A": {
+    "2": 0.961,
+    "5": 0.9188,
+    "10": 0.8734,
+    "20": 0.8539
+   },
+   "main_recomputed": {
+    "2": 0.961,
+    "5": 0.9188,
+    "10": 0.8734,
+    "20": 0.8539
+   },
+   "recomputed_B": {
+    "2": 0.961038961038961,
+    "5": 0.9188311688311688,
+    "10": 0.8733766233766234,
+    "20": 0.8538961038961039
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "same `dropped` reading: 2/5/10/20 = 0.961/0.9253/0.8799/0.8604."
+  },
+  "r31ext-qwen-whether-agreement-curve": {
+   "committed": {
+    "2": 0.9903,
+    "5": 0.9805,
+    "10": 0.961
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.whether_agreement_curve",
+   "reproduced_A": {
+    "2": 0.9903,
+    "5": 0.9805,
+    "10": 0.961
+   },
+   "main_recomputed": {
+    "2": 0.9903,
+    "5": 0.9805,
+    "10": 0.961
+   },
+   "recomputed_B": {
+    "2": 0.9902597402597403,
+    "5": 0.9805194805194806,
+    "10": 0.961038961038961
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "same `dropped` reading: 2/5/10 = 0.9903/0.9805/0.974."
+  },
+  "r31-scout-union-not-saturating-at-5": {
+   "committed": {
+    "marginal_gain_at_k5": 0.1022,
+    "saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.union_saturation",
+   "reproduced_A": {
+    "marginal_gain_at_k5": 0.1022,
+    "saturation_threshold": 0.05
+   },
+   "main_recomputed": {
+    "marginal_gain_at_k5": 0.1022,
+    "saturation_threshold": 0.05
+   },
+   "recomputed_B": {
+    "marginal_gain_at_k5": 0.10222222222222221,
+    "saturation_threshold": 0.05
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-qwen-union-not-saturating-at-5": {
+   "committed": {
+    "marginal_gain_at_k5": 0.1127,
+    "saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.union_saturation",
+   "reproduced_A": {
+    "marginal_gain_at_k5": 0.1127,
+    "saturation_threshold": 0.05
+   },
+   "main_recomputed": {
+    "marginal_gain_at_k5": 0.1127,
+    "saturation_threshold": 0.05
+   },
+   "recomputed_B": {
+    "marginal_gain_at_k5": 0.11265969802555158,
+    "saturation_threshold": 0.05
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31ext-set-union-saturates": {
+   "committed": {
+    "scout.union_saturation.marginal_gain_at_k5": 0.0274,
+    "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
+    "scout.union_saturation.saturation_threshold": 0.05,
+    "qwen.union_saturation.saturation_threshold": 0.05
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges",
+   "reproduced_A": {
+    "scout.union_saturation.marginal_gain_at_k5": 0.0274,
+    "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
+    "scout.union_saturation.saturation_threshold": 0.05,
+    "qwen.union_saturation.saturation_threshold": 0.05
+   },
+   "main_recomputed": {
+    "scout.union_saturation.marginal_gain_at_k5": 0.0274,
+    "qwen.union_saturation.marginal_gain_at_k5": 0.0461,
+    "scout.union_saturation.saturation_threshold": 0.05,
+    "qwen.union_saturation.saturation_threshold": 0.05
+   },
+   "recomputed_B": {
+    "scout.union_saturation.marginal_gain_at_k5": 0.02742793171004754,
+    "qwen.union_saturation.marginal_gain_at_k5": 0.04604691572545615,
+    "scout.union_saturation.saturation_threshold": 0.05,
+    "qwen.union_saturation.saturation_threshold": 0.05
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "qwen.union_saturation.marginal_gain_at_k5": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "r31ext-scout-set-union-marginal-gain": {
+   "committed": 0.0274,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.set_saturation_incremental.marginal_gain_at_n",
+   "reproduced_A": 0.0274,
+   "main_recomputed": 0.0274,
+   "recomputed_B": 0.02742793171004754,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31ext-qwen-set-union-marginal-gain": {
+   "committed": 0.0461,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.set_saturation_incremental.marginal_gain_at_n",
+   "reproduced_A": 0.0461,
+   "main_recomputed": 0.0461,
+   "recomputed_B": 0.04604691572545615,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "prereg-p-ext-2-fit-parameters": {
+   "committed": {
+    "Vmax_prereg": 72.3277,
+    "Km_prereg": 4.6179,
+    "r2_prereg": 0.994174,
+    "projected_U20": 58.7603,
+    "projected_U20_as_fraction_of_Vmax": 0.8124,
+    "threshold_U20": 65.0949,
+    "secondary_threshold_relative_error": 0.1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_2",
+   "reproduced_A": {
+    "Vmax_prereg": 72.3277,
+    "Km_prereg": 4.6179,
+    "r2_prereg": 0.994174,
+    "projected_U20": 58.7603,
+    "projected_U20_as_fraction_of_Vmax": 0.8124,
+    "threshold_U20": 65.0949,
+    "secondary_threshold_relative_error": null
+   },
+   "main_recomputed": {
+    "Vmax_prereg": 72.3277,
+    "Km_prereg": 4.6179,
+    "r2_prereg": 0.994174,
+    "projected_U20": 58.7603,
+    "projected_U20_as_fraction_of_Vmax": 0.8124,
+    "threshold_U20": 65.0949,
+    "secondary_threshold_relative_error": null
+   },
+   "recomputed_B": {
+    "Vmax_prereg": 72.32768584609056,
+    "Km_prereg": 4.617935967749764,
+    "r2_prereg": 0.9941737022704703,
+    "projected_U20": 58.7601543369371,
+    "projected_U20_as_fraction_of_Vmax": 0.8124157941673339,
+    "threshold_U20": 65.09491726148151,
+    "secondary_threshold_relative_error": null
+   },
+   "reproduced_A_note": "--prefit output; secondary_threshold_relative_error is a registered constant the prefit does not compute",
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "projected_U20": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "prereg-p-ext-2-scored": {
+   "committed": {
+    "observed_U20": 133.8267,
+    "observed_over_prereg_Vmax": 1.8503,
+    "SCORED": "PASS",
+    "secondary_projection_accuracy.relative_error": 1.2775,
+    "secondary_projection_accuracy.SCORED": "FAIL"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2",
+   "reproduced_A": {
+    "observed_U20": 133.8267,
+    "observed_over_prereg_Vmax": 1.8503,
+    "SCORED": "PASS",
+    "secondary_projection_accuracy.relative_error": 1.2775,
+    "secondary_projection_accuracy.SCORED": "FAIL"
+   },
+   "main_recomputed": {
+    "observed_U20": 133.8267,
+    "observed_over_prereg_Vmax": 1.8503,
+    "SCORED": "PASS",
+    "secondary_projection_accuracy.relative_error": 1.2775,
+    "secondary_projection_accuracy.SCORED": "FAIL"
+   },
+   "recomputed_B": {
+    "observed_U20": 133.82666666666665,
+    "observed_over_prereg_Vmax": 1.8502823491783462,
+    "SCORED": "PASS",
+    "secondary_projection_accuracy.relative_error": 1.277501419609271,
+    "secondary_projection_accuracy.SCORED": "FAIL"
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "prereg-p-ext-2-excluding-blowups": {
+   "committed": {
+    "observed_U20_excluding_blowups": 58.6187,
+    "n_pairs": 299,
+    "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
+    "secondary_projection_relative_error": 0.0024,
+    "SCORED_SECONDARY_ON_THIS_READING": "PASS",
+    "median_U20_all_pairs": 42.0
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2.THE_PASS_IS_AN_ARTEFACT_UNLESS_THIS_AGREES",
+   "reproduced_A": {
+    "observed_U20_excluding_blowups": 58.6187,
+    "n_pairs": 299,
+    "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
+    "secondary_projection_relative_error": 0.0024,
+    "SCORED_SECONDARY_ON_THIS_READING": "PASS",
+    "median_U20_all_pairs": 42.0
+   },
+   "main_recomputed": {
+    "observed_U20_excluding_blowups": 58.6187,
+    "n_pairs": 299,
+    "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
+    "secondary_projection_relative_error": 0.0024,
+    "SCORED_SECONDARY_ON_THIS_READING": "PASS",
+    "median_U20_all_pairs": 42.0
+   },
+   "recomputed_B": {
+    "observed_U20_excluding_blowups": 58.618729096989966,
+    "n_pairs": 299,
+    "SCORED_AS_WRITTEN_ON_THIS_READING": "FAIL",
+    "secondary_projection_relative_error": 0.002409295102476238,
+    "SCORED_SECONDARY_ON_THIS_READING": "PASS",
+    "median_U20_all_pairs": 42.0
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31ext-scout-sentence-fit-excluding-blowups": {
+   "committed": {
+    "mm_fit.Vmax": 68.3302,
+    "mm_fit.Km": 4.6368,
+    "mm_fit.r2": 0.988735,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.8118,
+    "marginal_gain_at_n": 0.0272,
+    "n_pairs_positive_somewhere": 299
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.sentence_saturation_excluding_blowups",
+   "reproduced_A": {
+    "mm_fit.Vmax": 68.3302,
+    "mm_fit.Km": 4.6368,
+    "mm_fit.r2": 0.988735,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.8118,
+    "marginal_gain_at_n": 0.0272,
+    "n_pairs_positive_somewhere": 299
+   },
+   "main_recomputed": {
+    "mm_fit.Vmax": 68.3302,
+    "mm_fit.Km": 4.6368,
+    "mm_fit.r2": 0.988735,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.8118,
+    "marginal_gain_at_n": 0.0272,
+    "n_pairs_positive_somewhere": 299
+   },
+   "recomputed_B": {
+    "mm_fit.Vmax": 68.33011173567388,
+    "mm_fit.Km": 4.636787233492559,
+    "mm_fit.r2": 0.9887351505651887,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.8117941601091127,
+    "marginal_gain_at_n": 0.02715809893307465,
+    "n_pairs_positive_somewhere": 299
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "mm_fit.Vmax": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "r31ext-scout-sentence-fit-degenerate-unfiltered": {
+   "committed": null,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_2.refit_frac_of_asymptote_at_20",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31ext-pooled-sentence-union-still-growing": {
+   "committed": {
+    "mean_distinct_sentences_at_k.30": 58.4804,
+    "mean_distinct_sentences_at_k.10": 36.7974,
+    "mean_distinct_sentences_at_k.20": 45.6667,
+    "frac_of_asymptote_at_n": 0.7816,
+    "marginal_gain_at_n": 0.0264,
+    "mm_fit.Vmax": 68.4676,
+    "mm_fit.Km": 8.3806,
+    "mm_fit.r2": 0.968155,
+    "n_pairs_positive_somewhere": 306
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.sentence_saturation_excluding_blowups",
+   "reproduced_A": {
+    "mean_distinct_sentences_at_k.30": 58.4804,
+    "mean_distinct_sentences_at_k.10": 36.7974,
+    "mean_distinct_sentences_at_k.20": 45.6667,
+    "frac_of_asymptote_at_n": 0.7816,
+    "marginal_gain_at_n": 0.0264,
+    "mm_fit.Vmax": 68.4676,
+    "mm_fit.Km": 8.3806,
+    "mm_fit.r2": 0.968155,
+    "n_pairs_positive_somewhere": 306
+   },
+   "main_recomputed": {
+    "mean_distinct_sentences_at_k.30": 58.4804,
+    "mean_distinct_sentences_at_k.10": 36.7974,
+    "mean_distinct_sentences_at_k.20": 45.6667,
+    "frac_of_asymptote_at_n": 0.7816,
+    "marginal_gain_at_n": 0.0264,
+    "mm_fit.Vmax": 68.4676,
+    "mm_fit.Km": 8.3806,
+    "mm_fit.r2": 0.968155,
+    "n_pairs_positive_somewhere": 306
+   },
+   "recomputed_B": {
+    "mm_fit.Vmax": 68.46755882103913,
+    "mm_fit.Km": 8.380640692202302,
+    "mm_fit.r2": 0.9681544337199744,
+    "frac_of_asymptote_at_n": 0.7816440647926709,
+    "marginal_gain_at_n": 0.026376082704666015,
+    "n_pairs_positive_somewhere": 306,
+    "mean_distinct_sentences_at_k.30": 58.48039215686274,
+    "mean_distinct_sentences_at_k.10": 36.79738562091503,
+    "mean_distinct_sentences_at_k.20": 45.666666666666664
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "mm_fit.r2": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "r31ext-pooled-fit-degenerate-unfiltered": {
+   "committed": null,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.sentence_saturation.frac_of_asymptote_at_n",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-union-as-labeler-unstable": {
+   "committed": {
+    "rate": 0.4708,
+    "consistent": 145,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5067,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.split_half_union_stability",
+   "reproduced_A": {
+    "rate": 0.4708,
+    "consistent": 145,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5067,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.4708,
+    "consistent": 145,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5067,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.4707792207792208,
+    "consistent": 145,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5066625188737148,
+    "PASS": false
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "'union' is the union of D3-DISTINCT sets (a set merged into an earlier one contributes none of its own spans). The plain union of all spans in the half gives 0.4838."
+  },
+  "r31-cross-judge-span-jaccard": {
+   "committed": {
+    "mean": 0.2123,
+    "median": 0.0805,
+    "n": 281
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_presentation_0.span_union_jaccard_where_both_positive",
+   "reproduced_A": {
+    "mean": 0.2123,
+    "median": 0.0805,
+    "n": 281
+   },
+   "main_recomputed": {
+    "mean": 0.2123,
+    "median": 0.0805,
+    "n": 281
+   },
+   "recomputed_B": {
+    "mean": 0.21228310259373256,
+    "median": 0.08050436469447139,
+    "n": 281
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-reliability-at-10": {
+   "committed": {
+    "n_readings": 10,
+    "split_half_r": 0.5444,
+    "spearman_brown_full_n": 0.705,
+    "top3_overlap_between_halves": 0.6557,
+    "draws": 20
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[3]",
+   "reproduced_A": {
+    "n_readings": 10,
+    "split_half_r": 0.5444,
+    "spearman_brown_full_n": 0.705,
+    "top3_overlap_between_halves": 0.6557,
+    "draws": 20
+   },
+   "main_recomputed": {
+    "n_readings": 10,
+    "split_half_r": 0.5444,
+    "spearman_brown_full_n": 0.705,
+    "top3_overlap_between_halves": 0.6557,
+    "draws": 20
+   },
+   "recomputed_B": {
+    "n_readings": 10,
+    "split_half_r": 0.5460019812404371,
+    "spearman_brown_full_n": 0.7063405970571287,
+    "top3_overlap_between_halves": 0.6556843267108168,
+    "draws": 20
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "split_half_r": "diff",
+    "spearman_brown_full_n": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-reliability-at-20": {
+   "committed": {
+    "n_readings": 20,
+    "split_half_r": 0.7526,
+    "spearman_brown_full_n": 0.8588,
+    "top3_overlap_between_halves": 0.7044,
+    "draws": 20
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[5]",
+   "reproduced_A": {
+    "n_readings": 20,
+    "split_half_r": 0.7526,
+    "spearman_brown_full_n": 0.8588,
+    "top3_overlap_between_halves": 0.7044,
+    "draws": 20
+   },
+   "main_recomputed": {
+    "n_readings": 20,
+    "split_half_r": 0.7526,
+    "spearman_brown_full_n": 0.8588,
+    "top3_overlap_between_halves": 0.7044,
+    "draws": 20
+   },
+   "recomputed_B": {
+    "n_readings": 20,
+    "split_half_r": 0.7526883304111616,
+    "spearman_brown_full_n": 0.858895808628553,
+    "top3_overlap_between_halves": 0.7044262295081968,
+    "draws": 20
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "split_half_r": "round",
+    "spearman_brown_full_n": "round"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-reliability-at-30": {
+   "committed": {
+    "n_readings": 30,
+    "split_half_r": 0.8527,
+    "spearman_brown_full_n": 0.9205,
+    "top3_overlap_between_halves": 0.7551,
+    "draws": 20,
+    "split_half_r_sd_over_draws": 0.0059,
+    "pairs_without_variance_in_a_half": 1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[6]",
+   "reproduced_A": {
+    "n_readings": 30,
+    "split_half_r": 0.8527,
+    "spearman_brown_full_n": 0.9205,
+    "top3_overlap_between_halves": 0.7551,
+    "draws": 20,
+    "split_half_r_sd_over_draws": 0.0059,
+    "pairs_without_variance_in_a_half": 1
+   },
+   "main_recomputed": {
+    "n_readings": 30,
+    "split_half_r": 0.8527,
+    "spearman_brown_full_n": 0.9205,
+    "top3_overlap_between_halves": 0.7551,
+    "draws": 20,
+    "split_half_r_sd_over_draws": 0.0059,
+    "pairs_without_variance_in_a_half": 1
+   },
+   "recomputed_B": {
+    "n_readings": 30,
+    "split_half_r": 0.85268756392484,
+    "spearman_brown_full_n": 0.9204871674298472,
+    "top3_overlap_between_halves": 0.755136612021858,
+    "draws": 20,
+    "split_half_r_sd_over_draws": 0.00591967210670326,
+    "pairs_without_variance_in_a_half": 1
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-bar": {
+   "committed": ">= 0.9 (r3's labeler bar, read on the graded instrument -- this is the number SS10 item 4 (a) turns on)",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "gates.graded_support_reliability",
+   "reproduced_A": ">= 0.9 (r3's labeler bar, read on the graded instrument -- this is the number SS10 item 4 (a) turns on)",
+   "main_recomputed": ">= 0.9 (r3's labeler bar, read on the graded instrument -- this is the number SS10 item 4 (a) turns on)",
+   "recomputed_B": null,
+   "status": "NOT RECOMPUTED (the bar's text (a constant of the design))"
+  },
+  "graded-support-reliability-sensitivities": {
+   "committed": {
+    "excluding_locator_blowups.spearman_brown_full_n": 0.9233,
+    "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9209
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_1.sensitivity",
+   "reproduced_A": {
+    "excluding_locator_blowups.spearman_brown_full_n": 0.9233,
+    "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9209
+   },
+   "main_recomputed": {
+    "excluding_locator_blowups.spearman_brown_full_n": 0.9233,
+    "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9209
+   },
+   "recomputed_B": {
+    "excluding_locator_blowups.spearman_brown_full_n": 0.9232976770306043,
+    "pairs_with_at_least_3_touched_sentences.spearman_brown_full_n": 0.9208648850334268
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "prereg-p-ext-1-scored": {
+   "committed": {
+    "predicted": 0.85,
+    "projected_at_preregistration": 0.8826,
+    "observed": 0.9205,
+    "observed_split_half_r": 0.8527,
+    "SCORED": "PASS"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "predictions.P_ext_1",
+   "reproduced_A": {
+    "predicted": 0.85,
+    "projected_at_preregistration": 0.8826,
+    "observed": 0.9205,
+    "observed_split_half_r": 0.8527,
+    "SCORED": "PASS"
+   },
+   "main_recomputed": {
+    "predicted": 0.85,
+    "projected_at_preregistration": 0.8826,
+    "observed": 0.9205,
+    "observed_split_half_r": 0.8527,
+    "SCORED": "PASS"
+   },
+   "recomputed_B": {
+    "predicted": 0.85,
+    "projected_at_preregistration": 0.8826,
+    "observed": 0.9204871674298472,
+    "observed_split_half_r": 0.85268756392484,
+    "SCORED": "PASS"
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "prereg-p-ext-1-as-registered": {
+   "committed": {
+    "threshold": 0.85,
+    "projected": 0.8826
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/predictions.json",
+   "pointer": "P_ext_1",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "pre-registered constant: not produced by any script",
+   "status": "NOT RECOMPUTED (pre-registered threshold and projection (constants))"
+  },
+  "cross-family-sonnet5-support-lift": {
+   "committed": {
+    "mean_support_of_picked_sentences": 10.7843,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 7.9209,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support": 277,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_with_support_0": 0.1262,
+    "max_possible_support": 30
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.sonnet5",
+   "reproduced_A": {
+    "mean_support_of_picked_sentences": 10.7843,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 7.9209,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support": 277,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_with_support_0": 0.1262,
+    "max_possible_support": 30
+   },
+   "main_recomputed": {
+    "mean_support_of_picked_sentences": 10.7843,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 7.9209,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support": 277,
+    "n_locally_touched_sentences": 40588,
+    "frac_picked_with_support_0": 0.1262,
+    "max_possible_support": 30
+   },
+   "recomputed_B": {
+    "mean_support_of_picked_sentences": 10.784345047923322,
+    "mean_support_of_all_locally_touched_sentences": 2.8634325416379225,
+    "lift_over_baseline": 7.9209125062854,
+    "n_sentences_picked": 626,
+    "n_pairs_with_local_support": 277,
+    "frac_picked_with_support_0": 0.12619808306709265,
+    "n_locally_touched_sentences": 40588,
+    "max_possible_support": 30
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH",
+   "finding": "baseline includes the locator blow-up pair (22,693 of 40,588 touched sentences, nearly all support 1). Without it: baseline 5.1901, lift +5.9628 (Sonnet)."
+  },
+  "cross-family-opus5-support-lift": {
+   "committed": {
+    "mean_support_of_picked_sentences": 9.1771,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 6.3137,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support": 306,
+    "frac_picked_with_support_0": 0.217
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.opus5",
+   "reproduced_A": {
+    "mean_support_of_picked_sentences": 9.1771,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 6.3137,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support": 306,
+    "frac_picked_with_support_0": 0.217
+   },
+   "main_recomputed": {
+    "mean_support_of_picked_sentences": 9.1771,
+    "mean_support_of_all_locally_touched_sentences": 2.8634,
+    "lift_over_baseline": 6.3137,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support": 306,
+    "frac_picked_with_support_0": 0.217
+   },
+   "recomputed_B": {
+    "mean_support_of_picked_sentences": 9.177091183119819,
+    "mean_support_of_all_locally_touched_sentences": 2.8634325416379225,
+    "lift_over_baseline": 6.313658641481896,
+    "n_sentences_picked": 1327,
+    "n_pairs_with_local_support": 306,
+    "frac_picked_with_support_0": 0.21703089675960813,
+    "n_locally_touched_sentences": 40588,
+    "max_possible_support": 30
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH",
+   "finding": "as Sonnet: without the blow-up pair, lift +4.4313."
+  },
+  "cross-family-fable51-support-lift": {
+   "committed": {
+    "mean_support_of_picked_sentences": 10.8024,
+    "mean_support_of_all_locally_touched_sentences": 5.3469,
+    "lift_over_baseline": 5.4555,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support": 248,
+    "frac_picked_with_support_0": 0.1661
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.per_judge.fable51",
+   "reproduced_A": {
+    "mean_support_of_picked_sentences": 10.8024,
+    "mean_support_of_all_locally_touched_sentences": 5.3469,
+    "lift_over_baseline": 5.4555,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support": 248,
+    "frac_picked_with_support_0": 0.1661
+   },
+   "main_recomputed": {
+    "mean_support_of_picked_sentences": 10.8024,
+    "mean_support_of_all_locally_touched_sentences": 5.3469,
+    "lift_over_baseline": 5.4555,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support": 248,
+    "frac_picked_with_support_0": 0.1661
+   },
+   "recomputed_B": {
+    "mean_support_of_picked_sentences": 10.802424242424243,
+    "mean_support_of_all_locally_touched_sentences": 5.346884014221507,
+    "lift_over_baseline": 5.455540228202736,
+    "n_sentences_picked": 825,
+    "n_pairs_with_local_support": 248,
+    "frac_picked_with_support_0": 0.16606060606060605,
+    "n_locally_touched_sentences": 14907,
+    "max_possible_support": 30
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "DRAFT \u00a75.5 and the claim note say Fable's baseline is 'computed over its own 248 positive pairs'; the harness takes every labeled pair with local support (250 pairs, 14,907 sentences). Over the 248 positive pairs the baseline is 5.3497 and the lift 5.4528."
+  },
+  "cross-family-local-self-reference-anchor": {
+   "committed": {
+    "mean_support_of_picked_sentences": 10.972,
+    "lift_over_baseline": 8.1086,
+    "n_sentences_picked": 3678,
+    "frac_picked_with_support_0": 0.0
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.local_self_reference.scout",
+   "reproduced_A": {
+    "mean_support_of_picked_sentences": 10.972,
+    "lift_over_baseline": 8.1086,
+    "n_sentences_picked": 3678,
+    "frac_picked_with_support_0": 0.0
+   },
+   "main_recomputed": {
+    "mean_support_of_picked_sentences": 10.972,
+    "lift_over_baseline": 8.1086,
+    "n_sentences_picked": 3678,
+    "frac_picked_with_support_0": 0.0
+   },
+   "recomputed_B": {
+    "mean_support_of_picked_sentences": 10.97199564980968,
+    "lift_over_baseline": 8.108563108171758,
+    "n_sentences_picked": 3678,
+    "frac_picked_with_support_0": 0.0
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "cross-family-opus-fable-agreement": {
+   "committed": {
+    "span_union_jaccard_where_both_positive.mean": 0.5041,
+    "span_union_jaccard_where_both_positive.median": 0.4545,
+    "whether_kappa.kappa": 0.7981,
+    "whether_kappa.observed_agreement": 0.996,
+    "co_labeled_pairs": 251,
+    "span_union_jaccard_where_both_positive.n": 248,
+    "whether_kappa.n": 251
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"opus5 vs fable51\"]",
+   "reproduced_A": {
+    "span_union_jaccard_where_both_positive.mean": 0.5041,
+    "span_union_jaccard_where_both_positive.median": 0.4545,
+    "whether_kappa.kappa": 0.7981,
+    "whether_kappa.observed_agreement": 0.996,
+    "co_labeled_pairs": 251,
+    "span_union_jaccard_where_both_positive.n": 248,
+    "whether_kappa.n": 251
+   },
+   "main_recomputed": {
+    "span_union_jaccard_where_both_positive.mean": 0.5041,
+    "span_union_jaccard_where_both_positive.median": 0.4545,
+    "whether_kappa.kappa": 0.7981,
+    "whether_kappa.observed_agreement": 0.996,
+    "co_labeled_pairs": 251,
+    "span_union_jaccard_where_both_positive.n": 248,
+    "whether_kappa.n": 251
+   },
+   "recomputed_B": {
+    "span_union_jaccard_where_both_positive.mean": 0.5040516835617072,
+    "span_union_jaccard_where_both_positive.median": 0.4544957093876787,
+    "whether_kappa.kappa": 0.798069187449719,
+    "whether_kappa.observed_agreement": 0.9960159362549801,
+    "co_labeled_pairs": 251,
+    "span_union_jaccard_where_both_positive.n": 248,
+    "whether_kappa.n": 251
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "cross-family-sonnet-opus-jaccard": {
+   "committed": 0.4179,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"sonnet5 vs opus5\"].span_union_jaccard_where_both_positive.mean",
+   "reproduced_A": 0.4179,
+   "main_recomputed": 0.4179,
+   "recomputed_B": 0.41794253747032,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "cross-family-sonnet-fable-jaccard": {
+   "committed": 0.4568,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "within_family[\"sonnet5 vs fable51\"].span_union_jaccard_where_both_positive.mean",
+   "reproduced_A": 0.4568,
+   "main_recomputed": 0.4568,
+   "recomputed_B": 0.45682625780704966,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-cost-per-pair": {
+   "committed": {
+    "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.1326,
+    "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.3023,
+    "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.2445
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges",
+   "reproduced_A": {
+    "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.1326,
+    "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.3023,
+    "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.2445
+   },
+   "main_recomputed": {
+    "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.1326,
+    "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.3023,
+    "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.2445
+   },
+   "recomputed_B": {
+    "sonnet5.cost_and_latency.mean_cost_usd_per_pair": 0.13255772402597402,
+    "opus5.cost_and_latency.mean_cost_usd_per_pair": 0.30232841883116884,
+    "fable51.cost_and_latency.mean_cost_usd_per_pair": 0.24451909163346613
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-sonnet5-cost": {
+   "committed": {
+    "total_cost_usd": 40.8278,
+    "mean_cost_usd_per_pair": 0.1326,
+    "n_pairs_costed": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.sonnet5.cost_and_latency",
+   "reproduced_A": {
+    "total_cost_usd": 40.8278,
+    "mean_cost_usd_per_pair": 0.1326,
+    "n_pairs_costed": 308
+   },
+   "main_recomputed": {
+    "total_cost_usd": 40.8278,
+    "mean_cost_usd_per_pair": 0.1326,
+    "n_pairs_costed": 308
+   },
+   "recomputed_B": {
+    "total_cost_usd": 40.827779,
+    "mean_cost_usd_per_pair": 0.13255772402597402,
+    "n_pairs_costed": 308
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-opus5-cost": {
+   "committed": {
+    "total_cost_usd": 93.1172,
+    "mean_cost_usd_per_pair": 0.3023,
+    "n_pairs_costed": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.cost_and_latency",
+   "reproduced_A": {
+    "total_cost_usd": 93.1172,
+    "mean_cost_usd_per_pair": 0.3023,
+    "n_pairs_costed": 308
+   },
+   "main_recomputed": {
+    "total_cost_usd": 93.1172,
+    "mean_cost_usd_per_pair": 0.3023,
+    "n_pairs_costed": 308
+   },
+   "recomputed_B": {
+    "total_cost_usd": 93.117153,
+    "mean_cost_usd_per_pair": 0.30232841883116884,
+    "n_pairs_costed": 308
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-fable51-cost": {
+   "committed": {
+    "total_cost_usd": 61.3743,
+    "mean_cost_usd_per_pair": 0.2445,
+    "n_pairs_costed": 251
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.fable51.cost_and_latency",
+   "reproduced_A": {
+    "total_cost_usd": 61.3743,
+    "mean_cost_usd_per_pair": 0.2445,
+    "n_pairs_costed": 251
+   },
+   "main_recomputed": {
+    "total_cost_usd": 61.3743,
+    "mean_cost_usd_per_pair": 0.2445,
+    "n_pairs_costed": 251
+   },
+   "recomputed_B": {
+    "total_cost_usd": 61.374292,
+    "mean_cost_usd_per_pair": 0.24451909163346613,
+    "n_pairs_costed": 251
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-total-cost": {
+   "committed": 195.32,
+   "source": "docs/plans/results/stage0/RESULTS-stage0b-claude-judges.md",
+   "pointer": "867 calls | **$195.32**",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": 195.319224,
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "judge-judge-graded-support-correlation": {
+   "committed": {
+    "mean_r": 0.2976,
+    "median_r": 0.3099,
+    "pooled_r_over_all_sentences": 0.2657,
+    "n_pairs": 297,
+    "n_sentences_pooled": 40588
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "cross_judge.support_correlation",
+   "reproduced_A": {
+    "mean_r": 0.2976,
+    "median_r": 0.3099,
+    "pooled_r_over_all_sentences": 0.2657,
+    "n_pairs": 297,
+    "n_sentences_pooled": 40588
+   },
+   "main_recomputed": {
+    "mean_r": 0.2976,
+    "median_r": 0.3099,
+    "pooled_r_over_all_sentences": 0.2657,
+    "n_pairs": 297,
+    "n_sentences_pooled": 40588
+   },
+   "recomputed_B": {
+    "mean_r": 0.29755712917272265,
+    "median_r": 0.3099296251064312,
+    "pooled_r_over_all_sentences": 0.2656920458143924,
+    "n_pairs": 297,
+    "n_sentences_pooled": 40588
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH",
+   "finding": "the pooled r over 40,588 sentences includes 22,693 from the blow-up pair; without it pooled r = 0.2282 over 17,895."
+  },
+  "judge-judge-top3-overlap": {
+   "committed": {
+    "top3_overlap": 0.4473,
+    "[\"frac_pairs_r_at_least_0.5\"]": 0.2727
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "cross_judge.support_correlation",
+   "reproduced_A": {
+    "top3_overlap": 0.4473,
+    "[\"frac_pairs_r_at_least_0.5\"]": 0.2727
+   },
+   "main_recomputed": {
+    "top3_overlap": 0.4473,
+    "[\"frac_pairs_r_at_least_0.5\"]": 0.2727
+   },
+   "recomputed_B": {
+    "top3_overlap": 0.4473398479913137,
+    "[\"frac_pairs_r_at_least_0.5\"]": 0.2727272727272727
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "claude-self-consistency-absent": {
+   "committed": null,
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "judges.opus5.self_consistency.rate",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "human-read-not-performed": {
+   "committed": "no agent read was substituted for a human read",
+   "source": "docs/plans/results/stage0/README.md",
+   "pointer": "no agent read was substituted for a human read",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (statement about the record, not a measurement)"
+  },
+  "deep-section-stratum-underpopulated": {
+   "committed": 3,
+   "source": "docs/plans/results/stage0/README.md",
+   "pointer": "deep-section stratum wanted 20 pairs and only 3 existed",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": 3,
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "confirmation-scale-pairs": {
+   "committed": {
+    "topics": 80,
+    "totals.pairs": 3738,
+    "totals.pooled": 2962,
+    "totals.sample": 776,
+    "pairs_per_topic.mean": 46.73,
+    "pairs_per_topic.median": 39,
+    "pairs_per_topic.min": 8,
+    "pairs_per_topic.max": 153
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "$",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "confirmation-scale-pairs-total": {
+   "committed": 3738,
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "totals.pairs",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "confirmation-scale-composition": {
+   "committed": {
+    "pooled": 2962,
+    "sample": 776,
+    "pairs": 3738,
+    "pooled_confirmatory_path_only": 1696
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/pool_counts.json",
+   "pointer": "totals",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "confirmation-readings-per-judge": {
+   "committed": {
+    "scout": 20,
+    "qwen": 10
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/label-manifest-conf.json",
+   "pointer": "n_presentations_per_judge",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "confirmation-total-readings": {
+   "committed": 112140,
+   "source": "docs/plans/results/stage0/RESULTS-confirmation-run-a-setup.md",
+   "pointer": "LABELING COMPLETE \u2014 112,140 readings over 3,738 pairs.",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "confirmation-record-counts": {
+   "committed": {
+    "scout.records": 74760,
+    "qwen.records": 37380
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "files",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "span-filter-dev-counts": {
+   "committed": {
+    "scout.records": 6160,
+    "scout.records_filtered": 82,
+    "scout.spans_dropped": 1088,
+    "scout.sentences_dropped": 25208,
+    "scout.records_flagged_blowup": 1,
+    "qwen.records": 3080,
+    "qwen.records_filtered": 0,
+    "qwen.spans_dropped": 0,
+    "qwen.sentences_dropped": 0,
+    "qwen.records_flagged_blowup": 0
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "files",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": {
+    "scout.records": 6160,
+    "scout.records_filtered": 54,
+    "scout.spans_dropped": 1088,
+    "scout.sentences_dropped": 25101,
+    "scout.records_flagged_blowup": 1,
+    "qwen.records": 3080,
+    "qwen.records_filtered": 0,
+    "qwen.spans_dropped": 0,
+    "qwen.sentences_dropped": 0,
+    "qwen.records_flagged_blowup": 0
+   },
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {
+    "scout.records_filtered": "diff",
+    "scout.sentences_dropped": "diff"
+   },
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "`records_filtered` counts records where the filter was APPLIED (82); only 54 records' evidence actually changed (28 applications were no-ops). `sentences_dropped` (25,208) counts per dropped span with overlaps; the distinct sentences removed are 25,101. DRAFT \u00a75.6 'rewrote 82' overstates by 28."
+  },
+  "span-filter-conf-counts": {
+   "committed": {
+    "scout.records": 74760,
+    "scout.records_filtered": 1050,
+    "scout.spans_dropped": 1441,
+    "scout.sentences_dropped": 33721,
+    "qwen.records": 37380,
+    "qwen.records_filtered": 9,
+    "qwen.spans_dropped": 1653,
+    "qwen.sentences_dropped": 8060
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "files",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "span-filter-instrument-unchanged": {
+   "committed": {
+    "delta_spearman_brown": -0.0013,
+    "recomputed_unfiltered.spearman_brown": 0.9205,
+    "recomputed_filtered.spearman_brown": 0.9192,
+    "committed_gates_r31ext.spearman_brown_at_30": 0.9205,
+    "VERDICT": "PASS",
+    "reproduces_committed_number": true,
+    "pairs": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "$",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": {
+    "delta_spearman_brown": -0.001260546925833883,
+    "recomputed_unfiltered.spearman_brown": 0.9204871674298472,
+    "recomputed_filtered.spearman_brown": 0.9192266205040133,
+    "committed_gates_r31ext.spearman_brown_at_30": 0.9205,
+    "VERDICT": "PASS",
+    "reproduces_committed_number": true,
+    "pairs": 308
+   },
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "span-filter-delta": {
+   "committed": -0.0013,
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "delta_spearman_brown",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": -0.001260546925833883,
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "span-filter-verdict": {
+   "committed": "PASS",
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-dev-verification.json",
+   "pointer": "VERDICT",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": "PASS",
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "locator-blowup-dev": {
+   "committed": {
+    "n_readings_flagged": 1,
+    "n_readings_examined": 6160,
+    "readings[0].spans_seen": 22,
+    "readings[0].spans_emitted": 986,
+    "readings[0].distinct_sentences": 22366,
+    "readings[0].topic": "2016_1",
+    "readings[0].docno": "4212306"
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "locator_blowups.scout",
+   "reproduced_A": {
+    "n_readings_flagged": 1,
+    "n_readings_examined": 6160,
+    "readings[0].spans_seen": 22,
+    "readings[0].spans_emitted": 986,
+    "readings[0].distinct_sentences": 22366,
+    "readings[0].topic": "2016_1",
+    "readings[0].docno": "4212306"
+   },
+   "main_recomputed": {
+    "n_readings_flagged": 1,
+    "n_readings_examined": 6160,
+    "readings[0].spans_seen": 22,
+    "readings[0].spans_emitted": 986,
+    "readings[0].distinct_sentences": 22366,
+    "readings[0].topic": "2016_1",
+    "readings[0].docno": "4212306"
+   },
+   "recomputed_B": {
+    "n_readings_flagged": 1,
+    "n_readings_examined": 6160,
+    "readings[0].spans_seen": 22,
+    "readings[0].spans_emitted": 986,
+    "readings[0].distinct_sentences": 22366,
+    "readings[0].topic": "2016_1",
+    "readings[0].docno": "4212306"
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "locator-blowup-qwen-dev-zero": {
+   "committed": {
+    "n_readings_flagged": 0,
+    "n_readings_examined": 3080
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "locator_blowups.qwen",
+   "reproduced_A": {
+    "n_readings_flagged": 0,
+    "n_readings_examined": 3080
+   },
+   "main_recomputed": {
+    "n_readings_flagged": 0,
+    "n_readings_examined": 3080
+   },
+   "recomputed_B": {
+    "n_readings_flagged": 0,
+    "n_readings_examined": 3080
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "confirmation-outputs-quarantined": {
+   "committed": "counts only \u2014 no endpoint value is computed, printed or stored here",
+   "source": "docs/plans/results/stage0/artifacts/conf-a/span-filter-conf.json",
+   "pointer": "QUARANTINE",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  },
+  "r31-scout-partial-credit-jaccard": {
+   "committed": 0.435,
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency.reading_ii_all_ten_presentation_pairs.mean_pairwise_span_union_jaccard.mean",
+   "reproduced_A": 0.435,
+   "main_recomputed": 0.435,
+   "recomputed_B": 0.43499193022220217,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-qwen-partial-credit-jaccard": {
+   "committed": 0.543,
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.self_consistency.reading_ii_all_ten_presentation_pairs.mean_pairwise_span_union_jaccard.mean",
+   "reproduced_A": 0.543,
+   "main_recomputed": 0.543,
+   "recomputed_B": 0.543028106815816,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-reliability-at-4": {
+   "committed": 0.1879,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[0].spearman_brown_full_n",
+   "reproduced_A": 0.1879,
+   "main_recomputed": 0.1879,
+   "recomputed_B": 0.1878660402488951,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-reliability-at-6": {
+   "committed": 0.4738,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[1].spearman_brown_full_n",
+   "reproduced_A": 0.4738,
+   "main_recomputed": 0.4738,
+   "recomputed_B": 0.47376514498027245,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-reliability-at-8": {
+   "committed": 0.6272,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[2].spearman_brown_full_n",
+   "reproduced_A": 0.6272,
+   "main_recomputed": 0.6272,
+   "recomputed_B": 0.6272117133687805,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-reliability-at-14": {
+   "committed": 0.788,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[4].spearman_brown_full_n",
+   "reproduced_A": 0.788,
+   "main_recomputed": 0.788,
+   "recomputed_B": 0.7880050356872668,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-degenerate-halves-at-4": {
+   "committed": 47,
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability[0].pairs_without_variance_in_a_half",
+   "reproduced_A": 47,
+   "main_recomputed": 47,
+   "recomputed_B": 47,
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31ext-scout-set-union-fraction-of-asymptote": {
+   "committed": {
+    "set_saturation_incremental.mm_fit.Vmax": 16.5552,
+    "set_saturation_incremental.mm_fit.Km": 8.7824,
+    "set_saturation_incremental.mm_fit.r2": 0.992232,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 300,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.20": 11.91
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout",
+   "reproduced_A": {
+    "set_saturation_incremental.mm_fit.Vmax": 16.5552,
+    "set_saturation_incremental.mm_fit.Km": 8.7824,
+    "set_saturation_incremental.mm_fit.r2": 0.992232,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 300,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.20": 11.91
+   },
+   "main_recomputed": {
+    "set_saturation_incremental.mm_fit.Vmax": 16.5552,
+    "set_saturation_incremental.mm_fit.Km": 8.7824,
+    "set_saturation_incremental.mm_fit.r2": 0.992232,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 300,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.20": 11.91
+   },
+   "recomputed_B": {
+    "set_saturation_incremental.mm_fit.Vmax": 16.555233633099686,
+    "set_saturation_incremental.mm_fit.Km": 8.782470854317218,
+    "set_saturation_incremental.mm_fit.r2": 0.9922317066455449,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 300,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.20": 11.91
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "set_saturation_incremental.mm_fit.Km": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "r31ext-qwen-set-union-fraction-of-asymptote": {
+   "committed": {
+    "set_saturation_incremental.mm_fit.Vmax": 5.1908,
+    "set_saturation_incremental.mm_fit.Km": 4.0961,
+    "set_saturation_incremental.mm_fit.r2": 0.994567,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 307,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.10": 3.7492
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen",
+   "reproduced_A": {
+    "set_saturation_incremental.mm_fit.Vmax": 5.1908,
+    "set_saturation_incremental.mm_fit.Km": 4.0961,
+    "set_saturation_incremental.mm_fit.r2": 0.994567,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 307,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.10": 3.7492
+   },
+   "main_recomputed": {
+    "set_saturation_incremental.mm_fit.Vmax": 5.1908,
+    "set_saturation_incremental.mm_fit.Km": 4.0961,
+    "set_saturation_incremental.mm_fit.r2": 0.994567,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 307,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.10": 3.7492
+   },
+   "recomputed_B": {
+    "set_saturation_incremental.mm_fit.Vmax": 5.190800858481167,
+    "set_saturation_incremental.mm_fit.Km": 4.096077269702906,
+    "set_saturation_incremental.mm_fit.r2": 0.9945684928323726,
+    "set_saturation_incremental.n_pairs_positive_somewhere": 307,
+    "union_saturation.over_pairs_positive_somewhere.mean_distinct_sets_at_k.10": 3.749185667752443
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "set_saturation_incremental.mm_fit.r2": "round"
+   },
+   "status": "MATCH-ROUNDING",
+   "why": "last-printed-digit difference from intermediate rounding: the harness rounds each mean curve to 4 decimals before computing marginal gains and before fitting, takes Vmax/Km from a finite grid and projects from the ROUNDED Vmax/Km; this recomputation keeps full precision and fits by golden-section search. Layer A (the pinned harness) reproduces the committed value exactly."
+  },
+  "r31ext-qwen-sentence-fit-excluding-blowups": {
+   "committed": {
+    "frac_of_asymptote_at_n": 0.7098,
+    "marginal_gain_at_n": 0.0694,
+    "mm_fit.Vmax": 6.3123,
+    "mm_fit.Km": 4.088,
+    "mm_fit.r2": 0.990467,
+    "mm_fit.DEGENERATE": false,
+    "n_pairs_positive_somewhere": 306
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.sentence_saturation_excluding_blowups",
+   "reproduced_A": {
+    "frac_of_asymptote_at_n": 0.7098,
+    "marginal_gain_at_n": 0.0694,
+    "mm_fit.Vmax": 6.3123,
+    "mm_fit.Km": 4.088,
+    "mm_fit.r2": 0.990467,
+    "mm_fit.DEGENERATE": false,
+    "n_pairs_positive_somewhere": 306
+   },
+   "main_recomputed": {
+    "frac_of_asymptote_at_n": 0.7098,
+    "marginal_gain_at_n": 0.0694,
+    "mm_fit.Vmax": 6.3123,
+    "mm_fit.Km": 4.088,
+    "mm_fit.r2": 0.990467,
+    "mm_fit.DEGENERATE": false,
+    "n_pairs_positive_somewhere": 306
+   },
+   "recomputed_B": {
+    "mm_fit.Vmax": 6.3122984084522935,
+    "mm_fit.Km": 4.08802512000101,
+    "mm_fit.r2": 0.9904653673291385,
+    "mm_fit.DEGENERATE": false,
+    "frac_of_asymptote_at_n": 0.7098226979878698,
+    "marginal_gain_at_n": 0.06942496493688652,
+    "n_pairs_positive_somewhere": 306
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "mm_fit.r2": "round"
+   },
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "'excluding blow-ups' drops pair 2016_1/4212306, where SCOUT blew up; Qwen has no blow-up there or anywhere. Qwen's own curve unfiltered: 307 pairs, marginal gain 0.0674, fraction of asymptote 0.6931."
+  },
+  "r31-qwen-union-as-labeler-unstable": {
+   "committed": {
+    "rate": 0.5779,
+    "consistent": 178,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5919,
+    "PASS": false
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.qwen.split_half_union_stability",
+   "reproduced_A": {
+    "rate": 0.5779,
+    "consistent": 178,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5919,
+    "PASS": false
+   },
+   "main_recomputed": {
+    "rate": 0.5779,
+    "consistent": 178,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5919,
+    "PASS": false
+   },
+   "recomputed_B": {
+    "rate": 0.577922077922078,
+    "consistent": 178,
+    "n_pairs": 308,
+    "mean_jaccard_where_both_positive": 0.5919485216977358,
+    "PASS": false
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "AMBIGUOUS DEFINITION",
+   "why": "as for Scout: plain span union gives 0.5877."
+  },
+  "judge-scout-support-reliability-curve": {
+   "committed": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142,
+    "[3].n_readings": 10,
+    "[4].n_readings": 14,
+    "[5].n_readings": 20,
+    "[5].pairs_without_variance_in_a_half": 4
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.support_reliability",
+   "reproduced_A": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142,
+    "[3].n_readings": 10,
+    "[4].n_readings": 14,
+    "[5].n_readings": 20,
+    "[5].pairs_without_variance_in_a_half": 4
+   },
+   "main_recomputed": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142,
+    "[3].n_readings": 10,
+    "[4].n_readings": 14,
+    "[5].n_readings": 20,
+    "[5].pairs_without_variance_in_a_half": 4
+   },
+   "recomputed_B": {
+    "[3].spearman_brown_full_n": 0.8338015838219025,
+    "[4].spearman_brown_full_n": 0.8821160665213015,
+    "[5].spearman_brown_full_n": 0.9140645871936025,
+    "[3].n_readings": 10,
+    "[4].n_readings": 14,
+    "[5].n_readings": 20,
+    "[5].pairs_without_variance_in_a_half": 5
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[5].spearman_brown_full_n": "diff",
+    "[5].pairs_without_variance_in_a_half": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "judge-qwen-support-reliability-curve": {
+   "committed": {
+    "[3].spearman_brown_full_n": 0.7216,
+    "[3].n_readings": 10,
+    "[3].pairs_without_variance_in_a_half": 8
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.support_reliability",
+   "reproduced_A": {
+    "[3].spearman_brown_full_n": 0.7216,
+    "[3].n_readings": 10,
+    "[3].pairs_without_variance_in_a_half": 8
+   },
+   "main_recomputed": {
+    "[3].spearman_brown_full_n": 0.7216,
+    "[3].n_readings": 10,
+    "[3].pairs_without_variance_in_a_half": 8
+   },
+   "recomputed_B": {
+    "[3].spearman_brown_full_n": 0.7219612705598802,
+    "[3].n_readings": 10,
+    "[3].pairs_without_variance_in_a_half": 8
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[3].spearman_brown_full_n": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-implied-single-reading-pooled": {
+   "committed": {
+    "[3].spearman_brown_full_n": 0.705,
+    "[4].spearman_brown_full_n": 0.788,
+    "[5].spearman_brown_full_n": 0.8588,
+    "[6].spearman_brown_full_n": 0.9205
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability",
+   "reproduced_A": {
+    "[3].spearman_brown_full_n": 0.705,
+    "[4].spearman_brown_full_n": 0.788,
+    "[5].spearman_brown_full_n": 0.8588,
+    "[6].spearman_brown_full_n": 0.9205
+   },
+   "main_recomputed": {
+    "[3].spearman_brown_full_n": 0.705,
+    "[4].spearman_brown_full_n": 0.788,
+    "[5].spearman_brown_full_n": 0.8588,
+    "[6].spearman_brown_full_n": 0.9205
+   },
+   "recomputed_B": {
+    "[3].spearman_brown_full_n": 0.7063405970571287,
+    "[4].spearman_brown_full_n": 0.7880050356872668,
+    "[5].spearman_brown_full_n": 0.858895808628553,
+    "[6].spearman_brown_full_n": 0.9204871674298472
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[3].spearman_brown_full_n": "diff",
+    "[5].spearman_brown_full_n": "round"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-implied-single-reading-scout": {
+   "committed": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.scout.support_reliability",
+   "reproduced_A": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142
+   },
+   "main_recomputed": {
+    "[3].spearman_brown_full_n": 0.8338,
+    "[4].spearman_brown_full_n": 0.8821,
+    "[5].spearman_brown_full_n": 0.9142
+   },
+   "recomputed_B": {
+    "[3].spearman_brown_full_n": 0.8338015838219025,
+    "[4].spearman_brown_full_n": 0.8821160665213015,
+    "[5].spearman_brown_full_n": 0.9140645871936025
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[5].spearman_brown_full_n": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-implied-single-reading-qwen": {
+   "committed": {
+    "[3].spearman_brown_full_n": 0.7216
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "judges.qwen.support_reliability",
+   "reproduced_A": {
+    "[3].spearman_brown_full_n": 0.7216
+   },
+   "main_recomputed": {
+    "[3].spearman_brown_full_n": 0.7216
+   },
+   "recomputed_B": {
+    "[3].spearman_brown_full_n": 0.7219612705598802
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[3].spearman_brown_full_n": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "graded-support-pooled-order": {
+   "committed": "s0, q0, s1, q1",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/PREDICTIONS.md",
+   "pointer": "order (s0, q0, s1, q1, \u2026, then the remaining Scout readings)",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": "s0, q0, s1, q1",
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "graded-support-degenerate-halves-curve": {
+   "committed": {
+    "[3].pairs_without_variance_in_a_half": 2,
+    "[4].pairs_without_variance_in_a_half": 2,
+    "[5].pairs_without_variance_in_a_half": 1,
+    "[6].pairs_without_variance_in_a_half": 1
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31ext/gates-r31ext.json",
+   "pointer": "pooled.support_reliability",
+   "reproduced_A": {
+    "[3].pairs_without_variance_in_a_half": 2,
+    "[4].pairs_without_variance_in_a_half": 2,
+    "[5].pairs_without_variance_in_a_half": 1,
+    "[6].pairs_without_variance_in_a_half": 1
+   },
+   "main_recomputed": {
+    "[3].pairs_without_variance_in_a_half": 2,
+    "[4].pairs_without_variance_in_a_half": 2,
+    "[5].pairs_without_variance_in_a_half": 1,
+    "[6].pairs_without_variance_in_a_half": 1
+   },
+   "recomputed_B": {
+    "[3].pairs_without_variance_in_a_half": 3,
+    "[4].pairs_without_variance_in_a_half": 2,
+    "[5].pairs_without_variance_in_a_half": 1,
+    "[6].pairs_without_variance_in_a_half": 1
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {
+    "[3].pairs_without_variance_in_a_half": "diff"
+   },
+   "status": "MISMATCH",
+   "why": "the harness's no-variance test is a float test (sqrt of a sum of squares == 0.0) on support fractions; a half whose values are all equal (e.g. all 1/5) can show ~1e-17 spread, so the pair is kept and contributes an r computed from rounding noise. With an exact test (integer vote counts) the pair is excluded, as the stated estimator says. Emulating the float test reproduces every committed value exactly (recompute_reliability.json, results.float_test)."
+  },
+  "dev-set-composition": {
+   "committed": "208",
+   "source": "docs/plans/results/stage0/artifacts/r31ext/PREDICTIONS.md",
+   "pointer": "308 development pairs (208 pooled + 100 bias-bound)",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": "208",
+   "reproduced_A_note": "source is not a gate-script output",
+   "A_vs_committed": null,
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-cross-judge-whether-kappa": {
+   "committed": {
+    "kappa": 0.29,
+    "observed_agreement": 0.9286,
+    "n": 308,
+    "b_positive_rate": 0.9805
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_presentation_0.pair_level_binary_kappa",
+   "reproduced_A": {
+    "kappa": 0.29,
+    "observed_agreement": 0.9286,
+    "n": 308,
+    "b_positive_rate": 0.9805
+   },
+   "main_recomputed": {
+    "kappa": 0.29,
+    "observed_agreement": 0.9286,
+    "n": 308,
+    "b_positive_rate": 0.9805
+   },
+   "recomputed_B": {
+    "kappa": 0.29002514668901885,
+    "observed_agreement": 0.9285714285714286,
+    "n": 308,
+    "b_positive_rate": 0.9805194805194806
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-cross-judge-span-jaccard-five-reading-unions": {
+   "committed": {
+    "n": 295,
+    "mean": 0.1613,
+    "median": 0.1012
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "cross_judge.at_k5_unions.span_union_jaccard_where_both_positive",
+   "reproduced_A": {
+    "n": 295,
+    "mean": 0.1613,
+    "median": 0.1012
+   },
+   "main_recomputed": {
+    "n": 295,
+    "mean": 0.1613,
+    "median": 0.1012
+   },
+   "recomputed_B": {
+    "n": 295,
+    "mean": 0.16130735895173667,
+    "median": 0.10120513152779577
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-span-self-consistency-all-ten-pairs": {
+   "committed": {
+    "mean_rate": 0.4201,
+    "min_rate": 0.3766,
+    "max_rate": 0.4675,
+    "n_pairs": 308
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.self_consistency.reading_ii_all_ten_presentation_pairs.union",
+   "reproduced_A": {
+    "mean_rate": 0.4201,
+    "min_rate": 0.3766,
+    "max_rate": 0.4675,
+    "n_pairs": 308
+   },
+   "main_recomputed": {
+    "mean_rate": 0.4201,
+    "min_rate": 0.3766,
+    "max_rate": 0.4675,
+    "n_pairs": 308
+   },
+   "recomputed_B": {
+    "mean_rate": 0.42012987012987013,
+    "min_rate": 0.37662337662337664,
+    "max_rate": 0.4675324675324675,
+    "n_pairs": 308
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-span-self-consistency-on-the-31": {
+   "committed": {
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.2903,
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 9,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.5484,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 17
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges",
+   "reproduced_A": {
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.2903,
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 9,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.5484,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 17
+   },
+   "main_recomputed": {
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.2903,
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 9,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.5484,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 17
+   },
+   "recomputed_B": {
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.2903225806451613,
+    "scout.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 9,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.rate": 0.5483870967741935,
+    "qwen.self_consistency.reading_i_presentation_0_vs_1.union.the_501_31_pairs.consistent": 17
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "r31-scout-hallucinated-span-rate-all-presentations": {
+   "committed": {
+    "rate": 0.01957,
+    "failed_spans": 85,
+    "attempted_spans": 4344,
+    "wilson95_upper": 0.02413
+   },
+   "source": "docs/plans/results/stage0/artifacts/r31/gates-r31.json",
+   "pointer": "judges.scout.hallucinated_span_rate_all_presentations",
+   "reproduced_A": {
+    "rate": 0.01957,
+    "failed_spans": 85,
+    "attempted_spans": 4344,
+    "wilson95_upper": 0.02413
+   },
+   "main_recomputed": {
+    "rate": 0.01957,
+    "failed_spans": 85,
+    "attempted_spans": 4344,
+    "wilson95_upper": 0.02413
+   },
+   "recomputed_B": {
+    "rate": 0.01956721915285451,
+    "failed_spans": 85,
+    "attempted_spans": 4344,
+    "wilson95_upper": 0.024130558073800306
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH"
+  },
+  "cross-family-support-correlation": {
+   "committed": {
+    "sonnet5.pooled_point_biserial_r": 0.2353,
+    "opus5.pooled_point_biserial_r": 0.2758,
+    "fable51.pooled_point_biserial_r": 0.2383,
+    "sonnet5.pooled_spearman_rho": 0.1353,
+    "opus5.pooled_spearman_rho": 0.1279,
+    "fable51.pooled_spearman_rho": 0.1238,
+    "sonnet5.n_sentences_pooled": 40667,
+    "opus5.n_sentences_pooled": 40876,
+    "fable51.n_sentences_pooled": 15044
+   },
+   "source": "docs/plans/results/stage0/artifacts/claude/gates-claude.json",
+   "pointer": "sentence_support_pooled30.correlation",
+   "reproduced_A": {
+    "sonnet5.pooled_point_biserial_r": 0.2353,
+    "opus5.pooled_point_biserial_r": 0.2758,
+    "fable51.pooled_point_biserial_r": 0.2383,
+    "sonnet5.pooled_spearman_rho": 0.1353,
+    "opus5.pooled_spearman_rho": 0.1279,
+    "fable51.pooled_spearman_rho": 0.1238,
+    "sonnet5.n_sentences_pooled": 40667,
+    "opus5.n_sentences_pooled": 40876,
+    "fable51.n_sentences_pooled": 15044
+   },
+   "main_recomputed": {
+    "sonnet5.pooled_point_biserial_r": 0.2353,
+    "opus5.pooled_point_biserial_r": 0.2758,
+    "fable51.pooled_point_biserial_r": 0.2383,
+    "sonnet5.pooled_spearman_rho": 0.1353,
+    "opus5.pooled_spearman_rho": 0.1279,
+    "fable51.pooled_spearman_rho": 0.1238,
+    "sonnet5.n_sentences_pooled": 40667,
+    "opus5.n_sentences_pooled": 40876,
+    "fable51.n_sentences_pooled": 15044
+   },
+   "recomputed_B": {
+    "sonnet5.pooled_point_biserial_r": 0.23531459298383775,
+    "sonnet5.pooled_spearman_rho": 0.1352771111339757,
+    "sonnet5.n_sentences_pooled": 40667,
+    "opus5.pooled_point_biserial_r": 0.2758487009167056,
+    "opus5.pooled_spearman_rho": 0.1279479913335493,
+    "opus5.n_sentences_pooled": 40876,
+    "fable51.pooled_point_biserial_r": 0.2382913471803317,
+    "fable51.pooled_spearman_rho": 0.12376267390068897,
+    "fable51.n_sentences_pooled": 15044
+   },
+   "A_vs_committed": "eq",
+   "B_parts_not_equal": {},
+   "status": "MATCH",
+   "finding": "pooled over sentences incl. the blow-up pair; without it point-biserial r = 0.2017 (Sonnet), 0.2226 (Opus); Fable unchanged."
+  },
+  "instrument-hashes-conf": {
+   "committed": {
+    "prompt_sha256": "ba09e122553833219a999f8a99c496fd2926b2b341f77026dfe7c6ab2f5131c7",
+    "rubric_sha256": "2e11f3688de916da8bfc8b5b0a788050bf9d077960d616d33490c6ecf747363b",
+    "system_sha256": "f758cbf4d74bf3d419eb263678a5bd436b24454c61cc50a758f421771dcae166",
+    "temperature": 0.0,
+    "presentation_seed_formula": "SEED_LABELDUP + 100*k + pair_index"
+   },
+   "source": "docs/plans/results/stage0/artifacts/conf-a/label-manifest-conf.json",
+   "pointer": "instrument",
+   "reproduced_A": null,
+   "main_recomputed": null,
+   "recomputed_B": null,
+   "reproduced_A_note": "source is not a gate-script output",
+   "status": "NOT RECOMPUTED (quarantine)",
+   "why": "confirmation-run data is quarantined; resolved against the committed artifact and checked for internal arithmetic only (recompute_derived)"
+  }
+ }
+}
