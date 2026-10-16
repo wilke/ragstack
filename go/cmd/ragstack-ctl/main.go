@@ -132,7 +132,14 @@ func usage() {
   fleet backup-identity init [--dry-run]    generate the ctl's age backup identity (0600) and add its
                                             public recipient to backup-recipients.txt; backups then
                                             seal tenants' secrets (restart the daemon to pick it up)
-  tenant create <name> --artifact ID        allocate, provision, start and route a new tenant
+  tenant create <name> --artifact ID | --image NAME [--artifact ID]
+                [--identity bvbrc|none] [--admin-subject S]… [--sa subject:role:purpose]…
+                [--key label:role]… [--set K=V]… [--template-from T] [--ui-mode static|dev|external]
+                [--es-heap 1g] [--postgres sqlite|local] [--no-start] [--no-gateway]
+                [--credentials-file PATH]
+                                            allocate, provision, start and route a new tenant;
+                                            waits, and delivers the minted credentials ONCE
+                                            (to PATH, 0600, when given; else to stdout)
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
   tenant logs <name> --file api|qdrant|es|ui [--lines N]
@@ -146,7 +153,7 @@ func usage() {
                                             secrets + sqlite state + the rollback descriptor,
                                             no store snapshots, no fence, seconds); --secrets
                                             require refuses unless a backup recipient exists
-  tenant restore <name> --from <bundle-id> --as <fresh-tenant>
+  tenant restore <name> --from <bundle-id> --as <fresh-tenant> [--credentials-file PATH]
   tenant decommission <name> [--archive=false]
                                             quarantine (rename, never delete). Archives first by
                                             default: a fenced, checked backup with the secrets
@@ -180,10 +187,12 @@ func usage() {
                                             --server is refused. They are the ops run on a
                                             tenant BEFORE its handover.
 
-  key mint <tenant> <label> --role admin|user [--restart]
-                                            waits, and prints the minted value ONCE
+  key mint <tenant> <label> --role admin|user [--restart] [--credentials-file PATH]
+                                            waits, and delivers the minted value ONCE (to
+                                            PATH, 0600, when given; else to stdout)
   key revoke <tenant> <id> [--restart]
-  admin add|remove <tenant> <subject>
+  admin add|remove <tenant> <subject>       ADMIN_SUBJECTS in tenant.env (comma or JSON form);
+                                            pending until the API restarts
   sa create <tenant> <subject> --role admin|user [--purpose TEXT]
   sa disable|enable <tenant> <subject>
   env set <tenant> KEY VALUE                a PUBLIC-class key only
@@ -194,7 +203,8 @@ func usage() {
   job list [--tenant T] [--state S] [--limit N]
   job show <id>
   job log <id> <n> [--lines N]
-  job secrets <id>                          a job's minted credentials, once (15-minute window)
+  job secrets <id> [--credentials-file PATH]
+                                            a job's minted credentials, once (15-minute window)
   job resume|continue|cancel <id>
 
 flags every operation accepts:

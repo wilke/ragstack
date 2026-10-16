@@ -290,7 +290,11 @@ Drop `--dry-run` to run it. The minted keys are printed **once**, when the job
 succeeds, and are in no file the ctl can read back — the registry keeps
 `sha256:<hex[:16]>` fingerprints. `--wait` is implied for an execute, because
 the delivery envelope is destroyed by the first read and expires after fifteen
-minutes; collect them then or mint replacements with `key mint`.
+minutes; collect them then or mint replacements with `key mint`. Pass
+`--credentials-file PATH` (also on `key mint`, `tenant restore` and `job
+secrets`) to have them written to a NEW 0600 file instead, with only labels and
+fingerprints on stdout; without it the values go to stdout and stderr warns
+that a logged session captures them.
 
 Flags worth knowing:
 

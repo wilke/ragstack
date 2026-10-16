@@ -914,39 +914,14 @@ func (p *previewer) dormant(st registry.Stores) bool {
 // --------------------------------------------------------------- identity
 
 func (p *previewer) identity() registry.Identity {
-	id := registry.Identity{Provider: "none"}
-	switch v, _ := p.get("IDENTITY_PROVIDER"); v {
-	case "bvbrc", "oidc", "none":
-		id.Provider = v
-	case "":
-	default:
+	// registry.IdentityFromEnv is the ONE derivation: the env ops that edit
+	// IDENTITY_PROVIDER / ADMIN_SUBJECTS re-derive the row with it (#736).
+	v, _ := p.get("IDENTITY_PROVIDER")
+	id, ok := registry.IdentityFromEnv(v, p.env["ADMIN_SUBJECTS"].Value)
+	if !ok {
 		p.warn(doctor.UnsupportedEnvKey, fmt.Sprintf("IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none; recorded as none", v))
 	}
-	id.AdminSubjectsCount = len(adminSubjects(p.env["ADMIN_SUBJECTS"].Value))
 	return id
-}
-
-// adminSubjects counts the entries of ADMIN_SUBJECTS in either accepted form
-// (comma-separated, or a JSON array). The subjects themselves are identities
-// and are deliberately NOT carried into the registry.
-func adminSubjects(v string) []string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return nil
-	}
-	if strings.HasPrefix(v, "[") {
-		var arr []string
-		if err := json.Unmarshal([]byte(v), &arr); err == nil {
-			return arr
-		}
-	}
-	var out []string
-	for _, s := range strings.Split(v, ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // keys builds the key ledger from the API_KEYS / API_KEY_TENANTS /

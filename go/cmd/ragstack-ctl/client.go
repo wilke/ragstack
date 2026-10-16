@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/api"
+	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 )
@@ -108,6 +109,12 @@ type opFlags struct {
 	// so the collection goes back the same way the submission went.
 	wantSecrets  bool
 	fetchSecrets func(jobID string) (*model.SecretsResponse, error)
+
+	// credentialsFile is --credentials-file, registered only by the commands
+	// that mint (addCredentialsFileFlag); nil everywhere else. When set, the
+	// envelope is written there (0600, never over an existing file) and stdout
+	// carries labels and fingerprints only (#736).
+	credentialsFile *string
 
 	// engine is the in-process engine a --direct submission runs through when
 	// the caller already built one. It exists for `fleet start|stop --all`,
@@ -752,12 +759,125 @@ func deliverSecrets(o *opFlags, jobID string) int {
 			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)
 		return exitError
 	}
-	return printSecrets(resp, *o.asJSON)
+	path := ""
+	if o.credentialsFile != nil {
+		path = *o.credentialsFile
+	}
+	return deliverEnvelope(resp, *o.asJSON, path)
+}
+
+// credentialsFileUsage is the flag's help text, shared by every minting verb.
+const credentialsFileUsage = "write the minted credentials to this NEW file (0600; an existing file is refused) " +
+	"and print only labels and fingerprints"
+
+// addCredentialsFileFlag registers --credentials-file on a command that mints.
+func (o *opFlags) addCredentialsFileFlag() {
+	o.credentialsFile = o.fs.String("credentials-file", "", credentialsFileUsage)
+}
+
+// checkCredentialsFile is the up-front half of --credentials-file: the path is
+// refused BEFORE the job is submitted when the write could not succeed, because
+// after the job the envelope exists for one read and a failed write would lose
+// it. "" is no file, and fine.
+func checkCredentialsFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("--credentials-file %s already exists; credentials are never written over a file "+
+			"(remove it or pick a new path)", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("--credentials-file %s: %w", path, err)
+	}
+	dir := filepath.Dir(path)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("--credentials-file %s: the directory %s does not exist", path, dir)
+	}
+	return nil
+}
+
+// writeCredentialsFile writes the envelope (secrets_response.json) to a NEW
+// file, created 0600 with O_EXCL so neither an existing file nor a link planted
+// at the path since the up-front check is ever followed or overwritten.
+func writeCredentialsFile(path string, resp *model.SecretsResponse) (err error) {
+	body, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = f.Write(append(body, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// deliverEnvelope is where a collected envelope goes: to --credentials-file
+// when one was named (stdout then carries labels and fingerprints only), else
+// to stdout with a warning on stderr that values are being shown. A file that
+// cannot be written after all falls back to stdout, loudly: the envelope has
+// been read once and destroyed, so it is the only copy there will ever be.
+func deliverEnvelope(resp *model.SecretsResponse, asJSON bool, path string) int {
+	if path == "" {
+		if len(resp.Secrets) > 0 {
+			fmt.Fprintf(stderr, "ragstack-ctl: warning: printing %d credential value(s) to stdout; "+
+				"pass --credentials-file PATH to write them to a 0600 file instead\n", len(resp.Secrets))
+		}
+		return printSecrets(resp, asJSON)
+	}
+	if err := writeCredentialsFile(path, resp); err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: the credentials could not be written to %s (%v); the envelope has "+
+			"already been read and destroyed, so they are printed below instead\n", path, err)
+		return printSecrets(resp, asJSON)
+	}
+	return printSecretLabels(resp, asJSON, path)
+}
+
+// redactedSecret is one credential as stdout may show it once its value has
+// gone to a file: label, role and fingerprint.
+type redactedSecret struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Role        string `json:"role"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// printSecretLabels reports a file-delivered envelope without its values.
+func printSecretLabels(resp *model.SecretsResponse, asJSON bool, path string) int {
+	rows := make([]redactedSecret, 0, len(resp.Secrets))
+	for _, s := range resp.Secrets {
+		rows = append(rows, redactedSecret{ID: s.ID, Label: s.Label, Role: s.Role, Fingerprint: auth.Fingerprint(s.Value)})
+	}
+	if asJSON {
+		return encode(map[string]any{
+			"job_id": resp.JobID, "delivered_at": resp.DeliveredAt, "expires_at": resp.ExpiresAt,
+			"credentials_file": path, "secrets": rows,
+		})
+	}
+	fmt.Fprintf(stdout, "\ncredentials for job %s written to %s (0600) — they are not stored anywhere else and "+
+		"cannot be shown again:\n", resp.JobID, path)
+	for _, r := range rows {
+		fmt.Fprintf(stdout, "  %-20s %-6s %s\n", r.Label, r.Role, r.Fingerprint)
+	}
+	fmt.Fprintf(stdout, "The registry keeps the same fingerprints.\n")
+	return exitOK
 }
 
 // printSecrets prints one delivered envelope. It is the ONLY place this binary
-// writes a secret value, shared by the commands that collect one on their own
-// wait (`tenant create`, `tenant restore`, `key mint`) and by `job secrets`.
+// writes a secret value to stdout, shared by the commands that collect one on
+// their own wait (`tenant create`, `tenant restore`, `key mint`) and by `job
+// secrets`, through deliverEnvelope (writeCredentialsFile is the only other
+// place a value goes).
 func printSecrets(resp *model.SecretsResponse, asJSON bool) int {
 	if asJSON {
 		return encode(resp)

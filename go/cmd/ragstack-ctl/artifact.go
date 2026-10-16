@@ -222,9 +222,15 @@ func createUsage() int {
   --ui-mode static|dev|external
   --no-start             provision and enable, but do not start
   --no-gateway           do not publish a gateway generation
+  --credentials-file PATH
+                         write the minted credentials to this NEW file (0600;
+                         an existing file is refused) and print only labels
+                         and fingerprints
 
-The minted credentials are printed ONCE, when the job succeeds. That needs the
+The minted credentials are delivered ONCE, when the job succeeds. That needs the
 job to be followed, so --wait is implied (as it already is under --direct).
+Without --credentials-file they are printed to stdout (with a warning on
+stderr) — which a logged session or transcript captures.
 `, opFlagSummary)
 	return exitUsage
 }
@@ -252,6 +258,7 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 	fs.Var(&keyFlags, "key", "label:role of a key to mint, repeatable")
 	fs.Var(&saFlags, "sa", "subject:role:purpose of a service account, repeatable")
 	fs.Var(&setFlagsIn, "set", "KEY=VALUE setting, repeatable (executable-surface keys under --direct only)")
+	o.addCredentialsFileFlag()
 
 	pos, rest := takePositionals(args, 1)
 	if err := fs.Parse(rest); err != nil {
@@ -263,6 +270,9 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 	}
 	name := pos[0]
 	set := setFlags(fs)
+	if err := checkCredentialsFile(*o.credentialsFile); err != nil {
+		return usageErr("%v", err)
+	}
 
 	opArgs := map[string]any{"name": name}
 	if *artifact != "" {

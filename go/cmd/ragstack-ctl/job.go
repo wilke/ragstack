@@ -26,7 +26,7 @@ func jobUsage() int {
   list [--tenant T] [--state S] [--limit N]   jobs, newest first
   show <id>                                   one job, its steps and its outcome
   log  <id> <n> [--lines N]                   the redacted tail of step n's log
-  secrets  <id>                               the job's minted credentials, printed ONCE (15-minute window)
+  secrets  <id> [--credentials-file PATH]     the job's minted credentials, delivered ONCE (15-minute window)
   resume   <id>                               re-run an interrupted job from its last checkpoint
   continue <id>                               release a job waiting in awaiting_cutover
   cancel   <id>                               stop a job, rolling back what can be rolled back
@@ -207,13 +207,17 @@ func cmdJobSecrets(args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("job secrets", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	r := addReadFlags(fs, jsonOut)
+	credsFile := fs.String("credentials-file", "", credentialsFileUsage)
 	pos, rest := takePositionals(args, 1)
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
 	}
 	pos = append(pos, fs.Args()...)
 	if len(pos) != 1 {
-		return usageErr("usage: ragstack-ctl job secrets <id>")
+		return usageErr("usage: ragstack-ctl job secrets <id> [--credentials-file PATH]")
+	}
+	if err := checkCredentialsFile(*credsFile); err != nil {
+		return usageErr("%v", err)
 	}
 	c, err := r.client()
 	if err != nil {
@@ -237,7 +241,7 @@ func cmdJobSecrets(args []string, jsonOut bool) int {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return failClient(fmt.Errorf("the envelope of job %s is not secrets_response.json: %w", pos[0], err))
 	}
-	return printSecrets(&out, *r.asJSON)
+	return deliverEnvelope(&out, *r.asJSON, *credsFile)
 }
 
 func cmdJobLog(args []string, jsonOut bool) int {

@@ -11,12 +11,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 )
@@ -489,5 +491,97 @@ func TestJobSecretsPrintsOnceAndSaysWhenTheEnvelopeIsGone(t *testing.T) {
 func TestJobSecretsNeedsExactlyOneID(t *testing.T) {
 	if rc, _, _ := capture(t, "job", "secrets"); rc != exitUsage {
 		t.Errorf("rc %d, want usage", rc)
+	}
+}
+
+// #736: without --credentials-file the value still reaches stdout, but stderr
+// says so; with it the envelope goes to a NEW 0600 file and stdout carries the
+// fingerprint only.
+func TestKeyMintWarnsWhenPrintingTheValue(t *testing.T) {
+	minted := strings.Repeat("5e", 32)
+	f := secretsScript(t, minted)
+	keyFile := writeKeyFile(t)
+	rc, _, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes")
+	if rc != exitOK {
+		t.Fatalf("rc %d (want 0) %s", rc, errs)
+	}
+	if !strings.Contains(errs, "--credentials-file") || !strings.Contains(errs, "warning") {
+		t.Errorf("no warning on stderr that values are shown: %q", errs)
+	}
+}
+
+func TestKeyMintCredentialsFileWritesTheEnvelopeAndPrintsFingerprints(t *testing.T) {
+	minted := strings.Repeat("5e", 32)
+	f := secretsScript(t, minted)
+	keyFile := writeKeyFile(t)
+	path := filepath.Join(t.TempDir(), "creds.json")
+	rc, out, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes", "--credentials-file", path)
+	if rc != exitOK {
+		t.Fatalf("rc %d (want 0) %s", rc, errs)
+	}
+	if strings.Contains(out, minted) || strings.Contains(errs, minted) {
+		t.Fatal("the minted value reached the terminal although --credentials-file was given")
+	}
+	if !strings.Contains(out, auth.Fingerprint(minted)) || !strings.Contains(out, path) {
+		t.Errorf("stdout does not name the file and the fingerprint:\n%s", out)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the credentials file is %v, want 0600", fi.Mode().Perm())
+	}
+	b, _ := os.ReadFile(path)
+	var env model.SecretsResponse
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("the file is not secrets_response.json: %v", err)
+	}
+	if len(env.Secrets) != 1 || env.Secrets[0].Value != minted || env.Secrets[0].Label != "ci-runner" {
+		t.Errorf("the file holds %+v", env.Secrets)
+	}
+}
+
+// An existing file is refused BEFORE the job is submitted: after it, the
+// envelope exists for one read and a failed write would lose it.
+func TestCredentialsFileRefusesAnExistingFileBeforeSubmitting(t *testing.T) {
+	f := secretsScript(t, strings.Repeat("5e", 32))
+	keyFile := writeKeyFile(t)
+	path := filepath.Join(t.TempDir(), "creds.json")
+	if err := os.WriteFile(path, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, _, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes", "--credentials-file", path)
+	if rc != exitUsage || !strings.Contains(errs, "already exists") {
+		t.Fatalf("rc %d, stderr %q; want a usage refusal naming the existing file", rc, errs)
+	}
+	if n := len(f.requests()); n != 0 {
+		t.Errorf("%d requests were sent; the refusal must come before the submission", n)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "keep me\n" {
+		t.Errorf("the existing file was touched: %q", b)
+	}
+}
+
+// `job secrets` takes the same flag.
+func TestJobSecretsCredentialsFile(t *testing.T) {
+	value := strings.Repeat("7c", 32)
+	f := secretsScript(t, value)
+	keyFile := writeKeyFile(t)
+	path := filepath.Join(t.TempDir(), "creds.json")
+	id := sampleJob(model.JobSucceeded).ID
+	rc, out, errs := capture(t, "job", "secrets", id, "--server", f.srv.URL, "--api-key-file", keyFile,
+		"--credentials-file", path)
+	if rc != exitOK {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if strings.Contains(out, value) {
+		t.Error("the value reached stdout")
+	}
+	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), value) {
+		t.Errorf("the file does not hold the envelope: %v", err)
 	}
 }
