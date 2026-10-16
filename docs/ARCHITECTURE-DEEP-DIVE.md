@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution.** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution; #707's status corrected to merged on 2026-10-11.** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1607,8 +1607,8 @@ step 6 has not, and step 5's retirement of the per-group image directories is st
   Each group's workers take one `--image-dir`, the group dir, which holds same-named
   symlinks to the store's image and receipt; the boot check verifies the first hit (the
   link), warns that the name is in two dirs, and logs "sha256 ok, labels ok" for all three
-  registered workflows. Writing that link into decision 6 as the way the store is reached
-  is proposed in #707 (open). #706 then removed the substitution (above).
+  registered workflows. Decision 6 now records that link as the way the store is reached
+  (#707, merged 2026-10-09 as `766cf50`). #706 then removed the substitution (above).
 - **Not yet:** retiring the per-group image directories (the rest of step 5; they still
   hold the pre-ADR `ragstack-worker*.sif` builds and the links above), and the server
   image (step 6): tenants still run from tagged checkouts.
