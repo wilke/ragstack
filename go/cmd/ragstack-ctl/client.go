@@ -115,6 +115,10 @@ type opFlags struct {
 	// envelope is written there (0600, never over an existing file) and stdout
 	// carries labels and fingerprints only (#736).
 	credentialsFile *string
+	// creds is the file --credentials-file named, already created (O_EXCL,
+	// 0600) before the job was submitted; nil when no file was asked for or
+	// under --dry-run.
+	creds *credsSink
 
 	// engine is the in-process engine a --direct submission runs through when
 	// the caller already built one. It exists for `fleet start|stop --all`,
@@ -759,11 +763,7 @@ func deliverSecrets(o *opFlags, jobID string) int {
 			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)
 		return exitError
 	}
-	path := ""
-	if o.credentialsFile != nil {
-		path = *o.credentialsFile
-	}
-	return deliverEnvelope(resp, *o.asJSON, path)
+	return deliverEnvelope(resp, *o.asJSON, o.creds)
 }
 
 // credentialsFileUsage is the flag's help text, shared by every minting verb.
@@ -775,72 +775,98 @@ func (o *opFlags) addCredentialsFileFlag() {
 	o.credentialsFile = o.fs.String("credentials-file", "", credentialsFileUsage)
 }
 
-// checkCredentialsFile is the up-front half of --credentials-file: the path is
-// refused BEFORE the job is submitted when the write could not succeed, because
-// after the job the envelope exists for one read and a failed write would lose
-// it. "" is no file, and fine.
-func checkCredentialsFile(path string) error {
-	if path == "" {
+// openCredentials is the up-front half of --credentials-file: the file is
+// CREATED (O_EXCL, 0600) before the job is submitted and its descriptor kept,
+// because after the job the envelope exists for one read and a write that
+// failed then — an existing path, a directory this account cannot write —
+// would lose it or push the values onto the terminal the flag exists to keep
+// them off. Nothing is opened under --dry-run (nothing is minted) or without
+// the flag. The caller defers o.creds.finish().
+func (o *opFlags) openCredentials() error {
+	if o.credentialsFile == nil || *o.credentialsFile == "" || *o.dryRun {
 		return nil
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("--credentials-file %s already exists; credentials are never written over a file "+
-			"(remove it or pick a new path)", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("--credentials-file %s: %w", path, err)
+	s, err := openCredsSink(*o.credentialsFile)
+	if err != nil {
+		return err
 	}
-	dir := filepath.Dir(path)
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("--credentials-file %s: the directory %s does not exist", path, dir)
-	}
+	o.creds = s
 	return nil
 }
 
-// writeCredentialsFile writes the envelope (secrets_response.json) to a NEW
-// file, created 0600 with O_EXCL so neither an existing file nor a link planted
-// at the path since the up-front check is ever followed or overwritten.
-func writeCredentialsFile(path string, resp *model.SecretsResponse) (err error) {
+// credsSink is a credentials file created before the job and filled after it.
+type credsSink struct {
+	path      string
+	f         *os.File
+	delivered bool
+}
+
+// openCredsSink creates path O_EXCL with mode 0600: neither an existing file
+// nor a link planted at the path is ever followed or overwritten. "" is no
+// sink.
+func openCredsSink(path string) (*credsSink, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("--credentials-file %s already exists; credentials are never written over a file "+
+			"(remove it or pick a new path)", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("--credentials-file %s cannot be created: %w", path, err)
+	}
+	return &credsSink{path: path, f: f}, nil
+}
+
+// write puts the envelope (secrets_response.json) into the open file.
+func (s *credsSink) write(resp *model.SecretsResponse) error {
 	body, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	if _, err := s.f.Write(append(body, '\n')); err != nil {
 		return err
 	}
-	defer func() {
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			_ = os.Remove(path)
-		}
-	}()
-	if _, err = f.Write(append(body, '\n')); err != nil {
+	if err := s.f.Sync(); err != nil {
 		return err
 	}
-	return f.Sync()
+	s.delivered = true
+	return nil
 }
 
-// deliverEnvelope is where a collected envelope goes: to --credentials-file
-// when one was named (stdout then carries labels and fingerprints only), else
-// to stdout with a warning on stderr that values are being shown. A file that
-// cannot be written after all falls back to stdout, loudly: the envelope has
-// been read once and destroyed, so it is the only copy there will ever be.
-func deliverEnvelope(resp *model.SecretsResponse, asJSON bool, path string) int {
-	if path == "" {
+// finish closes the file, and removes it when nothing was delivered into it
+// (a refused plan, a failed job, a replayed envelope): an empty credentials
+// file left behind would read as "the keys are in here".
+func (s *credsSink) finish() {
+	if s == nil {
+		return
+	}
+	_ = s.f.Close()
+	if !s.delivered {
+		_ = os.Remove(s.path)
+	}
+}
+
+// deliverEnvelope is where a collected envelope goes: into the credentials
+// file when one was opened (stdout then carries labels and fingerprints only),
+// else to stdout with a warning on stderr that values are being shown. A write
+// that fails mid-way (disk full) falls back to stdout, loudly: the envelope
+// has been read once and destroyed, so it is the only copy there will ever be.
+func deliverEnvelope(resp *model.SecretsResponse, asJSON bool, sink *credsSink) int {
+	if sink == nil {
 		if len(resp.Secrets) > 0 {
 			fmt.Fprintf(stderr, "ragstack-ctl: warning: printing %d credential value(s) to stdout; "+
 				"pass --credentials-file PATH to write them to a 0600 file instead\n", len(resp.Secrets))
 		}
 		return printSecrets(resp, asJSON)
 	}
-	if err := writeCredentialsFile(path, resp); err != nil {
-		fmt.Fprintf(stderr, "ragstack-ctl: the credentials could not be written to %s (%v); the envelope has "+
-			"already been read and destroyed, so they are printed below instead\n", path, err)
+	if err := sink.write(resp); err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: WARNING: the credentials could not be written to %s (%v); the envelope "+
+			"has already been read and destroyed, so they are printed to stdout below instead\n", sink.path, err)
 		return printSecrets(resp, asJSON)
 	}
-	return printSecretLabels(resp, asJSON, path)
+	return printSecretLabels(resp, asJSON, sink.path)
 }
 
 // redactedSecret is one credential as stdout may show it once its value has

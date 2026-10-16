@@ -585,3 +585,128 @@ func TestJobSecretsCredentialsFile(t *testing.T) {
 		t.Errorf("the file does not hold the envelope: %v", err)
 	}
 }
+
+// Review of #738: the file is CREATED before the job is submitted, so a
+// directory this account cannot write is refused up front — never discovered
+// after the envelope has been consumed, when the values would end up on stdout.
+func TestCredentialsFileInAnUnwritableDirectoryIsRefusedBeforeSubmitting(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a 0500 directory")
+	}
+	f := secretsScript(t, strings.Repeat("5e", 32))
+	keyFile := writeKeyFile(t)
+	dir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	rc, out, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes", "--credentials-file", filepath.Join(dir, "c.json"))
+	if rc != exitUsage || !strings.Contains(errs, "cannot be created") {
+		t.Fatalf("rc %d, stderr %q; want a usage refusal", rc, errs)
+	}
+	if n := len(f.requests()); n != 0 {
+		t.Errorf("%d requests were sent; the refusal must come before the submission", n)
+	}
+	if strings.Contains(out, strings.Repeat("5e", 32)) {
+		t.Error("a value reached stdout")
+	}
+}
+
+// --dry-run mints nothing, so --credentials-file is neither checked nor
+// created: an existing path is fine, and a new one is not left behind.
+func TestCredentialsFileIsIgnoredUnderDryRun(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing.json")
+	if err := os.WriteFile(existing, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, "fresh.json")
+	for _, path := range []string{existing, fresh} {
+		for _, argv := range [][]string{
+			{"key", "mint", "dev", "ci-runner", "--role", "user"},
+			{"tenant", "create", "conf", "--artifact", "a1"},
+			{"tenant", "restore", "dev", "--from", "20260914T101500Z-backup", "--as", "dev-restore"},
+		} {
+			f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("op", "dev")) })
+			argv = append(append([]string{}, argv...), "--server", f.srv.URL, "--dry-run", "--credentials-file", path)
+			if rc, _, errs := capture(t, argv...); rc != exitOK {
+				t.Errorf("%v: rc %d %s", argv[:2], rc, errs)
+			}
+		}
+	}
+	if b, _ := os.ReadFile(existing); string(b) != "keep me\n" {
+		t.Errorf("the existing file was touched: %q", b)
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Errorf("a dry run left %s behind (%v)", fresh, err)
+	}
+}
+
+// --json with the flag prints the redacted document: fingerprints, no value.
+func TestCredentialsFileWithJSONPrintsNoValue(t *testing.T) {
+	minted := strings.Repeat("5e", 32)
+	f := secretsScript(t, minted)
+	keyFile := writeKeyFile(t)
+	path := filepath.Join(t.TempDir(), "creds.json")
+	rc, out, errs := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user", "--json",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes", "--credentials-file", path)
+	if rc != exitOK {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if strings.Contains(out, minted) || strings.Contains(errs, minted) {
+		t.Fatal("the value reached the terminal under --json")
+	}
+	if !strings.Contains(out, auth.Fingerprint(minted)) || !strings.Contains(out, `"credentials_file"`) {
+		t.Errorf("the redacted JSON lacks the fingerprint or the file:\n%s", out)
+	}
+}
+
+// tenant create and tenant restore carry the flag through to the delivery.
+func TestCreateAndRestoreWriteTheCredentialsFile(t *testing.T) {
+	minted := strings.Repeat("5e", 32)
+	for _, argv := range [][]string{
+		{"tenant", "create", "conf", "--artifact", "a1"},
+		{"tenant", "restore", "dev", "--from", "20260914T101500Z-backup", "--as", "dev-restore",
+			"--yes-destructive", "dev"},
+	} {
+		f := secretsScript(t, minted)
+		keyFile := writeKeyFile(t)
+		path := filepath.Join(t.TempDir(), "creds.json")
+		argv = append(append([]string{}, argv...), "--server", f.srv.URL, "--api-key-file", keyFile, "--yes",
+			"--credentials-file", path)
+		rc, out, errs := capture(t, argv...)
+		if rc != exitOK {
+			t.Fatalf("%v: rc %d %s", argv[:2], rc, errs)
+		}
+		if strings.Contains(out, minted) || strings.Contains(errs, minted) {
+			t.Errorf("%v: the value reached the terminal", argv[:2])
+		}
+		if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), minted) {
+			t.Errorf("%v: the file does not hold the envelope (%v)", argv[:2], err)
+		}
+	}
+}
+
+// A job that delivers nothing (here: it failed) leaves no empty credentials
+// file behind to be mistaken for one holding keys.
+func TestAnUndeliveredCredentialsFileIsRemoved(t *testing.T) {
+	fastPolling(t)
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		if rec.Method == http.MethodPost {
+			replyJob(w, sampleJob(model.JobRunning))
+			return
+		}
+		replyJob(w, sampleJob(model.JobFailed))
+	})
+	keyFile := writeKeyFile(t)
+	path := filepath.Join(t.TempDir(), "creds.json")
+	rc, _, _ := capture(t, "key", "mint", "dev", "ci-runner", "--role", "user",
+		"--server", f.srv.URL, "--api-key-file", keyFile, "--yes", "--credentials-file", path)
+	if rc == exitOK {
+		t.Fatalf("a failed job exited 0")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("an undelivered credentials file was left behind (%v)", err)
+	}
+}

@@ -270,9 +270,10 @@ func cmdTenantCreate(args []string, registryPath, ragRoot string, jsonOut bool) 
 	}
 	name := pos[0]
 	set := setFlags(fs)
-	if err := checkCredentialsFile(*o.credentialsFile); err != nil {
+	if err := o.openCredentials(); err != nil {
 		return usageErr("%v", err)
 	}
+	defer o.creds.finish()
 
 	opArgs := map[string]any{"name": name}
 	if *artifact != "" {

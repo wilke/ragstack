@@ -216,9 +216,11 @@ func cmdJobSecrets(args []string, jsonOut bool) int {
 	if len(pos) != 1 {
 		return usageErr("usage: ragstack-ctl job secrets <id> [--credentials-file PATH]")
 	}
-	if err := checkCredentialsFile(*credsFile); err != nil {
+	sink, err := openCredsSink(*credsFile)
+	if err != nil {
 		return usageErr("%v", err)
 	}
+	defer sink.finish()
 	c, err := r.client()
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
@@ -241,7 +243,7 @@ func cmdJobSecrets(args []string, jsonOut bool) int {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return failClient(fmt.Errorf("the envelope of job %s is not secrets_response.json: %w", pos[0], err))
 	}
-	return deliverEnvelope(&out, *r.asJSON, *credsFile)
+	return deliverEnvelope(&out, *r.asJSON, sink)
 }
 
 func cmdJobLog(args []string, jsonOut bool) int {

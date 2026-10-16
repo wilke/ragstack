@@ -921,6 +921,12 @@ func (p *previewer) identity() registry.Identity {
 	if !ok {
 		p.warn(doctor.UnsupportedEnvKey, fmt.Sprintf("IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none; recorded as none", v))
 	}
+	// Adopt stays lenient (it records what is there), but a broken JSON list
+	// is said out loud: the API refuses to boot on it, and `admin add|remove`
+	// refuse to edit it.
+	if _, err := registry.AdminSubjectsStrict(p.env["ADMIN_SUBJECTS"].Value); err != nil {
+		p.warn(doctor.UnsupportedEnvKey, err.Error()+"; the subject count recorded is a best guess")
+	}
 	return id
 }
 

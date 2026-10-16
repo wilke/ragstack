@@ -386,14 +386,48 @@ func identityOfEnv(body []byte) (registry.Identity, error) {
 		return registry.Identity{}, fmt.Errorf("%w: tenant.env does not parse, so its identity cannot be "+
 			"recorded: %v", jobs.ErrRefused, err)
 	}
+	return identityOfFile(f)
+}
+
+// identityOfFile is identityOfEnv over an already-parsed file. A malformed
+// JSON ADMIN_SUBJECTS is refused (registry.AdminSubjectsStrict) rather than
+// counted by the lenient comma split.
+func identityOfFile(f *envfile.File) (registry.Identity, error) {
 	prov, _ := f.Get("IDENTITY_PROVIDER")
 	subs, _ := f.Get(keyAdminSubs)
+	if _, err := registry.AdminSubjectsStrict(subs); err != nil {
+		return registry.Identity{}, fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
 	id, ok := registry.IdentityFromEnv(prov, subs)
 	if !ok {
 		return registry.Identity{}, fmt.Errorf("%w: IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none",
 			jobs.ErrRefused, prov)
 	}
 	return id, nil
+}
+
+// checkIdentityAfterEdit is the PLAN-time half of the identity re-derivation:
+// it applies the edit to a copy of tenant.env and refuses when the result
+// could not be recorded (an unknown provider, a malformed ADMIN_SUBJECTS) —
+// better than an env step the registry step then rolls back. A file the plan
+// cannot read or parse is left to the edit step, which refuses on its own.
+func (p *planner) checkIdentityAfterEdit(ctx context.Context, mutate func(*envfile.File) error) error {
+	b, err := p.readFile(ctx, p.tpaths.TenantEnv)
+	if err != nil {
+		return nil
+	}
+	f, perr := envfile.Parse(b)
+	if perr != nil {
+		return nil
+	}
+	if err := mutate(f); err != nil {
+		return nil // the edit step reports its own failure
+	}
+	if _, err := identityOfFile(f); err != nil {
+		return p.refuse("after this edit tenant.env's identity could not be recorded: %v",
+			strings.TrimPrefix(err.Error(), jobs.ErrRefused.Error()+": "))
+	}
+	return nil
 }
 
 // identityKey reports whether an env key is one the row's identity summary

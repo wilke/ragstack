@@ -260,9 +260,10 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		}
 		opArgs["from"] = *from
 		opArgs["as"] = *as
-		if err := checkCredentialsFile(*o.credentialsFile); err != nil {
+		if err := o.openCredentials(); err != nil {
 			return usageErr("%v", err)
 		}
+		defer o.creds.finish()
 		// A restore MINTS the fresh tenant's credentials, and they exist for
 		// exactly one read. So the command has to still be there when the job
 		// ends: --wait is implied for an execute, exactly as it is for `tenant
@@ -353,9 +354,10 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		if *tenantString != "" {
 			opArgs["tenant_string"] = *tenantString
 		}
-		if err := checkCredentialsFile(*o.credentialsFile); err != nil {
+		if err := o.openCredentials(); err != nil {
 			return usageErr("%v", err)
 		}
+		defer o.creds.finish()
 		// The minted value exists for exactly one read of the job's secrets
 		// envelope, so the command has to still be there when the job ends:
 		// --wait is implied for an execute, exactly as it is for `tenant

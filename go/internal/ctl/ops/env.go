@@ -38,6 +38,16 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 			return p.refuse("IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none", value)
 		}
 	}
+	if key == keyAdminSubs {
+		if _, err := registry.AdminSubjectsStrict(value); err != nil {
+			return p.refuse("%v", err)
+		}
+	}
+	if identityKey(key) {
+		if err := p.checkIdentityAfterEdit(ctx, func(f *envfile.File) error { return f.Set(key, value) }); err != nil {
+			return err
+		}
+	}
 	var written []byte
 	p.addEnvEdit(ctx, envEdit{
 		Path: p.tpaths.TenantEnv, Op: "env-set",
@@ -59,6 +69,11 @@ func planEnvUnset(ctx context.Context, p *planner, args map[string]any) error {
 	key := argStringOf(args, "key")
 	if err := p.requirePublicKey(key); err != nil {
 		return err
+	}
+	if identityKey(key) {
+		if err := p.checkIdentityAfterEdit(ctx, func(f *envfile.File) error { f.Unset(key); return nil }); err != nil {
+			return err
+		}
 	}
 	var written []byte
 	p.addEnvEdit(ctx, envEdit{

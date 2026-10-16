@@ -41,7 +41,9 @@ func (p *planner) credFile() (path string, legacy bool) {
 // ---------------------------------------------------------------- key mint
 
 func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because the job writes the registry (the
+	// ledger row, and restart_pending after a --restart), as env set does.
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant)
 	label, role := argStringOf(args, "label"), argStringOf(args, "role")
 	if _, ok := effectiveKey(p.t.Keys, label); ok {
 		return p.refuse("%s already has an effective key labelled %q; revoke it first or pick another label",
@@ -240,7 +242,7 @@ func (p *planner) mintTenantString(ctx context.Context, args map[string]any, pat
 // ---------------------------------------------------------------- key revoke
 
 func planKeyRevoke(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant) // see planKeyMint
 	id := argStringOf(args, "id")
 	// ONE lookup, and it is the EFFECTIVE row.
 	//
@@ -601,7 +603,15 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 	// #736, a hand edit) must not refuse an edit the file allows. The row is
 	// the fallback only when the file cannot be read or parsed.
 	identity := p.t.Identity
-	if id, ok := p.envIdentity(ctx); ok {
+	id, ok, err := p.envIdentity(ctx)
+	if err != nil {
+		// The file PARSES and says something this op cannot act on (an
+		// unknown provider, a malformed ADMIN_SUBJECTS): refused here, not
+		// by a registry step after the env file has been rewritten.
+		return p.refuse("%s's tenant.env cannot be edited by admin add|remove: %v", p.t.Name,
+			strings.TrimPrefix(err.Error(), jobs.ErrRefused.Error()+": "))
+	}
+	if ok {
 		if id.Provider != identity.Provider || id.AdminSubjectsCount != identity.AdminSubjectsCount {
 			p.warn("the registry row records identity %s with %d admin subject(s) but tenant.env declares %s with "+
 				"%d; the plan follows tenant.env, and this job re-records the row from the file it writes",
@@ -635,7 +645,12 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 		Targets: []string{keyAdminSubs}, Written: &written,
 		Mutate: func(f *envfile.File) (string, error) {
 			raw, _ := f.Get(keyAdminSubs)
-			subs := registry.AdminSubjects(raw)
+			// Strict: a broken JSON list is refused, never "repaired" into a
+			// list holding its own garbage as a subject.
+			subs, err := registry.AdminSubjectsStrict(raw)
+			if err != nil {
+				return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+			}
 			out := subs[:0:0]
 			present := false
 			for _, s := range subs {
@@ -671,18 +686,24 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 }
 
 // envIdentity is the identity tenant.env declares, read at PLAN time. ok is
-// false when the file cannot be read or parsed, or names a provider the
-// contract does not know — the caller then falls back to the registry row.
-func (p *planner) envIdentity(ctx context.Context) (registry.Identity, bool) {
+// false when the file cannot be read or does not parse — the caller then
+// falls back to the registry row. err is set when the file parses but its
+// identity cannot be recorded (an unknown provider, a malformed
+// ADMIN_SUBJECTS): that is a refusal, never a silent fallback.
+func (p *planner) envIdentity(ctx context.Context) (registry.Identity, bool, error) {
 	b, err := p.readFile(ctx, p.tpaths.TenantEnv)
 	if err != nil {
-		return registry.Identity{}, false
+		return registry.Identity{}, false, nil
 	}
-	id, err := identityOfEnv(b)
+	f, _, perr := envfile.ParseLenient(b)
+	if perr != nil {
+		return registry.Identity{}, false, nil
+	}
+	id, err := identityOfFile(f)
 	if err != nil {
-		return registry.Identity{}, false
+		return registry.Identity{}, false, err
 	}
-	return id, true
+	return id, true, nil
 }
 
 // setAdminSubjects writes ADMIN_SUBJECTS back in the form it was found in:
