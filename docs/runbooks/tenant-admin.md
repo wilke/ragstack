@@ -282,7 +282,10 @@ curl -s -X POST "$BASE/v1/admin/service-accounts/ingest-bot/enable"  -H "X-API-K
 > (`go/cmd/ragstack-ctl/main.go:136-140`). The ctl also has
 > `sa create|disable|enable <tenant> <subject>` and
 > `admin add|remove <tenant> <subject>` as env-level equivalents of the API
-> routes above.
+> routes above. `admin add|remove` (and `env set|unset IDENTITY_PROVIDER` /
+> `ADMIN_SUBJECTS`) re-record the registry row's `identity` from tenant.env in
+> the same job and set `restart_pending`, which `tenant restart` or a `key …
+> --restart` clears.
 
 **A service account is spelled `@service:<subject>` when you grant it access** —
 e.g. `@service:ingest-bot`. That prefix is `_SERVICE_PREFIX`

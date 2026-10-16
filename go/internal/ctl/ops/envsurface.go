@@ -232,7 +232,7 @@ func planEnvSetSurface(ctx context.Context, p *planner, args map[string]any) err
 			return "set " + strings.Join(done, " "), nil
 		},
 	})
-	p.addEnvRegistryStep("", &written)
+	p.addEnvRegistryStep("", &written, false)
 	p.result["keys"] = keys
 	p.result["pending_until_restart"] = true
 	p.warn("the API reads its environment at start-up: these settings are `pending` until the tenant restarts "+
@@ -291,7 +291,7 @@ func planEnvUnsetSurface(ctx context.Context, p *planner, args map[string]any) e
 			return "unset " + strings.Join(keys, " "), nil
 		},
 	})
-	p.addEnvRegistryStep("", &written)
+	p.addEnvRegistryStep("", &written, false)
 	p.result["keys"] = keys
 	p.result["pending_until_restart"] = true
 	p.warn("the settings fall back to their defaults when the tenant restarts")
@@ -310,13 +310,25 @@ func planEnvUnsetSurface(ctx context.Context, p *planner, args map[string]any) e
 // the surface verbs pass "" because last_ops' key set is the registry
 // schema's OpVerb enum, a durable format an older ctl binary validates on
 // load, and widening it for a bookkeeping row is not worth that one-way door.
-func (p *planner) addEnvRegistryStep(verb string, written *[]byte) {
+func (p *planner) addEnvRegistryStep(verb string, written *[]byte, syncIdentity bool) {
 	name, path := p.tenant, p.tpaths.TenantEnv
+	title := "record restart_pending and tenant.env's new checksum"
+	warns := []string{"restart_pending becomes true until the tenant restarts; env_file_sha256 becomes the " +
+		"hash of the file this job wrote"}
+	if syncIdentity {
+		// #736: the row's identity summary is derived from IDENTITY_PROVIDER
+		// and ADMIN_SUBJECTS, so an edit of either re-derives it from the
+		// file this job wrote — in the SAME registry write. Before, the row
+		// kept `provider: none` after `env set IDENTITY_PROVIDER bvbrc`, and
+		// `admin add` then refused on the stale row.
+		title = "record restart_pending, tenant.env's new checksum and the identity it now declares"
+		warns = append(warns, "identity.provider and identity.admin_subjects_count are re-derived from the file "+
+			"this job wrote (IDENTITY_PROVIDER, ADMIN_SUBJECTS)")
+	}
 	p.add(step{
-		Kind: "registry", Title: "record restart_pending and tenant.env's new checksum", Targets: []string{name},
+		Kind: "registry", Title: title, Targets: []string{name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
-		Warnings: []string{"restart_pending becomes true until the tenant restarts; env_file_sha256 becomes the " +
-			"hash of the file this job wrote"},
+		Warnings:   warns,
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			var body []byte
 			if written != nil {
@@ -333,16 +345,91 @@ func (p *planner) addEnvRegistryStep(verb string, written *[]byte) {
 				body = b
 			}
 			sum := sha256Hex(body)
+			var id registry.Identity
+			if syncIdentity {
+				var err error
+				if id, err = identityOfEnv(body); err != nil {
+					return "", err
+				}
+			}
 			if err := p.saveTenant(sc, verb, func(t *registry.Tenant) error {
 				t.RestartPending = true
 				t.EnvFileSHA256 = sum
+				if syncIdentity {
+					t.Identity = id
+				}
 				return nil
 			}); err != nil {
 				return "", err
 			}
 			p.result["restart_pending"] = true
 			p.result["env_file_sha256"] = sum
+			if syncIdentity {
+				p.result["identity"] = map[string]any{
+					"provider": id.Provider, "admin_subjects_count": id.AdminSubjectsCount,
+				}
+				return fmt.Sprintf("%s restart_pending = true, env_file_sha256 = %s, identity = %s with %d admin "+
+					"subject(s)", name, sum, id.Provider, id.AdminSubjectsCount), nil
+			}
 			return fmt.Sprintf("%s restart_pending = true, env_file_sha256 = %s", name, sum), nil
 		},
 	})
 }
+
+// identityOfEnv derives the row's identity summary from tenant.env's bytes
+// with the one derivation adopt uses (registry.IdentityFromEnv). A provider
+// the contract does not know is refused: recording it as `none` would be the
+// stale-row problem again in the other direction.
+func identityOfEnv(body []byte) (registry.Identity, error) {
+	f, _, err := envfile.ParseLenient(body)
+	if err != nil {
+		return registry.Identity{}, fmt.Errorf("%w: tenant.env does not parse, so its identity cannot be "+
+			"recorded: %v", jobs.ErrRefused, err)
+	}
+	return identityOfFile(f)
+}
+
+// identityOfFile is identityOfEnv over an already-parsed file. A malformed
+// JSON ADMIN_SUBJECTS is refused (registry.AdminSubjectsStrict) rather than
+// counted by the lenient comma split.
+func identityOfFile(f *envfile.File) (registry.Identity, error) {
+	prov, _ := f.Get("IDENTITY_PROVIDER")
+	subs, _ := f.Get(keyAdminSubs)
+	if _, err := registry.AdminSubjectsStrict(subs); err != nil {
+		return registry.Identity{}, fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
+	id, ok := registry.IdentityFromEnv(prov, subs)
+	if !ok {
+		return registry.Identity{}, fmt.Errorf("%w: IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none",
+			jobs.ErrRefused, prov)
+	}
+	return id, nil
+}
+
+// checkIdentityAfterEdit is the PLAN-time half of the identity re-derivation:
+// it applies the edit to a copy of tenant.env and refuses when the result
+// could not be recorded (an unknown provider, a malformed ADMIN_SUBJECTS) —
+// better than an env step the registry step then rolls back. A file the plan
+// cannot read or parse is left to the edit step, which refuses on its own.
+func (p *planner) checkIdentityAfterEdit(ctx context.Context, mutate func(*envfile.File) error) error {
+	b, err := p.readFile(ctx, p.tpaths.TenantEnv)
+	if err != nil {
+		return nil
+	}
+	f, perr := envfile.Parse(b)
+	if perr != nil {
+		return nil
+	}
+	if err := mutate(f); err != nil {
+		return nil // the edit step reports its own failure
+	}
+	if _, err := identityOfFile(f); err != nil {
+		return p.refuse("after this edit tenant.env's identity could not be recorded: %v",
+			strings.TrimPrefix(err.Error(), jobs.ErrRefused.Error()+": "))
+	}
+	return nil
+}
+
+// identityKey reports whether an env key is one the row's identity summary
+// is derived from.
+func identityKey(key string) bool { return key == "IDENTITY_PROVIDER" || key == keyAdminSubs }

@@ -41,7 +41,9 @@ func (p *planner) credFile() (path string, legacy bool) {
 // ---------------------------------------------------------------- key mint
 
 func planKeyMint(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because the job writes the registry (the
+	// ledger row, and restart_pending after a --restart), as env set does.
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant)
 	label, role := argStringOf(args, "label"), argStringOf(args, "role")
 	if _, ok := effectiveKey(p.t.Keys, label); ok {
 		return p.refuse("%s already has an effective key labelled %q; revoke it first or pick another label",
@@ -240,7 +242,7 @@ func (p *planner) mintTenantString(ctx context.Context, args map[string]any, pat
 // ---------------------------------------------------------------- key revoke
 
 func planKeyRevoke(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant) // see planKeyMint
 	id := argStringOf(args, "id")
 	// ONE lookup, and it is the EFFECTIVE row.
 	//
@@ -590,10 +592,34 @@ func planAdminRemove(ctx context.Context, p *planner, args map[string]any) error
 }
 
 func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bool) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because the job ends in a registry write
+	// (#736): restart_pending, env_file_sha256 and the identity summary.
+	p.need(model.LockRegistry, model.LockManifest, model.LockTenant)
 	subject := argStringOf(args, "subject")
 	issuer := strings.SplitN(subject, ":", 2)[0]
-	provider := p.t.Identity.Provider
+	// The provider and the subject count are what tenant.env SAYS, when the
+	// plan can read it: the registry row is a summary of that file, and a
+	// summary that went stale (an `env set IDENTITY_PROVIDER` from before
+	// #736, a hand edit) must not refuse an edit the file allows. The row is
+	// the fallback only when the file cannot be read or parsed.
+	identity := p.t.Identity
+	id, ok, err := p.envIdentity(ctx)
+	if err != nil {
+		// The file PARSES and says something this op cannot act on (an
+		// unknown provider, a malformed ADMIN_SUBJECTS): refused here, not
+		// by a registry step after the env file has been rewritten.
+		return p.refuse("%s's tenant.env cannot be edited by admin add|remove: %v", p.t.Name,
+			strings.TrimPrefix(err.Error(), jobs.ErrRefused.Error()+": "))
+	}
+	if ok {
+		if id.Provider != identity.Provider || id.AdminSubjectsCount != identity.AdminSubjectsCount {
+			p.warn("the registry row records identity %s with %d admin subject(s) but tenant.env declares %s with "+
+				"%d; the plan follows tenant.env, and this job re-records the row from the file it writes",
+				identity.Provider, identity.AdminSubjectsCount, id.Provider, id.AdminSubjectsCount)
+		}
+		identity = id
+	}
+	provider := identity.Provider
 	if provider == "none" {
 		return p.refuse("%s has identity_provider `none`: it authenticates with API keys only, so there are no admin "+
 			"subjects to add or remove", p.t.Name)
@@ -602,9 +628,9 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 		return p.refuse("subject %q is issued by %q but %s's identity provider is %q; an admin subject's issuer must "+
 			"be the tenant's provider", subject, issuer, p.t.Name, provider)
 	}
-	if !add && p.t.Identity.AdminSubjectsCount <= 1 {
+	if !add && identity.AdminSubjectsCount <= 1 {
 		return p.refuse("%s has %d admin subject(s); removing the last one would leave the tenant with no bearer "+
-			"administrator", p.t.Name, p.t.Identity.AdminSubjectsCount)
+			"administrator", p.t.Name, identity.AdminSubjectsCount)
 	}
 	verb := "add"
 	if !add {
@@ -612,14 +638,18 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 	}
 	// ADMIN_SUBJECTS is a PUBLIC key: it lives in tenant.env, and the plan may
 	// show it.
+	var written []byte
 	p.addEnvEdit(ctx, envEdit{
 		Path: p.tpaths.TenantEnv, Op: "admin-" + verb, Destructive: !add,
 		Title:   fmt.Sprintf("%s %s in %s", verb, subject, keyAdminSubs),
-		Targets: []string{keyAdminSubs},
+		Targets: []string{keyAdminSubs}, Written: &written,
 		Mutate: func(f *envfile.File) (string, error) {
-			subs, err := jsonList(f, keyAdminSubs)
+			raw, _ := f.Get(keyAdminSubs)
+			// Strict: a broken JSON list is refused, never "repaired" into a
+			// list holding its own garbage as a subject.
+			subs, err := registry.AdminSubjectsStrict(raw)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 			}
 			out := subs[:0:0]
 			present := false
@@ -638,17 +668,53 @@ func (p *planner) planAdminEdit(ctx context.Context, args map[string]any, add bo
 			if !add && !present {
 				return "", fmt.Errorf("%w: %s is not in %s", jobs.ErrRefused, subject, keyAdminSubs)
 			}
-			if err := setJSON(f, keyAdminSubs, out); err != nil {
+			if err := setAdminSubjects(f, raw, out); err != nil {
 				return "", err
 			}
 			return verb + " " + subject, nil
 		},
 	})
+	// restart_pending: admin subjects are read at start-up, so the running
+	// API still enforces the old list. `tenant restart`, `start`,
+	// `update-code` and a `key … --restart` clear it.
+	p.addEnvRegistryStep("admin-"+verb, &written, true)
 	p.result["subject"] = subject
 	p.result["pending_until_restart"] = true
 	p.warn("admin subjects are read at start-up: this change is `pending` until the API restarts, and the proof is a " +
 		"surviving admin answering 200 and the removed one 403")
 	return nil
+}
+
+// envIdentity is the identity tenant.env declares, read at PLAN time. ok is
+// false when the file cannot be read or does not parse — the caller then
+// falls back to the registry row. err is set when the file parses but its
+// identity cannot be recorded (an unknown provider, a malformed
+// ADMIN_SUBJECTS): that is a refusal, never a silent fallback.
+func (p *planner) envIdentity(ctx context.Context) (registry.Identity, bool, error) {
+	b, err := p.readFile(ctx, p.tpaths.TenantEnv)
+	if err != nil {
+		return registry.Identity{}, false, nil
+	}
+	f, _, perr := envfile.ParseLenient(b)
+	if perr != nil {
+		return registry.Identity{}, false, nil
+	}
+	id, err := identityOfFile(f)
+	if err != nil {
+		return registry.Identity{}, false, err
+	}
+	return id, true, nil
+}
+
+// setAdminSubjects writes ADMIN_SUBJECTS back in the form it was found in:
+// comma-separated stays comma-separated (what a hand-written env uses), and
+// anything else — the JSON list the ctl writes, or an absent key — is JSON.
+// Both forms are read by the API.
+func setAdminSubjects(f *envfile.File, previous string, subs []string) error {
+	if strings.TrimSpace(previous) != "" && !registry.AdminSubjectsIsJSON(previous) {
+		return f.Set(keyAdminSubs, strings.Join(subs, ","))
+	}
+	return setJSON(f, keyAdminSubs, subs)
 }
 
 // ---------------------------------------------------------------- service accounts
@@ -954,6 +1020,7 @@ func (p *planner) addRestartOrPending(args map[string]any, pending string) error
 			}
 		}
 		p.addReadyStep(legs)
+		p.addRestartPendingClear()
 		p.result["effective"] = true
 		return nil
 	}
@@ -961,6 +1028,30 @@ func (p *planner) addRestartOrPending(args map[string]any, pending string) error
 	p.result["pending_until_restart"] = true
 	p.warn(pending)
 	return nil
+}
+
+// addRestartPendingClear records, after a `key … --restart` has restarted the
+// API and it answered ready, that the running API now reads the env files as
+// they are: restart_pending goes false, as `tenant restart` and `update-code`
+// leave it (#736 — before, a `key revoke --restart` left the flag an earlier
+// `env set` or `admin add` had raised).
+func (p *planner) addRestartPendingClear() {
+	name := p.tenant
+	p.add(step{
+		Kind: "registry", Title: "record restart_pending = false (the API restarted with the current env)",
+		Targets:    []string{name},
+		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			if err := p.saveTenant(sc, "", func(t *registry.Tenant) error {
+				t.RestartPending = false
+				return nil
+			}); err != nil {
+				return "", err
+			}
+			p.result["restart_pending"] = false
+			return name + " restart_pending = false", nil
+		},
+	})
 }
 
 // readFile reads a file through the Files driver for a PLAN preview.

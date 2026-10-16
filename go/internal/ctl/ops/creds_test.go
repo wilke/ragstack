@@ -599,3 +599,161 @@ func TestServiceAccountWithoutAnAdminKeyIsRefusedAtStepTime(t *testing.T) {
 		t.Errorf("a refused sa-create recorded %+v", sa)
 	}
 }
+
+// #736 (1): `env set IDENTITY_PROVIDER` re-records the row's identity in the
+// same registry write, and `admin add` then plans against it.
+func TestEnvSetIdentityProviderUpdatesTheRow(t *testing.T) {
+	noProvider := []byte(strings.Replace(string(tenantEnv()), "IDENTITY_PROVIDER=bvbrc\n", "", 1))
+	oc, fake := fixtureEnv(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		tn.Identity = registry.Identity{Provider: "none"}
+	}, noProvider)
+	r := newRunner(oc, fake)
+	r.runAll(t, plan(t, oc, "env-set", map[string]any{"key": "IDENTITY_PROVIDER", "value": "bvbrc"}))
+	row := oc.Fleet.Tenants["dev"]
+	if row.Identity.Provider != "bvbrc" || row.Identity.AdminSubjectsCount != 1 {
+		t.Fatalf("identity = %+v, want bvbrc with 1 admin subject", row.Identity)
+	}
+	r.runAll(t, plan(t, oc, "env-unset", map[string]any{"key": "IDENTITY_PROVIDER"}))
+	if row.Identity.Provider != "none" {
+		t.Errorf("after env unset identity = %+v, want none", row.Identity)
+	}
+	err := planErr(t, oc, "env-set", map[string]any{"key": "IDENTITY_PROVIDER", "value": "ldap"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "bvbrc|oidc|none") {
+		t.Errorf("an unknown provider = %v", err)
+	}
+}
+
+// #736 (1): a STALE row (provider none) does not refuse an admin edit the
+// file allows; the plan follows tenant.env and says the two disagree.
+func TestAdminAddFollowsTenantEnvOverAStaleRow(t *testing.T) {
+	oc, _ := fixture(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		tn.Identity = registry.Identity{Provider: "none"}
+	})
+	p := plan(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"})
+	found := false
+	for _, w := range p.Plan.Warnings {
+		found = found || strings.Contains(w, "the plan follows tenant.env")
+	}
+	if !found {
+		t.Errorf("no warning about the stale row: %v", p.Plan.Warnings)
+	}
+}
+
+// #736 (2): admin add/remove re-count the subjects on the row, raise
+// restart_pending, and keep the file's comma form; a `key … --restart`
+// clears restart_pending again.
+func TestAdminEditsRecountSubjectsAndKeepTheCommaForm(t *testing.T) {
+	commaEnv := []byte(strings.Replace(string(tenantEnv()), `ADMIN_SUBJECTS='["bvbrc:alice"]'`,
+		"ADMIN_SUBJECTS=bvbrc:alice,bvbrc:carol", 1))
+	oc, fake := fixtureEnv(t, "dev", func(tn *registry.Tenant) {
+		instanceManaged(tn)
+		tn.Identity = registry.Identity{Provider: "bvbrc", AdminSubjectsCount: 0}
+	}, commaEnv)
+	oc.Tenant.RestartPending = false
+	tp := paths.TenantPaths(oc.Roots, "dev", "dev")
+	r := newRunner(oc, fake)
+	r.runAll(t, plan(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"}))
+	row := oc.Fleet.Tenants["dev"]
+	if row.Identity.AdminSubjectsCount != 3 {
+		t.Errorf("admin_subjects_count = %d after add, want 3", row.Identity.AdminSubjectsCount)
+	}
+	if !row.RestartPending {
+		t.Error("admin add did not raise restart_pending")
+	}
+	body := string(fake.FakeFiles().Content(tp.TenantEnv))
+	if !strings.Contains(body, "ADMIN_SUBJECTS=bvbrc:alice,bvbrc:carol,bvbrc:bob\n") {
+		t.Errorf("the comma form was not kept:\n%s", body)
+	}
+	if row.EnvFileSHA256 != sha256Hex([]byte(body)) {
+		t.Error("admin add did not record tenant.env's new checksum")
+	}
+	if _, ok := row.LastOps["admin-add"]; !ok {
+		t.Error("last_ops[admin-add] was not recorded")
+	}
+	r.runAll(t, plan(t, oc, "admin-remove", map[string]any{"subject": "bvbrc:carol"}))
+	if row.Identity.AdminSubjectsCount != 2 {
+		t.Errorf("admin_subjects_count = %d after remove, want 2", row.Identity.AdminSubjectsCount)
+	}
+
+	restartable(t, oc, fake)
+	p := plan(t, oc, "key-mint", map[string]any{"label": "ops2", "role": "user", "restart": true})
+	r.runAll(t, p)
+	if row.RestartPending {
+		t.Error("key mint --restart left restart_pending true")
+	}
+}
+
+// #736 (2): the JSON form (what create writes) stays JSON.
+func TestAdminAddKeepsTheJSONForm(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	newRunner(oc, fake).runAll(t, plan(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"}))
+	tp := paths.TenantPaths(oc.Roots, "dev", "dev")
+	body := string(fake.FakeFiles().Content(tp.TenantEnv))
+	if !strings.Contains(body, `ADMIN_SUBJECTS='["bvbrc:alice","bvbrc:bob"]'`) {
+		t.Errorf("the JSON form was not kept:\n%s", body)
+	}
+	if got := oc.Fleet.Tenants["dev"].Identity.AdminSubjectsCount; got != 2 {
+		t.Errorf("admin_subjects_count = %d, want 2", got)
+	}
+}
+
+// Review of #738: a broken JSON ADMIN_SUBJECTS is refused at plan time by
+// admin add|remove and by env set, never "repaired" into a list holding the
+// garbage as a subject.
+func TestAdminEditsRefuseAMalformedJSONSubjectList(t *testing.T) {
+	broken := []byte(strings.Replace(string(tenantEnv()), `ADMIN_SUBJECTS='["bvbrc:alice"]'`,
+		`ADMIN_SUBJECTS='["bvbrc:alice"'`, 1))
+	oc, _ := fixtureEnv(t, "dev", managed, broken)
+	for _, verb := range []string{"admin-add", "admin-remove"} {
+		err := planErr(t, oc, verb, map[string]any{"subject": "bvbrc:bob"})
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "not a JSON array") {
+			t.Errorf("%s over a broken list = %v", verb, err)
+		}
+	}
+	oc, _ = fixture(t, "dev", managed)
+	err := planErr(t, oc, "env-set", map[string]any{"key": "ADMIN_SUBJECTS", "value": `["bvbrc:alice"`})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "not a JSON array") {
+		t.Errorf("env set of a broken list = %v", err)
+	}
+	if _, err := registry.AdminSubjectsStrict(`["bvbrc:alice"`); err == nil {
+		t.Error("AdminSubjectsStrict accepted a broken JSON list")
+	}
+	if got, err := registry.AdminSubjectsStrict("bvbrc:a, bvbrc:b"); err != nil || len(got) != 2 {
+		t.Errorf("the comma form = %v, %v", got, err)
+	}
+}
+
+// The provider is normalised as the API normalises it (strip + lower), and a
+// file naming an UNKNOWN provider is refused at plan time, not silently
+// replaced by the row's value.
+func TestProviderIsNormalisedAndAnUnknownOneRefusesAdminEdits(t *testing.T) {
+	for _, v := range []string{"BVBRC", " bvbrc", "Bvbrc "} {
+		id, ok := registry.IdentityFromEnv(v, "")
+		if !ok || id.Provider != "bvbrc" {
+			t.Errorf("IdentityFromEnv(%q) = %+v, %v; want bvbrc", v, id, ok)
+		}
+	}
+	upper := []byte(strings.Replace(string(tenantEnv()), "IDENTITY_PROVIDER=bvbrc", "IDENTITY_PROVIDER=BVBRC", 1))
+	oc, fake := fixtureEnv(t, "dev", func(tn *registry.Tenant) {
+		managed(tn)
+		tn.Identity = registry.Identity{Provider: "none"}
+	}, upper)
+	newRunner(oc, fake).runAll(t, plan(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"}))
+	if got := oc.Fleet.Tenants["dev"].Identity.Provider; got != "bvbrc" {
+		t.Errorf("recorded provider = %q, want the normalised bvbrc", got)
+	}
+
+	unknown := []byte(strings.Replace(string(tenantEnv()), "IDENTITY_PROVIDER=bvbrc", "IDENTITY_PROVIDER=ldap", 1))
+	oc, _ = fixtureEnv(t, "dev", managed, unknown) // the row says bvbrc
+	err := planErr(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "bvbrc|oidc|none") {
+		t.Errorf("admin add over an unknown provider = %v", err)
+	}
+	// env unset ADMIN_SUBJECTS over that file is refused at plan time too.
+	err = planErr(t, oc, "env-unset", map[string]any{"key": "ADMIN_SUBJECTS"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "bvbrc|oidc|none") {
+		t.Errorf("env unset over an unknown provider = %v", err)
+	}
+}

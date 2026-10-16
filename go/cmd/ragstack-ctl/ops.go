@@ -57,7 +57,7 @@ func tenantOpUsage(verb string) int {
 `, opFlagSummary)
 		return exitUsage
 	case "restore":
-		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant restore <source> --from <bundle-id> --as <fresh-tenant> %s
+		fmt.Fprintf(stderr, `usage: ragstack-ctl tenant restore <source> --from <bundle-id> --as <fresh-tenant> [--credentials-file PATH] %s
 
   <source>  the tenant the bundle was taken from. restore is destructive on it
             only in the bookkeeping sense — it marks the bundle verified — so
@@ -67,8 +67,10 @@ func tenantOpUsage(verb string) int {
             into it, and its counts are checked against the manifest before
             anything is published.
 
-The restored tenant's credentials are FRESH and are printed ONCE, when the job
-succeeds. That needs the job to be followed, so --wait is implied.
+The restored tenant's credentials are FRESH and are delivered ONCE, when the
+job succeeds. That needs the job to be followed, so --wait is implied.
+--credentials-file PATH writes them to that NEW file (0600) and prints only
+labels and fingerprints; without it they are printed to stdout.
 `, opFlagSummary)
 		return exitUsage
 	case "decommission":
@@ -188,6 +190,7 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		wantsFrm = true
 		from = fs.String("from", "", "bundle id (<ts>-<kind>) under the source tenant's backup dir — an id, never a path")
 		as = fs.String("as", "", "the FRESH tenant to restore into (v1 restores into an isolated new tenant only)")
+		o.addCredentialsFileFlag()
 	}
 
 	pos, rest := takePositionals(args, 1)
@@ -257,6 +260,10 @@ func cmdTenantOp(verb string, args []string, registryPath, ragRoot string, jsonO
 		}
 		opArgs["from"] = *from
 		opArgs["as"] = *as
+		if err := o.openCredentials(); err != nil {
+			return usageErr("%v", err)
+		}
+		defer o.creds.finish()
 		// A restore MINTS the fresh tenant's credentials, and they exist for
 		// exactly one read. So the command has to still be there when the job
 		// ends: --wait is implied for an execute, exactly as it is for `tenant
@@ -279,6 +286,7 @@ func keyUsage() int {
 	fmt.Fprintf(stderr, `usage: ragstack-ctl key <verb> <tenant> … %s
 
   mint   <tenant> <label> --role admin|user [--restart] [--prove] [--tenant-string S]
+         [--credentials-file PATH]
   revoke <tenant> <id> [--restart] [--prove]
 
 --tenant-string is the principal the tenant API stamps on everything the key
@@ -294,8 +302,11 @@ the minted key answers 200 AND can see the tenant's collections, the revoked
 key answers 401. The credentials are read from the tenant's own env files; the
 job records fingerprints and status codes, never a value.
 
-An executed mint waits for its job (--wait is implied) and prints the minted
-value ONCE, from the job's one-time secrets envelope; nothing stores it. If the
+An executed mint waits for its job (--wait is implied) and delivers the minted
+value ONCE, from the job's one-time secrets envelope; nothing stores it. With
+--credentials-file PATH it is written to that NEW file (0600) and stdout shows
+only the label and fingerprint; without it the value is printed (with a warning
+on stderr). If the
 command was interrupted before it could collect it, `+"`ragstack-ctl job secrets <id>`"+`
 reads the envelope within its 15-minute window.
 `, opFlagSummary)
@@ -316,6 +327,9 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		"should not, and the minted key must SEE the tenant's collections (needs --restart)")
 	tenantString := fs.String("tenant-string", "", "the principal API_KEY_TENANTS maps the minted key to "+
 		"(default: the convention the tenant's own ledger already uses)")
+	if verb == "mint" {
+		o.addCredentialsFileFlag()
+	}
 
 	want := 2 // <tenant> <label|id>
 	pos, rest := takePositionals(args, want)
@@ -340,6 +354,10 @@ func cmdKey(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		if *tenantString != "" {
 			opArgs["tenant_string"] = *tenantString
 		}
+		if err := o.openCredentials(); err != nil {
+			return usageErr("%v", err)
+		}
+		defer o.creds.finish()
 		// The minted value exists for exactly one read of the job's secrets
 		// envelope, so the command has to still be there when the job ends:
 		// --wait is implied for an execute, exactly as it is for `tenant

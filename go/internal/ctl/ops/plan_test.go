@@ -51,6 +51,7 @@ func tenantEnv() []byte {
 		"LOG_LEVEL=INFO\n" +
 		"ALLOWED_ORIGINS=https://example.test/" + testSecret + "\n" +
 		"QDRANT_URL=http://localhost:24041\n" +
+		"IDENTITY_PROVIDER=bvbrc\n" +
 		"ADMIN_SUBJECTS='[\"bvbrc:alice\"]'\n" +
 		"API_KEYS='[\"" + testSecret + "\"]'\n" +
 		"API_KEY_TENANTS='{\"" + testSecret + "\":\"dev\"}'\n" +
@@ -760,7 +761,10 @@ func TestPlanAdminEditsFollowTheIdentityProvider(t *testing.T) {
 	if !strings.Contains(preview, "bvbrc:bob") || !strings.Contains(preview, "bvbrc:alice") {
 		t.Errorf("the preview does not show the new subject list:\n%s", preview)
 	}
-	oc, _ = fixture(t, "demo", func(tn *registry.Tenant) { managed(tn); tn.Identity.Provider = "none" })
+	// tenant.env is what decides (#736): a file without IDENTITY_PROVIDER
+	// is the API's default, `none`, whatever the row says.
+	noProvider := []byte(strings.Replace(string(tenantEnv()), "IDENTITY_PROVIDER=bvbrc\n", "", 1))
+	oc, _ = fixtureEnv(t, "demo", func(tn *registry.Tenant) { managed(tn); tn.Identity.Provider = "bvbrc" }, noProvider)
 	if err := planErr(t, oc, "admin-add", map[string]any{"subject": "bvbrc:bob"}); !strings.Contains(err.Error(), "API keys only") {
 		t.Errorf("a tenant with no provider = %v", err)
 	}

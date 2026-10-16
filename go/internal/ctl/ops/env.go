@@ -30,6 +30,24 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 	if err := p.requirePublicKey(key); err != nil {
 		return err
 	}
+	if key == "IDENTITY_PROVIDER" {
+		// The registry step records the provider from the file this job
+		// writes (#736), and the contract knows three; refusing here is
+		// better than a file edit the registry step then rolls back.
+		if _, ok := registry.IdentityFromEnv(value, ""); !ok {
+			return p.refuse("IDENTITY_PROVIDER=%q is not one of bvbrc|oidc|none", value)
+		}
+	}
+	if key == keyAdminSubs {
+		if _, err := registry.AdminSubjectsStrict(value); err != nil {
+			return p.refuse("%v", err)
+		}
+	}
+	if identityKey(key) {
+		if err := p.checkIdentityAfterEdit(ctx, func(f *envfile.File) error { return f.Set(key, value) }); err != nil {
+			return err
+		}
+	}
 	var written []byte
 	p.addEnvEdit(ctx, envEdit{
 		Path: p.tpaths.TenantEnv, Op: "env-set",
@@ -39,7 +57,7 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 			return fmt.Sprintf("%s=%s", key, value), f.Set(key, value)
 		},
 	})
-	p.addEnvRegistryStep("env-set", &written)
+	p.addEnvRegistryStep("env-set", &written, identityKey(key))
 	p.result["key"] = key
 	p.result["pending_until_restart"] = true
 	p.warn("the API reads its environment at start-up: this setting is `pending` until the tenant restarts")
@@ -51,6 +69,11 @@ func planEnvUnset(ctx context.Context, p *planner, args map[string]any) error {
 	key := argStringOf(args, "key")
 	if err := p.requirePublicKey(key); err != nil {
 		return err
+	}
+	if identityKey(key) {
+		if err := p.checkIdentityAfterEdit(ctx, func(f *envfile.File) error { f.Unset(key); return nil }); err != nil {
+			return err
+		}
 	}
 	var written []byte
 	p.addEnvEdit(ctx, envEdit{
@@ -64,7 +87,7 @@ func planEnvUnset(ctx context.Context, p *planner, args map[string]any) error {
 			return "unset " + key, nil
 		},
 	})
-	p.addEnvRegistryStep("env-unset", &written)
+	p.addEnvRegistryStep("env-unset", &written, identityKey(key))
 	p.result["key"] = key
 	p.result["pending_until_restart"] = true
 	p.warn("the setting falls back to its default when the tenant restarts")
