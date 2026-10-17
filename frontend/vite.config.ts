@@ -34,20 +34,22 @@ export default defineConfig(({ mode }) => {
       rewrite: (p: string) => p.replace(new RegExp(`^/be/${name}`), ""),
     },
   });
-  // Vite refuses a request whose Host header it does not recognise (DNS-rebinding
-  // protection). Behind the coconut front proxy the browser's Host is the gateway
-  // host, not localhost, so the dev server 403s with "This host is not allowed"
-  // before any routing happens. Allow the gateway host (and, via the leading dot,
-  // any *.cels.anl.gov) — localhost/127.0.0.1 are always allowed regardless.
-  // Empty by default: hardcoding one deployment's hostname would widen every other
-  // user's DNS-rebinding exposure. Each deployment sets VITE_ALLOWED_HOSTS (a leading
-  // dot matches subdomains, e.g. ".example.org"); "true" disables the check entirely
-  // (do NOT do that on a reachable network). localhost/127.0.0.1 are always allowed.
-  const allowedRaw = env.VITE_ALLOWED_HOSTS ?? "";
-  const allowedHosts =
-    allowedRaw.trim() === "true"
+  // Vite (>=5.4.12) refuses a request whose Host header it does not recognise
+  // (DNS-rebinding protection) unless server.allowedHosts lists it. The UI is
+  // served through the BV-BRC proxy (www.bv-brc.org), which forwards to the coconut
+  // gateway with Host: coconut.cels.anl.gov, so without an allowance every request
+  // 403s ("Blocked request. This host ... is not allowed"). Default is therefore the
+  // two domains involved (a leading dot = the domain and all subdomains); localhost
+  // and loopback are always allowed on top. VITE_ALLOWED_HOSTS overrides: a
+  // comma-separated list replaces the default, and "true" allows any host (dev-only
+  // escape hatch -- do NOT use on a reachable network).
+  const allowedRaw = (env.VITE_ALLOWED_HOSTS ?? "").trim();
+  const allowedHosts: true | string[] =
+    allowedRaw.toLowerCase() === "true"
       ? true
-      : allowedRaw.split(",").map((h) => h.trim()).filter(Boolean);
+      : allowedRaw
+        ? allowedRaw.split(",").map((h) => h.trim()).filter(Boolean)
+        : [".bv-brc.org", ".anl.gov"];
 
   return {
     plugins: [react()],
