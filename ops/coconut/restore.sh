@@ -493,10 +493,12 @@ if want stores; then
 
   # ES: dotted settings as native -E args (apptainer --env shell-sources and mangles them);
   # call docker-entrypoint.sh directly (tini eats -E). Heaps are the LIVE values, not up.sh's.
+  # Shared ES :9200 heap: on 2026-10-17 moved 1g -> 16g (8.13.4, 10 indices, ~155 GB, 47.6M docs in open-access). A 1g heap caps
+  # direct memory at 512 MiB; the dev tenant's ES died of that under GoWe bulk ingest (#741). 16g < 31g compressed-oops ceiling; replicas=0 (single node, green).
   seed_if_empty "$IMG/elasticsearch.sif" /usr/share/elasticsearch/config "$DATA/elasticsearch/config"
   start_instance elasticsearch "$IMG/elasticsearch.sif" \
     --bind "$DATA/elasticsearch/data:/usr/share/elasticsearch/data" --bind "$DATA/elasticsearch/logs:/usr/share/elasticsearch/logs" \
-    --bind "$DATA/elasticsearch/config:/usr/share/elasticsearch/config" --env ES_JAVA_OPTS="-Xms1g -Xmx1g" \
+    --bind "$DATA/elasticsearch/config:/usr/share/elasticsearch/config" --env ES_JAVA_OPTS="-Xms16g -Xmx16g" \
     -- /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false
 
   # neo4j-dev: password comes from dev's secrets.env (never printed). Binds as live: /data, /logs, conf.
