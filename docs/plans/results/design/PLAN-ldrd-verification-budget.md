@@ -170,8 +170,8 @@ domain; release of the test set, forecasts and code to ModCon.
 Andreas Wilke (DSL) lead, 50 %; Carlo Graziani (MCS) co-PI, statistics — forecast validation and
 calibration (H1–H3), 0.05 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
 expert read, 0.05 FTE; a staff researcher (to be identified), 30 %, kept flexible so effort can shift between people by period; expert readers Sarah Owens, Rosemarie Wilton
-(BIO), 100 h each, adjudicator Pamela Weisenhorn (BIO), 40 h. A work computer (USD 15K); USD 10K travel per year; frontier
-readings through Argo about USD 2K per month (USD 24K per year). Open models run on an ALCF allocation to be requested, and on AmSC as it becomes available, with existing group GPUs for development; no equipment is requested. Budget from the division estimate (CELS divisional rate 30% on labor, materials factor 5%, DOE administration charge 3%): FY27 USD 389,899, FY28 about USD 373,878 at FY27 rates, total about USD 763.8K; the pre-proposal carries the quarterly budget table.
+(BIO), 100 h each, adjudicator Pamela Weisenhorn (BIO), 40 h. Computing USD 15K per year (a work computer in year 1); USD 10K travel per year; frontier
+readings through Argo about USD 2K per month (USD 24K per year). Open models run on an ALCF allocation to be requested, and on AmSC as it becomes available, with existing group GPUs for development; no equipment is requested. Budget from the division estimate (CELS divisional rate 30% on labor, materials factor 5%, DOE administration charge 3%): USD 389,899 per year, FY28 identical to FY27 at FY27 rates, total about USD 779.8K; the pre-proposal carries the quarterly budget table.
 
 ## 8. Risks
 
