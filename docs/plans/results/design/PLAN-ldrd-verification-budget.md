@@ -168,10 +168,10 @@ domain; release of the test set, forecasts and code to ModCon.
 ## 7. Team and resources
 
 Andreas Wilke (DSL) lead, 50 %; Carlo Graziani (MCS) co-PI, statistics — forecast validation and
-calibration (H1–H3), 0.1 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
-expert read, 0.1 FTE; a second researcher, 30 %; expert readers Sarah Owens, Rosemarie Wilton
-(BIO), adjudicator Pamela Weisenhorn (BIO), 200 hours in total. Two laptops; USD 10K travel per year; frontier
-readings through Argo about USD 2K per month (USD 24K per year). Open models run on an ALCF allocation to be requested, and on AmSC as it becomes available, with existing group GPUs for development; no equipment is requested. Budget (fully burdened, USD 360K per FTE-year — **provisional**, to be replaced by the division's rates): FY27 USD 434.6K, FY28 USD 428.6K, total USD 863.2K; the pre-proposal carries the quarterly budget table.
+calibration (H1–H3), 0.05 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
+expert read, 0.05 FTE; a staff researcher (to be identified), 30 %, kept flexible so effort can shift between people by period; expert readers Sarah Owens, Rosemarie Wilton
+(BIO), 100 h each, adjudicator Pamela Weisenhorn (BIO), 40 h. A work computer (USD 15K); USD 10K travel per year; frontier
+readings through Argo about USD 2K per month (USD 24K per year). Open models run on an ALCF allocation to be requested, and on AmSC as it becomes available, with existing group GPUs for development; no equipment is requested. Budget from the division estimate (CELS divisional rate 30% on labor, materials factor 5%, DOE administration charge 3%): FY27 USD 389,899, FY28 about USD 373,878 at FY27 rates, total about USD 763.8K; the pre-proposal carries the quarterly budget table.
 
 ## 8. Risks
 
@@ -204,7 +204,7 @@ proposal.
 | LP-2 | Equivalent-sentence grouping rule for scoring | Wilke |
 | LP-3 | Back-reference opener list and other density features, committed before reading (`PLAN-information-density.md` ID-4) | Wilke |
 | LP-4 | AmSC access path; request the ALCF allocation; choose the open models | Wilke |
-| LP-5 | Division burdened rates; replace the provisional budget | division budget rep |
+| LP-5 | Done: division estimate received 2026-10-20 (FY27 only); confirm FY28 escalation and the MCS rate for Graziani | division budget rep |
 | LP-6 | OpenChia as second testbed: Chia's agreement and funding status | Wilke, Chia |
 | LP-7 | Resolved: two-year project (MyLDRD FY2027–2028) with a month-8 renewal milestone | — |
 
