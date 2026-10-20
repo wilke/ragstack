@@ -169,7 +169,7 @@ Andreas Wilke (DSL) lead, 50 %; Carlo Graziani (MCS) co-PI, statistics — forec
 calibration (H1–H3), 0.1 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
 expert read, 0.1 FTE; a second researcher, 30 %; expert readers Sarah Owens, Rosemarie Wilton
 (BIO), adjudicator Pamela Weisenhorn (BIO), 100 hours in total. Two laptops; USD 10K travel; frontier
-readings through Argo about USD 2K per month (USD 24K per year); no equipment. Overall about
+readings through Argo about USD 2K per month (USD 24K per year). Open models run on a dedicated ALCF allocation (local GPUs for development); only if the allocation is oversubscribed do we request a small GPU system (e.g., DGX Spark units), sized to the open models chosen. No equipment otherwise. Overall about
 USD 420K per year at USD 360K per burdened FTE-year — **provisional**, to be replaced by the
 division's rates.
 
@@ -203,7 +203,7 @@ proposal.
 | LP-1 | Reliability target (0.85) and the H2 pass criterion as numbers, fixed before data | Wilke, Graziani |
 | LP-2 | Equivalent-sentence grouping rule for scoring | Wilke |
 | LP-3 | Back-reference opener list and other density features, committed before reading (`PLAN-information-density.md` ID-4) | Wilke |
-| LP-4 | AmSC access path; ALCF allocation name | Wilke |
+| LP-4 | AmSC access path; request the dedicated ALCF allocation; choose the open models, which decides whether a GPU system (DGX Spark units) is needed | Wilke |
 | LP-5 | Division burdened rates; replace the provisional budget | division budget rep |
 | LP-6 | OpenChia as second testbed: Chia's agreement and funding status | Wilke, Chia |
 | LP-7 | Three-year call term vs the 1 + 1 plan | Wilke |
