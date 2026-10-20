@@ -19,7 +19,7 @@ correlated errors).
 | # | Hypothesis | Measurement | Owners |
 |---|---|---|---|
 | H1 | Cheap features, recorded before any reading, predict each item's reliability at every budget (equivalently, the readings it needs) | §3: per-item curve, scored for calibration, ranking and accuracy against deep recorded readings | Graziani, Wilke |
-| H2 | Reliability at that budget tracks expert correctness (**go/no-go, month 8**) | Two expert readers + adjudicator on 150–200 items, stratified random draw | Davis, Graziani, readers |
+| H2 | Reliability at that budget tracks expert correctness (**month-8 renewal milestone**; passes if Spearman ρ ≥ 0.5 between reliability and expert agreement across budgets) | Two expert readers + adjudicator on 150–200 items, stratified random draw | Davis, Graziani, readers |
 | H3 | A cascade with deferral (stop / re-read / switch model / ask a human) beats published baselines at matched cost | Replay of recorded readings; cost–accuracy frontier | Graziani, Wilke |
 | H4 | A second model family is worth its measured error correlation | Effective independent readers per family; shared errors with a calibrated decision model (Jev) | Wilke, Graziani |
 
@@ -121,7 +121,7 @@ agent reads retrieved chunks instead, and that changes three things:
 2. **Retrieval can drop the evidence** (within-document retrieval failure, measured as reach and
    containment in the chunking study). Readings then agree on "no support" or on the wrong sentence:
    **stable but wrong**. A stability forecast says "stop early"; only the expert read catches it.
-   This is the strongest argument for H2 as the go/no-go.
+   This is the strongest argument for H2 as the renewal milestone.
 3. **Chunking cuts context**: a back-referencing sentence loses its antecedent and invites false
    support, so context dependency matters more under RAG.
 
@@ -133,7 +133,9 @@ feature.
 
 ## 5. Design by year
 
-**Year 1 (self-contained).**
+The project runs **two years** (MyLDRD: FY2027–2028). H2 is the month-8 renewal milestone; a negative result ends the project and is reported.
+
+**Year 1.**
 1. Build the viral/bacterial metagenomics and wastewater-surveillance question set with the expert
    readers (Davis, Owens, Wilton); answers sit in methods and results — the hard *where* case.
 2. Fit the forecaster on the existing pairs; register per-item forecasts (hashed) before reading.
@@ -148,9 +150,9 @@ feature.
    Trust-or-Escalate and fewest-readings-first at matched cost; Jev as a fast first reader, tested
    not relied on, with an open-model control in the same slot and its error correlation with the
    LLM readers measured (H3, H4).
-7. Go/no-go at month 8 on H2.
+7. Renewal milestone at month 8: H2 passes if Spearman ρ ≥ 0.5 between reliability and expert agreement across budgets.
 
-**Year 2 (if continued).** Live agent verification loop with retrieval (delivered context as a
+**Year 2.** Live agent verification loop with retrieval (delivered context as a
 second budget, §4.3); transfer of the forecasts, unchanged, to a new model generation and a second
 domain; release of the test set, forecasts and code to ModCon.
 
@@ -159,25 +161,23 @@ domain; release of the test set, forecasts and code to ModCon.
 | Milestone | Date | Criterion |
 |---|---|---|
 | Forecasts registered, question set built | [early 2027] | Hashed before reading; set signed off by the readers |
-| Go/no-go | month 8 | Expert read done; forecasts scored; H2 decided |
+| Renewal milestone | month 8 | Expert read done; forecasts scored; H2 decided (ρ ≥ 0.5) |
 | Year 1 final | 2027-09-30 | H1 and H2 answered; policy evaluated in replay; paper submitted |
-| Year 2 final (if continued) | 2028-09-30 | Live policy with retrieval; transfer to a new model generation and a second domain |
+| Year 2 final | 2028-09-30 | Live policy with retrieval; transfer to a new model generation and a second domain |
 
 ## 7. Team and resources
 
 Andreas Wilke (DSL) lead, 50 %; Carlo Graziani (MCS) co-PI, statistics — forecast validation and
 calibration (H1–H3), 0.1 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
 expert read, 0.1 FTE; a second researcher, 30 %; expert readers Sarah Owens, Rosemarie Wilton
-(BIO), adjudicator Pamela Weisenhorn (BIO), 100 hours in total. Two laptops; USD 10K travel; frontier
-readings through Argo about USD 2K per month (USD 24K per year). Open models run on a dedicated ALCF allocation (local GPUs for development); only if the allocation is oversubscribed do we request a small GPU system (e.g., DGX Spark units), sized to the open models chosen. No equipment otherwise. Overall about
-USD 420K per year at USD 360K per burdened FTE-year — **provisional**, to be replaced by the
-division's rates.
+(BIO), adjudicator Pamela Weisenhorn (BIO), 200 hours in total. Two laptops; USD 10K travel per year; frontier
+readings through Argo about USD 2K per month (USD 24K per year). Open models run on an ALCF allocation to be requested, and on AmSC as it becomes available, with existing group GPUs for development; no equipment is requested. Budget (fully burdened, USD 360K per FTE-year — **provisional**, to be replaced by the division's rates): FY27 USD 434.6K, FY28 USD 428.6K, total USD 863.2K; the pre-proposal carries the quarterly budget table.
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Reliability does not predict correctness | It is the go/no-go; the negative result is reported |
+| Reliability does not predict correctness | It is the month-8 renewal milestone; the negative result ends the project and is reported |
 | Redundant evidence read as difficulty | Equivalent sentences grouped before scoring (§4.2) |
 | Stable but wrong under retrieval | Expert read; delivered context as a year-2 factor (§4.3) |
 | Expert items chosen by difficulty | Stratified random draw, inclusion probabilities as weights |
@@ -200,13 +200,13 @@ proposal.
 
 | ID | Item | Owner |
 |---|---|---|
-| LP-1 | Reliability target (0.85) and the H2 pass criterion as numbers, fixed before data | Wilke, Graziani |
+| LP-1 | Reliability target (0.85) fixed before data; H2 pass criterion set: Spearman ρ ≥ 0.5 (Graziani to confirm the exact statistic) | Wilke, Graziani |
 | LP-2 | Equivalent-sentence grouping rule for scoring | Wilke |
 | LP-3 | Back-reference opener list and other density features, committed before reading (`PLAN-information-density.md` ID-4) | Wilke |
-| LP-4 | AmSC access path; request the dedicated ALCF allocation; choose the open models, which decides whether a GPU system (DGX Spark units) is needed | Wilke |
+| LP-4 | AmSC access path; request the ALCF allocation; choose the open models | Wilke |
 | LP-5 | Division burdened rates; replace the provisional budget | division budget rep |
 | LP-6 | OpenChia as second testbed: Chia's agreement and funding status | Wilke, Chia |
-| LP-7 | Three-year call term vs the 1 + 1 plan | Wilke |
+| LP-7 | Resolved: two-year project (MyLDRD FY2027–2028) with a month-8 renewal milestone | — |
 
 ## Sources
 
