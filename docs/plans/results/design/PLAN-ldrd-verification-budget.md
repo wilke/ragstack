@@ -1,6 +1,6 @@
 # PLAN — Verification budget: forecasting how many readings an evidence check needs (FY27 LDRD)
 
-Status: **proposal plan**, 2026-10-20. Pre-proposal due 2026-10-21 (FY27 LDRD Prime, focus area
+Status: **proposal plan**, 2026-10-20. MyLDRD record: LDRD Number 2027-0323. Pre-proposal due 2026-10-21 (FY27 LDRD Prime, focus area
 AI for Science, call "Agents for Science and Scalable Cognition", v.2026.10.07). Nothing in this
 plan has been run. Numbers under §2 resolve to `docs/papers/paper-a-evidence-localisation/claims.json`
 (claim ids in brackets) and will be recomputed with current code after submission
@@ -166,7 +166,7 @@ domain; release of the test set, forecasts and code to ModCon.
 ## 7. Team and resources
 
 Andreas Wilke (DSL) lead, 50 %; Carlo Graziani (MCS) co-PI, statistics — forecast validation and
-calibration (H1–H3), 0.1 FTE (agreed 2026-10-20); James Davis (CELS) co-PI, domain question set and
+calibration (H1–H3), 0.1 FTE (agreed 2026-10-20); James Davis (DSL) co-PI, domain question set and
 expert read, 0.1 FTE; a second researcher, 30 %; expert readers Sarah Owens, Rosemarie Wilton
 (BIO), adjudicator Pamela Weisenhorn (BIO), 100 hours in total. Two laptops; USD 10K travel; frontier
 readings through Argo about USD 2K per month (USD 24K per year); no equipment. Overall about
