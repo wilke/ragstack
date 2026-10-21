@@ -75,10 +75,24 @@ def prompt_hash() -> str:
     return h.hexdigest()[:12]
 
 
-def llm_version(model: str) -> str:
+DEFAULT_WINDOW_CHARS = 80_000
+DEFAULT_MAX_WINDOWS = 4
+DEFAULT_MAX_TOKENS = 2_048
+
+
+def llm_version(
+    model: str,
+    window_chars: int = DEFAULT_WINDOW_CHARS,
+    max_windows: int = DEFAULT_MAX_WINDOWS,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
     """The cache/provenance version of a glossary from ``model`` under this
-    prompt: ``llm/1:<model>:<prompt hash>``."""
-    return f"{LLM_EXTRACTOR}:{model}:{prompt_hash()}"
+    prompt AND these generation limits:
+    ``llm/1:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>``.
+    The limits change what the model sees and how much it may answer, so a
+    result produced under different limits is a different result."""
+    return (f"{LLM_EXTRACTOR}:{model}:{prompt_hash()}"
+            f":w{window_chars}x{max_windows}:t{max_tokens}")
 
 
 def windows(text: str, size: int, overlap: int, max_windows: int) -> tuple[list[str], bool]:
@@ -170,10 +184,10 @@ async def extract_with_llm(
     text: str,
     *,
     config: GlossaryConfig | None = None,
-    window_chars: int = 80_000,
+    window_chars: int = DEFAULT_WINDOW_CHARS,
     window_overlap: int = 2_000,
-    max_windows: int = 4,
-    max_tokens: int = 2_048,
+    max_windows: int = DEFAULT_MAX_WINDOWS,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> tuple[Glossary, LLMGlossaryStats]:
     """One document → a validated :class:`Glossary` stamped
     :func:`llm_version`. Temperature 0. A long document is read in windows and
@@ -196,7 +210,9 @@ async def extract_with_llm(
             stats.cut_off += 1
         proposed.extend(parse_response(answer))
     stats.proposed = len(proposed)
-    glossary, stats.rejected = validate_entries(proposed, text, llm_version(llm.model), cfg)
+    glossary, stats.rejected = validate_entries(
+        proposed, text, llm_version(llm.model, window_chars, max_windows, max_tokens), cfg
+    )
     return glossary, stats
 
 

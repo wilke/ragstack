@@ -44,7 +44,7 @@ def test_prompt_requires_one_entry_per_symbol_and_resolves_respectively() -> Non
 
 def test_version_names_model_and_prompt() -> None:
     v = sgl.llm_version("RedHatAI/Scout")
-    assert v.startswith("llm/1:RedHatAI/Scout:") and len(v.rsplit(":", 1)[1]) == 12
+    assert v.startswith("llm/1:RedHatAI/Scout:") and len(v.split(":")[2]) == 12
     assert sgl.llm_version("RedHatAI/Scout") == v
 
 
@@ -96,7 +96,7 @@ def test_merged_prefers_llm_order() -> None:
     assert m.as_dict() == {"Qb": ["breathing flow rate (exhaled volume)", "breathing flow rate"],
                            "λv": ["deactivation rate"]}
     assert [d.offset for d in m.entries[0].definitions] == [5, 40]
-    assert m.version == "llm/1:x:y+rules/1"
+    assert m.version == "llm/1:x:y+rules/2"
 
 
 def test_reassemble_overlapping_chunks_and_gaps() -> None:
@@ -154,3 +154,50 @@ def test_parse_response_recovers_latex_backslashes_and_trailing_values() -> None
     assert sgl.parse_response(
         '[{"symbol": "Qb", "definition": "x"} {"symbol": "Cq", "definition": "y"}]'
     ) == [("Qb", "x"), ("Cq", "y")]
+
+
+def test_version_folds_generation_limits() -> None:
+    a = sgl.llm_version("m")
+    assert a.endswith(":w80000x4:t2048")
+    assert sgl.llm_version("m", 40_000, 2, 1024) != a
+
+
+def test_extract_with_llm_stamps_its_limits() -> None:
+    llm = FakeLLM(['[{"symbol": "Qb", "definition": "breathing flow rate"}]'])
+    g, _ = asyncio.run(sgl.extract_with_llm(llm, DOC, max_tokens=512))
+    assert g.version == sgl.llm_version("fake/model", max_tokens=512)
+
+
+def test_cut_off_records_are_retried_only_with_flag(tmp_path, monkeypatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "sgl_script_trunc", Path(__file__).resolve().parents[2] / "scripts" / "symbol_glossary_llm.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    docs = tmp_path / "docs.jsonl"
+    docs.write_text(json.dumps({"text": DOC, "path": "a.pdf", "metadata": {}}) + "\n", encoding="utf-8")
+    cache = tmp_path / "cache.jsonl"
+    calls: list[int] = []
+
+    class _LLM(FakeLLM):
+        def __init__(self, base_url, model, http, api_key=None):  # noqa: ANN001
+            super().__init__(['[{"symbol": "Qb", "definition": "breathing flow rate"}]'], finish="length")
+            self.model = model
+            calls.append(1)
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):  # noqa: ANN001
+            calls.append(2)
+            return await super().complete_detailed(messages, max_tokens, temperature)
+
+    monkeypatch.setattr(mod, "OpenAILLM", _LLM)
+    base = ["--jsonl", str(docs), "--cache", str(cache), "--llm-endpoint", "http://127.0.0.1:1",
+            "--llm-model", "fake/model"]
+    assert mod.main(base) == 0
+    rec = json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["m"]["cut_off"] == 1
+    n = calls.count(2)
+    assert mod.main(base) == 0 and calls.count(2) == n          # counted as cached
+    assert mod.main([*base, "--retry-truncated"]) == 0 and calls.count(2) == n + 1

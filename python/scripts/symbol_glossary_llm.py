@@ -85,10 +85,10 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
     if not endpoint or not model:
         raise SystemExit("set --llm-endpoint/--llm-model or LLM_ENDPOINT/LLM_MODEL")
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or None
-    version = llm_version(model)
+    version = llm_version(model, args.window_chars, args.max_windows, args.max_tokens)
     config = config_from_json(args.config)
     cache = SymbolGlossaryCache(args.cache, writable=True)
-    counts = {"documents": 0, "cached": 0, "extracted": 0, "failed": 0, "entries": 0,
+    counts = {"documents": 0, "cached": 0, "cached_cut_off": 0, "extracted": 0, "failed": 0, "entries": 0,
               "proposed": 0, "rejected": 0, "truncated": 0, "cut_off": 0}
     sem = asyncio.Semaphore(max(1, args.concurrency))
     only = set(args.doc_id or [])
@@ -114,7 +114,7 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
                 else:
                     counts["failed"] += 1
                     return
-            cache.put(key, glossary)
+            cache.put(key, glossary, {"cut_off": stats.cut_off, "truncated": stats.truncated})
             counts["extracted"] += 1
             counts["entries"] += len(glossary.entries)
             counts["proposed"] += stats.proposed
@@ -133,9 +133,14 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
             counts["documents"] += 1
             if not text.strip():
                 continue
-            hit = cache.get(content_key(text), version)
-            if hit is not None and (hit[1] or not args.retry_empty):
+            key = content_key(text)
+            hit = cache.get(key, version)
+            cut_off = bool(hit is not None and cache.meta(key, version).get("cut_off"))
+            if hit is not None and (hit[1] or not args.retry_empty) and not (
+                cut_off and args.retry_truncated
+            ):
                 counts["cached"] += 1
+                counts["cached_cut_off"] += int(cut_off)
                 continue
             if args.limit and len(tasks) >= args.limit:
                 continue
@@ -162,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=300.0)
     p.add_argument("--limit", type=int, default=0, help="extract at most N uncached documents")
     p.add_argument("--doc-id", action="append", help="only these doc ids (repeatable)")
+    p.add_argument("--retry-truncated", action="store_true",
+                   help="re-extract documents whose cached answer was CUT OFF at --max-tokens "
+                        "(finish_reason=length: rows may be missing). Without it they count as "
+                        "cached, and the run's log reports them")
     p.add_argument("--retry-empty", action="store_true",
                    help="re-extract documents cached with an EMPTY glossary (the last record wins)")
     args = p.parse_args(argv)
