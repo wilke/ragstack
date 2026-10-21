@@ -941,6 +941,31 @@ func TestSelftestRunsTheWholeSequenceUnderTheInstanceSupervisor(t *testing.T) {
 	if !sawInstanceCheck {
 		t.Errorf("no instance post-check ran; checks = %v", s.checks)
 	}
+	// #741: the stores answered after the create; the drill KILLed the ES JVM,
+	// `start --only es` named the zombie and healed it, and the stores answered
+	// again — all three PASS on the fixture host, which models the zombie.
+	verdicts := map[string]checkResult{}
+	for _, c := range s.checks {
+		verdicts[c.Name] = c
+	}
+	for _, name := range []string{"stores answer after start", "zombie es healed by start --only es",
+		"stores answer after the zombie heal"} {
+		if c, ok := verdicts[name]; !ok || c.Verdict != checkPass {
+			t.Errorf("check %q = %+v (ran %v), want PASS", name, c, ok)
+		}
+	}
+	var drill *stepResult
+	for i := range s.steps {
+		if s.steps[i].Name == "start --only es (zombie)" {
+			drill = &s.steps[i]
+		}
+	}
+	if drill == nil || drill.State != string(model.JobSucceeded) {
+		t.Errorf("the zombie drill's start did not run or did not succeed: %+v", drill)
+	}
+	if !strings.Contains(log, "instances.Stop(elasticsearch-"+fixturePrimary+",ctl)") {
+		t.Errorf("the zombie was never stopped:\n%s", log)
+	}
 	if s.failedChecks() > 0 {
 		t.Errorf("%d check(s) failed:\n%s", s.failedChecks(), out.String())
 	}

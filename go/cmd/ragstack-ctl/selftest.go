@@ -11,7 +11,8 @@ package main
 //
 // The sequence is one tenant's life, start to finish:
 //
-//	create-sandbox → ingest a fixture → backup --fence → stop → restore --as
+//	create-sandbox → (instance mode: kill the ES JVM, `start --only es` heals
+//	the zombie) → ingest a fixture → backup --fence → stop → restore --as
 //	→ decommission both → assert the host is clean → sweep
 //
 // Three rules shape it.
@@ -225,8 +226,10 @@ the sandbox range is read, written, started or stopped.
                     which half of the control plane this run exercises.
                     Default: $CTL_DEFAULT_SUPERVISOR, else systemd. Under
                     instance the post-checks read the instance table and the
-                    pidfile instead of systemctl show, and the journal check
-                    is n/a (there is no unit to have a journal)
+                    pidfile instead of systemctl show, the journal check
+                    is n/a (there is no unit to have a journal), and the run
+                    KILLs the sandbox's Elasticsearch JVM and expects
+                    "start --only es" to heal the zombie instance (#741)
   --image NAME      create the sandbox in IMAGE mode from this prepared server
                     image: its API is the apptainer instance api-<sandbox>,
                     proved (labels, sha256) before every start; needs
@@ -531,6 +534,20 @@ func (s *selftest) execute(ctx context.Context) error {
 	// this run so the ingest can authenticate, and it is never printed.
 	if err := s.collectAdminKey(ctx, job.ID); err != nil {
 		return err
+	}
+	// "Started" means "answers" (#741): every store the create started owns
+	// its port and answers its own probe.
+	s.checks = append(s.checks, s.storesAnswerCheck(ctx, s.primary, "stores answer after start"))
+
+	// ---- zombie drill (instance mode) -------------------------------------
+	//
+	// dev's ES JVM exited on 2026-10-17 and left its instance registered;
+	// `tenant start --only es` then reported "succeeded" over a dead port. The
+	// drill makes that zombie on purpose and expects the start to heal it.
+	if s.instanceMode() {
+		if err := s.zombieDrill(ctx); err != nil {
+			return err
+		}
 	}
 
 	// ---- ingest ---------------------------------------------------------
@@ -1331,6 +1348,211 @@ func (s *selftest) esShutdownChecks(ctx context.Context, name string) []checkRes
 		out = append(out, checkResult{Name: "es journal has no SIGKILL", Verdict: checkPass, Detail: esUnit})
 	}
 	return out
+}
+
+// storesAnswerCheck is "started means answers" read back from the host: every
+// store the sandbox owns answers its own probe (ES `_cluster/health` yellow,
+// qdrant `/readyz`), and in instance mode the process on each store's port
+// descends from that store's instance in the ctl's table. Under systemd the
+// unit's process cannot be tied to the port from here, so the probes are the
+// whole check.
+func (s *selftest) storesAnswerCheck(ctx context.Context, name, label string) checkResult {
+	check := checkResult{Name: label}
+	t, err := s.tenantRow(name)
+	if err != nil {
+		check.Verdict, check.Detail = checkNA, err.Error()
+		return check
+	}
+	type leg struct {
+		instance string
+		port     int
+		ready    func() error
+	}
+	var legs []leg
+	if q := t.Stores.Qdrant; q.Ownership == registry.OwnershipExclusive {
+		url := q.URL
+		legs = append(legs, leg{"qdrant-" + t.ManifestName, t.Ports.QdrantHTTP,
+			func() error { return s.drv.Qdrant().Ready(ctx, url) }})
+	}
+	if e := t.Stores.Elasticsearch; e.Ownership == registry.OwnershipExclusive {
+		url := e.URL
+		legs = append(legs, leg{"elasticsearch-" + t.ManifestName, t.Ports.ESHTTP,
+			func() error { return s.drv.Elasticsearch().Ready(ctx, url) }})
+	}
+	if pg := t.Stores.Postgres; pg.Kind == registry.PostgresKindLocal {
+		port := int(pg.Port)
+		if port == 0 {
+			port = t.Ports.PG
+		}
+		legs = append(legs, leg{"postgres-" + t.ManifestName, port, nil})
+	}
+	if len(legs) == 0 {
+		check.Verdict, check.Detail = checkNA, name+" owns no store"
+		return check
+	}
+	var listed map[string]jobs.Instance
+	if s.instanceMode() {
+		list, err := s.drv.Instances().List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
+		if err != nil {
+			check.Verdict, check.Detail = checkNA, "the instance table cannot be read: "+err.Error()
+			return check
+		}
+		listed = map[string]jobs.Instance{}
+		for _, in := range list {
+			listed[in.Name] = in
+		}
+	}
+	var bad, good []string
+	for _, l := range legs {
+		if listed != nil {
+			in, ok := listed[l.instance]
+			if !ok {
+				bad = append(bad, l.instance+" is not in the ctl's instance table")
+				continue
+			}
+			owns, err := s.drv.Proc().InstanceOwnsPort(ctx, in.PID, l.port)
+			if err != nil {
+				bad = append(bad, fmt.Sprintf("%s: %v", l.instance, err))
+				continue
+			}
+			if !owns {
+				bad = append(bad, fmt.Sprintf("%s is registered (pid %d) but nothing it owns listens on :%d",
+					l.instance, in.PID, l.port))
+				continue
+			}
+		}
+		if l.ready != nil {
+			if err := l.ready(); err != nil {
+				bad = append(bad, fmt.Sprintf("%s on :%d does not answer: %v", l.instance, l.port, err))
+				continue
+			}
+		}
+		good = append(good, fmt.Sprintf("%s :%d", l.instance, l.port))
+	}
+	if len(bad) > 0 {
+		check.Verdict, check.Detail = checkFail, strings.Join(bad, "; ")
+		return check
+	}
+	check.Verdict, check.Detail = checkPass, strings.Join(good, ", ")
+	return check
+}
+
+// zombieWait bounds how long the drill waits for a KILLed JVM's port to free.
+var zombieWait = 60 * time.Second
+
+// zombieDrill is #741 on purpose, in the sandbox only: KILL the Elasticsearch
+// JVM inside the sandbox's elasticsearch instance (the pid that holds the ES
+// port, proved to descend from the instance first), leaving the instance
+// registered with nothing on its port; then `start --only es` and expect the
+// step to name the zombie, heal it, and the store to answer again.
+//
+// Skip-safe: when the host cannot produce the zombie — the JVM cannot be
+// identified or signalled, or the instance exits with its JVM rather than
+// lingering — the check is n/a and the start still runs, so the rest of the
+// sequence has an Elasticsearch to work with.
+func (s *selftest) zombieDrill(ctx context.Context) error {
+	const label = "zombie es healed by start --only es"
+	na := func(detail string) {
+		s.checks = append(s.checks, checkResult{Name: label, Verdict: checkNA, Detail: detail})
+	}
+	t, err := s.tenantRow(s.primary)
+	if err != nil {
+		na(err.Error())
+		return nil
+	}
+	if t.Stores.Elasticsearch.Ownership != registry.OwnershipExclusive {
+		na("the sandbox has no elasticsearch of its own")
+		return nil
+	}
+	instance, port := "elasticsearch-"+t.ManifestName, t.Ports.ESHTTP
+	in, listed, err := s.instanceIn(ctx, instance)
+	switch {
+	case err != nil:
+		na("the instance table cannot be read: " + err.Error())
+		return nil
+	case !listed:
+		na(instance + " is not in the ctl's instance table")
+		return nil
+	}
+	proc := s.drv.Proc()
+	jvm, _, err := proc.Owner(ctx, port)
+	if err != nil || jvm <= 0 {
+		na(fmt.Sprintf("the process on :%d cannot be attributed (%v)", port, err))
+		return nil
+	}
+	if owns, err := proc.InstanceOwnsPort(ctx, in.PID, port); err != nil || !owns {
+		na(fmt.Sprintf("pid %d on :%d does not descend from %s (pid %d), so it is not the ctl's to kill (%v)",
+			jvm, port, instance, in.PID, err))
+		return nil
+	}
+	if err := proc.Signal(ctx, jvm, "", "org.elasticsearch", "KILL"); err != nil {
+		na(fmt.Sprintf("the ES JVM (pid %d) could not be signalled here: %v", jvm, err))
+		return nil
+	}
+	fmt.Fprintf(s.out, "selftest: killed the ES JVM (pid %d) inside %s (pid %d)\n", jvm, instance, in.PID)
+	// Wait for the port to free; the instance should STAY registered.
+	zombie := false
+	deadline := time.Now().Add(zombieWait) // wall clock: s.now is frozen under test
+	for {
+		owns, err := proc.InstanceOwnsPort(ctx, in.PID, port)
+		if err == nil && !owns {
+			_, still, lerr := s.instanceIn(ctx, instance)
+			zombie = lerr == nil && still
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	// The start runs either way: it is what puts the sandbox's ES back.
+	job, err := s.submit(ctx, "start --only es (zombie)", "start", s.primary,
+		map[string]any{"only": []any{"es"}}, "")
+	if err != nil {
+		return err
+	}
+	if !zombie {
+		na(fmt.Sprintf("after the KILL %s did not linger as a zombie on this host (the port stayed held, or the "+
+			"instance exited with its JVM); the start ran as an ordinary start", instance))
+	} else {
+		sentence := "instance " + instance + " was a zombie"
+		found := false
+		for _, st := range job.Steps {
+			text, _ := s.eng.StepLog(ctx, job.ID, st.N)
+			if strings.Contains(text, sentence) {
+				found = true
+				break
+			}
+		}
+		if found {
+			s.checks = append(s.checks, checkResult{Name: label, Verdict: checkPass,
+				Detail: fmt.Sprintf("job %s: %q, stopped and restarted", job.ID, sentence)})
+		} else {
+			s.checks = append(s.checks, checkResult{Name: label, Verdict: checkFail,
+				Detail: fmt.Sprintf("job %s succeeded but no step logged %q: the zombie was not recognised", job.ID,
+					sentence)})
+		}
+	}
+	s.checks = append(s.checks, s.storesAnswerCheck(ctx, s.primary, "stores answer after the zombie heal"))
+	return nil
+}
+
+// instanceIn is one row of the ctl's instance table, by name.
+func (s *selftest) instanceIn(ctx context.Context, name string) (jobs.Instance, bool, error) {
+	list, err := s.drv.Instances().List(ctx, jobs.ListOptions{Namespace: jobs.NamespaceCtl})
+	if err != nil {
+		return jobs.Instance{}, false, err
+	}
+	for _, in := range list {
+		if in.Name == name {
+			return in, true, nil
+		}
+	}
+	return jobs.Instance{}, false, nil
 }
 
 // esLogCheck reads the tail of the tenant's Elasticsearch log for a line

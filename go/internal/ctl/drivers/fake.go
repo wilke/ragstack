@@ -821,6 +821,19 @@ func (p *FakeProc) signal(pid int, sig string) {
 			delete(p.spawnPorts, pid)
 		}
 	}
+	// A KILL cannot be ignored: whatever port the process held, it holds no
+	// longer. This is the selftest's zombie drill on the fake host — the JVM
+	// inside an elasticsearch instance KILLed, the instance left registered.
+	// (A TERM is left alone: a process that ignores one is a case tests build.)
+	if sig == "KILL" {
+		for port, o := range p.Owners {
+			if o.PID == pid {
+				delete(p.Owners, port)
+				delete(p.Ports, port)
+				delete(p.parents, pid)
+			}
+		}
+	}
 }
 
 // Spawn starts a detached process: it assigns a pid, writes the pidfile, and
