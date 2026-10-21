@@ -101,7 +101,8 @@ class ShardReceipt:
     # config — today ``{"symbol_glossary": {"extractor": "rules/1", ...}}``
     # (#754). ``None`` = none ran; then the key is omitted from the JSON, so a
     # receipt from a run without enrichment is byte-identical to one written
-    # before the field existed.
+    # before the field existed. INTERIM: folds into ADR-0011's
+    # ``core.activity.params`` when ADR-0011 PR-3 lands.
     enrichment: dict | None = None
 
     def to_json(self) -> str:

@@ -5,6 +5,7 @@ import hashlib
 import logging
 import shutil
 import unicodedata
+from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
@@ -187,6 +188,10 @@ async def _run_ingest(
             extra["duplicate_policy"] = DuplicateCheck(
                 policy=duplicate_policy, tenants=duplicate_scope
             )
+        # #754: snapshot the glossary step's counters so the manifest records
+        # what THIS job's pipeline did (duck-typed ingestors have none).
+        pipeline = getattr(ingestor, "_pipeline", None)
+        glossary_before = Counter(getattr(pipeline, "glossary_counts", None) or {})
         results = await ingestor.ingest_manifest(
             manifest, job_id=job_id, tenant_id=tenant_id, **extra
         )
@@ -217,6 +222,11 @@ async def _run_ingest(
     # good/config manifest for the derived collection.
     if final == COMPLETED:
         chunks = sum(len(r.chunk_ids or []) for r in results)
+        # The step record comes from the pipeline that ran, never from settings:
+        # a degraded or unconfigured step is not claimed (#754). Shared by
+        # concurrent jobs on one pipeline, so the delta is approximate there.
+        provenance_of = getattr(pipeline, "glossary_provenance", None)
+        enrichment = provenance_of(glossary_before) if callable(provenance_of) else None
         # Keyed on the SURFACE FLAG, not on `target is None` (#422 passes the
         # surface entry through now). The surface keeps the app-level manifest
         # it has always written — per-collection manifests/versions are for
@@ -228,11 +238,15 @@ async def _run_ingest(
         if not target.is_shared_surface:
             from ragstack.api.deps import write_ingest_manifest_for
 
-            write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+            write_ingest_manifest_for(
+                target, source=source, chunk_count=chunks or None, enrichment=enrichment
+            )
         else:
             from ragstack.api.deps import write_ingest_manifest
 
-            write_ingest_manifest(source=source, chunk_count=chunks or None)
+            write_ingest_manifest(
+                source=source, chunk_count=chunks or None, enrichment=enrichment
+            )
 
 
 async def _fail_unsupported_items(

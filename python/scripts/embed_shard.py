@@ -144,8 +144,9 @@ async def amain(args) -> int:
         group = args.embed_group_size or _derive_group_size(args)
         receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id,
                                         args.out, group_size=group)
-    attacher = pipeline.glossary_attacher
-    receipt.enrichment = attacher.provenance() if attacher is not None else None
+    # #754, ADR-0011: what the step DID on this shard (None if off or never
+    # applied; a degraded run is recorded with applied_batches: 0).
+    receipt.enrichment = pipeline.glossary_provenance()
     receipt.write(args.receipt)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"

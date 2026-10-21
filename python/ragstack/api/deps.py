@@ -131,7 +131,9 @@ def _derived_collection_name() -> str:
     )
 
 
-def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> None:
+def write_ingest_manifest(
+    *, source: str, chunk_count: int | None = None, enrichment: dict[str, Any] | None = None
+) -> None:
     """Write a verified (source='ingest') provenance manifest for the served
     collection after an ingest, overwriting any earlier config-materialized one.
     No-op when manifests are disabled. Best-effort — never raises into the caller."""
@@ -150,7 +152,7 @@ def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> Non
             chunk_method=settings.unrecorded_chunk_method(), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             corpus=source, chunk_count=chunk_count,
-            enrichment=_glossary_enrichment(),
+            enrichment=enrichment,
         )
         write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
@@ -695,7 +697,8 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
 
 
 def write_ingest_manifest_for(
-    entry: CollectionEntry, *, source: str, chunk_count: int | None = None
+    entry: CollectionEntry, *, source: str, chunk_count: int | None = None,
+    enrichment: dict[str, Any] | None = None,
 ) -> None:
     """Verified (source='ingest') manifest for a *specific* collection after a
     targeted ingest — the per-collection analogue of ``write_ingest_manifest``
@@ -719,7 +722,7 @@ def write_ingest_manifest_for(
             chunk_method=entry.chunk_method, chunk_size=entry.chunk_size,
             chunk_overlap=entry.chunk_overlap, chunk_params=entry.chunk_params,
             corpus=source, chunk_count=chunk_count,
-            enrichment=_glossary_enrichment(),
+            enrichment=enrichment,
         )
         write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
@@ -1273,12 +1276,6 @@ def _build_glossary_attacher() -> SymbolGlossaryAttacher | None:
                  settings.symbol_glossary_extraction,
                  settings.symbol_glossary_cache_path or "none")
     return attacher
-
-
-def _glossary_enrichment() -> dict[str, Any] | None:
-    """The manifest's hash-excluded ``enrichment`` record (ADR-0011), or None."""
-    attacher = _build_glossary_attacher()
-    return attacher.provenance() if attacher is not None else None
 
 
 def _build_boilerplate_filter() -> BoilerplateFilter | None:

@@ -21,12 +21,11 @@ class _FakeEmbedder:
 
 def test_deps_attacher_off_by_default_and_rules_when_set(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(deps.settings, "symbol_glossary_extraction", "off")
-    assert deps._build_glossary_attacher() is None and deps._glossary_enrichment() is None
+    assert deps._build_glossary_attacher() is None
     monkeypatch.setattr(deps.settings, "symbol_glossary_extraction", "rules")
     monkeypatch.setattr(deps.settings, "symbol_glossary_cache_path", str(tmp_path / "c.jsonl"))
     att = deps._build_glossary_attacher()
     assert att is not None and att.cache is not None
-    assert deps._glossary_enrichment()["symbol_glossary"]["extractor"] == "rules/1"  # type: ignore[index]
     monkeypatch.setattr(deps.settings, "symbol_glossary_extraction", "bogus")
     assert deps._build_glossary_attacher() is None  # a typo never takes the API down
 
@@ -71,4 +70,4 @@ def test_ingest_shard_default_receipt_has_no_enrichment(tmp_path) -> None:
 
 def test_ingest_shard_rules_records_enrichment(tmp_path) -> None:
     r = _run_ingest_shard(tmp_path, "--symbol-glossary", "rules")
-    assert r.enrichment and r.enrichment["symbol_glossary"]["extractor"] == "rules/1"
+    assert r.enrichment and r.enrichment["symbol_glossary"]["extractor"] == "rules/2"

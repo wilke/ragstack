@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any
 
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
@@ -110,6 +112,11 @@ class IngestionPipeline:
         # marker — never ``content`` — so what is embedded is unchanged. ``None``
         # = disabled, and the path is byte-for-byte what it was.
         self.glossary_attacher = glossary_attacher
+        # What the glossary step actually did, cumulatively: "applied" /
+        # "degraded" batches and "chunks_with_glossary". Read by
+        # :meth:`glossary_provenance`, so a manifest or receipt never claims a
+        # step that degraded on every batch (#754 review).
+        self.glossary_counts: Counter[str] = Counter()
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
         # shared across collections, so triples must be stamped with it on write
@@ -413,6 +420,7 @@ class IngestionPipeline:
         try:
             result = self.glossary_attacher.apply(documents, chunks)
         except Exception as e:  # noqa: BLE001 - degrade, never fail the ingest
+            self.glossary_counts["degraded"] += 1
             log.warning("symbol glossary skipped for %r: %s", source, e)
             from ragstack.ingestion.symbol_glossary import VERSION_KEY
 
@@ -420,8 +428,29 @@ class IngestionPipeline:
                 c.symbol_glossary = ""
                 c.metadata.pop(VERSION_KEY, None)
             return
+        self.glossary_counts["applied"] += 1
+        self.glossary_counts["chunks_with_glossary"] += result.chunks_with_glossary
         if result.chunks_with_glossary:
             log.info("ingest %r: symbol glossary %s", source, result.summary())
+
+    def glossary_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
+        """The step record for a manifest/receipt ``enrichment`` (ADR-0011), from
+        THIS pipeline's attacher, with what it did since ``since`` (a copy of
+        :attr:`glossary_counts` taken earlier; ``None`` = since construction).
+        ``None`` when no glossary step is configured or it never ran; a step that
+        only degraded is recorded WITH ``applied_batches: 0``, never as applied."""
+        if self.glossary_attacher is None:
+            return None
+        done = self.glossary_counts - (since or Counter())
+        if not done["applied"] and not done["degraded"]:
+            return None
+        rec = self.glossary_attacher.provenance()
+        rec["symbol_glossary"].update(
+            applied_batches=done["applied"],
+            degraded_batches=done["degraded"],
+            chunks_with_glossary=done["chunks_with_glossary"],
+        )
+        return rec
 
     async def _apply_doi_enrichment(self, documents: list[Document]) -> None:
         """Fill metadata gaps from each document's DOI, between load and chunk.

@@ -101,6 +101,11 @@ class CollectionManifest(BaseModel):
     #: indexed ALONGSIDE the chunks, never the chunk boundaries or the vectors.
     #: Omitted from dumps when empty, so a manifest written with no enrichment is
     #: byte-identical to one written before the field existed.
+    #:
+    #: **INTERIM.** ADR-0011 (Accepted) puts a step's parameters in its
+    #: provenance record's ``core.activity.params``. When ADR-0011 PR-3 lands,
+    #: this record folds into ``core.activity.params`` of the ingest activity and
+    #: this field goes away; readers should not build on it beyond that.
     enrichment: dict[str, Any] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
