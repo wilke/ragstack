@@ -17,6 +17,11 @@
     "collection": {
       "description": "Target collection id (from GET /v1/collections). Omitted → the server default collection. Documents are indexed with the target collection's bound embedder/chunker; an unknown id returns 404.",
       "type": ["string", "null"]
+    },
+    "duplicate_policy": {
+      "description": "The duplicate-paper guard for this request (#747). A document whose DOI, PMCID or PMID is already carried by a document indexed in the target collection (the caller's own or public) is the same work. `refuse` leaves it out (a 409 at admission when the file name carries the id, otherwise a failed job item with error `duplicate_work: key=<kind>:<value> existing_doc_id=<id> (…)`); `allow` ingests it and stamps `duplicate_of` on its chunks. Omitted or null → the deployment default (DUPLICATE_POLICY, `refuse`). Any other value is 422.",
+      "type": ["string", "null"],
+      "enum": ["refuse", "allow", null]
     }
   },
   "additionalProperties": false

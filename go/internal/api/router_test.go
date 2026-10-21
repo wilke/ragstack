@@ -159,6 +159,31 @@ func TestIngestEndpoint(t *testing.T) {
 	}
 }
 
+// TestIngestDuplicatePolicy pins Go's parity for #747: the stub runs no ingest,
+// so it accepts the contract's enum (and null) and refuses anything else 422.
+func TestIngestDuplicatePolicy(t *testing.T) {
+	cases := []struct {
+		body string
+		want int
+	}{
+		{`{"source":"/tmp/test.txt","duplicate_policy":"refuse"}`, http.StatusOK},
+		{`{"source":"/tmp/test.txt","duplicate_policy":"allow"}`, http.StatusOK},
+		{`{"source":"/tmp/test.txt","duplicate_policy":null}`, http.StatusOK},
+		{`{"source":"/tmp/test.txt","duplicate_policy":"off"}`, http.StatusUnprocessableEntity},
+		{`{"source":"/tmp/test.txt","duplicate_policy":"bogus"}`, http.StatusUnprocessableEntity},
+	}
+	for _, c := range cases {
+		r := newRouter()
+		req := httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(c.body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != c.want {
+			t.Errorf("%s: expected %d, got %d: %s", c.body, c.want, w.Code, w.Body.String())
+		}
+	}
+}
+
 // TestIngestStatusUnknownJob pins the contract's answer for a job id the server
 // cannot read (#628): 200, status "unknown", the job_id echoed, and exactly the
 // five IngestResponse keys. It used to answer the undefined status "not_found".

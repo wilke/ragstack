@@ -121,6 +121,18 @@ class TextIndex(Protocol):
         index, not the job registry, so CLI-built corpora are visible."""
         ...
 
+    async def find_documents_by_key(
+        self, keys: list[tuple[str, str]], tenants: list[str], *, limit: int = 20
+    ) -> dict[tuple[str, str], list[DocumentSummary]]:
+        """Indexed documents visible to ``tenants`` that carry any of the work
+        identity ``keys`` (``("doi"|"pmcid"|"pmid", normalised value)``,
+        ``ingestion.work_identity.work_keys``), grouped by the key they match
+        and compared NORMALISED (a stored ``…/-/`` DOI matches its canonical
+        form). At most ``limit`` documents per call. Fails closed (``{}``) on
+        an empty ``tenants`` list. The duplicate-paper guard's one lookup (#747);
+        it does NOT exclude the caller's own doc_id — the guard does."""
+        ...
+
 
 @runtime_checkable
 class GraphStore(Protocol):

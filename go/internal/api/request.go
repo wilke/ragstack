@@ -74,7 +74,16 @@ type IngestRequest struct {
 	Source     *string        `json:"source"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	Collection *string        `json:"collection,omitempty"`
+	// DuplicatePolicy is the duplicate-paper guard for this request (#747):
+	// "refuse" | "allow" | null. The Go server runs no ingest (HandleIngest is a
+	// stub), so parity is accepting the field and refusing a value outside the
+	// contract's enum with 422 — nothing else reads it.
+	DuplicatePolicy *string `json:"duplicate_policy,omitempty"`
 }
+
+// duplicatePolicies is contracts/schemas/ingest_request.json's enum for
+// duplicate_policy (null is the absent pointer).
+var duplicatePolicies = map[string]bool{"refuse": true, "allow": true}
 
 // ChunkConfig is the chunk strategy for a new collection (build-time identity).
 type ChunkConfig struct {

@@ -247,6 +247,9 @@ DECLARED_FIELDS: dict[str, DeclaredField] = {
         _f("doi_enriched_from", "string"),
         _f("metadata_source", "string"),
         _f("sha256", "string"),
+        # #747: on an `allow`-admitted copy of an already-indexed work, the
+        # doc_id of that copy (the work-level dedup handle for #754).
+        _f("duplicate_of", "string"),
         # Bibliographic.
         _f("title", "string"),
         _f("authors", "string", array=True),

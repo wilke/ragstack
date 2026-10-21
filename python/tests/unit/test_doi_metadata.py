@@ -139,6 +139,30 @@ def test_normalize_doi_strips_wrappers_and_punctuation():
 def test_normalize_doi_rejects_non_dois():
     for bad in ("", "not a doi", "10.5/x", "https://example.org/paper", "10.1234"):
         assert normalize_doi(bad) == ""
+    # A cut that leaves no suffix is still not a DOI.
+    assert normalize_doi("10.1073/-/DCSupplemental") == ""
+
+
+def test_normalize_doi_strips_pnas_supplement_suffix():
+    """#747 D8: PNAS's supplement link glues `/-/DCSupplemental` onto the
+    article DOI; a text scan stopping at the line break kept `…/-/`."""
+    for raw in ("10.1073/pnas.2018995118/-/DCSupplemental", "10.1073/pnas.2018995118/-/",
+                "10.1073/pnas.2018995118/-", "10.1073/pnas.2018995118/"):
+        assert normalize_doi(raw) == "10.1073/pnas.2018995118"
+
+
+def test_scan_text_merges_the_supplement_link_with_the_article_doi():
+    """The dev footer case (plan §0): one article DOI in the header, the
+    supplement link twice in the footers. Before D8 the `/-/` form won on
+    frequency and Crossref 404'd it; now both count for the article."""
+    text = (
+        "PNAS 2021 Vol. 118 No. 17 e2018995118 https://doi.org/10.1073/pnas.2018995118\n"
+        "body …\nThis article contains supporting information online at "
+        "https://www.pnas.org/lookup/suppl/doi:10.1073/pnas.2018995118/-/\nDCSupplemental.\n"
+        "… https://www.pnas.org/lookup/suppl/doi:10.1073/pnas.2018995118/-/\nDCSupplemental\n"
+        "Reference: 10.1000/other.ref"
+    )
+    assert scan_text_for_doi(text) == "10.1073/pnas.2018995118"
 
 
 def test_document_doi_from_existing_metadata_wins():

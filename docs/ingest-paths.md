@@ -145,6 +145,7 @@ Where each step runs, path by path:
 | **7. Write** | The entry's stores, as resolved by the API | The URLs the API seeds per run (#407) | The registry-resolved stores. `load_embeddings.py` **requires** a URL per leg (#636) | A registry route, else `--qdrant-url` / `--es-url`, which **default to localhost** (#454). ES only with `--text-backend elasticsearch` (default `none`) |
 | **8. Archive** | none | `versions/<n>/`, recorded on the registry | `pdf-ingest.cwl` only, not recorded | none |
 | **Chunk cap** (#291) | Yes, once per job | Yes, per task (`--max-chunks`) | `load_embeddings.py`: yes. `ingest_shard.py`: only if `max_chunks` is passed (default 0 = off) | **No** |
+| **Duplicate guard** (#747) | Yes: `DUPLICATE_POLICY` (default `refuse`), per request `duplicate_policy` | Admission pre-check on file names; the worker check (`--duplicate-policy`) only once the registered CWL declares `duplicate_policy` (the tools-image repin) | `ingest_shard.py --duplicate-policy`, default `off` | **No** |
 
 What each step means:
 
@@ -663,6 +664,97 @@ stay in place, and every read of them stays collection-scoped.
 60 % (memory mappings vs `vm.max_map_count`, threads vs the process limit, resident
 RAM) over ten loaded collections — measured value: see
 `docs/runbooks/active-collection-bound.md`.
+
+## Duplicate guard: work identity (#747)
+
+The same paper reached a collection six times on dev (`openchia`: two uploads of
+the publisher PDF, two copies whose DOI carried PNAS's `/-/` supplement-link tail, a
+Europe PMC rendering, one more), and the copies took six of the top 21 BM25 slots
+(#754). A document's id is keyed on its path, so a re-upload, a second rendering or
+a Workspace file ingested twice by reference is a NEW document. The guard keys on the
+**work** instead: the normalised DOI, PMCID or PMID (`ingestion/work_identity.py`).
+
+**Policy** (`Settings.duplicate_policy`, env `DUPLICATE_POLICY`, default `refuse` —
+owner decision D1; a request may send `duplicate_policy: "refuse" | "allow"`):
+
+| Policy | A copy of an already-indexed work |
+|---|---|
+| `refuse` | not ingested — a 409 at admission when its file name carries the id, else a failed item `duplicate_work: key=<kind>:<value> existing_doc_id=<id> (…)` |
+| `allow` | ingested; every chunk carries `duplicate_of=<existing doc_id>` (a declared field) |
+| `off` | no lookup, no id filling — the pre-#747 behaviour |
+
+A supplement carrying the article's DOI is the same work (D3). A re-ingest of the
+same source path (same doc id) is a replace, never a duplicate. The lookup scope is
+resolved once per request with `api/scope.py::count_scope`: own tenant + `public`,
+widened by the owner tenant of a collection the caller reaches through a share — the
+writer-tenants a query of that collection would return to this caller, so only
+documents the caller can already read are ever named. (The worker, which has no ACL
+store, uses `readable_tenants(tenant)`.) A lookup that fails (ES down) logs a WARNING
+and admits: the guard is corpus hygiene, not isolation. An index whose `metadata.doi`
+or `metadata.pmcid` is mapped `text` does not fail — the term queries match nothing —
+so the first lookup per index logs a one-time WARNING naming the field.
+
+**Two checks.** (1) **Admission**, best-effort, in `api/routers/documents.py`
+`_precheck_duplicate`: only the file NAME is read — a `PMC` token of at least five
+digits (`report-PMC2020.pdf` is a year, not an id), or a DOI by the configured
+publisher profile's filename rule on a **`.pdf`** name only (on `.txt`/`.md` the
+ASM rule turns `fig.1.txt` into `10.1128/fig.1.txt`) — before a job exists, a version
+is reserved or a byte is written. Two files of ONE request that share a key are also
+a 409. The 409 `detail` is an object: `{error: "duplicate_work", key,
+existing_doc_id, collection, message}` (`existing_doc_id` is null for the
+two-files-in-one-request case). (2) **Authoritative**, in
+`IngestionPipeline.prepare_documents`, after the loader and the DOI enricher and
+before the first chunk: missing ids are filled from a labelled header (`PMCID:` /
+`PMID:` / `DOI:`, line-wrap tolerant — the Europe PMC header) and a `PMC…` file
+name, then ONE `TextIndex.find_documents_by_key` per batch. A `.pdf` name's DOI is
+used as a lookup key only (when the metadata has no DOI), never written before
+enrichment, so it cannot pre-empt the enricher's text scan. One `DuplicateCheck` per
+job carries the scope and a shared `seen` map, so a second copy inside the same
+request is refused against the first even when every item is prepared before any
+is indexed (the chunk-cap sizing pass). Per path:
+
+| Path | Where | Refused document |
+|---|---|---|
+| API, local | `ShardedIngestor.ingest_manifest` → `prepare_source` | the item fails with the refusal (`DuplicateWork.job_error`); a 1-file job is `failed` |
+| API, gowe | the pre-check in the API; the worker check only when the registered workflow declares the `duplicate_policy` input (not yet — see below) | the receipt row carries the refusal; the batch completes (exit 0) |
+| operator `ingest_shard.py` | `run_shard(duplicate_policy=…)`, `--duplicate-policy`, default `off` (D10) | as gowe |
+| `ingest_jsonl.py`, `load_embeddings.py`, replay | **not guarded** | — |
+
+**GoWe path until the tools-image repin (ADR-0010).** The pinned tools image's
+`ingest_shard.py` predates `--duplicate-policy` (argparse would exit 2 on it), and
+under ADR-0010 the CWL is what declares which image a workflow runs. So
+`cwl/pdf-ingest-scatter.cwl` does **not** declare a `duplicate_policy` input yet,
+and `_gowe_inputs` sends it only when the registered workflow declares it
+(`tool_image.declared_workflow_inputs`, the `provenance_inputs` precedent). Until
+the repin PR adds the input (nullable, no default) with the image that carries the
+flag, **the GoWe path is guarded only by the admission check on file names**: a
+`PMC…`-named or ASM-named PDF is refused; a `sha-*` or other id-less name is not.
+
+**DOI normalisation (D8).** `doi_metadata.normalize_doi` cuts a trailing `/-/…`,
+`/-/`, `/-` or `/`. That fixes the text scan too: PNAS's footer link
+`…/doi:10.1073/pnas.2018995118/-/DCSupplemental` no longer out-votes the article DOI
+and 404s at Crossref. Existing indexes keep their malformed values until re-ingest;
+the lookup also matches the prefix `<doi>/-`.
+
+**The backlog.** `python scripts/duplicate_report.py --es-url … --index 'ragstack_lib_*'`
+(read-only, `ragstack/ops/duplicates.py`) groups the documents already indexed that
+share any key, filling missing ids from file names, and counts the documents with no
+id at all. Which copy to keep is the owner's call (`DELETE /v1/documents/{id}`).
+
+**Known limits.**
+
+- **Concurrent jobs race.** Two jobs (two uploads, two Workspace references)
+  ingesting the same new work at the same time can both pass: each looks up before
+  either has indexed. Within one job the shared `seen` map closes this (no `await`
+  between check and set); across jobs it would need a cross-process claim, which
+  step 1 does not add. `scripts/duplicate_report.py` finds what slips through.
+- **No cross-key bridging.** A PMCID-only copy does not match a DOI-only one until
+  enrichment fills both.
+- **Errata and corrections.** A correction whose header `DOI:` names the article it
+  corrects is treated as that article and refused under `refuse`. The
+  edition/child model is R1's; until then, `duplicate_policy=allow`.
+- **Reason visibility (#742).** `GET /v1/ingest/{job_id}` shows `failed: 1` without
+  the reason; the item error is on the job store and in the log.
 
 ## Chunk cap: the per-collection bound (#291)
 
