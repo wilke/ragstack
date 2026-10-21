@@ -142,7 +142,7 @@ def test_deterministic_and_sorted() -> None:
     a, b = extract_glossary(text), extract_glossary(text)
     assert a == b
     assert [e.symbol for e in a.entries] == sorted(e.symbol for e in a.entries)
-    assert a.version == EXTRACTOR_VERSION == "rules/1"
+    assert a.version == EXTRACTOR_VERSION == "rules/2"
 
 
 @pytest.mark.parametrize(
@@ -181,8 +181,9 @@ def test_for_chunk_only_symbols_present_as_tokens() -> None:
 def test_for_chunk_caps() -> None:
     g = Glossary(tuple(_e(f"Q{c}", "some long definition here") for c in "abcdefgh"))
     chunk = " ".join(f"Q{c}" for c in "abcdefgh")
-    assert len(g.for_chunk(chunk, GlossaryConfig(max_entries_per_chunk=3)).splitlines()) == 3
-    out = g.for_chunk(chunk, GlossaryConfig(max_chars_per_chunk=60))
+    cfg = GlossaryConfig(max_entries_per_chunk=3, attach_only_with_value=False)
+    assert len(g.for_chunk(chunk, cfg).splitlines()) == 3
+    out = g.for_chunk(chunk, GlossaryConfig(max_chars_per_chunk=60, attach_only_with_value=False))
     assert len(out) <= 60 and out
 
 
@@ -292,16 +293,21 @@ def test_attacher_rules_carries_definition_to_the_value_chunk() -> None:
     result = SymbolGlossaryAttacher().apply([doc], chunks)
     assert "Qb — breathing flow rate" in chunks[1].symbol_glossary
     assert "Qb" not in chunks[1].content.split("Qb=")[0]  # the value chunk never said it
-    assert all(c.metadata[VERSION_KEY] == "rules/1" for c in chunks)
+    assert all(c.metadata[VERSION_KEY] == "rules/2" for c in chunks)
     assert result.docs_rules == 1 and result.docs_cached == 0
-    assert result.chunks_with_glossary == 2
+    # Value-only (the default): the defining chunk mentions Qb but states no
+    # value, so only the caption chunk carries the glossary.
+    assert result.chunks_with_glossary == 1 and chunks[0].symbol_glossary == ""
+    doc, chunks = _doc_and_chunks(text)
+    SymbolGlossaryAttacher(GlossaryConfig(attach_only_with_value=False)).apply([doc], chunks)
+    assert all("Qb — breathing flow rate" in c.symbol_glossary for c in chunks)
 
 
 def test_attacher_symbol_free_chunk_gets_empty_but_is_stamped() -> None:
     doc, chunks = _doc_and_chunks("plain prose " * 30)
     SymbolGlossaryAttacher().apply([doc], chunks)
     assert [c.symbol_glossary for c in chunks] == ["", ""]
-    assert all(c.metadata[VERSION_KEY] == "rules/1" for c in chunks)
+    assert all(c.metadata[VERSION_KEY] == "rules/2" for c in chunks)
 
 
 def test_attacher_prefers_cache_and_revalidates(tmp_path) -> None:
@@ -312,7 +318,8 @@ def test_attacher_prefers_cache_and_revalidates(tmp_path) -> None:
         (_e("λv", "deactivation rate", "viral ventilation rate"),), "llm/1:m:h"))
     cache.close()
     doc, chunks = _doc_and_chunks(DOC)
-    att = SymbolGlossaryAttacher(cache=SymbolGlossaryCache(path))
+    att = SymbolGlossaryAttacher(GlossaryConfig(attach_only_with_value=False),
+                                 cache=SymbolGlossaryCache(path))
     result = att.apply([doc], chunks)
     assert chunks[0].symbol_glossary == "λv — deactivation rate"
     assert chunks[0].metadata[VERSION_KEY] == "llm/1:m:h"
@@ -323,7 +330,7 @@ def test_attacher_falls_back_to_rules_on_cache_miss(tmp_path) -> None:
     att = SymbolGlossaryAttacher(cache=SymbolGlossaryCache(tmp_path / "empty.jsonl"))
     doc, chunks = _doc_and_chunks(WHERE)
     att.apply([doc], chunks)
-    assert chunks[0].metadata[VERSION_KEY] == "rules/1"
+    assert chunks[0].metadata[VERSION_KEY] == "rules/2"
 
 
 def test_attacher_from_mode(tmp_path) -> None:
@@ -335,7 +342,7 @@ def test_attacher_from_mode(tmp_path) -> None:
     with pytest.raises(ValueError):
         attacher_from_mode("llm")
     prov = attacher_from_mode("rules").provenance()  # type: ignore[union-attr]
-    assert prov["symbol_glossary"]["extractor"] == "rules/1"
+    assert prov["symbol_glossary"]["extractor"] == "rules/2"
 
 
 def test_chunk_dump_omits_empty_glossary() -> None:
@@ -419,13 +426,15 @@ def test_rendering_is_nfc() -> None:
 def test_positional_definition_nearest_before_chunk_start() -> None:
     g = Glossary((_e("λv", "first meaning", "second meaning", offsets=(100, 5000)),))
     assert g.entries[0].ambiguous
-    assert g.for_chunk("λv here", start_char=50) == "λv — first meaning"      # none before: first after
-    assert g.for_chunk("λv here", start_char=100) == "λv — first meaning"     # at
-    assert g.for_chunk("λv here", start_char=4999) == "λv — first meaning"
-    assert g.for_chunk("λv here", start_char=6000) == "λv — second meaning"
-    assert g.for_chunk("λv here") == "λv — first meaning; second meaning"     # no position: all
-    assert g.for_chunk("λv", GlossaryConfig(positional=False), start_char=6000) == (
-        "λv — first meaning; second meaning")
+    m = GlossaryConfig(attach_only_with_value=False)  # these chunks mention λv, no value
+    assert g.for_chunk("λv here", m, start_char=50) == "λv — first meaning"    # none before: first after
+    assert g.for_chunk("λv here", m, start_char=100) == "λv — first meaning"   # at
+    assert g.for_chunk("λv here", m, start_char=4999) == "λv — first meaning"
+    assert g.for_chunk("λv here", m, start_char=6000) == "λv — second meaning"
+    assert g.for_chunk("λv here", m) == "λv — first meaning; second meaning"   # no position: all
+    assert g.for_chunk("λv", GlossaryConfig(positional=False, attach_only_with_value=False),
+                       start_char=6000) == "λv — first meaning; second meaning"
+    assert g.for_chunk("λv = 0.3/h", start_char=6000) == "λv — second meaning"  # default: value
 
 
 def test_rules_record_raw_offsets_and_flag_reuse() -> None:
@@ -438,7 +447,7 @@ def test_rules_record_raw_offsets_and_flag_reuse() -> None:
 
 
 def test_attacher_uses_chunk_position() -> None:
-    first = "where Qb is the breathing flow rate. "
+    first = "where Qb is the breathing flow rate. Qb = 1. "
     text = first + "pad " * 50 + "where Qb is the quanta budget. " + "pad " * 50 + "Qb=0.5."
     doc = Document(id="d", content=text)
     cut = len(first) + 100
@@ -489,3 +498,68 @@ def test_locality_gate_rejects_words_scattered_across_the_paper() -> None:
 def test_locality_gate_keeps_a_paraphrase_near_the_symbol() -> None:
     g, rejected = validate_entries([("λv", "deactivation rate of virions")], FAR, "llm/1")
     assert g.as_dict() == {"λv": ["deactivation rate of virions"]} and rejected == 0
+
+
+# --- review fixes (#754 PR 763) -----------------------------------------------
+
+
+def test_appositive_does_not_steal_the_previous_clause() -> None:
+    text = "where pm is the mask penetration factor, pf is the filtration efficiency"
+    d = extract_glossary(text).as_dict()
+    assert d.get("pm") == ["mask penetration factor"]
+    assert "mask penetration factor" not in d.get("pf", [])
+    assert d.get("pf") == ["filtration efficiency"]
+
+
+def test_where_rule_allows_space_before_units_in_parentheses() -> None:
+    d = extract_glossary("where Qb (L/min) is the breathing flow rate. Next.").as_dict()
+    assert d == {"Qb": ["breathing flow rate"]}
+
+
+@pytest.mark.parametrize(
+    "text,ok",
+    [("Qb = 0.5 m3/h", True), ("Qb=0.5", True), ("Qb ≈ 1.2 L/s", True), ("Qb ~ 30", True),
+     ("λv(r) = 0.3/h", True), ("λ_v = .3", True), ("r¯=0.5 μm", True), ("Qb = −2", True),
+     ("Qb (m3/h) = 0.5", True),
+     ("Qb is large", False), ("Qb = Cq V", False), ("λ̄c = λa + λf", False),
+     ("λs(r) < λa", False), ("Qbx = 1", False), ("the Qb value", False)],
+)
+def test_value_statement(text: str, ok: bool) -> None:
+    from ragstack.ingestion.symbol_glossary import states_value
+
+    sym = "λ̄c" if text.startswith("λ̄") else ("λs" if text.startswith("λs") else (
+        "λv" if text.startswith("λ") else ("r¯" if text.startswith("r") else "Qb")))
+    assert states_value(sym, text) is ok
+
+
+def test_value_only_attaches_to_the_value_chunk_only() -> None:
+    g = Glossary((_e("Qb", "breathing flow rate"),))
+    assert g.for_chunk("we discuss Qb at length") == ""
+    assert g.for_chunk("Table 1: Qb = 0.5 m3/h") == "Qb — breathing flow rate"
+    assert g.for_chunk("we discuss Qb", GlossaryConfig(attach_only_with_value=False)) == (
+        "Qb — breathing flow rate")
+
+
+def test_near_but_wrong_definition_through_another_symbol_is_rejected() -> None:
+    text = ("The air change rate λa and the viral deactivation rate λv are both "
+            "first-order losses; λv = 0.3/h here.")
+    g, rejected = validate_entries([("λv", "air change rate")], text, "llm/1")
+    assert g.as_dict() == {} and rejected == 1
+    g, _ = validate_entries([("λv", "viral deactivation rate"), ("λa", "air change rate")], text, "llm/1")
+    assert g.as_dict() == {"λa": ["air change rate"], "λv": ["viral deactivation rate"]}
+
+
+def test_near_but_wrong_paraphrase_is_a_known_limitation() -> None:
+    # A paraphrase (not a verbatim copy) cannot be checked for "which symbol
+    # does it sit next to": every word is near λv, so it passes. Documented.
+    text = "The air change rate λa and the viral deactivation rate λv matter in each of the rooms."
+    g, _ = validate_entries([("λv", "rate of air change")], text, "llm/1")
+    assert g.as_dict() == {"λv": ["rate of air change"]}
+
+
+def test_validated_offset_prefers_the_copy_nearest_the_symbol() -> None:
+    text = ("deactivation rate is discussed in general terms. " + "x " * 300
+            + "the deactivation rate λv is then fixed; λv = 0.3/h.")
+    g, _ = validate_entries([("λv", "deactivation rate")], text, "llm/1")
+    (d,) = g.entries[0].definitions
+    assert d.offset == text.rindex("deactivation rate")

@@ -67,7 +67,7 @@ log = logging.getLogger(__name__)
 #: to canonicalisation, or to how a chunk's field is rendered: it is stamped on
 #: every chunk (``metadata.symbol_glossary_version``) and in the collection
 #: manifest, and the backfill uses it to decide which chunks are already current.
-EXTRACTOR_VERSION = "rules/1"
+EXTRACTOR_VERSION = "rules/2"
 
 #: The per-chunk metadata key carrying the version of the glossary that produced
 #: the chunk's ``symbol_glossary`` field (``rules/1``, ``llm/1:<model>:<hash>``).
@@ -288,7 +288,7 @@ _DEF_END = (
     r"|,\s*and\b|\s+and\s+" + _SYMBOL_BODY + r"\s+(?:is|are|denotes)\b|\n\s*\n|$))"
 )
 # Optional function arguments after a symbol: "λv(r)", "Cj(x)".
-_ARGS = r"(?:\([^()\n]{1,20}\))?"
+_ARGS = r"(?:\s*\([^()\n]{1,20}\))?"
 # Optional "= value [unit]" after a symbol: "where Vb≈500 mL is the volume per
 # breath". No parentheses inside, so "(Cq=30) is the norm" cannot match.
 _VALUE = r"(?:\s*[=≈~]\s*[^\s.;()]{1,40}(?:\s+[^\W\d]{1,6}\d?)?)?"
@@ -311,7 +311,11 @@ _CONTINUATION = re.compile(
 # factor, fd". Two to six words ending in a head noun, then the symbol.
 _APPOSITIVE = re.compile(
     r"\bthe\s+(?P<def>(?:" + _NP_WORD + r"\s+){1,5}(?:" + _HEAD_NOUNS + r"))"
-    r"\s*,?\s+" + _SYMBOL + _ARGS,
+    r"\s*,?\s+" + _SYMBOL + _ARGS
+    # Not when the symbol opens its OWN definition clause: in "where pm is the
+    # mask penetration factor, pf is the filtration efficiency" the phrase
+    # before "pf" belongs to pm (#754 review).
+    + r"(?!\s+(?:is|are|denotes?|represents?)\b)",
     re.IGNORECASE,
 )
 # R3: "λ̄c = λa+… is the air purification rate" / "Qb is the …" — a symbol, an
@@ -417,6 +421,13 @@ class GlossaryConfig:
     #: before the chunk's start (falling back to the first one after it). Off:
     #: render every definition.
     positional: bool = True
+    #: Attach a symbol's definition to a chunk only where the chunk STATES A
+    #: VALUE for it — the symbol followed by ``=``/``≈``/``~`` and a number
+    #: (``Qb = 0.5 m3/h``, ``r̄ ≈ 1 μm``, ``λv(r) = 0.3/h``). The glossary exists
+    #: to carry a definition to the chunk that holds the number; attaching it to
+    #: every mention lifted whole symbol-dense papers into the top 10 (#754
+    #: experiment: ~9.7 of 10 BM25 slots at boost 2). On by default.
+    attach_only_with_value: bool = True
     #: LLM/cached definitions only: every content word of a definition must
     #: occur within this many characters of an occurrence of the symbol in the
     #: document (0 = off: words anywhere in the document suffice). The
@@ -486,6 +497,25 @@ def symbol_pattern(symbol: str) -> re.Pattern[str]:
     (not inside a longer token; a bar is part of the token, so ``r`` does not
     match inside ``r̄``). Case-sensitive: ``Qb`` and ``qb`` differ."""
     return re.compile(_NOT_TOKEN_BEFORE + re.escape(symbol) + _NOT_TOKEN_AFTER)
+
+
+@lru_cache(maxsize=4096)
+def value_pattern(symbol: str) -> re.Pattern[str]:
+    """Canonical ``symbol`` stating a value: the whole token, optional function
+    arguments (``λv(r)``), then ``=``/``≈``/``≃``/``~``/``∼`` and a number
+    (optionally signed; a decimal may start with ``.``). A bare equation
+    (``λ̄c = λa + λf``) is NOT a value statement, and neither is a comparison
+    (``λs(r) < λa``)."""
+    return re.compile(
+        _NOT_TOKEN_BEFORE + re.escape(symbol) + _NOT_TOKEN_AFTER
+        + r"\s*(?:\([^()\n]{0,20}\))?\s*[=≈≃~∼]\s*[-−+]?\s*\.?\d"
+    )
+
+
+def states_value(symbol: str, text: str) -> bool:
+    """Does ``text`` state a value for ``symbol`` (both canonicalised)?"""
+    key = canonical_symbol(symbol) if symbol else ""
+    return bool(key) and value_pattern(key).search(canonical_text(text)) is not None
 
 
 def symbol_occurs(symbol: str, text: str) -> bool:
@@ -568,7 +598,8 @@ class Glossary:
         for entry in self.entries:
             if len(lines) >= cfg.max_entries_per_chunk:
                 break
-            if symbol_pattern(entry.symbol).search(canon) is None:
+            pattern = value_pattern(entry.symbol) if cfg.attach_only_with_value else symbol_pattern(entry.symbol)
+            if pattern.search(canon) is None:
                 continue
             defs = "; ".join(d.text for d in entry.definition_for(where))
             line = display_form(f"{entry.symbol} — {defs}")
@@ -685,21 +716,55 @@ _DEF_STOP = frozenset(
 )
 
 
-def _near_symbol(defn: str, canon_fold: str, occurrences: list[int], window: int) -> bool:
+def _near_symbol(defn: str, canon: str, occurrences: list[int], window: int) -> bool:
     """Does every content word of ``defn`` occur within ``window`` characters
-    of SOME occurrence of the symbol? Words are matched by a stem prefix (the
-    word minus up to three trailing letters, at least five), so "deactivation"
-    is found in "deactivated"."""
+    of SOME occurrence of the symbol? ``occurrences`` are offsets into
+    ``canon``, and the spans are cut from ``canon`` itself (then casefolded),
+    so offsets and spans always refer to the same string. Words are matched by
+    a stem prefix (the word minus up to three trailing letters, at least five),
+    so "deactivation" is found in "deactivated"."""
     words = [w.casefold() for w in _WORDS.findall(canonical_text(defn))]
     words = [w for w in words if len(w) > 2 and w not in _DEF_STOP]
     if not words:
         return False
-    spans = [canon_fold[max(0, o - window) : o + window] for o in occurrences]
+    spans = [canon[max(0, o - window) : o + window].casefold() for o in occurrences]
     for w in words:
         stem = re.compile(r"\b" + re.escape(w[: max(5, len(w) - 3)]))
         if not any(stem.search(span) for span in spans):
             return False
     return True
+
+
+def _verbatim_pairs(
+    defn: str, canon: str, occurrences: list[int], window: int
+) -> list[tuple[int, int, int]]:
+    """``(distance, def_start, symbol_offset)`` for every verbatim occurrence
+    of ``defn`` within ``window`` of a symbol occurrence, nearest first."""
+    needle = " ".join(canonical_text(defn).split()).casefold()
+    if not needle:
+        return []
+    hay = canon.casefold()
+    if len(hay) != len(canon):  # casefold changed lengths (ß→ss): offsets unusable
+        return []
+    out = []
+    for m in re.finditer(re.escape(needle).replace(r"\ ", r"\s+"), hay):
+        for o in occurrences:
+            dist = o - m.end() if o >= m.end() else m.start() - o
+            if 0 <= dist <= window:
+                out.append((dist, m.start(), o))
+    return sorted(out)
+
+
+def _another_symbol_between(canon: str, a: int, b: int, symbol: str) -> bool:
+    """Is a DIFFERENT specific symbol token between offsets ``a`` and ``b``?
+    "the air change rate λa and the viral deactivation rate λv": the phrase
+    "air change rate" is next to λa, and λa stands between it and λv."""
+    lo, hi = min(a, b), max(a, b)
+    for m in re.finditer(_SYMBOL, canon[lo:hi]):
+        tok = m.group("sym")
+        if tok != symbol and is_specific_symbol(tok):
+            return True
+    return False
 
 
 def validate_entries(
@@ -745,14 +810,27 @@ def validate_entries(
             and _plausible_definition(defn, sym)
             and _norm_words(defn) <= doc_words
         )
+        occurrences = [m.start() for m in symbol_pattern(sym).finditer(canon)] if ok else []
+        pairs = _verbatim_pairs(defn, canon, occurrences, cfg.definition_window or len(canon)) if ok else []
         if ok and cfg.definition_window > 0:
-            occurrences = [m.start() for m in symbol_pattern(sym).finditer(canon)]
-            ok = _near_symbol(defn, canon_fold, occurrences, cfg.definition_window)
+            ok = _near_symbol(defn, canon, occurrences, cfg.definition_window)
+            # A verbatim copy of the phrase sits next to the symbol only through
+            # ANOTHER symbol (it names that one): reject. Paraphrases cannot be
+            # checked this way — a known limitation, see the tests.
+            if ok and pairs:
+                ok = any(
+                    not _another_symbol_between(
+                        canon, d0 + (len(defn) if d0 < o else 0), o if d0 < o else o + len(sym), sym
+                    )
+                    for _, d0, o in pairs
+                )
         if not ok or occ is None:
             rejected += 1
             continue
         if isinstance(given, int):
             offset = given
+        elif pairs:
+            offset = pos[pairs[0][1]]  # the verbatim copy nearest a use of the symbol
         else:
             at = canon_fold.find(" ".join(canonical_text(defn).split()).casefold())
             offset = pos[at] if at >= 0 else pos[occ.start()]
@@ -789,6 +867,9 @@ class SymbolGlossaryCache:
     def __init__(self, path: Path | str, *, writable: bool = False) -> None:
         self._path = Path(path)
         self._records: dict[str, dict[str, _CacheEntries]] = {}
+        #: Per-(key, version) generation facts, e.g. ``{"cut_off": 1}`` when the
+        #: model hit ``max_tokens`` (its answer may be missing rows).
+        self._meta: dict[tuple[str, str], dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._load()
         self._fh = open(self._path, "a", encoding="utf-8") if writable else None
@@ -808,6 +889,7 @@ class SymbolGlossaryCache:
                         by_version = self._records.setdefault(str(rec["k"]), {})
                         by_version.pop(str(rec["v"]), None)  # re-insert = last wins
                         by_version[str(rec["v"])] = entries
+                        self._meta[(str(rec["k"]), str(rec["v"]))] = dict(rec.get("m") or {})
                     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         continue
         except FileNotFoundError:
@@ -827,18 +909,26 @@ class SymbolGlossaryCache:
             last = next(reversed(by_version))
             return last, by_version[last]
 
-    def put(self, key: str, glossary: Glossary) -> None:
+    def meta(self, key: str, version: str) -> dict[str, Any]:
+        """Generation facts recorded with a (key, version) record; ``{}`` if none."""
+        with self._lock:
+            return dict(self._meta.get((key, version), {}))
+
+    def put(self, key: str, glossary: Glossary, meta: dict[str, Any] | None = None) -> None:
         if self._fh is None:
             raise RuntimeError("SymbolGlossaryCache opened read-only")
         entries: _CacheEntries = [
             (e.symbol, tuple((d.text, d.offset) for d in e.definitions)) for e in glossary.entries
         ]
-        rec = {"k": key, "v": glossary.version,
-               "e": [[s, [[d, o] for d, o in ds]] for s, ds in entries]}
+        rec: dict[str, Any] = {"k": key, "v": glossary.version,
+                               "e": [[s, [[d, o] for d, o in ds]] for s, ds in entries]}
+        if meta:
+            rec["m"] = dict(meta)
         with self._lock:
             by_version = self._records.setdefault(key, {})
             by_version.pop(glossary.version, None)
             by_version[glossary.version] = entries
+            self._meta[(key, glossary.version)] = dict(meta or {})
             self._fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
             self._fh.flush()
 
