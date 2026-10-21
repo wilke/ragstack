@@ -174,7 +174,7 @@ PAGES = [
     ),
     dict(
         src="adr/0011-provenance-records.md",
-        out="adr/0011-provenance-records.html", label="ADR 0011 · Proposed",
+        out="adr/0011-provenance-records.html", label="ADR 0011 · Accepted",
         card="ADR 0011 — Provenance records", index=False,
         blurb="",
     ),
