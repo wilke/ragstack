@@ -1,7 +1,16 @@
 # Cutting a release: tools image, store, stamp, server tag
 
-> **Status: never exercised end to end as of 2026-10-06. The first real
-> release will validate it.** This is a draft written from the code and
+> **Status: § 2 and § 3 exercised once, by the first real tools-image
+> build: tag `v1.6.8`, image `ragstack-tools-v1.6.8-b1.sif`, built and copied
+> to `/scout/containers/ragstack/` on 2026-10-21 (that image was then stamped
+> by #765 for the server tag `v1.6.9`). § 2 and § 3 worked as written, apart
+> from three fixes made afterwards: the `PYTHONPATH` reason in § 3, the dry
+> run's preview `build_date`, and the pre-install `verify` in § 2. Steps still
+> marked [never exercised] have not been re-checked against that run.**
+> The original draft note follows.
+>
+> First written (never exercised end to end, 2026-10-06) as a draft from the
+> code and
 > [ADR-0010](../adr/0010-tool-image-binding.md) on `main` at `cde401b` (#672),
 > updated against `cdcf737` (#678: `--store` build numbers, the Python ≥ 3.11
 > rule, and a stamped tree with `GOWE_IMAGE_DIRS` unset is a refusal).
@@ -129,7 +138,7 @@ just never gets a tools image. Write that down in the release notes.
 
 ---
 
-## 2. Build the tools image from the tag [dry run exercised; real build never exercised]
+## 2. Build the tools image from the tag [exercised: v1.6.8-b1, 2026-10-21]
 
 Build in a **clean, detached checkout of exactly `vT`**. The script derives the
 version from `HEAD` and refuses a dirty tree (exit 3). If no `v*` tag is
@@ -229,7 +238,7 @@ The import and `--help` checks are the post-build checks from
 
 ---
 
-## 3. Copy image and receipt to the shared store [never exercised]
+## 3. Copy image and receipt to the shared store [exercised: v1.6.8-b1, 2026-10-21]
 
 Copy **both** files. Each one goes in under a temporary name and is then
 renamed (a rename within one ext4 filesystem is atomic), so a worker or a boot
