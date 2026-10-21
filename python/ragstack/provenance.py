@@ -39,7 +39,7 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +92,28 @@ class CollectionManifest(BaseModel):
     ingested_at: str = ""  # ISO 8601; caller stamps (Date.now is unavailable here)
     ragstack_version: str = ""
     source: str = "ingest"  # "ingest" (verified) | "config" (materialized from registry)
+    #: Post-chunking enrichment steps and their versions/config (ADR-0011), e.g.
+    #: ``{"symbol_glossary": {"extractor": "rules/1", "config": {...}}}`` (#754).
+    #: Deliberately NOT part of ``spec_hash`` and NOT in ``chunk_params``: those
+    #: name the collection (``chunk_descriptor`` → ``spec_hash`` → the derived
+    #: collection and index name), so recording a glossary there would repoint
+    #: every live collection at an empty store. An enrichment changes what is
+    #: indexed ALONGSIDE the chunks, never the chunk boundaries or the vectors.
+    #: Omitted from dumps when empty, so a manifest written with no enrichment is
+    #: byte-identical to one written before the field existed.
+    #:
+    #: **INTERIM.** ADR-0011 (Accepted) puts a step's parameters in its
+    #: provenance record's ``core.activity.params``. When ADR-0011 PR-3 lands,
+    #: this record folds into ``core.activity.params`` of the ingest activity and
+    #: this field goes away; readers should not build on it beyond that.
+    enrichment: dict[str, Any] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_enrichment(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if not data.get("enrichment"):
+            data.pop("enrichment", None)
+        return data  # type: ignore[no-any-return]
 
 
 def make_ingest_manifest(
@@ -109,6 +131,7 @@ def make_ingest_manifest(
     chunk_count: int | None = None,
     ragstack_version: str = "",
     source: str = "ingest",
+    enrichment: dict[str, Any] | None = None,
 ) -> CollectionManifest:
     """Build a verified manifest for a just-ingested collection, stamped with the
     current time and the build spec's content hash. The single constructor shared
@@ -133,6 +156,7 @@ def make_ingest_manifest(
         ingested_at=datetime.now(UTC).isoformat(),
         ragstack_version=ragstack_version,
         source=source,
+        enrichment=dict(enrichment or {}),
     )
 
 

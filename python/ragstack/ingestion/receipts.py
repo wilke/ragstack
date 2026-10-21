@@ -97,11 +97,21 @@ class ShardReceipt:
     # before step 2 or by a hand-run tool given no inputs; readers normalise
     # it with ``ragstack.provenance.read_provenance``.
     provenance: dict | None = None
+    # ADR-0011: post-chunking enrichment steps this shard ran, with version and
+    # config — today ``{"symbol_glossary": {"extractor": "rules/1", ...}}``
+    # (#754). ``None`` = none ran; then the key is omitted from the JSON, so a
+    # receipt from a run without enrichment is byte-identical to one written
+    # before the field existed. INTERIM: folds into ADR-0011's
+    # ``core.activity.params`` when ADR-0011 PR-3 lands.
+    enrichment: dict | None = None
 
     def to_json(self) -> str:
         # Deterministic (sorted, no timestamp) so a re-run against an unchanged
         # shard produces a byte-identical receipt — idempotent + diff-able.
-        return json.dumps(asdict(self), indent=2, sort_keys=True)
+        data = asdict(self)
+        if data.get("enrichment") is None:
+            data.pop("enrichment", None)
+        return json.dumps(data, indent=2, sort_keys=True)
 
     def write(self, path: str | Path) -> None:
         Path(path).write_text(self.to_json(), encoding="utf-8")
@@ -132,6 +142,8 @@ class ShardReceipt:
             embedding_file=d.get("embedding_file", ""),
             error=d.get("error", ""),
             provenance=(dict(d["provenance"]) if isinstance(d.get("provenance"), dict)
+                        else None),
+            enrichment=(dict(d["enrichment"]) if isinstance(d.get("enrichment"), dict)
                         else None),
         )
 

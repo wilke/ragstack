@@ -136,6 +136,11 @@
       "description": "OPTIONAL, AND ABSENT IS MEANINGFUL — the worked example for x-ragstack-absence above. Stamped only on a chunk classified as non-body, and in the default configuration only ever with the value true. `{\"is_boilerplate\": false}` therefore matches nothing, and /v1/query's `exclude_boilerplate` is built as a negation of true rather than the equality anyone would expect (#601). Nothing may backfill a false here: doing so would reclassify every chunk ingested before #597 from 'unknown' to 'asserted not boilerplate'.",
       "x-ragstack-elasticsearch": {"type": "boolean"}
     },
+    "symbol_glossary_version": {
+      "type": ["string", "null"],
+      "description": "The version of the per-document symbol glossary step that produced this chunk's top-level `symbol_glossary` text field (#754): `rules/1`, or `llm/1:<model>:<prompt hash>` when an offline LLM glossary was cached for the document. Stamped on EVERY chunk of a processed document, including chunks with an empty glossary, so absence means 'never processed' — row-level audit and what makes the backfill resumable.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
 
     "source_path": {
       "type": ["string", "null"],

@@ -32,6 +32,22 @@ class Chunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     start_char: int = 0
     end_char: int = 0
+    #: Definitions, copied from this chunk's own document, of the symbols that
+    #: occur in this chunk (#754): one ``"<symbol> — <definition>"`` line each.
+    #: Indexed as its own BM25 field (``symbol_glossary`` in Elasticsearch),
+    #: never embedded and never part of ``content``. ``""`` = none / not built.
+    symbol_glossary: str = ""
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_symbol_glossary(self, handler: SerializerFunctionWrapHandler):
+        """An empty glossary is omitted from ``model_dump()`` so an embedding
+        file or archive written with the step off is byte-identical to one
+        written before the field existed (the ``ScoredChunk.collection``
+        precedent below)."""
+        data = handler(self)
+        if not data.get("symbol_glossary"):
+            data.pop("symbol_glossary", None)
+        return data
 
 
 # Trust ladder bounds for ``Triple.confidence`` (#347). ``LLM_MAX_CONFIDENCE`` is

@@ -552,6 +552,28 @@ class Settings(BaseSettings):
     # reasoning behind its default. Malformed JSON degrades to the defaults.
     boilerplate_config_json: str = ""
 
+    # --- Per-document symbol glossary (#754) ---
+    # A paper defines "Qb" once ("where Qb is the breathing flow rate") and a
+    # table caption pages later holds "Qb = 0.5 m3/h" without the words. At
+    # ingest, each chunk that uses a symbol gets the symbol's definition — copied
+    # from its OWN document, never a lexicon — in a separate BM25 field
+    # (``symbol_glossary``); ``content`` and the embedded text are unchanged.
+    #   off   — no glossary (default; the ingest path is byte-for-byte unchanged)
+    #   rules — deterministic rules, preferring a cached offline LLM glossary
+    #           (scripts/symbol_glossary_llm.py) when SYMBOL_GLOSSARY_CACHE_PATH
+    #           holds one for the document's exact text.
+    symbol_glossary_extraction: str = "off"
+    # GlossaryConfig overrides as a JSON object; malformed JSON → defaults.
+    symbol_glossary_config_json: str = ""
+    # The offline LLM glossary cache (JSONL), read-only at ingest. Empty = none.
+    symbol_glossary_cache_path: str = ""
+    # Query side: weight of the ``symbol_glossary`` field on the BM25 leg. 0 (the
+    # default) leaves the query byte-identical to before #754 — the field is not
+    # consulted at all. > 0 sums content + boost × glossary scores. Querying an
+    # index that has no such field is a no-op, so this is safe to turn on before
+    # every collection carries the field.
+    text_symbol_glossary_boost: float = 0.0
+
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).
     embedding_max_batch_items: int = 64

@@ -49,6 +49,7 @@ from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
+from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher, attacher_from_mode
 from ragstack.ingestion.tokenization import (
     TokenCounterUnavailable,
     make_token_counter,
@@ -130,7 +131,9 @@ def _derived_collection_name() -> str:
     )
 
 
-def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> None:
+def write_ingest_manifest(
+    *, source: str, chunk_count: int | None = None, enrichment: dict[str, Any] | None = None
+) -> None:
     """Write a verified (source='ingest') provenance manifest for the served
     collection after an ingest, overwriting any earlier config-materialized one.
     No-op when manifests are disabled. Best-effort — never raises into the caller."""
@@ -149,6 +152,7 @@ def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> Non
             chunk_method=settings.unrecorded_chunk_method(), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             corpus=source, chunk_count=chunk_count,
+            enrichment=enrichment,
         )
         write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
@@ -681,6 +685,7 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         # mean "disabled", never an AttributeError mid-ingest.
         doi_enricher=getattr(app_state, "doi_enricher", None),
         boilerplate_filter=_build_boilerplate_filter(),
+        glossary_attacher=_build_glossary_attacher(),
     )
     return ShardedIngestor(
         pipeline,
@@ -692,7 +697,8 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
 
 
 def write_ingest_manifest_for(
-    entry: CollectionEntry, *, source: str, chunk_count: int | None = None
+    entry: CollectionEntry, *, source: str, chunk_count: int | None = None,
+    enrichment: dict[str, Any] | None = None,
 ) -> None:
     """Verified (source='ingest') manifest for a *specific* collection after a
     targeted ingest — the per-collection analogue of ``write_ingest_manifest``
@@ -716,6 +722,7 @@ def write_ingest_manifest_for(
             chunk_method=entry.chunk_method, chunk_size=entry.chunk_size,
             chunk_overlap=entry.chunk_overlap, chunk_params=entry.chunk_params,
             corpus=source, chunk_count=chunk_count,
+            enrichment=enrichment,
         )
         write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
@@ -1083,6 +1090,7 @@ def _build_text_index_for(index: str):
             index,
             settings.elasticsearch_api_key or None,
             timeout=settings.elasticsearch_timeout,
+            symbol_glossary_boost=settings.text_symbol_glossary_boost,
         )
 
     if settings.require_durable_backends:
@@ -1246,6 +1254,28 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
         pubmed_ids=settings.doi_enrichment_pubmed_ids,
     )
     return DoiEnricher(resolver, profile=resolve_profile(settings.publisher_profile))
+
+
+def _build_glossary_attacher() -> SymbolGlossaryAttacher | None:
+    """The per-document symbol glossary step (#754), or ``None`` when off (the
+    default). ``rules`` prefers an offline LLM glossary from
+    ``SYMBOL_GLOSSARY_CACHE_PATH`` when it holds one for the document's exact
+    text. A bad mode is logged and treated as off: a typo in an env var must not
+    take the API down."""
+    try:
+        attacher = attacher_from_mode(
+            settings.symbol_glossary_extraction,
+            settings.symbol_glossary_config_json,
+            settings.symbol_glossary_cache_path,
+        )
+    except ValueError as e:
+        log.warning("symbol glossary disabled: %s", e)
+        return None
+    if attacher is not None:
+        log.info("symbol glossary enabled (mode=%s, llm cache=%s)",
+                 settings.symbol_glossary_extraction,
+                 settings.symbol_glossary_cache_path or "none")
+    return attacher
 
 
 def _build_boilerplate_filter() -> BoilerplateFilter | None:
@@ -2049,6 +2079,7 @@ async def lifespan(app: FastAPI):
         collection=default_collection,
         doi_enricher=doi_enricher,
         boilerplate_filter=_build_boilerplate_filter(),
+        glossary_attacher=_build_glossary_attacher(),
     )
 
     job_store = make_job_store(

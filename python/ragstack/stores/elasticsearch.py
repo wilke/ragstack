@@ -123,6 +123,16 @@ _DYNAMIC_TEMPLATES: list[dict[str, Any]] = [
     }
 ]
 
+# ``norms: false`` — no BM25 length normalisation on the glossary field. The
+# field is a few short lines, so with norms a one-term match scores as if it
+# were the whole field's subject: that length advantage is what crowded the top
+# 10 with glossary chunks. Measured on scratch copies of dev openchia (#754
+# review re-run as deployed, value-only attachment, reranked leg): recall@10
+# 0.271-0.290 with norms vs 0.361-0.387 without at boost 1-2 (base 0.226). Norms can be
+# DISABLED on an existing field in place but never re-enabled, so this is
+# decided here, before the field reaches any live index.
+_SYMBOL_GLOSSARY_MAPPING: dict[str, Any] = {"type": "text", "norms": False}
+
 # The mapping a NEW index is created with. ``metadata``'s sub-properties are
 # DERIVED from the declared schema (``contracts/schemas/chunk_metadata.json`` via
 # ``ragstack.metadata_schema``) rather than inferred from whichever document lands
@@ -136,6 +146,12 @@ _MAPPINGS: dict[str, Any] = {
     "dynamic_templates": _DYNAMIC_TEMPLATES,
     "properties": {
         "content": {"type": "text"},  # analyzed → BM25
+        # Per-chunk definitions of the symbols the chunk uses, copied from its
+        # own document (#754). A second analyzed field, queried only when
+        # TEXT_SYMBOL_GLOSSARY_BOOST > 0. Adding it to an existing index's
+        # mapping is legal (a new field), and querying it on an index that has
+        # never seen it is a no-op (measured: identical scores and totals).
+        "symbol_glossary": _SYMBOL_GLOSSARY_MAPPING,
         "doc_id": {"type": "keyword"},
         "chunk_id": {"type": "keyword"},
         "start_char": {"type": "integer"},
@@ -150,14 +166,39 @@ _MAPPINGS: dict[str, Any] = {
 # What ``ensure_index`` falls back to when the full mapping cannot be applied to an
 # index that already exists: exactly what this module pushed before #603.
 _TEMPLATE_ONLY_MAPPINGS: dict[str, Any] = {"dynamic_templates": _DYNAMIC_TEMPLATES}
+# NOTE (#754): after this fallback, ensure_index makes a third, narrow push of
+# just the `symbol_glossary` field, so a divergent index still gets norms:false
+# instead of a dynamic mapping on its first glossary write.
 
 
 def _es_id(tenant: str, chunk_id: str) -> str:
     return f"{tenant}:{chunk_id}"
 
 
-def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
-    """BM25 match on content, plus exact filters. Filter keys are chunk metadata
+def _text_clause(query: str, glossary_boost: float) -> dict[str, Any]:
+    """The scoring clause. ``glossary_boost <= 0`` is the pre-#754 clause,
+    byte-for-byte — the default, so nothing changes until an operator opts in.
+    ``> 0`` sums the content and the boosted ``symbol_glossary`` field scores
+    (``most_fields``): a chunk keeps its content score and gains the glossary's,
+    which is what lets a caption that never says "breathing rate" — only
+    ``Qb = 0.5`` — reach the BM25 candidate pool. Chosen over ``best_fields``
+    (max of the two) by the #754 scratch experiment."""
+    if glossary_boost <= 0:
+        return {"match": {"content": query}}
+    return {
+        "multi_match": {
+            "query": query,
+            "type": "most_fields",
+            "fields": ["content", f"symbol_glossary^{glossary_boost:g}"],
+        }
+    }
+
+
+def _build_query(
+    query: str, filters: dict[str, Any] | None, glossary_boost: float = 0.0
+) -> dict[str, Any]:
+    """BM25 match on content (plus, when ``glossary_boost > 0``, the
+    ``symbol_glossary`` field — see :func:`_text_clause`), plus exact filters. Filter keys are chunk metadata
     keys (same as the vector store), so they target ``metadata.<key>``. A list
     value matches any of its entries (used for tenant reads: own + public).
 
@@ -207,7 +248,7 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
         else:
             filter_clauses.append({"term": {field: value}})
     bool_query: dict[str, Any] = {
-        "must": [{"match": {"content": query}}],
+        "must": [_text_clause(query, glossary_boost)],
         "filter": filter_clauses,
     }
     if must_not_clauses:
@@ -310,7 +351,8 @@ class ElasticsearchTextIndex:
     def __init__(self, url: str, index: str, api_key: str | None = None,
                  refresh_on_write: bool = True,
                  bulk_batch_size: int = _BULK_BATCH_SIZE,
-                 timeout: float | None = None) -> None:
+                 timeout: float | None = None,
+                 symbol_glossary_boost: float = 0.0) -> None:
         from elasticsearch import AsyncElasticsearch
 
         # `timeout` is appended at the END of the signature rather than slotted
@@ -333,6 +375,9 @@ class ElasticsearchTextIndex:
         self._timeout = timeout
         self._index = index
         self._bulk_batch_size = max(1, bulk_batch_size)
+        # TEXT_SYMBOL_GLOSSARY_BOOST (#754). 0 = the field is never queried and
+        # the request body is byte-identical to before the field existed.
+        self._symbol_glossary_boost = max(0.0, float(symbol_glossary_boost))
         # Every write forces a synchronous refresh so a subsequent read sees it —
         # read-your-writes, which the interactive API path depends on.
         #
@@ -488,6 +533,24 @@ class ElasticsearchTextIndex:
                 self._index,
                 exc_info=True,
             )
+        # #754: a third, narrow push of the one field whose mapping cannot be
+        # fixed later in the wrong direction. A divergent index otherwise maps
+        # `symbol_glossary` dynamically on its first write (text WITH norms and
+        # a keyword subfield). A brand-new field conflicts with nothing; if it
+        # does fail (e.g. the field was already mapped differently), log and
+        # continue exactly like the fallback above.
+        try:
+            await self._es.indices.put_mapping(
+                index=self._index,
+                body={"properties": {"symbol_glossary": _SYMBOL_GLOSSARY_MAPPING}},
+            )
+        except Exception:  # noqa: BLE001 — never block store construction
+            log.warning(
+                "could not declare symbol_glossary on existing index %r; a first "
+                "glossary write will map it dynamically (see stores/elasticsearch.py)",
+                self._index,
+                exc_info=True,
+            )
 
     async def index(self, chunks: list[Chunk]) -> None:
         """Bulk-index ``chunks``, split into requests ES will actually accept.
@@ -535,16 +598,19 @@ class ElasticsearchTextIndex:
             tenant = str(metadata.get("tenant_id", DEFAULT_TENANT))
             metadata["tenant_id"] = tenant
             operations.append({"index": {"_index": self._index, "_id": _es_id(tenant, c.id)}})
-            operations.append(
-                {
-                    "content": c.content,
-                    "doc_id": c.doc_id,
-                    "chunk_id": c.id,
-                    "start_char": c.start_char,
-                    "end_char": c.end_char,
-                    "metadata": metadata,
-                }
-            )
+            doc: dict[str, Any] = {
+                "content": c.content,
+                "doc_id": c.doc_id,
+                "chunk_id": c.id,
+                "start_char": c.start_char,
+                "end_char": c.end_char,
+                "metadata": metadata,
+            }
+            # Only when present, so a chunk without one writes the same body
+            # it always did.
+            if c.symbol_glossary:
+                doc["symbol_glossary"] = c.symbol_glossary
+            operations.append(doc)
         # refresh so the just-indexed docs are immediately searchable — unless the
         # caller is bulk-loading, where it dominates the wall clock (see __init__).
         #
@@ -576,7 +642,7 @@ class ElasticsearchTextIndex:
         # Built OUTSIDE the guard: `_build_query` raises ValueError on a missing
         # tenant filter, which is a fail-closed tenancy guard and must never be
         # reported as "the store is unavailable, retry in 5s".
-        body = _build_query(query, filters)
+        body = _build_query(query, filters, self._symbol_glossary_boost)
         with self._guard("search"):
             resp = await self._es.search(index=self._index, query=body, size=top_k)
         results: list[ScoredChunk] = []
@@ -591,6 +657,7 @@ class ElasticsearchTextIndex:
                 start_char=int(src.get("start_char", 0) or 0),
                 end_char=int(src.get("end_char", 0) or 0),
                 metadata=metadata,
+                symbol_glossary=str(src.get("symbol_glossary", "") or ""),
             )
             results.append(
                 ScoredChunk(chunk=chunk, score=float(hit["_score"]), retrieval_method="bm25")

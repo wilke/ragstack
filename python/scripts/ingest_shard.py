@@ -55,6 +55,7 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import ExtractReport, run_shard
+from ragstack.ingestion.symbol_glossary import attacher_from_mode
 from ragstack.ingestion.work_identity import POLICIES, POLICY_OFF
 from ragstack.ops import ingest_target
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
@@ -187,7 +188,12 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
                              # nothing else. None when --doi-enrichment is off.
                              doi_enricher=enricher_from_args(args, http),
                              boilerplate_filter=filter_from_mode(
-                                 args.boilerplate, args.boilerplate_config))
+                                 args.boilerplate, args.boilerplate_config),
+                             # #754. Default off: the tools image changes no
+                             # output until a workflow asks for it.
+                             glossary_attacher=attacher_from_mode(
+                                 args.symbol_glossary, args.symbol_glossary_config,
+                                 args.symbol_glossary_cache))
 
 
 def _build_bridge(args) -> SyncEmbedBridge:
@@ -246,6 +252,9 @@ async def amain(args, target=None) -> int:
     # image produced it — the submission inputs the API seeded plus this
     # image's own RELEASE file (all null on a hand run outside an image).
     receipt.provenance = provenance_from_args(args)
+    # #754, ADR-0011: what the step DID on this shard (None if off or never
+    # applied; a degraded run is recorded with applied_batches: 0).
+    receipt.enrichment = pipeline.glossary_provenance()
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
@@ -324,6 +333,14 @@ def parse_args(argv=None):
                    help="chunk-level boilerplate handling (see ingest_jsonl.py)")
     p.add_argument("--boilerplate-config", default="",
                    help="JSON object overriding BoilerplateConfig thresholds")
+    # #754 per-document symbol glossary: a separate BM25 field, never embedded.
+    # Default OFF for the first tools-image release; the CWL passes nothing.
+    p.add_argument("--symbol-glossary", choices=["off", "rules"], default="off",
+                   help="per-document symbol glossary (rules, preferring a cached LLM glossary)")
+    p.add_argument("--symbol-glossary-config", default="",
+                   help="JSON object overriding GlossaryConfig")
+    p.add_argument("--symbol-glossary-cache", default="",
+                   help="offline LLM glossary cache (scripts/symbol_glossary_llm.py), read-only")
     p.add_argument("--chunk-method", default="fixed_token")
     # Breakpoint-embed fan-out, semantic methods only. These change REQUEST
     # GRANULARITY, not vectors: the bridge re-concatenates sub-batch results in

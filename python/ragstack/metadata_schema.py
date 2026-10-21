@@ -278,6 +278,9 @@ DECLARED_FIELDS: dict[str, DeclaredField] = {
         _f("section", "string"),
         _f("section_title", "string"),
         _f("is_boilerplate", "boolean"),
+        # #754: which glossary produced the chunk's `symbol_glossary` field
+        # (`rules/1`, `llm/1:<model>:<prompt hash>`); absent = never processed.
+        _f("symbol_glossary_version", "string"),
         # Provenance of the artifact.
         _f("source_path", "string"),
         _f("filename", "string"),
