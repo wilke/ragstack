@@ -175,8 +175,14 @@ class InMemoryVectorStore:
 class InMemoryTextIndex:
     """Very simple bag-of-words text search for development/testing."""
 
-    def __init__(self) -> None:
+    def __init__(self, symbol_glossary_boost: float = 0.0) -> None:
         self._chunks: list[Chunk] = []
+        # Mirrors ElasticsearchTextIndex (#754): 0 = the glossary field is never
+        # consulted (scores identical to before the field existed); > 0 = the
+        # chunk's content score PLUS boost × its glossary score, the
+        # ``most_fields`` sum ES computes. A fake that always (or never) read
+        # the field would encode a contract the real store does not have.
+        self._symbol_glossary_boost = max(0.0, float(symbol_glossary_boost))
 
     async def index(self, chunks: list[Chunk]) -> None:
         # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
@@ -199,16 +205,18 @@ class InMemoryTextIndex:
         if filters:
             candidates = [c for c in candidates if _matches(c, filters)]
         scored = []
-        for chunk in candidates:
-            tokens = set(chunk.content.lower().split())
+        def jaccard(text: str) -> float:
+            tokens = set(text.lower().split())
             overlap = len(query_tokens & tokens)
-            if overlap > 0:
+            return float(overlap) / len(query_tokens | tokens) if overlap else 0.0
+
+        for chunk in candidates:
+            score = jaccard(chunk.content)
+            if self._symbol_glossary_boost > 0 and chunk.symbol_glossary:
+                score += self._symbol_glossary_boost * jaccard(chunk.symbol_glossary)
+            if score > 0:
                 scored.append(
-                    ScoredChunk(
-                        chunk=chunk,
-                        score=float(overlap) / len(query_tokens | tokens),
-                        retrieval_method="bm25",
-                    )
+                    ScoredChunk(chunk=chunk, score=score, retrieval_method="bm25")
                 )
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
