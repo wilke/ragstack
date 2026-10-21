@@ -123,6 +123,16 @@ _DYNAMIC_TEMPLATES: list[dict[str, Any]] = [
     }
 ]
 
+# ``norms: false`` — no BM25 length normalisation on the glossary field. The
+# field is a few short lines, so with norms a one-term match scores as if it
+# were the whole field's subject: that length advantage is what crowded the top
+# 10 with glossary chunks. Measured on scratch copies of dev openchia (#754
+# review re-run, value-only attachment, reranked leg): recall@10 0.245-0.252
+# with norms vs 0.336-0.348 without at boost 1-2 (base 0.219). Norms can be
+# DISABLED on an existing field in place but never re-enabled, so this is
+# decided here, before the field reaches any live index.
+_SYMBOL_GLOSSARY_MAPPING: dict[str, Any] = {"type": "text", "norms": False}
+
 # The mapping a NEW index is created with. ``metadata``'s sub-properties are
 # DERIVED from the declared schema (``contracts/schemas/chunk_metadata.json`` via
 # ``ragstack.metadata_schema``) rather than inferred from whichever document lands
@@ -141,7 +151,7 @@ _MAPPINGS: dict[str, Any] = {
         # TEXT_SYMBOL_GLOSSARY_BOOST > 0. Adding it to an existing index's
         # mapping is legal (a new field), and querying it on an index that has
         # never seen it is a no-op (measured: identical scores and totals).
-        "symbol_glossary": {"type": "text"},
+        "symbol_glossary": _SYMBOL_GLOSSARY_MAPPING,
         "doc_id": {"type": "keyword"},
         "chunk_id": {"type": "keyword"},
         "start_char": {"type": "integer"},
@@ -156,6 +166,11 @@ _MAPPINGS: dict[str, Any] = {
 # What ``ensure_index`` falls back to when the full mapping cannot be applied to an
 # index that already exists: exactly what this module pushed before #603.
 _TEMPLATE_ONLY_MAPPINGS: dict[str, Any] = {"dynamic_templates": _DYNAMIC_TEMPLATES}
+# NOTE (#754): an index that falls back here does not get the declared
+# `symbol_glossary` mapping, so its first glossary write maps the field
+# dynamically (text WITH norms + a keyword subfield). That is recoverable —
+# norms can be disabled in place — and scripts/backfill_symbol_glossary.py
+# pushes the declared field mapping itself before writing.
 
 
 def _es_id(tenant: str, chunk_id: str) -> str:

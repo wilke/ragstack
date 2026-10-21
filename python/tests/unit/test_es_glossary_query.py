@@ -52,7 +52,7 @@ def test_tenant_fail_closed_unchanged_with_boost(filters: Any) -> None:
 
 
 def test_mapping_declares_symbol_glossary_as_text() -> None:
-    assert _MAPPINGS["properties"]["symbol_glossary"] == {"type": "text"}
+    assert _MAPPINGS["properties"]["symbol_glossary"] == {"type": "text", "norms": False}
     assert _MAPPINGS["properties"]["content"] == {"type": "text"}
 
 
