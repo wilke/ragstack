@@ -593,10 +593,18 @@ def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
 #: failed (exit N): <the tool's stderr>`` (worker.go / toolexec/execute.go). The
 #: deployed engine (0.26.1) records ``context.exit_code = -1`` for EVERY failed
 #: apptainer tool, so this prefix is the only place the tool's real exit code
-#: survives — and it sits at the head of ``context.stderr`` (``stderr[:1000] +
-#: "...(truncated)"``), with the message as a fallback.
-_EXEC_EXIT_RE = re.compile(r"command failed \(exit (\d+)\)")
-_EXEC_PREFIX_RE = re.compile(r"^.*?command failed \(exit \d+\):\s*")
+#: survives. It is matched ONLY at offset 0 of ``context.stderr``
+#: (``stderr[:1000] + "...(truncated)"``), never searched for and never read
+#: from ``message``: other worker failures embed user-controlled text (a
+#: stage-in error, ``execute: stage-in: …``, names the user's file path), and
+#: a file named ``…command failed (exit 5): nothing_to_archive…pdf`` must not
+#: be able to forge a tool exit code (#771 re-review).
+#:
+#: Deliberately NOT matched: the ``local`` executor's ``command failed: exit
+#: status N`` form (no parentheses). That executor is not how the scatter
+#: workflows run, and a classifier must return ``None`` ("cannot tell")
+#: rather than guess from a form it was not verified against.
+_EXEC_PREFIX_RE = re.compile(r"execute: (?:apptainer|docker) command failed \(exit (\d+)\): ")
 
 
 def tool_exit_code(submission: dict[str, Any]) -> int | None:
@@ -605,11 +613,11 @@ def tool_exit_code(submission: dict[str, Any]) -> int | None:
 
     ``error.context.exit_code`` when it is a real code (``>= 0``: an engine
     that reports it, or cwltool-shaped records); otherwise the code in the
-    worker's ``command failed (exit N)`` prefix at the head of
-    ``context.stderr``, then of ``message``. GoWe 0.26.1 records ``-1`` for
+    worker's ``execute: apptainer command failed (exit N): `` prefix, and only
+    when ``context.stderr`` STARTS with it. GoWe 0.26.1 records ``-1`` for
     every failed apptainer tool (#771 review), which is why a classifier that
     read only ``context.exit_code`` never fired in production."""
-    ctx, message = _failure_context(submission)
+    ctx, _message = _failure_context(submission)
     raw = ctx.get("exit_code")
     try:
         code = int(raw) if raw is not None else None
@@ -617,18 +625,20 @@ def tool_exit_code(submission: dict[str, Any]) -> int | None:
         code = None
     if code is not None and code >= 0:
         return code
-    for text in (str(ctx.get("stderr") or ""), message):
-        m = _EXEC_EXIT_RE.search(text[:300])
-        if m:
-            return int(m.group(1))
-    return None
+    m = _EXEC_PREFIX_RE.match(str(ctx.get("stderr") or ""))
+    return int(m.group(1)) if m else None
 
 
 def _tool_lines(text: str) -> list[str]:
-    """``text`` split into lines with the worker's ``… command failed (exit
-    N):`` prefix removed from the line that carries it, so the tool's own first
-    stderr line reads as the tool wrote it."""
-    return [_EXEC_PREFIX_RE.sub("", line, count=1).strip() for line in text.splitlines()]
+    """``text`` split into stripped lines, with the worker's prefix removed
+    from the FIRST line only (when the text starts with it), so the tool's own
+    first stderr line reads as the tool wrote it. Later lines — the listed
+    JSON objects included — are never rewritten, so text inside them cannot
+    pose as a prefixed tool line."""
+    m = _EXEC_PREFIX_RE.match(text)
+    if m:
+        text = text[m.end():]
+    return [line.strip() for line in text.splitlines()]
 
 
 def cap_refusal_of(submission: dict[str, Any]) -> str | None:

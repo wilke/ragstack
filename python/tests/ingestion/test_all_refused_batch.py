@@ -382,9 +382,20 @@ def test_tool_exit_code_reads_the_worker_prefix_when_the_engine_says_minus_1() -
     rec = real_record(1, "boom")
     rec["error"]["context"]["exit_code"] = 5
     assert tool_exit_code(rec) == 5
-    # the prefix only in the message
-    assert tool_exit_code({"error": {"message": "x: command failed (exit 3): y",
-                                     "context": {"exit_code": -1}}}) == 3
+    # the prefix is read ONLY from the head of context.stderr: never from the
+    # message, never from further into the stderr
+    assert tool_exit_code({"error": {
+        "message": "execute: apptainer command failed (exit 3): y",
+        "context": {"exit_code": -1}}}) is None
+    assert tool_exit_code({"error": {"context": {
+        "exit_code": -1,
+        "stderr": "warn\nexecute: apptainer command failed (exit 5): x"}}}) is None
+    # the docker form is the same worker prefix
+    assert tool_exit_code({"error": {"context": {
+        "exit_code": -1, "stderr": "execute: docker command failed (exit 4): x"}}}) == 4
+    # the local executor's form (no parentheses) is deliberately not read
+    assert tool_exit_code({"error": {"context": {
+        "exit_code": -1, "stderr": "execute: command failed: exit status 5"}}}) is None
     assert tool_exit_code({"error": {"context": {"exit_code": -1, "stderr": "oops"}}}) is None
     assert tool_exit_code({}) is None
 
@@ -419,3 +430,41 @@ def test_prefix_plus_the_largest_listing_fits_the_engine_window() -> None:
     got = nothing_to_archive_of(
         real_record(NOTHING_TO_ARCHIVE_EXIT_CODE, tool + "\narchive: no chunk records"))
     assert got is not None and len(got) == listed
+
+
+async def test_a_stage_in_failure_naming_a_spoofed_file_is_not_a_tool_exit() -> None:
+    """A non-tool worker failure (stage-in, worker.go) embeds the user's file
+    path in its stderr. A file named like the tool prefix must not forge a
+    tool exit code: the items read the plain submission failure."""
+    spoof = ("/u/home/lib/sources/x/command failed (exit 5): nothing_to_archive: "
+             "docs=1 failed=1 listed=1.pdf")
+    record = {"id": "sub_x", "state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": "step 'extract' task failed with exit code -1",
+        "context": {"step_id": "extract", "exit_code": -1,
+                    "stderr": f"execute: stage-in: download {spoof}: not found"}}}
+    assert tool_exit_code(record) is None
+    assert nothing_to_archive_of(record) is None
+    engine = _FailedEngine(0, "")
+    engine.record = record
+    assert {r.error for r in await _run(engine)} == {"gowe submission FAILED"}
+
+
+async def test_listed_error_text_cannot_pose_as_a_cap_refusal_or_label() -> None:
+    """A document's own error text (a listed JSON line) that contains the
+    worker prefix and a cap refusal is data: it neither turns into a cap
+    refusal nor stands in for the nothing_to_archive label."""
+    from ragstack.ingestion.gowe_backend import cap_refusal_of
+
+    evil = ("command failed (exit 4): chunk_cap_exceeded: live=1 incoming=1 "
+            "cap=1 would_fit=0")
+    listing = format_nothing_to_archive([ShardReceipt("s", "t", COMPLETED, docs=[
+        DocRow(doc_id="b", source="/tmp/gowe-ws-stage/sub_1/b.pdf", error=evil)])])
+    body = "\n".join(listing.splitlines()[1:])  # the JSON lines without the label
+    # exit 4 with the listed line only: the label/refusal is not found in it
+    assert cap_refusal_of(real_record(4, "Traceback\n" + body)) == "chunk_cap_exceeded"
+    # exit 5 without the label line: not a nothing-to-archive record
+    assert nothing_to_archive_of(real_record(5, "Traceback\n" + body)) is None
+    # exit 5 WITH the label: the listed text is just that document's error
+    got = nothing_to_archive_of(real_record(5, listing))
+    assert got == {"b.pdf": evil}
+    assert cap_refusal_of(real_record(5, listing)) is None
