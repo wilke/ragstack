@@ -92,6 +92,10 @@ class PooledEmbedder:
         achieved 58, because its one 22k-text request pinned one endpoint and
         parsed a ~350 MB JSON response in one go.
         """
+        if not texts:
+            # An empty request has an empty answer: no permit, no endpoint, no
+            # HTTP call. vLLM rejects an empty ``input`` with a 400 (#768).
+            return []
         if len(texts) > self._request_batch:
             batches = [texts[i:i + self._request_batch]
                        for i in range(0, len(texts), self._request_batch)]
@@ -173,7 +177,8 @@ class PooledEmbedder:
         failures — 5xx / network / all-endpoints-down — surface from :meth:`embed`
         as a ``RuntimeError`` (or a retriable-status error) and PROPAGATE
         unchanged, so ``--resume`` / ``--batch-retries`` re-feed the batch with no
-        data loss. Order-preserving.
+        data loss. Order-preserving. An empty ``texts`` returns ``([], 0)``
+        without an HTTP call (#768).
         """
         out: list[list[float] | None] = [None] * len(texts)
         quarantined = await self._embed_isolated_range(
@@ -184,6 +189,12 @@ class PooledEmbedder:
     async def _embed_isolated_range(
         self, texts: list[str], indices: list[int], out: list[list[float] | None]
     ) -> int:
+        if not indices:
+            # The bisect's base case for nothing: no call, nothing quarantined.
+            # It used to stop only at len == 1, so an empty input that 4xx'd
+            # (vLLM rejects an empty batch) bisected [] into [] + [] until
+            # RecursionError and failed the whole ingest task (#768).
+            return 0
         try:
             vecs = await self.embed([texts[i] for i in indices])
         except httpx.HTTPStatusError as e:

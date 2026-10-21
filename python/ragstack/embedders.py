@@ -42,6 +42,12 @@ class SidecarEmbedder:
         return self._client.http
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            # Nothing to embed is a valid request with an empty answer, never
+            # an HTTP call: a backend may reject an empty batch with a 4xx
+            # (vLLM does), which a poison-isolating caller would then bisect
+            # forever (#768).
+            return []
         body = await self._client.post_json("embed", {"texts": texts})
         return body["embeddings"]
 
@@ -75,6 +81,10 @@ class OpenAIEmbedder:
         return self._client.http
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            # vLLM answers an empty ``input`` with HTTP 400 (#768); an empty
+            # request has an empty answer and needs no round-trip.
+            return []
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -168,6 +178,10 @@ class BatchingEmbedder:
     async def _embed_group(
         self, texts: list[str], indices: list[int], out: list[list[float] | None]
     ) -> int:
+        if not indices:
+            # Nothing to embed: no call, nothing quarantined. Without this an
+            # empty group that 4xx'd would bisect into itself forever (#768).
+            return 0
         try:
             vecs = await self._base.embed([texts[i] for i in indices])
         except httpx.HTTPStatusError as e:

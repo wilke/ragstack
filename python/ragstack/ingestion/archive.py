@@ -140,6 +140,15 @@ class ArchiveError(ValueError):
     """Bad input to the writer (no vectors, mixed dims, missing files, ...)."""
 
 
+class EmptyVersionError(ArchiveError):
+    """The embedding file(s) hold no chunk record at all — every document of
+    the run failed on its own (all duplicates, all scanned), so there is
+    nothing to archive. ``ragstack-archive/1`` has no zero-row chunk version
+    (#357 residual); ``scripts/archive_version.py`` turns this into
+    ``receipts.NOTHING_TO_ARCHIVE_EXIT_CODE`` with each document's reason on
+    stderr (#768)."""
+
+
 class ArchiveCorrupt(ArchiveError):
     """A version directory that fails verification: a sha256 mismatch, a
     truncated/oversized vectors file, geometry that disagrees between the
@@ -428,7 +437,7 @@ def _pack_chunks(vdir: Path, chunks_list: list[Path], nworkers: int) -> tuple[in
                         rows += 1
                         doc_ids.add(doc_id)
             if rows == 0:
-                raise ArchiveError("no chunk records in the embedding file(s); "
+                raise EmptyVersionError("no chunk records in the embedding file(s); "
                                    "refusing to write an empty version")
             vfh.seek(0)
             vfh.write(pack_vector_header(dim, rows))

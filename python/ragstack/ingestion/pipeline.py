@@ -372,6 +372,13 @@ class IngestionPipeline:
             documents, source=source, tenant_id=tenant_id,
             duplicate_policy=duplicate_policy,
         )
+        if not chunks:
+            # Nothing to embed — every document refused by the duplicate guard,
+            # empty, or all boilerplate. Skip the embed step entirely: an empty
+            # request is not something every backend accepts (vLLM 400s, which
+            # once recursed into RecursionError and failed the task, #768), and
+            # the caller's per-document bookkeeping needs no vectors.
+            return [], produced, 0
         kept, quarantined = await self._embed_chunks(chunks, tenant_id, source)
         return kept, produced, quarantined
 
@@ -485,6 +492,8 @@ class IngestionPipeline:
         place. Neighbor linking groups by ``doc_id``, so a per-group call is
         correct as long as a document's chunks aren't split across groups (the
         streaming path groups whole documents). Returns (survivors, quarantined)."""
+        if not all_chunks:
+            return [], 0  # no embed call for nothing (#768)
         for chunk in all_chunks:
             chunk.metadata["tenant_id"] = tenant_id
         texts = [c.content for c in all_chunks]

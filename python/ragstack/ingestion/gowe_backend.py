@@ -66,7 +66,14 @@ from ragstack.ingestion.gowe_client import (
     GoWeError,
 )
 from ragstack.ingestion.manifest import ItemResult, WorkItem
-from ragstack.ingestion.receipts import COMPLETED, DocRow, ShardReceipt
+from ragstack.ingestion.receipts import (
+    COMPLETED,
+    NOTHING_TO_ARCHIVE,
+    NOTHING_TO_ARCHIVE_EXIT_CODE,
+    DocRow,
+    ShardReceipt,
+    parse_nothing_to_archive,
+)
 from ragstack.jobstore import COMPLETED as JOB_COMPLETED
 from ragstack.jobstore import FAILED as JOB_FAILED
 from ragstack.tool_image import provenance_inputs
@@ -87,6 +94,14 @@ NO_READABLE_RECEIPT = "no readable receipt for shard"
 #: Per-item error for a document in a failed batch whose receipt names no
 #: reason (a receipt not written by ``run_shard``).
 BATCH_FAILED = "batch failed"
+#: Per-item error when the run ingested NO document (the archive step exited
+#: ``NOTHING_TO_ARCHIVE_EXIT_CODE``) but this document's own reason is not in
+#: the engine's error record — it keeps only the first 1000 characters of the
+#: failed task's stderr, which lists a handful of documents (#768).
+NOTHING_TO_ARCHIVE_UNLISTED = (
+    f"{NOTHING_TO_ARCHIVE}: no document of this run was ingested; this "
+    f"document's own reason did not fit the engine's error record"
+)
 
 
 class GoWeContractError(GoWeError):
@@ -291,6 +306,21 @@ class GoWeBackend:
             # onto the job. Whole-submission failure is right here: a cap
             # refusal is a whole-job refusal by spec.
             reason = cap_refusal_of(final) or f"gowe submission {state}"
+            # A run in which every document failed ON ITS OWN (all refused
+            # as duplicates, all scanned) reaches the archive step with no
+            # chunk to pack, and it exits NOTHING_TO_ARCHIVE_EXIT_CODE with
+            # each document's reason on stderr (#768): report those per item
+            # rather than one opaque submission failure.
+            per_doc = nothing_to_archive_of(final)
+            if per_doc is not None:
+                return GoWeRun(
+                    results=[
+                        self._failed(wi, per_doc.get(_item_key(wi.source))
+                                     or NOTHING_TO_ARCHIVE_UNLISTED)
+                        for wi in items
+                    ],
+                    submission_id=sub_id, state=state,
+                )
             return GoWeRun(
                 results=[self._failed(wi, reason) for wi in items],
                 submission_id=sub_id, state=state,
@@ -581,6 +611,30 @@ def cap_refusal_of(submission: dict[str, Any]) -> str | None:
             if is_cap_refusal(line.strip()):
                 return line.strip()
     return CHUNK_CAP_EXCEEDED
+
+
+def nothing_to_archive_of(submission: dict[str, Any]) -> dict[str, str] | None:
+    """``{source basename: error}`` when a FAILED submission failed because it
+    had nothing to archive, else ``None`` (#768).
+
+    DETERMINISTIC, like :func:`cap_refusal_of`: the failed task's
+    ``exit_code == NOTHING_TO_ARCHIVE_EXIT_CODE`` decides — the archive step
+    exits 5 only when the embedding files hold no chunk at all, i.e. every
+    document failed on its own and each receipt row carries why. The mapping
+    is read from the JSON lines the step printed first on stderr
+    (``receipts.format_nothing_to_archive``); it may be shorter than the item
+    list (the engine keeps 1000 characters), even empty."""
+    ctx, message = _failure_context(submission)
+    try:
+        code = int(ctx["exit_code"]) if ctx.get("exit_code") is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code != NOTHING_TO_ARCHIVE_EXIT_CODE:
+        return None
+    out = parse_nothing_to_archive(str(ctx.get("stderr") or ""))
+    for name, error in parse_nothing_to_archive(message).items():
+        out.setdefault(name, error)
+    return out
 
 
 def _staging_failed(submission: dict[str, Any]) -> bool:

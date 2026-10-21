@@ -513,14 +513,37 @@ def test_cli_tombstone_and_mode_exclusivity(tmp_path: Path) -> None:
 
 
 def test_cli_reports_archive_errors_as_exit_1(tmp_path: Path, capsys) -> None:
-    empty = tmp_path / "empty.emb.jsonl"
-    empty.write_text(json.dumps({"schema": SCHEMA, "dim": DIM}) + "\n")
+    mixed = tmp_path / "mixed.emb.jsonl"
+    mixed.write_text("\n".join([
+        json.dumps({"schema": SCHEMA, "dim": 4}),
+        json.dumps({"id": "a", "doc_id": "d", "content": "x", "embedding": [1, 2, 3]}),
+    ]) + "\n")
     _receipt(tmp_path / "r.json")
-    rc = archive_version.main(["--version", "1", "--chunks", str(empty), "--receipt",
+    rc = archive_version.main(["--version", "1", "--chunks", str(mixed), "--receipt",
                                str(tmp_path / "r.json"), "--out", str(tmp_path),
                                "--collection-id", "c", "--workers", "1"])
     assert rc == 1
-    assert "no chunk records" in capsys.readouterr().err
+    assert "header dim 4" in capsys.readouterr().err
+
+
+def test_cli_nothing_to_archive_has_its_own_exit_code(tmp_path: Path, capsys) -> None:
+    """#768: zero chunk records (every document failed on its own) is not the
+    generic exit 1 — exit 5, the per-document reasons first on stderr."""
+    from ragstack.ingestion.receipts import NOTHING_TO_ARCHIVE, NOTHING_TO_ARCHIVE_EXIT_CODE
+
+    empty = tmp_path / "empty.emb.jsonl"
+    empty.write_text(json.dumps({"schema": SCHEMA, "dim": DIM}) + "\n")
+    _receipt(tmp_path / "r.json", n_chunks=0, n_docs=1, n_docs_failed=1, docs=[
+        {"doc_id": "d", "source": "/stage/x.pdf", "error": "no text layer"}])
+    rc = archive_version.main(["--version", "1", "--chunks", str(empty), "--receipt",
+                               str(tmp_path / "r.json"), "--out", str(tmp_path),
+                               "--collection-id", "c", "--workers", "1"])
+    assert rc == NOTHING_TO_ARCHIVE_EXIT_CODE
+    err = capsys.readouterr().err.splitlines()
+    assert err[0] == f"{NOTHING_TO_ARCHIVE}: docs=1 failed=1 listed=1"
+    assert json.loads(err[1]) == {"doc": "x.pdf", "error": "no text layer"}
+    assert "no chunk records" in err[-1]
+    assert not (tmp_path / "1").exists()
 
 
 def test_default_workers_is_capped() -> None:

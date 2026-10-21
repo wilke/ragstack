@@ -35,9 +35,19 @@ diverged (no ``versions/N/``, and a later restore silently omits those
 documents) — the very failure class Option B exists to remove. So per-document
 failure is DATA in the receipt, never a task failure.
 
+An all-failed batch never calls the embedder: ``embed_documents`` skips the
+embed step when no chunk survives (every document refused by the duplicate
+guard, all empty), because an empty request is not something every backend
+accepts — vLLM 400s on it, which once recursed into RecursionError and turned
+an all-refused batch into an exit 1 (#768).
+
 Known residual (#357 format): when every batch of a run is all-failed there are
-zero rows to pack, ``archive.write_version`` refuses a zero-row version and the
-run fails with no per-item detail — a format decision, not a batch-rule one.
+zero rows to pack and ``archive.write_version`` refuses a zero-row version — a
+format decision, not a batch-rule one — so the run still fails at the pack
+step. Since #768 that failure carries the per-item detail:
+``archive_version.py`` exits ``receipts.NOTHING_TO_ARCHIVE_EXIT_CODE`` with each
+document's row error first on stderr, and ``GoWeBackend`` lifts those onto the
+items (as many as fit the engine's 1000-character stderr window).
 
 Retry safety: a re-run against a working endpoint overwrites in place
 (deterministic ids + upsert of the same content), so an engine retry is safe. The
