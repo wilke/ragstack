@@ -127,8 +127,8 @@ _DYNAMIC_TEMPLATES: list[dict[str, Any]] = [
 # field is a few short lines, so with norms a one-term match scores as if it
 # were the whole field's subject: that length advantage is what crowded the top
 # 10 with glossary chunks. Measured on scratch copies of dev openchia (#754
-# review re-run, value-only attachment, reranked leg): recall@10 0.245-0.252
-# with norms vs 0.336-0.348 without at boost 1-2 (base 0.219). Norms can be
+# review re-run as deployed, value-only attachment, reranked leg): recall@10
+# 0.271-0.290 with norms vs 0.361-0.387 without at boost 1-2 (base 0.226). Norms can be
 # DISABLED on an existing field in place but never re-enabled, so this is
 # decided here, before the field reaches any live index.
 _SYMBOL_GLOSSARY_MAPPING: dict[str, Any] = {"type": "text", "norms": False}
