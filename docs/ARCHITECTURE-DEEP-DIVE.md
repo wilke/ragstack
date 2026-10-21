@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution.** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution; §5.2 and §7.1 updated against `8e62f22` (v1.6.7) on 2026-10-21 for #750/#752 (`rewrite_strategies` on `/v1/retrieve`) and the v1.6.7 rollout, with the matching sentences in §0, §3.4 and §6.** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -110,7 +110,9 @@ flowchart TD
 
 **Querying has one path and no bulk API.** `POST /v1/query` and `POST /v1/retrieve`
 (`python/ragstack/api/routers/query.py`) each serve one query; there is no
-batch-query route. Intra-request fan-out and fairness belong to §6–§7.
+batch-query route. Both take `rewrite_strategies` and run the same
+expand → retrieve → fuse → rerank steps; only `/v1/query` generates (since #752,
+§7.1). Intra-request fan-out and fairness belong to §6–§7.
 
 **Why it matters.** Paths A, B and C call the same pipeline, so chunk ids, neighbour
 links, quarantine, the metadata contract and the delete-prior rule cannot drift
@@ -1129,8 +1131,9 @@ have independent caps. Failover inside one request is sequential. Tenant
 fairness sits above this layer (`tenant_max_concurrency`, default 0 =
 unlimited; `config.py` notes it must be set below `embedding_max_concurrency` to
 matter). **Query-time cost:** each `HybridRetriever` embeds its query
-separately, so a request with V rewrite variants over N collections issues
-V×N one-text embed calls, even when collections share a spec. STATUS.md lists
+separately, so a request with V query variants (the original plus each distinct
+rewrite, §7.1) over N collections issues V×N one-text embed calls, even when
+collections share a spec — on `/v1/query` and, since #752, `/v1/retrieve`. STATUS.md lists
 "same-spec shared embedding call" as not yet done.
 
 **Single vs bulk:** The class has no single/bulk fork. The fork is in *which
@@ -1511,8 +1514,9 @@ Three artifacts, each **a build of a tag**, and the workflow binds them:
    `org.ragstack.build-date`, mirrored in `/opt/ragstack/RELEASE`) and its sha256 in a
    **receipt beside the image** — not its file name, and not `dockerImageId`. A dirty
    tree refuses to build; `python/` is staged from `git archive HEAD`.
-3. **The server (tenant) image is one build at tag S** (until it exists, tenants run
-   from tagged checkouts whose derived version plays the same role), and **S and T may differ**: a server
+3. **The server (tenant) image is one build at tag S** (built since PR-F, #709–#715, as
+   `ragstack-server-<version>-b<N>.sif`, below; a tenant still in worktree mode runs a
+   tagged checkout whose derived version plays the same role), and **S and T may differ**: a server
    release chooses which tools image its workflows name.
 4. **A workflow is CWL text naming a tools image.** GoWe's workflow id is the content
    hash of that text, so it binds text + image name. The CWL is where "this tools
@@ -1602,16 +1606,45 @@ step 6 has not, and step 5's retirement of the per-group image directories is st
   that name into every `dockerPull`/`dockerImageId` of the twelve workflows that declare
   one (`eval-scifact-chunking.cwl` declares none) and committed
   `cwl/tool-image.receipt.json` (version `v1.6.5`, commit `d5c970e`, build 1); `--check`
-  reports the tree stamped. Dev and hackathon run v1.6.6 (both checkouts at `4c1322e`, as
-  of 2026-10-08) with `GOWE_IMAGE_DIRS=/scout/containers/ragstack-<group>,/scout/containers/ragstack`.
+  reports the tree stamped. On 2026-10-08 dev and hackathon ran v1.6.6 (both checkouts
+  at `4c1322e`) with `GOWE_IMAGE_DIRS=/scout/containers/ragstack-<group>,/scout/containers/ragstack`.
   Each group's workers take one `--image-dir`, the group dir, which holds same-named
   symlinks to the store's image and receipt; the boot check verifies the first hit (the
   link), warns that the name is in two dirs, and logs "sha256 ok, labels ok" for all three
-  registered workflows. Writing that link into decision 6 as the way the store is reached
-  is proposed in #707 (open). #706 then removed the substitution (above).
-- **Not yet:** retiring the per-group image directories (the rest of step 5; they still
-  hold the pre-ADR `ragstack-worker*.sif` builds and the links above), and the server
-  image (step 6): tenants still run from tagged checkouts.
+  registered workflows. #707 (`766cf50`) wrote that link into ADR-0010 decision 6 (c) as
+  the way the store is reached ("reachability, not indirection"; absolute `dockerPull`
+  paths ruled out). #706 then removed the substitution (above).
+- **Landed in PR-F F1–F5 (#709, #710, #711, #713, #715; #655 step 6, the server
+  image):** per ADR-0010 Migration step 6 and `docs/runbooks/server-image.md`,
+  `apptainer/build-image.sh --kind server` builds `ragstack-server-<version>-b<N>.sif`
+  from `apptainer/ragstack-server.def` (label `org.ragstack.role` `server`; `python/` and
+  `cwl/` staged from the commit to `/opt/ragstack`), and `python/ragstack/version.py`
+  falls back to the image's generated `ragstack/_release.py` (`_release_attr`) when there
+  is no checkout (F1). `ragstack-ctl fleet image prepare --sif`
+  (`go/cmd/ragstack-ctl/image.go` `cmdImagePrepare`) admits an image into
+  `/rag/data/ctl/images/server/` only when its sha256, receipt and labels agree and its
+  commit is in the mirror (F3); a registry row with `server_image` runs its API as the
+  apptainer instance `api-<manifest>` (F3 fields, F2/F4 drivers; "image mode"); and `ragstack-ctl tenant
+  update-code <t> --image NAME` (`go/internal/ctl/ops/update.go` `planUpdateCode`) moves
+  a tenant, a worktree-mode one included, onto a prepared image in one job with
+  post-checks (`/v1/version` equals the image's version and commit) and a full rollback
+  (F5, `docs/runbooks/tenant-upgrade.md`). The worktree stays, kept at the image's commit:
+  it is the source of the static UI build, `gowe render` and `env`. In image mode the API
+  has no `apptainer` inside, so its boot check holds the tools image to sha256 and receipt
+  and logs labels as not checked; the ctl reads the server image's labels instead, before
+  every image start and in `update-code` (decision 7, 2026-10-09 amendment).
+- **v1.6.7 (tag at `8e62f22` = `5680404` plus the `python/pyproject.toml` bump, #753)** is a server
+  release only: `cwl/` is unchanged since v1.6.6, so its workflows still name
+  `ragstack-tools-v1.6.5-b1.sif` and `cwl/tool-image.receipt.json` is the same. **As of
+  2026-10-21** (an operational fact, not in the repo): asm-next, demo, elrond, clark and
+  lucid-next run `ragstack-server-v1.6.7-b1.sif` in image mode; dev runs `main` at
+  `5680404` as `ragstack-server-v1.6.6+5680404-b1.sif` in image mode; hackathon is still a
+  v1.6.6 worktree.
+- **Not yet:** retiring the per-group image directories (the rest of step 5; on
+  2026-10-08 they still held the pre-ADR `ragstack-worker*.sif` builds beside the links
+  above, and under decision 6 the links stay as the reachability path). Whether the server
+  image replaces checkouts for every tenant or only production ones is listed as **not
+  decided** in ADR-0010; hackathon has not moved.
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — since #664 builds
@@ -1839,7 +1872,7 @@ operator tool for the large extraction dumps". `docs/ingest-paths.md` still mark
 
 ```
 authz: _resolve_retrieval  → filters validated, scoped; retriever chosen (single or multi-collection)
-[rewrite: _expand_query]   → /v1/query only (§7.1)
+[rewrite: _expand_query]   → both endpoints since #752; default ["passthrough"] = [query] (§7.1)
 _retrieve_fused            → per-variant retrieve (§6.2/§6.4) → RRF (§6.3) → pool cut → rerank (§7.2) → shape → top_k
 expand: _expand_sources    → neighbour context (§6.6), post-rank
 [generate]                 → /v1/query only (§7.3)
@@ -2247,18 +2280,38 @@ Source files: `python/ragstack/api/routers/query.py`
 
 ### 7.1 Query rewriting and concurrent per-variant retrieval
 
-**What it is:** `/v1/query` only. It expands the query into retrieval variants
-through pluggable rewriters, retrieves each variant concurrently, and fuses the
-results with RRF. `/v1/retrieve` always uses the single original query.
+**What it is:** `/v1/query` and, since PR #752 (closes #750), `/v1/retrieve`.
+It expands the query into retrieval variants through pluggable rewriters,
+retrieves each variant concurrently, and fuses the results with RRF. Both
+request models (`QueryRequest`, `RetrieveRequest` in
+`python/ragstack/api/routers/query.py`) carry the same `rewrite_strategies`
+field — values `passthrough` | `multiquery` | `hyde`, default `["passthrough"]`,
+the same skip semantics — and both $ref the one `RewriteStrategies` schema in
+`contracts/openapi.yaml`. `retrieve` runs `_expand_query` under stage `rewrite`
+after `authz` (`_resolve_retrieval`) and the per-request reranker override, so
+a refused request costs no LLM call; it then calls `_retrieve_fused` with the
+variants and reranks once against the **original** query. It never generates
+and does not echo the variants (`RetrieveResponse` has no `rewritten_queries`).
+The default `["passthrough"]` yields `[query]`, the single-variant path
+`/v1/retrieve` always took, so a request without the field is byte-identical to
+before. The Go implementation accepts the field and ignores it
+(`go/internal/api/request.go` `RetrieveRequest.RewriteStrategies`): Go has no
+rewriters.
 
 **Algorithm / workflow:**
 1. `_expand_query(query, rewrite_strategies, rewriters)` (stage `rewrite`)
-   starts from `[query]`. It runs each requested strategy that is **present in
-   the registry**. `deps._build_rewriters` always includes `passthrough`, and
-   includes `multiquery`/`hyde` only when an LLM is configured. Unknown or
-   unavailable strategies are skipped. A rewriter exception is logged and
-   skipped. `CancelledError` is re-raised. Variants are stripped and
-   de-duplicated, with the original first.
+   starts from `[query]`. It iterates `dict.fromkeys(strategies)`, so a
+   repeated name runs once, in first-occurrence order (`["hyde"] * 3` is one LLM
+   call; silently, not an error). It runs each requested strategy that is
+   **present in the registry**. `deps._build_rewriters` always includes
+   `passthrough`, and includes `multiquery`/`hyde` only when an LLM is
+   configured. Unknown or unavailable strategies are skipped. A rewriter
+   exception is logged and skipped. `CancelledError` is re-raised. Variants are
+   stripped and de-duplicated, with the original first. The list is capped at
+   `MAX_REWRITE_STRATEGIES = 8` entries: `max_length` on both request models,
+   `maxItems: 8` on `RewriteStrategies` and in `contracts/schemas/query_request.json`
+   and `retrieve_request.json`; a ninth entry is a 422 on `/v1/query` as well
+   as `/v1/retrieve`.
 2. Rewriters (`python/ragstack/rewriting/rewriters.py`):
    `PassthroughRewriter` returns `[query]`. `MultiQueryRewriter(n=Settings.multiquery_n,
    default 3)` asks for N paraphrases and returns `[query] + lines[:n]`.
@@ -2276,22 +2329,28 @@ results with RRF. `/v1/retrieve` always uses the single original query.
 `asyncio.gather` for variant fan-out.
 
 **Inputs → Outputs:** `(query, rewrite_strategies)` → `list[str]` variants,
-echoed as `QueryResponse.rewritten_queries`. Variants × retrieve produce the
-fused `list[ScoredChunk]`.
+echoed as `QueryResponse.rewritten_queries` on `/v1/query` only. Variants ×
+retrieve produce the fused `list[ScoredChunk]`.
 
 **Scalability & parallelization:** Variant retrieval is concurrent. **Rewriter
-calls are sequential** (a `for` loop of awaits), so each LLM strategy adds a
-full LLM round trip before retrieval starts. Admission control is
-`tenant_slot` → `quota.slot(tenant)`, with a cap of `tenant_max_concurrency`
-(default 0 = unlimited).
+calls are sequential** (a `for` loop of awaits): each LLM-backed strategy is one
+LLM call per request, made before retrieval starts, which is why the list
+length is capped. **Rerank pool:** `depth` is fetched per variant
+(`_retrieve_fused`), so with V rewritten variants on one collection the
+reranker sees the fused union, up to (1+V)×depth candidates; a multi-collection
+union (`_fans_out`) is cut to `depth` before the one rerank (§7.2). Admission
+control is `tenant_slot` → `quota.slot(tenant)`, with a cap of
+`tenant_max_concurrency` (default 0 = unlimited).
 
-**Single vs bulk:** `/v1/retrieve` takes the one-variant path with no fuse.
-There is no batch-of-queries endpoint.
+**Single vs bulk:** with the default `["passthrough"]` (or only skipped
+strategies) either endpoint takes the one-variant path with no fuse; more
+variants take the `gather` + RRF path on either endpoint. There is no
+batch-of-queries endpoint.
 
 **Diagram:**
 ```mermaid
 flowchart TD
-  A["POST /v1/query"] --> B["_expand_query, sequential rewriters"]
+  A["POST /v1/query or /v1/retrieve, after authz"] --> B["_expand_query, distinct names, sequential rewriters"]
   B --> C{"strategy registered?"}
   C -- "passthrough" --> D["original query"]
   C -- "multiquery" --> E["LLM: N paraphrases"]
@@ -2305,8 +2364,11 @@ flowchart TD
   I -- "yes" --> J["single retrieve"]
   I -- "no" --> K["asyncio.gather retrieve per variant"]
   K --> L["RRF fuse on collection and chunk id"]
-  J --> M["pool cut, rerank, shape, top_k"]
+  J --> M["pool cut, rerank vs original query, shape, top_k"]
   L --> M
+  M --> N{"endpoint"}
+  N -- "/v1/query" --> O["generate, echo rewritten_queries"]
+  N -- "/v1/retrieve" --> P["sources only, no generation"]
 ```
 
 ### 7.2 Cross-encoder reranking: on by default, per-request control
