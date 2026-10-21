@@ -51,13 +51,38 @@ from ragstack.ingestion.symbol_glossary import (
     SymbolGlossaryCache,
     config_from_json,
 )
+from ragstack.stores.elasticsearch import _MAPPINGS as _STORE_MAPPINGS
 
+# The field's mapping is the store's own, so a backfilled index and a freshly
+# created one cannot disagree (e.g. on ``norms``).
 _MAPPING = {
     "properties": {
-        "symbol_glossary": {"type": "text"},
+        "symbol_glossary": dict(_STORE_MAPPINGS["properties"]["symbol_glossary"]),
         "metadata": {"properties": {VERSION_KEY: {"type": "keyword", "ignore_above": 8191}}},
     }
 }
+
+
+def check_index_name(name: str) -> str | None:
+    """Why ``name`` is not ONE concrete index name, or ``None`` if it is.
+    Wildcards, lists, ``_all`` and exclusions would turn one backfill into a
+    write across many indices."""
+    if not name or not name.strip():
+        return "empty index name"
+    if any(c in name for c in "*?,"):
+        return f"{name!r} is a pattern or a list, not one index"
+    if name in ("_all", "*") or name.startswith(("-", "_")):
+        return f"{name!r} is not a concrete index name"
+    return None
+
+
+async def resolve_exactly(es: Any, name: str) -> None:
+    """Refuse unless the cluster resolves ``name`` to exactly that one index —
+    an alias (which may point at several, or at another name) is refused too."""
+    got = await es.indices.get(index=name)
+    keys = set(getattr(got, "body", got).keys())
+    if keys != {name}:
+        raise SystemExit(f"refusing: {name!r} resolves to {sorted(keys)}, not exactly itself")
 
 
 def plan_updates(
@@ -110,6 +135,7 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         pending.clear()
 
     try:
+        await resolve_exactly(es, args.index)
         if args.apply:
             await es.indices.put_mapping(index=args.index, body=_MAPPING)
             if args.refresh_off and store is not None:
@@ -154,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh-off", action="store_true",
                    help="park refresh_interval during --apply and restore it after")
     args = p.parse_args(argv)
+    bad = check_index_name(args.index)
+    if bad:
+        p.error(bad)
     if args.apply and args.confirm_index != args.index:
         p.error("--apply writes to the index: repeat its exact name with --confirm-index")
     store = None

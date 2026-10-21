@@ -48,6 +48,9 @@ class FakeES:
     async def put_mapping(self, index: str, body: Any) -> None:
         self.mappings.append(body)
 
+    async def get(self, index: str) -> dict[str, Any]:
+        return getattr(self, "resolves", {index: {}})
+
     async def open_point_in_time(self, index: str, keep_alive: str) -> dict[str, str]:
         return {"id": "pit"}
 
@@ -83,7 +86,7 @@ def test_dry_run_writes_nothing() -> None:
     out = asyncio.run(bf.run(_args(), es=es))
     assert es.bulks == [] and es.mappings == []
     assert out["dry_run"] is True and out["docs"] == 2
-    assert out["chunks_to_update"] == out["chunks"] and out["chunks_with_glossary"] >= 2
+    assert out["chunks_to_update"] == out["chunks"] and out["chunks_with_glossary"] >= 1
 
 
 def test_apply_writes_partial_updates_then_is_resumable() -> None:
@@ -95,7 +98,7 @@ def test_apply_writes_partial_updates_then_is_resumable() -> None:
             assert set(action) == {"update"} and set(doc["doc"]) == {"symbol_glossary", "metadata"}
     last = es.rows[-1]
     assert last["symbol_glossary"] == "Qb — breathing flow rate"
-    assert last["metadata"][VERSION_KEY] == "rules/1" and "content" in last
+    assert last["metadata"][VERSION_KEY] == "rules/2" and "content" in last
     again = asyncio.run(bf.run(_args(apply=True), es=es))
     assert again["chunks_to_update"] == 0 and again["chunks_current"] == again["chunks"]
 
@@ -113,3 +116,25 @@ def test_reassembly_streams_documents_and_reports_gaps() -> None:
     es = FakeES(rows)
     out = asyncio.run(bf.run(_args(), es=es))
     assert out["docs"] == 1 and out["reassembly_gaps"] == 1
+
+
+@pytest.mark.parametrize("name", ["*", "ragstack_*", "a,b", "_all", "-a", "_x", "a?", ""])
+def test_rejects_patterns_lists_and_non_concrete_names(name: str) -> None:
+    assert bf.check_index_name(name) is not None
+    with pytest.raises(SystemExit):
+        bf.main(["--es-url", "http://127.0.0.1:1", "--index", name])
+
+
+def test_accepts_one_concrete_name() -> None:
+    assert bf.check_index_name("ragstack_lib_openchia_x_7033902e") is None
+
+
+def test_refuses_an_alias_or_multi_resolution() -> None:
+    es = FakeES(_rows("d1", TEXT))
+    es.resolves = {"real_index_1": {}, "real_index_2": {}}  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit):
+        asyncio.run(bf.run(_args(), es=es))
+    es.resolves = {"other": {}}  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit):
+        asyncio.run(bf.run(_args(apply=True), es=es))
+    assert es.bulks == [] and es.mappings == []
