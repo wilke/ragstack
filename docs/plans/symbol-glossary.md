@@ -151,7 +151,7 @@ The first experiment's recommendation was to ship with the boost at 0 and enable
 tenant only after a reranked measurement and a crowding check. That measurement is the
 next section.
 
-## Review re-run (2026-10-21, after the Fable review of PR #763)
+## Review re-run (2026-10-21, after the Fable review and re-review of PR #763)
 
 **What changed before the re-run:**
 - `rules/2`: the appositive rule no longer steals the previous clause's definition, and
@@ -164,54 +164,84 @@ next section.
 - **`symbol_glossary` mapped with `norms: false`.**
 - The locality gate gained the verbatim "another symbol in between" rejection.
 
-**Setup.** Scratch copies only. Every scratch index and collection was deleted, and both
-ES and Qdrant listed none left. The legs:
-- BM25 (top 200);
-- hybrid: RRF of BM25 and the base dense vectors, which the glossary does not change;
-- **reranked**: the hybrid top 50, rescored by the live cross-encoder sidecar
-  (`bge-reranker-v2-m3`, at most 4 requests in flight, read-only, 731 distinct calls),
-  then the per-document cap, then the top 10. This is the /v1/retrieve shape.
+**Setup, matching /v1/retrieve as deployed:**
+- Scratch copies only. Every scratch index and collection was deleted, and both ES and
+  Qdrant listed none left.
+- **Per-leg depth is 100**: top_k 50 × `retrieval_candidate_multiplier` 2. The first
+  version of this re-run used 200.
+- Legs:
+  - BM25;
+  - hybrid: RRF (k=60) of BM25 and the base dense vectors, which the glossary does not
+    change;
+  - **reranked**: the cap, then the cut to 50, then the live cross-encoder
+    (`bge-reranker-v2-m3`, at most 4 in flight, read-only), then the cap again, then
+    the top 10.
+- `cap2` is `RETRIEVAL_MAX_PER_DOC=2`. It is applied where live applies `shape()`: before
+  the cut to 50, inside `retrieve()`, and again after the rerank.
 
-`cap2` is `RETRIEVAL_MAX_PER_DOC=2`. Columns: s@10 and s@50 are symbol pairs (of 4) in
-the top 10 and top 50; lost and gained are counted against the same leg's base.
+Columns: s@10 and s@50 are symbol pairs (of 4) in the top 10 and top 50; lost and gained
+are counted against the same leg's base.
 
-| arm | BM25 r@10 | rerank r@10 | rerank r@10 B (51) | rerank s@10 / s@50 | rerank lost / gained | rerank docs@10 |
-|---|---|---|---|---|---|---|
-| base | 0.181 | 0.219 | 0.039 | 1 / 2 | – | 7.12 |
-| base cap2 | 0.213 | 0.252 | 0.039 | 1 / 2 | 0 / 5 | 7.93 |
-| mention, norms, @2 | 0.219 | 0.252 | 0.039 | 1 / 2 | 4 / 9 | 6.70 |
-| value-only, norms, @0.5 | 0.226 | 0.232 | 0.059 | 1 / 2 | 2 / 4 | 6.97 |
-| value-only, norms, @1 | 0.297 | 0.245 | 0.059 | 1 / 2 | 2 / 6 | 7.06 |
-| value-only, norms, @2 | 0.323 | 0.252 | 0.078 | 1 / 3 | 3 / 8 | 7.03 |
-| value-only, no norms, @0.5 | 0.381 | 0.271 | 0.078 | 1 / 2 | 2 / 10 | 7.04 |
-| **value-only, no norms, @1** | 0.465 | **0.348** | **0.196** | **2 / 4** | 2 / 22 | 7.03 |
-| value-only, no norms, @2 | 0.465 | 0.336 | 0.157 | 1 / 3 | 3 / 21 | 6.93 |
-| **value-only, no norms, @1, cap2** | 0.465 | **0.361** | 0.196 | 2 / 4 | 2 / 24 | 7.65 |
+| arm | BM25 r@10 | BM25 gloss@10 | rerank r@10 | rerank r@10 B (51) | rerank s@10 / s@50 | rerank lost / gained | rerank docs@10 |
+|---|---|---|---|---|---|---|---|
+| base | 0.181 | 0 | 0.226 | 0.059 | 1 / 2 | – | 7.14 |
+| base cap2 | 0.213 | 0 | 0.277 | 0.098 | 1 / 1 | 3 / 11 | 8.37 |
+| mention, norms on, @2 | 0.219 | 9.7 | 0.284 | 0.098 | 1 / 2 | 3 / 12 | 6.50 |
+| value-only, norms on, @1 | 0.297 | 6.6 | 0.271 | 0.059 | 1 / 2 | 2 / 9 | 7.02 |
+| value-only, norms on, @2 | 0.323 | 8.5 | 0.290 | 0.078 | 1 / 3 | 2 / 12 | 6.94 |
+| value-only, norms off, @0.5 | 0.381 | 6.5 | 0.303 | 0.137 | 1 / 2 | 2 / 14 | 7.03 |
+| **value-only, norms off, @1** | 0.465 | 8.3 | **0.361** | 0.196 | 2 / 4 | **0 / 21** | 7.03 |
+| value-only, norms off, @1, cap2 | 0.465 | 8.2 | 0.387 | 0.176 | 2 / 3 | 1 / 26 | 8.32 |
+| value-only, norms off, @2 | 0.465 | 8.9 | 0.387 | 0.196 | 2 / 4 | 1 / 26 | 7.04 |
+| value-only, norms off, @2, cap2 | 0.471 | 8.8 | 0.445 | 0.235 | 3 / 3 | 2 / 36 | 8.22 |
 
-- **Deactivation** (`deactivation_rate_s:2198638f`) reaches reranked rank 9 at value-only,
-  no norms, @1. It is the first arm to get it into the top 10 (2 of 6 queries).
-- **Crowding is gone on the reranked leg:** docs@10 is 7.0, against 7.1 for base.
-- **Caveat: the eval set favours this lever.** Its targets are value-stating chunks,
-  because it was built from parameter-extraction runs, and value-only attachment
-  promotes exactly those. Queries that do not seek a value are not measured here.
+- **Headline:** value-only, norms off, boost 1, uncapped: reranked recall@10 **0.361**
+  against a base of 0.226, with 0 records lost. (0.348 in the first, depth-200 version
+  of this re-run.)
+- **Deactivation** (`deactivation_rate_s:2198638f`) reaches reranked rank 6, or 5 with
+  the cap: 2 of 6 queries in the top 10.
+- **The cap, measured as deployed,** adds about 0.03 at boost 1 (0.387) and more at
+  boost 2 (0.445). It costs `effective_radius_m:83410a4f`, which leaves the pool.
 - The scratch base agrees with live openchia's ranks on 66% of records (see above).
 
-**Recommendation for openchia (dev):**
+**Recommendation for openchia (dev), as a trial:**
 - `SYMBOL_GLOSSARY_EXTRACTION=rules`;
 - `SYMBOL_GLOSSARY_CACHE_PATH=<the LLM cache built over openchia>`;
 - the defaults `attach_only_with_value=true` and `norms: false`;
 - `TEXT_SYMBOL_GLOSSARY_BOOST=1`;
-- `RETRIEVAL_MAX_PER_DOC=2`.
+- `RETRIEVAL_MAX_PER_DOC=2` is optional: +0.026 measured as deployed.
+
+**Caveats that go with this recommendation:**
+- **It is only safe with the reranker on.** On the BM25 leg alone, boost 1 still puts
+  about 8.3 glossaried chunks in the top 10. A `mode=bm25` or `rerank=false` request
+  would see the crowding.
+- **The eval rewards value-only attachment by construction:**
+  - every target is a value-stating chunk;
+  - the `quote_terms` queries are words taken from the value sentence;
+  - definition-, method- and mechanism-seeking queries are unmeasured;
+  - every symbol-pair gain comes from copies of one paper.
+- **Therefore boost 1 on openchia is a dev-tenant trial.** Add a sample of non-value
+  queries to the eval before enabling it on any other tenant.
 
 **Order of operations:**
-1. Release, and let the API restart add the field. `ensure_index`'s `put_mapping`
-   adds `symbol_glossary` (`norms: false`) to existing indices. That is additive and
-   writes no data.
+1. Release, and let the API restart add the field. `ensure_index`'s `put_mapping` adds
+   `symbol_glossary` (`norms: false`) to existing indices. That is additive and writes
+   no data. A divergent index gets it through the narrow third push.
 2. Backfill openchia: dry run first, then `--apply` on the owner's go.
 3. Set the boost.
 
-Before step 3, a boost on an index without the field is a measured no-op. Any other
-tenant should first get its own measurement.
+Before step 3, a boost on an index without the field is a measured no-op.
+
+**Known gaps (documented, behaviour unchanged):**
+- **GoWe-ingested collections get no glossary record in their manifest.**
+  `_run_gowe_ingest` writes `write_ingest_manifest_for` without `enrichment=`, and
+  nothing lifts the workers' receipt records into the manifest. The step record exists
+  only in the receipts. Merging receipt records into the manifest is a follow-up.
+- **Old cache records.** Records written before the version key gained the generation
+  limits (`llm/1:<model>:<hash>`, without `:w…:t…`) remain valid for ATTACHMENT: ingest
+  reads with `cache_version=None`, and the last record wins. The LLM script, however,
+  treats them as misses under the new key, so a re-run of the script re-extracts every
+  document.
 
 ## Follow-ups
 
@@ -220,3 +250,6 @@ tenant should first get its own measurement.
 - A reranked, end-to-end measurement before any boost goes above 0 on a tenant.
 - Embedding definitions (option c): evaluate at the open-access re-ingest (owner).
 - The #747 work-level dedup, to counter the crowding.
+- Merge the workers' receipt `enrichment` records into the GoWe-path manifest.
+- Add non-value queries to the eval (definition, method, mechanism) before any tenant
+  other than dev enables the boost.
