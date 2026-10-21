@@ -63,10 +63,13 @@ async def scroll_index(
     query: dict[str, Any] | None = None,
     page_size: int = 1000,
     keep_alive: str = "5m",
+    sort: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield every hit of ``index`` (``{"_id", "_source"}``) via PIT +
     ``search_after`` — consistent under concurrent writes, no scroll context
-    left behind. ``es`` is an ``AsyncElasticsearch``; only read APIs are called."""
+    left behind. ``es`` is an ``AsyncElasticsearch``; only read APIs are called.
+    ``sort`` precedes the ``_shard_doc`` tiebreaker (e.g. ``[{"doc_id": "asc"}]``
+    to stream one document's chunks contiguously)."""
     pit = (await es.open_point_in_time(index=index, keep_alive=keep_alive))["id"]
     try:
         after: list[Any] | None = None
@@ -74,7 +77,7 @@ async def scroll_index(
             body: dict[str, Any] = {
                 "size": page_size,
                 "pit": {"id": pit, "keep_alive": keep_alive},
-                "sort": [{"_shard_doc": "asc"}],
+                "sort": [*(sort or []), {"_shard_doc": "asc"}],
                 "query": query or {"match_all": {}},
             }
             if source is not None:
@@ -111,3 +114,26 @@ async def documents_from_index(
     for doc_id in sorted(by_doc):
         rows = by_doc[doc_id]
         yield reassemble(doc_id, rows), rows
+
+
+async def iter_documents_sorted(
+    es: Any, index: str, *, query: dict[str, Any] | None = None, page_size: int = 1000
+) -> AsyncIterator[tuple[Reassembled, list[dict[str, Any]]]]:
+    """Like :func:`documents_from_index`, but STREAMING: hits are sorted by the
+    ``doc_id`` keyword, so one document's chunks arrive contiguously and only
+    one document is held at a time — the shape a backfill over a 47.6M-chunk
+    index needs."""
+    current: str | None = None
+    rows: list[dict[str, Any]] = []
+    async for hit in scroll_index(es, index, query=query, page_size=page_size,
+                                  sort=[{"doc_id": "asc"}]):
+        row = dict(hit["_source"])
+        row["_id"] = hit["_id"]
+        doc_id = str(row.get("doc_id", ""))
+        if current is not None and doc_id != current:
+            yield reassemble(current, rows), rows
+            rows = []
+        current = doc_id
+        rows.append(row)
+    if current is not None and rows:
+        yield reassemble(current, rows), rows
