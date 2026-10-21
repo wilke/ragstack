@@ -166,9 +166,13 @@ async def test_an_existing_index_that_rejects_the_declared_mapping_keeps_its_tem
     es.indices.put_mapping = put_mapping  # type: ignore[assignment]
     await idx.ensure_index()  # must not raise
 
-    assert len(calls) == 2
+    # Full mapping, then the safe template fallback, then (#754) a narrow push
+    # of the symbol_glossary field alone — which this fake also rejects, and
+    # ensure_index must still not raise.
+    assert len(calls) == 3
     assert "properties" in calls[0]  # the full derived mapping, attempted first
     assert set(calls[1]) == {"dynamic_templates"}  # the safe fallback
+    assert calls[2] == {"properties": {"symbol_glossary": {"type": "text", "norms": False}}}
     tmpl = calls[1]["dynamic_templates"][0]["metadata_strings_as_keyword"]
     assert tmpl["mapping"]["ignore_above"] == _METADATA_KEYWORD_IGNORE_ABOVE
 
@@ -187,3 +191,22 @@ async def test_a_transport_error_does_not_trigger_the_fallback_attempt():
     es.indices.put_mapping = put_mapping  # type: ignore[assignment]
     await idx.ensure_index()  # must not raise
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_divergent_index_still_gets_the_glossary_field_without_norms():
+    """#754: when the full mapping is rejected, the template fallback alone would
+    leave `symbol_glossary` to dynamic mapping (with norms). The narrow third push
+    declares it; the field is new, so it does not conflict."""
+    idx, es = _store(exists=True)
+    calls: list[dict] = []
+
+    async def put_mapping(index, body):  # noqa: ARG001
+        calls.append(body)
+        if "metadata" in body.get("properties", {}):
+            raise _MapperConflict()  # only the full derived mapping conflicts
+
+    es.indices.put_mapping = put_mapping  # type: ignore[assignment]
+    await idx.ensure_index()
+    assert calls[-1] == {"properties": {"symbol_glossary": {"type": "text", "norms": False}}}
+    assert len(calls) == 3

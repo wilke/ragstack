@@ -166,11 +166,9 @@ _MAPPINGS: dict[str, Any] = {
 # What ``ensure_index`` falls back to when the full mapping cannot be applied to an
 # index that already exists: exactly what this module pushed before #603.
 _TEMPLATE_ONLY_MAPPINGS: dict[str, Any] = {"dynamic_templates": _DYNAMIC_TEMPLATES}
-# NOTE (#754): an index that falls back here does not get the declared
-# `symbol_glossary` mapping, so its first glossary write maps the field
-# dynamically (text WITH norms + a keyword subfield). That is recoverable —
-# norms can be disabled in place — and scripts/backfill_symbol_glossary.py
-# pushes the declared field mapping itself before writing.
+# NOTE (#754): after this fallback, ensure_index makes a third, narrow push of
+# just the `symbol_glossary` field, so a divergent index still gets norms:false
+# instead of a dynamic mapping on its first glossary write.
 
 
 def _es_id(tenant: str, chunk_id: str) -> str:
@@ -532,6 +530,24 @@ class ElasticsearchTextIndex:
             log.warning(
                 "could not update mappings on existing index %r; it keeps its "
                 "current template (see stores/elasticsearch.py)",
+                self._index,
+                exc_info=True,
+            )
+        # #754: a third, narrow push of the one field whose mapping cannot be
+        # fixed later in the wrong direction. A divergent index otherwise maps
+        # `symbol_glossary` dynamically on its first write (text WITH norms and
+        # a keyword subfield). A brand-new field conflicts with nothing; if it
+        # does fail (e.g. the field was already mapped differently), log and
+        # continue exactly like the fallback above.
+        try:
+            await self._es.indices.put_mapping(
+                index=self._index,
+                body={"properties": {"symbol_glossary": _SYMBOL_GLOSSARY_MAPPING}},
+            )
+        except Exception:  # noqa: BLE001 — never block store construction
+            log.warning(
+                "could not declare symbol_glossary on existing index %r; a first "
+                "glossary write will map it dynamically (see stores/elasticsearch.py)",
                 self._index,
                 exc_info=True,
             )

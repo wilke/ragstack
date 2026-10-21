@@ -737,8 +737,8 @@ def _near_symbol(defn: str, canon: str, occurrences: list[int], window: int) -> 
 
 def _verbatim_pairs(
     defn: str, canon: str, occurrences: list[int], window: int
-) -> list[tuple[int, int, int]]:
-    """``(distance, def_start, symbol_offset)`` for every verbatim occurrence
+) -> list[tuple[int, int, int, int]]:
+    """``(distance, def_start, def_end, symbol_offset)`` for every verbatim occurrence
     of ``defn`` within ``window`` of a symbol occurrence, nearest first."""
     needle = " ".join(canonical_text(defn).split()).casefold()
     if not needle:
@@ -751,7 +751,7 @@ def _verbatim_pairs(
         for o in occurrences:
             dist = o - m.end() if o >= m.end() else m.start() - o
             if 0 <= dist <= window:
-                out.append((dist, m.start(), o))
+                out.append((dist, m.start(), m.end(), o))
     return sorted(out)
 
 
@@ -818,11 +818,14 @@ def validate_entries(
             # ANOTHER symbol (it names that one): reject. Paraphrases cannot be
             # checked this way — a known limitation, see the tests.
             if ok and pairs:
+                # The region between the definition copy and the symbol: from
+                # the copy's END to the symbol, or from the symbol's end to
+                # the copy's start.
                 ok = any(
                     not _another_symbol_between(
-                        canon, d0 + (len(defn) if d0 < o else 0), o if d0 < o else o + len(sym), sym
+                        canon, d1 if d1 <= o else o + len(sym), o if d1 <= o else d0, sym
                     )
-                    for _, d0, o in pairs
+                    for _, d0, d1, o in pairs
                 )
         if not ok or occ is None:
             rejected += 1
