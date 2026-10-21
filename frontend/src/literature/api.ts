@@ -61,6 +61,8 @@ export interface Source {
 export interface RetrieveRequest {
   query: string;
   top_k?: number;
+  /** Query expansion before retrieval (#750); default ["passthrough"]. */
+  rewrite_strategies?: string[];
   use_graph?: boolean;
   collection?: string;
   /**

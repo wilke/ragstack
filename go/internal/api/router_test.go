@@ -83,6 +83,33 @@ func TestQueryEndpoint(t *testing.T) {
 	}
 }
 
+// TestRetrieveAcceptsRewriteStrategies: /v1/retrieve accepts the
+// `rewrite_strategies` field (issue #750). Go has no rewriters, so it is
+// accepted and ignored, exactly as HandleQuery ignores it — never a 422, and
+// the response carries no `rewritten_queries` (RetrieveResponse has none).
+func TestRetrieveAcceptsRewriteStrategies(t *testing.T) {
+	r := newRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/retrieve",
+		strings.NewReader(`{"query":"What is RAG?","rewrite_strategies":["hyde","multiquery","nonexistent"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["sources"]; !ok {
+		t.Fatal("missing 'sources' field")
+	}
+	if _, ok := body["rewritten_queries"]; ok {
+		t.Fatal("RetrieveResponse must not carry 'rewritten_queries'")
+	}
+}
+
 func TestQueryMissingFieldReturns422(t *testing.T) {
 	r := newRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/query",

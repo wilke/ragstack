@@ -3648,6 +3648,23 @@ components:
         status:
           type: string
 
+    RewriteStrategies:
+      type: array
+      items:
+        type: string
+      default: ["passthrough"]
+      description: >-
+        Query rewriters to expand the query with before retrieval:
+        `passthrough` (the query itself), `multiquery` (LLM paraphrases) and
+        `hyde` (an LLM-written hypothetical answer passage). The original
+        query is always retrieved; each variant is retrieved too, the
+        results are RRF-fused, and any rerank runs ONCE against the original
+        query. An unknown strategy, one this server cannot serve (no LLM
+        configured), or a rewriter that fails is skipped, never an error —
+        the request degrades to the plain query. Shared by QueryRequest and
+        RetrieveRequest (#750) with identical semantics; /v1/retrieve still
+        never generates and does not echo the variants.
+
     QueryRequest:
       type: object
       required: [query]
@@ -3658,10 +3675,7 @@ components:
           type: integer
           default: 5
         rewrite_strategies:
-          type: array
-          items:
-            type: string
-          default: ["passthrough"]
+          $ref: "#/components/schemas/RewriteStrategies"
         filters:
           description: >-
             Metadata equality constraints, ANDed. A value is a string, an
@@ -3874,6 +3888,8 @@ components:
         top_k:
           type: integer
           default: 5
+        rewrite_strategies:
+          $ref: "#/components/schemas/RewriteStrategies"
         filters:
           description: >-
             Metadata equality constraints, ANDed. A value is a string, an

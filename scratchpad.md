@@ -593,3 +593,9 @@ image + receipt → server release stamps the NAME into dockerPull AND
 dockerImageId (no digest in the CWL — receipt/labels carry it), commits, tags
 S. `stamp_tool_image.py` no longer derives, compares, or bumps pyproject; the
 pin test checks only "all bare" or "all the same well-formed .sif name".
+
+## 2026-10-21 — #750: `rewrite_strategies` on `/v1/retrieve`
+
+- The issue asks for `expand_ms` on retrieve; in this codebase `expand_ms` is
+  CONTEXT expansion (already on retrieve) and query expansion is `rewrite_ms` —
+  so retrieve now emits `rewrite_ms`, same stage name as `/v1/query`.

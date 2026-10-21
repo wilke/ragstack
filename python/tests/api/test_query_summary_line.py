@@ -42,8 +42,10 @@ SUMMARY_LOGGER = "ragstack.observability.middleware"
 #: measurement does not support.
 EXPECTED_QUERY_STAGES = {"authz", "rewrite", "embed", "vector", "text", "fuse", "expand"}
 
-#: ``/v1/retrieve`` is the same minus query rewriting, which it does not do.
-EXPECTED_RETRIEVE_STAGES = EXPECTED_QUERY_STAGES - {"rewrite"}
+#: ``/v1/retrieve`` times the same stages: since #750 it expands the query
+#: (``rewrite_strategies``) exactly as ``/v1/query`` does, and only generation —
+#: which never runs in this fixture anyway — is absent.
+EXPECTED_RETRIEVE_STAGES = EXPECTED_QUERY_STAGES
 
 
 def _summaries(caplog) -> list[logging.LogRecord]:
@@ -198,7 +200,7 @@ async def test_the_retrieve_path_times_exactly_the_expected_stages(client, caplo
 
     emitted = _stage_names(_one_summary(caplog))
     assert emitted == EXPECTED_RETRIEVE_STAGES
-    assert "rewrite" not in emitted, "/v1/retrieve does not rewrite queries"
+    assert "rewrite" in emitted, "/v1/retrieve rewrites queries since #750"
 
 
 async def test_a_fully_wired_query_times_the_model_stages_and_tags_the_collection(
