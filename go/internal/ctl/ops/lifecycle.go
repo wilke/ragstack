@@ -184,6 +184,18 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 	}
 	p.addReadyStep(legs)
 	if len(only) > 0 {
+		// The partial stop plans a "disable <leg> (desired_boot)" step per leg;
+		// the partial start plans the matching "enable", so the step list of a
+		// stop/start pair reads symmetrically (#741's side note). In instance
+		// mode desired_boot is the TENANT's row, which a partial op leaves as
+		// it is; the step reads it at run time and says what boot will do.
+		if p.sup.kind() == supervisorInstance {
+			for _, c := range legs {
+				if c.Managed {
+					instancePartialBootNote(p, c, "enabled")
+				}
+			}
+		}
 		p.warn("this is a partial start (--only): the tenant's `state` and `desired_boot` are left as they are, " +
 			"because starting one leg says nothing about the whole tenant")
 		return nil
@@ -241,10 +253,19 @@ func planStop(_ context.Context, p *planner, args map[string]any) error {
 		p.warn("desired_boot becomes `disabled`: the tenant will not come back at the next boot until it is started again")
 		p.result["desired_boot"] = "disabled"
 		for _, c := range reverse(legs) {
-			if c.Managed {
-				if err := p.sup.disableLeg(p, c); err != nil {
-					return err
-				}
+			if !c.Managed {
+				continue
+			}
+			if len(only) > 0 && p.sup.kind() == supervisorInstance {
+				// A partial stop does not write the registry, so the full
+				// stop's "the registry step of this plan writes it" would be
+				// false here (#741: the step list said "disable" and the row
+				// never changed).
+				instancePartialBootNote(p, c, "disabled")
+				continue
+			}
+			if err := p.sup.disableLeg(p, c); err != nil {
+				return err
 			}
 		}
 	}

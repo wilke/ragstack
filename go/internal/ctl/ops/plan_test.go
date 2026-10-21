@@ -137,7 +137,15 @@ func fixtureFull(t *testing.T, name string, mutate func(*registry.Tenant), env [
 		},
 		// A started unit makes its port listen and a stopped one frees it, so
 		// the readiness probes and the fence verify answer a fact.
-		UnitPorts:   map[string]int{"ragstack-" + tenant.Name + "-api.service": tenant.Ports.API},
+		UnitPorts: map[string]int{"ragstack-" + tenant.Name + "-api.service": tenant.Ports.API},
+		// …and so does a started store INSTANCE: its port is held by a child
+		// of the instance, which is what the start step's wait asks for
+		// ("started" means "answers", #741).
+		InstancePorts: map[string]int{
+			"qdrant-" + tenant.ManifestName:        tenant.Ports.QdrantHTTP,
+			"elasticsearch-" + tenant.ManifestName: tenant.Ports.ESHTTP,
+			"postgres-" + tenant.ManifestName:      pgPortOf(tenant),
+		},
 		Listening:   []int{tenant.Ports.API},
 		Collections: map[string][]string{tenant.Stores.Qdrant.URL: {"docs", "chunks"}},
 		Indices:     map[string][]string{tenant.Stores.Elasticsearch.URL: {"dev-chunks"}},
