@@ -284,6 +284,30 @@ class InMemoryTextIndex:
         )
         return docs, next_cursor
 
+    async def find_documents_by_key(
+        self, keys: list[tuple[str, str]], tenants: list[str], *, limit: int = 20
+    ) -> dict[tuple[str, str], list[DocumentSummary]]:
+        """The duplicate guard's lookup (#747): a linear scan — the in-memory
+        mirror of the ES query, same normalised matching and tenant scope."""
+        from ragstack.ingestion.work_identity import match_summaries
+
+        allowed = set(tenants)
+        if not allowed or not keys:
+            return {}
+        counts: dict[str, int] = {}
+        exemplar: dict[str, Chunk] = {}
+        for c in self._chunks:
+            if tenant_of(c) not in allowed:
+                continue
+            counts[c.doc_id] = counts.get(c.doc_id, 0) + 1
+            exemplar.setdefault(c.doc_id, c)
+        summaries = [
+            document_from_chunk_metadata(did, counts[did], dict(exemplar[did].metadata))
+            for did in sorted(exemplar)
+        ]
+        matched = match_summaries(keys, summaries)
+        return {k: v[:limit] for k, v in matched.items()}
+
 
 def _evidence_fields(t: Triple) -> dict[str, Any]:
     """The six #347 provenance fields — what an ON MATCH write replaces."""

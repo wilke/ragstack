@@ -14,7 +14,7 @@ parallelizable**, whether it distinguishes **single vs bulk** operation, and a
 > **Verified against `main` @ `22b44be` on 2026-09-23; updated against `f3fb936` on
 > 2026-10-04 for #642–#654 (ADR-0010 tool-image binding, the `chunk_method` enum,
 > per-collection memory stores, DOI enrichment on by default, no store-URL defaults
-> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution; §5.2 and §7.1 updated against `8e62f22` (v1.6.7) on 2026-10-21 for #750/#752 (`rewrite_strategies` on `/v1/retrieve`) and the v1.6.7 rollout, with the matching sentences in §0, §3.4 and §6.** Rewritten section by
+> in `load_embeddings.py`); §5.2 updated against `0e9bbb0` on 2026-10-05 for ADR-0010's three-artifact model (#666) and #655 step 1 (#664), and, with §8's archive layout, against `33642f9` the same day for step 2's provenance fields (#668); §5.2 updated against `cdcf737` on 2026-10-06 for step 4's identity check and `ragstack-ctl gowe render` (#672) and #678's refusal of a stamped tree with `GOWE_IMAGE_DIRS` unset; §5.2 updated against `a730cc9` on 2026-10-08 for step 5: v1.6.6, the first stamped release, and #706's removal of the substitution; §5.2 and §7.1 updated against `8e62f22` (v1.6.7) on 2026-10-21 for #750/#752 (`rewrite_strategies` on `/v1/retrieve`) and the v1.6.7 rollout, with the matching sentences in §0, §3.4 and §6; §5.2 updated on 2026-10-21 for hackathon's move to v1.6.7 and ADR-0010's acceptance.** Rewritten section by
 > section from the code; the previous version (2026-07-03) predated ADR-0002–0009.
 > **Citations** are repo-relative path + symbol; the **symbol is authoritative**,
 > and a line number, where given, was checked at that commit — re-derive it from the
@@ -1495,7 +1495,7 @@ per-document receipts onto the job.
   against declared types (GoWe#273), so today the enum is documentation and the
   API's own check above remains the gate.
 
-**Tool image binding — ADR-0010 (*Proposed*; the three-artifact model, #666).**
+**Tool image binding — ADR-0010 (*Accepted* 2026-10-21; the three-artifact model, #666).**
 Three artifacts, each **a build of a tag**, and the workflow binds them:
 
 1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
@@ -1636,15 +1636,13 @@ shared store, ops), 4 (#672, tightened by #678), 5 (the v1.6.6 release, then #70
 - **v1.6.7 (tag at `8e62f22` = `5680404` plus the `python/pyproject.toml` bump, #753)** is a server
   release only: `cwl/` is unchanged since v1.6.6, so its workflows still name
   `ragstack-tools-v1.6.5-b1.sif` and `cwl/tool-image.receipt.json` is the same. **As of
-  2026-10-21** (an operational fact, not in the repo): asm-next, demo, elrond, clark and
-  lucid-next run `ragstack-server-v1.6.7-b1.sif` in image mode; dev runs `main` at
-  `5680404` as `ragstack-server-v1.6.6+5680404-b1.sif` in image mode; hackathon is still a
-  v1.6.6 worktree.
+  2026-10-21** (an operational fact, not in the repo): all six tenants (asm-next,
+  demo, elrond, clark, lucid-next and hackathon, which moved on 2026-10-21 at 18:08Z) run
+  `ragstack-server-v1.6.7-b1.sif` in image mode; dev runs `main` at `5680404` as
+  `ragstack-server-v1.6.6+5680404-b1.sif` in image mode. (This settles ADR-0010's former open question, a server image for every tenant; ADR-0010 was Accepted on 2026-10-21.)
 - **Not yet:** retiring the per-group image directories (the rest of step 5; on
   2026-10-08 they still held the pre-ADR `ragstack-worker*.sif` builds beside the links
-  above, and under decision 6 the links stay as the reachability path). Whether the server
-  image replaces checkouts for every tenant or only production ones is listed as **not
-  decided** in ADR-0010; hackathon has not moved.
+  above, and under decision 6 the links stay as the reachability path).
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — since #664 builds

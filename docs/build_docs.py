@@ -168,13 +168,13 @@ PAGES = [
     ),
     dict(
         src="adr/0010-tool-image-binding.md",
-        out="adr/0010-tool-image-binding.html", label="ADR 0010 · Proposed",
+        out="adr/0010-tool-image-binding.html", label="ADR 0010 · Accepted",
         card="ADR 0010 — Tool image binding", index=False,
         blurb="",
     ),
     dict(
         src="adr/0011-provenance-records.md",
-        out="adr/0011-provenance-records.html", label="ADR 0011 · Proposed",
+        out="adr/0011-provenance-records.html", label="ADR 0011 · Accepted",
         card="ADR 0011 — Provenance records", index=False,
         blurb="",
     ),

@@ -459,3 +459,73 @@ def test_merge_receipts_cli(tmp_path: Path) -> None:
     assert summary["n_shards"] == 2 and summary["failed_shards"] == ["s1"]
     # gating: returns 1 when a shard failed
     assert merge_receipts.main([*files, "--out", str(out), "--fail-on-shard-error"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# the duplicate-paper guard on the worker (#747)
+# --------------------------------------------------------------------------- #
+_DUP_DOI = "10.1073/pnas.2018995118"
+
+
+def _paper_shard(tmp_path: Path, name: str, path: str, header: str) -> str:
+    p = tmp_path / name
+    body = " ".join(f"Indoor airborne transmission passage {i}." for i in range(30))
+    p.write_text(json.dumps({"text": f"{header}\n\n{body}", "path": path}), encoding="utf-8")
+    return str(p)
+
+
+@pytest.mark.asyncio
+async def test_run_shard_refuses_an_already_indexed_work_per_document(tmp_path: Path) -> None:
+    """A second rendering of an indexed paper: the task COMPLETES (a duplicate
+    is per-document data, not a task failure), its row names the refusal, and
+    nothing of it is written."""
+    pipe, vstore = _pipeline()
+    first = await run_shard(pipe, _paper_shard(
+        tmp_path, "a.jsonl", "/stage/sub_1/sha-a.md", f"DOI: {_DUP_DOI}"), "dev", "a")
+    assert first.status == COMPLETED and first.n_docs_failed == 0
+    before = await vstore.count_tenants(["dev"])
+    second = await run_shard(pipe, _paper_shard(
+        tmp_path, "b.jsonl", "/stage/sub_2/PMC8092463.md",
+        "PMCID: PMC8092463 · DOI: 10.1073/\npnas.2018995118/-/"), "dev", "b",
+        duplicate_policy="refuse")
+    assert second.status == COMPLETED and second.error == ""
+    assert second.n_docs == 1 and second.n_docs_failed == 1 and second.n_chunks == 0
+    (row,) = second.docs
+    assert row.error.startswith(f"duplicate_work: key=doi:{_DUP_DOI} "
+                                f"existing_doc_id={first.docs[0].doc_id}")
+    assert await vstore.count_tenants(["dev"]) == before
+
+
+@pytest.mark.asyncio
+async def test_run_shard_allow_admits_and_stamps_duplicate_of(tmp_path: Path) -> None:
+    pipe, _ = _pipeline()
+    first = await run_shard(pipe, _paper_shard(
+        tmp_path, "a.jsonl", "/stage/sub_1/sha-a.md", f"DOI: {_DUP_DOI}"), "dev", "a")
+    second = await run_shard(pipe, _paper_shard(
+        tmp_path, "b.jsonl", "/stage/sub_2/sha-b.md", f"DOI: {_DUP_DOI}"), "dev", "b",
+        duplicate_policy="allow")
+    assert second.status == COMPLETED and second.n_docs_failed == 0 and second.n_chunks
+    stamped = [c for c in pipe.text_index._chunks if c.doc_id == second.docs[0].doc_id]
+    assert stamped and {c.metadata["duplicate_of"] for c in stamped} == {first.docs[0].doc_id}
+
+
+@pytest.mark.asyncio
+async def test_run_shard_default_off_is_unchanged(tmp_path: Path) -> None:
+    """D10: the hand-run default is off — a second copy is ingested, no lookup,
+    no stamp, exactly as before #747."""
+    pipe, _ = _pipeline()
+    await run_shard(pipe, _paper_shard(
+        tmp_path, "a.jsonl", "/stage/sub_1/sha-a.md", f"DOI: {_DUP_DOI}"), "dev", "a")
+    second = await run_shard(pipe, _paper_shard(
+        tmp_path, "b.jsonl", "/stage/sub_2/sha-b.md", f"DOI: {_DUP_DOI}"), "dev", "b")
+    assert second.n_docs_failed == 0 and second.n_chunks
+    assert all("duplicate_of" not in c.metadata for c in pipe.text_index._chunks)
+
+
+def test_duplicate_policy_flag_defaults_off_and_validates() -> None:
+    base = ["s.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1"]
+    assert ingest_shard.parse_args(base).duplicate_policy == "off"
+    assert ingest_shard.parse_args([*base, "--duplicate-policy", "refuse"]).duplicate_policy \
+        == "refuse"
+    with pytest.raises(SystemExit):
+        ingest_shard.parse_args([*base, "--duplicate-policy", "maybe"])

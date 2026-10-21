@@ -19,6 +19,10 @@ func HandleIngest(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, r, "field 'source' is required")
 		return
 	}
+	if req.DuplicatePolicy != nil && !duplicatePolicies[*req.DuplicatePolicy] {
+		writeValidationError(w, r, "field 'duplicate_policy' must be one of 'refuse', 'allow' or null")
+		return
+	}
 
 	resp := IngestResponse{
 		JobID:    uuid.New().String(),

@@ -715,6 +715,113 @@ class ElasticsearchTextIndex:
         )
         return docs, next_cursor
 
+    async def find_documents_by_key(
+        self, keys: list[tuple[str, str]], tenants: list[str], *, limit: int = 20
+    ) -> dict[tuple[str, str], list[DocumentSummary]]:
+        """The duplicate guard's lookup (#747): ONE request per call — a
+        tenant-filtered ``bool.should`` over the keyword fields
+        ``metadata.doi``/``pmcid``/``pmid`` (inverted-index term lookups,
+        O(matching chunks)), a ``terms`` agg on ``doc_id`` and one exemplar
+        chunk per document — the ``list_documents`` shape. The exemplar's
+        metadata is matched client-side on NORMALISED keys
+        (``work_identity.match_summaries``).
+
+        Each DOI is also looked up as a case-insensitive PREFIX
+        ``<doi>/-``: the malformed ``…/-/`` form that existing indexes carry
+        from before ``normalize_doi`` cut it (#747 D8). ``pmcid`` is a
+        case-insensitive ``term`` too (a loader may have stored ``pmc123``).
+        ``pmid`` is sent as a string ``terms`` — on the one collection where it
+        is mapped ``long`` (#594) Elasticsearch coerces it, and
+        ``case_insensitive`` would be refused on a numeric field. Fails closed
+        (``{}``) on an empty ``tenants`` list.
+
+        A ``text``-mapped ``metadata.doi``/``pmcid`` does not raise — the term
+        queries simply match nothing — so the first call per index checks the
+        mapping and logs a one-time WARNING (best-effort; never fails the call)."""
+        from ragstack.ingestion.work_identity import match_summaries
+
+        if not tenants or not keys:
+            return {}
+        should: list[dict[str, Any]] = []
+        for kind, value in keys:
+            if kind == "doi":
+                should.append({"term": {"metadata.doi": {
+                    "value": value, "case_insensitive": True}}})
+                should.append({"prefix": {"metadata.doi": {
+                    "value": f"{value}/-", "case_insensitive": True}}})
+            elif kind == "pmcid":
+                should.append({"term": {"metadata.pmcid": {
+                    "value": value, "case_insensitive": True}}})
+        pmids = [v for k, v in keys if k == "pmid"]
+        if pmids:
+            should.append({"terms": {"metadata.pmid": pmids}})
+        if not should:
+            return {}
+        await self._warn_if_id_fields_not_keyword()
+        with self._guard("find_documents_by_key"):
+            resp = await self._es.search(
+                index=self._index,
+                size=0,
+                track_total_hits=False,
+                query={"bool": {
+                    "filter": [{"terms": {"metadata.tenant_id": list(tenants)}}],
+                    "should": should,
+                    "minimum_should_match": 1,
+                }},
+                aggs={
+                    "docs": {
+                        "terms": {"field": "doc_id", "size": limit},
+                        "aggs": {
+                            "exemplar": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "_source": {"includes": ["doc_id", "metadata"]},
+                                }
+                            }
+                        },
+                    }
+                },
+            )
+        buckets = resp.get("aggregations", {}).get("docs", {}).get("buckets", [])
+        summaries = []
+        for b in buckets:
+            hits = b.get("exemplar", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            summaries.append(
+                document_from_chunk_metadata(
+                    str(b["key"]), int(b["doc_count"]),
+                    dict(hits[0]["_source"].get("metadata") or {}),
+                )
+            )
+        return match_summaries(keys, summaries)
+
+    async def _warn_if_id_fields_not_keyword(self) -> None:
+        """One-time, best-effort: say so when ``metadata.doi``/``pmcid`` is not
+        a ``keyword`` here — the duplicate guard's term queries would then match
+        nothing and let every duplicate through without an error (#747)."""
+        if getattr(self, "_id_mapping_checked", False):
+            return
+        self._id_mapping_checked = True
+        try:
+            resp = await self._es.indices.get_field_mapping(
+                index=self._index, fields=["metadata.doi", "metadata.pmcid"]
+            )
+            body = getattr(resp, "body", resp)
+            for idx, entry in dict(body).items():
+                for name, fm in (entry.get("mappings") or {}).items():
+                    leaf = name.rsplit(".", 1)[-1]
+                    ftype = ((fm.get("mapping") or {}).get(leaf) or {}).get("type")
+                    if ftype and ftype != "keyword":
+                        log.warning(
+                            "duplicate guard: %s on index %r is mapped %r, not keyword — "
+                            "the work-identity lookup cannot match it, so duplicates "
+                            "pass silently (reindex; see metadata_conformance)",
+                            name, idx, ftype,
+                        )
+        except Exception as e:  # noqa: BLE001 — diagnostic only
+            log.debug("duplicate guard: mapping check skipped on %r: %s", self._index, e)
+
     async def healthcheck(self) -> None:
         """Read-only liveness probe: cluster info, no mutation. Unlike
         ``ensure_index`` (which *creates* the index), this only confirms the

@@ -1,10 +1,12 @@
 """FAISS sidecar service for legacy vector index search."""
 
 import os
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -26,9 +28,7 @@ def _load_index(name: str):
         raise HTTPException(
             status_code=503,
             detail="faiss is not installed. Install faiss-cpu to use this service.",
-        )
-
-    import numpy as np
+        ) from None
 
     index_path = Path(DATA_DIR) / f"{name}.faiss"
     if not index_path.exists():
@@ -52,7 +52,7 @@ def _list_available_indices() -> list[str]:
 
 class SearchRequest(BaseModel):
     query_vector: list[float]
-    top_k: Optional[int] = 5
+    top_k: int | None = 5
     index: str
 
 
@@ -65,11 +65,6 @@ class SearchResponse(BaseModel):
     results: list[SearchResult]
 
 
-class HealthResponse(BaseModel):
-    status: str
-    indices: list[str]
-
-
 class IndicesResponse(BaseModel):
     indices: list[str]
 
@@ -79,7 +74,7 @@ async def search(request: SearchRequest):
     try:
         import numpy as np
     except ImportError:
-        raise HTTPException(status_code=503, detail="numpy is not installed.")
+        raise HTTPException(status_code=503, detail="numpy is not installed.") from None
 
     index = _load_index(request.index)
     query = np.array([request.query_vector], dtype=np.float32)
@@ -99,9 +94,42 @@ async def search(request: SearchRequest):
     return SearchResponse(results=results)
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    return HealthResponse(status="ok", indices=list(_indices.keys()))
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+@app.get("/live")
+async def live():
+    """Liveness: the process serves HTTP."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness (#751 PR-1, minimal): faiss imports and DATA_DIR can be listed.
+
+    There is no model to exercise here; loading an index is a request's job and
+    can be large, so the probe never provisions anything.
+    """
+    start = time.perf_counter()
+    try:
+        import faiss  # noqa: F401
+
+        available = _list_available_indices()
+    except Exception as exc:  # report the class, never a traceback
+        text = str(exc).strip()
+        return JSONResponse(status_code=503, content={
+            "status": "fail", "error": type(exc).__name__,
+            "detail": (text.splitlines()[0] if text else "")[:300],
+            "checked_at": _now_iso(),
+        })
+    return {"status": "ok", "indices": list(_indices.keys()), "available": len(available),
+            "probe_ms": round((time.perf_counter() - start) * 1000, 1),
+            "checked_at": _now_iso()}
+
+
+# /health is an alias of /ready (#751) so existing pollers get the stricter answer.
+app.add_api_route("/health", ready, methods=["GET"])
 
 
 @app.get("/indices", response_model=IndicesResponse)

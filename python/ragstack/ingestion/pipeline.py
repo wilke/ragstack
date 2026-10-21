@@ -10,6 +10,13 @@ from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
+from ragstack.ingestion.work_identity import (
+    POLICY_OFF,
+    DuplicateCheck,
+    DuplicateWork,
+    WorkIdentityStage,
+    refusal_of,
+)
 from ragstack.metadata_schema import validate_chunks
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
@@ -21,7 +28,7 @@ from ragstack.protocols import (
     TextIndex,
     VectorStore,
 )
-from ragstack.tenancy import DEFAULT_TENANT
+from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +84,7 @@ class IngestionPipeline:
         boilerplate_filter: BoilerplateFilter | None = None,
         delete_prior: bool = True,
         glossary_attacher: SymbolGlossaryAttacher | None = None,
+        work_identity: WorkIdentityStage | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -125,8 +133,21 @@ class IngestionPipeline:
         # and #303 produced exactly that divergence in this repository. The caller
         # asserts id-stability; the pipeline does not guess it.
         self._delete_prior = delete_prior
+        # The duplicate-paper guard (#747). Runs only when a caller passes a
+        # ``duplicate_policy`` other than "off" (the default on every method), so
+        # an unguarded caller is byte-for-byte what it was. The lookup goes to
+        # THIS pipeline's text index — the collection the write lands in.
+        self.work_identity = work_identity or WorkIdentityStage(
+            text_index, profile=getattr(doi_enricher, "profile", None)
+        )
 
-    async def ingest(self, source: str, tenant_id: str = DEFAULT_TENANT) -> list[str]:
+    async def ingest(
+        self,
+        source: str,
+        tenant_id: str = DEFAULT_TENANT,
+        *,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
+    ) -> list[str]:
         """Ingest a source and return the list of chunk IDs created.
 
         Every chunk is stamped with ``tenant_id`` (the owning tenant, derived
@@ -142,11 +163,18 @@ class IngestionPipeline:
         without forking this logic.
         """
         return await self.index_chunks(
-            await self.embed_source(source, tenant_id=tenant_id), tenant_id=tenant_id
+            await self.embed_source(
+                source, tenant_id=tenant_id, duplicate_policy=duplicate_policy
+            ),
+            tenant_id=tenant_id,
         )
 
     async def embed_source(
-        self, source: str, tenant_id: str = DEFAULT_TENANT
+        self,
+        source: str,
+        tenant_id: str = DEFAULT_TENANT,
+        *,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> list[Chunk]:
         """Load, chunk, and embed ``source``; return the surviving embedded chunks.
 
@@ -165,29 +193,78 @@ class IngestionPipeline:
         loaded or chunked twice. :meth:`embed_documents` is the same pair of
         primitives for a caller that owns the document list.
         """
-        return await self.embed_prepared(await self.prepare_source(source), tenant_id)
+        prepared = await self.prepare_source(
+            source, tenant_id=tenant_id, duplicate_policy=duplicate_policy
+        )
+        return await self.embed_prepared(prepared, tenant_id)
 
-    async def prepare_source(self, source: str) -> PreparedSource:
+    async def prepare_source(
+        self,
+        source: str,
+        *,
+        tenant_id: str = DEFAULT_TENANT,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
+    ) -> PreparedSource:
         """Load ``source`` and run :meth:`prepare_documents` — the text-only,
         store-free, GPU-free first step of :meth:`embed_source`. Loader errors
-        propagate exactly as they did from ``embed_source``."""
+        propagate exactly as they did from ``embed_source``.
+
+        Raises :class:`~ragstack.ingestion.work_identity.DuplicateWork` when the
+        duplicate guard refused EVERY loaded document (#747): one source is one
+        job item, and that item fails with the refusal as its error — before
+        any embed or store write. A partially refused multi-document source
+        goes on with the survivors; the refused ones are logged."""
         documents: list[Document] = self.loader.load(source)
-        chunks, produced = await self.prepare_documents(documents, source=source)
+        chunks, produced = await self.prepare_documents(
+            documents, source=source, tenant_id=tenant_id,
+            duplicate_policy=duplicate_policy,
+        )
+        refused = [d for d in documents if refusal_of(d)]
+        if refused and len(refused) == len(documents):
+            raise DuplicateWork(refusal_of(refused[0]))
         return PreparedSource(
-            source=source, doc_ids=[d.id for d in documents], chunks=chunks, produced=produced,
+            source=source, doc_ids=[d.id for d in documents if not refusal_of(d)],
+            chunks=chunks, produced=produced,
         )
 
     async def prepare_documents(
-        self, documents: list[Document], source: str = ""
+        self,
+        documents: list[Document],
+        source: str = "",
+        *,
+        tenant_id: str = DEFAULT_TENANT,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> tuple[list[Chunk], int]:
         """Enrich, chunk and boilerplate-filter already-loaded ``documents``;
         return ``(chunks, produced)`` — the text-only chunks and how many were
         produced before the boilerplate filter. Touches only the chunker (and
         the optional DOI enricher): no embedder, no store. ``source`` labels
-        log lines."""
+        log lines.
+
+        ``duplicate_policy`` (#747): a policy name (``work_identity.POLICIES``)
+        or a ``work_identity.DuplicateCheck`` carrying the lookup scope and the
+        job's shared ``seen`` keys. Anything but ``"off"`` runs the
+        duplicate-paper guard: ids filled from the header and a ``PMC…`` file
+        name before enrichment, then ONE text-index lookup scoped to the
+        check's ``tenants`` (default ``readable_tenants(tenant_id)``) after it,
+        BEFORE the chunk loop. A refused document produces no chunks and is
+        marked (``work_identity.refusal_of``); an admitted duplicate's chunks
+        carry ``duplicate_of``. ``documents`` itself is never shortened."""
+        check = DuplicateCheck.coerce(duplicate_policy)
+        guarded = check.policy != POLICY_OFF
+        if guarded:
+            self.work_identity.fill_ids(documents)
         await self._apply_doi_enrichment(documents)
+        to_chunk = documents
+        if guarded:
+            to_chunk = await self.work_identity.admit(
+                documents,
+                tenants=check.tenants if check.tenants is not None
+                else readable_tenants(tenant_id),
+                policy=check.policy, source=source, seen=check.seen,
+            )
         all_chunks: list[Chunk] = []
-        for doc in documents:
+        for doc in to_chunk:
             # Run chunking in a worker thread: chunkers are synchronous, and the
             # SemanticChunker blocks on a (bridged) embed round-trip, which would
             # otherwise stall the event loop. to_thread keeps the loop responsive.
@@ -262,6 +339,8 @@ class IngestionPipeline:
         documents: list[Document],
         tenant_id: str = DEFAULT_TENANT,
         source: str = "",
+        *,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> tuple[list[Chunk], int, int]:
         """Enrich, chunk, and embed already-loaded ``documents``; return
         ``(kept, produced, quarantined)`` — the surviving embedded chunks, how
@@ -278,9 +357,14 @@ class IngestionPipeline:
         for the single-source path, where it protects prior data). Touches
         only the chunker and embedder — never a store. ``source`` only labels
         log lines. The same two primitives as ``embed_source``:
-        :meth:`prepare_documents` then the embed step.
+        :meth:`prepare_documents` then the embed step. A document the duplicate
+        guard refused (``duplicate_policy``, #747) simply has no chunks in
+        ``kept``; ``work_identity.refusal_of(doc)`` names why.
         """
-        chunks, produced = await self.prepare_documents(documents, source=source)
+        chunks, produced = await self.prepare_documents(
+            documents, source=source, tenant_id=tenant_id,
+            duplicate_policy=duplicate_policy,
+        )
         kept, quarantined = await self._embed_chunks(chunks, tenant_id, source)
         return kept, produced, quarantined
 

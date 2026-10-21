@@ -189,6 +189,16 @@ def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> N
     assert tool_in["inputBinding"]["prefix"] == "--max-chunks"
 
 
+def test_duplicate_policy_is_not_declared_until_the_tools_image_repin(wf: dict) -> None:
+    """#747 / ADR-0010: the pinned tools image's ingest_shard predates
+    ``--duplicate-policy``, and the CWL is what declares which image a workflow
+    runs. So the input is NOT declared today, and ``_gowe_inputs`` sends it
+    only when the registered workflow declares it. The repin PR that ships the
+    new image adds the input (nullable, no default) and flips this test."""
+    assert "duplicate_policy" not in wf["inputs"]
+    assert "duplicate_policy" not in _steps(wf)["ingest"]["run"]["inputs"]
+
+
 # --- the store-target sweep: every CWL in the repo, not just this one -------- #
 #
 # #407: `qdrant_url`/`es_url` defaulted to `http://localhost:6333`/`:9200` and

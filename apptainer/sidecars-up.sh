@@ -9,6 +9,12 @@
 # from apptainer/data/<svc>/cache/ so first-call downloads persist.
 #
 # Currently wraps: embedding (port 50053) + crossencoder reranker (port 50052).
+#
+# After starting, waits until each sidecar's GET /ready answers 200 — /ready runs
+# one real inference on the configured device (#751), so "up" means "the model
+# works", not "the port is open". SIDECARS_READY_TIMEOUT (seconds, default 300;
+# 0 skips the wait) bounds it; on timeout the last /ready body is printed and the
+# script exits 1.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +30,7 @@ CROSSENCODER_MODEL="${CROSSENCODER_MODEL:-BAAI/bge-reranker-v2-m3}"
 # and note this model is slow on CPU). CROSSENCODER_GPU pins which card.
 CROSSENCODER_DEVICE="${CROSSENCODER_DEVICE:-cuda}"
 CROSSENCODER_GPU="${CROSSENCODER_GPU:-0}"
+SIDECARS_READY_TIMEOUT="${SIDECARS_READY_TIMEOUT:-300}"
 
 mkdir -p "$DATA"/embedding/{deps,cache}
 mkdir -p "$DATA"/crossencoder/{deps,cache}
@@ -113,8 +120,42 @@ start_crossencoder() {
         /bin/sh -c 'cd /app && exec /usr/local/bin/python -m uvicorn main:app --host 0.0.0.0 --port 50052'
 }
 
+# wait_ready NAME URL SECONDS — poll URL until it answers 200. 503 (probe failed,
+# model loading) and connection refused both mean "keep waiting"; at the deadline
+# print the last status + body (the 503 names the exception class) and fail.
+wait_ready() {
+    local name="$1" url="$2" secs="$3" waited=0 code body tmp
+    tmp="$(mktemp)"
+    while :; do
+        # -m 15: the sidecar's own probe is bounded at 5 s; leave headroom.
+        code="$(curl -s -m 15 -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null || true)"
+        if [[ "$code" == 200 ]]; then
+            echo "[$name] ready ($url)"
+            rm -f "$tmp"
+            return 0
+        fi
+        if (( waited >= secs )); then
+            body="$(head -c 500 "$tmp" 2>/dev/null || true)"
+            rm -f "$tmp"
+            echo "[$name] ERROR: not ready after ${secs}s ($url)" >&2
+            echo "[$name]   last answer: HTTP ${code:-000} ${body:-<no body>}" >&2
+            return 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+}
+
 start_embedding
 start_crossencoder
 
 echo
 apptainer instance list
+
+if (( SIDECARS_READY_TIMEOUT > 0 )); then
+    echo
+    ready_fail=0
+    wait_ready embedding http://127.0.0.1:50053/ready "$SIDECARS_READY_TIMEOUT" || ready_fail=1
+    wait_ready crossencoder http://127.0.0.1:50052/ready "$SIDECARS_READY_TIMEOUT" || ready_fail=1
+    exit "$ready_fail"
+fi

@@ -87,6 +87,21 @@ paths:
             restored automatically. The body names the reason; after repairing
             the archive the owner retries with
             POST /v1/collections/{collection_id}/restore.
+
+            Also (#747): the duplicate-paper guard refused the request before
+            any job existed — a file NAME carries a work id (a `PMC<digits>`
+            token, or a DOI by the publisher-profile filename rule) that a
+            document already indexed in the target collection carries too
+            (scope: the caller's own documents plus public ones). Only under
+            `duplicate_policy: refuse`, the default. Best-effort: names without
+            an id pass, and the authoritative check runs in the job after the
+            document's DOI/PMCID/PMID are known — there a refusal is a FAILED
+            job item whose error is `duplicate_work: key=<kind>:<value>
+            existing_doc_id=<id> (…)`, not a 409. This 409's `detail` is an
+            OBJECT (the `owner_quota_exceeded` precedent): `{error:
+            "duplicate_work", key: "<kind>:<value>", existing_doc_id,
+            collection, message}`. Resubmit with `duplicate_policy: allow` to
+            keep a second copy.
         "503":
           description: >-
             FOUR distinct causes answer with this status; the body's `reason`
@@ -187,6 +202,21 @@ paths:
             restored automatically. The body names the reason; after repairing
             the archive the owner retries with
             POST /v1/collections/{collection_id}/restore.
+
+            Also (#747): the duplicate-paper guard refused the request before
+            any job existed — a file NAME carries a work id (a `PMC<digits>`
+            token, or a DOI by the publisher-profile filename rule) that a
+            document already indexed in the target collection carries too
+            (scope: the caller's own documents plus public ones). Only under
+            `duplicate_policy: refuse`, the default. Best-effort: names without
+            an id pass, and the authoritative check runs in the job after the
+            document's DOI/PMCID/PMID are known — there a refusal is a FAILED
+            job item whose error is `duplicate_work: key=<kind>:<value>
+            existing_doc_id=<id> (…)`, not a 409. This 409's `detail` is an
+            OBJECT (the `owner_quota_exceeded` precedent): `{error:
+            "duplicate_work", key: "<kind>:<value>", existing_doc_id,
+            collection, message}`. Resubmit with `duplicate_policy: allow` to
+            keep a second copy.
         "503":
           description: >-
             FOUR distinct causes answer with this status; the body's `reason`
@@ -440,6 +470,13 @@ paths:
                     Optional target collection id (same semantics as
                     IngestRequest.collection); omit to target the caller's
                     writable default (see the endpoint description).
+                duplicate_policy:
+                  type: string
+                  enum: [refuse, allow]
+                  description: >
+                    Optional duplicate-paper guard for this upload (same
+                    semantics as IngestRequest.duplicate_policy, #747); omit
+                    for the deployment default (`refuse`). Any other value is 422.
       responses:
         "202":
           description: >-
@@ -5321,6 +5358,21 @@ components:
             default collection. Documents are indexed with the target collection's
             bound embedder/chunker; an unknown id returns 404.
           type: [string, "null"]
+        duplicate_policy:
+          description: >-
+            The duplicate-paper guard for this request (#747). A document whose
+            DOI, PMCID or PMID is already carried by a document indexed in the
+            target collection (the caller's own or public) is the same WORK —
+            a second rendering, a re-upload, a supplement carrying the
+            article's DOI. `refuse` leaves it out: a 409 at admission when the
+            file name carries the id, otherwise the job item fails with
+            `duplicate_work: key=<kind>:<value> existing_doc_id=<id> (…)`.
+            `allow` ingests it and stamps `duplicate_of` (the existing doc_id)
+            on its chunks. Omitted or null → the deployment default
+            (DUPLICATE_POLICY, `refuse`). A re-ingest of the same source path
+            is a replace, never a duplicate. Any other value is 422.
+          type: [string, "null"]
+          enum: [refuse, allow, null]
 
     IngestResponse:
       type: object

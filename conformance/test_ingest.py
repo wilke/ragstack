@@ -30,3 +30,29 @@ async def test_ingest_status_returns_response(client: httpx.AsyncClient) -> None
     body = resp.json()
     assert "job_id" in body
     assert "status" in body
+
+
+async def test_ingest_rejects_an_unknown_duplicate_policy(client: httpx.AsyncClient) -> None:
+    """#747: `duplicate_policy` is an enum (refuse | allow | null); any other
+    value is a 422 on both implementations — before INGEST_ROOT is consulted,
+    since it is a body validation error."""
+    resp = await client.post(
+        "/v1/ingest", json={"source": "/tmp/test.txt", "duplicate_policy": "bogus"}
+    )
+    if resp.status_code == 503:
+        pytest.skip("target server has no INGEST_ROOT; /v1/ingest disabled (503)")
+    assert resp.status_code == 422, resp.text
+
+
+async def test_ingest_accepts_duplicate_policy_allow(client: httpx.AsyncClient) -> None:
+    """#747: `duplicate_policy: "allow"` is part of IngestRequest — the same
+    accepted-job contract as a request without it."""
+    resp = await client.post(
+        "/v1/ingest", json={"source": "/tmp/test.txt", "duplicate_policy": "allow"}
+    )
+    if resp.status_code == 503:
+        pytest.skip("target server has no INGEST_ROOT; /v1/ingest disabled (503)")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "accepted"
+    assert "job_id" in body

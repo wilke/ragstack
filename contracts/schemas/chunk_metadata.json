@@ -172,6 +172,11 @@
       "description": "Hex digest of the source artifact.",
       "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
     },
+    "duplicate_of": {
+      "type": ["string", "null"],
+      "description": "The doc_id of an already-indexed copy of the same work (same DOI, PMCID or PMID — #747). Stamped only on a document admitted with duplicate_policy=allow; absent means the guard found no earlier copy, or did not run. The work-level dedup handle for retrieval (#754).",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
     "licence": {
       "type": ["string", "null"],
       "description": "Licence statement as it appears in the source. Frequently a full paragraph, which is what `ignore_above` on the derived mapping is for.",
