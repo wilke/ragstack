@@ -20,11 +20,13 @@ Each glossary arm is queried at ``--boosts``; every arm is also reported with a
 per-document cap (``retrieval_max_per_doc``, stable demotion, applied last as
 the retriever does).
 
-Legs: ``bm25`` (top 200); ``hybrid`` = RRF(k=60) of BM25 top 200 and the dense
-top 200 from the BASE vectors (the glossary is never embedded, so the vectors
-do not change); ``rerank`` = the hybrid top 50 rescored by the live
-cross-encoder sidecar (stateless, read-only use, at most 4 requests in flight)
-on chunk CONTENT, as /v1/retrieve does, then the cap, then top 10.
+Legs, matching /v1/retrieve as deployed: per-leg depth ``--leg-depth`` (100 =
+top_k 50 x retrieval_candidate_multiplier 2). ``bm25``; ``hybrid`` = RRF(k=60) of
+the BM25 and dense lists, the dense list from the BASE vectors (the glossary is
+never embedded, so the vectors do not change); ``rerank`` = the hybrid list,
+capped (``shape()`` inside ``retrieve()``), cut to 50, rescored by the live
+cross-encoder sidecar on chunk CONTENT (stateless, read-only use, at most 4
+requests in flight), capped again (the router's second ``shape()``), top 10.
 
 The report holds pair ids, ranks and counts only.
 """
@@ -159,6 +161,10 @@ async def main_async(args: argparse.Namespace) -> int:
     names = {a: gx._check_scratch(f"{prefix}r{a}_{date}", prefix) for a in es_arms}
     qname = gx._check_scratch(f"{prefix}rbase_{date}", prefix)
 
+    # Per-leg depth as deployed: top_k (the rerank pool, 50) ×
+    # retrieval_candidate_multiplier (2) = 100 per leg before RRF.
+    gx.DEPTH = args.leg_depth
+    report_depth = args.leg_depth
     rows = [json.loads(line) for line in Path(args.dump).read_text(encoding="utf-8").splitlines() if line.strip()]
     tenants = sorted({str((r.get("metadata") or {}).get("tenant_id", "")) for r in rows} - {""})
     content = {str(r["chunk_id"]): str(r["content"]) for r in rows}
@@ -176,19 +182,22 @@ async def main_async(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {"stats": {**counts, "records": len(specs),
                                         "records_B": sum(s["kind"] == "B" for s in specs)},
                               "bm25": {}, "hybrid": {}, "rerank": {}}
+    report["stats"]["leg_depth"] = report_depth
     try:
         for a, st in stores.items():
             await st.drop_index()
-            if a == "valnn":
-                mapping = copy.deepcopy(_MAPPINGS)
-                mapping["properties"]["symbol_glossary"] = {"type": "text", "norms": False}
-                await es.indices.create(index=names[a], mappings=mapping)
-            else:
-                await st.ensure_index()
+            # Each arm's glossary mapping is EXPLICIT: the store's own mapping
+            # is now norms:false, so "norms on" must be stated, not inherited.
+            mapping = copy.deepcopy(_MAPPINGS)
+            mapping["properties"]["symbol_glossary"] = (
+                {"type": "text", "norms": False} if a == "valnn" else {"type": "text", "norms": True}
+            )
+            await es.indices.create(index=names[a], mappings=mapping)
             await st.index(arms[a])
             await st.refresh()
-        report["stats"]["valnn_mapping"] = (await es.indices.get_mapping(index=names["valnn"]))[
-            names["valnn"]]["mappings"]["properties"]["symbol_glossary"]
+        for a in ("mention", "val", "valnn"):
+            report["stats"][f"{a}_mapping"] = (await es.indices.get_mapping(index=names[a]))[
+                names[a]]["mappings"]["properties"]["symbol_glossary"]
 
         # Dense: base vectors only (the glossary is never embedded).
         urls = [u for u in args.embed_urls.split(",") if u]
@@ -213,11 +222,17 @@ async def main_async(args: argparse.Namespace) -> int:
         for arm, boost in configs:
             bm = await gx.bm25_lists(es, names[arm], specs, tenants, boost, "most_fields")
             hy = [gx.rrf(a, b) for a, b in zip(bm, dense, strict=True)]
-            rr = await rerank_all(args.rerank_url, specs, hy, content, memo)
             for cap in (0, args.cap):
                 label = f"{arm}" + (f"@{boost:g}" if arm != "base" else "") + (f" cap{cap}" if cap else "")
-                for leg, lists in (("bm25", bm), ("hybrid", hy), ("rerank", rr)):
-                    res = gx.to_results(specs, [cap_per_doc(lst, cap) for lst in lists])
+                # As deployed: retriever.retrieve() applies shape() (the cap)
+                # to the fused list BEFORE the cut to the rerank pool, and the
+                # query router applies it again AFTER the rerank.
+                bm_c = [cap_per_doc(lst, cap) for lst in bm]
+                hy_c = [cap_per_doc(lst, cap) for lst in hy]
+                rr = await rerank_all(args.rerank_url, specs, hy_c, content, memo)
+                rr_c = [cap_per_doc(lst, cap) for lst in rr]
+                for leg, lists in (("bm25", bm_c), ("hybrid", hy_c), ("rerank", rr_c)):
+                    res = gx.to_results(specs, lists)
                     if label == "base":
                         refs[leg] = res
                     report[leg][label] = row(specs, refs[leg], res, gl.get(arm))
@@ -255,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scratch-prefix", default=gx.REQUIRED_PREFIX)
     p.add_argument("--boosts", default="0.5,1,2", type=lambda s: [float(x) for x in s.split(",") if x])
     p.add_argument("--cap", type=int, default=2, help="retrieval_max_per_doc for the capped rows")
+    p.add_argument("--leg-depth", type=int, default=100,
+                   help="per-leg fetch before RRF (live: top_k 50 x candidate_multiplier 2)")
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     gx._check_scratch(args.scratch_prefix, args.scratch_prefix)
