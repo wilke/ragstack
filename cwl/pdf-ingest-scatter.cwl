@@ -265,6 +265,9 @@ inputs:
     type: ["null", string]
     doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when
       the receipt is absent or names another image."
+  duplicate_policy:
+    type: ["null", string]
+    doc: "The duplicate-paper guard policy passed to ingest_shard --duplicate-policy (off|refuse|allow); null = the tool's default (off)."
   max_chunks:
     type: int
     default: 0
@@ -346,8 +349,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.5-b1.sif
-          dockerImageId: ragstack-tools-v1.6.5-b1.sif
+          dockerPull: ragstack-tools-v1.6.8-b1.sif
+          dockerImageId: ragstack-tools-v1.6.8-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -402,13 +405,14 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      duplicate_policy: duplicate_policy
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.5-b1.sif
-          dockerImageId: ragstack-tools-v1.6.5-b1.sif
+          dockerPull: ragstack-tools-v1.6.8-b1.sif
+          dockerImageId: ragstack-tools-v1.6.8-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -484,6 +488,9 @@ steps:
         tool_image_digest:
           type: ["null", string]
           inputBinding: {prefix: --tool-image-digest, position: 26}
+        duplicate_policy:
+          type: ["null", string]
+          inputBinding: {prefix: --duplicate-policy, position: 27}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
@@ -523,8 +530,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.5-b1.sif
-          dockerImageId: ragstack-tools-v1.6.5-b1.sif
+          dockerPull: ragstack-tools-v1.6.8-b1.sif
+          dockerImageId: ragstack-tools-v1.6.8-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       inputs:
         version: {type: string, inputBinding: {prefix: --version, position: 1}}

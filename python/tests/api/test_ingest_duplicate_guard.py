@@ -224,8 +224,8 @@ async def test_gowe_worker_input_only_when_the_workflow_declares_it(
 ) -> None:
     """Review fix 4 / ADR-0010: the CWL declares which image runs, so the API
     sends ``duplicate_policy`` only when the REGISTERED workflow declares that
-    input (the ``provenance_inputs`` precedent). The pinned scatter CWL does not
-    (its image's ingest_shard predates the flag); the repin PR adds it."""
+    input (the ``provenance_inputs`` precedent). The fixture registers a bare
+    CWL that does not declare it; then one that does."""
     from ragstack.config import settings
 
     backend = gowe["backend"]
@@ -253,17 +253,32 @@ async def test_gowe_worker_input_only_when_the_workflow_declares_it(
     assert "duplicate_policy" not in gowe["engine"].submissions[-1]["inputs"]
 
 
-async def test_the_repo_scatter_cwl_does_not_declare_the_input_yet() -> None:
-    """What the API registers today: no ``duplicate_policy`` input, so nothing
-    is sent until the tools-image repin adds it."""
+async def test_the_repo_scatter_cwl_declares_the_input_so_it_is_sent(
+    client, gowe, monkeypatch  # noqa: F811
+) -> None:
+    """#759 (R1): the shipped ``cwl/pdf-ingest-scatter.cwl`` declares
+    ``duplicate_policy``, so once it is the registered text the API seeds the
+    input whenever the resolved policy is not ``off`` — and still omits it
+    when the deployment turns the guard off."""
     from pathlib import Path
 
+    from ragstack.config import settings
     from ragstack.tool_image import declared_workflow_inputs
 
     cwl = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
     if not cwl.is_file():
         pytest.skip("no cwl/ in this checkout")
-    assert "duplicate_policy" not in declared_workflow_inputs(cwl.read_text())
+    text = cwl.read_text()
+    assert "duplicate_policy" in declared_workflow_inputs(text)
+
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", text)
+    assert (await _upload(client, "a.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["duplicate_policy"] == "refuse"
+
+    await _poll(client, gowe["engine"].submissions[-1]["inputs"]["job_id"], AUTH)
+    monkeypatch.setattr(settings, "duplicate_policy", "off")
+    assert (await _upload(client, "b.pdf")).status_code == 202
+    assert "duplicate_policy" not in gowe["engine"].submissions[-1]["inputs"]
 
 
 # --------------------------------------------------------------------------- #
