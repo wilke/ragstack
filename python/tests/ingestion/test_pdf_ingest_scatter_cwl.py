@@ -189,14 +189,34 @@ def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> N
     assert tool_in["inputBinding"]["prefix"] == "--max-chunks"
 
 
-def test_duplicate_policy_is_not_declared_until_the_tools_image_repin(wf: dict) -> None:
-    """#747 / ADR-0010: the pinned tools image's ingest_shard predates
-    ``--duplicate-policy``, and the CWL is what declares which image a workflow
-    runs. So the input is NOT declared today, and ``_gowe_inputs`` sends it
-    only when the registered workflow declares it. The repin PR that ships the
-    new image adds the input (nullable, no default) and flips this test."""
-    assert "duplicate_policy" not in wf["inputs"]
-    assert "duplicate_policy" not in _steps(wf)["ingest"]["run"]["inputs"]
+def test_duplicate_policy_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> None:
+    """#747 / #759 (R1): the duplicate-paper guard's policy reaches the worker
+    as ONE nullable workflow input with NO default, bound to ``ingest_shard
+    --duplicate-policy``. No default on purpose: ``_gowe_inputs`` sends the
+    input only when the registered workflow DECLARES it and the policy is not
+    ``off``, so an omitted value stays null, the flag is left off the argv and
+    the tool runs its own default (``off``). ADR-0010: declaring the input is
+    the declaration that the image this CWL names takes the flag — this lands
+    together with the tools-image repin on the same branch."""
+    from ragstack.ingestion.work_identity import POLICIES
+    from ragstack.tool_image import declared_workflow_inputs
+
+    inp = wf["inputs"]["duplicate_policy"]
+    assert inp["type"] == ["null", "string"] and "default" not in inp
+    # The doc names exactly the values the tool accepts.
+    for policy in POLICIES:
+        assert policy in inp["doc"], policy
+    ingest = _steps(wf)["ingest"]
+    assert ingest["in"]["duplicate_policy"] == "duplicate_policy"
+    tool_in = ingest["run"]["inputs"]["duplicate_policy"]
+    assert tool_in["type"] == ["null", "string"] and "default" not in tool_in
+    assert tool_in["inputBinding"]["prefix"] == "--duplicate-policy"
+    positions = [i["inputBinding"]["position"]
+                 for i in ingest["run"]["inputs"].values()
+                 if isinstance(i, dict) and "inputBinding" in i]
+    assert positions.count(tool_in["inputBinding"]["position"]) == 1
+    # What the API actually reads off the registered text.
+    assert "duplicate_policy" in declared_workflow_inputs(CWL_PATH.read_text())
 
 
 # --- the store-target sweep: every CWL in the repo, not just this one -------- #

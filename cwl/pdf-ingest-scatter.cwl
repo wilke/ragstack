@@ -265,6 +265,9 @@ inputs:
     type: ["null", string]
     doc: "Its sha256 from the committed cwl/tool-image.receipt.json; null when
       the receipt is absent or names another image."
+  duplicate_policy:
+    type: ["null", string]
+    doc: "The duplicate-paper guard policy passed to ingest_shard --duplicate-policy (off|refuse|allow); null = the tool's default (off)."
   max_chunks:
     type: int
     default: 0
@@ -402,6 +405,7 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      duplicate_policy: duplicate_policy
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -484,6 +488,9 @@ steps:
         tool_image_digest:
           type: ["null", string]
           inputBinding: {prefix: --tool-image-digest, position: 26}
+        duplicate_policy:
+          type: ["null", string]
+          inputBinding: {prefix: --duplicate-policy, position: 27}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
