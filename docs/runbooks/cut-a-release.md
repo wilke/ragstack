@@ -1,7 +1,16 @@
 # Cutting a release: tools image, store, stamp, server tag
 
-> **Status: never exercised end to end as of 2026-10-06. The first real
-> release will validate it.** This is a draft written from the code and
+> **Status: § 2 and § 3 exercised once, by the first real tools-image
+> build: tag `v1.6.8`, image `ragstack-tools-v1.6.8-b1.sif`, built and copied
+> to `/scout/containers/ragstack/` on 2026-10-21 (that image was then stamped
+> by #765 for the server tag `v1.6.9`). § 2 and § 3 worked as written, apart
+> from three fixes made afterwards: the `PYTHONPATH` reason in § 3, the dry
+> run's preview `build_date`, and the pre-install `verify` in § 2. Steps still
+> marked [never exercised] have not been re-checked against that run.**
+> The original draft note follows.
+>
+> First written (never exercised end to end, 2026-10-06) as a draft from the
+> code and
 > [ADR-0010](../adr/0010-tool-image-binding.md) on `main` at `cde401b` (#672),
 > updated against `cdcf737` (#678: `--store` build numbers, the Python ≥ 3.11
 > rule, and a stamped tree with `GOWE_IMAGE_DIRS` unset is a refusal).
@@ -129,7 +138,7 @@ just never gets a tools image. Write that down in the release notes.
 
 ---
 
-## 2. Build the tools image from the tag [dry run exercised; real build never exercised]
+## 2. Build the tools image from the tag [exercised: v1.6.8-b1, 2026-10-21]
 
 Build in a **clean, detached checkout of exactly `vT`**. The script derives the
 version from `HEAD` and refuses a dirty tree (exit 3). If no `v*` tag is
@@ -144,7 +153,8 @@ mkdir -p "$OUT"
 TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python \
     --out "$OUT" --store "$ST" --dry-run
 # read: version v1.6.5, build N, stores: /scout/containers/ragstack,
-#       image $OUT/ragstack-tools-v1.6.5-b<N>.sif; then drop --dry-run:
+#       image $OUT/ragstack-tools-v1.6.5-b<N>.sif; then drop --dry-run.
+#       Its build_date is only a preview: the real build stamps its own time.
 TMPDIR=/rag/tmp apptainer/build-tools-image.sh --sandbox --python /rag/envs/ragstack/bin/python \
     --out "$OUT" --store "$ST"
 ```
@@ -156,9 +166,9 @@ Flags, from `apptainer/build-tools-image.sh` (`--help` prints its header):
 | `--sandbox` | **Required on coconut.** `--fakeroot` does not work (no subuid/subgid; `MEMORY.md`), and without this flag the script runs `apptainer build --fakeroot`. The flag does the rootless two-step instead: `build --sandbox <tmp> <def>`, then `build <sif> <tmp>`. A sandbox two-step produced `ragstack-worker-v1.6.4-21-g6a7fe95.sif` on this host on 2026-10-04 (its labels show `deffile.from: /rag/tmp/…sbx`), but that was before the script existed. |
 | `--python /rag/envs/ragstack/bin/python` | **Required on coconut.** The interpreter rule (#678): `--python EXE`, else `$PYTHON` if set, else `python3` **only if it is ≥ 3.11**, else the script refuses with exit 2, naming `--python` and `PYTHON`. For `wilke`, `python3` is miniconda's 3.8.5, so without the flag the script stops with "no Python >= 3.11 found: `python3` is Python 3.8.5" [exercised]. `PYTHON=/rag/envs/ragstack/bin/python` in the environment works too. |
 | `--out DIR` | Where the image and receipt go. The default is `apptainer/images/` inside the worktree (gitignored). **Never point it at the shared store.** |
-| `--store DIR` | A dir where **released** builds of this version live. Read only. Repeatable or comma-separated. The build number counts builds across `--out` **and** every `--store` (below). A `--store` that is not a directory is a refusal (exit 2): today, before § 0, `--store /scout/containers/ragstack` stops with "--store /scout/containers/ragstack is not a directory" [exercised]. |
+| `--store DIR` | A dir where **released** builds of this version live. Read only. Repeatable or comma-separated. The build number counts builds across `--out` **and** every `--store` (below). A `--store` that is not a directory is a refusal (exit 2), with "--store DIR is not a directory" [exercised before § 0, when `/scout/containers/ragstack` did not exist yet; it has existed since 2026-10-08]. |
 | `TMPDIR=/rag/tmp` | The sandbox and the staged `python/` go under `$TMPDIR`. The 2026-10-04 sandbox build used `/rag/tmp`. |
-| `--dry-run` | Prints the version, build number, paths, the exact `apptainer` command(s) and the receipt with `sha256: null`. Builds nothing. [exercised] |
+| `--dry-run` | Prints the version, build number, paths, the exact `apptainer` command(s) and the receipt with `sha256: null`. Builds nothing. [exercised] The `build_date` it prints is a preview. The script reads the clock when it starts, so the real build stamps its own later time into the labels, `RELEASE` and the receipt. Check those against the receipt, not against the dry run. |
 
 **Build numbers count `--out` and every `--store`** (#678). `b<N>` is one more
 than the highest build of that version found in any of them (a receipt without
@@ -191,7 +201,17 @@ apptainer exec "$SIF" python -c "import ragstack, fitz, qdrant_client, elasticse
 apptainer exec "$SIF" python /opt/ragstack/scripts/load_graph.py --help >/dev/null
 apptainer exec "$SIF" python /opt/ragstack/scripts/ingest_shard.py --help | grep -- --workflow-id
 #   the provenance flags (#668) must be there; the first stamped release turns them on
+N=$(basename "$SIF")
+PYTHONPATH=python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --name "$N" --dirs "$OUT"
+#   Expect: "  dockerPull: <N> -> ok at $OUT/<N>" (two-space indent), then "ok", exit 0
 ```
+
+The last command is the same identity check § 3 runs against the store and the
+API runs at boot (`python/ragstack/tool_image.py`, `verify --name NAME --dirs
+DIR[,DIR…]`), pointed at the build directory instead. It reads the receipt
+beside the image, compares the streamed sha256 with it and compares
+`apptainer inspect --labels` with its version, commit and build. Run it from
+the release checkout: `PYTHONPATH=python` is required (see § 3).
 
 The import and `--help` checks are the post-build checks from
 [`cwl/README.md` § Post-build checks](../../cwl/README.md#post-build-checks).
@@ -218,7 +238,7 @@ The import and `--help` checks are the post-build checks from
 
 ---
 
-## 3. Copy image and receipt to the shared store [never exercised]
+## 3. Copy image and receipt to the shared store [exercised: v1.6.8-b1, 2026-10-21]
 
 Copy **both** files. Each one goes in under a temporary name and is then
 renamed (a rename within one ext4 filesystem is atomic), so a worker or a boot
@@ -237,7 +257,7 @@ install -m 0444 "$OUT/$N.receipt.json" "$ST/.$N.receipt.json.partial" && mv -n "
 ```bash
 cd ~/Development/worktrees/release-v1.6.5
 PYTHONPATH=python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --name "$N" --dirs "$ST"
-# Expect: "dockerPull: ragstack-tools-v1.6.5-b1.sif -> ok at /scout/containers/ragstack/…", "ok", exit 0
+# Expect: "  dockerPull: ragstack-tools-v1.6.5-b1.sif -> ok at /scout/containers/ragstack/…" (two-space indent), then "ok", exit 0
 sha256sum "$ST/$N"; grep sha256 "$ST/$N.receipt.json"           # the same digest, by eye
 CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "sha256sum $ST/$N"  # svcbvbrc can read it
 ```
@@ -245,11 +265,14 @@ CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "sha256sum $ST/$N"  # svcbvbrc can r
 `verify` checks that the file exists, the receipt beside it names it, the
 streamed sha256 equals the receipt's, and `apptainer inspect --labels` equals
 the receipt's version, commit and build (`ragstack.tool_image.verify_named_image`).
-Run it with `PYTHONPATH=<checkout>/python`, because the copy of `ragstack`
-installed in `/rag/envs/ragstack` lacks the newer modules [exercised:
-`python -m ragstack.version` → "No module named ragstack.version" without it].
-The `--name … --dirs /scout/containers/ragstack` form runs today and reports
-`not found in: /scout/containers/ragstack` [exercised].
+Run it with `PYTHONPATH=<checkout>/python`, because the shared env
+`/rag/envs/ragstack` has no `ragstack` installed at all (its editable install
+was removed on 2026-10-06), so `import ragstack` fails without it. An older
+note here said the installed copy "lacks the newer modules"; that is stale.
+For the first real release, `verify --name ragstack-tools-v1.6.8-b1.sif
+--dirs /scout/containers/ragstack` printed
+`  dockerPull: ragstack-tools-v1.6.8-b1.sif -> ok at /scout/containers/ragstack/ragstack-tools-v1.6.8-b1.sif`,
+then `ok`, and exited 0 [exercised].
 
 **If it fails partway:** an interrupted copy leaves a `.partial` file, which
 nothing resolves. Delete it and copy again. If you copied an image but not its
