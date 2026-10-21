@@ -299,3 +299,34 @@ func fakeStat(pid int, comm string, start uint64) string {
 	}
 	return fmt.Sprintln(strings.Join(fields, " "))
 }
+
+// #741's zombie, on a /proc fixture: the instance's starter is alive and its
+// only children are apptainer's own (appinit, squashfuse_ll) — the JVM that
+// held :24043 is gone. Nothing the instance owns listens, whether the port is
+// free or has since been taken by a process outside the instance; the same
+// instance with its JVM back is owned again.
+func TestRealProcInstanceOwnsPortIsFalseWhenOnlyAppinitIsLeft(t *testing.T) {
+	ctx := context.Background()
+	procRoot := t.TempDir()
+	writeStat(t, procRoot, 2537528, 1, "starter-suid")
+	writeStat(t, procRoot, 2537529, 2537528, "appinit")
+	writeStat(t, procRoot, 2537530, 2537528, "squashfuse_ll")
+	writeStat(t, procRoot, 4100, 1, "java") // another tenant's elasticsearch
+	listeners := []hostfacts.Listener{{Port: 24083, Addr: "127.0.0.1", Pid: 4100, UID: 1000}}
+	p := &RealProc{
+		ProcRoot:  func() string { return procRoot },
+		Listeners: func() ([]hostfacts.Listener, error) { return listeners, nil },
+	}
+	if owns, err := p.InstanceOwnsPort(ctx, 2537528, 24043); err != nil || owns {
+		t.Errorf("free port: InstanceOwnsPort = %v, %v; want false — appinit holds nothing", owns, err)
+	}
+	if owns, err := p.InstanceOwnsPort(ctx, 2537528, 24083); err != nil || owns {
+		t.Errorf("another tenant's port: InstanceOwnsPort = %v, %v; want false", owns, err)
+	}
+	// The JVM comes back under appinit and binds :24043.
+	writeStat(t, procRoot, 2537600, 2537529, "java")
+	listeners = append(listeners, hostfacts.Listener{Port: 24043, Addr: "127.0.0.1", Pid: 2537600, UID: 1000})
+	if owns, err := p.InstanceOwnsPort(ctx, 2537528, 24043); err != nil || !owns {
+		t.Errorf("JVM back: InstanceOwnsPort = %v, %v; want true", owns, err)
+	}
+}

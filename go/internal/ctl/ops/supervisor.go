@@ -492,7 +492,7 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 	port := c.Port
 	warnings = append(warnings, fmt.Sprintf("the step succeeds only once the store answers: the process on :%d "+
 		"descends from the instance and the store answers %s, within %s — `apptainer instance run` returning is not "+
-		"enough (#741)", port, answer.answered, seconds(createReadyTimeout)),
+		"enough (#741)", port, answer.answered, seconds(storeAnswerTimeout)),
 		fmt.Sprintf("an instance that is already registered but owns nothing on :%d is a zombie: it is stopped "+
 			"(KILL to its starter if `instance stop` leaves it registered) and started again", port))
 
@@ -600,7 +600,7 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 		// "Started" means "answers" (#741): the wait is INSIDE this step, so
 		// that no plan, resume or rollback can see this leg as started while
 		// its port is dead.
-		detail, err := answer.await(ctx, sc, createReadyTimeout)
+		detail, err := answer.await(ctx, sc, storeAnswerTimeout)
 		if err != nil {
 			return "", err
 		}

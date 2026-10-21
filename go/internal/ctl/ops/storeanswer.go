@@ -28,6 +28,11 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/render"
 )
 
+// storeAnswerTimeout is how long a store start waits for the store to answer:
+// createReadyTimeout, the bound every other readiness wait in the ctl uses. A
+// variable so a test does not wait it out.
+var storeAnswerTimeout = createReadyTimeout
+
 // zombieKillWait bounds how long a starter that was sent KILL may stay in the
 // instance table. A KILL is not negotiable; ten seconds is apptainer noticing.
 // A variable so a test does not wait it out.
