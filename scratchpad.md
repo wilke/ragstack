@@ -599,3 +599,19 @@ pin test checks only "all bare" or "all the same well-formed .sif name".
 - The issue asks for `expand_ms` on retrieve; in this codebase `expand_ms` is
   CONTEXT expansion (already on retrieve) and query expansion is `rewrite_ms` —
   so retrieve now emits `rewrite_ms`, same stage name as `/v1/query`.
+
+## 2026-10-21 — #754 A: per-document symbol glossary
+
+- Rules (`rules/1`) run in ingest; an offline, cached LLM glossary
+  (`scripts/symbol_glossary_llm.py`, Scout on mango:8003) is preferred when cached.
+  Both are validated against the document. The representation is a separate ES text
+  field, `symbol_glossary`, with boost 0 by default. Provenance goes in a hash-excluded
+  `enrichment` record, not `chunk_params`.
+- Folded in from the literature review: canonical symbol keys, positional
+  definitions, and the "respectively" rule and prompt.
+- Experiment on scratch copies of dev openchia: rules+LLM at boost 2 brings 3/4
+  symbol pairs into the BM25 top 50, and recall@10 goes 0.181 → 0.206. Rules alone
+  fail the bar. The contextual-retrieval baseline (16,514 Scout calls, 5.5/s) gives
+  0.174 on BM25 and 0.148 hybrid. Full record: `docs/plans/symbol-glossary.md`.
+- Found during the run: the model reproduced the λv trap on one copy, and the
+  words-occur gate let it through. Added a locality gate (MEMORY.md).
