@@ -1,6 +1,6 @@
 # 0010. A tool is bound to its image at release time, not at registration or by worker group
 
-Status: Proposed (2026-09-24; amended 2026-10-04 (rename/retire; versions vs builds), 2026-10-05 (the three-artifact model, replacing the earlier decisions 1–5) and 2026-10-09 (PR-F: the server image — decision 7's label check split between the boot and the ctl, Migration step 6); issues #609, #613, #614; PR #642; GoWe#273, GoWe#274)
+Status: Accepted (2026-10-21, owner; proposed 2026-09-24, amended 2026-10-04 (rename/retire; versions vs builds), 2026-10-05 (the three-artifact model, replacing the earlier decisions 1–5) and 2026-10-09 (PR-F: the server image — decision 7's label check split between the boot and the ctl, Migration step 6); issues #609, #613, #614; PR #642; GoWe#273, GoWe#274)
 
 ## Context
 
@@ -205,8 +205,13 @@ different artifacts that produced a circular release flow.)
    receipt. Provenance runs from a chunk to the exact tool without a log.
 
 Not decided: per-tool images (all tools share one image, so "tool version" and
-"tools release" coincide); whether the server image replaces checkouts for every
-tenant or only for production ones (an ops decision once the build exists).
+"tools release" coincide).
+
+Settled in practice, recorded on acceptance as an operational fact: as of 2026-10-21 every tenant runs its API from a server image
+(asm-next, demo, elrond, clark, lucid-next and hackathon on
+`ragstack-server-v1.6.7-b1.sif`; dev on `main` as
+`ragstack-server-v1.6.6+5680404-b1.sif`), and worktrees are kept at the image's
+commit per Migration step 6.
 
 ## Consequences
 
