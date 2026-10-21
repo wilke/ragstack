@@ -11,7 +11,7 @@
 #               and then every store a REGISTRY tenant owns outright (its instance name,
 #               SIF and ports come from the row; the tenant's own bin/up.sh runs it when
 #               it has one, because that script owns the binds and the pg password)
-#   sidecars    crossencoder :50052 (GPU 0), embedding :50053 (CPU)
+#   sidecars    crossencoder :50052 (GPU 6), embedding :50053 (CPU)
 #   sfr         six SFR-Embedding-Mistral vLLM endpoints :9001–:9006 on GPUs 0–5
 #   apis        every registry tenant's API, on the port, bind, pidfile and log its row
 #               records, from the worktree its row records
@@ -565,9 +565,12 @@ fi
 
 # ---------------------------------------------------------------- sidecars
 if want sidecars; then
-  say "== sidecars (crossencoder GPU 0 first — SFR :9001 takes 90 % of that card afterwards)"
-  if (( DRY )); then echo "  [dry-run] RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=0 /rag/repos/ragstack/apptainer/sidecars-up.sh"; else
-    RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=0 CROSSENCODER_DEVICE=cuda /rag/repos/ragstack/apptainer/sidecars-up.sh 2>&1 | sed 's/^/  /'
+  # crossencoder on GPU 6 (idle card) since 2026-10-21: it used to share GPU 0 with SFR :9001, and
+  # the card filled (130 GB vLLM + 12.7 GB reranker of 143 GB) until cuDNN could not get an attention
+  # workspace — every /rerank 500 while /health stayed ok (ragstack #748). GPUs 0–5 are the SFR fleet.
+  say "== sidecars (crossencoder GPU 6; SFR :9001–:9006 own GPUs 0–5)"
+  if (( DRY )); then echo "  [dry-run] RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 /rag/repos/ragstack/apptainer/sidecars-up.sh"; else
+    RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 CROSSENCODER_DEVICE=cuda /rag/repos/ragstack/apptainer/sidecars-up.sh 2>&1 | sed 's/^/  /'
   fi
   wait_http http://127.0.0.1:50052/health 300 "crossencoder :50052" || fail=1
   wait_http http://127.0.0.1:50053/health 300 "embedding :50053" || fail=1
