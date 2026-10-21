@@ -94,3 +94,33 @@ reboot the host comes up with the system daemons only. Every service below is re
 
 `:3000` p3-web (BV-BRC-Web dev), `:5174` VaxpipeApp Vite, `codex` (interactive), `:8899` docs
 server, `:5173`/`:5175` legacy UIs (`restore.sh --only legacy-ui` brings the last two back).
+
+## Sidecar `/live` + `/ready` (#751 PR-1, #748) — rollout
+
+What changed: the crossencoder (`:50052`) and embedding (`:50053`) sidecars gained `GET /live`
+(process serves, always 200) and `GET /ready` (one real inference on the configured device —
+crossencoder: a two-pair `predict`; embedding: one `encode` — bounded at `HEALTH_TIMEOUT_S=5`,
+verdict cached `HEALTH_CACHE_S=10`). `/health` is now an **alias of `/ready`**, so every existing
+poller (`restore.sh`, `snapshot.sh`, the API's startup reranker check, `/v1/models/status`, the
+embed pool) gets 503 when the model does not work instead of #748's green `/health` over a dead
+`/rerank`. Failure body: `{"status":"fail","error":"<ExceptionClass>","detail":"<first line>",…}`.
+The embedding sidecar now warms its model at startup (lifespan), like the crossencoder.
+`sidecars-up.sh` waits for `/ready` 200 (`SIDECARS_READY_TIMEOUT`, default 300 s, `0` skips) and
+prints the last 503 body; `restore.sh` gates on `/ready` itself (it passes `SIDECARS_READY_TIMEOUT=0`).
+
+Rollout — **no image rebuild**: the sidecars run `python.sif` with the source bind-mounted at
+`/app` from `/rag/repos/ragstack/sidecars/<svc>`. After merge, update `/rag/repos/ragstack` to the
+merged commit, then restart the two instances **by instance name** (never a `pkill` pattern —
+other tenants' processes match the same uvicorn command lines):
+
+```bash
+apptainer instance stop crossencoder
+apptainer instance stop embedding
+/rag/bin/restore.sh --only sidecars        # restarts both (crossencoder on GPU 6), waits on /ready
+curl -s http://127.0.0.1:50052/ready; echo  # expect {"status":"ok",…,"device":"cuda:0",…}
+curl -s http://127.0.0.1:50053/ready; echo
+```
+
+While the two are down every tenant's rerank falls back to RRF and any embedding call routed to
+`:50053` fails; warm-up is the model load (crossencoder ≈ tens of seconds on GPU). Do it in a quiet
+window and tell the tenant owners.

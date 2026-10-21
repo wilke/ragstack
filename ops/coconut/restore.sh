@@ -569,11 +569,20 @@ if want sidecars; then
   # the card filled (130 GB vLLM + 12.7 GB reranker of 143 GB) until cuDNN could not get an attention
   # workspace — every /rerank 500 while /health stayed ok (ragstack #748). GPUs 0–5 are the SFR fleet.
   say "== sidecars (crossencoder GPU 6; SFR :9001–:9006 own GPUs 0–5)"
-  if (( DRY )); then echo "  [dry-run] RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 /rag/repos/ragstack/apptainer/sidecars-up.sh"; else
-    RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 CROSSENCODER_DEVICE=cuda /rag/repos/ragstack/apptainer/sidecars-up.sh 2>&1 | sed 's/^/  /'
+  # SIDECARS_READY_TIMEOUT=0: sidecars-up.sh only starts; the gate below is the one wait.
+  if (( DRY )); then echo "  [dry-run] RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 SIDECARS_READY_TIMEOUT=0 /rag/repos/ragstack/apptainer/sidecars-up.sh"; else
+    RAG_DATA=$DATA RAG_IMAGES=$IMG CROSSENCODER_GPU=6 CROSSENCODER_DEVICE=cuda SIDECARS_READY_TIMEOUT=0 /rag/repos/ragstack/apptainer/sidecars-up.sh 2>&1 | sed 's/^/  /'
   fi
-  wait_http http://127.0.0.1:50052/health 300 "crossencoder :50052" || fail=1
-  wait_http http://127.0.0.1:50053/health 300 "embedding :50053" || fail=1
+  # /ready runs one real rerank / embed on the real device (#751); a failing probe is 503, which
+  # http_ok does not accept, so "answers" here means "the model works" — #748's green /health
+  # over a dead reranker cannot pass this gate. On failure, print what the sidecar said.
+  for sc in "crossencoder 50052" "embedding 50053"; do
+    read -r sc_name sc_port <<<"$sc"
+    if ! wait_http "http://127.0.0.1:$sc_port/ready" 300 "$sc_name :$sc_port /ready"; then
+      fail=1
+      (( DRY )) || say "      last /ready: $(curl -s -m 15 "http://127.0.0.1:$sc_port/ready" 2>/dev/null | head -c 500)"
+    fi
+  done
 fi
 
 # ---------------------------------------------------------------- sfr

@@ -75,7 +75,7 @@ jobs:
       - name: Install (editable, all extras + dev)
         run: pip install -e ".[all,dev]"   # matches `make install-python`
       - name: ruff
-        run: ruff check .
+        run: ruff check . ../sidecars
       - name: mypy
         run: mypy ragstack/
       - name: pytest (offline suites)
@@ -83,6 +83,11 @@ jobs:
         # tests use in-memory doubles (tests/api/conftest.py). integration/eval
         # need live backends and run in the integration job / not at all.
         run: pytest tests/unit tests/ingestion tests/api tests/test_document_registry.py -q
+      - name: pytest (sidecar /live + /ready, stub models)
+        # `make test-sidecars`: the sidecars are standalone apps outside the
+        # package; a stub model stands in for torch, so no GPU and no ports.
+        working-directory: .
+        run: pytest sidecars/tests -q
       - name: validate control-plane contract
         # `make validate-contracts`: argv-only, no server, no imports from
         # python/ or go/. It had no automatic runner at ALL — the contract is a

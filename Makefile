@@ -1,4 +1,4 @@
-.PHONY: help install-python test-python perf-python lint-python run-python \
+.PHONY: help install-python test-python test-sidecars perf-python lint-python run-python \
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
        test-conformance-authz test-conformance-identity-google \
@@ -35,11 +35,17 @@ install-python: ## Install Python package in dev mode
 test-python: ## Run Python unit + API tests
 	cd python && PYTHONPATH=$(CURDIR)/python pytest tests/ -v
 
+# The ML sidecars (sidecars/*/main.py) are standalone FastAPI apps bind-mounted
+# into python.sif, not part of the ragstack package; their /live + /ready tests
+# use a stub model (no torch, no GPU, no ports) (#751 PR-1).
+test-sidecars: ## Run the sidecar /live + /ready tests (stub models, no GPU)
+	pytest sidecars/tests -v
+
 perf-python: ## Run Python performance budget tests
 	cd python && PYTHONPATH=$(CURDIR)/python pytest tests/ -m perf -v -s
 
-lint-python: ## Lint Python code
-	cd python && ruff check . && mypy ragstack/
+lint-python: ## Lint Python code (the package + the sidecars)
+	cd python && ruff check . ../sidecars && mypy ragstack/
 
 # Dev server on the config defaults, whose text/graph backends are `memory` —
 # test-only, so this opts out of durability explicitly (#651). Export
@@ -373,4 +379,4 @@ new-tenant-apptainer: ## Provision a tenant (ADR-0005): NAME=acme [ARGS="--dry-r
 # and no infra, so there was no reason for the control-plane contract's only
 # automatic check to be reachable exclusively through `make
 # test-conformance-ctl` (which builds a Go binary and boots a daemon).
-test-all: test-python test-go validate-contracts ## Run all unit tests (Python + Go) + the control-plane contract checks
+test-all: test-python test-sidecars test-go validate-contracts ## Run all unit tests (Python + Go) + the control-plane contract checks
