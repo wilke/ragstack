@@ -15,7 +15,9 @@ document whose chunks were upserted, otherwise names why it was not, and
   them and ``run_shard`` folds them in as failed rows, carrying the report's
   constant ``error`` verbatim so a job can ``GROUP BY error`` over them;
 * **per-document ingest failures** — a loaded document that produced no
-  embeddable chunk (:data:`~ragstack.ingestion.receipts.NO_CHUNKS_ERROR`);
+  embeddable chunk (:data:`~ragstack.ingestion.receipts.NO_CHUNKS_ERROR`), or
+  one the duplicate guard refused as an already-indexed work (#747: the row's
+  error is the formatted ``duplicate_work: key=… existing_doc_id=…`` refusal);
 * **batch-level failures** — the shard could not be loaded, the embedder
   raised (an infra 5xx), or the upsert failed: the receipt is ``failed`` and
   EVERY document without a more specific error inherits the batch error.
@@ -63,6 +65,7 @@ from ragstack.ingestion.receipts import (
     DocRow,
     ShardReceipt,
 )
+from ragstack.ingestion.work_identity import POLICY_OFF, refusal_of
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +118,7 @@ async def run_shard(
     embedding_file: str | Path | None = None,
     report: ExtractReport | None = None,
     max_chunks: int = 0,
+    duplicate_policy: str = POLICY_OFF,
 ) -> ShardReceipt:
     """Ingest one shard (a batch of documents) through ``pipeline`` and return
     its receipt — see the module docstring for the per-document rules.
@@ -143,6 +147,13 @@ async def run_shard(
     same input the decoupled embed stage would have produced. The file holds
     ONLY the successful documents' chunks. ``None`` keeps the coupled
     behaviour. A file from a failed batch is removed (retry starts clean).
+
+    ``duplicate_policy`` (#747, ``work_identity.POLICIES``; ``ingest_shard
+    --duplicate-policy``, default ``off``): the duplicate-paper guard, run in
+    ``prepare_documents`` against this collection's text index scoped to
+    ``readable_tenants(tenant)``. A refused document is per-document DATA —
+    its row carries the refusal, the batch goes on and the task completes
+    (no new exit code: unlike the cap, a duplicate is not a whole-job refusal).
 
     ``report`` folds the extract stage's skipped files into the receipt as
     failed rows (their constant errors verbatim) and lets an empty shard — a
@@ -189,19 +200,23 @@ async def run_shard(
 
     try:
         kept, produced, quarantined = await pipeline.embed_documents(
-            docs, tenant_id=tenant, source=shard_path
+            docs, tenant_id=tenant, source=shard_path,
+            **({"duplicate_policy": duplicate_policy}
+               if duplicate_policy != POLICY_OFF else {}),
         )
     except Exception as e:  # noqa: BLE001 — isolate the batch; the engine retries
         return failed_batch(f"{type(e).__name__}: {e}")
     ids_by_doc: dict[str, list[str]] = {}
     for c in kept:
         ids_by_doc.setdefault(c.doc_id, []).append(c.id)
+    # Rows copied the metadata at load; the refusal is on the documents.
+    refusals = {d.id: refusal_of(d) for d in docs if refusal_of(d)}
     for row in rows:
         if row.error:
             continue
         row.chunk_ids = ids_by_doc.get(row.doc_id, [])
         if not row.chunk_ids:
-            row.error = NO_CHUNKS_ERROR
+            row.error = refusals.get(row.doc_id) or NO_CHUNKS_ERROR
     if not kept:
         log.warning("shard %s: no embeddable chunks in the batch (produced %d, "
                     "quarantined %d); every row reports its own error",

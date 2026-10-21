@@ -599,3 +599,26 @@ pin test checks only "all bare" or "all the same well-formed .sif name".
 - The issue asks for `expand_ms` on retrieve; in this codebase `expand_ms` is
   CONTEXT expansion (already on retrieve) and query expansion is `rewrite_ms` —
   so retrieve now emits `rewrite_ms`, same stage name as `/v1/query`.
+
+## 2026-10-21 — #747 R1 step 1: duplicate-paper guard by DOI/PMCID/PMID
+
+Branch `feat/duplicate-guard-747`. Plan: the Fable plan for #747 (decisions D1–D10).
+Owner decisions: D1 refuse by default on the API (`DUPLICATE_POLICY=refuse`), per-request
+`duplicate_policy: allow`; tools (`ingest_shard --duplicate-policy`) default `off`. D3 a
+supplement is the same work. D2/D4–D8/D10 as recommended. D9: #742 not here.
+
+- `ingestion/work_identity.py`: normalisers (`normalize_pmcid`, `normalize_pmid`,
+  `work_keys`, `ids_from_filename`, `ids_from_text`), `WorkIdentityStage.fill_ids`/`admit`,
+  `DuplicateWork(job_error)`, `format_refusal`. Hook in `prepare_documents` BEFORE the
+  chunk loop; every pipeline method takes `duplicate_policy` (default off, byte-identical).
+- `TextIndex.find_documents_by_key` (ES: one `bool.should` request, DOI term + `/-` prefix,
+  case-insensitive; in-memory: scan). Matching is on normalised keys, client-side.
+- `normalize_doi` cuts `/-/…` (D8). `duplicate_of` declared (schema + `DECLARED_FIELDS`).
+- API: 409 object at admission from file names; item label at job time.
+- Deviation: `GOWE_WORKER_DUPLICATE_POLICY` (default false) gates the worker input, because
+  with D1's refuse default the API would otherwise put `--duplicate-policy` on every task
+  of the pinned image (exit 2). The CWL input is nullable with no default.
+- Report (read-only, dev `openchia`): the Bazant & Bush group, all six copies, joined on
+  DOI incl. the two `/-/` copies and the `PMC8092463.md` copy by file name; plus three
+  pairs of publisher PDF + Europe PMC rendering.
+

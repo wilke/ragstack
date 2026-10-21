@@ -116,6 +116,10 @@ _DOI_PREFIXES = re.compile(
     r"^\s*(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*|info:doi/)", re.IGNORECASE
 )
 _DOI_SHAPE = re.compile(r"^10\.\d{4,9}/\S+$")
+# A publisher supplement-link tail glued onto an article DOI: `/-/DCSupplemental`,
+# `/-/`, `/-` (see normalize_doi). Anchored at the end; a `/-` inside a suffix
+# followed by anything but `/` is left alone.
+_SUPPLEMENT_TAIL = re.compile(r"/-(?:/.*)?$")
 # A DOI as it appears in running prose (same shape enrich._DOI_IN_TEXT uses).
 _DOI_IN_TEXT = re.compile(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+")
 
@@ -188,11 +192,19 @@ def normalize_doi(raw: str) -> str:
     the ``10.NNNN/suffix`` shape. Lowercased: DOIs are case-insensitive and both
     Crossref and DataCite key on the lowercase form, so this makes the cache key
     and the API path agree regardless of how the DOI was written in the PDF.
+
+    A trailing ``/-/…`` (or a bare ``/-/``, ``/-``, ``/``) is cut (#747 D8).
+    PNAS prints its supplement link as
+    ``…/lookup/suppl/doi:10.1073/pnas.2018995118/-/DCSupplemental``, and a text
+    scan that stops at the line break kept ``10.1073/pnas.2018995118/-/`` as a
+    second candidate — a DOI no registry knows, so Crossref 404'd and the
+    article was indexed with no title or pmcid. No registered DOI uses ``/-/``.
     """
     if not raw:
         return ""
     doi = _DOI_PREFIXES.sub("", str(raw)).strip().strip("<>")
     doi = _trim_trailing_punctuation(doi)
+    doi = _SUPPLEMENT_TAIL.sub("", doi).rstrip("/")
     if not _DOI_SHAPE.match(doi):
         return ""
     return doi.lower()

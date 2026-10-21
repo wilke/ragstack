@@ -28,6 +28,7 @@ from ragstack.ingestion.chunk_cap import ChunkCapExceeded
 from ragstack.ingestion.loaders import NO_TEXT_ERROR, NO_TEXT_LABEL
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline, PreparedSource
+from ragstack.ingestion.work_identity import POLICY_OFF
 from ragstack.jobstore import COMPLETED, FAILED, JobStore
 from ragstack.quota import TenantQuota
 from ragstack.tenancy import DEFAULT_TENANT
@@ -61,6 +62,7 @@ class ShardedIngestor:
         job_id: str | None = None,
         tenant_id: str = DEFAULT_TENANT,
         chunk_cap: int | None = None,
+        duplicate_policy: str = POLICY_OFF,
     ) -> list[ItemResult]:
         """Process the manifest, returning a result per *processed* item.
 
@@ -87,16 +89,26 @@ class ShardedIngestor:
                 log.info("resuming job %s: skipping %d completed item(s)", job_id, skipped)
             items = remaining
 
+        # The duplicate guard's keywords travel only when it is on, so an
+        # unguarded run makes the calls it always made (spied/duck-typed callees).
+        guard: dict[str, str] = (
+            {"tenant_id": tenant_id, "duplicate_policy": duplicate_policy}
+            if duplicate_policy != POLICY_OFF else {}
+        )
         # The cap gate: one count, one prepare pass, before the first write.
         # Only the REMAINING items count as incoming — a resumed job's completed
         # items are already in the live figure.
         prepared = (
-            await self._admit(items, job_id, chunk_cap) if chunk_cap is not None else None
+            await self._admit(items, job_id, chunk_cap, **guard)
+            if chunk_cap is not None else None
         )
 
         shards = partition(items, self._shard_size)
         results = await self._backend.run_shards(
-            shards, lambda shard: self._run_shard(shard, job_id, tenant_id, prepared)
+            shards, lambda shard: self._run_shard(
+                shard, job_id, tenant_id, prepared,
+                **({"duplicate_policy": duplicate_policy} if guard else {}),
+            )
         )
         # The scanned-PDF count, per run, at INFO (#202): the per-item error is
         # the constant NO_TEXT_ERROR string (so the SQL job stores can GROUP BY
@@ -110,7 +122,12 @@ class ShardedIngestor:
         return results
 
     async def _admit(
-        self, items: list[WorkItem], job_id: str | None, chunk_cap: int
+        self,
+        items: list[WorkItem],
+        job_id: str | None,
+        chunk_cap: int,
+        tenant_id: str = DEFAULT_TENANT,
+        duplicate_policy: str = POLICY_OFF,
     ) -> Prepared:
         """Size the job and check it against ``chunk_cap`` — ONE live count and
         one text-only prepare pass over ``items``; no embed, no store write.
@@ -135,7 +152,9 @@ class ShardedIngestor:
         incoming = 0
         for item in items:
             try:
-                p = await self._pipeline.prepare_source(item.source)
+                p = await self._pipeline.prepare_source(
+                    item.source, **_guard_kwargs(tenant_id, duplicate_policy)
+                )
             except Exception as e:  # noqa: BLE001 — the item fails; the job goes on
                 log.warning("ingest item %s failed: %s", item.item_id, e)
                 prepared[item.item_id] = ItemResult(
@@ -166,11 +185,12 @@ class ShardedIngestor:
         job_id: str | None,
         tenant_id: str,
         prepared: Prepared | None = None,
+        duplicate_policy: str = POLICY_OFF,
     ) -> list[ItemResult]:
         results: list[ItemResult] = []
         for item in shard:
             if prepared is None:
-                result = await self._ingest_item(item, tenant_id)
+                result = await self._ingest_item(item, tenant_id, duplicate_policy)
             else:
                 # Consume the item ONCE: ``_embed_and_link`` sets ``embedding``
                 # in place on these very chunk objects, so a reference left in
@@ -192,12 +212,17 @@ class ShardedIngestor:
             results.append(result)
         return results
 
-    async def _ingest_item(self, item: WorkItem, tenant_id: str) -> ItemResult:
+    async def _ingest_item(
+        self, item: WorkItem, tenant_id: str, duplicate_policy: str = POLICY_OFF
+    ) -> ItemResult:
         try:
             # Hold one of the tenant's concurrency slots so a single tenant can't
             # monopolize the shared embedding fleet during a large ingest.
             async with self._quota.slot(tenant_id):
-                chunk_ids = await self._pipeline.ingest(item.source, tenant_id=tenant_id)
+                chunk_ids = await self._pipeline.ingest(
+                    item.source, tenant_id=tenant_id,
+                    **_guard_kwargs(None, duplicate_policy),
+                )
         except Exception as e:
             log.warning("ingest item %s failed: %s", item.item_id, e)
             # Caller-safe label: the exception's class name, unless the error
@@ -240,3 +265,15 @@ class ShardedIngestor:
             status=COMPLETED,
             chunk_ids=chunk_ids,
         )
+
+
+def _guard_kwargs(tenant_id: str | None, duplicate_policy: str) -> dict[str, str]:
+    """The duplicate-guard keywords for a pipeline call — sent only when the
+    guard is on, so an unguarded run makes the call it always made (duck-typed
+    pipelines included)."""
+    if duplicate_policy == POLICY_OFF:
+        return {}
+    out = {"duplicate_policy": duplicate_policy}
+    if tenant_id is not None:
+        out["tenant_id"] = tenant_id
+    return out

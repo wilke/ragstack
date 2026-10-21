@@ -229,6 +229,41 @@ class Settings(BaseSettings):
     # many would have fit — never a partial write. A replay (restore) is never
     # capped: it re-admits what was already admitted. 0 disables the default.
     max_chunks_per_collection: int = 50_000
+    # Duplicate-paper guard (#747; ingestion/work_identity.py). The policy an API
+    # ingest runs under when the request does not name one (a request may send
+    # `duplicate_policy: "refuse" | "allow"`):
+    #   refuse — a document whose DOI / PMCID / PMID is already indexed in the
+    #            target collection (own tenant + public) is not ingested: a
+    #            best-effort 409 at admission when the FILE NAME carries the id
+    #            (PMC1234567.pdf), else the job item fails with
+    #            `duplicate_work: key=… existing_doc_id=…`;
+    #   allow  — it is ingested and its chunks carry `duplicate_of`;
+    #   off    — no lookup at all (the pre-#747 behaviour).
+    # Owner decision 2026-10-21 (D1): refuse by default on the API. The hand-run
+    # tools (`ingest_shard --duplicate-policy`) default to off.
+    duplicate_policy: str = "refuse"
+    # Whether this tenant's GoWe worker image carries `ingest_shard
+    # --duplicate-policy` (#747). The worker-side check (the authoritative one
+    # on the gowe path: it runs after the PDF is extracted and its ids are
+    # known) needs the flag, and a tools image built before #747 rejects it in
+    # argparse — exit 2 on every task. Off (default), the API sends no
+    # `duplicate_policy` input, the CWL input stays null, and the gowe path is
+    # guarded only by the admission pre-check on file names. Turn it on with the
+    # tools-image rebuild + CWL repin (ADR-0010) that ships this ingest_shard.
+    gowe_worker_duplicate_policy: bool = False
+
+    @field_validator("duplicate_policy")
+    @classmethod
+    def _validate_duplicate_policy(cls, value: str) -> str:
+        # Spelled out, not imported: `settings` is built at import time and the
+        # ingestion package must not be imported from here (work_identity.POLICIES
+        # is the same tuple; a test pins the two together).
+        policies = ("refuse", "allow", "off")
+        value = value.strip().lower()
+        if value not in policies:
+            raise ValueError(f"duplicate_policy {value!r} not in {policies}")
+        return value
+
     # Capability gate on POST /v1/collections (issue #287): whether a non-admin
     # principal may create a collection at all. ADR-0003 opened creation to any
     # authenticated caller — this switch is for the deployment that must NOT do

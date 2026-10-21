@@ -55,6 +55,7 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import ExtractReport, run_shard
+from ragstack.ingestion.work_identity import POLICIES, POLICY_OFF
 from ragstack.ops import ingest_target
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -227,7 +228,9 @@ async def amain(args, target=None) -> int:
             shard_id = args.shard_id or os.path.basename(args.shard)
             receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
                                       embedding_file=args.embedding_file or None,
-                                      report=report, max_chunks=max(0, args.max_chunks))
+                                      report=report, max_chunks=max(0, args.max_chunks),
+                                      duplicate_policy=getattr(args, "duplicate_policy",
+                                                               POLICY_OFF))
     finally:
         if bridge is not None:
             # close() can raise RuntimeError of its own: after thread.join(5.0)
@@ -305,6 +308,14 @@ def parse_args(argv=None):
                         "0 (default) = unlimited. The API derives it per job: the "
                         "collection's registry override, else MAX_CHUNKS_PER_COLLECTION "
                         "for a user-created collection")
+    p.add_argument("--duplicate-policy", choices=list(POLICIES), default=POLICY_OFF,
+                   help="duplicate-paper guard (#747): 'refuse' leaves out a document "
+                        "whose DOI/PMCID/PMID is already indexed in this collection "
+                        "(its receipt row carries 'duplicate_work: key=… "
+                        "existing_doc_id=…'; the batch continues, exit 0); 'allow' "
+                        "keeps it and stamps duplicate_of on its chunks; 'off' "
+                        "(default, like --doi-enrichment for a hand run) does no "
+                        "lookup. The API sends it per job on the gowe path")
     # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
     # offline plane matches the online API's default instead of silently
     # producing chunks the API path would have tagged.

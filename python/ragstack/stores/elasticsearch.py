@@ -679,6 +679,78 @@ class ElasticsearchTextIndex:
         )
         return docs, next_cursor
 
+    async def find_documents_by_key(
+        self, keys: list[tuple[str, str]], tenants: list[str], *, limit: int = 20
+    ) -> dict[tuple[str, str], list[DocumentSummary]]:
+        """The duplicate guard's lookup (#747): ONE request per call — a
+        tenant-filtered ``bool.should`` over the keyword fields
+        ``metadata.doi``/``pmcid``/``pmid`` (inverted-index term lookups,
+        O(matching chunks)), a ``terms`` agg on ``doc_id`` and one exemplar
+        chunk per document — the ``list_documents`` shape. The exemplar's
+        metadata is matched client-side on NORMALISED keys
+        (``work_identity.match_summaries``).
+
+        Each DOI is also looked up as a case-insensitive PREFIX
+        ``<doi>/-``: the malformed ``…/-/`` form that existing indexes carry
+        from before ``normalize_doi`` cut it (#747 D8). ``pmid`` is sent as a
+        string ``terms`` — on the one collection where it is mapped ``long``
+        (#594) Elasticsearch coerces it. Fails closed (``{}``) on an empty
+        ``tenants`` list."""
+        from ragstack.ingestion.work_identity import match_summaries
+
+        if not tenants or not keys:
+            return {}
+        should: list[dict[str, Any]] = []
+        for kind, value in keys:
+            if kind == "doi":
+                should.append({"term": {"metadata.doi": {
+                    "value": value, "case_insensitive": True}}})
+                should.append({"prefix": {"metadata.doi": {
+                    "value": f"{value}/-", "case_insensitive": True}}})
+        for kind in ("pmcid", "pmid"):
+            values = [v for k, v in keys if k == kind]
+            if values:
+                should.append({"terms": {f"metadata.{kind}": values}})
+        if not should:
+            return {}
+        with self._guard("find_documents_by_key"):
+            resp = await self._es.search(
+                index=self._index,
+                size=0,
+                track_total_hits=False,
+                query={"bool": {
+                    "filter": [{"terms": {"metadata.tenant_id": list(tenants)}}],
+                    "should": should,
+                    "minimum_should_match": 1,
+                }},
+                aggs={
+                    "docs": {
+                        "terms": {"field": "doc_id", "size": limit},
+                        "aggs": {
+                            "exemplar": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "_source": {"includes": ["doc_id", "metadata"]},
+                                }
+                            }
+                        },
+                    }
+                },
+            )
+        buckets = resp.get("aggregations", {}).get("docs", {}).get("buckets", [])
+        summaries = []
+        for b in buckets:
+            hits = b.get("exemplar", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            summaries.append(
+                document_from_chunk_metadata(
+                    str(b["key"]), int(b["doc_count"]),
+                    dict(hits[0]["_source"].get("metadata") or {}),
+                )
+            )
+        return match_summaries(keys, summaries)
+
     async def healthcheck(self) -> None:
         """Read-only liveness probe: cluster info, no mutation. Unlike
         ``ensure_index`` (which *creates* the index), this only confirms the
