@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
+from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
 from ragstack.metadata_schema import validate_chunks
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
@@ -75,6 +76,7 @@ class IngestionPipeline:
         doi_enricher: DoiEnricher | None = None,
         boilerplate_filter: BoilerplateFilter | None = None,
         delete_prior: bool = True,
+        glossary_attacher: SymbolGlossaryAttacher | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -94,6 +96,12 @@ class IngestionPipeline:
         # a GPU round-trip or reached a store. ``None`` = disabled, and the
         # chunk→embed path is byte-for-byte what it was.
         self.boilerplate_filter = boilerplate_filter
+        # Optional per-document symbol glossary (#754), applied AFTER the
+        # boilerplate filter (a dropped chunk needs no glossary) and before the
+        # embed. It writes only ``Chunk.symbol_glossary`` and one metadata
+        # marker — never ``content`` — so what is embedded is unchanged. ``None``
+        # = disabled, and the path is byte-for-byte what it was.
+        self.glossary_attacher = glossary_attacher
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
         # shared across collections, so triples must be stamped with it on write
@@ -185,7 +193,9 @@ class IngestionPipeline:
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
         produced = len(all_chunks)
-        return self._filter_boilerplate(all_chunks, source), produced
+        kept = self._filter_boilerplate(all_chunks, source)
+        self._attach_glossary(documents, kept, source)
+        return kept, produced
 
     async def _embed_chunks(
         self, chunks: list[Chunk], tenant_id: str, source: str
@@ -304,6 +314,31 @@ class IngestionPipeline:
             )
         return result.chunks
 
+    def _attach_glossary(
+        self, documents: list[Document], chunks: list[Chunk], source: str
+    ) -> None:
+        """Give each chunk the definitions of the symbols it uses, from its own
+        document's glossary (#754). Runs after the boilerplate filter.
+
+        Never fatal, the boilerplate filter's contract: a bug in the extractor
+        must not fail an ingest, so any exception degrades to "no glossary" —
+        every chunk's field reset to ``""`` and its marker removed, so a
+        half-applied glossary never reaches a store."""
+        if self.glossary_attacher is None or not chunks:
+            return
+        try:
+            result = self.glossary_attacher.apply(documents, chunks)
+        except Exception as e:  # noqa: BLE001 - degrade, never fail the ingest
+            log.warning("symbol glossary skipped for %r: %s", source, e)
+            from ragstack.ingestion.symbol_glossary import VERSION_KEY
+
+            for c in chunks:
+                c.symbol_glossary = ""
+                c.metadata.pop(VERSION_KEY, None)
+            return
+        if result.chunks_with_glossary:
+            log.info("ingest %r: symbol glossary %s", source, result.summary())
+
     async def _apply_doi_enrichment(self, documents: list[Document]) -> None:
         """Fill metadata gaps from each document's DOI, between load and chunk.
 
@@ -383,6 +418,10 @@ class IngestionPipeline:
             all_chunks = self._filter_boilerplate(all_chunks, source)
             if not all_chunks:
                 continue
+            # Whole documents stay within a group, so the per-document glossary
+            # sees each document's full text here, as it does in
+            # prepare_documents.
+            self._attach_glossary(group, all_chunks, source)
             kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
             if quarantined:
                 log.warning(
