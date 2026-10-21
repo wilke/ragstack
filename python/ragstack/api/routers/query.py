@@ -120,10 +120,14 @@ async def _expand_query(
     an LLM strategy with no LLM configured) are skipped, and a rewriter that
     raises is skipped too — so retrieval degrades to the plain query rather than
     failing the request. Variants are de-duplicated, original first.
+
+    Repeated strategy names collapse to one run (first occurrence wins the
+    order), so ``["hyde"] * 3`` costs one LLM call, not three — silently, not
+    as an error.
     """
     variants: list[str] = [query]
     seen = {query}
-    for name in strategies:
+    for name in dict.fromkeys(strategies):
         rewriter = rewriters.get(name)
         if rewriter is None:
             continue
@@ -140,6 +144,13 @@ async def _expand_query(
                 seen.add(v)
                 variants.append(v)
     return variants
+
+
+#: Cap on ``rewrite_strategies`` entries (#750 review): each LLM-backed strategy
+#: is one sequential LLM call per request, so the list length bounds the cost.
+#: Repeated names are collapsed in _expand_query, not rejected. Mirrors
+#: ``maxItems`` on RewriteStrategies in contracts/openapi.yaml.
+MAX_REWRITE_STRATEGIES = 8
 
 
 def _bound_top_k(v: int) -> int:
@@ -178,7 +189,11 @@ def _check_collections(collection: str | None, collections: list[str] | None) ->
 class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1)
-    rewrite_strategies: list[str] = Field(default_factory=lambda: ["passthrough"])
+    rewrite_strategies: list[str] = Field(
+        default_factory=lambda: ["passthrough"],
+        max_length=MAX_REWRITE_STRATEGIES,
+        json_schema_extra={"default": ["passthrough"]},
+    )
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
     stream: bool = False
@@ -294,7 +309,11 @@ class RetrieveRequest(BaseModel):
     # See QueryRequest — same strategies, same skip semantics (#750): an unknown
     # or unavailable strategy, or a rewriter that raises, is skipped rather than
     # failing the request. The default leaves the response byte-identical.
-    rewrite_strategies: list[str] = Field(default_factory=lambda: ["passthrough"])
+    rewrite_strategies: list[str] = Field(
+        default_factory=lambda: ["passthrough"],
+        max_length=MAX_REWRITE_STRATEGIES,
+        json_schema_extra={"default": ["passthrough"]},
+    )
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
     # See QueryRequest for semantics — same per-request rerank control.

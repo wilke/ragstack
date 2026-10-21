@@ -235,7 +235,7 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 |---|---|---|---|
 | `query` | string | — | **required** |
 | `top_k` | int | 5 | results to return |
-| `rewrite_strategies` | string[] | `["passthrough"]` | also `multiquery`, `hyde` (LLM-backed; ignored if no LLM). The original query is always retrieved; each variant is retrieved too and RRF-fused, and the rerank runs once against the **original** query. An unknown strategy, an unavailable one or a failing rewriter is skipped — never an error. Same field on [`/v1/retrieve`](#post-v1retrieve) |
+| `rewrite_strategies` | string[] | `["passthrough"]` | also `multiquery`, `hyde` (LLM-backed; ignored if no LLM). The original query is always retrieved; each variant is retrieved too and RRF-fused, and the rerank runs once against the **original** query. An unknown strategy, an unavailable one or a failing rewriter is skipped — never an error. A repeated name runs once; at most 8 entries (more → `422`). Each LLM-backed strategy costs one LLM call per request, made sequentially. Same field on [`/v1/retrieve`](#post-v1retrieve) |
 | `filters` | object | `{}` | metadata equality filters (ANDed); see [Metadata & filtering](#metadata--filtering) |
 | `use_graph` | bool | true | include the knowledge-graph retrieval leg |
 | `stream` | bool | false | **accepted and ignored** — no streaming is implemented and no response differs (#458). Do not build on it |
@@ -282,8 +282,14 @@ retrieve each variant, RRF-fuse across variants (and across collections with
 HyDE passage — cut to `top_k`, then apply `context_window`. The default
 `["passthrough"]` leaves the response byte-identical to a request without the
 field. Unknown or unavailable strategies (no LLM configured) and a failing
-rewriter are skipped, as on `/v1/query`; only a type violation (e.g. a string
-instead of a list) is a `422`. The variants are not echoed — `RetrieveResponse`
+rewriter are skipped, as on `/v1/query`; a repeated name runs once (silently
+de-duplicated, not rejected). Each LLM-backed strategy costs one LLM call per
+request, made sequentially, and the list holds at most 8 entries — more, or a
+type violation (e.g. a string instead of a list), is a `422`. Cost of the
+rerank pool: `rerank_candidates` (the depth) is fetched per variant, so with V
+rewritten variants on one collection the reranker sees the fused union of each
+variant's candidates — up to (1+V)×depth — whereas a multi-collection
+(`collections`) union is cut to depth before the rerank. The variants are not echoed — `RetrieveResponse`
 has no `rewritten_queries`. The expansion is timed as `rewrite_ms` on the
 request's summary line (`expand_ms` there is context expansion). The Go
 implementation accepts the field and ignores it: Go has no rewriters.

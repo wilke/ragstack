@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -83,11 +84,25 @@ func TestQueryEndpoint(t *testing.T) {
 	}
 }
 
-// TestRetrieveAcceptsRewriteStrategies: /v1/retrieve accepts the
-// `rewrite_strategies` field (issue #750). Go has no rewriters, so it is
-// accepted and ignored, exactly as HandleQuery ignores it — never a 422, and
-// the response carries no `rewritten_queries` (RetrieveResponse has none).
+// TestRetrieveAcceptsRewriteStrategies: `rewrite_strategies` on /v1/retrieve
+// (issue #750). The JSON decoder was already lenient about unknown fields, so
+// the HTTP half alone passes with or without the field; what this change adds
+// is RetrieveRequest.RewriteStrategies, the documented schema mirror, and the
+// Unmarshal half asserts the field is actually decoded. Go has no rewriters:
+// the handler accepts it and ignores it, exactly as HandleQuery does — never a
+// 422, and the response carries no `rewritten_queries`.
 func TestRetrieveAcceptsRewriteStrategies(t *testing.T) {
+	var decoded api.RetrieveRequest
+	if err := json.Unmarshal(
+		[]byte(`{"query":"q","rewrite_strategies":["hyde","multiquery","nonexistent"]}`),
+		&decoded,
+	); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := []string{"hyde", "multiquery", "nonexistent"}; !reflect.DeepEqual(decoded.RewriteStrategies, want) {
+		t.Fatalf("RewriteStrategies = %#v, want %#v", decoded.RewriteStrategies, want)
+	}
+
 	r := newRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/retrieve",
 		strings.NewReader(`{"query":"What is RAG?","rewrite_strategies":["hyde","multiquery","nonexistent"]}`))

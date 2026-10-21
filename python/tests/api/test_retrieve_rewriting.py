@@ -185,6 +185,30 @@ async def test_rewrite_strategies_type_violation_is_422_on_both_endpoints(client
     assert resp.status_code == 422, resp.text
 
 
+@pytest.mark.parametrize("endpoint", ["/v1/retrieve", "/v1/query"])
+async def test_more_than_eight_strategies_is_422_on_both_endpoints(client, endpoint):
+    """The list is capped at 8 (each LLM-backed entry is an LLM call)."""
+    ok = await client.post(endpoint, json={"query": "orig", "rewrite_strategies": ["x"] * 8})
+    assert ok.status_code == 200, ok.text
+    resp = await client.post(endpoint, json={"query": "orig", "rewrite_strategies": ["x"] * 9})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/retrieve", "/v1/query"])
+async def test_repeated_strategy_runs_once(client, _restore_state, endpoint):
+    """``["hyde"] * 3`` is one rewriter (one LLM) call — de-duplicated silently,
+    not rejected."""
+    retriever = _RecordingRetriever()
+    rewriter = _FakeRewriter(["a hypothetical answer passage"])
+    app.state.retriever = retriever
+    app.state.rewriters = {"hyde": rewriter}
+
+    resp = await client.post(endpoint, json={"query": "orig", "rewrite_strategies": ["hyde"] * 3})
+    assert resp.status_code == 200, resp.text
+    assert rewriter.calls == ["orig"]
+    assert sorted(retriever.queries) == ["a hypothetical answer passage", "orig"]
+
+
 async def test_served_openapi_declares_rewrite_strategies_identically(client):
     spec = app.openapi()
     props = [
@@ -192,8 +216,11 @@ async def test_served_openapi_declares_rewrite_strategies_identically(client):
         for name in ("QueryRequest", "RetrieveRequest")
     ]
     assert props[0] == props[1]
-    assert props[1]["type"] == "array"
-    assert props[1]["items"] == {"type": "string"}
+    for prop in props:
+        assert prop["type"] == "array"
+        assert prop["items"] == {"type": "string"}
+        assert prop["default"] == ["passthrough"]
+        assert prop["maxItems"] == 8
     assert "rewrite_strategies" not in spec["components"]["schemas"]["RetrieveResponse"]["properties"]
 
 

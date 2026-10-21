@@ -40,6 +40,7 @@ async def test_contract_declares_rewrite_strategies(schemas: dict[str, dict]) ->
     assert r["type"] == "array"
     assert r["items"] == {"type": "string"}
     assert r["default"] == ["passthrough"]
+    assert r["maxItems"] == 8, "capped: each LLM-backed strategy is an LLM call"
     assert "rewritten_queries" not in schemas["retrieve_response"]["properties"]
 
 
