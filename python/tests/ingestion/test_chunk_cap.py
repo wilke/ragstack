@@ -609,3 +609,22 @@ async def test_gowe_backend_classifies_exit_4_as_a_cap_refusal():
     assert cap_refusal_of({"error": "boom"}) is None and cap_refusal_of({}) is None
     run = await _run_failed(_FailedEngineClient(None, error="task failed"))
     assert {r.error for r in run.results} == {"gowe submission FAILED"}
+
+
+async def test_gowe_backend_classifies_exit_4_from_the_real_engine_record():
+    """GoWe 0.26.1 records ``exit_code: -1`` for every failed apptainer tool;
+    the real code is only in the worker's stderr prefix (#771 review)."""
+    line = format_refusal(49_990, 34, 50_000)
+    record = {"code": "TASK_FAILED",
+              "message": "step 'ingest' task failed with exit code -1",
+              "context": {"step_id": "ingest", "exit_code": -1,
+                          "stderr": "execute: apptainer command failed (exit 4): "
+                                    + line + "\n"}}
+    run = await _run_failed(_FailedEngineClient(None, error=record))
+    assert {r.error for r in run.results} == {line}
+    # the same record shape for a generic failure is not a cap refusal
+    generic = {**record, "context": {"step_id": "ingest", "exit_code": -1,
+                                     "stderr": "execute: apptainer command failed "
+                                               "(exit 1): " + line}}
+    run = await _run_failed(_FailedEngineClient(None, error=generic))
+    assert {r.error for r in run.results} == {"gowe submission FAILED"}

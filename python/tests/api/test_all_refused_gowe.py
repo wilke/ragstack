@@ -5,8 +5,9 @@ never ``gowe submission FAILED``.
 On a real engine such a run fails at the ``pack`` step — there is no chunk to
 archive and ``ragstack-archive/1`` has no zero-row version (#357 residual) —
 so ``archive_version.py`` exits ``NOTHING_TO_ARCHIVE_EXIT_CODE`` with each
-document's receipt error first on stderr, and the engine copies that stderr
-into the submission's failure record. A mixed run delivers its archive and the
+document's receipt error first on stderr. The engine (GoWe 0.26.1) records
+``exit_code: -1`` and keeps the real code only in the worker's ``command
+failed (exit 5):`` prefix on that stderr. A mixed run delivers its archive and the
 refused document's row error reaches its item the ordinary way.
 """
 from __future__ import annotations
@@ -54,11 +55,16 @@ async def test_all_refused_upload_reports_duplicate_work_per_item(client, gowe):
         DocRow(doc_id="c", source=f"{STAGED}/c.pdf", error=_refusal("doc-a2")),
     ])])
 
+    # The record exactly as GoWe 0.26.1 writes it: exit_code is -1 for every
+    # failed apptainer tool; the real code is only in the worker's prefix.
     async def failed_wait(sub_id, **kw):
         return {"id": sub_id, "state": "FAILED", "output_state": "",
-                "error": {"code": "TASK_FAILED", "message": "task pack failed",
-                          "context": {"stderr": stderr + "\narchive: no chunk records",
-                                      "exit_code": NOTHING_TO_ARCHIVE_EXIT_CODE}}}
+                "error": {"code": "TASK_FAILED",
+                          "message": "step 'pack' task failed with exit code -1",
+                          "context": {"step_id": "pack", "exit_code": -1, "stderr":
+                                      "execute: apptainer command failed (exit "
+                                      f"{NOTHING_TO_ARCHIVE_EXIT_CODE}): " + stderr
+                                      + "\narchive: no chunk records"}}}
 
     gowe["backend"].client.wait = failed_wait  # type: ignore[method-assign]
     r = await _upload(client, "b.pdf", "c.pdf")

@@ -37,6 +37,7 @@ from ragstack.ingestion.gowe_backend import (
     NOTHING_TO_ARCHIVE_UNLISTED,
     GoWeBackend,
     nothing_to_archive_of,
+    tool_exit_code,
 )
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.manifest import WorkItem
@@ -344,3 +345,77 @@ async def test_gowe_backend_maps_nothing_to_archive_per_document() -> None:
                                     {"error": {"context": {"exit_code": "x"}}}])
 def test_nothing_to_archive_of_ignores_other_failures(record) -> None:
     assert nothing_to_archive_of(record) is None
+
+
+# --------------------------------------------------------------------------- #
+# the REAL engine record shape (GoWe 0.26.1, the #771 review)
+# --------------------------------------------------------------------------- #
+
+#: What GoWe's worker prepends to a failed apptainer tool's stderr.
+EXEC_PREFIX = "execute: apptainer command failed (exit {code}): "
+
+
+def real_record(code: int, tool_stderr: str, step: str = "pack") -> dict:
+    """A FAILED submission exactly as the deployed engine records it: the
+    context's ``exit_code`` is ALWAYS -1 for a failed apptainer tool, the real
+    code survives only in the worker's prefix, and the stderr is cut to 1000
+    characters with a ``...(truncated)`` marker (scheduler buildSubmissionError)."""
+    stderr = EXEC_PREFIX.format(code=code) + tool_stderr
+    if len(stderr) > 1000:
+        stderr = stderr[:1000] + "...(truncated)"
+    return {"id": "sub_x", "state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": f"step '{step}' task failed with exit code -1",
+        "context": {"step_id": step, "exit_code": -1, "stderr": stderr}}}
+
+
+def _refusals(n: int) -> list[ShardReceipt]:
+    return [ShardReceipt("batch0", "t", COMPLETED, docs=[
+        DocRow(doc_id=f"d{i}", source=f"/tmp/gowe-ws-stage/sub_1/{i:03d}-paper.pdf",
+               error=f"duplicate_work: key=doi:10.1000/x{i} existing_doc_id={'e' * 64}")
+        for i in range(n)])]
+
+
+def test_tool_exit_code_reads_the_worker_prefix_when_the_engine_says_minus_1() -> None:
+    assert tool_exit_code(real_record(5, "nothing_to_archive: docs=1")) == 5
+    assert tool_exit_code(real_record(4, "chunk_cap_exceeded: live=1")) == 4
+    # a future engine that records the real code: the context wins
+    rec = real_record(1, "boom")
+    rec["error"]["context"]["exit_code"] = 5
+    assert tool_exit_code(rec) == 5
+    # the prefix only in the message
+    assert tool_exit_code({"error": {"message": "x: command failed (exit 3): y",
+                                     "context": {"exit_code": -1}}}) == 3
+    assert tool_exit_code({"error": {"context": {"exit_code": -1, "stderr": "oops"}}}) is None
+    assert tool_exit_code({}) is None
+
+
+async def test_real_engine_record_exit_5_maps_each_document() -> None:
+    refusal = f"duplicate_work: key=doi:{DOI} existing_doc_id={EXISTING}"
+    tool = format_nothing_to_archive([ShardReceipt("s", "t", COMPLETED, docs=[
+        DocRow(doc_id="b", source="/tmp/gowe-ws-stage/sub_1/b.pdf", error=refusal)])])
+    engine = _FailedEngine(0, "")
+    engine.record = real_record(NOTHING_TO_ARCHIVE_EXIT_CODE, tool + "\narchive: no chunk records")
+    by_id = {r.item_id: r for r in await _run(engine)}
+    assert by_id["b"].error == refusal
+    assert by_id["z"].error == NOTHING_TO_ARCHIVE_UNLISTED
+
+
+def test_real_engine_exit_5_needs_the_label_line() -> None:
+    """Exit 5 is not reserved by the engine: without the label it is not ours."""
+    assert nothing_to_archive_of(real_record(5, "Traceback: something else")) is None
+    assert nothing_to_archive_of(real_record(1, "nothing_to_archive: docs=1")) is None
+    assert nothing_to_archive_of(real_record(5, "nothing_to_archive: docs=0 failed=0 "
+                                                "listed=0")) == {}
+
+
+def test_prefix_plus_the_largest_listing_fits_the_engine_window() -> None:
+    """The worker's ~44-character prefix sits INSIDE the 1000 kept characters:
+    the label and every listed line must survive it uncut."""
+    tool = format_nothing_to_archive(_refusals(200))
+    payload = EXEC_PREFIX.format(code=NOTHING_TO_ARCHIVE_EXIT_CODE) + tool
+    assert len(payload) <= 1000
+    listed = len(tool.splitlines()) - 1
+    assert listed > 0
+    got = nothing_to_archive_of(
+        real_record(NOTHING_TO_ARCHIVE_EXIT_CODE, tool + "\narchive: no chunk records"))
+    assert got is not None and len(got) == listed

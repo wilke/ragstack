@@ -41,6 +41,13 @@ requirements:
     dockerImageId: ragstack-tools-v1.6.8-b1.sif
 
 baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
+# Exit 5 = nothing to archive (#768): every document of the run failed on
+# its own (all refused as duplicates, all scanned), the receipts name each
+# reason, and a retry reproduces it exactly. GoWe parses but does not yet
+# honour this (it retries exit 5 — three cheap pack retries); cwltool
+# does, and the API classifies the exit code off the submission's error
+# record either way.
+permanentFailCodes: [5]
 
 inputs:
   version:

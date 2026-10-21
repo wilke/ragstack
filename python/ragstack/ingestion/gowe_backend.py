@@ -52,6 +52,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -100,7 +101,7 @@ BATCH_FAILED = "batch failed"
 #: failed task's stderr, which lists a handful of documents (#768).
 NOTHING_TO_ARCHIVE_UNLISTED = (
     f"{NOTHING_TO_ARCHIVE}: no document of this run was ingested; this "
-    f"document's own reason did not fit the engine's error record"
+    f"document's own reason is not listed in the engine's error record"
 )
 
 
@@ -588,28 +589,66 @@ def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return {}, (str(err) if err else str(submission.get("message") or ""))
 
 
+#: GoWe's worker wraps a failed tool's stderr as ``execute: apptainer command
+#: failed (exit N): <the tool's stderr>`` (worker.go / toolexec/execute.go). The
+#: deployed engine (0.26.1) records ``context.exit_code = -1`` for EVERY failed
+#: apptainer tool, so this prefix is the only place the tool's real exit code
+#: survives — and it sits at the head of ``context.stderr`` (``stderr[:1000] +
+#: "...(truncated)"``), with the message as a fallback.
+_EXEC_EXIT_RE = re.compile(r"command failed \(exit (\d+)\)")
+_EXEC_PREFIX_RE = re.compile(r"^.*?command failed \(exit \d+\):\s*")
+
+
+def tool_exit_code(submission: dict[str, Any]) -> int | None:
+    """The failed TOOL's exit code from a FAILED submission's record, or
+    ``None`` when it cannot be told.
+
+    ``error.context.exit_code`` when it is a real code (``>= 0``: an engine
+    that reports it, or cwltool-shaped records); otherwise the code in the
+    worker's ``command failed (exit N)`` prefix at the head of
+    ``context.stderr``, then of ``message``. GoWe 0.26.1 records ``-1`` for
+    every failed apptainer tool (#771 review), which is why a classifier that
+    read only ``context.exit_code`` never fired in production."""
+    ctx, message = _failure_context(submission)
+    raw = ctx.get("exit_code")
+    try:
+        code = int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code is not None and code >= 0:
+        return code
+    for text in (str(ctx.get("stderr") or ""), message):
+        m = _EXEC_EXIT_RE.search(text[:300])
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _tool_lines(text: str) -> list[str]:
+    """``text`` split into lines with the worker's ``… command failed (exit
+    N):`` prefix removed from the line that carries it, so the tool's own first
+    stderr line reads as the tool wrote it."""
+    return [_EXEC_PREFIX_RE.sub("", line, count=1).strip() for line in text.splitlines()]
+
+
 def cap_refusal_of(submission: dict[str, Any]) -> str | None:
     """The chunk-cap refusal a FAILED submission carries, or ``None``.
 
-    DETERMINISTIC first: ``error.context.exit_code == CAP_REFUSED_EXIT_CODE``
-    (``ingest_shard`` exits 4 on a cap refusal) decides. The refusal line the
-    tool printed to stderr (``chunk_cap_exceeded: live=.. incoming=.. cap=..
-    would_fit=..``) supplies the numbers when it is inside the engine's
-    stderr window; without it the bare label is returned — the label is what
-    the job records either way. A refusal line in stderr with a DIFFERENT
-    exit code is not a cap refusal (the exit code is authoritative, as in
-    ``restore.classify_failure``)."""
-    ctx, message = _failure_context(submission)
-    try:
-        code = int(ctx["exit_code"]) if ctx.get("exit_code") is not None else None
-    except (TypeError, ValueError):
-        code = None
-    if code != CAP_REFUSED_EXIT_CODE:
+    DETERMINISTIC first: the tool's exit code (:func:`tool_exit_code`) ``==
+    CAP_REFUSED_EXIT_CODE`` (``ingest_shard`` exits 4 on a cap refusal)
+    decides. The refusal line the tool printed to stderr (``chunk_cap_exceeded:
+    live=.. incoming=.. cap=.. would_fit=..``) supplies the numbers when it is
+    inside the engine's stderr window; without it the bare label is returned —
+    the label is what the job records either way. A refusal line in stderr
+    with a DIFFERENT exit code is not a cap refusal (the exit code is
+    authoritative, as in ``restore.classify_failure``)."""
+    if tool_exit_code(submission) != CAP_REFUSED_EXIT_CODE:
         return None
+    ctx, message = _failure_context(submission)
     for text in (str(ctx.get("stderr") or ""), message):
-        for line in text.splitlines():
-            if is_cap_refusal(line.strip()):
-                return line.strip()
+        for line in _tool_lines(text):
+            if is_cap_refusal(line):
+                return line
     return CHUNK_CAP_EXCEEDED
 
 
@@ -617,23 +656,25 @@ def nothing_to_archive_of(submission: dict[str, Any]) -> dict[str, str] | None:
     """``{source basename: error}`` when a FAILED submission failed because it
     had nothing to archive, else ``None`` (#768).
 
-    DETERMINISTIC, like :func:`cap_refusal_of`: the failed task's
-    ``exit_code == NOTHING_TO_ARCHIVE_EXIT_CODE`` decides — the archive step
-    exits 5 only when the embedding files hold no chunk at all, i.e. every
-    document failed on its own and each receipt row carries why. The mapping
-    is read from the JSON lines the step printed first on stderr
-    (``receipts.format_nothing_to_archive``); it may be shorter than the item
-    list (the engine keeps 1000 characters), even empty."""
-    ctx, message = _failure_context(submission)
-    try:
-        code = int(ctx["exit_code"]) if ctx.get("exit_code") is not None else None
-    except (TypeError, ValueError):
-        code = None
-    if code != NOTHING_TO_ARCHIVE_EXIT_CODE:
+    DETERMINISTIC, like :func:`cap_refusal_of`: the tool's exit code
+    (:func:`tool_exit_code`) ``== NOTHING_TO_ARCHIVE_EXIT_CODE`` decides, and
+    the ``nothing_to_archive:`` label line the archive step prints first must
+    be there too as confirmation — exit 5 is not reserved by the engine, so a
+    bare 5 from some other failure is not read as this. The mapping comes from
+    the JSON lines after the label (``receipts.format_nothing_to_archive``); it
+    may be shorter than the item list (the engine keeps 1000 characters), even
+    empty."""
+    if tool_exit_code(submission) != NOTHING_TO_ARCHIVE_EXIT_CODE:
         return None
-    out = parse_nothing_to_archive(str(ctx.get("stderr") or ""))
-    for name, error in parse_nothing_to_archive(message).items():
-        out.setdefault(name, error)
+    ctx, message = _failure_context(submission)
+    texts = (str(ctx.get("stderr") or ""), message)
+    if not any(line.startswith(f"{NOTHING_TO_ARCHIVE}:")
+               for text in texts for line in _tool_lines(text)):
+        return None
+    out: dict[str, str] = {}
+    for text in texts:
+        for name, error in parse_nothing_to_archive(text).items():
+            out.setdefault(name, error)
     return out
 
 
