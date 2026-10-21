@@ -466,3 +466,26 @@ def test_respectively_rule_pairs_lists() -> None:
 def test_respectively_rule_refuses_count_mismatch() -> None:
     text = "Qb and Cq are the breathing flow rate, x and the quanta concentration, respectively."
     assert extract_glossary(text, GlossaryConfig(rule_appositive=False)).as_dict() == {}
+
+
+# --- locality gate (the λv trap, as a model actually produced it) -------------
+
+FAR = (
+    "The virions become deactivated at a rate λv that depends on humidity; the "
+    "deactivation rate is bounded by data. " + "filler text " * 60
+    + "The rate of ventilation is set by the HVAC system and the air change rate."
+)
+
+
+def test_locality_gate_rejects_words_scattered_across_the_paper() -> None:
+    # All three words occur in the document, but not near λv.
+    g, rejected = validate_entries([("λv", "rate of ventilation")], FAR, "llm/1")
+    assert g.as_dict() == {} and rejected == 1
+    g, _ = validate_entries([("λv", "rate of ventilation")], FAR, "llm/1",
+                            GlossaryConfig(definition_window=0))
+    assert g.as_dict() == {"λv": ["rate of ventilation"]}  # the owner's minimum gate alone
+
+
+def test_locality_gate_keeps_a_paraphrase_near_the_symbol() -> None:
+    g, rejected = validate_entries([("λv", "deactivation rate of virions")], FAR, "llm/1")
+    assert g.as_dict() == {"λv": ["deactivation rate of virions"]} and rejected == 0

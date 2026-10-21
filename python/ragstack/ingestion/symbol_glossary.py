@@ -417,6 +417,15 @@ class GlossaryConfig:
     #: before the chunk's start (falling back to the first one after it). Off:
     #: render every definition.
     positional: bool = True
+    #: LLM/cached definitions only: every content word of a definition must
+    #: occur within this many characters of an occurrence of the symbol in the
+    #: document (0 = off: words anywhere in the document suffice). The
+    #: document-wide words-occur gate is not enough: on one openchia copy of
+    #: Bazant & Bush the model proposed "λv — rate of ventilation", and all three
+    #: words occur somewhere in that paper. They do not occur NEXT TO λv, where
+    #: the paper says it is the deactivation rate. 200 rejects that and keeps
+    #: every correct λv definition on the other copies (#754 experiment).
+    definition_window: int = 200
     #: Rule toggles.
     rule_where: bool = True
     rule_appositive: bool = True
@@ -669,6 +678,30 @@ def _norm_words(text: str) -> set[str]:
     return {w.casefold() for w in _WORDS.findall(canonical_text(text))}
 
 
+# Words that carry no meaning of their own in a definition; the locality gate
+# checks only the others.
+_DEF_STOP = frozenset(
+    "a an the of in on at to for with by from and or per as is are be its their this that".split()
+)
+
+
+def _near_symbol(defn: str, canon_fold: str, occurrences: list[int], window: int) -> bool:
+    """Does every content word of ``defn`` occur within ``window`` characters
+    of SOME occurrence of the symbol? Words are matched by a stem prefix (the
+    word minus up to three trailing letters, at least five), so "deactivation"
+    is found in "deactivated"."""
+    words = [w.casefold() for w in _WORDS.findall(canonical_text(defn))]
+    words = [w for w in words if len(w) > 2 and w not in _DEF_STOP]
+    if not words:
+        return False
+    spans = [canon_fold[max(0, o - window) : o + window] for o in occurrences]
+    for w in words:
+        stem = re.compile(r"\b" + re.escape(w[: max(5, len(w) - 3)]))
+        if not any(stem.search(span) for span in spans):
+            return False
+    return True
+
+
 def validate_entries(
     raw: Iterable[tuple[str, str] | tuple[str, str, int | None]],
     document_text: str,
@@ -682,6 +715,10 @@ def validate_entries(
     * the symbol (canonicalised; trailing arguments ``λv(r)`` → ``λv``) must
       occur in the document as a whole token and pass the rules' specificity
       guard;
+    * locality (``config.definition_window``): every content word of the
+      definition must occur near an occurrence of the symbol — a definition
+      assembled from words scattered across the paper is not the paper's
+      definition of THIS symbol;
     * every word of the definition must occur in the document (canonical,
       case-insensitive) — the "copied from the document, never from a lexicon"
       rule, checked rather than trusted. A model that "knows" λv is a
@@ -708,6 +745,9 @@ def validate_entries(
             and _plausible_definition(defn, sym)
             and _norm_words(defn) <= doc_words
         )
+        if ok and cfg.definition_window > 0:
+            occurrences = [m.start() for m in symbol_pattern(sym).finditer(canon)]
+            ok = _near_symbol(defn, canon_fold, occurrences, cfg.definition_window)
         if not ok or occ is None:
             rejected += 1
             continue
