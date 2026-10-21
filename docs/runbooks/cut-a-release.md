@@ -166,7 +166,7 @@ Flags, from `apptainer/build-tools-image.sh` (`--help` prints its header):
 | `--sandbox` | **Required on coconut.** `--fakeroot` does not work (no subuid/subgid; `MEMORY.md`), and without this flag the script runs `apptainer build --fakeroot`. The flag does the rootless two-step instead: `build --sandbox <tmp> <def>`, then `build <sif> <tmp>`. A sandbox two-step produced `ragstack-worker-v1.6.4-21-g6a7fe95.sif` on this host on 2026-10-04 (its labels show `deffile.from: /rag/tmp/…sbx`), but that was before the script existed. |
 | `--python /rag/envs/ragstack/bin/python` | **Required on coconut.** The interpreter rule (#678): `--python EXE`, else `$PYTHON` if set, else `python3` **only if it is ≥ 3.11**, else the script refuses with exit 2, naming `--python` and `PYTHON`. For `wilke`, `python3` is miniconda's 3.8.5, so without the flag the script stops with "no Python >= 3.11 found: `python3` is Python 3.8.5" [exercised]. `PYTHON=/rag/envs/ragstack/bin/python` in the environment works too. |
 | `--out DIR` | Where the image and receipt go. The default is `apptainer/images/` inside the worktree (gitignored). **Never point it at the shared store.** |
-| `--store DIR` | A dir where **released** builds of this version live. Read only. Repeatable or comma-separated. The build number counts builds across `--out` **and** every `--store` (below). A `--store` that is not a directory is a refusal (exit 2): today, before § 0, `--store /scout/containers/ragstack` stops with "--store /scout/containers/ragstack is not a directory" [exercised]. |
+| `--store DIR` | A dir where **released** builds of this version live. Read only. Repeatable or comma-separated. The build number counts builds across `--out` **and** every `--store` (below). A `--store` that is not a directory is a refusal (exit 2), with "--store DIR is not a directory" [exercised before § 0, when `/scout/containers/ragstack` did not exist yet; it has existed since 2026-10-08]. |
 | `TMPDIR=/rag/tmp` | The sandbox and the staged `python/` go under `$TMPDIR`. The 2026-10-04 sandbox build used `/rag/tmp`. |
 | `--dry-run` | Prints the version, build number, paths, the exact `apptainer` command(s) and the receipt with `sha256: null`. Builds nothing. [exercised] The `build_date` it prints is a preview. The script reads the clock when it starts, so the real build stamps its own later time into the labels, `RELEASE` and the receipt. Check those against the receipt, not against the dry run. |
 
@@ -203,7 +203,7 @@ apptainer exec "$SIF" python /opt/ragstack/scripts/ingest_shard.py --help | grep
 #   the provenance flags (#668) must be there; the first stamped release turns them on
 N=$(basename "$SIF")
 PYTHONPATH=python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --name "$N" --dirs "$OUT"
-#   Expect: "dockerPull: <N> -> ok at $OUT/<N>", "ok", exit 0
+#   Expect: "  dockerPull: <N> -> ok at $OUT/<N>" (two-space indent), then "ok", exit 0
 ```
 
 The last command is the same identity check § 3 runs against the store and the
@@ -257,7 +257,7 @@ install -m 0444 "$OUT/$N.receipt.json" "$ST/.$N.receipt.json.partial" && mv -n "
 ```bash
 cd ~/Development/worktrees/release-v1.6.5
 PYTHONPATH=python /rag/envs/ragstack/bin/python -m ragstack.tool_image verify --name "$N" --dirs "$ST"
-# Expect: "dockerPull: ragstack-tools-v1.6.5-b1.sif -> ok at /scout/containers/ragstack/…", "ok", exit 0
+# Expect: "  dockerPull: ragstack-tools-v1.6.5-b1.sif -> ok at /scout/containers/ragstack/…" (two-space indent), then "ok", exit 0
 sha256sum "$ST/$N"; grep sha256 "$ST/$N.receipt.json"           # the same digest, by eye
 CTL_BIN=/bin/bash /rag/bin/ctl-as-svc.sh -c "sha256sum $ST/$N"  # svcbvbrc can read it
 ```
@@ -269,8 +269,10 @@ Run it with `PYTHONPATH=<checkout>/python`, because the shared env
 `/rag/envs/ragstack` has no `ragstack` installed at all (its editable install
 was removed on 2026-10-06), so `import ragstack` fails without it. An older
 note here said the installed copy "lacks the newer modules"; that is stale.
-The `--name … --dirs /scout/containers/ragstack` form runs today and reports
-`not found in: /scout/containers/ragstack` [exercised].
+For the first real release, `verify --name ragstack-tools-v1.6.8-b1.sif
+--dirs /scout/containers/ragstack` printed
+`  dockerPull: ragstack-tools-v1.6.8-b1.sif -> ok at /scout/containers/ragstack/ragstack-tools-v1.6.8-b1.sif`,
+then `ok`, and exited 0 [exercised].
 
 **If it fails partway:** an interrupted copy leaves a `.partial` file, which
 nothing resolves. Delete it and copy again. If you copied an image but not its
