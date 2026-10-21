@@ -58,8 +58,12 @@ definition and the value sit in different chunks.
 - **Provenance (ADR-0011):**
   - `metadata.symbol_glossary_version` is stamped on every processed chunk;
   - `CollectionManifest.enrichment` and `ShardReceipt.enrichment` hold the step record
-    and are hash-excluded.
-  - **Not** `chunk_params`: that feeds `spec_hash` and the collection name.
+    and are hash-excluded. **Not** `chunk_params`: that feeds `spec_hash` and the
+    collection name.
+  - The record comes from the pipeline that ran the step. It counts applied and
+    degraded batches, so a step that only degraded is never recorded as applied.
+  - **`enrichment` is INTERIM.** ADR-0011 is Accepted. When its PR-3 lands, the record
+    folds into the ingest activity's `core.activity.params`, and the field goes away.
 - **Settings and flags** (all default off):
   - `SYMBOL_GLOSSARY_EXTRACTION=off|rules`, `SYMBOL_GLOSSARY_CONFIG_JSON`,
     `SYMBOL_GLOSSARY_CACHE_PATH`, `TEXT_SYMBOL_GLOSSARY_BOOST`;
@@ -143,8 +147,71 @@ top 50, and regression recall@10 does not fall):
 - **index_case_count** pairs are not symbol problems. Only 6 of the 9 have an openchia
   target in this index, and none moves consistently.
 
-Recommendation: ship the field with the boost at 0 (this PR). Enable it per tenant only
-after a reranked `/v1/retrieve` measurement and a check on document crowding.
+The first experiment's recommendation was to ship with the boost at 0 and enable per
+tenant only after a reranked measurement and a crowding check. That measurement is the
+next section.
+
+## Review re-run (2026-10-21, after the Fable review of PR #763)
+
+**What changed before the re-run:**
+- `rules/2`: the appositive rule no longer steals the previous clause's definition, and
+  `where Qb (L/min) is …` is now found.
+- **Value-only attachment, on by default** (`attach_only_with_value`). A chunk gets a
+  symbol's definition only where it states a value for that symbol: `=`, `≈` or `~`
+  followed by a number. A bare equation does not count.
+  - The reviewer's prototype regex, which needs no number, gave 925 glossaried chunks;
+    this one gives 683, against 2,651 for every mention.
+- **`symbol_glossary` mapped with `norms: false`.**
+- The locality gate gained the verbatim "another symbol in between" rejection.
+
+**Setup.** Scratch copies only. Every scratch index and collection was deleted, and both
+ES and Qdrant listed none left. The legs:
+- BM25 (top 200);
+- hybrid: RRF of BM25 and the base dense vectors, which the glossary does not change;
+- **reranked**: the hybrid top 50, rescored by the live cross-encoder sidecar
+  (`bge-reranker-v2-m3`, at most 4 requests in flight, read-only, 731 distinct calls),
+  then the per-document cap, then the top 10. This is the /v1/retrieve shape.
+
+`cap2` is `RETRIEVAL_MAX_PER_DOC=2`. Columns: s@10 and s@50 are symbol pairs (of 4) in
+the top 10 and top 50; lost and gained are counted against the same leg's base.
+
+| arm | BM25 r@10 | rerank r@10 | rerank r@10 B (51) | rerank s@10 / s@50 | rerank lost / gained | rerank docs@10 |
+|---|---|---|---|---|---|---|
+| base | 0.181 | 0.219 | 0.039 | 1 / 2 | – | 7.12 |
+| base cap2 | 0.213 | 0.252 | 0.039 | 1 / 2 | 0 / 5 | 7.93 |
+| mention, norms, @2 | 0.219 | 0.252 | 0.039 | 1 / 2 | 4 / 9 | 6.70 |
+| value-only, norms, @0.5 | 0.226 | 0.232 | 0.059 | 1 / 2 | 2 / 4 | 6.97 |
+| value-only, norms, @1 | 0.297 | 0.245 | 0.059 | 1 / 2 | 2 / 6 | 7.06 |
+| value-only, norms, @2 | 0.323 | 0.252 | 0.078 | 1 / 3 | 3 / 8 | 7.03 |
+| value-only, no norms, @0.5 | 0.381 | 0.271 | 0.078 | 1 / 2 | 2 / 10 | 7.04 |
+| **value-only, no norms, @1** | 0.465 | **0.348** | **0.196** | **2 / 4** | 2 / 22 | 7.03 |
+| value-only, no norms, @2 | 0.465 | 0.336 | 0.157 | 1 / 3 | 3 / 21 | 6.93 |
+| **value-only, no norms, @1, cap2** | 0.465 | **0.361** | 0.196 | 2 / 4 | 2 / 24 | 7.65 |
+
+- **Deactivation** (`deactivation_rate_s:2198638f`) reaches reranked rank 9 at value-only,
+  no norms, @1. It is the first arm to get it into the top 10 (2 of 6 queries).
+- **Crowding is gone on the reranked leg:** docs@10 is 7.0, against 7.1 for base.
+- **Caveat: the eval set favours this lever.** Its targets are value-stating chunks,
+  because it was built from parameter-extraction runs, and value-only attachment
+  promotes exactly those. Queries that do not seek a value are not measured here.
+- The scratch base agrees with live openchia's ranks on 66% of records (see above).
+
+**Recommendation for openchia (dev):**
+- `SYMBOL_GLOSSARY_EXTRACTION=rules`;
+- `SYMBOL_GLOSSARY_CACHE_PATH=<the LLM cache built over openchia>`;
+- the defaults `attach_only_with_value=true` and `norms: false`;
+- `TEXT_SYMBOL_GLOSSARY_BOOST=1`;
+- `RETRIEVAL_MAX_PER_DOC=2`.
+
+**Order of operations:**
+1. Release, and let the API restart add the field. `ensure_index`'s `put_mapping`
+   adds `symbol_glossary` (`norms: false`) to existing indices. That is additive and
+   writes no data.
+2. Backfill openchia: dry run first, then `--apply` on the owner's go.
+3. Set the boost.
+
+Before step 3, a boost on an index without the field is a measured no-op. Any other
+tenant should first get its own measurement.
 
 ## Follow-ups
 
