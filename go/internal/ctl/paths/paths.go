@@ -186,6 +186,14 @@ func (r Roots) CtlUIDist() string { return filepath.Join(r.CtlStateDir, "ui", "d
 // purpose — already an approved root of the Files and Instances drivers and
 // already ACL-granted to the daemon's account — so the store needs no new root
 // (and /rag/apptainer/images, which is neither, is not where it goes).
+// CtlInstanceLogsDir is where apptainer files the stdout/stderr of every
+// instance the CONTROL PLANE started: `<CtlStateDir>/apptainer/config` is the
+// APPTAINER_CONFIGDIR the ctl forces on its apptainer calls, and apptainer
+// writes `instances/logs/<host>/<user>/<name>.out|.err` under it.
+func (r Roots) CtlInstanceLogsDir() string {
+	return filepath.Join(r.CtlStateDir, "apptainer", "config", "instances", "logs")
+}
+
 func (r Roots) ServerImagesDir() string { return filepath.Join(r.CtlStateDir, "images", "server") }
 
 // Tenant is every path of one tenant, spelled once. name is the registry key
