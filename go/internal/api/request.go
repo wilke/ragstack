@@ -47,10 +47,14 @@ type QueryRequest struct {
 // TODO(parity, issue #27): mirror QueryRequest's `rerank` / `rerank_candidates`
 // per-request rerank controls (see Python ragstack.api.routers.query).
 type RetrieveRequest struct {
-	Query    *string        `json:"query"`
-	TopK     int            `json:"top_k,omitempty"`
-	Filters  map[string]any `json:"filters,omitempty"`
-	UseGraph *bool          `json:"use_graph,omitempty"`
+	Query *string `json:"query"`
+	TopK  int     `json:"top_k,omitempty"`
+	// RewriteStrategies mirrors QueryRequest.RewriteStrategies (issue #750).
+	// Go has no rewriters; accepted and ignored exactly as HandleQuery ignores
+	// it; schema mirror only per ADR-0006.
+	RewriteStrategies []string       `json:"rewrite_strategies,omitempty"`
+	Filters           map[string]any `json:"filters,omitempty"`
+	UseGraph          *bool          `json:"use_graph,omitempty"`
 	// Collection selects which registry collection to retrieve from; nil = default.
 	Collection *string `json:"collection,omitempty"`
 	// Collections mirrors QueryRequest.Collections (issue #253); mutually exclusive with Collection.

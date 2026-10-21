@@ -3648,6 +3648,27 @@ components:
         status:
           type: string
 
+    RewriteStrategies:
+      type: array
+      items:
+        type: string
+      maxItems: 8
+      default: ["passthrough"]
+      description: >-
+        Query rewriters to expand the query with before retrieval:
+        `passthrough` (the query itself), `multiquery` (LLM paraphrases) and
+        `hyde` (an LLM-written hypothetical answer passage). The original
+        query is always retrieved; each variant is retrieved too, the
+        results are RRF-fused, and any rerank runs ONCE against the original
+        query. An unknown strategy, one this server cannot serve (no LLM
+        configured), or a rewriter that fails is skipped, never an error —
+        the request degrades to the plain query. A repeated name runs once
+        (de-duplicated silently, not rejected); at most 8 entries. Each
+        LLM-backed strategy costs one LLM call per request, made
+        sequentially. Shared by QueryRequest and
+        RetrieveRequest (#750) with identical semantics; /v1/retrieve still
+        never generates and does not echo the variants.
+
     QueryRequest:
       type: object
       required: [query]
@@ -3658,10 +3679,7 @@ components:
           type: integer
           default: 5
         rewrite_strategies:
-          type: array
-          items:
-            type: string
-          default: ["passthrough"]
+          $ref: "#/components/schemas/RewriteStrategies"
         filters:
           description: >-
             Metadata equality constraints, ANDed. A value is a string, an
@@ -3702,7 +3720,11 @@ components:
           description: >-
             Override for the candidate-pool depth fed to the reranker. null
             (default) uses the server default (max(top_k, server's
-            rerank_candidates)).
+            rerank_candidates)). This is the depth fetched PER retrieval: with
+            several `rewrite_strategies` variants on one collection the
+            reranker sees the fused union of each variant's candidates — up to
+            (1+V)×depth for V rewritten variants — whereas a multi-collection
+            (`collections`) union is cut to depth before the rerank.
           type: [integer, "null"]
           minimum: 1
           default: null
@@ -3874,6 +3896,8 @@ components:
         top_k:
           type: integer
           default: 5
+        rewrite_strategies:
+          $ref: "#/components/schemas/RewriteStrategies"
         filters:
           description: >-
             Metadata equality constraints, ANDed. A value is a string, an
@@ -3911,7 +3935,11 @@ components:
           description: >-
             Override for the candidate-pool depth fed to the reranker. null
             (default) uses the server default (max(top_k, server's
-            rerank_candidates)).
+            rerank_candidates)). This is the depth fetched PER retrieval: with
+            several `rewrite_strategies` variants on one collection the
+            reranker sees the fused union of each variant's candidates — up to
+            (1+V)×depth for V rewritten variants — whereas a multi-collection
+            (`collections`) union is cut to depth before the rerank.
           type: [integer, "null"]
           minimum: 1
           default: null
