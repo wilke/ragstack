@@ -44,6 +44,7 @@ RESPONSE = {"aggregations": {"docs": {"buckets": [
                   "tenant_id": "alice", "filename": "sha-1.md"}),
     _bucket("b", {"doi": f"{DOI}/-/", "tenant_id": "public"}),
     _bucket("c", {"pmid": 33858987, "tenant_id": "alice"}),  # the #594 long
+    _bucket("c2", {"pmcid": "pmc8092463", "tenant_id": "alice"}),  # stored lower-case
     _bucket("d", {"doi": "10.1000/unrelated", "tenant_id": "alice"}),
     {"key": "e", "doc_count": 1, "exemplar": {"hits": {"hits": []}}},  # deleted mid-agg
 ]}}}
@@ -63,7 +64,8 @@ async def test_query_shape() -> None:
     assert {"term": {"metadata.doi": {"value": DOI, "case_insensitive": True}}} in q["should"]
     assert {"prefix": {"metadata.doi": {"value": f"{DOI}/-", "case_insensitive": True}}} \
         in q["should"]
-    assert {"terms": {"metadata.pmcid": ["PMC8092463"]}} in q["should"]
+    assert {"term": {"metadata.pmcid": {"value": "PMC8092463", "case_insensitive": True}}} \
+        in q["should"]
     assert {"terms": {"metadata.pmid": ["33858987"]}} in q["should"]
     agg = call["aggs"]["docs"]
     assert agg["terms"] == {"field": "doc_id", "size": 7}
@@ -77,6 +79,8 @@ async def test_parse_groups_on_normalised_keys() -> None:
     found = await ix.find_documents_by_key(keys, ["alice", "public"])
     assert [s.doc_id for s in found[("doi", DOI)]] == ["a", "b"]   # `/-/` joins
     assert [s.doc_id for s in found[("pmid", "33858987")]] == ["a", "c"]  # int coerces
+    by_pmcid = await ix.find_documents_by_key([("pmcid", "PMC8092463")], ["alice"])
+    assert [s.doc_id for s in by_pmcid[("pmcid", "PMC8092463")]] == ["a", "c2"]
     assert found[("doi", DOI)][0].chunk_count == 5
     assert found[("doi", DOI)][0].source == "sha-1.md"
 
@@ -93,3 +97,31 @@ async def test_fails_closed_on_no_tenants_and_sends_nothing_without_keys() -> No
 async def test_missing_aggregations_block_is_no_match() -> None:
     ix, _ = _index({})
     assert await ix.find_documents_by_key([("doi", DOI)], ["alice"]) == {}
+
+
+class _Indices:
+    def __init__(self, ftype: str) -> None:
+        self.ftype = ftype
+        self.calls = 0
+
+    async def get_field_mapping(self, index, fields):
+        self.calls += 1
+        return {"x": {"mappings": {
+            "metadata.doi": {"full_name": "metadata.doi", "mapping": {"doi": {"type": self.ftype}}},
+        }}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ftype,warned", [("text", True), ("keyword", False)])
+async def test_one_time_warning_when_the_id_field_is_not_keyword(caplog, ftype, warned) -> None:
+    """Review fix 7: a text-mapped metadata.doi makes the term query match
+    nothing — a silent miss, so the first lookup per index says so, once."""
+    import logging
+
+    ix, fake = _index(RESPONSE)
+    fake.indices = _Indices(ftype)  # type: ignore[attr-defined]
+    with caplog.at_level(logging.WARNING, logger="ragstack.stores.elasticsearch"):
+        await ix.find_documents_by_key([("doi", DOI)], ["alice"])
+        await ix.find_documents_by_key([("doi", DOI)], ["alice"])
+    assert fake.indices.calls == 1  # type: ignore[attr-defined]
+    assert ("mapped 'text', not keyword" in caplog.text) is warned

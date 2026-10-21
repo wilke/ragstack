@@ -692,10 +692,16 @@ class ElasticsearchTextIndex:
 
         Each DOI is also looked up as a case-insensitive PREFIX
         ``<doi>/-``: the malformed ``…/-/`` form that existing indexes carry
-        from before ``normalize_doi`` cut it (#747 D8). ``pmid`` is sent as a
-        string ``terms`` — on the one collection where it is mapped ``long``
-        (#594) Elasticsearch coerces it. Fails closed (``{}``) on an empty
-        ``tenants`` list."""
+        from before ``normalize_doi`` cut it (#747 D8). ``pmcid`` is a
+        case-insensitive ``term`` too (a loader may have stored ``pmc123``).
+        ``pmid`` is sent as a string ``terms`` — on the one collection where it
+        is mapped ``long`` (#594) Elasticsearch coerces it, and
+        ``case_insensitive`` would be refused on a numeric field. Fails closed
+        (``{}``) on an empty ``tenants`` list.
+
+        A ``text``-mapped ``metadata.doi``/``pmcid`` does not raise — the term
+        queries simply match nothing — so the first call per index checks the
+        mapping and logs a one-time WARNING (best-effort; never fails the call)."""
         from ragstack.ingestion.work_identity import match_summaries
 
         if not tenants or not keys:
@@ -707,12 +713,15 @@ class ElasticsearchTextIndex:
                     "value": value, "case_insensitive": True}}})
                 should.append({"prefix": {"metadata.doi": {
                     "value": f"{value}/-", "case_insensitive": True}}})
-        for kind in ("pmcid", "pmid"):
-            values = [v for k, v in keys if k == kind]
-            if values:
-                should.append({"terms": {f"metadata.{kind}": values}})
+            elif kind == "pmcid":
+                should.append({"term": {"metadata.pmcid": {
+                    "value": value, "case_insensitive": True}}})
+        pmids = [v for k, v in keys if k == "pmid"]
+        if pmids:
+            should.append({"terms": {"metadata.pmid": pmids}})
         if not should:
             return {}
+        await self._warn_if_id_fields_not_keyword()
         with self._guard("find_documents_by_key"):
             resp = await self._es.search(
                 index=self._index,
@@ -750,6 +759,32 @@ class ElasticsearchTextIndex:
                 )
             )
         return match_summaries(keys, summaries)
+
+    async def _warn_if_id_fields_not_keyword(self) -> None:
+        """One-time, best-effort: say so when ``metadata.doi``/``pmcid`` is not
+        a ``keyword`` here — the duplicate guard's term queries would then match
+        nothing and let every duplicate through without an error (#747)."""
+        if getattr(self, "_id_mapping_checked", False):
+            return
+        self._id_mapping_checked = True
+        try:
+            resp = await self._es.indices.get_field_mapping(
+                index=self._index, fields=["metadata.doi", "metadata.pmcid"]
+            )
+            body = getattr(resp, "body", resp)
+            for idx, entry in dict(body).items():
+                for name, fm in (entry.get("mappings") or {}).items():
+                    leaf = name.rsplit(".", 1)[-1]
+                    ftype = ((fm.get("mapping") or {}).get(leaf) or {}).get("type")
+                    if ftype and ftype != "keyword":
+                        log.warning(
+                            "duplicate guard: %s on index %r is mapped %r, not keyword — "
+                            "the work-identity lookup cannot match it, so duplicates "
+                            "pass silently (reindex; see metadata_conformance)",
+                            name, idx, ftype,
+                        )
+        except Exception as e:  # noqa: BLE001 — diagnostic only
+            log.debug("duplicate guard: mapping check skipped on %r: %s", self._index, e)
 
     async def healthcheck(self) -> None:
         """Read-only liveness probe: cluster info, no mutation. Unlike

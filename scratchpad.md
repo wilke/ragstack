@@ -615,9 +615,15 @@ supplement is the same work. D2/D4–D8/D10 as recommended. D9: #742 not here.
   case-insensitive; in-memory: scan). Matching is on normalised keys, client-side.
 - `normalize_doi` cuts `/-/…` (D8). `duplicate_of` declared (schema + `DECLARED_FIELDS`).
 - API: 409 object at admission from file names; item label at job time.
-- Deviation: `GOWE_WORKER_DUPLICATE_POLICY` (default false) gates the worker input, because
-  with D1's refuse default the API would otherwise put `--duplicate-policy` on every task
-  of the pinned image (exit 2). The CWL input is nullable with no default.
+- GoWe worker input: sent only when the REGISTERED workflow declares `duplicate_policy`
+  (ADR-0010, `declared_workflow_inputs`); the scatter CWL does not yet — the tools-image
+  repin adds it. Until then the gowe path has only the admission file-name check.
+- Review fixes (Fable, approve-with-fixes): `.pdf`-only filename DOI and as a lookup key
+  only; PMC token >= 5 digits; scope = `count_scope` (shared collections); one
+  `DuplicateCheck` per job with shared `seen` (two copies in one request); 409 for two
+  names in one request; case-insensitive pmcid term; one-time WARNING on a non-keyword
+  id mapping. Found while fixing: the ENRICHER's own `derive_doi` filename leg has the
+  same `.txt`/`.md` false positive (`fig.1.txt` → `10.1128/fig.1.txt`) — separate issue.
 - Report (read-only, dev `openchia`): the Bazant & Bush group, all six copies, joined on
   DOI incl. the two `/-/` copies and the `PMC8092463.md` copy by file name; plus three
   pairs of publisher PDF + Europe PMC rendering.

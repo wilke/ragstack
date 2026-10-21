@@ -22,13 +22,14 @@ loads inside the shard-parallel run); the gate could later be spread over
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from ragstack.ingestion.backends import IngestBackend, partition
 from ragstack.ingestion.chunk_cap import ChunkCapExceeded
 from ragstack.ingestion.loaders import NO_TEXT_ERROR, NO_TEXT_LABEL
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline, PreparedSource
-from ragstack.ingestion.work_identity import POLICY_OFF
+from ragstack.ingestion.work_identity import POLICY_OFF, DuplicateCheck
 from ragstack.jobstore import COMPLETED, FAILED, JobStore
 from ragstack.quota import TenantQuota
 from ragstack.tenancy import DEFAULT_TENANT
@@ -62,7 +63,7 @@ class ShardedIngestor:
         job_id: str | None = None,
         tenant_id: str = DEFAULT_TENANT,
         chunk_cap: int | None = None,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> list[ItemResult]:
         """Process the manifest, returning a result per *processed* item.
 
@@ -91,9 +92,13 @@ class ShardedIngestor:
 
         # The duplicate guard's keywords travel only when it is on, so an
         # unguarded run makes the calls it always made (spied/duck-typed callees).
-        guard: dict[str, str] = (
-            {"tenant_id": tenant_id, "duplicate_policy": duplicate_policy}
-            if duplicate_policy != POLICY_OFF else {}
+        # ONE check per run: its ``seen`` is shared by every item, so a second
+        # copy inside the same request is refused even on the cap-sizing path
+        # (every item prepared before any is indexed).
+        check = DuplicateCheck.coerce(duplicate_policy)
+        guard: dict[str, Any] = (
+            {"tenant_id": tenant_id, "duplicate_policy": check}
+            if check.policy != POLICY_OFF else {}
         )
         # The cap gate: one count, one prepare pass, before the first write.
         # Only the REMAINING items count as incoming — a resumed job's completed
@@ -107,7 +112,7 @@ class ShardedIngestor:
         results = await self._backend.run_shards(
             shards, lambda shard: self._run_shard(
                 shard, job_id, tenant_id, prepared,
-                **({"duplicate_policy": duplicate_policy} if guard else {}),
+                **({"duplicate_policy": check} if guard else {}),
             )
         )
         # The scanned-PDF count, per run, at INFO (#202): the per-item error is
@@ -127,7 +132,7 @@ class ShardedIngestor:
         job_id: str | None,
         chunk_cap: int,
         tenant_id: str = DEFAULT_TENANT,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> Prepared:
         """Size the job and check it against ``chunk_cap`` — ONE live count and
         one text-only prepare pass over ``items``; no embed, no store write.
@@ -185,7 +190,7 @@ class ShardedIngestor:
         job_id: str | None,
         tenant_id: str,
         prepared: Prepared | None = None,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> list[ItemResult]:
         results: list[ItemResult] = []
         for item in shard:
@@ -213,7 +218,8 @@ class ShardedIngestor:
         return results
 
     async def _ingest_item(
-        self, item: WorkItem, tenant_id: str, duplicate_policy: str = POLICY_OFF
+        self, item: WorkItem, tenant_id: str,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> ItemResult:
         try:
             # Hold one of the tenant's concurrency slots so a single tenant can't
@@ -267,13 +273,15 @@ class ShardedIngestor:
         )
 
 
-def _guard_kwargs(tenant_id: str | None, duplicate_policy: str) -> dict[str, str]:
+def _guard_kwargs(
+    tenant_id: str | None, duplicate_policy: str | DuplicateCheck
+) -> dict[str, Any]:
     """The duplicate-guard keywords for a pipeline call — sent only when the
     guard is on, so an unguarded run makes the call it always made (duck-typed
     pipelines included)."""
-    if duplicate_policy == POLICY_OFF:
+    if DuplicateCheck.coerce(duplicate_policy).policy == POLICY_OFF:
         return {}
-    out = {"duplicate_policy": duplicate_policy}
+    out: dict[str, Any] = {"duplicate_policy": duplicate_policy}
     if tenant_id is not None:
         out["tenant_id"] = tenant_id
     return out

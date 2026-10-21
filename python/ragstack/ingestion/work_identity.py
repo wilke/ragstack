@@ -30,9 +30,19 @@ lookup, no id filling, byte-identical to before. The API defaults to
 ``refuse`` (``Settings.duplicate_policy``); the hand-run tools default to
 ``off``.
 
-The lookup is **fail-open**: a text index that cannot answer (ES down, an old
-index whose ``metadata.doi`` is ``text``-typed) logs a WARNING and admits. The
-guard is corpus hygiene, not isolation.
+The lookup is **fail-open**: a text index that cannot answer (ES down) logs a
+WARNING and admits. An index whose ``metadata.doi``/``pmcid`` is mapped
+``text`` instead of ``keyword`` does NOT error — the term queries just match
+nothing, so duplicates pass silently; ``ElasticsearchTextIndex`` logs a
+one-time WARNING per index when it sees such a mapping, and
+``scripts/metadata_conformance.py`` reports it. The guard is corpus hygiene,
+not isolation.
+
+Known limits (step 1): two CONCURRENT jobs ingesting the same new work can both
+pass (each looks up before either has indexed; within ONE job the shared
+``DuplicateCheck.seen`` closes that); an erratum or correction whose header
+``DOI:`` names the article it corrects is treated as that article — the
+edition/child model is R1's.
 
 The normalisers here are pure and are meant to seed R1's work resolver. No
 cross-key bridging in step 1: a new document carrying only a PMCID does not
@@ -43,12 +53,13 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ragstack.documents import DocumentSummary
 from ragstack.ingestion.doi_metadata import normalize_doi
-from ragstack.ingestion.enrich import derive_doi
+from ragstack.ingestion.enrich import DEFAULT_PROFILE, PublisherProfile
+from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.models import Document
 
 log = logging.getLogger(__name__)
@@ -56,6 +67,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "DUPLICATE_OF",
     "DUPLICATE_WORK",
+    "DuplicateCheck",
     "POLICIES",
     "POLICY_ALLOW",
     "POLICY_OFF",
@@ -99,7 +111,14 @@ KEY_KINDS = ("doi", "pmcid", "pmid")
 #: the window stops short of a reference list.
 HEADER_SCAN_CHARS = 2000
 
-_PMC_IN_NAME = re.compile(r"(?<![A-Za-z0-9])PMC(\d{1,9})(?![0-9])", re.IGNORECASE)
+# A PMCID token in a FILE NAME needs at least five digits. Real PMCIDs run from
+# low numbers (old back-file scans) to ~8 digits today, but a 1–4 digit token in
+# a name is far more often a year or a counter ("report-PMC2020.pdf") than an
+# id; a short real PMCID is still read from labelled header text or metadata.
+PMCID_NAME_MIN_DIGITS = 5
+_PMC_IN_NAME = re.compile(
+    rf"(?<![A-Za-z0-9])PMC(\d{{{PMCID_NAME_MIN_DIGITS},9}})(?![0-9A-Za-z])", re.IGNORECASE
+)
 _PMCID_PREFIX = re.compile(
     r"^\s*(?:pmcid\s*:?\s*|(?:https?://)?(?:www\.)?(?:ncbi\.nlm\.nih\.gov/pmc/articles/"
     r"|europepmc\.org/(?:article/PMC/|abstract/PMC/)?))",
@@ -163,20 +182,29 @@ def work_keys(metadata: dict[str, Any]) -> list[tuple[str, str]]:
     return keys
 
 
-def ids_from_filename(name: str) -> dict[str, str]:
-    """Ids a file NAME carries: ``pmcid`` from a ``PMC<digits>`` token, ``doi``
-    from the default publisher profile's filename rule. Pure; used by the
-    admission pre-check (where only the name is known) and by :meth:`fill_ids`."""
+def ids_from_filename(name: str, profile: PublisherProfile | None = None) -> dict[str, str]:
+    """Ids a file NAME carries: ``pmcid`` from a ``PMC<digits>`` token (at
+    least :data:`PMCID_NAME_MIN_DIGITS` digits), ``doi`` from the publisher
+    profile's filename rule — **for ``.pdf`` names only**, the case the rule
+    was validated on (an ASM-style stem such as ``fig.1`` or ``notes.2021-draft``
+    on a ``.txt``/``.md`` would otherwise become ``10.1128/fig.1``). The
+    ingestable suffix is stripped before the rule runs. Pure; used by the
+    admission pre-check (where only the name is known) and by the stage."""
     base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem, suffix = base, ""
+    for sfx in DEFAULT_INGEST_SUFFIXES:
+        if base.lower().endswith(sfx):
+            stem, suffix = base[: -len(sfx)], sfx
+            break
     out: dict[str, str] = {}
-    m = _PMC_IN_NAME.search(base)
+    m = _PMC_IN_NAME.search(stem)
     if m:
         pmcid = normalize_pmcid(f"PMC{m.group(1)}")
         if pmcid:
             out["pmcid"] = pmcid
-    if base:
-        raw, source = derive_doi(base, "", "")
-        doi = normalize_doi(raw) if source == "filename" else ""
+    if stem and suffix == ".pdf":
+        raw = (profile or DEFAULT_PROFILE).doi_from_filename(stem)
+        doi = normalize_doi(raw) if raw else ""
         if doi:
             out["doi"] = doi
     return out
@@ -278,6 +306,32 @@ def match_summaries(
 
 
 @dataclass
+class DuplicateCheck:
+    """One job's duplicate-guard settings, threaded through the pipeline as
+    ``duplicate_policy=`` (a bare policy string is accepted too).
+
+    ``tenants`` is the lookup scope — the router resolves it once per request
+    with ``api.scope.count_scope`` (own + public + a shared collection's owner
+    tenant), so only documents the caller can already read are ever named;
+    ``None`` = ``readable_tenants(tenant_id)`` (the worker, a hand run).
+    ``seen`` maps a work key to the first doc_id ADMITTED under it in this job,
+    shared across the job's items, so two copies inside one request are caught
+    even when the second is prepared before the first is indexed (the chunk-cap
+    sizing pass). Check-and-set on it has no ``await`` in between, so items
+    running concurrently in one event loop cannot both pass."""
+
+    policy: str = POLICY_OFF
+    tenants: list[str] | None = None
+    seen: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    @classmethod
+    def coerce(cls, value: DuplicateCheck | str | None) -> DuplicateCheck:
+        if isinstance(value, DuplicateCheck):
+            return value
+        return cls(policy=value or POLICY_OFF)
+
+
+@dataclass
 class _Match:
     key: tuple[str, str]
     existing_doc_id: str
@@ -287,31 +341,41 @@ class WorkIdentityStage:
     """The guard's two steps, run by ``IngestionPipeline.prepare_documents``:
     :meth:`fill_ids` before DOI enrichment, :meth:`admit` after it."""
 
-    def __init__(self, text_index: Any) -> None:
+    def __init__(self, text_index: Any, profile: PublisherProfile | None = None) -> None:
         self._text_index = text_index
+        self._profile = profile
 
-    @staticmethod
-    def fill_ids(documents: list[Document]) -> None:
-        """Fill MISSING ``pmcid``/``pmid``/``doi`` from each document's file
-        name and labelled header text. Never overwrites a present value (the
+    def fill_ids(self, documents: list[Document]) -> None:
+        """Fill MISSING ``pmcid``/``pmid``/``doi`` from labelled header text
+        and a ``PMC…`` file name. Never overwrites a present value (the
         ``merge_enrichment`` precedence). Runs before enrichment so a recovered
-        id can be resolved further (a header DOI becomes a Crossref title)."""
+        id can be resolved further (a header DOI becomes a Crossref title).
+
+        A file-name DOI is deliberately NOT written here: it would pre-empt the
+        enricher's frequency-ranked text scan (``document_doi`` takes a present
+        ``doi`` as authoritative). The enricher applies the same filename rule
+        itself; the guard uses it only as a lookup key (:meth:`keys_for`)."""
         for doc in documents:
-            name = (
-                doc.source
-                or str(doc.metadata.get("source_path") or "")
-                or str(doc.metadata.get("filename") or "")
-            )
-            from_name = ids_from_filename(name)
-            found = {**ids_from_text(doc.content), **from_name}
-            for field in KEY_KINDS:
-                value = found.get(field)
-                if value and _is_missing(doc.metadata.get(field)):
-                    doc.metadata[field] = value
-                    if field == "doi":
-                        doc.metadata.setdefault(
-                            "doi_source", "filename" if "doi" in from_name else "text"
-                        )
+            from_name = ids_from_filename(_name_of(doc), self._profile)
+            found = {**ids_from_text(doc.content)}
+            if "pmcid" in from_name:
+                found.setdefault("pmcid", from_name["pmcid"])
+            for kind in KEY_KINDS:
+                value = found.get(kind)
+                if value and _is_missing(doc.metadata.get(kind)):
+                    doc.metadata[kind] = value
+                    if kind == "doi":
+                        doc.metadata.setdefault("doi_source", "text")
+
+    def keys_for(self, doc: Document) -> list[tuple[str, str]]:
+        """The lookup keys of ``doc``: its metadata ids, plus the ``.pdf``
+        file-name DOI when the metadata carries no DOI at all."""
+        keys = work_keys(doc.metadata)
+        if not any(k == "doi" for k, _ in keys):
+            fn_doi = ids_from_filename(_name_of(doc), self._profile).get("doi")
+            if fn_doi:
+                keys.insert(0, ("doi", fn_doi))
+        return keys
 
     async def admit(
         self,
@@ -320,6 +384,7 @@ class WorkIdentityStage:
         tenants: list[str],
         policy: str,
         source: str = "",
+        seen: dict[tuple[str, str], str] | None = None,
     ) -> list[Document]:
         """Return the documents to chunk. ``refuse``: a document whose work is
         already indexed (or appeared earlier in this same call) is left out and
@@ -328,12 +393,14 @@ class WorkIdentityStage:
 
         A re-ingest of the SAME document (``existing.doc_id == doc.id``) is a
         replace, not a duplicate. ONE batched lookup per call; a lookup failure
-        admits everything with a WARNING (fail-open)."""
+        admits everything with a WARNING (fail-open). ``seen`` (shared across a
+        job's items, :class:`DuplicateCheck`) records each ADMITTED document's
+        keys, so a later copy in the same job is refused against it."""
         if policy == POLICY_OFF or not documents:
             return list(documents)
         if policy not in POLICIES:
             raise ValueError(f"duplicate_policy {policy!r} not in {POLICIES}")
-        per_doc = [(doc, work_keys(doc.metadata)) for doc in documents]
+        per_doc = [(doc, self.keys_for(doc)) for doc in documents]
         all_keys = list(dict.fromkeys(k for _, keys in per_doc for k in keys))
         if not all_keys:
             return list(documents)
@@ -346,12 +413,14 @@ class WorkIdentityStage:
                 "the check", source, type(e).__name__, e,
             )
             found = {}
-        seen_here: dict[tuple[str, str], str] = {}
+        seen_here = seen if seen is not None else {}
         admitted: list[Document] = []
+        # No await from here on: check-and-set on ``seen`` is atomic in the loop.
         for doc, keys in per_doc:
             match = _first_match(doc, keys, found, seen_here)
-            for k in keys:
-                seen_here.setdefault(k, doc.id)
+            if match is None or policy == POLICY_ALLOW:
+                for k in keys:
+                    seen_here.setdefault(k, doc.id)
             if match is None:
                 admitted.append(doc)
                 continue
@@ -382,6 +451,14 @@ def _first_match(
         if other is not None and other != doc.id:
             return _Match(k, other)
     return None
+
+
+def _name_of(doc: Document) -> str:
+    return (
+        doc.source
+        or str(doc.metadata.get("source_path") or "")
+        or str(doc.metadata.get("filename") or "")
+    )
 
 
 def _is_missing(value: Any) -> bool:

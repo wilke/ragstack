@@ -994,6 +994,12 @@ class DoiEnricher:
         self._resolver = resolver
         self._profile = profile
 
+    @property
+    def profile(self) -> PublisherProfile | None:
+        """The publisher profile whose filename rule DOI discovery uses (the
+        duplicate guard reads the same one, #747)."""
+        return self._profile
+
     async def enrich_documents(self, documents: list[Document]) -> int:
         """Enrich ``documents`` in place; return how many were changed.
 

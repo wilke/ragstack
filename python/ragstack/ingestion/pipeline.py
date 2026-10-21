@@ -11,6 +11,7 @@ from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.ingestion.work_identity import (
     POLICY_OFF,
+    DuplicateCheck,
     DuplicateWork,
     WorkIdentityStage,
     refusal_of,
@@ -128,14 +129,16 @@ class IngestionPipeline:
         # ``duplicate_policy`` other than "off" (the default on every method), so
         # an unguarded caller is byte-for-byte what it was. The lookup goes to
         # THIS pipeline's text index — the collection the write lands in.
-        self.work_identity = work_identity or WorkIdentityStage(text_index)
+        self.work_identity = work_identity or WorkIdentityStage(
+            text_index, profile=getattr(doi_enricher, "profile", None)
+        )
 
     async def ingest(
         self,
         source: str,
         tenant_id: str = DEFAULT_TENANT,
         *,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> list[str]:
         """Ingest a source and return the list of chunk IDs created.
 
@@ -163,7 +166,7 @@ class IngestionPipeline:
         source: str,
         tenant_id: str = DEFAULT_TENANT,
         *,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> list[Chunk]:
         """Load, chunk, and embed ``source``; return the surviving embedded chunks.
 
@@ -192,7 +195,7 @@ class IngestionPipeline:
         source: str,
         *,
         tenant_id: str = DEFAULT_TENANT,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> PreparedSource:
         """Load ``source`` and run :meth:`prepare_documents` — the text-only,
         store-free, GPU-free first step of :meth:`embed_source`. Loader errors
@@ -222,7 +225,7 @@ class IngestionPipeline:
         source: str = "",
         *,
         tenant_id: str = DEFAULT_TENANT,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> tuple[list[Chunk], int]:
         """Enrich, chunk and boilerplate-filter already-loaded ``documents``;
         return ``(chunks, produced)`` — the text-only chunks and how many were
@@ -230,22 +233,27 @@ class IngestionPipeline:
         the optional DOI enricher): no embedder, no store. ``source`` labels
         log lines.
 
-        ``duplicate_policy`` (#747, ``work_identity.POLICIES``): anything but
-        ``"off"`` runs the duplicate-paper guard — ids filled from the file
-        name and header before enrichment, then ONE text-index lookup scoped to
-        ``readable_tenants(tenant_id)`` after it, BEFORE the chunk loop. A
-        refused document produces no chunks and is marked
-        (``work_identity.refusal_of``); an admitted duplicate's chunks carry
-        ``duplicate_of``. ``documents`` itself is never shortened."""
-        guarded = duplicate_policy != POLICY_OFF
+        ``duplicate_policy`` (#747): a policy name (``work_identity.POLICIES``)
+        or a ``work_identity.DuplicateCheck`` carrying the lookup scope and the
+        job's shared ``seen`` keys. Anything but ``"off"`` runs the
+        duplicate-paper guard: ids filled from the header and a ``PMC…`` file
+        name before enrichment, then ONE text-index lookup scoped to the
+        check's ``tenants`` (default ``readable_tenants(tenant_id)``) after it,
+        BEFORE the chunk loop. A refused document produces no chunks and is
+        marked (``work_identity.refusal_of``); an admitted duplicate's chunks
+        carry ``duplicate_of``. ``documents`` itself is never shortened."""
+        check = DuplicateCheck.coerce(duplicate_policy)
+        guarded = check.policy != POLICY_OFF
         if guarded:
             self.work_identity.fill_ids(documents)
         await self._apply_doi_enrichment(documents)
         to_chunk = documents
         if guarded:
             to_chunk = await self.work_identity.admit(
-                documents, tenants=readable_tenants(tenant_id),
-                policy=duplicate_policy, source=source,
+                documents,
+                tenants=check.tenants if check.tenants is not None
+                else readable_tenants(tenant_id),
+                policy=check.policy, source=source, seen=check.seen,
             )
         all_chunks: list[Chunk] = []
         for doc in to_chunk:
@@ -322,7 +330,7 @@ class IngestionPipeline:
         tenant_id: str = DEFAULT_TENANT,
         source: str = "",
         *,
-        duplicate_policy: str = POLICY_OFF,
+        duplicate_policy: str | DuplicateCheck = POLICY_OFF,
     ) -> tuple[list[Chunk], int, int]:
         """Enrich, chunk, and embed already-loaded ``documents``; return
         ``(kept, produced, quarantined)`` — the surviving embedded chunks, how

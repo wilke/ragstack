@@ -47,6 +47,7 @@ from ragstack.api.deps import (
     single_inflight_ingest,
 )
 from ragstack.api.job_lifecycle import job_lifecycle
+from ragstack.api.scope import count_scope
 from ragstack.api.security import (
     ROLE_ADMIN,
     Principal,
@@ -63,6 +64,7 @@ from ragstack.ingestion.chunk_cap import (
     is_cap_refusal,
 )
 from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
+from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
     GoWeBackend,
@@ -84,12 +86,14 @@ from ragstack.ingestion.work_identity import (
     DUPLICATE_WORK,
     POLICY_OFF,
     POLICY_REFUSE,
+    DuplicateCheck,
     ids_from_filename,
     work_keys,
 )
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.store_routing import es_url_for, qdrant_url_for
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
+from ragstack.tool_image import declared_workflow_inputs
 from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceClient,
@@ -131,6 +135,7 @@ async def _run_ingest(
     every_file: bool = False,
     collection_store: CollectionStore | None = None,
     duplicate_policy: str = POLICY_OFF,
+    duplicate_scope: list[str] | None = None,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -157,6 +162,7 @@ async def _run_ingest(
     authoritative, post-enrichment check). A refused item is ``failed`` with
     ``duplicate_work: key=… existing_doc_id=…`` as its error; the job status
     follows :func:`_final_status` like any other item failure.
+    ``duplicate_scope`` is the request's lookup scope (:func:`_duplicate_scope`).
     """
     await job_store.update(job_id, status=RUNNING)
     try:
@@ -177,7 +183,10 @@ async def _run_ingest(
         if cap is not None:
             extra["chunk_cap"] = cap
         if duplicate_policy != POLICY_OFF:
-            extra["duplicate_policy"] = duplicate_policy
+            # One check per job: its `seen` keys are shared by every item.
+            extra["duplicate_policy"] = DuplicateCheck(
+                policy=duplicate_policy, tenants=duplicate_scope
+            )
         results = await ingestor.ingest_manifest(
             manifest, job_id=job_id, tenant_id=tenant_id, **extra
         )
@@ -452,41 +461,80 @@ def _resolve_duplicate_policy(requested: str | None) -> str:
     return requested or settings.duplicate_policy
 
 
+async def _duplicate_scope(
+    entry: CollectionEntry,
+    collections: CollectionRegistry,
+    principal: Principal,
+    policy: str,
+) -> list[str] | None:
+    """The duplicate guard's lookup scope for one request (#747 D6), resolved
+    ONCE: :func:`ragstack.api.scope.count_scope` — own + public, widened by the
+    owner tenant of a collection SHARED with the caller, i.e. exactly the
+    writer-tenants whose documents a query of ``entry`` would return to this
+    caller. So a collaborator's copy in a shared collection is found, and only
+    documents the caller can already read are ever named. ``None`` when the
+    guard is off (no ACL round trip)."""
+    if policy == POLICY_OFF:
+        return None
+    return await count_scope(entry, collections, principal)
+
+
 async def _precheck_duplicate(
     entry: CollectionEntry,
     names: list[str],
-    tenant: str,
+    scope: list[str] | None,
     policy: str,
     *,
     same_document: set[str] | None = None,
 ) -> None:
     """The admission-time half of the duplicate guard (#747 D2): a 409 BEFORE a
     job exists, a version is reserved or a byte is written, when a file NAME
-    carries a work id (``PMC1234567.pdf``, a publisher-profile DOI name) that a
-    document already indexed in ``entry`` carries too.
+    carries a work id (``PMC1234567.pdf``, a publisher-profile DOI on a ``.pdf``
+    name) that a document already indexed in ``entry`` carries too — or that
+    another file of the SAME request carries.
 
     Best-effort by design — the bytes are not parsed here (an upload is bytes,
     a GoWe source is not even on this host), so a name without an id passes and
     the authoritative check runs in the job after enrichment. Only ``refuse``
-    pre-checks. Scope is :func:`readable_tenants` — the caller's own documents
-    plus public ones, never another tenant's (naming a foreign doc_id would be
-    an existence oracle). ``same_document`` holds doc ids / source paths that
-    are THIS source (a re-ingest of the same path is a replace, not a
-    duplicate). A lookup failure admits (fail-open): the job-time check still
-    runs.
+    pre-checks. ``scope`` is :func:`_duplicate_scope` — never a tenant whose
+    documents the caller cannot read (naming a foreign doc_id would be an
+    existence oracle). ``same_document`` holds doc ids / source paths that are
+    THIS source (a re-ingest of the same path is a replace, not a duplicate).
+    A lookup failure admits (fail-open): the job-time check still runs.
 
     The 409 ``detail`` is an object, like ``owner_quota_exceeded``:
-    ``{error: "duplicate_work", key, existing_doc_id, collection, message}``.
+    ``{error: "duplicate_work", key, existing_doc_id, collection, message}``;
+    ``existing_doc_id`` is null when the clash is between two files of the
+    request.
     """
-    if policy != POLICY_REFUSE:
+    if policy != POLICY_REFUSE or not scope:
         return
-    per_name = [(n, work_keys(ids_from_filename(n))) for n in names]
-    keys = list(dict.fromkeys(k for _, ks in per_name for k in ks))
+    profile = resolve_profile(settings.publisher_profile)
+    per_name = [(n, work_keys(ids_from_filename(n, profile))) for n in names]
+
+    def _conflict(key: tuple[str, str], existing: str | None, message: str) -> HTTPException:
+        kind, value = key
+        return HTTPException(status_code=409, detail={
+            "error": DUPLICATE_WORK, "key": f"{kind}:{value}",
+            "existing_doc_id": existing, "collection": entry.id, "message": message,
+        })
+
+    first_name: dict[tuple[str, str], str] = {}
+    for name, name_keys in per_name:
+        for key in name_keys:
+            other = first_name.setdefault(key, name)
+            if other != name:
+                raise _conflict(key, None, (
+                    f"{other!r} and {name!r} in this request are the same work "
+                    f"({key[0]} {key[1]}); nothing was ingested. Send one of them, or "
+                    f"resubmit with duplicate_policy=allow to keep both."
+                ))
+    keys = list(first_name)
     lookup = getattr(getattr(entry, "text_index", None), "find_documents_by_key", None)
     if not keys or lookup is None:
         return
     try:
-        found = await lookup(keys, readable_tenants(tenant))
+        found = await lookup(keys, scope)
     except Exception as e:  # noqa: BLE001 — fail-open; the job-time check still runs
         log.warning("duplicate pre-check on %r skipped (%s): %s",
                     entry.id, type(e).__name__, e)
@@ -497,22 +545,12 @@ async def _precheck_duplicate(
             for existing in found.get(key, []):
                 if existing.doc_id in skip or (existing.source and existing.source in skip):
                     continue
-                kind, value = key
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": DUPLICATE_WORK,
-                        "key": f"{kind}:{value}",
-                        "existing_doc_id": existing.doc_id,
-                        "collection": entry.id,
-                        "message": (
-                            f"{name!r} is {kind} {value}, which is already indexed in "
-                            f"collection {entry.id!r} as document {existing.doc_id}; "
-                            f"nothing was ingested. Resubmit with "
-                            f"duplicate_policy=allow to keep a second copy."
-                        ),
-                    },
-                )
+                raise _conflict(key, existing.doc_id, (
+                    f"{name!r} is {key[0]} {key[1]}, which is already indexed in "
+                    f"collection {entry.id!r} as document {existing.doc_id}; "
+                    f"nothing was ingested. Resubmit with "
+                    f"duplicate_policy=allow to keep a second copy."
+                ))
 
 
 def _source_identity(source: str) -> set[str]:
@@ -721,6 +759,7 @@ def _gowe_inputs(
     *,
     max_chunks: int | None = None,
     duplicate_policy: str = POLICY_OFF,
+    declared_inputs: set[str] | None = None,
 ) -> dict[str, Any]:
     """Per-job workflow inputs (cwl/pdf-ingest-scatter.cwl): the archive's
     identity (``version``/``collection_id``/``spec_hash``/``job_id``) and the
@@ -777,10 +816,12 @@ def _gowe_inputs(
 
     ``duplicate_policy`` (#747): the worker-side duplicate guard
     (``ingest_shard --duplicate-policy``). Sent only when the policy is not
-    ``off`` AND ``GOWE_WORKER_DUPLICATE_POLICY`` says the tenant's worker image
-    carries the flag — a tools image built before #747 would reject it in
-    argparse on every task, so the input stays null (no flag on the argv)
-    until the image is rebuilt and repinned (ADR-0010)."""
+    ``off`` AND the registered workflow DECLARES the input
+    (``declared_inputs``, from ``tool_image.declared_workflow_inputs`` — the
+    ``provenance_inputs`` precedent). ADR-0010: the CWL names the image, so a
+    CWL that declares the input is the declaration that its image's
+    ``ingest_shard`` takes the flag; the pinned image does not, and its CWL
+    does not declare it. The input arrives with the tools-image repin."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -806,7 +847,7 @@ def _gowe_inputs(
         inputs["max_chunks"] = int(max_chunks)
     if settings.collection_registry_name:
         inputs["registry"] = settings.collection_registry_name
-    if duplicate_policy != POLICY_OFF and settings.gowe_worker_duplicate_policy:
+    if duplicate_policy != POLICY_OFF and "duplicate_policy" in (declared_inputs or set()):
         inputs["duplicate_policy"] = duplicate_policy
     if settings.doi_enrichment_enabled:
         inputs["doi_enrichment"] = True
@@ -1126,7 +1167,10 @@ async def ingest(
         entry = await _authorize_ingest_target(request.collection, principal, collections)
         _refuse_unrunnable_chunk_method(entry)
         policy = _resolve_duplicate_policy(request.duplicate_policy)
-        await _precheck_duplicate(entry, [Path(ws_path(uri)).name], tenant, policy)
+        await _precheck_duplicate(
+            entry, [Path(ws_path(uri)).name],
+            await _duplicate_scope(entry, collections, principal, policy), policy,
+        )
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
@@ -1150,7 +1194,8 @@ async def ingest(
                 job.job_id,
                 [WorkItem(item_id=ws_path(uri), source=uri)],
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
-                             duplicate_policy=policy),
+                             duplicate_policy=policy,
+                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,
@@ -1187,9 +1232,10 @@ async def ingest(
         request.collection, principal, collections, http_request.app.state, ingestor
     )
     policy = _resolve_duplicate_policy(request.duplicate_policy)
+    scope = await _duplicate_scope(target, collections, principal, policy)
     if _is_file_name(request.source):
         await _precheck_duplicate(
-            target, [Path(request.source).name], tenant, policy,
+            target, [Path(request.source).name], scope, policy,
             same_document=_source_identity(request.source),
         )
 
@@ -1210,6 +1256,7 @@ async def ingest(
             target,
             collection_store=get_collection_store(http_request),
             duplicate_policy=policy,
+            duplicate_scope=scope,
         )
         job.dispatched()  # _run_ingest terminalizes the row from here
         return IngestResponse(
@@ -1581,7 +1628,10 @@ async def ingest_upload(
         entry = await _authorize_ingest_target(collection, principal, collections)
         _refuse_unrunnable_chunk_method(entry)
         policy = _resolve_duplicate_policy(duplicate_policy)
-        await _precheck_duplicate(entry, _upload_names(files, kinds), tenant, policy)
+        await _precheck_duplicate(
+            entry, _upload_names(files, kinds),
+            await _duplicate_scope(entry, collections, principal, policy), policy,
+        )
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
@@ -1612,7 +1662,8 @@ async def ingest_upload(
                 job.job_id,
                 items,
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
-                             duplicate_policy=policy),
+                             duplicate_policy=policy,
+                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,
@@ -1639,7 +1690,8 @@ async def ingest_upload(
         collection, principal, collections, http_request.app.state, ingestor
     )
     policy = _resolve_duplicate_policy(duplicate_policy)
-    await _precheck_duplicate(target, _upload_names(files, kinds), tenant, policy)
+    scope = await _duplicate_scope(target, collections, principal, policy)
+    await _precheck_duplicate(target, _upload_names(files, kinds), scope, policy)
 
     # #415, and this is the site that proved a hand-rolled handler is not
     # enough: the `confine_to_root` 400 and the `mkdir` OSError below both sit
@@ -1696,6 +1748,7 @@ async def ingest_upload(
             True,  # every staged file becomes an item; unsupported suffixes fail visibly
             collection_store=get_collection_store(http_request),
             duplicate_policy=policy,
+            duplicate_scope=scope,
         )
         job.dispatched()  # _run_ingest terminalizes the row from here
         return IngestResponse(

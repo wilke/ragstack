@@ -315,7 +315,8 @@ def parse_args(argv=None):
                         "existing_doc_id=…'; the batch continues, exit 0); 'allow' "
                         "keeps it and stamps duplicate_of on its chunks; 'off' "
                         "(default, like --doi-enrichment for a hand run) does no "
-                        "lookup. The API sends it per job on the gowe path")
+                        "lookup. The API sends it on the gowe path once the "
+                        "registered workflow declares the duplicate_policy input")
     # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
     # offline plane matches the online API's default instead of silently
     # producing chunks the API path would have tagged.

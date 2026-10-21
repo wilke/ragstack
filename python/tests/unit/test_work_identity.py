@@ -97,6 +97,27 @@ def test_ids_from_filename() -> None:
     assert ids_from_filename("") == {}
 
 
+@pytest.mark.parametrize("name", [
+    "fig.1.txt", "table.1.txt", "notes.2021-draft.md", "jvi.02415-06.md",
+    "jvi.02415-06.txt", "report-PMC2020.pdf", "PMC123.md", "xPMC12345.pdf",
+])
+def test_ids_from_filename_false_positives(name: str) -> None:
+    """Review fix 1/6: the ASM filename rule is a ``.pdf``-only rule (it turned
+    ``fig.1.txt`` into ``10.1128/fig.1.txt``), and a PMCID token in a name needs
+    at least five digits (``report-PMC2020`` is a year)."""
+    assert ids_from_filename(name) == {}
+
+
+def test_ids_from_filename_pdf_asm_rule_and_profile() -> None:
+    from ragstack.ingestion.enrich import PublisherProfile
+
+    assert ids_from_filename("jvi.02415-06.pdf") == {"doi": "10.1128/jvi.02415-06"}
+    assert ids_from_filename("/x/JVI.02415-06.PDF") == {"doi": "10.1128/jvi.02415-06"}
+    other = PublisherProfile(name="mbio", doi_prefix="10.9999")
+    assert ids_from_filename("jvi.02415-06.pdf", other) == {"doi": "10.9999/jvi.02415-06"}
+    assert ids_from_filename("PMC12345.pdf") == {"pmcid": "PMC12345"}
+
+
 def test_ids_from_text_reads_the_europe_pmc_header_including_the_wrapped_doi() -> None:
     assert ids_from_text(EUROPE_PMC_HEADER) == {
         "pmcid": "PMC8092463", "pmid": "33858987", "doi": DOI,
@@ -124,7 +145,6 @@ def test_settings_policies_match_the_module() -> None:
     with pytest.raises(ValueError):
         Settings(duplicate_policy="maybe")
     assert Settings().duplicate_policy == "refuse"            # D1: the API default
-    assert Settings().gowe_worker_duplicate_policy is False   # pinned image safety
 
 
 # --------------------------------------------------------------------------- #
@@ -136,11 +156,38 @@ def test_fill_ids_fills_missing_from_name_and_header_and_never_overwrites() -> N
     bare = Document(id="d1", content=EUROPE_PMC_HEADER, source="/x/PMC8092463.md")
     mine = Document(id="d2", content=EUROPE_PMC_HEADER, source="/x/PMC8092463.md",
                     metadata={"pmcid": "PMC1", "doi": "10.9999/keep"})
-    WorkIdentityStage.fill_ids([bare, mine])
+    WorkIdentityStage(InMemoryTextIndex()).fill_ids([bare, mine])
     assert bare.metadata == {"pmcid": "PMC8092463", "pmid": "33858987", "doi": DOI,
                              "doi_source": "text"}
     assert mine.metadata["pmcid"] == "PMC1" and mine.metadata["doi"] == "10.9999/keep"
     assert mine.metadata["pmid"] == "33858987" and "doi_source" not in mine.metadata
+
+
+def test_a_filename_doi_is_a_lookup_key_never_metadata() -> None:
+    """Review fix 1: a ``.pdf`` name's DOI must not be written before
+    enrichment (``document_doi`` would take it as authoritative and skip the
+    text scan). The real DOI in the text is what the metadata keeps; the name's
+    DOI only joins the lookup keys when the metadata has no DOI at all."""
+    from ragstack.ingestion.doi_metadata import document_doi
+
+    stage = WorkIdentityStage(InMemoryTextIndex())
+    labelled = Document(id="a", content="DOI: 10.1234/real.1\n\nbody", source="/x/fig.1.txt")
+    stage.fill_ids([labelled])
+    assert labelled.metadata["doi"] == "10.1234/real.1"
+    assert stage.keys_for(labelled) == [("doi", "10.1234/real.1")]
+
+    asm = Document(id="b", content="body only", source="/x/jvi.02415-06.pdf")
+    stage.fill_ids([asm])
+    assert "doi" not in asm.metadata
+    assert stage.keys_for(asm) == [("doi", "10.1128/jvi.02415-06")]
+
+    unlabelled = Document(id="c", content=f"PNAS https://doi.org/{DOI} x " * 3,
+                          source="/x/notes.2021-draft.md")
+    stage.fill_ids([unlabelled])
+    assert "doi" not in unlabelled.metadata
+    assert stage.keys_for(unlabelled) == []
+    assert document_doi(Document(id="d", content=unlabelled.content,
+                                 source="/x/sha-1.md")) == (DOI, "text")
 
 
 # --------------------------------------------------------------------------- #
@@ -307,3 +354,51 @@ async def test_sharded_item_carries_the_refusal_on_both_local_paths(chunk_cap) -
     assert by_id["i-dup"].status == FAILED
     assert by_id["i-dup"].error == format_refusal(("doi", DOI), "first")
     assert by_id["i-new"].status == COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_cap,shard_size", [(10_000, 64), (None, 1)])
+async def test_two_copies_inside_one_job_second_is_refused(chunk_cap, shard_size) -> None:
+    """Review fix 3: ONE ``DuplicateCheck`` per manifest run, its ``seen`` shared
+    by every item. Covers the cap-sizing pass (every item prepared before any is
+    indexed) and concurrent shards (shard_size=1, two at once)."""
+    from ragstack.ingestion.backends import LocalAsyncIORunner
+    from ragstack.ingestion.manifest import Manifest, WorkItem
+    from ragstack.ingestion.sharded import ShardedIngestor
+    from ragstack.jobstore import COMPLETED, FAILED
+
+    pipe, loader = _pipe()
+    loader.docs["c1"] = [_doc("c1", {"pmid": "77"})]
+    loader.docs["c2"] = [_doc("c2", {"pmid": "PMID: 77"})]
+    ingestor = ShardedIngestor(pipe, LocalAsyncIORunner(max_concurrency=2),
+                               shard_size=shard_size)
+    manifest = Manifest(items=[WorkItem(item_id="i1", source="c1"),
+                               WorkItem(item_id="i2", source="c2")])
+    results = await ingestor.ingest_manifest(
+        manifest, tenant_id="alice", duplicate_policy="refuse",
+        **({"chunk_cap": chunk_cap} if chunk_cap else {}),
+    )
+    by_id = {r.item_id: r for r in results}
+    statuses = sorted((by_id["i1"].status, by_id["i2"].status))
+    assert statuses == sorted([COMPLETED, FAILED])
+    loser = by_id["i1"] if by_id["i1"].status == FAILED else by_id["i2"]
+    winner_doc = "c2" if loser.item_id == "i1" else "c1"
+    assert loser.error == format_refusal(("pmid", "77"), winner_doc)
+    assert {c.doc_id for c in pipe.text_index._chunks} == {winner_doc}
+
+
+@pytest.mark.asyncio
+async def test_check_tenants_widen_the_scope_for_a_shared_collection() -> None:
+    """Review fix 2: the lookup scope is the list the router resolved
+    (``count_scope``), not ``readable_tenants`` of the writer — so the owner's
+    copy in a collection shared with this caller is found."""
+    from ragstack.ingestion.work_identity import DuplicateCheck
+
+    pipe, loader = _pipe()
+    await _seed(pipe, loader, _doc("owners", ENRICHED), tenant="owner")
+    loader.docs["mine"] = [_doc("mine", ENRICHED)]
+    with pytest.raises(DuplicateWork, match="existing_doc_id=owners"):
+        await pipe.ingest("mine", tenant_id="collab", duplicate_policy=DuplicateCheck(
+            policy="refuse", tenants=["collab", "public", "owner"]))
+    # …and without the widening, the owner's copy is invisible to the caller
+    assert await pipe.ingest("mine", tenant_id="collab", duplicate_policy="refuse")

@@ -287,20 +287,6 @@ inputs:
       job by the API (documents.py::_gowe_inputs). Default false, so a hand-run
       workflow makes no outbound request unless asked. Never fails a task: a
       slow, down or rate-limiting service degrades to 'no title'."
-  duplicate_policy:
-    type: ["null", string]
-    doc: "Duplicate-paper guard (#747): `refuse` leaves out a document whose
-      DOI/PMCID/PMID is already indexed in the collection (its receipt row
-      carries `duplicate_work: key=… existing_doc_id=…`, the batch goes on),
-      `allow` keeps it and stamps `duplicate_of`, `off` does no lookup. NULL
-      (the default) emits no flag at all, so the task argv is byte-for-byte
-      the pre-#747 one and ingest_shard runs its own default, off — which is
-      what keeps a tools image that predates --duplicate-policy working
-      (argparse would exit 2 on an unknown flag). The API seeds it only when
-      the tenant's worker image carries the flag
-      (GOWE_WORKER_DUPLICATE_POLICY) and the policy is not off. A string, not
-      an enum: ingest_shard's argparse validates the value (refuse | allow |
-      off), and a YAML 1.1 reader parses a bare `off` as a boolean."
   doi_mailto:
     type: ["null", string]
     doc: "Contact address for Crossref's polite pool and NCBI's email parameter.
@@ -411,7 +397,6 @@ steps:
       collection_id: collection_id
       registry: registry
       doi_enrichment: doi_enrichment
-      duplicate_policy: duplicate_policy
       doi_mailto: doi_mailto
       doi_cache_dir: doi_cache_dir
       workflow_id: workflow_id
@@ -489,11 +474,6 @@ steps:
         doi_cache_dir:
           type: ["null", string]
           inputBinding: {prefix: --doi-cache-dir, position: 23}
-        # #747. Null (the default) is skipped before the prefix, so an image
-        # whose ingest_shard.py predates the flag never sees it.
-        duplicate_policy:
-          type: ["null", string]
-          inputBinding: {prefix: --duplicate-policy, position: 27}
         # Provenance (ADR-0010 decision 8): recorded on the receipt, not checked.
         workflow_id:
           type: ["null", string]

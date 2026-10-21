@@ -189,26 +189,14 @@ def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> N
     assert tool_in["inputBinding"]["prefix"] == "--max-chunks"
 
 
-def test_duplicate_policy_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> None:
-    """#747: the duplicate guard reaches the worker as ONE optional workflow
-    input bound to ``ingest_shard --duplicate-policy``. Nullable with NO
-    default, unlike ``max_chunks``: a null input emits no flag, so a tools
-    image whose ingest_shard predates the flag keeps working (an ``off``
-    default would put ``--duplicate-policy off`` on every argv — argparse exit
-    2 on the pinned image). A string, not an enum: YAML 1.1 reads a bare
-    ``off`` as a boolean."""
-    inp = wf["inputs"]["duplicate_policy"]
-    assert inp["type"] == ["null", "string"] and "default" not in inp
-    ingest = _steps(wf)["ingest"]
-    assert ingest["in"]["duplicate_policy"] == "duplicate_policy"
-    tool_in = ingest["run"]["inputs"]["duplicate_policy"]
-    assert tool_in["type"] == ["null", "string"] and "default" not in tool_in
-    assert tool_in["inputBinding"]["prefix"] == "--duplicate-policy"
-    positions = [
-        i["inputBinding"]["position"] for i in ingest["run"]["inputs"].values()
-        if isinstance(i, dict) and "inputBinding" in i
-    ] + [a["position"] for a in ingest["run"]["arguments"]]
-    assert len(positions) == len(set(positions)), "argv positions must be unique"
+def test_duplicate_policy_is_not_declared_until_the_tools_image_repin(wf: dict) -> None:
+    """#747 / ADR-0010: the pinned tools image's ingest_shard predates
+    ``--duplicate-policy``, and the CWL is what declares which image a workflow
+    runs. So the input is NOT declared today, and ``_gowe_inputs`` sends it
+    only when the registered workflow declares it. The repin PR that ships the
+    new image adds the input (nullable, no default) and flips this test."""
+    assert "duplicate_policy" not in wf["inputs"]
+    assert "duplicate_policy" not in _steps(wf)["ingest"]["run"]["inputs"]
 
 
 # --- the store-target sweep: every CWL in the repo, not just this one -------- #

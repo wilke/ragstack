@@ -21,6 +21,10 @@ import pytest
 
 from ragstack.api.main import app
 from ragstack.ingestion.work_identity import DUPLICATE_WORK, format_refusal
+from tests.api.test_chunk_cap_status import (  # noqa: F401 — fixtures
+    _cleanup,
+    principals,
+)
 from tests.api.test_ingest_gowe_path import (  # noqa: F401 — the `gowe` fixture
     AUTH,
     TENANT,
@@ -215,19 +219,23 @@ async def test_gowe_precheck_never_names_another_tenants_document(client, gowe) 
     assert r.status_code == 202, r.text
 
 
-async def test_gowe_worker_input_only_when_the_image_carries_the_flag(
+async def test_gowe_worker_input_only_when_the_workflow_declares_it(
     client, gowe, monkeypatch  # noqa: F811
 ) -> None:
-    """Risk 1: the pinned tools image predates --duplicate-policy, so by default
-    the submission carries no duplicate_policy (the CWL input stays null and the
-    argv is the pre-#747 one). With GOWE_WORKER_DUPLICATE_POLICY on, the
-    resolved policy travels; `off` never does."""
+    """Review fix 4 / ADR-0010: the CWL declares which image runs, so the API
+    sends ``duplicate_policy`` only when the REGISTERED workflow declares that
+    input (the ``provenance_inputs`` precedent). The pinned scatter CWL does not
+    (its image's ingest_shard predates the flag); the repin PR adds it."""
     from ragstack.config import settings
 
+    backend = gowe["backend"]
     assert (await _upload(client, "a.pdf")).status_code == 202
     assert "duplicate_policy" not in gowe["engine"].submissions[-1]["inputs"]
 
-    monkeypatch.setattr(settings, "gowe_worker_duplicate_policy", True)
+    monkeypatch.setattr(backend, "workflow_cwl", (
+        "cwlVersion: v1.2\nclass: Workflow\ninputs:\n"
+        "  pdfs: File[]\n  duplicate_policy: [\"null\", string]\n"
+        "outputs: {}\nsteps: {}\n"))
     await _poll(client, gowe["engine"].submissions[-1]["inputs"]["job_id"], AUTH)
     assert (await _upload(client, "b.pdf")).status_code == 202
     assert gowe["engine"].submissions[-1]["inputs"]["duplicate_policy"] == "refuse"
@@ -243,3 +251,79 @@ async def test_gowe_worker_input_only_when_the_image_carries_the_flag(
     monkeypatch.setattr(settings, "duplicate_policy", "off")
     assert (await _upload(client, "d.pdf")).status_code == 202
     assert "duplicate_policy" not in gowe["engine"].submissions[-1]["inputs"]
+
+
+async def test_the_repo_scatter_cwl_does_not_declare_the_input_yet() -> None:
+    """What the API registers today: no ``duplicate_policy`` input, so nothing
+    is sent until the tools-image repin adds it."""
+    from pathlib import Path
+
+    from ragstack.tool_image import declared_workflow_inputs
+
+    cwl = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
+    if not cwl.is_file():
+        pytest.skip("no cwl/ in this checkout")
+    assert "duplicate_policy" not in declared_workflow_inputs(cwl.read_text())
+
+
+# --------------------------------------------------------------------------- #
+# review fixes 2 and 3: shared scope, copies inside one request
+# --------------------------------------------------------------------------- #
+
+
+async def test_two_files_of_one_request_sharing_a_key_are_409(client) -> None:
+    jobs_before = set(app.state.job_store._jobs)
+    r = await client.post("/v1/ingest/upload", files=[
+        ("files", ("PMC8092463.md", EPMC.encode(), "text/markdown")),
+        ("files", ("copy-PMC8092463.md", EPMC.encode(), "text/markdown")),
+    ])
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["key"] == "pmcid:PMC8092463" and detail["existing_doc_id"] is None
+    assert "in this request" in detail["message"]
+    assert set(app.state.job_store._jobs) == jobs_before
+
+
+async def test_two_unnamed_copies_in_one_upload_second_item_refused(client) -> None:
+    """Names carry no id, so admission passes; the job-time check refuses the
+    second copy against the first (the shared per-job ``seen``)."""
+    r = await client.post("/v1/ingest/upload", files=[
+        ("files", ("one.md", f"DOI: {DOI}\n\n{BODY}".encode(), "text/markdown")),
+        ("files", ("two.md", f"DOI: {DOI}/-/\n\n{BODY}".encode(), "text/markdown")),
+    ])
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    body = await _poll(client, job_id)
+    assert body["items"]["completed"] == 1 and body["items"]["failed"] == 1
+    (failed,) = [i for i in app.state.job_store._items[job_id].values() if i.error]
+    assert failed.error.startswith(f"duplicate_work: key=doi:{DOI} existing_doc_id=")
+    assert len(_doc_ids()) == 1
+
+
+async def test_shared_collection_scope_finds_the_owners_copy(
+    client, principals, _cleanup, tmp_path  # noqa: F811
+) -> None:
+    """Review fix 2: the owner's chunks are stamped with the OWNER's tenant, so a
+    non-owner writer (here an admin, the one non-owner write allowed today) must
+    look up with ``count_scope`` — own + public + the owner — or the owner's
+    copy is invisible. The 409 names the owner's doc, which the caller can read."""
+    from tests.api.test_chunk_cap_status import _h, _install
+
+    await _install("lib", owner="owner")
+    src = tmp_path / "a" / "PMC8092463.md"
+    src.parent.mkdir()
+    src.write_text(EPMC, encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src), "collection": "lib"},
+                          headers=_h("owner"))
+    assert r.status_code == 200, r.text
+    assert (await _poll(client, r.json()["job_id"], _h("owner")))["status"] == "completed"
+    owners = {c.doc_id for c in app.state.text_index._chunks
+              if c.metadata.get("tenant_id") == "owner"}
+    assert len(owners) == 1
+    copy = tmp_path / "b" / "PMC8092463.md"
+    copy.parent.mkdir()
+    copy.write_text(EPMC, encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(copy), "collection": "lib"},
+                          headers=_h("admin"))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["existing_doc_id"] == owners.pop()

@@ -240,17 +240,11 @@ class Settings(BaseSettings):
     #   allow  — it is ingested and its chunks carry `duplicate_of`;
     #   off    — no lookup at all (the pre-#747 behaviour).
     # Owner decision 2026-10-21 (D1): refuse by default on the API. The hand-run
-    # tools (`ingest_shard --duplicate-policy`) default to off.
+    # tools (`ingest_shard --duplicate-policy`) default to off. On the gowe path
+    # the worker check runs only once the registered workflow declares the
+    # `duplicate_policy` input (ADR-0010: the tools-image repin adds it); until
+    # then the admission check on file names is the guard there.
     duplicate_policy: str = "refuse"
-    # Whether this tenant's GoWe worker image carries `ingest_shard
-    # --duplicate-policy` (#747). The worker-side check (the authoritative one
-    # on the gowe path: it runs after the PDF is extracted and its ids are
-    # known) needs the flag, and a tools image built before #747 rejects it in
-    # argparse — exit 2 on every task. Off (default), the API sends no
-    # `duplicate_policy` input, the CWL input stays null, and the gowe path is
-    # guarded only by the admission pre-check on file names. Turn it on with the
-    # tools-image rebuild + CWL repin (ADR-0010) that ships this ingest_shard.
-    gowe_worker_duplicate_policy: bool = False
 
     @field_validator("duplicate_policy")
     @classmethod
