@@ -110,9 +110,8 @@ flowchart TD
 
 **Querying has one path and no bulk API.** `POST /v1/query` and `POST /v1/retrieve`
 (`python/ragstack/api/routers/query.py`) each serve one query; there is no
-batch-query route. Both take `rewrite_strategies` and run the same
-expand → retrieve → fuse → rerank steps; only `/v1/query` generates (since #752,
-§7.1). Intra-request fan-out and fairness belong to §6–§7.
+batch-query route. Both take `rewrite_strategies` (since #752, §7.1) and run the
+same expand → retrieve → fuse → rerank steps; only `/v1/query` generates. Intra-request fan-out and fairness belong to §6–§7.
 
 **Why it matters.** Paths A, B and C call the same pipeline, so chunk ids, neighbour
 links, quarantine, the metadata contract and the delete-prior rule cannot drift
@@ -1545,9 +1544,9 @@ step writes beside the CWL); the last three the worker reads from the image's
 provenance begins with the first stamped release; a version written before then reads
 as all-`null` ("unknown"), never as an error.
 
-**What the code does at `main` @ `a730cc9`** — #655 steps 1 (#664), 2 (#668), 3 (the shared
-store, ops), 4 (#672, tightened by #678) and 5 (the v1.6.6 release, then #706) have landed;
-step 6 has not, and step 5's retirement of the per-group image directories is still open:
+**What the code does at `main` @ `8e62f22` (v1.6.7)** — #655 steps 1 (#664), 2 (#668), 3 (the
+shared store, ops), 4 (#672, tightened by #678), 5 (the v1.6.6 release, then #706) and 6 (PR-F,
+#709–#715) have landed; step 5's retirement of the per-group image directories is still open:
 - **Landed:** the single version derivation (`ragstack/version.py`; `ragstack.__version__`
   via `ragstack/__init__.py`; `GET /v1/version` reports it); the tools-image build
   (`apptainer/build-tools-image.sh` + `apptainer/ragstack-tools.def`, writing
@@ -1598,7 +1597,8 @@ step 6 has not, and step 5's retirement of the per-group image directories is st
   tenant's own python against its checkout and prints each workflow's text sha256,
   its `dockerPull` and the verdict: exit 3 on a problem or `unchecked`, 1 when the
   check could not run. Runbook: `docs/runbooks/verifying-tools-image.md`. The installed
-  `/rag/bin/ragstack-ctl` (`v1.6.4-60-gcef1aeb`, as of 2026-10-08) carries `gowe render`.
+  `/rag/bin/ragstack-ctl` (`v1.6.4-60-gcef1aeb` as of 2026-10-08; `v1.6.6-27-g8f5b5d0` as of
+  2026-10-21) carries `gowe render`.
 - **Landed in v1.6.6 and #706 (#655 steps 3 and 5):** the first tools tag, v1.6.5
   (`d5c970e`), built `ragstack-tools-v1.6.5-b1.sif`, which sits with its receipt in the
   shared store `/scout/containers/ragstack/`. v1.6.6 (tag at `4c1322e`; the stamping
@@ -2311,7 +2311,8 @@ rewriters.
    `MAX_REWRITE_STRATEGIES = 8` entries: `max_length` on both request models,
    `maxItems: 8` on `RewriteStrategies` and in `contracts/schemas/query_request.json`
    and `retrieve_request.json`; a ninth entry is a 422 on `/v1/query` as well
-   as `/v1/retrieve`.
+   as `/v1/retrieve` (Python; Go accepts the list unchecked, so the contract's
+   `maxItems` is enforced on one side only).
 2. Rewriters (`python/ragstack/rewriting/rewriters.py`):
    `PassthroughRewriter` returns `[query]`. `MultiQueryRewriter(n=Settings.multiquery_n,
    default 3)` asks for N paraphrases and returns `[query] + lines[:n]`.
@@ -2336,8 +2337,8 @@ retrieve produce the fused `list[ScoredChunk]`.
 calls are sequential** (a `for` loop of awaits): each LLM-backed strategy is one
 LLM call per request, made before retrieval starts, which is why the list
 length is capped. **Rerank pool:** `depth` is fetched per variant
-(`_retrieve_fused`), so with V rewritten variants on one collection the
-reranker sees the fused union, up to (1+V)×depth candidates; a multi-collection
+(`_retrieve_fused`), so with V variants (the original included, as in §3.4) on
+one collection the reranker sees the fused union, up to V×depth candidates; a multi-collection
 union (`_fans_out`) is cut to `depth` before the one rerank (§7.2). Admission
 control is `tenant_slot` → `quota.slot(tenant)`, with a cap of
 `tenant_max_concurrency` (default 0 = unlimited).
