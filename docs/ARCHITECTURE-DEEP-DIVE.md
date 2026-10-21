@@ -1495,7 +1495,7 @@ per-document receipts onto the job.
   against declared types (GoWe#273), so today the enum is documentation and the
   API's own check above remains the gate.
 
-**Tool image binding — ADR-0010 (*Proposed*; the three-artifact model, #666).**
+**Tool image binding — ADR-0010 (*Accepted* 2026-10-21; the three-artifact model, #666).**
 Three artifacts, each **a build of a tag**, and the workflow binds them:
 
 1. **A repo version is a tag:** `vX` on a release tag, `vX+<shortsha>` past one (the
@@ -1639,12 +1639,10 @@ shared store, ops), 4 (#672, tightened by #678), 5 (the v1.6.6 release, then #70
   2026-10-21** (an operational fact, not in the repo): all six tenants (asm-next,
   demo, elrond, clark, lucid-next and hackathon, which moved on 2026-10-21 at 18:08Z) run
   `ragstack-server-v1.6.7-b1.sif` in image mode; dev runs `main` at `5680404` as
-  `ragstack-server-v1.6.6+5680404-b1.sif` in image mode.
+  `ragstack-server-v1.6.6+5680404-b1.sif` in image mode. (This settles ADR-0010's former open question, a server image for every tenant; ADR-0010 was Accepted on 2026-10-21.)
 - **Not yet:** retiring the per-group image directories (the rest of step 5; on
   2026-10-08 they still held the pre-ADR `ragstack-worker*.sif` builds beside the links
-  above, and under decision 6 the links stay as the reachability path). Whether the server
-  image replaces checkouts for every tenant was settled in practice, and ADR-0010 is
-  Accepted (2026-10-21).
+  above, and under decision 6 the links stay as the reachability path).
 
 **Tools & models:** `GoWeClient` (`python/ragstack/ingestion/gowe_client.py`),
 `WorkspaceClient` (`python/ragstack/workspace.py`), the tool image — since #664 builds
