@@ -1056,6 +1056,110 @@ requests to Crossref's polite pool and is worth setting on every tenant) and
 `DOI_ENRICHMENT_CACHE_DIR` (an on-disk per-DOI cache, so the same paper ingested
 into three collections resolves once — set it on any real deployment).
 
+## 6d. Symbol glossary (#754)
+
+A paper defines `Qb` once ("where Qb is the breathing flow rate") and a table
+caption pages later says only `Qb = 0.5 m3/h`. The glossary copies the
+definition from the chunk's own document into a separate Elasticsearch field,
+`symbol_glossary`, so a keyword search can reach the caption. It is not
+embedded, never added to `content`, and Qdrant is untouched. Design, the
+extraction rules and every measurement are in
+[`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md); this section is
+the operator's side. Everything ships off.
+
+### The settings
+
+| Key | Default | Effect |
+|---|---|---|
+| `TEXT_SYMBOL_GLOSSARY_BOOST` | `0` | Query side. `0` sends the exact pre-#754 BM25 `match` on `content`, byte-identical. A value above 0 sends a `multi_match` of type `most_fields` over `content` and `symbol_glossary^<boost>`. |
+| `SYMBOL_GLOSSARY_EXTRACTION` | `off` | Ingest side. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. |
+| `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. |
+| `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. |
+
+The boost only has an effect on an index whose chunks carry a `symbol_glossary`
+field (ingested with extraction on, or backfilled). On an index without the
+field it is a no-op, so it is safe to set before every collection has one. The
+plan measured it on dev's `openchia` collection (reranked recall@10 0.361 to
+0.387 at boost 1 to 2 with norms off, against 0.226 without; see the plan's
+re-run table for the setup and the crowding check). That is one collection and
+one query set, not a promise.
+
+**The boost changes what a search returns.** Tell evaluation users before you
+set it: runs from before and after are different conditions.
+
+### The mapping
+
+`symbol_glossary` is mapped `text` with `norms: false`. The field is added to
+an existing index when the store is constructed, that is, at the first API
+start after the image that carries #763. It is declared up front because norms
+can be disabled on an existing field but never re-enabled, and the measurements
+favoured norms off; an undeclared field would be mapped dynamically, with
+norms, on its first write. If the push fails the store logs a warning and
+carries on.
+
+### Backfilling an existing collection
+
+`python/scripts/backfill_symbol_glossary.py` builds the glossary from the
+chunks already in Elasticsearch: it reassembles each document from its chunks
+and writes `symbol_glossary` (and `metadata.symbol_glossary_version`) with
+partial updates. No vector is touched and nothing is re-embedded. It is a dry
+run unless told otherwise, and resumable: a chunk that already holds what would
+be written is skipped, so after an interruption re-run the same command.
+
+Find the physical index name (`ragstack_lib_<collection>_<model>_<chunker>_<hash>`):
+
+```bash
+curl -s "$ES_URL/_cat/indices/ragstack_lib_<collection>_*?h=index,docs.count"
+```
+
+Dry run, then apply (the confirmation repeats the exact index name):
+
+```bash
+cd <checkout>/python
+PYTHONPATH=. python scripts/backfill_symbol_glossary.py \
+    --es-url "$ES_URL" --index ragstack_lib_openchia_<model>_<chunker>_<hash> \
+    [--llm-cache glossary.jsonl]
+PYTHONPATH=. python scripts/backfill_symbol_glossary.py \
+    --es-url "$ES_URL" --index ragstack_lib_openchia_<model>_<chunker>_<hash> \
+    [--llm-cache glossary.jsonl] \
+    --apply --confirm-index ragstack_lib_openchia_<model>_<chunker>_<hash>
+```
+
+There is no default URL or index. The sizing note in the script header is
+authoritative: a 16.5k-chunk collection takes seconds; a very large index is
+hours, at least twice its size in transient disk, and segment churn like a
+rewrite. Do not run it on `open-access` (47.6M chunks): that corpus will be
+re-ingested instead.
+
+### Setting the boost on a ctl-managed tenant (today)
+
+`ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1` is currently
+refused ("not a known ragstack setting", issue #775). Until that lands, append
+the line to the tenant's env file, keeping a backup, and restart the API only:
+
+```bash
+cp <data>/tenants/<t>/config/tenant.env <data>/tenants/<t>/config/tenant.env.bak-$(date +%Y%m%d%H%M)
+echo 'TEXT_SYMBOL_GLOSSARY_BOOST=1' >> <data>/tenants/<t>/config/tenant.env
+ragstack-ctl tenant restart <t> --only api
+```
+
+There is no non-admin way to read the effective value (`/v1/config` is
+admin-only), so verify by behaviour: a query that only the glossary can answer
+should now return the caption chunk.
+
+### Rollout order (used on dev, 2026-10-22)
+
+1. Roll the server image. The mapping appears on restart; the boost is still 0.
+2. Deduplicate the collection if needed.
+3. Backfill dry run; read what it would change.
+4. Backfill `--apply`.
+5. Set the boost to 1 (above) and restart the API.
+6. Tell evaluation users.
+
+Papers ingested through GoWe get no glossary yet: the bulk tools accept
+`--symbol-glossary {off,rules}` but no CWL passes it, so enabling it there needs
+a tools tag plus CWL stamping. Until then, backfill those collections.
+
 ## 7. Diagnosing a user report
 
 ### "My ingest failed and it won't tell me why"
