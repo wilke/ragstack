@@ -398,12 +398,11 @@ as the end of a definition: `where Qb is the breathing\nflow rate.` gave no entr
   `…, and Cp(t) is`, `λ (h−1) is`, `μ=μ(T) is`, `η represents`, `while τd is`, `where μt is`.
   On wrapped text the line break used to stop these run-ons by accident. Without this,
   folding lost about 10 definitions that `rules/2` had found.
-- **Continuation clauses are searched in bounded windows chained from clause to clause**
-  (each clause may start up to 2,500 characters after the previous one; the window adds
-  1,500 for the clause itself), against precomputed sentence ends. A window's end is never a
-  terminator: a clause whose match ends at a window cut is re-searched from its own start
-  with a fresh window, never emitted truncated. A long run with no sentence end was
-  quadratic (3.5 s on a synthetic 80k-character input; now 0.6 s).
+- **Continuation clauses are searched with a watermark.** The search is still rules/2's,
+  unbounded to the sentence end. But each stretch of a sentence is scanned once, and a second
+  `where` in an already scanned sentence adds nothing. Rescanning per match was quadratic on
+  a long run with no sentence end (3.5 s on a synthetic 80k-character input). The comma-bearing
+  worst case at 400k characters now takes 0.7 s. There is no window, so no clause is cut by one.
 - **Appositive vs a clause with arguments.** "the initial concentration, Cp(t) is the point
   concentration" no longer gives Cp "initial concentration": the optional arguments used to
   let the match backtrack past the `(?!\s+is)` check. With arguments or a unit in
@@ -427,9 +426,13 @@ written. So after the bump every `rules/2`-stamped chunk is rewritten with `rule
 `llm/…`-stamped chunk is skipped, provided the run passes the same `--llm-cache`.
 **A backfill without `--llm-cache` OVERWRITES the LLM glossaries in the index with rules
 output** (true before this change too; more likely now that every rules chunk is re-planned).
-The dry run reports `docs_llm` and `chunks_llm_replaced`; check them. `--apply` now refuses
-when the index holds `llm/…`-stamped chunks and no `--llm-cache` is given, unless
-`--replace-llm`.
+The dry run reports `docs_llm` and `chunks_llm_replaced`; check them. `--apply` now refuses,
+before any write and unless `--replace-llm` is given, when it would replace an LLM glossary:
+- with no `--llm-cache`, one count query of `llm/…` chunks decides;
+- with a cache, a full read-only planning pass runs first, so a partial or wrong-corpus cache
+  is caught too.
+
+`--llm-cache` must name an existing, non-empty file, so a typo can't open as an empty cache.
 
 **Release.** `rules/3` reaches each path separately:
 - GoWe uploads need a tools tag, its image, and the CWL restamp;

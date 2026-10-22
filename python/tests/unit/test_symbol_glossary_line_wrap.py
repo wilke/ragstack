@@ -271,7 +271,9 @@ def test_validated_wrapped_verbatim_definition_gets_its_raw_offset() -> None:
 def test_long_run_without_a_sentence_end_stays_fast() -> None:
     import time
 
-    for text in ("where Qb is the\n" * 5000, "where Qb is the " * 5000, "ab-\ncd " * 20000):
+    comma = "where Qb is the breathing flow rate, and Cq is the quanta concentration "
+    for text in ("where Qb is the\n" * 5000, "where Qb is the " * 5000, "ab-\ncd " * 20000,
+                 comma * (400_000 // len(comma))):
         t0 = time.perf_counter()
         extract_glossary(text)
         assert time.perf_counter() - t0 < 2.0  # quadratic was ~3.5 s on the first
@@ -280,31 +282,30 @@ def test_long_run_without_a_sentence_end_stays_fast() -> None:
 # --- review of #794 ------------------------------------------------------------
 
 
-def test_continuation_reach_is_not_a_terminator() -> None:
-    """One "where" sentence far longer than the continuation window: every
-    clause is found whole, none is cut at a window boundary."""
-    from ragstack.ingestion.symbol_glossary import _CONTINUATION_MARGIN, _CONTINUATION_REACH
-
+def test_a_long_where_sentence_keeps_every_clause_whole() -> None:
     n = 300
     clauses = ", ".join(f"x{k} denotes the mass quantity number {k}" for k in range(2, n + 1))
     text = "where x1 is the mass quantity number 1, " + clauses + ". End."
-    assert len(text) > 2 * (_CONTINUATION_REACH + _CONTINUATION_MARGIN)
     got = extract_glossary(text, GlossaryConfig(rule_is_the=False)).as_dict()
     assert got == {f"x{k}": [f"mass quantity number {k}"] for k in range(1, n + 1)}
 
 
-def test_a_window_cut_inside_a_clause_is_not_emitted_truncated() -> None:
-    from ragstack.ingestion import symbol_glossary as sg
+@pytest.mark.parametrize("gap", [3990, 2400])
+def test_long_whitespace_gap_inside_a_sentence_does_not_cut_or_drop_clauses(gap: int) -> None:
+    # The shapes that broke the windowed continuation search (#794 review):
+    # a clause past a long space run was truncated or lost. Cq's span cannot
+    # reach a terminator within 200 characters, so Cq has no definition, as
+    # under the unbounded rules/2 search.
+    text = ("where Qb is the rate, and Cq denotes the mass flux" + " " * gap
+            + "number one, and Cw denotes the wall flux. End.")
+    assert extract_glossary(text).as_dict() == {"Cw": ["wall flux"], "Qb": ["rate"]}
 
-    # place a clause so the first window ends inside its definition
-    filler = ", ".join(f"x{k} denotes the mass quantity number {k}" for k in range(2, 400))
-    text = "where x1 is the mass quantity number 1, " + filler + ". End."
-    canon = sg.definition_map(text)[0]
-    m = next(sg._WHERE.finditer(canon))
-    for c in sg._continuations(canon, m.end("def"), len(canon) - 6):
-        assert c.group("def").startswith("the mass quantity number ")
-        assert c.group("def").split()[-1].isdigit()
-        assert canon[c.end() : c.end() + 2] in (", ", ". ")
+
+def test_one_character_span_before_a_spaced_comma_still_ends() -> None:
+    # rules/2 took "x " and dropped it as implausible, then found Cq; the
+    # (?<=\S) end check must not turn this into "x , Cq is the quanta …".
+    text = "where Qb is the x , Cq is the quanta concentration."
+    assert extract_glossary(text).as_dict() == {"Cq": ["quanta concentration"]}
 
 
 @pytest.mark.parametrize(

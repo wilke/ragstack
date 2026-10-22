@@ -1137,8 +1137,11 @@ with rules output.** If the collection was backfilled from an LLM cache (dev
 openchia was), always pass that same cache. In the dry run, check `docs_llm` (documents
 served from the cache) and `chunks_llm_replaced` (LLM-stamped chunks this run
 would replace with rules). `chunks_llm_replaced` should be 0 unless you mean it. `--apply`
-refuses when the index holds `llm/…`-stamped chunks and no `--llm-cache` is
-given; pass `--replace-llm` only to replace them on purpose.
+refuses, before writing anything, whenever the run would replace an LLM
+glossary: no `--llm-cache`, or a cache that misses some documents (a partial
+cache or another corpus's; a read-only planning pass checks this first, so an
+apply with a cache scans the index twice). `--llm-cache` must name an existing,
+non-empty file. Pass `--replace-llm` only to replace LLM glossaries on purpose.
 
 After an extractor version bump (`rules/2` → `rules/3`, #790), the dry run counts
 every `rules/…`-stamped chunk as to-update, because the stamp changes. With the

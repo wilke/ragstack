@@ -170,7 +170,8 @@ def canonical_text(text: str) -> str:
 # tried once, not from every character (quadratic otherwise).
 _LINE_BREAK = re.compile(
     r"(?<![^\W\d_])(?P<left>[^\W\d_]+)-(?P<hws>[^\S\n]*\n[^\S\n]*)(?P<right>[^\W\d_]+)"
-    # A hyphen with a digit on either side ("COVID-\n19", "SARS-CoV-\n2",
+    # A hyphen between letters/digits where alternative 1 does not apply
+    # (e.g. a digit on either side: "COVID-\n19", "SARS-CoV-\n2",
     # "2-\ndimensional"): never joined, the break is dropped and the hyphen kept.
     r"|(?<=[^\W_])-(?P<dws>[^\S\n]*\n[^\S\n]*)(?=[^\W_])"
     r"|(?P<ws>\s*\n\s*)"
@@ -197,11 +198,13 @@ def _fold_line_breaks(text: str, pos: list[int]) -> tuple[str, list[int]]:
       - otherwise the hyphen is KEPT and only the break is dropped
         (``well-\\nknown`` → ``well-known``, ``SARS-\\nCoV`` → ``SARS-CoV``,
         ``air-\\nborne`` → ``air-borne`` unless the text also says
-        ``airborne``; with a digit on either side, ``COVID-\\n19`` →
+        ``airborne``; between letters or digits where the letter rule does
+        not apply, e.g. a digit on either side, ``COVID-\\n19`` →
         ``COVID-19``). A hyphen after a space (``rate -\\nflow``) is a dash,
-        and folds like any break (``rate - flow``). A real compound split at its hyphen cannot be told from
-        a soft hyphen without a dictionary; keeping the hyphen never invents a
-        word, it only leaves a soft hyphen visible.
+        and folds like any break (``rate - flow``). A real compound split at
+        its hyphen cannot be told from a soft hyphen without a dictionary;
+        keeping the hyphen never invents a word, it only leaves a soft hyphen
+        visible.
     """
     if "\n" not in text:
         return text, pos
@@ -394,7 +397,10 @@ _NEXT_CLAUSE = _SYMBOL_BODY + _ARGS + _VALUE + _ARGS + r"\s+(?:is|are|denotes|re
 # that starts the next "and Y is" clause, "where/while Y is", or a blank line.
 # A SINGLE line break no longer ends it: extraction runs on line-folded text
 # (:func:`definition_map`), and a paragraph break survives the folding.
-_DEF_SPAN = r"(?P<def>[^.;:\n]{2,200}?)"
+# {1,…}, not {2,…}: with _DEF_END's (?<=\S) a span cannot end on a space, so
+# "where Qb is the x , Cq is …" needs a one-character span to stop at "x"
+# (rules/2 took "x " and then dropped it as implausible; so does this).
+_DEF_SPAN = r"(?P<def>[^.;:\n]{1,200}?)"
 # Linear on long whitespace runs: the leading whitespace is taken ATOMICALLY
 # (``(?>\s*)``), "\s+and" becomes a look-behind for the space, and the
 # paragraph break is ``[^\S\n]*\n[^\S\n]*\n`` (the same runs as
@@ -468,7 +474,9 @@ _RESPECTIVELY = re.compile(
     # split ambiguity that is quadratic on a long run of spaces.
     r"(?P<syms>" + _SYM_IN_LIST + r"(?:\s*,\s*" + _SYM_IN_LIST + r"){0,6}\s*(?:,\s*)?and\s+"
     + _SYM_IN_LIST + r")\s+(?:are|denote|represent|are\s+defined\s+as)\s+"
-    r"(?P<defs>[^.;:\n]{5,400}?)(?<=\S)\s*(?:,\s*)?respectively\b",
+    # {1,…}: see _DEF_SPAN; fewer than five characters never pair two
+    # plausible definitions, so the outcome matches rules/2's {5,…}.
+    r"(?P<defs>[^.;:\n]{1,400}?)(?<=\S)\s*(?:,\s*)?respectively\b",
 )
 _LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+")
 
@@ -488,41 +496,6 @@ _AFTER_NUMBER = re.compile(r"\d\s*$")
 # naming ("the air exchange rate, λs(r)<λa"; "the adjustment time, λc−1").
 _RELATION_AFTER = re.compile(r"\s*(?:[<>≤≥≪≫≲≳∝]|[−-]\s*1\b)")
 _SENTENCE_END = re.compile(r"[.;](?:\s|$)|\n\s*\n")
-# How far past the previous clause the next continuation clause may START. The
-# search window is this plus _CONTINUATION_MARGIN, room for one whole clause
-# (a definition span is at most 200 characters) and its end test.
-_CONTINUATION_REACH = 2500
-_CONTINUATION_MARGIN = 1500
-
-
-def _continuations(canon: str, start: int, sentence_end: int) -> Iterable[re.Match[str]]:
-    """The continuation clauses between ``start`` and ``sentence_end``.
-
-    Searched in bounded windows chained from clause to clause, so a long run
-    without a sentence end cannot make every "where" match rescan it
-    (quadratic). A window's end is NOT a terminator: ``_DEF_END``'s ``$``
-    matches at ``endpos``, so a clause whose match ends at a window cut (not at
-    the real sentence end) is re-searched from its own start with a fresh
-    window instead of being emitted truncated."""
-    at = start
-    while at < sentence_end:
-        stop = min(sentence_end, at + _CONTINUATION_REACH + _CONTINUATION_MARGIN)
-        c = _CONTINUATION.search(canon, at, stop)
-        if c is None:
-            return
-        if c.end() == stop and stop < sentence_end:
-            if c.start() == at:
-                # Cannot get a longer window from here (a whitespace run longer
-                # than the margin): skip this clause rather than truncate it.
-                at = c.start() + 1
-            else:
-                at = c.start()
-            continue
-        if c.start() > at + _CONTINUATION_REACH:
-            return
-        yield c
-        at = c.end()
-
 
 def _clean_definition(raw: str, max_words: int) -> str:
     """Collapse whitespace, drop a leading article, cap at ``max_words``.
@@ -823,13 +796,23 @@ def extract_glossary(text: str, config: GlossaryConfig | None = None) -> Glossar
         # quadratic on a long run without one (rules/3 folds single line
         # breaks, so such runs are longer than they were).
         ends = [e.start() for e in _SENTENCE_END.finditer(canon)]
+        # A watermark: the continuation search is rules/2's, unbounded to the
+        # sentence end, but each stretch of text is scanned once. A second
+        # "where" in a sentence already scanned adds nothing (its clauses were
+        # found by the first scan), and rescanning it per match was quadratic
+        # on a long run without a sentence end. No window cut, so no clause is
+        # ever truncated by one.
+        covered = 0
         for m in _WHERE.finditer(canon):
             add(m.start("sym"), m.group("sym"), m.group("def"))
             # Continuation clauses of the same sentence: "…, and pm is the …".
             i = bisect.bisect_left(ends, m.end())
             sentence_end = ends[i] if i < len(ends) else len(canon)
-            for c in _continuations(canon, m.end("def"), sentence_end):
-                add(c.start("sym"), c.group("sym"), c.group("def"))
+            start = max(m.end("def"), covered)
+            if start < sentence_end:
+                for c in _CONTINUATION.finditer(canon, start, sentence_end):
+                    add(c.start("sym"), c.group("sym"), c.group("def"))
+                covered = sentence_end
     if cfg.rule_is_the:
         for m in _IS_THE.finditer(canon):
             if _AFTER_NUMBER.search(canon, max(0, m.start("sym") - 12), m.start("sym")):

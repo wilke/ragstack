@@ -207,13 +207,67 @@ def test_apply_without_llm_cache_refuses_to_overwrite_llm_glossaries(tmp_path: P
     assert all(r["metadata"][VERSION_KEY] == "rules/3" for r in rows)
 
 
-def test_apply_with_llm_cache_is_not_refused(tmp_path: Path) -> None:
-    rows = _rows("b", TEXT)
+def _llm_index(tmp_path: Path) -> tuple[FakeES, list[dict[str, Any]], str, str]:
+    """Two documents, both stamped from an LLM glossary in the index."""
+    text_a, text_b = TEXT, TEXT.replace("Qb", "Cq")
+    rows = _rows("a", text_a) + _rows("b", text_b)
     for r in rows:
         r["metadata"][VERSION_KEY] = "llm/1:m:h"
-    es = FakeES(rows)
-    cache = tmp_path / "g.jsonl"
-    cache.write_text("")
-    out = asyncio.run(bf.run(_args(apply=True, llm_cache=str(cache)), es=es))
-    assert out["dry_run"] is False  # a cache was given: the operator chose what wins
+    return FakeES(rows), rows, text_a, text_b
 
+
+def _cache_with(tmp_path: Path, *docs: tuple[str, str]) -> str:
+    from ragstack.ingestion.symbol_glossary import (
+        Definition,
+        Glossary,
+        GlossaryEntry,
+        SymbolGlossaryCache,
+        content_key,
+    )
+
+    path = tmp_path / "g.jsonl"
+    cache = SymbolGlossaryCache(path, writable=True)
+    for text, sym in docs:
+        cache.put(content_key(text), Glossary(
+            (GlossaryEntry(sym, (Definition("breathing flow rate", 6),)),), "llm/1:m:h"))
+    cache.close()
+    return str(path)
+
+
+@pytest.mark.parametrize("problem", ["missing", "empty"])
+def test_llm_cache_must_be_an_existing_non_empty_file(tmp_path: Path, problem: str) -> None:
+    path = tmp_path / "typo.jsonl"
+    if problem == "empty":
+        path.write_text("")
+    with pytest.raises(SystemExit):
+        bf.main(["--es-url", "http://127.0.0.1:1", "--index", "i", "--llm-cache", str(path)])
+
+
+def test_apply_with_an_empty_cache_is_refused_before_any_write(tmp_path: Path) -> None:
+    # run() called directly (no argparse): the planning pass still catches it
+    es, rows, _, _ = _llm_index(tmp_path)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    with pytest.raises(SystemExit, match="Nothing was written"):
+        asyncio.run(bf.run(_args(apply=True, llm_cache=str(empty)), es=es))
+    assert es.bulks == [] and es.mappings == []
+
+
+def test_apply_with_a_cache_missing_some_llm_documents_is_refused(tmp_path: Path) -> None:
+    es, rows, text_a, _ = _llm_index(tmp_path)
+    partial = _cache_with(tmp_path, (text_a, "Qb"))  # document b is not in it
+    dry = asyncio.run(bf.run(_args(llm_cache=partial), es=es))
+    assert dry["chunks_llm_replaced"] == sum(r["doc_id"] == "b" for r in rows)
+    with pytest.raises(SystemExit, match="would replace the LLM glossary"):
+        asyncio.run(bf.run(_args(apply=True, llm_cache=partial), es=es))
+    assert es.bulks == [] and es.mappings == []  # nothing written, not even document a
+    out = asyncio.run(bf.run(_args(apply=True, llm_cache=partial, replace_llm=True), es=es))
+    assert out["chunks_written"] > 0
+
+
+def test_apply_with_a_complete_cache_is_not_refused(tmp_path: Path) -> None:
+    es, rows, text_a, text_b = _llm_index(tmp_path)
+    full = _cache_with(tmp_path, (text_a, "Qb"), (text_b, "Cq"))
+    out = asyncio.run(bf.run(_args(apply=True, llm_cache=full), es=es))
+    assert out["dry_run"] is False and out.get("chunks_llm_replaced", 0) == 0
+    assert all(r["metadata"][VERSION_KEY] == "llm/1:m:h" for r in rows)
