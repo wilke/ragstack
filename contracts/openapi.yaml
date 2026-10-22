@@ -2673,9 +2673,12 @@ paths:
       operationId: healthDeep
       summary: Deep dependency health probe (admin only)
       description: >-
-        Liveness of each backing store (vector, text, graph, job store) with
-        per-check latency and backend detail. ADMIN ONLY — the `detail` strings
-        can carry backend hostnames/versions, so a non-admin gets 403.
+        Liveness of each backing store (vector, text, graph, job store) and of
+        the routed-around dependencies (reranker, embedder, llm, ingest_engine,
+        doi_resolver — #751) with per-check latency, a `state` and backend
+        detail. ADMIN ONLY — the `detail` strings can carry backend
+        hostnames/versions, so a non-admin gets 403. Bounded and cached: never
+        provisions anything, and polling it is never load on a dependency.
       tags: [Health]
       security:
         - ApiKeyAuth: []
@@ -3623,6 +3626,19 @@ components:
       type: object
       description: >-
         Deep dependency health (admin only — detail may carry backend info).
+        Checks are the stores (`vector`, `text`, `graph`, `jobstore`) and,
+        since #751, the dependencies a request can route around: `reranker`
+        (crossencoder sidecar `/ready`), `embedder` (embedding sidecar
+        `/ready`, or `/v1/models` on an OpenAI-style embedding API), `llm`
+        (`/v1/models`), `ingest_engine` (GoWe `/api/v1/health` when
+        INGEST_BACKEND=gowe) and `doi_resolver`. A dependency that is not
+        configured reports `state: disabled` with `ok: true` and does not
+        degrade the overall status. Each probe is bounded (3 s) and its
+        verdict is cached per process (about 10 s) and shared with the request
+        path, so a poller never becomes load and this endpoint says what the
+        last real call saw. `status` is `degraded` when any check is neither
+        ok nor disabled. The Go implementation answers with every check
+        `disabled` (nothing is wired in its scaffold).
       required: [status, checks]
       properties:
         status:
@@ -3636,6 +3652,16 @@ components:
             properties:
               name: { type: string }
               ok: { type: boolean }
+              state:
+                type: string
+                enum: [ok, degraded, down, disabled]
+                description: >-
+                  Finer verdict than `ok` (which stays for compatibility and
+                  is true for `ok` and `disabled`): `ok` — the probe or the
+                  last real call succeeded; `degraded` — it answered, but not
+                  well (a sidecar still loading, a malformed answer); `down` —
+                  no usable answer (transport error, timeout, 5xx);
+                  `disabled` — not configured on this server.
               detail: { type: [string, "null"] }
               latency_ms: { type: [number, "null"] }
             additionalProperties: false
@@ -3924,6 +3950,49 @@ components:
             resolved. Echoed rather than assumed: a template does NOT pin a
             model (ADR-0008 decision 5), so this is how a degraded result is
             attributed to a swapped default instead of a prompt regression.
+        degraded:
+          $ref: "#/components/schemas/Degraded"
+
+    Degraded:
+      type: array
+      minItems: 1
+      description: >-
+        The stages that fell back to a lower-quality path on this request
+        (#748, #751). OMITTED — never an empty array — when nothing degraded,
+        so an undegraded response is byte-identical to one from a server that
+        predates the field. Present means: still a 200, still real results,
+        but lower quality than this server normally produces. Callers should
+        treat it as a quality signal, not as an error; an eval harness should
+        not compare a degraded run against an undegraded one.
+      items:
+        $ref: "#/components/schemas/DegradedEntry"
+
+    DegradedEntry:
+      type: object
+      required: [component, reason]
+      description: >-
+        One stage that fell back. `rerank`: the cross-encoder sidecar did not
+        answer or answered badly, so `sources` are in the fused (RRF) order and
+        each `score` is an RRF score (roughly 0.01–0.1), not a cross-encoder
+        relevance (roughly 0–1) — the #748 signature. `generation`: the LLM
+        call failed, so `answer` is the retrieval-only placeholder and no
+        template provenance is set. `rewrite`: a requested rewrite strategy
+        raised and was skipped, so fewer query variants were retrieved (an
+        unknown or unconfigured strategy is still skipped silently, as
+        documented on `rewrite_strategies`). `graph` and `context` are
+        reserved for a graph-leg or context-expansion fallback; neither
+        implementation emits them today. `reason` is the exception class and
+        the first line of its message, at most 200 characters, with any URL
+        credentials removed.
+      properties:
+        component:
+          type: string
+          enum: [rerank, generation, rewrite, graph, context]
+        reason:
+          type: string
+          maxLength: 200
+      additionalProperties: false
+
     RetrieveRequest:
       type: object
       required: [query]
@@ -4069,6 +4138,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Source"
+        degraded:
+          $ref: "#/components/schemas/Degraded"
 
     CollectionInfo:
       type: object

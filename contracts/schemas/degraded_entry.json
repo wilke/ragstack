@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "degraded_entry.json",
+  "title": "DegradedEntry",
+  "description": "One stage of a query/retrieve request that fell back to a lower-quality path instead of failing the request (#748, #751). The request still succeeded (HTTP 200) and every result it carries is real; it is the ranking or the answer that is not what this server normally produces. Callers that measure quality (eval harnesses, score thresholds) should treat the response as lower quality, not as an error, and should not compare it against undegraded runs. `component` names the stage: `rerank` — the cross-encoder sidecar did not answer or answered badly, so `sources` are in the fused (RRF) order and `score` is an RRF score (0.01–0.1 range), not a cross-encoder relevance; `generation` — the LLM call failed, so `answer` is the retrieval-only placeholder; `rewrite` — a requested rewrite strategy raised and was skipped, so fewer query variants were retrieved; `graph` and `context` are reserved for a graph-leg or context-expansion fallback (not emitted by any implementation today). `reason` is the exception class and first line of the message, bounded to 200 characters, with any URL credentials removed.",
+  "type": "object",
+  "required": ["component", "reason"],
+  "properties": {
+    "component": {
+      "type": "string",
+      "enum": ["rerank", "generation", "rewrite", "graph", "context"]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "additionalProperties": false
+}
