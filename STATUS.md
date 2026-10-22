@@ -2,20 +2,28 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-09-15
-**Deployed:** five tenants, no longer all on one tag — behind the nginx gateway on
-`:9000` at `/ragstack/<tenant>/api/`, and publicly at
-`https://www.bv-brc.org/ragstack/<tenant>/`.
+**Last updated:** 2026-10-22
+**Deployed:** seven tenants, all on server tag
+[`v1.6.11`](https://github.com/wilke/ragstack/releases/tag/v1.6.11) (**`010b699`**) in
+**image mode** since 2026-10-22T02:44Z: the API runs from
+`ragstack-server-v1.6.11-b1.sif`, the UI from artifact `v1.6.11-010b699d734a`, and the
+GoWe workflows name tools image `ragstack-tools-v1.6.10-b1.sif`. They sit behind the nginx
+gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
+`https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
+view; trust it over this table.
 
-| Tenant | Port | Code | UI |
-|---|---|---|---|
-| `hackathon` | 24080 | [`v1.6.1`](https://github.com/wilke/ragstack/releases/tag/v1.6.1) (**`4ea2e38`**) | static build |
-| `dev` | 24040 | `v1.6.1` | dev server 8090 |
-| `asm-next` | 24020 | `v1.6.1` | dev server 5212 |
-| `demo` | 24060 | [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3) (**`652be18`**) | dev server 5210 |
-| `lucid-next` | 24000 | `v1.5.3` | dev server 5211 |
+| Tenant | API port | Stores |
+|---|---|---|
+| `lucid-next` | 24000 | mixed |
+| `asm-next` | 24020 | shared |
+| `dev` | 24040 | dedicated |
+| `demo` | 24060 | shared |
+| `hackathon` | 24080 | dedicated |
+| `clark` | 24100 | dedicated |
+| `elrond` | 24120 | dedicated |
 
-Their checkouts are `/rag/repos/tenants/<name>` and their data
+In image mode the API runs from the server image, not from the tenant's checkout at
+`/rag/repos/tenants/<name>`. Their data is in
 `/rag/data/tenants/<name>` — **note the data dirs drop the `-next` suffix**
 (`asm-next` → `/rag/data/tenants/asm`, `lucid-next` → `/rag/data/tenants/lucid`).
 `/rag/repos/ragstack` is a **frozen** pre-security checkout (`6d6fcf6`) that serves
