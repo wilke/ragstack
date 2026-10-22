@@ -474,9 +474,9 @@ _RESPECTIVELY = re.compile(
     # split ambiguity that is quadratic on a long run of spaces.
     r"(?P<syms>" + _SYM_IN_LIST + r"(?:\s*,\s*" + _SYM_IN_LIST + r"){0,6}\s*(?:,\s*)?and\s+"
     + _SYM_IN_LIST + r")\s+(?:are|denote|represent|are\s+defined\s+as)\s+"
-    # {1,…}: see _DEF_SPAN; fewer than five characters never pair two
-    # plausible definitions, so the outcome matches rules/2's {5,…}.
-    r"(?P<defs>[^.;:\n]{1,400}?)(?<=\S)\s*(?:,\s*)?respectively\b",
+    # {5,…} as in rules/2: a lazy {1,…} would stop at an inner "respectively"
+    # in the first few characters of the list and lose the whole list.
+    r"(?P<defs>[^.;:\n]{5,400}?)(?<=\S)\s*(?:,\s*)?respectively\b",
 )
 _LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+")
 

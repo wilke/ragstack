@@ -563,3 +563,10 @@ def test_validated_offset_prefers_the_copy_nearest_the_symbol() -> None:
     g, _ = validate_entries([("λv", "deactivation rate")], text, "llm/1")
     (d,) = g.entries[0].definitions
     assert d.offset == text.rindex("deactivation rate")
+
+
+def test_respectively_list_whose_definitions_start_with_respectively() -> None:
+    # #794 review: a lazy {1,…} stopped at the inner word and lost the list
+    g = extract_glossary("Qb, Cq and λv are the respectively measured rate, the quanta "
+                         "time and the viral volume, respectively. Later Qb = 1.")
+    assert {e.symbol for e in g.entries} >= {"Qb", "Cq"}

@@ -236,7 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--es-url", required=True, help="no default, deliberately")
     p.add_argument("--index", required=True, help="the one index to backfill")
-    p.add_argument("--llm-cache", default="", type=existing_cache_file,
+    # default=None, not "": argparse runs ``type`` on a string default, so ""
+    # would reject every run that omits the flag.
+    p.add_argument("--llm-cache", default=None, type=existing_cache_file,
                    help="offline LLM glossary cache, read-only; must exist and be non-empty")
     p.add_argument("--config", default="", help="GlossaryConfig overrides as JSON")
     p.add_argument("--batch-size", type=int, default=500)

@@ -271,3 +271,16 @@ def test_apply_with_a_complete_cache_is_not_refused(tmp_path: Path) -> None:
     out = asyncio.run(bf.run(_args(apply=True, llm_cache=full), es=es))
     assert out["dry_run"] is False and out.get("chunks_llm_replaced", 0) == 0
     assert all(r["metadata"][VERSION_KEY] == "llm/1:m:h" for r in rows)
+
+
+def test_cli_runs_without_llm_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    # argparse applies ``type`` to a string default; omitting --llm-cache must parse
+    seen = {}
+
+    async def fake_run(args, store=None):
+        seen["llm_cache"] = args.llm_cache
+        return {}
+
+    monkeypatch.setattr(bf, "run", fake_run)
+    assert bf.main(["--es-url", "http://127.0.0.1:1", "--index", "i"]) == 0
+    assert seen["llm_cache"] is None
