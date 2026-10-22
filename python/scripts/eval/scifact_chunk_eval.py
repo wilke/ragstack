@@ -62,6 +62,7 @@ from ragstack.embedders import make_embedder
 from ragstack.ingestion.tokenization import HFTokenCounter
 from ragstack.models import Document
 from ragstack.provenance import experiment_provenance
+from ragstack.retrieval.glossary import hydrate_chunks
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -427,6 +428,9 @@ async def evaluate_config(
     sem = asyncio.Semaphore(c7.EVAL_CONCURRENCY)
 
     async def _rerank(query: str, chunks):
+        if getattr(reranker, "include_symbol_glossary", False):
+            # --rerank-symbol-glossary: what the API does (retrieval/glossary.py).
+            chunks = await hydrate_chunks(tindex, chunks, filters["tenant_id"])
         last_exc: Exception | None = None
         for attempt in range(c7.RERANK_RETRIES):
             try:
@@ -696,7 +700,10 @@ async def amain(args, live_eps) -> int:
         timeout = httpx.Timeout(300.0, connect=30.0)
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
         async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+            reranker = SidecarReranker(
+                c7.RERANKER_URL, http=client,
+                include_symbol_glossary=args.rerank_symbol_glossary,
+            )
             stats = await evaluate_config(
                 cfg, queries, qrels, client, args.rerank_pool,
                 args.retrieve_pool, reranker,
@@ -728,7 +735,10 @@ async def amain(args, live_eps) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+        reranker = SidecarReranker(
+            c7.RERANKER_URL, http=client,
+            include_symbol_glossary=args.rerank_symbol_glossary,
+        )
         ingest_stats: dict = {}
         for cfg in configs:
             ingest_stats[cfg.key] = await ingest_config(cfg, corpus_docs, client)
@@ -772,6 +782,8 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--rerank-pool", type=int, default=100,
                    help="#top chunks reranked by the cross-encoder per query")
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument("--retrieve-pool", type=int, default=300,
                    help="#chunks retrieved per query (>= rerank-pool); wider than "
                    "the rerank pool so recall@100 can reach 100 unique docs")

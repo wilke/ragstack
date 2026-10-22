@@ -108,6 +108,7 @@ from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.tokenization import HFTokenCounter, TokenCounter
 from ragstack.models import Chunk, Document
 from ragstack.provenance import experiment_provenance
+from ragstack.retrieval.glossary import hydrate_chunks
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -1065,6 +1066,9 @@ async def evaluate_config(
         """Rerank with bounded retry — the single crossencoder sidecar can drop a
         connection (httpx ReadError) under concurrent load; retry transient errors
         rather than aborting the whole eval over one dropped request."""
+        if getattr(reranker, "include_symbol_glossary", False):
+            # --rerank-symbol-glossary: what the API does (retrieval/glossary.py).
+            chunks = await hydrate_chunks(tindex, chunks, filters["tenant_id"])
         last_exc: Exception | None = None
         for attempt in range(RERANK_RETRIES):
             try:
@@ -1509,7 +1513,10 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        reranker = SidecarReranker(RERANKER_URL, http=client)
+        reranker = SidecarReranker(
+            RERANKER_URL, http=client,
+            include_symbol_glossary=args.rerank_symbol_glossary,
+        )
 
         ingest_stats: dict = {}
         for cfg in CONFIGS:
@@ -1575,6 +1582,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument("--rerank-pool", type=int, default=50)
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument(
         "--eval-sample", type=int, default=1000,
         help="deterministically sample N known-item queries (0 = all). Same set "

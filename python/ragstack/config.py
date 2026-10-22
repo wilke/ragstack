@@ -1125,7 +1125,8 @@ class Settings(BaseSettings):
     # ``content`` otherwise — byte-identical to before for a chunk without one.
     # ON by default: on dev openchia, reranking the API's own 50-candidate pool
     # with the glossary took recall@10 from 62 to 81 of 155, none lost (a
-    # shuffled-glossary control gave 63). Independent of
+    # shuffled-glossary control gave 63; docs/plans/symbol-glossary.md
+    # #dev-trial-2026-10-22, Test 3). Independent of
     # TEXT_SYMBOL_GLOSSARY_BOOST (the BM25 side). Vector-only candidates carry
     # no glossary (Qdrant's payload has none), so before reranking the router
     # fetches theirs from the collection's text index in one tenant-scoped
@@ -1133,6 +1134,13 @@ class Settings(BaseSettings):
     # Only response ORDER changes; a source's ``content`` never includes it.
     # Set false to opt out.
     rerank_include_symbol_glossary: bool = True
+    # Bound, in seconds, on that glossary lookup (one ES request per collection
+    # per reranked query, no retries). It keeps a vector search from depending
+    # on Elasticsearch: with ES down or slow, a reranked query waits at most
+    # this long and reranks without the glossary (a rate-limited warning). <= 0
+    # turns the lookup off — then only BM25 hits, which carry the glossary
+    # already, are scored with it.
+    rerank_glossary_timeout: float = 2.0
     crossencoder_sidecar_url: str = "http://localhost:50052"
 
     # Observability

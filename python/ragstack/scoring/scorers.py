@@ -88,18 +88,22 @@ class CrossEncoderScorer:
         self,
         model_name: str | None = None,
         *,
-        include_symbol_glossary: bool = False,
+        include_symbol_glossary: bool | None = None,
     ) -> None:
         # Default to config.reranker_model so the reranker model has ONE Python
-        # source of truth (config.py) rather than a re-literal here.
-        if model_name is None:
+        # source of truth (config.py) rather than a re-literal here. The
+        # glossary flag follows the same rule: unset reads
+        # rerank_include_symbol_glossary (default on), as the API's reranker does.
+        if model_name is None or include_symbol_glossary is None:
             from ragstack.config import Settings
 
-            model_name = Settings().reranker_model
+            cfg = Settings()
+            if model_name is None:
+                model_name = cfg.reranker_model
+            if include_symbol_glossary is None:
+                include_symbol_glossary = cfg.rerank_include_symbol_glossary
         self.model_name = model_name
-        #: Score content plus the chunk's symbol glossary (see
-        #: :func:`rerank_passage`). Off unless the caller passes it, like
-        #: :class:`SidecarReranker`'s.
+        #: Score content plus the chunk's symbol glossary (see :func:`rerank_passage`).
         self.include_symbol_glossary = include_symbol_glossary
         self._model: CrossEncoder | None = None
 
@@ -164,7 +168,9 @@ class SidecarReranker:
         #: ``settings.rerank_include_symbol_glossary`` (default ON) from
         #: ``api/deps.py``; the constructor default is OFF so a library caller
         #: — the eval scripts build their own ``SidecarReranker`` — keeps
-        #: scoring exactly ``content`` unless it opts in. The router reads this
+        #: scoring exactly ``content`` unless it opts in (their
+        #: ``--rerank-symbol-glossary``, which also hydrates via
+        #: ``retrieval.glossary.hydrate_chunks``). The router reads this
         #: attribute to decide whether to hydrate candidates' glossaries before
         #: the rerank (``retrieval/glossary.py``).
         self.include_symbol_glossary = include_symbol_glossary

@@ -221,7 +221,7 @@ class InMemoryTextIndex:
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
     async def get_symbol_glossaries(
-        self, chunk_ids: list[str], tenants: list[str]
+        self, chunk_ids: list[str], tenants: list[str], *, timeout: float | None = None  # noqa: ARG002
     ) -> dict[tuple[str, str], str]:
         """Mirror of ``ElasticsearchTextIndex.get_symbol_glossaries``: non-empty
         glossaries of ``chunk_ids`` written by one of ``tenants``, keyed

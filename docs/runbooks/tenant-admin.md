@@ -1080,6 +1080,7 @@ a collection whose chunks carry a glossary change order without any boost.
 | `SYMBOL_GLOSSARY_EXTRACTION` | `rules` (since #783; was `off`) | Ingest side, both paths. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. On a gowe tenant the API sends it as the `symbol_glossary` workflow input. |
 | `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. In-process ingests only: a gowe worker runs the default config. |
 | `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. In-process ingests only: a gowe worker uses no LLM cache. |
+| `RERANK_GLOSSARY_TIMEOUT` | `2` | Seconds. Bound on the one Elasticsearch read that gives vector-only rerank candidates their glossary; `0` turns that read off. |
 | `RERANK_INCLUDE_SYMBOL_GLOSSARY` | `true` | Rerank side. The cross-encoder scores a chunk's `content`, a newline, then its `symbol_glossary`, instead of `content` alone. A chunk without a glossary is scored exactly as before. Independent of the boost. See [The reranker reads the glossary](#the-reranker-reads-the-glossary). |
 
 The boost only has an effect on an index whose chunks carry a `symbol_glossary`
@@ -1177,9 +1178,9 @@ candidate's `content` plus a newline plus its `symbol_glossary`. Only the scored
 text changes: a source's `content` in the response never includes the
 glossary. On dev `openchia`, an offline rerank of the API's own 50-candidate
 pool went from 62 to 81 of 155 relevant chunks in the top 10, none lost; a
-shuffled-glossary control gave 63 (recorded in
-[`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md)). That is one
-collection and one query set, not a promise.
+shuffled-glossary control gave 63 ([Dev trial
+(2026-10-22)](../plans/symbol-glossary.md#dev-trial-2026-10-22), Test 3). That
+is one collection and one query set, not a promise.
 
 - **It only matters for chunks that have a glossary**: papers ingested with
   extraction on (default since v1.6.12) or backfilled (above). On a collection
@@ -1192,10 +1193,15 @@ collection and one query set, not a promise.
   found has no glossary on it (Qdrant does not store one), so before the rerank
   the API fetches the missing glossaries from that collection's
   Elasticsearch index, in one request per collection, scoped to the caller's
-  readable tenants. If that read fails, the API logs
-  `rerank glossary hydration failed` and reranks those chunks without their
-  glossary. The query does not fail. The time is counted in the `rerank`
-  stage of the query summary line.
+  readable tenants. That read is bounded by `RERANK_GLOSSARY_TIMEOUT` (default
+  `2` seconds, no retries), so with Elasticsearch down or slow a reranked query
+  waits at most that long. A collection with no text index, or whose ES index
+  does not exist, is skipped. If the read fails, the API reranks those chunks
+  without their glossary and the query does not fail; it logs
+  `rerank glossary hydration failed for collection <id>` at most once a minute
+  per collection, with a running failure count. `RERANK_GLOSSARY_TIMEOUT=0`
+  turns the read off (only BM25 hits are then scored with their glossary). The
+  time is counted in the `rerank` stage of the query summary line.
 - It does nothing when reranking is off (`RERANK_ENABLED=false`, or a request
   with `rerank: false`).
 
@@ -1210,7 +1216,11 @@ ragstack-ctl env set <t> RERANK_INCLUDE_SYMBOL_GLOSSARY false
 ragstack-ctl tenant restart <t> --only api
 ```
 
-No re-ingest is needed either way.
+No re-ingest is needed either way. **The opt-out needs a `ragstack-ctl` built
+from a tree that has this setting** (the first server tag after v1.6.12); an
+older ctl refuses `RERANK_INCLUDE_SYMBOL_GLOSSARY` and `RERANK_GLOSSARY_TIMEOUT`
+as "not a known ragstack setting". With an older ctl, edit `tenant.env` by
+hand as for the boost above.
 
 ### Extraction on by default (#783)
 

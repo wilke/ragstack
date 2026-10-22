@@ -110,6 +110,18 @@ no `candidate_multiplier` (`chunking_compare_7way.py:765`, `scifact_chunk_eval.p
 ablation harness (#122) is "the missing ability to isolate
 embedding/BM25/RRF-k/rewriting/graph/answer-quality; today only chunking is isolated."
 
+**Reranker input diverges from the API from the first server tag after v1.6.12.**
+The API's cross-encoder then scores `content + "\n" + symbol_glossary` for a chunk
+that has a glossary (`RERANK_INCLUDE_SYMBOL_GLOSSARY`, default on; #754), fetching
+vector-only candidates' glossaries from ES first. The harnesses
+(`chunking_compare.py`, `chunking_compare_7way.py`, `scifact_chunk_eval.py`,
+`chunk_one.py`, `g1_library_sweep.py`) build their own `SidecarReranker` and still
+score `content` alone **unless run with `--rerank-symbol-glossary`**, which turns on
+the same passage text and the same hydration (`retrieval/glossary.py::hydrate_chunks`).
+It is off by default so every result above stays comparable; a run that sets it is a
+different condition and must say so. It only changes anything on a corpus whose ES
+index carries `symbol_glossary`.
+
 ### 1.2 The one accidental data point
 
 R5 and R5b score the *same* corpus, queries, qrels, embedding model, and reference

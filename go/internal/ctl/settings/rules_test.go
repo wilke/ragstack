@@ -33,6 +33,7 @@ func TestValidatePublic(t *testing.T) {
 		"DUPLICATE_POLICY":               {"refuse", "allow", "off", "Refuse"},
 		"DOI_ENRICHMENT_PUBMED_IDS":      {"true", "false", "1", "0", "yes", "Off", "TRUE"},
 		"RERANK_INCLUDE_SYMBOL_GLOSSARY": {"true", "false", "1", "0", "no", "On", "FALSE"},
+		"RERANK_GLOSSARY_TIMEOUT":        {"0", "2", "0.5", "10"},
 		"LOG_LEVEL":                      {"anything", ""}, // no rule: any string
 	}
 	for k, vs := range ok {
@@ -56,6 +57,7 @@ func TestValidatePublic(t *testing.T) {
 		"DUPLICATE_POLICY":               {"skip", "", " refuse", "allow\n"},
 		"DOI_ENRICHMENT_PUBMED_IDS":      {"maybe", "", " true ", "1 ", "true\n", "\ttrue"},
 		"RERANK_INCLUDE_SYMBOL_GLOSSARY": {"maybe", "", " false", "false\n", "2"},
+		"RERANK_GLOSSARY_TIMEOUT":        {"-1", "x", "", "2s", "inf"},
 	}
 	for k, vs := range bad {
 		for _, v := range vs {
@@ -81,6 +83,9 @@ func TestGlossaryRuleScopes(t *testing.T) {
 	if r, _ := RuleFor("RERANK_INCLUDE_SYMBOL_GLOSSARY"); r.Scope != ScopeAPIRestart ||
 		!strings.Contains(r.Help, "no re-ingest") {
 		t.Errorf("RERANK_INCLUDE_SYMBOL_GLOSSARY rule = %+v", r)
+	}
+	if r, _ := RuleFor("RERANK_GLOSSARY_TIMEOUT"); r.Scope != ScopeAPIRestart {
+		t.Errorf("RERANK_GLOSSARY_TIMEOUT rule = %+v", r)
 	}
 	if Classify("RERANK_INCLUDE_SYMBOL_GLOSSARY") != Public {
 		t.Errorf("RERANK_INCLUDE_SYMBOL_GLOSSARY must be public so `env set` can opt a tenant out")

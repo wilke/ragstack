@@ -96,7 +96,10 @@ async def amain(args, cfg) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+        reranker = SidecarReranker(
+            c7.RERANKER_URL, http=client,
+            include_symbol_glossary=args.rerank_symbol_glossary,
+        )
         await sc.ingest_config(cfg, corpus_docs, client)
         stats = await sc.evaluate_config(
             cfg, queries, qrels, client, args.rerank_pool, args.retrieve_pool, reranker
@@ -128,6 +131,8 @@ def parse_args(argv=None):
                         "HF_HOME/rag cache); accepted for CWL-input symmetry, ignored")
     p.add_argument("--query-limit", type=int, default=0, help="cap #test queries (0=all)")
     p.add_argument("--rerank-pool", type=int, default=100)
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument("--retrieve-pool", type=int, default=300)
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in defaults)")

@@ -18,6 +18,10 @@ class _RecordingES:
         self.hits = hits or []
         self.exc = exc
 
+    def options(self, **kwargs):
+        self.options_calls = [*getattr(self, "options_calls", []), kwargs]
+        return self
+
     async def search(self, **kwargs):
         self.calls.append(kwargs)
         if self.exc is not None:
@@ -79,3 +83,23 @@ async def test_an_outage_is_store_unavailable() -> None:
     es = _RecordingES(exc=ConnectionTimeout("timed out"))
     with pytest.raises(StoreUnavailable):
         await _index(es).get_symbol_glossaries(["c1"], ["alice"])
+
+
+async def test_the_timeout_bounds_this_request_without_retries() -> None:
+    es = _RecordingES()
+    await _index(es).get_symbol_glossaries(["c1"], ["alice"], timeout=2.0)
+    assert es.options_calls == [{"request_timeout": 2.0, "max_retries": 0}]
+    es2 = _RecordingES()
+    await _index(es2).get_symbol_glossaries(["c1"], ["alice"])
+    assert not hasattr(es2, "options_calls")
+
+
+async def test_a_missing_index_is_no_glossaries_not_an_error() -> None:
+    from elastic_transport import ApiResponseMeta, HttpHeaders
+    from elasticsearch import NotFoundError
+
+    meta = ApiResponseMeta(
+        status=404, http_version="1.1", headers=HttpHeaders(), duration=0.0, node=None
+    )
+    es = _RecordingES(exc=NotFoundError(message="index_not_found_exception", meta=meta, body={}))
+    assert await _index(es).get_symbol_glossaries(["c1"], ["alice"], timeout=2.0) == {}

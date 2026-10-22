@@ -408,7 +408,8 @@ async def _maybe_rerank(
     read per collection, ``retrieval/glossary.py`` — and runs only when a rerank
     actually happens. It is timed inside the ``rerank`` stage: it is part of what
     reranking costs, and an ES round trip, so it belongs with the external time
-    ADR-0006 subtracts. It never raises; a failed lookup reranks without it."""
+    ADR-0006 subtracts. It never raises and is bounded by
+    ``RERANK_GLOSSARY_TIMEOUT``; a failed lookup reranks without it."""
     if reranker is None or not scored:
         return scored
     try:
@@ -527,7 +528,8 @@ async def _retrieve_fused(
     # same setting and a stub without it never triggers a read.
     hydrate = (
         functools.partial(
-            hydrate_symbol_glossary, retriever, filters=filters, tenant_id=tenant_id
+            hydrate_symbol_glossary, retriever, filters=filters, tenant_id=tenant_id,
+            timeout=settings.rerank_glossary_timeout,
         )
         if getattr(active, "include_symbol_glossary", False)
         else None

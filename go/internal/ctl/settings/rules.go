@@ -168,6 +168,15 @@ var publicRules = map[string]PublicRule{
 			"independent of TEXT_SYMBOL_GLOSSARY_BOOST, and changes reranked result ORDER on those " +
 			"collections (never a source's content) — tell evaluation users before changing it." + glossaryNote,
 	},
+	"RERANK_GLOSSARY_TIMEOUT": {
+		Check: nonNegativeFloat,
+		Scope: ScopeAPIRestart,
+		Help: "seconds, a number >= 0 (default 2): the bound on the one Elasticsearch lookup that gives " +
+			"vector-only rerank candidates their glossary when RERANK_INCLUDE_SYMBOL_GLOSSARY is on. With ES " +
+			"down or slow a reranked query waits at most this long and reranks without the glossary. 0 turns " +
+			"the lookup off (only BM25 hits are scored with their glossary). Query-time: it takes effect at " +
+			"`tenant restart <t> --only api`, with no re-ingest." + glossaryNote,
+	},
 	// #747: the duplicate-paper guard.
 	"DUPLICATE_POLICY": {
 		Check: oneOfFold("refuse", "allow", "off"),

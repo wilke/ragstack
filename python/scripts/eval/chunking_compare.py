@@ -70,6 +70,7 @@ from ragstack.ingestion.tokenization import (
 )
 from ragstack.models import Chunk, Document
 from ragstack.provenance import experiment_provenance
+from ragstack.retrieval.glossary import hydrate_chunks
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -694,7 +695,11 @@ async def evaluate_mode(
             r_rank: int | None = None
             r_top1: float | None = None
             if pool:
-                reranked = await reranker.score(query, [h.chunk for h in pool])
+                cands = [h.chunk for h in pool]
+                if getattr(reranker, "include_symbol_glossary", False):
+                    # --rerank-symbol-glossary: what the API does (retrieval/glossary.py).
+                    cands = await hydrate_chunks(tindex, cands, filters["tenant_id"])
+                reranked = await reranker.score(query, cands)
                 rer_doc_ids = [sc.chunk.doc_id for sc in reranked][:top_k]
                 r_rank = _doc_rank(rer_doc_ids, relevant)
                 if reranked:
@@ -1005,7 +1010,10 @@ async def amain(args: argparse.Namespace) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        reranker = SidecarReranker(RERANKER_URL, http=client)
+        reranker = SidecarReranker(
+            RERANKER_URL, http=client,
+            include_symbol_glossary=args.rerank_symbol_glossary,
+        )
 
         ingest_stats: dict = {}
         for mode in MODES:
@@ -1060,6 +1068,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=300, help="docs in the subset")
     p.add_argument("--top-k", type=int, default=10, help="retrieval cut for metrics")
     p.add_argument("--rerank-pool", type=int, default=50, help="rerank candidate pool")
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument("--chunk-size", type=int, default=512)
     p.add_argument("--chunk-overlap", type=int, default=64)
     p.add_argument(
