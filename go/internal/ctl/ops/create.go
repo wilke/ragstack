@@ -275,6 +275,9 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 				surface[k] = v
 				continue
 			}
+			if err := settings.ValidatePublic(k, v); err != nil {
+				return p.refuse("settings.%v", err)
+			}
 			set[k] = v
 		}
 	}

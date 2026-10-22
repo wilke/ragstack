@@ -228,7 +228,16 @@ are counted against the same leg's base.
    `symbol_glossary` (`norms: false`) to existing indices. That is additive and writes
    no data. A divergent index gets it through the narrow third push.
 2. Backfill openchia: dry run first, then `--apply` on the owner's go.
-3. Set the boost.
+3. Set the boost through the ctl, then restart the API only. The boost is query-time,
+   so no re-ingest is needed:
+   `ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1`, then
+   `ragstack-ctl tenant restart <tenant> --only api`. Do not hand-edit `tenant.env`.
+   `SYMBOL_GLOSSARY_EXTRACTION` and `SYMBOL_GLOSSARY_CONFIG_JSON` are set the same way
+   (`env set`). They affect only ingests after the restart and the backfill.
+   `SYMBOL_GLOSSARY_CACHE_PATH` is a host path, so it is CLI-only:
+   `ragstack-ctl env set-surface <tenant> SYMBOL_GLOSSARY_CACHE_PATH=<path>` on the host,
+   as the ctl account.
+   The API logs `symbol glossary config: extraction=… boost=…` at every start (#775).
 
 Before step 3, a boost on an index without the field is a measured no-op.
 

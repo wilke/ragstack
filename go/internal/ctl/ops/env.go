@@ -30,6 +30,9 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 	if err := p.requirePublicKey(key); err != nil {
 		return err
 	}
+	if err := settings.ValidatePublic(key, value); err != nil {
+		return p.refuse("%v", err)
+	}
 	if key == "IDENTITY_PROVIDER" {
 		// The registry step records the provider from the file this job
 		// writes (#736), and the contract knows three; refusing here is
@@ -61,6 +64,9 @@ func planEnvSet(ctx context.Context, p *planner, args map[string]any) error {
 	p.result["key"] = key
 	p.result["pending_until_restart"] = true
 	p.warn("the API reads its environment at start-up: this setting is `pending` until the tenant restarts")
+	if rule, ok := settings.RuleFor(key); ok && rule.Help != "" {
+		p.warn("%s (%s): %s", key, rule.Scope, rule.Help)
+	}
 	return nil
 }
 
