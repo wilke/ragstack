@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -51,17 +52,34 @@ func oneOf(allowed ...string) func(string) error {
 	}
 }
 
-// oneOfFold is oneOf after config.py's strip().lower().
+// oneOfFold is oneOf after config.py's lower() (ValidatePublic has already
+// refused surrounding whitespace).
 func oneOfFold(allowed ...string) func(string) error {
 	inner := oneOf(allowed...)
-	return func(v string) error { return inner(strings.ToLower(strings.TrimSpace(v))) }
+	return func(v string) error { return inner(strings.ToLower(v)) }
 }
 
-// nonNegativeFloat is a finite float >= 0, as pydantic parses a float field.
+// decimalFloat is the DECIMAL float syntax Python's float() and pydantic
+// accept: an optional sign, digits with single underscores between them, an
+// optional fraction ("5.", ".5"), an optional exponent. strconv.ParseFloat
+// alone would also take hex floats ("0x1p4" = 16), which pydantic refuses.
+var decimalFloat = regexp.MustCompile(
+	`^[+-]?(\d(_?\d)*(\.(\d(_?\d)*)?)?|\.\d(_?\d)*)([eE][+-]?\d(_?\d)*)?$`)
+
+// nonNegativeFloat is a finite decimal float >= 0. NaN, infinities and
+// negatives parse in pydantic but are refused here deliberately: none is a
+// meaningful boost.
 func nonNegativeFloat(v string) error {
-	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	switch strings.TrimLeft(strings.ToLower(v), "+-") {
+	case "nan", "inf", "infinity":
+		return fmt.Errorf("%q must be a finite number >= 0", v)
+	}
+	if !decimalFloat.MatchString(v) {
+		return fmt.Errorf("%q is not a number (decimal notation)", v)
+	}
+	f, err := strconv.ParseFloat(strings.ReplaceAll(v, "_", ""), 64)
 	if err != nil {
-		return fmt.Errorf("%q is not a number", v)
+		return fmt.Errorf("%q is not a number (decimal notation)", v)
 	}
 	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 		return fmt.Errorf("%q must be a finite number >= 0", v)
@@ -69,23 +87,42 @@ func nonNegativeFloat(v string) error {
 	return nil
 }
 
-// pydanticBool is the set of strings pydantic accepts for a bool field.
+// pydanticBool is the set of strings pydantic accepts for a bool field
+// (case-insensitive, as pydantic folds it; no surrounding whitespace).
 func pydanticBool(v string) error {
-	switch strings.ToLower(strings.TrimSpace(v)) {
+	switch strings.ToLower(v) {
 	case "0", "off", "f", "false", "n", "no", "1", "on", "t", "true", "y", "yes":
 		return nil
 	}
 	return fmt.Errorf("%q is not a boolean (true|false|1|0|yes|no|on|off)", v)
 }
 
-// jsonObjectOrEmpty is a JSON object, or empty for "the defaults".
-func jsonObjectOrEmpty(v string) error {
-	if strings.TrimSpace(v) == "" {
+// glossaryConfigKeys are the field names of GlossaryConfig
+// (python/ragstack/ingestion/symbol_glossary.py). config_from_json ignores an
+// unknown key with only a log warning, so a typo would look applied.
+// TestGlossaryConfigKeysMatchPython keeps the two in step.
+var glossaryConfigKeys = set(
+	"max_definitions_per_symbol", "max_definition_words", "max_entries_per_chunk", "max_chars_per_chunk",
+	"allow_single_letter", "positional", "attach_only_with_value", "definition_window",
+	"rule_where", "rule_appositive", "rule_is_the", "rule_parenthetical", "rule_respectively",
+)
+
+// glossaryConfigJSON is empty ("the defaults") or a JSON object whose keys are
+// all GlossaryConfig fields. Value types are coerced (or refused, with a
+// warning) by the API's config_from_json.
+func glossaryConfigJSON(v string) error {
+	if v == "" {
 		return nil
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(v), &m); err != nil || m == nil {
 		return fmt.Errorf("not a JSON object (the API would silently fall back to the defaults)")
+	}
+	for k := range m {
+		if !glossaryConfigKeys[k] {
+			return fmt.Errorf("%q is not a GlossaryConfig key (the API would ignore it); known: %s",
+				k, strings.Join(keys(glossaryConfigKeys), ", "))
+		}
 	}
 	return nil
 }
@@ -99,15 +136,17 @@ var publicRules = map[string]PublicRule{
 		Check: oneOf("off", "rules"),
 		Scope: ScopeNewIngests,
 		Help: "off|rules. Applies only to documents ingested in-process by the API after " +
-			"`tenant restart <t> --only api`, and to scripts/backfill_symbol_glossary.py; chunks already " +
-			"indexed are unchanged until they are backfilled or re-ingested. A gowe tenant's worker " +
-			"ingest does not read it (the CWL takes no glossary input yet)." + glossaryNote,
+			"`tenant restart <t> --only api`; chunks already indexed are unchanged until they are re-ingested " +
+			"or backfilled. scripts/backfill_symbol_glossary.py does NOT read it (it takes --config and " +
+			"--llm-cache on its command line), and a gowe tenant's worker ingest does not read it either " +
+			"(the CWL takes no glossary input yet)." + glossaryNote,
 	},
 	"SYMBOL_GLOSSARY_CONFIG_JSON": {
-		Check: jsonObjectOrEmpty,
+		Check: glossaryConfigJSON,
 		Scope: ScopeNewIngests,
-		Help: "GlossaryConfig overrides as a JSON object (empty = defaults). Like SYMBOL_GLOSSARY_EXTRACTION, " +
-			"it affects only ingests after `tenant restart <t> --only api` and the backfill." + glossaryNote,
+		Help: "GlossaryConfig overrides as a JSON object (empty = defaults); every key must be a " +
+			"GlossaryConfig field. Like SYMBOL_GLOSSARY_EXTRACTION, it affects only in-process API ingests " +
+			"after `tenant restart <t> --only api`; the backfill script takes its own --config." + glossaryNote,
 	},
 	"TEXT_SYMBOL_GLOSSARY_BOOST": {
 		Check: nonNegativeFloat,
@@ -144,6 +183,13 @@ func ValidatePublic(key, value string) error {
 	r, ok := RuleFor(key)
 	if !ok || r.Check == nil {
 		return nil
+	}
+	// As ValidateSurface: no surrounding whitespace and no control character.
+	// pydantic does not strip a bool or float, so " true " would pass here
+	// and fail Settings() at the next boot; a newline would pass the plan and
+	// fail when the env file is written.
+	if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\n\r\x00") {
+		return fmt.Errorf("%s=%q: the value has leading or trailing whitespace or a control character", key, value)
 	}
 	if err := r.Check(value); err != nil {
 		return fmt.Errorf("%s=%s: %v", key, value, err)

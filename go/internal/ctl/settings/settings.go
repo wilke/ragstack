@@ -89,7 +89,9 @@ var executableSurface = set(
 	"PROMPT_TEMPLATES_FILE",
 	// The offline LLM symbol-glossary cache (#754/#763): a JSONL file the API
 	// opens at ingest and whose records become text in the index — a host path
-	// the process reads, DOI_ENRICHMENT_CACHE_DIR's sibling. CLI-only.
+	// the process reads, DOI_ENRICHMENT_CACHE_DIR's sibling. CLI-only. On an
+	// image-mode tenant the file must exist before the restart: it becomes a
+	// bind source (render.APIImagePathKeys), and apptainer refuses a missing one.
 	"SYMBOL_GLOSSARY_CACHE_PATH",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
 	// The image store dirs the boot identity check (ADR-0010 decision 7, #655

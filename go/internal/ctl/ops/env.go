@@ -125,8 +125,7 @@ func (p *planner) requirePublicKey(key string) error {
 		if reason, retired := settings.Retired(key); retired {
 			return p.refuse("%s is %s", key, reason)
 		}
-		return p.refuse("%s is not a known ragstack setting; the typed env API edits the public allowlist only "+
-			"(`ragstack-ctl env get %s` lists it)", key, p.t.Name)
+		return p.refuse("%s is not a known ragstack setting; the typed env API edits the public allowlist only", key)
 	}
 }
 

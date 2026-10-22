@@ -233,10 +233,14 @@ are counted against the same leg's base.
    `ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1`, then
    `ragstack-ctl tenant restart <tenant> --only api`. Do not hand-edit `tenant.env`.
    `SYMBOL_GLOSSARY_EXTRACTION` and `SYMBOL_GLOSSARY_CONFIG_JSON` are set the same way
-   (`env set`). They affect only ingests after the restart and the backfill.
+   (`env set`). They affect only in-process API ingests after the restart. The backfill
+   script does not read either setting: it takes `--config` and `--llm-cache` on its
+   command line.
    `SYMBOL_GLOSSARY_CACHE_PATH` is a host path, so it is CLI-only:
    `ragstack-ctl env set-surface <tenant> SYMBOL_GLOSSARY_CACHE_PATH=<path>` on the host,
-   as the ctl account.
+   as the ctl account. On an image-mode tenant the file must exist before the restart,
+   because the path is bound into the API instance and apptainer refuses a missing bind
+   source.
    The API logs `symbol glossary config: extraction=… boost=…` at every start (#775).
 
 Before step 3, a boost on an index without the field is a measured no-op.
