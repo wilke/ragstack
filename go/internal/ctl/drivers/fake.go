@@ -303,6 +303,7 @@ func NewFake(opts FakeOptions) *Fake {
 		LogRoot: opts.InstanceLogRoot, ExitOnRun: copyMapString(opts.InstanceExitOnRun),
 		IgnoreInitdbArgs: opts.InstanceIgnoreInitdbArgs,
 	}
+	f.proc.onKill = f.instances.killStarter
 	// In this order, and not over a map of the two: the pids this fake hands
 	// out are part of what a test asserts, and a map would shuffle them.
 	for _, name := range opts.RunningInstances {
@@ -707,6 +708,10 @@ type FakeProc struct {
 	// filled by FakeInstances when it starts an instance: the process on the
 	// port is the instance's CHILD, as it is on the host.
 	parents map[int]int
+	// onKill is told about every KILL, AFTER the lock is released: a KILL to
+	// an instance's starter takes the instance out of FakeInstances' tables,
+	// as it does on the host.
+	onKill func(pid int)
 }
 
 // Owner is the process behind the LISTEN socket on port.
@@ -789,6 +794,14 @@ func (p *FakeProc) Signal(_ context.Context, pid int, wantCwd, wantCmd, sig stri
 	if err := p.r.record("proc", "Signal", strconv.Itoa(pid), wantCwd, wantCmd, sig); err != nil {
 		return err
 	}
+	p.signal(pid, sig)
+	if sig == "KILL" && p.onKill != nil {
+		p.onKill(pid)
+	}
+	return nil
+}
+
+func (p *FakeProc) signal(pid int, sig string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Signals = append(p.Signals, fmt.Sprintf("%d:%s", pid, sig))
@@ -808,7 +821,19 @@ func (p *FakeProc) Signal(_ context.Context, pid int, wantCwd, wantCmd, sig stri
 			delete(p.spawnPorts, pid)
 		}
 	}
-	return nil
+	// A KILL cannot be ignored: whatever port the process held, it holds no
+	// longer. This is the selftest's zombie drill on the fake host — the JVM
+	// inside an elasticsearch instance KILLed, the instance left registered.
+	// (A TERM is left alone: a process that ignores one is a case tests build.)
+	if sig == "KILL" {
+		for port, o := range p.Owners {
+			if o.PID == pid {
+				delete(p.Owners, port)
+				delete(p.Ports, port)
+				delete(p.parents, pid)
+			}
+		}
+	}
 }
 
 // Spawn starts a detached process: it assigns a pid, writes the pidfile, and
@@ -1051,6 +1076,16 @@ type FakeInstances struct {
 	// instances either start or fail to start cannot produce the three minutes
 	// of waiting that followed on coconut.
 	ExitOnRun map[string]string
+	// SilentOnRun makes a named instance START AND NEVER BIND: Run succeeds
+	// and the instance enters the table, but nothing of its own holds its
+	// port. It is the zombie of #741 from birth — appinit up, the store
+	// inside it gone (or never come) — and the case a start that trusted
+	// `instance run` reported as "succeeded".
+	SilentOnRun map[string]bool
+	// StuckOnStop makes Stop of a named instance FAIL and leave it in the
+	// table, as an `apptainer instance stop` that timed out does. Only a KILL
+	// to the instance's starter pid (FakeProc.Signal) takes it out then.
+	StuckOnStop map[string]bool
 	// Specs is every InstanceSpec Run got past the name and image checks with,
 	// in order (an already-running name included), like Spawned. It is inspectable STATE, not a call
 	// record: a spec's ExtraEnv carries secrets (the postgres password, an
@@ -1232,9 +1267,59 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 		i.files.Put(path, body, 0o644)
 		return nil
 	}
-	i.start(spec.Namespace, spec.Name, spec.SIF)
+	in := i.start(spec.Namespace, spec.Name, spec.SIF)
+	if i.SilentOnRun[spec.Name] {
+		i.unbind(in)
+	}
 	i.maybeInitdb(spec)
 	return nil
+}
+
+// unbind frees the port a running instance's service holds and leaves the
+// instance in its table: the store inside it exited, the starter did not.
+// Caller holds the lock.
+func (i *FakeInstances) unbind(in jobs.Instance) {
+	port, ok := i.ports[in.Name]
+	if !ok {
+		return
+	}
+	i.proc.mu.Lock()
+	defer i.proc.mu.Unlock()
+	if o, had := i.proc.Owners[port]; had && o.PID == in.PID+1 {
+		delete(i.proc.parents, o.PID)
+		delete(i.proc.Owners, port)
+		delete(i.proc.Ports, port)
+	}
+}
+
+// Zombify kills the SERVICE inside a running ctl-namespace instance and leaves
+// the instance registered — dev's elasticsearch on 2026-10-17 (#741): appinit
+// and squashfuse alive, no JVM, nothing on the port. A fixture adjustment; it
+// records no call.
+func (i *FakeInstances) Zombify(name string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	in, ok := i.Running[name]
+	if !ok {
+		return false
+	}
+	i.unbind(in)
+	return true
+}
+
+// killStarter is what a KILL to an instance's STARTER does: the instance
+// leaves every table it is in, and its port is freed. FakeProc.Signal calls it
+// through the hook NewFake wires.
+func (i *FakeInstances) killStarter(pid int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, ns := range []jobs.InstanceNamespace{jobs.NamespaceCtl, jobs.NamespaceAccountDefault} {
+		for name, in := range i.table(ns) {
+			if in.PID == pid {
+				i.stop(ns, name)
+			}
+		}
+	}
 }
 
 // maybeInitdb models the one thing the postgres image's entrypoint does that a
@@ -1377,6 +1462,9 @@ func (i *FakeInstances) Stop(_ context.Context, name string, opts jobs.StopOptio
 	defer i.mu.Unlock()
 	if _, ok := i.table(opts.Namespace)[name]; !ok {
 		return nil
+	}
+	if i.StuckOnStop[name] {
+		return fmt.Errorf("apptainer instance stop %s: timed out", name)
 	}
 	i.stop(opts.Namespace, name)
 	return nil

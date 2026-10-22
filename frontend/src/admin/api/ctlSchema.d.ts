@@ -1713,8 +1713,11 @@ export interface components {
          */
         logs_response: {
             tenant: string;
-            /** @enum {string} */
-            file: "api" | "qdrant" | "es" | "ui";
+            /**
+             * @description `es-out` / `es-err` are the elasticsearch instance's own stdout / stderr as apptainer captures them (ES's server log, and why a JVM exited); `es` is the best available elasticsearch log, which falls back to the GC stream.
+             * @enum {string}
+             */
+            file: "api" | "qdrant" | "es" | "es-out" | "es-err" | "ui";
             lines: string[];
             requested: number;
             returned: number;
@@ -3068,7 +3071,8 @@ export interface operations {
     ctlTenantLogs: {
         parameters: {
             query: {
-                file: "api" | "qdrant" | "es" | "ui";
+                /** @description `es-out` / `es-err` are the elasticsearch instance's own stdout / stderr (ES's server log, and why a JVM exited); `es` falls back to the GC stream. */
+                file: "api" | "qdrant" | "es" | "es-out" | "es-err" | "ui";
                 /** @description How many lines from the end. Capped at 5000. */
                 lines?: components["parameters"]["Lines"];
             };

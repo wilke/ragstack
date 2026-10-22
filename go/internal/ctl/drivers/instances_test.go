@@ -601,3 +601,53 @@ func TestFakeInstancesPortIsHeldByAChildOfTheInstance(t *testing.T) {
 		t.Error("an unrelated pid was reported as the instance's")
 	}
 }
+
+// The fake's #741 fixtures: a zombie keeps its row and loses its port; an
+// instance that will not stop leaves only on a KILL to its starter; a silent
+// instance is registered from birth with nothing on its port.
+func TestFakeInstancesZombieStuckAndSilent(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(FakeOptions{InstancePorts: map[string]int{"elasticsearch-dev": 24043, "qdrant-dev": 24041}})
+	ins, proc := f.FakeInstances(), f.FakeProc()
+	run := func(name string) jobs.Instance {
+		t.Helper()
+		if err := ins.Run(ctx, jobs.InstanceSpec{Name: name, SIF: "/rag/apptainer/images/x.sif"}); err != nil {
+			t.Fatal(err)
+		}
+		return ins.Running[name]
+	}
+
+	es := run("elasticsearch-dev")
+	if !ins.Zombify("elasticsearch-dev") {
+		t.Fatal("Zombify found no instance")
+	}
+	if _, ok := ins.Running["elasticsearch-dev"]; !ok {
+		t.Error("a zombie left the instance table")
+	}
+	if owns, _ := proc.InstanceOwnsPort(ctx, es.PID, 24043); owns {
+		t.Error("a zombie still owns its port")
+	}
+
+	ins.StuckOnStop = map[string]bool{"elasticsearch-dev": true}
+	if err := ins.Stop(ctx, "elasticsearch-dev", jobs.StopOptions{}); err == nil {
+		t.Error("a stuck stop succeeded")
+	}
+	if _, ok := ins.Running["elasticsearch-dev"]; !ok {
+		t.Error("a stuck instance left the table on stop")
+	}
+	if err := proc.Signal(ctx, es.PID, "", "", "KILL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ins.Running["elasticsearch-dev"]; ok {
+		t.Error("a KILL to the starter left the instance registered")
+	}
+
+	ins.SilentOnRun = map[string]bool{"qdrant-dev": true}
+	q := run("qdrant-dev")
+	if _, ok := ins.Running["qdrant-dev"]; !ok {
+		t.Error("a silent instance is not registered")
+	}
+	if owns, _ := proc.InstanceOwnsPort(ctx, q.PID, 24041); owns {
+		t.Error("a silent instance owns its port")
+	}
+}

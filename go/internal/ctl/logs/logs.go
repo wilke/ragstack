@@ -326,15 +326,32 @@ func Resolve(roots paths.Roots, t *registry.Tenant, file model.LogFile) (string,
 		if t.Stores.Qdrant.Ownership != registry.OwnershipExclusive {
 			return "", fmt.Errorf("%w: %s runs on a shared qdrant the ctl only probes", ErrNoLog, t.Name)
 		}
-		candidates = append(storeCandidates(t, tp, "qdrant"), instanceLog(string(t.Stores.Qdrant.Instance))...)
+		instance := storeInstance(string(t.Stores.Qdrant.Instance), "qdrant", t.ManifestName)
+		candidates = withCtlInstanceLog(t, storeCandidates(t, tp, "qdrant"), ctlInstanceLog(roots, instance, ".out"))
+		candidates = append(candidates, instanceLog(instance, ".out")...)
 	case model.LogES:
 		if t.Stores.Elasticsearch.Ownership != registry.OwnershipExclusive {
 			return "", fmt.Errorf("%w: %s runs on a shared elasticsearch the ctl only probes", ErrNoLog, t.Name)
 		}
-		candidates = append(storeCandidates(t, tp, "elasticsearch"), instanceLog(string(t.Stores.Elasticsearch.Instance))...)
+		instance := storeInstance(string(t.Stores.Elasticsearch.Instance), "elasticsearch", t.ManifestName)
+		candidates = withCtlInstanceLog(t, storeCandidates(t, tp, "elasticsearch"), ctlInstanceLog(roots, instance, ".out"))
+		candidates = append(candidates, instanceLog(instance, ".out")...)
+		// LAST: what ES writes into its own log directory under this layout is
+		// the JVM's GC stream (`gc.log`), which says THAT the JVM exited and
+		// never why (#741). It is the answer only when there is nothing else.
 		if newest := newestLog(tp.ESLogs); newest != "" {
 			candidates = append(candidates, newest)
 		}
+	case model.LogESOut, model.LogESErr:
+		if t.Stores.Elasticsearch.Ownership != registry.OwnershipExclusive {
+			return "", fmt.Errorf("%w: %s runs on a shared elasticsearch the ctl only probes", ErrNoLog, t.Name)
+		}
+		ext := ".out"
+		if file == model.LogESErr {
+			ext = ".err"
+		}
+		instance := storeInstance(string(t.Stores.Elasticsearch.Instance), "elasticsearch", t.ManifestName)
+		candidates = append(ctlInstanceLog(roots, instance, ext), instanceLog(instance, ext)...)
 	default:
 		return "", fmt.Errorf("%w: unknown selector %q", ErrNoLog, file)
 	}
@@ -363,10 +380,42 @@ func storeCandidates(t *registry.Tenant, tp paths.Tenant, svc string) []string {
 	}
 }
 
-// instanceLog is the apptainer instance's stdout capture, the only place a
-// hand-started store's output goes today. It lives under the operator's home,
-// so it is offered only when this account can actually read it.
-func instanceLog(instance string) []string {
+// storeInstance is the store's instance name: the row's, or the name every
+// store instance is given (`<kind>-<manifest_name>`) when the row has none.
+func storeInstance(recorded, kind, manifest string) string {
+	if recorded != "" {
+		return recorded
+	}
+	return kind + "-" + manifest
+}
+
+// withCtlInstanceLog places the ctl-namespace instance capture among the
+// unit-era candidates. For an instance-supervised tenant it goes FIRST: the
+// store's output goes nowhere else, and a `<data>/logs/es-<t>.log` beside it is
+// from before the handover. For a systemd tenant it goes after them.
+func withCtlInstanceLog(t *registry.Tenant, unitLogs, ctl []string) []string {
+	if t.Supervisor == "instance" {
+		return append(append([]string(nil), ctl...), unitLogs...)
+	}
+	return append(append([]string(nil), unitLogs...), ctl...)
+}
+
+// ctlInstanceLog is the capture of an instance the CONTROL PLANE started:
+// `<CtlStateDir>/apptainer/config/instances/logs/<host>/<user>/<instance><ext>`
+// (ext ".out" or ".err"). It is where a supervisor:instance store's own log
+// is — ES's server log, postgres's FATAL — and before #741 nothing here
+// looked for it.
+func ctlInstanceLog(roots paths.Roots, instance, ext string) []string {
+	if instance == "" || roots.CtlStateDir == "" {
+		return nil
+	}
+	return globLogs(roots.CtlInstanceLogsDir(), instance+ext)
+}
+
+// instanceLog is the capture of an instance in the ACCOUNT's default registry
+// — a hand-started store. It lives under the operator's home, so it is offered
+// only when this account can actually read it.
+func instanceLog(instance, ext string) []string {
 	if instance == "" {
 		return nil
 	}
@@ -374,8 +423,12 @@ func instanceLog(instance string) []string {
 	if err != nil {
 		return nil
 	}
-	base := filepath.Join(home, ".apptainer", "instances", "logs")
-	matches, err := filepath.Glob(filepath.Join(base, "*", "*", instance+".out"))
+	return globLogs(filepath.Join(home, ".apptainer", "instances", "logs"), instance+ext)
+}
+
+// globLogs is `<base>/<host>/<user>/<name>`, sorted.
+func globLogs(base, name string) []string {
+	matches, err := filepath.Glob(filepath.Join(base, "*", "*", name))
 	if err != nil {
 		return nil
 	}

@@ -142,8 +142,13 @@ func usage() {
                                             (to PATH, 0600, when given; else to stdout)
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
-  tenant logs <name> --file api|qdrant|es|ui [--lines N]
-                                            bounded, redacted tail (never the on-disk path)
+  tenant logs <name> --file api|qdrant|es|es-out|es-err|ui [--lines N]
+                                            bounded, redacted tail (never the on-disk path);
+                                            es = the store's best log (its instance's stdout
+                                            under the ctl's apptainer config dir first, the
+                                            GC stream last); es-out / es-err = the ES
+                                            instance's own stdout / stderr, where ES says
+                                            why it exited
 
   tenant start|restart <name> [--only api,ui,qdrant,es] [--force]
   tenant stop <name> [--only …] [--keep-enabled] [--force]
@@ -1316,7 +1321,7 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 
 func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|ui [--lines N]")
+		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|es-out|es-err|ui [--lines N]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant create <name> --artifact ID [options]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission|purge|update-code <name> [op args]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant rebase-worktree <name> [--mirror DIR] [--dry-run] [--include-dev-ui]")
@@ -1371,7 +1376,8 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 	asJSON := fs.Bool("json", jsonOut, "machine-readable output")
-	file := fs.String("file", "api", "api|qdrant|es|ui")
+	file := fs.String("file", "api", "api|qdrant|es|es-out|es-err|ui (es-out/es-err: the elasticsearch instance's "+
+		"own stdout/stderr, where ES logs why it exited)")
 	lines := fs.Int("lines", 200, "how many lines to tail (max 2000)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage

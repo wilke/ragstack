@@ -179,6 +179,12 @@ const (
 	LogQdrant LogFile = "qdrant"
 	LogES     LogFile = "es"
 	LogUI     LogFile = "ui"
+	// LogESOut and LogESErr are the elasticsearch INSTANCE's own stdout and
+	// stderr as apptainer captures them — where ES writes its server log
+	// (and the reason a JVM exited, #741) — as opposed to `es`, which is the
+	// best log there is and may be the GC stream.
+	LogESOut LogFile = "es-out"
+	LogESErr LogFile = "es-err"
 )
 
 // ErrorCode is the machine-readable failure class of error.json. One status

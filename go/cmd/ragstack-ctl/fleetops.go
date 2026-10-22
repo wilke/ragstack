@@ -72,7 +72,10 @@ func fleetOpsUsage() int {
   start --all   start every tenant whose row says desired_boot enabled, in
                 display order. Idempotent: a leg that is already running is a
                 no-op in both supervisors, so a periodic run of this is the
-                watchdog instance mode does not otherwise have.
+                watchdog instance mode does not otherwise have. In instance
+                mode "running" means the store's instance owns its port; a
+                registered instance with nothing on its port is a zombie, and
+                the start stops it and starts it again (#741).
   stop  --all   stop every tenant the ctl supervises, in REVERSE display
                 order. Destructive: it needs --yes-destructive all once for
                 the fleet, and each tenant's own plan is then confirmed with

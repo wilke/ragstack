@@ -180,6 +180,14 @@ func (r Roots) BackupIdentity() string { return filepath.Join(r.CtlConfigDir, "b
 // CtlUIDist is the built admin UI served by the gateway.
 func (r Roots) CtlUIDist() string { return filepath.Join(r.CtlStateDir, "ui", "dist") }
 
+// CtlInstanceLogsDir is where apptainer files the stdout/stderr of every
+// instance the CONTROL PLANE started: `<CtlStateDir>/apptainer/config` is the
+// APPTAINER_CONFIGDIR the ctl forces on its apptainer calls, and apptainer
+// writes `instances/logs/<host>/<user>/<name>.out|.err` under it.
+func (r Roots) CtlInstanceLogsDir() string {
+	return filepath.Join(r.CtlStateDir, "apptainer", "config", "instances", "logs")
+}
+
 // ServerImagesDir is the ctl's server-image store: `fleet image prepare`
 // copies a verified `ragstack-server-*.sif` and its receipt here, and an
 // image-mode tenant's API instance runs from it. It is INSIDE CtlStateDir on

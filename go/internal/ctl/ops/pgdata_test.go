@@ -687,6 +687,11 @@ func TestReleaseTakeAbandonPutsTheOriginalClusterBack(t *testing.T) {
 // and then reported `pg_isready … no response`, which says nothing about why.
 //
 // This one also pins the other half: only THIS attempt's output is quoted.
+//
+// Since #741 the wait is INSIDE the instance's own start step ("started" means
+// "answers"), so the failure arrives one step earlier than it used to — at
+// `start the instance postgres-dev`, not at the restore that followed it —
+// with the same sentence.
 func TestTheReadinessWaitStopsWhenTheInstanceIsGoneAndIgnoresAnOlderLog(t *testing.T) {
 	oc, fake, pp := pgFixture(t, released, nil)
 	seedReleasedDump(t, oc, fake)
@@ -701,12 +706,12 @@ func TestTheReadinessWaitStopsWhenTheInstanceIsGoneAndIgnoresAnOlderLog(t *testi
 
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
 	r := newRunner(oc, fake)
-	runUpTo(t, r, p, "restore the release's dump")
-	step, _ := stepNamed(t, p, "restore the release's dump")
+	runUpTo(t, r, p, "start the instance postgres-dev")
+	step, _ := stepNamed(t, p, "start the instance postgres-dev")
 
 	_, err := r.run(step)
 	if err == nil {
-		t.Fatal("the restore succeeded over a postgres that never started")
+		t.Fatal("the start succeeded for a postgres that never answered")
 	}
 	if !strings.Contains(err.Error(), "postgres-dev") || !strings.Contains(err.Error(), "is not coming up") {
 		t.Errorf("the failure does not say the instance is gone: %v", err)
@@ -731,8 +736,8 @@ func TestTheReadinessWaitQuotesWhatThisAttemptWrote(t *testing.T) {
 
 	p := planAs(t, oc, "svcbvbrc", "handover", map[string]any{"phase": "take", "token": testToken})
 	r := newRunner(oc, fake)
-	runUpTo(t, r, p, "restore the release's dump")
-	step, _ := stepNamed(t, p, "restore the release's dump")
+	runUpTo(t, r, p, "start the instance postgres-dev")
+	step, _ := stepNamed(t, p, "start the instance postgres-dev")
 
 	_, err := r.run(step)
 	if err == nil || !strings.Contains(err.Error(), "could not create lock file") {

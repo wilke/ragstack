@@ -332,6 +332,53 @@ func instanceBootIntent(p *planner, c component, want string) error {
 	return nil
 }
 
+// instancePartialBootNote is enableLeg/disableLeg for a PARTIAL start or stop
+// (`--only <leg>`) in instance mode.
+//
+// desired_boot is one field of the TENANT's row and `fleet start --all` starts
+// every managed leg of a tenant whose row says `enabled`; a partial op writes
+// no registry at all. So the step changes nothing and says, at run time, what
+// the row holds and therefore what the next boot does with this leg. It does
+// NOT set desired_boot to enabled on a partial start: during a handover soak
+// the row is deliberately `disabled` while the tenant runs, and a partial start
+// must not commit the boot the operator has not committed.
+func instancePartialBootNote(p *planner, c component, want string) {
+	verb, op := "enable", "start"
+	if want == "disabled" {
+		verb, op = "disable", "stop"
+	}
+	tenant := p.tenant
+	p.addFor("instance", step{
+		Kind: "instance", Title: verb + " " + c.Name + " (desired_boot)", Targets: []string{c.Name},
+		Warnings: []string{"desired_boot is the tenant's, not a leg's: a partial " + op + " leaves the registry's " +
+			"value as it is, and `ragstack-ctl fleet start --all` starts every leg of a tenant whose row says " +
+			"`enabled` — this step reads the row and says which"},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			cur := ""
+			if f := sc.Ops.Fleet; f != nil {
+				if t, ok := f.Tenants[tenant]; ok {
+					cur = t.DesiredBoot
+				}
+			}
+			switch {
+			case cur == "":
+				sc.Logf("the registry loaded for this job has no row for %s; desired_boot is not known here", tenant)
+				return "desired_boot unknown (no registry row)", nil
+			case cur == "enabled":
+				sc.Logf("desired_boot is enabled for %s: `fleet start --all` starts %s with the rest of the tenant",
+					tenant, c.Name)
+			case want == "enabled":
+				sc.Logf("WARNING: desired_boot is %s for %s, so `fleet start --all` skips the whole tenant, %s "+
+					"included; a partial start does not change that — `ragstack-ctl tenant start %s` without --only "+
+					"does", cur, tenant, c.Name, tenant)
+			default:
+				sc.Logf("desired_boot is %s for %s: `fleet start --all` skips the tenant", cur, tenant)
+			}
+			return "desired_boot " + cur + " (registry, tenant-wide; a partial " + op + " leaves it)", nil
+		},
+	})
+}
+
 // startLeg is `apptainer instance run` for a store and a detached spawn for
 // the api.
 func (s instanceSupervisor) startLeg(p *planner, c component) error {
@@ -388,16 +435,10 @@ func (instanceSupervisor) startStore(p *planner, c component) error {
 			return "stopped " + name, sc.Ops.Drivers.Instances().Stop(ctx, name,
 				jobs.StopOptions{Namespace: jobs.NamespaceCtl})
 		},
-		Reconcile: func(ctx context.Context, sc *jobs.StepContext) (jobs.Reconciliation, error) {
-			up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
-			if err != nil {
-				return jobs.ReconcileStuck, err
-			}
-			if up {
-				return jobs.ReconcileDone, nil
-			}
-			return jobs.ReconcileRedo, nil
-		},
+		// The same test the run half's zombie check makes: listed AND owning
+		// the port. A resumed job that called a registered-but-silent instance
+		// DONE would be #741 again, one restart later.
+		Reconcile: l.answer.reconcile,
 	})
 	return nil
 }
@@ -412,6 +453,9 @@ type storeLaunch struct {
 	Argv     []string
 	Warnings []string
 	Run      jobs.StepFunc
+	// answer is the "started means answers" question the run half ends with,
+	// and what the start step's reconcile asks (storeanswer.go).
+	answer storeAnswer
 }
 
 // storeLaunchOf renders the instance start of one store leg. A plan-time call:
@@ -444,18 +488,46 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 		warnings = append(warnings, "the config bind "+seedInto+" is seeded from the image first when it is empty; "+
 			"an Elasticsearch whose config directory is empty exits before it logs why")
 	}
+	answer := storeAnswerFor(p, c, name)
+	port := c.Port
+	warnings = append(warnings, fmt.Sprintf("the step succeeds only once the store answers: the process on :%d "+
+		"descends from the instance and the store answers %s, within %s — `apptainer instance run` returning is not "+
+		"enough (#741)", port, answer.answered, seconds(storeAnswerTimeout)),
+		fmt.Sprintf("an instance that is already registered but owns nothing on :%d is a zombie: it is stopped "+
+			"(KILL to its starter if `instance stop` leaves it registered) and started again", port))
 
 	run := func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-		up, err := instanceRunning(ctx, sc, name, jobs.NamespaceCtl)
+		in, up, err := instanceIn(ctx, sc, name, jobs.NamespaceCtl)
 		if err != nil {
 			return "", err
 		}
+		healed := ""
 		if up {
 			// Idempotent by design: `fleet start --all` runs over a fleet
 			// half of which is already up, and a periodic run of it is the
-			// only watchdog instance mode has.
-			sc.Logf("instance %s is already running", name)
-			return "already running: " + name, nil
+			// only watchdog instance mode has. "Up" is the instance owning its
+			// port, not its name being in the table: a registered instance
+			// whose store has exited is a zombie, and this step — the one that
+			// was asked to start this leg — is where it heals (#741).
+			state, in, err := answer.classify(ctx, sc, in)
+			if err != nil {
+				return "", err
+			}
+			switch state {
+			case listedHealthy:
+				sc.Logf("instance %s is already running", name)
+				return "already running: " + name, nil
+			case listedZombie:
+				if err := stopZombie(ctx, sc, name, in); err != nil {
+					return "", err
+				}
+				sc.Logf("instance %s was a zombie: registered (pid %d) with nothing on :%d; stopped and restarting",
+					name, in.PID, port)
+				healed = fmt.Sprintf(" (it was a zombie: registered, pid %d, with nothing on :%d; stopped first)",
+					in.PID, port)
+			case listedGone:
+				sc.Logf("instance %s left the instance table while it was being checked; starting it", name)
+			}
 		}
 		if seedInto != "" {
 			seeded, err := seedESConfig(ctx, sc, sif, seedFrom, seedInto)
@@ -525,10 +597,19 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 		if err := sc.Ops.Drivers.Instances().Run(ctx, spec); err != nil {
 			return "", err
 		}
-		return "started " + name, nil
+		// "Started" means "answers" (#741): the wait is INSIDE this step, so
+		// that no plan, resume or rollback can see this leg as started while
+		// its port is dead.
+		detail, err := answer.await(ctx, sc, storeAnswerTimeout)
+		if err != nil {
+			return "", err
+		}
+		sc.Logf("started %s; %s", name, detail)
+		return "started " + name + "; " + detail + healed, nil
 	}
 	return storeLaunch{Name: name, Argv: append([]string{"/usr/bin/apptainer", "instance", "run", "--no-home"},
-		append(append(st.BindArgs(), st.EnvArgs()...), append([]string{sif, name}, st.Args...)...)...), Warnings: warnings, Run: run}, nil
+		append(append(st.BindArgs(), st.EnvArgs()...), append([]string{sif, name}, st.Args...)...)...),
+		Warnings: warnings, Run: run, answer: answer}, nil
 }
 
 func (instanceSupervisor) stopStore(p *planner, c component) error {
@@ -1521,6 +1602,22 @@ func sharedStoreProbes(t *registry.Tenant, tp paths.Tenant) []storeProbe {
 	return out
 }
 
+// readyTimeoutError is awaitStores' "the bound passed" answer: the same
+// sentence it has always been, typed so that a caller which knows what its
+// probe was asking (storeAnswer) can say it better, and unwrapping to the
+// probe's last answer as the %w it replaced did.
+type readyTimeoutError struct {
+	what  string
+	bound time.Duration
+	last  error
+}
+
+func (e *readyTimeoutError) Error() string {
+	return fmt.Sprintf("%s did not become ready within %s: %v", e.what, e.bound, e.last)
+}
+
+func (e *readyTimeoutError) Unwrap() error { return e.last }
+
 // awaitStores polls every probe until it answers or the bound passes. Wall
 // clock and a real sleep, for the reason create's readiness gate gives: this
 // is a run half waiting for a process to open its files.
@@ -1557,7 +1654,7 @@ func awaitStores(ctx context.Context, sc *jobs.StepContext, probes []storeProbe,
 				}
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("%s did not become ready within %s: %w", pr.what, bound, err)
+				return &readyTimeoutError{what: pr.what, bound: bound, last: err}
 			}
 			select {
 			case <-ctx.Done():

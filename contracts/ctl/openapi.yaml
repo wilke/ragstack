@@ -754,7 +754,10 @@ paths:
         - name: file
           in: query
           required: true
-          schema: { type: string, enum: [api, qdrant, es, ui] }
+          description: >-
+            `es-out` / `es-err` are the elasticsearch instance's own stdout / stderr
+            (ES's server log, and why a JVM exited); `es` falls back to the GC stream.
+          schema: { type: string, enum: [api, qdrant, es, es-out, es-err, ui] }
         - $ref: "#/components/parameters/Lines"
       responses:
         "200":

@@ -7,7 +7,11 @@
   "required": ["tenant", "file", "lines", "requested", "returned", "truncated", "redacted"],
   "properties": {
     "tenant": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
-    "file": { "type": "string", "enum": ["api", "qdrant", "es", "ui"] },
+    "file": {
+      "description": "`es-out` / `es-err` are the elasticsearch instance's own stdout / stderr as apptainer captures them (ES's server log, and why a JVM exited); `es` is the best available elasticsearch log, which falls back to the GC stream.",
+      "type": "string",
+      "enum": ["api", "qdrant", "es", "es-out", "es-err", "ui"]
+    },
     "lines": { "type": "array", "items": { "type": "string" } },
     "requested": { "type": "integer", "minimum": 1, "maximum": 5000 },
     "returned": { "type": "integer", "minimum": 0 },

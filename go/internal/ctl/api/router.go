@@ -71,7 +71,7 @@ var tenantNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 var jobIDRE = regexp.MustCompile(`^[0-7][0-9A-HJKMNP-TV-Z]{25}$`)
 
 // logFiles is the `file` query enum of GET /v1/tenants/{name}/logs.
-var logFiles = map[string]bool{"api": true, "qdrant": true, "es": true, "ui": true}
+var logFiles = map[string]bool{"api": true, "qdrant": true, "es": true, "es-out": true, "es-err": true, "ui": true}
 
 // maxBodyBytes bounds a request body. Nothing this API accepts is large, and
 // an unbounded reader on a publicly mounted surface is a memory lever.
@@ -621,7 +621,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	file := r.URL.Query().Get("file")
 	if !logFiles[file] {
 		writeError(w, r, model.CodeValidation,
-			fmt.Sprintf("file %q is not one of api, qdrant, es, ui", file),
+			fmt.Sprintf("file %q is not one of api, qdrant, es, es-out, es-err, ui", file),
 			map[string]any{"fields": []string{"file"}})
 		return
 	}

@@ -41,6 +41,7 @@ These bit us once. Don't repeat them.
 - **Some bind targets need image content to start.** ES `config/` and Neo4j `conf/` are populated by the image build. Bind-mounting an empty host dir to them breaks the service. Solution: `seed_if_empty()` step copies the image's contents into the host dir on first run (`apptainer/up.sh`).
 - **`pip install --target` console scripts have shebang issues.** When the deps dir is bind-mounted at a different path than the install path (we install at host `apptainer/data/embedding/deps/` and mount at `/deps`), the `uvicorn` console script's shebang breaks. Use `python -m uvicorn` instead.
 - **Instance logs are append-only.** `~/.apptainer/instances/logs/<host>/<user>/<svc>.{err,out}` keep growing across restarts. Historical errors from earlier failed runs persist after fix — don't trust them as current state; check `ss -ltn` and `curl` the service instead.
+- **A listed instance is not a running store (#741).** `apptainer instance list` keeps an instance whose service died (appinit + squashfuse_ll alive, no JVM, nothing on the port). The ctl's store start therefore waits until the port's owner descends from the instance (`Proc.InstanceOwnsPort`) and the store answers, and treats "listed, owns nothing on its port" as a zombie to stop and restart. The ctl's own instances log under `<CtlStateDir>/apptainer/config/instances/logs/<host>/<user>/` (not `~/.apptainer/…`); `tenant logs --file es-out|es-err` reads them.
 
 ### Neo4j
 

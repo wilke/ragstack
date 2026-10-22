@@ -188,6 +188,9 @@ func TestResolveSelectors(t *testing.T) {
 // TestESFallsBackToTheNewestRotatedFile: Elasticsearch names its own logs
 // after the cluster, so the selector takes the newest *.log in its log dir.
 func TestESFallsBackToTheNewestRotatedFile(t *testing.T) {
+	// The instance name now defaults to elasticsearch-<manifest>, so a real
+	// ~/.apptainer capture of a hand-started dev store would answer first.
+	t.Setenv("HOME", t.TempDir())
 	roots, tenant := tenantTree(t)
 	tenant.Stores.Elasticsearch.Ownership = registry.OwnershipExclusive
 	tp := paths.TenantPaths(roots, "dev", "dev")
@@ -439,5 +442,92 @@ func TestReadRefusesWhenAHistoricalSecretsCopyIsUnreadable(t *testing.T) {
 	}
 	if unreadable.Path != bak {
 		t.Errorf("path = %q, want the historical copy %q", unreadable.Path, bak)
+	}
+}
+
+// #741: an instance-supervised elasticsearch logs to its INSTANCE's stdout,
+// under the ctl's apptainer config dir; ES's own log directory holds the GC
+// stream, which says that the JVM exited and never why. `es` must find the
+// instance capture first, and `es-out` / `es-err` name the instance streams
+// outright.
+func TestESPrefersTheCtlInstanceOutputOverTheGCStream(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no hand-started captures leak in from the host
+	roots, tenant := tenantTree(t)
+	tenant.Supervisor = "instance"
+	tenant.Stores.Elasticsearch.Ownership = registry.OwnershipExclusive
+	tenant.Stores.Elasticsearch.Instance = "elasticsearch-dev"
+	tp := paths.TenantPaths(roots, "dev", "dev")
+	gc := filepath.Join(tp.ESLogs, "gc.log")
+	write(t, gc, "[gc,heap,exit] Heap\n")
+	base := filepath.Join(roots.CtlStateDir, "apptainer", "config", "instances", "logs", "coconut", "svcbvbrc")
+	out := filepath.Join(base, "elasticsearch-dev.out")
+	errLog := filepath.Join(base, "elasticsearch-dev.err")
+	write(t, out, `{"log.level":"ERROR","message":"fatal error java.lang.OutOfMemoryError: Cannot reserve 1048576 bytes of direct buffer memory"}`+"\n")
+	write(t, errLog, "WARNING: A terminally deprecated method in java.lang.System has been called\n")
+	if roots.CtlInstanceLogsDir() != filepath.Join(roots.CtlStateDir, "apptainer", "config", "instances", "logs") {
+		t.Fatalf("CtlInstanceLogsDir = %s", roots.CtlInstanceLogsDir())
+	}
+
+	for _, c := range []struct {
+		file model.LogFile
+		want string
+	}{
+		{model.LogES, out},
+		{model.LogESOut, out},
+		{model.LogESErr, errLog},
+	} {
+		got, err := Resolve(roots, tenant, c.file)
+		if err != nil || got != c.want {
+			t.Errorf("resolve %s = %q, %v; want %q", c.file, got, err, c.want)
+		}
+	}
+	// A stale unit-era log does not shadow the live instance capture of an
+	// instance-supervised tenant…
+	unitLog := filepath.Join(tenant.DataDir, "logs", "elasticsearch-dev.log")
+	write(t, unitLog, "from before the handover\n")
+	if got, _ := Resolve(roots, tenant, model.LogES); got != out {
+		t.Errorf("instance tenant: resolve es = %q, want the instance capture %q", got, out)
+	}
+	// …while a systemd tenant's unit log stays first.
+	tenant.Supervisor = "systemd"
+	if got, _ := Resolve(roots, tenant, model.LogES); got != unitLog {
+		t.Errorf("systemd tenant: resolve es = %q, want the unit log %q", got, unitLog)
+	}
+
+	// The tail reads the reason, redacted like every other log.
+	resp, err := Read(roots, tenant, model.LogESOut, 10)
+	if err != nil || resp.File != model.LogESOut || !strings.Contains(strings.Join(resp.Lines, "\n"), "OutOfMemoryError") {
+		t.Errorf("read es-out = %+v, %v", resp, err)
+	}
+
+	// Without an instance capture the GC stream is still the fallback.
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(unitLog); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Resolve(roots, tenant, model.LogES); got != gc {
+		t.Errorf("no capture: resolve es = %q, want %q", got, gc)
+	}
+	if _, err := Resolve(roots, tenant, model.LogESOut); !errors.Is(err, ErrNoLog) {
+		t.Errorf("no capture: resolve es-out = %v, want ErrNoLog", err)
+	}
+	// A shared elasticsearch has no instance of this tenant's.
+	tenant.Stores.Elasticsearch.Ownership = registry.OwnershipShared
+	if _, err := Resolve(roots, tenant, model.LogESErr); !errors.Is(err, ErrNoLog) {
+		t.Errorf("shared ES: resolve es-err = %v, want ErrNoLog", err)
+	}
+}
+
+// qdrant's instance capture is found under the ctl config dir too.
+func TestQdrantFindsTheCtlInstanceCapture(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	roots, tenant := tenantTree(t)
+	tenant.Supervisor = "instance"
+	out := filepath.Join(roots.CtlInstanceLogsDir(), "coconut", "svcbvbrc", "qdrant-dev.out")
+	write(t, out, "qdrant listening\n")
+	if got, err := Resolve(roots, tenant, model.LogQdrant); err != nil || got != out {
+		t.Errorf("resolve qdrant = %q, %v; want %q", got, err, out)
 	}
 }
