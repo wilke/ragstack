@@ -1,7 +1,11 @@
 # Per-document symbol glossary (#754 fix A)
 
-Status: `IN PROGRESS`, code in PR "feat(retrieval): per-document symbol glossary field (#754 A)".
-Nothing is deployed and nothing live was written. Every switch defaults to off.
+Status: `DEPLOYED`, with a dev trial running.
+- The code shipped in server tag v1.6.11 (#763), fleet-wide since 2026-10-22T02:43Z.
+- Dev openchia was backfilled on 2026-10-22 and runs boost 1.
+- Extraction is on by default from v1.6.12 (#784). v1.6.12 was rolled out from 2026-10-22,
+  dev first. The boost defaults to 0 on every tenant.
+- Live measurements: [Dev trial (2026-10-22)](#dev-trial-2026-10-22).
 
 Status note (2026-10-22, #783): owner decision. Extraction now defaults to `rules` on
 both ingest paths: `SYMBOL_GLOSSARY_EXTRACTION`, the shard tools' `--symbol-glossary`,
@@ -57,7 +61,8 @@ definition and the value sit in different chunks.
   gets the nearest definition at or before its start, or failing that the first one
   after it. Symbols with more than one definition are flagged.
 - **Representation (owner decision): a separate ES `text` field, `symbol_glossary`.**
-  - It is not embedded, it is never added to `content`, and Qdrant is untouched.
+  - It is not embedded and it is never added to `content`. No vector changes; the
+    Qdrant payload only gains `metadata.symbol_glossary_version`.
   - Query side: `TEXT_SYMBOL_GLOSSARY_BOOST`. The default 0 emits the byte-identical
     pre-#754 query. A value above 0 uses `multi_match` `most_fields` over `content` and
     `symbol_glossary^b`.
@@ -72,26 +77,29 @@ definition and the value sit in different chunks.
     degraded batches, so a step that only degraded is never recorded as applied.
   - **`enrichment` is INTERIM.** ADR-0011 is Accepted. When its PR-3 lands, the record
     folds into the ingest activity's `core.activity.params`, and the field goes away.
-- **Settings and flags** (all default off):
-  - `SYMBOL_GLOSSARY_EXTRACTION=off|rules`, `SYMBOL_GLOSSARY_CONFIG_JSON`,
-    `SYMBOL_GLOSSARY_CACHE_PATH`, `TEXT_SYMBOL_GLOSSARY_BOOST`;
-  - `ingest_shard.py` / `embed_shard.py --symbol-glossary {off,rules}`, default off.
+- **Settings and flags** (as built in #763; #784 changed the extraction defaults):
+  - `SYMBOL_GLOSSARY_EXTRACTION=off|rules` (default `rules` since #784, `off` before),
+    `SYMBOL_GLOSSARY_CONFIG_JSON`, `SYMBOL_GLOSSARY_CACHE_PATH`,
+    `TEXT_SYMBOL_GLOSSARY_BOOST` (default 0);
+  - `ingest_shard.py` / `embed_shard.py --symbol-glossary {off,rules}` (default `rules`
+    since #784).
 
-  The CWL files are unchanged. A worker-side glossary needs a tools-image release
-  (ADR-0010).
+  Since #784 every ingest CWL has a `symbol_glossary` input. No tools-image release was
+  needed: the pinned `ragstack-tools-v1.6.10-b1` already takes the flag.
 - **Backfill:** `scripts/backfill_symbol_glossary.py` is a dry run by default.
   - It streams by `doc_id` and writes partial updates only.
   - It is resumable.
   - It needs `--apply --confirm-index <name>`.
   - It was verified on a scratch copy of openchia: 2,113 of 2,113 chunks were
     identical to the in-process attacher, and a second run wrote nothing.
-  - It has not been run on any live index. The owner plans to re-ingest open-access
+  - It was applied to live dev openchia on 2026-10-22 (see the dev trial section). No
+    other live index has been backfilled. The owner plans to re-ingest open-access
     under a new chunking policy, so there is no open-access backfill.
 
 ## The experiment (2026-10-21)
 
 - **Setup.** Dev ES, scratch copies only (`scratch754_*`, deleted and verified by
-  listing ES and Qdrant). The source was openchia (16,514 chunks, 289 documents, read
+  listing ES and Qdrant). The source was openchia (16,514 chunks, 289 documents,
   read-only), with 0 reassembly gaps. The eval set is the private
   `openchia-261021` set: 155 query records, 73 distinct queries. Hits are scored on the
   quote appearing in the chunk text, per the eval set's README.
@@ -239,7 +247,9 @@ are counted against the same leg's base.
 3. Set the boost through the ctl, then restart the API only. The boost is query-time,
    so no re-ingest is needed:
    `ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1`, then
-   `ragstack-ctl tenant restart <tenant> --only api`. Do not hand-edit `tenant.env`.
+   `ragstack-ctl tenant restart <tenant> --only api`. This works from v1.6.12 (#781). On
+   v1.6.11, `env set` refuses the glossary keys, so dev's boost was appended to
+   `tenant.env` by hand (runbook §6d).
    `SYMBOL_GLOSSARY_EXTRACTION` and `SYMBOL_GLOSSARY_CONFIG_JSON` are set the same way
    (`env set`). They affect only in-process API ingests after the restart. The backfill
    script does not read either setting: it takes `--config` and `--llm-cache` on its
@@ -249,7 +259,8 @@ are counted against the same leg's base.
    as the ctl account. On an image-mode tenant the file must exist before the restart,
    because the path is bound into the API instance and apptainer refuses a missing bind
    source.
-   The API logs `symbol glossary config: extraction=… boost=…` at every start (#775).
+   From v1.6.12 (#781) the API logs `symbol glossary config: extraction=… boost=…` at every
+   start. v1.6.11 does not log it.
 
 Before step 3, a boost on an index without the field is a measured no-op.
 
@@ -264,13 +275,112 @@ Before step 3, a boost on an index without the field is a measured no-op.
   treats them as misses under the new key, so a re-run of the script re-extracts every
   document.
 
+## Dev trial (2026-10-22)
+
+These are live measurements on dev, unlike the scratch-copy experiments above.
+
+**State:**
+- Dev ran v1.6.11 (#763) for all four tests. It moved to v1.6.12 after them.
+- openchia was deduplicated first: 293 → 285 documents, 16,629 → 16,084 chunks.
+- It was then backfilled with rules plus the cached LLM glossary (`--llm-cache`). 543
+  chunks carry a glossary. Most documents are stamped `llm/1:…`; 72 chunks are stamped
+  `rules/2`.
+- `TEXT_SYMBOL_GLOSSARY_BOOST=1`, set at 00:21Z and live from the 00:37Z API restart, with the reranker on (`bge-reranker-v2-m3`)
+  and the default `RERANK_CANDIDATES` of 50.
+- Eval set: the private `openchia-261021` set, 155 records (73 distinct queries,
+  51 kind B), remapped to the deduplicated chunk ids. Found means any gold chunk_id is in
+  the top 10.
+
+**Test 1: the API arms** (OpenChia, 02:52–02:59Z). Duplicate removal and glossary
+changed together:
+
+| arm | 2026-10-21 | 2026-10-22 |
+|---|---|---|
+| hybrid + reranker (default) | 0.226 | 0.400 |
+| HyDE | – | 0.419 |
+| exclude_boilerplate | – | 0.400 |
+| hybrid, no reranker | – | 0.548 |
+| BM25 only, no reranker | – | 0.619 |
+
+**Test 2: the glossary alone, BM25 leg** (read-only on the live index):
+- Setup: the API's own `_build_query` at boost 0 and at boost 1, on the same index, the
+  same queries and the same tenant filter.
+- Boost 1 reproduces the API's BM25 arm exactly: 96 found, 69 in the top 3.
+
+| boost | found / 155 | top 3 | recall@10 | kind B recall@10 |
+|---|---|---|---|---|
+| 0 | 32 | 20 | 0.206 | 0.078 |
+| 1 | 96 | 69 | 0.619 | 0.431 |
+
+67 records were gained and 3 lost. The duplicate removal's share stays unmeasured, because
+no BM25 number from before the dedup exists on this query set.
+
+**Test 3: reranker input** (offline, read-only):
+- Each query's pool is the API's own rerank input: `/v1/retrieve` with top_k=50 and the
+  reranker off.
+- The pool was reranked through the same sidecar with the same payload shape.
+- The control (content only) reproduces the live reranked top 10 on all 73 queries, list
+  and order.
+
+| reranker reads | found / 155 | top 3 | recall@10 | kind B recall@10 |
+|---|---|---|---|---|
+| `content` (what the API does) | 62 | 30 | 0.400 | 0.275 |
+| **`content` + `\n` + `symbol_glossary`** | **81** | **44** | **0.523** | **0.412** |
+| `symbol_glossary` + `\n` + `content` | 77 | 48 | 0.497 | 0.373 |
+| `content` + a shuffled glossary (control) | 63 | 38 | 0.406 | – |
+
+- Appending the chunk's own glossary gains 19 records and loses none. A shuffled glossary
+  does nothing, so the gain comes from what the definitions say.
+- 119 of 155 records have a gold chunk in the 50-chunk pool. The other 36 are out of reach
+  for any reranker at that depth.
+- "Hybrid, no reranker" (85 found) is a shallow fusion: 20 per leg (`top_k` × the candidate multiplier), cut to 10. The
+  50-pool's own fused
+  top 10 finds 56, and the two agree on 3 of 73 queries.
+- Not deployed: the reranker still scores `content` only (`scoring/scorers.py`).
+
+**Test 4: end-to-end Runs** (OpenChia T4, 03:20–03:33Z, dev and asm-next on v1.6.11):
+- Setup: RAGStack-only Runs on one case (nursing-home, natural), 3 with the reranker on
+  and 3 with it off.
+- Result: both arms solved 3 of 3, with identical answers. Runs with the reranker off used
+  about 8% fewer request tokens on the median Run.
+- In every Run the reference paper was read as Europe PMC full text, and it supplied most
+  values. RAGStack contributed 13–17 facts per Run in both arms. So the eval-set recall
+  gap from Test 3 did not change an outcome here, and the case for a reranker that reads
+  the glossary rests on the eval set.
+- For comparison, RAGStack-only Runs before the dedup and the glossary solved 7 of 9, at
+  up to 472k tokens. This batch solved 6 of 6, at no more than 186k. That is consistent
+  with the new condition helping, but this design does not control for it.
+
+**What these tests do not cover:**
+- **Non-symbol queries.** Every record targets a value-stating chunk, and 55 of 65 pairs
+  come from one paper. Definition-, method- and mechanism-seeking queries are unmeasured,
+  both for the boost and for a reranker that reads the glossary.
+- **Other collections.** Only openchia has a glossary.
+- **Significance.** There are no significance tests, and records share queries.
+
+**Tests still needed:**
+1. **A non-symbol query set.** Run it on dev openchia at boost 0 vs 1, and with the
+   reranker reading content vs content + glossary. Use the regression snapshot (#687),
+   or add definition/method/mechanism queries to `openchia-261021`. Gate: recall@10 does
+   not fall.
+2. **A second collection.** Backfill a scratch copy of another collection, then repeat
+   Tests 2 and 3.
+3. **Pool depth and fusion.** `RERANK_CANDIDATES` above 50, and the deep vs shallow fusion
+   difference, against the 36-record ceiling.
+4. **End to end after v1.6.12.** A scratch GoWe upload on dev gets the `rules` glossary
+   without a backfill: `symbol_glossary` is set on value-stating chunks, and the receipt
+   records `enrichment.symbol_glossary`.
+
 ## Follow-ups
 
 - JATS `<def-list>` in the JATS extractor, emitted as a per-document table the pipeline
   prefers.
-- A reranked, end-to-end measurement before any boost goes above 0 on a tenant.
+- ~~A reranked, end-to-end measurement before any boost goes above 0 on a tenant.~~
+  Done on dev, 2026-10-22: see Dev trial.
+- A setting that makes the reranker read `content` + `symbol_glossary` (Test 3), default
+  off, gated on Tests 1 and 2.
 - Embedding definitions (option c): evaluate at the open-access re-ingest (owner).
 - The #747 work-level dedup, to counter the crowding.
 - Merge the workers' receipt `enrichment` records into the GoWe-path manifest.
-- Add non-value queries to the eval (definition, method, mechanism) before any tenant
-  other than dev enables the boost.
+- Add non-value queries to the eval before any tenant other than dev enables the boost
+  (Tests still needed, item 1).
