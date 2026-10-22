@@ -170,6 +170,9 @@ def canonical_text(text: str) -> str:
 # tried once, not from every character (quadratic otherwise).
 _LINE_BREAK = re.compile(
     r"(?<![^\W\d_])(?P<left>[^\W\d_]+)-(?P<hws>[^\S\n]*\n[^\S\n]*)(?P<right>[^\W\d_]+)"
+    # A hyphen with a digit on either side ("COVID-\n19", "SARS-CoV-\n2",
+    # "2-\ndimensional"): never joined, the break is dropped and the hyphen kept.
+    r"|(?<=[^\W_])-(?P<dws>[^\S\n]*\n[^\S\n]*)(?=[^\W_])"
     r"|(?P<ws>\s*\n\s*)"
 )
 
@@ -194,7 +197,9 @@ def _fold_line_breaks(text: str, pos: list[int]) -> tuple[str, list[int]]:
       - otherwise the hyphen is KEPT and only the break is dropped
         (``well-\\nknown`` → ``well-known``, ``SARS-\\nCoV`` → ``SARS-CoV``,
         ``air-\\nborne`` → ``air-borne`` unless the text also says
-        ``airborne``). A real compound split at its hyphen cannot be told from
+        ``airborne``; with a digit on either side, ``COVID-\\n19`` →
+        ``COVID-19``). A hyphen after a space (``rate -\\nflow``) is a dash,
+        and folds like any break (``rate - flow``). A real compound split at its hyphen cannot be told from
         a soft hyphen without a dictionary; keeping the hyphen never invents a
         word, it only leaves a soft hyphen visible.
     """
@@ -213,6 +218,11 @@ def _fold_line_breaks(text: str, pos: list[int]) -> tuple[str, list[int]]:
             out_pos.extend(pos[last : m.start()])
             out.append(" ")
             out_pos.append(pos[m.start()])
+            last = m.end()
+            continue
+        if m.group("dws") is not None:
+            out.append(text[last : m.start("dws")])  # up to and including the hyphen
+            out_pos.extend(pos[last : m.start("dws")])
             last = m.end()
             continue
         left, right = m.group("left"), m.group("right")
@@ -385,9 +395,18 @@ _NEXT_CLAUSE = _SYMBOL_BODY + _ARGS + _VALUE + _ARGS + r"\s+(?:is|are|denotes|re
 # A SINGLE line break no longer ends it: extraction runs on line-folded text
 # (:func:`definition_map`), and a paragraph break survives the folding.
 _DEF_SPAN = r"(?P<def>[^.;:\n]{2,200}?)"
+# Linear on long whitespace runs: the leading whitespace is taken ATOMICALLY
+# (``(?>\s*)``), "\s+and" becomes a look-behind for the space, and the
+# paragraph break is ``[^\S\n]*\n[^\S\n]*\n`` (the same runs as
+# ``\s*\n\s*\n``). The old ``\s*`` followed by ``\s+…`` / ``\n\s*\n`` split a
+# space run every possible way: seconds at a few thousand spaces.
 _DEF_END = (
-    r"(?=\s*(?:[.;:](?:\s|$)|,\s*(?:and\s+)?" + _NEXT_CLAUSE
-    + r"|,\s*and\b|\s+(?:and|where|while)\s+" + _NEXT_CLAUSE + r"|\n\s*\n|$))"
+    # (?<=\S): a lazy definition ends where this first holds, and whenever it
+    # holds inside a whitespace run it also holds at the run's start, so a
+    # definition never ends on a space. Checking that first makes each step
+    # inside a long space run O(1) instead of a rescan of the run.
+    r"(?<=\S)(?=[^\S\n]*\n[^\S\n]*\n|(?>\s*)(?:[.;:](?:\s|$)|,\s*(?:and\s+)?" + _NEXT_CLAUSE
+    + r"|,\s*and\b|(?<=\s)(?:and|where|while)\s+" + _NEXT_CLAUSE + r"|$))"
 )
 _COPULA = (
     r"(?:is|are|denotes|denote|represents|represent|stands\s+for|is\s+defined\s+as"
@@ -407,12 +426,23 @@ _CONTINUATION = re.compile(
 # R2: appositive "the effective infectious drop radius r̄" / "the dilution
 # factor, fd". Two to six words ending in a head noun, then the symbol.
 _APPOSITIVE = re.compile(
-    r"\bthe\s+(?P<def>(?:" + _NP_WORD + r"\s+){1,5}(?:" + _HEAD_NOUNS + r"))"
-    r"\s*,?\s+" + _SYMBOL + _ARGS
+    # Possessive whitespace (\s++, \s*+) wherever a letter or "," must follow:
+    # the same matches, without backtracking through a long run of spaces.
+    r"\bthe\s++(?P<def>(?:" + _NP_WORD + r"\s++){1,5}(?:" + _HEAD_NOUNS + r"))"
+    # "(?:\s*,)?\s+", not "\s*,?\s+": the same matches, without the split
+    # ambiguity that is quadratic on a long run of spaces.
+    r"(?:\s*+,)?\s++" + _SYMBOL + _ARGS
     # Not when the symbol opens its OWN definition clause: in "where pm is the
     # mask penetration factor, pf is the filtration efficiency" the phrase
-    # before "pf" belongs to pm (#754 review).
-    + r"(?!\s+(?:is|are|denotes?|represents?)\b)",
+    # before "pf" belongs to pm (#754 review). With arguments or a unit in
+    # parentheses (rules/3), only a DEFINING clause counts: "the initial
+    # concentration, Cp(t) is the point concentration" is Cp's own clause (the
+    # optional _ARGS used to backtrack past "(t)" and dodge the check), while
+    # "the pedestrian density ρ(t) is a major determinant" and "the social
+    # distance index Pd (%) is expressed as …" keep the appositive (measured on
+    # dev openchia: the plain lookahead lost three correct definitions there).
+    + r"(?!\s+(?:is|are|denotes?|represents?)\b"
+    r"|\s*\([^()\n]{1,20}\)\s+(?:(?:is|are)\s+the|denotes?|represents?)\b)",
     re.IGNORECASE,
 )
 # R3: "λ̄c = λa+… is the air purification rate" / "Qb is the …" — a symbol, an
@@ -424,8 +454,9 @@ _IS_THE = re.compile(
 # the leftmost-match engine retries the phrase from every character of a long
 # token — quadratic on a 100k-char run.
 _PAREN = re.compile(
-    r"(?<![\w\-])(?P<def>(?:" + _NP_WORD + r"\s+){0,5}(?:" + _HEAD_NOUNS + r"))\s*\(\s*"
-    + _SYMBOL + r"\s*\)",
+    # Possessive whitespace: the same matches, linear on long space runs.
+    r"(?<![\w\-])(?P<def>(?:" + _NP_WORD + r"\s++){0,5}(?:" + _HEAD_NOUNS + r"))\s*+\(\s*+"
+    + _SYMBOL + r"\s*+\)",
     re.IGNORECASE,
 )
 # R5: coordination — "Qb, Cq and λv are the breathing rate, the quanta
@@ -433,9 +464,11 @@ _PAREN = re.compile(
 # of single-symbol rules (SymDef 2023). Pairs only when the counts agree.
 _SYM_IN_LIST = _NOT_TOKEN_BEFORE + _SYMBOL_BODY + _NOT_TOKEN_AFTER + _ARGS
 _RESPECTIVELY = re.compile(
-    r"(?P<syms>" + _SYM_IN_LIST + r"(?:\s*,\s*" + _SYM_IN_LIST + r"){0,6}\s*,?\s*and\s+"
+    # "\s*(?:,\s*)?and", not "\s*,?\s*and": the same matches, without the
+    # split ambiguity that is quadratic on a long run of spaces.
+    r"(?P<syms>" + _SYM_IN_LIST + r"(?:\s*,\s*" + _SYM_IN_LIST + r"){0,6}\s*(?:,\s*)?and\s+"
     + _SYM_IN_LIST + r")\s+(?:are|denote|represent|are\s+defined\s+as)\s+"
-    r"(?P<defs>[^.;:\n]{5,400}?)\s*,?\s*respectively\b",
+    r"(?P<defs>[^.;:\n]{5,400}?)(?<=\S)\s*(?:,\s*)?respectively\b",
 )
 _LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+")
 
@@ -455,9 +488,40 @@ _AFTER_NUMBER = re.compile(r"\d\s*$")
 # naming ("the air exchange rate, λs(r)<λa"; "the adjustment time, λc−1").
 _RELATION_AFTER = re.compile(r"\s*(?:[<>≤≥≪≫≲≳∝]|[−-]\s*1\b)")
 _SENTENCE_END = re.compile(r"[.;](?:\s|$)|\n\s*\n")
-# How far past a "where" definition its continuation clauses are looked for:
-# ten clauses of a full definition span each, far more than any sentence holds.
+# How far past the previous clause the next continuation clause may START. The
+# search window is this plus _CONTINUATION_MARGIN, room for one whole clause
+# (a definition span is at most 200 characters) and its end test.
 _CONTINUATION_REACH = 2500
+_CONTINUATION_MARGIN = 1500
+
+
+def _continuations(canon: str, start: int, sentence_end: int) -> Iterable[re.Match[str]]:
+    """The continuation clauses between ``start`` and ``sentence_end``.
+
+    Searched in bounded windows chained from clause to clause, so a long run
+    without a sentence end cannot make every "where" match rescan it
+    (quadratic). A window's end is NOT a terminator: ``_DEF_END``'s ``$``
+    matches at ``endpos``, so a clause whose match ends at a window cut (not at
+    the real sentence end) is re-searched from its own start with a fresh
+    window instead of being emitted truncated."""
+    at = start
+    while at < sentence_end:
+        stop = min(sentence_end, at + _CONTINUATION_REACH + _CONTINUATION_MARGIN)
+        c = _CONTINUATION.search(canon, at, stop)
+        if c is None:
+            return
+        if c.end() == stop and stop < sentence_end:
+            if c.start() == at:
+                # Cannot get a longer window from here (a whitespace run longer
+                # than the margin): skip this clause rather than truncate it.
+                at = c.start() + 1
+            else:
+                at = c.start()
+            continue
+        if c.start() > at + _CONTINUATION_REACH:
+            return
+        yield c
+        at = c.end()
 
 
 def _clean_definition(raw: str, max_words: int) -> str:
@@ -762,10 +826,9 @@ def extract_glossary(text: str, config: GlossaryConfig | None = None) -> Glossar
         for m in _WHERE.finditer(canon):
             add(m.start("sym"), m.group("sym"), m.group("def"))
             # Continuation clauses of the same sentence: "…, and pm is the …".
-            # Bounded, so a sentence-less run cannot make each match rescan it.
             i = bisect.bisect_left(ends, m.end())
-            stop = min(ends[i] if i < len(ends) else len(canon), m.end("def") + _CONTINUATION_REACH)
-            for c in _CONTINUATION.finditer(canon, m.end("def"), stop):
+            sentence_end = ends[i] if i < len(ends) else len(canon)
+            for c in _continuations(canon, m.end("def"), sentence_end):
                 add(c.start("sym"), c.group("sym"), c.group("def"))
     if cfg.rule_is_the:
         for m in _IS_THE.finditer(canon):

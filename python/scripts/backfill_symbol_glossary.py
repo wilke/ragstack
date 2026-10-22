@@ -20,6 +20,10 @@ Safety:
 * there is no default ES URL and no default index;
 * resumable: a chunk whose stored marker and field already equal what would be
   written is skipped, so a re-run after an interruption only does the rest;
+* ``--apply`` without ``--llm-cache`` is refused while the index holds
+  ``llm/…``-stamped chunks, unless ``--replace-llm``: without the cache every
+  such chunk is re-planned from the rules, and its LLM glossary would be
+  OVERWRITTEN. Check ``docs_llm`` / ``chunks_llm_replaced`` in the dry run;
 * ``--refresh-off`` parks ``refresh_interval`` for the run and restores it after
   (``ElasticsearchTextIndex.bulk_load_refresh`` / ``restore_refresh``).
 
@@ -105,9 +109,27 @@ def plan_updates(
         if stored_version == glossary.version and stored_field == rendered:
             counts["chunks_current"] += 1
             continue
+        if str(stored_version or "").startswith("llm/") and not glossary.version.startswith("llm/"):
+            # an LLM glossary in the index that this run would replace by rules
+            counts["chunks_llm_replaced"] += 1
         out.append((str(row["_id"]), rendered, glossary.version))
     counts[f"docs_{'llm' if glossary.version.startswith('llm/') else 'rules'}"] += 1
     return out, counts
+
+
+LLM_GUARD_MESSAGE = (
+    "refusing --apply: {n} chunk(s) in {index!r} carry an LLM glossary (metadata.{key} = llm/…), "
+    "and no --llm-cache was given. Without the cache those documents are re-planned from the "
+    "rules and their LLM glossaries are OVERWRITTEN with rules output. Pass the cache the index "
+    "was backfilled with (--llm-cache <file>), or --replace-llm to replace them on purpose. "
+    "A dry run reports docs_llm and chunks_llm_replaced."
+)
+
+
+async def count_llm_stamped(es: Any, index: str) -> int:
+    """How many chunks in ``index`` are stamped from an LLM glossary. Read-only."""
+    resp = await es.count(index=index, query={"prefix": {f"metadata.{VERSION_KEY}": "llm/"}})
+    return int(getattr(resp, "body", resp).get("count", 0))
 
 
 async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> dict[str, Any]:
@@ -136,6 +158,13 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
 
     try:
         await resolve_exactly(es, args.index)
+        if args.apply and not args.llm_cache and not getattr(args, "replace_llm", False):
+            # Without a cache every llm/-stamped chunk would be re-planned
+            # (rules/… != llm/…), so "the index has any" == "this run would
+            # overwrite some". Checked before the first write.
+            n = await count_llm_stamped(es, args.index)
+            if n:
+                raise SystemExit(LLM_GUARD_MESSAGE.format(n=n, index=args.index, key=VERSION_KEY))
         if args.apply:
             await es.indices.put_mapping(index=args.index, body=_MAPPING)
             if args.refresh_off and store is not None:
@@ -177,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--batch-size", type=int, default=500)
     p.add_argument("--apply", action="store_true", help="WRITE. Without it this is a dry run.")
     p.add_argument("--confirm-index", default="", help="must repeat --index when --apply")
+    p.add_argument("--replace-llm", action="store_true",
+                   help="with --apply and no --llm-cache: overwrite llm/-stamped glossaries with rules")
     p.add_argument("--refresh-off", action="store_true",
                    help="park refresh_interval during --apply and restore it after")
     args = p.parse_args(argv)

@@ -388,6 +388,9 @@ as the end of a definition: `where Qb is the breathing\nflow rate.` gave no entr
   dropped (`well-\nknown` → `well-known`, `SARS-\nCoV` → `SARS-CoV`, `air-\nborne` →
   `air-borne`). A compound split at its hyphen cannot be told from a soft hyphen without a
   dictionary. Keeping the hyphen never invents a word; at worst a soft hyphen stays visible.
+  With a digit on either side the hyphen is kept and the break dropped with no space
+  (`COVID-\n19` → `COVID-19`, `SARS-CoV-\n2`, `2-\ndimensional`). A hyphen after a space
+  is a dash and folds like any break (`rate -\nflow` → `rate - flow`).
 - **Offsets stay exact.** The raw-offset map is carried through the folding character by
   character, so a definition's offset, which positional attachment compares with
   `start_char`, is the raw offset as before.
@@ -395,9 +398,25 @@ as the end of a definition: `where Qb is the breathing\nflow rate.` gave no entr
   `…, and Cp(t) is`, `λ (h−1) is`, `μ=μ(T) is`, `η represents`, `while τd is`, `where μt is`.
   On wrapped text the line break used to stop these run-ons by accident. Without this,
   folding lost about 10 definitions that `rules/2` had found.
-- **Continuation clauses are searched within 2,500 characters**, against precomputed
-  sentence ends. A long run with no sentence end was quadratic (3.5 s on a synthetic
-  80k-character input; now 0.6 s).
+- **Continuation clauses are searched in bounded windows chained from clause to clause**
+  (each clause may start up to 2,500 characters after the previous one; the window adds
+  1,500 for the clause itself), against precomputed sentence ends. A window's end is never a
+  terminator: a clause whose match ends at a window cut is re-searched from its own start
+  with a fresh window, never emitted truncated. A long run with no sentence end was
+  quadratic (3.5 s on a synthetic 80k-character input; now 0.6 s).
+- **Appositive vs a clause with arguments.** "the initial concentration, Cp(t) is the point
+  concentration" no longer gives Cp "initial concentration": the optional arguments used to
+  let the match backtrack past the `(?!\s+is)` check. With arguments or a unit in
+  parentheses only a defining clause (`is the`, `denotes`, `represents`) blocks the
+  appositive. Blocking every `is`, as for a bare symbol, lost three correct openchia
+  definitions (`the instantaneous pedestrian density ρ(t) is a major determinant`, `the
+  social distance index Pd (%) is expressed …`); this form loses one (`the system time
+  constant τ (s) is the reciprocal of φ` keeps only "reciprocal of φ").
+- **Linear on long whitespace runs.** `\s*,?\s*and`-style splits, `\s*` before `\s+…`
+  in `_DEF_END`, and backtracking through `\s+` before a letter were quadratic (seconds at a
+  few thousand spaces). They are rewritten (atomic or possessive whitespace,
+  `(?:,\s*)?and`, a `(?<=\S)` end check) with the same matches: 200k spaces now take
+  about 0.15 s.
 - **Unchanged:** chunk matching (`for_chunk`). The symbol and value patterns already allow any
   whitespace, newlines included, between symbol, `=` and number (`Qb =\n0.5` attaches; tests
   added). Also unchanged: the LLM validation gates (`validate_entries` still runs on
@@ -405,9 +424,20 @@ as the end of a definition: `where Qb is the breathing\nflow rate.` gave no entr
 
 **Backfill.** A chunk is current only when its stamp and its field both equal what would be
 written. So after the bump every `rules/2`-stamped chunk is rewritten with `rules/3`, and an
-`llm/…`-stamped chunk is skipped, provided the run passes the same `--llm-cache`. Without
-the cache, those documents fall back to rules and are rewritten. That was already true before
-this change.
+`llm/…`-stamped chunk is skipped, provided the run passes the same `--llm-cache`.
+**A backfill without `--llm-cache` OVERWRITES the LLM glossaries in the index with rules
+output** (true before this change too; more likely now that every rules chunk is re-planned).
+The dry run reports `docs_llm` and `chunks_llm_replaced`; check them. `--apply` now refuses
+when the index holds `llm/…`-stamped chunks and no `--llm-cache` is given, unless
+`--replace-llm`.
+
+**Release.** `rules/3` reaches each path separately:
+- GoWe uploads need a tools tag, its image, and the CWL restamp;
+- in-process (API) ingests need a server tag;
+- the backfill needs only a checkout.
+
+Mixed stamps are safe: each chunk carries its own version, the field is rendered per
+document, and the backfill re-plans only what differs.
 
 **Measured on dev openchia** (read-only; 285 documents reassembled from 16,084
 chunks the way the backfill does; both versions run offline on the same text):
@@ -415,15 +445,20 @@ chunks the way the backfill does; both versions run offline on the same text):
 | | rules/2 | rules/3 |
 |---|---|---|
 | glossary entries (doc × symbol) | 690 | 971 |
-| definitions | 789 | 1,142 |
+| definitions | 789 | 1,141 |
 | documents with ≥1 entry | 152 | 156 |
 | chunks that would carry a glossary (value-only) | 272 | 344 |
 | definitions at the 12-word cap | 1 | 112 |
+| definitions matching a run-on heuristic (`, X is/the` inside) | 4 | 39 |
+
+Measured on the final `rules/3` (after the #794 review). The first `rules/3` cut (aa42144)
+differed by one definition (the τ appositive above); the window, digit-hyphen and
+whitespace changes moved nothing on this corpus.
 
 - 285 doc-symbols are new, and 4 are lost. Of the new definitions, about 265 span a folded
   line break.
-- **Longer and worse.** 111 new definitions run to the 12-word cap. In a sample of 45, about
-  a quarter ran on into the next symbol's clause (`air density, u→ is the air flow rate, …`).
+- **Longer and worse.** 111 new definitions run to the 12-word cap. In a sample of 45, 11
+  (about a quarter) ran on into the next symbol's clause (`air density, u→ is the air flow rate, …`).
   That happens where `_NEXT_CLAUSE` cannot read the next symbol (arrows, primes, spaced
   subscripts such as `M w`). The rest are long but correct. Across 265 wrapped spans, one
   definition ran on across a line into the next sentence.
@@ -436,8 +471,7 @@ chunks the way the backfill does; both versions run offline on the same text):
     equation.
 - Live impact on openchia is small: 16,012 of its chunks are stamped from the LLM cache, and
   only 72 (3 documents) are stamped `rules/2`. The gain is for new uploads, which get
-  `rules` by default since #784. On GoWe they get the tools image's rules version until a
-  tools tag carries `rules/3`.
+  `rules` by default since #784 (see Release above for when each path gets `rules/3`).
 
 ## Follow-ups
 

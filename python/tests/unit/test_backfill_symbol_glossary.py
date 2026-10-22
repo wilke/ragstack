@@ -66,6 +66,12 @@ class FakeES:
             {"_id": r["_id"], "_source": {k: v for k, v in r.items() if k != "_id"},
              "sort": [start + j + 1]} for j, r in enumerate(page)]}}
 
+    async def count(self, index: str, query: dict[str, Any]) -> dict[str, int]:
+        ((field, prefix),) = query["prefix"].items()
+        key = field.split(".", 1)[1]
+        return {"count": sum(1 for r in self.rows
+                             if str((r.get("metadata") or {}).get(key) or "").startswith(prefix))}
+
     async def bulk(self, operations: list[dict[str, Any]], refresh: bool) -> dict[str, Any]:
         self.bulks.append(operations)
         for action, doc in zip(operations[::2], operations[1::2], strict=True):
@@ -75,10 +81,11 @@ class FakeES:
         return {"errors": False, "items": []}
 
 
-def _args(apply: bool = False) -> Any:
+def _args(apply: bool = False, llm_cache: str = "", replace_llm: bool = False) -> Any:
     return bf.main.__globals__["argparse"].Namespace(
-        es_url="http://127.0.0.1:1", index="i", llm_cache="", config="", batch_size=2,
-        apply=apply, confirm_index="i" if apply else "", refresh_off=False)
+        es_url="http://127.0.0.1:1", index="i", llm_cache=llm_cache, config="", batch_size=2,
+        apply=apply, confirm_index="i" if apply else "", refresh_off=False,
+        replace_llm=replace_llm)
 
 
 def test_dry_run_writes_nothing() -> None:
@@ -178,3 +185,35 @@ def test_rules_version_bump_redoes_rules_chunks_but_not_llm_chunks(tmp_path: Pat
     assert len(updates) == len(rules_rows) and {v for _, _, v in updates} == {"rules/3"}
     updates, counts = bf.plan_updates(attacher, llm_text, llm_rows)
     assert updates == [] and counts["chunks_current"] == len(llm_rows) and counts["docs_llm"] == 1
+
+
+def test_apply_without_llm_cache_refuses_to_overwrite_llm_glossaries(tmp_path: Path) -> None:
+    """An index holding llm/-stamped chunks: --apply without --llm-cache would
+    replace those LLM glossaries with rules output. Refused before any write,
+    unless --replace-llm; the dry run reports what would be replaced."""
+    rows = _rows("a", TEXT) + _rows("b", TEXT.replace("Qb", "Cq"))
+    for r in rows:
+        if r["doc_id"] == "b":
+            r["metadata"][VERSION_KEY] = "llm/1:m:h"
+            r["symbol_glossary"] = "Cq — quanta concentration"
+    es = FakeES(rows)
+    dry = asyncio.run(bf.run(_args(), es=es))
+    assert dry["chunks_llm_replaced"] == sum(r["doc_id"] == "b" for r in rows)
+    with pytest.raises(SystemExit, match="OVERWRITTEN"):
+        asyncio.run(bf.run(_args(apply=True), es=es))
+    assert es.bulks == [] and es.mappings == []  # nothing written, not even the mapping
+    out = asyncio.run(bf.run(_args(apply=True, replace_llm=True), es=es))
+    assert out["chunks_written"] == len(rows)
+    assert all(r["metadata"][VERSION_KEY] == "rules/3" for r in rows)
+
+
+def test_apply_with_llm_cache_is_not_refused(tmp_path: Path) -> None:
+    rows = _rows("b", TEXT)
+    for r in rows:
+        r["metadata"][VERSION_KEY] = "llm/1:m:h"
+    es = FakeES(rows)
+    cache = tmp_path / "g.jsonl"
+    cache.write_text("")
+    out = asyncio.run(bf.run(_args(apply=True, llm_cache=str(cache)), es=es))
+    assert out["dry_run"] is False  # a cache was given: the operator chose what wins
+

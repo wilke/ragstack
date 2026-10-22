@@ -1132,10 +1132,18 @@ PYTHONPATH=. python scripts/backfill_symbol_glossary.py \
     --apply --confirm-index ragstack_lib_openchia_<model>_<chunker>_<hash>
 ```
 
+**A backfill without `--llm-cache` OVERWRITES the LLM glossaries in the index
+with rules output.** If the collection was backfilled from an LLM cache (dev
+openchia was), always pass that same cache. In the dry run, check `docs_llm` (documents
+served from the cache) and `chunks_llm_replaced` (LLM-stamped chunks this run
+would replace with rules). `chunks_llm_replaced` should be 0 unless you mean it. `--apply`
+refuses when the index holds `llm/…`-stamped chunks and no `--llm-cache` is
+given; pass `--replace-llm` only to replace them on purpose.
+
 After an extractor version bump (`rules/2` → `rules/3`, #790), the dry run counts
-every `rules/…`-stamped chunk as to-update, because the stamp changes. Pass the same
-`--llm-cache` as the first backfill. Then `llm/…`-stamped chunks stay current and are
-skipped; without the cache, those documents fall back to rules.
+every `rules/…`-stamped chunk as to-update, because the stamp changes. With the
+same `--llm-cache`, `llm/…`-stamped chunks stay current and are skipped. Mixed
+stamps in one index are safe.
 
 There is no default URL or index. The sizing note in the script header is
 authoritative: a 16.5k-chunk collection takes seconds; a very large index is

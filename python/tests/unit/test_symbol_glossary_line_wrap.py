@@ -167,19 +167,41 @@ def test_dehyphenation_cases(raw: str, folded: str) -> None:
         "where Qb is the breathing\nflow rate.",
         "A λ̄c\r\nis the breath-\ning rate; breathing\n\nends \\lambda_v here\n",
         "µ-\nm and r¯\n  \tx-\nyz  \n\n\n q",
+        "COVID-\n19 and SARS-CoV-\n 2, a 2-\ndimensional ﬁ-\nlter, ﬁlter\n",
     ],
 )
 def test_definition_map_offsets_are_exact(raw: str) -> None:
+    """Strict alignment: walking the canonical text in order, every character
+    of the folded text is EITHER the next kept canonical character (same
+    character, same raw offset) OR a folded space standing for a whitespace run
+    with one newline, mapped to the run's first raw offset. Everything skipped
+    is whitespace or a dropped soft hyphen."""
     canon, cpos = canonical_map(raw)
     folded, pos = definition_map(raw)
-    assert len(pos) == len(folded) + 1 and pos[-1] == len(raw)
-    assert pos == sorted(pos)
+    assert len(pos) == len(folded) + 1 and pos[-1] == len(raw) == cpos[-1]
+    j = 0
     for i, ch in enumerate(folded):
-        if ch == " " and raw[pos[i]].isspace():
-            continue  # a folded whitespace run: mapped to the run's first offset
-        # every kept character maps to the raw offset it came from
-        j = cpos.index(pos[i])
-        assert ch in canon[j : j + 4]
+        if canon[j] == ch and cpos[j] == pos[i]:
+            j += 1  # a kept character, at its own raw offset
+            continue
+        if ch == " " and canon[j].isspace() and cpos[j] == pos[i]:
+            # a folded line break: ONE space for a whitespace run with ONE newline
+            k = j
+            while k < len(canon) and canon[k].isspace():
+                k += 1
+            assert canon[j:k].count("\n") == 1, (i, canon[j:k])
+            j = k
+            continue
+        # dropped: a soft hyphen and its break (joined word), or the break after
+        # a kept hyphen; then the next folded character is the next canonical one
+        k = j + 1 if canon[j] == "-" else j
+        w = k
+        while k < len(canon) and canon[k].isspace():
+            k += 1
+        assert k > j and canon[w:k].count("\n") == 1, (i, ch, canon[j:k])
+        assert canon[k] == ch and cpos[k] == pos[i], (i, ch, k)
+        j = k + 1
+    assert j == len(canon)  # nothing left over: every canonical character accounted for
 
 
 def test_definition_offsets_are_raw_offsets_after_folding() -> None:
@@ -253,3 +275,77 @@ def test_long_run_without_a_sentence_end_stays_fast() -> None:
         t0 = time.perf_counter()
         extract_glossary(text)
         assert time.perf_counter() - t0 < 2.0  # quadratic was ~3.5 s on the first
+
+
+# --- review of #794 ------------------------------------------------------------
+
+
+def test_continuation_reach_is_not_a_terminator() -> None:
+    """One "where" sentence far longer than the continuation window: every
+    clause is found whole, none is cut at a window boundary."""
+    from ragstack.ingestion.symbol_glossary import _CONTINUATION_MARGIN, _CONTINUATION_REACH
+
+    n = 300
+    clauses = ", ".join(f"x{k} denotes the mass quantity number {k}" for k in range(2, n + 1))
+    text = "where x1 is the mass quantity number 1, " + clauses + ". End."
+    assert len(text) > 2 * (_CONTINUATION_REACH + _CONTINUATION_MARGIN)
+    got = extract_glossary(text, GlossaryConfig(rule_is_the=False)).as_dict()
+    assert got == {f"x{k}": [f"mass quantity number {k}"] for k in range(1, n + 1)}
+
+
+def test_a_window_cut_inside_a_clause_is_not_emitted_truncated() -> None:
+    from ragstack.ingestion import symbol_glossary as sg
+
+    # place a clause so the first window ends inside its definition
+    filler = ", ".join(f"x{k} denotes the mass quantity number {k}" for k in range(2, 400))
+    text = "where x1 is the mass quantity number 1, " + filler + ". End."
+    canon = sg.definition_map(text)[0]
+    m = next(sg._WHERE.finditer(canon))
+    for c in sg._continuations(canon, m.end("def"), len(canon) - 6):
+        assert c.group("def").startswith("the mass quantity number ")
+        assert c.group("def").split()[-1].isdigit()
+        assert canon[c.end() : c.end() + 2] in (", ", ". ")
+
+
+@pytest.mark.parametrize(
+    ("raw", "folded"),
+    [
+        ("COVID-\n19 cases", "COVID-19 cases"),
+        ("SARS-CoV-\n2 virus", "SARS-CoV-2 virus"),
+        ("a 2-\ndimensional flow", "a 2-dimensional flow"),
+        ("N-\n95 mask", "N-95 mask"),
+        ("COVID-\n\n19", "COVID-\n\n19"),  # a paragraph break is still kept
+    ],
+)
+def test_hyphen_next_to_a_digit_keeps_the_hyphen_without_a_space(raw: str, folded: str) -> None:
+    assert definition_map(raw)[0] == folded
+
+
+def test_appositive_does_not_steal_a_clause_with_arguments() -> None:
+    text = "We set the initial concentration, Cp(t) is the point concentration. Next."
+    assert extract_glossary(text).as_dict() == {"Cp": ["point concentration"]}
+    # without a clause of its own the appositive still reads (and keeps) the args
+    assert extract_glossary("the initial concentration Cp(t) at the inlet").as_dict() == {
+        "Cp": ["initial concentration"]}
+    # a predicate that is not a definition does not block the appositive
+    assert extract_glossary(
+        "Here the instantaneous pedestrian density ρ(t) is a major factor. The social "
+        "distance index Pd (%) is expressed as a function of distance.").as_dict() == {
+        "Pd": ["social distance index"], "ρ": ["instantaneous pedestrian density"]}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Qb" + " " * 200_000 + "and Cq are the rates, respectively.",
+        "the breathing flow rate" + " " * 200_000 + "Qb here.",
+        "where Qb is the" + " " * 200_000 + "rate.",
+        "Qb, Cq" + " " * 200_000 + "x",
+    ],
+)
+def test_long_space_runs_stay_fast(text: str) -> None:
+    import time
+
+    t0 = time.perf_counter()
+    extract_glossary(text)
+    assert time.perf_counter() - t0 < 1.0
