@@ -158,6 +158,25 @@ var publicRules = map[string]PublicRule{
 			"Query-time: it takes effect at `tenant restart <t> --only api`, with no re-ingest. On an index " +
 			"without the field it is a no-op, so backfill first. Trial only with the reranker on." + glossaryNote,
 	},
+	"RERANK_INCLUDE_SYMBOL_GLOSSARY": {
+		Check: pydanticBool,
+		Scope: ScopeAPIRestart,
+		Help: "true|false (default true): the cross-encoder scores a chunk's content plus its " +
+			"`symbol_glossary` instead of content alone; a chunk without a glossary is scored exactly as " +
+			"before. Query-time: it takes effect at `tenant restart <t> --only api`, with no re-ingest. It " +
+			"only matters for chunks that carry a glossary (extracted since v1.6.12 or backfilled), is " +
+			"independent of TEXT_SYMBOL_GLOSSARY_BOOST, and changes reranked result ORDER on those " +
+			"collections (never a source's content) — tell evaluation users before changing it." + glossaryNote,
+	},
+	"RERANK_GLOSSARY_TIMEOUT": {
+		Check: nonNegativeFloat,
+		Scope: ScopeAPIRestart,
+		Help: "seconds, a number >= 0 (default 2): the bound on the one Elasticsearch lookup that gives " +
+			"vector-only rerank candidates their glossary when RERANK_INCLUDE_SYMBOL_GLOSSARY is on. With ES " +
+			"down or slow a reranked query waits at most this long and reranks without the glossary. 0 turns " +
+			"the lookup off (only BM25 hits are scored with their glossary). Query-time: it takes effect at " +
+			"`tenant restart <t> --only api`, with no re-ingest." + glossaryNote,
+	},
 	// #747: the duplicate-paper guard.
 	"DUPLICATE_POLICY": {
 		Check: oneOfFold("refuse", "allow", "off"),
