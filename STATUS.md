@@ -3,11 +3,13 @@
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
 **Last updated:** 2026-10-22
-**Deployed:** seven tenants, all on server tag
-[`v1.6.12`](https://github.com/wilke/ragstack/releases/tag/v1.6.12) (**`6bf8acc`**),
-image mode, since 2026-10-22 ≈03:38Z (`dev` since 03:35Z). **dev** runs server tag [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**) since 2026-10-22T13:32Z (rest of the fleet pending the owner's word). The API runs from
-`ragstack-server-v1.6.12-b1.sif`, and the GoWe workflows name tools image
-`ragstack-tools-v1.6.10-b1.sif`. They sit behind the nginx
+**Deployed:** seven tenants, image mode. **`dev`** runs server tag
+[`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**) since
+2026-10-22T13:32Z: the API from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools
+image `ragstack-tools-v1.6.13-b1.sif`. The other six run
+[`v1.6.12`](https://github.com/wilke/ragstack/releases/tag/v1.6.12) (**`6bf8acc`**) since
+2026-10-22 ≈03:38Z, from `ragstack-server-v1.6.12-b1.sif` with tools image
+`ragstack-tools-v1.6.10-b1.sif`, until the owner's word to roll them. They sit behind the nginx
 gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
 `https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
 view; trust it over this table.
