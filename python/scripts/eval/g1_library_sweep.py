@@ -1667,6 +1667,9 @@ def build_run_manifest(
             },
         },
         "reranker": reranker,
+        # --rerank-symbol-glossary: whether the reranker scored content +
+        # symbol_glossary (the API's default since #754) or content alone.
+        "rerank_symbol_glossary": bool(getattr(args, "rerank_symbol_glossary", False)),
         "query_vector_cache": qvec_cache,
         "runtime": {
             "host": platform.node(),

@@ -59,7 +59,10 @@ def _ordered_qids(queries: dict) -> list[str]:
     return sorted(queries, key=lambda q: int(q) if q.isdigit() else q)
 
 
-def build_metrics_payload(config: str, source: str, stats: dict, query_ids: list[str]) -> dict:
+def build_metrics_payload(
+    config: str, source: str, stats: dict, query_ids: list[str],
+    *, rerank_symbol_glossary: bool = False,
+) -> dict:
     """Assemble the metrics.json payload from evaluate_config's return.
 
     Deterministic (no timestamp) so a re-run against an unchanged store diffs
@@ -76,6 +79,8 @@ def build_metrics_payload(config: str, source: str, stats: dict, query_ids: list
     return {
         "config": config,
         "source": source,
+        # --rerank-symbol-glossary: the reranker scored content + glossary.
+        "rerank_symbol_glossary": bool(rerank_symbol_glossary),
         "n_queries": len(query_ids),
         "query_ids": list(query_ids),
         "means": stats["means"],
@@ -107,7 +112,10 @@ async def amain(args, cfg) -> int:
         if args.teardown:
             await sc.teardown(client, [cfg.key])
 
-    payload = build_metrics_payload(cfg.key, source, stats, _ordered_qids(queries))
+    payload = build_metrics_payload(
+        cfg.key, source, stats, _ordered_qids(queries),
+        rerank_symbol_glossary=args.rerank_symbol_glossary,
+    )
     Path(args.out).write_text(json.dumps(payload, indent=2, sort_keys=True),
                               encoding="utf-8")
     m = stats["means"]
