@@ -3,7 +3,8 @@
 Status: `DEPLOYED`, with a dev trial running.
 - The code shipped in server tag v1.6.11 (#763), fleet-wide since 2026-10-22T02:43Z.
 - Dev openchia was backfilled on 2026-10-22 and runs boost 1.
-- Extraction is on by default from v1.6.12 (#784). The boost defaults to 0 on every tenant.
+- Extraction is on by default from v1.6.12 (#784). v1.6.12 was rolled out from 2026-10-22,
+  dev first. The boost defaults to 0 on every tenant.
 - Live measurements: [Dev trial (2026-10-22)](#dev-trial-2026-10-22).
 
 Status note (2026-10-22, #783): owner decision. Extraction now defaults to `rules` on
@@ -98,7 +99,7 @@ definition and the value sit in different chunks.
 ## The experiment (2026-10-21)
 
 - **Setup.** Dev ES, scratch copies only (`scratch754_*`, deleted and verified by
-  listing ES and Qdrant). The source was openchia (16,514 chunks, 289 documents, read
+  listing ES and Qdrant). The source was openchia (16,514 chunks, 289 documents,
   read-only), with 0 reassembly gaps. The eval set is the private
   `openchia-261021` set: 155 query records, 73 distinct queries. Hits are scored on the
   quote appearing in the chunk text, per the eval set's README.
@@ -258,7 +259,8 @@ are counted against the same leg's base.
    as the ctl account. On an image-mode tenant the file must exist before the restart,
    because the path is bound into the API instance and apptainer refuses a missing bind
    source.
-   The API logs `symbol glossary config: extraction=… boost=…` at every start (#775).
+   From v1.6.12 (#781) the API logs `symbol glossary config: extraction=… boost=…` at every
+   start. v1.6.11 does not log it.
 
 Before step 3, a boost on an index without the field is a measured no-op.
 
@@ -278,12 +280,12 @@ Before step 3, a boost on an index without the field is a measured no-op.
 These are live measurements on dev, unlike the scratch-copy experiments above.
 
 **State:**
-- Dev runs v1.6.11 (#763).
+- Dev ran v1.6.11 (#763) for all four tests. It moved to v1.6.12 after them.
 - openchia was deduplicated first: 293 → 285 documents, 16,629 → 16,084 chunks.
 - It was then backfilled with rules plus the cached LLM glossary (`--llm-cache`). 543
   chunks carry a glossary. Most documents are stamped `llm/1:…`; 72 chunks are stamped
   `rules/2`.
-- `TEXT_SYMBOL_GLOSSARY_BOOST=1` since 00:21Z, with the reranker on (`bge-reranker-v2-m3`)
+- `TEXT_SYMBOL_GLOSSARY_BOOST=1`, set at 00:21Z and live from the 00:37Z API restart, with the reranker on (`bge-reranker-v2-m3`)
   and the default `RERANK_CANDIDATES` of 50.
 - Eval set: the private `openchia-261021` set, 155 records (73 distinct queries,
   51 kind B), remapped to the deduplicated chunk ids. Found means any gold chunk_id is in
@@ -331,9 +333,23 @@ no BM25 number from before the dedup exists on this query set.
   does nothing, so the gain comes from what the definitions say.
 - 119 of 155 records have a gold chunk in the 50-chunk pool. The other 36 are out of reach
   for any reranker at that depth.
-- "Hybrid, no reranker" (85 found) is a shallow depth-10 fusion. The 50-pool's own fused
+- "Hybrid, no reranker" (85 found) is a shallow fusion: 20 per leg (`top_k` × the candidate multiplier), cut to 10. The
+  50-pool's own fused
   top 10 finds 56, and the two agree on 3 of 73 queries.
 - Not deployed: the reranker still scores `content` only (`scoring/scorers.py`).
+
+**Test 4: end-to-end Runs** (OpenChia T4, 03:20–03:33Z, dev and asm-next on v1.6.11):
+- Setup: RAGStack-only Runs on one case (nursing-home, natural), 3 with the reranker on
+  and 3 with it off.
+- Result: both arms solved 3 of 3, with identical answers. Runs with the reranker off used
+  about 8% fewer request tokens on the median Run.
+- In every Run the reference paper was read as Europe PMC full text, and it supplied most
+  values. RAGStack contributed 13–17 facts per Run in both arms. So the eval-set recall
+  gap from Test 3 did not change an outcome here, and the case for a reranker that reads
+  the glossary rests on the eval set.
+- For comparison, RAGStack-only Runs before the dedup and the glossary solved 7 of 9, at
+  up to 472k tokens. This batch solved 6 of 6, at no more than 186k. That is consistent
+  with the new condition helping, but this design does not control for it.
 
 **What these tests do not cover:**
 - **Non-symbol queries.** Every record targets a value-stating chunk, and 55 of 65 pairs
@@ -366,5 +382,5 @@ no BM25 number from before the dedup exists on this query set.
 - Embedding definitions (option c): evaluate at the open-access re-ingest (owner).
 - The #747 work-level dedup, to counter the crowding.
 - Merge the workers' receipt `enrichment` records into the GoWe-path manifest.
-- Add non-value queries to the eval (definition, method, mechanism) before any tenant
-  other than dev enables the boost.
+- Add non-value queries to the eval before any tenant other than dev enables the boost
+  (Tests still needed, item 1).
