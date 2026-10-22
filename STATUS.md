@@ -3,27 +3,24 @@
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
 **Last updated:** 2026-10-22
-**Deployed:** seven tenants, image mode. **`dev`** (since 2026-10-22T13:32Z) and
-**`asm-next`** (since 15:45Z) run server tag
+**Deployed:** seven tenants, image mode, all on server tag
 [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**): the API
 from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools image
-`ragstack-tools-v1.6.13-b1.sif`. The other five run
-[`v1.6.12`](https://github.com/wilke/ragstack/releases/tag/v1.6.12) (**`6bf8acc`**) since
-2026-10-22 ≈03:38Z, from `ragstack-server-v1.6.12-b1.sif` with tools image
-`ragstack-tools-v1.6.10-b1.sif`, until the owner's word to roll them. They sit behind the nginx
-gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
+`ragstack-tools-v1.6.13-b1.sif`. `dev` first (2026-10-22T13:32Z), then `asm-next` (15:45Z),
+then `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` (17:25:33–17:27:04Z).
+They sit behind the nginx gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
 `https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
 view; trust it over this table.
 
 | Tenant | API port | Stores | UI |
 |---|---|---|---|
-| `lucid-next` | 24000 | mixed | static, artifact `v1.6.12-6bf8acc0f2d9` |
+| `lucid-next` | 24000 | mixed | static, artifact `v1.6.14-baf7174a805d` |
 | `asm-next` | 24020 | shared | static, artifact `v1.6.14-baf7174a805d` |
 | `dev` | 24040 | dedicated | Vite dev server on `:8090`, from the checkout |
-| `demo` | 24060 | shared | static, artifact `v1.6.12-6bf8acc0f2d9` |
-| `hackathon` | 24080 | dedicated | static, artifact `v1.6.12-6bf8acc0f2d9` |
-| `clark` | 24100 | dedicated | static, artifact `v1.6.12-6bf8acc0f2d9` |
-| `elrond` | 24120 | dedicated | static, artifact `v1.6.12-6bf8acc0f2d9` |
+| `demo` | 24060 | shared | static, artifact `v1.6.14-baf7174a805d` |
+| `hackathon` | 24080 | dedicated | static, artifact `v1.6.14-baf7174a805d` |
+| `clark` | 24100 | dedicated | static, artifact `v1.6.14-baf7174a805d` |
+| `elrond` | 24120 | dedicated | static, artifact `v1.6.14-baf7174a805d` |
 
 In image mode the API runs from the server image, not from the tenant's checkout at
 `/rag/repos/tenants/<name>`. The checkout is still needed: `update-code` keeps it at the
