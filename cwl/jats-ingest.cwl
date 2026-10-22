@@ -128,6 +128,12 @@ inputs:
       The index spent ~28x longer refreshing than indexing on the last build. The
       tool forces an explicit refresh before returning, so the driver's count
       verification stays accurate."
+  symbol_glossary:
+    type: string
+    default: "rules"
+    doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
+      (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
+      the chunk ids and the collection identity are unchanged either way."
 
 steps:
   extract:
@@ -190,6 +196,7 @@ steps:
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
       metadata_passthrough: metadata_passthrough
+      symbol_glossary: symbol_glossary
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -247,6 +254,12 @@ steps:
           inputBinding:
             prefix: --metadata-passthrough
             position: 10
+        symbol_glossary:
+          type: string
+          default: "rules"
+          inputBinding:
+            prefix: --symbol-glossary
+            position: 13
       arguments:
         - position: 11
           prefix: --out

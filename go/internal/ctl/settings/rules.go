@@ -135,18 +135,21 @@ var publicRules = map[string]PublicRule{
 	"SYMBOL_GLOSSARY_EXTRACTION": {
 		Check: oneOf("off", "rules"),
 		Scope: ScopeNewIngests,
-		Help: "off|rules. Applies only to documents ingested in-process by the API after " +
-			"`tenant restart <t> --only api`; chunks already indexed are unchanged until they are re-ingested " +
-			"or backfilled. scripts/backfill_symbol_glossary.py does NOT read it (it takes --config and " +
-			"--llm-cache on its command line), and a gowe tenant's worker ingest does not read it either " +
-			"(the CWL takes no glossary input yet)." + glossaryNote,
+		Help: "off|rules (default rules, #783). Applies to documents ingested after " +
+			"`tenant restart <t> --only api`, on both ingest paths: in-process, and a gowe tenant's worker " +
+			"ingest, which receives it as the `symbol_glossary` workflow input when the registered " +
+			"pdf-ingest-scatter workflow declares it. Chunks already indexed are unchanged until they are " +
+			"re-ingested or backfilled; backfill before raising TEXT_SYMBOL_GLOSSARY_BOOST above 0. " +
+			"scripts/backfill_symbol_glossary.py does NOT read it (it takes --config and --llm-cache on its " +
+			"command line)." + glossaryNote,
 	},
 	"SYMBOL_GLOSSARY_CONFIG_JSON": {
 		Check: glossaryConfigJSON,
 		Scope: ScopeNewIngests,
 		Help: "GlossaryConfig overrides as a JSON object (empty = defaults); every key must be a " +
-			"GlossaryConfig field. Like SYMBOL_GLOSSARY_EXTRACTION, it affects only in-process API ingests " +
-			"after `tenant restart <t> --only api`; the backfill script takes its own --config." + glossaryNote,
+			"GlossaryConfig field. Unlike SYMBOL_GLOSSARY_EXTRACTION, it affects only in-process API ingests " +
+			"after `tenant restart <t> --only api` (a gowe worker runs the default config); the backfill " +
+			"script takes its own --config." + glossaryNote,
 	},
 	"TEXT_SYMBOL_GLOSSARY_BOOST": {
 		Check: nonNegativeFloat,

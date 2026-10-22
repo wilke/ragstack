@@ -3,6 +3,14 @@
 Status: `IN PROGRESS`, code in PR "feat(retrieval): per-document symbol glossary field (#754 A)".
 Nothing is deployed and nothing live was written. Every switch defaults to off.
 
+Status note (2026-10-22, #783): owner decision. Extraction now defaults to `rules` on
+both ingest paths: `SYMBOL_GLOSSARY_EXTRACTION`, the shard tools' `--symbol-glossary`,
+and a `symbol_glossary` input on every ingest CWL, which the API seeds from the
+setting on GoWe submissions. The query side is unchanged: `TEXT_SYMBOL_GLOSSARY_BOOST`
+still defaults to 0. Collections ingested earlier have no glossary until backfilled,
+and a tenant must backfill them before raising the boost. Runbook:
+[`tenant-admin.md` §6d](../runbooks/tenant-admin.md#6d-symbol-glossary-754).
+
 ## The problem
 
 A paper defines a symbol once ("where Qb is the breathing flow rate"). A table caption

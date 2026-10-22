@@ -106,6 +106,12 @@ inputs:
     type: string
     doc: "The Elasticsearch instance to WRITE to, as seen from the worker.
       REQUIRED, no default — see qdrant_url."
+  symbol_glossary:
+    type: string
+    default: "rules"
+    doc: "Per-document symbol glossary passed to ingest_shard --symbol-glossary
+      (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
+      the chunk ids and the collection identity are unchanged either way."
 
 steps:
   ingest_shard:
@@ -125,6 +131,7 @@ steps:
       es_url: es_url
       collection_id: collection_id
       registry: registry
+      symbol_glossary: symbol_glossary
     out: [receipt]
     run:
       class: CommandLineTool
@@ -161,6 +168,10 @@ steps:
         registry:
           type: ["null", string]
           inputBinding: {prefix: --registry, position: 16}
+        symbol_glossary:
+          type: string
+          default: "rules"
+          inputBinding: {prefix: --symbol-glossary, position: 17}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: receipt.json}

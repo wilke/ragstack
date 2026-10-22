@@ -1257,8 +1257,8 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
 
 
 def _build_glossary_attacher() -> SymbolGlossaryAttacher | None:
-    """The per-document symbol glossary step (#754), or ``None`` when off (the
-    default). ``rules`` prefers an offline LLM glossary from
+    """The per-document symbol glossary step (#754), or ``None`` when off.
+    ``rules`` is the default since #783. ``rules`` prefers an offline LLM glossary from
     ``SYMBOL_GLOSSARY_CACHE_PATH`` when it holds one for the document's exact
     text. A bad mode is logged and treated as off: a typo in an env var must not
     take the API down."""

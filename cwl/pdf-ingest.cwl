@@ -150,6 +150,12 @@ inputs:
     type: ["null", string]
     doc: "Worker-side directory for the per-DOI resolution cache; omitted =
       in-process only."
+  symbol_glossary:
+    type: string
+    default: "rules"
+    doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
+      (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
+      the chunk ids and the collection identity are unchanged either way."
 
 steps:
   extract:
@@ -205,6 +211,7 @@ steps:
       doi_enrichment: doi_enrichment
       doi_mailto: doi_mailto
       doi_cache_dir: doi_cache_dir
+      symbol_glossary: symbol_glossary
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -244,6 +251,10 @@ steps:
         doi_cache_dir:
           type: ["null", string]
           inputBinding: {prefix: --doi-cache-dir, position: 14}
+        symbol_glossary:
+          type: string
+          default: "rules"
+          inputBinding: {prefix: --symbol-glossary, position: 15}
       arguments:
         - {position: 10, prefix: --out, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
         - {position: 11, prefix: --receipt, valueFrom: receipt.json}

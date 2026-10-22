@@ -98,8 +98,10 @@ def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
                              doi_enricher=enricher_from_args(args, http),
                              boilerplate_filter=filter_from_mode(
                                  args.boilerplate, args.boilerplate_config),
-                             # #754. Default off: the tools image changes no
-                             # output until a workflow asks for it.
+                             # #754. Default rules since #783 (None when
+                             # --symbol-glossary off). The glossary is its own
+                             # BM25 field: content, the embedded text and the
+                             # chunk ids are unchanged either way.
                              glossary_attacher=attacher_from_mode(
                                  args.symbol_glossary, args.symbol_glossary_config,
                                  args.symbol_glossary_cache))
@@ -177,8 +179,10 @@ def parse_args(argv=None):
     p.add_argument("--boilerplate-config", default="",
                    help="JSON object overriding BoilerplateConfig thresholds")
     # #754 per-document symbol glossary: a separate BM25 field, never embedded.
-    # Default OFF for the first tools-image release; the CWL passes nothing.
-    p.add_argument("--symbol-glossary", choices=["off", "rules"], default="off",
+    # Default RULES since #783 (it was off for the first tools-image release).
+    # The CWL passes its `symbol_glossary` input here (default rules), and the
+    # API seeds that input from SYMBOL_GLOSSARY_EXTRACTION, so both paths agree.
+    p.add_argument("--symbol-glossary", choices=["off", "rules"], default="rules",
                    help="per-document symbol glossary (rules, preferring a cached LLM glossary)")
     p.add_argument("--symbol-glossary-config", default="",
                    help="JSON object overriding GlossaryConfig")

@@ -268,6 +268,14 @@ inputs:
   duplicate_policy:
     type: ["null", string]
     doc: "The duplicate-paper guard policy passed to ingest_shard --duplicate-policy (off|refuse|allow); null = the tool's default (off)."
+  symbol_glossary:
+    type: string
+    default: "rules"
+    doc: "Per-document symbol glossary passed to ingest_shard --symbol-glossary
+      (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
+      the chunk ids and the collection identity are unchanged either way. The API
+      seeds it from SYMBOL_GLOSSARY_EXTRACTION (documents.py::_gowe_inputs), so
+      a gowe ingest makes the same choice as an in-process one."
   max_chunks:
     type: int
     default: 0
@@ -406,6 +414,7 @@ steps:
       tool_image: tool_image
       tool_image_digest: tool_image_digest
       duplicate_policy: duplicate_policy
+      symbol_glossary: symbol_glossary
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -491,6 +500,10 @@ steps:
         duplicate_policy:
           type: ["null", string]
           inputBinding: {prefix: --duplicate-policy, position: 27}
+        symbol_glossary:
+          type: string
+          default: "rules"
+          inputBinding: {prefix: --symbol-glossary, position: 28}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.

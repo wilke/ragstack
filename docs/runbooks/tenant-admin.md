@@ -1065,16 +1065,18 @@ definition from the chunk's own document into a separate Elasticsearch field,
 embedded, never added to `content`, and Qdrant is untouched. Design, the
 extraction rules and every measurement are in
 [`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md); this section is
-the operator's side. Everything ships off.
+the operator's side. Since #783, extraction is **on by default** (`rules`) on
+both ingest paths, and the query side still ships off (boost `0`), so search
+results do not change until a tenant raises the boost.
 
 ### The settings
 
 | Key | Default | Effect |
 |---|---|---|
 | `TEXT_SYMBOL_GLOSSARY_BOOST` | `0` | Query side. `0` sends the exact pre-#754 BM25 `match` on `content`, byte-identical. A value above 0 sends a `multi_match` of type `most_fields` over `content` and `symbol_glossary^<boost>`. |
-| `SYMBOL_GLOSSARY_EXTRACTION` | `off` | Ingest side. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. |
-| `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. |
-| `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. |
+| `SYMBOL_GLOSSARY_EXTRACTION` | `rules` (since #783; was `off`) | Ingest side, both paths. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. On a gowe tenant the API sends it as the `symbol_glossary` workflow input. |
+| `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. In-process ingests only: a gowe worker runs the default config. |
+| `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. In-process ingests only: a gowe worker uses no LLM cache. |
 
 The boost only has an effect on an index whose chunks carry a `symbol_glossary`
 field (ingested with extraction on, or backfilled). On an index without the
@@ -1156,9 +1158,37 @@ should now return the caption chunk.
 5. Set the boost to 1 (above) and restart the API.
 6. Tell evaluation users.
 
-Papers ingested through GoWe get no glossary yet: the bulk tools accept
-`--symbol-glossary {off,rules}` but no CWL passes it, so enabling it there needs
-a tools tag plus CWL stamping. Until then, backfill those collections.
+### Extraction on by default (#783)
+
+A newly ingested paper gets the `rules` glossary on both paths:
+
+- **In-process** (`INGEST_BACKEND=local`): `SYMBOL_GLOSSARY_EXTRACTION`, now
+  `rules` by default.
+- **GoWe**: `ingest_shard.py` and `embed_shard.py` default `--symbol-glossary`
+  to `rules`. Every ingest workflow that runs them (`pdf-ingest-scatter`,
+  `pdf-ingest`, `ingest-bulk`, `jats-ingest`, `embed-bulk`) declares an
+  optional `symbol_glossary` input (`off|rules`, default `rules`). The API
+  sends the tenant's `SYMBOL_GLOSSARY_EXTRACTION` as that input on every
+  upload, `off` included, when its registered `pdf-ingest-scatter` declares
+  it. An older registered workflow is submitted as before. This reaches a
+  tenant only after the ADR-0010 release: tools tag, tools image, restamp,
+  server tag, roll.
+
+To opt a tenant out, set `SYMBOL_GLOSSARY_EXTRACTION=off` and restart the API.
+That covers both paths. A hand-run workflow takes `symbol_glossary: off` in its
+job file.
+
+What does not change: chunk ids, `content`, the embedded text, the vectors and
+the collection identity (`spec_hash`). The glossary is never embedded, and it is
+attached after chunking. Receipts and manifests record the step under
+`enrichment.symbol_glossary` (ADR-0011). On the GoWe path that record is on each
+batch receipt in the version's `receipt.json`.
+
+**Old collections are not touched.** Anything ingested before the change has no
+`symbol_glossary` field until it is re-ingested or backfilled (above).
+**Backfill a collection before raising `TEXT_SYMBOL_GLOSSARY_BOOST` above 0**
+for it. Otherwise only its newest papers can gain from the boost, and the
+search compares glossary and non-glossary documents unevenly.
 
 ## 7. Diagnosing a user report
 
