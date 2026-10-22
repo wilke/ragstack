@@ -608,7 +608,6 @@ async def _retrieve_fused(
     # full ranked pool instead of its top_k, so the shaping has candidates to
     # promote from; with shaping off this is byte-for-byte the previous path.
     shaping = _shaping_active(retriever)
-<<<<<<< HEAD
     # The reranker reads the chunk's symbol glossary (#754,
     # RERANK_INCLUDE_SYMBOL_GLOSSARY): vector-only candidates — and, under
     # HyDE/multi-query, candidates whose last-fused copy came from a vector hit —
