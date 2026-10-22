@@ -1193,8 +1193,8 @@ decision 2026-10-22). When a query is reranked, the cross-encoder scores each
 candidate's `content` plus a newline plus its `symbol_glossary`. Only the scored
 text changes: a source's `content` in the response never includes the
 glossary. On dev `openchia`, an offline rerank of the API's own 50-candidate
-pool went from 62 to 81 of 155 relevant chunks in the top 10, none lost; a
-shuffled-glossary control gave 63 ([Dev trial
+pool went from 53 to 65 of 155 records with a relevant chunk in the top 10 (13
+gained, 1 lost); a shuffled-glossary control gave 57 ([Dev trial
 (2026-10-22)](../plans/symbol-glossary.md#dev-trial-2026-10-22), Test 3). That
 is one collection and one query set, not a promise.
 
