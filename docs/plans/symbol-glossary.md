@@ -302,10 +302,10 @@ These are live measurements on dev, unlike the scratch-copy experiments above.
 >   ceiling 119. Don't quote them.
 
 **State:**
-- Dev ran v1.6.11 (#763) for all four tests. It moved to v1.6.12 after them.
+- Dev ran v1.6.11 (#763) for the first run of all four tests and moved to v1.6.12 after them. The v1.6.14 column of Test 1 and the re-runs of Tests 2 and 3 are on v1.6.14 (#796).
 - openchia was deduplicated first: 293 → 285 documents, 16,629 → 16,084 chunks.
 - It was then backfilled with rules plus the cached LLM glossary (`--llm-cache`). 543
-  chunks carry a glossary. Most documents are stamped `llm/1:…`; 72 chunks are stamped
+  chunks carried a glossary (481 after the second dedup removed 62 of them). Most documents are stamped `llm/1:…`; 72 chunks are stamped
   `rules/2`.
 - `TEXT_SYMBOL_GLOSSARY_BOOST=1`, set at 00:21Z and live from the 00:37Z API restart, with the reranker on (`bge-reranker-v2-m3`)
   and the default `RERANK_CANDIDATES` of 50.
@@ -314,7 +314,7 @@ These are live measurements on dev, unlike the scratch-copy experiments above.
   (`requote/glossary_split_records.quote-261022.jsonl`). Found means any gold chunk_id
   is in the top 10.
 
-**Test 1: the API arms** (OpenChia, 02:52–02:59Z, re-scored by quote gold). Duplicate
+**Test 1: the API arms** (OpenChia; v1.6.11 at 02:52–02:59Z, v1.6.14 at 15:49–15:56Z, both before the second dedup; re-scored by quote gold). Duplicate
 removal and glossary changed together. Found / 155 and recall@10:
 
 | arm | v1.6.11 | v1.6.14 (reranker reads the glossary) |
@@ -322,8 +322,10 @@ removal and glossary changed together. Found / 155 and recall@10:
 | hybrid + reranker (default) | 44 (0.284; kind B 7) | 62 (0.400; kind B 18) |
 | hybrid, no reranker | 64 (0.413) | 64 |
 | BM25 only, no reranker | 72 (0.465; kind B 20) | 72 |
+| HyDE | 46 | 62 |
+| exclude_boilerplate | 44 | 62 |
 
-HyDE and exclude_boilerplate weren't re-scored. The 2026-10-21 column of the first
+The 2026-10-21 column of the first
 version isn't comparable, because it predates the dedup remap.
 
 **Test 2: the glossary alone, BM25 leg** (read-only on the live index, re-run after
