@@ -42,9 +42,16 @@ from ragstack.api.scope import shared_scope
 from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.ingestion.boilerplate import BOILERPLATE_KEY
-from ragstack.models import ContextChunk, ScoredChunk, Source
+from ragstack.models import ContextChunk, DegradedComponent, DegradedEntry, ScoredChunk, Source
 from ragstack.observability.context import current_context
-from ragstack.observability.stages import note_query_sha, stage
+from ragstack.observability.dependencies import (
+    STATE_DEGRADED,
+    STATE_DOWN,
+    STATE_OK,
+    dependency_health,
+)
+from ragstack.observability.fallbacks import degraded_reason, rate_limited, record_fallback
+from ragstack.observability.stages import note, note_query_sha, stage
 from ragstack.prompts import PromptTemplate, TemplateRenderError, render, to_wire
 from ragstack.protocols import QueryRewriter
 from ragstack.retrieval.glossary import hydrate_symbol_glossary
@@ -113,8 +120,33 @@ def _exclude_boilerplate(filters: dict[str, Any]) -> dict[str, Any]:
     return {**filters, BOILERPLATE_KEY: Not(True)}
 
 
+def _degrade(
+    degraded: list[DegradedEntry] | None,
+    component: DegradedComponent,
+    exc: BaseException,
+    *,
+    prefix: str = "",
+) -> None:
+    """Record one fallback (#748, #751 principle 4): on the response (the
+    ``degraded`` list the handler emits), on the per-request summary line
+    (``degraded=rerank,…`` via :func:`note`) and on the process counter
+    (``ragstack_fallback_total{component}``). ``degraded`` is ``None`` for a
+    caller outside a request (none today; the parameter is optional so the
+    helpers stay callable from tests without a list)."""
+    reason = degraded_reason(exc)
+    if prefix:
+        reason = f"{prefix}: {reason}"[:200]
+    if degraded is not None:
+        degraded.append(DegradedEntry(component=component, reason=reason))
+    note("degraded", component)
+    record_fallback(component)
+
+
 async def _expand_query(
-    query: str, strategies: list[str], rewriters: dict[str, QueryRewriter]
+    query: str,
+    strategies: list[str],
+    rewriters: dict[str, QueryRewriter],
+    degraded: list[DegradedEntry] | None = None,
 ) -> list[str]:
     """Expand the query into retrieval variants per the requested strategies.
 
@@ -122,6 +154,10 @@ async def _expand_query(
     an LLM strategy with no LLM configured) are skipped, and a rewriter that
     raises is skipped too — so retrieval degrades to the plain query rather than
     failing the request. Variants are de-duplicated, original first.
+
+    Only the raise is a *fallback* and recorded on ``degraded`` (component
+    ``rewrite``): a strategy this server does not offer is a documented skip,
+    not a lower-quality run of something it normally does.
 
     Repeated strategy names collapse to one run (first occurrence wins the
     order), so ``["hyde"] * 3`` costs one LLM call, not three — silently, not
@@ -137,8 +173,9 @@ async def _expand_query(
             produced = await rewriter.rewrite(query)
         except asyncio.CancelledError:
             raise  # never swallow cancellation (client disconnect / timeout)
-        except Exception:
+        except Exception as e:
             log.warning("query rewriter %r failed; skipping", name, exc_info=True)
+            _degrade(degraded, "rewrite", e, prefix=name)
             continue
         for v in produced:
             v = (v or "").strip()
@@ -295,6 +332,10 @@ class QueryResponse(BaseModel):
     # the model was, which is what made a 25-source query return fewer rows than
     # a 10-source one.
     truncated: bool | SkipJsonSchema[None] = None
+    # The stages that fell back on this request (#748): omitted — never an
+    # empty list — when nothing did, by the same rule as the provenance fields,
+    # so an undegraded response is byte-identical to one from before the field.
+    degraded: list[DegradedEntry] | SkipJsonSchema[None] = None
 
     @model_serializer(mode="wrap")
     def _omit_absent_provenance(self, handler: SerializerFunctionWrapHandler):
@@ -302,6 +343,8 @@ class QueryResponse(BaseModel):
         for key in ("template", "template_version", "template_hash", "model", "truncated"):
             if data.get(key) is None:
                 data.pop(key, None)
+        if not data.get("degraded"):
+            data.pop("degraded", None)
         return data
 
 
@@ -349,6 +392,15 @@ class RetrieveRequest(BaseModel):
 
 class RetrieveResponse(BaseModel):
     sources: list[Source]
+    # See QueryResponse.degraded — same field, same omit-when-empty rule.
+    degraded: list[DegradedEntry] | SkipJsonSchema[None] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_degraded(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if not data.get("degraded"):
+            data.pop("degraded", None)
+        return data
 
 
 class ChunkOut(BaseModel):
@@ -384,11 +436,23 @@ def _fans_out(retriever: Any) -> bool:
     return isinstance(retriever, MultiCollectionRetriever) and len(retriever.legs) > 1
 
 
+#: The dependency-health name the reranker's verdict is filed under — the same
+#: key ``routers/health_deep.py`` reads, which is the whole point.
+RERANKER_DEPENDENCY = "reranker"
+
+#: Rate-limit key for the "rerank unavailable" warning. One line per 60 s per
+#: process; #748 wrote it 231 times in 90 minutes on one tenant.
+_RERANK_WARN_KEY = "rerank.unavailable"
+
+
 async def _maybe_rerank(
     reranker,
     query: str,
     scored: list[ScoredChunk],
     top_k: int | None,
+    degraded: list[DegradedEntry] | None = None,
+    *,
+    shared: bool = True,
     hydrate: Callable[[list[ScoredChunk]], Awaitable[list[ScoredChunk]]] | None = None,
 ) -> list[ScoredChunk]:
     """Rescore the fused candidate pool with the cross-encoder, if one is wired.
@@ -401,7 +465,14 @@ async def _maybe_rerank(
 
     Degrades gracefully: a reranker outage / bad response falls back to the
     fused order rather than failing the request (same contract as the LLM and
-    rewriter stages). Cancellation is never swallowed.
+    rewriter stages) — and SAYS so (#748): the fallback is appended to
+    ``degraded`` as ``{component: "rerank", reason}``, counted, put on the
+    summary line, and — when ``shared`` (this is the server's own reranker, not
+    a per-request ``reranker`` override) — recorded as the reranker's verdict
+    in :data:`dependency_health`, which is what ``/v1/health/deep`` serves. One
+    fact, four projections. A successful rerank records ``ok`` the same way, so
+    while traffic flows deep health never has to probe. Cancellation is never
+    swallowed.
 
     ``hydrate`` (when the reranker reads the symbol glossary, #754) fills in
     the glossary of candidates that arrived without one — one batched text-index
@@ -416,7 +487,6 @@ async def _maybe_rerank(
         with stage("rerank"):
             pool = await hydrate(scored) if hydrate is not None else scored
             reranked = await reranker.score(query, [s.chunk for s in pool], top_k=top_k)
-        return _restamp(pool, reranked)
     except asyncio.CancelledError:
         raise
     except (KeyError, ValueError) as e:
@@ -424,10 +494,21 @@ async def _maybe_rerank(
         # outage — log it distinctly (ERROR) so it isn't lost among flaky-network
         # warnings. Still degrade to the fused order.
         log.error("rerank response invalid (%s); using fused order", e, exc_info=True)
+        _degrade(degraded, "rerank", e)
+        if shared:
+            dependency_health.record(RERANKER_DEPENDENCY, STATE_DEGRADED, degraded_reason(e))
         return scored
-    except Exception:
-        log.warning("rerank unavailable; using fused order", exc_info=True)
+    except Exception as e:
+        rate_limited.warning(
+            log, _RERANK_WARN_KEY, "rerank unavailable; using fused order", exc_info=True
+        )
+        _degrade(degraded, "rerank", e)
+        if shared:
+            dependency_health.record(RERANKER_DEPENDENCY, STATE_DOWN, degraded_reason(e))
         return scored
+    if shared:
+        dependency_health.record(RERANKER_DEPENDENCY, STATE_OK, "last rerank call succeeded")
+    return _restamp(pool, reranked)
 
 
 def _restamp(pool: list[ScoredChunk], reranked: list[ScoredChunk]) -> list[ScoredChunk]:
@@ -462,8 +543,15 @@ async def _retrieve_fused(
     rerank_candidates: int | None = None,
     tenant_id: str | None = None,
     mode: str = "hybrid",
+    degraded: list[DegradedEntry] | None = None,
+    rerank_shared: bool = True,
 ) -> list[ScoredChunk]:
     """Hybrid-retrieve each query variant, RRF-fuse, optionally rerank, truncate.
+
+    ``degraded`` collects the fallbacks the request takes (#748) and
+    ``rerank_shared`` says whether ``reranker`` is the server's own (its
+    verdict then feeds deep health) or a per-request override (it does not) —
+    see :func:`_maybe_rerank`.
 
     When a reranker is active the per-variant retrievals fetch a deeper pool
     (``rerank_candidates``) so the cross-encoder has real recall to work with;
@@ -520,6 +608,7 @@ async def _retrieve_fused(
     # full ranked pool instead of its top_k, so the shaping has candidates to
     # promote from; with shaping off this is byte-for-byte the previous path.
     shaping = _shaping_active(retriever)
+<<<<<<< HEAD
     # The reranker reads the chunk's symbol glossary (#754,
     # RERANK_INCLUDE_SYMBOL_GLOSSARY): vector-only candidates — and, under
     # HyDE/multi-query, candidates whose last-fused copy came from a vector hit —
@@ -535,7 +624,8 @@ async def _retrieve_fused(
         else None
     )
     scored = await _maybe_rerank(
-        active, query, scored, None if shaping else top_k, hydrate=hydrate
+        active, query, scored, None if shaping else top_k, degraded,
+        shared=rerank_shared, hydrate=hydrate,
     )
     if shaping:
         scored = retriever.shape(scored)
@@ -867,12 +957,17 @@ async def retrieve(
             registry, request.collection, request.collections, principal, tenant,
             request.filters, request.exclude_boilerplate,
         )
+    shared_reranker = reranker
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
+    # The fallbacks this request takes (#748). Emitted only when non-empty.
+    degraded: list[DegradedEntry] = []
     # Same expansion as /query, after authz so a refused request costs no LLM
     # call. The default ["passthrough"] yields [request.query] — the exact
     # single-variant path this endpoint always took.
     with stage("rewrite"):
-        variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
+        variants = await _expand_query(
+            request.query, request.rewrite_strategies, rewriters, degraded
+        )
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -885,13 +980,15 @@ async def retrieve(
         rerank_candidates=request.rerank_candidates,
         tenant_id=tenant,
         mode=request.retrieval_mode,
+        degraded=degraded,
+        rerank_shared=reranker is shared_reranker,
     )
     # `expand` likewise: N batched get_chunks round trips to the vector store.
     # Recorded even when context_window=0 makes it a no-op — "we timed it and it
     # was zero" is a fact; a missing field is an unanswered question.
     with stage("expand"):
         context = await _expand_sources(targets, scored, request.context_window)
-    return RetrieveResponse(sources=_to_sources(scored, context))
+    return RetrieveResponse(sources=_to_sources(scored, context), degraded=degraded or None)
 
 
 class PromptTemplatesResponse(BaseModel):
@@ -1055,7 +1152,10 @@ async def query(
     template = _resolve_template(templates, request.template)
     if template is not None:
         _validate_template_vars(template, request.template_vars)
+    shared_reranker = reranker
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
+    # The fallbacks this request takes (#748). Emitted only when non-empty.
+    degraded: list[DegradedEntry] = []
     # `authz` is not an optional stage: since #419 _resolve_retrieval is a
     # batched ACL round trip to Postgres plus the lifecycle gate, i.e. an
     # EXTERNAL call. ADR-0006 makes the Go trigger a residual over "everything
@@ -1067,7 +1167,9 @@ async def query(
             request.filters, request.exclude_boilerplate,
         )
     with stage("rewrite"):
-        variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
+        variants = await _expand_query(
+            request.query, request.rewrite_strategies, rewriters, degraded
+        )
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -1080,6 +1182,8 @@ async def query(
         rerank_candidates=request.rerank_candidates,
         tenant_id=tenant,
         mode=request.retrieval_mode,
+        degraded=degraded,
+        rerank_shared=reranker is shared_reranker,
     )
 
     # Context expansion is strictly post-rank: it reads the final ``scored``
@@ -1128,14 +1232,17 @@ async def query(
                         user,
                         max_tokens=template.max_output_tokens or settings.llm_max_output_tokens,
                     )
-        except Exception:
+        except Exception as e:
             # Retrieval already succeeded — don't fail the whole query on an LLM
-            # outage or a malformed/empty response. Return the sources with a note.
+            # outage or a malformed/empty response. Return the sources with a note
+            # — and a `degraded` entry (#748), so a caller can tell this
+            # placeholder from a generated answer without parsing the text.
             #
             # A TemplateRenderError cannot reach here: bad `template_vars` are
             # refused as a 422 BEFORE retrieval runs, so this branch only ever
             # covers the transport.
             log.warning("answer generation failed; returning sources only", exc_info=True)
+            _degrade(degraded, "generation", e)
             answer = _fallback_answer("[answer generation failed]", request.query, sources)
             used_template = None
             truncated = False
@@ -1154,4 +1261,5 @@ async def query(
         # no such question to answer when no template was used.
         model=_resolved_model(generator) if used_template else None,
         truncated=True if (used_template and truncated) else None,
+        degraded=degraded or None,
     )

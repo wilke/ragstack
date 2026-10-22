@@ -55,3 +55,26 @@ async def test_query_degrades_when_generation_fails(client):
         assert "sources" in body
     finally:
         app.state.generator = None
+
+
+@pytest.mark.asyncio
+async def test_generation_failure_is_reported_as_degraded(client):
+    """#748 part 2 for the LLM leg: the placeholder answer is accompanied by
+    ``degraded: [{component: "generation", …}]`` so a caller can tell it from
+    a generated answer without parsing the text — and a successful or
+    unconfigured generation omits the key entirely."""
+    from ragstack.observability.fallbacks import fallback_total
+
+    app.state.generator = _BoomGenerator()
+    try:
+        body = (await client.post("/v1/query", json={"query": "what is RAG?"})).json()
+        assert body["degraded"] == [
+            {"component": "generation", "reason": "RuntimeError: LLM endpoint is down"}
+        ]
+        assert fallback_total()["generation"] == 1
+        app.state.generator = _FakeGenerator("fine")
+        assert "degraded" not in (await client.post("/v1/query", json={"query": "q"})).json()
+        app.state.generator = None  # not configured is the server's normal, not a fallback
+        assert "degraded" not in (await client.post("/v1/query", json={"query": "q"})).json()
+    finally:
+        app.state.generator = None

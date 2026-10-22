@@ -1,7 +1,7 @@
 """Shared data models for RAGStack."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -197,3 +197,26 @@ class Source(BaseModel):
             if data.get(key) is None:
                 data.pop(key, None)
         return data
+
+
+#: The stages a query/retrieve request can fall back on — the ``component``
+#: enum of ``contracts/schemas/degraded_entry.json``. ``graph`` and ``context``
+#: are reserved: no fallback exists for them today and none is invented.
+DegradedComponent = Literal["rerank", "generation", "rewrite", "graph", "context"]
+
+
+class DegradedEntry(BaseModel):
+    """One stage of a request that fell back to a lower-quality path (#748).
+
+    Carried on ``QueryResponse.degraded`` / ``RetrieveResponse.degraded``, and
+    only when non-empty: the request still succeeded and every result in it is
+    real, but the ranking (``rerank``: RRF order and RRF scores instead of
+    cross-encoder relevance), the answer (``generation``: the retrieval-only
+    placeholder) or the variant set (``rewrite``: a strategy that raised) is
+    not what this server normally produces. ``reason`` is the exception class
+    and first message line, at most 200 characters, credentials scrubbed — see
+    ``observability.fallbacks.degraded_reason``.
+    """
+
+    component: DegradedComponent
+    reason: str = Field(max_length=200)
