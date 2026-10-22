@@ -1062,7 +1062,8 @@ A paper defines `Qb` once ("where Qb is the breathing flow rate") and a table
 caption pages later says only `Qb = 0.5 m3/h`. The glossary copies the
 definition from the chunk's own document into a separate Elasticsearch field,
 `symbol_glossary`, so a keyword search can reach the caption. It is not
-embedded, never added to `content`, and Qdrant is untouched. Design, the
+embedded, never added to `content`, and no vector changes (Qdrant only gains the
+`symbol_glossary_version` metadata key in the payload). Design, the
 extraction rules and every measurement are in
 [`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md); this section is
 the operator's side. Since #783, extraction is **on by default** (`rules`) on
@@ -1133,11 +1134,18 @@ hours, at least twice its size in transient disk, and segment churn like a
 rewrite. Do not run it on `open-access` (47.6M chunks): that corpus will be
 re-ingested instead.
 
-### Setting the boost on a ctl-managed tenant (today)
+### Setting the boost on a ctl-managed tenant
 
-`ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1` is currently
-refused ("not a known ragstack setting", issue #775). Until that lands, append
-the line to the tenant's env file, keeping a backup, and restart the API only:
+From the first server tag after v1.6.11 (it carries #781, the fix for #775), use ctl:
+
+```bash
+ragstack-ctl env set <t> TEXT_SYMBOL_GLOSSARY_BOOST 1
+ragstack-ctl tenant restart <t> --only api
+```
+
+On v1.6.11 itself, `env set` refuses the key ("not a known ragstack setting").
+There, append the line to the tenant's env file, keeping a backup, and restart
+the API only:
 
 ```bash
 cp <data>/tenants/<t>/config/tenant.env <data>/tenants/<t>/config/tenant.env.bak-$(date +%Y%m%d%H%M)
@@ -1171,8 +1179,10 @@ A newly ingested paper gets the `rules` glossary on both paths:
   sends the tenant's `SYMBOL_GLOSSARY_EXTRACTION` as that input on every
   upload, `off` included, when its registered `pdf-ingest-scatter` declares
   it. An older registered workflow is submitted as before. This reaches a
-  tenant only after the ADR-0010 release: tools tag, tools image, restamp,
-  server tag, roll.
+  tenant with the next server tag and a roll. No tools tag or restamp is
+  needed: the pinned tools image (`ragstack-tools-v1.6.10-b1`) already takes
+  `--symbol-glossary` (its built-in default stays `off`, which is why the
+  workflow passes the value explicitly).
 
 To opt a tenant out, set `SYMBOL_GLOSSARY_EXTRACTION=off` and restart the API.
 That covers both paths. A hand-run workflow takes `symbol_glossary: off` in its
