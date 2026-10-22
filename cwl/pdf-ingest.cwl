@@ -166,8 +166,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.8-b1.sif
-          dockerImageId: ragstack-tools-v1.6.8-b1.sif
+          dockerPull: ragstack-tools-v1.6.10-b1.sif
+          dockerImageId: ragstack-tools-v1.6.10-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -210,8 +210,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.8-b1.sif
-          dockerImageId: ragstack-tools-v1.6.8-b1.sif
+          dockerPull: ragstack-tools-v1.6.10-b1.sif
+          dockerImageId: ragstack-tools-v1.6.10-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
@@ -271,8 +271,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.8-b1.sif
-          dockerImageId: ragstack-tools-v1.6.8-b1.sif
+          dockerPull: ragstack-tools-v1.6.10-b1.sif
+          dockerImageId: ragstack-tools-v1.6.10-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/load_embeddings.py]
@@ -332,8 +332,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.8-b1.sif
-          dockerImageId: ragstack-tools-v1.6.8-b1.sif
+          dockerPull: ragstack-tools-v1.6.10-b1.sif
+          dockerImageId: ragstack-tools-v1.6.10-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       inputs:
         version: {type: string, inputBinding: {prefix: --version, position: 1}}
