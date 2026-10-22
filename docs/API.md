@@ -258,6 +258,23 @@ is visible — see [Context expansion](#context-expansion-context_window).
 `collection` is present only on a `collections` request — the registry id the
 source came from.
 
+`degraded` (#748, #751) is present **only when a stage fell back**: an array of
+`{ component, reason }` with `component` one of `rerank`, `generation`,
+`rewrite` (`graph` and `context` are reserved) and `reason` the exception class
+plus the first line of its message (≤ 200 chars, URL credentials removed). It
+is omitted — never an empty array — when nothing degraded, so an undegraded
+response is byte-identical to one from a server that predates the field. The
+request still succeeded and every result is real; it is the **quality** that is
+not what this server normally produces: with `rerank` the `sources` are in the
+fused (RRF) order and each `score` is an RRF score (≈0.01–0.1) rather than a
+cross-encoder relevance (≈0–1) — the #748 signature a caller could previously
+only guess from the score range; with `generation` the `answer` is the
+`[answer generation failed]` placeholder; with `rewrite` a strategy that raised
+was skipped (named in `reason`) so fewer variants were retrieved. Treat it as a
+quality signal, not an error: an eval harness should not compare a degraded run
+against an undegraded one. No LLM configured is the server's normal, not a
+fallback, and is not reported here.
+
 ```bash
 curl -s "$BASE"/v1/query \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
@@ -273,7 +290,8 @@ generation — `/v1/retrieve` never writes an answer.
 `use_graph` (true), plus the same `rewrite_strategies`, `collection`, `collections`,
 `retrieval_mode`, `rerank`, `rerank_candidates`, `context_window`,
 `exclude_boilerplate` and `reranker` fields as `/v1/query`. **Response**
-(`RetrieveResponse`): `{ sources[] }`.
+(`RetrieveResponse`): `{ sources[], degraded? }` — `degraded` exactly as on
+`/v1/query` (no `generation` entry, since nothing generates here).
 
 `rewrite_strategies` (#750) runs exactly what `/v1/query` runs before generation:
 expand the query (`multiquery` paraphrases, a `hyde` hypothetical passage),
@@ -1561,21 +1579,43 @@ state use [`GET /v1/ingest/{job_id}`](#get-v1ingestjob_id), which needs no role.
 
 ### GET /v1/health/deep
 
-Liveness of each backing store — vector, text, graph, job store — with
-per-check latency and backend detail. **Admin only**: the `detail` strings can
-carry backend hostnames and versions, so a non-admin gets **403**. The open,
-keyless liveness check is [`GET /health`](#get-health); this one is neither.
+Liveness of each backing store — vector, text, graph, job store — and, since
+#751, of the dependencies a request can route around — `reranker`, `embedder`,
+`llm`, `ingest_engine`, `doi_resolver` — with per-check latency, a `state` and
+backend detail. **Admin only**: the `detail` strings can carry backend
+hostnames and versions, so a non-admin gets **403**. The open, keyless
+liveness check is [`GET /health`](#get-health); this one is neither.
 
 ```bash
 curl -s "$BASE"/v1/health/deep -H 'X-API-Key: kadmin'
-# {"status":"ok","checks":[{"name":"vector","ok":true,"detail":"qdrant 1.12.1",
-#                           "latency_ms":3.4}, …]}
+# {"status":"degraded","checks":[
+#   {"name":"vector","ok":true,"state":"ok","detail":"qdrant","latency_ms":3.4}, …,
+#   {"name":"reranker","ok":false,"state":"down",
+#    "detail":"HTTPStatusError: Server error '500 Internal Server Error' for url
+#              'http://localhost:50052/rerank' [request path]","latency_ms":null},
+#   {"name":"llm","ok":true,"state":"disabled","detail":"LLM_ENDPOINT unset: …"}, …]}
 ```
 
-**200** `DeepHealthResponse` `{ status, checks: [{ name, ok, detail,
+**200** `DeepHealthResponse` `{ status, checks: [{ name, ok, state?, detail,
 latency_ms }] }` — a failing dependency is reported **inside a 200**, in its own
-check, rather than turning the probe itself into a 5xx. Schema:
-`contracts/schemas/deep_health_response.json`.
+check, rather than turning the probe itself into a 5xx. `state` is `ok`,
+`degraded` (answered, but not well — a sidecar still loading), `down` (no usable
+answer) or `disabled` (not configured on this server: nothing to probe, and it
+does not degrade the whole); `ok` is its compatibility projection (`true` for
+`ok` and `disabled`). `status` is `degraded` when any check is neither ok nor
+disabled. Schema: `contracts/schemas/deep_health_response.json`.
+
+The dependency checks are **bounded and cached**: each probe (sidecar `/ready`,
+`/v1/models` on vLLM/OpenAI-style servers, GoWe `/api/v1/health`) has a 3 s
+timeout and its verdict is kept ~10 s per process, so polling this endpoint is
+never load. More than that, the reranker's verdict is **the one the request
+path writes**: every real rerank records `ok` or `down` with the exception it
+saw, and this endpoint serves that (marked `[request path]` in `detail`) rather
+than probing — the fact a caller sees as `degraded: [rerank]` on `/v1/retrieve`
+and the fact this endpoint reports are the same fact. `doi_resolver` is never
+probed over the network (Crossref/NCBI are public, rate-limited APIs): it
+reports the enricher's own circuit breaker — `degraded` once it has tripped.
+The Go implementation serves the route with every check `disabled`.
 
 ### GET · PUT · DELETE /v1/admin/log-level
 

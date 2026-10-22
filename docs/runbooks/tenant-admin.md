@@ -1318,14 +1318,23 @@ curl -s -H "X-API-Key: $ADMIN_KEY" "$BASE/v1/stats/stores" | python3 -m json.too
 curl -s -H "X-API-Key: $ADMIN_KEY" "$BASE/v1/stats/tenants" | python3 -m json.tool
 ```
 
-- **`GET /v1/health/deep`** — `api/routers/health_deep.py:58`, **admin-only**
+- **`GET /v1/health/deep`** — `api/routers/health_deep.py`, **admin-only**
   (`api/main.py:239`). Returns `{status: "ok"|"degraded", checks: [...]}`; each
-  check is `{name, ok, detail, latency_ms}` and the four names, in order, are
-  `vector`, `text`, `graph`, `jobstore` (`health_deep.py:90-95`). `detail`
-  carries the backend name on success and `"{backend}: {ExcType}: {msg}"` on
-  failure (`:51-53`). Any failing check makes `status` `degraded`.
+  check is `{name, ok, state, detail, latency_ms}`. The names, in order, are the
+  stores `vector`, `text`, `graph`, `jobstore` and (since #751 PR-3) the
+  routed-around dependencies `reranker`, `embedder`, `llm`, `ingest_engine`,
+  `doi_resolver`. `state` is `ok` / `degraded` / `down` / `disabled`
+  (`disabled` = not configured on this tenant, does not degrade the whole);
+  `detail` carries the backend name on success and `"{ExcType}: {msg}"` on
+  failure. Any check that is neither ok nor disabled makes `status` `degraded`.
   **`latency_ms` is the number to read** when the complaint is "slow" rather
-  than "broken".
+  than "broken". **`reranker: down … [request path]`** means the last real
+  rerank on this tenant failed and every `/v1/query`/`/v1/retrieve` since is
+  answering in fused (RRF) order with `degraded: [{component: "rerank"}]` in
+  the body — the #748 shape; check the crossencoder sidecar (`:50052/ready`)
+  and `grep 'rerank unavailable'` in the API log (one line per minute, with a
+  suppressed count). The dependency verdicts are cached ~10 s per process, so a
+  fix shows up on the next real request or the next probe after that.
 - **`GET /v1/stats/stores`** — `api/routers/stats.py:111`. **Not admin-only**:
   any authenticated caller, tenant-scoped in the handler
   (`api/main.py:213-215`). `{tenants, vector, text, graph}` where each store is

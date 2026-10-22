@@ -163,9 +163,15 @@ export EMBEDDING_SIDECAR_URL="http://127.0.0.1:$EMB_PORT"
 export EMBEDDING_API=sidecar
 export EMBEDDING_MODEL=conformance-stub
 export EMBEDDING_MODEL_DIM="$EMB_DIM"
-# The reranker's health probe runs in the real lifespan and its sidecar is
-# dead-pinned; nothing in this run is testing rerank.
-export RERANK_ENABLED=false
+# The same stub speaks the crossencoder contract (/rerank, /ready — an
+# order-preserving no-op rerank), so the keyed boot runs with rerank ON and
+# the `degraded` surface (#748, #751 PR-3) is reachable: a test flips the stub
+# to fail through POST /__conformance/rerank and reads `degraded: [rerank]`
+# off /v1/retrieve and `reranker: down` off /v1/health/deep. The URL is
+# exported for the tests that do that; without it they skip.
+export CROSSENCODER_SIDECAR_URL="http://127.0.0.1:$EMB_PORT"
+export RERANK_ENABLED=true
+export RAGSTACK_CONFORMANCE_RERANK_STUB_URL="http://127.0.0.1:$EMB_PORT"
 
 export VECTOR_BACKEND=memory TEXT_BACKEND=memory GRAPH_BACKEND=memory
 export REQUIRE_DURABLE_BACKENDS=false

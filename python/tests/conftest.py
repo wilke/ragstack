@@ -216,3 +216,22 @@ async def pg_test_dsn():
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:
             await conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_fallback_state():
+    """The fallback counter, the rate-limited warning windows and the
+    dependency-verdict cache (#751 PR-3) are process-wide by design — one fact
+    for the whole server. Between tests that is leakage: a rerank failure in
+    one test would show as a cached ``down`` verdict in the next test's deep
+    health. Reset all three on both sides of every test."""
+    from ragstack.observability.dependencies import dependency_health
+    from ragstack.observability.fallbacks import rate_limited, reset_fallbacks
+
+    dependency_health.reset()
+    reset_fallbacks()
+    rate_limited.reset()
+    yield
+    dependency_health.reset()
+    reset_fallbacks()
+    rate_limited.reset()

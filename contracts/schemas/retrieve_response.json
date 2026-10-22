@@ -11,6 +11,14 @@
       "items": {
         "$ref": "source.json"
       }
+    },
+    "degraded": {
+      "description": "The stages that fell back to a lower-quality path on this request (#748). OMITTED — never an empty array — when nothing degraded, so an undegraded response is byte-identical to one from a server that predates the field. Present means: still a 200, still real results, but lower quality than this server normally produces (see degraded_entry.json for what each component means). Callers should not treat it as an error.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "degraded_entry.json"
+      }
     }
   },
   "additionalProperties": false

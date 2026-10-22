@@ -82,3 +82,37 @@ async def test_query_rewriting_retrieves_each_variant_and_fuses(client):
         }
     finally:
         app.state.retriever, app.state.rewriters = prev_retriever, prev_rewriters
+
+
+@pytest.mark.asyncio
+async def test_failing_rewriter_is_reported_as_degraded_but_unknown_strategy_is_not(client):
+    """A wired rewriter that RAISES is a fallback the caller should see
+    (``degraded: [{component: "rewrite"}]``, naming the strategy); a strategy
+    this server does not offer is the documented silent skip, not a
+    degradation of something it normally does."""
+    from ragstack.observability.fallbacks import fallback_total
+
+    retriever = _RecordingRetriever()
+    app.state.retriever = retriever
+    app.state.rewriters = {"boom": _BoomRewriter(), "multiquery": _FakeRewriter(["alt"])}
+    try:
+        resp = await client.post(
+            "/v1/query",
+            json={"query": "orig", "rewrite_strategies": ["boom", "nonexistent", "multiquery"]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["degraded"] == [
+            {"component": "rewrite", "reason": "boom: RuntimeError: rewriter exploded"}
+        ]
+        assert body["rewritten_queries"] == ["orig", "alt"]  # the other strategy still ran
+        assert fallback_total()["rewrite"] == 1
+
+        resp = await client.post(
+            "/v1/retrieve", json={"query": "orig", "rewrite_strategies": ["nonexistent"]}
+        )
+        assert "degraded" not in resp.json()
+    finally:
+        from ragstack.rewriting.rewriters import PassthroughRewriter
+
+        app.state.rewriters = {"passthrough": PassthroughRewriter()}

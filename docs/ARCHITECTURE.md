@@ -406,7 +406,13 @@ flowchart TB
 
 Every stage degrades gracefully: an unknown rewrite strategy falls back to the plain query,
 a rerank failure falls back to the fused order, and an LLM failure returns sources with a
-note — the call still returns 200.
+note — the call still returns 200. Since #751 PR-3 it also *says so*: the response carries
+`degraded: [{component: rerank|generation|rewrite, reason}]` (omitted when nothing fell
+back), the fallback is counted per process (`ragstack_fallback_total{component}`, exported
+by PR-5), the per-request summary line gets `degraded=rerank`, and the reranker's verdict is
+written into the shared dependency cache that `GET /v1/health/deep` serves — one fact,
+projected everywhere, so a two-hour silent fallback (#748) cannot happen again. The
+"rerank unavailable" warning is rate-limited to one line per minute with a suppressed count.
 
 ---
 

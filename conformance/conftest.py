@@ -501,3 +501,33 @@ async def caller_without_default_access(
             readable_id=next(cid for cid in p2_ids if cid != pointer_target),
             impl=impl,
         )
+
+
+# --------------------------------------------------------------------------- #
+# `degraded` on query/retrieve (#748, #751 PR-3)
+# --------------------------------------------------------------------------- #
+DEGRADED_COMPONENTS = {"rerank", "generation", "rewrite", "graph", "context"}
+
+
+def assert_degraded_valid(body: dict, schemas: dict[str, dict]) -> None:
+    """When a query/retrieve body carries ``degraded`` it must be the contract's
+    shape: a non-empty array of ``{component, reason}`` with every component in
+    the enum. Absent is fine (and is the normal case); an empty array is not —
+    the key is omitted when nothing degraded."""
+    if "degraded" not in body:
+        return
+    import jsonschema
+
+    entries = body["degraded"]
+    assert isinstance(entries, list) and entries, "degraded must be omitted, never empty"
+    schema = schemas["degraded_entry"]
+    for entry in entries:
+        jsonschema.validate(instance=entry, schema=schema)
+        assert entry["component"] in DEGRADED_COMPONENTS, entry
+
+
+def rerank_stub_url() -> str | None:
+    """The conformance sidecar stub's URL when the server under test was booted
+    against it (``run_authz_keyed.sh``), else ``None``. Only that stub can be
+    told to fail; a test that needs a forced rerank failure skips without it."""
+    return os.environ.get("RAGSTACK_CONFORMANCE_RERANK_STUB_URL") or None

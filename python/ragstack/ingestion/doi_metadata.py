@@ -701,6 +701,19 @@ class DoiMetadataResolver:
         self._consecutive_transport_failures = 0
         self._tripped = False
 
+    @property
+    def breaker_open(self) -> bool:
+        """True once :data:`BREAKER_THRESHOLD` consecutive transport failures
+        have tripped the breaker — the resolver asks nothing further this run.
+        Read by ``/v1/health/deep`` (``doi_resolver``, #751): the enricher's
+        own experience of the network is the health signal, so a poller never
+        adds a request to a public API."""
+        return self._tripped
+
+    @property
+    def consecutive_transport_failures(self) -> int:
+        return self._consecutive_transport_failures
+
     async def resolve(self, doi: str) -> Resolution | None:
         """Resolve one DOI. Returns ``None`` on any miss or failure; never raises."""
         doi = normalize_doi(doi)
@@ -999,6 +1012,11 @@ class DoiEnricher:
         """The publisher profile whose filename rule DOI discovery uses (the
         duplicate guard reads the same one, #747)."""
         return self._profile
+
+    @property
+    def resolver(self) -> DoiMetadataResolver:
+        """The resolver this enricher asks — deep health reads its breaker."""
+        return self._resolver
 
     async def enrich_documents(self, documents: list[Document]) -> int:
         """Enrich ``documents`` in place; return how many were changed.

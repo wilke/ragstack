@@ -89,6 +89,10 @@ func NewRouterWithServer(logger *slog.Logger, s *Server) http.Handler {
 		// must not need a credential.
 		r.Use(s.Auth.Middleware(writeUnauthorized))
 
+		// Deep health is under /v1 (unlike /health) because it is admin only:
+		// its check details may name backends. See HandleHealthDeep.
+		r.Get("/health/deep", s.HandleHealthDeep)
+
 		r.Post("/query", HandleQuery)
 		r.Post("/retrieve", HandleRetrieve)
 		r.Post("/ingest", HandleIngest)
