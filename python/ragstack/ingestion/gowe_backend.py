@@ -52,6 +52,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,7 +67,14 @@ from ragstack.ingestion.gowe_client import (
     GoWeError,
 )
 from ragstack.ingestion.manifest import ItemResult, WorkItem
-from ragstack.ingestion.receipts import COMPLETED, DocRow, ShardReceipt
+from ragstack.ingestion.receipts import (
+    COMPLETED,
+    NOTHING_TO_ARCHIVE,
+    NOTHING_TO_ARCHIVE_EXIT_CODE,
+    DocRow,
+    ShardReceipt,
+    parse_nothing_to_archive,
+)
 from ragstack.jobstore import COMPLETED as JOB_COMPLETED
 from ragstack.jobstore import FAILED as JOB_FAILED
 from ragstack.tool_image import provenance_inputs
@@ -87,6 +95,14 @@ NO_READABLE_RECEIPT = "no readable receipt for shard"
 #: Per-item error for a document in a failed batch whose receipt names no
 #: reason (a receipt not written by ``run_shard``).
 BATCH_FAILED = "batch failed"
+#: Per-item error when the run ingested NO document (the archive step exited
+#: ``NOTHING_TO_ARCHIVE_EXIT_CODE``) but this document's own reason is not in
+#: the engine's error record — it keeps only the first 1000 characters of the
+#: failed task's stderr, which lists a handful of documents (#768).
+NOTHING_TO_ARCHIVE_UNLISTED = (
+    f"{NOTHING_TO_ARCHIVE}: no document of this run was ingested; this "
+    f"document's own reason is not listed in the engine's error record"
+)
 
 
 class GoWeContractError(GoWeError):
@@ -291,6 +307,21 @@ class GoWeBackend:
             # onto the job. Whole-submission failure is right here: a cap
             # refusal is a whole-job refusal by spec.
             reason = cap_refusal_of(final) or f"gowe submission {state}"
+            # A run in which every document failed ON ITS OWN (all refused
+            # as duplicates, all scanned) reaches the archive step with no
+            # chunk to pack, and it exits NOTHING_TO_ARCHIVE_EXIT_CODE with
+            # each document's reason on stderr (#768): report those per item
+            # rather than one opaque submission failure.
+            per_doc = nothing_to_archive_of(final)
+            if per_doc is not None:
+                return GoWeRun(
+                    results=[
+                        self._failed(wi, per_doc.get(_item_key(wi.source))
+                                     or NOTHING_TO_ARCHIVE_UNLISTED)
+                        for wi in items
+                    ],
+                    submission_id=sub_id, state=state,
+                )
             return GoWeRun(
                 results=[self._failed(wi, reason) for wi in items],
                 submission_id=sub_id, state=state,
@@ -558,29 +589,103 @@ def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return {}, (str(err) if err else str(submission.get("message") or ""))
 
 
+#: GoWe's worker wraps a failed tool's stderr as ``execute: apptainer command
+#: failed (exit N): <the tool's stderr>`` (worker.go / toolexec/execute.go). The
+#: deployed engine (0.26.1) records ``context.exit_code = -1`` for EVERY failed
+#: apptainer tool, so this prefix is the only place the tool's real exit code
+#: survives. It is matched ONLY at offset 0 of ``context.stderr``
+#: (``stderr[:1000] + "...(truncated)"``), never searched for and never read
+#: from ``message``: other worker failures embed user-controlled text (a
+#: stage-in error, ``execute: stage-in: …``, names the user's file path), and
+#: a file named ``…command failed (exit 5): nothing_to_archive…pdf`` must not
+#: be able to forge a tool exit code (#771 re-review).
+#:
+#: Deliberately NOT matched: the ``local`` executor's ``command failed: exit
+#: status N`` form (no parentheses). That executor is not how the scatter
+#: workflows run, and a classifier must return ``None`` ("cannot tell")
+#: rather than guess from a form it was not verified against.
+_EXEC_PREFIX_RE = re.compile(r"execute: (?:apptainer|docker) command failed \(exit (\d+)\): ")
+
+
+def tool_exit_code(submission: dict[str, Any]) -> int | None:
+    """The failed TOOL's exit code from a FAILED submission's record, or
+    ``None`` when it cannot be told.
+
+    ``error.context.exit_code`` when it is a real code (``>= 0``: an engine
+    that reports it, or cwltool-shaped records); otherwise the code in the
+    worker's ``execute: apptainer command failed (exit N): `` prefix, and only
+    when ``context.stderr`` STARTS with it. GoWe 0.26.1 records ``-1`` for
+    every failed apptainer tool (#771 review), which is why a classifier that
+    read only ``context.exit_code`` never fired in production."""
+    ctx, _message = _failure_context(submission)
+    raw = ctx.get("exit_code")
+    try:
+        code = int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code is not None and code >= 0:
+        return code
+    m = _EXEC_PREFIX_RE.match(str(ctx.get("stderr") or ""))
+    return int(m.group(1)) if m else None
+
+
+def _tool_lines(text: str) -> list[str]:
+    """``text`` split into stripped lines, with the worker's prefix removed
+    from the FIRST line only (when the text starts with it), so the tool's own
+    first stderr line reads as the tool wrote it. Later lines — the listed
+    JSON objects included — are never rewritten, so text inside them cannot
+    pose as a prefixed tool line."""
+    m = _EXEC_PREFIX_RE.match(text)
+    if m:
+        text = text[m.end():]
+    return [line.strip() for line in text.splitlines()]
+
+
 def cap_refusal_of(submission: dict[str, Any]) -> str | None:
     """The chunk-cap refusal a FAILED submission carries, or ``None``.
 
-    DETERMINISTIC first: ``error.context.exit_code == CAP_REFUSED_EXIT_CODE``
-    (``ingest_shard`` exits 4 on a cap refusal) decides. The refusal line the
-    tool printed to stderr (``chunk_cap_exceeded: live=.. incoming=.. cap=..
-    would_fit=..``) supplies the numbers when it is inside the engine's
-    stderr window; without it the bare label is returned — the label is what
-    the job records either way. A refusal line in stderr with a DIFFERENT
-    exit code is not a cap refusal (the exit code is authoritative, as in
-    ``restore.classify_failure``)."""
-    ctx, message = _failure_context(submission)
-    try:
-        code = int(ctx["exit_code"]) if ctx.get("exit_code") is not None else None
-    except (TypeError, ValueError):
-        code = None
-    if code != CAP_REFUSED_EXIT_CODE:
+    DETERMINISTIC first: the tool's exit code (:func:`tool_exit_code`) ``==
+    CAP_REFUSED_EXIT_CODE`` (``ingest_shard`` exits 4 on a cap refusal)
+    decides. The refusal line the tool printed to stderr (``chunk_cap_exceeded:
+    live=.. incoming=.. cap=.. would_fit=..``) supplies the numbers when it is
+    inside the engine's stderr window; without it the bare label is returned —
+    the label is what the job records either way. A refusal line in stderr
+    with a DIFFERENT exit code is not a cap refusal (the exit code is
+    authoritative, as in ``restore.classify_failure``)."""
+    if tool_exit_code(submission) != CAP_REFUSED_EXIT_CODE:
         return None
+    ctx, message = _failure_context(submission)
     for text in (str(ctx.get("stderr") or ""), message):
-        for line in text.splitlines():
-            if is_cap_refusal(line.strip()):
-                return line.strip()
+        for line in _tool_lines(text):
+            if is_cap_refusal(line):
+                return line
     return CHUNK_CAP_EXCEEDED
+
+
+def nothing_to_archive_of(submission: dict[str, Any]) -> dict[str, str] | None:
+    """``{source basename: error}`` when a FAILED submission failed because it
+    had nothing to archive, else ``None`` (#768).
+
+    DETERMINISTIC, like :func:`cap_refusal_of`: the tool's exit code
+    (:func:`tool_exit_code`) ``== NOTHING_TO_ARCHIVE_EXIT_CODE`` decides, and
+    the ``nothing_to_archive:`` label line the archive step prints first must
+    be there too as confirmation — exit 5 is not reserved by the engine, so a
+    bare 5 from some other failure is not read as this. The mapping comes from
+    the JSON lines after the label (``receipts.format_nothing_to_archive``); it
+    may be shorter than the item list (the engine keeps 1000 characters), even
+    empty."""
+    if tool_exit_code(submission) != NOTHING_TO_ARCHIVE_EXIT_CODE:
+        return None
+    ctx, message = _failure_context(submission)
+    texts = (str(ctx.get("stderr") or ""), message)
+    if not any(line.startswith(f"{NOTHING_TO_ARCHIVE}:")
+               for text in texts for line in _tool_lines(text)):
+        return None
+    out: dict[str, str] = {}
+    for text in texts:
+        for name, error in parse_nothing_to_archive(text).items():
+            out.setdefault(name, error)
+    return out
 
 
 def _staging_failed(submission: dict[str, Any]) -> bool:

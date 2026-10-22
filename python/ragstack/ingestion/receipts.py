@@ -158,6 +158,79 @@ class ShardReceipt:
             raise ValueError(f"{path}: invalid receipt: {e}") from e
 
 
+# --------------------------------------------------------------------------- #
+# Nothing to archive (#768): a run in which NO document was ingested.
+# --------------------------------------------------------------------------- #
+
+#: Exit code of the archive step (``scripts/archive_version.py``) when every
+#: document of the run failed on its own — all refused as duplicates, all
+#: scanned PDFs — so there is no chunk to pack and ``ragstack-archive/1``
+#: refuses a zero-row version (the #357 residual). Distinct from the generic
+#: exit 1 so the API can classify the engine's failure record DETERMINISTICALLY
+#: (``gowe_backend.nothing_to_archive_of``) and lift each document's own reason
+#: onto its job item instead of ``gowe submission FAILED``. Mirrors the chunk
+#: cap's ``CAP_REFUSED_EXIT_CODE = 4``.
+NOTHING_TO_ARCHIVE_EXIT_CODE = 5
+#: The label line the archive step prints first on stderr in that case.
+NOTHING_TO_ARCHIVE = "nothing_to_archive"
+#: GoWe copies the failed task's stderr into the submission's error record
+#: truncated to its first 1000 characters, and the worker PREPENDS its own
+#: ``execute: apptainer command failed (exit 5): `` (~44 characters) inside
+#: that window. Stay under what is left so no listed line is cut, and stop
+#: listing documents (whole lines only) when the budget is spent.
+NOTHING_TO_ARCHIVE_STDERR_BUDGET = 880
+_MAX_LISTED_ERROR = 400
+
+
+def format_nothing_to_archive(receipts: list[ShardReceipt]) -> str:
+    """The archive step's stderr for a run with nothing to archive: a label
+    line ``nothing_to_archive: docs=N failed=F listed=L``, then one compact
+    JSON object per failed document, ``{"doc": <source basename>, "error":
+    <its row error>}``, in receipt order, within
+    :data:`NOTHING_TO_ARCHIVE_STDERR_BUDGET`. The basename is what the API
+    matches a work item on (the engine pre-stages each input under it)."""
+    rows = [row for r in receipts for row in r.docs]
+    failed = [row for row in rows if row.error]
+    lines: list[str] = []
+    used = 0
+    for row in failed:
+        name = row.source.rstrip("/").rsplit("/", 1)[-1] if row.source else ""
+        if not name:
+            continue
+        error = " ".join(row.error.split())[:_MAX_LISTED_ERROR]
+        line = json.dumps({"doc": name, "error": error}, ensure_ascii=False,
+                          separators=(",", ":"))
+        # +1 newline; the label line (< 80 chars) is reserved below.
+        if used + len(line) + 1 > NOTHING_TO_ARCHIVE_STDERR_BUDGET - 80:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    label = (f"{NOTHING_TO_ARCHIVE}: docs={len(rows)} failed={len(failed)} "
+             f"listed={len(lines)}")
+    return "\n".join([label, *lines])
+
+
+def parse_nothing_to_archive(text: str) -> dict[str, str]:
+    """``{source basename: error}`` from :func:`format_nothing_to_archive`'s
+    output (or a truncated copy of it): every line that parses as such an
+    object; anything else — the label, a cut-off last line — is ignored."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        doc, error = obj.get("doc"), obj.get("error")
+        if isinstance(doc, str) and doc and isinstance(error, str) and error:
+            out.setdefault(doc, error)
+    return out
+
+
 def merge_summary(receipts: list[ShardReceipt]) -> dict:
     """Fold shard receipts into a run summary (the gather step's core).
 

@@ -12,6 +12,11 @@ Two modes, mutually exclusive:
 * **chunk version** — ``--chunks <emb.jsonl...> --receipt <receipt.json...>``
   writes ``chunks.jsonl.gz`` + ``vectors.f32`` + ``receipt.json`` +
   ``manifest.json``;
+  When the embedding files hold NO chunk at all (every document of the run
+  failed on its own — all duplicates, all scanned) there is nothing to
+  archive: the tool exits ``NOTHING_TO_ARCHIVE_EXIT_CODE`` (5) and prints
+  each document's receipt error to stderr first (#768), so the API can
+  report it per document;
 * **tombstone version** — ``--tombstone doc_ids.json`` (a JSON list of doc ids,
   or an object with a ``doc_ids`` list) writes ``tombstone.json`` +
   ``manifest.json`` only.
@@ -39,7 +44,17 @@ import json
 import sys
 from pathlib import Path
 
-from ragstack.ingestion.archive import ArchiveError, write_tombstone, write_version
+from ragstack.ingestion.archive import (
+    ArchiveError,
+    EmptyVersionError,
+    write_tombstone,
+    write_version,
+)
+from ragstack.ingestion.receipts import (
+    NOTHING_TO_ARCHIVE_EXIT_CODE,
+    ShardReceipt,
+    format_nothing_to_archive,
+)
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
@@ -59,6 +74,23 @@ def _load_doc_ids(path: str) -> list[str]:
         raise SystemExit(f"{path}: expected a JSON list of doc-id strings "
                          "(or an object with a 'doc_ids' list)")
     return ids
+
+
+def _readable_receipts(paths: list[str]) -> list[ShardReceipt]:
+    """The receipts that parse (one object or a JSON array of them per file);
+    an unreadable one only shortens the per-document listing."""
+    out: list[ShardReceipt] = []
+    for path in paths:
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for entry in data if isinstance(data, list) else [data]:
+            try:
+                out.append(ShardReceipt.from_dict(entry))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+    return out
 
 
 def parse_args(argv=None):
@@ -107,6 +139,17 @@ def main(argv=None) -> int:
                 spec_hash=args.spec_hash, job_id=args.job_id, workers=args.workers,
                 provenance=provenance,
             )
+    except EmptyVersionError as e:
+        # Every document of the run failed on its own (#768): all refused as
+        # duplicates, all scanned PDFs. There is no zero-row version in
+        # ragstack-archive/1 (#357 residual), so this task still fails — but
+        # with its own exit code and each document's reason FIRST on stderr,
+        # the part of it the engine keeps on the submission's error record, so
+        # the API can report per document instead of `gowe submission FAILED`.
+        print(format_nothing_to_archive(_readable_receipts(args.receipt)),
+              file=sys.stderr, flush=True)
+        print(f"archive: {e}", file=sys.stderr)
+        return NOTHING_TO_ARCHIVE_EXIT_CODE
     except ArchiveError as e:
         print(f"archive: {e}", file=sys.stderr)
         return 1
