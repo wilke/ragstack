@@ -280,64 +280,96 @@ Before step 3, a boost on an index without the field is a measured no-op.
 
 These are live measurements on dev, unlike the scratch-copy experiments above.
 
+> **Correction (2026-10-22, re-scored).** The first version of this section scored
+> against gold that was too wide. When the first dedup remapped the eval set, each
+> removed gold chunk was mapped to every kept chunk that overlapped it, not just the
+> chunks containing the answer. As a result, 131 of 155 records counted non-answer
+> chunks as hits (629 of 997 gold ids). OpenChia found it, and this session verified
+> it. The gold is now rebuilt by quote text (NFKC, case and whitespace folded, first or
+> last 60% for a quote cut by a chunk boundary): 544 ids, all containing the answer.
+> Two records (r131, r132) have no gold chunk in openchia, so 153 is the maximum.
+>
+> - **Test 1:** re-scored by OpenChia from its cached API responses.
+> - **Tests 2 and 3:** the original ranked lists weren't kept, so they were re-run
+>   read-only on 2026-10-22 against the corrected gold. By then a second dedup had
+>   removed 9 more documents (276 documents, 15,648 chunks, 481 with a glossary), so
+>   their pool differs from Test 1's.
+> - **What held:** every direction. The glossary lifts BM25, the reranker that reads
+>   the glossary gains with almost nothing lost, and a shuffled glossary doesn't
+>   explain it.
+> - **What shrank:** the magnitudes.
+> - **Superseded figures:** BM25 32 → 96, reranker 62 → 81 (shuffled 63), pool
+>   ceiling 119. Don't quote them.
+
 **State:**
-- Dev ran v1.6.11 (#763) for all four tests. It moved to v1.6.12 after them.
+- Dev ran v1.6.11 (#763) for the first run of all four tests and moved to v1.6.12 after them. The v1.6.14 column of Test 1 and the re-runs of Tests 2 and 3 are on v1.6.14 (#796).
 - openchia was deduplicated first: 293 → 285 documents, 16,629 → 16,084 chunks.
 - It was then backfilled with rules plus the cached LLM glossary (`--llm-cache`). 543
-  chunks carry a glossary. Most documents are stamped `llm/1:…`; 72 chunks are stamped
+  chunks carried a glossary (481 after the second dedup removed 62 of them). Most documents are stamped `llm/1:…`; 72 chunks are stamped
   `rules/2`.
 - `TEXT_SYMBOL_GLOSSARY_BOOST=1`, set at 00:21Z and live from the 00:37Z API restart, with the reranker on (`bge-reranker-v2-m3`)
   and the default `RERANK_CANDIDATES` of 50.
 - Eval set: the private `openchia-261021` set, 155 records (73 distinct queries,
-  51 kind B), remapped to the deduplicated chunk ids. Found means any gold chunk_id is in
-  the top 10.
+  51 kind B). Gold is the chunks that contain the record's quote
+  (`requote/glossary_split_records.quote-261022.jsonl`). Found means any gold chunk_id
+  is in the top 10.
 
-**Test 1: the API arms** (OpenChia, 02:52–02:59Z). Duplicate removal and glossary
-changed together:
+**Test 1: the API arms** (OpenChia; v1.6.11 at 02:52–02:59Z, v1.6.14 at 15:49–15:56Z, both before the second dedup; re-scored by quote gold). Duplicate
+removal and glossary changed together. Found / 155 and recall@10:
 
-| arm | 2026-10-21 | 2026-10-22 |
+| arm | v1.6.11 | v1.6.14 (reranker reads the glossary) |
 |---|---|---|
-| hybrid + reranker (default) | 0.226 | 0.400 |
-| HyDE | – | 0.419 |
-| exclude_boilerplate | – | 0.400 |
-| hybrid, no reranker | – | 0.548 |
-| BM25 only, no reranker | – | 0.619 |
+| hybrid + reranker (default) | 44 (0.284; kind B 7) | 62 (0.400; kind B 18) |
+| hybrid, no reranker | 64 (0.413) | 64 |
+| BM25 only, no reranker | 72 (0.465; kind B 20) | 72 |
+| HyDE | 46 | 62 |
+| exclude_boilerplate | 44 | 62 |
 
-**Test 2: the glossary alone, BM25 leg** (read-only on the live index):
+The 2026-10-21 column of the first
+version isn't comparable, because it predates the dedup remap.
+
+**Test 2: the glossary alone, BM25 leg** (read-only on the live index, re-run after
+the second dedup):
 - Setup: the API's own `_build_query` at boost 0 and at boost 1, on the same index, the
   same queries and the same tenant filter.
-- Boost 1 reproduces the API's BM25 arm exactly: 96 found, 69 in the top 3.
+- Boost 1 reproduces the API's BM25 arm (`/v1/retrieve`, BM25 mode) exactly on all 73
+  queries, list and order.
 
 | boost | found / 155 | top 3 | recall@10 | kind B recall@10 |
 |---|---|---|---|---|
-| 0 | 32 | 20 | 0.206 | 0.078 |
-| 1 | 96 | 69 | 0.619 | 0.431 |
+| 0 | 28 | 18 | 0.181 | 0.059 |
+| 1 | 85 | 61 | 0.548 | 0.412 |
 
-67 records were gained and 3 lost. The duplicate removal's share stays unmeasured, because
-no BM25 number from before the dedup exists on this query set.
+58 records were gained and 1 lost. BM25 finds 85 here and 72 in Test 1. The difference is
+the second dedup: 9 fewer duplicate documents compete for the top 10. The first dedup's
+share stays unmeasured, because no BM25 number from before it exists on this query set.
 
 **Test 3: reranker input** (offline, read-only):
 - Each query's pool is the API's own rerank input: `/v1/retrieve` with top_k=50 and the
-  reranker off.
+  reranker off. Re-run after the second dedup, on v1.6.14.
 - The pool was reranked through the same sidecar with the same payload shape.
-- The control (content only) reproduces the live reranked top 10 on all 73 queries, list
-  and order.
+- The live reranked top 10 equals the `content` + glossary arm on all 73 queries, list
+  and order, as v1.6.14's default should. (In the first run, on v1.6.11, the content-only
+  arm reproduced live.)
 
 | reranker reads | found / 155 | top 3 | recall@10 | kind B recall@10 |
 |---|---|---|---|---|
-| `content` (what the API does) | 62 | 30 | 0.400 | 0.275 |
-| **`content` + `\n` + `symbol_glossary`** | **81** | **44** | **0.523** | **0.412** |
-| `symbol_glossary` + `\n` + `content` | 77 | 48 | 0.497 | 0.373 |
-| `content` + a shuffled glossary (control) | 63 | 38 | 0.406 | – |
+| `content` (v1.6.13 and earlier) | 53 | 21 | 0.342 | 0.255 |
+| **`content` + `\n` + `symbol_glossary`** (v1.6.14 default) | **65** | **31** | **0.419** | **0.392** |
+| `symbol_glossary` + `\n` + `content` | 68 | 36 | 0.439 | 0.373 |
+| `content` + a shuffled glossary (control) | 57 | 25 | 0.368 | 0.255 |
 
-- Appending the chunk's own glossary gains 19 records and loses none. A shuffled glossary
-  does nothing, so the gain comes from what the definitions say.
-- 119 of 155 records have a gold chunk in the 50-chunk pool. The other 36 are out of reach
-  for any reranker at that depth.
-- "Hybrid, no reranker" (85 found) is a shallow fusion: 20 per leg (`top_k` × the candidate multiplier), cut to 10. The
-  50-pool's own fused
-  top 10 finds 56, and the two agree on 3 of 73 queries.
-- Not deployed: the reranker still scores `content` only (`scoring/scorers.py`).
+- Appending the chunk's own glossary gains 13 records and loses 1. A shuffled glossary
+  gains 5 and loses 1, so most of the gain comes from what the definitions say.
+- Glossary first finds 3 more than glossary last (8 gained, 5 lost against it), but with
+  more churn and a lower kind-B recall. The shipped order isn't changed on this evidence.
+- 105 of 155 records have a gold chunk in the 50-chunk pool. The other 50 are out of
+  reach for any reranker at that depth.
+- "Hybrid, no reranker" (64 found in Test 1) is a shallow fusion: 20 per leg (`top_k` ×
+  the candidate multiplier), cut to 10. The 50-pool's own fused top 10, unreranked,
+  finds 33.
+- Deployed: v1.6.14 (#792) makes `content` + glossary the default
+  (`RERANK_INCLUDE_SYMBOL_GLOSSARY`).
 
 **Test 4: end-to-end Runs** (OpenChia T4, 03:20–03:33Z, dev and asm-next on v1.6.11):
 - Setup: RAGStack-only Runs on one case (nursing-home, natural), 3 with the reranker on
