@@ -29,16 +29,52 @@ type Source struct {
 	Context []ContextChunk `json:"context,omitempty"`
 }
 
-// QueryResponse is the response for POST /v1/query.
-type QueryResponse struct {
-	Answer           string   `json:"answer"`
-	Sources          []Source `json:"sources"`
-	RewrittenQueries []string `json:"rewritten_queries"`
+// DegradedEntry is one stage of a query/retrieve request that fell back to a
+// lower-quality path instead of failing the request
+// (contracts/schemas/degraded_entry.json, #748, #751). Component is one of
+// rerank, generation, rewrite, graph, context; Reason is bounded to 200
+// characters by the contract.
+type DegradedEntry struct {
+	Component string `json:"component"`
+	Reason    string `json:"reason"`
 }
 
-// RetrieveResponse is the response for POST /v1/retrieve.
+// QueryResponse is the response for POST /v1/query.
+//
+// Degraded is omitted when empty: the contract gives it minItems 1, so an
+// undegraded response carries no `degraded` key at all. The Go stub handlers
+// never degrade and never set it.
+type QueryResponse struct {
+	Answer           string          `json:"answer"`
+	Sources          []Source        `json:"sources"`
+	RewrittenQueries []string        `json:"rewritten_queries"`
+	Degraded         []DegradedEntry `json:"degraded,omitempty"`
+}
+
+// RetrieveResponse is the response for POST /v1/retrieve. Degraded follows
+// the same rule as on QueryResponse.
 type RetrieveResponse struct {
-	Sources []Source `json:"sources"`
+	Sources  []Source        `json:"sources"`
+	Degraded []DegradedEntry `json:"degraded,omitempty"`
+}
+
+// DeepHealthCheck is one dependency verdict in a DeepHealthResponse
+// (contracts/schemas/deep_health_response.json). OK stays for compatibility
+// and is true for state ok and disabled; State is the finer verdict
+// (ok, degraded, down, disabled).
+type DeepHealthCheck struct {
+	Name      string   `json:"name"`
+	OK        bool     `json:"ok"`
+	State     string   `json:"state,omitempty"`
+	Detail    *string  `json:"detail,omitempty"`
+	LatencyMS *float64 `json:"latency_ms,omitempty"`
+}
+
+// DeepHealthResponse is the body for GET /v1/health/deep (admin only). Checks
+// must encode as [] and never null: build it with a non-nil slice.
+type DeepHealthResponse struct {
+	Status string            `json:"status"`
+	Checks []DeepHealthCheck `json:"checks"`
 }
 
 // IngestResponse is the response for POST /v1/ingest and GET /v1/ingest/{job_id}
