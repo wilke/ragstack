@@ -4,26 +4,27 @@ Persistent status across sessions and machines. Read this first to pick up where
 
 **Last updated:** 2026-10-22
 **Deployed:** seven tenants, all on server tag
-[`v1.6.11`](https://github.com/wilke/ragstack/releases/tag/v1.6.11) (**`010b699`**) in
-**image mode** since 2026-10-22T02:44Z: the API runs from
-`ragstack-server-v1.6.11-b1.sif`, the UI from artifact `v1.6.11-010b699d734a`, and the
-GoWe workflows name tools image `ragstack-tools-v1.6.10-b1.sif`. They sit behind the nginx
+[`v1.6.11`](https://github.com/wilke/ragstack/releases/tag/v1.6.11) (**`010b699`**),
+image mode, since 2026-10-22T02:43Z (`dev` since 00:37Z). The API runs from
+`ragstack-server-v1.6.11-b1.sif`, and the GoWe workflows name tools image
+`ragstack-tools-v1.6.10-b1.sif`. They sit behind the nginx
 gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
 `https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
 view; trust it over this table.
 
-| Tenant | API port | Stores |
-|---|---|---|
-| `lucid-next` | 24000 | mixed |
-| `asm-next` | 24020 | shared |
-| `dev` | 24040 | dedicated |
-| `demo` | 24060 | shared |
-| `hackathon` | 24080 | dedicated |
-| `clark` | 24100 | dedicated |
-| `elrond` | 24120 | dedicated |
+| Tenant | API port | Stores | UI |
+|---|---|---|---|
+| `lucid-next` | 24000 | mixed | static, artifact `v1.6.11-010b699d734a` |
+| `asm-next` | 24020 | shared | static, artifact `v1.6.11-010b699d734a` |
+| `dev` | 24040 | dedicated | Vite dev server on `:8090`, from the checkout |
+| `demo` | 24060 | shared | static, artifact `v1.6.11-010b699d734a` |
+| `hackathon` | 24080 | dedicated | static, artifact `v1.6.11-010b699d734a` |
+| `clark` | 24100 | dedicated | static, artifact `v1.6.11-010b699d734a` |
+| `elrond` | 24120 | dedicated | static, artifact `v1.6.11-010b699d734a` |
 
 In image mode the API runs from the server image, not from the tenant's checkout at
-`/rag/repos/tenants/<name>`. Their data is in
+`/rag/repos/tenants/<name>`. The checkout is still needed: `update-code` keeps it at the
+image's commit, and `gowe render`, drift checks and dev's UI read it. Tenant data is in
 `/rag/data/tenants/<name>` — **note the data dirs drop the `-next` suffix**
 (`asm-next` → `/rag/data/tenants/asm`, `lucid-next` → `/rag/data/tenants/lucid`).
 `/rag/repos/ragstack` is a **frozen** pre-security checkout (`6d6fcf6`) that serves
@@ -318,7 +319,7 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 ```
 /rag/
 ├── repos/ragstack/      # FROZEN pre-security checkout (6d6fcf6) — serves no API
-├── repos/tenants/<t>/   # the four SERVING checkouts, all at v1.5.3
+├── repos/tenants/<t>/   # per-tenant checkouts, kept at the image's commit (the API runs from the server image)
 ├── apptainer/images/    # SIFs (qdrant.sif, elasticsearch.sif, neo4j.sif, postgres.sif, redis.sif, python.sif)
 ├── data/                # all service persistence (qdrant/, elasticsearch/, neo4j/, postgres/, redis/, embedding/)
 │   └── tenants/         # per-tenant dedicated stores + manifest.tsv (ADR-0005; provisioned by apptainer/new-tenant.sh)
