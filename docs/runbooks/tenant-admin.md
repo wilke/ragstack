@@ -1062,19 +1062,22 @@ A paper defines `Qb` once ("where Qb is the breathing flow rate") and a table
 caption pages later says only `Qb = 0.5 m3/h`. The glossary copies the
 definition from the chunk's own document into a separate Elasticsearch field,
 `symbol_glossary`, so a keyword search can reach the caption. It is not
-embedded, never added to `content`, and Qdrant is untouched. Design, the
+embedded, never added to `content`, and no vector changes (Qdrant only gains the
+`symbol_glossary_version` metadata key in the payload). Design, the
 extraction rules and every measurement are in
 [`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md); this section is
-the operator's side. Everything ships off.
+the operator's side. Since #783, extraction is **on by default** (`rules`) on
+both ingest paths, and the query side still ships off (boost `0`), so search
+results do not change until a tenant raises the boost.
 
 ### The settings
 
 | Key | Default | Effect |
 |---|---|---|
 | `TEXT_SYMBOL_GLOSSARY_BOOST` | `0` | Query side. `0` sends the exact pre-#754 BM25 `match` on `content`, byte-identical. A value above 0 sends a `multi_match` of type `most_fields` over `content` and `symbol_glossary^<boost>`. |
-| `SYMBOL_GLOSSARY_EXTRACTION` | `off` | Ingest side. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. |
-| `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. |
-| `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. |
+| `SYMBOL_GLOSSARY_EXTRACTION` | `rules` (since #783; was `off`) | Ingest side, both paths. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. On a gowe tenant the API sends it as the `symbol_glossary` workflow input. |
+| `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. In-process ingests only: a gowe worker runs the default config. |
+| `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. In-process ingests only: a gowe worker uses no LLM cache. |
 
 The boost only has an effect on an index whose chunks carry a `symbol_glossary`
 field (ingested with extraction on, or backfilled). On an index without the
@@ -1131,11 +1134,18 @@ hours, at least twice its size in transient disk, and segment churn like a
 rewrite. Do not run it on `open-access` (47.6M chunks): that corpus will be
 re-ingested instead.
 
-### Setting the boost on a ctl-managed tenant (today)
+### Setting the boost on a ctl-managed tenant
 
-`ragstack-ctl env set <tenant> TEXT_SYMBOL_GLOSSARY_BOOST 1` is currently
-refused ("not a known ragstack setting", issue #775). Until that lands, append
-the line to the tenant's env file, keeping a backup, and restart the API only:
+From the first server tag after v1.6.11 (it carries #781, the fix for #775), use ctl:
+
+```bash
+ragstack-ctl env set <t> TEXT_SYMBOL_GLOSSARY_BOOST 1
+ragstack-ctl tenant restart <t> --only api
+```
+
+On v1.6.11 itself, `env set` refuses the key ("not a known ragstack setting").
+There, append the line to the tenant's env file, keeping a backup, and restart
+the API only:
 
 ```bash
 cp <data>/tenants/<t>/config/tenant.env <data>/tenants/<t>/config/tenant.env.bak-$(date +%Y%m%d%H%M)
@@ -1156,9 +1166,39 @@ should now return the caption chunk.
 5. Set the boost to 1 (above) and restart the API.
 6. Tell evaluation users.
 
-Papers ingested through GoWe get no glossary yet: the bulk tools accept
-`--symbol-glossary {off,rules}` but no CWL passes it, so enabling it there needs
-a tools tag plus CWL stamping. Until then, backfill those collections.
+### Extraction on by default (#783)
+
+A newly ingested paper gets the `rules` glossary on both paths:
+
+- **In-process** (`INGEST_BACKEND=local`): `SYMBOL_GLOSSARY_EXTRACTION`, now
+  `rules` by default.
+- **GoWe**: `ingest_shard.py` and `embed_shard.py` default `--symbol-glossary`
+  to `rules`. Every ingest workflow that runs them (`pdf-ingest-scatter`,
+  `pdf-ingest`, `ingest-bulk`, `jats-ingest`, `embed-bulk`) declares an
+  optional `symbol_glossary` input (`off|rules`, default `rules`). The API
+  sends the tenant's `SYMBOL_GLOSSARY_EXTRACTION` as that input on every
+  upload, `off` included, when its registered `pdf-ingest-scatter` declares
+  it. An older registered workflow is submitted as before. This reaches a
+  tenant with the next server tag and a roll. No tools tag or restamp is
+  needed: the pinned tools image (`ragstack-tools-v1.6.10-b1`) already takes
+  `--symbol-glossary` (its built-in default stays `off`, which is why the
+  workflow passes the value explicitly).
+
+To opt a tenant out, set `SYMBOL_GLOSSARY_EXTRACTION=off` and restart the API.
+That covers both paths. A hand-run workflow takes `symbol_glossary: off` in its
+job file.
+
+What does not change: chunk ids, `content`, the embedded text, the vectors and
+the collection identity (`spec_hash`). The glossary is never embedded, and it is
+attached after chunking. Receipts and manifests record the step under
+`enrichment.symbol_glossary` (ADR-0011). On the GoWe path that record is on each
+batch receipt in the version's `receipt.json`.
+
+**Old collections are not touched.** Anything ingested before the change has no
+`symbol_glossary` field until it is re-ingested or backfilled (above).
+**Backfill a collection before raising `TEXT_SYMBOL_GLOSSARY_BOOST` above 0**
+for it. Otherwise only its newest papers can gain from the boost, and the
+search compares glossary and non-glossary documents unevenly.
 
 ## 7. Diagnosing a user report
 

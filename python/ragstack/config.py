@@ -558,11 +558,17 @@ class Settings(BaseSettings):
     # ingest, each chunk that uses a symbol gets the symbol's definition — copied
     # from its OWN document, never a lexicon — in a separate BM25 field
     # (``symbol_glossary``); ``content`` and the embedded text are unchanged.
-    #   off   — no glossary (default; the ingest path is byte-for-byte unchanged)
+    #   off   — no glossary (the ingest path is byte-for-byte the pre-#754 one)
     #   rules — deterministic rules, preferring a cached offline LLM glossary
     #           (scripts/symbol_glossary_llm.py) when SYMBOL_GLOSSARY_CACHE_PATH
-    #           holds one for the document's exact text.
-    symbol_glossary_extraction: str = "off"
+    #           holds one for the document's exact text. The default since #783:
+    #           the query side is unchanged while TEXT_SYMBOL_GLOSSARY_BOOST=0.
+    # Both ingest paths follow it: in-process (deps._build_glossary_attacher) and
+    # gowe, where the API sends it as the `symbol_glossary` workflow input
+    # (documents.py::_gowe_inputs) when the registered workflow declares it.
+    # SYMBOL_GLOSSARY_CONFIG_JSON and SYMBOL_GLOSSARY_CACHE_PATH are in-process
+    # only; a gowe worker runs the tool's default config and no LLM cache.
+    symbol_glossary_extraction: str = "rules"
     # GlossaryConfig overrides as a JSON object; malformed JSON → defaults.
     symbol_glossary_config_json: str = ""
     # The offline LLM glossary cache (JSONL), read-only at ingest. Empty = none.

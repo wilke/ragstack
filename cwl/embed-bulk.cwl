@@ -50,6 +50,12 @@ inputs:
   embedding_api_key:
     type: ["null", string]
     doc: "Bearer token for keyed endpoints."
+  symbol_glossary:
+    type: string
+    default: "rules"
+    doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
+      (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
+      the chunk ids and the collection identity are unchanged either way."
 
 steps:
   embed_shard:
@@ -64,6 +70,7 @@ steps:
       embedding_url: embedding_url
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
+      symbol_glossary: symbol_glossary
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -116,6 +123,12 @@ steps:
           inputBinding:
             prefix: --embedding-url
             position: 9
+        symbol_glossary:
+          type: string
+          default: "rules"
+          inputBinding:
+            prefix: --symbol-glossary
+            position: 12
       arguments:
         - position: 10
           prefix: --out

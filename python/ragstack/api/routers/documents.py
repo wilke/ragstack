@@ -764,6 +764,14 @@ async def _reserve_version(entry: CollectionEntry, collection_store: CollectionS
         raise HTTPException(status_code=503, detail=str(e)) from None
 
 
+def gowe_symbol_glossary(mode: str) -> str:
+    """The ``symbol_glossary`` workflow input for ``SYMBOL_GLOSSARY_EXTRACTION``
+    (#783): ``rules`` only for exactly ``rules``, else ``off`` — the in-process
+    reading (``attacher_from_mode`` accepts exactly ``off``/``rules`` and
+    ``deps`` degrades anything else to off)."""
+    return "rules" if mode == "rules" else "off"
+
+
 def _gowe_inputs(
     entry: CollectionEntry,
     record: CollectionRecord,
@@ -835,7 +843,19 @@ def _gowe_inputs(
     ``provenance_inputs`` precedent). ADR-0010: the CWL names the image, so a
     CWL that declares the input is the declaration that its image's
     ``ingest_shard`` takes the flag; the pinned image does not, and its CWL
-    does not declare it. The input arrives with the tools-image repin."""
+    does not declare it. The input arrives with the tools-image repin.
+
+    ``symbol_glossary`` (#783): ``SYMBOL_GLOSSARY_EXTRACTION``, threaded to the
+    worker's ``--symbol-glossary`` so a gowe ingest makes the same glossary
+    choice as an in-process one (an ingest-time behaviour must travel on the
+    submission, the #596 lesson). Sent for BOTH values — the workflow input
+    defaults to ``rules``, so an omitted ``off`` would be ignored — but only
+    when the registered workflow DECLARES the input, the ``duplicate_policy``
+    precedent: an older registered text, whose image may predate the flag,
+    is submitted exactly as before. (The image pinned when this landed,
+    ragstack-tools-v1.6.10-b1, already takes ``--symbol-glossary``.) An unknown mode is sent as ``off``, which
+    is what ``deps._build_glossary_attacher`` turns it into in-process, and
+    never verbatim: the tool's argparse would exit 2 and fail every task."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -863,6 +883,8 @@ def _gowe_inputs(
         inputs["registry"] = settings.collection_registry_name
     if duplicate_policy != POLICY_OFF and "duplicate_policy" in (declared_inputs or set()):
         inputs["duplicate_policy"] = duplicate_policy
+    if "symbol_glossary" in (declared_inputs or set()):
+        inputs["symbol_glossary"] = gowe_symbol_glossary(settings.symbol_glossary_extraction)
     if settings.doi_enrichment_enabled:
         inputs["doi_enrichment"] = True
         if settings.doi_enrichment_mailto:

@@ -193,6 +193,10 @@ def test_five_pdfs_in_batches_of_two_yield_three_tasks_and_five_rows(
     scan_batch = next(r for r in receipts if any(Path(d["source"]).name == "scan.pdf" for d in r["docs"]))
     assert scan_batch["status"] == "completed" and scan_batch["n_docs_failed"] == 1
     assert all(r["status"] == "completed" and r["error"] == "" for r in receipts)
+    # #783: the job names no symbol_glossary, so the workflow default (rules)
+    # reaches ingest_shard --symbol-glossary and every batch records the step.
+    assert all(r["enrichment"]["symbol_glossary"]["extractor"].startswith("rules/")
+               for r in receipts), [r.get("enrichment") for r in receipts]
     for name in ("a.pdf", "b.pdf", "d.pdf", "e.pdf"):
         assert by_name[name]["error"] == "" and by_name[name]["chunk_ids"]
     # Per-document ids partition the shard ids.

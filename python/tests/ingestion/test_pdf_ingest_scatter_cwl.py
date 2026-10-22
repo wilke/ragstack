@@ -847,3 +847,74 @@ def test_every_registry_workflow_says_which_registry(cwl: Path) -> None:
             f"to --registry — the value reaches the tool and never reaches the "
             f"command, so the worker silently uses its group's registry."
         )
+
+
+# --- #783: the symbol glossary on every workflow that runs a shard tool ------ #
+#
+# ``ingest_shard`` and ``embed_shard`` default ``--symbol-glossary`` to
+# ``rules``; every workflow that runs one declares a ``symbol_glossary`` input
+# (string, default "rules") threaded to that flag, so the API can send ``off``
+# (documents.py::_gowe_inputs) and a hand run can opt out. Same pattern as
+# ``duplicate_policy`` (#765), but with a default, because the input is sent for
+# both values. The config/cache flags are deliberately NOT exposed.
+
+_GLOSSARY_CLIS = ("ingest_shard", "embed_shard")
+
+
+def _glossary_steps(doc: dict) -> list[tuple[str, dict]]:
+    """``(step name, step)`` for every inlined step whose tool runs a shard CLI."""
+    out = []
+    for name, step in (doc.get("steps") or {}).items():
+        run = step.get("run")
+        if isinstance(run, dict) and any(
+            _script_key(token) in _GLOSSARY_CLIS
+            for command in _invoked_scripts({"baseCommand": run.get("baseCommand", [])})
+            for token in command.split()
+        ):
+            out.append((name, step))
+    return out
+
+
+def test_the_glossary_sweep_sees_every_shard_tool_workflow() -> None:
+    """Anti-vacuity: pinned by name, so a workflow that stops matching cannot
+    silently drop out of the test below."""
+    found = {
+        p.name for p in _cwl_files()
+        if _glossary_steps(yaml.safe_load(p.read_text(encoding="utf-8")))
+    }
+    assert found == {
+        "embed-bulk.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
+        "pdf-ingest.cwl", "pdf-ingest-scatter.cwl",
+    }, sorted(found)
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_symbol_glossary_input_is_threaded_to_every_shard_tool(cwl: Path) -> None:
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    steps = _glossary_steps(doc)
+    if not steps:
+        pytest.skip("runs no shard tool")
+    inp = doc["inputs"]["symbol_glossary"]
+    # A quoted "rules": an unquoted `off` would be a YAML 1.1 boolean.
+    assert inp["type"] == "string" and inp["default"] == "rules"
+    assert "off" in inp["doc"] and "rules" in inp["doc"]
+    for name, step in steps:
+        assert step["in"]["symbol_glossary"] == "symbol_glossary", name
+        tool_inputs = step["run"]["inputs"]
+        tool_in = tool_inputs["symbol_glossary"]
+        assert tool_in["type"] == "string" and tool_in["default"] == "rules", name
+        assert tool_in["inputBinding"]["prefix"] == "--symbol-glossary", name
+        positions = [i["inputBinding"]["position"] for i in tool_inputs.values()
+                     if isinstance(i, dict) and "inputBinding" in i]
+        positions += [a["position"] for a in step["run"].get("arguments", [])
+                      if isinstance(a, dict) and "position" in a]
+        assert positions.count(tool_in["inputBinding"]["position"]) == 1, name
+        # Out of scope (#783): the config JSON and the LLM cache stay in-process.
+        assert "symbol_glossary_config" not in tool_inputs
+        assert "symbol_glossary_cache" not in tool_inputs
+
+
+def test_the_api_reads_the_glossary_input_off_the_scatter_text() -> None:
+    from ragstack.tool_image import declared_workflow_inputs
+
+    assert "symbol_glossary" in declared_workflow_inputs(CWL_PATH.read_text())
