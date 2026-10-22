@@ -628,6 +628,67 @@ func TestPlanEnvSetEditsPublicKeysOnly(t *testing.T) {
 	}
 }
 
+// #775: the symbol-glossary keys #763 added to config.py were refused as "not
+// a known ragstack setting", so the only way to set the boost was a hand edit
+// of tenant.env. Both are public now, with a value rule each: a typo must be a
+// refusal, because the API turns an unknown mode into "off" with only a log
+// warning and the edit would look applied.
+func TestPlanEnvSetSymbolGlossaryKeys(t *testing.T) {
+	oc, _ := fixture(t, "dev", managed)
+	for _, c := range []struct{ key, value, scope string }{
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "1", "api-restart"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "0", "api-restart"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "2.5", "api-restart"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "rules", "new-ingests"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "off", "new-ingests"},
+		{"SYMBOL_GLOSSARY_CONFIG_JSON", `{"attach_only_with_value":true}`, "new-ingests"},
+	} {
+		p := plan(t, oc, "env-set", map[string]any{"key": c.key, "value": c.value})
+		preview := string(p.Steps[0].Plan.WouldWrite[0].Preview)
+		// (The env grammar single-quotes a JSON value.)
+		if !strings.Contains(preview, c.key+"="+c.value) && !strings.Contains(preview, c.key+"='"+c.value+"'") {
+			t.Errorf("env-set %s=%s: the preview does not show the edit:\n%s", c.key, c.value, preview)
+		}
+		// The plan tells the operator what has to happen before it applies.
+		var help string
+		for _, w := range p.Plan.Warnings {
+			if strings.HasPrefix(w, c.key+" ("+c.scope+")") {
+				help = w
+			}
+		}
+		if help == "" || !strings.Contains(help, "--only api") {
+			t.Errorf("env-set %s: no %s help naming the API restart in %q", c.key, c.scope, p.Plan.Warnings)
+		}
+	}
+	for _, c := range []struct{ key, value, want string }{
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "-1", ">= 0"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "-0.5", ">= 0"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "high", "not a number"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "", "not a number"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "NaN", ">= 0"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "inf", ">= 0"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "0x1p4", "not a number"},
+		{"TEXT_SYMBOL_GLOSSARY_BOOST", "1\n", "whitespace"},
+		{"DOI_ENRICHMENT_PUBMED_IDS", " true ", "whitespace"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "llm", "off|rules"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "Rules", "off|rules"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "", "off|rules"},
+		{"SYMBOL_GLOSSARY_CONFIG_JSON", "{not json", "JSON object"},
+		{"SYMBOL_GLOSSARY_CONFIG_JSON", "[1]", "JSON object"},
+	} {
+		err := planErr(t, oc, "env-set", map[string]any{"key": c.key, "value": c.value})
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), c.want) ||
+			!strings.Contains(err.Error(), c.key) {
+			t.Errorf("env-set %s=%q = %v, want a refusal naming the key and %q", c.key, c.value, err, c.want)
+		}
+	}
+	// The cache path is a host path the API reads: CLI-only, like the DOI cache.
+	err := planErr(t, oc, "env-set", map[string]any{"key": "SYMBOL_GLOSSARY_CACHE_PATH", "value": "/x"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "executable-surface") {
+		t.Errorf("env-set SYMBOL_GLOSSARY_CACHE_PATH = %v, want the executable-surface refusal", err)
+	}
+}
+
 // The canary: a plan is shown, logged, hashed and audited, so no secret may
 // survive anywhere in it — not in a preview, not in an argument, not in a
 // title.

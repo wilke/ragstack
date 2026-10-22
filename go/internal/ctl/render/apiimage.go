@@ -104,6 +104,7 @@ var APIImagePathKeys = []string{
 	"GRADING_STORE_PATH",
 	"USER_STORE_PATH",
 	"PROMPT_TEMPLATES_FILE",
+	"SYMBOL_GLOSSARY_CACHE_PATH",
 }
 
 // APIImageSQLiteStores pairs each sqlite store's path key with its backend key

@@ -87,6 +87,12 @@ var executableSurface = set(
 	// operator who can already see the file, and refused over HTTP, where a
 	// session that could repoint it would be choosing what every answer says.
 	"PROMPT_TEMPLATES_FILE",
+	// The offline LLM symbol-glossary cache (#754/#763): a JSONL file the API
+	// opens at ingest and whose records become text in the index — a host path
+	// the process reads, DOI_ENRICHMENT_CACHE_DIR's sibling. CLI-only. On an
+	// image-mode tenant the file must exist before the restart: it becomes a
+	// bind source (render.APIImagePathKeys), and apptainer refuses a missing one.
+	"SYMBOL_GLOSSARY_CACHE_PATH",
 	"GOWE_WORKFLOW_CWL", "COLLECTION_RESTORE_CWL", "GRAPH_EXTRACT_CWL",
 	// The image store dirs the boot identity check (ADR-0010 decision 7, #655
 	// step 4) looks the stamped dockerPull up in. A host path that decides
@@ -127,7 +133,8 @@ func Retired(key string) (reason string, ok bool) {
 //
 //	grep -E '^    [a-z_]+:' python/ragstack/config.py | sed -E 's/^ +([a-z_]+):.*/\1/' | tr a-z A-Z | sort -u
 //
-// and drop the keys the two tables above claim.
+// and drop the keys the two tables above claim. TestEverySettingsFieldIsClassified
+// (catalogue_test.go) fails when config.py gains a field no table classifies.
 var public = set(
 	"ACCESS_LOG_REPLACED",
 	"ACL_BACKFILL_OWNER",
@@ -164,8 +171,10 @@ var public = set(
 	"DOI_ENRICHMENT_DATACITE_FALLBACK",
 	"DOI_ENRICHMENT_ENABLED",
 	"DOI_ENRICHMENT_MAILTO",
+	"DOI_ENRICHMENT_PUBMED_IDS",
 	"DOI_ENRICHMENT_TIMEOUT",
 	"DOI_ENRICHMENT_USER_AGENT",
+	"DUPLICATE_POLICY",
 	"ELASTICSEARCH_INDEX",
 	"ELASTICSEARCH_TIMEOUT",
 	"EMBEDDING_API",
@@ -260,9 +269,13 @@ var public = set(
 	"RETRIEVAL_MAX_PER_DOC",
 	"RRF_K",
 	"SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS",
+	// The per-document symbol glossary (#754/#763; value rules in rules.go).
+	"SYMBOL_GLOSSARY_CONFIG_JSON",
+	"SYMBOL_GLOSSARY_EXTRACTION",
 	"TENANT_COLLECTIONS",
 	"TENANT_MAX_CONCURRENCY",
 	"TEXT_BACKEND",
+	"TEXT_SYMBOL_GLOSSARY_BOOST",
 	"TOP_K",
 	"UPLOAD_CONTENT_TYPES",
 	"USER_STORE_BACKEND",

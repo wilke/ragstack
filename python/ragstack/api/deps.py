@@ -1278,6 +1278,25 @@ def _build_glossary_attacher() -> SymbolGlossaryAttacher | None:
     return attacher
 
 
+def _log_glossary_config() -> None:
+    """One startup line with the EFFECTIVE symbol-glossary config (#754, #775).
+
+    ``_build_glossary_attacher`` logs only when extraction is on, and the boost
+    was logged nowhere, so a tenant whose ``env set`` had not been applied by a
+    restart looked the same in its log as one where it had. This line is
+    printed every boot, on or off. An unknown mode is shown as the ``off`` it
+    becomes. It names settings, never values from secrets.env."""
+    mode = settings.symbol_glossary_extraction
+    extraction = mode if mode in ("off", "rules") else f"off (unknown mode {mode!r})"
+    log.info(
+        "symbol glossary config: extraction=%s boost=%g llm_cache=%s config_json=%s",
+        extraction,
+        settings.text_symbol_glossary_boost,
+        settings.symbol_glossary_cache_path or "none",
+        "set" if settings.symbol_glossary_config_json.strip() else "default",
+    )
+
+
 def _build_boilerplate_filter() -> BoilerplateFilter | None:
     """The chunk-level boilerplate filter, or ``None`` when detection is off.
 
@@ -2005,6 +2024,7 @@ async def lifespan(app: FastAPI):
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()
     text_index = _build_text_index()
+    _log_glossary_config()
     graph_store = _build_graph_store()
     # Resolved up front (not just where the registry is built) because the default
     # pipeline and retriever below need it to scope the shared graph store: the
