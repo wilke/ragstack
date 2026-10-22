@@ -579,6 +579,8 @@ class Settings(BaseSettings):
     # index that has no such field is a no-op, so this is safe to turn on before
     # every collection carries the field.
     text_symbol_glossary_boost: float = 0.0
+    # The reranker side is RERANK_INCLUDE_SYMBOL_GLOSSARY (default on), next to
+    # the other rerank settings below.
 
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).
@@ -1118,6 +1120,19 @@ class Settings(BaseSettings):
     # Set rerank_enabled=false to opt a deployment back out.
     rerank_enabled: bool = True
     rerank_candidates: int = 50
+    # The cross-encoder scores ``content + "\n" + symbol_glossary`` for a chunk
+    # that carries a glossary (#754; owner decision 2026-10-22), plain
+    # ``content`` otherwise — byte-identical to before for a chunk without one.
+    # ON by default: on dev openchia, reranking the API's own 50-candidate pool
+    # with the glossary took recall@10 from 62 to 81 of 155, none lost (a
+    # shuffled-glossary control gave 63). Independent of
+    # TEXT_SYMBOL_GLOSSARY_BOOST (the BM25 side). Vector-only candidates carry
+    # no glossary (Qdrant's payload has none), so before reranking the router
+    # fetches theirs from the collection's text index in one tenant-scoped
+    # request (retrieval/glossary.py); a failed fetch degrades to no glossary.
+    # Only response ORDER changes; a source's ``content`` never includes it.
+    # Set false to opt out.
+    rerank_include_symbol_glossary: bool = True
     crossencoder_sidecar_url: str = "http://localhost:50052"
 
     # Observability

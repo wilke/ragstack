@@ -1289,11 +1289,14 @@ def _log_glossary_config() -> None:
     mode = settings.symbol_glossary_extraction
     extraction = mode if mode in ("off", "rules") else f"off (unknown mode {mode!r})"
     log.info(
-        "symbol glossary config: extraction=%s boost=%g llm_cache=%s config_json=%s",
+        "symbol glossary config: extraction=%s boost=%g llm_cache=%s config_json=%s rerank=%s",
         extraction,
         settings.text_symbol_glossary_boost,
         settings.symbol_glossary_cache_path or "none",
         "set" if settings.symbol_glossary_config_json.strip() else "default",
+        # RERANK_INCLUDE_SYMBOL_GLOSSARY: whether the cross-encoder reads the
+        # glossary. Printed as configured; it acts only while a reranker is wired.
+        "on" if settings.rerank_include_symbol_glossary else "off",
     )
 
 
@@ -1337,7 +1340,11 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     if not settings.rerank_enabled:
         return None
     log.info("reranker enabled: %s @ %s", settings.reranker_model, settings.crossencoder_sidecar_url)
-    return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
+    return SidecarReranker(
+        base_url=settings.crossencoder_sidecar_url,
+        http=http,
+        include_symbol_glossary=settings.rerank_include_symbol_glossary,
+    )
 
 
 def _llm_from_entry(entry: Any, http: httpx.AsyncClient) -> OpenAILLM:
@@ -1353,7 +1360,13 @@ def _llm_from_entry(entry: Any, http: httpx.AsyncClient) -> OpenAILLM:
 
 
 def _reranker_from_entry(entry: Any, http: httpx.AsyncClient) -> SidecarReranker:
-    return SidecarReranker(base_url=entry.base_urls[0], http=http)
+    # A registered reranker (hot swap or per-request override) reads the
+    # glossary under the same setting as the default one.
+    return SidecarReranker(
+        base_url=entry.base_urls[0],
+        http=http,
+        include_symbol_glossary=settings.rerank_include_symbol_glossary,
+    )
 
 
 def apply_assignment(app: Any, task: str, entry: ModelEntry | None) -> None:

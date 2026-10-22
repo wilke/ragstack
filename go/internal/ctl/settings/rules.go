@@ -158,6 +158,16 @@ var publicRules = map[string]PublicRule{
 			"Query-time: it takes effect at `tenant restart <t> --only api`, with no re-ingest. On an index " +
 			"without the field it is a no-op, so backfill first. Trial only with the reranker on." + glossaryNote,
 	},
+	"RERANK_INCLUDE_SYMBOL_GLOSSARY": {
+		Check: pydanticBool,
+		Scope: ScopeAPIRestart,
+		Help: "true|false (default true): the cross-encoder scores a chunk's content plus its " +
+			"`symbol_glossary` instead of content alone; a chunk without a glossary is scored exactly as " +
+			"before. Query-time: it takes effect at `tenant restart <t> --only api`, with no re-ingest. It " +
+			"only matters for chunks that carry a glossary (extracted since v1.6.12 or backfilled), is " +
+			"independent of TEXT_SYMBOL_GLOSSARY_BOOST, and changes reranked result ORDER on those " +
+			"collections (never a source's content) — tell evaluation users before changing it." + glossaryNote,
+	},
 	// #747: the duplicate-paper guard.
 	"DUPLICATE_POLICY": {
 		Check: oneOfFold("refuse", "allow", "off"),

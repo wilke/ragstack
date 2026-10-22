@@ -1067,8 +1067,10 @@ embedded, never added to `content`, and no vector changes (Qdrant only gains the
 extraction rules and every measurement are in
 [`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md); this section is
 the operator's side. Since #783, extraction is **on by default** (`rules`) on
-both ingest paths, and the query side still ships off (boost `0`), so search
-results do not change until a tenant raises the boost.
+both ingest paths. The BM25 query side still ships off (boost `0`). The
+reranker, though, reads the glossary **by default** from the first server tag
+after v1.6.12 (`RERANK_INCLUDE_SYMBOL_GLOSSARY`, below), so reranked results on
+a collection whose chunks carry a glossary change order without any boost.
 
 ### The settings
 
@@ -1078,6 +1080,7 @@ results do not change until a tenant raises the boost.
 | `SYMBOL_GLOSSARY_EXTRACTION` | `rules` (since #783; was `off`) | Ingest side, both paths. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. On a gowe tenant the API sends it as the `symbol_glossary` workflow input. |
 | `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. In-process ingests only: a gowe worker runs the default config. |
 | `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. In-process ingests only: a gowe worker uses no LLM cache. |
+| `RERANK_INCLUDE_SYMBOL_GLOSSARY` | `true` | Rerank side. The cross-encoder scores a chunk's `content`, a newline, then its `symbol_glossary`, instead of `content` alone. A chunk without a glossary is scored exactly as before. Independent of the boost. See [The reranker reads the glossary](#the-reranker-reads-the-glossary). |
 
 The boost only has an effect on an index whose chunks carry a `symbol_glossary`
 field (ingested with extraction on, or backfilled). On an index without the
@@ -1165,6 +1168,49 @@ should now return the caption chunk.
 4. Backfill `--apply`.
 5. Set the boost to 1 (above) and restart the API.
 6. Tell evaluation users.
+
+### The reranker reads the glossary
+
+The setting is `RERANK_INCLUDE_SYMBOL_GLOSSARY`, **on by default** (owner
+decision 2026-10-22). When a query is reranked, the cross-encoder scores each
+candidate's `content` plus a newline plus its `symbol_glossary`. Only the scored
+text changes: a source's `content` in the response never includes the
+glossary. On dev `openchia`, an offline rerank of the API's own 50-candidate
+pool went from 62 to 81 of 155 relevant chunks in the top 10, none lost; a
+shuffled-glossary control gave 63 (recorded in
+[`docs/plans/symbol-glossary.md`](../plans/symbol-glossary.md)). That is one
+collection and one query set, not a promise.
+
+- **It only matters for chunks that have a glossary**: papers ingested with
+  extraction on (default since v1.6.12) or backfilled (above). On a collection
+  without the field it changes nothing, and it costs one small batched
+  Elasticsearch read per reranked query.
+- **It is independent of `TEXT_SYMBOL_GLOSSARY_BOOST`.** The boost decides
+  which chunks BM25 brings into the pool; this decides how the reranker orders
+  the pool. Either can be on without the other.
+- **Dense hits are given their glossary first.** A chunk only the vector leg
+  found has no glossary on it (Qdrant does not store one), so before the rerank
+  the API fetches the missing glossaries from that collection's
+  Elasticsearch index, in one request per collection, scoped to the caller's
+  readable tenants. If that read fails, the API logs
+  `rerank glossary hydration failed` and reranks those chunks without their
+  glossary. The query does not fail. The time is counted in the `rerank`
+  stage of the query summary line.
+- It does nothing when reranking is off (`RERANK_ENABLED=false`, or a request
+  with `rerank: false`).
+
+**It changes reranked result order on those collections.** Tell evaluation
+users: runs from before and after are different conditions.
+
+The startup line `symbol glossary config: … rerank=on|off` shows the value in
+effect. To opt a tenant out:
+
+```bash
+ragstack-ctl env set <t> RERANK_INCLUDE_SYMBOL_GLOSSARY false
+ragstack-ctl tenant restart <t> --only api
+```
+
+No re-ingest is needed either way.
 
 ### Extraction on by default (#783)
 

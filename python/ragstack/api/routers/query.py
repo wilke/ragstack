@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -46,6 +47,7 @@ from ragstack.observability.context import current_context
 from ragstack.observability.stages import note_query_sha, stage
 from ragstack.prompts import PromptTemplate, TemplateRenderError, render, to_wire
 from ragstack.protocols import QueryRewriter
+from ragstack.retrieval.glossary import hydrate_symbol_glossary
 from ragstack.retrieval.retriever import (
     STAMP_KEY,
     CollectionLeg,
@@ -383,7 +385,11 @@ def _fans_out(retriever: Any) -> bool:
 
 
 async def _maybe_rerank(
-    reranker, query: str, scored: list[ScoredChunk], top_k: int | None
+    reranker,
+    query: str,
+    scored: list[ScoredChunk],
+    top_k: int | None,
+    hydrate: Callable[[list[ScoredChunk]], Awaitable[list[ScoredChunk]]] | None = None,
 ) -> list[ScoredChunk]:
     """Rescore the fused candidate pool with the cross-encoder, if one is wired.
 
@@ -395,13 +401,21 @@ async def _maybe_rerank(
 
     Degrades gracefully: a reranker outage / bad response falls back to the
     fused order rather than failing the request (same contract as the LLM and
-    rewriter stages). Cancellation is never swallowed."""
+    rewriter stages). Cancellation is never swallowed.
+
+    ``hydrate`` (when the reranker reads the symbol glossary, #754) fills in
+    the glossary of candidates that arrived without one — one batched text-index
+    read per collection, ``retrieval/glossary.py`` — and runs only when a rerank
+    actually happens. It is timed inside the ``rerank`` stage: it is part of what
+    reranking costs, and an ES round trip, so it belongs with the external time
+    ADR-0006 subtracts. It never raises; a failed lookup reranks without it."""
     if reranker is None or not scored:
         return scored
     try:
         with stage("rerank"):
-            reranked = await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
-        return _restamp(scored, reranked)
+            pool = await hydrate(scored) if hydrate is not None else scored
+            reranked = await reranker.score(query, [s.chunk for s in pool], top_k=top_k)
+        return _restamp(pool, reranked)
     except asyncio.CancelledError:
         raise
     except (KeyError, ValueError) as e:
@@ -505,7 +519,22 @@ async def _retrieve_fused(
     # full ranked pool instead of its top_k, so the shaping has candidates to
     # promote from; with shaping off this is byte-for-byte the previous path.
     shaping = _shaping_active(retriever)
-    scored = await _maybe_rerank(active, query, scored, None if shaping else top_k)
+    # The reranker reads the chunk's symbol glossary (#754,
+    # RERANK_INCLUDE_SYMBOL_GLOSSARY): vector-only candidates — and, under
+    # HyDE/multi-query, candidates whose last-fused copy came from a vector hit —
+    # carry none, so fetch theirs from the text index first. The flag is read
+    # off the reranker itself, so a per-request override reranker follows the
+    # same setting and a stub without it never triggers a read.
+    hydrate = (
+        functools.partial(
+            hydrate_symbol_glossary, retriever, filters=filters, tenant_id=tenant_id
+        )
+        if getattr(active, "include_symbol_glossary", False)
+        else None
+    )
+    scored = await _maybe_rerank(
+        active, query, scored, None if shaping else top_k, hydrate=hydrate
+    )
     if shaping:
         scored = retriever.shape(scored)
     return scored[:top_k]

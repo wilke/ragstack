@@ -263,6 +263,8 @@ var public = set(
 	"REQUIRE_DURABLE_BACKENDS",
 	"RERANK_CANDIDATES",
 	"RERANK_ENABLED",
+	// The reranker reads the chunk's symbol glossary (#754; value rule in rules.go).
+	"RERANK_INCLUDE_SYMBOL_GLOSSARY",
 	"RERANKER_MODEL",
 	"RETRIEVAL_CANDIDATE_MULTIPLIER",
 	"RETRIEVAL_DEMOTE_BOILERPLATE",

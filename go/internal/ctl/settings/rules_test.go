@@ -30,9 +30,10 @@ func TestValidatePublic(t *testing.T) {
 		"SYMBOL_GLOSSARY_EXTRACTION": {"off", "rules"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"", `{}`, `{"definition_window":200}`,
 			`{"attach_only_with_value":true,"rule_respectively":false}`},
-		"DUPLICATE_POLICY":          {"refuse", "allow", "off", "Refuse"},
-		"DOI_ENRICHMENT_PUBMED_IDS": {"true", "false", "1", "0", "yes", "Off", "TRUE"},
-		"LOG_LEVEL":                 {"anything", ""}, // no rule: any string
+		"DUPLICATE_POLICY":               {"refuse", "allow", "off", "Refuse"},
+		"DOI_ENRICHMENT_PUBMED_IDS":      {"true", "false", "1", "0", "yes", "Off", "TRUE"},
+		"RERANK_INCLUDE_SYMBOL_GLOSSARY": {"true", "false", "1", "0", "no", "On", "FALSE"},
+		"LOG_LEVEL":                      {"anything", ""}, // no rule: any string
 	}
 	for k, vs := range ok {
 		for _, v := range vs {
@@ -52,8 +53,9 @@ func TestValidatePublic(t *testing.T) {
 		"SYMBOL_GLOSSARY_EXTRACTION": {"on", "llm", "RULES", "", " rules", "rules\n"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"{", "null", `"x"`, "[]", `{"definiton_window":200}`, " {}",
 			"{}\n"},
-		"DUPLICATE_POLICY":          {"skip", "", " refuse", "allow\n"},
-		"DOI_ENRICHMENT_PUBMED_IDS": {"maybe", "", " true ", "1 ", "true\n", "\ttrue"},
+		"DUPLICATE_POLICY":               {"skip", "", " refuse", "allow\n"},
+		"DOI_ENRICHMENT_PUBMED_IDS":      {"maybe", "", " true ", "1 ", "true\n", "\ttrue"},
+		"RERANK_INCLUDE_SYMBOL_GLOSSARY": {"maybe", "", " false", "false\n", "2"},
 	}
 	for k, vs := range bad {
 		for _, v := range vs {
@@ -74,6 +76,14 @@ func TestGlossaryRuleScopes(t *testing.T) {
 	if r, _ := RuleFor("SYMBOL_GLOSSARY_EXTRACTION"); r.Scope != ScopeNewIngests ||
 		!strings.Contains(r.Help, "backfill") {
 		t.Errorf("SYMBOL_GLOSSARY_EXTRACTION rule = %+v", r)
+	}
+	// The reranker's glossary input is query-time, like the boost.
+	if r, _ := RuleFor("RERANK_INCLUDE_SYMBOL_GLOSSARY"); r.Scope != ScopeAPIRestart ||
+		!strings.Contains(r.Help, "no re-ingest") {
+		t.Errorf("RERANK_INCLUDE_SYMBOL_GLOSSARY rule = %+v", r)
+	}
+	if Classify("RERANK_INCLUDE_SYMBOL_GLOSSARY") != Public {
+		t.Errorf("RERANK_INCLUDE_SYMBOL_GLOSSARY must be public so `env set` can opt a tenant out")
 	}
 }
 

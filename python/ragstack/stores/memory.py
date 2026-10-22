@@ -220,6 +220,24 @@ class InMemoryTextIndex:
                 )
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
+    async def get_symbol_glossaries(
+        self, chunk_ids: list[str], tenants: list[str]
+    ) -> dict[tuple[str, str], str]:
+        """Mirror of ``ElasticsearchTextIndex.get_symbol_glossaries``: non-empty
+        glossaries of ``chunk_ids`` written by one of ``tenants``, keyed
+        ``(tenant, chunk_id)``. Fails closed on an empty ``tenants``."""
+        scope = set(tenants)
+        if not scope:
+            raise ValueError(
+                "InMemoryTextIndex.get_symbol_glossaries requires a non-empty tenant scope"
+            )
+        wanted = set(chunk_ids)
+        return {
+            (tenant_of(c), c.id): c.symbol_glossary
+            for c in self._chunks
+            if c.id in wanted and c.symbol_glossary and tenant_of(c) in scope
+        }
+
     async def drop_index(self) -> bool:
         """Discard every document — the in-memory analogue of dropping the ES
         index (see ``ElasticsearchTextIndex.drop_index``). Returns whether
