@@ -234,6 +234,7 @@ import httpx
 
 from ragstack import provenance
 from ragstack.models import Chunk, ScoredChunk
+from ragstack.retrieval.glossary import hydrate_chunks
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import RRFScorer, SidecarReranker
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -1399,6 +1400,12 @@ async def evaluate_cell(
                     h.chunk for h in head if (qid, h.chunk.id) not in rerank_cache
                 ]
                 if missing:
+                    if getattr(reranker, "include_symbol_glossary", False):
+                        # --rerank-symbol-glossary: what the API does
+                        # (retrieval/glossary.py).
+                        missing = await hydrate_chunks(
+                            tindex, missing, filters["tenant_id"]
+                        )
                     scored = await reranker.score(text, missing)
                     for sc in scored:
                         rerank_cache[(qid, sc.chunk.id)] = sc.score
@@ -1660,6 +1667,9 @@ def build_run_manifest(
             },
         },
         "reranker": reranker,
+        # --rerank-symbol-glossary: whether the reranker scored content +
+        # symbol_glossary (the API's default since #754) or content alone.
+        "rerank_symbol_glossary": bool(getattr(args, "rerank_symbol_glossary", False)),
         "query_vector_cache": qvec_cache,
         "runtime": {
             "host": platform.node(),
@@ -2848,7 +2858,10 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     try:
         async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+            reranker = SidecarReranker(
+                c7.RERANKER_URL, http=client,
+                include_symbol_glossary=args.rerank_symbol_glossary,
+            )
             indexes: dict[str, LibraryIndex] = {}
             for s in samples:
                 idx = await build_library_index(
@@ -3076,6 +3089,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--rerank-candidates", type=_int_list,
                    default=[DEFAULT_RERANK_CANDIDATES],
                    help="rerank_candidates values (used only when --rerank includes on)")
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument("--seed", type=int, default=0, help="corpus-sampling seed")
     p.add_argument("--judged-fraction", type=float, default=0.5,
                    help="max fraction of a library that may be judged documents")

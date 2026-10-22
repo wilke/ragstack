@@ -664,6 +664,76 @@ class ElasticsearchTextIndex:
             )
         return results
 
+    async def get_symbol_glossaries(
+        self, chunk_ids: list[str], tenants: list[str], *, timeout: float | None = None
+    ) -> dict[tuple[str, str], str]:
+        """The stored ``symbol_glossary`` of each of ``chunk_ids`` that one of
+        ``tenants`` wrote, keyed ``(tenant, chunk_id)`` — non-empty glossaries
+        only; a chunk without one, or not visible to ``tenants``, is absent.
+
+        Used before a rerank to give vector-leg candidates (whose Qdrant payload
+        carries no glossary) the glossary the BM25 leg would have returned
+        (``retrieval/glossary.py``). ONE request for the whole batch: an ``ids``
+        query over every ``<tenant>:<chunk_id>`` document id (how
+        ``_index_batch`` keys a chunk, see :func:`_es_id`), so it does not
+        depend on how ``chunk_id`` happens to be mapped in an older index, AND
+        the same ``metadata.tenant_id`` filter the BM25 search applies.
+        Tenant-scoped and fail-closed: an empty ``tenants`` raises, like
+        ``_build_query``, rather than reading across tenants.
+
+        ``timeout`` bounds THIS request only (``RERANK_GLOSSARY_TIMEOUT``), with
+        no client retries, so an unreachable cluster costs a reranked query at
+        most that long instead of the client's default (10 s per attempt). A
+        missing index (404) is "no glossaries", not an error: a collection whose
+        text index was never created has nothing to hydrate from."""
+        from elasticsearch import NotFoundError
+
+        ids = list(dict.fromkeys(chunk_ids))
+        scope = list(dict.fromkeys(tenants))
+        if not scope:
+            raise ValueError(
+                "ElasticsearchTextIndex.get_symbol_glossaries requires a non-empty "
+                "tenant scope; an unscoped read would return chunks across all tenants"
+            )
+        if not ids:
+            return {}
+        doc_ids = [_es_id(t, c) for c in ids for t in scope]
+        body = {
+            "bool": {
+                "filter": [
+                    {"ids": {"values": doc_ids}},
+                    {"terms": {"metadata.tenant_id": scope}},
+                ]
+            }
+        }
+        es = (
+            self._es
+            if timeout is None
+            else self._es.options(request_timeout=timeout, max_retries=0)
+        )
+        try:
+            with self._guard("get_symbol_glossaries"):
+                resp = await es.search(
+                    index=self._index,
+                    query=body,
+                    # ES refuses a size above index.max_result_window (10,000 by
+                    # default); a larger pool just hydrates partially.
+                    size=min(len(doc_ids), 10_000),
+                    source_includes=["chunk_id", "symbol_glossary", "metadata.tenant_id"],
+                )
+        except NotFoundError:
+            log.debug("get_symbol_glossaries: index %r does not exist", self._index)
+            return {}
+        found: dict[tuple[str, str], str] = {}
+        for hit in resp["hits"]["hits"]:
+            src = hit["_source"]
+            glossary = str(src.get("symbol_glossary", "") or "")
+            if not glossary:
+                continue
+            tenant = str((src.get("metadata") or {}).get("tenant_id", DEFAULT_TENANT))
+            found[(tenant, str(src.get("chunk_id", "")))] = glossary
+        return found
+
     async def count_tenants(self, tenants: list[str]) -> int:
         """Count indexed chunks visible to ``tenants`` (own + public) via a
         terms-filtered ``_count``. Fails closed (returns 0) on an empty list —

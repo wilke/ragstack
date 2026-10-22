@@ -12,6 +12,23 @@ if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
 
 
+def rerank_passage(chunk: Chunk, include_symbol_glossary: bool) -> str:
+    """The passage text a cross-encoder scores for ``chunk``.
+
+    ``content``, a newline, then ``symbol_glossary`` when ``include_symbol_glossary`` is on
+    and the chunk carries a non-empty glossary (#754, owner decision
+    2026-10-22: RERANK_INCLUDE_SYMBOL_GLOSSARY, default on); otherwise exactly
+    ``content``, byte-identical to the pre-glossary reranker input. Only the
+    scored TEXT changes — the reranker returns the original chunk, so a
+    response's ``content`` never carries the glossary.
+
+    One helper for both cross-encoder scorers (local and sidecar), so the two
+    cannot disagree on what a passage is."""
+    if include_symbol_glossary and chunk.symbol_glossary:
+        return f"{chunk.content}\n{chunk.symbol_glossary}"
+    return chunk.content
+
+
 class RRFScorer:
     """
     Reciprocal Rank Fusion (RRF) — combine multiple ranked lists into one.
@@ -67,14 +84,27 @@ class CrossEncoderScorer:
     Falls back gracefully if the library is not available.
     """
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        *,
+        include_symbol_glossary: bool | None = None,
+    ) -> None:
         # Default to config.reranker_model so the reranker model has ONE Python
-        # source of truth (config.py) rather than a re-literal here.
-        if model_name is None:
+        # source of truth (config.py) rather than a re-literal here. The
+        # glossary flag follows the same rule: unset reads
+        # rerank_include_symbol_glossary (default on), as the API's reranker does.
+        if model_name is None or include_symbol_glossary is None:
             from ragstack.config import Settings
 
-            model_name = Settings().reranker_model
+            cfg = Settings()
+            if model_name is None:
+                model_name = cfg.reranker_model
+            if include_symbol_glossary is None:
+                include_symbol_glossary = cfg.rerank_include_symbol_glossary
         self.model_name = model_name
+        #: Score content plus the chunk's symbol glossary (see :func:`rerank_passage`).
+        self.include_symbol_glossary = include_symbol_glossary
         self._model: CrossEncoder | None = None
 
     def _load_model(self) -> None:
@@ -95,7 +125,9 @@ class CrossEncoderScorer:
     ) -> list[ScoredChunk]:
         self._load_model()
         assert self._model is not None  # _load_model guarantees this or raises
-        pairs = [(query, c.content) for c in candidates]
+        pairs = [
+            (query, rerank_passage(c, self.include_symbol_glossary)) for c in candidates
+        ]
         raw_scores: list[float] = self._model.predict(pairs).tolist()
         scored = [
             ScoredChunk(chunk=c, score=float(s), retrieval_method="reranked")
@@ -128,8 +160,20 @@ class SidecarReranker:
         http: httpx.AsyncClient,
         *,
         timeout: float = DEFAULT_TIMEOUT,
+        include_symbol_glossary: bool = False,
     ) -> None:
         self._client = SidecarClient(base_url, http, timeout=timeout)
+        #: Score content plus the chunk's symbol glossary (see
+        #: :func:`rerank_passage`). The API passes
+        #: ``settings.rerank_include_symbol_glossary`` (default ON) from
+        #: ``api/deps.py``; the constructor default is OFF so a library caller
+        #: — the eval scripts build their own ``SidecarReranker`` — keeps
+        #: scoring exactly ``content`` unless it opts in (their
+        #: ``--rerank-symbol-glossary``, which also hydrates via
+        #: ``retrieval.glossary.hydrate_chunks``). The router reads this
+        #: attribute to decide whether to hydrate candidates' glossaries before
+        #: the rerank (``retrieval/glossary.py``).
+        self.include_symbol_glossary = include_symbol_glossary
 
     @property
     def base_url(self) -> str:
@@ -148,7 +192,9 @@ class SidecarReranker:
             "rerank",
             {
                 "query": query,
-                "documents": [c.content for c in candidates],
+                "documents": [
+                    rerank_passage(c, self.include_symbol_glossary) for c in candidates
+                ],
                 "top_k": len(candidates) if top_k is None else min(top_k, len(candidates)),
             },
         )

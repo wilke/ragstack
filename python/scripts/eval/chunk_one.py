@@ -59,7 +59,10 @@ def _ordered_qids(queries: dict) -> list[str]:
     return sorted(queries, key=lambda q: int(q) if q.isdigit() else q)
 
 
-def build_metrics_payload(config: str, source: str, stats: dict, query_ids: list[str]) -> dict:
+def build_metrics_payload(
+    config: str, source: str, stats: dict, query_ids: list[str],
+    *, rerank_symbol_glossary: bool = False,
+) -> dict:
     """Assemble the metrics.json payload from evaluate_config's return.
 
     Deterministic (no timestamp) so a re-run against an unchanged store diffs
@@ -76,6 +79,8 @@ def build_metrics_payload(config: str, source: str, stats: dict, query_ids: list
     return {
         "config": config,
         "source": source,
+        # --rerank-symbol-glossary: the reranker scored content + glossary.
+        "rerank_symbol_glossary": bool(rerank_symbol_glossary),
         "n_queries": len(query_ids),
         "query_ids": list(query_ids),
         "means": stats["means"],
@@ -96,7 +101,10 @@ async def amain(args, cfg) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+        reranker = SidecarReranker(
+            c7.RERANKER_URL, http=client,
+            include_symbol_glossary=args.rerank_symbol_glossary,
+        )
         await sc.ingest_config(cfg, corpus_docs, client)
         stats = await sc.evaluate_config(
             cfg, queries, qrels, client, args.rerank_pool, args.retrieve_pool, reranker
@@ -104,7 +112,10 @@ async def amain(args, cfg) -> int:
         if args.teardown:
             await sc.teardown(client, [cfg.key])
 
-    payload = build_metrics_payload(cfg.key, source, stats, _ordered_qids(queries))
+    payload = build_metrics_payload(
+        cfg.key, source, stats, _ordered_qids(queries),
+        rerank_symbol_glossary=args.rerank_symbol_glossary,
+    )
     Path(args.out).write_text(json.dumps(payload, indent=2, sort_keys=True),
                               encoding="utf-8")
     m = stats["means"]
@@ -128,6 +139,8 @@ def parse_args(argv=None):
                         "HF_HOME/rag cache); accepted for CWL-input symmetry, ignored")
     p.add_argument("--query-limit", type=int, default=0, help="cap #test queries (0=all)")
     p.add_argument("--rerank-pool", type=int, default=100)
+    p.add_argument("--rerank-symbol-glossary", action="store_true",
+                   help="score content + \"\\n\" + symbol_glossary in the reranker, as the API does by default (RERANK_INCLUDE_SYMBOL_GLOSSARY), hydrating each candidate's glossary from the ES index first. Default OFF so past results stay comparable.")
     p.add_argument("--retrieve-pool", type=int, default=300)
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in defaults)")

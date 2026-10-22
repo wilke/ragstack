@@ -62,6 +62,17 @@ async def test_startup_logs_the_effective_glossary_config(
     assert want in lines[0], lines[0]
 
 
+@pytest.mark.parametrize(("flag", "want"), [(True, "rerank=on"), (False, "rerank=off")])
+async def test_the_line_names_the_rerank_glossary_flag(monkeypatch, caplog, flag, want) -> None:
+    """RERANK_INCLUDE_SYMBOL_GLOSSARY (default on) is on the same line, so an
+    opt-out applied by a restart is visible in the tenant's log."""
+    _in_memory_settings(monkeypatch)
+    monkeypatch.setattr(deps.settings, "rerank_include_symbol_glossary", flag)
+    lines = await _boot(caplog)
+    assert len(lines) == 1, lines
+    assert lines[0].endswith(want), lines[0]
+
+
 async def test_the_line_carries_no_secret(monkeypatch, caplog) -> None:
     _in_memory_settings(monkeypatch)
     canary = "sk-canary-0123456789abcdef"
