@@ -107,7 +107,7 @@ def test_ingest_shard_default_records_rules_enrichment(tmp_path) -> None:
     (ADR-0011), exactly as an explicit ``--symbol-glossary rules`` does."""
     for extra in ((), ("--symbol-glossary", "rules")):
         r = _run_ingest_shard(tmp_path, *extra)
-        assert r.enrichment and r.enrichment["symbol_glossary"]["extractor"] == "rules/2"
+        assert r.enrichment and r.enrichment["symbol_glossary"]["extractor"] == "rules/3"
         assert r.enrichment["symbol_glossary"]["applied_batches"] == 1
 
 

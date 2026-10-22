@@ -73,7 +73,7 @@ def test_prepare_documents_attaches_and_embeds_content_only() -> None:
     by_id = {c.id: c for c in chunks}
     assert by_id["doc-0-1"].symbol_glossary == "Qb — breathing flow rate of one person"
     assert by_id["doc-0-2"].symbol_glossary == ""
-    assert all(c.metadata[VERSION_KEY] == "rules/2" for c in chunks)
+    assert all(c.metadata[VERSION_KEY] == "rules/3" for c in chunks)
     assert emb.seen == [DEFINE, VALUE, PLAIN]  # the glossary is never embedded
 
 
@@ -110,14 +110,14 @@ def test_streaming_path_attaches_per_group() -> None:
     assert by_id["doc-0-1"].symbol_glossary == "Qb — breathing flow rate of one person"
     # doc-1 never defines Qb: a definition from ANOTHER document must not leak in.
     assert by_id["doc-1-1"].symbol_glossary == ""
-    assert by_id["doc-1-1"].metadata[VERSION_KEY] == "rules/2"
+    assert by_id["doc-1-1"].metadata[VERSION_KEY] == "rules/3"
 
 
 def test_extractor_bug_degrades_to_no_glossary(caplog) -> None:
     class Boom(SymbolGlossaryAttacher):
         def apply(self, documents, chunks):  # noqa: ANN001
             chunks[0].symbol_glossary = "half-applied"
-            chunks[0].metadata[VERSION_KEY] = "rules/2"
+            chunks[0].metadata[VERSION_KEY] = "rules/3"
             raise RuntimeError("bug")
 
     chunks = asyncio.run(_pipeline(_Embedder(), Boom()).embed_source("x"))
@@ -159,7 +159,7 @@ def test_provenance_reflects_what_the_step_did() -> None:
     assert pipe.glossary_provenance() is None  # configured, never ran
     asyncio.run(pipe.embed_source("x"))
     rec = pipe.glossary_provenance()["symbol_glossary"]  # type: ignore[index]
-    assert rec["extractor"] == "rules/2" and rec["applied_batches"] == 1
+    assert rec["extractor"] == "rules/3" and rec["applied_batches"] == 1
     assert rec["degraded_batches"] == 0 and rec["chunks_with_glossary"] == 1
     snap = Counter(pipe.glossary_counts)
     assert pipe.glossary_provenance(snap) is None  # nothing since the snapshot

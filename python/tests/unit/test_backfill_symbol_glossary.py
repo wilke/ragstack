@@ -66,6 +66,12 @@ class FakeES:
             {"_id": r["_id"], "_source": {k: v for k, v in r.items() if k != "_id"},
              "sort": [start + j + 1]} for j, r in enumerate(page)]}}
 
+    async def count(self, index: str, query: dict[str, Any]) -> dict[str, int]:
+        ((field, prefix),) = query["prefix"].items()
+        key = field.split(".", 1)[1]
+        return {"count": sum(1 for r in self.rows
+                             if str((r.get("metadata") or {}).get(key) or "").startswith(prefix))}
+
     async def bulk(self, operations: list[dict[str, Any]], refresh: bool) -> dict[str, Any]:
         self.bulks.append(operations)
         for action, doc in zip(operations[::2], operations[1::2], strict=True):
@@ -75,10 +81,11 @@ class FakeES:
         return {"errors": False, "items": []}
 
 
-def _args(apply: bool = False) -> Any:
+def _args(apply: bool = False, llm_cache: str = "", replace_llm: bool = False) -> Any:
     return bf.main.__globals__["argparse"].Namespace(
-        es_url="http://127.0.0.1:1", index="i", llm_cache="", config="", batch_size=2,
-        apply=apply, confirm_index="i" if apply else "", refresh_off=False)
+        es_url="http://127.0.0.1:1", index="i", llm_cache=llm_cache, config="", batch_size=2,
+        apply=apply, confirm_index="i" if apply else "", refresh_off=False,
+        replace_llm=replace_llm)
 
 
 def test_dry_run_writes_nothing() -> None:
@@ -98,7 +105,7 @@ def test_apply_writes_partial_updates_then_is_resumable() -> None:
             assert set(action) == {"update"} and set(doc["doc"]) == {"symbol_glossary", "metadata"}
     last = es.rows[-1]
     assert last["symbol_glossary"] == "Qb — breathing flow rate"
-    assert last["metadata"][VERSION_KEY] == "rules/2" and "content" in last
+    assert last["metadata"][VERSION_KEY] == "rules/3" and "content" in last
     again = asyncio.run(bf.run(_args(apply=True), es=es))
     assert again["chunks_to_update"] == 0 and again["chunks_current"] == again["chunks"]
 
@@ -138,3 +145,142 @@ def test_refuses_an_alias_or_multi_resolution() -> None:
     with pytest.raises(SystemExit):
         asyncio.run(bf.run(_args(apply=True), es=es))
     assert es.bulks == [] and es.mappings == []
+
+
+def test_rules_version_bump_redoes_rules_chunks_but_not_llm_chunks(tmp_path: Path) -> None:
+    """#790: after rules/2 → rules/3, a chunk stamped rules/2 is re-done (even an
+    unchanged or empty field gets the new stamp), while a chunk stamped from the
+    cached LLM glossary — same cache, same validation, same rendering — is
+    current and is skipped."""
+    from ragstack.ingestion.symbol_glossary import (
+        EXTRACTOR_VERSION,
+        Definition,
+        Glossary,
+        GlossaryEntry,
+        SymbolGlossaryAttacher,
+        SymbolGlossaryCache,
+        content_key,
+    )
+
+    rules_text = TEXT
+    llm_text = "where Cq is the quanta\nconcentration. " + "pad " * 30 + "Table: Cq = 30."
+    cache = SymbolGlossaryCache(tmp_path / "g.jsonl", writable=True)
+    cache.put(content_key(llm_text),
+              Glossary((GlossaryEntry("Cq", (Definition("quanta concentration", 6),)),), "llm/1:m:h"))
+    attacher = SymbolGlossaryAttacher(cache=cache)
+
+    def stamped(rows: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+        g = attacher.glossary_for(text)
+        for r in rows:
+            r["symbol_glossary"] = g.for_chunk(r["content"], start_char=r["start_char"]) or None
+            r["metadata"][VERSION_KEY] = g.version
+        return rows
+
+    rules_rows = stamped(_rows("a", rules_text), rules_text)
+    for r in rules_rows:
+        r["metadata"][VERSION_KEY] = "rules/2"  # what the index holds today
+    llm_rows = stamped(_rows("b", llm_text), llm_text)
+    assert EXTRACTOR_VERSION == "rules/3"
+    updates, counts = bf.plan_updates(attacher, rules_text, rules_rows)
+    assert len(updates) == len(rules_rows) and {v for _, _, v in updates} == {"rules/3"}
+    updates, counts = bf.plan_updates(attacher, llm_text, llm_rows)
+    assert updates == [] and counts["chunks_current"] == len(llm_rows) and counts["docs_llm"] == 1
+
+
+def test_apply_without_llm_cache_refuses_to_overwrite_llm_glossaries(tmp_path: Path) -> None:
+    """An index holding llm/-stamped chunks: --apply without --llm-cache would
+    replace those LLM glossaries with rules output. Refused before any write,
+    unless --replace-llm; the dry run reports what would be replaced."""
+    rows = _rows("a", TEXT) + _rows("b", TEXT.replace("Qb", "Cq"))
+    for r in rows:
+        if r["doc_id"] == "b":
+            r["metadata"][VERSION_KEY] = "llm/1:m:h"
+            r["symbol_glossary"] = "Cq — quanta concentration"
+    es = FakeES(rows)
+    dry = asyncio.run(bf.run(_args(), es=es))
+    assert dry["chunks_llm_replaced"] == sum(r["doc_id"] == "b" for r in rows)
+    with pytest.raises(SystemExit, match="OVERWRITTEN"):
+        asyncio.run(bf.run(_args(apply=True), es=es))
+    assert es.bulks == [] and es.mappings == []  # nothing written, not even the mapping
+    out = asyncio.run(bf.run(_args(apply=True, replace_llm=True), es=es))
+    assert out["chunks_written"] == len(rows)
+    assert all(r["metadata"][VERSION_KEY] == "rules/3" for r in rows)
+
+
+def _llm_index(tmp_path: Path) -> tuple[FakeES, list[dict[str, Any]], str, str]:
+    """Two documents, both stamped from an LLM glossary in the index."""
+    text_a, text_b = TEXT, TEXT.replace("Qb", "Cq")
+    rows = _rows("a", text_a) + _rows("b", text_b)
+    for r in rows:
+        r["metadata"][VERSION_KEY] = "llm/1:m:h"
+    return FakeES(rows), rows, text_a, text_b
+
+
+def _cache_with(tmp_path: Path, *docs: tuple[str, str]) -> str:
+    from ragstack.ingestion.symbol_glossary import (
+        Definition,
+        Glossary,
+        GlossaryEntry,
+        SymbolGlossaryCache,
+        content_key,
+    )
+
+    path = tmp_path / "g.jsonl"
+    cache = SymbolGlossaryCache(path, writable=True)
+    for text, sym in docs:
+        cache.put(content_key(text), Glossary(
+            (GlossaryEntry(sym, (Definition("breathing flow rate", 6),)),), "llm/1:m:h"))
+    cache.close()
+    return str(path)
+
+
+@pytest.mark.parametrize("problem", ["missing", "empty"])
+def test_llm_cache_must_be_an_existing_non_empty_file(tmp_path: Path, problem: str) -> None:
+    path = tmp_path / "typo.jsonl"
+    if problem == "empty":
+        path.write_text("")
+    with pytest.raises(SystemExit):
+        bf.main(["--es-url", "http://127.0.0.1:1", "--index", "i", "--llm-cache", str(path)])
+
+
+def test_apply_with_an_empty_cache_is_refused_before_any_write(tmp_path: Path) -> None:
+    # run() called directly (no argparse): the planning pass still catches it
+    es, rows, _, _ = _llm_index(tmp_path)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    with pytest.raises(SystemExit, match="Nothing was written"):
+        asyncio.run(bf.run(_args(apply=True, llm_cache=str(empty)), es=es))
+    assert es.bulks == [] and es.mappings == []
+
+
+def test_apply_with_a_cache_missing_some_llm_documents_is_refused(tmp_path: Path) -> None:
+    es, rows, text_a, _ = _llm_index(tmp_path)
+    partial = _cache_with(tmp_path, (text_a, "Qb"))  # document b is not in it
+    dry = asyncio.run(bf.run(_args(llm_cache=partial), es=es))
+    assert dry["chunks_llm_replaced"] == sum(r["doc_id"] == "b" for r in rows)
+    with pytest.raises(SystemExit, match="would replace the LLM glossary"):
+        asyncio.run(bf.run(_args(apply=True, llm_cache=partial), es=es))
+    assert es.bulks == [] and es.mappings == []  # nothing written, not even document a
+    out = asyncio.run(bf.run(_args(apply=True, llm_cache=partial, replace_llm=True), es=es))
+    assert out["chunks_written"] > 0
+
+
+def test_apply_with_a_complete_cache_is_not_refused(tmp_path: Path) -> None:
+    es, rows, text_a, text_b = _llm_index(tmp_path)
+    full = _cache_with(tmp_path, (text_a, "Qb"), (text_b, "Cq"))
+    out = asyncio.run(bf.run(_args(apply=True, llm_cache=full), es=es))
+    assert out["dry_run"] is False and out.get("chunks_llm_replaced", 0) == 0
+    assert all(r["metadata"][VERSION_KEY] == "llm/1:m:h" for r in rows)
+
+
+def test_cli_runs_without_llm_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    # argparse applies ``type`` to a string default; omitting --llm-cache must parse
+    seen = {}
+
+    async def fake_run(args, store=None):
+        seen["llm_cache"] = args.llm_cache
+        return {}
+
+    monkeypatch.setattr(bf, "run", fake_run)
+    assert bf.main(["--es-url", "http://127.0.0.1:1", "--index", "i"]) == 0
+    assert seen["llm_cache"] is None

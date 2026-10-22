@@ -20,6 +20,14 @@ Safety:
 * there is no default ES URL and no default index;
 * resumable: a chunk whose stored marker and field already equal what would be
   written is skipped, so a re-run after an interruption only does the rest;
+* an LLM glossary in the index is never replaced by rules output unless
+  ``--replace-llm``. ``--apply`` is refused, before any write, when the run
+  would replace one (``chunks_llm_replaced`` > 0): with no ``--llm-cache`` at
+  all (checked with one count query), or with a cache that misses documents
+  (a full read-only planning pass runs first whenever the index holds
+  ``llm/…`` chunks). ``--llm-cache`` must name an existing, non-empty file, so
+  a typo cannot open as an empty cache. Check ``docs_llm`` /
+  ``chunks_llm_replaced`` in the dry run;
 * ``--refresh-off`` parks ``refresh_interval`` for the run and restores it after
   (``ElasticsearchTextIndex.bulk_load_refresh`` / ``restore_refresh``).
 
@@ -105,9 +113,35 @@ def plan_updates(
         if stored_version == glossary.version and stored_field == rendered:
             counts["chunks_current"] += 1
             continue
+        if str(stored_version or "").startswith("llm/") and not glossary.version.startswith("llm/"):
+            # an LLM glossary in the index that this run would replace by rules
+            counts["chunks_llm_replaced"] += 1
         out.append((str(row["_id"]), rendered, glossary.version))
     counts[f"docs_{'llm' if glossary.version.startswith('llm/') else 'rules'}"] += 1
     return out, counts
+
+
+REPLACE_GUARD_MESSAGE = (
+    "refusing --apply: this run would replace the LLM glossary of {n} chunk(s) in {index!r} "
+    "with rules output (chunks_llm_replaced), because --llm-cache {cache!r} has no record for "
+    "their documents' exact text (a partial or a different corpus's cache). Nothing was "
+    "written. Pass the cache the index was backfilled with, or --replace-llm to replace them "
+    "on purpose."
+)
+
+LLM_GUARD_MESSAGE = (
+    "refusing --apply: {n} chunk(s) in {index!r} carry an LLM glossary (metadata.{key} = llm/…), "
+    "and no --llm-cache was given. Without the cache those documents are re-planned from the "
+    "rules and their LLM glossaries are OVERWRITTEN with rules output. Pass the cache the index "
+    "was backfilled with (--llm-cache <file>), or --replace-llm to replace them on purpose. "
+    "A dry run reports docs_llm and chunks_llm_replaced."
+)
+
+
+async def count_llm_stamped(es: Any, index: str) -> int:
+    """How many chunks in ``index`` are stamped from an LLM glossary. Read-only."""
+    resp = await es.count(index=index, query={"prefix": {f"metadata.{VERSION_KEY}": "llm/"}})
+    return int(getattr(resp, "body", resp).get("count", 0))
 
 
 async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> dict[str, Any]:
@@ -136,6 +170,25 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
 
     try:
         await resolve_exactly(es, args.index)
+        if args.apply and not args.llm_cache and not getattr(args, "replace_llm", False):
+            # Without a cache every llm/-stamped chunk would be re-planned
+            # (rules/… != llm/…), so "the index has any" == "this run would
+            # overwrite some". Checked before the first write.
+            n = await count_llm_stamped(es, args.index)
+            if n:
+                raise SystemExit(LLM_GUARD_MESSAGE.format(n=n, index=args.index, key=VERSION_KEY))
+        elif args.apply and not getattr(args, "replace_llm", False):
+            # A cache was given, but it may miss documents (partial, or another
+            # corpus's): plan everything read-only first, write nothing if any
+            # LLM glossary would be replaced. Skipped when the index has no
+            # llm/-stamped chunk, since then nothing can be replaced.
+            if await count_llm_stamped(es, args.index):
+                replaced = 0
+                async for doc, rows in iter_documents_sorted(es, args.index):
+                    replaced += plan_updates(attacher, doc.text, rows)[1]["chunks_llm_replaced"]
+                if replaced:
+                    raise SystemExit(REPLACE_GUARD_MESSAGE.format(
+                        n=replaced, index=args.index, cache=args.llm_cache))
         if args.apply:
             await es.indices.put_mapping(index=args.index, body=_MAPPING)
             if args.refresh_off and store is not None:
@@ -168,15 +221,31 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
     return result
 
 
+def existing_cache_file(path: str) -> str:
+    """argparse type for ``--llm-cache``: an existing, non-empty file. A typo
+    would otherwise open as an EMPTY cache, every LLM-stamped document would
+    fall back to rules, and the run would replace their glossaries."""
+    if not os.path.isfile(path):
+        raise argparse.ArgumentTypeError(f"--llm-cache {path!r}: no such file")
+    if os.path.getsize(path) == 0:
+        raise argparse.ArgumentTypeError(f"--llm-cache {path!r}: the file is empty")
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--es-url", required=True, help="no default, deliberately")
     p.add_argument("--index", required=True, help="the one index to backfill")
-    p.add_argument("--llm-cache", default="", help="offline LLM glossary cache, read-only")
+    # default=None, not "": argparse runs ``type`` on a string default, so ""
+    # would reject every run that omits the flag.
+    p.add_argument("--llm-cache", default=None, type=existing_cache_file,
+                   help="offline LLM glossary cache, read-only; must exist and be non-empty")
     p.add_argument("--config", default="", help="GlossaryConfig overrides as JSON")
     p.add_argument("--batch-size", type=int, default=500)
     p.add_argument("--apply", action="store_true", help="WRITE. Without it this is a dry run.")
     p.add_argument("--confirm-index", default="", help="must repeat --index when --apply")
+    p.add_argument("--replace-llm", action="store_true",
+                   help="with --apply and no --llm-cache: overwrite llm/-stamped glossaries with rules")
     p.add_argument("--refresh-off", action="store_true",
                    help="park refresh_interval during --apply and restore it after")
     args = p.parse_args(argv)

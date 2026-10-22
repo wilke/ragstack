@@ -96,7 +96,7 @@ def test_merged_prefers_llm_order() -> None:
     assert m.as_dict() == {"Qb": ["breathing flow rate (exhaled volume)", "breathing flow rate"],
                            "λv": ["deactivation rate"]}
     assert [d.offset for d in m.entries[0].definitions] == [5, 40]
-    assert m.version == "llm/1:x:y+rules/2"
+    assert m.version == "llm/1:x:y+rules/3"
 
 
 def test_reassemble_overlapping_chunks_and_gaps() -> None:

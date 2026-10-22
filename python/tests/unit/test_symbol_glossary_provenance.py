@@ -17,7 +17,7 @@ BASE: dict = {"collection": "c", "model": "m", "dim": 8, "chunk_method": "fixed_
 def test_enrichment_recorded_and_does_not_change_spec_hash() -> None:
     plain = make_ingest_manifest(**BASE)
     enriched = make_ingest_manifest(**BASE, enrichment=ENRICH)
-    assert enriched.enrichment["symbol_glossary"]["extractor"] == "rules/2"
+    assert enriched.enrichment["symbol_glossary"]["extractor"] == "rules/3"
     assert enriched.spec_hash == plain.spec_hash == spec_hash(
         "m", 8, chunk_descriptor("fixed_token", 512, 64, None))
     assert enriched.chunk_params == {} == plain.chunk_params
@@ -40,7 +40,7 @@ def test_receipt_enrichment_roundtrip_and_omitted_when_none() -> None:
 
 
 def test_version_key_is_declared_keyword() -> None:
-    assert ms.metadata_problems({"tenant_id": "t", VERSION_KEY: "rules/2"}) == []
+    assert ms.metadata_problems({"tenant_id": "t", VERSION_KEY: "rules/3"}) == []
     assert ms.metadata_problems({"tenant_id": "t", VERSION_KEY: 3}) != []
     props = ms.elasticsearch_metadata_properties()
     assert props[VERSION_KEY]["type"] == "keyword"
