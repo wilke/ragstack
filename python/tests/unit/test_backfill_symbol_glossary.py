@@ -98,7 +98,7 @@ def test_apply_writes_partial_updates_then_is_resumable() -> None:
             assert set(action) == {"update"} and set(doc["doc"]) == {"symbol_glossary", "metadata"}
     last = es.rows[-1]
     assert last["symbol_glossary"] == "Qb — breathing flow rate"
-    assert last["metadata"][VERSION_KEY] == "rules/2" and "content" in last
+    assert last["metadata"][VERSION_KEY] == "rules/3" and "content" in last
     again = asyncio.run(bf.run(_args(apply=True), es=es))
     assert again["chunks_to_update"] == 0 and again["chunks_current"] == again["chunks"]
 
@@ -138,3 +138,43 @@ def test_refuses_an_alias_or_multi_resolution() -> None:
     with pytest.raises(SystemExit):
         asyncio.run(bf.run(_args(apply=True), es=es))
     assert es.bulks == [] and es.mappings == []
+
+
+def test_rules_version_bump_redoes_rules_chunks_but_not_llm_chunks(tmp_path: Path) -> None:
+    """#790: after rules/2 → rules/3, a chunk stamped rules/2 is re-done (even an
+    unchanged or empty field gets the new stamp), while a chunk stamped from the
+    cached LLM glossary — same cache, same validation, same rendering — is
+    current and is skipped."""
+    from ragstack.ingestion.symbol_glossary import (
+        EXTRACTOR_VERSION,
+        Definition,
+        Glossary,
+        GlossaryEntry,
+        SymbolGlossaryAttacher,
+        SymbolGlossaryCache,
+        content_key,
+    )
+
+    rules_text = TEXT
+    llm_text = "where Cq is the quanta\nconcentration. " + "pad " * 30 + "Table: Cq = 30."
+    cache = SymbolGlossaryCache(tmp_path / "g.jsonl", writable=True)
+    cache.put(content_key(llm_text),
+              Glossary((GlossaryEntry("Cq", (Definition("quanta concentration", 6),)),), "llm/1:m:h"))
+    attacher = SymbolGlossaryAttacher(cache=cache)
+
+    def stamped(rows: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+        g = attacher.glossary_for(text)
+        for r in rows:
+            r["symbol_glossary"] = g.for_chunk(r["content"], start_char=r["start_char"]) or None
+            r["metadata"][VERSION_KEY] = g.version
+        return rows
+
+    rules_rows = stamped(_rows("a", rules_text), rules_text)
+    for r in rules_rows:
+        r["metadata"][VERSION_KEY] = "rules/2"  # what the index holds today
+    llm_rows = stamped(_rows("b", llm_text), llm_text)
+    assert EXTRACTOR_VERSION == "rules/3"
+    updates, counts = bf.plan_updates(attacher, rules_text, rules_rows)
+    assert len(updates) == len(rules_rows) and {v for _, _, v in updates} == {"rules/3"}
+    updates, counts = bf.plan_updates(attacher, llm_text, llm_rows)
+    assert updates == [] and counts["chunks_current"] == len(llm_rows) and counts["docs_llm"] == 1

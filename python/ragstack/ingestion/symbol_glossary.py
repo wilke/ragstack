@@ -67,7 +67,7 @@ log = logging.getLogger(__name__)
 #: to canonicalisation, or to how a chunk's field is rendered: it is stamped on
 #: every chunk (``metadata.symbol_glossary_version``) and in the collection
 #: manifest, and the backfill uses it to decide which chunks are already current.
-EXTRACTOR_VERSION = "rules/2"
+EXTRACTOR_VERSION = "rules/3"
 
 #: The per-chunk metadata key carrying the version of the glossary that produced
 #: the chunk's ``symbol_glossary`` field (``rules/1``, ``llm/1:<model>:<hash>``).
@@ -163,6 +163,94 @@ def canonical_map(text: str) -> tuple[str, list[int]]:
 def canonical_text(text: str) -> str:
     """The canonical form of ``text`` (see :func:`canonical_map`)."""
     return canonical_map(text)[0]
+
+
+# A word broken at a line end with a hyphen ("breath-\ning"), or any whitespace
+# run that contains a newline. Anchored at a word start so a long letter run is
+# tried once, not from every character (quadratic otherwise).
+_LINE_BREAK = re.compile(
+    r"(?<![^\W\d_])(?P<left>[^\W\d_]+)-(?P<hws>[^\S\n]*\n[^\S\n]*)(?P<right>[^\W\d_]+)"
+    r"|(?P<ws>\s*\n\s*)"
+)
+
+
+def _fold_line_breaks(text: str, pos: list[int]) -> tuple[str, list[int]]:
+    """Undo the line wrapping of PDF text, carrying the raw-offset map ``pos``
+    along EXACTLY (every kept character keeps its own raw offset; a folded
+    whitespace run becomes one space at the run's first offset).
+
+    * A whitespace run with ONE newline (a wrapped line) becomes a single space.
+      A run with two or more (``\\n\\s*\\n``, a paragraph break) is kept as is,
+      so it still ends a definition (``_DEF_END``, ``_DEF_SPAN``).
+    * A word hyphenated across a single line break, ``left-\\nright``:
+
+      - joined (``breath-\\ning`` → ``breathing``) only when the hyphen sits
+        between two LOWERCASE letters, each side is at least two letters (no
+        typesetter breaks off one letter; ``a-\\nb`` is more likely algebra),
+        AND the joined word occurs elsewhere in
+        the same text unbroken. The document is the dictionary: the rules copy
+        the document's words, so a de-hyphenation must produce a word the
+        document itself spells;
+      - otherwise the hyphen is KEPT and only the break is dropped
+        (``well-\\nknown`` → ``well-known``, ``SARS-\\nCoV`` → ``SARS-CoV``,
+        ``air-\\nborne`` → ``air-borne`` unless the text also says
+        ``airborne``). A real compound split at its hyphen cannot be told from
+        a soft hyphen without a dictionary; keeping the hyphen never invents a
+        word, it only leaves a soft hyphen visible.
+    """
+    if "\n" not in text:
+        return text, pos
+    words: set[str] | None = None
+    out: list[str] = []
+    out_pos: list[int] = []
+    last = 0
+    for m in _LINE_BREAK.finditer(text):
+        if m.group("ws") is not None:
+            ws = m.group("ws")
+            if ws.count("\n") != 1:
+                continue  # a paragraph break: kept verbatim
+            out.append(text[last : m.start()])
+            out_pos.extend(pos[last : m.start()])
+            out.append(" ")
+            out_pos.append(pos[m.start()])
+            last = m.end()
+            continue
+        left, right = m.group("left"), m.group("right")
+        join = False
+        if len(left) >= 2 and len(right) >= 2 and left[-1].islower() and right[0].islower():
+            if words is None:
+                words = {w.casefold() for w in _WORDS.findall(text)}
+            join = (left + right).casefold() in words
+        out.append(text[last : m.end("left")])
+        out_pos.extend(pos[last : m.end("left")])
+        if not join:
+            out.append("-")
+            out_pos.append(pos[m.start("hws") - 1])
+        out.append(right)
+        out_pos.extend(pos[m.start("right") : m.end("right")])
+        last = m.end()
+    if not out:
+        return text, pos
+    out.append(text[last:])
+    out_pos.extend(pos[last:])  # includes the trailing end-offset sentinel
+    return "".join(out), out_pos
+
+
+def definition_map(text: str) -> tuple[str, list[int]]:
+    """``(text, pos)`` the rules match DEFINITIONS on: :func:`canonical_map`,
+    then :func:`_fold_line_breaks` (#790). PDF text keeps the PDF's line breaks,
+    and a definition wrapped across one ("where Qb is the breathing\\nflow
+    rate") was cut at the newline. ``pos`` stays exact, so a definition's raw
+    offset — what positional attachment compares with ``Chunk.start_char`` — is
+    unchanged by the folding.
+
+    Only extraction uses this. Symbol and value matching on chunks
+    (:meth:`Glossary.for_chunk`) needs no folding (their patterns allow any
+    whitespace, newlines included, between symbol, ``=`` and number), and the
+    LLM validation gates (:func:`validate_entries`) keep :func:`canonical_map`
+    unchanged."""
+    canon, pos = canonical_map(text)
+    return _fold_line_breaks(canon, pos)
 
 
 @lru_cache(maxsize=65536)
@@ -280,18 +368,27 @@ _HEAD_NOUNS = (
     "potential|charge|weight|yield|level|index|variance|mean|average"
 )
 _NP_WORD = r"[^\W\d_][\w\-]*"
-# What ends a "where X is DEF" definition: sentence end, a semicolon, a comma
-# that starts the next "and Y is" clause, or a blank line.
-_DEF_SPAN = r"(?P<def>[^.;:\n]{2,200}?)"
-_DEF_END = (
-    r"(?=\s*(?:[.;:](?:\s|$)|,\s*(?:and\s+)?" + _SYMBOL_BODY + r"\s+(?:is|are|denotes)\b"
-    r"|,\s*and\b|\s+and\s+" + _SYMBOL_BODY + r"\s+(?:is|are|denotes)\b|\n\s*\n|$))"
-)
 # Optional function arguments after a symbol: "λv(r)", "Cj(x)".
 _ARGS = r"(?:\s*\([^()\n]{1,20}\))?"
 # Optional "= value [unit]" after a symbol: "where Vb≈500 mL is the volume per
 # breath". No parentheses inside, so "(Cq=30) is the norm" cannot match.
 _VALUE = r"(?:\s*[=≈~]\s*[^\s.;()]{1,40}(?:\s+[^\W\d]{1,6}\d?)?)?"
+# The start of the NEXT definition clause, which ends the current one: "Cp(t)
+# is", "λ (h−1) is", "ρ=ρw/ρa is", "η represents". rules/3 (#790) admits the
+# arguments, value and "represents" that the clause-opening rules admit; before,
+# "…, and Cp(t) is the …" ran on into the next clause, and in PDF text only the
+# line break that happened to fall there had stopped it. The second ``_ARGS``
+# takes "μ=μ(T) is".
+_NEXT_CLAUSE = _SYMBOL_BODY + _ARGS + _VALUE + _ARGS + r"\s+(?:is|are|denotes|represents)\b"
+# What ends a "where X is DEF" definition: sentence end, a semicolon, a comma
+# that starts the next "and Y is" clause, "where/while Y is", or a blank line.
+# A SINGLE line break no longer ends it: extraction runs on line-folded text
+# (:func:`definition_map`), and a paragraph break survives the folding.
+_DEF_SPAN = r"(?P<def>[^.;:\n]{2,200}?)"
+_DEF_END = (
+    r"(?=\s*(?:[.;:](?:\s|$)|,\s*(?:and\s+)?" + _NEXT_CLAUSE
+    + r"|,\s*and\b|\s+(?:and|where|while)\s+" + _NEXT_CLAUSE + r"|\n\s*\n|$))"
+)
 _COPULA = (
     r"(?:is|are|denotes|denote|represents|represent|stands\s+for|is\s+defined\s+as"
     r"|is\s+given\s+by)"
@@ -358,6 +455,9 @@ _AFTER_NUMBER = re.compile(r"\d\s*$")
 # naming ("the air exchange rate, λs(r)<λa"; "the adjustment time, λc−1").
 _RELATION_AFTER = re.compile(r"\s*(?:[<>≤≥≪≫≲≳∝]|[−-]\s*1\b)")
 _SENTENCE_END = re.compile(r"[.;](?:\s|$)|\n\s*\n")
+# How far past a "where" definition its continuation clauses are looked for:
+# ten clauses of a full definition span each, far more than any sentence holds.
+_CONTINUATION_REACH = 2500
 
 
 def _clean_definition(raw: str, max_words: int) -> str:
@@ -644,7 +744,7 @@ def extract_glossary(text: str, config: GlossaryConfig | None = None) -> Glossar
     cfg = config or DEFAULT_CONFIG
     if not text or not text.strip():
         return Glossary((), EXTRACTOR_VERSION)
-    canon, pos = canonical_map(text)
+    canon, pos = definition_map(text)
     found: list[tuple[int, str, str]] = []
 
     def add(offset: int, sym: str, raw: str) -> None:
@@ -655,11 +755,17 @@ def extract_glossary(text: str, config: GlossaryConfig | None = None) -> Glossar
             found.append((pos[min(offset, len(pos) - 1)], sym, defn))
 
     if cfg.rule_where:
+        # Sentence ends, found once: searching for the next one per match is
+        # quadratic on a long run without one (rules/3 folds single line
+        # breaks, so such runs are longer than they were).
+        ends = [e.start() for e in _SENTENCE_END.finditer(canon)]
         for m in _WHERE.finditer(canon):
             add(m.start("sym"), m.group("sym"), m.group("def"))
             # Continuation clauses of the same sentence: "…, and pm is the …".
-            end = _SENTENCE_END.search(canon, m.end())
-            for c in _CONTINUATION.finditer(canon, m.end("def"), end.start() if end else len(canon)):
+            # Bounded, so a sentence-less run cannot make each match rescan it.
+            i = bisect.bisect_left(ends, m.end())
+            stop = min(ends[i] if i < len(ends) else len(canon), m.end("def") + _CONTINUATION_REACH)
+            for c in _CONTINUATION.finditer(canon, m.end("def"), stop):
                 add(c.start("sym"), c.group("sym"), c.group("def"))
     if cfg.rule_is_the:
         for m in _IS_THE.finditer(canon):

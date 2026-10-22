@@ -142,7 +142,7 @@ def test_deterministic_and_sorted() -> None:
     a, b = extract_glossary(text), extract_glossary(text)
     assert a == b
     assert [e.symbol for e in a.entries] == sorted(e.symbol for e in a.entries)
-    assert a.version == EXTRACTOR_VERSION == "rules/2"
+    assert a.version == EXTRACTOR_VERSION == "rules/3"
 
 
 @pytest.mark.parametrize(
@@ -293,7 +293,7 @@ def test_attacher_rules_carries_definition_to_the_value_chunk() -> None:
     result = SymbolGlossaryAttacher().apply([doc], chunks)
     assert "Qb — breathing flow rate" in chunks[1].symbol_glossary
     assert "Qb" not in chunks[1].content.split("Qb=")[0]  # the value chunk never said it
-    assert all(c.metadata[VERSION_KEY] == "rules/2" for c in chunks)
+    assert all(c.metadata[VERSION_KEY] == "rules/3" for c in chunks)
     assert result.docs_rules == 1 and result.docs_cached == 0
     # Value-only (the default): the defining chunk mentions Qb but states no
     # value, so only the caption chunk carries the glossary.
@@ -307,7 +307,7 @@ def test_attacher_symbol_free_chunk_gets_empty_but_is_stamped() -> None:
     doc, chunks = _doc_and_chunks("plain prose " * 30)
     SymbolGlossaryAttacher().apply([doc], chunks)
     assert [c.symbol_glossary for c in chunks] == ["", ""]
-    assert all(c.metadata[VERSION_KEY] == "rules/2" for c in chunks)
+    assert all(c.metadata[VERSION_KEY] == "rules/3" for c in chunks)
 
 
 def test_attacher_prefers_cache_and_revalidates(tmp_path) -> None:
@@ -330,7 +330,7 @@ def test_attacher_falls_back_to_rules_on_cache_miss(tmp_path) -> None:
     att = SymbolGlossaryAttacher(cache=SymbolGlossaryCache(tmp_path / "empty.jsonl"))
     doc, chunks = _doc_and_chunks(WHERE)
     att.apply([doc], chunks)
-    assert chunks[0].metadata[VERSION_KEY] == "rules/2"
+    assert chunks[0].metadata[VERSION_KEY] == "rules/3"
 
 
 def test_attacher_from_mode(tmp_path) -> None:
@@ -342,7 +342,7 @@ def test_attacher_from_mode(tmp_path) -> None:
     with pytest.raises(ValueError):
         attacher_from_mode("llm")
     prov = attacher_from_mode("rules").provenance()  # type: ignore[union-attr]
-    assert prov["symbol_glossary"]["extractor"] == "rules/2"
+    assert prov["symbol_glossary"]["extractor"] == "rules/3"
 
 
 def test_chunk_dump_omits_empty_glossary() -> None:

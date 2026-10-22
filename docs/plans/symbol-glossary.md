@@ -25,7 +25,8 @@ definition and the value sit in different chunks.
 ## What was built
 
 - **Extraction, two ways (owner decision 2026-10-21: both):**
-  - `ingestion/symbol_glossary.py`: deterministic rules, `rules/1`. The rules cover:
+  - `ingestion/symbol_glossary.py`: deterministic rules (`rules/1`; now `rules/3`, see
+    [rules/3](#rules3-definitions-wrapped-across-a-line-790)). The rules cover:
     - `where X is …` clauses and their continuations;
     - appositives (`the … radius r̄`);
     - `X … is the …`;
@@ -371,6 +372,73 @@ no BM25 number from before the dedup exists on this query set.
    without a backfill: `symbol_glossary` is set on value-stating chunks, and the receipt
    records `enrichment.symbol_glossary`.
 
+## rules/3: definitions wrapped across a line (#790)
+
+**The bug.** PDF text keeps the PDF's line breaks, and `rules/2` treated a single newline
+as the end of a definition: `where Qb is the breathing\nflow rate.` gave no entry.
+
+**What changed in `rules/3`:**
+- **Line folding.** Definitions are matched on `definition_map(text)`: the canonical text
+  with every whitespace run that holds ONE newline folded to a single space. A run with two
+  or more newlines (a paragraph break) is kept, so it still ends a definition.
+- **De-hyphenation, conservative.** `left-\nright` is joined only when the hyphen sits
+  between two lowercase letters, each fragment has at least two letters, and the joined
+  word occurs unbroken elsewhere in the same document (`breath-\ning` becomes `breathing`
+  if the paper also says "breathing"). Otherwise the hyphen is kept and only the break is
+  dropped (`well-\nknown` → `well-known`, `SARS-\nCoV` → `SARS-CoV`, `air-\nborne` →
+  `air-borne`). A compound split at its hyphen cannot be told from a soft hyphen without a
+  dictionary. Keeping the hyphen never invents a word; at worst a soft hyphen stays visible.
+- **Offsets stay exact.** The raw-offset map is carried through the folding character by
+  character, so a definition's offset, which positional attachment compares with
+  `start_char`, is the raw offset as before.
+- **The next clause ends a definition**, including the forms the clause-opening rules accept:
+  `…, and Cp(t) is`, `λ (h−1) is`, `μ=μ(T) is`, `η represents`, `while τd is`, `where μt is`.
+  On wrapped text the line break used to stop these run-ons by accident. Without this,
+  folding lost about 10 definitions that `rules/2` had found.
+- **Continuation clauses are searched within 2,500 characters**, against precomputed
+  sentence ends. A long run with no sentence end was quadratic (3.5 s on a synthetic
+  80k-character input; now 0.6 s).
+- **Unchanged:** chunk matching (`for_chunk`). The symbol and value patterns already allow any
+  whitespace, newlines included, between symbol, `=` and number (`Qb =\n0.5` attaches; tests
+  added). Also unchanged: the LLM validation gates (`validate_entries` still runs on
+  `canonical_map`), so a cached `llm/…` glossary validates and renders exactly as before.
+
+**Backfill.** A chunk is current only when its stamp and its field both equal what would be
+written. So after the bump every `rules/2`-stamped chunk is rewritten with `rules/3`, and an
+`llm/…`-stamped chunk is skipped, provided the run passes the same `--llm-cache`. Without
+the cache, those documents fall back to rules and are rewritten. That was already true before
+this change.
+
+**Measured on dev openchia** (read-only; 285 documents reassembled from 16,084
+chunks the way the backfill does; both versions run offline on the same text):
+
+| | rules/2 | rules/3 |
+|---|---|---|
+| glossary entries (doc × symbol) | 690 | 971 |
+| definitions | 789 | 1,142 |
+| documents with ≥1 entry | 152 | 156 |
+| chunks that would carry a glossary (value-only) | 272 | 344 |
+| definitions at the 12-word cap | 1 | 112 |
+
+- 285 doc-symbols are new, and 4 are lost. Of the new definitions, about 265 span a folded
+  line break.
+- **Longer and worse.** 111 new definitions run to the 12-word cap. In a sample of 45, about
+  a quarter ran on into the next symbol's clause (`air density, u→ is the air flow rate, …`).
+  That happens where `_NEXT_CLAUSE` cannot read the next symbol (arrows, primes, spaced
+  subscripts such as `M w`). The rest are long but correct. Across 265 wrapped spans, one
+  definition ran on across a line into the next sentence.
+- The four lost symbols:
+  - `η` hits the appositive rule's greedy phrase. `mask-filtration efficiency η` is now
+    one word shorter, so the phrase overshoots to the next head noun.
+  - `Eh` is the symbol in `V˙Eh is …`. The next-clause pattern cannot read the dotted
+    symbol, so the previous definition runs on over it.
+  - Two were wrong under `rules/2` anyway: a mispaired "respectively", and a garbled
+    equation.
+- Live impact on openchia is small: 16,012 of its chunks are stamped from the LLM cache, and
+  only 72 (3 documents) are stamped `rules/2`. The gain is for new uploads, which get
+  `rules` by default since #784. On GoWe they get the tools image's rules version until a
+  tools tag carries `rules/3`.
+
 ## Follow-ups
 
 - JATS `<def-list>` in the JATS extractor, emitted as a per-document table the pipeline
@@ -384,3 +452,6 @@ no BM25 number from before the dedup exists on this query set.
 - Merge the workers' receipt `enrichment` records into the GoWe-path manifest.
 - Add non-value queries to the eval before any tenant other than dev enables the boost
   (Tests still needed, item 1).
+- rules/3 run-ons: end a definition at `, <token> is the` for symbols `_SYMBOL_BODY`
+  cannot read (`u→`, `u′2`, `M w`), and make the appositive phrase non-greedy (#790).
+- A tools tag so GoWe ingests stamp `rules/3`.

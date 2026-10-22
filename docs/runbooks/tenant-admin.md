@@ -1128,6 +1128,11 @@ PYTHONPATH=. python scripts/backfill_symbol_glossary.py \
     --apply --confirm-index ragstack_lib_openchia_<model>_<chunker>_<hash>
 ```
 
+After an extractor version bump (`rules/2` → `rules/3`, #790), the dry run counts
+every `rules/…`-stamped chunk as to-update, because the stamp changes. Pass the same
+`--llm-cache` as the first backfill. Then `llm/…`-stamped chunks stay current and are
+skipped; without the cache, those documents fall back to rules.
+
 There is no default URL or index. The sizing note in the script header is
 authoritative: a 16.5k-chunk collection takes seconds; a very large index is
 hours, at least twice its size in transient disk, and segment churn like a
