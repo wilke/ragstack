@@ -25,8 +25,8 @@ class: CommandLineTool
 
 requirements:
   DockerRequirement:
-    dockerPull: ragstack-tools-v1.6.8-b1.sif
-    dockerImageId: ragstack-tools-v1.6.8-b1.sif
+    dockerPull: ragstack-tools-v1.6.10-b1.sif
+    dockerImageId: ragstack-tools-v1.6.10-b1.sif
 
 baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
 
