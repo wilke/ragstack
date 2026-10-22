@@ -1,4 +1,5 @@
-"""A dependency-free stand-in for the embedding sidecar, for self-booted runs.
+"""A dependency-free stand-in for the embedding AND crossencoder sidecars, for
+self-booted runs.
 
 ``run_authz_keyed.sh`` pins every store and sidecar URL at ``127.0.0.1:1``
 (#432) because on the dev host the real ports carry live services. That is the
@@ -12,6 +13,15 @@ So the runner boots this: ``POST /embed`` speaking the sidecar's wire contract
 rather than a model. It is emphatically **not** a model: it says nothing about
 retrieval quality, only that the plumbing carries a vector end to end. Retrieval
 quality is an L-layer claim (use-case matrix F5), never a conformance one.
+
+Since #751 PR-3 it also speaks the crossencoder sidecar's contract — ``POST
+/rerank`` returning ``{scores, indices}`` in the ORIGINAL order (score = 1/(i+1),
+so a rerank is a visible no-op), ``GET /ready``/``/live`` as #760 defines them —
+so the keyed boot can run with ``RERANK_ENABLED=true`` and the ``degraded``
+surface (#748) is reachable from a black-box test: ``POST /__conformance/rerank
+{"mode": "fail"}`` makes ``/rerank`` answer 500 and ``/ready`` answer 503
+``{"status": "fail"}`` until ``{"mode": "ok"}`` restores it. That control route
+is test furniture; the real sidecars have nothing like it.
 
 Determinism (same text → same vector) is defensive rather than load-bearing
 today: the self-booted collections are empty, so no conformance assertion
@@ -35,6 +45,8 @@ import struct
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+MODEL_NAME = "conformance-stub"
+
 
 def _vector(text: str, dim: int) -> list[float]:
     """A deterministic unit-ish vector for *text*.
@@ -56,6 +68,9 @@ def _vector(text: str, dim: int) -> list[float]:
 
 class _Handler(BaseHTTPRequestHandler):
     dim = 8
+    #: "ok" | "fail" — flipped by POST /__conformance/rerank. Class-level so
+    #: every handler thread sees the same mode.
+    rerank_mode = "ok"
 
     def _send(self, status: int, body: dict) -> None:
         payload = json.dumps(body).encode("utf-8")
@@ -65,23 +80,66 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _body(self) -> dict | None:
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._send(400, {"detail": "body is not JSON"})
+            return None
+        return data if isinstance(data, dict) else {}
+
     def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
-        if self.path.rstrip("/") in ("/health", "/healthz", ""):
-            self._send(200, {"status": "ok", "stub": True, "dim": self.dim})
+        path = self.path.rstrip("/")
+        if path == "/live":
+            self._send(200, {"status": "ok"})
+        elif path in ("/health", "/healthz", "/ready", ""):
+            # #760 semantics: 200 ok / 503 {"status": "fail", …}. /health is an
+            # alias of /ready on the real sidecars, so it is one here too.
+            if _Handler.rerank_mode == "fail":
+                self._send(503, {"status": "fail", "model": MODEL_NAME, "loaded": True,
+                                 "error": "RuntimeError",
+                                 "detail": "conformance stub forced to fail"})
+            else:
+                self._send(200, {"status": "ok", "model": MODEL_NAME, "loaded": True,
+                                 "stub": True, "dim": self.dim})
         else:
             self._send(404, {"detail": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
-        if self.path.rstrip("/") != "/embed":
+        path = self.path.rstrip("/")
+        if path == "/embed":
+            body = self._body()
+            if body is None:
+                return
+            texts = body.get("texts") or []
+            self._send(200, {"embeddings": [_vector(str(t), self.dim) for t in texts]})
+        elif path == "/rerank":
+            body = self._body()
+            if body is None:
+                return
+            if _Handler.rerank_mode == "fail":
+                self._send(500, {"detail": "conformance stub forced to fail"})
+                return
+            docs = body.get("documents") or []
+            top_k = body.get("top_k")
+            n = len(docs) if top_k is None else min(int(top_k), len(docs))
+            # Original order, descending scores: a rerank that changes nothing,
+            # which is exactly as much as a stub may claim.
+            self._send(200, {"scores": [1.0 / (i + 1) for i in range(n)],
+                             "indices": list(range(n))})
+        elif path == "/__conformance/rerank":
+            body = self._body()
+            if body is None:
+                return
+            mode = body.get("mode")
+            if mode not in ("ok", "fail"):
+                self._send(400, {"detail": "mode must be ok or fail"})
+                return
+            _Handler.rerank_mode = mode
+            self._send(200, {"mode": mode})
+        else:
             self._send(404, {"detail": "not found"})
-            return
-        length = int(self.headers.get("Content-Length") or 0)
-        try:
-            texts = json.loads(self.rfile.read(length) or b"{}").get("texts") or []
-        except json.JSONDecodeError:
-            self._send(400, {"detail": "body is not JSON"})
-            return
-        self._send(200, {"embeddings": [_vector(str(t), self.dim) for t in texts]})
 
     def log_message(self, fmt: str, *args: object) -> None:
         """Silence per-request logging — the runner's log is for the API."""
@@ -91,8 +149,8 @@ def main(argv: list[str]) -> int:
     port = int(argv[1]) if len(argv) > 1 else 0
     _Handler.dim = int(argv[2]) if len(argv) > 2 else 8
     server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    print(f"stub-embedding: listening on 127.0.0.1:{server.server_port} dim={_Handler.dim}",
-          flush=True)
+    print(f"stub-sidecar: listening on 127.0.0.1:{server.server_port} dim={_Handler.dim} "
+          f"(embed + rerank)", flush=True)
     server.serve_forever()
     return 0
 
