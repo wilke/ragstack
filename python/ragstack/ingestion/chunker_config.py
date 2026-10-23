@@ -190,12 +190,17 @@ def build_chunker(
     breakpoint_max_tokens: int | None = None,
     breakpoint_token_counter: TokenCounter | None = None,
     max_breakpoint_sentences: int | None = 3000,
+    size_unit: str = "chars",
     on_warn: Callable[[str], None] | None = None,
 ) -> tuple[object, TokenCounter, int]:
     """Construct a chunker with its token counter + budget resolved.
 
     ``max_tokens`` is the ``--chunk-max-tokens`` override (the *model window*);
-    ``None`` auto-detects from ``base_url``. Returns
+    ``None`` auto-detects from ``base_url``. ``size_unit`` (``sentence``/``words``)
+    is the ``--chunk-size-unit`` flag: ``"chars"`` (default) keeps the historical
+    behaviour, in which ``chunk_size`` is unused because a budget is always
+    resolved here; ``"tokens"`` makes ``chunk_size`` a token budget capped at the
+    resolved window. Returns
     ``(chunker, token_counter, resolved_max_tokens)`` — the counter/budget are
     returned so callers can reuse them without re-deriving. The semantic-only
     breakpoint args are passed straight through to :func:`make_chunker`.
@@ -219,5 +224,6 @@ def build_chunker(
         breakpoint_max_tokens=breakpoint_max_tokens,
         breakpoint_token_counter=breakpoint_token_counter,
         max_breakpoint_sentences=max_breakpoint_sentences,
+        size_unit=size_unit,
     )
     return chunker, token_counter, resolved_max
