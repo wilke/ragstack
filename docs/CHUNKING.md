@@ -280,13 +280,27 @@ chunks have to fit inside it.
   therefore produce chunks close to the model window (about 4,080 tokens for
   SFR), not *size* characters, and `make_chunker` logs a warning saying so.
   This default is kept so that existing invocations chunk exactly as before.
-  To get *size*-token chunks, pass `size_unit="tokens"`
-  (`--chunk-size-unit tokens` on `ingest_jsonl.py`, `ingest_shard.py` and
-  `embed_shard.py`): the budget becomes min(*size*, model window − 16), and it is
-  used for both the packing and the split of a single over-long sentence or
-  word. The GoWe workflows do not expose this flag yet, and `size_unit` is not
-  part of the collection's build spec, so it does not change the descriptor or
-  `spec_hash`.
+  To get *size*-token chunks, use `size_unit="tokens"`: the budget becomes
+  min(*size*, model window − 16), and it is used for both the packing and the
+  split of a single over-long sentence or word. Where it comes from depends on
+  the tool:
+  - **`ingest_shard.py`** (the GoWe worker, which writes into a registry
+    collection) reads it from the collection's `chunk.params` as
+    `"size_unit": "tokens"`, and has no flag, so it cannot contradict the
+    collection. That makes the unit part of the collection's
+    [identity](#a-collection-keeps-its-method-for-life): `chunk_params` is in
+    the chunk descriptor and the `spec_hash`. It is read only for
+    `sentence`/`words`. A bad value fails the shard with a message naming the
+    key. If no unit is recorded, the unit is `chars`.
+  - **`ingest_jsonl.py`** takes `--chunk-size-unit tokens`. When it writes into
+    a registry collection, a flag that contradicts the unit the entry records
+    is refused with exit 2. An entry that records none counts as `chars`.
+  - **`embed_shard.py`** takes `--chunk-size-unit tokens`. It writes an
+    embedding file, not a collection.
+
+  The GoWe workflows do not pass a unit yet. Whether the API accepts
+  `size_unit` in `chunk.params` at create time is a separate change
+  ([#647](https://github.com/wilke/ragstack/issues/647)).
 
 ## Recommendations
 

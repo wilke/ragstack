@@ -48,12 +48,8 @@ import httpx
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
-from ragstack.ingestion.chunker_config import (
-    CHUNK_SIZE_UNIT_CHOICES,
-    CHUNK_SIZE_UNIT_HELP,
-    build_chunker,
-    needs_embed_fn,
-)
+from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
+from ragstack.ingestion.chunkers import SIZE_UNITS
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.loaders import JsonlLoader
@@ -117,6 +113,42 @@ def _semantic_params(spec) -> dict:
     return out
 
 
+#: The methods whose ``chunk_size`` unit is selectable (#318 P1).
+_SIZE_UNIT_METHODS = ("sentence", "words")
+
+
+def _size_unit(spec, method: str) -> str:
+    """What ``chunk_size`` counts, **from the registry entry** — never a CLI flag.
+
+    ``size_unit`` is collection identity: the same method/size/overlap gives ~8x
+    different chunks under ``"chars"`` and ``"tokens"`` on this tool's path (which
+    always resolves a token budget). Same rule as :func:`_semantic_params`: a
+    second source for an identity value is how #609 happened, so the entry's
+    ``chunk_params["size_unit"]`` is the one source. Because ``chunk_params`` is
+    part of ``CollectionSpec.chunk_descriptor()`` and so of ``spec_hash``, this
+    also puts the unit inside the ADR-0002 build-spec guard.
+
+    Read only for ``sentence``/``words``. ``create_collection`` persists
+    ``chunk_params`` for any method but validates them only for the methods that
+    use them, so a ``fixed`` collection can legitimately carry junk here — reading
+    it unconditionally would refuse a shard on the path every current collection
+    uses. Absent (or no spec) → ``"chars"``, the historical behaviour. A bad value
+    raises here, naming the key, rather than mid-shard.
+    """
+    if method not in _SIZE_UNIT_METHODS or spec is None:
+        return "chars"
+    params = dict(getattr(spec, "chunk_params", None) or {})
+    unit = params.get("size_unit")
+    if unit is None:
+        return "chars"
+    if unit not in SIZE_UNITS:
+        raise SystemExit(
+            f"collection chunk_params['size_unit'] must be one of "
+            f"{', '.join(SIZE_UNITS)}; got {unit!r}"
+        )
+    return str(unit)
+
+
 def _build_chunker(args, spec=None, embed_fn=None):
     """Chunker via the shared factory (fixed_token token-window included).
 
@@ -135,7 +167,7 @@ def _build_chunker(args, spec=None, embed_fn=None):
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
         embed_fn=embed_fn,
-        size_unit=getattr(args, "chunk_size_unit", "chars"),
+        size_unit=_size_unit(spec, args.chunk_method),
         # Only for the methods that HAVE semantic params. `_validate_chunk`
         # range-checks `params` solely for the semantic methods, but
         # `create_collection` persists them for any method — so a `fixed`
@@ -368,8 +400,6 @@ def parse_args(argv=None):
                    help="concurrent breakpoint embed calls per process (semantic only)")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)
-    p.add_argument("--chunk-size-unit", choices=CHUNK_SIZE_UNIT_CHOICES,
-                   default="chars", help=CHUNK_SIZE_UNIT_HELP)
     p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
                    default="hf", help="token counter backend (fixed_token forces hf)")
     p.add_argument("--chunk-max-tokens", type=int, default=None,

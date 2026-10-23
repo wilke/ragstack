@@ -1185,6 +1185,48 @@ async def run(
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
 
 
+def _refuse_size_unit_mismatch(args: argparse.Namespace, target: Any) -> None:
+    """Refuse a ``--chunk-size-unit`` that contradicts the registry entry (#318).
+
+    ``size_unit`` is collection identity (same method/size/overlap, ~8x different
+    chunks on this path, which always resolves a token budget), and the entry
+    records it in ``chunk_params["size_unit"]`` — which ``ingest_shard.py`` reads
+    as its one source. ``IngestTarget.check_build`` compares method/size/overlap
+    only, so without this a ``tokens`` run would pass the ADR-0002 guard into a
+    ``chars`` collection (or the reverse) and mix two chunkings in one index.
+
+    Only ``sentence``/``words`` read the unit. An entry that records none means
+    ``chars`` — the historical behaviour every existing collection was built
+    with — so on an existing entry ``--chunk-size-unit tokens`` is refused
+    unless the entry says ``tokens``. Exits 2 like ``resolve_or_exit``.
+    """
+    if target is None or args.chunk_method not in ("sentence", "words"):
+        return
+    params = dict(getattr(target.spec, "chunk_params", None) or {})
+    recorded = params.get("size_unit")
+    entry_unit = "chars" if recorded is None else recorded
+    if entry_unit not in CHUNK_SIZE_UNIT_CHOICES:
+        print(
+            f"error: collection {target.collection_id!r} chunk_params['size_unit'] "
+            f"must be one of {', '.join(CHUNK_SIZE_UNIT_CHOICES)}; got {recorded!r}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    flag = getattr(args, "chunk_size_unit", "chars")
+    if flag != entry_unit:
+        print(
+            f"error: refusing to ingest into collection {target.collection_id!r}: "
+            f"--chunk-size-unit {flag} contradicts the registry entry, which records "
+            f"size_unit={entry_unit!r}"
+            f"{'' if recorded is not None else ' (none recorded, so chars)'}. "
+            f"The unit is part of the collection's identity (ADR-0002); match the "
+            f"entry, or create a collection whose chunk params say "
+            f"size_unit={flag!r}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("input", type=Path, help="JSONL file (one {text,path,metadata} per line)")
@@ -1375,6 +1417,7 @@ def main() -> None:
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )
+    _refuse_size_unit_mismatch(args, target)
     asyncio.run(run(args, target))
 
 
