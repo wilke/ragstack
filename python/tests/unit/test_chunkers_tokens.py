@@ -153,9 +153,11 @@ def test_token_overlap_reemits_trailing_units():
     counter = WordTokenCounter()
     doc = _doc(_sentences(8, words_each=3))  # 8 sentences x 3 = 24 tokens
     # Each sentence is 16 chars; an overlap budget of 20 chars re-emits one whole
-    # trailing sentence on the token path (char-budget overlap semantics).
+    # trailing sentence on the token path (char-budget overlap semantics). The
+    # token path is size_unit="tokens" (#318): under "chars", max_tokens is only a
+    # cap, and its re-packed pieces tile without overlap.
     chunker = SentenceChunker(
-        chunk_size=512, chunk_overlap=20, max_tokens=6, token_counter=counter
+        chunk_size=6, chunk_overlap=20, size_unit="tokens", token_counter=counter
     )
     chunks = chunker.chunk(doc)
     assert len(chunks) > 1
@@ -180,10 +182,10 @@ def test_token_overlap_honors_chunk_overlap_magnitude():
     counter = WordTokenCounter()
     doc = _doc(_sentences(12, words_each=3))  # 12 sentences x 16 chars each
     small = SentenceChunker(
-        chunk_size=512, chunk_overlap=5, max_tokens=9, token_counter=counter
+        chunk_size=9, chunk_overlap=5, size_unit="tokens", token_counter=counter
     ).chunk(doc)
     large = SentenceChunker(
-        chunk_size=512, chunk_overlap=40, max_tokens=9, token_counter=counter
+        chunk_size=9, chunk_overlap=40, size_unit="tokens", token_counter=counter
     ).chunk(doc)
     # Both stay within budget and reconstruct.
     assert all(counter.count(c.content) <= 9 for c in small)

@@ -138,11 +138,10 @@ def shard_refusal(
 #: say the same thing (#318 P1). See :data:`ragstack.ingestion.chunkers.SIZE_UNITS`.
 CHUNK_SIZE_UNIT_CHOICES: tuple[str, ...] = SIZE_UNITS
 CHUNK_SIZE_UNIT_HELP = (
-    "what --chunk-size counts for sentence/words: 'chars' (default, the historical "
-    "behaviour -- with the token budget this tool always resolves, --chunk-size is "
-    "NOT used and chunks fill to the model window) or 'tokens' (--chunk-size is a "
-    "token budget, capped at the window; a single sentence/word longer than it is "
-    "split). --chunk-overlap stays chars. Ignored by other methods."
+    "what --chunk-size counts for sentence/words: 'chars' (default) or 'tokens'. "
+    "Either way the model window is a cap: a chunk over it is re-packed at "
+    "sentence/word boundaries, and a single sentence/word longer than the budget "
+    "is split. --chunk-overlap stays chars. Ignored by other methods."
 )
 
 
@@ -209,10 +208,8 @@ def build_chunker(
 
     ``max_tokens`` is the ``--chunk-max-tokens`` override (the *model window*);
     ``None`` auto-detects from ``base_url``. ``size_unit`` (``sentence``/``words``)
-    is the ``--chunk-size-unit`` flag: ``"chars"`` (default) keeps the historical
-    behaviour, in which ``chunk_size`` is unused because a budget is always
-    resolved here; ``"tokens"`` makes ``chunk_size`` a token budget capped at the
-    resolved window. Returns
+    is what ``chunk_size`` counts: ``"chars"`` (default) or ``"tokens"``; the
+    resolved window is a cap under both. Returns
     ``(chunker, token_counter, resolved_max_tokens)`` — the counter/budget are
     returned so callers can reuse them without re-deriving. The semantic-only
     breakpoint args are passed straight through to :func:`make_chunker`.

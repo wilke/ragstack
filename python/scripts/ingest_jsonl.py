@@ -599,12 +599,13 @@ async def run(
             # Threshold changes which docs fall back to fixed_token, changing spans.
             max_breakpoint_sentences=args.semantic_max_sentences,
             chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
-            # Only when non-default, so every existing cache keeps its key: a
-            # tokens run packs to a different budget, so it must never reuse
-            # spans segmented under chars (or vice versa).
+            # sentence/words only (other methods keep their keys). Their output
+            # changed under #318 — a token budget used to replace chunk_size and
+            # now caps it — so a pre-#318 cached segmentation must not be reused,
+            # and a tokens run must not reuse a chars one (or vice versa).
             **(
-                {"size_unit": "tokens"}
-                if getattr(args, "chunk_size_unit", "chars") == "tokens" else {}
+                {"size_unit": getattr(args, "chunk_size_unit", "chars"), "pack": "318"}
+                if args.chunk_method in ("sentence", "words") else {}
             ),
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)

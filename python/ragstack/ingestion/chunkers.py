@@ -17,7 +17,6 @@ deterministic-id contract above.
 """
 from __future__ import annotations
 
-import logging
 import math
 import re
 import sys
@@ -33,8 +32,6 @@ from ragstack.models import Chunk, Document
 # than the async Embedder protocol. ``api/deps.py`` bridges the configured
 # async embedder into this shape.
 EmbedFn = Callable[[Sequence[str]], Sequence[Sequence[float]]]
-
-log = logging.getLogger(__name__)
 
 #: How the sentence/word chunkers measure a chunk against the token budget.
 #:
@@ -65,18 +62,18 @@ def _validate_budget_mode(budget_mode: str) -> str:
 
 #: What ``chunk_size`` counts for the sentence/word chunkers (issue #318 P1).
 #:
-#: ``chars``  — DEFAULT, and byte-identical to the behaviour before this knob
-#:              existed: with no token budget, pack whole units to ``chunk_size``
-#:              chars; with a token budget (``max_tokens`` + ``token_counter``),
-#:              pack to ``max_tokens`` and **ignore** ``chunk_size`` entirely.
-#:              That second half is the defect #318 reports — kept as the default
-#:              because flipping it re-sizes (~8x the chunk count) every existing
-#:              ``sentence``/``words`` invocation, which is a collection-identity
-#:              change, not a bug fix.
-#: ``tokens`` — OPT-IN: ``chunk_size`` is a token budget. Pack to
+#: ``chars``  — DEFAULT: pack whole units to ``chunk_size`` chars. With a token
+#:              budget (``max_tokens`` + ``token_counter``) that budget is a CAP:
+#:              a chunk over it is re-packed at unit boundaries to fit (see
+#:              :func:`_pack_spans`). Without one, byte-identical to the original
+#:              char packing.
+#: ``tokens`` — ``chunk_size`` is a token budget. Pack to
 #:              ``min(chunk_size, max_tokens)`` (or ``chunk_size`` with no cap),
 #:              and hard-split a single over-budget unit at that SAME budget.
-#:              Requires a ``token_counter``. ``chunk_overlap`` stays in chars.
+#:              Requires a ``token_counter``.
+#:
+#: ``chunk_overlap`` is chars under both. (The pre-#318 behaviour — a token
+#: budget silently replacing ``chunk_size`` — is gone; see :func:`_pack_spans`.)
 SIZE_UNITS: tuple[str, ...] = ("chars", "tokens")
 DEFAULT_SIZE_UNIT = "chars"
 
@@ -510,20 +507,15 @@ class SentenceChunker:
 
     ``chunk_size == -1`` disables chunking (the whole document is one chunk).
 
-    When ``max_tokens`` + ``token_counter`` are supplied, packing is driven by the
-    token budget instead of the char budget, and any single over-budget sentence is
-    hard-split by tokens. With ``max_tokens`` None the char-budget behaviour is
-    unchanged. ``budget_mode`` selects how a chunk is measured against that token
-    budget — ``"joined"`` (default: fill to the budget on the joined text, then cut
-    back to a sentence boundary) or ``"summed"`` (legacy, under-filling); see
-    :func:`_pack_spans_tokens`. It is ignored when there is no token budget.
-
-    ``size_unit`` says what ``chunk_size`` counts (see :data:`SIZE_UNITS`).
-    ``"chars"`` (default) is the historical behaviour — note that on the token
-    path it means ``chunk_size`` is **not used at all** (packing goes to
-    ``max_tokens``). ``"tokens"`` makes ``chunk_size`` a token budget, capped at
-    ``max_tokens`` when one is set, and requires a ``token_counter``.
-    ``chunk_overlap`` is chars in both units.
+    ``size_unit`` says what ``chunk_size`` counts (see :data:`SIZE_UNITS`):
+    ``"chars"`` (default) or ``"tokens"`` (requires a ``token_counter``).
+    ``chunk_overlap`` is chars in both. When ``max_tokens`` + ``token_counter``
+    are supplied, ``max_tokens`` is a cap in both units: no chunk exceeds it, and
+    a sentence is split only when it alone is over the cap (see
+    :func:`_pack_spans`). ``budget_mode`` (``size_unit="tokens"`` only) selects
+    how a chunk is measured against the token budget — ``"joined"`` (default:
+    fill to the budget on the joined text, then cut back to a sentence boundary)
+    or ``"summed"`` (legacy, under-filling); see :func:`_pack_spans_tokens`.
     """
 
     def __init__(
@@ -590,18 +582,11 @@ class WordChunker:
     so spans tile the source and offsets reconstruct it exactly. ``chunk_size
     == -1`` disables chunking.
 
-    When ``max_tokens`` + ``token_counter`` are supplied, packing is driven by the
-    token budget instead of the char budget, and any single over-budget word is
-    hard-split by tokens. With ``max_tokens`` None the behaviour is unchanged.
-    ``budget_mode`` selects how a chunk is measured against that token budget —
-    ``"joined"`` (default: fill to the budget on the joined text, then cut back to
-    a word boundary) or ``"summed"`` (legacy, which under-fills a word-unit chunk
-    to ~0.68 of the budget); see :func:`_pack_spans_tokens`. It is ignored when
-    there is no token budget.
-
-    ``size_unit`` has the same meaning as on :class:`SentenceChunker`:
-    ``"chars"`` (default, historical — ``chunk_size`` unused on the token path) or
-    ``"tokens"`` (``chunk_size`` is a token budget capped at ``max_tokens``).
+    ``size_unit``, ``max_tokens`` and ``budget_mode`` mean what they do on
+    :class:`SentenceChunker`, with words as the unit: ``max_tokens`` is a cap,
+    and a word is split only when it alone is over it. ``budget_mode="summed"``
+    under-fills a word-unit token chunk to ~0.68 of the budget; see
+    :func:`_pack_spans_tokens`.
     """
 
     def __init__(
@@ -685,24 +670,30 @@ def _pack_spans(
     """Greedily pack consecutive unit spans (sentences/words) into chunks, then
     start the next chunk with a tail of units (sliding-window overlap).
 
-    The packing *budget* is either characters (default) or tokens:
+    ``chunk_size`` is always the size; ``size_unit`` says what it counts:
 
+    - ``size_unit="chars"`` (default): pack whole units to ``chunk_size`` chars —
+      byte-for-byte the original char packing. When ``max_tokens`` +
+      ``token_counter`` are set, ``max_tokens`` is a **cap**, not the size: a
+      char-packed chunk whose joined token count exceeds it is re-packed over its
+      OWN unit spans with the joined-mode token packer (no overlap inside: the
+      pieces tile that chunk), so a cut falls inside a unit only when that one
+      unit alone exceeds the cap. The outer overlap resume then continues from
+      the char-packed chunk's end, exactly as without a cap. A chunk that fits
+      the cap is emitted unchanged, so a cap larger than every chunk changes
+      nothing. ``budget_mode`` does not apply here (the cap re-pack is always
+      ``"joined"``).
     - ``size_unit="tokens"``: the budget is ``chunk_size`` tokens, capped at
       ``max_tokens`` when that is set. It is ONE budget for both of the token
       packer's jobs — the fill limit and the oversized-single-unit hard split —
       so a unit longer than ``chunk_size`` is split to ``chunk_size``, not
       emitted whole because it happens to fit the (much larger) model window.
-    - ``size_unit="chars"`` with ``max_tokens`` + ``token_counter``: the budget
-      is ``max_tokens`` and ``chunk_size`` is **ignored** (issue #318 P1 — kept
-      byte-identical because changing it re-sizes every existing invocation).
-    - otherwise: ``chunk_size`` chars, the original packing byte-for-byte.
+      ``budget_mode`` selects the fill (see :func:`_pack_spans_tokens`).
 
-    Token packing is delegated to :func:`_pack_spans_tokens`, which fills a chunk
-    up to the budget measured on the **joined** text and then cuts back to the
-    nearest unit boundary (``budget_mode="joined"``, the default), or reproduces
-    the legacy sum-of-per-unit-counts fill (``budget_mode="summed"``). A single
-    unit that is itself over budget is hard-split by tokens via
-    :func:`_token_split_span` in both modes.
+    (Before #318 a token budget with ``size_unit`` unset packed to ``max_tokens``
+    and ignored ``chunk_size`` entirely; that behaviour is removed — no deployed
+    sentence/words collection was built with it, and keeping it would have spread
+    it to every in-process collection once the API resolves ``max_tokens``.)
 
     Because units are consecutive and tile the source, each chunk's span is
     ``(units[first].start, units[last].end)`` — a contiguous char range that
@@ -717,14 +708,9 @@ def _pack_spans(
             doc, spans, budget, chunk_overlap, token_counter,
             budget_mode=budget_mode,
         )
-    use_tokens = max_tokens is not None and token_counter is not None
-    if use_tokens:
-        assert token_counter is not None and max_tokens is not None  # narrow for mypy
-        return _pack_spans_tokens(
-            doc, spans, max_tokens, chunk_overlap, token_counter,
-            budget_mode=budget_mode,
-        )
 
+    capped = max_tokens is not None and token_counter is not None
+    text = doc.content
     chunks: list[Chunk] = []
     n = len(spans)
     i = 0
@@ -740,11 +726,47 @@ def _pack_spans(
             size += unit_len
             j += 1
         end = spans[j - 1][1]
-        chunks.append(_make_chunk(doc, cur_start, end))
+        if capped:
+            assert token_counter is not None and max_tokens is not None  # narrow for mypy
+            chunks.extend(
+                _cap_unit_range(doc, spans, i, j, max_tokens, token_counter, text)
+            )
+        else:
+            chunks.append(_make_chunk(doc, cur_start, end))
         if j >= n:
             break
         i = _overlap_resume(spans, i, j, chunk_overlap)
     return chunks
+
+
+def _cap_unit_range(
+    doc: Document,
+    spans: list[tuple[int, int]],
+    lo: int,
+    hi: int,
+    max_tokens: int,
+    token_counter: TokenCounter,
+    text: str | None = None,
+) -> list[Chunk]:
+    """Emit units ``spans[lo:hi]`` as one chunk, or — if its joined text is over
+    ``max_tokens`` — re-packed at UNIT boundaries to fit.
+
+    The shared token-cap step for chunkers whose size is not tokens (char-sized
+    ``sentence``/``words``, and semantic blocks): it never moves a boundary the
+    caller chose unless the cap forces it, and when it does, the new boundaries
+    are unit edges. The re-pack is :func:`_pack_spans_tokens` in joined mode with
+    no overlap, so the pieces tile the range; a cut lands inside a unit only via
+    its hard-split path, i.e. when that single unit alone exceeds ``max_tokens``.
+    A single-unit range goes straight to :func:`_token_split_span` (nothing to
+    respect; it returns the unit unchanged when it fits).
+    """
+    src = doc.content if text is None else text
+    start, end = spans[lo][0], spans[hi - 1][1]
+    if hi - lo == 1 or token_counter.count(src[start:end]) <= max_tokens:
+        return _token_split_span(doc, start, end, max_tokens, token_counter)
+    return _pack_spans_tokens(
+        doc, spans[lo:hi], max_tokens, 0, token_counter, budget_mode="joined",
+    )
 
 
 def _furthest_fitting_unit(
@@ -1280,16 +1302,10 @@ class SemanticChunker:
         :func:`_token_split_span`, which cuts wherever the token count runs out —
         mid-sentence, routinely.
         """
-        start, end = spans[lo][0], spans[hi - 1][1]
         if self.max_tokens is None or self.token_counter is None:
-            return [_make_chunk(doc, start, end)]
-        if hi - lo == 1 or self.token_counter.count(doc.content[start:end]) <= self.max_tokens:
-            # One sentence (nothing to respect), or the block fits: same as before.
-            return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
-        return _pack_spans_tokens(
-            doc, spans[lo:hi], self.max_tokens, 0, self.token_counter,
-            budget_mode="joined",
-        )
+            return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
+        # Same cap step as char-sized sentence/words (_cap_unit_range).
+        return _cap_unit_range(doc, spans, lo, hi, self.max_tokens, self.token_counter)
 
     def _cap_tokens(self, s: str) -> str:
         """Bound ``s`` to the BREAKPOINT embedder's token budget (first lossless
@@ -1464,17 +1480,16 @@ def make_chunker(
     method that is not *capped* by ``max_tokens`` — its window is the size — so a
     ``chunk_size`` larger than ``max_tokens`` raises ``ValueError`` instead.
 
-    ``budget_mode`` (``sentence``/``words`` only, and only with a token budget):
+    ``budget_mode`` (``sentence``/``words`` with ``size_unit="tokens"`` only):
     ``"joined"`` (default) fills to the budget measured on the joined chunk text
     and then cuts back to a unit boundary; ``"summed"`` reproduces the legacy
     under-filling sum-of-isolated-unit-counts packing. See
     :func:`_pack_spans_tokens`. Other methods ignore it.
 
     ``size_unit`` (``sentence``/``words`` only): what ``chunk_size`` counts — see
-    :data:`SIZE_UNITS`. The default ``"chars"`` keeps the historical behaviour, in
-    which a token budget makes ``chunk_size`` dead; that combination is logged at
-    WARNING here so it is never silent. ``"tokens"`` makes ``chunk_size`` a token
-    budget capped at ``max_tokens``. Other methods ignore it.
+    :data:`SIZE_UNITS`. ``"chars"`` (default): ``chunk_size`` chars, with
+    ``max_tokens`` as a cap. ``"tokens"``: ``chunk_size`` tokens, capped at
+    ``max_tokens``. ``chunk_size`` is used either way. Other methods ignore it.
 
     ``max_breakpoint_sentences`` (semantic only): oversized-doc fallback threshold —
     a doc that sub-splits into more than this many sentence spans is chunked with the
@@ -1513,23 +1528,6 @@ def make_chunker(
             token_counter=token_counter,
         )
     if method in ("sentence", "words"):
-        if (
-            size_unit == "chars"
-            and max_tokens is not None
-            and token_counter is not None
-            and chunk_size != -1
-        ):
-            # The ambiguous combination (#318 P1): the token packer fills to
-            # max_tokens and never reads chunk_size, so e.g. chunk_size=512 against
-            # a 4080-token window yields ~4080-token chunks. Kept for byte-identity;
-            # said out loud so nobody reads chunk_size as the size they got.
-            log.warning(
-                "chunk_method=%r: chunk_size=%d is NOT used — with a token budget "
-                "(max_tokens=%d) and size_unit='chars', chunks are packed to "
-                "max_tokens. To make chunk_size a token budget capped at max_tokens, "
-                "pass size_unit='tokens' (--chunk-size-unit tokens).",
-                method, chunk_size, max_tokens,
-            )
         cls = SentenceChunker if method == "sentence" else WordChunker
         return cls(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
