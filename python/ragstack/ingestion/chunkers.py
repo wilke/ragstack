@@ -1170,8 +1170,9 @@ class SemanticChunker:
         self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
         self.min_chunk_length = min_chunk_length
         # When set, any semantic chunk over the token budget is split into
-        # <=max_tokens pieces by tokens — replacing the harness's ad-hoc char cap
-        # and guaranteeing no chunk overflows the embedder context.
+        # <=max_tokens pieces — at sentence boundaries (see _emit_block), cutting
+        # inside a sentence only when one sentence alone is over budget — so no
+        # chunk overflows the embedder context.
         self.max_tokens = max_tokens
         self.token_counter = token_counter
         # breakpoint_max_tokens: the context budget for the BREAKPOINT embed inputs
@@ -1256,10 +1257,39 @@ class SemanticChunker:
         return self._emit(doc, 0, len(doc.content))
 
     def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
-        """Emit a semantic chunk span, token-splitting it if over budget."""
+        """Emit a span with no sentence structure to respect, token-splitting it
+        if over budget. Used for a single-sentence document and by the
+        oversized-doc fallback; a multi-sentence semantic block goes through
+        :meth:`_emit_block`, which never cuts inside a sentence that fits."""
         if self.max_tokens is None or self.token_counter is None:
             return [_make_chunk(doc, start, end)]
         return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
+
+    def _emit_block(
+        self, doc: Document, spans: list[tuple[int, int]], lo: int, hi: int
+    ) -> list[Chunk]:
+        """Emit the semantic block of sentences ``spans[lo:hi]``, within budget.
+
+        A block that fits ``max_tokens`` (or any block, with no budget) is one
+        chunk, exactly as before. An over-budget block is re-packed at SENTENCE
+        boundaries with the joined-mode token packer (no overlap: the pieces tile
+        the block), so a cut lands inside a sentence only when that one sentence
+        alone exceeds ``max_tokens`` — the packer's hard-split path. The block's
+        spans are the ones breakpoint detection already used; nothing is
+        re-segmented. Before this, the whole block went to
+        :func:`_token_split_span`, which cuts wherever the token count runs out —
+        mid-sentence, routinely.
+        """
+        start, end = spans[lo][0], spans[hi - 1][1]
+        if self.max_tokens is None or self.token_counter is None:
+            return [_make_chunk(doc, start, end)]
+        if hi - lo == 1 or self.token_counter.count(doc.content[start:end]) <= self.max_tokens:
+            # One sentence (nothing to respect), or the block fits: same as before.
+            return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
+        return _pack_spans_tokens(
+            doc, spans[lo:hi], self.max_tokens, 0, self.token_counter,
+            budget_mode="joined",
+        )
 
     def _cap_tokens(self, s: str) -> str:
         """Bound ``s`` to the BREAKPOINT embedder's token budget (first lossless
@@ -1344,9 +1374,18 @@ class SemanticChunker:
             (spans[s][0], spans[e - 1][1]) for s, e in groups if e > s
         ]
         chunk_spans = self._merge_short(chunk_spans)
+        # _merge_short only extends ranges between existing sentence edges, so
+        # every chunk span maps back to a sentence-index range [lo, hi). First
+        # span starting at a char / last span ending at it, so a (degenerate)
+        # zero-width span can never invert the range.
+        first_of: dict[int, int] = {}
+        past_of: dict[int, int] = {}
+        for i, (s, e) in enumerate(spans):
+            first_of.setdefault(s, i)
+            past_of[e] = i + 1
         out: list[Chunk] = []
         for s, e in chunk_spans:
-            out.extend(self._emit(doc, s, e))
+            out.extend(self._emit_block(doc, spans, first_of[s], past_of[e]))
         return out
 
     def _breakpoint_groups(
