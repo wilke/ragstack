@@ -163,6 +163,8 @@ export EMBEDDING_SIDECAR_URL="http://127.0.0.1:$EMB_PORT"
 export EMBEDDING_API=sidecar
 export EMBEDDING_MODEL=conformance-stub
 export EMBEDDING_MODEL_DIM="$EMB_DIM"
+# The stub model has no HF tokenizer and the stub serves no /v1/models, so name the token counter and window explicitly (#647).
+export CHUNK_TOKEN_COUNTER=estimate CHUNK_MAX_TOKENS=512
 # The same stub speaks the crossencoder contract (/rerank, /ready — an
 # order-preserving no-op rerank), so the keyed boot runs with rerank ON and
 # the `degraded` surface (#748, #751 PR-3) is reachable: a test flips the stub

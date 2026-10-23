@@ -271,7 +271,7 @@ chunks have to fit inside it.
   `max_model_len` the collection's own embedding endpoint reports at
   `GET /v1/models`; tokens are counted with the collection model's HF tokenizer
   unless `CHUNK_TOKEN_COUNTER` says otherwise. The API **refuses** an ingest
-  (400, naming the collection) when neither gives a window, rather than assuming
+  (503, naming the collection) when neither gives a window, rather than assuming
   one; the bulk tools still fall back to 4,096. The default collection resolves
   its budget on the first ingest, not at boot, so a deployment that sets no
   chunk options still starts without loading a tokenizer or calling the

@@ -262,8 +262,21 @@ def test_unreachable_endpoint_without_chunk_max_tokens_refuses(monkeypatch):
         deps._chunker_for(entry)
     msg = str(exc.value)
     assert "'acme'" in msg and "CHUNK_MAX_TOKENS" in msg and "max_model_len" in msg
-    assert "127.0.0.1" not in msg  # the internal URL stays in the log, not the 400 body
-    assert isinstance(exc.value, ValueError)  # -> the ingest router's 400
+    assert "127.0.0.1" not in msg  # the internal URL stays in the log, not the 503 body
+    # A dependency failure, not a client error: NOT a ValueError (-> 400), and
+    # transient because an endpoint exists and simply did not answer.
+    assert not isinstance(exc.value, ValueError) and exc.value.transient
+
+
+def test_no_endpoint_at_all_is_not_transient(monkeypatch):
+    monkeypatch.setattr(chunker_config, "resolve_max_tokens", real_resolve_max_tokens)
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", None)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", [])
+    monkeypatch.setattr(deps.settings, "embedding_sidecar_url", "")
+    with pytest.raises(ModelWindowUnavailable, match="no embedding endpoint") as exc:
+        deps._chunker_for(_entry("fixed", embedding_endpoints=[]))
+    assert exc.value.transient is False
 
 
 def test_explicit_chunk_max_tokens_needs_no_endpoint(monkeypatch):

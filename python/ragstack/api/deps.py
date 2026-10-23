@@ -604,7 +604,7 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     ``CHUNK_TOKEN_COUNTER=hf``, the default), and ``max_tokens`` is
     ``CHUNK_MAX_TOKENS`` when set, else the window the collection's OWN embedding
     endpoint reports. When neither yields a window this REFUSES
-    (:class:`ModelWindowUnavailable`, a ``ValueError`` -> 400) instead of
+    (:class:`ModelWindowUnavailable` -> the ingest router's 503) instead of
     assuming one: a guessed window silently sizes the whole collection. The
     trade-off is that a transient endpoint hiccup fails the ingest request.
 
@@ -648,8 +648,10 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
             **_chunk_param_kwargs(method, params, entry.id),
         )
     except ModelWindowUnavailable as e:
-        raise ModelWindowUnavailable(f"collection {entry.id!r}: {e}") from None
-    except ValueError as e:  # TokenCounterUnavailable is not one: it stays the router's 503
+        raise ModelWindowUnavailable(
+            f"collection {entry.id!r}: {e}", transient=e.transient
+        ) from None
+    except ValueError as e:  # neither *Unavailable is one: both stay the router's 503
         raise ValueError(f"collection {entry.id!r}: {e}") from None
     return chunker
 

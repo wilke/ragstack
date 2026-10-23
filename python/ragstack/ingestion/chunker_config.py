@@ -197,14 +197,24 @@ _UNDETECTED_WINDOW = 0
 _FALLBACK_BUDGET = 4096
 
 
-class ModelWindowUnavailable(ValueError):
+class ModelWindowUnavailable(RuntimeError):
     """No per-chunk token budget could be determined, and the caller refused to guess.
 
-    A ``ValueError`` so the ingest router's existing mapping (400 with this text as
-    the detail) applies unchanged. The message deliberately names no endpoint URL:
-    it can cross the API boundary, and the URL is an internal address — the
-    operator finds it in the WARNING ``resolve_max_tokens`` logs just before.
+    A dependency failure, not a client error: no change to the request would fix
+    it. So it is a ``RuntimeError`` (like ``TokenCounterUnavailable``), never a
+    ``ValueError`` — the ingest router maps ``ValueError`` to 400, and maps this
+    to 503 explicitly. ``transient`` is True when an endpoint IS configured but did
+    not report a window (down, slow, malformed: worth a ``Retry-After``), False
+    when there is none to ask (an operator has to act).
+
+    The message deliberately names no endpoint URL: it crosses the API boundary,
+    and the URL is an internal address — the operator finds it in the WARNING
+    ``resolve_max_tokens`` logs just before.
     """
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 #: Real HF token counters, one per model, for the life of the process.
@@ -297,7 +307,8 @@ def resolve_chunk_sizing(
             f"CHUNK_MAX_TOKENS is not set. Refusing to assume a window — a guessed "
             f"budget would silently re-size every chunk. Fix: set CHUNK_MAX_TOKENS "
             f"to the embedding model's context window (e.g. its max_model_len), or "
-            f"make the embedding endpoint answer GET /v1/models with max_model_len."
+            f"make the embedding endpoint answer GET /v1/models with max_model_len.",
+            transient=bool(base_url),
         )
     return token_counter, budget
 
