@@ -88,3 +88,51 @@ def test_persists_across_instances_and_skips_corrupt_lines(tmp_path):
 def test_config_fingerprint_is_order_independent():
     assert config_fingerprint(a=1, b=2) == config_fingerprint(b=2, a=1)
     assert config_fingerprint(a=1) != config_fingerprint(a=2)
+
+
+# --------------------------------------------------------------------------- #
+# The segmenter is part of every fingerprint (#318 P2)
+# --------------------------------------------------------------------------- #
+_CFG = {"method": "semantic", "buffer_size": 3, "pct": 80.0, "chunk_size": 512}
+
+
+def test_fingerprint_differs_across_segmenter_versions(monkeypatch):
+    from ragstack.ingestion import chunkers
+
+    monkeypatch.setattr(chunkers, "SEGMENTER_VERSION", "punkt-bare")
+    old = config_fingerprint(**_CFG)
+    monkeypatch.setattr(chunkers, "SEGMENTER_VERSION", "punkt-abbrev-v1")
+    new = config_fingerprint(**_CFG)
+    assert old != new
+    assert config_fingerprint(**_CFG) == new  # still stable for one version
+
+
+def test_fingerprint_names_the_current_segmenter_and_refuses_an_override():
+    import json
+
+    import pytest
+
+    from ragstack.ingestion import chunkers
+    from ragstack.ingestion.segmentation_cache import SEGMENTER_KEY
+
+    assert json.loads(config_fingerprint(**_CFG))[SEGMENTER_KEY] == chunkers.SEGMENTER_VERSION
+    with pytest.raises(ValueError):
+        config_fingerprint(**_CFG, segmenter_version="punkt-bare")
+
+
+def test_cache_written_before_the_key_existed_is_a_miss(tmp_path):
+    """A cache file keyed by the pre-#318 fingerprint (the same config, no
+    segmenter) must not serve spans to the current code."""
+    import json
+
+    path = tmp_path / "seg.jsonl"
+    doc = _doc("Fig. 2 shows it. Done.")
+    pre_key_fp = json.dumps(_CFG, sort_keys=True, default=str)  # the old formula
+    fn_old, _ = _chunker([(0, 5), (5, 22)])  # "punkt-bare" spans, split at "Fig."
+    SegmentationCache(path, pre_key_fp).get_or_compute(doc, fn_old)
+
+    cache = SegmentationCache(path, config_fingerprint(**_CFG))
+    fn_new, calls = _chunker([(0, 17), (17, 22)])
+    got = cache.get_or_compute(doc, fn_new)
+    assert calls["n"] == 1 and cache.misses == 1 and cache.hits == 0
+    assert [(c.start_char, c.end_char) for c in got] == [(0, 17), (17, 22)]

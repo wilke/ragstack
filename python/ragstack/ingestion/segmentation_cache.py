@@ -26,8 +26,12 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from ragstack.ingestion import chunkers
 from ragstack.ingestion.chunkers import _make_chunk
 from ragstack.models import Chunk, Document
+
+#: The key :func:`config_fingerprint` adds itself; a caller may not pass it.
+SEGMENTER_KEY = "segmenter_version"
 
 
 def config_fingerprint(**parts: object) -> str:
@@ -35,8 +39,24 @@ def config_fingerprint(**parts: object) -> str:
     method, buffer/percentile/min-length, token budgets, breakpoint model) yields a
     different fingerprint → a different cache key → a clean recompute (never a stale
     span reused under new settings). Uses json so values are quoted/escaped — a
-    model id containing a delimiter can't collide with a different config."""
-    return json.dumps(parts, sort_keys=True, default=str)
+    model id containing a delimiter can't collide with a different config.
+
+    The sentence segmenter is part of every fingerprint, unconditionally:
+    :data:`ragstack.ingestion.chunkers.SEGMENTER_VERSION` (read at call time) is
+    added under :data:`SEGMENTER_KEY`, for every caller. The spans of the
+    ``sentence`` / ``semantic`` / ``semantic_pooled`` chunkers are built on
+    sentence boundaries, so a cache built under one segmenter must never serve
+    another — a hit would rebuild the OLD chunk ids and make a "full re-ingest"
+    after a segmenter change migrate nothing (#318 P2). Adding the key
+    invalidated every cache file written before it existed, once: those were all
+    built under ``punkt-bare``, and a cache built under ``punkt-bare`` must never
+    serve ``punkt-abbrev-v1``. Each later ``SEGMENTER_VERSION`` bump invalidates
+    them again, which is the point."""
+    if SEGMENTER_KEY in parts:
+        raise ValueError(
+            f"{SEGMENTER_KEY!r} is added by config_fingerprint itself; do not pass it")
+    return json.dumps({**parts, SEGMENTER_KEY: chunkers.SEGMENTER_VERSION},
+                      sort_keys=True, default=str)
 
 
 class SegmentationCache:
