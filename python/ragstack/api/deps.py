@@ -524,7 +524,8 @@ _SEMANTIC_PARAM_KWARGS: tuple[tuple[str, str, str, Any], ...] = (
 SIZE_UNIT_METHODS: tuple[str, ...] = ("sentence", "words")
 #: ``chunkers.SIZE_UNITS`` once #802 lands; the same two values until then.
 SIZE_UNITS: tuple[str, ...] = tuple(getattr(_chunkers, "SIZE_UNITS", ("chars", "tokens")))
-_DEFAULT_SIZE_UNIT = "chars"
+#: Public so the create router normalises against the same value.
+DEFAULT_SIZE_UNIT: str = getattr(_chunkers, "DEFAULT_SIZE_UNIT", "chars")
 
 
 def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | None:
@@ -532,10 +533,11 @@ def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | N
 
     ``None`` when the key is absent or null (the factory default, ``chars``, then
     applies). Raises ``ValueError`` — the create router's 400 and the ingest
-    router's 400 — for a value outside :data:`SIZE_UNITS`, and for a non-default
-    unit on a method that has no such choice: a ``fixed`` collection recording
-    ``size_unit='tokens'`` would otherwise be chunked by characters while its
-    identity says tokens.
+    router's 400 — for a value outside :data:`SIZE_UNITS`, and for ANY
+    ``size_unit`` on a method that has no such choice: a ``fixed`` collection
+    recording ``size_unit='tokens'`` would otherwise be chunked by characters
+    while its identity says tokens. Same rule as #802's shard tool, which reads
+    ``spec.chunk_params["size_unit"]`` for sentence/words, default ``chars``.
     """
     value = (params or {}).get("size_unit")
     if value is None:
@@ -544,7 +546,9 @@ def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | N
         raise ValueError(
             f"chunk param 'size_unit' must be one of {', '.join(SIZE_UNITS)}; got {value!r}"
         )
-    if method not in SIZE_UNIT_METHODS and value != _DEFAULT_SIZE_UNIT:
+    if method not in SIZE_UNIT_METHODS:
+        # Even "chars": the key is meaningless here, and persisting it would
+        # change the collection's spec_hash for nothing.
         raise ValueError(
             f"chunk param 'size_unit' applies only to {', '.join(SIZE_UNIT_METHODS)}, "
             f"not chunk_method={method!r}"
@@ -573,7 +577,7 @@ def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str)
         if method in SIZE_UNIT_METHODS:
             if "size_unit" in accepted:
                 out["size_unit"] = size_unit
-            elif size_unit != _DEFAULT_SIZE_UNIT:
+            elif size_unit != DEFAULT_SIZE_UNIT:
                 # The collection says tokens and this build cannot count them:
                 # chunking it by characters would contradict its identity.
                 raise ValueError(

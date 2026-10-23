@@ -44,6 +44,7 @@ from ragstack.api.collections import (
 )
 from ragstack.api.default_collection import pick_default, visible_entries
 from ragstack.api.deps import (
+    DEFAULT_SIZE_UNIT,
     bound_json_body,
     build_collection_entry,
     default_chunk_method_for,
@@ -394,6 +395,23 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             )
 
 
+def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
+    """Drop ``size_unit`` when it equals the default (``chars``).
+
+    ``chunk_params`` feeds ``chunk_descriptor()`` -> ``spec_hash`` -> the physical
+    name, so ``{}`` and ``{"size_unit": "chars"}`` would content-address the SAME
+    chunking to two stores. Persisting only the non-default unit keeps every
+    existing collection's hash unchanged and lets the default never fork the
+    namespace. Called after :func:`_validate_chunk`, which has already refused a
+    ``size_unit`` on a method that has no such choice.
+    """
+    params = dict(chunk.params or {})
+    if params.get("size_unit") == DEFAULT_SIZE_UNIT:
+        del params["size_unit"]
+        return chunk.model_copy(update={"params": params})
+    return chunk
+
+
 def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
     """422 when this deployment's ingest backend cannot chunk ``method``.
 
@@ -607,7 +625,7 @@ async def create_collection(
     # slots as empty strings, which would otherwise split them).
     if body.chunk is not None:
         _validate_chunk(body.chunk)
-        chunk = body.chunk
+        chunk = _normalise_chunk(body.chunk)
     else:
         # settings.chunk_method — `fixed_token` unless CHUNK_METHOD says otherwise
         # (owner decision 2026-10-06), or `fixed` when that unconfigured default

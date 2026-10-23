@@ -126,7 +126,7 @@ def _entry(method: str, **over) -> CollectionEntry:
         "embedding_endpoints": [ENDPOINT],
     }
     if method == "fixed":
-        kw |= {"chunk_size": 300, "chunk_overlap": 30}  # chars
+        kw |= {"chunk_size": 1200, "chunk_overlap": 100}  # chars: > BUDGET tokens, so the cap bites
     kw.update(over)
     return CollectionEntry(**kw)
 
@@ -429,11 +429,14 @@ def test_absent_size_unit_leaves_the_factory_default(fake_backends, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    ("method", "unit"), [("sentence", "bytes"), ("words", 3), ("fixed", "tokens")]
+    ("method", "unit"),
+    [("sentence", "bytes"), ("words", 3), ("fixed", "tokens"), ("fixed", "chars"),
+     ("semantic", "chars")],
 )
 def test_bad_size_unit_refuses_the_ingest(fake_backends, method, unit):
     with pytest.raises(ValueError, match="size_unit"):
-        deps._chunker_for(_entry(method, chunk_params={"size_unit": unit}))
+        deps._chunker_for(_entry(method, chunk_params={"size_unit": unit}),
+                          embed_fn=topic_embed_fn)
 
 
 @pytest.mark.skipif(_FACTORY_HAS_SIZE_UNIT, reason="factory already takes size_unit (#802)")
