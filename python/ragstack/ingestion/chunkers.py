@@ -399,9 +399,9 @@ SEGMENTER_VERSION: str = "punkt-abbrev-v1"
 #: ``art``, ``app``, ``est`` (``EST``s), ``cv`` (``CV``). Kept despite a known
 #: acronym collision, because the abbreviation is the commoner period form:
 #: ``no`` (``NO``, nitric oxide), ``co`` (``CO``), ``sp`` (``SP``), ``str``
-#: (``STR``), ``mr`` (``MR``; in the 50 regression documents "Mr. T" occurs
-#: 16 times mid-sentence, "MR." 5 times) — each costs a false merge where the
-#: acronym ends a sentence.
+#: (``STR``), ``mr`` (``MR``; on the 50 regression documents the entry removes
+#: 18 false "Mr." splits and makes 5 false merges after a sentence-final
+#: "MR.") — each costs a false merge where the acronym ends a sentence.
 #:
 #: Single letters (genus initials — *E. coli*, *S. enterica*, *B. subtilis* —
 #: and personal initials) are deliberately NOT entries. Punkt's built-in
