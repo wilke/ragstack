@@ -292,3 +292,9 @@ data that shapes them, are proposed in
 [`plans/section-taxonomy.md`](plans/section-taxonomy.md). Neither is a method
 you can choose today, and `CHUNK_SECTION_AWARE` from
 [`plan-c5.md`](plan-c5.md) was never built.
+
+The first piece exists for JATS: `ingestion/jats.py::article_spans` returns
+the article record's text together with each section's and paragraph's
+character span in it. Untitled sections and paragraphs before the first
+section get their own spans. Nothing consumes these spans yet, and the stored
+records are unchanged.
