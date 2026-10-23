@@ -292,3 +292,56 @@ data that shapes them, are proposed in
 [`plans/section-taxonomy.md`](plans/section-taxonomy.md). Neither is a method
 you can choose today, and `CHUNK_SECTION_AWARE` from
 [`plan-c5.md`](plan-c5.md) was never built.
+
+### Offline trial on openchia (2026-10-22) — EXPLORATORY, nothing passed
+
+A pre-registered offline trial chunked the JATS full text of openchia's 232 PMC papers several ways. It scored them on the private `openchia-261021` set (155 records, quote-text gold), on the served retrieval path in process.
+
+**Arms:**
+
+- **L:** the live chunks, fixed_token 512/64 over PDF-derived text;
+- **J1:** JATS at 512/64 with tables and figures lifted;
+- **S0:** 512/64 inside each section;
+- **JS:** semantic over the whole JATS prose;
+- **SS:** semantic inside each section;
+- **S0m:** S0 with small sibling sections merged.
+
+The pass rule, fixed in advance, had three parts:
+
+- net ≥ +5 records;
+- no loss at a 5,120-token delivered budget;
+- at least one net gain outside the dominant paper (Bazant & Bush, 138 of 155 records).
+
+**No arm passed it.**
+
+Reranked recall@10 (found, of 155), with two glossary extractors:
+
+| arm | chunks | Scout glossary | Qwen3.6 glossary |
+|---|---|---|---|
+| L | 15,648 | 66 | 75 |
+| J1 | 19,130 | 65 | 72 |
+| S0 | 22,414 | 60 | 72 |
+| JS | 21,782 | 56 | 69 |
+| SS | 26,011 | 59 | 74 |
+| S0m | 21,626 | 62 | 72 |
+
+- **Semantic without sections loses:** JS − J1 is −9 with Scout (p = 0.035).
+- **Semantic within sections ties token-within-sections** (SS − S0: −1 and +2), with about 16% more chunks.
+- **Sections help semantic a little** (SS − JS: +3 and +5), but nets 0 outside the dominant paper.
+- **Merging small sections changes little** (+2 and 0).
+- **Section heading fields lose** in every form tried, as a BM25 field or prepended to the text: up to −13.
+
+**Where the gold sits:**
+
+- in tables or captions only for 76 records;
+- in Results only for 37;
+- in an abstract only for none.
+
+So this set cannot test whether a claim's section (abstract vs body) should weigh its credibility.
+
+**Status:**
+
+- **Exploratory:** one eval set, one dominant paper, harness not committed.
+- **Overlap at the passage level is still open.** The study's N2 confirmation never ran.
+- **A chunk-size × overlap sweep is pending.** It counts quotes split across chunk boundaries and estimates storage.
+- **Nothing here changes the default.**

@@ -508,6 +508,47 @@ whitespace changes moved nothing on this corpus.
   only 72 (3 documents) are stamped `rules/2`. The gain is for new uploads, which get
   `rules` by default since #784 (see Release above for when each path gets `rules/3`).
 
+## Which LLM extracts the glossary (offline trial, 2026-10-22) — EXPLORATORY
+
+An offline trial asked whether a different extraction model changes retrieval. It ran in process, with no store writes, and mirrors the served `/v1/retrieve` path:
+
+- BM25 top 100 and dense SFR top 100, fused with RRF k=60;
+- cap, cut to 50, `bge-reranker-v2-m3` reading content + glossary, top 10.
+
+Setup:
+
+- **Eval set and gold:** the private `openchia-261021` set (155 records). Gold is quote text, a ≥60% prefix or suffix hit.
+- **Pool:** after the 9-document dedup (276 documents, 15,648 live chunks).
+- **Cap:** per-document cap 0, which reproduces the live numbers exactly.
+- **Glossary:** rules/3 plus that model's LLM glossary.
+- **Extraction:** `scripts/symbol_glossary_llm.py` with the same prompt (hash `1836f4b83986`) for every model.
+- **Settings:** the script defaults (window 80,000 chars × 4, max_tokens 2,048), except Opus at 8,192.
+
+Each model's glossary was attached to three chunkings of the same papers:
+
+- **L:** the live chunks;
+- **J1:** JATS text at 512/64 with tables and figures lifted;
+- **S0:** JATS text at 512/64 inside each section.
+
+Reranked recall@10 (records found, of 155):
+
+| extractor | L | J1 | S0 |
+|---|---|---|---|
+| Llama-4-Scout (served) | 66 | 65 | 60 |
+| Qwen3.8-27B, thinking off | 58 | 65 | 68 |
+| Claude Opus 5 (Argo) | 63 | 63 | 62 |
+| Qwen3-Coder-Next | 72 | 70 | 69 |
+| Qwen3.6-35B-A3B, thinking off | 75 | 72 | 72 |
+
+- **Best against Scout on the live chunks:** Qwen3.6, net +9 (10 gained, 1 lost, exact McNemar p = 0.012). Qwen3-Coder-Next nets +6 (p = 0.031).
+- **The caveat that decides the reading: every extractor gain is in one paper.** 138 of the 155 records point into Bazant & Bush. Outside it, every extractor contrast nets 0 or −1, and every model finds the same 2 records there on the live chunks. These numbers can't confirm Qwen3.6 as the served extractor. That needs a multi-paper eval set.
+- **Coverage doesn't predict retrieval.** Chunks with a glossary on L:
+  - Opus 652 and Qwen3.8 620, which retrieve worst;
+  - Coder-Next 455, which retrieves second best.
+- **Thinking on is unusable at this budget.** Qwen3.8 with thinking on at max_tokens 8,192 spent the whole budget on reasoning in 63 of 77 calls. It was stopped and never scored.
+- **The Argo route reports `finish_reason: stop` when an answer hits max_tokens,** so the script's cut-off counter is blind there.
+- **Status: exploratory.** It is one eval set, dominated by one paper, and the harness is not committed yet. The served extractor is unchanged.
+
 ## Follow-ups
 
 - JATS `<def-list>` in the JATS extractor, emitted as a per-document table the pipeline
