@@ -1,0 +1,187 @@
+{
+  "name": "sentence-gold-biomedical-1",
+  "description": "20 hand-written biomedical/scholarly passages (#318 P2), not copied from any corpus. Each passage's text is its sentences joined by one space; `sentences` are the expected sentence units, in order. `groups` names the SENTENCE_ABBREVIATIONS groups (or negative cases) the passage covers. A change to a passage is a new fixture name, never an edit in place.",
+  "passages": [
+    {
+      "id": "p01-honorifics",
+      "groups": ["honorifics"],
+      "sentences": [
+        "Dr. Smith and Prof. Tanaka collected the samples with Mr. Okafor at the clinic.",
+        "The analysis was performed by J. A. Rivera, Ph.D., and K. Lee, M.D., at St. Jude.",
+        "Both authors approved the final version."
+      ]
+    },
+    {
+      "id": "p02-et-al",
+      "groups": ["latin"],
+      "sentences": [
+        "Hoffmann et al. reported a similar effect in a larger cohort.",
+        "Unlike Kronmal et al. who studied adults, we enrolled children.",
+        "The difference was not significant."
+      ]
+    },
+    {
+      "id": "p03-eg-ie",
+      "groups": ["latin"],
+      "sentences": [
+        "Opportunistic infections (e.g. tuberculosis) were excluded, i.e. only primary cases were analysed.",
+        "Other exclusions, viz. pregnancy and dialysis, are listed elsewhere, cf. the protocol.",
+        "Recruitment closed in 2019."
+      ]
+    },
+    {
+      "id": "p04-vs-ca-etc",
+      "groups": ["latin"],
+      "sentences": [
+        "Mortality was 12% vs. 18% in the two arms, and enrolment took ca. 14 months.",
+        "Secondary outcomes (length of stay, readmission, etc.) are reported in the appendix.",
+        "No adverse events were attributed to the intervention."
+      ]
+    },
+    {
+      "id": "p05-fig-figs",
+      "groups": ["document-pointers"],
+      "sentences": [
+        "Survivin was absent from the mesenchyme (Fig. 4A).",
+        "Its expression rose in later stages, as Figs. 5 and 6 show.",
+        "The pattern was reproducible."
+      ]
+    },
+    {
+      "id": "p06-fig-number-end",
+      "groups": ["document-pointers", "negative"],
+      "sentences": [
+        "Expression levels are summarised in Fig. 2.",
+        "The results were consistent across replicates."
+      ]
+    },
+    {
+      "id": "p07-tab-eq-ref",
+      "groups": ["document-pointers"],
+      "sentences": [
+        "Baseline characteristics are given in Tab. 1 and the model in Eq. 3 of Ref. 12.",
+        "Parameters were fitted as in Eqs. 4 and 5 (see Refs. 7 and 9).",
+        "Fit quality was good."
+      ]
+    },
+    {
+      "id": "p08-suppl-vol-pp-no",
+      "groups": ["document-pointers"],
+      "sentences": [
+        "Primer sequences are listed in Suppl. Table S2.",
+        "The method follows Ch. 4 of the manual, Vol. 2, pp. 113-120.",
+        "The antibody was purchased from Abcam (cat. no. 12345) and used at 1:500."
+      ]
+    },
+    {
+      "id": "p09-measures",
+      "groups": ["measures"],
+      "sentences": [
+        "Cells were incubated at a final conc. of approx. 5 uM for 2 days.",
+        "The mol. wt. of the purified protein was 42 kDa.",
+        "Incubation temp. was held constant."
+      ]
+    },
+    {
+      "id": "p10-mgkg-end",
+      "groups": ["measures", "negative"],
+      "sentences": [
+        "The dose was 3 mg/kg.",
+        "The next cohort received twice that dose.",
+        "Cells were then washed for 5 min.",
+        "Imaging followed immediately."
+      ]
+    },
+    {
+      "id": "p11-routes",
+      "groups": ["routes"],
+      "sentences": [
+        "Mice were injected i.v. with the vector and received the drug i.p. on day 3.",
+        "Patients took 200 mg p.o. b.i.d. for two weeks.",
+        "Compliance was monitored by pill count."
+      ]
+    },
+    {
+      "id": "p12-taxonomy",
+      "groups": ["taxonomy"],
+      "sentences": [
+        "Isolates of Bacillus sp. strain KR-1 and Streptococcus spp. were obtained from the culture collection.",
+        "Salmonella enterica subsp. enterica serovar Typhi was grown overnight.",
+        "Escherichia coli str. K-12 served as control."
+      ]
+    },
+    {
+      "id": "p13-genus-initials",
+      "groups": ["genus-initials"],
+      "sentences": [
+        "E. coli K-12 and S. enterica were grown in LB medium.",
+        "B. subtilis did not grow under these conditions, unlike P. aeruginosa.",
+        "Growth of C. trachomatis required host cells."
+      ]
+    },
+    {
+      "id": "p14-initial-digit",
+      "groups": ["genus-initials", "negative"],
+      "sentences": [
+        "Patients were randomised to group A or group B.",
+        "3 patients withdrew before the first visit."
+      ]
+    },
+    {
+      "id": "p15-journals",
+      "groups": ["journals"],
+      "sentences": [
+        "The assay was first described in Proc. Natl. Acad. Sci. U.S.A. in 2001.",
+        "A refinement appeared in J. Biol. Chem. two years later.",
+        "Clinical validation was published in N. Engl. J. Med. and Ann. Intern. Med."
+      ]
+    },
+    {
+      "id": "p16-institutions",
+      "groups": ["institutions"],
+      "sentences": [
+        "Reagents were purchased from Sigma Chemical Co. (St. Louis, MO) and from Wako Ltd. in Osaka.",
+        "Sequencing was done by the Dept. of Genetics, Univ. of Toronto, for the U.S. arm and the U.K. arm.",
+        "All data were deposited."
+      ]
+    },
+    {
+      "id": "p17-months",
+      "groups": ["months"],
+      "sentences": [
+        "Samples were collected between Jan. 2018 and Sept. 2019.",
+        "A second round ran from Oct. 2020 to Dec. 2021.",
+        "No samples were lost."
+      ]
+    },
+    {
+      "id": "p18-number-lowercase",
+      "groups": ["number-heuristic", "negative"],
+      "sentences": [
+        "Patients in arm 2. received placebo, while those in arm 1. received the active drug.",
+        "The trial was double blind.",
+        "Follow-up lasted 12 months."
+      ]
+    },
+    {
+      "id": "p19-clinical-acronym-end",
+      "groups": ["negative"],
+      "sentences": [
+        "Most patients presented to the ED.",
+        "Those with mild symptoms were discharged within hours.",
+        "Admissions were rare."
+      ]
+    },
+    {
+      "id": "p20-mixed",
+      "groups": ["latin", "document-pointers", "honorifics", "measures", "genus-initials"],
+      "sentences": [
+        "Dr. Smith et al. reported a 2.5-fold increase (p < 0.05).",
+        "Fig. 2 shows the effect in vivo, i.e. in mice infected with S. aureus at approx. 10^6 CFU.",
+        "The U.S. cohort was smaller.",
+        "Why the effect was weaker there is unclear!",
+        "Further work is needed?"
+      ]
+    }
+  ]
+}
