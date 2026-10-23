@@ -1460,7 +1460,9 @@ def make_chunker(
 
     When ``max_tokens`` + ``token_counter`` are passed, every method sizes/caps by
     tokens so no emitted chunk exceeds the embedder context. With them None the
-    char-budget behaviour is unchanged (back-compat).
+    char-budget behaviour is unchanged (back-compat). ``fixed_token`` is the one
+    method that is not *capped* by ``max_tokens`` — its window is the size — so a
+    ``chunk_size`` larger than ``max_tokens`` raises ``ValueError`` instead.
 
     ``budget_mode`` (``sentence``/``words`` only, and only with a token budget):
     ``"joined"`` (default) fills to the budget measured on the joined chunk text
@@ -1493,8 +1495,19 @@ def make_chunker(
     if method == "fixed_token":
         # chunk_size / chunk_overlap are TOKENS here; the window IS the cap so
         # max_tokens is not threaded (the chunker enforces <= chunk_size tokens).
+        # That makes a window WIDER than max_tokens a request this method cannot
+        # honour without breaking the other one — every chunk would overflow the
+        # embedder context. Refuse it rather than silently clamp (a clamp would
+        # re-size the collection behind the caller's back).
         if token_counter is None:
             raise ValueError("chunk_method='fixed_token' requires a token_counter")
+        if max_tokens is not None and chunk_size > max_tokens:
+            raise ValueError(
+                f"chunk_method='fixed_token' with chunk_size={chunk_size} tokens "
+                f"exceeds max_tokens={max_tokens} (the embedder's per-chunk token "
+                f"budget): every full window would overflow the model context. "
+                f"Use chunk_size <= {max_tokens}."
+            )
         return FixedTokenWindowChunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             token_counter=token_counter,

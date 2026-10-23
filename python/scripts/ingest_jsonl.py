@@ -71,7 +71,12 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
+from ragstack.ingestion.chunker_config import (
+    CHUNK_SIZE_UNIT_CHOICES,
+    CHUNK_SIZE_UNIT_HELP,
+    build_chunker,
+    needs_embed_fn,
+)
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
@@ -566,6 +571,7 @@ async def run(
         base_url=embed_base_url,
         api_key=embed_api_key,
         embed_fn=embed_bridge,
+        size_unit=getattr(args, "chunk_size_unit", "chars"),
         buffer_size=args.chunk_buffer_size,
         breakpoint_percentile=args.chunk_breakpoint_percentile,
         min_chunk_length=args.chunk_min_length,
@@ -593,6 +599,13 @@ async def run(
             # Threshold changes which docs fall back to fixed_token, changing spans.
             max_breakpoint_sentences=args.semantic_max_sentences,
             chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
+            # Only when non-default, so every existing cache keeps its key: a
+            # tokens run packs to a different budget, so it must never reuse
+            # spans segmented under chars (or vice versa).
+            **(
+                {"size_unit": "tokens"}
+                if getattr(args, "chunk_size_unit", "chars") == "tokens" else {}
+            ),
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
         print(f"segmentation cache {args.segmentation_cache} "
@@ -1282,11 +1295,13 @@ def main() -> None:
                         "(~buffer-window× less embedding work, deterministic blocks) — "
                         "pair with --breakpoint-embedding-* to run it on a cheap model.")
     p.add_argument("--chunk-size", type=int, default=512,
-                   help="chunk size (chars for fixed/sentence/words; TOKENS for "
-                        "fixed_token)")
+                   help="chunk size (chars for fixed/sentence/words unless "
+                        "--chunk-size-unit tokens; TOKENS for fixed_token)")
     p.add_argument("--chunk-overlap", type=int, default=64,
                    help="chunk overlap (chars for fixed/sentence/words; TOKENS for "
                         "fixed_token)")
+    p.add_argument("--chunk-size-unit", choices=CHUNK_SIZE_UNIT_CHOICES,
+                   default="chars", help=CHUNK_SIZE_UNIT_HELP)
     # Semantic-only tunables (ignored by other methods).
     p.add_argument("--chunk-buffer-size", type=int, default=3,
                    help="semantic: sentences of context on each side of a buffer")

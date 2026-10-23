@@ -33,7 +33,12 @@ import httpx
 
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
+from ragstack.ingestion.chunker_config import (
+    CHUNK_SIZE_UNIT_CHOICES,
+    CHUNK_SIZE_UNIT_HELP,
+    build_chunker,
+    needs_embed_fn,
+)
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
@@ -69,6 +74,7 @@ def _build_chunker(args):
         max_tokens=args.chunk_max_tokens,
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
+        size_unit=getattr(args, "chunk_size_unit", "chars"),
     )
     return chunker
 
@@ -191,6 +197,8 @@ def parse_args(argv=None):
     p.add_argument("--chunk-method", default="fixed_token")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)
+    p.add_argument("--chunk-size-unit", choices=CHUNK_SIZE_UNIT_CHOICES,
+                   default="chars", help=CHUNK_SIZE_UNIT_HELP)
     p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
                    default="hf", help="token counter backend (fixed_token forces hf)")
     p.add_argument("--chunk-max-tokens", type=int, default=None,
