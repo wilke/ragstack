@@ -361,6 +361,23 @@ def _token_split_span(
 # text[s:e] for every span reproduces ``text`` byte-for-byte (whitespace
 # included), which is what keeps the deterministic chunk ids honest downstream.
 
+#: Identity of the sentence segmenter — what :func:`sentence_spans` returns for
+#: a given text. **Bump it whenever ``sentence_spans`` output can change for any
+#: input** (a new abbreviation, a changed heuristic, a new backend rule): a
+#: sentence boundary is a chunk boundary, and chunk ids are
+#: ``uuid5(doc_id:start:end)``, so a moved boundary is a moved chunk id and a
+#: moved point id. Recorded in the production receipt / archive provenance
+#: (:func:`ragstack.provenance.tool_provenance`) and in every
+#: :func:`ragstack.provenance.sentence_spans_fingerprint`, so a reader can tell
+#: which segmentation a collection was built with.
+#:
+#: History: ``"punkt-bare"`` (implicit; never recorded) — ``PunktSentenceTokenizer()``
+#: with no parameters, every period a candidate break; the code that produced
+#: the stage0 results and ``/rag/snapshots/regression/v1``.
+#: ``"punkt-abbrev-v1"`` — :data:`SENTENCE_ABBREVIATIONS` seeded into Punkt and
+#: mirrored by the regex fallback (#318 P2).
+SEGMENTER_VERSION: str = "punkt-abbrev-v1"
+
 #: Abbreviations after which a period is NOT a sentence break, for both sentence
 #: backends. Punkt's convention: lower case, WITHOUT the trailing period, and
 #: one *Punkt token* each — Punkt splits on whitespace, so "et al." is matched
@@ -393,8 +410,8 @@ def _token_split_span(
 #: wrongly ("Group B. 3 patients left." would merge). The regex fallback
 #: mirrors that heuristic (:func:`_fallback_keeps_break`).
 #:
-#: Changing this set changes :func:`sentence_spans` output, and with it chunk
-#: ids (``uuid5(doc_id:start:end)``).
+#: Changing this set changes :func:`sentence_spans` output: bump
+#: :data:`SEGMENTER_VERSION`.
 SENTENCE_ABBREVIATIONS: frozenset[str] = frozenset({
     # Honorifics, titles and degrees before/after a name ("Dr. Smith", "Ph.D.").
     "dr", "drs", "prof", "profs", "mr", "mrs", "messrs", "jr", "sr", "rev",
