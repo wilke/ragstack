@@ -17,7 +17,6 @@ docs/plans/chunking-one-factory.md §8).
 """
 from __future__ import annotations
 
-import inspect
 import re
 import time
 
@@ -413,11 +412,8 @@ def test_failed_hf_load_is_not_cached(monkeypatch):
 # size_unit (#318 / #802) flows from chunk_params to the factory
 # --------------------------------------------------------------------------- #
 
-_FACTORY_HAS_SIZE_UNIT = "size_unit" in inspect.signature(build_chunker).parameters
-
-
 def _spy_factory(monkeypatch):
-    """A build_chunker that accepts size_unit (as #802's does) and records it."""
+    """A build_chunker that records the size_unit it is handed."""
     seen: dict = {}
 
     def fake_build_chunker(method, *, size_unit="chars", **kw):
@@ -452,16 +448,6 @@ def test_bad_size_unit_refuses_the_ingest(fake_backends, method, unit):
                           embed_fn=topic_embed_fn)
 
 
-@pytest.mark.skipif(_FACTORY_HAS_SIZE_UNIT, reason="factory already takes size_unit (#802)")
-def test_tokens_unit_is_refused_not_ignored_by_a_factory_without_it(fake_backends):
-    """Before #802 lands the factory cannot count `size` in tokens; chunking such
-    a collection by characters would contradict its identity, so it refuses."""
-    with pytest.raises(ValueError, match="#802"):
-        deps._chunker_for(_entry("sentence", chunk_params={"size_unit": "tokens"}))
-    assert deps._chunker_for(_entry("sentence", chunk_params={"size_unit": "chars"}))
-
-
-@pytest.mark.skipif(not _FACTORY_HAS_SIZE_UNIT, reason="needs #802's size_unit kwarg")
 @pytest.mark.parametrize("method", ["sentence", "words"])
 @pytest.mark.parametrize("doc_factory", [_topic_doc, _long_doc], ids=["topics", "oversize"])
 def test_size_unit_tokens_parity(fake_backends, method, doc_factory):
@@ -475,3 +461,41 @@ def test_size_unit_tokens_parity(fake_backends, method, doc_factory):
     )
     assert _spans(api.chunk(doc)) == _spans(bulk.chunk(doc))
     assert max(COUNTER.count(c.content) for c in api.chunk(doc)) <= min(entry.chunk_size, BUDGET)
+
+
+#: sentence/words rows for #802's semantics (owner decision 2026-10-23):
+#: ``chars`` packs to *size* characters and CAPS at ``max_tokens`` at unit
+#: boundaries; ``tokens`` packs to *size* tokens, capped at ``max_tokens``.
+#: Each row is chosen so the cap actually bites (``size`` > the budget).
+_UNIT_ROWS = [
+    pytest.param({}, 1200, 100, id="chars-default-cap"),
+    pytest.param({"size_unit": "chars"}, 1200, 100, id="chars-explicit-cap"),
+    pytest.param({"size_unit": "tokens"}, 40, 8, id="tokens-under-budget"),
+    pytest.param({"size_unit": "tokens"}, 200, 20, id="tokens-capped"),
+]
+
+
+@pytest.mark.parametrize("method", ["sentence", "words"])
+@pytest.mark.parametrize(("params", "size", "overlap"), _UNIT_ROWS)
+@pytest.mark.parametrize("doc_factory", [_topic_doc, _long_doc], ids=["topics", "oversize"])
+def test_size_unit_parity_and_cap(fake_backends, method, params, size, overlap, doc_factory):
+    entry = _entry(method, chunk_size=size, chunk_overlap=overlap, chunk_params=params)
+    unit = params.get("size_unit", "chars")
+    doc = doc_factory()
+    api_chunks = deps._chunker_for(entry).chunk(doc)
+    bulk, _c, _m = build_chunker(
+        method, chunk_size=size, chunk_overlap=overlap, model=entry.model,
+        token_backend="hf", max_tokens=None, base_url=ENDPOINT, size_unit=unit,
+    )
+    assert api_chunks
+    assert _spans(api_chunks) == _spans(bulk.chunk(doc))
+    tokens = [COUNTER.count(c.content) for c in api_chunks]
+    assert max(tokens) <= BUDGET  # the cap holds in both units
+    if unit == "tokens":
+        assert max(tokens) <= min(size, BUDGET)
+    else:
+        # chars means chars: no chunk is packed past `size` characters (plus at
+        # most one unit, since a unit is never split to meet `size`). The legacy
+        # pack-to-window behaviour would fill to ~BUDGET tokens instead.
+        longest_unit = max(len(s) for s in re.split(r"(?<=\.)\s", doc.content))
+        assert max(len(c.content) for c in api_chunks) <= size + longest_unit

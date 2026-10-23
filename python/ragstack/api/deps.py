@@ -8,7 +8,6 @@ fallback keeps unit tests and demo runs functional without infra.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import math
@@ -41,7 +40,6 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.grading.store import make_grading_store
 from ragstack.graph.extractor import LLMKGExtractor
-from ragstack.ingestion import chunkers as _chunkers
 from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
 from ragstack.ingestion.chunker_config import (
@@ -51,7 +49,7 @@ from ragstack.ingestion.chunker_config import (
     needs_embed_fn,
     parse_unsupported_methods,
 )
-from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.ingestion.chunkers import CHUNK_METHODS, SIZE_UNITS
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
@@ -522,10 +520,7 @@ _SEMANTIC_PARAM_KWARGS: tuple[tuple[str, str, str, Any], ...] = (
 #: rides in ``chunk_params``, so it is already folded into ``chunk_descriptor()``
 #: and ``spec_hash`` — and the GoWe shard tool reads it from the same place.
 SIZE_UNIT_METHODS: tuple[str, ...] = ("sentence", "words")
-#: ``chunkers.SIZE_UNITS`` once #802 lands; the same two values until then.
-SIZE_UNITS: tuple[str, ...] = tuple(getattr(_chunkers, "SIZE_UNITS", ("chars", "tokens")))
-#: Public so the create router normalises against the same value.
-DEFAULT_SIZE_UNIT: str = getattr(_chunkers, "DEFAULT_SIZE_UNIT", "chars")
+# SIZE_UNITS (and the default, ``chars``) come from ragstack.ingestion.chunkers (#802).
 
 
 def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | None:
@@ -562,9 +557,6 @@ def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str)
     ``chunk_params`` is free-form in the contract, so keys this server does not
     use are ignored — but logged once at DEBUG so a misspelt tunable is findable.
     """
-    # Guarded on the factory's signature so this works before and after #802 adds
-    # the ``size_unit`` kwarg, with no edit here when it lands.
-    accepted = inspect.signature(build_chunker).parameters
     out: dict[str, Any] = {}
     used: set[str] = set()
     if needs_embed_fn(method):
@@ -574,16 +566,7 @@ def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str)
     size_unit = size_unit_from_params(method, params)
     if size_unit is not None:
         used.add("size_unit")
-        if method in SIZE_UNIT_METHODS:
-            if "size_unit" in accepted:
-                out["size_unit"] = size_unit
-            elif size_unit != DEFAULT_SIZE_UNIT:
-                # The collection says tokens and this build cannot count them:
-                # chunking it by characters would contradict its identity.
-                raise ValueError(
-                    f"chunk param size_unit={size_unit!r} is not supported by this "
-                    f"server's chunker factory (needs #802)"
-                )
+        out["size_unit"] = size_unit  # validated above: sentence/words only
     ignored = sorted(set(params) - used)
     if ignored:
         log.debug(

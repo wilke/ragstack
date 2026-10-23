@@ -44,7 +44,6 @@ from ragstack.api.collections import (
 )
 from ragstack.api.default_collection import pick_default, visible_entries
 from ragstack.api.deps import (
-    DEFAULT_SIZE_UNIT,
     bound_json_body,
     build_collection_entry,
     default_chunk_method_for,
@@ -81,7 +80,7 @@ from ragstack.group_store import get_group_store
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
-from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
