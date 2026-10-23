@@ -177,7 +177,8 @@ def test_fixed_token_binds_the_collections_tokenizer(monkeypatch):
         seen.update({"backend": backend, **kw})
         return _Counter()
 
-    monkeypatch.setattr("ragstack.api.deps.make_token_counter", _fake)
+    # The factory (#647) is where the counter is built now, for every method.
+    monkeypatch.setattr("ragstack.ingestion.chunker_config.make_token_counter", _fake)
     c = _chunker_for(_entry("fixed_token", model="acme/embedder"))
     assert isinstance(c, FixedTokenWindowChunker)
     assert seen["backend"] == "hf" and seen["model"] == "acme/embedder"
@@ -333,3 +334,45 @@ async def test_unknown_semantic_params_ride_along(client, _admin):
         },
     )
     assert r.status_code == 201, r.text
+
+
+# --------------------------------------------------------------------------- #
+# size_unit (#318 / #802): validated at create, the same check ingest runs
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["sentence", "words"])
+@pytest.mark.parametrize("unit", ["chars", "tokens"])
+async def test_size_unit_is_accepted_for_sentence_and_words(client, _admin, method, unit):
+    await _register(client)
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": f"su-{method}-{unit}",
+        "chunk": {"method": method, "size": 256, "overlap": 32, "params": {"size_unit": unit}},
+    })
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "unit", "needle"),
+    [
+        ("sentence", "bytes", "must be one of chars, tokens"),
+        ("words", 7, "must be one of"),
+        ("fixed", "tokens", "applies only to sentence, words"),
+        ("semantic", "tokens", "applies only to sentence, words"),
+    ],
+)
+async def test_bad_size_unit_is_refused_at_create(client, _admin, method, unit, needle):
+    """400, like every other invalid chunk config (contracts/openapi.yaml lists
+    400 "chunk config is invalid" for POST /v1/collections; 422 is reserved for a
+    body that fails the schema, and `params` is free-form there)."""
+    await _register(client)
+    chunk: dict = {"method": method, "params": {"size_unit": unit}}
+    if method not in ("semantic", "semantic_pooled"):
+        chunk |= {"size": 256, "overlap": 32}
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": f"bad-{method}", "chunk": chunk,
+    })
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]

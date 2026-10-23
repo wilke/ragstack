@@ -4,6 +4,7 @@ import json
 import pytest
 
 from ragstack.api import deps
+from ragstack.ingestion import chunker_config
 from ragstack.stores import InMemoryVectorStore
 
 
@@ -354,11 +355,12 @@ def test_kg_extractor_built_when_enabled_with_llm(monkeypatch):
 
 
 def _capture_make_chunker(monkeypatch):
-    """Patch deps.make_chunker to record the kwargs it was called with.
+    """Patch the factory's make_chunker to record the kwargs it was called with.
 
-    Returns the dict that will hold the captured call. Also stubs out the
-    semantic SyncEmbedBridge path is avoided by leaving chunk_method at its
-    default ("fixed"), so no embedder is built.
+    Since #647 the API builds every chunker through
+    ``chunker_config.build_chunker``, so that is where the call is intercepted.
+    Returns the dict that will hold the captured call. chunk_method is left at
+    its default ("fixed"), so no embedder is built.
     """
     captured: dict = {}
 
@@ -367,33 +369,55 @@ def _capture_make_chunker(monkeypatch):
         captured.update(kwargs)
         return object()  # a stand-in chunker; deps only returns it
 
-    monkeypatch.setattr(deps, "make_chunker", fake_make_chunker)
+    monkeypatch.setattr(chunker_config, "make_chunker", fake_make_chunker)
     return captured
 
 
-def test_chunker_no_token_sizing_by_default(monkeypatch):
-    # Default (chunk_max_tokens=None): the token-sizing path is off — make_chunker
-    # gets max_tokens/token_counter=None and no token counter is built (no
-    # tokenizer load / endpoint probe at startup).
+def test_chunker_no_token_sizing_at_boot_by_default(monkeypatch):
+    # Default (chunk_max_tokens=None): nothing is resolved at startup — no token
+    # counter built (no tokenizer load) and no endpoint probed. The budget is
+    # resolved lazily, through the same factory, on the first chunk (#647).
     monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
     monkeypatch.setattr(deps.settings, "chunk_max_tokens", None)
 
     def boom(*a, **k):  # pragma: no cover - must not be called
-        raise AssertionError("make_token_counter must not run when feature is off")
+        raise AssertionError("nothing may be resolved at boot when the feature is off")
 
-    monkeypatch.setattr(deps, "make_token_counter", boom)
-    monkeypatch.setattr(deps, "resolve_max_tokens", boom)
+    monkeypatch.setattr(chunker_config, "make_token_counter", boom)
+    monkeypatch.setattr(chunker_config, "resolve_max_tokens", boom)
     captured = _capture_make_chunker(monkeypatch)
 
     chunker, bridge = deps._build_chunker()
     assert bridge is None
-    assert captured["max_tokens"] is None
-    assert captured["token_counter"] is None
+    assert isinstance(chunker, deps._LazyChunker)
+    assert captured == {}  # make_chunker not reached yet
+
+
+def test_lazy_default_chunker_resolves_through_the_factory_on_first_use(monkeypatch):
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", None)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", ["http://emb-1:8000"])
+    seen: dict = {}
+
+    def fake_resolve(explicit, **kw):
+        seen.update(explicit=explicit, **kw)
+        return 300
+
+    monkeypatch.setattr(chunker_config, "resolve_max_tokens", fake_resolve)
+    chunker, _ = deps._build_chunker()
+    from ragstack.models import Document
+
+    chunks = chunker.chunk(Document(id="d", content="alpha beta gamma. " * 5, metadata={}))
+    assert chunks
+    assert seen["explicit"] is None and seen["base_url"] == "http://emb-1:8000"
+    inner = chunker.resolve()
+    assert inner.max_tokens == 300 and inner.token_counter is not None
 
 
 def test_chunker_token_sizing_when_enabled(monkeypatch):
     # chunk_max_tokens set: a TokenCounter is built and a resolved budget +
-    # counter are passed into make_chunker, so /v1/ingest caps chunks by tokens.
+    # counter are passed into make_chunker, eagerly (no network is needed).
     monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
     monkeypatch.setattr(deps.settings, "chunk_max_tokens", 256)
     monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
@@ -415,8 +439,8 @@ def test_chunker_token_sizing_when_enabled(monkeypatch):
         resolve_calls.update(kwargs)
         return 240
 
-    monkeypatch.setattr(deps, "make_token_counter", fake_make_token_counter)
-    monkeypatch.setattr(deps, "resolve_max_tokens", fake_resolve_max_tokens)
+    monkeypatch.setattr(chunker_config, "make_token_counter", fake_make_token_counter)
+    monkeypatch.setattr(chunker_config, "resolve_max_tokens", fake_resolve_max_tokens)
     captured = _capture_make_chunker(monkeypatch)
 
     deps._build_chunker()
@@ -445,10 +469,10 @@ def test_chunker_token_sizing_falls_back_to_sidecar_url(monkeypatch):
 
     seen: dict = {}
     monkeypatch.setattr(
-        deps, "make_token_counter", lambda backend, **kw: seen.update(kw) or object()
+        chunker_config, "make_token_counter", lambda backend, **kw: seen.update(kw) or object()
     )
     monkeypatch.setattr(
-        deps, "resolve_max_tokens", lambda explicit, **kw: 100
+        chunker_config, "resolve_max_tokens", lambda explicit, **kw: 100
     )
     _capture_make_chunker(monkeypatch)
 
@@ -464,11 +488,13 @@ def test_chunker_refuses_to_boot_on_an_unloadable_tokenizer(monkeypatch):
     start, instead of starting and capping every chunk with a heuristic budget
     that is ~1.4x off. Every other chunker test here stubs ``make_token_counter``
     out, so none of them would notice a re-added fallback — this one deliberately
-    does not stub it.
+    does not stub it (patching ``HFTokenCounter._tokenizer`` also makes the
+    offline guard in ``tests/unit/offline_chunk_sizing.py`` defer to the real
+    factory).
 
-    ``chunk_max_tokens`` is set (the gate on the counter being built at all), and
-    is an explicit int, so ``resolve_max_tokens`` returns from the override
-    without probing the endpoint — no network on this path.
+    ``chunk_max_tokens`` is set (the gate on an eager build), and is an explicit
+    int, so ``resolve_max_tokens`` returns from the override without probing the
+    endpoint — no network on this path.
     """
     from ragstack.ingestion.tokenization import HFTokenCounter
 

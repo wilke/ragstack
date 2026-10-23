@@ -8,10 +8,12 @@ fallback keeps unit tests and demo runs functional without infra.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import math
 import os
+import threading
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, TypedDict
@@ -39,10 +41,17 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.grading.store import make_grading_store
 from ragstack.graph.extractor import LLMKGExtractor
+from ragstack.ingestion import chunkers as _chunkers
 from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
-from ragstack.ingestion.chunker_config import needs_embed_fn, parse_unsupported_methods
-from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
+from ragstack.ingestion.chunker_config import (
+    ModelWindowUnavailable,
+    build_chunker,
+    cached_token_counter,
+    needs_embed_fn,
+    parse_unsupported_methods,
+)
+from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
@@ -53,7 +62,6 @@ from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher, attacher_
 from ragstack.ingestion.tokenization import (
     TokenCounterUnavailable,
     make_token_counter,
-    resolve_max_tokens,
 )
 from ragstack.jobstore import KIND_INGEST, make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
@@ -493,11 +501,108 @@ def _semantic_param(params: dict[str, Any], key: str, default: Any, cast: Any) -
         raise ValueError(f"chunk param {key!r} must be a number; got {params[key]!r}") from None
 
 
+#: ``chunk_params`` keys -> the :func:`build_chunker` kwarg each one sets, for the
+#: SEMANTIC methods only, with the setting that is its default and its cast. These
+#: are exactly the tunables ``POST /v1/collections`` range-checks
+#: (``routers/collections.py`` ``SEMANTIC_PARAM_BOUNDS``); the contract spells the
+#: percentile ``breakpoint_percentile_threshold`` where the factory says
+#: ``breakpoint_percentile``. Read only for the semantic methods, as
+#: ``scripts/ingest_shard.py`` does: ``create_collection`` persists ``params`` for
+#: any method, so a ``fixed`` collection may legitimately carry a value here that
+#: means nothing to it.
+_SEMANTIC_PARAM_KWARGS: tuple[tuple[str, str, str, Any], ...] = (
+    ("buffer_size", "buffer_size", "chunk_buffer_size", int),
+    ("breakpoint_percentile_threshold", "breakpoint_percentile",
+     "chunk_breakpoint_percentile", float),
+    ("min_chunk_length", "min_chunk_length", "chunk_min_length", int),
+)
+
+#: The methods whose ``chunk_size`` can be counted in either unit (#318, #802):
+#: ``size_unit`` in ``chunk_params`` says which. It is collection identity — it
+#: rides in ``chunk_params``, so it is already folded into ``chunk_descriptor()``
+#: and ``spec_hash`` — and the GoWe shard tool reads it from the same place.
+SIZE_UNIT_METHODS: tuple[str, ...] = ("sentence", "words")
+#: ``chunkers.SIZE_UNITS`` once #802 lands; the same two values until then.
+SIZE_UNITS: tuple[str, ...] = tuple(getattr(_chunkers, "SIZE_UNITS", ("chars", "tokens")))
+_DEFAULT_SIZE_UNIT = "chars"
+
+
+def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | None:
+    """The ``size_unit`` a collection's ``chunk_params`` records, validated.
+
+    ``None`` when the key is absent or null (the factory default, ``chars``, then
+    applies). Raises ``ValueError`` — the create router's 400 and the ingest
+    router's 400 — for a value outside :data:`SIZE_UNITS`, and for a non-default
+    unit on a method that has no such choice: a ``fixed`` collection recording
+    ``size_unit='tokens'`` would otherwise be chunked by characters while its
+    identity says tokens.
+    """
+    value = (params or {}).get("size_unit")
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in SIZE_UNITS:
+        raise ValueError(
+            f"chunk param 'size_unit' must be one of {', '.join(SIZE_UNITS)}; got {value!r}"
+        )
+    if method not in SIZE_UNIT_METHODS and value != _DEFAULT_SIZE_UNIT:
+        raise ValueError(
+            f"chunk param 'size_unit' applies only to {', '.join(SIZE_UNIT_METHODS)}, "
+            f"not chunk_method={method!r}"
+        )
+    return value
+
+
+def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str) -> dict[str, Any]:
+    """The :func:`build_chunker` kwargs a collection's ``chunk_params`` set.
+
+    ``chunk_params`` is free-form in the contract, so keys this server does not
+    use are ignored — but logged once at DEBUG so a misspelt tunable is findable.
+    """
+    # Guarded on the factory's signature so this works before and after #802 adds
+    # the ``size_unit`` kwarg, with no edit here when it lands.
+    accepted = inspect.signature(build_chunker).parameters
+    out: dict[str, Any] = {}
+    used: set[str] = set()
+    if needs_embed_fn(method):
+        for key, kwarg, setting, cast in _SEMANTIC_PARAM_KWARGS:
+            out[kwarg] = _semantic_param(params, key, getattr(settings, setting), cast)
+            used.add(key)
+    size_unit = size_unit_from_params(method, params)
+    if size_unit is not None:
+        used.add("size_unit")
+        if method in SIZE_UNIT_METHODS:
+            if "size_unit" in accepted:
+                out["size_unit"] = size_unit
+            elif size_unit != _DEFAULT_SIZE_UNIT:
+                # The collection says tokens and this build cannot count them:
+                # chunking it by characters would contradict its identity.
+                raise ValueError(
+                    f"chunk param size_unit={size_unit!r} is not supported by this "
+                    f"server's chunker factory (needs #802)"
+                )
+    ignored = sorted(set(params) - used)
+    if ignored:
+        log.debug(
+            "collection %r (chunk_method=%s): chunk_params %s not used by this chunker",
+            collection_id, method, ignored,
+        )
+    return out
+
+
 def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     """Build a chunker from a *target collection's* own chunk config, falling back
-    to the server defaults for any unset field. ``fixed_token`` binds the HF
-    tokenizer of the collection's embedding model (its sliding window is sized in
-    that model's tokens).
+    to the server defaults for any unset field — through the SAME factory the bulk
+    tools use (:func:`~ragstack.ingestion.chunker_config.build_chunker`), so one
+    collection spec is chunked one way whichever path ingests it (#647).
+
+    Every method is token-budgeted: the counter is the collection embedding
+    model's HF tokenizer (``fixed_token`` always; otherwise when
+    ``CHUNK_TOKEN_COUNTER=hf``, the default), and ``max_tokens`` is
+    ``CHUNK_MAX_TOKENS`` when set, else the window the collection's OWN embedding
+    endpoint reports. When neither yields a window this REFUSES
+    (:class:`ModelWindowUnavailable`, a ``ValueError`` -> 400) instead of
+    assuming one: a guessed window silently sizes the whole collection. The
+    trade-off is that a transient endpoint hiccup fails the ingest request.
 
     The semantic methods embed sentence buffers synchronously, so they need an
     ``embed_fn``; ``build_ingestor_for`` supplies one bound to *this collection's*
@@ -520,28 +625,29 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
             f"chunk_method={method!r} needs an embedding backend for this collection, "
             "but none could be built"
         )
-    token_counter = None
-    if method == "fixed_token":
-        model = entry.model or settings.embedding_model
-        if not model:
-            raise ValueError(
-                "chunk_method='fixed_token' requires the collection's embedding_model"
-            )
-        token_counter = make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
-    return make_chunker(
-        method,
-        chunk_size=size,
-        chunk_overlap=overlap,
-        token_counter=token_counter,
-        embed_fn=embed_fn,
-        buffer_size=_semantic_param(params, "buffer_size", settings.chunk_buffer_size, int),
-        breakpoint_percentile_threshold=_semantic_param(
-            params, "breakpoint_percentile_threshold", settings.chunk_breakpoint_percentile, float
-        ),
-        min_chunk_length=_semantic_param(
-            params, "min_chunk_length", settings.chunk_min_length, int
-        ),
-    )
+    # The collection's own endpoints, exactly as _embed_bridge_for picks them: the
+    # window must be the one of the model that stores THIS collection's vectors.
+    urls = list(entry.embedding_endpoints) or embedding_urls()
+    try:
+        chunker, _counter, _max_tokens = build_chunker(
+            method,
+            chunk_size=size,
+            chunk_overlap=overlap,
+            model=entry.model or settings.embedding_model or None,
+            token_backend=settings.chunk_token_counter,
+            max_tokens=settings.chunk_max_tokens,
+            base_url=urls[0] if urls else None,
+            api_key=settings.openai_api_key or None,
+            embed_fn=embed_fn,
+            on_warn=log.warning,
+            require_window=True,
+            **_chunk_param_kwargs(method, params, entry.id),
+        )
+    except ModelWindowUnavailable as e:
+        raise ModelWindowUnavailable(f"collection {entry.id!r}: {e}") from None
+    except ValueError as e:  # TokenCounterUnavailable is not one: it stays the router's 503
+        raise ValueError(f"collection {entry.id!r}: {e}") from None
+    return chunker
 
 
 #: Models whose HF tokenizer has loaded in this process (value always ``None``).
@@ -1434,21 +1540,59 @@ def build_reranker_for(
     return _reranker_from_entry(entry, http)
 
 
+class _LazyChunker:
+    """A chunker built on first use — the server-default chunker's boot property.
+
+    :func:`_build_chunker` runs in ``lifespan``. Resolving the token budget there
+    would GET the embedding endpoint's ``/v1/models`` at boot (and refuse to boot
+    if it is down), and building the default ``hf`` counter would load an HF
+    tokenizer at boot — both things a deployment that never set ``CHUNK_METHOD`` /
+    ``CHUNK_MAX_TOKENS`` has never done. So the build is deferred to the first
+    ``chunk()``: through the same factory, with the same refusal, but failing that
+    ingest job rather than the boot. A failed build is not cached, so the next
+    ingest retries it (a transient endpoint outage heals without a restart).
+
+    The pipeline only ever calls ``chunk`` (from a worker thread, hence the lock).
+    """
+
+    def __init__(self, build: Any) -> None:
+        self._build = build
+        self._chunker: Any = None
+        self._lock = threading.Lock()
+
+    def resolve(self) -> Any:
+        if self._chunker is None:
+            with self._lock:
+                if self._chunker is None:
+                    self._chunker = self._build()
+        return self._chunker
+
+    def chunk(self, doc: Any) -> Any:
+        return self.resolve().chunk(doc)
+
+
 def _build_chunker():
-    """Build the configured chunker.
+    """Build the configured (server-default collection's) chunker.
 
     Returns ``(chunker, embed_bridge)``. ``embed_bridge`` is non-None only for
-    ``chunk_method=semantic``: that chunker embeds sentence buffers synchronously
+    the semantic methods: that chunker embeds sentence buffers synchronously
     from inside the (async) ingestion pipeline, so we hand it a sync bridge. The
     bridge builds its *own* embedder + httpx client on its background loop (via
     ``_build_embedder``) — not the app's main-loop client, which would otherwise
     raise a cross-loop error — and is closed at shutdown.
+
+    The chunker is built through the same factory as every per-collection one
+    (:func:`~ragstack.ingestion.chunker_config.build_chunker`), so it is token-
+    budgeted for every method. When ``CHUNK_MAX_TOKENS`` is set the window needs no
+    network and the build is eager (a bad tokenizer refuses the boot, as before);
+    otherwise it is a :class:`_LazyChunker`, resolved on first ingest.
     """
     # This is the settings-derived default collection's chunker, so it takes that
     # collection's method — unrecorded_chunk_method() (CHUNK_METHOD, else the
     # legacy `fixed`), not the `fixed_token` default a NEW collection is created
     # with. A deployment that never set CHUNK_METHOD therefore boots exactly as
-    # before: no HF tokenizer is loaded at startup.
+    # before: no HF tokenizer is loaded and no endpoint is probed at startup (the
+    # budget is resolved lazily, see below).
     method = settings.unrecorded_chunk_method()
     # Validate against the canonical set, not a hand-copied literal: an out-of-date
     # literal here silently dropped `fixed_token` (and `semantic_pooled`) to `fixed`,
@@ -1467,59 +1611,47 @@ def _build_chunker():
         bridge = SyncEmbedBridge(_build_embedder)
         embed_fn = bridge
 
-    # Token-based sizing is opt-in (chunk_max_tokens set). When off, pass nothing
-    # so the char-budget path is unchanged and no tokenizer/endpoint is touched at
-    # startup. When on, build a TokenCounter and resolve the per-chunk budget from
-    # the embedding endpoint so /v1/ingest never emits an over-window chunk.
-    #
-    # The ``fixed_token`` method ALSO needs a TokenCounter (its window is the sizing
-    # unit) even when chunk_max_tokens is unset — and specifically the HF fast
-    # tokenizer's offset mapping, so force the 'hf' backend and require a model.
-    # Without this, make_chunker('fixed_token') would raise the opaque
-    # "requires a token_counter" at startup.
-    max_tokens: int | None = None
-    token_counter = None
-    if settings.chunk_max_tokens is not None or method == "fixed_token":
-        base_url = (settings.embedding_endpoints or [settings.embedding_sidecar_url])[0]
-        api_key = settings.openai_api_key or None
-        model = settings.embedding_model or None
-        # fixed_token forces the HF backend (it needs the fast tokenizer's offset
-        # map) and requires a model to load that tokenizer.
-        if method == "fixed_token" and not model:
-            raise ValueError(
-                "chunk_method='fixed_token' requires embedding_model (its sliding "
-                "token window is built from that model's HF tokenizer)"
-            )
-        counter_backend = "hf" if method == "fixed_token" else settings.chunk_token_counter
-        token_counter = make_token_counter(
-            counter_backend,
+    base_url = embedding_urls()[0]
+    api_key = settings.openai_api_key or None
+    model = settings.embedding_model or None
+
+    def build() -> Any:
+        chunker, _counter, max_tokens = build_chunker(
+            method,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
             model=model,
+            token_backend=settings.chunk_token_counter,
+            max_tokens=settings.chunk_max_tokens,
             base_url=base_url,
             api_key=api_key,
+            embed_fn=embed_fn,
+            buffer_size=settings.chunk_buffer_size,
+            breakpoint_percentile=settings.chunk_breakpoint_percentile,
+            min_chunk_length=settings.chunk_min_length,
+            on_warn=log.warning,
+            require_window=True,
         )
-        if settings.chunk_max_tokens is not None:
-            max_tokens = resolve_max_tokens(
-                settings.chunk_max_tokens,
-                base_url=base_url,
-                api_key=api_key,
-            )
-            log.info(
-                "token-based chunk sizing on: max_tokens=%d counter=%s",
-                max_tokens,
-                counter_backend,
-            )
+        log.info("default chunker: chunk_method=%s max_tokens=%d", method, max_tokens)
+        return chunker
 
-    chunker = make_chunker(
-        method,
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        embed_fn=embed_fn,
-        buffer_size=settings.chunk_buffer_size,
-        breakpoint_percentile_threshold=settings.chunk_breakpoint_percentile,
-        min_chunk_length=settings.chunk_min_length,
-        max_tokens=max_tokens,
-        token_counter=token_counter,
-    )
+    if settings.chunk_max_tokens is not None:
+        # An explicit window: no network, so build now and let a bad tokenizer
+        # refuse the boot rather than the first ingest.
+        chunker: Any = build()
+    else:
+        if method == "fixed_token":
+            # fixed_token has always loaded its tokenizer at boot, so an unloadable
+            # one refuses to start (TokenCounterUnavailable) instead of failing every
+            # ingest. Keep that: load (and cache) the counter now; only the window,
+            # which needs the network, waits for the first chunk.
+            if not model:
+                raise ValueError(
+                    "chunk_method='fixed_token' requires embedding_model (its sliding "
+                    "token window is built from that model's HF tokenizer)"
+                )
+            cached_token_counter("hf", model=model, base_url=base_url, api_key=api_key)
+        chunker = _LazyChunker(build)
     log.info("chunker: chunk_method=%s", method)
     return chunker, bridge
 

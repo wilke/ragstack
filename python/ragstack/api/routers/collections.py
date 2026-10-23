@@ -55,6 +55,7 @@ from ragstack.api.deps import (
     materialize_config_manifest_for_spec,
     probe_tenant_count,
     rate_limited,
+    size_unit_from_params,
 )
 from ragstack.api.eviction import (
     active_count,
@@ -348,6 +349,13 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             400,
             f"unknown chunk method {method!r}; valid: {', '.join(sorted(CHUNK_METHODS))}",
         )
+    # `size_unit` (sentence/words; #318) is collection identity, so a bad value is
+    # refused here rather than at the first ingest. 400 like every other invalid
+    # chunk config (contracts/openapi.yaml), via the same check ingest runs.
+    try:
+        size_unit_from_params(method, chunk.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     if method in SEMANTIC_METHODS:
         for key, value in (chunk.params or {}).items():
             bounds = SEMANTIC_PARAM_BOUNDS.get(key)

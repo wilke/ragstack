@@ -25,6 +25,7 @@ from ragstack.api.collections import CollectionEntry
 from ragstack.api.security import ROLE_ADMIN
 from ragstack.collection_store import CollectionSpec
 from ragstack.config import LEGACY_CHUNK_METHOD, Settings, settings
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunkers import FixedTokenWindowChunker, RecursiveCharacterChunker
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.provenance import chunk_descriptor, read_manifest, spec_hash
@@ -184,10 +185,9 @@ def test_method_less_spec_identity_does_not_depend_on_the_default():
 
 
 def test_method_less_entry_is_still_chunked_with_fixed(_unconfigured, monkeypatch):
-    def _boom(*a, **kw):  # pragma: no cover - must not be reached
-        raise AssertionError("a method-less entry must not load a tokenizer")
-
-    monkeypatch.setattr(deps, "make_token_counter", _boom)
+    """A method-less entry is chunked with `fixed`, never the new-collection
+    default. (Since #647 every method is token-budgeted, so a counter IS built —
+    the offline guard supplies it — but the chunker is still the char splitter.)"""
     assert isinstance(deps._chunker_for(_entry(None)), RecursiveCharacterChunker)
     assert isinstance(deps._chunker_for(_entry("")), RecursiveCharacterChunker)
 
@@ -200,7 +200,7 @@ def test_recorded_fixed_token_entry_still_gets_fixed_token(monkeypatch):
         def _tokenizer(self):
             return object()
 
-    monkeypatch.setattr(deps, "make_token_counter", lambda backend, **kw: _Counter())
+    monkeypatch.setattr(chunker_config, "make_token_counter", lambda backend, **kw: _Counter())
     assert isinstance(deps._chunker_for(_entry("fixed_token")), FixedTokenWindowChunker)
 
 
@@ -228,9 +228,11 @@ def test_boot_chunker_of_an_unconfigured_deployment_loads_no_tokenizer(
     def _boom(*a, **kw):  # pragma: no cover - must not be reached
         raise AssertionError("boot must not load a tokenizer")
 
-    monkeypatch.setattr(deps, "make_token_counter", _boom)
+    monkeypatch.setattr(chunker_config, "make_token_counter", _boom)
+    monkeypatch.setattr(chunker_config, "resolve_max_tokens", _boom)
     chunker, bridge = deps._build_chunker()
-    assert isinstance(chunker, RecursiveCharacterChunker) and bridge is None
+    # Nothing resolved at boot: the budget (#647) waits for the first ingest.
+    assert isinstance(chunker, deps._LazyChunker) and bridge is None
 
 
 def test_boot_chunker_with_configured_fixed_token_and_no_tokenizer_fails_clearly(monkeypatch):
@@ -243,7 +245,7 @@ def test_boot_chunker_with_configured_fixed_token_and_no_tokenizer_fails_clearly
     def _fail(backend, *, model, **kw):
         raise TokenCounterUnavailable(backend, model, OSError("no tokenizer"))
 
-    monkeypatch.setattr(deps, "make_token_counter", _fail)
+    monkeypatch.setattr(chunker_config, "make_token_counter", _fail)
     with pytest.raises(TokenCounterUnavailable):
         deps._build_chunker()
 
