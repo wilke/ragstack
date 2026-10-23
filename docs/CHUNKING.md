@@ -289,8 +289,12 @@ chunks have to fit inside it.
     characters. That behaviour is removed, not kept. A registry check on
     2026-10-23 found no production `sentence`/`words` collection, and the
     chunking study is pinned to its commit.
-  - [deep-dive §2.1](ARCHITECTURE-DEEP-DIVE.md#21-chunker-construction-the-five-builders-and-what-615-consolidated)
-    still describes the old behaviour.
+  - See [deep-dive §2.1](ARCHITECTURE-DEEP-DIVE.md#21-chunker-construction-the-five-builders-and-what-615-consolidated)
+    for how the builders used to diverge.
+  - The 7-way eval harness, `scripts/eval/chunking_compare_7way.py`, now
+    builds its `sentence`/`words` arms with `size_unit="tokens"` (its old
+    spelling relied on the removed behaviour). It reproduces the committed
+    grids, including the `budget_mode="summed"` arm.
 
   Where `size_unit` comes from depends on the tool:
   - **`ingest_shard.py`** (the GoWe worker, which writes into a registry
