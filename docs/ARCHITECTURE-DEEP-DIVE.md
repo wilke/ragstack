@@ -525,7 +525,7 @@ The old behaviour was removed rather than kept as a default. The plan read zero 
 
 **Scalability & parallelization:** Construction runs once per app, collection or tool run. `api/deps.py` `_embed_bridge_for` caches one bridge per collection id on `app_state`.
 
-**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. That split is where the `sentence` / `words` divergence comes from.
+**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. Since #802 and #805 (one factory), both paths build through `build_chunker`, and `sentence` / `words` are `chunk_size` chars with a token cap on both, so the split now decides only which process runs the factory, not what it builds.
 
 **Diagram:**
 ```mermaid
