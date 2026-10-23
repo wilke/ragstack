@@ -454,6 +454,32 @@ _TOKEN_BEFORE_PERIOD = re.compile(r"[^\s()\[\]{}\"'`;:*@!?]*\Z")
 # Punkt's own numeric-token pattern (``PunktToken._RE_NUMERIC``), on the token
 # including its trailing period.
 _PUNKT_NUMERIC = re.compile(r"^-?[\.,]?\d[\d,\.-]*\.?$")
+# A paragraph break: two newlines with only horizontal whitespace between.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t\r\f\v]*\n")
+# A single period (optionally closed by quotes/brackets) followed by whitespace
+# that contains a paragraph break; group "end" is where the next paragraph starts.
+_PERIOD_THEN_PARAGRAPH = re.compile(
+    r"(?<!\.)\.(?P<close>[\"')\]]*)[ \t\r\f\v]*\n[ \t\r\f\v]*\n\s*")
+
+
+#: How far back :func:`_token_before` looks. Far longer than any abbreviation,
+#: and it keeps each lookup O(1) on multi-megabyte documents.
+_TOKEN_WINDOW = 64
+
+
+def _token_before(text: str, period_at: int) -> str:
+    """The Punkt token that ends at the period ``text[period_at]``, without it.
+
+    Only the last :data:`_TOKEN_WINDOW` characters are searched; a token that
+    fills the whole window is longer than any abbreviation, so it is returned
+    with a ``\x00`` prefix — never an abbreviation, initial or number, while
+    its last hyphen-separated part still matches the way Punkt matches it."""
+    lo = max(0, period_at - _TOKEN_WINDOW)
+    tm = _TOKEN_BEFORE_PERIOD.search(text, lo, period_at)
+    token = tm.group(0) if tm else ""
+    if lo > 0 and tm is not None and tm.start() == lo:
+        token = "\x00" + token
+    return token.lstrip("-,&#")
 
 
 def _is_abbreviation(token: str) -> bool:
@@ -478,14 +504,16 @@ def _fallback_keeps_break(text: str, m: re.Match[str]) -> bool:
     * a single ``.`` after a number followed by a lower-case letter is not a
       break ("arm 2. received").
 
-    ``?``, ``!``, ``..`` and paragraph breaks are kept exactly as before.
+    ``?``, ``!``, ``..`` and paragraph breaks are kept exactly as before: a
+    period followed by a paragraph break is always a break, whatever precedes it
+    ("… the burden of MR.\n\nExercise …").
     """
     punct = m.group("punct")
     if punct != ".":
         return True  # "?", "!", "..", or a paragraph break (punct is None)
-    head = text[: m.start("punct")]
-    tm = _TOKEN_BEFORE_PERIOD.search(head)
-    token = (tm.group(0) if tm else "").lstrip("-,&#")
+    if _PARAGRAPH_BREAK.search(text, m.end("close"), m.end()):
+        return True
+    token = _token_before(text, m.start("punct"))
     if not token:
         return True
     if _is_abbreviation(token):
@@ -570,17 +598,30 @@ def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
         return None
     if not raw:
         return []
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    for i in range(len(raw)):
-        # Tile gaplessly: this sentence runs from the previous sentence's end up
-        # to (but not including) the next sentence's start; the last one runs to
-        # end-of-text. This mirrors the upstream span->sentence expansion while
-        # guaranteeing full coverage of ``text``.
-        next_start = raw[i + 1][0] if i < len(raw) - 1 else len(text)
-        spans.append((cursor, next_start))
-        cursor = next_start
-    return spans
+    # Tile gaplessly: each sentence runs from the previous sentence's end up to
+    # (but not including) the next sentence's start; the last one runs to
+    # end-of-text. This mirrors the upstream span->sentence expansion while
+    # guaranteeing full coverage of ``text``.
+    starts = [s for s, _ in raw[1:]]
+    starts.extend(_abbreviation_paragraph_breaks(text))
+    bounds = sorted({b for b in starts if 0 < b < len(text)})
+    edges = [0, *bounds, len(text)]
+    return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+
+def _abbreviation_paragraph_breaks(text: str) -> list[int]:
+    """Sentence starts Punkt drops because an abbreviation ends a paragraph.
+
+    Punkt knows no paragraphs: once ``etc``/``MR``-as-``mr`` is an abbreviation
+    it would join "… back pain, etc.\n\nTherefore …" across the paragraph
+    break, which bare Punkt (every period a candidate) never did. A period
+    after an abbreviation followed by a paragraph break stays a break — the
+    same rule the regex fallback applies (:func:`_fallback_keeps_break`)."""
+    out: list[int] = []
+    for m in _PERIOD_THEN_PARAGRAPH.finditer(text):
+        if m.end() < len(text) and _is_abbreviation(_token_before(text, m.start())):
+            out.append(m.end())
+    return out
 
 
 # A span longer than this (chars) with no sentence break gets sub-split on

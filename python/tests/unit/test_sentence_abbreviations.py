@@ -163,3 +163,46 @@ def test_punkt_needs_no_data(monkeypatch):
     chunkers._punkt_sentence_spans("Again. And again.")
     assert chunkers._PUNKT_TOKENIZER is tok  # built once, reused
 
+
+
+PARAGRAPH_CASES = [
+    # (text, expected units): an abbreviation never swallows a paragraph break.
+    ("Shoulder pain, back pain, etc.\n\nTherefore, the review is needed.",
+     ["Shoulder pain, back pain, etc.", "Therefore, the review is needed."]),
+    ("It indexes the burden of MR.\n\nExercise echo can help.",
+     ["It indexes the burden of MR.", "Exercise echo can help."]),
+    ("As in (Fig. 2).\n  \nThe next paragraph. Dr. Smith agreed.",
+     ["As in (Fig. 2).", "The next paragraph.", "Dr. Smith agreed."]),
+    ("See Smith et al.\n\n", ["See Smith et al."]),
+    # A single newline is not a paragraph break: the abbreviation still holds.
+    ("Smith et al.\nreported it.", ["Smith et al.\nreported it."]),
+]
+
+
+@needs_nltk
+@pytest.mark.parametrize(("text", "units"), PARAGRAPH_CASES)
+def test_abbreviation_keeps_paragraph_break_punkt(text, units):
+    spans = chunkers._punkt_sentence_spans(text)
+    assert spans is not None
+    _assert_tiles(text, spans)
+    assert _units(text, spans) == units
+
+
+@pytest.mark.parametrize(("text", "units"), PARAGRAPH_CASES)
+def test_abbreviation_keeps_paragraph_break_regex(text, units, no_nltk):
+    spans = chunkers.sentence_spans(text)
+    _assert_tiles(text, spans)
+    assert _units(text, spans) == units
+
+
+def test_token_lookup_is_bounded():
+    """A period after a huge no-space run is not mistaken for an abbreviation
+    (and the lookup stays local, so a multi-MB blob is not quadratic)."""
+    blob = "x" * 5000 + "fig. Next one. " + "y" * 100 + "-fig. Done."
+    spans = chunkers._fallback_sentence_spans(blob)
+    _assert_tiles(blob, spans)
+    # "xxxx…fig." is not "fig." — a break; "yyyy…-fig." ends in the "fig" part,
+    # which Punkt also matches (tok.split("-")[-1]) — no break.
+    assert len(spans) == 3
+    if chunkers._punkt_sentence_spans("A b. C d.") is not None:
+        assert chunkers._punkt_sentence_spans(blob) == spans
