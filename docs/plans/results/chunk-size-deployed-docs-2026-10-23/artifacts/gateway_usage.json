@@ -1,0 +1,68 @@
+{
+ "W judge, Claude Opus 4.8": {
+  "completion_tokens": 17374,
+  "probes_excluded": 1,
+  "prompt_tokens": 1911527,
+  "requests": 3731,
+  "status": {
+   "error:HTTPStatusError": 1,
+   "ok": 3730
+  },
+  "zero_token_completions": 1
+ },
+ "W judge, Claude Opus 5": {
+  "completion_tokens": 786683,
+  "probes_excluded": 0,
+  "prompt_tokens": 2018788,
+  "requests": 3908,
+  "status": {
+   "error:empty_answer": 268,
+   "ok": 3640
+  },
+  "zero_token_completions": 214
+ },
+ "W judge, GPT-5.6 Sol (subset)": {
+  "completion_tokens": 13517,
+  "probes_excluded": 1,
+  "prompt_tokens": 179902,
+  "requests": 498,
+  "status": {
+   "error:HTTPStatusError": 4,
+   "ok": 494
+  },
+  "zero_token_completions": 4
+ },
+ "k10 grader, Claude Opus 4.8": {
+  "completion_tokens": 33697,
+  "probes_excluded": 1,
+  "prompt_tokens": 1384446,
+  "requests": 3195,
+  "status": {
+   "error:empty_answer": 80,
+   "ok": 3115
+  },
+  "zero_token_completions": 80
+ },
+ "k10 grader, Claude Opus 5": {
+  "completion_tokens": 250808,
+  "probes_excluded": 0,
+  "prompt_tokens": 1387067,
+  "requests": 3194,
+  "status": {
+   "error:empty_answer": 78,
+   "ok": 3116
+  },
+  "zero_token_completions": 76
+ },
+ "k10 grader, GPT-5.6 Sol (subset)": {
+  "completion_tokens": 17670,
+  "probes_excluded": 1,
+  "prompt_tokens": 134031,
+  "requests": 444,
+  "status": {
+   "error:HTTPStatusError": 4,
+   "ok": 440
+  },
+  "zero_token_completions": 4
+ }
+}

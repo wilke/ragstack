@@ -1,0 +1,203 @@
+{
+ "as_run_harness_sha256": {
+  "parsing_test": "dc118e3e83b24cc6d8bcfe807603249b05dc034ee68180d7968bc3930d36c688",
+  "section_aware_trial": "7fccd0a7ac03f10353d662ddc9c82798485b813b90d11c0f1a5e8b2e28930423",
+  "trial": "3b7d16e200cc6c45730da911003dde98540e62f6cdbbb9a37836c806586202e0"
+ },
+ "citable": false,
+ "export_provenance": {
+  "citable": false,
+  "commit": "72db8035e90a8647b701b5467730f4e2e21cf8ae",
+  "describe": "v1.6.17-3-g72db803-dirty",
+  "dirty": true,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-10-24T15:24:11Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 23,
+  "version": null
+ },
+ "files": {
+  "addendum_S.json": "d266183b2c975696",
+  "gateway_usage.json": "973d94eb6b1914f6",
+  "k10.json": "725905ebcf9d2d46",
+  "k10.opus5.json": "01bda5e047ebd703",
+  "k10.sol.json": "7c75c77df9482678",
+  "part12.json": "14d5fbc8b53eb750",
+  "part3.json": "c9217417c1fc6751",
+  "part3.opus5.json": "a99d32a7ce5535d8",
+  "part3.sol.json": "fd485b2b22373d1b",
+  "per_record.json": "16af99c491405e7c"
+ },
+ "prereg_sha256_private_originals": {
+  "addendum_S": "68e31254fc5501cf99ed1851c8530c9d082c538a4ebcbfc10b7c04c706a584bf",
+  "k10": "dda8af1efbda810cf0bd436793244fc85056c71fee3b391ea4160619231a76e2",
+  "part1": "8b5a37e035945f798f038aede159b9fd5c0430e96267243d4eb7b32cc865cb18",
+  "part2": "3619ce0d8ea0bad3fc2765fc71ba3328fb8d3eed2d87a809143eb56383e1a793",
+  "part3": "2ddf5407bd1781af61e9d8cd2005dc17fde0e85d6c8dd17e7958f986d9f58c9e"
+ },
+ "redaction": {
+  "doc_ids": "salted sha256, 12 hex (salt private)",
+  "skipped_keys": [
+   "W_yes_hits_note",
+   "_ids_not_contained",
+   "base_url",
+   "drift_ids",
+   "est_input_tokens_chars_div4",
+   "index",
+   "judge_pool",
+   "legend",
+   "note",
+   "opus_no_label_by_doc",
+   "pages_differing_ids",
+   "prereg",
+   "prereg_sha256",
+   "provenance",
+   "reassembly_failed_ids",
+   "rescore_variants",
+   "retries",
+   "rr_list",
+   "top10",
+   "unparseable_raw",
+   "url"
+  ],
+  "stratum_labels": [
+   "cli",
+   "other",
+   "quickref",
+   "seed",
+   "topic",
+   "tutorial"
+  ],
+  "string_rule": "^[A-Za-z0-9_.+|~:=<>()%/,*# -]{0,80}$"
+ },
+ "schema": "chunktrial-public-export/1",
+ "sources": {
+  "addendum_S": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T16:02:10Z",
+    "untracked": 2,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "dc52678db9f4d8a1"
+  },
+  "k10": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T21:37:57Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "d7491126b34bf119"
+  },
+  "k10.opus5": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T18:56:11Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "0acb597be4aa63a3"
+  },
+  "k10.sol": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T21:35:20Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "9edc35d502b4e40c"
+  },
+  "part12": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T14:36:08Z",
+    "untracked": 2,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "368faa1eed450880"
+  },
+  "part3": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T21:38:00Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "f503e8da206e319a"
+  },
+  "part3.opus5": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T18:28:17Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "1fd4e783f614547d"
+  },
+  "part3.sol": {
+   "citable": false,
+   "run_provenance": {
+    "commit": "dec0ae1afda9c709219728fe28b75a31237d771b",
+    "describe": "v1.6.14-1-gdec0ae1",
+    "dirty": false,
+    "in_image": false,
+    "recorded_at": "2026-10-23T21:34:02Z",
+    "untracked": 3,
+    "version": "v1.6.14+dec0ae1"
+   },
+   "sha256_prefix": "9042b67554aa2315"
+  }
+ },
+ "status": "EXPLORATORY",
+ "why_not_citable": [
+  "the results were produced by an uncommitted harness (dirty tree, untracked files)",
+  "the primary grader was changed after results were seen"
+ ]
+}

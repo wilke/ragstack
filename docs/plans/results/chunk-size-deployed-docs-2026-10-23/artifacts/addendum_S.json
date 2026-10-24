@@ -1,0 +1,931 @@
+{
+ "bug_criterion": {
+  "SEM512_over_512": 0,
+  "SEMlive_over_512": 235,
+  "missing_cap_confirmed": true
+ },
+ "chunker_params": {
+  "SEM256": {
+   "breakpoint_percentile_threshold": 80.0,
+   "buffer_size": 3,
+   "chunk_overlap": 32,
+   "chunk_size": 256,
+   "max_tokens": 256,
+   "min_chunk_length": 500,
+   "token_counter": "SFR"
+  },
+  "SEM512": {
+   "breakpoint_percentile_threshold": 80.0,
+   "buffer_size": 3,
+   "chunk_overlap": 64,
+   "chunk_size": 512,
+   "max_tokens": 512,
+   "min_chunk_length": 500,
+   "token_counter": "SFR"
+  },
+  "SEMlive": {
+   "breakpoint_percentile_threshold": 80.0,
+   "buffer_size": 3,
+   "chunk_overlap": 64,
+   "chunk_size": 512,
+   "min_chunk_length": 500,
+   "token_counter": null
+  }
+ },
+ "contrasts": {
+  "all|SEM256 - SEMlive": {
+   "b2048": {
+    "gained": 7,
+    "gained_ids": [
+     "g038",
+     "g039",
+     "g042",
+     "g052",
+     "g065",
+     "g079",
+     "g095"
+    ],
+    "lost": 2,
+    "lost_ids": [
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 0.1797,
+    "net": 5,
+    "net_by_stratum": {
+     "cli": 4,
+     "other": 0,
+     "quickref": 2,
+     "topic": 0,
+     "tutorial": -1
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 0.625,
+    "net": -2,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": -2,
+     "topic": 0,
+     "tutorial": -1
+    }
+   },
+   "rerank": {
+    "gained": 2,
+    "gained_ids": [
+     "g039",
+     "g042"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 1.0,
+    "net": -1,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": -2,
+     "topic": 0,
+     "tutorial": -1
+    }
+   }
+  },
+  "all|SEM256 - T256o0": {
+   "b2048": {
+    "gained": 2,
+    "gained_ids": [
+     "g065",
+     "g110"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 1.0,
+    "net": -1,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": -1,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g110"
+    ],
+    "lost": 4,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 0.375,
+    "net": -3,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": -2,
+     "topic": -1,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 2,
+    "gained_ids": [
+     "g065",
+     "g110"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 1.0,
+    "net": -1,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": -1,
+     "tutorial": 0
+    }
+   }
+  },
+  "all|SEM512 - SEMlive": {
+   "b2048": {
+    "gained": 6,
+    "gained_ids": [
+     "g038",
+     "g039",
+     "g065",
+     "g070",
+     "g079",
+     "g095"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.0312,
+    "net": 6,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": 4,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 1,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 2,
+    "gained_ids": [
+     "g039",
+     "g042"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.5,
+    "net": 2,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   }
+  },
+  "all|SEM512 - T512o0": {
+   "b2048": {
+    "gained": 4,
+    "gained_ids": [
+     "g039",
+     "g065",
+     "g083",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.125,
+    "net": 4,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 2,
+     "topic": 0,
+     "tutorial": 1
+    }
+   },
+   "b5120": {
+    "gained": 4,
+    "gained_ids": [
+     "g039",
+     "g042",
+     "g065",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.125,
+    "net": 4,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": 1,
+     "topic": 0,
+     "tutorial": 1
+    }
+   },
+   "rerank": {
+    "gained": 4,
+    "gained_ids": [
+     "g039",
+     "g042",
+     "g065",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.125,
+    "net": 4,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": 1,
+     "topic": 0,
+     "tutorial": 1
+    }
+   }
+  },
+  "all|SEMlive - L": {
+   "b2048": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   }
+  },
+  "low_echo|SEM256 - SEMlive": {
+   "b2048": {
+    "gained": 5,
+    "gained_ids": [
+     "g038",
+     "g039",
+     "g052",
+     "g065",
+     "g079"
+    ],
+    "lost": 2,
+    "lost_ids": [
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 0.4531,
+    "net": 3,
+    "net_by_stratum": {
+     "cli": 3,
+     "other": 0,
+     "quickref": 1,
+     "topic": 0,
+     "tutorial": -1
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 0.625,
+    "net": -2,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": -2,
+     "topic": 0,
+     "tutorial": -1
+    }
+   },
+   "rerank": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121"
+    ],
+    "mcnemar_p": 0.625,
+    "net": -2,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": -2,
+     "topic": 0,
+     "tutorial": -1
+    }
+   }
+  },
+  "low_echo|SEM256 - T256o0": {
+   "b2048": {
+    "gained": 2,
+    "gained_ids": [
+     "g065",
+     "g110"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 1.0,
+    "net": -1,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": -1,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g110"
+    ],
+    "lost": 4,
+    "lost_ids": [
+     "g070",
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 0.375,
+    "net": -3,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": -2,
+     "topic": -1,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 2,
+    "gained_ids": [
+     "g065",
+     "g110"
+    ],
+    "lost": 3,
+    "lost_ids": [
+     "g094",
+     "g121",
+     "g137"
+    ],
+    "mcnemar_p": 1.0,
+    "net": -1,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": -1,
+     "tutorial": 0
+    }
+   }
+  },
+  "low_echo|SEM512 - SEMlive": {
+   "b2048": {
+    "gained": 5,
+    "gained_ids": [
+     "g038",
+     "g039",
+     "g065",
+     "g070",
+     "g079"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.0625,
+    "net": 5,
+    "net_by_stratum": {
+     "cli": 2,
+     "other": 0,
+     "quickref": 3,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 1,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 1,
+    "gained_ids": [
+     "g039"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 1,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   }
+  },
+  "low_echo|SEM512 - T512o0": {
+   "b2048": {
+    "gained": 4,
+    "gained_ids": [
+     "g039",
+     "g065",
+     "g083",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.125,
+    "net": 4,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 2,
+     "topic": 0,
+     "tutorial": 1
+    }
+   },
+   "b5120": {
+    "gained": 3,
+    "gained_ids": [
+     "g039",
+     "g065",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.25,
+    "net": 3,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 1,
+     "topic": 0,
+     "tutorial": 1
+    }
+   },
+   "rerank": {
+    "gained": 3,
+    "gained_ids": [
+     "g039",
+     "g065",
+     "g110"
+    ],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 0.25,
+    "net": 3,
+    "net_by_stratum": {
+     "cli": 1,
+     "other": 0,
+     "quickref": 1,
+     "topic": 0,
+     "tutorial": 1
+    }
+   }
+  },
+  "low_echo|SEMlive - L": {
+   "b2048": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "b5120": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   },
+   "rerank": {
+    "gained": 0,
+    "gained_ids": [],
+    "lost": 0,
+    "lost_ids": [],
+    "mcnemar_p": 1.0,
+    "net": 0,
+    "net_by_stratum": {
+     "cli": 0,
+     "other": 0,
+     "quickref": 0,
+     "topic": 0,
+     "tutorial": 0
+    }
+   }
+  }
+ },
+ "load": {
+  "http_calls": 611,
+  "rerank_calls": 136,
+  "texts_embedded": 19505,
+  "wall_seconds": 115
+ },
+ "manifest": {
+  "docs": 336,
+  "drift_docs": 0,
+  "manifest": "checked"
+ },
+ "reproduction": {
+  "chunks_SEMlive": 1265,
+  "chunks_live": 1265,
+  "pages": 336,
+  "pages_differing": 0,
+  "pages_identical_boundaries": 336,
+  "pages_identical_text": 336
+ },
+ "semantic_buffer_texts": 17806,
+ "size_distributions": {
+  "L": {
+   "chunks": 1265,
+   "max": 3398,
+   "median": 311,
+   "over_256": 798,
+   "over_512": 235,
+   "p90": 665
+  },
+  "SEM256": {
+   "chunks": 2491,
+   "max": 257,
+   "median": 247,
+   "over_256": 1,
+   "over_512": 0,
+   "p90": 256
+  },
+  "SEM512": {
+   "chunks": 1564,
+   "max": 512,
+   "median": 297.0,
+   "over_256": 922,
+   "over_512": 0,
+   "p90": 511
+  },
+  "SEMlive": {
+   "chunks": 1265,
+   "max": 3398,
+   "median": 311,
+   "over_256": 798,
+   "over_512": 235,
+   "p90": 665
+  }
+ },
+ "split_quotes": {
+  "SEM256": {
+   "contained": 109,
+   "partial": 7
+  },
+  "SEM512": {
+   "contained": 116
+  },
+  "SEMlive": {
+   "contained": 116
+  }
+ },
+ "storage": {
+  "SEM256": {
+   "chunks": 2491,
+   "content_chars_total": 1670670,
+   "estimate": {
+    "hnsw_links_gb": 0.0003,
+    "vectors_gb_bin": 0.0013,
+    "vectors_gb_f32": 0.041,
+    "vectors_gb_int8": 0.01
+   },
+   "share_under_128": 0.2088,
+   "tokens_max": 257,
+   "tokens_median": 247,
+   "tokens_p90": 256,
+   "tokens_total": 484694
+  },
+  "SEM512": {
+   "chunks": 1564,
+   "content_chars_total": 1670670,
+   "estimate": {
+    "hnsw_links_gb": 0.0002,
+    "vectors_gb_bin": 0.0008,
+    "vectors_gb_f32": 0.026,
+    "vectors_gb_int8": 0.006
+   },
+   "share_under_128": 0.0959,
+   "tokens_max": 512,
+   "tokens_median": 297.0,
+   "tokens_p90": 511,
+   "tokens_total": 484083
+  },
+  "SEMlive": {
+   "chunks": 1265,
+   "content_chars_total": 1670670,
+   "estimate": {
+    "hnsw_links_gb": 0.0002,
+    "vectors_gb_bin": 0.0006,
+    "vectors_gb_f32": 0.021,
+    "vectors_gb_int8": 0.005
+   },
+   "share_under_128": 0.0198,
+   "tokens_max": 3398,
+   "tokens_median": 311,
+   "tokens_p90": 665,
+   "tokens_total": 483914
+  }
+ },
+ "summary": {
+  "L": {
+   "all": {
+    "b2048": 106,
+    "b5120": 113,
+    "bm25": 102,
+    "hybrid": 105,
+    "n": 116,
+    "r10": 112,
+    "r10_full": 110
+   },
+   "low_echo": {
+    "b2048": 88,
+    "b5120": 93,
+    "bm25": 83,
+    "hybrid": 87,
+    "n": 96,
+    "r10": 93,
+    "r10_full": 91
+   }
+  },
+  "SEM256": {
+   "all": {
+    "b2048": 111,
+    "b5120": 111,
+    "bm25": 97,
+    "hybrid": 102,
+    "n": 116,
+    "r10": 111,
+    "r10_full": 102
+   },
+   "low_echo": {
+    "b2048": 91,
+    "b5120": 91,
+    "bm25": 77,
+    "hybrid": 82,
+    "n": 96,
+    "r10": 91,
+    "r10_full": 85
+   }
+  },
+  "SEM512": {
+   "all": {
+    "b2048": 112,
+    "b5120": 114,
+    "bm25": 102,
+    "hybrid": 105,
+    "n": 116,
+    "r10": 114,
+    "r10_full": 112
+   },
+   "low_echo": {
+    "b2048": 93,
+    "b5120": 94,
+    "bm25": 83,
+    "hybrid": 87,
+    "n": 96,
+    "r10": 94,
+    "r10_full": 92
+   }
+  },
+  "SEMlive": {
+   "all": {
+    "b2048": 106,
+    "b5120": 113,
+    "bm25": 102,
+    "hybrid": 105,
+    "n": 116,
+    "r10": 112,
+    "r10_full": 110
+   },
+   "low_echo": {
+    "b2048": 88,
+    "b5120": 93,
+    "bm25": 83,
+    "hybrid": 87,
+    "n": 96,
+    "r10": 93,
+    "r10_full": 91
+   }
+  },
+  "T256o0": {
+   "all": {
+    "b2048": 112,
+    "b5120": 114,
+    "bm25": 100,
+    "hybrid": 103,
+    "n": 116,
+    "r10": 112,
+    "r10_full": 105
+   },
+   "low_echo": {
+    "b2048": 92,
+    "b5120": 94,
+    "bm25": 80,
+    "hybrid": 83,
+    "n": 96,
+    "r10": 92,
+    "r10_full": 86
+   }
+  },
+  "T512o0": {
+   "all": {
+    "b2048": 108,
+    "b5120": 110,
+    "bm25": 106,
+    "hybrid": 108,
+    "n": 116,
+    "r10": 110,
+    "r10_full": 106
+   },
+   "low_echo": {
+    "b2048": 89,
+    "b5120": 91,
+    "bm25": 86,
+    "hybrid": 89,
+    "n": 96,
+    "r10": 91,
+    "r10_full": 87
+   }
+  }
+ },
+ "verdicts": {
+  "SEM256 - SEMlive": {
+   "leg": "b5120",
+   "net": -2,
+   "net_b5120": -2,
+   "passes": false,
+   "rule1_net_ge_5": false,
+   "rule2_no_loss_b5120": false,
+   "rule3_gain_in_2_strata": false,
+   "strata_with_net_gain": 1
+  },
+  "SEM256 - T256o0": {
+   "leg": "b5120",
+   "net": -3,
+   "net_b5120": -3,
+   "passes": false,
+   "rule1_net_ge_5": false,
+   "rule2_no_loss_b5120": false,
+   "rule3_gain_in_2_strata": false,
+   "strata_with_net_gain": 0
+  },
+  "SEM512 - SEMlive": {
+   "leg": "b5120",
+   "net": 1,
+   "net_b5120": 1,
+   "passes": false,
+   "rule1_net_ge_5": false,
+   "rule2_no_loss_b5120": true,
+   "rule3_gain_in_2_strata": false,
+   "strata_with_net_gain": 1
+  },
+  "SEM512 - T512o0": {
+   "leg": "b5120",
+   "net": 4,
+   "net_b5120": 4,
+   "passes": false,
+   "rule1_net_ge_5": false,
+   "rule2_no_loss_b5120": true,
+   "rule3_gain_in_2_strata": true,
+   "strata_with_net_gain": 3
+  },
+  "SEMlive - L": {
+   "leg": "b5120",
+   "net": 0,
+   "net_b5120": 0,
+   "passes": false,
+   "rule1_net_ge_5": false,
+   "rule2_no_loss_b5120": true,
+   "rule3_gain_in_2_strata": false,
+   "strata_with_net_gain": 0
+  }
+ }
+}
