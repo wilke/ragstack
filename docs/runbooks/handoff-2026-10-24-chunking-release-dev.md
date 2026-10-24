@@ -65,3 +65,22 @@ Scripts are ready in this session's scratchpad (`devtest/`):
 - **Leg E** in-process path (scratch in-memory API from the v1.6.17 checkout, dev's vLLM :9001 for embeddings): `sentence size=128 size_unit=tokens` → 220 chunks, max **128** tokens; `sentence 1500 chars` → max 1498 chars / 748 tokens; `semantic` → max 2324 tokens ≤ 4080, 35/36 chunks end at sentence punctuation; >3,000-sentence document → the `fixed_token` 512 fallback (#809, unchanged); `size_unit` on a `fixed` collection → 400; dead endpoint + no `CHUNK_MAX_TOKENS` → **503** "cannot size chunks … did not report the model window"; with `CHUNK_MAX_TOKENS=512` sizing proceeds.
 
 What dev adds: the GoWe path with the new tools image (legs B–D) and the #811 rehearsal on `sem-e2e` / `sem-e2e-legacy`.
+
+## Result: dev on v1.6.17 (2026-10-24 02:57Z), legs A–F green
+
+Steps 8–9 by the management session: `fleet image prepare` job 01M5NXEKCMSVY4V6E3JFDXSAYJ, `update-code dev` job 01M5NXF7QZH2DA6VXHNC6J56EB (26/26 steps). `/v1/version` = `a86f00b4…`; boot log: `ragstack-tools-v1.6.16-b1.sif … sha256 ok` for all three registered workflows (the "labels not verified: no apptainer on PATH" WARNING is the image-mode wording since 2026-10-09, unchanged).
+
+GoWe path, one PDF (`2005.11401__rag-lewis-2020.pdf`) per collection, submitted as a BV-BRC user (an API key cannot submit on `INGEST_BACKEND=gowe`), each collection purged afterwards:
+
+| collection | n | max tok | max chars | ends at sentence punctuation |
+|---|---|---|---|---|
+| `fixed_token` 512/64 | 50 | 512 | 2221 | — |
+| `sentence` size 128 `size_unit=tokens` | 220 | **128** | 586 | 203/220 |
+| `sentence` 1500 chars | 49 | 748 | **1498** | 48/49 |
+| `semantic` buffer_size 2 | 40 | 1822 (≤ 4080) | 6116 | 39/40 |
+
+The two `sentence` rows are **identical** to the in-process leg (same document, same numbers): the API builder and the shard tool now chunk alike (#805). Every job's Workspace `receipt.json` carries `provenance.tool_image=ragstack-tools-v1.6.16-b1.sif`, digest `1fd4584d4368…` (= the store receipt) and `segmenter_version=punkt-abbrev-v1` — the workers run Punkt (#815 closed on the GoWe path). `size_unit` on a `fixed` collection is refused at create (400).
+
+Harness notes for the next person: `collection` is a multipart form field on `/v1/ingest/upload`; `/v1/chunks` is fetch-by-id (take the ids from `GET /v1/ingest/{job_id}`); one ingest job in flight per user; a BV-BRC user may own at most `MAX_COLLECTIONS_PER_OWNER=5` collections (counted in the ACL store, not the registry's informational `owner` column), so transfer each test collection to the user, upload, and transfer it back before the next; purging a collection does not remove its Workspace folder, so re-creating the same id and re-uploading the same file is refused as a duplicate source — use fresh ids.
+
+**#811 rehearsal — not done, redesigned.** `sem-e2e` / `sem-e2e-legacy` are 5-chunk #609 smoke artifacts with no ingest jobs and no recorded sources, so they cannot rehearse a real re-ingest. And a re-upload of an existing source is refused by the Workspace dedupe, so "full re-ingest" for #811 cannot be a re-upload: it has to be a **versioned rebuild** through the archive / restore-collection replay (ADR lifecycle, #376), or a new collection + owner/pointer swap. That is a plan of its own, tracked in #811.

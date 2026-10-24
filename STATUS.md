@@ -41,10 +41,10 @@ current-state snapshot: the open PR stack, the chunking study's stopped confirma
 one human task that is blocking, live infrastructure, and the failures this line of work
 already made. This file remains the long-form project history.
 
-**Released, not yet deployed (2026-10-24): tools tag `v1.6.16` → `ragstack-tools-v1.6.16-b1.sif`
-(in `/scout/containers/ragstack`), server tag `v1.6.17` → `ragstack-server-v1.6.17-b1.sif` (built,
-awaiting `fleet image prepare` + `tenant update-code dev`;
-[handoff](docs/runbooks/handoff-2026-10-24-chunking-release-dev.md)).** The chunking release
+**Released; deployed on `dev` only (2026-10-24 02:57Z): tools tag `v1.6.16` → `ragstack-tools-v1.6.16-b1.sif`
+(in `/scout/containers/ragstack`), server tag `v1.6.17` → `ragstack-server-v1.6.17-b1.sif` (`update-code dev`
+job 01M5NXF7QZH2DA6VXHNC6J56EB; legs A–F green, GoWe receipts carry the new image and `punkt-abbrev-v1`;
+[handoff + results](docs/runbooks/handoff-2026-10-24-chunking-release-dev.md)). Other tenants stay on v1.6.14 until a soak and the #811 plan.** The chunking release
 below, plus [#813](https://github.com/wilke/ragstack/pull/813) and
 [#816](https://github.com/wilke/ragstack/pull/816). **`v1.6.15` is a tools tag with no image**:
 its image's post-build check found no `nltk` — and neither deployed image had it
