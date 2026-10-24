@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from ragstack.ingestion.archive import read_manifest, write_tombstone, write_version
+from ragstack.ingestion.chunkers import SEGMENTER_VERSION
 from ragstack.ingestion.gowe_backend import GoWeBackend
 from ragstack.ingestion.manifest import WorkItem
 from ragstack.ingestion.receipts import COMPLETED, ShardReceipt
@@ -118,7 +119,8 @@ def test_record_inside_an_image_reads_release(tmp_path: Path) -> None:
                                  "build_date": "2026-10-05T00:00:00Z"}
     got = tool_provenance("wf_1", NAME, DIGEST, release_path=rel)
     assert got == {"workflow_id": "wf_1", "tool_image": NAME, "tool_image_digest": DIGEST,
-                   "image_version": "v9.9.9", "image_commit": "c" * 40, "image_build": "1"}
+                   "image_version": "v9.9.9", "image_commit": "c" * 40, "image_build": "1",
+                   "segmenter_version": SEGMENTER_VERSION}
     assert tuple(got) == PROVENANCE_KEYS
 
 
@@ -127,9 +129,11 @@ def test_record_outside_an_image_has_null_release_fields(tmp_path: Path) -> None
     assert got["image_version"] is None and got["image_commit"] is None
     assert got["image_build"] is None
     assert (got["workflow_id"], got["tool_image"], got["tool_image_digest"]) == ("wf_1", NAME, DIGEST)
-    # A hand run: nothing seeded, nothing read → every field null, never "".
-    assert tool_provenance(release_path=tmp_path / "absent") == unknown_provenance()
-    assert tool_provenance("", "  ", None, release_path=tmp_path / "absent") == unknown_provenance()
+    # A hand run: nothing seeded, nothing read → every field null, never "" —
+    # except segmenter_version, which the code always knows (#318 P2).
+    hand = {**unknown_provenance(), "segmenter_version": SEGMENTER_VERSION}
+    assert tool_provenance(release_path=tmp_path / "absent") == hand
+    assert tool_provenance("", "  ", None, release_path=tmp_path / "absent") == hand
 
 
 def test_old_manifest_without_the_key_reads_as_unknown() -> None:
@@ -153,7 +157,8 @@ def test_cli_flags_build_the_record(tmp_path: Path, monkeypatch) -> None:
                          "--tool-image-digest", DIGEST])
     got = provenance_from_args(args)
     assert got["workflow_id"] == "wf_2" and got["tool_image_digest"] == DIGEST
-    assert provenance_from_args(p.parse_args([])) == unknown_provenance()
+    assert provenance_from_args(p.parse_args([])) == {
+        **unknown_provenance(), "segmenter_version": SEGMENTER_VERSION}
 
 
 # --------------------------------------------------------------------------- #
@@ -452,7 +457,8 @@ def test_archive_version_cli_takes_the_flags(tmp_path: Path, monkeypatch) -> Non
     assert rc == 0
     got = read_manifest(tmp_path / "out" / "5")["provenance"]
     assert got == {"workflow_id": "wf_7", "tool_image": NAME, "tool_image_digest": DIGEST,
-                   "image_version": "v9.9.9", "image_commit": "c" * 40, "image_build": "1"}
+                   "image_version": "v9.9.9", "image_commit": "c" * 40, "image_build": "1",
+                   "segmenter_version": SEGMENTER_VERSION}
     # The flags are optional: a hand run writes the seeded fields as null.
     (tmp_path / "ids.json").write_text('["d0"]')
     rc = archive_version.main([
@@ -466,7 +472,8 @@ def test_archive_version_cli_takes_the_flags(tmp_path: Path, monkeypatch) -> Non
 
 def test_shard_receipt_carries_provenance_and_tolerates_its_absence() -> None:
     prov = {"workflow_id": "wf_1", "tool_image": NAME, "tool_image_digest": DIGEST,
-            "image_version": None, "image_commit": None, "image_build": None}
+            "image_version": None, "image_commit": None, "image_build": None,
+            "segmenter_version": SEGMENTER_VERSION}
     r = ShardReceipt("s", "public", COMPLETED, n_docs=1, provenance=prov)
     back = ShardReceipt.from_dict(json.loads(r.to_json()))
     assert back.provenance == prov and back == r

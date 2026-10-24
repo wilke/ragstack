@@ -93,7 +93,10 @@ class ShardReceipt:
     # image produced this receipt — the object ``ragstack.provenance.
     # tool_provenance`` builds (workflow_id / tool_image / tool_image_digest
     # from the submission inputs, image_version / image_commit / image_build
-    # from the worker's own RELEASE file). ``None`` on a receipt written
+    # from the worker's own RELEASE file, and — since #318 P2 —
+    # segmenter_version, the chunkers.SEGMENTER_VERSION whose sentence
+    # boundaries this shard's sentence/semantic chunk ids derive from; a
+    # receipt without it predates the key). ``None`` on a receipt written
     # before step 2 or by a hand-run tool given no inputs; readers normalise
     # it with ``ragstack.provenance.read_provenance``.
     provenance: dict | None = None

@@ -110,6 +110,70 @@ in `routers/collections.py` `SEMANTIC_PARAM_BOUNDS`:
 The defaults come from `make_chunker`'s signature and `Settings.chunk_buffer_size`
 / `chunk_breakpoint_percentile` / `chunk_min_length`.
 
+## Sentence segmentation
+
+`sentence`, `semantic` and `semantic_pooled` all start from
+`chunkers.sentence_spans`, so a sentence boundary is a chunk boundary.
+
+**What Punkt sees.** NLTK's `PunktSentenceTokenizer` is built in code from
+`PunktParameters`, not loaded from NLTK's `punkt` data, so nothing is
+downloaded. It has no trained statistics. The only thing it knows is
+`abbrev_types`, which is set to `chunkers.SENTENCE_ABBREVIATIONS`. After a
+period, Punkt then decides like this:
+
+- after a listed abbreviation, it never breaks ("et al.", "Fig. 2", "i.e.",
+  "Proc. Natl. Acad. Sci. U.S.A."), unless a paragraph break follows the
+  period;
+- after a single letter followed by a letter, it does not break. This is
+  Punkt's own initial heuristic, and it is what handles genus abbreviations
+  ("E. coli", "S. enterica") and personal initials;
+- after a number followed by a lower-case word, it does not break ("arm 2.
+  received");
+- after any other period, it breaks.
+
+Without `nltk`, the regex fallback applies the same rules. On the 20-passage
+gold set (`python/tests/unit/fixtures/sentence_gold_biomedical.json`) both
+backends score 20/20.
+
+**The list.** There are about 130 lower-case entries without their final
+period. Punkt matches one token at a time, so "et al." is matched by its
+entry `al`. The groups are honorifics and degrees, Latin connectives,
+pointers into the paper (`fig`, `tab`, `eq`, `ref`, `suppl`, `vol`, `pp`,
+`no`), measures, dosing routes (`i.v`, `p.o`, `b.i.d`), taxonomy (`sp`,
+`spp`, `subsp`), journal-title words, institutions and places, and months.
+Matching ignores case, so an entry also matches the same letters in capitals.
+For that reason `min`, `max`, `sec`, `ed`, `ms` and `am` are left out on
+purpose: "5 min.", "VO2 max.", "the ED." and "MS." end sentences far more
+often than they abbreviate. The reasoning for each group is in the comment
+above the set.
+
+**`SEGMENTER_VERSION`.** `chunkers.SEGMENTER_VERSION` names the segmenter.
+It is `"punkt-abbrev-v1"` now. The previous segmenter, a bare
+`PunktSentenceTokenizer()` with every period a candidate break, is
+`"punkt-bare"`; that name was never recorded anywhere. Bump the version
+whenever `sentence_spans` output can change for any input. The version is
+recorded under `segmenter_version` in the `provenance` object of every shard
+receipt and archive manifest (`provenance.tool_provenance`), and in every
+`sentence_spans_fingerprint`. A record without the key predates it and was
+built with `punkt-bare`.
+
+**Migration rule.** A chunk id is `uuid5(doc_id:start:end)`, so a moved
+sentence boundary changes the chunk id and the point id. When the segmenter
+changes, every `sentence`, `semantic` and `semantic_pooled` collection needs
+a **full re-ingest**, never a hot patch:
+
+- Re-ingesting an unchanged document writes new points and leaves the old
+  ones orphaned.
+- A partial re-ingest leaves a collection that mixes chunks from two
+  segmenters.
+- The collection's `spec_hash` does not include the segmenter, so nothing
+  refuses the mixed ingest.
+
+Labels keyed by sentence span (stage0/stage1) come from a different
+coordinate system ([section-taxonomy.md](plans/section-taxonomy.md)), and
+they do not translate to the new spans. `fixed`, `fixed_token` and `words`
+collections are unaffected.
+
 ## A collection keeps its method for life
 
 The chunk method is part of a collection's identity

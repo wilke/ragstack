@@ -237,6 +237,7 @@ PROVENANCE_KEYS = (
     "image_version",       # org.ragstack.version of the image the worker ran in (RELEASE)
     "image_commit",        # org.ragstack.commit
     "image_build",         # org.ragstack.build
+    "segmenter_version",   # chunkers.SEGMENTER_VERSION of the code that wrote it (#318 P2)
 )
 
 
@@ -275,11 +276,18 @@ def tool_provenance(
 ) -> dict[str, str | None]:
     """The ``provenance`` object a worker writes: the three submission inputs
     the API seeded (what it *was told*) plus what its own image's ``RELEASE``
-    file says (what it *is*). Outside an image the last three are ``null``.
-    Empty strings are ``null`` — a CWL ``["null", string]`` input omitted by
-    a hand-run arrives as nothing, and nothing is not a value. ``release_path``
-    defaults to :data:`RELEASE_PATH`, resolved at call time."""
+    file says (what it *is*). Outside an image the three image fields are
+    ``null``. Empty strings are ``null`` — a CWL ``["null", string]`` input
+    omitted by a hand-run arrives as nothing, and nothing is not a value.
+    ``release_path`` defaults to :data:`RELEASE_PATH`, resolved at call time.
+
+    ``segmenter_version`` is :data:`ragstack.ingestion.chunkers.SEGMENTER_VERSION`
+    of the code writing the record — which sentence segmentation (and so which
+    sentence/semantic chunk ids) that code produces. Always set by this
+    function, in an image or not; ``null`` only on a record written before
+    #318 P2, which therefore used the unrecorded ``"punkt-bare"`` segmenter."""
     release = read_release(RELEASE_PATH if release_path is None else release_path)
+    from ragstack.ingestion.chunkers import SEGMENTER_VERSION
     return {
         "workflow_id": _nullable(workflow_id),
         "tool_image": _nullable(tool_image),
@@ -287,11 +295,14 @@ def tool_provenance(
         "image_version": _nullable(release.get("version")),
         "image_commit": _nullable(release.get("commit")),
         "image_build": _nullable(release.get("build")),
+        "segmenter_version": _nullable(SEGMENTER_VERSION),
     }
 
 
 def unknown_provenance() -> dict[str, str | None]:
-    """What a record written before #655 step 2 says: every field ``null``."""
+    """What a record written before #655 step 2 says: every field ``null``.
+    (Since #318 P2 a fresh :func:`tool_provenance` is never all-``null``: its
+    ``segmenter_version`` is always known.)"""
     return dict.fromkeys(PROVENANCE_KEYS)
 
 
@@ -441,8 +452,12 @@ def sentence_spans_fingerprint(
     """:func:`span_fingerprint` of ``sentence_spans()`` over ``texts``, plus
     which backend segmented them (``punkt`` when ``nltk`` is importable, else
     the ``regex`` fallback — the two disagree, so an environment without
-    ``nltk`` is a different segmentation even at the same commit) and the
-    ``nltk`` version. ``sample`` says whose texts these are: ``"run"`` (the
+    ``nltk`` is a different segmentation even at the same commit), the
+    ``nltk`` version, and ``segmenter_version``
+    (:data:`chunkers.SEGMENTER_VERSION`; absent on a fingerprint recorded
+    before #318 P2, whose segmenter was ``"punkt-bare"``). The version is a
+    label, not identity: ``sha256`` already is the segmentation, so it is not
+    in the :func:`comparison_key` fields. ``sample`` says whose texts these are: ``"run"`` (the
     experiment's own documents) or :data:`CANONICAL_SEGMENTATION_SAMPLE_NAME`
     (:data:`CANONICAL_SEGMENTATION_SAMPLE`).
 
@@ -462,7 +477,8 @@ def sentence_spans_fingerprint(
     except ImportError:
         nltk_version = None
     backend = "punkt" if chunkers._punkt_sentence_spans("A b. C d.") is not None else "regex"
-    fp.update({"sample": sample, "backend": backend, "nltk": nltk_version})
+    fp.update({"sample": sample, "backend": backend, "nltk": nltk_version,
+               "segmenter_version": chunkers.SEGMENTER_VERSION})
     return fp
 
 

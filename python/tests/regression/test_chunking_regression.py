@@ -1,8 +1,11 @@
-"""Chunking regression: the CURRENT code against frozen 55a0fc2 goldens.
+"""Chunking regression: the CURRENT code against frozen goldens.
 
-The goldens (``RAGSTACK_REGRESSION_DIR``, default ``/rag/snapshots/regression/v1``) are
-50 stage0 dev-10 documents chunked at tag ``exp/stage0-55a0fc2``. They were proven
-byte-equal to the stage0 run's own ``spans_*.jsonl`` rows. This test reruns the same
+The goldens (``RAGSTACK_REGRESSION_DIR``, default ``/rag/snapshots/regression/v2``) are
+50 stage0 dev-10 documents. v1 was chunked at tag ``exp/stage0-55a0fc2`` and proven
+byte-equal to the stage0 run's own ``spans_*.jsonl`` rows; v2 (tag
+``exp/regression-v2-163c960``, PR #804) re-uses v1's inputs byte-for-byte, keeps the six
+fixed-token arms byte-identical, and re-baselines ``sentence_spans`` for the seeded Punkt
+segmenter (``SEGMENTER_VERSION = "punkt-abbrev-v1"``). This test reruns the same
 inputs through today's ``FixedTokenWindowChunker`` (the 6 stage0 index arms) and
 ``sentence_spans`` (the 50 docs plus ``canonical-1``), and compares the result
 byte-for-byte. See ``README.md`` in this directory for what to do on a mismatch.
@@ -25,7 +28,7 @@ import pytest
 
 pytestmark = pytest.mark.regression
 
-DEFAULT_DIR = "/rag/snapshots/regression/v1"
+DEFAULT_DIR = "/rag/snapshots/regression/v2"
 REG_DIR = pathlib.Path(os.environ.get("RAGSTACK_REGRESSION_DIR", DEFAULT_DIR))
 HERE = pathlib.Path(__file__).resolve().parent
 

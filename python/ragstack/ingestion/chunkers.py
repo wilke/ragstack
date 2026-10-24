@@ -361,7 +361,173 @@ def _token_split_span(
 # text[s:e] for every span reproduces ``text`` byte-for-byte (whitespace
 # included), which is what keeps the deterministic chunk ids honest downstream.
 
-_SENTENCE_END = re.compile(r"[.!?]+[\"')\]]*\s+|\n{2,}")
+#: Identity of the sentence segmenter — what :func:`sentence_spans` returns for
+#: a given text. **Bump it whenever ``sentence_spans`` output can change for any
+#: input** (a new abbreviation, a changed heuristic, a new backend rule): a
+#: sentence boundary is a chunk boundary, and chunk ids are
+#: ``uuid5(doc_id:start:end)``, so a moved boundary is a moved chunk id and a
+#: moved point id. Recorded in the production receipt / archive provenance
+#: (:func:`ragstack.provenance.tool_provenance`) and in every
+#: :func:`ragstack.provenance.sentence_spans_fingerprint`, so a reader can tell
+#: which segmentation a collection was built with.
+#:
+#: History: ``"punkt-bare"`` (implicit; never recorded) — ``PunktSentenceTokenizer()``
+#: with no parameters, every period a candidate break; the code that produced
+#: the stage0 results and ``/rag/snapshots/regression/v1``.
+#: ``"punkt-abbrev-v1"`` — :data:`SENTENCE_ABBREVIATIONS` seeded into Punkt and
+#: mirrored by the regex fallback (#318 P2).
+SEGMENTER_VERSION: str = "punkt-abbrev-v1"
+
+#: Abbreviations after which a period is NOT a sentence break, for both sentence
+#: backends. Punkt's convention: lower case, WITHOUT the trailing period, and
+#: one *Punkt token* each — Punkt splits on whitespace, so "et al." is matched
+#: by its last token ``al``, and "U.S.A." by ``u.s.a``. Matching is
+#: case-insensitive (Punkt lowercases the token), so an entry also suppresses
+#: the break after the same letters in upper case: that is why clinical
+#: acronyms that end sentences (``ED``, ``MS``, ``AM``) are left out.
+#:
+#: Inclusion rule: an entry is here when its period-terminated form occurs
+#: mid-sentence in biomedical full text. A missing entry is a FALSE SPLIT (a
+#: chunk can start "2 shows the effect …"); a present entry at a true sentence
+#: end is a FALSE MERGE (one sentence unit holds two sentences) — the cheaper
+#: error for chunking, so ambiguous entries (``etc``, ``no``, ``al``) are in.
+#: Excluded on purpose, because their period form is predominantly a sentence
+#: end: ``min``/``max``/``sec`` ("for 5 min. Cells were …", "VO2 max. Many …"
+#: — SI writes the unit without a period, so the period is the sentence's),
+#: ``yr(s)``/``hr(s)``/``wk``/``mo``/``lb(s)``, ``resp`` ("… respectively."),
+#: ``ed``/``eds`` (the emergency-department acronym ``ED``/``EDs``), ``arch``,
+#: ``art``, ``app``, ``est`` (``EST``s), ``cv`` (``CV``). Kept despite a known
+#: acronym collision, because the abbreviation is the commoner period form:
+#: ``no`` (``NO``, nitric oxide), ``co`` (``CO``), ``sp`` (``SP``), ``str``
+#: (``STR``), ``mr`` (``MR``; on the 50 regression documents the entry removes
+#: 18 false "Mr." splits and makes 5 false merges after a sentence-final
+#: "MR.") — each costs a false merge where the acronym ends a sentence.
+#:
+#: Single letters (genus initials — *E. coli*, *S. enterica*, *B. subtilis* —
+#: and personal initials) are deliberately NOT entries. Punkt's built-in
+#: initial heuristic already refuses a break after a lone letter followed by a
+#: letter, upper or lower case; an entry would change only "X. <digit>" — and
+#: wrongly ("Group B. 3 patients left." would merge). The regex fallback
+#: mirrors that heuristic (:func:`_fallback_keeps_break`).
+#:
+#: Changing this set changes :func:`sentence_spans` output: bump
+#: :data:`SEGMENTER_VERSION`.
+SENTENCE_ABBREVIATIONS: frozenset[str] = frozenset({
+    # Honorifics, titles and degrees before/after a name ("Dr. Smith", "Ph.D.").
+    "dr", "drs", "prof", "profs", "mr", "mrs", "messrs", "jr", "sr", "rev",
+    "ph.d", "m.d", "b.sc", "m.sc", "m.p.h", "d.v.m", "b.a", "m.a",
+    # Latin and scholarly connectives ("et al.", "i.e.", "cf.", "vs."); "al" is
+    # the token Punkt sees for "et al.".
+    "al", "e.g", "i.e", "cf", "viz", "vs", "ca", "etc", "a.k.a", "ibid",
+    # Pointers into the paper or a reference: figures, tables, equations,
+    # references, sections, supplements, chapters, volumes, pages, numbers.
+    "fig", "figs", "tab", "tabs", "eq", "eqs", "ref", "refs", "sect", "suppl",
+    "supp", "ch", "chap", "vol", "vols", "pp", "no", "nos", "cat",
+    # Measures and quantities written with a period ("approx. 3 mg", "mol. wt.").
+    "approx", "conc", "temp", "wt", "mol", "dil",
+    # Dosing routes and frequencies ("injected i.v. into", "given b.i.d. for").
+    "i.v", "i.p", "i.m", "s.c", "p.o", "b.i.d", "t.i.d", "q.i.d", "q.d",
+    # Taxonomy below the genus ("Bacillus sp. strain", "subsp. enterica").
+    "sp", "spp", "subsp", "ssp", "var", "nov", "str",
+    # Journal-title words as cited in full text ("Proc. Natl. Acad. Sci. U.S.A.",
+    # "J. Biol. Chem.", "N. Engl. J. Med.").
+    "proc", "natl", "acad", "sci", "biol", "chem", "biochem", "biophys", "med",
+    "res", "clin", "int", "annu", "physiol", "immunol", "microbiol", "genet",
+    "pharmacol", "neurosci", "endocrinol", "infect", "dis", "commun",
+    "nucl", "soc", "assoc", "exp", "pathol", "oncol", "epidemiol", "virol",
+    "hum", "nat", "eur", "br", "engl", "ann", "intern",
+    # Institutions, companies, places ("Sigma Chemical Co. (St. Louis, MO)",
+    # "Dept. of", "U.S. cohort").
+    "inc", "ltd", "co", "corp", "univ", "dept", "inst", "st", "mt", "ft",
+    "u.s", "u.k", "u.s.a",
+    # Months as abbreviated in citations and dates ("Sept. 2019"; "nov" is
+    # listed under taxonomy).
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "dec",
+})
+
+_SENTENCE_END = re.compile(r"(?P<punct>[.!?]+)(?P<close>[\"')\]]*)\s+|\n{2,}")
+
+# The Punkt token before a period: the run of characters that Punkt's word
+# tokenizer keeps in one token (it splits brackets, quotes and these marks off
+# as tokens of their own), with the separators a token cannot start with removed.
+_TOKEN_BEFORE_PERIOD = re.compile(r"[^\s()\[\]{}\"'`;:*@!?]*\Z")
+# Punkt's own numeric-token pattern (``PunktToken._RE_NUMERIC``), on the token
+# including its trailing period.
+_PUNKT_NUMERIC = re.compile(r"^-?[\.,]?\d[\d,\.-]*\.?$")
+# A paragraph break: two newlines with only horizontal whitespace between.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t\r\f\v]*\n")
+# A single period (optionally closed by quotes/brackets) followed by whitespace
+# that contains a paragraph break; group "end" is where the next paragraph starts.
+_PERIOD_THEN_PARAGRAPH = re.compile(
+    r"(?<!\.)\.(?P<close>[\"')\]]*)[ \t\r\f\v]*\n[ \t\r\f\v]*\n\s*")
+
+
+#: How far back :func:`_token_before` looks. Far longer than any abbreviation,
+#: and it keeps each lookup O(1) on multi-megabyte documents.
+_TOKEN_WINDOW = 64
+
+
+def _token_before(text: str, period_at: int) -> str:
+    """The Punkt token that ends at the period ``text[period_at]``, without it.
+
+    Only the last :data:`_TOKEN_WINDOW` characters are searched; a token that
+    fills the whole window is longer than any abbreviation, so it is returned
+    with a ``\x00`` prefix — never an abbreviation, initial or number, while
+    its last hyphen-separated part still matches the way Punkt matches it."""
+    lo = max(0, period_at - _TOKEN_WINDOW)
+    tm = _TOKEN_BEFORE_PERIOD.search(text, lo, period_at)
+    token = tm.group(0) if tm else ""
+    if lo > 0 and tm is not None and tm.start() == lo:
+        token = "\x00" + token
+    return token.lstrip("-,&#")
+
+
+def _is_abbreviation(token: str) -> bool:
+    """Punkt's first-pass abbreviation test on a token without its final period:
+    the token, or its last hyphen-separated part, lower-cased, is in
+    :data:`SENTENCE_ABBREVIATIONS`."""
+    low = token.lower()
+    return low in SENTENCE_ABBREVIATIONS or low.split("-")[-1] in SENTENCE_ABBREVIATIONS
+
+
+def _fallback_keeps_break(text: str, m: re.Match[str]) -> bool:
+    """Whether the regex fallback keeps the candidate break ``m``.
+
+    Mirrors what Punkt decides with :data:`SENTENCE_ABBREVIATIONS` and no
+    trained orthographic context, so the two backends agree wherever the
+    question is an abbreviation:
+
+    * a single ``.`` after an abbreviation is never a break (Punkt has no
+      orthographic evidence that would re-break it);
+    * a single ``.`` after a lone letter (an initial, a genus abbreviation)
+      followed by a letter is not a break ("E. coli", "J. Smith");
+    * a single ``.`` after a number followed by a lower-case letter is not a
+      break ("arm 2. received").
+
+    ``?``, ``!``, ``..`` and paragraph breaks are kept exactly as before: a
+    period followed by a paragraph break is always a break, whatever precedes it
+    ("… the burden of MR.\n\nExercise …").
+    """
+    punct = m.group("punct")
+    if punct != ".":
+        return True  # "?", "!", "..", or a paragraph break (punct is None)
+    if _PARAGRAPH_BREAK.search(text, m.end("close"), m.end()):
+        return True
+    token = _token_before(text, m.start("punct"))
+    if not token:
+        return True
+    if _is_abbreviation(token):
+        return False
+    if m.group("close"):
+        # Punkt's next token is then the closing mark, not a word: the
+        # initial / number heuristics below do not fire.
+        return True
+    nxt = text[m.end()] if m.end() < len(text) else ""
+    if len(token) == 1 and token.isalpha() and nxt.isalpha():
+        return False
+    if _PUNKT_NUMERIC.match(token + ".") and nxt.islower():
+        return False
+    return True
 
 
 def _fallback_sentence_spans(text: str) -> list[tuple[int, int]]:
@@ -369,12 +535,17 @@ def _fallback_sentence_spans(text: str) -> list[tuple[int, int]]:
 
     Splits *after* sentence-ending punctuation (keeping the trailing whitespace
     attached to the sentence it follows) so the spans tile ``text`` exactly.
+    A candidate break that :func:`_fallback_keeps_break` rejects (a period after
+    an abbreviation, an initial, or a number before lower case) is skipped, so
+    the fallback agrees with the Punkt backend on abbreviations.
     """
     if not text:
         return []
     spans: list[tuple[int, int]] = []
     start = 0
     for m in _SENTENCE_END.finditer(text):
+        if not _fallback_keeps_break(text, m):
+            continue
         end = m.end()
         spans.append((start, end))
         start = end
@@ -383,10 +554,27 @@ def _fallback_sentence_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+_PUNKT_TOKENIZER: object | None = None
+
+
+def _punkt_tokenizer(nltk_module):
+    """The shared Punkt tokenizer seeded with :data:`SENTENCE_ABBREVIATIONS`,
+    built on first use. Built in code from ``PunktParameters`` — never loaded
+    from NLTK's ``punkt`` data — so no data download is needed. Tokenizing does
+    not mutate the parameters (only training does), so one instance is shared."""
+    global _PUNKT_TOKENIZER
+    if _PUNKT_TOKENIZER is None:
+        params = nltk_module.tokenize.punkt.PunktParameters()
+        params.abbrev_types = set(SENTENCE_ABBREVIATIONS)
+        _PUNKT_TOKENIZER = nltk_module.tokenize.PunktSentenceTokenizer(params)
+    return _PUNKT_TOKENIZER
+
+
 def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
     """NLTK Punkt sentence spans, or ``None`` if NLTK is unavailable.
 
-    Uses ``PunktSentenceTokenizer()`` with NLTK's built-in default parameters, so
+    Uses a ``PunktSentenceTokenizer`` whose parameters are built in code —
+    NLTK's defaults plus ``abbrev_types`` = :data:`SENTENCE_ABBREVIATIONS` — so
     it needs only ``nltk`` installed (the ``[chunking]`` extra) — no ``punkt``
     data download. The regex fallback (:func:`_fallback_sentence_spans`) is used
     only when ``nltk`` itself is not installed.
@@ -401,7 +589,7 @@ def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
     except ImportError:
         return None
     try:
-        tokenizer = nltk.tokenize.PunktSentenceTokenizer()
+        tokenizer = _punkt_tokenizer(nltk)
         raw = list(tokenizer.span_tokenize(text))
     except LookupError:
         # Defensive: some NLTK builds load punkt data; fall back if it's absent.
@@ -410,17 +598,30 @@ def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
         return None
     if not raw:
         return []
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    for i in range(len(raw)):
-        # Tile gaplessly: this sentence runs from the previous sentence's end up
-        # to (but not including) the next sentence's start; the last one runs to
-        # end-of-text. This mirrors the upstream span->sentence expansion while
-        # guaranteeing full coverage of ``text``.
-        next_start = raw[i + 1][0] if i < len(raw) - 1 else len(text)
-        spans.append((cursor, next_start))
-        cursor = next_start
-    return spans
+    # Tile gaplessly: each sentence runs from the previous sentence's end up to
+    # (but not including) the next sentence's start; the last one runs to
+    # end-of-text. This mirrors the upstream span->sentence expansion while
+    # guaranteeing full coverage of ``text``.
+    starts = [s for s, _ in raw[1:]]
+    starts.extend(_abbreviation_paragraph_breaks(text))
+    bounds = sorted({b for b in starts if 0 < b < len(text)})
+    edges = [0, *bounds, len(text)]
+    return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+
+def _abbreviation_paragraph_breaks(text: str) -> list[int]:
+    """Sentence starts Punkt drops because an abbreviation ends a paragraph.
+
+    Punkt knows no paragraphs: once ``etc``/``MR``-as-``mr`` is an abbreviation
+    it would join "… back pain, etc.\n\nTherefore …" across the paragraph
+    break, which bare Punkt (every period a candidate) never did. A period
+    after an abbreviation followed by a paragraph break stays a break — the
+    same rule the regex fallback applies (:func:`_fallback_keeps_break`)."""
+    out: list[int] = []
+    for m in _PERIOD_THEN_PARAGRAPH.finditer(text):
+        if m.end() < len(text) and _is_abbreviation(_token_before(text, m.start())):
+            out.append(m.end())
+    return out
 
 
 # A span longer than this (chars) with no sentence break gets sub-split on
