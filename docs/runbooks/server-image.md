@@ -106,7 +106,9 @@ SIF=/path/to/ragstack-server-<version>-b<N>.sif
 apptainer inspect --labels "$SIF"                 # role server, version, commit
 apptainer exec --cleanenv "$SIF" cat /opt/ragstack/RELEASE
 apptainer exec --cleanenv "$SIF" python -c \
-  'import ragstack, ragstack.graph_extract as g, ragstack.version as v; print(ragstack.__file__, g.DEFAULT_CWL, v.git_sha(), v.git_tag())'
+  'import ragstack, nltk, ragstack.graph_extract as g, ragstack.version as v; print(ragstack.__file__, g.DEFAULT_CWL, v.git_sha(), v.git_tag())'
+apptainer exec --cleanenv "$SIF" python -c "from ragstack.ingestion.chunkers import segmenter_version as s; assert s()=='punkt-abbrev-v1', s()"
+#   in-process sentence/semantic ingest runs Punkt, not the regex fallback (#815)
 sha256sum "$SIF"; cat "$SIF.receipt.json"
 ```
 
