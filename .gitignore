@@ -101,6 +101,8 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 docs/adr/*.html
+# Experiment pages, rendered by docs/build_docs.py from docs/plans/results/*/README.md.
+docs/experiments/
 
 # A stray `go build ./cmd/ragstack-ctl` run from go/ (make build-ctl writes go/bin/ragstack-ctl).
 # It was tracked from PR-A (eb41858) until #715.

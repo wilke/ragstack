@@ -180,6 +180,50 @@ PAGES = [
     ),
 ]
 
+# Experiment records. Any docs/plans/results/<dir>/README.md whose first line is
+#   <!-- experiment: <title> | <date> | <status> -->
+# is published under experiments/<dir>/, with its RESULTS.md and DEVIATIONS.md when they
+# exist, and listed on experiments/index.html (one landing-page card). The record folder
+# stays the single source; nothing is copied into docs/ by hand.
+_EXPERIMENT_MARK = re.compile(r"<!--\s*experiment:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*-->")
+_EXPERIMENT_PARTS = (("README.md", "index.html", "Experiment"), ("RESULTS.md", "results.html", "Results"),
+                     ("DEVIATIONS.md", "deviations.html", "Deviations"))
+
+
+def _discover_experiments() -> list[dict]:
+    found = []
+    for readme in sorted((HERE / "plans" / "results").glob("*/README.md")):
+        first = readme.read_text(encoding="utf-8").split("\n", 1)[0]
+        mo = _EXPERIMENT_MARK.match(first.strip())
+        if not mo:
+            continue
+        title, date, status = mo.groups()
+        found.append(dict(dir=readme.parent.name, title=title, date=date, status=status))
+    # Newest first; ties by folder name, so the order is stable.
+    return sorted(found, key=lambda e: (e["date"], e["dir"]), reverse=True)
+
+
+EXPERIMENTS = _discover_experiments()
+for _e in EXPERIMENTS:
+    for _src, _out, _kind in _EXPERIMENT_PARTS:
+        if (HERE / "plans" / "results" / _e["dir"] / _src).is_file():
+            PAGES.append(dict(
+                src=f"plans/results/{_e['dir']}/{_src}", out=f"experiments/{_e['dir']}/{_out}",
+                label=f"{_kind} · {_e['status']}", card=_e["title"], index=False,
+                blurb=f"{_e['date']} · {_e['status']}",
+            ))
+if EXPERIMENTS:
+    PAGES.append(dict(
+        src="experiments.md", out="experiments/index.html", label="Experiments",
+        card="Experiments",
+        blurb="Dated experiment records: the goal and subquestions, results with their decision rules, "
+              "threats to validity, redacted pre-registrations and the public artifacts behind every number.",
+        md="# Experiments\n\nEach record lives in `docs/plans/results/<folder>/`. A status of EXPLORATORY "
+           "means the numbers are not citable.\n\n| date | experiment | status |\n|---|---|---|\n"
+           + "".join(f"| {e['date']} | [{e['title']}](plans/results/{e['dir']}/README.md) | {e['status']} |\n"
+                     for e in EXPERIMENTS),
+    ))
+
 # Relative .md links in the sources point at repo paths; on the built site they must point
 # at the rendered pages. Anything not listed here is left alone — repo-root links like
 # ../SPEC.md deliberately fall through to GitHub.
@@ -229,7 +273,11 @@ def gh_slug(text: str) -> str:
 
 
 def render_page(page: dict) -> None:
-    raw = _rewrite_links((HERE / page["src"]).read_text(encoding="utf-8"), page["src"], page["out"])
+    text = page["md"] if "md" in page else (HERE / page["src"]).read_text(encoding="utf-8")
+    # A leading HTML comment (the experiment marker) is metadata, not content: drop it so
+    # the first heading is still found as the page title.
+    text = re.sub(r"\A<!--.*?-->[ \t]*\n", "", text, flags=re.DOTALL)
+    raw = _rewrite_links(text, page["src"], page["out"])
 
     m = re.match(r"#\s+(.+)\n", raw)
     title = m.group(1).strip() if m else page["card"]
