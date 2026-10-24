@@ -84,3 +84,16 @@ The two `sentence` rows are **identical** to the in-process leg (same document, 
 Harness notes for the next person: `collection` is a multipart form field on `/v1/ingest/upload`; `/v1/chunks` is fetch-by-id (take the ids from `GET /v1/ingest/{job_id}`); one ingest job in flight per user; a BV-BRC user may own at most `MAX_COLLECTIONS_PER_OWNER=5` collections (counted in the ACL store, not the registry's informational `owner` column), so transfer each test collection to the user, upload, and transfer it back before the next; purging a collection does not remove its Workspace folder, so re-creating the same id and re-uploading the same file is refused as a duplicate source — use fresh ids.
 
 **#811 rehearsal — not done, redesigned.** `sem-e2e` / `sem-e2e-legacy` are 5-chunk #609 smoke artifacts with no ingest jobs and no recorded sources, so they cannot rehearse a real re-ingest. And a re-upload of an existing source is refused by the Workspace dedupe, so "full re-ingest" for #811 cannot be a re-upload: it has to be a **versioned rebuild** through the archive / restore-collection replay (ADR lifecycle, #376), or a new collection + owner/pointer swap. That is a plan of its own, tracked in #811.
+
+## #811 rehearsal on the OA subset (dev, 2026-10-24 ~03:55–04:10Z)
+
+Bulk plane: `jats-ingest.cwl` via `python/scripts/gowe_batch_ingest.py` from the dev checkout (a86f00b), GoWe group `ragstack-dev` (2 CPU workers, `--extra-bind /rag`, image dir with the v1.6.16-b1 symlink), embeddings on :9005/:9006. Shards, templates and ledgers: `/rag/ingest/oa/relchk-20261024/`.
+
+| batch | submission | target | result |
+|---|---|---|---|
+| re-ingest 204 existing (dev-proto shard-00000) | `sub_2c988dfe` | `oa-dev` fixed_token 512/64 | delta 0, legs 34,127/34,127, per-article counts identical |
+| 200 new (plan_shards `--exclude dev-proto`) | `sub_da15ce2f` | `oa-sent-trial` sentence 1500/0 (throwaway) | 0 → 8,592; max 1500 chars / 648 tok; 394/400 sentence-edge ends |
+| same 200 again | `sub_899f28e1` | `oa-sent-trial` | delta 0, per-article differences 0 |
+| 200 new (kept) | `sub_855d0801` | `oa-dev` | 34,127 → 41,993; 1,000 articles; max 512 tok |
+
+`oa-sent-trial` purged afterwards (registry, ES index and Qdrant collection gone). Findings for the fleet: `/scout/containers` (default workers' `--image-dir`) had no stamped image until this run (symlink pair added); default workers bind only `/scout/data`, not `/rag`; bulk receipts carry no provenance (#821); `semantic` is not in `jats-ingest.cwl`'s method enum. The migration procedure is now written up on #811.
