@@ -1,5 +1,33 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-10-24 — chunking release cut (v1.6.16 tools / v1.6.17 server), #815 found by the runbook
+
+Owner decision: deploy to dev first, #806–#809 after a live signal; #810 fixed first (#813, three
+keyed boots green from unstamped scratch CWL copies). Release per `cut-a-release.md`:
+
+- **v1.6.15 tagged, image built, image rejected.** The § 2 post-build import check failed on
+  `nltk`. Checked the *deployed* images the same way: `tools-v1.6.13-b1` and `server-v1.6.14-b1`
+  have no nltk either — the defs never listed the `chunking` extra. So the fleet has run the regex
+  sentence fallback all along, while every measurement (stage0, goldens v1/v2, dev) ran Punkt.
+  Filed #815; fixed by #816 (extra in both defs + a def-parsing test; `segmenter_version()`
+  honest about the backend; one WARNING per process on the fallback; backend assertion in the
+  post-build checks of both runbooks and `cwl/README.md`). Lesson recorded: assert the backend
+  the code chose, not the import. v1.6.15 keeps no image (runbook § 1 "if it fails partway").
+- **v1.6.16 (tools)** → `ragstack-tools-v1.6.16-b1.sif`, sha `1fd4584d4368…`, store + dev-group
+  symlinks, identity verify ok. In-image check beyond the runbook: `sentence_spans` over the 50
+  golden docs + canonical byte-identical to v2 (image nltk 3.10.4 vs goldens' 3.9.4 — no change).
+- **v1.6.17 (server)** → CWL stamped (#818), `ragstack-server-v1.6.17-b1.sif`, sha `1e6f1302ecb4…`,
+  boot smoke `/v1/version` = a86f00b. Steps 8–9 (prepare, `update-code dev`) handed to the
+  management session: `docs/runbooks/handoff-2026-10-24-chunking-release-dev.md`.
+- **Tested before deploy:** keyed conformance on v1.6.17 (251/19, 2, 2); in-process leg on a
+  scratch API against dev's vLLM — sentence `size_unit=tokens` 128 → max 128 tokens; sentence
+  1500 chars → max 1498 chars; semantic ≤ 4080 with 35/36 sentence-edge ends; >3,000-sentence doc
+  → the #809 fixed_token fallback; `size_unit` on `fixed` → 400; dead endpoint → 503 refusal.
+- Slips, for the record: the #817 squash commit carries a mistyped `Claude-Session` trailer (a
+  `sed` in the merge body; not rewritten); two of my test-script iterations were wrong about the
+  API (`collection` is a multipart field; `/v1/chunks` is fetch-by-id) — the API was right both times.
+
+
 ## Session 2026-10-23 — #318 / #647: chunkers respect max_tokens, keep sentences whole, Punkt abbreviations, JATS spans
 
 Four Opus subagents, one worktree each, Fable planning and review; every PR verified by an

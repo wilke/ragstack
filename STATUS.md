@@ -2,7 +2,7 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-10-23
+**Last updated:** 2026-10-24
 **Deployed:** seven tenants, image mode, all on server tag
 [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**): the API
 from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools image
@@ -40,6 +40,23 @@ it as documentation. The upgrade procedure is
 current-state snapshot: the open PR stack, the chunking study's stopped confirmation run, the
 one human task that is blocking, live infrastructure, and the failures this line of work
 already made. This file remains the long-form project history.
+
+**Released, not yet deployed (2026-10-24): tools tag `v1.6.16` → `ragstack-tools-v1.6.16-b1.sif`
+(in `/scout/containers/ragstack`), server tag `v1.6.17` → `ragstack-server-v1.6.17-b1.sif` (built,
+awaiting `fleet image prepare` + `tenant update-code dev`;
+[handoff](docs/runbooks/handoff-2026-10-24-chunking-release-dev.md)).** The chunking release
+below, plus [#813](https://github.com/wilke/ragstack/pull/813) and
+[#816](https://github.com/wilke/ragstack/pull/816). **`v1.6.15` is a tools tag with no image**:
+its image's post-build check found no `nltk` — and neither deployed image had it
+([#815](https://github.com/wilke/ragstack/issues/815)): **the whole fleet has segmented
+sentences with the regex fallback** while the study, the v1/v2 goldens and every dev session ran
+Punkt. #816 puts the chunking extra in both image defs (pinned by a test), makes
+`segmenter_version()` report the backend actually in use, and adds the backend assertion to the
+post-build checks. Verified before deploy: both images' receipts/labels/sha256, Punkt inside
+both, `sentence_spans` in the tools image byte-identical to the v2 goldens, keyed conformance
+251/19 + 2 + 2, and the in-process path (sentence `size_unit=tokens` → max 128 tokens; the 503
+window refusal). Deployed collections (`clark` semantic, `dev` ×2) remain regex-segmented until
+[#811](https://github.com/wilke/ragstack/issues/811).
 
 **Unreleased on `main` (2026-10-23, not yet in any server/tools image) — chunking correctness,
 issues #318 and #647, PRs #803 → #802 → #805 → #804, each Fable-reviewed with an independent
