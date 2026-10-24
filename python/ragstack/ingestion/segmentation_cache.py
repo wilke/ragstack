@@ -42,8 +42,9 @@ def config_fingerprint(**parts: object) -> str:
     model id containing a delimiter can't collide with a different config.
 
     The sentence segmenter is part of every fingerprint, unconditionally:
-    :data:`ragstack.ingestion.chunkers.SEGMENTER_VERSION` (read at call time) is
-    added under :data:`SEGMENTER_KEY`, for every caller. The spans of the
+    :func:`ragstack.ingestion.chunkers.segmenter_version` — the backend this
+    process actually runs, ``punkt-abbrev-v1`` or ``regex-abbrev-v1`` (#815) —
+    is added under :data:`SEGMENTER_KEY`, for every caller. The spans of the
     ``sentence`` / ``semantic`` / ``semantic_pooled`` chunkers are built on
     sentence boundaries, so a cache built under one segmenter must never serve
     another — a hit would rebuild the OLD chunk ids and make a "full re-ingest"
@@ -51,11 +52,12 @@ def config_fingerprint(**parts: object) -> str:
     invalidated every cache file written before it existed, once: those were all
     built under ``punkt-bare``, and a cache built under ``punkt-bare`` must never
     serve ``punkt-abbrev-v1``. Each later ``SEGMENTER_VERSION`` bump invalidates
-    them again, which is the point."""
+    them again, which is the point; and a cache written by a process on the
+    regex fallback never serves a Punkt process, or the reverse."""
     if SEGMENTER_KEY in parts:
         raise ValueError(
             f"{SEGMENTER_KEY!r} is added by config_fingerprint itself; do not pass it")
-    return json.dumps({**parts, SEGMENTER_KEY: chunkers.SEGMENTER_VERSION},
+    return json.dumps({**parts, SEGMENTER_KEY: chunkers.segmenter_version()},
                       sort_keys=True, default=str)
 
 

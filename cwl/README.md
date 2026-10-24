@@ -99,7 +99,13 @@ After every rebuild, run these against the new SIF before trusting it:
 
 ```bash
 apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
-    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers; print('ok')"
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, nltk; print('ok')"
+# The sentence segmenter the image will actually run (#815): without nltk,
+# sentence_spans() silently falls back to the regex splitter, which is not the
+# segmentation the study, the regression goldens or any dev environment measured.
+# `import nltk` alone is not the check -- assert the backend the code chose.
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
+    python -c "from ragstack.ingestion.chunkers import segmenter_version as s; assert s() == 'punkt-abbrev-v1', s()"
 apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
     python /opt/ragstack/scripts/load_graph.py --help
 apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \

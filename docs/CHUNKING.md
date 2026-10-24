@@ -151,11 +151,16 @@ above the set.
 It is `"punkt-abbrev-v1"` now. The previous segmenter, a bare
 `PunktSentenceTokenizer()` with every period a candidate break, is
 `"punkt-bare"`; that name was never recorded anywhere. Bump the version
-whenever `sentence_spans` output can change for any input. The version is
-recorded under `segmenter_version` in the `provenance` object of every shard
-receipt and archive manifest (`provenance.tool_provenance`), and in every
-`sentence_spans_fingerprint`. A record without the key predates it and was
-built with `punkt-bare`.
+whenever `sentence_spans` output can change for any input, together with
+`REGEX_SEGMENTER_VERSION` (`"regex-abbrev-v1"`), the name of the regex
+fallback that runs when `nltk` is not installed. What is *recorded* is
+`chunkers.segmenter_version()`: the name of the backend this process actually
+runs (#815 — every image before v1.6.15 lacked `nltk` and ran the fallback).
+It is recorded under `segmenter_version` in the `provenance` object of every
+shard receipt and archive manifest (`provenance.tool_provenance`), in every
+`sentence_spans_fingerprint`, and in every segmentation-cache key. A record
+without the key predates it and was built with `punkt-bare`. A process on the
+fallback logs one WARNING the first time it segments.
 
 **Migration rule.** A chunk id is `uuid5(doc_id:start:end)`, so a moved
 sentence boundary changes the chunk id and the point id. When the segmenter

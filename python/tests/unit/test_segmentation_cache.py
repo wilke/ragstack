@@ -99,9 +99,10 @@ _CFG = {"method": "semantic", "buffer_size": 3, "pct": 80.0, "chunk_size": 512}
 def test_fingerprint_differs_across_segmenter_versions(monkeypatch):
     from ragstack.ingestion import chunkers
 
-    monkeypatch.setattr(chunkers, "SEGMENTER_VERSION", "punkt-bare")
+    # The recorded value is chunkers.segmenter_version() (#815): set its cache.
+    monkeypatch.setattr(chunkers, "_SEGMENTER_VERSION_CACHE", "punkt-bare")
     old = config_fingerprint(**_CFG)
-    monkeypatch.setattr(chunkers, "SEGMENTER_VERSION", "punkt-abbrev-v1")
+    monkeypatch.setattr(chunkers, "_SEGMENTER_VERSION_CACHE", "punkt-abbrev-v1")
     new = config_fingerprint(**_CFG)
     assert old != new
     assert config_fingerprint(**_CFG) == new  # still stable for one version
@@ -115,7 +116,7 @@ def test_fingerprint_names_the_current_segmenter_and_refuses_an_override():
     from ragstack.ingestion import chunkers
     from ragstack.ingestion.segmentation_cache import SEGMENTER_KEY
 
-    assert json.loads(config_fingerprint(**_CFG))[SEGMENTER_KEY] == chunkers.SEGMENTER_VERSION
+    assert json.loads(config_fingerprint(**_CFG))[SEGMENTER_KEY] == chunkers.segmenter_version()
     with pytest.raises(ValueError):
         config_fingerprint(**_CFG, segmenter_version="punkt-bare")
 

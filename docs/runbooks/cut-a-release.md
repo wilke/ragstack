@@ -135,6 +135,7 @@ cd python && /rag/envs/ragstack/bin/python -m pytest -q tests/unit/test_version_
 **If it fails partway:** a pushed tag stays where it is. If the tagged tree
 turns out to be wrong, merge the fix and tag `v1.6.6` as the tools tag. `v1.6.5`
 just never gets a tools image. Write that down in the release notes.
+(First case: `v1.6.15` got no tools image — its `b1` had no `nltk`, #815.)
 
 ---
 
@@ -196,8 +197,10 @@ apptainer inspect --labels "$SIF" | grep org.ragstack
 #   org.ragstack.version = v1.6.5, .commit = $(git rev-parse v1.6.5^{commit}), .build = 1, .build-date = receipt's
 apptainer exec "$SIF" cat /opt/ragstack/RELEASE                      # the same four values
 sha256sum "$SIF"                                                     # == the receipt's sha256
-apptainer exec "$SIF" python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j, asyncpg; print(ragstack.__version__)"
+apptainer exec "$SIF" python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j, asyncpg, nltk; print(ragstack.__version__)"
 #   Expect 1.6.5 (PEP 440: no leading v)
+apptainer exec "$SIF" python -c "from ragstack.ingestion.chunkers import segmenter_version as s; assert s()=='punkt-abbrev-v1', s()"
+#   the sentence chunkers run Punkt, not the regex fallback (#815)
 apptainer exec "$SIF" python /opt/ragstack/scripts/load_graph.py --help >/dev/null
 apptainer exec "$SIF" python /opt/ragstack/scripts/ingest_shard.py --help | grep -- --workflow-id
 #   the provenance flags (#668) must be there; the first stamped release turns them on
@@ -215,7 +218,10 @@ the release checkout: `PYTHONPATH=python` is required (see § 3).
 
 The import and `--help` checks are the post-build checks from
 [`cwl/README.md` § Post-build checks](../../cwl/README.md#post-build-checks).
-`import neo4j` is required, not optional (#404).
+`import neo4j` is required, not optional (#404). So are `import nltk` and the
+segmenter assertion: without `nltk` the image builds and runs, but every
+sentence/semantic chunk comes from the regex fallback instead of Punkt
+(#815).
 
 **If it fails partway:**
 

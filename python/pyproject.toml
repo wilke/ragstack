@@ -92,8 +92,9 @@ embeddings = [
 ]
 chunking = [
     # NLTK Punkt sentence tokenizer, used by the sentence/semantic chunkers for
-    # high-quality sentence splitting (a regex fallback is used when absent).
-    # Vendor or download the punkt model: `python -m nltk.downloader punkt`.
+    # high-quality sentence splitting (a regex fallback is used when absent,
+    # with a WARNING — a different segmentation; #815). No data download: the
+    # Punkt parameters are built in code. Both image defs install this extra.
     "nltk>=3.8",
 ]
 tokenization = [

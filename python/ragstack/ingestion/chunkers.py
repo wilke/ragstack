@@ -17,6 +17,7 @@ deterministic-id contract above.
 """
 from __future__ import annotations
 
+import logging
 import math
 import re
 import sys
@@ -25,6 +26,8 @@ from collections.abc import Callable, Sequence
 
 from ragstack.ingestion.tokenization import TokenCounter
 from ragstack.models import Chunk, Document
+
+logger = logging.getLogger(__name__)
 
 # A callable that turns a list of texts into a list of dense vectors. Sync on
 # purpose: chunkers run synchronously inside the (already-async) ingestion
@@ -361,15 +364,23 @@ def _token_split_span(
 # text[s:e] for every span reproduces ``text`` byte-for-byte (whitespace
 # included), which is what keeps the deterministic chunk ids honest downstream.
 
-#: Identity of the sentence segmenter — what :func:`sentence_spans` returns for
-#: a given text. **Bump it whenever ``sentence_spans`` output can change for any
-#: input** (a new abbreviation, a changed heuristic, a new backend rule): a
-#: sentence boundary is a chunk boundary, and chunk ids are
+#: Identity of the *designed* sentence segmenter — the Punkt backend, what
+#: :func:`sentence_spans` returns for a given text when ``nltk`` is installed
+#: (the ``[chunking]`` extra). **Bump it whenever ``sentence_spans`` output can
+#: change for any input** (a new abbreviation, a changed heuristic, a new
+#: backend rule): a sentence boundary is a chunk boundary, and chunk ids are
 #: ``uuid5(doc_id:start:end)``, so a moved boundary is a moved chunk id and a
-#: moved point id. Recorded in the production receipt / archive provenance
-#: (:func:`ragstack.provenance.tool_provenance`) and in every
-#: :func:`ragstack.provenance.sentence_spans_fingerprint`, so a reader can tell
-#: which segmentation a collection was built with.
+#: moved point id. Bump :data:`REGEX_SEGMENTER_VERSION` with it.
+#:
+#: This constant is NOT what gets recorded. :func:`segmenter_version` is — it
+#: names the backend actually in use, so a process without ``nltk`` records
+#: :data:`REGEX_SEGMENTER_VERSION` instead (#815: every image before v1.6.15
+#: lacked ``nltk`` and ran the regex fallback while recording nothing). The
+#: recorded value lands in the production receipt / archive provenance
+#: (:func:`ragstack.provenance.tool_provenance`), every
+#: :func:`ragstack.provenance.sentence_spans_fingerprint` and every
+#: segmentation-cache key, so a reader can tell which segmentation a collection
+#: was built with.
 #:
 #: History: ``"punkt-bare"`` (implicit; never recorded) — ``PunktSentenceTokenizer()``
 #: with no parameters, every period a candidate break; the code that produced
@@ -377,6 +388,18 @@ def _token_split_span(
 #: ``"punkt-abbrev-v1"`` — :data:`SENTENCE_ABBREVIATIONS` seeded into Punkt and
 #: mirrored by the regex fallback (#318 P2).
 SEGMENTER_VERSION: str = "punkt-abbrev-v1"
+
+#: The regex fallback's counterpart of :data:`SEGMENTER_VERSION`, recorded by
+#: :func:`segmenter_version` when ``nltk`` is unavailable. The two backends
+#: share :data:`SENTENCE_ABBREVIATIONS` but are different algorithms (Punkt's
+#: orthographic/collocation heuristics vs. the regex post-filter), so their
+#: boundaries can differ on real text: they must never share a cache key or a
+#: provenance label. Bump it together with :data:`SEGMENTER_VERSION`.
+#:
+#: History: ``"regex-abbrev-v1"`` — the fallback with :data:`SENTENCE_ABBREVIATIONS`
+#: (#318 P2); first recorded under this name by #815. Records written before
+#: #815 by a process without ``nltk`` say ``"punkt-abbrev-v1"`` wrongly.
+REGEX_SEGMENTER_VERSION: str = "regex-abbrev-v1"
 
 #: Abbreviations after which a period is NOT a sentence break, for both sentence
 #: backends. Punkt's convention: lower case, WITHOUT the trailing period, and
@@ -411,7 +434,7 @@ SEGMENTER_VERSION: str = "punkt-abbrev-v1"
 #: mirrors that heuristic (:func:`_fallback_keeps_break`).
 #:
 #: Changing this set changes :func:`sentence_spans` output: bump
-#: :data:`SEGMENTER_VERSION`.
+#: :data:`SEGMENTER_VERSION` and :data:`REGEX_SEGMENTER_VERSION`.
 SENTENCE_ABBREVIATIONS: frozenset[str] = frozenset({
     # Honorifics, titles and degrees before/after a name ("Dr. Smith", "Ph.D.").
     "dr", "drs", "prof", "profs", "mr", "mrs", "messrs", "jr", "sr", "rev",
@@ -683,6 +706,33 @@ def _subsplit_long_spans(
     return out
 
 
+def _segmenter_version_for(punkt_available: bool) -> str:
+    """The recorded segmenter name for a backend: :data:`SEGMENTER_VERSION`
+    for Punkt, :data:`REGEX_SEGMENTER_VERSION` for the regex fallback."""
+    return SEGMENTER_VERSION if punkt_available else REGEX_SEGMENTER_VERSION
+
+
+_SEGMENTER_VERSION_CACHE: str | None = None
+
+
+def segmenter_version() -> str:
+    """The segmenter this process's :func:`sentence_spans` actually runs —
+    ``"punkt-abbrev-v1"`` when the Punkt backend works here, else
+    ``"regex-abbrev-v1"``. This, not the constant :data:`SEGMENTER_VERSION`, is
+    what every record writes (#815).
+
+    The probe is the one :func:`ragstack.provenance.sentence_spans_fingerprint`
+    uses for its ``backend`` field — ``_punkt_sentence_spans("A b. C d.") is not
+    None`` — run once and cached: whether ``nltk`` imports does not change
+    within a process. (Tests that hide ``nltk`` reset
+    ``_SEGMENTER_VERSION_CACHE``.)"""
+    global _SEGMENTER_VERSION_CACHE
+    if _SEGMENTER_VERSION_CACHE is None:
+        _SEGMENTER_VERSION_CACHE = _segmenter_version_for(
+            _punkt_sentence_spans("A b. C d.") is not None)
+    return _SEGMENTER_VERSION_CACHE
+
+
 def sentence_spans(text: str) -> list[tuple[int, int]]:
     """Return gapless sentence spans into ``text`` (NLTK Punkt, else regex).
 
@@ -694,8 +744,34 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
     """
     spans = _punkt_sentence_spans(text)
     if spans is None:
+        _warn_regex_fallback_once()
         spans = _fallback_sentence_spans(text)
     return _subsplit_long_spans(text, spans)
+
+
+_FALLBACK_WARNED = False
+
+
+def _warn_regex_fallback_once() -> None:
+    """Log, once per process, that :func:`sentence_spans` is on the regex
+    fallback — a different segmentation from the Punkt one every study, golden
+    and dev environment measured (#815), recorded as
+    :data:`REGEX_SEGMENTER_VERSION`.
+
+    Deliberately a warning, not a refusal: whether a production worker/API
+    without ``nltk`` should refuse sentence-based chunk methods
+    (refuse-don't-degrade) is the owner's policy decision, tracked in #815."""
+    global _FALLBACK_WARNED
+    if _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED = True
+    logger.warning(
+        "sentence_spans: NLTK Punkt is unavailable; using the regex sentence "
+        "fallback (segmenter_version=%s), a different segmentation from the "
+        "Punkt one (%s) the sentence/semantic chunkers were measured with. "
+        "Fix: pip install \"ragstack[chunking]\" (or rebuild the tools/server "
+        "image, whose defs install the chunking extra). See #815.",
+        REGEX_SEGMENTER_VERSION, SEGMENTER_VERSION)
 
 
 class SentenceChunker:
