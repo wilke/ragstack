@@ -140,7 +140,7 @@ def _mean(xs: list[float]) -> float:
 def test_joined_mode_fills_the_budget(cls, budget):
     doc = _doc(PROSE)
     chunks = cls(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget, token_counter=COUNTER
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens", token_counter=COUNTER
     ).chunk(doc)
     fills = _fills(chunks, budget)
     assert _mean(fills) >= 0.95, (cls.__name__, budget, _mean(fills))
@@ -153,10 +153,10 @@ def test_joined_mode_fills_better_than_legacy(budget):
     """Differential: the same input, same budget, strictly fuller chunks."""
     doc = _doc(PROSE)
     new = WordChunker(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget, token_counter=COUNTER
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens", token_counter=COUNTER
     ).chunk(doc)
     old = WordChunker(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode="summed",
     ).chunk(doc)
     assert _mean(_fills(new, budget)) > _mean(_fills(old, budget))
@@ -171,7 +171,7 @@ def test_joined_mode_fills_better_than_legacy(budget):
 def test_legacy_mode_reproduces_old_word_fill(budget):
     doc = _doc(PROSE)
     chunks = WordChunker(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode="summed",
     ).chunk(doc)
     fill = _mean(_fills(chunks, budget))
@@ -193,7 +193,7 @@ def test_legacy_mode_reproduces_old_sentence_fill(budget):
     """
     doc = _doc(PROSE)
     chunks = SentenceChunker(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode="summed",
     ).chunk(doc)
     fill = _mean(_fills(chunks, budget))
@@ -210,7 +210,7 @@ def test_legacy_mode_reproduces_old_sentence_fill(budget):
 def test_never_exceeds_budget(cls, budget, mode):
     doc = _doc(PROSE)
     chunks = cls(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode=mode,
     ).chunk(doc)
     assert chunks
@@ -226,7 +226,7 @@ def test_never_exceeds_budget_with_single_over_budget_unit(cls, mode):
     text = f"a short lead in sentence. {monster} and a short tail after it."
     doc = _doc(text)
     chunks = cls(
-        chunk_size=10**9, chunk_overlap=0, max_tokens=budget,
+        chunk_size=budget, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode=mode,
     ).chunk(doc)
     assert len(chunks) > 1
@@ -240,7 +240,7 @@ def test_never_exceeds_budget_with_single_over_budget_unit(cls, mode):
 def test_never_exceeds_budget_with_overlap_on(mode):
     doc = _doc(PROSE)
     chunks = WordChunker(
-        chunk_size=10**9, chunk_overlap=200, max_tokens=512,
+        chunk_size=512, chunk_overlap=200, size_unit="tokens",
         token_counter=COUNTER, budget_mode=mode,
     ).chunk(doc)
     assert len(chunks) > 2
@@ -256,7 +256,7 @@ def test_never_exceeds_budget_with_overlap_on(mode):
 def test_joined_mode_never_splits_a_word(budget):
     doc = _doc(PROSE)
     chunks = WordChunker(
-        chunk_size=10**9, chunk_overlap=64, max_tokens=budget, token_counter=COUNTER
+        chunk_size=budget, chunk_overlap=64, size_unit="tokens", token_counter=COUNTER
     ).chunk(doc)
     spans = word_spans(PROSE)
     starts = {s for s, _ in spans}
@@ -266,7 +266,7 @@ def test_joined_mode_never_splits_a_word(budget):
         assert c.end_char in ends, c.end_char
     # And the same for sentence units.
     schunks = SentenceChunker(
-        chunk_size=10**9, chunk_overlap=64, max_tokens=budget, token_counter=COUNTER
+        chunk_size=budget, chunk_overlap=64, size_unit="tokens", token_counter=COUNTER
     ).chunk(doc)
     sspans = sentence_spans(PROSE)
     sstarts = {s for s, _ in sspans}
@@ -286,7 +286,7 @@ def test_deterministic(cls, mode):
 
     def run():
         chunks = cls(
-            chunk_size=10**9, chunk_overlap=64, max_tokens=512,
+            chunk_size=512, chunk_overlap=64, size_unit="tokens",
             token_counter=SpaceMergeCounter(), budget_mode=mode,
         ).chunk(doc)
         return [(c.id, c.start_char, c.end_char, c.content) for c in chunks]
@@ -303,10 +303,10 @@ def test_deterministic(cls, mode):
 def test_make_chunker_threads_budget_mode():
     doc = _doc(PROSE)
     new = make_chunker(
-        "words", chunk_size=10**9, chunk_overlap=0, max_tokens=512, token_counter=COUNTER
+        "words", chunk_size=512, chunk_overlap=0, size_unit="tokens", token_counter=COUNTER
     ).chunk(doc)
     old = make_chunker(
-        "words", chunk_size=10**9, chunk_overlap=0, max_tokens=512,
+        "words", chunk_size=512, chunk_overlap=0, size_unit="tokens",
         token_counter=COUNTER, budget_mode="summed",
     ).chunk(doc)
     assert len(new) < len(old)

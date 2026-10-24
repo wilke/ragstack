@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Collection
 
-from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
+from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT, SIZE_UNITS, make_chunker
 from ragstack.ingestion.tokenization import (
     TokenCounter,
     make_token_counter,
@@ -134,6 +134,17 @@ def shard_refusal(
     )
 
 
+#: ``--chunk-size-unit`` choices and help, shared by the three bulk tools so they
+#: say the same thing (#318 P1). See :data:`ragstack.ingestion.chunkers.SIZE_UNITS`.
+CHUNK_SIZE_UNIT_CHOICES: tuple[str, ...] = SIZE_UNITS
+CHUNK_SIZE_UNIT_HELP = (
+    "what --chunk-size counts for sentence/words: 'chars' (default) or 'tokens'. "
+    "Either way the model window is a cap: a chunk over it is re-packed at "
+    "sentence/word boundaries, and a single sentence/word longer than the budget "
+    "is split. --chunk-overlap stays chars. Ignored by other methods."
+)
+
+
 def resolve_token_backend(
     method: str, token_backend: str, model: str | None,
     warn: Callable[[str], None],
@@ -190,12 +201,15 @@ def build_chunker(
     breakpoint_max_tokens: int | None = None,
     breakpoint_token_counter: TokenCounter | None = None,
     max_breakpoint_sentences: int | None = 3000,
+    size_unit: str = DEFAULT_SIZE_UNIT,
     on_warn: Callable[[str], None] | None = None,
 ) -> tuple[object, TokenCounter, int]:
     """Construct a chunker with its token counter + budget resolved.
 
     ``max_tokens`` is the ``--chunk-max-tokens`` override (the *model window*);
-    ``None`` auto-detects from ``base_url``. Returns
+    ``None`` auto-detects from ``base_url``. ``size_unit`` (``sentence``/``words``)
+    is what ``chunk_size`` counts: ``"chars"`` (default) or ``"tokens"``; the
+    resolved window is a cap under both. Returns
     ``(chunker, token_counter, resolved_max_tokens)`` — the counter/budget are
     returned so callers can reuse them without re-deriving. The semantic-only
     breakpoint args are passed straight through to :func:`make_chunker`.
@@ -219,5 +233,6 @@ def build_chunker(
         breakpoint_max_tokens=breakpoint_max_tokens,
         breakpoint_token_counter=breakpoint_token_counter,
         max_breakpoint_sentences=max_breakpoint_sentences,
+        size_unit=size_unit,
     )
     return chunker, token_counter, resolved_max

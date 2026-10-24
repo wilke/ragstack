@@ -71,7 +71,12 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.boilerplate import filter_from_mode
-from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
+from ragstack.ingestion.chunker_config import (
+    CHUNK_SIZE_UNIT_CHOICES,
+    CHUNK_SIZE_UNIT_HELP,
+    build_chunker,
+    needs_embed_fn,
+)
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
@@ -566,6 +571,7 @@ async def run(
         base_url=embed_base_url,
         api_key=embed_api_key,
         embed_fn=embed_bridge,
+        size_unit=getattr(args, "chunk_size_unit", "chars"),
         buffer_size=args.chunk_buffer_size,
         breakpoint_percentile=args.chunk_breakpoint_percentile,
         min_chunk_length=args.chunk_min_length,
@@ -593,6 +599,14 @@ async def run(
             # Threshold changes which docs fall back to fixed_token, changing spans.
             max_breakpoint_sentences=args.semantic_max_sentences,
             chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
+            # sentence/words only (other methods keep their keys). Their output
+            # changed under #318 — a token budget used to replace chunk_size and
+            # now caps it — so a pre-#318 cached segmentation must not be reused,
+            # and a tokens run must not reuse a chars one (or vice versa).
+            **(
+                {"size_unit": getattr(args, "chunk_size_unit", "chars"), "pack": "318"}
+                if args.chunk_method in ("sentence", "words") else {}
+            ),
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
         print(f"segmentation cache {args.segmentation_cache} "
@@ -1172,6 +1186,48 @@ async def run(
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
 
 
+def _refuse_size_unit_mismatch(args: argparse.Namespace, target: Any) -> None:
+    """Refuse a ``--chunk-size-unit`` that contradicts the registry entry (#318).
+
+    ``size_unit`` is collection identity (same method/size/overlap, ~8x different
+    chunks on this path, which always resolves a token budget), and the entry
+    records it in ``chunk_params["size_unit"]`` — which ``ingest_shard.py`` reads
+    as its one source. ``IngestTarget.check_build`` compares method/size/overlap
+    only, so without this a ``tokens`` run would pass the ADR-0002 guard into a
+    ``chars`` collection (or the reverse) and mix two chunkings in one index.
+
+    Only ``sentence``/``words`` read the unit. An entry that records none means
+    ``chars`` — the historical behaviour every existing collection was built
+    with — so on an existing entry ``--chunk-size-unit tokens`` is refused
+    unless the entry says ``tokens``. Exits 2 like ``resolve_or_exit``.
+    """
+    if target is None or args.chunk_method not in ("sentence", "words"):
+        return
+    params = dict(getattr(target.spec, "chunk_params", None) or {})
+    recorded = params.get("size_unit")
+    entry_unit = "chars" if recorded is None else recorded
+    if entry_unit not in CHUNK_SIZE_UNIT_CHOICES:
+        print(
+            f"error: collection {target.collection_id!r} chunk_params['size_unit'] "
+            f"must be one of {', '.join(CHUNK_SIZE_UNIT_CHOICES)}; got {recorded!r}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    flag = getattr(args, "chunk_size_unit", "chars")
+    if flag != entry_unit:
+        print(
+            f"error: refusing to ingest into collection {target.collection_id!r}: "
+            f"--chunk-size-unit {flag} contradicts the registry entry, which records "
+            f"size_unit={entry_unit!r}"
+            f"{'' if recorded is not None else ' (none recorded, so chars)'}. "
+            f"The unit is part of the collection's identity (ADR-0002); match the "
+            f"entry, or create a collection whose chunk params say "
+            f"size_unit={flag!r}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("input", type=Path, help="JSONL file (one {text,path,metadata} per line)")
@@ -1282,11 +1338,13 @@ def main() -> None:
                         "(~buffer-window× less embedding work, deterministic blocks) — "
                         "pair with --breakpoint-embedding-* to run it on a cheap model.")
     p.add_argument("--chunk-size", type=int, default=512,
-                   help="chunk size (chars for fixed/sentence/words; TOKENS for "
-                        "fixed_token)")
+                   help="chunk size (chars for fixed/sentence/words unless "
+                        "--chunk-size-unit tokens; TOKENS for fixed_token)")
     p.add_argument("--chunk-overlap", type=int, default=64,
                    help="chunk overlap (chars for fixed/sentence/words; TOKENS for "
                         "fixed_token)")
+    p.add_argument("--chunk-size-unit", choices=CHUNK_SIZE_UNIT_CHOICES,
+                   default="chars", help=CHUNK_SIZE_UNIT_HELP)
     # Semantic-only tunables (ignored by other methods).
     p.add_argument("--chunk-buffer-size", type=int, default=3,
                    help="semantic: sentences of context on each side of a buffer")
@@ -1360,6 +1418,7 @@ def main() -> None:
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )
+    _refuse_size_unit_mismatch(args, target)
     asyncio.run(run(args, target))
 
 

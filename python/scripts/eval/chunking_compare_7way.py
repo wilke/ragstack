@@ -745,6 +745,34 @@ def token_window_chunks(
 # --------------------------------------------------------------------------- #
 # Build the chunks for one config (returns chunks; capping happens after)
 # --------------------------------------------------------------------------- #
+def sentence_words_chunker(cfg: ChunkConfig, token_counter):
+    """The sentence/words chunker for ``cfg``: pack to ``cfg.size`` TOKENS.
+
+    ``size_unit="tokens", chunk_size=cfg.size`` is the token-budget pack.
+    ``cfg.char_overlap`` gives the ~1-sentence / ~64-token tail overlap in char
+    terms. This used to be spelled ``chunk_size=10**9, max_tokens=cfg.size``,
+    which relied on a token budget silently replacing ``chunk_size``. #318
+    removed that behaviour: ``max_tokens`` is now only a cap on a
+    ``chunk_size``-char pack, so the old spelling would char-pack whole
+    documents and lose the overlap. The new spelling runs the identical
+    ``_pack_spans_tokens(budget=cfg.size)`` call, so committed grids reproduce
+    (pinned by ``tests/eval/test_chunking_harness_size_unit.py``).
+
+    ``extra`` is how a config selects the packer's fill mode. With nothing
+    passed you get the default ``budget_mode="joined"``: fill to the budget on
+    the joined text, then cut back to a unit boundary.
+    ``extra={"budget_mode": "summed"}`` reproduces the legacy under-filled arm
+    that the completed Leg A/Leg B grids ran with. Both are reachable on
+    purpose: the claim under test is realised versus nominal chunk tokens, and
+    the mis-filled arm is where the two come apart.
+    """
+    return make_chunker(
+        cfg.kind, chunk_size=cfg.size, chunk_overlap=cfg.char_overlap,
+        size_unit="tokens", token_counter=token_counter,
+        **cfg.extra,
+    )
+
+
 def chunk_docs_for_config(cfg: ChunkConfig, docs: list[Document]) -> list[Chunk]:
     """Chunk all ``docs`` with config ``cfg`` (no cap yet). Stamps tenant_id."""
     assert TOKEN_COUNTER is not None
@@ -769,21 +797,7 @@ def chunk_docs_for_config(cfg: ChunkConfig, docs: list[Document]) -> list[Chunk]
         return all_chunks
 
     if cfg.kind in ("sentence", "words"):
-        # Token-budget packing path: max_tokens=size drives the pack; char_overlap
-        # gives the ~1-sentence / ~64-token tail overlap in char terms.
-        #
-        # ``extra`` is how a config selects the packer's fill mode: nothing passed
-        # means the default ``budget_mode="joined"`` (fill to the budget on the
-        # joined text, then cut back to a unit boundary), and
-        # ``extra={"budget_mode": "summed"}`` reproduces the legacy under-filled
-        # arm that the completed Leg A/Leg B grids were run with. Both are
-        # reachable on purpose: realised-vs-nominal chunk tokens is the claim under
-        # test, and the mis-filled arm is where the two come apart.
-        chunker = make_chunker(
-            cfg.kind, chunk_size=10**9, chunk_overlap=cfg.char_overlap,
-            max_tokens=cfg.size, token_counter=TOKEN_COUNTER,
-            **cfg.extra,
-        )
+        chunker = sentence_words_chunker(cfg, TOKEN_COUNTER)
         for doc in docs:
             chunks = chunker.chunk(doc)
             _stamp(chunks)

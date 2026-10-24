@@ -498,7 +498,13 @@ Four facts frame this section:
 
 `scripts/ingest_jsonl.py` also calls `build_chunker` inline.
 
-**Why it matters:** The builders give identical results for `fixed` and `fixed_token`, and for `semantic` apart from edge cases. They differ for `sentence` and `words`, because once a token budget is present `_pack_spans` delegates to `_pack_spans_tokens`, which ignores `chunk_size` and packs to the model window. The plan's measurement on a 4,489-char document (size 200, overlap 20) gave 30 vs 1 chunks for `sentence` and 25 vs 1 for `words` (chunking-one-factory.md §8). The same plan reports zero live collections on hackathon or dev using `sentence` or `words` (read 2026-09-18).
+**Why it matters:** The builders give identical results for `fixed` and `fixed_token`, and for `semantic` apart from edge cases.
+
+For `sentence` and `words` they differed until #318. Once a token budget was present, `_pack_spans` delegated to `_pack_spans_tokens`, which ignored `chunk_size` and packed to the model window. The plan's measurement on a 4,489-char document (size 200, overlap 20) gave 30 vs 1 chunks for `sentence` and 25 vs 1 for `words` (chunking-one-factory.md §8).
+
+Since #318, `chunk_size` is always the size, and a token budget is always a cap. Under `size_unit="chars"` (the default), units are packed to `chunk_size` chars exactly as with no budget. A packed chunk over `max_tokens` is then re-packed at unit boundaries (`_cap_unit_range`, joined `_pack_spans_tokens`, no overlap inside it). A cut falls inside a unit only when that unit alone is over the cap, and a cap that no chunk reaches changes nothing. A token budget is asked for explicitly with `size_unit="tokens"`, which packs to `min(chunk_size, max_tokens)` tokens and hard-splits an over-long unit at that same budget.
+
+The old behaviour was removed rather than kept as a default. The plan read zero live `sentence`/`words` collections on hackathon or dev on 2026-09-18, and a registry check of every production tenant found none on 2026-10-23.
 
 **What #615 (`a2be96f`) consolidated:**
 - `chunker_config.SEMANTIC_METHODS = ("semantic", "semantic_pooled")` and `needs_embed_fn(method)` are the single membership test. `api/deps.py` `_chunker_for` / `_embed_fn_for` / `_build_chunker`, `ingest_shard.py`, `embed_shard.py` and `ingest_jsonl.py` call `needs_embed_fn`. `api/routers/collections.py` re-exports the constant. `SHARD_UNSUPPORTED_METHODS` is derived from it.
@@ -519,7 +525,7 @@ Four facts frame this section:
 
 **Scalability & parallelization:** Construction runs once per app, collection or tool run. `api/deps.py` `_embed_bridge_for` caches one bridge per collection id on `app_state`.
 
-**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. That split is where the `sentence` / `words` divergence comes from.
+**Single vs bulk:** The API builders serve path A only; on path B the API never chunks (§0), so paths B and C reach `build_chunker` through the shard tools. Since #802 and #805 (one factory), both paths build through `build_chunker`, and `sentence` / `words` are `chunk_size` chars with a token cap on both, so the split now decides only which process runs the factory, not what it builds.
 
 **Diagram:**
 ```mermaid

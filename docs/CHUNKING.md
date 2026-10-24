@@ -34,8 +34,8 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
 |---|---|---|---|---|
 | `fixed` | characters | every *size* characters, mid-word if necessary | no | all |
 | `fixed_token` | tokens of the collection's embedding model | every *size* tokens | no | all |
-| `sentence` | characters (see [token budget](#token-budget)) | sentence boundaries | no | all |
-| `words` | characters (see [token budget](#token-budget)) | word boundaries | no | all |
+| `sentence` | characters, or tokens with `size_unit="tokens"` (see [token budget](#token-budget)) | sentence boundaries | no | all |
+| `words` | characters, or tokens with `size_unit="tokens"` (see [token budget](#token-budget)) | word boundaries | no | all |
 | `semantic` | not used (see below) | at topic shifts that embeddings detect | yes, about 7× the tokens of `semantic_pooled` | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
 | `semantic_pooled` | not used (see below) | at topic shifts that embeddings detect, in different places from `semantic` | yes | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
 
@@ -49,18 +49,40 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
   never exceeds *size* tokens of that model. It needs an embedding model with
   a loadable HF tokenizer and refuses to start without one
   (`chunker_config.py` `resolve_token_backend`; `api/deps.py` `_chunker_for`).
-- **`sentence`**: `SentenceChunker`. Packs whole sentences up to about *size*
-  characters, and the next chunk repeats about *overlap* characters of
-  sentences. It never splits a sentence. Sentences are found with NLTK Punkt
-  when the `[chunking]` extra is installed and with a regex otherwise. A
-  *size* of `-1` puts the whole document in one chunk.
-- **`words`**: `WordChunker`. The same as `sentence`, with words as the unit.
-  *size* `-1` also works here.
+  A *size* larger than the token budget (`max_tokens`) is refused with a
+  `ValueError` naming both numbers, so on the bulk path a window wider than the
+  model's (window − 16) cannot be built.
+- **`sentence`**: `SentenceChunker`. Packs whole sentences up to *size*, and
+  the next chunk repeats about *overlap* characters of sentences. What *size*
+  counts is `size_unit` (`--chunk-size-unit` on the bulk tools):
+  - `chars` (the default): *size* characters. If there is a token budget, it
+    is a **cap**. A packed chunk that comes out over the budget is re-packed
+    into whole sentences that fit. Any chunk already within the budget is left
+    exactly as it was (see [token budget](#token-budget)).
+  - `tokens`: *size* tokens, capped at the token budget when there is one. A
+    single sentence longer than *size* tokens is split by tokens at *size*, not
+    at the model window, so no chunk exceeds *size*. Needs a token counter
+    and refuses to build without one.
+
+  *size* is always used. *overlap* is characters in both units. Under `chars`,
+  the pieces of a re-packed chunk do not overlap each other. The overlap with
+  the next chunk is the same as it would be without the cap. A sentence is
+  split only when it alone is over the budget. Sentences are found with NLTK
+  Punkt when the `[chunking]` extra is installed and with a regex otherwise. A
+  *size* of `-1` puts the whole document in one chunk (still token-split to fit
+  a budget).
+- **`words`**: `WordChunker`. The same as `sentence`, with words as the unit,
+  including `size_unit`. *size* `-1` also works here.
 - **`semantic`**: `SemanticChunker`. Splits the text into sentences. For each
   sentence it embeds the text of a window reaching `buffer_size` sentences
   either side, then cuts wherever the cosine distance between neighbouring
   windows is above the `breakpoint_percentile_threshold` percentile. Chunks
   shorter than `min_chunk_length` *characters* are merged into a neighbour.
+  With a token budget, a chunk over the budget is split **at sentence
+  boundaries**, packing as many whole sentences as fit; a cut falls inside a
+  sentence only when that one sentence is longer than the budget. (Before
+  #318's follow-up it was cut wherever the token count ran out, usually
+  mid-sentence.)
     *size* and *overlap* only matter for a document that splits into more than
   3,000 sentence spans (`max_breakpoint_sentences`). On GoWe that document is
   chunked by the `fixed_token` window instead, using the collection's
@@ -68,8 +90,9 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
   `pdf-ingest-scatter.cwl`). On the in-process path no tokenizer is wired for
   semantic collections, so the fallback returns the whole document as one
   chunk, which the embedder then truncates (the same root cause as
-  [#647](#token-budget)). Apart from that fallback, semantic chunks do not
-  overlap.
+  [#647](#token-budget)). The `fixed_token` fallback window does cut
+  mid-sentence; that is a deliberate cost guard and is unchanged. Apart from
+  that fallback, semantic chunks do not overlap.
 - **`semantic_pooled`**: the same class with `pool_sentences=True` and
   distances rounded to 6 decimals. It embeds each sentence once and averages
   the vectors over the window, instead of embedding every window's text. That
@@ -252,10 +275,45 @@ chunks have to fit inside it.
   give different chunks on different backends. A long semantic chunk on the
   in-process path is truncated by the embedder instead of being split. In the
   corpus run, semantic chunks reached 4,080 tokens on GoWe (p50 611, p90 2,125).
-- A related difference ([deep-dive §2.1](ARCHITECTURE-DEEP-DIVE.md#21-chunker-construction-the-five-builders-and-what-615-consolidated)):
-  when a token budget is present, `sentence` and `words` pack up to the budget
-  and ignore *size*. On GoWe they therefore produce chunks close to the model
-  window, not *size* characters.
+- **`sentence` and `words` with a token budget**
+  ([#318](https://github.com/wilke/ragstack/issues/318) P1): *size* is always
+  the size, and the budget is always a cap.
+  - Under the default `size_unit="chars"`, chunks are *size* characters. A
+    chunk over the budget is re-packed at sentence or word boundaries.
+  - Under `size_unit="tokens"`, chunks are *size* tokens. The budget is
+    min(*size*, model window − 16), and that number is used both for packing and
+    for splitting a single over-long sentence or word.
+  - Before #318, a token budget **replaced** *size*. On GoWe and the bulk CLIs,
+    which always resolve a budget, `sentence`/`words` therefore produced chunks
+    close to the model window (about 4,080 tokens for SFR), not *size*
+    characters. That behaviour is removed, not kept. A registry check on
+    2026-10-23 found no production `sentence`/`words` collection, and the
+    chunking study is pinned to its commit.
+  - See [deep-dive §2.1](ARCHITECTURE-DEEP-DIVE.md#21-chunker-construction-the-five-builders-and-what-615-consolidated)
+    for how the builders used to diverge.
+  - The 7-way eval harness, `scripts/eval/chunking_compare_7way.py`, now
+    builds its `sentence`/`words` arms with `size_unit="tokens"` (its old
+    spelling relied on the removed behaviour). It reproduces the committed
+    grids, including the `budget_mode="summed"` arm.
+
+  Where `size_unit` comes from depends on the tool:
+  - **`ingest_shard.py`** (the GoWe worker, which writes into a registry
+    collection) reads it from the collection's `chunk.params` as
+    `"size_unit": "tokens"`, and has no flag, so it cannot contradict the
+    collection. That makes the unit part of the collection's
+    [identity](#a-collection-keeps-its-method-for-life): `chunk_params` is in
+    the chunk descriptor and the `spec_hash`. It is read only for
+    `sentence`/`words`. A bad value fails the shard with a message naming the
+    key. If no unit is recorded, the unit is `chars`.
+  - **`ingest_jsonl.py`** takes `--chunk-size-unit tokens`. When it writes into
+    a registry collection, a flag that contradicts the unit the entry records
+    is refused with exit 2. An entry that records none counts as `chars`.
+  - **`embed_shard.py`** takes `--chunk-size-unit tokens`. It writes an
+    embedding file, not a collection.
+
+  The GoWe workflows do not pass a unit yet. Whether the API accepts
+  `size_unit` in `chunk.params` at create time is a separate change
+  ([#647](https://github.com/wilke/ragstack/issues/647)).
 
 ## Recommendations
 
