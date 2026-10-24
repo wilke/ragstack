@@ -49,6 +49,10 @@ OUTPUT CONTRACT
   ``path`` is unique per record (``PMC123``, ``PMC123#table-2``,
   ``PMC123#table-2-part-3``) because ``JsonlLoader`` derives the document id from
   it and colliding paths overwrite each other.
+* ``--spans-out FILE`` (optional, off by default) — one ``{"pmcid", "spans"}``
+  JSONL row per article record: every element's ``(start, end)`` in that
+  record's ``text`` (:class:`ragstack.ingestion.jats.Span`). Never written into
+  the ``--out`` shard: spans are large and not a filterable field.
 * ``--report FILE`` (alias ``--skip-report``, the flag ``jats-ingest.cwl`` binds)
   — sidecar JSON: per-kind record counts and the full list of
   skipped items (unparseable articles, articles with no prose, units under
@@ -144,12 +148,18 @@ def extract_articles(
     kinds: set[str] | None = None,
     count_tokens=None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    spans: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Convert ``items`` -> ``(records, skipped)``. Pure — no filesystem writes.
 
     Each item's own keys are its manifest row; ``manifest[pmcid]`` (when given)
     fills in underneath, so a self-contained shard needs no corpus manifest.
     ``kinds`` filters emitted records by ``content_type`` (default: all).
+
+    ``spans``, when a list, receives one ``{"pmcid", "spans"}`` row per article
+    that produced an article record (independent of ``kinds``): the element
+    spans of :func:`ragstack.ingestion.jats.article_spans`, offsets into that
+    record's ``text``. The records themselves are unchanged.
     """
     manifest = manifest or {}
     kinds = kinds or set(CONTENT_TYPES)
@@ -160,9 +170,18 @@ def extract_articles(
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})
-        recs, skips = convert_file(item["xml_path"], pmcid, row,
-                                   max_chars, min_unit_chars,
-                                   count_tokens, max_tokens)
+        if spans is None:
+            recs, skips = convert_file(item["xml_path"], pmcid, row,
+                                       max_chars, min_unit_chars,
+                                       count_tokens, max_tokens)
+        else:
+            recs, skips, art_spans = convert_file(item["xml_path"], pmcid, row,
+                                                  max_chars, min_unit_chars,
+                                                  count_tokens, max_tokens,
+                                                  with_spans=True)
+            if art_spans:
+                spans.append({"pmcid": pmcid,
+                              "spans": [s._asdict() for s in art_spans]})
         skipped.extend(skips)
         records.extend(r for r in recs
                        if r["metadata"].get("content_type", "article") in kinds)
@@ -249,10 +268,14 @@ def main(argv=None) -> int:
 
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()}
     count_tokens = _unit_token_counter(args)
+    span_rows: list[dict] | None = [] if args.spans_out else None
     records, skipped = extract_articles(items, manifest, args.max_table_chars,
                                         args.min_unit_chars, kinds,
-                                        count_tokens, args.unit_token_budget)
+                                        count_tokens, args.unit_token_budget,
+                                        spans=span_rows)
     write_jsonl(records, args.out)
+    if span_rows is not None:
+        write_jsonl(span_rows, args.spans_out)
     report = build_report(records, skipped, len(items), args.out)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
@@ -331,6 +354,10 @@ def parse_args(argv=None):
                    help="convert at most N articles (preview)")
     p.add_argument("--kinds", default=",".join(CONTENT_TYPES),
                    help="comma-separated content_type filter")
+    p.add_argument("--spans-out", default=None,
+                   help="also write element spans, one {pmcid, spans} JSONL row "
+                        "per article record (offsets into its text; #318). Off "
+                        "by default; the --out shard is unchanged either way")
     p.add_argument("--max-fail-rate", type=float, default=0.01,
                    help="exit non-zero if more than this fraction of articles fail "
                         "to parse (0 disables)")

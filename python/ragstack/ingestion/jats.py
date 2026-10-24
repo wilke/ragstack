@@ -57,6 +57,14 @@ collection, whose string years make ``{"year": 2021}`` match 129,248 chunks on
 the Elasticsearch leg and **0** on the Qdrant leg — the same request, two
 answers, no error.
 
+ELEMENT SPANS (#318 P3). :func:`article_spans` returns the article record's
+``text`` together with a :class:`Span` per abstract / ``<sec>`` / heading / block
+element, offsets into that text accumulated during the very walk that builds it
+(``article_prose`` and ``section_text`` are thin wrappers over the same walk, so
+the text cannot drift from the spans). Untitled sections and body-lead paragraphs
+are first-class spans — the section boundaries the flat text loses. Spans are
+opt-in (``article_records(..., with_spans=True)``) and never enter a record.
+
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
 carries no lxml guarantee. The one non-stdlib import is
 ``ragstack.metadata_schema``, which is a dependency-free leaf ON PURPOSE:
@@ -73,6 +81,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Literal, NamedTuple, overload
 from xml.etree import ElementTree as ET
 
 from ragstack.metadata_schema import coerce_year
@@ -387,45 +396,188 @@ def fig_units(
 
 # ----------------------------------------------------------------------- body
 
+#: The separator every prose level joins its non-empty parts with. Span offsets
+#: are accumulated from ``len(part)`` and ``len(_SEP)``, never searched for.
+_SEP = "\n\n"
+
+
+class Span(NamedTuple):
+    """One XML element's place in the article record text (#318 P3, #688 §5).
+
+    ``start``/``end`` are offsets into the article record's ``text`` — the
+    ``"\\n\\n".join(abstract, body)`` string :func:`article_records` emits — so
+    ``text[start:end]`` is exactly the element's normalised contribution:
+
+    * ``kind="abstract"`` — ``clean_itext(abstract)``; one leaf span, depth 0.
+    * ``kind="sec"`` — ``section_text(sec, depth)``: the markdown heading (if the
+      ``<sec>`` has a non-empty title) plus every child. A container: it covers
+      its children's spans.
+    * ``kind="title"`` — the ``"## Title"`` heading line of its ``<sec>``.
+    * any other ``kind`` — the element tag of a block child of ``<body>``/``<sec>``
+      (``"p"``, ``"list"``, ``"disp-quote"``, ``"label"``…): ``clean_itext(el)``.
+
+    ``path`` is a structural path, 1-based among same-tag siblings and counting
+    EVERY sibling of that tag (lifted floats and empty elements included), so it
+    is XPath-shaped and stable without XML ids: ``body/sec[2]/sec[1]/p[3]``
+    resolves with ``root.find(".//body").find("sec[2]/sec[1]/p[3]")``. Its first
+    step names the element :func:`article_prose` selected: ``abstract`` is
+    ``root.find(".//article-meta//abstract")``, ``body`` is ``root.find(".//body")``.
+
+    ``depth`` is the number of enclosing ``<sec>`` elements: the abstract,
+    body-lead paragraphs and top-level ``<sec>`` are 0 (so a ``sec`` span's
+    depth is the ``depth`` argument :func:`section_text` was called with, and its
+    heading level is ``min(depth + 2, 6)``); a ``<p>`` or ``<title>`` inside a
+    top-level ``<sec>`` is 1. The depth-0 spans therefore partition the record.
+
+    ``title`` is the section title text (no ``#``) on ``sec`` and ``title``
+    spans, ``None`` when the ``<sec>`` has no title or it normalises to empty —
+    an untitled section is a first-class span, not a gap. ``None`` on leaves.
+
+    EMPTY ELEMENTS GET NO SPAN. An element whose normalised text is ``""`` is
+    dropped by the ``if p`` join filter and contributes nothing to the text, so
+    there is no offset it could honestly own; every emitted span has
+    ``start < end``. Lifted floats (``<table-wrap>``/``<fig>``) get no span
+    either — they are separate unit records.
+
+    ``._asdict()`` gives the JSON row shape ``scripts/jats_extract.py
+    --spans-out`` writes.
+    """
+
+    kind: str
+    path: str
+    xml_id: str | None
+    start: int
+    end: int
+    title: str | None
+    depth: int
+
+
+def _section_walk(sec, depth: int, path: str, base: int,
+                  spans: list[Span] | None) -> str:
+    """:func:`section_text`'s single implementation, optionally recording spans.
+
+    ``base`` is the offset of this section's first character in the final text;
+    child offsets are accumulated from the same ``len``s the ``_SEP`` join
+    produces, so they are exact by construction. ``spans is None`` builds text
+    only (the default ingest path pays no span bookkeeping).
+    """
+    parts: list[str] = []
+    pos = base  # where the next non-empty part would start, before its separator
+
+    def take(text: str) -> int:
+        """Append a non-empty part; return its start offset."""
+        nonlocal pos
+        start = pos + (len(_SEP) if parts else 0)
+        parts.append(text)
+        pos = start + len(text)
+        return start
+
+    def next_start() -> int:
+        return pos + (len(_SEP) if parts else 0)
+
+    first = len(spans) if spans is not None else 0
+    head_title: str | None = None
+    title = sec.find("title")
+    if title is not None:
+        t = itext(title)
+        if t:
+            head_title = t
+            heading = ("#" * min(depth + 2, 6)) + " " + t
+            s = take(heading)
+            if spans is not None:
+                spans.append(Span("title", f"{path}/title[1]", title.get("id"),
+                                  s, s + len(heading), t, depth + 1))
+    seen: dict[str, int] = {}
+    for child in sec:
+        n = seen[child.tag] = seen.get(child.tag, 0) + 1
+        if child.tag == "title":
+            continue
+        if child.tag in LIFT:
+            continue
+        cpath = f"{path}/{child.tag}[{n}]"
+        if child.tag == "sec":
+            text = _section_walk(child, depth + 1, cpath, next_start(), spans)
+        else:
+            text = clean_itext(child)   # prunes floats nested inside <p>
+            if text and spans is not None:
+                s = next_start()
+                spans.append(Span(child.tag, cpath, child.get("id"),
+                                  s, s + len(text), None, depth + 1))
+        if text:          # the ``if p`` filter: an empty part takes no separator
+            take(text)
+    out = _SEP.join(parts)
+    if out and spans is not None:
+        # Pre-order: the container precedes its children (same start, larger end).
+        spans.insert(first, Span("sec", path, sec.get("id"), base, base + len(out),
+                                 head_title, depth))
+    return out
+
+
 def section_text(sec, depth: int = 0) -> str:
     """Body text for one ``<sec>``, with tables/figures removed and titles kept.
 
     Section titles are retained inline: the XML carries 952 labelled sections
     across 50 articles (median 20/article), which is chunk-boundary information
-    that does not survive PDF extraction at all.
+    that does not survive PDF extraction at all. (An UNTITLED ``<sec>`` leaves
+    no heading — its boundary survives only in :func:`article_spans`.)
     """
-    parts: list[str] = []
-    title = sec.find("title")
-    if title is not None:
-        t = itext(title)
-        if t:
-            parts.append(("#" * min(depth + 2, 6)) + " " + t)
-    for child in sec:
-        if child.tag == "title":
-            continue
+    return _section_walk(sec, depth, "sec", 0, None)
+
+
+def _prose_walk(root, spans: list[Span] | None) -> tuple[str, str]:
+    """:func:`article_prose`'s single implementation, optionally recording spans
+    with offsets into the RECORD text ``"\\n\\n".join(x for x in (abstract, body) if x)``."""
+    abst = root.find(".//article-meta//abstract")
+    abstract = clean_itext(abst)
+    if abstract and spans is not None:
+        spans.append(Span("abstract", "abstract", abst.get("id"),
+                          0, len(abstract), None, 0))
+    body = root.find(".//body")
+    if body is None:
+        return abstract, ""
+    # The body starts after the abstract and its separator — or at 0 when the
+    # abstract is empty and the record join's ``if x`` filter drops it.
+    pos = len(abstract) + len(_SEP) if abstract else 0
+    chunks: list[str] = []
+    seen: dict[str, int] = {}
+    for child in body:
+        n = seen[child.tag] = seen.get(child.tag, 0) + 1
         if child.tag in LIFT:
             continue
+        start = pos + (len(_SEP) if chunks else 0)
+        cpath = f"body/{child.tag}[{n}]"
         if child.tag == "sec":
-            parts.append(section_text(child, depth + 1))
+            text = _section_walk(child, 0, cpath, start, spans)
         else:
-            parts.append(clean_itext(child))   # prunes floats nested inside <p>
-    return "\n\n".join(p for p in parts if p)
+            text = clean_itext(child)
+            if text and spans is not None:
+                spans.append(Span(child.tag, cpath, child.get("id"),
+                                  start, start + len(text), None, 0))
+        if text:
+            chunks.append(text)
+            pos = start + len(text)
+    return abstract, _SEP.join(chunks)
 
 
 def article_prose(root) -> tuple[str, str]:
     """``(abstract, body_text)`` with floats lifted out."""
-    abst = root.find(".//article-meta//abstract")
-    abstract = clean_itext(abst)
-    body = root.find(".//body")
-    if body is None:
-        return abstract, ""
-    chunks: list[str] = []
-    for child in body:
-        if child.tag in LIFT:
-            continue
-        chunks.append(section_text(child) if child.tag == "sec"
-                      else clean_itext(child))
-    return abstract, "\n\n".join(c for c in chunks if c)
+    return _prose_walk(root, None)
+
+
+def article_spans(root) -> tuple[str, list[Span]]:
+    """``(prose_text, spans)``: the article record's text and every element's span.
+
+    ``prose_text`` is byte-identical to the ``text`` of the ``content_type=
+    "article"`` record :func:`article_records` builds (``""`` when the article
+    has no prose and no record is emitted). ``spans`` is in document pre-order
+    (sorted by ``start``; a container before its first child) — see
+    :class:`Span` for the fields and the empty-element policy. Offsets are
+    accumulated during the same walk that builds the text, never recovered by
+    string search, so repeated text cannot alias.
+    """
+    spans: list[Span] = []
+    abstract, body = _prose_walk(root, spans)
+    return _SEP.join(x for x in (abstract, body) if x), spans
 
 
 def collect_floats(root) -> tuple[list, list]:
@@ -510,6 +662,22 @@ def merge_manifest(meta: dict, pmcid: str, manifest: dict | None) -> dict:
 
 # -------------------------------------------------------------------- records
 
+_Records = tuple[list[dict], list[dict]]
+_RecordsWithSpans = tuple[list[dict], list[dict], list[Span]]
+
+
+@overload
+def article_records(
+    root, pmcid: str, manifest: dict | None = ..., max_chars: int = ...,
+    min_unit_chars: int = ..., count_tokens: TokenCounter | None = ...,
+    max_tokens: int = ..., *, with_spans: Literal[False] = ...,
+) -> _Records: ...
+@overload
+def article_records(
+    root, pmcid: str, manifest: dict | None = ..., max_chars: int = ...,
+    min_unit_chars: int = ..., count_tokens: TokenCounter | None = ...,
+    max_tokens: int = ..., *, with_spans: Literal[True],
+) -> _RecordsWithSpans: ...
 def article_records(
     root,
     pmcid: str,
@@ -518,16 +686,26 @@ def article_records(
     min_unit_chars: int = DEFAULT_MIN_UNIT_CHARS,
     count_tokens: TokenCounter | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-) -> tuple[list[dict], list[dict]]:
+    *,
+    with_spans: bool = False,
+) -> _Records | _RecordsWithSpans:
     """One parsed JATS ``root`` -> ``(records, skipped)``.
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts; ``skipped``
     are ``{"path", "pmcid", "kind", "reason"}`` dicts for units below
     ``min_unit_chars`` (``kind="unit"``) and for an article with no prose at all
     (``kind="prose"``). Nothing is dropped silently. Pure — no filesystem access.
+
+    ``with_spans=True`` returns a THIRD element: the article record's
+    :class:`Span` list (offsets into that record's ``text``; ``[]`` when no
+    article record is emitted). It is a parallel return, not a record key, on
+    purpose: spans are large and are not a filterable field, so they must never
+    reach ``metadata`` or the JSONL shard — the record dicts are identical
+    either way.
     """
     meta = merge_manifest(front_meta(root), pmcid, manifest)
-    abstract, body = article_prose(root)
+    spans: list[Span] | None = [] if with_spans else None
+    abstract, body = _prose_walk(root, spans)
     tws, figs = collect_floats(root)
     records: list[dict] = []
     skipped: list[dict] = []
@@ -562,9 +740,25 @@ def article_records(
            for s, t, href in fig_units(fig, i, max_chars, count_tokens, max_tokens)),
           "figure")
 
+    if spans is not None:
+        return records, skipped, (spans if prose.strip() else [])
     return records, skipped
 
 
+@overload
+def convert_file(
+    xml_path: str | Path, pmcid: str | None = ..., manifest: dict | None = ...,
+    max_chars: int = ..., min_unit_chars: int = ...,
+    count_tokens: TokenCounter | None = ..., max_tokens: int = ...,
+    *, with_spans: Literal[False] = ...,
+) -> _Records: ...
+@overload
+def convert_file(
+    xml_path: str | Path, pmcid: str | None = ..., manifest: dict | None = ...,
+    max_chars: int = ..., min_unit_chars: int = ...,
+    count_tokens: TokenCounter | None = ..., max_tokens: int = ...,
+    *, with_spans: Literal[True],
+) -> _RecordsWithSpans: ...
 def convert_file(
     xml_path: str | Path,
     pmcid: str | None = None,
@@ -573,23 +767,32 @@ def convert_file(
     min_unit_chars: int = DEFAULT_MIN_UNIT_CHARS,
     count_tokens: TokenCounter | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-) -> tuple[list[dict], list[dict]]:
+    *,
+    with_spans: bool = False,
+) -> _Records | _RecordsWithSpans:
     """Read + convert one JATS file -> ``(records, skipped)``.
 
     An unparseable / missing / unreadable file yields ``([], [entry])`` with
     ``kind="article"`` — one bad file is reported, never raised, so it cannot sink
     a shard. ``pmcid`` defaults to the filename stem up to the first ``.``
-    (``PMC123.1.xml`` -> ``PMC123``).
+    (``PMC123.1.xml`` -> ``PMC123``). ``with_spans`` is as in
+    :func:`article_records` (a failed file's spans are ``[]``).
     """
     path = Path(xml_path)
     pmcid = pmcid or path.name.split(".")[0]
+    failed: list[dict] | None = None
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as e:
-        return [], [{"path": str(path), "pmcid": pmcid, "kind": "article",
-                     "reason": f"parse error: {e}"}]
+        failed = [{"path": str(path), "pmcid": pmcid, "kind": "article",
+                   "reason": f"parse error: {e}"}]
     except Exception as e:  # noqa: BLE001 - missing/unreadable file must not raise
-        return [], [{"path": str(path), "pmcid": pmcid, "kind": "article",
-                     "reason": f"{type(e).__name__}: {e}"}]
+        failed = [{"path": str(path), "pmcid": pmcid, "kind": "article",
+                   "reason": f"{type(e).__name__}: {e}"}]
+    if failed is not None:
+        return ([], failed, []) if with_spans else ([], failed)
+    if with_spans:
+        return article_records(root, pmcid, manifest, max_chars, min_unit_chars,
+                               count_tokens, max_tokens, with_spans=True)
     return article_records(root, pmcid, manifest, max_chars, min_unit_chars,
                            count_tokens, max_tokens)

@@ -234,6 +234,7 @@ onnxruntime), marker-pdf 2.0.0 (torch), s2orc-doc2json (no push since 2024-04), 
    title or None, depth)`, built in the same pass as `article_prose`. The abstract, body-lead
    paragraphs and every untitled `<sec>` get their own span. The text itself can stay
    byte-identical, so existing JATS collections are unaffected.
+   **Done** (#318 P3): `jats.article_spans()` / `article_records(..., with_spans=True)`; the record text is unchanged.
 2. **A `section` method in `ingestion/chunkers.py`** (owner decision: section-aware code lives in
    the chunker module), about 150–200 lines with metadata. A section that fits the budget is one
    chunk; an oversize section is windowed by `FixedTokenWindowChunker`. Never merge across
