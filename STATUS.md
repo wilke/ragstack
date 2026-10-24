@@ -44,7 +44,7 @@ already made. This file remains the long-form project history.
 **Released; deployed on `dev` only (2026-10-24 02:57Z): tools tag `v1.6.16` → `ragstack-tools-v1.6.16-b1.sif`
 (in `/scout/containers/ragstack`), server tag `v1.6.17` → `ragstack-server-v1.6.17-b1.sif` (`update-code dev`
 job 01M5NXF7QZH2DA6VXHNC6J56EB; legs A–F green, GoWe receipts carry the new image and `punkt-abbrev-v1`;
-[handoff + results](docs/runbooks/handoff-2026-10-24-chunking-release-dev.md)). Other tenants stay on v1.6.14 until a soak and the #811 plan.** The chunking release
+[handoff + results](docs/runbooks/handoff-2026-10-24-chunking-release-dev.md)). Other tenants stay on v1.6.14 until a soak and the #811 plan. The #811 rehearsal ran on the OA subset: re-ingest is an idempotent replace by doc_id on both fixed_token and sentence collections (delta 0 twice); `oa-dev` grew to 1,000 articles / 41,993 chunks.** The chunking release
 below, plus [#813](https://github.com/wilke/ragstack/pull/813) and
 [#816](https://github.com/wilke/ragstack/pull/816). **`v1.6.15` is a tools tag with no image**:
 its image's post-build check found no `nltk` — and neither deployed image had it
