@@ -32,7 +32,12 @@
 #                          credentials, and this server is not it. See
 #                          conformance/run_ctl_local.sh.
 #   AUTHZ_CONF_CREATE_GATE 1 → also run the A3 create-gate phase (second boot)
-#   AUTHZ_CONF_GOWE_GUARD  1 → also run the #609 chunk-capability phase (third boot)
+#   AUTHZ_CONF_GOWE_GUARD  1 → also run the #609 chunk-capability phase (third
+#                          boot, INGEST_BACKEND=gowe, from unstamped scratch
+#                          copies of the registered CWL — #810)
+#   Both phase knobs default to 0 (a bare run of this script is one boot);
+#   `make test-conformance-keyed` sets both to 1, which is why that target
+#   always runs all three boots.
 #   PYTHON                 interpreter (default `python`)
 # Extra args are forwarded to pytest: `conformance/run_authz_keyed.sh -v -k admin`.
 set -euo pipefail
@@ -309,18 +314,96 @@ fi
 # the guard ever stopped firing, this phase must fail rather than quietly submit
 # to something. GOWE_WORKFLOW_CWL is the repo's own scatter workflow — read at
 # boot only, so it does not need a runtime.
+#
+# The workflows are boot-registered from UNSTAMPED scratch copies (#810). The
+# committed tree is stamped (every dockerPull names ragstack-tools-<v>-b<N>.sif),
+# and a gowe boot holds every stamped name it registers to the image behind it
+# (ADR-0010 decision 7): with GOWE_IMAGE_DIRS unset it REFUSES ("identity check
+# NOT RUN"), and on CI or any host without the release store there is no image
+# to verify against. Neither the check nor the committed CWL is touched: the
+# copies below name the bare ragstack-worker.sif — exactly what an unstamped
+# tree on a dev box names — so the boot reports "unstamped tree, identity check
+# skipped" through the same verify_cwl_file call production makes. The set of
+# documents comes from deps._registered_cwl_paths, so a registrar added there
+# is copied too instead of silently reaching the stamped original. No receipt
+# is written beside the copies, and the helper re-verifies each copy as
+# `unstamped` (and the set as one unstamped tree) before the boot is attempted.
+# This phase proves the #609 chunk-capability guard, nothing about images; the
+# image check's own refusal is held by python/tests/unit/test_tool_image_identity.py.
 if [[ "${AUTHZ_CONF_GOWE_GUARD:-0}" == "1" ]]; then
   GOWE_PORT=$((PORT + 2))
   GOWE_LOG="$WORK/gowe.log"
+  UNSTAMPED_CWL_DIR="$WORK/cwl-unstamped"
+  mkdir -p "$UNSTAMPED_CWL_DIR"
+  echo "[authz-conf] writing unstamped scratch copies of the registered workflows" \
+       "to $UNSTAMPED_CWL_DIR (#810) ..."
+  # Prints `SETTING=<copy>` lines, one per registered document.
+  UNSTAMPED_ENV="$(GOWE_WORKFLOW_CWL="$HERE/../cwl/pdf-ingest-scatter.cwl" \
+    "$PYTHON" - "$UNSTAMPED_CWL_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+from ragstack.api.deps import _registered_cwl_paths
+from ragstack.tool_image import (
+    DEFAULT_TOOL_IMAGE,
+    RECEIPT_BASENAME,
+    STAMPED_IMAGE_RE,
+    check_tree_state,
+    image_sites,
+    verify_cwl_file,
+)
+
+
+def die(msg: str) -> None:
+    print(f"[authz-conf] ABORT (#810 unstamped copies): {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+dst = Path(sys.argv[1])
+docs: dict[str, str] = {}
+for setting, src in _registered_cwl_paths():
+    if not src:
+        die(f"{setting} resolved to no path")
+    src_path = Path(src).expanduser().resolve()
+    text = src_path.read_text(encoding="utf-8")
+    names = {v for _n, _f, v in image_sites(text)}
+    stamped = sorted(v for v in names if STAMPED_IMAGE_RE.match(v))
+    if names - set(stamped) - {DEFAULT_TOOL_IMAGE}:
+        die(f"{src_path} names an image that is neither stamped nor default: {sorted(names)}")
+    for name in stamped:
+        text = text.replace(name, DEFAULT_TOOL_IMAGE)
+    out = dst / src_path.name
+    if out.exists():
+        die(f"two registrars share the basename {src_path.name}")
+    out.write_text(text, encoding="utf-8")
+    docs[str(out)] = text
+    print(f"{setting}={out}")
+if (dst / RECEIPT_BASENAME).exists():
+    die(f"a receipt exists beside the copies: {dst / RECEIPT_BASENAME}")
+state, _name, problems = check_tree_state(docs)
+if state != "unstamped" or problems:
+    die(f"the copies are not one unstamped tree: {state} {problems}")
+for path in docs:
+    verdict = verify_cwl_file(path, [])["verdict"]
+    if verdict["state"] != "unstamped" or verdict["problems"]:
+        die(f"{path} does not verify as unstamped: {verdict}")
+PY
+)" || exit 1
+  echo "$UNSTAMPED_ENV" | sed 's/^/[authz-conf]   /'
   echo "[authz-conf] booting a third API on $HOST:$GOWE_PORT with" \
        "INGEST_BACKEND=gowe (#609) ..."
+  # GOWE_IMAGE_DIRS is unset on purpose: a caller's value must not change what
+  # this boot checks, and an unstamped tree has nothing to check it against.
+  # shellcheck disable=SC2046  # word-split SETTING=path pairs into env args
+  env -u GOWE_IMAGE_DIRS $(echo "$UNSTAMPED_ENV") \
   INGEST_BACKEND=gowe \
   GOWE_URL="http://127.0.0.1:1" \
-  GOWE_WORKFLOW_CWL="$HERE/../cwl/pdf-ingest-scatter.cwl" \
     "$PYTHON" -m uvicorn ragstack.api.main:app --host "$HOST" --port "$GOWE_PORT" \
     >"$GOWE_LOG" 2>&1 &
   GOWE_PID=$!
   wait_for_health "$GOWE_PORT" "$GOWE_LOG" authz-conf-gowe "$GOWE_PID"
+  # Show WHY it booted: one "unstamped tree, identity check skipped" per copy.
+  grep "tool image check" "$GOWE_LOG" | redact || true
   set +e
   RAGSTACK_BASE_URL="http://$HOST:$GOWE_PORT" RAGSTACK_IMPL=python \
   RAGSTACK_CONFORMANCE_INGEST_BACKEND=gowe \
