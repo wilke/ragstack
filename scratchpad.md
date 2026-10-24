@@ -1,5 +1,43 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-10-23 — #318 / #647: chunkers respect max_tokens, keep sentences whole, Punkt abbreviations, JATS spans
+
+Four Opus subagents, one worktree each, Fable planning and review; every PR verified by an
+independent suite run plus probes that were not the PR's own tests. Merged in order
+#803 → #802 → #805 → #804 (`d5081ee`, `a613f10`, `77afc64`, `94553a2`).
+
+Decisions and why:
+- **P1 gating reversed mid-flight.** The issue asked to keep the window-fill behaviour
+  byte-identical and gate the fix behind an opt-in. Once #805 made the in-process path
+  resolve `max_tokens` for every method, that legacy would have turned every in-process
+  `sentence`/`words` collection from 512 chars into ~4080 tokens. A read-only registry
+  check found **no** `sentence`/`words` collection in any tenant (clark/dev/elrond/demo
+  sqlite; asm empty; hackathon Postgres unchecked), so the owner chose: chars mean chars,
+  `max_tokens` is a cap at unit boundaries, legacy removed. `chunking_compare_7way.py`
+  was moved to `size_unit="tokens"` so the committed grids still reproduce (16 tests).
+- **`size_unit` is collection identity.** The shard tool reads it from the registry
+  entry (`chunk_params` → `chunk_descriptor()` → `spec_hash`), never from a CLI flag
+  (the #609 rule); create normalises `"chars"` away so `{}` and `{"size_unit":"chars"}`
+  share one hash; `ingest_jsonl` refuses a flag that contradicts the entry.
+- **Refuse, don't degrade, on the API path**: no window → 503 + Retry-After, logged.
+  Bulk tools still fall back to 4096 (#808).
+- **P2 default changed, not opt-in**: v2 goldens generated from tag
+  `exp/regression-v2-163c960`; `generate.py` exits non-zero unless the delta is exactly
+  the one measured twice beforehand (33/50 docs, canonical 0/1/4, 227 −/13 +).
+  Segmentation-cache fingerprint carries `SEGMENTER_VERSION` (found by the P2 agent:
+  without it the "full re-ingest" would have replayed old boundaries from a warm cache).
+
+Review catches worth remembering: my own review premise was wrong once (I said
+`ingest_jsonl` had no registry spec; the agent checked and added the guard anyway);
+agents' fixtures and mine disagreed twice and both times my probe was the one at fault
+(a 900-word sentence is sub-split into words above 2,000 chars; an embedded repeat is not
+an exact-match leaf). Two subagents collided in the shared scratchpad (PR body swapped,
+restored from GitHub edit history) → per-agent subdirectories from now on.
+
+Not done here, tracked: #806–#811. #811 (re-ingest of every sentence/semantic collection)
+is the production migration and needs its own plan per tenant before the next release.
+
+
 ## Session 2026-08-07 (evening) — JATS/OA ingest plane prototype (#301)
 
 Built and proven end-to-end on the DEV tenant against the live `/rag/oa` harvest

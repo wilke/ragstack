@@ -2,7 +2,7 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-10-22
+**Last updated:** 2026-10-23
 **Deployed:** seven tenants, image mode, all on server tag
 [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**): the API
 from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools image
@@ -40,6 +40,27 @@ it as documentation. The upgrade procedure is
 current-state snapshot: the open PR stack, the chunking study's stopped confirmation run, the
 one human task that is blocking, live infrastructure, and the failures this line of work
 already made. This file remains the long-form project history.
+
+**Unreleased on `main` (2026-10-23, not yet in any server/tools image) — chunking correctness,
+issues #318 and #647, PRs #803 → #802 → #805 → #804, each Fable-reviewed with an independent
+suite run and probes.** (1) **Every chunker respects `max_tokens` on every entry point**
+(#805): one factory, `chunker_config.resolve_chunk_sizing`, feeds the bulk tools and both API
+builders; the in-process path, which capped nothing but `fixed_token`, now caps every method
+and answers **503** (not a silent 4096 window) when neither `CHUNK_MAX_TOKENS` nor the
+collection endpoint's `/v1/models` yields a window. (2) **`chunk_size` is honoured on the
+token path** (#802): chars mean chars; `max_tokens` is a cap enforced at sentence/word
+boundaries (`_cap_unit_range`, also used by `SemanticChunker`, which no longer cuts
+mid-sentence); `size_unit="tokens"` is the opt-in token budget; `fixed_token` wider than the
+window is refused; `size_unit` is collection identity (registry `chunk_params` → `spec_hash`).
+No production collection is `sentence`/`words`, so nothing deployed changes shape.
+(3) **Punkt is seeded with ~130 biomedical abbreviations** (#804): `SEGMENTER_VERSION =
+"punkt-abbrev-v1"` is in every receipt's provenance and every segmentation-cache key; the
+regression goldens moved to **`/rag/snapshots/regression/v2`** (v1 untouched).
+**Migration owed: every `sentence` / `semantic` / `semantic_pooled` collection needs a full
+re-ingest once this ships — [#811](https://github.com/wilke/ragstack/issues/811)** (clark 1,
+dev 2, hackathon unchecked). (4) **`jats.article_spans()`** (#803) returns element/section
+spans over the article record text, byte-identical text, untitled sections first-class —
+the prerequisite for the planned `section` chunk method (#688 §5). Follow-ups: #806–#810.
 
 <details><summary>Historical header (v0.15.0 era, kept for the release narrative below)</summary>
 
