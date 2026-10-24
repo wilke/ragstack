@@ -48,7 +48,7 @@ From: python:3.12-slim-bookworm
 # CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
 # `/v1/embeddings`); none of them run a model locally, so torch/CUDA are
 # deliberately NOT installed. Deps are the ragstack package + its
-# [vector,pdf,text,tokenization,graph,postgres] extras:
+# [vector,pdf,text,tokenization,graph,postgres,chunking] extras:
 #   - qdrant-client  (vector store upserts)
 #   - pymupdf        (PDF text extraction — the `pdf` extra / PdfLoader)
 #   - elasticsearch  (BM25 text index)
@@ -65,6 +65,13 @@ From: python:3.12-slim-bookworm
 #                      driver or the resolve raises and the step exits 2. The
 #                      sqlite backend hid this because it uses stdlib sqlite3
 #                      (2026-09-15: every hackathon ingest failed on it; #563).
+#   - nltk           (the `chunking` extra: the Punkt sentence segmenter behind
+#                      the sentence / semantic / semantic_pooled chunkers. No
+#                      data download — PunktParameters is built in code.
+#                      Without it sentence_spans() falls back to the regex
+#                      splitter, a different segmentation from the one the
+#                      study, goldens and dev ran; every image before
+#                      v1.6.15 shipped without it (#815))
 #   - httpx/pydantic/cryptography come in via the base ragstack dependency set.
 # `transformers` does not pull torch (torch is an optional backend); sentencepiece
 # + protobuf are added so slow-path tokenizers still load without torch present.
@@ -148,7 +155,7 @@ EOF
     # this from the day the registry read landed (#263) because
     # SqliteCollectionStore uses stdlib sqlite3 — the gap only shows the first
     # time a tenant on a postgres registry ingests (#563).
-    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres]"
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres,chunking]"
 
     # Tokenizer robustness without torch: some HF slow tokenizers need these.
     python -m pip install sentencepiece protobuf

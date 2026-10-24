@@ -47,7 +47,8 @@ From: python:3.12-slim-bookworm
 # (host path == container path) and runs `--no-home --cleanenv` with the
 # environment passed as APPTAINERENV_* (PR-F §1.2).
 #
-# CPU-ONLY, MODELS NOT BAKED IN — as the tools image: same extras, no torch;
+# CPU-ONLY, MODELS NOT BAKED IN — as the tools image: same extras (including
+# `chunking` = nltk, the Punkt sentence segmenter; #815), no torch;
 # the HF tokenizer comes from a bind-mounted HF_HOME (default /rag/cache).
 #
 # Smoke test:
@@ -92,7 +93,7 @@ EOF
     # The SAME extras as the tools image (ragstack-tools.def explains each one;
     # version bounds live in python/pyproject.toml only). fastapi and
     # uvicorn[standard] are base dependencies of ragstack. torch is absent.
-    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres]"
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres,chunking]"
     python -m pip install sentencepiece protobuf
 
     # Bytecode for the staged tree now: at runtime the image root is read-only,
