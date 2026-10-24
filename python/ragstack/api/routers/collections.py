@@ -55,6 +55,7 @@ from ragstack.api.deps import (
     materialize_config_manifest_for_spec,
     probe_tenant_count,
     rate_limited,
+    size_unit_from_params,
 )
 from ragstack.api.eviction import (
     active_count,
@@ -79,7 +80,7 @@ from ragstack.group_store import get_group_store
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
-from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
@@ -348,6 +349,13 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             400,
             f"unknown chunk method {method!r}; valid: {', '.join(sorted(CHUNK_METHODS))}",
         )
+    # `size_unit` (sentence/words; #318) is collection identity, so a bad value is
+    # refused here rather than at the first ingest. 400 like every other invalid
+    # chunk config (contracts/openapi.yaml), via the same check ingest runs.
+    try:
+        size_unit_from_params(method, chunk.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     if method in SEMANTIC_METHODS:
         for key, value in (chunk.params or {}).items():
             bounds = SEMANTIC_PARAM_BOUNDS.get(key)
@@ -384,6 +392,23 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
                 f"chunk overlap ({overlap}) must be smaller than the chunk size "
                 f"({effective}); otherwise chunking never advances",
             )
+
+
+def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
+    """Drop ``size_unit`` when it equals the default (``chars``).
+
+    ``chunk_params`` feeds ``chunk_descriptor()`` -> ``spec_hash`` -> the physical
+    name, so ``{}`` and ``{"size_unit": "chars"}`` would content-address the SAME
+    chunking to two stores. Persisting only the non-default unit keeps every
+    existing collection's hash unchanged and lets the default never fork the
+    namespace. Called after :func:`_validate_chunk`, which has already refused a
+    ``size_unit`` on a method that has no such choice.
+    """
+    params = dict(chunk.params or {})
+    if params.get("size_unit") == DEFAULT_SIZE_UNIT:
+        del params["size_unit"]
+        return chunk.model_copy(update={"params": params})
+    return chunk
 
 
 def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
@@ -599,7 +624,7 @@ async def create_collection(
     # slots as empty strings, which would otherwise split them).
     if body.chunk is not None:
         _validate_chunk(body.chunk)
-        chunk = body.chunk
+        chunk = _normalise_chunk(body.chunk)
     else:
         # settings.chunk_method — `fixed_token` unless CHUNK_METHOD says otherwise
         # (owner decision 2026-10-06), or `fixed` when that unconfigured default

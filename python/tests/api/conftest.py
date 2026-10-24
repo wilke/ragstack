@@ -29,6 +29,7 @@ from ragstack.quota import TenantQuota
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.rewriting.rewriters import PassthroughRewriter
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
+from tests.unit.offline_chunk_sizing import offline_chunk_sizing  # noqa: F401 - autouse (#647)
 
 #: The id of the conftest's settings-derived (legacy shared-surface) entry —
 #: its physical collection name. `default` is the POINTER at it, never an entry

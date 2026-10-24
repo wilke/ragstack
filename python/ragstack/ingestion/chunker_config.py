@@ -1,8 +1,9 @@
-"""Shared chunker construction for the bulk ingesters.
+"""Shared chunker construction — the bulk ingesters AND the API.
 
-``scripts/ingest_jsonl.py``, ``scripts/ingest_shard.py`` and
-``scripts/embed_shard.py`` all need to turn a chunk-method + size/overlap +
-embedding-model into a ready chunker with its token counter and per-chunk token
+``scripts/ingest_jsonl.py``, ``scripts/ingest_shard.py``,
+``scripts/embed_shard.py`` and the API's in-process builders (``api/deps.py``
+``_chunker_for`` / ``_build_chunker``, since #647) all need to turn a
+chunk-method + size/overlap + embedding-model into a ready chunker with its token counter and per-chunk token
 budget resolved. That wiring is subtle — the
 ``fixed_token`` sliding window *requires* the HF offset tokenizer, and an
 hf/endpoint backend without a model cannot be built at all — so it lives here
@@ -20,10 +21,12 @@ the segmentation-cache fingerprint).
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable, Collection
 
 from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT, SIZE_UNITS, make_chunker
 from ragstack.ingestion.tokenization import (
+    HFTokenCounter,
     TokenCounter,
     make_token_counter,
     resolve_max_tokens,
@@ -184,6 +187,132 @@ def resolve_token_backend(
     return backend
 
 
+#: ``resolve_max_tokens``'s ``default`` when the caller wants to KNOW that no
+#: window was found. Every budget it returns on success (and every explicit one) is
+#: clamped to ``>= 1``, so ``0`` cannot be confused with a detected window.
+_UNDETECTED_WINDOW = 0
+
+#: The budget a non-strict build falls back to when nothing reports a window —
+#: ``resolve_max_tokens``'s own default, kept for the bulk tools' behaviour.
+_FALLBACK_BUDGET = 4096
+
+
+class ModelWindowUnavailable(RuntimeError):
+    """No per-chunk token budget could be determined, and the caller refused to guess.
+
+    A dependency failure, not a client error: no change to the request would fix
+    it. So it is a ``RuntimeError`` (like ``TokenCounterUnavailable``), never a
+    ``ValueError`` — the ingest router maps ``ValueError`` to 400, and maps this
+    to 503 explicitly. ``transient`` is True when an endpoint IS configured but did
+    not report a window (down, slow, malformed: worth a ``Retry-After``), False
+    when there is none to ask (an operator has to act).
+
+    The message deliberately names no endpoint URL: it crosses the API boundary,
+    and the URL is an internal address — the operator finds it in the WARNING
+    ``resolve_max_tokens`` logs just before.
+    """
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+#: Real HF token counters, one per model, for the life of the process.
+#:
+#: ``make_token_counter("hf", ...)`` builds a fresh :class:`HFTokenCounter` and
+#: force-loads ``AutoTokenizer.from_pretrained`` every call, so the API's
+#: per-collection path (one build per ingest request) would re-read the tokenizer
+#: from disk every time. Only SUCCESSES are cached — a load failure may be
+#: transient (Hub/NFS hiccup) and must be retried — and only real
+#: ``HFTokenCounter`` instances, so a test's fake counter can never leak into a
+#: later build. Sharing one tokenizer across threads is safe for the calls the
+#: chunkers make (``encode``/``__call__`` without changing truncation or padding,
+#: which is the only state the fast tokenizer mutates).
+_HF_COUNTERS: dict[str, TokenCounter] = {}
+_HF_COUNTERS_LOCK = threading.Lock()
+
+
+def cached_token_counter(
+    backend: str, *, model: str | None, base_url: str | None, api_key: str | None,
+) -> TokenCounter:
+    """:func:`make_token_counter`, with the ``hf`` backend cached per model."""
+    if backend != "hf" or not model:
+        return make_token_counter(backend, model=model, base_url=base_url, api_key=api_key)
+    hit = _HF_COUNTERS.get(model)
+    if hit is not None:
+        return hit
+    with _HF_COUNTERS_LOCK:
+        hit = _HF_COUNTERS.get(model)
+        if hit is not None:
+            return hit
+        counter = make_token_counter(backend, model=model, base_url=base_url, api_key=api_key)
+        if isinstance(counter, HFTokenCounter):
+            _HF_COUNTERS[model] = counter
+        return counter
+
+
+def clear_token_counter_cache() -> None:
+    """Drop every cached HF counter (tests; a tokenizer swapped on disk)."""
+    with _HF_COUNTERS_LOCK:
+        _HF_COUNTERS.clear()
+
+
+def resolve_chunk_sizing(
+    method: str,
+    *,
+    model: str | None,
+    token_backend: str,
+    max_tokens: int | None,
+    base_url: str | None,
+    api_key: str | None,
+    warn: Callable[[str], None],
+    require_window: bool = False,
+) -> tuple[TokenCounter, int]:
+    """THE place a chunk spec's ``(token_counter, max_tokens)`` is decided.
+
+    Every builder — the bulk tools via :func:`build_chunker`, the API's
+    per-collection and server-default chunkers — resolves through here, so one
+    collection spec cannot be sized two ways (#647).
+
+    * counter: ``hf`` bound to ``model`` for ``fixed_token`` (forced) or when
+      ``token_backend == "hf"``; otherwise the configured backend
+      (:func:`resolve_token_backend` — which refuses rather than degrades).
+    * budget: ``max_tokens`` (the *model window*, an explicit override) minus the
+      specials reserve; else auto-detected from ``{base_url}/v1/models``.
+
+    ``require_window``: when nothing yields a window (no override, endpoint absent,
+    unreachable or reporting no ``max_model_len``) raise
+    :class:`ModelWindowUnavailable` instead of falling back to a fixed 4096. The
+    API passes it — a silently assumed window there sizes a whole collection —
+    while the bulk tools keep their historical fallback.
+    """
+    backend = resolve_token_backend(method, token_backend, model, warn)
+    token_counter = cached_token_counter(
+        backend, model=model, base_url=base_url, api_key=api_key
+    )
+    if not require_window:
+        return token_counter, resolve_max_tokens(
+            max_tokens, base_url=base_url, api_key=api_key, default=_FALLBACK_BUDGET
+        )
+    budget = resolve_max_tokens(
+        max_tokens, base_url=base_url, api_key=api_key, default=_UNDETECTED_WINDOW
+    )
+    if budget == _UNDETECTED_WINDOW:
+        where = (
+            "the embedding endpoint did not report the model window (max_model_len "
+            "from GET /v1/models)" if base_url else "no embedding endpoint is configured"
+        )
+        raise ModelWindowUnavailable(
+            f"cannot size chunks for chunk_method={method!r}: {where} and "
+            f"CHUNK_MAX_TOKENS is not set. Refusing to assume a window — a guessed "
+            f"budget would silently re-size every chunk. Fix: set CHUNK_MAX_TOKENS "
+            f"to the embedding model's context window (e.g. its max_model_len), or "
+            f"make the embedding endpoint answer GET /v1/models with max_model_len.",
+            transient=bool(base_url),
+        )
+    return token_counter, budget
+
+
 def build_chunker(
     method: str,
     *,
@@ -203,6 +332,7 @@ def build_chunker(
     max_breakpoint_sentences: int | None = 3000,
     size_unit: str = DEFAULT_SIZE_UNIT,
     on_warn: Callable[[str], None] | None = None,
+    require_window: bool = False,
 ) -> tuple[object, TokenCounter, int]:
     """Construct a chunker with its token counter + budget resolved.
 
@@ -213,13 +343,13 @@ def build_chunker(
     ``(chunker, token_counter, resolved_max_tokens)`` — the counter/budget are
     returned so callers can reuse them without re-deriving. The semantic-only
     breakpoint args are passed straight through to :func:`make_chunker`.
+    ``require_window`` is :func:`resolve_chunk_sizing`'s refusal switch.
     """
     warn = on_warn or (lambda m: print(m, file=sys.stderr))
-    backend = resolve_token_backend(method, token_backend, model, warn)
-    token_counter = make_token_counter(
-        backend, model=model, base_url=base_url, api_key=api_key
+    token_counter, resolved_max = resolve_chunk_sizing(
+        method, model=model, token_backend=token_backend, max_tokens=max_tokens,
+        base_url=base_url, api_key=api_key, warn=warn, require_window=require_window,
     )
-    resolved_max = resolve_max_tokens(max_tokens, base_url=base_url, api_key=api_key)
     chunker = make_chunker(
         method,
         chunk_size=chunk_size,

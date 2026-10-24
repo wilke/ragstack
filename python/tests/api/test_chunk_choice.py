@@ -177,7 +177,8 @@ def test_fixed_token_binds_the_collections_tokenizer(monkeypatch):
         seen.update({"backend": backend, **kw})
         return _Counter()
 
-    monkeypatch.setattr("ragstack.api.deps.make_token_counter", _fake)
+    # The factory (#647) is where the counter is built now, for every method.
+    monkeypatch.setattr("ragstack.ingestion.chunker_config.make_token_counter", _fake)
     c = _chunker_for(_entry("fixed_token", model="acme/embedder"))
     assert isinstance(c, FixedTokenWindowChunker)
     assert seen["backend"] == "hf" and seen["model"] == "acme/embedder"
@@ -333,3 +334,83 @@ async def test_unknown_semantic_params_ride_along(client, _admin):
         },
     )
     assert r.status_code == 201, r.text
+
+
+# --------------------------------------------------------------------------- #
+# size_unit (#318 / #802): validated at create, the same check ingest runs
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["sentence", "words"])
+@pytest.mark.parametrize("unit", ["chars", "tokens"])
+async def test_size_unit_is_accepted_for_sentence_and_words(client, _admin, method, unit):
+    await _register(client)
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": f"su-{method}-{unit}",
+        "chunk": {"method": method, "size": 256, "overlap": 32, "params": {"size_unit": unit}},
+    })
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "unit", "needle"),
+    [
+        ("sentence", "bytes", "must be one of chars, tokens"),
+        ("words", 7, "must be one of"),
+        ("fixed", "tokens", "applies only to sentence, words"),
+        ("fixed", "chars", "applies only to sentence, words"),
+        ("fixed_token", "chars", "applies only to sentence, words"),
+        ("semantic", "tokens", "applies only to sentence, words"),
+    ],
+)
+async def test_bad_size_unit_is_refused_at_create(client, _admin, method, unit, needle):
+    """400, like every other invalid chunk config (contracts/openapi.yaml lists
+    400 "chunk config is invalid" for POST /v1/collections; 422 is reserved for a
+    body that fails the schema, and `params` is free-form there)."""
+    await _register(client)
+    chunk: dict = {"method": method, "params": {"size_unit": unit}}
+    if method not in ("semantic", "semantic_pooled"):
+        chunk |= {"size": 256, "overlap": 32}
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": f"bad-{method}", "chunk": chunk,
+    })
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["sentence", "words"])
+async def test_default_size_unit_is_dropped_so_the_hash_does_not_fork(
+    client, _admin, monkeypatch, tmp_path, method
+):
+    """`{"size_unit": "chars"}` IS the default chunking, so it must content-address
+    to the same physical store as `{}` — chunk_params feed chunk_descriptor ->
+    spec_hash -> the physical name. The key is dropped before the spec is stored;
+    a non-default unit is kept (and so, correctly, forks the name)."""
+    from ragstack.api.collections import CollectionSpec
+
+    f = tmp_path / "libs.json"
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
+    await _register(client)
+    base = {"method": method, "size": 256, "overlap": 32}
+    def create(params):
+        # No explicit id: the physical name is content-addressed over the spec.
+        return client.post("/v1/collections", json={
+            "embedding": "emb-sfr", "chunk": base | ({"params": params} if params else {}),
+        })
+
+    plain = await create({})
+    assert plain.status_code == 201, plain.text
+    plain_name = plain.json()["id"]
+    # Same chunking -> the SAME content address, so it is the existing collection.
+    chars = await create({"size_unit": "chars"})
+    assert chars.status_code == 409 and plain_name in chars.json()["detail"], chars.text
+    tokens = await create({"size_unit": "tokens"})
+    assert tokens.status_code == 201, tokens.text
+    tokens_name = tokens.json()["id"]
+    assert tokens_name != plain_name
+    specs = {d["collection"]: CollectionSpec.model_validate(d) for d in json.loads(f.read_text())}
+    assert specs[plain_name].chunk_params == {}
+    assert specs[tokens_name].chunk_params == {"size_unit": "tokens"}

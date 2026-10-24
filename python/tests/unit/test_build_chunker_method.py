@@ -8,6 +8,7 @@ machinery each method otherwise pulls in."""
 import pytest
 
 from ragstack.api import deps
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 
 
@@ -25,11 +26,14 @@ def _spy_method(monkeypatch, method):
     # and leaves it on `fixed` (Settings.unrecorded_chunk_method).
     monkeypatch.setattr(deps.settings, "_chunk_method_configured", True)
     monkeypatch.setattr(deps.settings, "embedding_model", "some/model")
-    monkeypatch.setattr(deps, "make_chunker", fake_make_chunker)
+    # The API builds through the shared factory (#647); intercept it there.
+    monkeypatch.setattr(chunker_config, "make_chunker", fake_make_chunker)
     # semantic_pooled/semantic build a real embed bridge; neutralise it.
     monkeypatch.setattr(deps, "SyncEmbedBridge", lambda *_a, **_k: object())
-    # fixed_token/token paths build a token counter; neutralise that too.
-    monkeypatch.setattr(deps, "make_token_counter", lambda *_a, **_k: object(), raising=False)
+    # every method builds a token counter; neutralise that too.
+    monkeypatch.setattr(chunker_config, "make_token_counter", lambda *_a, **_k: object())
+    # An explicit window: the build is eager, so make_chunker is reached at once.
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", 1024)
     deps._build_chunker()
     return seen.get("method")
 

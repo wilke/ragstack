@@ -87,12 +87,11 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
   3,000 sentence spans (`max_breakpoint_sentences`). On GoWe that document is
   chunked by the `fixed_token` window instead, using the collection's
   size/overlap or, if it recorded none, the workflow defaults (256/32 in
-  `pdf-ingest-scatter.cwl`). On the in-process path no tokenizer is wired for
-  semantic collections, so the fallback returns the whole document as one
-  chunk, which the embedder then truncates (the same root cause as
-  [#647](#token-budget)). The `fixed_token` fallback window does cut
-  mid-sentence; that is a deliberate cost guard and is unchanged. Apart from
-  that fallback, semantic chunks do not overlap.
+  `pdf-ingest-scatter.cwl`). The in-process path does the same since
+  [#647](#token-budget) (before it, no tokenizer was wired there and the
+  fallback returned the whole document as one chunk). The `fixed_token`
+  fallback window does cut mid-sentence; that is a deliberate cost guard and is
+  unchanged. Apart from that fallback, semantic chunks do not overlap.
 - **`semantic_pooled`**: the same class with `pool_sentences=True` and
   distances rounded to 6 decimals. It embeds each sentence once and averages
   the vectors over the window, instead of embedding every window's text. That
@@ -260,21 +259,26 @@ chunks have to fit inside it.
 
 - **`fixed_token`** is capped by its own window: no chunk exceeds *size*
   tokens.
-- **The in-process default chunker** applies a cap only when
-  `CHUNK_MAX_TOKENS` is set (`Settings.chunk_max_tokens`, default unset). The
-  value is the model window, and the budget is that minus a 16-token reserve
-  (`ingestion/tokenization.py` `resolve_max_tokens`,
-  `DEFAULT_TOKEN_RESERVE`).
-- **The GoWe / bulk path** always caps (`chunker_config.py` `build_chunker`).
-  It uses `--chunk-max-tokens` if given, otherwise the endpoint's
-  `max_model_len` minus 16; for SFR-Embedding-Mistral that is 4,080 tokens.
-- **Known inconsistency, [#647](https://github.com/wilke/ragstack/issues/647):**
-  the GoWe path caps `semantic` chunks at model window − 16. The in-process
-  per-collection path (`api/deps.py` `_chunker_for`, used by uploads on a
-  `local` tenant) passes no budget at all, so the same spec and document can
-  give different chunks on different backends. A long semantic chunk on the
-  in-process path is truncated by the embedder instead of being split. In the
-  corpus run, semantic chunks reached 4,080 tokens on GoWe (p50 611, p90 2,125).
+- **Every other method, on every path**, is capped at the model window minus
+  a 16-token reserve (`ingestion/tokenization.py` `resolve_max_tokens`,
+  `DEFAULT_TOKEN_RESERVE`); for SFR-Embedding-Mistral that is 4,080 tokens.
+  Since [#647](https://github.com/wilke/ragstack/issues/647) there is one
+  place that decides the counter and the budget, `chunker_config.py`
+  `resolve_chunk_sizing`, and the GoWe/bulk tools, the in-process
+  per-collection path (`api/deps.py` `_chunker_for`) and the in-process default
+  collection (`_build_chunker`) all build through it. The window is
+  `CHUNK_MAX_TOKENS` (`--chunk-max-tokens` on the CLIs) when set, otherwise the
+  `max_model_len` the collection's own embedding endpoint reports at
+  `GET /v1/models`; tokens are counted with the collection model's HF tokenizer
+  unless `CHUNK_TOKEN_COUNTER` says otherwise. The API **refuses** an ingest
+  (503, naming the collection) when neither gives a window, rather than assuming
+  one; the bulk tools still fall back to 4,096. The default collection resolves
+  its budget on the first ingest, not at boot, so a deployment that sets no
+  chunk options still starts without loading a tokenizer or calling the
+  endpoint. Before #647 the in-process path passed no budget at all, so a long
+  semantic chunk there was truncated by the embedder instead of being split (in
+  the corpus run, semantic chunks reached 4,080 tokens on GoWe: p50 611, p90
+  2,125).
 - **`sentence` and `words` with a token budget**
   ([#318](https://github.com/wilke/ragstack/issues/318) P1): *size* is always
   the size, and the budget is always a cap.
@@ -311,9 +315,14 @@ chunks have to fit inside it.
   - **`embed_shard.py`** takes `--chunk-size-unit tokens`. It writes an
     embedding file, not a collection.
 
-  The GoWe workflows do not pass a unit yet. Whether the API accepts
-  `size_unit` in `chunk.params` at create time is a separate change
-  ([#647](https://github.com/wilke/ragstack/issues/647)).
+  - **The API** (#647) accepts `"size_unit"` in `chunk.params` at create, only
+    for `sentence`/`words` and only `chars` or `tokens`; anything else is a
+    `400`. `"chars"` is dropped before the spec is stored, so it
+    content-addresses to the same collection as no unit at all. In-process
+    ingest (`_chunker_for`) reads it from the entry, the same way the shard
+    tool does.
+
+  The GoWe workflows do not pass a unit yet.
 
 ## Recommendations
 

@@ -64,7 +64,11 @@ from ragstack.ingestion.chunk_cap import (
     effective_chunk_cap,
     is_cap_refusal,
 )
-from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
+from ragstack.ingestion.chunker_config import (
+    ModelWindowUnavailable,
+    parse_unsupported_methods,
+    shard_refusal,
+)
 from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
@@ -452,6 +456,21 @@ async def _resolve_ingest_target(
         # `client_detail`, not `str(e)`: the full message embeds the tokenizer
         # loader's own error text, which quotes the HF cache path on this host.
         raise HTTPException(status_code=503, detail=e.client_detail) from None
+    except ModelWindowUnavailable as e:
+        # 503, not 400 (#647): the per-chunk token budget comes from the
+        # collection's embedding endpoint (or CHUNK_MAX_TOKENS), and neither gave
+        # one — a dependency failure the payload cannot fix. Refusing beats the
+        # old silent 4096, which sized the whole collection on a guess. An
+        # endpoint that exists but did not answer is worth a retry, so that case
+        # carries Retry-After like this file's other transient 503s; "no endpoint
+        # configured" is operator-only and does not. Logged here because an
+        # HTTPException writes no line of its own (docs/runbooks/tracing-a-503.md).
+        # The message names the collection and the fix, never the endpoint URL.
+        log.warning("ingest refused, no token window: %s", e)
+        raise HTTPException(
+            status_code=503, detail=str(e),
+            headers={"Retry-After": "5"} if e.transient else None,
+        ) from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     return target, run_ingestor
