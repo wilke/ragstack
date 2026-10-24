@@ -150,8 +150,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/jats_extract.py]
       inputs:
         shard:
@@ -202,8 +202,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
@@ -286,8 +286,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:
@@ -325,8 +325,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
         NetworkAccess:
           networkAccess: true
         EnvVarRequirement:

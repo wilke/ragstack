@@ -357,8 +357,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -420,8 +420,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -543,8 +543,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.13-b1.sif
-          dockerImageId: ragstack-tools-v1.6.13-b1.sif
+          dockerPull: ragstack-tools-v1.6.16-b1.sif
+          dockerImageId: ragstack-tools-v1.6.16-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       # Exit 5 = nothing to archive (#768): every document of the run failed on
       # its own (all refused as duplicates, all scanned), the receipts name each
