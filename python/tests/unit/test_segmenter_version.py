@@ -168,3 +168,28 @@ def test_the_probe_is_cached(monkeypatch, fresh_probe):
     monkeypatch.setattr(chunkers, "_punkt_sentence_spans", counting)
     first = segmenter_version()
     assert segmenter_version() == first and len(calls) == 1
+
+
+def test_the_regex_fallback_warns_once_per_process(no_nltk, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(chunkers, "_FALLBACK_WARNED", False)
+    with caplog.at_level(logging.WARNING, logger=chunkers.__name__):
+        for _ in range(3):
+            chunkers.sentence_spans("One. Two. Three.")
+    warned = [r for r in caplog.records
+              if r.name == chunkers.__name__ and r.levelno == logging.WARNING]
+    assert len(warned) == 1
+    msg = warned[0].getMessage()
+    assert "regex-abbrev-v1" in msg and 'pip install "ragstack[chunking]"' in msg
+
+
+@pytest.mark.skipif(not _HAVE_NLTK, reason="nltk not installed")
+def test_punkt_does_not_warn(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(chunkers, "_FALLBACK_WARNED", False)
+    with caplog.at_level(logging.WARNING, logger=chunkers.__name__):
+        chunkers.sentence_spans("One. Two. Three.")
+    assert not [r for r in caplog.records if r.name == chunkers.__name__]
+    assert chunkers._FALLBACK_WARNED is False

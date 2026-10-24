@@ -17,6 +17,7 @@ deterministic-id contract above.
 """
 from __future__ import annotations
 
+import logging
 import math
 import re
 import sys
@@ -25,6 +26,8 @@ from collections.abc import Callable, Sequence
 
 from ragstack.ingestion.tokenization import TokenCounter
 from ragstack.models import Chunk, Document
+
+logger = logging.getLogger(__name__)
 
 # A callable that turns a list of texts into a list of dense vectors. Sync on
 # purpose: chunkers run synchronously inside the (already-async) ingestion
@@ -741,8 +744,34 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
     """
     spans = _punkt_sentence_spans(text)
     if spans is None:
+        _warn_regex_fallback_once()
         spans = _fallback_sentence_spans(text)
     return _subsplit_long_spans(text, spans)
+
+
+_FALLBACK_WARNED = False
+
+
+def _warn_regex_fallback_once() -> None:
+    """Log, once per process, that :func:`sentence_spans` is on the regex
+    fallback — a different segmentation from the Punkt one every study, golden
+    and dev environment measured (#815), recorded as
+    :data:`REGEX_SEGMENTER_VERSION`.
+
+    Deliberately a warning, not a refusal: whether a production worker/API
+    without ``nltk`` should refuse sentence-based chunk methods
+    (refuse-don't-degrade) is the owner's policy decision, tracked in #815."""
+    global _FALLBACK_WARNED
+    if _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED = True
+    logger.warning(
+        "sentence_spans: NLTK Punkt is unavailable; using the regex sentence "
+        "fallback (segmenter_version=%s), a different segmentation from the "
+        "Punkt one (%s) the sentence/semantic chunkers were measured with. "
+        "Fix: pip install \"ragstack[chunking]\" (or rebuild the tools/server "
+        "image, whose defs install the chunking extra). See #815.",
+        REGEX_SEGMENTER_VERSION, SEGMENTER_VERSION)
 
 
 class SentenceChunker:
