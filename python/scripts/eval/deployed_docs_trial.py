@@ -26,6 +26,8 @@ Subcommands:
   generated questions and the seed set, judge the seed W group's pool with a
   local Llama-4-Scout endpoint, and write the part-1/2 results file.
 * ``addendum-s``, ``part3``, ``k10``: see the redacted pre-registrations.
+* ``part4``: the confirmatory part 4, in :mod:`deployed_docs_part4` (pause and
+  resume; exit 75 = paused). Its config keys are documented there.
 """
 from __future__ import annotations
 
@@ -289,6 +291,79 @@ def parse_json_answer(s: str) -> dict[str, Any] | None:
     return d
 
 
+def check_single(q: str, quote: str, text: str) -> str:
+    """Part-2 validation of a single-passage question: the status
+    (``empty_question`` / ``quote_too_long`` / ``quote_not_in_page`` / ``valid``)."""
+    if not q:
+        return "empty_question"
+    if len(quote) > MAX_QUOTE_CHARS:
+        return "quote_too_long"
+    if not norm(quote) or norm(quote) not in norm(text):
+        return "quote_not_in_page"
+    return "valid"
+
+
+def check_pair(q: str, qa: str, qb: str, text: str, a_span: tuple[int, int], b_span: tuple[int, int],
+               nm: tuple[str, list[int]] | Any, gap: int) -> tuple[str, int | None]:
+    """Part-3 validation of a two-passage (M) question: (status, quote gap or
+    None). ``nm`` is :func:`norm_map` of ``text`` or a zero-argument callable
+    returning it (so it is computed only when the quotes are found). The gap is
+    returned whenever both quote positions resolve (``valid`` or
+    ``quotes_too_close``)."""
+    nt = norm(text)
+    if not q:
+        return "empty_question", None
+    if len(qa) > MAX_QUOTE_CHARS or len(qb) > MAX_QUOTE_CHARS:
+        return "quote_too_long", None
+    if not norm(qa) or not norm(qb) or norm(qa) not in nt or norm(qb) not in nt:
+        return "quote_not_in_page", None
+    ntext, pos = nm() if callable(nm) else nm
+    pa = quote_pos(norm(qa), ntext, pos, a_span)
+    pb = quote_pos(norm(qb), ntext, pos, b_span)
+    if pa is None or pb is None:
+        return "quote_position_unresolved", None
+    return ("valid" if abs(pb - pa) >= gap else "quotes_too_close"), abs(pb - pa)
+
+
+def walk_budget(lst: list[str], bud: int, tokens: Any) -> list[str]:
+    """Whole chunks of ``lst`` in order while the running token total stays
+    <= ``bud`` (``tokens(cid)`` gives a chunk's tokens); the first chunk that
+    would exceed it stops the walk."""
+    tot, keep = 0, []
+    for cid in lst:
+        tot += tokens(cid)
+        if tot > bud:
+            break
+        keep.append(cid)
+    return keep
+
+
+def reader_messages(question: str, passages: list[str], limit: int, ntok: Any, system: str,
+                    reserve: int = 512) -> tuple[list[dict[str, str]], int, str]:
+    """The k=10 test's reader prompt over ``passages`` (already rendered with
+    their glossary): trailing excerpts are dropped while the prompt exceeds
+    ``limit - reserve`` tokens. Returns (messages, excerpts dropped, excerpts body)."""
+    ps = list(passages)
+    dropped = 0
+    while True:
+        body = "\n\n".join(f"[{n}] {p}" for n, p in enumerate(ps, 1))
+        user = f"Documentation excerpts:\n\n{body}\n\nQuestion: {question}"
+        if ntok(system + user) <= limit - reserve or len(ps) <= 1:
+            return [{"role": "system", "content": system}, {"role": "user", "content": user}], dropped, body
+        ps.pop()
+        dropped += 1
+
+
+def grader_messages(question: str, gold: list[str], answer: str) -> list[dict[str, str]]:
+    """The k=10 test's grader prompt (GRADER_USER from the private config)."""
+    return [{"role": "user", "content": GRADER_USER.format(question=question, gold="\n".join(gold), answer=answer)}]
+
+
+def load_cache(p: Path) -> dict[str, dict[str, Any]]:
+    """A ``{"k": ...}`` JSONL cache as {k: row} (the last row of a key wins)."""
+    return {x["k"]: x for x in read_jsonl(p)} if p.exists() else {}
+
+
 async def chat_many(url: str, model: str, prompts: list[list[dict[str, str]]], max_tokens: int,
                     extra: dict[str, Any] | None = None) -> list[tuple[str, dict[str, Any]]]:
     import httpx
@@ -368,14 +443,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             else:
                 q, quote = d["question"].strip(), d["answer_quote"]
                 rec.update(question=q, answer_quote=quote)
-                if not q:
-                    rec["status"] = "empty_question"
-                elif len(quote) > MAX_QUOTE_CHARS:
-                    rec["status"] = "quote_too_long"
-                elif not norm(quote) or norm(quote) not in norm(page["text"]):
-                    rec["status"] = "quote_not_in_page"
-                else:
-                    rec["status"] = "valid"
+                rec["status"] = check_single(q, quote, page["text"])
+                if rec["status"] == "valid":
                     rec["echo"] = echo(q, page["text"][p["p_start"]:p["p_end"]])
             st[rec["status"]] += 1
             fh.write(json.dumps(rec) + "\n")
@@ -639,13 +708,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     queries = {r["record_id"]: r["query"] for r in records}
 
     def budget_walk(lst: list[str], bud: int) -> list[str]:
-        tot, keep = 0, []
-        for cid in lst:
-            tot += by_id[cid].tokens
-            if tot > bud:
-                break
-            keep.append(cid)
-        return keep
+        return walk_budget(lst, bud, lambda cid: by_id[cid].tokens)
 
     # W judging pool: every arm's chunks within the b5120 walk (which contains the top 10
     # whenever the top 10 fits; the top 10 is added explicitly) -- deviation logged.
@@ -969,6 +1032,30 @@ def quote_pos(nq: str, ntext: str, pos: list[int], span: tuple[int, int]) -> int
     return (inside or hits)[0]
 
 
+def draw_b(rng: random.Random, text: str, a: int, chars: int, gap: int) -> tuple[int, bool] | None:
+    """Part 3's B window start for an A window at ``a``: uniform over the
+    positions at least ``gap`` before or after ``a`` (room for ``chars``),
+    snapped to a sentence start; the raw position when the snap breaks the gap,
+    overlaps A or runs off the page. Returns (b, unsnapped), or None when there
+    is no room (no random draw is made then)."""
+    n = len(text)
+    lo_hi = [(0, a - gap), (a + gap, n - chars)]
+    segs = [(x, y) for x, y in lo_hi if y >= x]
+    if not segs:
+        return None
+    tot = sum(y - x + 1 for x, y in segs)
+    r = rng.randint(0, tot - 1)
+    for x, y in segs:
+        if r <= y - x:
+            b_raw = x + r
+            break
+        r -= y - x + 1
+    b = snap_sentence(text, b_raw)
+    if abs(b - a) < gap or (b < a + chars and a < b + chars) or b + 1 > n:
+        return b_raw, True
+    return b, False
+
+
 def p3_sample(pages: dict[str, dict[str, Any]], elig: list[str]) -> tuple[list[dict[str, Any]], Counter]:
     rng = random.Random(P3_SEED)
     items: list[dict[str, Any]] = []
@@ -978,21 +1065,12 @@ def p3_sample(pages: dict[str, dict[str, Any]], elig: list[str]) -> tuple[list[d
         n = len(text)
         for k in (1, 2):
             a = snap_sentence(text, rng.randint(0, max(0, n - P3_M_CHARS)))
-            lo_hi = [(0, a - P3_M_GAP), (a + P3_M_GAP, n - P3_M_CHARS)]
-            segs = [(x, y) for x, y in lo_hi if y >= x]
-            if not segs:
+            drawn = draw_b(rng, text, a, P3_M_CHARS, P3_M_GAP)
+            if drawn is None:
                 st["M_no_room"] += 1
                 continue
-            tot = sum(y - x + 1 for x, y in segs)
-            r = rng.randint(0, tot - 1)
-            for x, y in segs:
-                if r <= y - x:
-                    b_raw = x + r
-                    break
-                r -= y - x + 1
-            b = snap_sentence(text, b_raw)
-            if abs(b - a) < P3_M_GAP or (b < a + P3_M_CHARS and a < b + P3_M_CHARS) or b + 1 > n:
-                b = b_raw
+            b, unsnapped = drawn
+            if unsnapped:
                 st["M_b_unsnapped"] += 1
             items.append({"type": "M", "doc_id": did, "k": k, "a": [a, min(n, a + P3_M_CHARS)],
                           "b": [b, min(n, b + P3_M_CHARS)]})
@@ -1076,37 +1154,28 @@ def p3_generate(out: Path, pages: dict[str, dict[str, Any]], page_tokens: dict[s
             elif it["type"] == "D":
                 q, quote = d["question"].strip(), d["answer_quote"]
                 rec.update(question=q, answer_quote=quote)
-                if not q:
-                    rec["status"] = "empty_question"
-                elif len(quote) > MAX_QUOTE_CHARS:
-                    rec["status"] = "quote_too_long"
-                elif not norm(quote) or norm(quote) not in norm(text):
-                    rec["status"] = "quote_not_in_page"
+                status = check_single(q, quote, text)
+                if status != "valid":
+                    rec["status"] = status
                 else:
                     rec["echo"] = echo(q, text[it["p"][0]:it["p"][1]])
                     rec["status"] = "echo_high" if rec["echo"] >= ECHO_HIGH else "valid"
             else:
                 q, qa, qb = d["question"].strip(), d["quote_a"], d["quote_b"]
                 rec.update(question=q, quote_a=qa, quote_b=qb)
-                nt = norm(text)
-                if not q:
-                    rec["status"] = "empty_question"
-                elif len(qa) > MAX_QUOTE_CHARS or len(qb) > MAX_QUOTE_CHARS:
-                    rec["status"] = "quote_too_long"
-                elif not norm(qa) or not norm(qb) or norm(qa) not in nt or norm(qb) not in nt:
-                    rec["status"] = "quote_not_in_page"
+
+                def nm_of(did: str = it["doc_id"], text: str = text) -> tuple[str, list[int]]:
+                    if did not in nm_cache:
+                        nm_cache[did] = norm_map(text)
+                    return nm_cache[did]
+
+                status, gap = check_pair(q, qa, qb, text, tuple(it["a"]), tuple(it["b"]), nm_of, P3_M_GAP)
+                if gap is None:
+                    rec["status"] = status
                 else:
-                    if it["doc_id"] not in nm_cache:
-                        nm_cache[it["doc_id"]] = norm_map(text)
-                    ntext, pos = nm_cache[it["doc_id"]]
-                    pa = quote_pos(norm(qa), ntext, pos, tuple(it["a"]))
-                    pb = quote_pos(norm(qb), ntext, pos, tuple(it["b"]))
-                    if pa is None or pb is None:
-                        rec["status"] = "quote_position_unresolved"
-                    else:
-                        rec["quote_gap"] = abs(pb - pa)
-                        rec["status"] = "valid" if abs(pb - pa) >= P3_M_GAP else "quotes_too_close"
-                        rec["echo"] = max(echo(q, text[it["a"][0]:it["a"][1]]), echo(q, text[it["b"][0]:it["b"][1]]))
+                    rec["quote_gap"] = gap
+                    rec["status"] = status
+                    rec["echo"] = max(echo(q, text[it["a"][0]:it["a"][1]]), echo(q, text[it["b"][0]:it["b"][1]]))
             stc[it["type"]][rec["status"]] += 1
             fh.write(json.dumps(rec) + "\n")
     gen = {"eligible_pages": len(elig_all), "pages_used": len(elig), "sampling": dict(st), "calls": calls,
@@ -1322,7 +1391,7 @@ async def opus_many(prompts: list[list[dict[str, str]]], max_tokens: int, inflig
     return out, stop.is_set()
 
 
-def strat_sample(keys_by_stratum: dict[str, list[str]], n: int, seed: int = 261023) -> set[str]:
+def strat_sample(keys_by_stratum: dict[str, list[str]], n: int, seed: int | str = 261023) -> set[str]:
     """Largest-remainder proportional allocation, then random.Random(seed).sample per stratum
     over the sorted keys, strata in sorted order."""
     tot = sum(len(v) for v in keys_by_stratum.values())
@@ -1428,13 +1497,7 @@ def cmd_part3(args: argparse.Namespace) -> int:
     gb = Gold(records, {r["record_id"]: {"expected": {"quote": r.get("quote_b", "")}} for r in qs})
 
     def walk(lst: list[str], bud: int) -> list[str]:
-        tot, keep = 0, []
-        for cid in lst:
-            tot += by_id[cid].tokens
-            if tot > bud:
-                break
-            keep.append(cid)
-        return keep
+        return walk_budget(lst, bud, lambda cid: by_id[cid].tokens)
 
     def a_name(a: str) -> str:
         return sat.config_name(a, "rules", 0, POOL, 1.0)
@@ -1927,15 +1990,9 @@ def cmd_k10(args: argparse.Namespace) -> int:
         return len(tok([s], add_special_tokens=False)["input_ids"][0])
 
     def reader_prompt(i: str, cids: list[str], limit: int) -> tuple[list[dict[str, str]], int]:
-        cids = list(cids)
-        dropped = 0
-        while True:
-            body = "\n\n".join(f"[{n}] {passage(by_id[c], 'rules', False)}" for n, c in enumerate(cids, 1))
-            user = f"Documentation excerpts:\n\n{body}\n\nQuestion: {recs[i]['q']}"
-            if ntok(READER_SYSTEM + user) <= limit - 512 or len(cids) <= 1:
-                return [{"role": "system", "content": READER_SYSTEM}, {"role": "user", "content": user}], dropped
-            cids.pop()
-            dropped += 1
+        msgs, dropped, _ = reader_messages(recs[i]["q"], [passage(by_id[c], "rules", False) for c in cids],
+                                           limit, ntok, READER_SYSTEM)
+        return msgs, dropped
 
     ans_path = out / "k10-answers-261023.jsonl"
     answers: dict[str, dict[str, Any]] = {}
@@ -1991,18 +2048,13 @@ def cmd_k10(args: argparse.Namespace) -> int:
         return sha(i + "\x00" + norm(a_txt))
 
     def grader_msgs(i: str, a_txt: str) -> list[dict[str, str]]:
-        return [{"role": "user", "content": GRADER_USER.format(question=recs[i]["q"], gold="\n".join(recs[i]["gold"]),
-                                                               answer=a_txt)}]
+        return grader_messages(recs[i]["q"], recs[i]["gold"], a_txt)
 
     uniq: dict[str, tuple[str, str]] = {}
     for k, x in answers.items():
         i = k.split("|", 2)[2]
         uniq.setdefault(gkey(i, x["answer"]), (i, x["answer"]))
     log(f"k10 grading: {len(answers)} answers, {len(uniq)} distinct (question, normalised answer)")
-
-    def load_cache(p: Path) -> dict[str, dict[str, Any]]:
-        return {x["k"]: x for x in read_jsonl(p)} if p.exists() else {}
-
     qg_path = out / "k10-grades-qwen-261023.jsonl"
     qg = load_cache(qg_path)
     todo = [(gk, i, a_txt) for gk, (i, a_txt) in uniq.items() if gk not in qg]
@@ -2315,6 +2367,9 @@ def main(argv: list[str] | None = None) -> int:
                            help="stop once Opus completion tokens since --opus-cap-since (both batches) pass this")
             r.add_argument("--opus-cap-since", type=float, default=None,
                            help="epoch seconds of the go; earlier call-log rows don't count toward the cap")
+    import deployed_docs_part4 as p4
+
+    p4.add_part4_parser(sub)
     args = ap.parse_args(argv)
     cfg = load_private_config(args.private_config)
     if args.out_dir is None:
@@ -2329,7 +2384,7 @@ def main(argv: list[str] | None = None) -> int:
     elif getattr(args, "opus", False) or getattr(args, "opus_test_one", False) or getattr(args, "probe_keys", ""):
         raise SystemExit("--opus/--opus-test-one need --opus-cap-since (the go time) for the output-token stop")
     return {"prepare": cmd_prepare, "run": cmd_run, "addendum-s": cmd_addendum_s,
-            "part3": cmd_part3, "k10": cmd_k10}[args.cmd](args)
+            "part3": cmd_part3, "k10": cmd_k10, "part4": p4.cmd_part4}[args.cmd](args)
 
 
 if __name__ == "__main__":
