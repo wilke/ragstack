@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Answer Grading</title>
+<style>
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --ink: #1d2320; --muted: #5d6762; --line: #d9ded9;
+  --accent: #2f6f5e; --accent-ink: #ffffff; --ref: #eef4f1; --ans: #f7f4ec; --focus: #2f6f5e;
+  --correct: #2e7d4f; --partial: #a86b12; --incorrect: #b23b3b; --abstained: #50606e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141816; --panel: #1c211f; --ink: #e4e9e6; --muted: #9aa5a0; --line: #2f3633;
+    --accent: #6fbfa6; --accent-ink: #0f1412; --ref: #1f2a26; --ans: #2a2720; --focus: #6fbfa6;
+    --correct: #6cc28e; --partial: #e0a64a; --incorrect: #e57a7a; --abstained: #9fb0bf;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141816; --panel: #1c211f; --ink: #e4e9e6; --muted: #9aa5a0; --line: #2f3633;
+  --accent: #6fbfa6; --accent-ink: #0f1412; --ref: #1f2a26; --ans: #2a2720; --focus: #6fbfa6;
+  --correct: #6cc28e; --partial: #e0a64a; --incorrect: #e57a7a; --abstained: #9fb0bf;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 48px; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+h1 { font-size: 1.35rem; margin: 0; text-wrap: balance; }
+.meta { color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+details.howto { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+details.howto summary { cursor: pointer; font-weight: 600; }
+details.howto dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0 4px; }
+details.howto dt { font-weight: 600; }
+details.howto dd { margin: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }
+.label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
+.question { font-size: 1.08rem; font-weight: 600; }
+.ref { background: var(--ref); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; }
+.ref p { margin: 0 0 8px; } .ref p:last-child { margin: 0; }
+.ans { background: var(--ans); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+.grades { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.grades button { font: inherit; padding: 10px 6px; border-radius: 6px; border: 2px solid var(--line);
+  background: var(--panel); color: var(--ink); cursor: pointer; }
+.grades button .k { display: block; font-size: .75rem; color: var(--muted); }
+.grades button[aria-pressed="true"][data-g="correct"] { border-color: var(--correct); color: var(--correct); }
+.grades button[aria-pressed="true"][data-g="partial"] { border-color: var(--partial); color: var(--partial); }
+.grades button[aria-pressed="true"][data-g="incorrect"] { border-color: var(--incorrect); color: var(--incorrect); }
+.grades button[aria-pressed="true"][data-g="abstained"] { border-color: var(--abstained); color: var(--abstained); }
+.grades button[aria-pressed="true"] { font-weight: 700; }
+textarea { width: 100%; min-height: 56px; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); resize: vertical; }
+input[type=text] { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.btn { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.status { color: var(--muted); font-size: .9rem; min-height: 1.4em; }
+.warn { border: 2px solid var(--incorrect); color: var(--ink); background: var(--panel); border-radius: 8px; padding: 10px 14px; }
+select { font: inherit; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); max-width: 100%; }
+@media (max-width: 560px) { .grades { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .bar > span { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Answer Grading</h1>
+    <div class="meta" id="progress">0 of 0 graded</div>
+  </header>
+  <div class="bar" aria-hidden="true"><span id="barfill"></span></div>
+
+  <details class="howto" open>
+    <summary>How to grade</summary>
+    <p>Each item shows a user's question, a <strong>reference</strong> quoted from the documentation, and an <strong>answer</strong> a model gave. Grade the answer against the reference:</p>
+    <dl>
+      <dt>Correct</dt><dd>It states the information in the reference (wording may differ); extra correct detail is fine.</dd>
+      <dt>Partial</dt><dd>It states some but not all of the reference information, or for two-part references only one part.</dd>
+      <dt>Incorrect</dt><dd>It contradicts the reference or gives different information.</dd>
+      <dt>Abstained</dt><dd>It says the documentation does not answer the question.</dd>
+    </dl>
+    <p>Keys: <strong>1–4</strong> choose a grade, <strong>←/→</strong> move between items. Your grades are saved in this browser as you go. When you finish, press <strong>Export grades</strong> and send back the file.</p>
+  </details>
+
+  <div class="tools">
+    <label for="who">Your name</label>
+    <input type="text" id="who" autocomplete="name" placeholder="Name or initials">
+    <label for="jump">Go to</label>
+    <select id="jump"></select>
+  </div>
+
+  <main class="card" id="card" aria-live="polite">
+    <div>
+      <div class="label">Question</div>
+      <div class="question" id="q"></div>
+    </div>
+    <div>
+      <div class="label">Reference (from the documentation)</div>
+      <div class="ref" id="ref"></div>
+    </div>
+    <div>
+      <div class="label">Answer given</div>
+      <div class="ans" id="ans"></div>
+    </div>
+    <div>
+      <div class="label" id="grade-label">Your grade</div>
+      <div class="grades" role="group" aria-labelledby="grade-label">
+        <button type="button" data-g="correct" aria-pressed="false">Correct<span class="k">1</span></button>
+        <button type="button" data-g="partial" aria-pressed="false">Partial<span class="k">2</span></button>
+        <button type="button" data-g="incorrect" aria-pressed="false">Incorrect<span class="k">3</span></button>
+        <button type="button" data-g="abstained" aria-pressed="false">Abstained<span class="k">4</span></button>
+      </div>
+    </div>
+    <div>
+      <label class="label" for="note">Note (optional)</label>
+      <textarea id="note" placeholder="Anything unclear about this item"></textarea>
+    </div>
+    <div class="nav">
+      <button type="button" class="btn" id="prev">← Previous</button>
+      <span class="meta" id="pos"></span>
+      <button type="button" class="btn" id="next">Next →</button>
+    </div>
+  </main>
+
+  <div class="tools">
+    <button type="button" class="btn primary" id="export">Export grades</button>
+    <button type="button" class="btn" id="nextopen">Next ungraded</button>
+    <label class="btn" for="importf">Import a saved grades file</label>
+    <input type="file" id="importf" accept="application/json,.json" hidden>
+  </div>
+  <div class="status" id="status" role="status"></div>
+  <div class="warn" id="storagewarn" role="alert" hidden>This browser is not saving your progress. Press <strong>Export grades</strong> often, and keep the file. You can bring it back with <strong>Import a saved grades file</strong>.</div>
+</div>
+
+<script id="data" type="application/json">__ITEMS__</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("data").textContent);
+  var ITEMS = DATA.items;
+  var KEY = "answer-grading:" + DATA.export_id;
+  var GRADES = ["correct", "partial", "incorrect", "abstained"];
+  var state = { pos: 0, grades: {}, notes: {}, who: "" };
+
+  function storageBroken() { document.getElementById("storagewarn").hidden = false; }
+  function load() {
+    try {
+      var s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s && s.grades) state = s;
+      localStorage.setItem(KEY + ":probe", "1"); localStorage.removeItem(KEY + ":probe");
+    } catch (e) { storageBroken(); }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { storageBroken(); }
+  }
+  function say(t) { document.getElementById("status").textContent = t; }
+
+  function el(id) { return document.getElementById(id); }
+  function graded() { return ITEMS.filter(function (it) { return state.grades[it.item]; }).length; }
+
+  function renderJump() {
+    var sel = el("jump"); sel.innerHTML = "";
+    ITEMS.forEach(function (it, i) {
+      var o = document.createElement("option"); o.value = i;
+      o.textContent = "Item " + (i + 1) + (state.grades[it.item] ? " — " + state.grades[it.item] : "");
+      sel.appendChild(o);
+    });
+    sel.value = state.pos;
+  }
+
+  function render() {
+    var it = ITEMS[state.pos];
+    el("q").textContent = it.question;
+    var ref = el("ref"); ref.innerHTML = "";
+    (Array.isArray(it.reference) ? it.reference : [it.reference]).forEach(function (r, i, arr) {
+      var p = document.createElement("p");
+      p.textContent = (arr.length > 1 ? "Part " + (i + 1) + ": " : "") + r;
+      ref.appendChild(p);
+    });
+    el("ans").textContent = it.answer;
+    document.querySelectorAll(".grades button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(state.grades[it.item] === b.dataset.g));
+    });
+    el("note").value = state.notes[it.item] || "";
+    el("pos").textContent = "Item " + (state.pos + 1) + " of " + ITEMS.length;
+    var n = graded();
+    el("progress").textContent = n + " of " + ITEMS.length + " graded";
+    el("barfill").style.width = (100 * n / ITEMS.length) + "%";
+    el("prev").disabled = state.pos === 0;
+    el("next").disabled = state.pos === ITEMS.length - 1;
+    renderJump();
+  }
+
+  function go(i) { state.pos = Math.max(0, Math.min(ITEMS.length - 1, i)); save(); render(); }
+  function grade(g) {
+    var it = ITEMS[state.pos];
+    state.grades[it.item] = g; save(); render();
+    say("Saved: item " + (state.pos + 1) + " is " + g + ".");
+  }
+
+  document.querySelectorAll(".grades button").forEach(function (b) {
+    b.addEventListener("click", function () { grade(b.dataset.g); });
+  });
+  el("prev").addEventListener("click", function () { go(state.pos - 1); });
+  el("next").addEventListener("click", function () { go(state.pos + 1); });
+  el("jump").addEventListener("change", function () { go(Number(this.value)); });
+  el("nextopen").addEventListener("click", function () {
+    for (var k = 1; k <= ITEMS.length; k++) {
+      var i = (state.pos + k) % ITEMS.length;
+      if (!state.grades[ITEMS[i].item]) { go(i); return; }
+    }
+    say("All items are graded. Press Export grades and send back the file.");
+  });
+  el("note").addEventListener("input", function () {
+    var it = ITEMS[state.pos]; var v = this.value.trim();
+    if (v) state.notes[it.item] = this.value; else delete state.notes[it.item];
+    save();
+  });
+  el("who").value = state.who || "";
+  el("who").addEventListener("input", function () { state.who = this.value; save(); });
+
+  document.addEventListener("keydown", function (e) {
+    var t = e.target.tagName;
+    if (t === "TEXTAREA" || t === "INPUT" || t === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key >= "1" && e.key <= "4") { grade(GRADES[Number(e.key) - 1]); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { go(state.pos + 1); e.preventDefault(); }
+    else if (e.key === "ArrowLeft") { go(state.pos - 1); e.preventDefault(); }
+  });
+
+  el("export").addEventListener("click", function () {
+    var out = {
+      export_id: DATA.export_id, grader: state.who || "", exported_at: new Date().toISOString(),
+      n_items: ITEMS.length, n_graded: graded(),
+      grades: ITEMS.map(function (it) {
+        return { item: it.item, grade: state.grades[it.item] || null, note: state.notes[it.item] || "" };
+      })
+    };
+    var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "grades-" + DATA.export_id + "-" + (state.who || "grader").replace(/[^A-Za-z0-9_-]+/g, "_") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    say("Exported " + out.n_graded + " of " + out.n_items + " grades." + (out.n_graded < out.n_items ? " Some items are still ungraded." : ""));
+  });
+
+  el("importf").addEventListener("change", function () {
+    var f = this.files && this.files[0]; if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      try {
+        var d = JSON.parse(r.result);
+        if (d.export_id !== DATA.export_id) { say("That file belongs to a different set of items. Nothing was imported."); return; }
+        d.grades.forEach(function (g) {
+          if (g.grade && GRADES.indexOf(g.grade) >= 0) state.grades[g.item] = g.grade;
+          if (g.note) state.notes[g.item] = g.note;
+        });
+        if (d.grader && !state.who) { state.who = d.grader; el("who").value = d.grader; }
+        save(); render(); say("Imported " + d.grades.filter(function (g) { return g.grade; }).length + " grades.");
+      } catch (e) { say("That file could not be read as a grades file."); }
+    };
+    r.readAsText(f);
+    this.value = "";
+  });
+
+  load();
+  if (state.pos >= ITEMS.length) state.pos = 0;
+  render();
+})();
+</script>
+</body>
+</html>
