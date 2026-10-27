@@ -36,8 +36,8 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
 | `fixed_token` | tokens of the collection's embedding model | every *size* tokens | no | all |
 | `sentence` | characters, or tokens with `size_unit="tokens"` (see [token budget](#token-budget)) | sentence boundaries | no | all |
 | `words` | characters, or tokens with `size_unit="tokens"` (see [token budget](#token-budget)) | word boundaries | no | all |
-| `semantic` | not used (see below) | at topic shifts that embeddings detect | yes, about 7× the tokens of `semantic_pooled` | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
-| `semantic_pooled` | not used (see below) | at topic shifts that embeddings detect, in different places from `semantic` | yes | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
+| `semantic` | tokens of the collection's embedding model: *size* is a **cap** on every chunk for a collection that records `size_cap` (every semantic collection created from this release on). In older collections *size* is not a cap. Overlap is not used ([size cap](#the-semantic-size-cap)) | at topic shifts that embeddings detect; a block over the cap is split by `cap_split` | yes, about 7× the tokens of `semantic_pooled` | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
+| `semantic_pooled` | as `semantic` | as `semantic`, but in different places | yes | `pdf-ingest-scatter.cwl`, `ingest-bulk.cwl` only |
 
 - **`fixed`**: `RecursiveCharacterChunker`. Takes a window of *size*
   characters, then steps forward by *size − overlap*.
@@ -83,8 +83,12 @@ A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
   sentence only when that one sentence is longer than the budget. (Before
   #318's follow-up it was cut wherever the token count ran out, usually
   mid-sentence.)
-    *size* and *overlap* only matter for a document that splits into more than
-  3,000 sentence spans (`max_breakpoint_sentences`). On GoWe that document is
+  In a collection that records the size-cap marker, *size* caps every chunk
+  in tokens, and by default it also bounds the breakpoint-embedding inputs. See
+  [the semantic size cap](#the-semantic-size-cap). In a collection without the
+  marker (every semantic collection created before it existed), *size* and
+  *overlap* matter only for a document that splits into more than 3,000
+  sentence spans (`max_breakpoint_sentences`). On GoWe that document is
   chunked by the `fixed_token` window instead, using the collection's
   size/overlap or, if it recorded none, the workflow defaults (256/32 in
   `pdf-ingest-scatter.cwl`). The in-process path does the same since
@@ -109,6 +113,168 @@ in `routers/collections.py` `SEMANTIC_PARAM_BOUNDS`:
 
 The defaults come from `make_chunker`'s signature and `Settings.chunk_buffer_size`
 / `chunk_breakpoint_percentile` / `chunk_min_length`.
+
+Three more keys, `size_cap`, `cap_split` and `breakpoint_cap`, control the
+semantic size cap. They are described in the next section.
+
+## The semantic size cap
+
+Before this change, `semantic` and `semantic_pooled` ignored *size*. The only
+cap was the model window minus 16 tokens (4,080 for SFR-Embedding-Mistral), so a
+collection created as "semantic, size 512" held chunks of up to 3,398 tokens.
+The confirmatory study
+([`chunk-size-deployed-docs-part4-2026-10-25/RESULTS.md`](plans/results/chunk-size-deployed-docs-part4-2026-10-25/RESULTS.md))
+found semantic chunking capped at 512 tokens no worse than uncapped, and better
+at small context budgets. That result is provisional until its grader
+validation is in.
+
+The cap is set by three keys in the collection's `chunk.params`:
+
+| key | values | default when the API records it | what it does |
+|---|---|---|---|
+| `size_cap` | `"tokens"` | `"tokens"` on every new semantic collection | Marks *size* as an upper bound on every chunk, in tokens. Absent means an older, uncapped collection. |
+| `cap_split` | `"greedy"`, `"balanced"`, `"topic"` | `"greedy"` | How a block over the cap is split ([below](#splitting-a-block-over-the-cap)). |
+| `breakpoint_cap` | `"size"`, `"window"` | `"size"` | How the breakpoint-embedding inputs are bounded ([below](#bounding-the-breakpoint-inputs)). |
+
+### The cap
+
+For a collection that records `"size_cap": "tokens"`, *size* is an upper bound
+on every semantic chunk. It is counted in tokens of the collection embedding
+model's tokenizer, the same counter the window cap uses.
+
+*size* may not exceed the model's per-chunk budget (window − 16). A larger
+*size* is **refused**, never clamped. The `ValueError` names both numbers. It
+is a 400 at ingest, and also at create when `CHUNK_MAX_TOKENS` names the window
+without a network call.
+
+**The default size.** A semantic collection created **without a size** gets
+the deployment's `CHUNK_SIZE` (`Settings.chunk_size`, 512 unless `tenant.env`
+sets it), recorded as a number together with the marker. This includes every
+semantic collection created from the UI, which sends no size, and a create that
+takes a semantic server default.
+
+When `CHUNK_MAX_TOKENS` names the window, a default above the per-chunk budget
+is **clamped** to that budget. The clamped number is recorded and an INFO line
+is logged. For example, `CHUNK_MAX_TOKENS=512` with the default `CHUNK_SIZE=512`
+records 496. Only the deployment default is clamped: a size the caller sends is
+refused above the budget, never clamped. When the window comes from the
+embedding endpoint instead, it is not known at create. An over-budget default
+is then refused at the first ingest, like any other size.
+
+`CHUNK_SIZE` is the size of the deployment's default method. That method is
+`fixed_token` (tokens) unless `CHUNK_METHOD` says otherwise, and tokens too when
+`CHUNK_METHOD` is a semantic method. When `CHUNK_METHOD` is `fixed`,
+`sentence` or `words`, `CHUNK_SIZE` counts characters. A semantic create
+without a size is then refused with a 400 asking for an explicit size in
+tokens, rather than reading characters as tokens.
+
+*overlap* is not applied by semantic chunking. Only the oversized-document
+fallback uses it. A create with a non-zero overlap below the recorded size logs
+a WARNING and is not refused, because existing clients send 64. An overlap at or
+above the recorded size (the explicit size, or the clamped default when the size
+is omitted) is refused with a 400, as for every other method, because the
+recorded spec would otherwise state an overlap the chunker never applies.
+
+### Splitting a block over the cap
+
+`cap_split` decides how a semantic block (the sentences between two
+breakpoints) that is over the cap is split.
+
+| `cap_split` | what it does | when to choose it |
+|---|---|---|
+| `greedy` (default) | Packs the block's sentences greedily into pieces of at most *size* tokens. This is what the study's capped arm ran. | When you want to match the tested configuration. It can leave a small tail: a 520-token block at cap 512 becomes 512 + 8. |
+| `balanced` | Cuts the block into k = ⌈tokens / *size*⌉ pieces of roughly equal size at sentence boundaries. If k pieces cannot all fit, it tries k + 1, and so on. | When small tail pieces are a problem. |
+| `topic` | Cuts the block at its strongest internal breakpoint, the largest cosine distance between neighbouring sentence buffers inside it. It repeats on each piece until every piece fits. It reuses the distances breakpoint detection already computed, so it embeds nothing extra. | When cuts should follow the weaker topic shifts inside a block. It can still leave a small piece next to a strong shift. |
+
+Under every strategy:
+- a cut falls inside a sentence only when that one sentence alone is longer
+  than *size*;
+- the pieces tile the block exactly;
+- pieces are not merged afterwards (`min_chunk_length` is applied before the
+  cap).
+
+`greedy` stays the default until an evaluation chooses between the three.
+Only a block over the cap is split, so a block that fits is one chunk under
+all three.
+
+### Bounding the breakpoint inputs
+
+Breakpoint detection embeds a buffer of up to 2 × `buffer_size` + 1 sentences
+around each sentence. Those buffers are bounded so they fit an embedding model.
+
+- **`breakpoint_cap: "size"`** (the default) bounds each buffer at *size*
+  tokens; only its first *size* tokens are embedded. This is exactly what the
+  study's capped arm ran: `make_chunker("semantic", max_tokens=512)` bounded
+  both the breakpoint inputs and the chunks with one number. So a rebuild with
+  *size* 512 reproduces that arm, which a test asserts span for span. The cost
+  is that a buffer longer than *size* is compared on its beginning only.
+- **`breakpoint_cap: "window"`** bounds buffers only at the model window (or
+  at a smaller breakpoint model's window). The breakpoints are then those of an
+  uncapped collection, and only the emitted chunks are capped.
+
+### Who sets it
+
+- **The API** (`POST /v1/collections`) writes all three keys into the
+  `chunk_params` of every new `semantic`/`semantic_pooled` collection, with or
+  without a size and including a create that takes the server default. A key
+  the request names is kept. Every value is stored explicitly, so a later
+  change of default cannot re-chunk the collection.
+  - A request that sends any of these keys on another method, or an unknown
+    value, gets a `400`.
+- **`ingest_shard.py`** (the GoWe worker) reads the keys from the registry
+  entry, as it reads `buffer_size`. It has no flag for them, and no CWL input
+  changed.
+- **`ingest_jsonl.py`** reads them from the registry entry when it writes into
+  one. It refuses a contradicting `--semantic-size-cap`, `--semantic-cap-split`
+  or `--semantic-breakpoint-cap` with exit 2. Without an entry, the flags
+  decide; an unset split or breakpoint flag takes the API's defaults.
+
+Every path reads the keys through one function,
+`chunker_config.semantic_cap_from_params`, and builds through `build_chunker`.
+So one recorded spec gives the same chunks in-process and on GoWe. Within a
+recorded cap, an absent `cap_split` reads as `greedy` and an absent
+`breakpoint_cap` as `size`. Without `size_cap`, either key is refused.
+
+### Existing collections are not changed
+
+Every semantic collection created before the marker records a *size* (often
+512, a default that meant nothing), and its stored chunks were made with only
+the window as a cap. Reading that *size* as a cap now would make new uploads
+chunk differently from the stored chunks. That is the #647 defect class: one
+collection, two chunkings.
+
+So **only a collection whose `chunk_params` record `size_cap` is capped**.
+Without it, chunking is exactly what it was, including a recorded *size* larger
+than the window, which is neither refused nor applied. To cap an existing
+collection, create a new one and ingest again
+([identity](#a-collection-keeps-its-method-for-life)).
+
+### Release order: capped collections need new workers
+
+**A capped collection must be ingested by workers built from this release or
+later.** On `INGEST_BACKEND=gowe` the chunking runs in the worker image
+(`ingest_shard.py`), not in the API. An older image does not know the keys and
+ignores them, so it would chunk a capped collection **uncapped**, with no error.
+That leaves one collection holding chunks made two ways.
+
+Nothing refuses this at runtime. Roll the tools image and the workflows before
+creating capped semantic collections on a GoWe tenant. The new image prints a
+`[chunker] … size_cap=…` line on stderr and writes a `chunking` object into
+every semantic shard receipt (below). A semantic receipt without that object
+came from an older image.
+
+### Where it is recorded
+
+| where | what |
+|---|---|
+| the collection spec (`chunk_size`, `chunk_params`) | the cap, `size_cap`, `cap_split` and `breakpoint_cap`, as recorded at create. `chunk_params` is free-form in the contract, so no schema changed. It is part of the chunk descriptor, the `spec_hash` and the physical name, and it is shown by `GET /v1/collections`. |
+| the collection manifest | the same `chunk_size` and `chunk_params`, written by every ingest path. Because a cap above the window is refused rather than clamped, the cap that is applied always equals the recorded *size*. |
+| the shard receipt (GoWe) | `chunking`: what the worker actually applied. Its fields are `v` (1), `method`, `size_cap`, `chunk_size`, `cap_split`, `breakpoint_cap`, `window_budget` (the resolved `max_tokens`) and `breakpoint_input_budget`. On an uncapped collection, `size_cap` is `null` there. The object is written only for the semantic methods. A receipt without it predates it, or came from another method. |
+
+**A semantic-default deployment** (`CHUNK_METHOD=semantic` plus `CHUNK_SIZE`)
+is affected too. A create that omits `chunk` now records the marker, so its
+content address differs from the uncapped, settings-derived default
+collection. It mints a separate store instead of re-mapping to that surface.
 
 ## Sentence segmentation
 
@@ -328,6 +494,9 @@ chunks have to fit inside it.
 
 - **`fixed_token`** is capped by its own window: no chunk exceeds *size*
   tokens.
+- **A semantic collection with a recorded size cap** is capped at its *size*,
+  which must be within the window budget below. By default its breakpoint
+  inputs are bounded at *size* too ([size cap](#the-semantic-size-cap)).
 - **Every other method, on every path**, is capped at the model window minus
   a 16-token reserve (`ingestion/tokenization.py` `resolve_max_tokens`,
   `DEFAULT_TOKEN_RESERVE`); for SFR-Embedding-Mistral that is 4,080 tokens.
@@ -406,12 +575,14 @@ chunks have to fit inside it.
   detection embedded 2.41 M tokens for `semantic` and 0.36 M for
   `semantic_pooled` (6.78×), on top of about 0.35 M tokens of chunk embedding.
   `fixed` 512/64 embedded 0.40 M tokens in total, so `semantic` cost about 7×
-  the embedding tokens of `fixed`, and `semantic_pooled` about 1.8×. Chunks are larger and vary more (p50 611 tokens,
-  up to the 4,080 cap, against 179 for `fixed` 512 characters on the same
+  the embedding tokens of `fixed`, and `semantic_pooled` about 1.8×. Measured before the size cap existed, chunks were larger and varied more (p50 611 tokens,
+  up to the 4,080 window cap, against 179 for `fixed` 512 characters on the same
   papers). On a GoWe tenant you also need the method off
   `INGEST_WORKER_UNSUPPORTED_METHODS` and a workflow that admits it. Choose
   between `semantic` and `semantic_pooled` knowingly, because they produce
-  different chunks.
+  different chunks. A new semantic collection is capped at its *size* in
+  tokens (512 by default); on GoWe, roll workers from this release first
+  ([release order](#release-order-capped-collections-need-new-workers)).
 - **Decide before you ingest.** You cannot change the method in place. To try
   another method, create a second collection, ingest the same documents, and
   compare them.

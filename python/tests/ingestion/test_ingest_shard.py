@@ -346,6 +346,33 @@ def test_amain_runs_a_semantic_shard_end_to_end(tmp_path, monkeypatch) -> None:
     assert embedder.calls >= 2, "breakpoint embed never happened"
     # The bridge's background thread is gone: the `finally` ran and close() worked.
     assert [t for t in threading.enumerate() if "embed" in t.name.lower()] == []
+    # The receipt records what the semantic chunker applied: no size cap here
+    # (the spec-less shard is the legacy, window-only chunking).
+    assert receipt["chunking"]["method"] == "semantic_pooled"
+    assert receipt["chunking"]["size_cap"] is None and receipt["chunking"]["v"] == 1
+
+
+def test_amain_records_the_applied_semantic_cap_in_the_receipt(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    text = ("Cats are wonderful. Cats purr softly. Cats love to nap. "
+            "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls.")
+    shard = tmp_path / "s.jsonl"
+    shard.write_text(json.dumps({"text": text, "path": "/corpus/a.txt"}), encoding="utf-8")
+    out = str(tmp_path / "r.json")
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _TopicEmbedder())
+    args = ingest_shard.parse_args(_semantic_argv(str(shard), out, "semantic")
+                                   + ["--chunk-size", "200", "--chunk-max-tokens", "4096"])
+    monkeypatch.setattr(ingest_shard, "_semantic_params",
+                        lambda spec: {"buffer_size": 1, "min_chunk_length": 10})
+    monkeypatch.setattr(ingest_shard, "_semantic_cap", lambda spec, method: {
+        "size_cap": "tokens", "cap_split": "balanced", "breakpoint_cap": "size"})
+    assert asyncio.run(ingest_shard.amain(args)) == 0
+    assert json.loads(Path(out).read_text())["chunking"] == {
+        "v": 1, "method": "semantic", "size_cap": "tokens", "chunk_size": 200,
+        "cap_split": "balanced", "breakpoint_cap": "size", "window_budget": 4080,
+        "breakpoint_input_budget": 200,
+    }
 
 
 def test_amain_closes_the_bridge_when_the_shard_fails(tmp_path, monkeypatch) -> None:

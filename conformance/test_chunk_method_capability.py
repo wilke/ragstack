@@ -39,7 +39,10 @@ from conftest import skip_no_credential
 
 pytestmark = pytest.mark.asyncio
 
-SEMANTIC = {"method": "semantic", "size": 512, "overlap": 0}
+#: size 128: a black-box test must not assume the window. A semantic size is a
+#: token cap refused above the server's budget (the keyed runner sets
+#: CHUNK_MAX_TOKENS=512, budget 496), and that 400 would pre-empt the 422 under test.
+SEMANTIC = {"method": "semantic", "size": 128, "overlap": 0}
 
 #: Methods the shard ingest can do — mirrors chunker_config.shard_supported_methods().
 #: Spelled out rather than imported: conformance is black-box and may not import

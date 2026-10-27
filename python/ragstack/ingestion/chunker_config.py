@@ -24,7 +24,17 @@ import sys
 import threading
 from collections.abc import Callable, Collection
 
-from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT, SIZE_UNITS, make_chunker
+from ragstack.ingestion.chunkers import (
+    BREAKPOINT_CAPS,
+    CAP_SPLITS,
+    CHUNK_METHODS,
+    DEFAULT_BREAKPOINT_CAP,
+    DEFAULT_CAP_SPLIT,
+    DEFAULT_SIZE_UNIT,
+    SIZE_CAPS,
+    SIZE_UNITS,
+    make_chunker,
+)
 from ragstack.ingestion.tokenization import (
     HFTokenCounter,
     TokenCounter,
@@ -64,6 +74,90 @@ SEMANTIC_METHODS: tuple[str, ...] = ("semantic", "semantic_pooled")
 def needs_embed_fn(method: str | None) -> bool:
     """Does ``method`` detect boundaries by embedding, and so need an ``embed_fn``?"""
     return method in SEMANTIC_METHODS
+
+
+#: ``chunk_params`` keys of the semantic size cap (see ``chunkers.SIZE_CAPS`` /
+#: ``chunkers.CAP_SPLITS``). They ride in ``chunk_params``, so they are already
+#: part of ``chunk_descriptor()`` -> ``spec_hash`` -> the physical name, with no
+#: contract change: ``chunk_params`` is free-form in the schema.
+SIZE_CAP_PARAM = "size_cap"
+CAP_SPLIT_PARAM = "cap_split"
+BREAKPOINT_CAP_PARAM = "breakpoint_cap"
+#: Every size-cap key, in the order the API records them.
+SEMANTIC_CAP_PARAMS: tuple[str, ...] = (SIZE_CAP_PARAM, CAP_SPLIT_PARAM, BREAKPOINT_CAP_PARAM)
+
+
+def semantic_cap_from_params(
+    method: str | None, params: dict | None, *, recorded_size: int | None
+) -> dict[str, str]:
+    """The ``build_chunker`` kwargs (``size_cap``, ``cap_split``, ``breakpoint_cap``)
+    a collection's
+    recorded ``chunk_params`` set — THE one reader, for the API's in-process
+    builder and for the bulk tools alike.
+
+    * Not a semantic method -> ``{}``: the keys are ignored (the create router
+      refuses them there; an existing entry carrying junk must not fail a shard,
+      the same leniency ``ingest_shard._semantic_params`` has).
+    * No ``size_cap`` recorded -> ``{}`` unless ``cap_split`` or
+      ``breakpoint_cap`` is (refused): the collection
+      predates the marker (or never asked for it) and is chunked exactly as
+      before, with only the model window as a cap.
+    * ``size_cap`` must be one of :data:`~ragstack.ingestion.chunkers.SIZE_CAPS`,
+      ``cap_split`` one of :data:`~ragstack.ingestion.chunkers.CAP_SPLITS`; a
+      ``cap_split`` without a ``size_cap`` is refused (it would look applied
+      while splitting nothing differently). Absent ``cap_split`` under a cap is
+      ``greedy`` — but the API records it explicitly at create, so a later change
+      of that default cannot re-chunk an existing collection. Likewise
+      ``breakpoint_cap`` (one of ``BREAKPOINT_CAPS``; absent under a cap is
+      ``"size"``, the study arm, and the API records it explicitly).
+
+    * A recorded ``size_cap`` needs a recorded ``chunk_size`` (``recorded_size``,
+      the entry's own value): the cap IS that number, and an unrecorded one would
+      be filled in differently by each path (the API's ``CHUNK_SIZE`` setting,
+      the shard tool's workflow input) — one spec, two caps.
+
+    Raises ``ValueError`` naming the key (the API's 400; the shard tool turns it
+    into a SystemExit).
+    """
+    if not needs_embed_fn(method):
+        return {}
+    params = params or {}
+    cap = params.get(SIZE_CAP_PARAM)
+    split = params.get(CAP_SPLIT_PARAM)
+    bp = params.get(BREAKPOINT_CAP_PARAM)
+    if cap is None:
+        for key, value in ((CAP_SPLIT_PARAM, split), (BREAKPOINT_CAP_PARAM, bp)):
+            if value is not None:
+                raise ValueError(
+                    f"chunk param {key!r} needs {SIZE_CAP_PARAM!r}="
+                    f"{SIZE_CAPS[0]!r}: without a recorded size cap a semantic "
+                    f"collection is chunked as before (window-only, greedy)"
+                )
+        return {}
+    if not isinstance(cap, str) or cap not in SIZE_CAPS:
+        raise ValueError(
+            f"chunk param {SIZE_CAP_PARAM!r} must be one of {', '.join(SIZE_CAPS)}; got {cap!r}"
+        )
+    if recorded_size is None:
+        raise ValueError(
+            f"chunk param {SIZE_CAP_PARAM!r}={cap!r} makes chunk_size the token cap, "
+            f"but the collection records no chunk_size"
+        )
+    if split is None:
+        split = DEFAULT_CAP_SPLIT
+    if not isinstance(split, str) or split not in CAP_SPLITS:
+        raise ValueError(
+            f"chunk param {CAP_SPLIT_PARAM!r} must be one of {', '.join(CAP_SPLITS)}; "
+            f"got {split!r}"
+        )
+    if bp is None:
+        bp = DEFAULT_BREAKPOINT_CAP
+    if not isinstance(bp, str) or bp not in BREAKPOINT_CAPS:
+        raise ValueError(
+            f"chunk param {BREAKPOINT_CAP_PARAM!r} must be one of "
+            f"{', '.join(BREAKPOINT_CAPS)}; got {bp!r}"
+        )
+    return {"size_cap": cap, "cap_split": split, "breakpoint_cap": bp}
 
 
 #: Default for ``Settings.ingest_worker_unsupported_methods`` — see
@@ -331,6 +425,9 @@ def build_chunker(
     breakpoint_token_counter: TokenCounter | None = None,
     max_breakpoint_sentences: int | None = 3000,
     size_unit: str = DEFAULT_SIZE_UNIT,
+    size_cap: str | None = None,
+    cap_split: str = DEFAULT_CAP_SPLIT,
+    breakpoint_cap: str | None = None,
     on_warn: Callable[[str], None] | None = None,
     require_window: bool = False,
 ) -> tuple[object, TokenCounter, int]:
@@ -344,6 +441,12 @@ def build_chunker(
     returned so callers can reuse them without re-deriving. The semantic-only
     breakpoint args are passed straight through to :func:`make_chunker`.
     ``require_window`` is :func:`resolve_chunk_sizing`'s refusal switch.
+    ``size_cap`` / ``cap_split`` (semantic only) come from the collection's
+    recorded ``chunk_params`` via :func:`semantic_cap_from_params` — every caller
+    reads them through that one function, so a spec resolves the same way on the
+    API and the bulk path. With ``size_cap="tokens"`` the semantic cap is
+    ``chunk_size`` tokens, refused (``ValueError``) when it exceeds the resolved
+    budget returned here.
     """
     warn = on_warn or (lambda m: print(m, file=sys.stderr))
     token_counter, resolved_max = resolve_chunk_sizing(
@@ -364,5 +467,8 @@ def build_chunker(
         breakpoint_token_counter=breakpoint_token_counter,
         max_breakpoint_sentences=max_breakpoint_sentences,
         size_unit=size_unit,
+        size_cap=size_cap,
+        cap_split=cap_split,
+        breakpoint_cap=breakpoint_cap,
     )
     return chunker, token_counter, resolved_max

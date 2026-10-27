@@ -216,9 +216,13 @@ async def test_every_chunk_method_is_creatable(client, _admin, method):
 
 
 @pytest.mark.asyncio
-async def test_semantic_library_records_no_fake_size(client, _admin, monkeypatch, tmp_path):
-    """A semantic library sends no size/overlap, so its spec (and therefore its
-    manifest/provenance) must not claim a window it never used."""
+async def test_semantic_library_without_a_size_gets_the_default_token_cap(
+    client, _admin, monkeypatch, tmp_path
+):
+    """Replaces the old "semantic records no fake size" rule (owner decision on
+    #829): a semantic library that sends no size is capped at the deployment's
+    default size — CHUNK_SIZE, tokens under the default fixed_token method —
+    recorded as a number with the marker, so the spec says what the chunker does."""
     from ragstack.api.collections import CollectionSpec
 
     f = tmp_path / "libs.json"
@@ -234,13 +238,31 @@ async def test_semantic_library_records_no_fake_size(client, _admin, monkeypatch
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["chunk_method"] == "semantic" and body["chunk_size"] is None
+    assert body["chunk_method"] == "semantic" and body["chunk_size"] == 512
 
     spec = next(
         CollectionSpec.model_validate(d) for d in json.loads(f.read_text()) if d["id"] == "sem"
     )
-    assert spec.chunk_size is None and spec.chunk_overlap is None
-    assert spec.chunk_params == {"buffer_size": 4}
+    assert spec.chunk_size == 512 and spec.chunk_overlap is None
+    assert spec.chunk_params == {"buffer_size": 4, "size_cap": "tokens",
+                                 "cap_split": "greedy", "breakpoint_cap": "size"}
+
+
+@pytest.mark.asyncio
+async def test_semantic_default_size_is_refused_when_chunk_size_counts_characters(
+    client, _admin, monkeypatch, tmp_path
+):
+    """CHUNK_METHOD=fixed makes CHUNK_SIZE a character count; it is not
+    reinterpreted as a token cap. An explicit size still works."""
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(tmp_path / "l.json"))
+    monkeypatch.setattr("ragstack.config.settings.chunk_method", "fixed")
+    await _register(client)
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": "semc", "chunk": {"method": "semantic"}})
+    assert r.status_code == 400 and "counts characters" in r.json()["detail"], r.text
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": "semc", "chunk": {"method": "semantic", "size": 256}})
+    assert r.status_code == 201, r.text
 
 
 @pytest.mark.asyncio
@@ -414,3 +436,214 @@ async def test_default_size_unit_is_dropped_so_the_hash_does_not_fork(
     specs = {d["collection"]: CollectionSpec.model_validate(d) for d in json.loads(f.read_text())}
     assert specs[plain_name].chunk_params == {}
     assert specs[tokens_name].chunk_params == {"size_unit": "tokens"}
+
+
+# --------------------------------------------------------------------------- #
+# The semantic size cap at create (marker recorded; overlap warned, not refused)
+# --------------------------------------------------------------------------- #
+
+
+async def _create_semantic(client, monkeypatch, tmp_path, cid, chunk):
+    from ragstack.api.collections import CollectionSpec
+
+    f = tmp_path / "libs.json"
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
+    reg = await client.post("/v1/admin/models/registry", json=EMB)
+    assert reg.status_code == 201 or "already exists" in reg.text, reg.text  # 2nd create
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": cid, "chunk": chunk,
+    })
+    spec = None
+    if r.status_code == 201:
+        spec = next(
+            CollectionSpec.model_validate(d) for d in json.loads(f.read_text()) if d["id"] == cid
+        )
+    return r, spec
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["semantic", "semantic_pooled"])
+async def test_semantic_with_a_size_records_the_token_cap(client, _admin, monkeypatch, tmp_path,
+                                                          method):
+    """A NEW semantic collection with a size records that the size is a token cap,
+    and the split strategy, as concrete values — so the bulk path and a later
+    default change cannot read the spec any other way."""
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "capped", {
+        "method": method, "size": 512, "overlap": 0, "params": {"buffer_size": 4},
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_size == 512
+    assert spec.chunk_params == {"buffer_size": 4, "size_cap": "tokens", "cap_split": "greedy",
+                                 "breakpoint_cap": "size"}
+
+
+@pytest.mark.asyncio
+async def test_semantic_keeps_an_explicit_cap_split(client, _admin, monkeypatch, tmp_path):
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "bal", {
+        "method": "semantic", "size": 256,
+        "params": {"cap_split": "balanced", "breakpoint_cap": "window"},
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_params == {"size_cap": "tokens", "cap_split": "balanced",
+                                 "breakpoint_cap": "window"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("chunk", "needle"), [
+    ({"method": "semantic", "size": 512, "params": {"cap_split": "smart"}}, "cap_split"),
+    ({"method": "semantic", "size": 512, "params": {"size_cap": "chars"}}, "size_cap"),
+    ({"method": "semantic", "size": 512, "params": {"breakpoint_cap": "all"}}, "breakpoint_cap"),
+    ({"method": "words", "size": 512, "params": {"breakpoint_cap": "size"}}, "applies only"),
+    ({"method": "semantic", "size": 0}, "at least 1"),
+    ({"method": "fixed_token", "size": 512, "params": {"size_cap": "tokens"}}, "applies only"),
+    ({"method": "sentence", "size": 512, "params": {"cap_split": "greedy"}}, "applies only"),
+])
+async def test_bad_semantic_cap_is_a_400(client, _admin, monkeypatch, tmp_path, chunk, needle):
+    r, _spec = await _create_semantic(client, monkeypatch, tmp_path, "bad", chunk)
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_cap_over_chunk_max_tokens_is_refused_at_create(
+    client, _admin, monkeypatch, tmp_path
+):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
+    ok, _ = await _create_semantic(client, monkeypatch, tmp_path, "fits",
+                                   {"method": "semantic", "size": 512})
+    assert ok.status_code == 201, ok.text
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "over",
+                                  {"method": "semantic", "size": 513})
+    assert r.status_code == 400, r.text
+    assert "512" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_overlap_is_warned_not_refused(client, _admin, monkeypatch, tmp_path,
+                                                      caplog):
+    with caplog.at_level("WARNING", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "ov", {
+            "method": "semantic", "size": 512, "overlap": 64,
+        })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_overlap == 64  # recorded as sent: not refused, not rewritten
+    warned = [m.getMessage() for m in caplog.records if "ignores chunk_overlap" in m.getMessage()]
+    assert warned and "64" in warned[0]
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="ragstack.api.routers.collections"):
+        r, _ = await _create_semantic(client, monkeypatch, tmp_path, "nov", {
+            "method": "semantic", "size": 512, "overlap": 0,
+        })
+    assert r.status_code == 201
+    assert not [m for m in caplog.records if "ignores chunk_overlap" in m.getMessage()]
+
+
+def test_unmarked_semantic_entry_builds_uncapped(monkeypatch):
+    """A pre-marker entry (chunk_size recorded, no size_cap) keeps window-only
+    chunking; a marked one is capped at its size."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
+    monkeypatch.setattr("ragstack.config.settings.chunk_token_counter", "estimate")
+    embed = lambda texts: [[0.0] * 8 for _ in texts]  # noqa: E731
+    old = _chunker_for(_entry("semantic", chunk_size=512), embed_fn=embed)
+    assert old.size_cap_tokens is None and old.cap_split == "greedy"
+    new = _chunker_for(
+        _entry("semantic", chunk_size=512,
+               chunk_params={"size_cap": "tokens", "cap_split": "topic"}),
+        embed_fn=embed,
+    )
+    assert new.size_cap_tokens == 512 and new.cap_split == "topic"
+
+
+@pytest.mark.asyncio
+async def test_semantic_server_default_cap_is_clamped_to_the_budget_at_create(
+    client, _admin, monkeypatch, tmp_path, caplog
+):
+    """A create that omits `chunk` takes the server default — which, for a semantic
+    default, records the size-cap marker. CHUNK_SIZE=1024 over a 512-token budget
+    used to mint the collection (201) recording 1024 and then fail every ingest
+    with a 400. The deployment default is now clamped to the budget and the
+    clamped number is what the spec records, so every ingest can honour it."""
+    from ragstack.api.collections import CollectionSpec
+
+    f = tmp_path / "libs.json"
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
+    monkeypatch.setattr("ragstack.config.settings.chunk_method", "semantic")
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
+    monkeypatch.setattr("ragstack.config.settings.chunk_size", 1024)
+    await _register(client)
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
+    assert r.status_code == 201, r.text
+    spec = next(CollectionSpec.model_validate(d) for d in json.loads(f.read_text()))
+    assert spec.chunk_size == 512
+    assert spec.chunk_params == {"size_cap": "tokens", "cap_split": "greedy",
+                                 "breakpoint_cap": "size"}
+    assert any("default semantic chunk size 1024" in m.getMessage() for m in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_semantic_default_size_is_clamped_but_an_explicit_one_is_refused(
+    client, _admin, monkeypatch, tmp_path, caplog
+):
+    """A size-less semantic create (what the UI sends) on a tight-window
+    deployment: the default CHUNK_SIZE (512) over the budget (256) is clamped and
+    recorded as 256. A size the CALLER sends over the budget is refused, never
+    clamped."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "nosize",
+                                         {"method": "semantic"})
+    assert r.status_code == 201, r.text
+    assert spec.chunk_size == 256 and spec.chunk_params["size_cap"] == "tokens"
+    assert any("recording 256" in m.getMessage() for m in caplog.records)
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "explicit",
+                                  {"method": "semantic", "size": 257})
+    assert r.status_code == 400 and "256" in r.json()["detail"], r.text
+    # Within the budget the default is not touched.
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "roomy",
+                                     {"method": "semantic"})
+    assert r.status_code == 201 and spec.chunk_size == 512, r.text
+
+
+@pytest.mark.asyncio
+async def test_semantic_default_clamp_is_logged_once_per_create(
+    client, _admin, monkeypatch, tmp_path, caplog
+):
+    """The clamp INFO line is emitted by the call that records the size only —
+    validation computes the same default silently."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "once",
+                                         {"method": "semantic"})
+    assert r.status_code == 201 and spec.chunk_size == 256, r.text
+    lines = [m for m in caplog.records if "recording 256" in m.getMessage()]
+    assert len(lines) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk", [
+    {"method": "semantic", "overlap": 300},              # omitted size -> clamped 256
+    {"method": "semantic", "size": 128, "overlap": 128},
+    {"method": "semantic", "size": 128, "overlap": -1},
+])
+async def test_semantic_overlap_must_be_below_the_recorded_size(
+    client, _admin, monkeypatch, tmp_path, chunk
+):
+    """The oversized-document fallback uses the recorded size and overlap, so an
+    overlap at or above the (possibly clamped default) size is refused."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "ov", chunk)
+    assert r.status_code == 400, r.text
+    assert "overlap" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_overlap_below_the_clamped_default_is_accepted(
+    client, _admin, monkeypatch, tmp_path
+):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "ok",
+                                     {"method": "semantic", "overlap": 255})
+    assert r.status_code == 201, r.text
+    assert (spec.chunk_size, spec.chunk_overlap) == (256, 255)
