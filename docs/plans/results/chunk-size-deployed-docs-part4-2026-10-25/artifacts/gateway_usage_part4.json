@@ -1,0 +1,64 @@
+{
+ "addendum_Q": {
+  "calls": 1522,
+  "failures": {
+   "empty": 1,
+   "http_502": 1
+  },
+  "input_tokens": 315243,
+  "local": {},
+  "output_tokens": 70845,
+  "recorded_by_store": {
+   "opus55": {
+    "calls_recorded": 744,
+    "completion_tokens": 63868,
+    "prompt_tokens": 177036
+   },
+   "sol": {
+    "calls_recorded": 744,
+    "completion_tokens": 6917,
+    "prompt_tokens": 125020
+   }
+  }
+ },
+ "part4": {
+  "calls": 18549,
+  "failures": {
+   "ReadError": 4,
+   "RemoteProtocolError": 4,
+   "http_502": 11,
+   "http_599": 1
+  },
+  "input_tokens": 6916402,
+  "local": {
+   "calls": 22050,
+   "completion_tokens": 2187713,
+   "prompt_tokens": 71811906
+  },
+  "output_tokens": 763806,
+  "recorded_by_store": {
+   "generation": {
+    "completion_tokens": 100449,
+    "prompt_tokens": 712497
+   },
+   "graders": {
+    "opus48": {
+     "calls_recorded": 3844,
+     "completion_tokens": 49441,
+     "prompt_tokens": 1779021
+    },
+    "sol": {
+     "calls_recorded": 13658,
+     "completion_tokens": 603849,
+     "prompt_tokens": 4347479
+    }
+   }
+  }
+ },
+ "source": "sum of run_segments[].totals_since_resume (the run's own gateway counters); local = the readers' local-model calls, not gateway",
+ "total": {
+  "calls": 20071,
+  "input_tokens": 7231645,
+  "output_tokens": 834651
+ }
+}
