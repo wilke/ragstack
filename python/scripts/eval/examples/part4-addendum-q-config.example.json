@@ -1,0 +1,23 @@
+{
+  "_comment": "SYNTHETIC snippet for part4_addendum_q.py: these two keys go into the same private config as part 4 (examples/part4-config.example.json); the real config lives outside the repo. prompts.ADDQ_USER: the classifier prompt with {question} and {quote}; the real one has the product name written in where this shows <PRODUCT> (the script refuses a prompt that still contains <PRODUCT>). The 'addendum_q' block is documented in part4_addendum_q.py (DEFAULTS); keys left out take the defaults; files.prereg is required.",
+  "prompts": {
+    "ADDQ_USER": "A user asked about <PRODUCT>:\n\nQuestion: {question}\n\nA sentence from the <PRODUCT> documentation:\n<quote>\n{quote}\n</quote>\n\nDoes the sentence give what the question asks for?\n- answer: it states (part of) what is asked.\n- setup: it only restates the situation the question already mentions.\n- neither: it is unrelated.\nAnswer with one word: answer, setup, or neither."
+  },
+  "addendum_q": {
+    "primary": {"model": "Example Classifier A", "tag": "clsA", "max_tokens": 1024, "temperature": 0},
+    "secondary": {"model": "Example Classifier B", "tag": "clsB", "max_tokens": 4096, "temperature": null},
+    "gateway": {"inflight": 4, "passes": 2},
+    "limits": {"output_token_cap": 1000000, "batch_calls": null, "batch_input_tokens": null,
+               "batch_output_tokens": null, "max_fail_consecutive": 5, "max_fail_total": 20,
+               "empty_retries": 2, "empty_backoff_s": 30.0, "rate_backoffs_s": [30.0, 120.0, 600.0]},
+    "set": "M",
+    "expected_questions": 372,
+    "kappa": {"n_boot": 10000, "level": 0.95, "seed": 261026},
+    "human": {"n": 40, "seed": "261026|Q"},
+    "files": {"prereg": "PREREG-addendum-Q.md", "prereg_sha256": null, "questions": "part4-questions.jsonl",
+              "part4_results": "results-part4.json", "labels": "addq-labels-{tag}.jsonl",
+              "call_log": "addq-calls.jsonl", "state": "addq-state.json",
+              "results": "results-part4-addendum-q.json", "human_results": "addq-human.json",
+              "pause_file": "PAUSE"}
+  }
+}

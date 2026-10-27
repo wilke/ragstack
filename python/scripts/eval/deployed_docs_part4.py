@@ -616,15 +616,65 @@ async def run_jobs(jobs: list[tuple[str, Callable[[Any], Any]]], sems: dict[str,
 #: label words -> label (``abstain`` / ``abstains`` / ``abstention`` count as ``abstained``)
 LABEL_WORDS = {"correct": "correct", "partial": "partial", "incorrect": "incorrect", "abstained": "abstained",
                "abstain": "abstained", "abstains": "abstained", "abstention": "abstained"}
-_LABEL_RE = "|".join(sorted(LABEL_WORDS, key=len, reverse=True))
-_BOLD = re.compile(rf"\*\*\s*({_LABEL_RE})\s*[.:!]?\s*\*\*", re.I)
-_GRADE = re.compile(rf"\bgrade\s*[:=\-]\s*\**\s*({_LABEL_RE})\b", re.I)
-_WORDS = re.compile(rf"\b({_LABEL_RE})\b", re.I)
 _TOKEN = re.compile(r"[a-z']+")
 #: plus any word ending in n't
 NEGATORS = frozenset({"not", "never", "no", "nor", "neither", "hardly", "cannot"})
 QUALIFIERS = frozenset({"partially", "partly", "mostly", "largely", "somewhat", "half", "nearly", "almost", "only"})
 NEGATION_WINDOW = 3
+
+
+class LabelParser:
+    """The part-4 parser rule over a label set: ``label_words`` (word -> label) and
+    the ``marker`` regex of rule 1 (``grade`` for part 4: ``Grade: <label>``).
+
+    Called as ``parser(text) -> (label, rule)``; the rule is :func:`parse_grade`'s.
+    One generalisation, inert for part 4's labels: a preceding word that is itself a
+    word of the same label does not negate or qualify it (relevant only when a label
+    word is also a negator, as ``neither`` is for addendum Q: ``neither; neither``).
+    Part 4's label words are neither negators nor qualifiers, so its behaviour is
+    unchanged (tested against a frozen copy of the original parser)."""
+
+    def __init__(self, label_words: dict[str, str], marker: str = "grade") -> None:
+        self.words = dict(label_words)
+        self.label_re = "|".join(sorted(self.words, key=len, reverse=True))
+        self.bold = re.compile(rf"\*\*\s*({self.label_re})\s*[.:!]?\s*\*\*", re.I)
+        self.marked = re.compile(rf"\b{marker}\s*[:=\-]\s*\**\s*({self.label_re})\b", re.I)
+        self.any_word = re.compile(rf"\b({self.label_re})\b", re.I)
+
+    def __call__(self, text: str) -> tuple[str, str]:
+        words = self.words
+        mark_hits = list(self.marked.finditer(text))
+        # a bold match that contains the start of a marker match is the marker's own
+        # decoration (``**Answer:** setup``), not a second label: the marker decides.
+        # Inert for part 4: ``grade`` is not a label word, so no bold span contains it.
+        bold_hits = [b for b in self.bold.finditer(text)
+                     if not any(b.start() <= m.start() < b.end() for m in mark_hits)]
+        marked = ({words[m.group(1).lower()] for m in bold_hits}
+                  | {words[m.group(1).lower()] for m in mark_hits})
+        if len(marked) == 1:
+            return next(iter(marked)), "bold_or_grade"
+        if len(marked) > 1:
+            return "unparseable", "several"
+        hits = list(self.any_word.finditer(text))
+        distinct = {words[m.group(1).lower()] for m in hits}
+        if not distinct:
+            return "unparseable", "none"
+        if len(distinct) > 1:
+            return "unparseable", "several"
+        lab = next(iter(distinct))
+        for m in hits:
+            before = _TOKEN.findall(text[:m.start()].lower().replace("’", "'"))[-NEGATION_WINDOW:]
+            before = [w for w in before if words.get(w) != lab]
+            if any(w in NEGATORS or w.endswith("n't") for w in before):
+                return "unparseable", "negated"
+            if any(w in QUALIFIERS for w in before):
+                return "unparseable", "qualified"
+        return lab, "one_word"
+
+
+_PARSE_GRADE = LabelParser(LABEL_WORDS, "grade")
+_LABEL_RE = _PARSE_GRADE.label_re
+_BOLD, _GRADE, _WORDS = _PARSE_GRADE.bold, _PARSE_GRADE.marked, _PARSE_GRADE.any_word
 
 
 def parse_grade(text: str) -> tuple[str, str]:
@@ -640,26 +690,10 @@ def parse_grade(text: str) -> tuple[str, str]:
        ending in ``n't``) or of :data:`QUALIFIERS` within the
        :data:`NEGATION_WINDOW` words before it (rule ``one_word``);
     3. otherwise ``unparseable`` (rule ``none``, ``several``, ``negated`` or ``qualified``).
+
+    The rule lives in :class:`LabelParser` (shared with addendum Q's label set).
     """
-    marked = ({LABEL_WORDS[m.group(1).lower()] for m in _BOLD.finditer(text)}
-              | {LABEL_WORDS[m.group(1).lower()] for m in _GRADE.finditer(text)})
-    if len(marked) == 1:
-        return next(iter(marked)), "bold_or_grade"
-    if len(marked) > 1:
-        return "unparseable", "several"
-    hits = list(_WORDS.finditer(text))
-    distinct = {LABEL_WORDS[m.group(1).lower()] for m in hits}
-    if not distinct:
-        return "unparseable", "none"
-    if len(distinct) > 1:
-        return "unparseable", "several"
-    for m in hits:
-        before = _TOKEN.findall(text[:m.start()].lower().replace("’", "'"))[-NEGATION_WINDOW:]
-        if any(w in NEGATORS or w.endswith("n't") for w in before):
-            return "unparseable", "negated"
-        if any(w in QUALIFIERS for w in before):
-            return "unparseable", "qualified"
-    return next(iter(distinct)), "one_word"
+    return _PARSE_GRADE(text)
 
 
 # --------------------------------------------------------------- truncation
