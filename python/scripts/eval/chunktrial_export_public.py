@@ -98,8 +98,10 @@ def word_grams(text: str, n: int = GRAM_WORDS) -> set[tuple[str, ...]]:
 
 
 class Redactor:
-    def __init__(self, cfg: dict[str, Any], doc_ids: set[str], filenames: set[str], texts: list[str]):
+    def __init__(self, cfg: dict[str, Any], doc_ids: set[str], filenames: set[str], texts: list[str],
+                 skip_keys: set[str] | frozenset[str] | None = None):
         self.salt = cfg["export_salt"]
+        self.skip_keys = SKIP_KEYS if skip_keys is None else skip_keys
         self.labels = cfg["public_stratum_labels"]
         self.doc_ids = doc_ids
         self.filenames = filenames
@@ -135,7 +137,7 @@ class Redactor:
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
-                if k in SKIP_KEYS:
+                if k in self.skip_keys:
                     continue
                 k2 = self.relabel(str(k))
                 self.check(k2, path + "/" + k2)
@@ -151,6 +153,19 @@ class Redactor:
             return o
         self.errors.append(f"{path}: unexpected type {type(o).__name__}")
         return None
+
+
+def blob_leak(name: str, blob: str, red: Redactor) -> str | None:
+    """Why ``blob`` (an output file's text) must not be written, or None: a private text
+    (normalised substring) or a run of :data:`GRAM_WORDS` words from one."""
+    low = norm(blob)
+    leaks = [t for t in red.texts if t in low]
+    if leaks:
+        return f"{name} contains {len(leaks)} private text(s)"
+    runs = word_grams(blob) & red.grams
+    if runs:
+        return f"{name} contains {len(runs)} {GRAM_WORDS}-word run(s) from private text"
+    return None
 
 
 def usage_totals(src: Path) -> dict[str, Any]:
@@ -285,15 +300,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     blobs = {n: json.dumps(o, indent=1, sort_keys=True, ensure_ascii=True) + "\n" for n, o in outputs.items()}
     for n, b in blobs.items():
-        low = norm(b)
-        leaks = [t for t in red.texts if t in low]
-        if leaks:
-            print(f"REFUSING to write: {n} contains {len(leaks)} private text(s)", file=sys.stderr)
-            return 3
-        runs = word_grams(b) & red.grams
-        if runs:
-            print(f"REFUSING to write: {n} contains {len(runs)} {GRAM_WORDS}-word run(s) from private text",
-                  file=sys.stderr)
+        why = blob_leak(n, b, red)
+        if why:
+            print(f"REFUSING to write: {why}", file=sys.stderr)
             return 3
     dest.mkdir(parents=True, exist_ok=True)
     for n, b in blobs.items():
