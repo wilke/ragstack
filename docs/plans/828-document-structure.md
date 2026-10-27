@@ -1,7 +1,11 @@
 # Document structure: one model, per-format adapters, section-aware chunking and chunk metadata (#828)
 
-**Status:** `PROPOSED`, design note, 2026-10-27. No code. Written for the owner's review
-before the first PR of the series in §12. It folds in the owner's direction from the #828
+**Status:** `PROPOSED`, design note, 2026-10-27, revised the same day after an independent
+review (its findings are folded in where they bit: §2 adapter placement and invariants 3 and 5,
+§4 supersession and release order, §6 the `section_title` change on unit records and the
+list-filter caveat, §7 the `embed_heading_path` forcing rule, §8 the shared helper, §9.1 the BOM
+and parser details, §10 the statistics, §12 the #831 dependency and the contract change in
+PR 4a). No code. Written for the owner's review before the first PR of the series in §12. It folds in the owner's direction from the #828
 thread (document level, not format level; `Document.structure`; adapters; stamping by offset
 overlap; inferred structure for PDF and extracted text; captions; placement as an evaluation
 arm; an accuracy check before anything relies on the inference), the merge rule of #831, the
@@ -82,19 +86,54 @@ Every adapter in this note follows it. In particular:
   PyMuPDF block geometry) and emits offsets into it directly.
 - No step ever transforms `content` after structure exists. Normalisation that the loader does
   today (universal newlines in `TextFileLoader`, `.strip()` of PDF text) happens *before* the
-  adapter runs, on both paths, because the adapter runs inside the loader.
+  adapter runs, on both paths. `TextFileLoader` reads `utf-8`, not `utf-8-sig`, so a BOM is
+  `content[0]` and stays there; the Markdown adapter parses `content` with the BOM removed and
+  adds its length back to every offset (§9.1), which is a parse-input choice, not a transform of
+  `content`.
+
+**Where each adapter runs** (this decides what the JSONL must carry and which image must be
+new; the review found the first draft's answer could not work on GoWe):
+
+| adapter | what the structure is read from | where it runs | why |
+|---|---|---|---|
+| Markdown (§9.1) | the raw text itself | **at ingest**, on every path: a pipeline step `attach_structure(documents, options)` dispatching on the suffix of `Document.source`, after load and DOI enrichment, before chunking | raw Markdown travels intact through the GoWe extract step since #830, so nothing is lost by deferring; and the ingest step is the only one that knows the collection spec (`ingest_shard._build_pipeline` resolves the target; the extract step's CWL inputs are `pdfs` and `batch_id`, nothing else), so `text_render` can only be applied there. `pdf_extract.py` never writes structure for `.md`/`.txt`. |
+| JATS (§9.2) | the XML | **at extract** (`jats_extract.py`, and the in-process `JatsLoader` of PR 4a) | the XML is not available after the record is written; the structure rides the JSONL (§4) |
+| PDF (§9.4) | layout from the PDF bytes | **at extract** (`pdf_extract.py` → `PdfLoader`) | same: the layout is gone once the text is written; the structure rides the JSONL |
+| extracted text (§9.5) | the text itself | **at ingest**, like Markdown, when the collection opts in | there is nothing else to read it from |
+
+So the GoWe extract step gains no workflow input and no spec lookup (consistent with #829's
+rule that `chunk_params` are read from the registry entry, never from a CWL input), the
+`text_render` marker is honoured where the entry is known, and the JSONL carries structure only
+for formats whose source is unavailable downstream.
 
 **Invariants, tested in PR-1 and asserted on every load (§8):**
 
 1. `0 <= start < end <= len(content)` for every section and block.
 2. Sections nest: for any two sections, either one contains the other or they are disjoint; a
    child's `level` is its parent's `level + 1`.
-3. The level-1 sections partition `[0, len(content))` in order, with no gaps. Text before the
-   first heading is a level-1 section with `title=None` (untitled sections are first-class,
-   `section-taxonomy.md` rule 7). `structure` absent means *unknown*; it never means one big
-   section.
+3. The level-1 sections partition `[0, len(content))` in order, with no gaps, and the children
+   of any section partition their parent's span. **Separators belong to the preceding
+   section:** a section's `end` is the next sibling's `start`, or its parent's `end`, or
+   `len(content)` at level 1. This matters because the sources do not hand over gap-free spans:
+   `jats.py` joins sibling spans with `"\n\n"` that belongs to no `Span` (and the abstract and the
+   body are joined the same way), and a Markdown blank line between a paragraph and the next
+   heading is in no token's `map`. The adapters therefore *extend* each section's `end` to the
+   next start before emitting, and the validator checks the result, not the source spans. Text
+   before the first heading is a level-1 section with `title=None` (untitled sections are
+   first-class, `section-taxonomy.md` rule 7). `structure` absent means *unknown*; it never
+   means one big section.
 4. Blocks do not overlap each other and are sorted by `start`. They need not cover the text.
-5. A `heading` block's text equals its section's `title` (whitespace-normalised).
+5. A titled section has exactly one `heading` block, it is the section's first block, and it
+   lies within the section. A `heading` block covers **the title text only**, never the heading
+   markup: in raw Markdown an ATX heading's `map` covers `## Title\n`, so the block starts after
+   the `#` run and its following spaces and ends before the optional closing `#` sequence and
+   the newline; a setext heading's block is its first line's text; JATS' `title` span covers
+   the rendered `## Title` line, so the block starts `min(depth+2, 6) + 1` characters in. The
+   stronger property — the heading block's text equals `title` — holds exactly in stripped
+   Markdown and JATS, and after inline-markup removal in raw Markdown (`*tool*` → `tool`); it is
+   asserted by each adapter's own tests, not by the load-time validator, which would otherwise
+   need a renderer and would have dropped every raw-Markdown and JATS structure of the first
+   draft.
 6. `stamp(structure, start, end)` is a pure function; the same inputs give the same metadata
    on every path, which is what the parity tests compare.
 
@@ -179,16 +218,32 @@ The GoWe path and the operator CWL paths hop through JSONL (`{"text", "path", "m
 {"text": "...", "path": "...", "metadata": {...}, "structure": {"sections": [...], "blocks": [...], "structure_source": "parsed", "adapter": "markdown/1"}}
 ```
 
-Why not inside `metadata`: `jats.py` already states the rule — spans "are large and are not a
-filterable field, so they must never reach `metadata` or the JSONL shard" — and `metadata` is
-what the passthrough allow-list, `index_metadata` and the ES keyword mapping consume. A
-top-level key is outside all three, so structure is immune to the metadata drift #833 item 4
-describes and never lands in a store as a payload. `pdf_extract.py` writes the key when the
-document has structure; `JsonlLoader._document` reads it, **validates the invariants of §2
-against `text` before accepting it**, and on any violation drops the structure (not the
-document) and counts it in a new `DropReport.structure_invalid` counter the shard prints, so a
-corrupt or stale structure is loud and the document still ingests as unstructured. `--spans-out`
-on `jats_extract.py` stays as it is; the record key is the carrier from now on.
+Why not inside `metadata`: `metadata` is what the passthrough allow-list, `index_metadata` and
+the ES keyword mapping consume. A top-level key is outside all three, so structure is immune to
+the metadata drift #833 item 4 describes and never lands in a store as a payload.
+
+**This supersedes a rule in the code.** `jats.article_records` (the `with_spans` docstring) and
+`scripts/jats_extract.py` (`--spans-out`) both say spans "must never reach `metadata` or the
+JSONL shard". Half of that stands — never `metadata` — and half is reversed here: the shard
+record *is* the carrier, as a top-level key. The reason the rule existed (spans are large and
+not filterable) is met by keeping them out of `metadata`; the reason to reverse it is that the
+JATS and PDF structures have no other way to reach the ingest step (§2). PR 1 rewrites the
+`jats.py` docstring; PR 4b rewrites `jats_extract.py`'s and makes `--spans-out` a debugging
+side file that duplicates the record key.
+
+`pdf_extract.py` and `jats_extract.py` write the key when the document has structure;
+`JsonlLoader._document` reads it, **validates the invariants of §2 against `text` before
+accepting it**, and on any violation drops the structure (not the document) and counts it in a
+new `DropReport.structure_invalid` counter the shard prints, so a corrupt or stale structure is
+loud and the document still ingests as unstructured.
+
+**An old image drops the key silently.** `JsonlLoader._document` reads `text`, `path` and
+`metadata` and ignores every other key, so an ingest image without this series ingests a
+structured shard as unstructured with no error; and an extract image without it writes no key,
+so a new ingest image fed by an old extract image sees no PDF or JATS structure. Neither is a
+failure the engine notices. The tells are in the receipt: `enrichment.structure` absent means an
+old ingest image; present with `adapters` counting `pdf-layout/1: 0` beside `structure_missing: N`
+means an old extract image. §7's release-order table carries this.
 
 Size: a section or block is about 60–120 bytes of JSON; a long JATS article with 200 spans
 is ~20 KB beside ~60 KB of text. Acceptable. A structure over 1 MB is dropped with the same
@@ -233,8 +288,13 @@ barely collide, and where they do the rule is explicit.
   reference*, *Command reference* → `parameters`.
 - `introduction` appears in both classes under one role; the docs cue only *refines* it to
   `overview` when the sibling test fires. Either answer is a correct `roles/1` value.
-- The classifier fills `role` only where the adapter left it `None`, from `title` alone, and
-  writes `role_source="rules/1"`. A declared role (JATS `sec-type`) is never overwritten.
+- The classifier fills `role` only where the adapter left it `None`, and writes
+  `role_source="rules/1"`. A declared role (JATS `sec-type`) is never overwritten. **It takes the
+  whole section list, not one title**: five of the rules above need context — *summary* is
+  `abstract` when first and `conclusions` when last, *results and discussion* depends on a
+  preceding `methods`, *introduction* becomes `overview` on an `installation`/`usage` sibling,
+  and the stamp's inheritance (§6) walks ancestors. `classify_roles(sections) -> None` is one
+  pass over the tree, deterministic for a given list.
 - **Roles are inherited downward for stamping only** (§6): a level-2 section under *Methods* has
   no role of its own unless its title matches; the chunk's `section_role` is the nearest titled
   ancestor's role. The structure records what each section's title says; the stamp records what
@@ -259,15 +319,19 @@ rules.
 ## 6. Chunk metadata: the stamp
 
 `stamp(structure, start_char, end_char, content) -> dict` lives in
-`ragstack/ingestion/structure.py` and runs in `IngestionPipeline.prepare_documents` between the
-chunk loop and `_filter_boilerplate`, on every path that uses the pipeline (A, B, C; path D is
-handled in §8). It writes only when `doc.structure is not None`; a chunk of an unstructured
-document gets none of these keys. Absent is a state (`chunk_metadata.json`
+`ragstack/ingestion/structure.py`. The pipeline wraps it as `_stamp_structure(documents, chunks)`,
+a shared helper in the shape of `_filter_boilerplate` / `_attach_glossary`, called from **both**
+chunk loops — `prepare_documents` (paths A and B) and `iter_embed_source` (path C:
+`embed_shard.py` → `run_embed_shard` → `iter_embed_source`, which never calls
+`prepare_documents`) — between the chunk loop and `_filter_boilerplate`; `ingest_jsonl.py`'s own
+loop (path D) calls the same helper. One helper, three call sites, one parity test. It writes
+only when `doc.structure is not None`; a chunk of an unstructured document gets none of these
+keys. Absent is a state (`chunk_metadata.json`
 `x-ragstack-absence`): it means *not processed*, never *no section*.
 
 | field | type | rule |
 |---|---|---|
-| `section_title` | string | the **owning section's** title. Owning = among the deepest sections overlapping `[start_char, end_char)`, the one with the largest overlap in characters; ties → the earliest. Existing field; today only JATS unit records fill it (with the unit suffix). Omitted when the owning section is untitled. |
+| `section_title` | string | the **owning section's** title. Owning = among the deepest sections overlapping `[start_char, end_char)`, the one with the largest overlap in characters; ties → the earliest. Omitted when the owning section is untitled. **Existing field, and the stamp changes its value on one producer:** today only JATS unit records fill it, with the unit *suffix* (`table-2`, `figure-1`, set in `article_records` and carried to chunks by the passthrough allow-list on path C). Under the stamp a unit chunk's `section_title` becomes the caption's label text (`Table 2`), which is what the schema's description ("the source document's own heading") always meant; the suffix survives in `source`/`path` (`PMC…#table-2`). Collections ingested earlier keep the suffix, and `structure_version` tells the two apart. Open question Q13. |
 | `section_path` | list of strings | the owning section's `path`. Omitted when empty. |
 | `section_level` | integer | the owning section's `level`. |
 | `section_role` | string (`roles/1`) | the owning section's role, or the nearest titled ancestor's when the owning section has none; `unknown` otherwise. |
@@ -284,11 +348,32 @@ the top of the Qdrant payload, and under `metadata.*` in Elasticsearch. All new 
 declared in `contracts/schemas/chunk_metadata.json` **and** `metadata_schema.DECLARED_FIELDS`
 (the test pins them field for field); strings and lists of strings map to `keyword` with
 `ignore_above`, `section_level` to `long`, `section_crossing` to `boolean`. The ES mapping is
-derived from the table, and `ensure_index` pushes the derived mapping to an existing index with
-`put_mapping`; a brand-new field conflicts with nothing (the `symbol_glossary` precedent), so an
-existing index accepts the new fields without reindexing. `section_level` is **not** added to
-`KNOWN_INT_FIELDS` in this series (that widens the filter-side 400 and needs its own contract
-note, as the module says).
+derived from the table. How it reaches an **existing** index is exactly `ensure_index`'s current
+behaviour, no more: a new index is created with the full derived mapping; an existing one gets
+one `put_mapping` of the full derived mapping, which succeeds when nothing already mapped
+conflicts (the new fields themselves conflict with nothing), and on a divergent index (one whose
+`metadata.year` is already a `keyword`, say) the whole push is rejected and the module falls back
+to pushing the dynamic template alone. On such an index the new fields are typed by the template
+on first write: the strings and string lists become `keyword` through
+`metadata_strings_as_keyword`, and `section_level` / `section_crossing` fall to ES's own
+inference, which gives `long` / `boolean` — the declared types, by luck rather than by decision.
+Only `symbol_glossary` has a field-specific third push today; this series adds none, and
+`metadata_conformance.py` reports the divergence as it does for every other field.
+`section_level` is **not** added to `KNOWN_INT_FIELDS` in this series (that widens the
+filter-side 400 and needs its own contract note, as the module says).
+
+**List-valued fields and the in-memory predicate.** `section_path`, `block_types`,
+`caption_labels` and `refers_to` are lists. Server-side, Qdrant and Elasticsearch match a scalar
+filter against any element of a list (the `authors` precedent). The shared in-memory predicate
+`stores/filters.py::payload_matches` does not: it compares `actual != value`, so a list-valued
+payload never matches a scalar filter there — and `QdrantVectorStore.get_chunks` re-checks every
+retrieved record through that predicate, as does `InMemoryVectorStore`. A filter on a list field
+therefore already disagrees between the retrieval legs and the context-expansion path for
+`authors`, and would for these four. Scalar fields (`section_role`, `section_title`,
+`section_level`, `structure_source`) are unaffected. Fixing `payload_matches` to treat a list
+`actual` as "any element equals" is a small change with its own test and conformance case; it
+is a **prerequisite for offering a filter on any list field**, listed in PR 1, and not a reason
+to store these as anything but lists.
 
 **Identity: stamping is not in `spec_hash`.** `spec_hash` is `sha1(model|dim|chunk_descriptor)`
 and `chunk_descriptor` is `method/size/overlap/{chunk_params}`. The stamp changes neither content
@@ -307,11 +392,27 @@ collection an ingest resolves to.** Two consequences the owner should accept exp
    is a stamped field and why a stamp change is a version bump, never an in-place edit.
 
 Stamping is controlled by a deployment setting, `STRUCTURE_METADATA=off|on`, with a matching
-`--structure-metadata` flag on `ingest_shard.py` / `ingest_jsonl.py` and a `structure_metadata`
-CWL input the API seeds from the setting — the `symbol_glossary` pattern (#783) exactly. Default
-`off` until the accuracy check (§10) has run; then `on` for new ingests. What ran is recorded in
-the shard receipt under `enrichment.structure = {"stamp": "stamp/1", "adapters": {...counts}}`
-(ADR-0011 interim slot) and in the collection manifest.
+`--structure-metadata` flag on `ingest_shard.py` / `embed_shard.py` / `ingest_jsonl.py` and a
+`structure_metadata` CWL input the API seeds from the setting when the registered workflow
+declares it — the `symbol_glossary` pattern (#783) exactly, including the ADR-0010 stamped-image
+gate on the declared-inputs check. Default `off` until the accuracy check (§10) has run; then
+`on` for new ingests. **A marker overrides the setting** (§7): a collection whose `chunk_params`
+carry `structure_cuts` or `embed_heading_path` needs structure to chunk or embed at all, so the
+one reader returns `needs_structure=True` and the adapters run and the stamp is written whatever
+`STRUCTURE_METADATA` says, on every path; otherwise one spec would give two results by
+deployment setting. What ran is recorded in the shard receipt under
+`enrichment.structure = {"stamp": "stamp/1", "adapters": {"markdown/1": n, ...},
+"structure_missing": n, "backend": "markdown-it-py/3.0.0"}` — the interim post-chunking
+enrichment slot `ShardReceipt.enrichment` already holds for the symbol glossary
+(`receipts.py`, "folds into ADR-0011's `core.activity.params` when ADR-0011 PR-3 lands") — and
+in the collection manifest.
+
+**A missing parser is a refusal, never a fallback.** The Markdown adapter needs the `[markdown]`
+extra. When the adapters are asked to run (setting `on`, or a marker set) and the extra is
+absent, the API refuses the ingest (503 naming the extra, like the token-counter refusal) and the
+bulk tools exit at configuration; nothing degrades to "no structure" or to a regex. The fleet ran
+a regex sentence segmenter for months because an optional import fell back silently (#815), and
+the backend name in `enrichment.structure.backend` is the audit that would have caught it.
 
 ---
 
@@ -329,9 +430,9 @@ free-form in the contract).
 
 | key | values | what it changes | why it is identity |
 |---|---|---|---|
-| `text_render` | absent (raw) \| `"markdown-plain/1"` | the Markdown loader emits the stripped plain text of #828 §2 as `content` (headings on their own line without `#`; links as `text (url)`; images as alt plus target; inline HTML as visible text plus `href`; code verbatim; math verbatim; tables one row per line, cells joined by ` \| `; emphasis markers dropped). Applies to `.md` only; other suffixes are untouched. | content changes, so every offset, chunk and id changes |
+| `text_render` | absent (raw) \| `"markdown-plain/1"` | the Markdown adapter, at ingest (§2), replaces `content` with the stripped plain text of #828 §2 (headings on their own line without `#`; links as `text (url)`; images as alt plus target; inline HTML as visible text plus `href`; code verbatim; math verbatim; tables one row per line, cells joined by ` \| `; emphasis markers dropped). Applies to `.md` only; other suffixes are untouched. | content changes, so every offset, chunk and id changes |
 | `structure_cuts` | absent \| `"sections/1"` | section boundaries become **preferred** cut points for every method (§7.1); the #831 merge never crosses one | chunk boundaries change |
-| `embed_heading_path` | absent \| `"prefix/1"` | the embedded text is `" › ".join(section_path) + "\n" + content`; the stored `content`, the offsets and the ids are unchanged | vectors change; the collection's vectors are no longer a function of `content` alone |
+| `embed_heading_path` | absent \| `"prefix/1"` | the embedded text is `" › ".join(section_path) + "\n" + content`; the stored `content`, the offsets and the ids are unchanged. Applied in the **embed input list only**, at the three places a chunk's text is handed to an embedder: `IngestionPipeline._embed_and_link` (shared by `embed_source` and `iter_embed_source`, so paths A, B and C) and `ingest_jsonl.py`'s `_embed_drop_bad` (path D). It needs `section_path` on the chunk, so it forces structure and stamping (§6). | vectors change; the collection's vectors are no longer a function of `content` alone |
 
 They are three keys, not one, because §11 evaluates each as its own arm; one key would couple
 the arms and force a re-ingest to change any of them.
@@ -339,11 +440,25 @@ the arms and force a re-ingest to change any of them.
 Which methods accept them: all six. `structure_cuts` on `fixed` (characters) is allowed but
 pointless and logged; `embed_heading_path` on any method is a vector change only.
 
-**Release order (#829's trap, restated).** An older tools image ignores all three keys and
-chunks a marked collection unmarked, with no error. The receipt's `chunking` object gains
-`structure_cuts`, `embed_heading_path` and the loader's `text_render`; a receipt without them came
-from an older image. No runtime guard, as the owner decided for #829; the image and workflows roll
-first (ADR-0010).
+**`text_render` is applied at ingest, from the record's suffix.** The GoWe extract step cannot
+apply it (§2: it has no spec), and it must not be a CWL input (#829: a second source for an
+identity value is how #609 happened). So the stripped render is produced by the Markdown adapter
+in the ingest step, on the raw text the shard carries, for records whose `path` ends in `.md`;
+the in-process path does the same in the same helper. The extract step's output is identical with
+or without the marker.
+
+**Release order, for the whole design** (#829's trap, restated and widened). Three images are
+involved and each can lag:
+
+| what lags | what happens, silently | the tell |
+|---|---|---|
+| the **ingest** image (`ingest_shard.py` / `embed_shard.py`) predates this series | all three markers are ignored: a marked collection is chunked unmarked and embedded without the prefix; a structured shard is ingested unstructured | receipt has no `chunking.structure_cuts` / `text_render` / `embed_heading_path` keys and no `enrichment.structure` |
+| the **extract** image (`pdf_extract.py` / `jats_extract.py`) predates it | no `structure` key in the shard, so PDF and JATS documents ingest unstructured; Markdown is unaffected (its adapter runs at ingest) | `enrichment.structure.structure_missing` counts them, `adapters` shows `pdf-layout/1: 0` |
+| the **server** predates it | no marker can be recorded at create; stamping on an ingest the server runs in-process is off | `GET /v1/collections` shows no marker; no `structure_version` on new chunks |
+
+No runtime guard, as the owner decided for #829; the images and the workflows roll first
+(ADR-0010), and a marked collection is not created on a GoWe tenant until the receipt of a
+scratch ingest shows the keys.
 
 ### 7.1 Section-preferred cuts and the #831 wall
 
@@ -378,26 +493,32 @@ different coordinate system regardless, as every chunking change is.
 ## 8. Carrying structure through every ingest path
 
 [`ingest-paths.md`](../ingest-paths.md) names four paths and one pipeline. Structure must arrive
-at `prepare_documents` identically on each.
+at the chunk loop identically on each — and there are three chunk loops, not one
+(`prepare_documents`, `iter_embed_source`, and `ingest_jsonl.py`'s own).
 
 | path | where the adapter runs | how structure travels | what proves it |
 |---|---|---|---|
-| **A. API, in-process** | inside the loader `default_loader_registry()` dispatches to (`build_ingestor_for`) | in memory, on `Document.structure` | the invariants (§2) on every loaded document |
-| **B. API → GoWe** | `pdf_extract.py`, through the same registry (#830) | `"structure"` key in the shard JSONL → `JsonlLoader` validates and restores it → `ingest_shard.py` → the same pipeline | **parity test:** `test_extract_text_parity.py` grows a structure half — for each fixture, the structure after the JSONL round trip equals the in-process structure field for field, and the stamped chunk metadata of the two paths is identical |
-| **C. operator CWL** (`jats-ingest.cwl`, `ingest-bulk.cwl`, `pdf-ingest.cwl`) | `jats_extract.py` (JATS adapter, §9.2) or `pdf_extract.py` | the same JSONL key → `embed_shard.py` / `ingest_shard.py` → the pipeline | the same parity test, driven through `embed_shard.py` |
-| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | `JsonlLoader` restores it; the tool's own chunk loop must call `stamp()` and honour `structure_from_params` | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test |
+| **A. API, in-process** | PDF and JATS: inside the loader `default_loader_registry()` dispatches to (`build_ingestor_for`); Markdown and extracted text: the pipeline's `attach_structure` step | in memory, on `Document.structure` | the invariants (§2) on every loaded document |
+| **B. API → GoWe** | PDF: `pdf_extract.py`, through the same registry (#830); Markdown: `attach_structure` inside `ingest_shard.py`'s pipeline, from the raw text the shard carries | PDF structure as the `"structure"` key in the shard JSONL → `JsonlLoader` validates and restores it; Markdown structure is built at ingest | **parity test:** `test_extract_text_parity.py` grows a structure half — for each fixture, the structure the GoWe path ends with equals the in-process structure field for field, and the stamped chunk metadata of the two paths is identical |
+| **C. operator CWL** (`jats-ingest.cwl`, `ingest-bulk.cwl`, `pdf-ingest.cwl`) | `jats_extract.py` (JATS adapter, §9.2) or `pdf_extract.py` | the same JSONL key → `embed_shard.py` → `run_embed_shard` → `IngestionPipeline.iter_embed_source`, which does **not** call `prepare_documents`; the `_stamp_structure` helper (§6) is therefore called from `iter_embed_source` too, next to its existing `_filter_boilerplate` / `_attach_glossary` calls | the same parity test, driven through `embed_shard.py` |
+| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | `JsonlLoader` restores it; the tool's own chunk loop calls `attach_structure`, `_stamp_structure` and the `embed_heading_path` prefix in `_embed_drop_bad`, and reads the markers through `structure_from_params` | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test |
 
 **#833 and this design.** Three of its four findings touch structure directly.
 
 - *Item 2, JATS extracted three ways.* Today JATS `.xml` reaches a store by `jats_extract.py`
   (the parser), by the GoWe extract step (since #830: skipped, `no loader for .xml`), or
   in-process by reference, where an unknown suffix **falls back to `TextFileLoader` and ingests
-  the raw XML as text**. The structure model needs **one JATS adapter** (§9.2), so: register
-  `.xml` → a `JatsLoader` that wraps `jats.article_records(..., with_spans=True)` in
-  `default_loader_registry()`, and make the in-process fallback for an unknown suffix a refusal
-  with the same `no loader for <suffix>` error the other two paths record (item 1). Both are
-  parity fixes and belong in their own PR with a parity test before the JATS adapter PR (open
-  question Q7).
+  the raw XML as text** (`LoaderRegistry.load` uses `self._default`; the upload route's
+  `_fail_unsupported_items` refusal runs only for uploads). The structure model needs **one JATS
+  adapter** (§9.2), so: register `.xml` → a `JatsLoader` that wraps
+  `jats.article_records(..., with_spans=True)` in `default_loader_registry()`, and make the
+  in-process fallback for an unknown suffix a refusal with the same `no loader for <suffix>`
+  error the other two paths record (item 1). Both are parity fixes and belong in their own PR
+  with a parity test before the JATS adapter PR (open question Q7). **The second is a contract
+  change:** a by-reference `POST /v1/ingest` of a `.rst` or `.csv` file today returns 200 and
+  ingests the bytes as text; afterwards it returns 200 with a failed item carrying the constant
+  error. CLAUDE.md's rule applies — `contracts/openapi.yaml` wording first, a conformance case,
+  then both implementations.
 - *Item 3, `.jsonl` twice on GoWe.* Harmless for structure as long as `JsonlLoader` round-trips
   the key unchanged; the parity test includes a double pass.
 - *Item 4, metadata differs after the shard.* Structure is not metadata (§4), so it is not subject
@@ -418,29 +539,45 @@ is never run on JATS text.
 
 An adapter fills `Document.structure` and does nothing else. Each is a function in
 `ragstack.ingestion` (not in `scripts/`, not in CWL JavaScript — `structured-ingest.md` §6.5),
-called by the loader for its suffix.
+called either by the loader for its suffix (PDF, JATS: the source is only available there) or by
+the pipeline's `attach_structure` step at ingest (Markdown, extracted text: the text is the
+source) — §2's placement table.
 
 ### 9.1 Markdown — `markdown/1`, `parsed`
 
-Parser: a CommonMark implementation (`markdown-it-py`, with `mdit_py_plugins` `front_matter`),
-under a new `[markdown]` extra beside `[pdf]` and `[chunking]`. Without the extra the `.md`
-loader produces no structure and logs once, like the nltk fallback (#815); it never guesses with
-a regex, because `#` inside a fenced block is code and a regex cannot know that.
+Parser: `markdown-it-py` on the `commonmark` preset with `md.enable("table")` (tables are not in
+the preset), `mdit_py_plugins.front_matter` and `mdit_py_plugins.dollarmath` (without it `$$…$$`
+is a paragraph), under a new `[markdown]` extra beside `[pdf]` and `[chunking]`. The adapter
+runs only when asked (§6: setting `on` or a marker), and a missing extra is then a refusal, not a
+fallback. It never guesses with a regex, because `#` inside a fenced block is code and a regex
+cannot know that.
+
+**The BOM.** `TextFileLoader` keeps the byte-order mark as `content[0]`. Fed to the parser it
+breaks the front-matter plugin (the opening `---` is no longer at column 0), and the front matter
+then parses as a setext `h2` whose title is the YAML — the review's probe on the #830 parity
+fixture showed exactly that. The adapter parses `content[len(BOM):]` and adds `len(BOM)` (1) to
+every offset; `content` itself is untouched, and the preamble section still starts at 0.
 
 One parse, two outputs:
 
 - **Raw mode** (`text_render` absent). `content` is the file text as `TextFileLoader` reads it
-  today, byte for byte. Block tokens carry line ranges (`token.map`); a line-offset table turns
-  them into character offsets into that same text. ATX and setext headings open sections; a
-  section closes at the next heading of equal or higher rank or at EOF; front matter is a
-  `front_matter` block; fenced and indented code are `code`; pipe tables `table`; lists `list`;
-  blockquotes `quote`; a paragraph consisting only of an image is `figure`, and if its alt or the
-  following paragraph starts with a caption label it is also a `figure_caption`; `$$` blocks are
-  `math`; everything else is `prose`.
+  today, byte for byte. Block tokens carry line ranges (`token.map`, end-exclusive, covering the
+  whole line including its newline); a line-offset table over `content` turns them into
+  character offsets. ATX and setext headings open sections; a section closes at the next heading
+  of equal or higher rank or at EOF, and its `end` is then extended to the next section's `start`
+  (§2 invariant 3); the `heading` block is the title text only (§2 invariant 5: after the `#` run
+  and its spaces, before any closing `#` sequence; the first line of a setext heading). Front
+  matter is a `front_matter` block; fenced and indented code are `code`; pipe tables `table`;
+  lists `list`; blockquotes `quote`; a paragraph consisting only of an image is `figure`, and if
+  its alt or the following paragraph starts with a caption label it is also a `figure_caption`;
+  `math_block` tokens are `math`; `html_block` and everything else is `prose`.
 - **Stripped mode** (`text_render="markdown-plain/1"`). The same token stream is rendered through
   the emitter of §2 with the #828 §2 rules; sections and blocks are recorded at emitter positions.
   A test asserts every content word of the source survives (link targets, code, table cells,
-  math), and that `content[s.start:s.end]` for a `heading` block equals the heading text.
+  math), and that `content[s.start:s.end]` for a `heading` block equals the heading text. The
+  review's probe ran this emitter over the #830 parity fixture: every needle (link targets, the
+  `$VAR` and `${HOME}` forms, code lines, table cells including an escaped pipe, the maths, the
+  text inside `<details>`) survived, and the heading blocks equalled their titles exactly.
 
 Detects: headings and their nesting, the block kinds above, image captions by label. Cannot
 detect: tables drawn in HTML (`<table>` is inline HTML and stays `prose`), semantic roles beyond
@@ -452,12 +589,16 @@ the heading text (that is the classifier's job), and anything about a document w
 Source: the existing `Span` list from `article_spans` / `article_records(with_spans=True)`. The
 mapping is mechanical:
 
-- `kind="sec"` → `Section(level=depth+1, title=span.title, locator=span.path)`; `role` from
-  `sec-type` via the `declared/1` map (the adapter must start reading `sec-type`, which nothing
-  does today); `kind="abstract"` → a level-1 section titled `Abstract` with `role="abstract"`,
-  `role_source="declared/1"`; body-lead paragraphs before the first `<sec>` → the untitled
-  level-1 section.
-- `kind="title"` → `heading` block; `p` → `prose`; `list` → `list`; `disp-quote` → `quote`;
+- `kind="sec"` → `Section(level=depth+1, title=span.title, locator=span.path)`, with `end`
+  extended to the next sibling's `start` or the parent's `end` so the `"\n\n"` joins that belong
+  to no `Span` fall inside a section (§2 invariant 3); `role` from `sec-type` via the
+  `declared/1` map (the adapter must start reading `sec-type`, which nothing does today);
+  `kind="abstract"` → a level-1 section titled `Abstract` with `role="abstract"`,
+  `role_source="declared/1"`, extended likewise over the abstract–body join; body-lead paragraphs
+  before the first `<sec>` → the untitled level-1 section.
+- `kind="title"` → `heading` block over the title text only: the span covers the rendered
+  `## Title` line, so the block starts `min(depth+2, 6) + 1` characters after `span.start` and
+  ends at `span.end`. `p` → `prose`; `list` → `list`; `disp-quote` → `quote`;
   `disp-formula` → `math`; `preformat`/`code` → `code`; `label` → `prose`.
 - Table and figure **unit records** (`content_type=table|figure`) are separate documents today
   and stay so; each gets a one-section structure (`title` = the caption's label text,
@@ -541,8 +682,12 @@ metrics and the labelling protocol, in the three-tier discipline of `docs/papers
 | the same papers' previously extracted text | 40 | `text-heuristic/1` |
 
 Selection by seeded random draw from each population; the seed and the id list hashes are
-recorded. Two labellers on a 20% overlap subset; Cohen's κ on boundaries, roles and caption
-labels is reported before the metrics.
+recorded. Two labellers: 100% double-labelled on the PDF stratum (the one adapter that can be
+badly wrong, and the one whose labels are hardest), a 20% overlap subset on the others.
+Agreement is reported before the metrics, with the unit stated: for boundaries the unit is the
+**line** (a line is or is not a section start, matched at one-line tolerance), for roles the
+matched section, for captions the labelled caption. Because section starts are 1–2% of lines,
+κ on boundaries is dominated by the prevalence; PABAK and raw agreement are reported beside it.
 
 **Labels per document:** the ordered list of section starts (offset), titles, levels and roles
 (from `roles/1`); every caption's `[start, end)` and label; every table body's `[start, end)`;
@@ -555,11 +700,17 @@ per-document checklist of the failure modes: two-column order broken, running he
 - Section boundaries: precision and recall of inferred section starts against labelled starts,
   at exact offset and at a one-line tolerance; reported per adapter, and for `pdf-layout/1` also
   per failure-mode checklist state.
-- Roles: accuracy given a matched boundary; per-class precision and recall over `roles/1`;
-  the confusion matrix; split by `role_source` (`declared/1` vs `rules/1`) and by
-  `structure_source`.
+- Roles: accuracy given a matched boundary; per-class precision and recall over `roles/1`
+  (precision's denominator is *sections the classifier assigned that role*, recall's is
+  *sections labelled with it*; `unknown` is a class like any other, so a wrong `unknown` is a
+  recall miss on the true class and a precision miss on `unknown`); the confusion matrix; split
+  by `role_source` (`declared/1` vs `rules/1`) and by `structure_source`. Every proportion
+  carries a Wilson 95% interval, and a class with fewer than 10 labelled sections is reported
+  but not gated on.
 - Captions and tables: precision and recall of `figure_caption`, `table_caption` and `table`
-  blocks by span overlap ≥ 0.5; label accuracy on matched captions.
+  blocks, a match being IoU ≥ 0.5 between the inferred and the labelled span (not the fraction
+  of the labelled span covered, which a block that swallows the following paragraph would pass);
+  label accuracy on matched captions.
 - Citation resolution: the share of labelled `refers_to` citations whose resolved label matches
   the labelled caption; the wrong-caption rate separately from the unresolved rate.
 - Agreement between `section_role in {references, acknowledgements}` and the existing boilerplate
@@ -567,8 +718,10 @@ per-document checklist of the failure modes: two-column order broken, running he
 
 **Gates** (pre-registered; the numbers are the proposal): a `section_role` filter is exposed only
 for `structure_source=parsed` until inferred role precision ≥ 0.85 and boundary recall ≥ 0.80 at
-one-line tolerance on the PDF stratum; `text-heuristic/1` roles stay `unknown`-only unless its
-precision clears the same bar. §11's results are reported split by adapter in any case, so a
+one-line tolerance on the PDF stratum, **both judged on the lower bound of the Wilson interval**,
+not the point estimate (40 documents give a few hundred sections; a point estimate of 0.86 with
+a lower bound of 0.78 has not cleared the bar); `text-heuristic/1` roles stay `unknown`-only
+unless its precision clears the same bar the same way. §11's results are reported split by adapter in any case, so a
 null on an arm is attributable.
 
 ---
@@ -615,13 +768,13 @@ every carrier hop is proven before the next adapter needs it.
 
 | PR | content | tests |
 |---|---|---|
-| **1 — model and stamp** | `Section`/`Block`/`DocumentStructure`/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants) and `stamp`; the `rules/1` table and `classify_roles`; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key, `JsonlLoader` reads/validates it; `prepare_documents` stamps when `STRUCTURE_METADATA=on`; receipt `enrichment.structure`. No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition, half-open); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` drops an invalid structure with a counted reason and keeps the document; mutation: remove the validation and the test fails. |
-| **2 — Markdown raw mode + GoWe carry** | `markdown/1` raw mode in the `.md` loader under the `[markdown]` extra; parity test growth. | adversarial fixture (the one in `test_extract_text_parity.py`: front matter, CRLF, BOM, fences containing `#`, setext headings, tables, images); structure after JSONL round trip equals in-process; stamped metadata identical on both paths; without the extra: no structure, one log line, content unchanged. |
-| **3 — `text_render` and the one reader** | `structure_from_params`; `text_render="markdown-plain/1"` stripped mode; API create validation and explicit recording; `ingest_shard`/`ingest_jsonl` read through the reader and refuse contradicting flags; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title; absent marker → `content` byte-identical to `TextFileLoader`; unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven). |
-| **4a — JATS parity (#833 items 1–2)** | `.xml` → `JatsLoader` in the registry; unknown-suffix fallback becomes a refusal with the shared error. | three-path parity test for a JATS fixture (in-process, `pdf_extract.py`, `jats_extract.py`): same `content`, same doc id, same metadata subset; unknown suffix refused identically on A and B. |
+| **1 — model and stamp** | `Section`/`Block`/`DocumentStructure`/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants) and `stamp`; the `rules/1` table and `classify_roles(sections)`; the pipeline helpers `attach_structure` and `_stamp_structure`, called from `prepare_documents` **and** `iter_embed_source`, and from `ingest_jsonl.py`'s loop; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key, `JsonlLoader` reads/validates it; `STRUCTURE_METADATA` setting, `--structure-metadata` on the three tools, the CWL input; receipt `enrichment.structure`; `payload_matches` treats a list `actual` as any-element (the list-filter prerequisite, §6); the `jats.py` docstring rewrite (§4). No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition with extended ends, half-open, heading block first-in-section); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` drops an invalid structure with a counted reason and keeps the document, and ignores the key byte-for-byte when absent; the same structured shard stamps identically through `prepare_documents`, `iter_embed_source` and `ingest_jsonl`; `payload_matches` list test plus a conformance case; mutation: remove the validation and the test fails. |
+| **2 — Markdown raw mode on both paths** | `markdown/1` raw mode in `attach_structure` under the `[markdown]` extra (preset + `table` + `front_matter` + `dollarmath`; BOM-shifted parse; title-only heading blocks; extended section ends); the refusal when the extra is missing and the adapter was asked for; parity test growth. | adversarial fixture (the one in `test_extract_text_parity.py`: BOM, front matter, CRLF, fences containing `#`, setext headings, tables, images, `$$` maths); front matter is a `front_matter` block and **not** a heading; heading blocks equal titles after inline-markup removal; structure built by `ingest_shard` from the shard equals the in-process structure field for field; stamped metadata identical on both paths; `STRUCTURE_METADATA=on` without the extra: refused, and `content` untouched. |
+| **3 — `text_render` and the one reader** | `structure_from_params` (returns the three markers plus `needs_structure`); `text_render="markdown-plain/1"` stripped mode, applied at ingest from the record's suffix; API create validation and explicit recording; `ingest_shard`/`embed_shard`/`ingest_jsonl` read through the reader and refuse contradicting flags; receipt `chunking` keys; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title exactly; absent marker → `content` byte-identical to `TextFileLoader` on both paths; the GoWe shard is identical with and without the marker (the extract step does not see it); unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven). |
+| **4a — JATS parity (#833 items 1–2), a contract change** | `.xml` → `JatsLoader` in the registry; the in-process unknown-suffix fallback becomes a refusal with the shared error. Contract first: `contracts/openapi.yaml` wording for `/v1/ingest` by reference (a file with no loader is a failed item with `no loader for <suffix>`, where today it is ingested as text), a conformance case, then the Python change and the Go side's equivalent. | three-path parity test for a JATS fixture (in-process, `pdf_extract.py`, `jats_extract.py`): same `content`, same doc id, same metadata subset; unknown suffix refused identically on A and B; the conformance case passes against both implementations. |
 | **4b — JATS adapter** | `jats/1` from `Span` + `sec-type` → `declared/1`; unit-record structures. | fixture with untitled `<sec>`, nested `<sec>`, `sec-type` present and absent, floats in `<floats-group>`; untitled section is a first-class section; `section_title` on article chunks is the heading, not the unit suffix; declared role never overwritten by rules. |
 | **5 — accuracy-check harness** | `scripts/eval/structure_accuracy.py`: label format, κ, the §10 metrics, the public export with the part-4 allow-list discipline; the labelling run itself is an owner-scheduled activity, its record a results directory. | metrics on a synthetic labelled fixture; the exporter refuses any string that is not a short safe token. |
-| **6 — `structure_cuts` and `embed_heading_path`** | segmenter in `chunkers.py` (§7.1); the #831 wall; heading attached to the following segment; `embed_heading_path` applied in `_embed_and_link` to the embed input only; receipt `chunking` keys. | chunks tile the document under every method; no chunk spans two leaf sections; sibling merge sets `section_crossing`; `fixed_token` overlap does not cross a segment; stored `content` unchanged under `embed_heading_path` (mutation: prefix leaks into `content` → fails); absent markers reproduce today's spans against the #829 baseline fixture. |
+| **6 — `structure_cuts` and `embed_heading_path`** | segmenter in `chunkers.py` (§7.1); heading attached to the following segment; `embed_heading_path` applied in `_embed_and_link` and in `ingest_jsonl._embed_drop_bad` to the embed input only; both markers force `needs_structure`; receipt `chunking` keys. **Depends on #831's merge PR** (opt-in `size_tolerance` / `min_piece`, in progress separately): if it has landed, this PR adds the section wall to its merge; if not, this PR ships the cuts without any merge and the wall is added in #831's PR, which then depends on this one. The table assumes the first order. | chunks tile the document under every method; no chunk spans two leaf sections; sibling merge sets `section_crossing`; `fixed_token` overlap does not cross a segment; stored `content` unchanged under `embed_heading_path` on all three embed loops (mutation: prefix leaks into `content` → fails); `embed_heading_path` with `STRUCTURE_METADATA=off` still stamps and prefixes (mutation: honour the setting → fails); absent markers reproduce today's spans against the #829 baseline fixture. |
 | **7 — inferred adapters and captions** | `pdf-layout/1` with the text-identity guard; `text-heuristic/1`; caption and table blocks; `refers_to` for all adapters. | fixture PDFs built in-test (reportlab) with known headings, a two-column page, a running header, a caption mid-paragraph, a reference list; text-mismatch guard emits no structure (mutation: emit anyway → fails); every inferred section has `structure_source=inferred`; unrecognised → `unknown`. |
 | **8 — evaluation arms** | the §11 harness extensions, the placement transforms, the pre-registration template. | arms built through `ragstack.ingestion` only (a test imports nothing else); result files hold counts and ids only. |
 | **9 — rollout** | `backfill_structure_metadata.py`; conformance report row for partial coverage; docs (`CHUNKING.md`, `ingest-paths.md`, `cookbook-users.md`); tools image + workflow stamp (ADR-0010); `STRUCTURE_METADATA` default flipped to `on` only after §10's record exists. | backfill is idempotent and resumable by `structure_version`; dry run writes nothing; a non-production tenant is its only live target. |
@@ -650,7 +803,10 @@ one that can be wrong about a document, and it lands after the thing that measur
   is listed by `metadata_conformance.py`.
 - **Go**: the Go server treats chunk metadata as an opaque map; the contract change is the
   schema file, which both implementations are checked against by conformance. No Go code change
-  is expected for PRs 1–7.
+  is expected for the metadata and chunking PRs. **PR 4a is the exception**: the unknown-suffix
+  refusal on by-reference ingest is contract-visible, so it needs the `openapi.yaml` wording, a
+  conformance case, and the Go side's equivalent behaviour (per CLAUDE.md's rule for API
+  changes).
 - **The chunking study's pins** (`EXPECT_COMMIT`, `sentence_spans_fingerprint`) are unaffected:
   `sentence_spans` does not change; `structure_cuts` runs before it on offset ranges.
 
@@ -660,7 +816,7 @@ one that can be wrong about a document, and it lands after the thing that measur
 
 | failure mode | how it would show | what catches it |
 |---|---|---|
-| **Offsets drift** — a transform runs on `content` after structure exists (a `.strip()`, a newline normalisation, a BOM removal) | `content[start:end]` is off by a few characters; `section_title` lands on the wrong section near the edges; `heading` blocks do not equal titles | §2 invariant 5 asserted on every load (`JsonlLoader`, in-process); the parity test compares structures field for field after the JSONL hop; the adapter runs *inside* the loader, after every normalisation the loader does |
+| **Offsets drift** — a transform runs on `content` after structure exists (a `.strip()`, a newline normalisation, a BOM removal) | `content[start:end]` is off by a few characters; `section_title` lands on the wrong section near the edges; `heading` blocks do not equal titles | §2 invariants 1–5 asserted on every load (`JsonlLoader`, in-process); the parity test compares structures field for field after the JSONL hop; every adapter runs after the loader's normalisation (inside the loader for PDF/JATS, in `attach_structure` for Markdown), and the BOM is handled as a parse-input shift, not a strip |
 | **Structure built from a different text than the stored one** (PDF dict walk vs `get_text()`) | plausible sections, wrong positions, silently | the byte-identity guard in `pdf-layout/1`: mismatch → no structure, counted; §10 reports the rate |
 | **Heading false positives in PDFs** — bold figure labels, running headers, author affiliations, the first line of every page | hundreds of tiny sections; `section_title` is a page header; `structure_cuts` shreds the document | running-header suppression by repetition; the score threshold; §10 boundary precision per PDF; `structure_source=inferred` lets filters and the evaluation exclude it; the §7.1 merge recombines tiny siblings |
 | **Two-column order** — blocks emitted column-interleaved | a section boundary falls mid-sentence; `refers_to` and captions land in the wrong section | §10's checklist counts it; a diagnostic: the share of section starts that are not sentence starts (cheap, computable on every PDF, logged) |
@@ -671,29 +827,44 @@ one that can be wrong about a document, and it lands after the thing that measur
 | **Repeated text aliasing** — the same heading twice in a document | a search-based locator picks the first occurrence | offsets are accumulated, never searched (§2); the stamp uses offsets, not titles |
 | **Mixed collection** — stamped and unstamped chunks, or two `structure_version`s | a `section_role` filter under-returns with no error | `structure_version` on every stamped chunk; the conformance report; the backfill; no filter offered on partial coverage |
 | **Old worker image ignores a marker** (the #829 trap) | a marked collection chunked unmarked, no error | receipt `chunking.structure_cuts`/`text_render`; release order documented; the `[chunker]` stderr line |
+| **Old extract image writes no `structure` key; old ingest image ignores one** | PDF and JATS documents ingest unstructured with no error | `enrichment.structure` absent (old ingest image) or `structure_missing` counting (old extract image); §7 release-order table |
+| **One spec, two results by deployment setting** — `embed_heading_path` set but `STRUCTURE_METADATA=off` on one host | the same collection embedded with and without the prefix | the markers force `needs_structure`; the PR-6 mutation test |
+| **Silent parser fallback** (the #815 class) — `[markdown]` extra missing in one image | structure silently absent on one path, present on the other | refusal when the adapter was asked for; `enrichment.structure.backend` names the parser |
+| **A list field filtered through the in-memory predicate** | context expansion and in-memory stores return nothing for `{"block_types": "table"}` while the ES/Qdrant legs match | `payload_matches` any-element fix as a prerequisite in PR 1, with a conformance case |
 | **Stripped text changes token counts** | chunk sizes and counts differ from the raw collection | by design: `text_render` is identity; the two are different collections |
 | **`refers_to` false positives** — "Table 2 of [12]" cites another paper's table; "Fig. 1A–C" variants | wrong caption linked; the attached-placement arm attaches the wrong text | normalisation table with tests; §10's wrong-caption rate is a first-class metric; `refers_to` is metadata, never moves text until an arm wins |
 | **Duplicate labels** — two "Figure 1" (main and supplementary) | `caption_labels` ambiguous | labels keep their prefix (`Figure S1` ≠ `Figure 1`); duplicates within a document are counted in §10 |
 | **Heading path leaks into stored content** | `content` no longer equals `doc.content[start:end]`; ids still match, text does not | PR-6 test: stored `content` byte-identical under `embed_heading_path`; the prefix is applied to the embed input list only |
 | **Structure bloats the JSONL** — a block per line on a pathological PDF | shard files grow, `JsonlLoader` slows | size ceiling with a counted drop; blocks need not cover the text, so an adapter may emit fewer |
 | **Filter grammar surprises** — `section_path` is a list | a filter on it matches any element | the same as `authors` today; documented in the schema description |
-| **Two sources for an identity value** (a CLI flag beside the entry's `chunk_params`) | #609 again | the one reader; flags refused when they contradict the entry; no CWL input for the markers |
+| **Two sources for an identity value** (a CLI flag beside the entry's `chunk_params`) | #609 again | the one reader; flags refused when they contradict the entry; no CWL input for the markers, which is possible only because `text_render` is applied at ingest (§2, §7) |
 
 ---
 
 ## 15. Open questions for the owner, each with a recommendation
 
 1. **Store the whole structure per document (for display and re-stamping without re-parsing)?**
-   Recommendation: not in Qdrant or Elasticsearch. Keep the JSONL `structure` key as the carrier,
-   keep `--spans-out`, and defer an archive role (`structure.jsonl.gz`) until the backfill needs
-   it; Markdown and JATS re-parse in milliseconds, and PDF re-extraction is what the accuracy
-   check wants anyway.
+   Recommendation: not in Qdrant or Elasticsearch. Keep the JSONL `structure` key as the carrier
+   and `--spans-out` as a debugging side file. What a backfill (Q12) needs differs by format:
+   a Markdown-raw collection's `content` is reconstructable from its chunks (they tile the
+   document; `ingestion/reassembly.py` exists for this) and the adapter re-runs on it; a JATS
+   collection's structure can only come from the XML (§8), which a backfill must find by `pmcid`
+   in the harvest tree the collection was built from. So: no archive role in this series, and the
+   JATS backfill is conditional on that tree being available; where it is not, the collection is
+   not backfilled. If the owner wants JATS backfills to be unconditional, the alternative is an
+   archive role `structure.jsonl.gz` written by the archive step from the shard's key, which is a
+   `ragstack-archive/1` manifest change.
 2. **One `chunk_params` key or three?** Recommendation: three (`text_render`, `structure_cuts`,
    `embed_heading_path`). Each is an evaluation arm in §11 and each is identity on its own; one
-   key would force a new collection to change any of them.
+   key would force a new collection to change any of them. With `text_render` applied at ingest
+   from the record's suffix (§7), none of the three needs a CWL input or an extract-step change,
+   so the three-key shape costs nothing on the workflow side.
 3. **Is metadata stamping identity?** Recommendation: no — a deployment setting with a per-chunk
    `structure_version`, default off until §10 has run, then on, with a backfill; the symbol
-   glossary precedent. The cost is mixed coverage, made auditable rather than impossible.
+   glossary precedent. The costs, stated: mixed coverage within a collection (auditable, not
+   impossible); the markers `structure_cuts` and `embed_heading_path` must *force* stamping
+   regardless of the setting, or one spec gives two results (§6, §7); and on JATS unit records the
+   stamp changes the meaning of an existing field, `section_title` (Q13).
 4. **One role vocabulary without a document-class switch?** Recommendation: yes, `roles/1` as the
    union, with the plural rule for *References* vs *Reference*. A class switch would need a new
    per-collection setting and buys one disambiguation.
@@ -705,7 +876,10 @@ one that can be wrong about a document, and it lands after the thing that measur
    stays `unknown`-only unless it clears the bar.
 7. **Fix #833 items 1–2 (the `.xml` loader and the unknown-suffix fallback) inside this series?**
    Recommendation: yes, as PR 4a, before the JATS adapter — one JATS adapter is a premise of the
-   model, and the in-process raw-XML-as-text fallback is a live defect.
+   model, and the in-process raw-XML-as-text fallback is a live defect. Note it is a **contract
+   change** (a by-reference ingest of an unknown suffix goes from "ingested as text" to "failed
+   item"), so it carries the `openapi.yaml` wording, a conformance case and both implementations,
+   which is more than a loader fix.
 8. **Caption placement: ingest option or harness-only?** Recommendation: harness-only until an
    arm wins; if `separate` or `attached` wins it becomes a `text_render`-class marker because it
    changes content.
@@ -716,5 +890,13 @@ one that can be wrong about a document, and it lands after the thing that measur
 11. **`level` as tree depth or raw heading rank?** Recommendation: tree depth; the rank is a
     Markdown-only notion and the source still has it.
 12. **Backfill existing collections' metadata without re-chunking?** Recommendation: yes for
-    Markdown-raw and JATS collections after §10, a non-production tenant first; no backfill for PDF
-    collections until the inferred adapter clears its gate.
+    Markdown-raw collections (reassemble `content` from the chunks, re-run the adapter, re-stamp)
+    after §10, a non-production tenant first; for JATS collections only where the harvest tree is
+    still available to re-read the XML by `pmcid` (§8: JATS structure never comes from the record
+    text; see Q1); no backfill for PDF collections until the inferred adapter clears its gate.
+13. **`section_title` on JATS table and figure unit chunks: keep the unit suffix (`table-2`) or
+    stamp the caption label (`Table 2`)?** Recommendation: stamp the label. The schema already
+    defines the field as the document's own heading, the suffix stays available in `source`, and
+    `structure_version` separates old rows from new. The alternative — the stamp writes
+    `section_title` only when the loader left it empty — would make the stamp non-uniform across
+    producers, which is the kind of special case this model exists to remove.
