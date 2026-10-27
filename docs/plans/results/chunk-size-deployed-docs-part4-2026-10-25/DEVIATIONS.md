@@ -123,3 +123,8 @@ honest.
 **Code consequence.** The addendum-Q import wrote to one fixed file, so a second labeller would have
 replaced the first. It gains `--out` and an export-id check. The owner's import was kept under its own
 name before this change.
+
+## Decision, 2026-10-27T18:10:54Z: the multi-grader rule above is approved (owner: "approve grader rule in DEVIATIONS.md")
+
+The owner approved the proposal above as amended after the Fable review of PR #827, with no changes. No
+grade from the new graders existed at that point. From now on it is the rule. Changing it is a deviation.

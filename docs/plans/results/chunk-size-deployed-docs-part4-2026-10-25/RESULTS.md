@@ -308,8 +308,7 @@ reported beside them.
 | Part 4 §5 part B: human vs Sol on H4's discordant pairs | 2–3 graders | 30 pairs (60 answers) | **pending** |
 | grader notes that flag reference problems | 2–3 graders | all 100 | **pending** (tallied by hand) |
 
-How several graders' results combine was proposed **before any of their grades exists**. It is awaiting
-the owner's approval: see [DEVIATIONS.md](DEVIATIONS.md#proposal-2026-10-27-two-to-three-more-graders-for-both-questionnaires-pending-owner-approval-no-grade-exists-yet).
+How several graders' results combine was proposed **before any of their grades exists**. The owner approved it on 2026-10-27, still before any grade existed: see [DEVIATIONS.md](DEVIATIONS.md#proposal-2026-10-27-two-to-three-more-graders-for-both-questionnaires-pending-owner-approval-no-grade-exists-yet).
 
 **The owner's 40 addendum-Q labels.** The owner labelled 28 answer, 8 setup and 4 neither.
 

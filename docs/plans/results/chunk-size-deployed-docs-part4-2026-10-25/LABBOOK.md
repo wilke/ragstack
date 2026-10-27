@@ -16,7 +16,7 @@ LLM gateway.
 | Part 4, confirmatory, model-graded | **complete.** H2, H3 and H4 confirmed; H1 not confirmed. |
 | Addendum Q, exploratory | **complete.** It includes the owner's 40 labels. |
 | Human grader validation (prereg §5) | **pending.** 2–3 graders, both questionnaires |
-| How several graders combine | **proposed, awaiting the owner's approval.** No grade from them exists yet. |
+| How several graders combine | **approved** by the owner on 2026-10-27, before any grade from them existed |
 | Public record | this folder. It is provisional until the human validation is in. |
 | Rebuild recommendation | **provisional:** cap at 512 tokens, as capped semantic or fixed 512 |
 
@@ -99,13 +99,13 @@ LLM gateway.
 | 10-26 | how the "neither model" check works when the human agrees with neither grader: item sets fixed | Fable review, logged | the prereg didn't name them; no grade existed |
 | 10-26 | run addendum Q; the owner labels 40 pairs | owner ("Approved and run") | the reference-quote defect |
 | 10-27 | write the record now, provisional; 2–3 more graders handle both questionnaires | owner | |
-| 10-27 | how several graders combine (per grader, plus a majority verdict) | **proposed**, awaiting the owner | must be fixed before any grade exists |
+| 10-27 | how several graders combine (per grader, plus a majority verdict) | proposed | must be fixed before any grade exists |
+| 10-27 | the multi-grader rule, as tightened by the Fable review of #827, approved | owner ("approve grader rule") | no grade from the new graders existed |
 
 ## What happens next
 
-1. **The owner approves, or amends, the multi-grader rule** in
+1. ~~The owner approves, or amends, the multi-grader rule.~~ **Done 2026-10-27:** approved without changes. See
    [DEVIATIONS.md](DEVIATIONS.md#proposal-2026-10-27-two-to-three-more-graders-for-both-questionnaires-pending-owner-approval-no-grade-exists-yet).
-   This must happen before any grader's file is opened.
 2. **Graders return their files.** Then:
    - import each one with `part4_human_import.py`, one output per grader;
    - import their addendum-Q labels with `part4_addendum_q.py import-human --out`;
