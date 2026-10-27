@@ -111,10 +111,13 @@ for formats whose source is unavailable downstream.
 1. `0 <= start < end <= len(content)` for every section and block.
 2. Sections nest: for any two sections, either one contains the other or they are disjoint; a
    child's `level` is its parent's `level + 1`.
-3. The level-1 sections partition `[0, len(content))` in order, with no gaps, and the children
-   of any section partition their parent's span. **Separators belong to the preceding
-   section:** a section's `end` is the next sibling's `start`, or its parent's `end`, or
-   `len(content)` at level 1. This matters because the sources do not hand over gap-free spans:
+3. The level-1 sections partition `[0, len(content))` in order, with no gaps. The children of
+   any section are disjoint, ordered and lie within the parent — they do **not** partition it,
+   because a parent normally has text of its own before its first child (its heading and lead
+   paragraphs, in Markdown and in a JATS `<sec>` with `<p>` before a nested `<sec>`); that text
+   belongs to the parent alone, and the deepest-overlapping-section stamp (§6) needs nothing
+   stronger. **Separators belong to the preceding section:** a section's `end` is the next
+   sibling's `start`, or its parent's `end`, or `len(content)` at level 1. This matters because the sources do not hand over gap-free spans:
    `jats.py` joins sibling spans with `"\n\n"` that belongs to no `Span` (and the abstract and the
    body are joined the same way), and a Markdown blank line between a paragraph and the next
    heading is in no token's `map`. The adapters therefore *extend* each section's `end` to the
@@ -336,7 +339,7 @@ keys. Absent is a state (`chunk_metadata.json`
 | `section_level` | integer | the owning section's `level`. |
 | `section_role` | string (`roles/1`) | the owning section's role, or the nearest titled ancestor's when the owning section has none; `unknown` otherwise. |
 | `section_role_version` | string | the `role_source` of the section whose role was used. |
-| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more leaf sections (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Open question Q10. |
+| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more *segments* (§7.1: a leaf section, or a parent's own text outside its children), i.e. its text is owned by more than one section (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Open question Q10. |
 | `block_types` | list of strings | the sorted distinct `kind`s of the blocks overlapping the chunk. |
 | `caption_labels` | list of strings | `label` of every `figure_caption` / `table_caption` block whose `start` lies inside the chunk (the label is at the start of a caption, so the chunk that holds the start holds the label). |
 | `refers_to` | list of strings | labels cited in the chunk's own `content`, normalised to the same form as `label` (`Fig. 3`, `FIG 3`, `Figure 3A`, `Figs. 2 and 3` → `Figure 3`, `Figure 2`, `Figure 3`). Computed from `content`, not from structure, but stamped only for structured documents so it is versioned with them. |
@@ -418,8 +421,10 @@ the backend name in `enrichment.structure.backend` is the audit that would have 
 
 ## 7. Opt-in behaviours that *are* identity: three `chunk_params` markers
 
-Three things change the chunks or the vectors and therefore fork a collection by construction.
-Each is a `chunk_params` key under the #829 discipline: absent = today's behaviour exactly;
+Three things change the chunks or the vectors and therefore fork a collection by construction
+(a fourth marker, `structure_infer`, opts a collection into the inferred text adapter and is
+described in §9.5; it rides under the same discipline). Each is a `chunk_params` key under the
+#829 discipline: absent = today's behaviour exactly;
 present = applied; an unknown value is refused (400 at create, exit 2 on the bulk tools); the API
 records defaults explicitly so a later default change cannot re-chunk; **one reader**,
 `structure_from_params(method, params)` in `chunker_config.py`, serves the API's `_chunk_param_kwargs`,
@@ -432,7 +437,7 @@ free-form in the contract).
 |---|---|---|---|
 | `text_render` | absent (raw) \| `"markdown-plain/1"` | the Markdown adapter, at ingest (§2), replaces `content` with the stripped plain text of #828 §2 (headings on their own line without `#`; links as `text (url)`; images as alt plus target; inline HTML as visible text plus `href`; code verbatim; math verbatim; tables one row per line, cells joined by ` \| `; emphasis markers dropped). Applies to `.md` only; other suffixes are untouched. | content changes, so every offset, chunk and id changes |
 | `structure_cuts` | absent \| `"sections/1"` | section boundaries become **preferred** cut points for every method (§7.1); the #831 merge never crosses one | chunk boundaries change |
-| `embed_heading_path` | absent \| `"prefix/1"` | the embedded text is `" › ".join(section_path) + "\n" + content`; the stored `content`, the offsets and the ids are unchanged. Applied in the **embed input list only**, at the three places a chunk's text is handed to an embedder: `IngestionPipeline._embed_and_link` (shared by `embed_source` and `iter_embed_source`, so paths A, B and C) and `ingest_jsonl.py`'s `_embed_drop_bad` (path D). It needs `section_path` on the chunk, so it forces structure and stamping (§6). | vectors change; the collection's vectors are no longer a function of `content` alone |
+| `embed_heading_path` | absent \| `"prefix/1"` | the embedded text is `" › ".join(section_path) + "\n" + content`; the stored `content`, the offsets and the ids are unchanged. Applied in the **embed input list only**, at the places a chunk's text is handed to an embedder: `IngestionPipeline._embed_and_link` (shared by `embed_source` and `iter_embed_source`: paths A and B, and path C once C can read markers — see below, it cannot in this series) and `ingest_jsonl.py`'s `_embed_drop_bad` (path D). It needs `section_path` on the chunk, so it forces structure and stamping (§6). | vectors change; the collection's vectors are no longer a function of `content` alone |
 
 They are three keys, not one, because §11 evaluates each as its own arm; one key would couple
 the arms and force a re-ingest to change any of them.
@@ -446,6 +451,40 @@ identity value is how #609 happened). So the stripped render is produced by the 
 in the ingest step, on the raw text the shard carries, for records whose `path` ends in `.md`;
 the in-process path does the same in the same helper. The extract step's output is identical with
 or without the marker.
+
+**Path C cannot read markers, so marked collections are refused there.** `scripts/embed_shard.py`
+(the chunk-and-embed step of `jats-ingest.cwl`, `pdf-ingest.cwl` and `embed-bulk.cwl`) builds its
+chunker from CLI arguments alone — `_build_chunker(args)` — and resolves no registry entry, so it
+can see neither `chunk_params` nor the markers, and it cannot tell that it is working for a
+marked collection. Two options:
+
+- **(a)** give `embed_shard.py` the registry resolution `ingest_shard.py` has (`ingest_target`,
+  the #563 pattern: the registry name on the submission, the DSN from the worker's secret file).
+  Correct, and the eventual answer, but it changes an operator workflow's inputs and the tools
+  image contract; **later, not in this series**.
+- **(b), chosen for this series:** marked collections are **refused on path C at the point that
+  does know the spec**, which is not `embed_shard.py` itself. Two gates, both with registry
+  access today:
+  1. `scripts/load_embeddings.py` — the un-scattered load step every path-C workflow ends with —
+     already resolves the target and runs `check_build` before writing. The embedding-file
+     header gains a `chunking` object (the same shape as the receipt's: method, size cap, and
+     now the structure markers as applied, absent when none). Load refuses, before any write,
+     when the registry entry's `chunk_params` carry a structure marker the header does not show
+     as applied (or the reverse). This is the authoritative guard: nothing reaches a store that
+     was chunked or embedded under a different spec than the entry records — the ADR-0002
+     build-spec guard, extended by one object.
+  2. The API's GoWe dispatch already refuses a collection whose method the deployed workflow
+     cannot run (`_refuse_unrunnable_chunk_method`); the same check refuses a *marked*
+     collection when `GOWE_WORKFLOW_CWL` names a workflow whose chunk step is `embed_shard.py`.
+     Today the API's workflow is `pdf-ingest-scatter.cwl` (`ingest_shard.py`), so this gate is
+     dormant, but it is what keeps a future workflow swap from re-opening the hole.
+  `gowe_batch_ingest.py` already reads the registry read-only (`resolve_store_name`) and may
+  pre-check `chunk_params` to fail early with a clear message; that is a convenience, and the
+  load-time guard is the one the tests pin.
+
+  Consequence: in this series the markers work on paths A, B and D; on path C a marked
+  collection is refused and an unmarked one behaves exactly as today. Stamping (not identity)
+  still runs on path C through `iter_embed_source` when `--structure-metadata` is on.
 
 **Release order, for the whole design** (#829's trap, restated and widened). Three images are
 involved and each can lag:
@@ -466,18 +505,22 @@ The chunkers keep their algorithms; `structure_cuts` adds two rules at the seams
 have:
 
 - **Preferred cut.** Before packing (`sentence`, `words`, `semantic*`) or sliding (`fixed_token`),
-  the document is split into *segments* at the boundaries of its **leaf** sections. Each segment
-  is chunked on its own with the collection's method and size. A chunk therefore never starts in
-  one leaf section and ends in another. Offsets stay document-global (segments are offset ranges,
-  not substrings), so ids are still `uuid5(doc_id:start:end)` and the chunks still tile the
-  document.
+  the document is split into *segments*. A segment is a maximal offset range owned by exactly one
+  section: each **leaf** section is one segment, and a **parent's own text** — its heading and
+  lead paragraphs before its first child, and any text after its last child — is a segment of its
+  own, owned by the parent. (Invariant 3 does not make children partition their parent, so this
+  is where the parent's text goes; it is never folded into the first child.) Each segment is
+  chunked on its own with the collection's method and size, so a chunk never starts in one
+  segment and ends in another. Offsets stay document-global (segments are offset ranges, not
+  substrings), so ids are still `uuid5(doc_id:start:end)` and the chunks still tile the document.
 - **Merge up to the cap.** Hard section walls produced a median chunk of 108 tokens in the
   exploratory run (#828 §4); that is the small-piece problem #831 addresses. Under
   `structure_cuts`, the #831 merge runs with one extra rule: a piece may merge with its neighbour
-  only when both lie in the same leaf section **or** both are whole leaf sections under the same
-  parent (sibling merge; the result is then a chunk whose owning section is the parent and whose
-  `section_crossing` is `true`). It never merges a fragment of one section with a fragment of
-  another. Without #831's `size_tolerance` the merge target is `chunk_size` itself.
+  only when both lie in the same segment, **or** both are whole segments under the same parent
+  (a parent's lead text with its first child, or two sibling leaves). The result of the second
+  kind is a chunk owned by the parent, and it is exactly when `section_crossing` fires: a chunk
+  that overlaps two or more segments. The merge never joins a fragment of one segment with a
+  fragment of another. Without #831's `size_tolerance` the merge target is `chunk_size` itself.
 - **Headings travel with their body.** A `heading` block is never a segment's whole content when
   the next block fits with it; the segmenter attaches a heading to the segment that follows it.
 - **`fixed_token` with overlap.** Overlap does not reach back across a segment boundary. The first
@@ -500,8 +543,8 @@ at the chunk loop identically on each — and there are three chunk loops, not o
 |---|---|---|---|
 | **A. API, in-process** | PDF and JATS: inside the loader `default_loader_registry()` dispatches to (`build_ingestor_for`); Markdown and extracted text: the pipeline's `attach_structure` step | in memory, on `Document.structure` | the invariants (§2) on every loaded document |
 | **B. API → GoWe** | PDF: `pdf_extract.py`, through the same registry (#830); Markdown: `attach_structure` inside `ingest_shard.py`'s pipeline, from the raw text the shard carries | PDF structure as the `"structure"` key in the shard JSONL → `JsonlLoader` validates and restores it; Markdown structure is built at ingest | **parity test:** `test_extract_text_parity.py` grows a structure half — for each fixture, the structure the GoWe path ends with equals the in-process structure field for field, and the stamped chunk metadata of the two paths is identical |
-| **C. operator CWL** (`jats-ingest.cwl`, `ingest-bulk.cwl`, `pdf-ingest.cwl`) | `jats_extract.py` (JATS adapter, §9.2) or `pdf_extract.py` | the same JSONL key → `embed_shard.py` → `run_embed_shard` → `IngestionPipeline.iter_embed_source`, which does **not** call `prepare_documents`; the `_stamp_structure` helper (§6) is therefore called from `iter_embed_source` too, next to its existing `_filter_boilerplate` / `_attach_glossary` calls | the same parity test, driven through `embed_shard.py` |
-| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | `JsonlLoader` restores it; the tool's own chunk loop calls `attach_structure`, `_stamp_structure` and the `embed_heading_path` prefix in `_embed_drop_bad`, and reads the markers through `structure_from_params` | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test |
+| **C. operator CWL** (`jats-ingest.cwl`, `ingest-bulk.cwl`, `pdf-ingest.cwl`) | `jats_extract.py` (JATS adapter, §9.2) or `pdf_extract.py` | the same JSONL key → `embed_shard.py` → `run_embed_shard` → `IngestionPipeline.iter_embed_source`, which does **not** call `prepare_documents`; the `_stamp_structure` helper (§6) is therefore called from `iter_embed_source` too, next to its existing `_filter_boilerplate` / `_attach_glossary` calls. **Markers are not honoured here** (`embed_shard.py` has no registry access): a marked collection is refused at `load_embeddings.py` by the header-vs-entry check of §7, and stamping runs only under `--structure-metadata` | the same parity test, driven through `embed_shard.py`; plus the load-time refusal test |
+| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | the tool does **not** use `JsonlLoader` — it builds `Document` itself from `enrich(record)` at three sites — so it gets the structure key through the same shared reader `JsonlLoader` uses, `structure_from_record(record, text)` (validate, or drop with a counted `structure_dropped`); its own chunk loop calls `attach_structure`, `_stamp_structure` and the `embed_heading_path` prefix in `_embed_drop_bad`, and reads the markers through `structure_from_params` | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test, which feeds the same structured shard to all three |
 
 **#833 and this design.** Three of its four findings touch structure directly.
 
@@ -565,8 +608,13 @@ One parse, two outputs:
   whole line including its newline); a line-offset table over `content` turns them into
   character offsets. ATX and setext headings open sections; a section closes at the next heading
   of equal or higher rank or at EOF, and its `end` is then extended to the next section's `start`
-  (§2 invariant 3); the `heading` block is the title text only (§2 invariant 5: after the `#` run
-  and its spaces, before any closing `#` sequence; the first line of a setext heading). Front
+  (§2 invariant 3); the `heading` block is the title text only (§2 invariant 5: after up to three
+  spaces of indentation, the `#` run and its following spaces, and before any closing `#`
+  sequence and trailing spaces). A setext heading's content may span several lines; **the title
+  is its first line** — a decision, made because the stamp wants one line a reader would quote —
+  and the heading block covers that first line only. The title-equality test fixtures
+  single-line setext headings only; a multi-line setext heading is covered by a separate test
+  asserting the first-line rule, not equality with the whole content. Front
   matter is a `front_matter` block; fenced and indented code are `code`; pipe tables `table`;
   lists `list`; blockquotes `quote`; a paragraph consisting only of an image is `figure`, and if
   its alt or the following paragraph starts with a caption label it is also a `figure_caption`;
@@ -660,6 +708,20 @@ Tables by the numeric-token / function-word test over runs of lines. Anything un
 `unknown`; the adapter emits sections only at the headings it is confident of and leaves the
 rest of the text in untitled sections. Expected weaker than 9.4, and the owner's instruction
 applies: **if the PDFs still exist, re-extract from them** and run 9.4 instead.
+
+**It runs only on an explicit opt-in, and never as a fallback.** The trigger is a fourth
+`chunk_params` marker, `structure_infer = "text-heuristic/1"`, read by the same one reader as the
+other three. A marker rather than a deployment setting, for three reasons: inference is a
+property of a *corpus* (the text-only paper collections), not of a deployment, and a setting
+would reinterpret every PDF record lacking a structure key across every collection on the
+host; the choice must be recorded on the collection so §10 and §11 can split by it; and it
+should fork the collection, since the §11 arms that need it are new collections anyway (the
+identity cost is accepted knowingly, although stamping alone would not require it). What the
+marker does **not** do: it is never triggered by `STRUCTURE_METADATA=on` alone; it never
+substitutes for a `.pdf` record that arrived without a structure key — that record is still
+counted as `structure_missing` (the old-extract-image tell of §4 and §7) *and then* inferred, so
+the two counts stay separate and the tell survives; and plain `.txt` without the marker stays
+structure-absent, per the #828 model table. With the marker, a `.txt` record is inferred too.
 
 ---
 
@@ -768,9 +830,9 @@ every carrier hop is proven before the next adapter needs it.
 
 | PR | content | tests |
 |---|---|---|
-| **1 — model and stamp** | `Section`/`Block`/`DocumentStructure`/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants) and `stamp`; the `rules/1` table and `classify_roles(sections)`; the pipeline helpers `attach_structure` and `_stamp_structure`, called from `prepare_documents` **and** `iter_embed_source`, and from `ingest_jsonl.py`'s loop; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key, `JsonlLoader` reads/validates it; `STRUCTURE_METADATA` setting, `--structure-metadata` on the three tools, the CWL input; receipt `enrichment.structure`; `payload_matches` treats a list `actual` as any-element (the list-filter prerequisite, §6); the `jats.py` docstring rewrite (§4). No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition with extended ends, half-open, heading block first-in-section); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` drops an invalid structure with a counted reason and keeps the document, and ignores the key byte-for-byte when absent; the same structured shard stamps identically through `prepare_documents`, `iter_embed_source` and `ingest_jsonl`; `payload_matches` list test plus a conformance case; mutation: remove the validation and the test fails. |
+| **1 — model and stamp** | `Section`/`Block`/`DocumentStructure`/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants) and `stamp`; the `rules/1` table and `classify_roles(sections)`; the pipeline helpers `attach_structure` and `_stamp_structure`, called from `prepare_documents` **and** `iter_embed_source`, and from `ingest_jsonl.py`'s loop; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key; one shared reader `structure_from_record(record, text)` (validate or drop with a counted `structure_dropped`) used by `JsonlLoader` **and** by `ingest_jsonl.py`'s three `Document(...)` construction sites, which bypass `JsonlLoader`; `STRUCTURE_METADATA` setting, `--structure-metadata` on the three tools, the CWL input; receipt `enrichment.structure`; `payload_matches` treats a list `actual` as any-element (the list-filter prerequisite, §6); the `jats.py` docstring rewrite (§4). No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition with extended ends, half-open, heading block first-in-section); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` and `ingest_jsonl` both drop an invalid structure with a counted reason and keep the document, and ignore the key byte-for-byte when absent; the same structured shard stamps identically through `prepare_documents`, `iter_embed_source` and `ingest_jsonl` (the parity test feeds one shard to all three); `payload_matches` list test plus a conformance case; mutation: remove the validation and the test fails. |
 | **2 — Markdown raw mode on both paths** | `markdown/1` raw mode in `attach_structure` under the `[markdown]` extra (preset + `table` + `front_matter` + `dollarmath`; BOM-shifted parse; title-only heading blocks; extended section ends); the refusal when the extra is missing and the adapter was asked for; parity test growth. | adversarial fixture (the one in `test_extract_text_parity.py`: BOM, front matter, CRLF, fences containing `#`, setext headings, tables, images, `$$` maths); front matter is a `front_matter` block and **not** a heading; heading blocks equal titles after inline-markup removal; structure built by `ingest_shard` from the shard equals the in-process structure field for field; stamped metadata identical on both paths; `STRUCTURE_METADATA=on` without the extra: refused, and `content` untouched. |
-| **3 — `text_render` and the one reader** | `structure_from_params` (returns the three markers plus `needs_structure`); `text_render="markdown-plain/1"` stripped mode, applied at ingest from the record's suffix; API create validation and explicit recording; `ingest_shard`/`embed_shard`/`ingest_jsonl` read through the reader and refuse contradicting flags; receipt `chunking` keys; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title exactly; absent marker → `content` byte-identical to `TextFileLoader` on both paths; the GoWe shard is identical with and without the marker (the extract step does not see it); unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven). |
+| **3 — `text_render` and the one reader** | `structure_from_params` (returns the four markers — `text_render`, `structure_cuts`, `embed_heading_path`, `structure_infer` — plus `needs_structure`); `text_render="markdown-plain/1"` stripped mode, applied at ingest from the record's suffix; API create validation and explicit recording; `ingest_shard`/`ingest_jsonl` read through the reader and refuse contradicting flags; **path C**: the embedding-file header gains a `chunking` object with the markers as applied, `load_embeddings.py` refuses a header-vs-entry mismatch before any write, and the API's GoWe dispatch refuses a marked collection on a workflow whose chunk step is `embed_shard.py` (§7, option b); receipt `chunking` keys; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title exactly; absent marker → `content` byte-identical to `TextFileLoader` on both paths; the GoWe shard is identical with and without the marker (the extract step does not see it); unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven); **`load_embeddings` refuses** an embedding file whose header shows no markers against an entry that records one, and the reverse, with nothing written (mutation: drop the check → a marked entry accepts an unmarked file → fails); an unmarked entry with an old header (no `chunking` object) loads exactly as today. |
 | **4a — JATS parity (#833 items 1–2), a contract change** | `.xml` → `JatsLoader` in the registry; the in-process unknown-suffix fallback becomes a refusal with the shared error. Contract first: `contracts/openapi.yaml` wording for `/v1/ingest` by reference (a file with no loader is a failed item with `no loader for <suffix>`, where today it is ingested as text), a conformance case, then the Python change and the Go side's equivalent. | three-path parity test for a JATS fixture (in-process, `pdf_extract.py`, `jats_extract.py`): same `content`, same doc id, same metadata subset; unknown suffix refused identically on A and B; the conformance case passes against both implementations. |
 | **4b — JATS adapter** | `jats/1` from `Span` + `sec-type` → `declared/1`; unit-record structures. | fixture with untitled `<sec>`, nested `<sec>`, `sec-type` present and absent, floats in `<floats-group>`; untitled section is a first-class section; `section_title` on article chunks is the heading, not the unit suffix; declared role never overwritten by rules. |
 | **5 — accuracy-check harness** | `scripts/eval/structure_accuracy.py`: label format, κ, the §10 metrics, the public export with the part-4 allow-list discipline; the labelling run itself is an owner-scheduled activity, its record a results directory. | metrics on a synthetic labelled fixture; the exporter refuses any string that is not a short safe token. |
