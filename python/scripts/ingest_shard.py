@@ -48,7 +48,11 @@ import httpx
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
-from ragstack.ingestion.chunker_config import build_chunker, needs_embed_fn
+from ragstack.ingestion.chunker_config import (
+    build_chunker,
+    needs_embed_fn,
+    semantic_cap_from_params,
+)
 from ragstack.ingestion.chunkers import SIZE_UNITS
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
@@ -149,6 +153,25 @@ def _size_unit(spec, method: str) -> str:
     return str(unit)
 
 
+def _semantic_cap(spec, method: str) -> dict:
+    """The semantic size cap (``size_cap`` / ``cap_split``), **from the registry
+    entry** — never a CLI flag, for the same reason as :func:`_semantic_params`.
+    Read through :func:`~ragstack.ingestion.chunker_config.semantic_cap_from_params`,
+    the function the API's in-process builder uses, so one recorded spec is capped
+    one way on both paths. ``{}`` (no cap recorded, or no spec) is the historical,
+    window-only chunking. A bad value fails the shard naming the key.
+    """
+    if spec is None:
+        return {}
+    try:
+        return semantic_cap_from_params(
+            method, getattr(spec, "chunk_params", None),
+            recorded_size=getattr(spec, "chunk_size", None),
+        )
+    except ValueError as e:
+        raise SystemExit(f"collection {e}") from None
+
+
 def _build_chunker(args, spec=None, embed_fn=None):
     """Chunker via the shared factory (fixed_token token-window included).
 
@@ -176,6 +199,7 @@ def _build_chunker(args, spec=None, embed_fn=None):
         # tool never read the spec at all, so that would have been a regression on
         # the path every current collection uses.
         **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
+        **_semantic_cap(spec, args.chunk_method),
     )
     return chunker
 

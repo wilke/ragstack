@@ -5169,7 +5169,12 @@ components:
                 Extra chunker parameters. The semantic methods read `buffer_size`
                 (1-50), `breakpoint_percentile_threshold` (1-100) and
                 `min_chunk_length` (0-100000); anything omitted falls back to the
-                server default. Unrecognised keys are accepted and stored as-is.
+                server default. A semantic collection created with a `size`
+                records `size_cap: "tokens"` (the size is then a per-chunk token
+                cap, at most the embedding model's budget) and `cap_split`
+                (`greedy`, `balanced` or `topic`; default `greedy`); both are
+                refused on other methods. Unrecognised keys are accepted and
+                stored as-is.
               type: object
               default: {}
           additionalProperties: false

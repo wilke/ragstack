@@ -48,6 +48,7 @@ from ragstack.ingestion.chunker_config import (
     cached_token_counter,
     needs_embed_fn,
     parse_unsupported_methods,
+    semantic_cap_from_params,
 )
 from ragstack.ingestion.chunkers import CHUNK_METHODS, SIZE_UNITS
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
@@ -551,7 +552,9 @@ def size_unit_from_params(method: str, params: dict[str, Any] | None) -> str | N
     return value
 
 
-def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str) -> dict[str, Any]:
+def _chunk_param_kwargs(
+    method: str, params: dict[str, Any], collection_id: str, *, recorded_size: int | None = None
+) -> dict[str, Any]:
     """The :func:`build_chunker` kwargs a collection's ``chunk_params`` set.
 
     ``chunk_params`` is free-form in the contract, so keys this server does not
@@ -567,6 +570,13 @@ def _chunk_param_kwargs(method: str, params: dict[str, Any], collection_id: str)
     if size_unit is not None:
         used.add("size_unit")
         out["size_unit"] = size_unit  # validated above: sentence/words only
+    # The semantic size cap (size_cap / cap_split): read through the SAME
+    # function scripts/ingest_shard.py uses, so a recorded spec is capped one way
+    # on both paths. {} for a collection that records no cap -> unchanged chunking.
+    cap = semantic_cap_from_params(method, params, recorded_size=recorded_size)
+    if cap:
+        used.update(("size_cap", "cap_split"))
+        out.update(cap)
     ignored = sorted(set(params) - used)
     if ignored:
         log.debug(
@@ -628,7 +638,7 @@ def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
             embed_fn=embed_fn,
             on_warn=log.warning,
             require_window=True,
-            **_chunk_param_kwargs(method, params, entry.id),
+            **_chunk_param_kwargs(method, params, entry.id, recorded_size=entry.chunk_size),
         )
     except ModelWindowUnavailable as e:
         raise ModelWindowUnavailable(

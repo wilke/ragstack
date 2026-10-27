@@ -78,10 +78,22 @@ from ragstack.collection_store import CollectionRecord, CollectionStore, CreateO
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.backends import ingest_backend_name
+from ragstack.ingestion.chunker_config import (
+    CAP_SPLIT_PARAM,
+    SIZE_CAP_PARAM,
+    parse_unsupported_methods,
+    shard_refusal,
+)
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
-from ragstack.ingestion.chunker_config import parse_unsupported_methods, shard_refusal
-from ragstack.ingestion.chunkers import CHUNK_METHODS, DEFAULT_SIZE_UNIT
-from ragstack.ingestion.tokenization import TokenCounterUnavailable
+from ragstack.ingestion.chunkers import (
+    CAP_SPLITS,
+    CHUNK_METHODS,
+    DEFAULT_CAP_SPLIT,
+    DEFAULT_SIZE_UNIT,
+    SIZE_CAP_TOKENS,
+    SIZE_CAPS,
+)
+from ragstack.ingestion.tokenization import DEFAULT_TOKEN_RESERVE, TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
@@ -356,7 +368,17 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
         size_unit_from_params(method, chunk.params)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
+    params = chunk.params or {}
+    if method not in SEMANTIC_METHODS:
+        for key in (SIZE_CAP_PARAM, CAP_SPLIT_PARAM):
+            if key in params:
+                raise HTTPException(
+                    400,
+                    f"chunk param {key!r} applies only to "
+                    f"{', '.join(SEMANTIC_METHODS)}, not chunk_method={method!r}",
+                )
     if method in SEMANTIC_METHODS:
+        _validate_semantic_cap(chunk)
         for key, value in (chunk.params or {}).items():
             bounds = SEMANTIC_PARAM_BOUNDS.get(key)
             if bounds is None:
@@ -394,8 +416,57 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             )
 
 
+def _validate_semantic_cap(chunk: ChunkConfig) -> None:
+    """400 for a semantic chunk config whose size cap cannot be honoured.
+
+    A NEW semantic collection's ``size``, when given, is a token cap
+    (``_normalise_chunk`` records ``size_cap='tokens'``), so it has to be a real
+    bound: >= 1, and — when
+    ``CHUNK_MAX_TOKENS`` names the window without a network call — no larger than
+    the per-chunk budget (window minus the specials reserve). Otherwise the
+    window is the embedding endpoint's, known only at ingest, where the same
+    refusal (``make_chunker``) answers 400 naming both numbers.
+    """
+    params = chunk.params or {}
+    cap = params.get(SIZE_CAP_PARAM)
+    if cap is not None and cap not in SIZE_CAPS:
+        raise HTTPException(
+            400, f"chunk param {SIZE_CAP_PARAM!r} must be one of {', '.join(SIZE_CAPS)}; got {cap!r}"
+        )
+    split = params.get(CAP_SPLIT_PARAM)
+    if split is not None and split not in CAP_SPLITS:
+        raise HTTPException(
+            400,
+            f"chunk param {CAP_SPLIT_PARAM!r} must be one of {', '.join(CAP_SPLITS)}; got {split!r}",
+        )
+    size = chunk.size
+    if size is None:
+        if cap is not None or split is not None:
+            raise HTTPException(
+                400,
+                f"chunk params {SIZE_CAP_PARAM!r}/{CAP_SPLIT_PARAM!r} need a chunk size: "
+                f"the size IS the token cap",
+            )
+        return  # no size, no cap: the model window is the only bound, as before
+    if size < 1:
+        raise HTTPException(
+            400, f"chunk size for {chunk.method!r} is a token cap and must be at least 1; got {size}"
+        )
+    if settings.chunk_max_tokens is not None:
+        budget = max(1, settings.chunk_max_tokens - DEFAULT_TOKEN_RESERVE)
+        if size > budget:
+            raise HTTPException(
+                400,
+                f"chunk size {size} tokens exceeds the embedding model's per-chunk "
+                f"budget of {budget} tokens (CHUNK_MAX_TOKENS={settings.chunk_max_tokens} "
+                f"minus a {DEFAULT_TOKEN_RESERVE}-token reserve); semantic chunk size "
+                f"is a cap, so use a size <= {budget}",
+            )
+
+
 def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
-    """Drop ``size_unit`` when it equals the default (``chars``).
+    """Drop ``size_unit`` when it equals the default (``chars``); on a semantic
+    method with a size, record the size-cap marker (see the branch below).
 
     ``chunk_params`` feeds ``chunk_descriptor()`` -> ``spec_hash`` -> the physical
     name, so ``{}`` and ``{"size_unit": "chars"}`` would content-address the SAME
@@ -407,6 +478,18 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
     params = dict(chunk.params or {})
     if params.get("size_unit") == DEFAULT_SIZE_UNIT:
         del params["size_unit"]
+        return chunk.model_copy(update={"params": params})
+    if chunk.method in SEMANTIC_METHODS and chunk.size is not None:
+        # A NEW semantic collection with a size: that size is a token cap. Record
+        # the marker and the split strategy as concrete values. A collection
+        # without the marker keeps the historical window-only chunking forever
+        # (no semantic collection created before this recorded it, and their
+        # stored chunks were made uncapped), and an unrecorded split would follow
+        # a later change of default — one collection, two chunkings. A semantic
+        # create with NO size records no size and no marker: the model window
+        # stays the only bound (and the spec claims no size it does not use).
+        params.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
+        params.setdefault(CAP_SPLIT_PARAM, DEFAULT_CAP_SPLIT)
         return chunk.model_copy(update={"params": params})
     return chunk
 
@@ -641,10 +724,19 @@ async def create_collection(
             # set explicitly; the unconfigured default falls back instead.
             log.error("collection create: %s", e)
             raise HTTPException(503, e.client_detail) from None
-        chunk = ChunkConfig(
+        chunk = _normalise_chunk(ChunkConfig(
             method=default_method,
             size=settings.chunk_size,
             overlap=settings.chunk_overlap,
+        ))
+    if chunk.method in SEMANTIC_METHODS and chunk.overlap:
+        # Semantic chunks do not overlap (only the oversized-document fixed_token
+        # fallback uses it). Not refused: existing clients send 64 by habit.
+        log.warning(
+            "collection create: chunk_method=%s ignores chunk_overlap=%s (semantic "
+            "chunks do not overlap; it is used only by the oversized-document "
+            "fixed_token fallback)",
+            chunk.method, chunk.overlap,
         )
     # On the RESOLVED method — see the helper: the omitted-chunk branch above
     # takes the server default, and that default is just as unrunnable under a

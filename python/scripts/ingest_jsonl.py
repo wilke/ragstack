@@ -76,8 +76,14 @@ from ragstack.ingestion.chunker_config import (
     CHUNK_SIZE_UNIT_HELP,
     build_chunker,
     needs_embed_fn,
+    semantic_cap_from_params,
 )
-from ragstack.ingestion.chunkers import link_neighbors_by_document
+from ragstack.ingestion.chunkers import (
+    CAP_SPLITS,
+    DEFAULT_CAP_SPLIT,
+    SIZE_CAPS,
+    link_neighbors_by_document,
+)
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
@@ -561,6 +567,9 @@ async def run(
     # estimate, which silently re-sized every chunk, so the estimator is now an
     # explicit --chunk-token-counter choice) and builds the chunker. Returns the
     # counter + budget for reuse below (doc-metrics writer, seg-cache fingerprint).
+    # Semantic size cap: from the registry entry when there is one (refusing a
+    # contradicting flag), else from --semantic-size-cap / --semantic-cap-split.
+    cap_kwargs = _semantic_cap_kwargs(args, target)
     chunker, token_counter, max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -581,6 +590,7 @@ async def run(
         max_breakpoint_sentences=(
             args.semantic_max_sentences if args.semantic_max_sentences > 0 else None
         ),
+        **cap_kwargs,
     )
     # Optional segmentation cache: store each doc's chunk spans keyed by
     # content+config, so a re-ingest rebuilds identical blocks from the cache
@@ -607,6 +617,8 @@ async def run(
                 {"size_unit": getattr(args, "chunk_size_unit", "chars"), "pack": "318"}
                 if args.chunk_method in ("sentence", "words") else {}
             ),
+            # Only when a cap is set, so every uncapped fingerprint is unchanged.
+            **cap_kwargs,
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
         print(f"segmentation cache {args.segmentation_cache} "
@@ -1140,6 +1152,7 @@ async def run(
                 "breakpoint_percentile": args.chunk_breakpoint_percentile,
                 "buffer_size": args.chunk_buffer_size,
                 "min_chunk_length": args.chunk_min_length,
+                **cap_kwargs,
             }
         # chunk_count is the WHOLE collection's chunk count for this tenant — a
         # resumed run's stats["chunks"] counts only the segment it processed, so
@@ -1184,6 +1197,55 @@ async def run(
     if stats.get("boilerplate_flagged") or stats.get("boilerplate_dropped"):
         print(f"boilerplate: {stats['boilerplate_flagged']} chunks flagged, "
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
+
+
+def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str]:
+    """The semantic size cap (``size_cap`` / ``cap_split``) this run chunks with.
+
+    Writing into a registry collection, the ENTRY is the source (its
+    ``chunk_params``, read by the same ``semantic_cap_from_params`` the API and
+    ``ingest_shard.py`` use), and a ``--semantic-size-cap`` /
+    ``--semantic-cap-split`` that contradicts it is refused with exit 2 — the cap
+    is collection identity, like ``size_unit``. With no entry the flags decide.
+    Neither set: ``{}``, the historical window-only chunking. A flag on a
+    non-semantic method is refused rather than ignored.
+    """
+    cap_flag = getattr(args, "semantic_size_cap", None)
+    split_flag = getattr(args, "semantic_cap_split", None)
+    if not needs_embed_fn(args.chunk_method):
+        if cap_flag or split_flag:
+            print("error: --semantic-size-cap/--semantic-cap-split apply only to "
+                  "the semantic chunk methods", file=sys.stderr)
+            raise SystemExit(2)
+        return {}
+    try:
+        if target is None:
+            flags = {k: v for k, v in (("size_cap", cap_flag), ("cap_split", split_flag)) if v}
+            return semantic_cap_from_params(
+                args.chunk_method, flags, recorded_size=args.chunk_size
+            )
+        entry = semantic_cap_from_params(
+            args.chunk_method, getattr(target.spec, "chunk_params", None),
+            recorded_size=getattr(target.spec, "chunk_size", None),
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(2) from None
+    want = {
+        "size_cap": entry.get("size_cap"),
+        "cap_split": entry.get("cap_split", DEFAULT_CAP_SPLIT),
+    }
+    for key, flag in (("size_cap", cap_flag), ("cap_split", split_flag)):
+        if flag and flag != want[key]:
+            print(
+                f"error: refusing to ingest into collection {target.collection_id!r}: "
+                f"--semantic-{key.replace('_', '-')} {flag} contradicts the registry "
+                f"entry, which records {key}={want[key]!r}. The semantic size cap is "
+                f"part of the collection's identity (ADR-0002).",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+    return entry
 
 
 def _refuse_size_unit_mismatch(args: argparse.Namespace, target: Any) -> None:
@@ -1352,6 +1414,15 @@ def main() -> None:
                    help="semantic: distance percentile above which a chunk boundary is placed")
     p.add_argument("--chunk-min-length", type=int, default=500,
                    help="semantic: merge chunks shorter than this many chars into a neighbor")
+    p.add_argument("--semantic-size-cap", choices=SIZE_CAPS, default=None,
+                   help="semantic: 'tokens' makes --chunk-size an upper bound in "
+                        "tokens on every semantic chunk (refused above the model "
+                        "window). Default: no size cap, only the model window caps. "
+                        "Into a registry collection the entry decides; a "
+                        "contradicting flag is refused.")
+    p.add_argument("--semantic-cap-split", choices=CAP_SPLITS, default=None,
+                   help="semantic, with --semantic-size-cap: how an over-cap block "
+                        "is split — greedy (default), balanced, or topic.")
     p.add_argument("--semantic-max-sentences", type=int, default=3000,
                    help="semantic: OVERSIZED-DOC FALLBACK. A doc that splits into more "
                         "than this many sentence spans is chunked with the fixed_token "

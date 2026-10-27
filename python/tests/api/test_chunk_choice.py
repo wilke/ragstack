@@ -414,3 +414,115 @@ async def test_default_size_unit_is_dropped_so_the_hash_does_not_fork(
     specs = {d["collection"]: CollectionSpec.model_validate(d) for d in json.loads(f.read_text())}
     assert specs[plain_name].chunk_params == {}
     assert specs[tokens_name].chunk_params == {"size_unit": "tokens"}
+
+
+# --------------------------------------------------------------------------- #
+# The semantic size cap at create (marker recorded; overlap warned, not refused)
+# --------------------------------------------------------------------------- #
+
+
+async def _create_semantic(client, monkeypatch, tmp_path, cid, chunk):
+    from ragstack.api.collections import CollectionSpec
+
+    f = tmp_path / "libs.json"
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
+    reg = await client.post("/v1/admin/models/registry", json=EMB)
+    assert reg.status_code == 201 or "already exists" in reg.text, reg.text  # 2nd create
+    r = await client.post("/v1/collections", json={
+        "embedding": "emb-sfr", "id": cid, "chunk": chunk,
+    })
+    spec = None
+    if r.status_code == 201:
+        spec = next(
+            CollectionSpec.model_validate(d) for d in json.loads(f.read_text()) if d["id"] == cid
+        )
+    return r, spec
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["semantic", "semantic_pooled"])
+async def test_semantic_with_a_size_records_the_token_cap(client, _admin, monkeypatch, tmp_path,
+                                                          method):
+    """A NEW semantic collection with a size records that the size is a token cap,
+    and the split strategy, as concrete values — so the bulk path and a later
+    default change cannot read the spec any other way."""
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "capped", {
+        "method": method, "size": 512, "overlap": 0, "params": {"buffer_size": 4},
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_size == 512
+    assert spec.chunk_params == {"buffer_size": 4, "size_cap": "tokens", "cap_split": "greedy"}
+
+
+@pytest.mark.asyncio
+async def test_semantic_keeps_an_explicit_cap_split(client, _admin, monkeypatch, tmp_path):
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "bal", {
+        "method": "semantic", "size": 256, "params": {"cap_split": "balanced"},
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_params == {"size_cap": "tokens", "cap_split": "balanced"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("chunk", "needle"), [
+    ({"method": "semantic", "size": 512, "params": {"cap_split": "smart"}}, "cap_split"),
+    ({"method": "semantic", "size": 512, "params": {"size_cap": "chars"}}, "size_cap"),
+    ({"method": "semantic", "params": {"cap_split": "topic"}}, "need a chunk size"),
+    ({"method": "semantic", "size": 0}, "at least 1"),
+    ({"method": "fixed_token", "size": 512, "params": {"size_cap": "tokens"}}, "applies only"),
+    ({"method": "sentence", "size": 512, "params": {"cap_split": "greedy"}}, "applies only"),
+])
+async def test_bad_semantic_cap_is_a_400(client, _admin, monkeypatch, tmp_path, chunk, needle):
+    r, _spec = await _create_semantic(client, monkeypatch, tmp_path, "bad", chunk)
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_cap_over_chunk_max_tokens_is_refused_at_create(
+    client, _admin, monkeypatch, tmp_path
+):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
+    ok, _ = await _create_semantic(client, monkeypatch, tmp_path, "fits",
+                                   {"method": "semantic", "size": 512})
+    assert ok.status_code == 201, ok.text
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "over",
+                                  {"method": "semantic", "size": 513})
+    assert r.status_code == 400, r.text
+    assert "512" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_overlap_is_warned_not_refused(client, _admin, monkeypatch, tmp_path,
+                                                      caplog):
+    with caplog.at_level("WARNING", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "ov", {
+            "method": "semantic", "size": 512, "overlap": 64,
+        })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_overlap == 64  # recorded as sent: not refused, not rewritten
+    warned = [m.getMessage() for m in caplog.records if "ignores chunk_overlap" in m.getMessage()]
+    assert warned and "64" in warned[0]
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="ragstack.api.routers.collections"):
+        r, _ = await _create_semantic(client, monkeypatch, tmp_path, "nov", {
+            "method": "semantic", "size": 512, "overlap": 0,
+        })
+    assert r.status_code == 201
+    assert not [m for m in caplog.records if "ignores chunk_overlap" in m.getMessage()]
+
+
+def test_unmarked_semantic_entry_builds_uncapped(monkeypatch):
+    """A pre-marker entry (chunk_size recorded, no size_cap) keeps window-only
+    chunking; a marked one is capped at its size."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
+    monkeypatch.setattr("ragstack.config.settings.chunk_token_counter", "estimate")
+    embed = lambda texts: [[0.0] * 8 for _ in texts]  # noqa: E731
+    old = _chunker_for(_entry("semantic", chunk_size=512), embed_fn=embed)
+    assert old.size_cap_tokens is None and old.cap_split == "greedy"
+    new = _chunker_for(
+        _entry("semantic", chunk_size=512,
+               chunk_params={"size_cap": "tokens", "cap_split": "topic"}),
+        embed_fn=embed,
+    )
+    assert new.size_cap_tokens == 512 and new.cap_split == "topic"

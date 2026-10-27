@@ -80,6 +80,42 @@ def _validate_budget_mode(budget_mode: str) -> str:
 SIZE_UNITS: tuple[str, ...] = ("chars", "tokens")
 DEFAULT_SIZE_UNIT = "chars"
 
+#: The SEMANTIC size-cap marker: what ``chunk_params["size_cap"]`` may record.
+#:
+#: ``"tokens"`` — ``chunk_size`` is an UPPER BOUND, in tokens of the collection
+#: embedding model's tokenizer (the same counter as the window cap), on every
+#: semantic chunk. It must be <= the resolved window budget (``max_tokens``);
+#: a larger one is refused, never clamped.
+#:
+#: **Absent** — the historical behaviour, kept exactly: ``chunk_size`` is used
+#: only by the oversized-document ``fixed_token`` fallback and the only cap is
+#: ``max_tokens``. Every semantic collection created before the marker existed
+#: records ``chunk_size`` (often a meaningless 512) and was chunked uncapped, so
+#: reading its ``chunk_size`` as a cap now would mix two chunkings in one
+#: collection (#647's defect class). Only a recorded marker turns the cap on.
+SIZE_CAP_TOKENS = "tokens"
+SIZE_CAPS: tuple[str, ...] = (SIZE_CAP_TOKENS,)
+
+#: How a semantic block over the cap is split (``chunk_params["cap_split"]``).
+#: Only meaningful with a recorded ``size_cap``; an uncapped (legacy) collection
+#: is always ``greedy``, which is what it was built with.
+#:
+#: ``greedy``   — re-pack the block's sentences greedily into <= cap pieces
+#:                (:func:`_cap_unit_range`); can leave a small tail (520 tokens
+#:                at cap 512 -> 512 + 8). The behaviour before ``cap_split``.
+#: ``balanced`` — split into k = ceil(tokens / cap) pieces of roughly equal size
+#:                at sentence boundaries, raising k until every piece fits
+#:                (:func:`_balanced_unit_range`).
+#: ``topic``    — split recursively at the block's strongest internal breakpoint
+#:                (largest consecutive-buffer cosine distance, the distances
+#:                breakpoint detection already computed: no extra embedding)
+#:                until every piece fits (:meth:`SemanticChunker._topic_split`).
+#:
+#: Under all three a cut lands inside a sentence only when that one sentence
+#: alone is over the cap (hard token split, as before).
+CAP_SPLITS: tuple[str, ...] = ("greedy", "balanced", "topic")
+DEFAULT_CAP_SPLIT = "greedy"
+
 
 def _validate_size_unit(
     size_unit: str, chunk_size: int, token_counter: TokenCounter | None
@@ -1046,6 +1082,138 @@ def _cap_unit_range(
     )
 
 
+def _balanced_unit_range(
+    doc: Document,
+    spans: list[tuple[int, int]],
+    lo: int,
+    hi: int,
+    cap: int,
+    token_counter: TokenCounter,
+) -> list[Chunk]:
+    """Emit units ``spans[lo:hi]`` as pieces of roughly EQUAL token size, each
+    <= ``cap`` (``cap_split="balanced"``).
+
+    A unit that alone exceeds ``cap`` is hard-split by tokens exactly as the
+    greedy packer does, and it separates the block into runs; each run of
+    fitting units that is itself over ``cap`` is cut into k pieces at unit
+    boundaries, starting at k = ceil(joined tokens / cap). The pieces are chosen
+    by :func:`_balanced_cuts` on the per-unit counts (min-max piece, then the
+    largest smallest piece) and then VERIFIED on the joined text; when a piece
+    does not fit, k is raised. k = number of units always fits (each piece is
+    then a single unit, whose joined count IS its own count), so the loop ends
+    and the never-exceed-``cap`` invariant is measured, not inferred.
+    """
+    text = doc.content
+    tok = [token_counter.count(text[s:e]) for s, e in spans[lo:hi]]
+    out: list[Chunk] = []
+    run = lo
+    for i in range(lo, hi):
+        if tok[i - lo] > cap:
+            if run < i:
+                out.extend(_balanced_run(doc, spans, run, i, cap, token_counter, tok[run - lo : i - lo]))
+            s, e = spans[i]
+            out.extend(_token_split_span(doc, s, e, cap, token_counter))
+            run = i + 1
+    if run < hi:
+        out.extend(_balanced_run(doc, spans, run, hi, cap, token_counter, tok[run - lo :]))
+    return out
+
+
+def _balanced_run(
+    doc: Document,
+    spans: list[tuple[int, int]],
+    lo: int,
+    hi: int,
+    cap: int,
+    token_counter: TokenCounter,
+    weights: list[int],
+) -> list[Chunk]:
+    """One run of :func:`_balanced_unit_range`: every unit fits ``cap`` alone."""
+    text = doc.content
+
+    def joined(a: int, b: int) -> int:
+        return token_counter.count(text[spans[a][0] : spans[b - 1][1]])
+
+    total = joined(lo, hi)
+    if total <= cap:
+        return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
+    n = hi - lo
+    k = max(2, -(-total // cap))
+    while k <= n:
+        cuts = _balanced_cuts(weights, k, cap)
+        if cuts is not None:
+            pieces = [(lo + a, lo + b) for a, b in zip(cuts, cuts[1:], strict=False)]
+            if all(joined(a, b) <= cap for a, b in pieces):
+                return [_make_chunk(doc, spans[a][0], spans[b - 1][1]) for a, b in pieces]
+        k += 1
+    raise AssertionError(  # pragma: no cover — k == n always fits (single units)
+        f"balanced split found no partition of {n} units under cap {cap}"
+    )
+
+
+def _balanced_cuts(weights: list[int], k: int, cap: int) -> list[int] | None:
+    """Boundaries ``[0, c1, ..., n]`` cutting ``weights`` into exactly ``k``
+    contiguous non-empty pieces, each summing to <= ``cap``, that (1) minimise the
+    largest piece and then (2) maximise the smallest one; ``None`` if no such
+    partition exists. Deterministic: ties keep the earliest cut.
+
+    Two O(k * n * w) dynamic programmes over prefix sums (``w`` = units that fit
+    in one piece), pure arithmetic — no token counting here.
+    """
+    n = len(weights)
+    if k > n:
+        return None
+    prefix = [0]
+    for w in weights:
+        prefix.append(prefix[-1] + w)
+    inf = float("inf")
+
+    def fits_before(j: int, limit: float):
+        """Start indices i < j with sum(weights[i:j]) <= limit, nearest first."""
+        i = j - 1
+        while i >= 0 and prefix[j] - prefix[i] <= limit:
+            yield i
+            i -= 1
+
+    # (1) best[p][j]: min over partitions of weights[:j] into p pieces of the max piece.
+    best = [[inf] * (n + 1) for _ in range(k + 1)]
+    best[0][0] = 0
+    for p in range(1, k + 1):
+        for j in range(p, n + 1):
+            for i in fits_before(j, cap):
+                if i < p - 1:
+                    break
+                cand = max(best[p - 1][i], prefix[j] - prefix[i])
+                if cand < best[p][j]:
+                    best[p][j] = cand
+    limit = best[k][n]
+    if limit == inf:
+        return None
+    # (2) among partitions whose pieces are all <= limit, maximise the smallest.
+    low = [[-inf] * (n + 1) for _ in range(k + 1)]
+    back = [[-1] * (n + 1) for _ in range(k + 1)]
+    low[0][0] = inf
+    for p in range(1, k + 1):
+        for j in range(p, n + 1):
+            for i in fits_before(j, limit):
+                if i < p - 1:
+                    break
+                if low[p - 1][i] == -inf:
+                    continue
+                cand = min(low[p - 1][i], prefix[j] - prefix[i])
+                if cand > low[p][j] or (cand == low[p][j] and i < back[p][j]):
+                    low[p][j] = cand
+                    back[p][j] = i
+    if low[k][n] == -inf:  # pragma: no cover — (1) found one at this limit
+        return None
+    cuts = [n]
+    j = n
+    for p in range(k, 0, -1):
+        j = back[p][j]
+        cuts.append(j)
+    return cuts[::-1]
+
+
 def _furthest_fitting_unit(
     i: int, n: int, max_tokens: int, joined_of: Callable[[int, int], int]
 ) -> int:
@@ -1463,7 +1631,42 @@ class SemanticChunker:
         max_breakpoint_sentences: int | None = 3000,
         chunk_size: int = 512,
         chunk_overlap: int = 64,
+        size_cap_tokens: int | None = None,
+        cap_split: str = DEFAULT_CAP_SPLIT,
     ) -> None:
+        if cap_split not in CAP_SPLITS:
+            raise ValueError(
+                f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}"
+            )
+        if size_cap_tokens is None and cap_split != DEFAULT_CAP_SPLIT:
+            # A collection without a recorded cap is chunked as it always was;
+            # a split strategy with nothing to split at would only look applied.
+            raise ValueError(
+                f"cap_split={cap_split!r} needs a size cap (size_cap='tokens'): "
+                f"without one, semantic blocks are split only at the model window, "
+                f"greedily, as before"
+            )
+        if size_cap_tokens is not None:
+            if token_counter is None:
+                raise ValueError(
+                    "a semantic size cap (size_cap='tokens') requires a token_counter: "
+                    "chunk_size is a token bound and there is nothing to count with"
+                )
+            if size_cap_tokens < 1:
+                raise ValueError(
+                    f"a semantic size cap needs chunk_size >= 1 token; got {size_cap_tokens}"
+                )
+            if max_tokens is not None and size_cap_tokens > max_tokens:
+                raise ValueError(
+                    f"semantic chunk_size={size_cap_tokens} tokens (size_cap='tokens') "
+                    f"exceeds max_tokens={max_tokens} (the embedder's per-chunk token "
+                    f"budget): a chunk that size would overflow the model context. "
+                    f"Use chunk_size <= {max_tokens}."
+                )
+        #: The per-chunk token cap a recorded ``size_cap='tokens'`` sets
+        #: (``chunk_size``), or ``None`` (legacy: only ``max_tokens`` caps).
+        self.size_cap_tokens = size_cap_tokens
+        self.cap_split = cap_split
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
         self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
@@ -1518,7 +1721,9 @@ class SemanticChunker:
         # FixedTokenWindowChunker, built lazily on first use (it requires an HF
         # TokenCounter with an offset map). If none is available, the fallback
         # degrades to a token-budget split over the whole doc (still O(n), lossless,
-        # deterministic ids) rather than flooding the fleet.
+        # deterministic ids) rather than flooding the fleet. (With a recorded size
+        # cap, make_chunker also passes chunk_size as size_cap_tokens, so the
+        # fallback window and the cap are the same number of tokens.)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._fallback_chunker: FixedTokenWindowChunker | None = None
@@ -1560,12 +1765,26 @@ class SemanticChunker:
         if over budget. Used for a single-sentence document and by the
         oversized-doc fallback; a multi-sentence semantic block goes through
         :meth:`_emit_block`, which never cuts inside a sentence that fits."""
-        if self.max_tokens is None or self.token_counter is None:
+        cap = self._block_cap
+        if cap is None or self.token_counter is None:
             return [_make_chunk(doc, start, end)]
-        return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
+        return _token_split_span(doc, start, end, cap, self.token_counter)
+
+    @property
+    def _block_cap(self) -> int | None:
+        """The token cap on an EMITTED chunk: the recorded size cap when there is
+        one (already checked <= ``max_tokens``), else ``max_tokens``. Breakpoint
+        inputs are bounded separately (:meth:`_cap_tokens`), by the window, so a
+        size cap never moves a breakpoint."""
+        return self.size_cap_tokens if self.size_cap_tokens is not None else self.max_tokens
 
     def _emit_block(
-        self, doc: Document, spans: list[tuple[int, int]], lo: int, hi: int
+        self,
+        doc: Document,
+        spans: list[tuple[int, int]],
+        lo: int,
+        hi: int,
+        distances: Sequence[float] | None = None,
     ) -> list[Chunk]:
         """Emit the semantic block of sentences ``spans[lo:hi]``, within budget.
 
@@ -1579,10 +1798,65 @@ class SemanticChunker:
         :func:`_token_split_span`, which cuts wherever the token count runs out —
         mid-sentence, routinely.
         """
-        if self.max_tokens is None or self.token_counter is None:
+        cap = self._block_cap
+        counter = self.token_counter
+        if cap is None or counter is None:
             return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
-        # Same cap step as char-sized sentence/words (_cap_unit_range).
-        return _cap_unit_range(doc, spans, lo, hi, self.max_tokens, self.token_counter)
+        if self.cap_split == "greedy":
+            # Same cap step as char-sized sentence/words (_cap_unit_range). The
+            # legacy (no size cap) path is always this one, with cap = max_tokens.
+            return _cap_unit_range(doc, spans, lo, hi, cap, counter)
+        start, end = spans[lo][0], spans[hi - 1][1]
+        if hi - lo == 1 or counter.count(doc.content[start:end]) <= cap:
+            return _token_split_span(doc, start, end, cap, counter)
+        if self.cap_split == "balanced":
+            return _balanced_unit_range(doc, spans, lo, hi, cap, counter)
+        if distances is None:  # pragma: no cover — chunk() always passes them
+            raise ValueError("cap_split='topic' needs the breakpoint distances")
+        return self._topic_split(doc, spans, lo, hi, cap, distances)
+
+    def _topic_split(
+        self,
+        doc: Document,
+        spans: list[tuple[int, int]],
+        lo: int,
+        hi: int,
+        cap: int,
+        distances: Sequence[float],
+    ) -> list[Chunk]:
+        """``cap_split="topic"``: cut the block at its strongest internal breakpoint,
+        recursively, until every piece is <= ``cap`` tokens.
+
+        ``distances[i]`` is the cosine distance between the buffers of sentences
+        ``i`` and ``i + 1`` — the series breakpoint detection already computed
+        (rounded, for ``semantic_pooled``), so this embeds nothing. Inside
+        ``spans[a:b]`` the candidate cuts are before sentence ``m`` for ``a < m < b``,
+        scored by ``distances[m - 1]``; ties go to the cut that best balances the
+        two sides' characters, then to the earliest. A single sentence still over
+        ``cap`` is hard-split by tokens, as under every strategy. Iterative (an
+        explicit stack, left piece first), so a long block cannot hit the
+        recursion limit and the pieces come out in document order.
+        """
+        assert self.token_counter is not None  # narrowed by _emit_block
+        counter = self.token_counter
+        text = doc.content
+        out: list[Chunk] = []
+        stack = [(lo, hi)]
+        while stack:
+            a, b = stack.pop()
+            start, end = spans[a][0], spans[b - 1][1]
+            if b - a == 1 or counter.count(text[start:end]) <= cap:
+                out.extend(_token_split_span(doc, start, end, cap, counter))
+                continue
+
+            def score(m: int, a: int = a, start: int = start, end: int = end) -> tuple:
+                at = spans[m][0]
+                return (distances[m - 1], -abs((at - start) - (end - at)), -m)
+
+            cut = max(range(a + 1, b), key=score)
+            stack.append((cut, b))
+            stack.append((a, cut))
+        return out
 
     def _cap_tokens(self, s: str) -> str:
         """Bound ``s`` to the BREAKPOINT embedder's token budget (first lossless
@@ -1678,7 +1952,7 @@ class SemanticChunker:
             past_of[e] = i + 1
         out: list[Chunk] = []
         for s, e in chunk_spans:
-            out.extend(self._emit_block(doc, spans, first_of[s], past_of[e]))
+            out.extend(self._emit_block(doc, spans, first_of[s], past_of[e], distances))
         return out
 
     def _breakpoint_groups(
@@ -1740,6 +2014,8 @@ def make_chunker(
     max_breakpoint_sentences: int | None = 3000,
     budget_mode: str = DEFAULT_BUDGET_MODE,
     size_unit: str = DEFAULT_SIZE_UNIT,
+    size_cap: str | None = None,
+    cap_split: str = DEFAULT_CAP_SPLIT,
 ):
     """Build the chunker named by ``method``.
 
@@ -1772,7 +2048,27 @@ def make_chunker(
     a doc that sub-splits into more than this many sentence spans is chunked with the
     fixed_token sliding window instead of the (per-span) breakpoint embed, keeping
     ingest cost independent of document size. ``None`` disables the fallback.
+
+    ``size_cap`` (semantic only): the collection's recorded size-cap marker, see
+    :data:`SIZE_CAPS`. ``"tokens"`` makes ``chunk_size`` an upper bound, in
+    tokens, on every semantic chunk — refused (``ValueError``) above
+    ``max_tokens``, never clamped. ``None`` (default): the historical behaviour,
+    ``chunk_size`` feeds only the oversized-doc fallback. ``cap_split`` (semantic,
+    with ``size_cap`` only): how an over-cap block is split, see
+    :data:`CAP_SPLITS`.
     """
+    if cap_split not in CAP_SPLITS:
+        raise ValueError(f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}")
+    if size_cap is not None and size_cap not in SIZE_CAPS:
+        raise ValueError(f"unknown size_cap {size_cap!r}; valid: {', '.join(SIZE_CAPS)}")
+    if method not in ("semantic", "semantic_pooled") and (
+        size_cap is not None or cap_split != DEFAULT_CAP_SPLIT
+    ):
+        # Same rule as size_unit: a knob this method ignores must not look applied.
+        raise ValueError(
+            f"size_cap/cap_split apply only to the semantic methods, not "
+            f"chunk_method={method!r}"
+        )
     if size_unit not in SIZE_UNITS:
         # Checked for every method, not only the two that read it: a typo must not
         # be accepted just because this method happens to ignore the knob.
@@ -1843,5 +2139,7 @@ def make_chunker(
             max_breakpoint_sentences=max_breakpoint_sentences,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            size_cap_tokens=chunk_size if size_cap == SIZE_CAP_TOKENS else None,
+            cap_split=cap_split,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")
