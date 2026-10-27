@@ -1161,8 +1161,9 @@ def _balanced_run(
     if total <= cap:
         return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
     n = hi - lo
-    # Clamp to n: seams can make the joined count exceed the sum of the units'
-    # own counts, so ceil(total / cap) may ask for more pieces than units.
+    # Defensive only: seams can make ceil(total / cap) exceed n, but an unclamped
+    # k > n skips the loop and reaches the same one-unit-per-piece fallback below,
+    # so the clamp states the bound rather than changing any output.
     k = max(2, min(n, -(-total // cap)))
     while k < n:
         cuts = _balanced_cuts(weights, k, cap)
@@ -1811,8 +1812,10 @@ class SemanticChunker:
     def _block_cap(self) -> int | None:
         """The token cap on an EMITTED chunk: the recorded size cap when there is
         one (already checked <= ``max_tokens``), else ``max_tokens``. Breakpoint
-        inputs are bounded separately (:meth:`_cap_tokens`), by the window, so a
-        size cap never moves a breakpoint."""
+        inputs are bounded separately (:attr:`breakpoint_budget`): by the window
+        under ``breakpoint_cap='window'``, where the size cap moves no breakpoint;
+        at the size cap too under the default ``breakpoint_cap='size'``, where it
+        can (that is the study arm's behaviour)."""
         return self.size_cap_tokens if self.size_cap_tokens is not None else self.max_tokens
 
     def _emit_block(

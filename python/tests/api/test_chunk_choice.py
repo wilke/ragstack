@@ -555,13 +555,14 @@ def test_unmarked_semantic_entry_builds_uncapped(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_semantic_server_default_cap_is_validated_at_create(
-    client, _admin, monkeypatch, tmp_path
+async def test_semantic_server_default_cap_is_clamped_to_the_budget_at_create(
+    client, _admin, monkeypatch, tmp_path, caplog
 ):
     """A create that omits `chunk` takes the server default — which, for a semantic
-    default, now records the size-cap marker. Its size must be checked here like
-    an explicit one: CHUNK_SIZE=1024 over a 512-token budget used to mint the
-    collection (201) and then fail every ingest with a 400."""
+    default, records the size-cap marker. CHUNK_SIZE=1024 over a 512-token budget
+    used to mint the collection (201) recording 1024 and then fail every ingest
+    with a 400. The deployment default is now clamped to the budget and the
+    clamped number is what the spec records, so every ingest can honour it."""
     from ragstack.api.collections import CollectionSpec
 
     f = tmp_path / "libs.json"
@@ -570,26 +571,36 @@ async def test_semantic_server_default_cap_is_validated_at_create(
     monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
     monkeypatch.setattr("ragstack.config.settings.chunk_size", 1024)
     await _register(client)
-    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
-    assert r.status_code == 400, r.text
-    assert "512" in r.json()["detail"]
-    # Control: a default size within the budget mints a capped collection.
-    monkeypatch.setattr("ragstack.config.settings.chunk_size", 512)
-    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
     assert r.status_code == 201, r.text
     spec = next(CollectionSpec.model_validate(d) for d in json.loads(f.read_text()))
     assert spec.chunk_size == 512
     assert spec.chunk_params == {"size_cap": "tokens", "cap_split": "greedy",
                                  "breakpoint_cap": "size"}
+    assert any("default semantic chunk size 1024" in m.getMessage() for m in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_semantic_default_size_over_the_window_is_refused_at_create(
-    client, _admin, monkeypatch, tmp_path
+async def test_semantic_default_size_is_clamped_but_an_explicit_one_is_refused(
+    client, _admin, monkeypatch, tmp_path, caplog
 ):
-    """A semantic create with no size takes CHUNK_SIZE as its cap, under the same
-    rule as an explicit size: over the CHUNK_MAX_TOKENS budget it is a 400."""
+    """A size-less semantic create (what the UI sends) on a tight-window
+    deployment: the default CHUNK_SIZE (512) over the budget (256) is clamped and
+    recorded as 256. A size the CALLER sends over the budget is refused, never
+    clamped."""
     monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
-    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "nosize",
-                                  {"method": "semantic"})
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "nosize",
+                                         {"method": "semantic"})
+    assert r.status_code == 201, r.text
+    assert spec.chunk_size == 256 and spec.chunk_params["size_cap"] == "tokens"
+    assert any("recording 256" in m.getMessage() for m in caplog.records)
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "explicit",
+                                  {"method": "semantic", "size": 257})
     assert r.status_code == 400 and "256" in r.json()["detail"], r.text
+    # Within the budget the default is not touched.
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "roomy",
+                                     {"method": "semantic"})
+    assert r.status_code == 201 and spec.chunk_size == 512, r.text

@@ -5154,15 +5154,18 @@ components:
                 Chunk budget: characters for `fixed`/`sentence`/`words`, tokens of
                 the collection's embedding model for `fixed_token`. Must be >= 1
                 (`sentence`/`words` also accept -1 = one chunk per document).
-                Omit for the semantic methods, which derive boundaries from the
-                text — a size sent there would be recorded in the collection's
-                provenance without ever having been used.
+                For the semantic methods it is an upper bound in tokens of the
+                collection's embedding model on every chunk, refused (400) above
+                the model's per-chunk budget; omitted, the deployment's default
+                size is used (clamped to the budget when the server knows it at
+                create) and recorded.
               type: [integer, "null"]
             overlap:
               description: >-
                 Overlap between neighbouring chunks, in the same unit as `size`.
                 Must be >= 0 and strictly less than `size`, otherwise the sliding
-                window never advances. Omit for the semantic methods.
+                window never advances. Not applied by the semantic methods (a
+                non-zero value is accepted, recorded and logged as ignored).
               type: [integer, "null"]
             params:
               description: >-
@@ -5170,9 +5173,10 @@ components:
                 (1-50), `breakpoint_percentile_threshold` (1-100) and
                 `min_chunk_length` (0-100000); anything omitted falls back to the
                 server default. Every new semantic collection records
-                `size_cap: "tokens"` (its `size`, or the deployment default size
-                when omitted, is then a per-chunk token cap, at most the embedding
-                model's budget), `cap_split` (`greedy`, `balanced` or `topic`;
+                `size_cap: "tokens"` (its `size` is then a per-chunk token cap: a
+                size the caller sends is refused above the embedding model's
+                budget; an omitted size takes the deployment default, clamped to
+                that budget when it is known at create), `cap_split` (`greedy`, `balanced` or `topic`;
                 default `greedy`) and `breakpoint_cap` (`size` or `window`;
                 default `size`: breakpoint-embedding inputs are bounded at the
                 size too); all three are refused on other methods. Unrecognised

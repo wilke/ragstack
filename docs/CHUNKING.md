@@ -149,8 +149,17 @@ without a network call.
 
 **The default size.** A semantic collection created **without a size** gets
 the deployment's `CHUNK_SIZE` (`Settings.chunk_size`, 512 unless `tenant.env`
-sets it), recorded as a number together with the marker. It is refused like an
-explicit size when it exceeds the window.
+sets it), recorded as a number together with the marker. This includes every
+semantic collection created from the UI, which sends no size, and a create that
+takes a semantic server default.
+
+When `CHUNK_MAX_TOKENS` names the window, a default above the per-chunk budget
+is **clamped** to that budget. The clamped number is recorded and an INFO line
+is logged. For example, `CHUNK_MAX_TOKENS=512` with the default `CHUNK_SIZE=512`
+records 496. Only the deployment default is clamped: a size the caller sends is
+refused above the budget, never clamped. When the window comes from the
+embedding endpoint instead, it is not known at create. An over-budget default
+is then refused at the first ingest, like any other size.
 
 `CHUNK_SIZE` is the size of the deployment's default method. That method is
 `fixed_token` (tokens) unless `CHUNK_METHOD` says otherwise, and tokens too when

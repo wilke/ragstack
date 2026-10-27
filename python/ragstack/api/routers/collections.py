@@ -435,6 +435,13 @@ def _default_semantic_size() -> int:
     semantic one. When ``CHUNK_METHOD`` is a character-sized method, that number
     is characters and is refused as a token cap (400 asking for an explicit
     size) rather than reinterpreted.
+
+    When ``CHUNK_MAX_TOKENS`` names the window, the DEFAULT is clamped to the
+    per-chunk budget (window minus the reserve) and the clamped number is what
+    gets recorded — so a size-less create (the UI sends none) still works on a
+    tight-window deployment. Only the deployment default is clamped: a size the
+    caller sends is refused above the budget, never clamped
+    (:func:`_validate_semantic_cap`).
     """
     if settings.chunk_method in _CHAR_SIZED_DEFAULT_METHODS:
         raise HTTPException(
@@ -443,7 +450,17 @@ def _default_semantic_size() -> int:
             f"deployment's default CHUNK_SIZE={settings.chunk_size} counts characters "
             f"(CHUNK_METHOD={settings.chunk_method!r}); send chunk.size in tokens",
         )
-    return settings.chunk_size
+    size = settings.chunk_size
+    if settings.chunk_max_tokens is not None:
+        budget = max(1, settings.chunk_max_tokens - DEFAULT_TOKEN_RESERVE)
+        if size > budget:
+            log.info(
+                "collection create: default semantic chunk size %d exceeds the "
+                "per-chunk budget %d (CHUNK_MAX_TOKENS=%d); recording %d",
+                size, budget, settings.chunk_max_tokens, budget,
+            )
+            size = budget
+    return size
 
 
 def _validate_semantic_cap(chunk: ChunkConfig) -> None:
@@ -745,14 +762,17 @@ async def create_collection(
             raise HTTPException(503, e.client_detail) from None
         default_chunk = ChunkConfig(
             method=default_method,
-            size=settings.chunk_size,
+            # A semantic default takes its size from _default_semantic_size (via
+            # _normalise_chunk): CHUNK_SIZE, clamped to a known budget — it is the
+            # deployment's default, not a size the caller chose.
+            size=None if default_method in SEMANTIC_METHODS else settings.chunk_size,
             overlap=settings.chunk_overlap,
         )
         if default_method in SEMANTIC_METHODS:
             # The default spec gets the size-cap marker too, so its size must be a
-            # cap this deployment can honour — refuse here (400), not at every
-            # later ingest. Only the cap check: the other defaults were never
-            # validated here and are not re-judged by this change.
+            # cap this deployment can honour — checked here, not at every later
+            # ingest. Only the cap check: the other defaults were never validated
+            # here and are not re-judged by this change.
             _validate_semantic_cap(default_chunk)
         chunk = _normalise_chunk(default_chunk)
     if chunk.method in SEMANTIC_METHODS and chunk.overlap:

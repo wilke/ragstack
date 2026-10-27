@@ -26,9 +26,10 @@ export const CHUNK_METHODS = [
 export type ChunkMethod = (typeof CHUNK_METHODS)[number];
 
 // Methods whose boundaries come from embedding-similarity breakpoints rather
-// than a size budget. `size`/`overlap` are meaningless for these (the server
-// derives boundaries from the text), so the form must NOT send them — a bogus
-// size lands in the collection's manifest and misreports how it was built.
+// than a size budget. The form does not send `size`/`overlap` for these: the
+// server records the deployment's default size as the collection's token cap
+// (size_cap, #829 — clamped to a known window budget), and semantic chunks do
+// not overlap. Letting the user choose the cap here is a separate follow-up.
 const SEMANTIC_METHODS: readonly string[] = ["semantic", "semantic_pooled"];
 
 export function isSemanticMethod(method: string): boolean {
@@ -221,8 +222,8 @@ export interface ChunkConfigBody {
 
 /**
  * The `chunk` object to POST. Size/overlap are included ONLY for methods that
- * actually measure by them — a semantic collection sends neither, so its manifest
- * and provenance don't claim a window it never used. Blank semantic params are
+ * are sized by the form — a semantic collection sends neither, and the server
+ * records its default token cap for it (#829). Blank semantic params are
  * omitted so the server's defaults apply (and are recorded) rather than a
  * client-side guess at them.
  *
