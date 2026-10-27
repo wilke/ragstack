@@ -386,7 +386,8 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
         # Semantic chunks do not overlap, but the oversized-document fixed_token
         # fallback does, with the RECORDED size — which for an omitted size is the
         # (possibly clamped) default, not settings.chunk_size. An overlap at or
-        # above it would record a spec whose fallback never advances.
+        # above it would be silently reduced at ingest, so the recorded spec (an
+        # identity input) would state an overlap that is never applied.
         overlap = chunk.overlap
         if overlap is not None:
             if overlap < 0:
@@ -396,8 +397,8 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
                 raise HTTPException(
                     400,
                     f"chunk overlap ({overlap}) must be smaller than the chunk size "
-                    f"({effective}); semantic chunks do not overlap, but the "
-                    f"oversized-document fallback would never advance",
+                    f"({effective}); semantic chunks do not overlap, but the size and "
+                    f"overlap are recorded and used by the oversized-document fallback",
                 )
         for key, value in (chunk.params or {}).items():
             bounds = SEMANTIC_PARAM_BOUNDS.get(key)
@@ -794,7 +795,7 @@ async def create_collection(
         chunk = _normalise_chunk(default_chunk)
     if chunk.method in SEMANTIC_METHODS and chunk.overlap:
         # Semantic chunks do not overlap (only the oversized-document fixed_token
-        # fallback uses it). Not refused: existing clients send 64 by habit.
+        # fallback uses it). Below the size, not refused: existing clients send 64 by habit.
         log.warning(
             "collection create: chunk_method=%s ignores chunk_overlap=%s (semantic "
             "chunks do not overlap; it is used only by the oversized-document "

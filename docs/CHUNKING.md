@@ -169,8 +169,11 @@ without a size is then refused with a 400 asking for an explicit size in
 tokens, rather than reading characters as tokens.
 
 *overlap* is not applied by semantic chunking. Only the oversized-document
-fallback uses it. A create with a non-zero overlap logs a WARNING and is not
-refused, because existing clients send 64.
+fallback uses it. A create with a non-zero overlap below the recorded size logs
+a WARNING and is not refused, because existing clients send 64. An overlap at or
+above the recorded size (the explicit size, or the clamped default when the size
+is omitted) is refused with a 400, as for every other method, because the
+recorded spec would otherwise state an overlap the chunker never applies.
 
 ### Splitting a block over the cap
 

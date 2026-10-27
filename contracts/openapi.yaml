@@ -5164,8 +5164,11 @@ components:
               description: >-
                 Overlap between neighbouring chunks, in the same unit as `size`.
                 Must be >= 0 and strictly less than `size`, otherwise the sliding
-                window never advances. Not applied by the semantic methods (a
-                non-zero value is accepted, recorded and logged as ignored).
+                window never advances. Not applied by the semantic methods, but
+                still recorded, so it must be >= 0 and strictly less than the size
+                that will be recorded (the explicit size, or the deployment default
+                after clamping); below that a non-zero value is accepted, recorded
+                and logged as unused.
               type: [integer, "null"]
             params:
               description: >-
