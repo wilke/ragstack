@@ -11,8 +11,8 @@ file gives one text on both ingest paths:
 * ``.pdf`` -> :class:`~ragstack.ingestion.loaders.PdfLoader` (PyMuPDF);
 * ``.md`` / ``.txt`` -> :class:`~ragstack.ingestion.loaders.TextFileLoader`
   (the raw file text, byte for byte what the in-process path stores);
-* ``.jsonl`` -> :class:`~ragstack.ingestion.loaders.JsonlLoader` (one record
-  per document, as in-process);
+* ``.jsonl`` -> *skipped* with ``JSONL_UNSUPPORTED_ERROR``: a batch file is
+  many documents behind one receipt item (use the bulk JSONL workflows);
 * any other suffix -> *skipped* with the constant ``no loader for <suffix>``
   error, the string the in-process upload path records for it.
 
@@ -31,7 +31,8 @@ as *skipped* in a sidecar JSON report — it never crashes the job, so one bad
 file can't sink a large batch. This mirrors how ``JsonlLoader`` skips (rather
 than errors on) bad lines. Each skipped entry carries a human ``reason`` and a
 constant, countable ``error`` — the loader's ``job_error`` (``NO_TEXT_ERROR``
-for a scanned PDF), ``no loader for <suffix>``, or :data:`EMPTY_TEXT_ERROR` —
+for a scanned PDF), ``no loader for <suffix>``, ``EMPTY_TEXT_ERROR``,
+``JSONL_UNSUPPORTED_ERROR``, or the exception class name —
 and the report lists every attempted ``inputs`` path, so the ingest step
 (``ingest_shard.py --extract-report``) can account for the whole batch per
 document (#203 2b).
@@ -57,18 +58,13 @@ import sys
 from pathlib import Path
 
 from ragstack.ingestion.loaders import (
+    EMPTY_TEXT_ERROR,
+    JSONL_UNSUPPORTED_ERROR,
     LoaderError,
     LoaderRegistry,
     default_loader_registry,
     no_loader_error,
 )
-
-#: The per-item error for a file whose loader returned only empty or
-#: whitespace text (an empty ``.md``/``.txt``). Constant, so it is countable.
-#: ``JsonlLoader`` drops an empty-text record downstream without a receipt row,
-#: so it is reported here instead of being emitted. (The in-process path ingests
-#: such a file as a document with no chunks.)
-EMPTY_TEXT_ERROR = "no text (empty document)"
 
 
 def iter_pdf_paths(inputs: list[str], recursive: bool = False) -> list[Path]:
@@ -121,15 +117,25 @@ def extract_documents(
     (scanned/image-only PDFs, empty files, unsupported suffixes): ``reason`` is
     the human message, ``error`` a constant per-item job error (a
     ``LoaderError`` subclass's ``job_error`` — ``NO_TEXT_ERROR`` for a scanned
-    PDF — ``no loader for <suffix>``, :data:`EMPTY_TEXT_ERROR`, else the reason
-    itself), which the receipt carries verbatim so a job can ``GROUP BY`` it.
+    PDF — ``no loader for <suffix>``, ``EMPTY_TEXT_ERROR``,
+    ``JSONL_UNSUPPORTED_ERROR``, else the exception's class name), which the
+    receipt carries verbatim so a job can ``GROUP BY`` it.
     Pure/deterministic — no filesystem writes.
     """
     registry = registry if registry is not None else default_loader_registry()
     records: list[dict] = []
     skipped: list[dict] = []
     for path in paths:
-        source = str(path)
+        # Resolve first: ``loader_for`` reads the suffix of the path as given,
+        # ``registry.load`` dispatches on the resolved one — resolving here makes
+        # them the same path (a symlink to another suffix cannot split them).
+        source = str(Path(path).resolve())
+        if Path(source).suffix.lower() == ".jsonl":
+            # A batch file is many documents behind one receipt item: it cannot
+            # be accounted for per item here, and path-less records would share
+            # the shard file's id. Refused, not half-ingested (#830 review).
+            skipped.append(_skip(source, JSONL_UNSUPPORTED_ERROR, JSONL_UNSUPPORTED_ERROR))
+            continue
         if registry.loader_for(source) is None:
             err = no_loader_error(Path(source).suffix)
             skipped.append(_skip(source, err, err))
@@ -141,8 +147,9 @@ def extract_documents(
             skipped.append(_skip(source, str(e), getattr(e, "job_error", None) or str(e)))
             continue
         except Exception as e:  # noqa: BLE001 - one bad file must not sink the batch
-            msg = f"{type(e).__name__}: {e}"
-            skipped.append(_skip(source, msg, msg))
+            # error: the class name, the label the in-process path records
+            # (ingestion/sharded.py) — constant, so countable; reason: the detail.
+            skipped.append(_skip(source, f"{type(e).__name__}: {e}", type(e).__name__))
             continue
         kept = [doc for doc in docs if doc.content.strip()]
         if not kept:
@@ -153,7 +160,7 @@ def extract_documents(
             records.append(
                 {
                     "text": doc.content,
-                    "path": doc.source or source,
+                    "path": doc.source,
                     "metadata": dict(doc.metadata),
                 }
             )
@@ -216,7 +223,7 @@ def parse_args(argv=None):
     )
     p.add_argument(
         "pdfs", nargs="+",
-        help="files of any supported suffix (.pdf/.md/.txt/.jsonl, dispatched by "
+        help="files of any supported suffix (.pdf/.md/.txt, dispatched by "
              "suffix) and/or directories (which contribute their PDFs)",
     )
     p.add_argument("--out", default="shard.jsonl", help="output JSONL shard path")

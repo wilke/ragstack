@@ -81,15 +81,46 @@ def test_scanned_pdf_is_skipped_not_crashed(tmp_path: Path):
     assert skipped[0]["reason"]  # a caller-safe reason string, not a crash
 
 
-def test_non_pdf_file_is_skipped(tmp_path: Path):
+class _NotAPdf:
+    """What PyMuPDF >= 2 returns for non-PDF bytes it can still open (Markdown,
+    text, XML): a document with ``is_pdf`` False and a RENDERED page text."""
+
+    is_pdf = False
+    closed = False
+
+    def pages(self):
+        raise AssertionError("a non-PDF document must not be rendered into text")
+
+    def close(self):
+        self.closed = True
+
+
+def test_non_pdf_file_is_skipped(tmp_path: Path, monkeypatch):
+    """PyMuPDF-version-independent: 1.27 refuses to open the bytes, 2.x opens
+    and renders them; either way the file is skipped with "could not open PDF"
+    (#828). The fake reproduces the 2.x case on any installed version."""
     notpdf = tmp_path / "notes.pdf"  # .pdf suffix but not a PDF
     notpdf.write_text("this is plain text, not a pdf", encoding="utf-8")
+    fake = _NotAPdf()
+    monkeypatch.setattr(pymupdf, "open", lambda *_a, **_k: fake)
 
     records, skipped = pdf_extract.extract_pdfs([notpdf.resolve()])
 
     assert records == []
     assert len(skipped) == 1
     assert skipped[0]["path"] == str(notpdf.resolve())
+    assert skipped[0]["error"].startswith("could not open PDF 'notes.pdf'")
+    assert fake.closed
+
+
+def test_real_pdf_passes_the_is_pdf_guard(tmp_path: Path):
+    good = tmp_path / "good.pdf"
+    _write_pdf(good, "a genuine pdf")
+    doc = pymupdf.open(good)
+    assert doc.is_pdf
+    doc.close()
+    records, skipped = pdf_extract.extract_pdfs([good.resolve()])
+    assert skipped == [] and "a genuine pdf" in records[0]["text"]
 
 
 def test_main_writes_jsonl_and_report(tmp_path: Path):

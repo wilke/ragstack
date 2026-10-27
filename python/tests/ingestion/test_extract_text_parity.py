@@ -24,6 +24,8 @@ import pytest
 from ragstack.ingestion import loaders
 from ragstack.ingestion.loaders import (
     DEFAULT_INGEST_SUFFIXES,
+    EMPTY_TEXT_ERROR,
+    JSONL_UNSUPPORTED_ERROR,
     JsonlLoader,
     PdfLoader,
     TextFileLoader,
@@ -195,11 +197,14 @@ def test_pdf_still_goes_to_pdf_loader(tmp_path, monkeypatch):
     monkeypatch.setattr(PdfLoader, "load", _fake)
     pdf = (tmp_path / "a.pdf")
     pdf.write_bytes(b"%PDF-1.4 stub")
+    upper = (tmp_path / "X.PDF")  # suffix matching is case-insensitive
+    upper.write_bytes(b"%PDF-1.4 stub")
     md = _write(tmp_path / "b.md", "# b\n")
-    records, skipped = pdf_extract.extract_documents([pdf.resolve(), md])
+    records, skipped = pdf_extract.extract_documents([pdf.resolve(), upper.resolve(), md])
     assert skipped == []
-    assert seen == ["a.pdf"]
+    assert seen == ["a.pdf", "X.PDF"]
     assert [r["metadata"] for r in records] == [{"filename": "a.pdf", "pages": 1},
+                                                {"filename": "a.pdf", "pages": 1},
                                                 {"filename": "b.md"}]
 
 
@@ -214,7 +219,7 @@ def test_unsupported_suffix_and_empty_text_are_skipped(tmp_path, no_pdf_loader):
     assert [(s["path"], s["error"]) for s in skipped] == [
         (str(xml), "no loader for .xml"),          # the in-process upload's string
         (str(noext), "no loader for (no suffix)"),
-        (str(empty), pdf_extract.EMPTY_TEXT_ERROR),
+        (str(empty), EMPTY_TEXT_ERROR),
     ]
     assert no_pdf_loader == []
 
@@ -224,7 +229,42 @@ def test_undecodable_text_file_is_skipped_not_crashed(tmp_path, no_pdf_loader):
     bad.write_bytes(b"caf\xe9\n")
     records, skipped = pdf_extract.extract_documents([bad.resolve()])
     assert records == []
-    assert skipped[0]["error"].startswith("UnicodeDecodeError")
+    # error: the class name, as the in-process path labels it (countable);
+    # reason: the detail.
+    assert skipped[0]["error"] == "UnicodeDecodeError"
+    assert skipped[0]["reason"].startswith("UnicodeDecodeError: ")
+
+
+def test_jsonl_is_refused_not_half_ingested(tmp_path, no_pdf_loader):
+    """A ``.jsonl`` batch file is many documents behind one receipt item, and
+    path-less records would all get the shard file's id: refused (#830)."""
+    shard = tmp_path / "batch.jsonl"
+    shard.write_text(
+        json.dumps({"text": "with a path", "path": "/x/a.pdf", "metadata": {}}) + "\n"
+        + json.dumps({"text": "no path one", "metadata": {}}) + "\n"
+        + json.dumps({"text": "no path two", "metadata": {}}) + "\n",
+        encoding="utf-8",
+    )
+    upper = tmp_path / "B.JSONL"
+    upper.write_text(json.dumps({"text": "t", "path": "/x/b.pdf"}) + "\n", encoding="utf-8")
+    records, skipped = pdf_extract.extract_documents([shard.resolve(), upper.resolve()])
+    assert records == []
+    assert [(s["path"], s["error"]) for s in skipped] == [
+        (str(shard.resolve()), JSONL_UNSUPPORTED_ERROR),
+        (str(upper.resolve()), JSONL_UNSUPPORTED_ERROR),
+    ]
+
+
+def test_symlink_dispatches_on_its_target(tmp_path, no_pdf_loader):
+    """``loader_for`` reads the suffix as given, ``registry.load`` the resolved
+    one; the extract step resolves first, so a ``.md`` link to an ``.xml``
+    target is refused like the ``.xml`` — not read as raw XML."""
+    target = _write(tmp_path / "paper.xml", "<article/>")
+    link = tmp_path / "paper.md"
+    link.symlink_to(target)
+    records, skipped = pdf_extract.extract_documents([link])  # unresolved on purpose
+    assert records == []
+    assert [(s["path"], s["error"]) for s in skipped] == [(str(target), "no loader for .xml")]
 
 
 def test_registry_loader_for_is_the_dispatch_map():

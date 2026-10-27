@@ -52,6 +52,17 @@ class LoaderError(Exception):
 NO_TEXT_ERROR = "no extractable text (scanned PDF?)"
 NO_TEXT_LABEL = "no_text"
 
+# Per-item job errors of the GoWe extract step (``scripts/pdf_extract.py``,
+# #828), constant so they count like ``NO_TEXT_ERROR``:
+#: a ``.md``/``.txt`` whose text is empty or whitespace only. ``JsonlLoader``
+#: would drop such a record downstream with no receipt row, so the extract step
+#: reports it instead. (In-process, such a file is a document with no chunks.)
+EMPTY_TEXT_ERROR = "no text (empty document)"
+#: a ``.jsonl`` batch file staged into the GoWe extract step. One file is many
+#: documents there, which the per-file receipt cannot account for (and path-less
+#: records would share one id), so it is refused rather than half-ingested.
+JSONL_UNSUPPORTED_ERROR = "jsonl is not ingestable through the GoWe extract step"
+
 
 NO_LOADER_LABEL = "no_loader"
 
@@ -153,8 +164,15 @@ class PdfLoader:
         except Exception as e:
             raise LoaderError(f"could not open PDF '{path.name}'") from e
         try:
+            # PyMuPDF >= 2 also opens non-PDF documents (Markdown, text, XML,
+            # images…) and returns a RENDERING of them. A ``.pdf`` name on such
+            # bytes must not be ingested as that rendering (#828).
+            if not doc.is_pdf:
+                raise LoaderError(f"could not open PDF '{path.name}' (not a PDF)")
             pages = [page.get_text() for page in doc.pages()]
             embedded_doi = _doi_from_pdf_metadata(doc)
+        except LoaderError:
+            raise
         except Exception as e:
             raise LoaderError(f"could not extract text from PDF '{path.name}'") from e
         finally:
@@ -498,7 +516,12 @@ class LoaderRegistry:
         Lets a caller outside the API process (the GoWe extract tool, #828) ask
         the SAME suffix map the in-process path loads through, instead of
         keeping its own copy that can drift — the drift that sent ``.md`` files
-        through PyMuPDF on one path and ``TextFileLoader`` on the other."""
+        through PyMuPDF on one path and ``TextFileLoader`` on the other.
+
+        Note the suffix is read from ``source`` AS GIVEN, while :meth:`load`
+        dispatches on the suffix of the RESOLVED path — they differ for a
+        symlink whose target has another suffix. Callers that pair the two
+        (the extract tool) resolve the path first."""
         return self._loaders.get(Path(source).suffix.lower())
 
     def _resolve(self, source: str) -> Path:
