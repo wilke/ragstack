@@ -42,6 +42,7 @@ import {
 import {
   DEFAULT_CHUNK_FORM,
   buildChunkConfig,
+  describeSemanticCap,
   validateChunkForm,
   type ChunkForm,
 } from "../lib/chunkers";
@@ -731,6 +732,7 @@ function CollectionDetail({ c }: { c: CollectionInfo }) {
         <Field k="dimensions" v={String(c.dim)} />
         <Field k="chunk method" v={c.chunk_method ?? "—"} />
         <Field k="chunk size" v={c.chunk_size != null ? String(c.chunk_size) : "—"} />
+        {describeSemanticCap(c) ? <Field k="size cap" v={describeSemanticCap(c)} /> : null}
         <Field k="default" v={c.default ? "yes — cannot be deleted" : "no"} />
       </dl>
       <dl>
@@ -1331,8 +1333,11 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 // Prefer verified manifest values over the operator-asserted label.
                 const method = p?.chunk_method ?? c.chunk_method;
                 const size = p?.chunk_size ?? c.chunk_size;
+                const semCap = describeSemanticCap(c);
                 const chunking = method
-                  ? `${method}${size ? "/" + size : ""}${p?.chunk_overlap != null ? " · ov " + p.chunk_overlap : ""}`
+                  ? semCap
+                    ? `${method} · ${semCap}`
+                    : `${method}${size ? "/" + size : ""}${p?.chunk_overlap != null ? " · ov " + p.chunk_overlap : ""}`
                   : "—";
                 const open = expanded === c.id;
                 return (

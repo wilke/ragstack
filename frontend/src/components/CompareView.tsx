@@ -1,3 +1,4 @@
+import { describeSemanticCap } from "../lib/chunkers";
 import { MAX_TOPK } from "./QueryOptionsMenu";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -1306,7 +1307,9 @@ export function CompareView({
                     {c ? (
                       <div className="truncate">
                         {c.model.split("/").pop()} · {c.dim}d
-                        {method ? ` · ${method}${p?.chunk_size ? "/" + p.chunk_size : ""}` : ""}
+                        {method
+                          ? ` · ${method}${describeSemanticCap(c) ? " " + describeSemanticCap(c) : p?.chunk_size ? "/" + p.chunk_size : ""}`
+                          : ""}
                         {p ? (p.source === "ingest" ? " · verified" : " · config") : ""}
                       </div>
                     ) : null}

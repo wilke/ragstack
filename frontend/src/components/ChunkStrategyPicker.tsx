@@ -1,7 +1,10 @@
 import {
   CHUNK_METHODS,
   CHUNK_METHOD_INFO,
+  CAP_SPLITS,
+  CAP_SPLIT_HELP,
   SEMANTIC_PARAMS,
+  isCapSplit,
   isChunkMethod,
   type ChunkForm,
 } from "../lib/chunkers";
@@ -21,8 +24,8 @@ import { HelpTip } from "./HelpTip";
 // Size/overlap are shown only for the methods that measure by them, and are
 // labelled with the unit that method actually counts in (characters for
 // fixed/sentence/words, tokens for fixed_token). The semantic methods surface
-// their own tunables instead and send no size/overlap at all
-// (see lib/chunkers.ts::buildChunkConfig).
+// their own tunables instead, plus an optional token cap and a split method,
+// and never send an overlap (see lib/chunkers.ts::buildChunkConfig).
 export function ChunkStrategyPicker({
   idPrefix,
   form,
@@ -131,12 +134,61 @@ export function ChunkStrategyPicker({
               and by the glossary entry the tip interpolates; it is not repeated
               here. */}
           <p className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-            <span>Boundaries come from the text itself, so there is no fixed size or overlap.</span>
+            <span>Boundaries come from the text itself, so there is no overlap.</span>
             <HelpTip icon term="semantic tunables">
               {lookupTerm("semantic tunables")} Like size and overlap, they are fixed when the
               collection is created.
             </HelpTip>
           </p>
+          <div className="mb-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor={`${idPrefix}-cap-size`}
+                className="mb-1 block text-xs font-medium text-gray-500"
+              >
+                Max chunk size (tokens)
+              </label>
+              <input
+                id={`${idPrefix}-cap-size`}
+                type="number"
+                inputMode="numeric"
+                min={1}
+                value={form.capSize}
+                placeholder="server default"
+                onChange={(e) => onChange({ ...form, capSize: e.target.value })}
+                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+              />
+              <p className="mt-1 text-[11px] leading-snug text-gray-400">
+                An upper bound on every chunk, counted in the embedding model's own tokens. Blank
+                uses the server's default. A size above the model's budget is refused by the server.
+              </p>
+            </div>
+            <div>
+              <label
+                htmlFor={`${idPrefix}-cap-split`}
+                className="mb-1 block text-xs font-medium text-gray-500"
+              >
+                Split oversized blocks
+              </label>
+              <select
+                id={`${idPrefix}-cap-split`}
+                value={form.capSplit}
+                onChange={(e) => {
+                  if (isCapSplit(e.target.value)) onChange({ ...form, capSplit: e.target.value });
+                }}
+                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+              >
+                {CAP_SPLITS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] leading-snug text-gray-400">
+                {CAP_SPLIT_HELP[form.capSplit]} Applies when a topic block is longer than the cap.
+              </p>
+            </div>
+          </div>
           <div className="grid gap-3 sm:grid-cols-3">
             {SEMANTIC_PARAMS.map((spec) => (
               <div key={spec.key}>

@@ -594,6 +594,24 @@ describe("static render", () => {
     expect(html).toContain("Min chunk length");
   });
 
+  it("offers the optional token cap and split method on a semantic method only", () => {
+    const html = render(
+      createElement(ChunkStrategyPicker, {
+        idPrefix: "t",
+        form: { ...DEFAULT_CHUNK_FORM, method: "semantic" },
+        onChange: () => {},
+      }),
+    );
+    expect(html).toContain("Max chunk size (tokens)");
+    expect(html).toContain("Split oversized blocks");
+    expect(html).toContain("refused by the server");
+    expect(html).not.toContain("breakpoint_cap");
+    const fixed = render(
+      createElement(ChunkStrategyPicker, { idPrefix: "t", form: DEFAULT_CHUNK_FORM, onChange: () => {} }),
+    );
+    expect(fixed).not.toContain("Split oversized blocks");
+  });
+
   // The only irreversible control in the UI. Assert its confirmation actually
   // spells out what dies and that the button starts locked — a purge gate that
   // renders enabled, or that omits the store name, is the bug that matters.

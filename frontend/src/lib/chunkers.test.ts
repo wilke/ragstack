@@ -6,6 +6,7 @@ import {
   apiDetailObject,
   buildChunkConfig,
   describeChunking,
+  describeSemanticCap,
   isChunkMethod,
   isSemanticMethod,
   validateChunkForm,
@@ -122,6 +123,73 @@ describe("buildChunkConfig", () => {
   });
 });
 
+describe("semantic size cap + split (#829)", () => {
+  it("validates an optional cap and the split method", () => {
+    expect(validateChunkForm(form({ method: "semantic", capSize: "" }))).toBeNull();
+    expect(validateChunkForm(form({ method: "semantic", capSize: " 256 " }))).toBeNull();
+    expect(validateChunkForm(form({ method: "semantic", capSize: "0" }))).toMatch(/at least 1/i);
+    expect(validateChunkForm(form({ method: "semantic", capSize: "-3" }))).toMatch(/at least 1/i);
+    expect(validateChunkForm(form({ method: "semantic", capSize: "1.5" }))).toMatch(/whole number/i);
+    expect(
+      validateChunkForm(form({ method: "semantic", capSplit: "bogus" as ChunkForm["capSplit"] })),
+    ).toMatch(/split/i);
+  });
+
+  it("sends size only when filled, never overlap, and cap_split only when changed", () => {
+    expect(buildChunkConfig(form({ method: "semantic", capSize: "256" }))).toEqual({
+      method: "semantic",
+      size: 256,
+    });
+    expect(buildChunkConfig(form({ method: "semantic_pooled", capSplit: "topic" }))).toEqual({
+      method: "semantic_pooled",
+      params: { cap_split: "topic" },
+    });
+    const both = buildChunkConfig(
+      form({ method: "semantic", capSize: "300", capSplit: "balanced", params: { buffer_size: "4" } }),
+    );
+    expect(both).toEqual({
+      method: "semantic",
+      size: 300,
+      params: { buffer_size: 4, cap_split: "balanced" },
+    });
+    expect("overlap" in both).toBe(false);
+  });
+
+  it("does not leak the semantic fields into a sized method", () => {
+    expect(
+      buildChunkConfig(form({ method: "words", size: "800", overlap: "80", capSize: "9", capSplit: "topic" })),
+    ).toEqual({ method: "words", size: 800, overlap: 80 });
+  });
+
+  it("describes the recorded cap, and calls a markerless collection legacy", () => {
+    const capped = {
+      chunk_method: "semantic",
+      provenance: {
+        chunk_method: "semantic",
+        chunk_size: 512,
+        chunk_params: { size_cap: "tokens", cap_split: "balanced" },
+      },
+    };
+    expect(describeSemanticCap(capped)).toBe("cap 512 tok \u00b7 balanced split");
+    expect(describeChunking(capped)).toBe("semantic \u00b7 cap 512 tok \u00b7 balanced split");
+    expect(
+      describeSemanticCap({
+        provenance: { chunk_method: "semantic_pooled", chunk_size: 512, chunk_params: { size_cap: "tokens" } },
+      }),
+    ).toBe("cap 512 tok \u00b7 greedy split");
+    expect(
+      describeSemanticCap({
+        provenance: { chunk_method: "semantic", chunk_size: 512, chunk_params: { buffer_size: 3 } },
+      }),
+    ).toBe("uncapped (legacy)");
+  });
+
+  it("claims nothing without params or for other methods", () => {
+    expect(describeSemanticCap({ chunk_method: "semantic", chunk_size: 512 })).toBe("");
+    expect(describeSemanticCap({ chunk_method: "fixed_token", chunk_size: 512 })).toBe("");
+  });
+});
+
 describe("describeChunking", () => {
   it("prefers manifest provenance over the registry label", () => {
     expect(
@@ -146,7 +214,7 @@ describe("describeChunking", () => {
         chunk_method: "semantic",
         provenance: { chunk_method: "semantic", chunk_params: { buffer_size: 5 } },
       }),
-    ).toBe("semantic · buffer size 5");
+    ).toBe("semantic · uncapped (legacy), buffer size 5");
   });
 
   it("is empty when nothing is known", () => {
