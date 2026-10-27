@@ -383,6 +383,22 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
                 )
     if method in SEMANTIC_METHODS:
         _validate_semantic_cap(chunk)
+        # Semantic chunks do not overlap, but the oversized-document fixed_token
+        # fallback does, with the RECORDED size — which for an omitted size is the
+        # (possibly clamped) default, not settings.chunk_size. An overlap at or
+        # above it would record a spec whose fallback never advances.
+        overlap = chunk.overlap
+        if overlap is not None:
+            if overlap < 0:
+                raise HTTPException(400, f"chunk overlap cannot be negative; got {overlap}")
+            effective = chunk.size if chunk.size is not None else _default_semantic_size()
+            if overlap >= effective:
+                raise HTTPException(
+                    400,
+                    f"chunk overlap ({overlap}) must be smaller than the chunk size "
+                    f"({effective}); semantic chunks do not overlap, but the "
+                    f"oversized-document fallback would never advance",
+                )
         for key, value in (chunk.params or {}).items():
             bounds = SEMANTIC_PARAM_BOUNDS.get(key)
             if bounds is None:
@@ -426,7 +442,7 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
 _CHAR_SIZED_DEFAULT_METHODS = ("fixed", "sentence", "words")
 
 
-def _default_semantic_size() -> int:
+def _default_semantic_size(*, announce: bool = False) -> int:
     """The token cap a NEW semantic collection gets when the request names no size.
 
     ``settings.chunk_size`` (``CHUNK_SIZE``, code default 512) — the size of the
@@ -441,7 +457,8 @@ def _default_semantic_size() -> int:
     gets recorded — so a size-less create (the UI sends none) still works on a
     tight-window deployment. Only the deployment default is clamped: a size the
     caller sends is refused above the budget, never clamped
-    (:func:`_validate_semantic_cap`).
+    (:func:`_validate_semantic_cap`). ``announce`` logs the clamp; only the call
+    that records the size passes it, so one create logs it once.
     """
     if settings.chunk_method in _CHAR_SIZED_DEFAULT_METHODS:
         raise HTTPException(
@@ -453,13 +470,13 @@ def _default_semantic_size() -> int:
     size = settings.chunk_size
     if settings.chunk_max_tokens is not None:
         budget = max(1, settings.chunk_max_tokens - DEFAULT_TOKEN_RESERVE)
-        if size > budget:
+        if size > budget and announce:
             log.info(
                 "collection create: default semantic chunk size %d exceeds the "
                 "per-chunk budget %d (CHUNK_MAX_TOKENS=%d); recording %d",
                 size, budget, settings.chunk_max_tokens, budget,
             )
-            size = budget
+        size = min(size, budget)
     return size
 
 
@@ -522,7 +539,7 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
         # semantic collection created before this recorded it, and their stored
         # chunks were made uncapped), and an unrecorded split, bound or size would
         # follow a later change of default — one collection, two chunkings.
-        size = chunk.size if chunk.size is not None else _default_semantic_size()
+        size = chunk.size if chunk.size is not None else _default_semantic_size(announce=True)
         params.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
         params.setdefault(CAP_SPLIT_PARAM, DEFAULT_CAP_SPLIT)
         params.setdefault(BREAKPOINT_CAP_PARAM, DEFAULT_BREAKPOINT_CAP)

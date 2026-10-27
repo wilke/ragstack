@@ -604,3 +604,46 @@ async def test_semantic_default_size_is_clamped_but_an_explicit_one_is_refused(
     r, spec = await _create_semantic(client, monkeypatch, tmp_path, "roomy",
                                      {"method": "semantic"})
     assert r.status_code == 201 and spec.chunk_size == 512, r.text
+
+
+@pytest.mark.asyncio
+async def test_semantic_default_clamp_is_logged_once_per_create(
+    client, _admin, monkeypatch, tmp_path, caplog
+):
+    """The clamp INFO line is emitted by the call that records the size only —
+    validation computes the same default silently."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "once",
+                                         {"method": "semantic"})
+    assert r.status_code == 201 and spec.chunk_size == 256, r.text
+    lines = [m for m in caplog.records if "recording 256" in m.getMessage()]
+    assert len(lines) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk", [
+    {"method": "semantic", "overlap": 300},              # omitted size -> clamped 256
+    {"method": "semantic", "size": 128, "overlap": 128},
+    {"method": "semantic", "size": 128, "overlap": -1},
+])
+async def test_semantic_overlap_must_be_below_the_recorded_size(
+    client, _admin, monkeypatch, tmp_path, chunk
+):
+    """The oversized-document fallback uses the recorded size and overlap, so an
+    overlap at or above the (possibly clamped default) size is refused."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    r, _ = await _create_semantic(client, monkeypatch, tmp_path, "ov", chunk)
+    assert r.status_code == 400, r.text
+    assert "overlap" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_overlap_below_the_clamped_default_is_accepted(
+    client, _admin, monkeypatch, tmp_path
+):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "ok",
+                                     {"method": "semantic", "overlap": 255})
+    assert r.status_code == 201, r.text
+    assert (spec.chunk_size, spec.chunk_overlap) == (256, 255)
