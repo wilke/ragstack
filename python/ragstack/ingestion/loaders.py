@@ -87,7 +87,12 @@ def confine_to_root(source: str, root: str | Path | None) -> Path:
 
 
 class TextFileLoader:
-    """Load plain-text or Markdown files from disk."""
+    """Load plain-text or Markdown files from disk, as raw text.
+
+    The file is read verbatim (UTF-8, universal newlines): Markdown syntax, link
+    targets, inline HTML and code all survive. Never route these suffixes
+    through :class:`PdfLoader` — PyMuPDF >= 2 *opens* ``.md`` and returns a
+    rendering that drops link targets, HTML and some code (#828)."""
 
     def load(self, source: str) -> list[Document]:
         path = Path(source)
@@ -484,6 +489,17 @@ class LoaderRegistry:
 
     def register(self, suffix: str, loader: DocumentLoader) -> None:
         self._loaders[suffix.lower()] = loader
+
+    def loader_for(self, source: str) -> DocumentLoader | None:
+        """The loader registered for ``source``'s suffix, or ``None`` when the
+        suffix has no registration (where :meth:`load` would fall back to the
+        default loader). Dispatch only: no confinement, existence or size check.
+
+        Lets a caller outside the API process (the GoWe extract tool, #828) ask
+        the SAME suffix map the in-process path loads through, instead of
+        keeping its own copy that can drift — the drift that sent ``.md`` files
+        through PyMuPDF on one path and ``TextFileLoader`` on the other."""
+        return self._loaders.get(Path(source).suffix.lower())
 
     def _resolve(self, source: str) -> Path:
         path = confine_to_root(source, self._root)

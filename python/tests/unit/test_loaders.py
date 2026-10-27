@@ -95,12 +95,11 @@ def test_markdown_dispatches_to_the_text_loader_and_keeps_its_markup(tmp_path: P
     """`.md` is read by the plain text loader, so the markup survives verbatim.
 
     This is the LOCAL-backend half of a claim in ``docs/cookbook-users.md``
-    recipe 4. On a GoWe deployment the same file is handled by the PDF
-    extractor, which stores the RENDERED text — the heading marker gone,
-    ``**bold**`` gone, ``-`` bullets turned into ``\u2022``. The doc says the
-    behaviour depends on the backend; this pins the branch that is reachable
-    from the repository, and the difference is the reason the doc has to say
-    which backend it means.
+    recipe 4. Before #828 a GoWe deployment handed the same file to the PDF
+    extractor, which (PyMuPDF 2) stored the RENDERED text — the heading marker
+    gone, ``**bold**`` gone, ``-`` bullets turned into ``\u2022``. Since #828
+    the GoWe extract step dispatches through this same registry; that half is
+    pinned in ``tests/ingestion/test_extract_text_parity.py``.
 
     Anyone planning to filter or match on literal markup depends on this.
     """
