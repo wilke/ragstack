@@ -115,7 +115,9 @@ The defaults come from `make_chunker`'s signature and `Settings.chunk_buffer_siz
 / `chunk_breakpoint_percentile` / `chunk_min_length`.
 
 Three more keys, `size_cap`, `cap_split` and `breakpoint_cap`, control the
-semantic size cap. They are described in the next section.
+semantic size cap. They are described in the next section. Two opt-in keys,
+`size_tolerance` and `min_piece`, turn the cap into a target with a tolerance
+([below](#opt-in-size-tolerance-and-small-piece-merge)).
 
 ## The semantic size cap
 
@@ -191,7 +193,8 @@ Under every strategy:
   than *size*;
 - the pieces tile the block exactly;
 - pieces are not merged afterwards (`min_chunk_length` is applied before the
-  cap).
+  cap), unless the collection opts in to the
+  [size tolerance](#opt-in-size-tolerance-and-small-piece-merge).
 
 `greedy` stays the default until an evaluation chooses between the three.
 Only a block over the cap is split, so a block that fits is one chunk under
@@ -225,8 +228,9 @@ around each sentence. Those buffers are bounded so they fit an embedding model.
   entry, as it reads `buffer_size`. It has no flag for them, and no CWL input
   changed.
 - **`ingest_jsonl.py`** reads them from the registry entry when it writes into
-  one. It refuses a contradicting `--semantic-size-cap`, `--semantic-cap-split`
-  or `--semantic-breakpoint-cap` with exit 2. Without an entry, the flags
+  one. It refuses a contradicting `--semantic-size-cap`, `--semantic-cap-split`,
+  `--semantic-breakpoint-cap`, `--semantic-size-tolerance` or
+  `--semantic-min-piece` with exit 2. Without an entry, the flags
   decide; an unset split or breakpoint flag takes the API's defaults.
 
 Every path reads the keys through one function,
@@ -269,7 +273,74 @@ came from an older image.
 |---|---|
 | the collection spec (`chunk_size`, `chunk_params`) | the cap, `size_cap`, `cap_split` and `breakpoint_cap`, as recorded at create. `chunk_params` is free-form in the contract, so no schema changed. It is part of the chunk descriptor, the `spec_hash` and the physical name, and it is shown by `GET /v1/collections`. |
 | the collection manifest | the same `chunk_size` and `chunk_params`, written by every ingest path. Because a cap above the window is refused rather than clamped, the cap that is applied always equals the recorded *size*. |
-| the shard receipt (GoWe) | `chunking`: what the worker actually applied. Its fields are `v` (1), `method`, `size_cap`, `chunk_size`, `cap_split`, `breakpoint_cap`, `window_budget` (the resolved `max_tokens`) and `breakpoint_input_budget`. On an uncapped collection, `size_cap` is `null` there. The object is written only for the semantic methods. A receipt without it predates it, or came from another method. |
+| the shard receipt (GoWe) | `chunking`: what the worker actually applied. Its fields are `v` (2), `method`, `size_cap`, `chunk_size`, `cap_split`, `breakpoint_cap`, `window_budget` (the resolved `max_tokens`), `breakpoint_input_budget`, and since v2 `size_tolerance`, `min_piece` and `ceiling` (the applied ceiling in tokens, already clamped to the window; all three `null` on a strict or uncapped collection). On an uncapped collection, `size_cap` is `null` there. A v1 object has no tolerance fields and was written by a strict worker. The object is written only for the semantic methods. A receipt without it predates it, or came from another method. |
+
+## Opt-in: size tolerance and small-piece merge
+
+Issue #831. The strict cap above is what the study tested, and it stays the
+default. A collection can instead opt in to treating *size* as a **target**
+with a tolerance, and to merging small pieces. This becomes the default only if
+the retrieval evaluation planned in #831 supports it.
+
+Why: a small piece (a heading line, or a one-sentence lead-in cut off at a
+strong topic edge) is a poor retrieval unit and takes one of a fixed top-k's
+slots. The study's losses came from much larger chunks (1,024 tokens, and
+uncapped chunks of up to 3,398), not from a tolerance just above the target.
+
+| key | values | default when on | what it does |
+|---|---|---|---|
+| `size_tolerance` | a number from 0 to 1 | 0.25 | Turns the setting on. The **ceiling** is ⌊*size* × (1 + `size_tolerance`)⌋ tokens, clamped to the window budget: never above it. |
+| `min_piece` | whole tokens, 0 to *size* | ⌊*size* / 4⌋ | A piece under this many tokens is merged into a neighbour. 0 never merges. |
+
+Both need the size-cap marker, so they are refused on the other methods (400 at
+create) and on an uncapped entry.
+
+**The rule.** At *size* 512 with tolerance 0.25 the ceiling is 640.
+
+1. **Split only over the ceiling.** A block (the sentences between two
+   breakpoints) at or under the ceiling is one chunk: a 600-token block stays
+   whole. A block over it is split **aiming at the target**, by the block's
+   `cap_split` with *size* as the cap, so a 700-token block becomes about
+   2 × 350 under `balanced` (512 + 188 under `greedy`). Inside such a block,
+   a sentence over the target is kept whole when it fits the ceiling and is
+   cut only when it is over the ceiling; a run of sentences between such
+   sentences is kept whole when it fits the ceiling.
+2. **Merge small pieces.** After `min_chunk_length` (characters, applied before
+   any of this) and after the split, every piece under `min_piece` joins the
+   neighbour across the **weaker** boundary: the smaller breakpoint distance,
+   from the distances breakpoint detection already computed, so no extra
+   embedding call is made. A boundary inside a sentence (a hard split) counts
+   as the weakest. The merge happens only when the joined piece is at most the
+   ceiling; otherwise the piece joins the other neighbour if that fits;
+   otherwise it stays as it is. A merged piece that is still small is examined
+   again.
+3. **Sections (seam, not yet active).** A piece must never merge across a
+   document section boundary. That needs the document structure planned in
+   #828, which does not exist yet; the merge takes a set of barrier offsets
+   (`_merge_small_pieces(barriers=…)`) and is passed none today.
+
+Every chunk is at most the ceiling, and so at most the window. The chunks tile
+the document. A cut falls inside a sentence only when that sentence alone is
+over the ceiling. A single-sentence document follows the same rule; the
+oversized-document fallback (`fixed_token`) is unchanged.
+
+**Recording.** The API records both keys as concrete numbers when a request
+sends either one (the other takes its default; a `null` counts as not sent).
+`size_tolerance` is stored as a float, so `0` and `0.0` give the same
+`spec_hash`. A create that sends neither records neither: **a collection
+without `size_tolerance` is chunked exactly as under the strict cap**, which
+includes every collection created before #831. The ceiling depends on the
+window, which may be known only at ingest, so it is not part of the spec; the
+shard receipt (`chunking.ceiling`) and the `[chunker] … ceiling=…` stderr line
+of `ingest_shard.py` record the applied value. The keys are read by the same
+`semantic_cap_from_params` as the cap, on the API, in `ingest_shard.py` and in
+`ingest_jsonl.py` (`--semantic-size-tolerance` and `--semantic-min-piece`
+without a registry entry).
+
+**Release order.** As for the cap: a worker image built before #831 ignores
+the two keys and chunks a tolerant collection strictly, with no error. Its
+receipts carry `chunking.v` 1. Roll the image before creating tolerant
+collections on a GoWe tenant.
 
 **A semantic-default deployment** (`CHUNK_METHOD=semantic` plus `CHUNK_SIZE`)
 is affected too. A create that omits `chunk` now records the marker, so its

@@ -349,7 +349,7 @@ def test_amain_runs_a_semantic_shard_end_to_end(tmp_path, monkeypatch) -> None:
     # The receipt records what the semantic chunker applied: no size cap here
     # (the spec-less shard is the legacy, window-only chunking).
     assert receipt["chunking"]["method"] == "semantic_pooled"
-    assert receipt["chunking"]["size_cap"] is None and receipt["chunking"]["v"] == 1
+    assert receipt["chunking"]["size_cap"] is None and receipt["chunking"]["v"] == 2
 
 
 def test_amain_records_the_applied_semantic_cap_in_the_receipt(tmp_path, monkeypatch) -> None:
@@ -369,9 +369,38 @@ def test_amain_records_the_applied_semantic_cap_in_the_receipt(tmp_path, monkeyp
         "size_cap": "tokens", "cap_split": "balanced", "breakpoint_cap": "size"})
     assert asyncio.run(ingest_shard.amain(args)) == 0
     assert json.loads(Path(out).read_text())["chunking"] == {
-        "v": 1, "method": "semantic", "size_cap": "tokens", "chunk_size": 200,
+        "v": 2, "method": "semantic", "size_cap": "tokens", "chunk_size": 200,
         "cap_split": "balanced", "breakpoint_cap": "size", "window_budget": 4080,
         "breakpoint_input_budget": 200,
+        # #831: strict collection -> no tolerance, recorded as null (not omitted).
+        "size_tolerance": None, "min_piece": None, "ceiling": None,
+    }
+
+
+def test_amain_records_the_applied_size_tolerance_in_the_receipt(tmp_path, monkeypatch) -> None:
+    """#831: the opt-in tolerance reaches the receipt as applied — the ceiling
+    is the computed one (200 * 1.25), and min_piece the recorded one."""
+    import asyncio
+
+    text = ("Cats are wonderful. Cats purr softly. Cats love to nap. "
+            "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls.")
+    shard = tmp_path / "s.jsonl"
+    shard.write_text(json.dumps({"text": text, "path": "/corpus/a.txt"}), encoding="utf-8")
+    out = str(tmp_path / "r.json")
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _TopicEmbedder())
+    args = ingest_shard.parse_args(_semantic_argv(str(shard), out, "semantic")
+                                   + ["--chunk-size", "200", "--chunk-max-tokens", "4096"])
+    monkeypatch.setattr(ingest_shard, "_semantic_params",
+                        lambda spec: {"buffer_size": 1, "min_chunk_length": 10})
+    monkeypatch.setattr(ingest_shard, "_semantic_cap", lambda spec, method: {
+        "size_cap": "tokens", "cap_split": "topic", "breakpoint_cap": "size",
+        "size_tolerance": 0.25, "min_piece": 30})
+    assert asyncio.run(ingest_shard.amain(args)) == 0
+    assert json.loads(Path(out).read_text())["chunking"] == {
+        "v": 2, "method": "semantic", "size_cap": "tokens", "chunk_size": 200,
+        "cap_split": "topic", "breakpoint_cap": "size", "window_budget": 4080,
+        "breakpoint_input_budget": 200,
+        "size_tolerance": 0.25, "min_piece": 30, "ceiling": 250,
     }
 
 

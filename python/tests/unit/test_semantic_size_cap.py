@@ -622,9 +622,10 @@ def test_receipt_records_the_applied_cap_and_round_trips():
     chunker = _capped("semantic_pooled", "topic", cap=48)
     applied = semantic_chunking_provenance(chunker)
     assert applied == {
-        "v": 1, "method": "semantic_pooled", "size_cap": "tokens", "chunk_size": 48,
+        "v": 2, "method": "semantic_pooled", "size_cap": "tokens", "chunk_size": 48,
         "cap_split": "topic", "breakpoint_cap": "size", "window_budget": 80,
         "breakpoint_input_budget": 48,
+        "size_tolerance": None, "min_piece": None, "ceiling": None,  # #831: strict
     }
     r = ShardReceipt("s1", "t", "completed", chunking=applied)
     again = ShardReceipt.from_dict(json.loads(r.to_json()))

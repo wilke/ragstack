@@ -504,6 +504,86 @@ async def test_bad_semantic_cap_is_a_400(client, _admin, monkeypatch, tmp_path, 
     assert needle in r.json()["detail"]
 
 
+# --------------------------------------------------------------------------- #
+# #831: the opt-in size tolerance at create
+# --------------------------------------------------------------------------- #
+
+_STRICT = {"size_cap": "tokens", "cap_split": "greedy", "breakpoint_cap": "size"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("params", "recorded"), [
+    # Asked for: both keys recorded concretely, defaults filled in.
+    ({"size_tolerance": 0.25}, {"size_tolerance": 0.25, "min_piece": 128}),
+    ({"min_piece": 64}, {"size_tolerance": 0.25, "min_piece": 64}),
+    ({"size_tolerance": 0, "min_piece": 0.0}, {"size_tolerance": 0.0, "min_piece": 0}),
+    ({"size_tolerance": 1, "min_piece": 512}, {"size_tolerance": 1.0, "min_piece": 512}),
+    # Not asked for (or null): strict, and NO tolerance key — the hash of every
+    # strict collection is unchanged.
+    ({}, {}),
+    ({"size_tolerance": None}, {}),
+    ({"size_tolerance": None, "min_piece": None}, {}),
+])
+async def test_size_tolerance_is_recorded_concretely(client, _admin, monkeypatch, tmp_path,
+                                                     params, recorded):
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "tol", {
+        "method": "semantic_pooled", "size": 512, "params": params,
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_params == {**_STRICT, **recorded}
+    assert all(type(spec.chunk_params[k]) is type(v) for k, v in recorded.items())
+
+
+@pytest.mark.asyncio
+async def test_size_tolerance_default_size_records_min_piece_of_the_recorded_size(
+    client, _admin, monkeypatch, tmp_path
+):
+    """No size sent: min_piece is a quarter of the size actually recorded (here
+    the default clamped to the budget), not of the unclamped setting."""
+    monkeypatch.setattr("ragstack.config.settings.chunk_method", "fixed_token")
+    monkeypatch.setattr("ragstack.config.settings.chunk_size", 512)
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 272)  # budget 256
+    r, spec = await _create_semantic(client, monkeypatch, tmp_path, "tol-default", {
+        "method": "semantic", "params": {"size_tolerance": 0.5},
+    })
+    assert r.status_code == 201, r.text
+    assert spec.chunk_size == 256
+    assert spec.chunk_params["min_piece"] == 64 and spec.chunk_params["size_tolerance"] == 0.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("chunk", "needle"), [
+    ({"method": "semantic", "size": 512, "params": {"size_tolerance": 1.5}}, "size_tolerance"),
+    ({"method": "semantic", "size": 512, "params": {"size_tolerance": -0.1}}, "size_tolerance"),
+    ({"method": "semantic", "size": 512, "params": {"size_tolerance": True}}, "size_tolerance"),
+    ({"method": "semantic", "size": 512, "params": {"size_tolerance": "a"}}, "size_tolerance"),
+    ({"method": "semantic", "size": 512, "params": {"min_piece": 513}}, "min_piece"),
+    ({"method": "semantic", "size": 512, "params": {"min_piece": -1}}, "min_piece"),
+    ({"method": "semantic", "size": 512, "params": {"min_piece": 1.5}}, "min_piece"),
+    ({"method": "semantic", "size": 512, "params": {"min_piece": "a"}}, "min_piece"),
+    ({"method": "fixed_token", "size": 512, "params": {"size_tolerance": 0.25}}, "applies only"),
+    ({"method": "sentence", "size": 512, "params": {"min_piece": 10}}, "applies only"),
+    ({"method": "words", "size": 512, "params": {"size_tolerance": None}}, "applies only"),
+])
+async def test_bad_size_tolerance_is_a_400(client, _admin, monkeypatch, tmp_path, chunk, needle):
+    r, _spec = await _create_semantic(client, monkeypatch, tmp_path, "bad-tol", chunk)
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
+
+
+def test_tolerant_entry_builds_tolerant_and_strict_entry_strict(monkeypatch):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
+    monkeypatch.setattr("ragstack.config.settings.chunk_token_counter", "estimate")
+    embed = lambda texts: [[0.0] * 8 for _ in texts]  # noqa: E731
+    tol = _chunker_for(_entry("semantic", chunk_size=512, chunk_params={
+        **_STRICT, "size_tolerance": 0.25, "min_piece": 100}), embed_fn=embed)
+    assert (tol.size_tolerance, tol.min_piece_tokens, tol.ceiling_tokens) == (0.25, 100, 640)
+    strict = _chunker_for(_entry("semantic", chunk_size=512, chunk_params=dict(_STRICT)),
+                          embed_fn=embed)
+    assert (strict.size_tolerance, strict.min_piece_tokens, strict.ceiling_tokens) == (
+        None, None, None)
+
+
 @pytest.mark.asyncio
 async def test_semantic_cap_over_chunk_max_tokens_is_refused_at_create(
     client, _admin, monkeypatch, tmp_path

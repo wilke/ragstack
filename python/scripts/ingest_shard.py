@@ -154,8 +154,8 @@ def _size_unit(spec, method: str) -> str:
 
 
 def _semantic_cap(spec, method: str) -> dict:
-    """The semantic size cap (``size_cap`` / ``cap_split`` / ``breakpoint_cap``),
-    **from the registry
+    """The semantic size cap (``size_cap`` / ``cap_split`` / ``breakpoint_cap``,
+    plus the opt-in ``size_tolerance`` / ``min_piece`` of #831), **from the registry
     entry** — never a CLI flag, for the same reason as :func:`_semantic_params`.
     Read through :func:`~ragstack.ingestion.chunker_config.semantic_cap_from_params`,
     the function the API's in-process builder uses, so one recorded spec is capped
@@ -212,7 +212,10 @@ def _build_chunker(args, spec=None, embed_fn=None):
               f"chunk_size={applied['chunk_size']} cap_split={applied['cap_split']} "
               f"breakpoint_cap={applied['breakpoint_cap']} "
               f"breakpoint_input_budget={applied['breakpoint_input_budget']} "
-              f"window_budget={applied['window_budget']}", file=sys.stderr)
+              f"window_budget={applied['window_budget']} "
+              f"size_tolerance={applied['size_tolerance']} "
+              f"min_piece={applied['min_piece']} ceiling={applied['ceiling']}",
+              file=sys.stderr)
     return chunker
 
 

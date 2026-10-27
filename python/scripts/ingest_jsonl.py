@@ -1200,7 +1200,7 @@ async def run(
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
 
 
-def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str]:
+def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, Any]:
     """The semantic size cap (``size_cap`` / ``cap_split`` / ``breakpoint_cap``)
     this run chunks with.
 
@@ -1209,6 +1209,8 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str
     ``ingest_shard.py`` use), and a ``--semantic-size-cap`` /
     ``--semantic-cap-split`` / ``--semantic-breakpoint-cap`` that contradicts it
     is refused with exit 2 — the cap is collection identity, like ``size_unit``.
+    The opt-in tolerance (#831) follows the same rule through
+    ``--semantic-size-tolerance`` / ``--semantic-min-piece``.
     With no entry the flags decide (an unset split/breakpoint flag under a cap
     takes the same defaults the API records: ``greedy`` / ``size``). Neither set:
     ``{}``, the historical window-only chunking. A flag on a non-semantic method
@@ -1218,12 +1220,16 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str
         "size_cap": getattr(args, "semantic_size_cap", None),
         "cap_split": getattr(args, "semantic_cap_split", None),
         "breakpoint_cap": getattr(args, "semantic_breakpoint_cap", None),
+        "size_tolerance": getattr(args, "semantic_size_tolerance", None),
+        "min_piece": getattr(args, "semantic_min_piece", None),
     }
-    given = {k: v for k, v in flags.items() if v}
+    # `is not None`, not truthiness: a tolerance of 0 or a min_piece of 0 is a value.
+    given = {k: v for k, v in flags.items() if v is not None and v != ""}
     if not needs_embed_fn(args.chunk_method):
         if given:
             print("error: --semantic-size-cap/--semantic-cap-split/"
-                  "--semantic-breakpoint-cap apply only to the semantic chunk methods",
+                  "--semantic-breakpoint-cap/--semantic-size-tolerance/"
+                  "--semantic-min-piece apply only to the semantic chunk methods",
                   file=sys.stderr)
             raise SystemExit(2)
         return {}
@@ -1244,6 +1250,8 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str
         "size_cap": entry.get("size_cap"),
         "cap_split": entry.get("cap_split", DEFAULT_CAP_SPLIT),
         "breakpoint_cap": entry.get("breakpoint_cap"),
+        "size_tolerance": entry.get("size_tolerance"),
+        "min_piece": entry.get("min_piece"),
     }
     for key, flag in given.items():
         if flag != want[key]:
@@ -1438,6 +1446,16 @@ def main() -> None:
                         "bounds the breakpoint-embedding inputs at --chunk-size tokens "
                         "(the study's SEM arms); 'window' bounds them at the model "
                         "window only.")
+    p.add_argument("--semantic-size-tolerance", type=float, default=None,
+                   help="semantic, with --semantic-size-cap: OPT-IN (#831). "
+                        "--chunk-size becomes a target; chunks may reach "
+                        "chunk_size*(1+tolerance) tokens (never above the window), "
+                        "and pieces under --semantic-min-piece tokens are merged "
+                        "across the weaker topic boundary. Default: off (strict cap). "
+                        "Into a registry collection the entry decides.")
+    p.add_argument("--semantic-min-piece", type=int, default=None,
+                   help="semantic, with --semantic-size-tolerance: merge pieces under "
+                        "this many tokens (default chunk_size // 4; 0 = never merge).")
     p.add_argument("--semantic-max-sentences", type=int, default=3000,
                    help="semantic: OVERSIZED-DOC FALLBACK. A doc that splits into more "
                         "than this many sentence spans is chunked with the fixed_token "

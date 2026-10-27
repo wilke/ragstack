@@ -81,9 +81,13 @@ from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import (
     BREAKPOINT_CAP_PARAM,
     CAP_SPLIT_PARAM,
+    MIN_PIECE_PARAM,
     SEMANTIC_CAP_PARAMS,
     SIZE_CAP_PARAM,
+    SIZE_TOLERANCE_PARAM,
+    SIZE_TOLERANCE_PARAMS,
     parse_unsupported_methods,
+    semantic_cap_from_params,
     shard_refusal,
 )
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
@@ -93,9 +97,11 @@ from ragstack.ingestion.chunkers import (
     CHUNK_METHODS,
     DEFAULT_BREAKPOINT_CAP,
     DEFAULT_CAP_SPLIT,
+    DEFAULT_SIZE_TOLERANCE,
     DEFAULT_SIZE_UNIT,
     SIZE_CAP_TOKENS,
     SIZE_CAPS,
+    default_min_piece,
 )
 from ragstack.ingestion.tokenization import DEFAULT_TOKEN_RESERVE, TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
@@ -374,7 +380,7 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
         raise HTTPException(400, str(e)) from None
     params = chunk.params or {}
     if method not in SEMANTIC_METHODS:
-        for key in SEMANTIC_CAP_PARAMS:
+        for key in (*SEMANTIC_CAP_PARAMS, *SIZE_TOLERANCE_PARAMS):
             if key in params:
                 raise HTTPException(
                     400,
@@ -505,6 +511,15 @@ def _validate_semantic_cap(chunk: ChunkConfig) -> None:
         raise HTTPException(
             400, f"chunk size for {chunk.method!r} is a token cap and must be at least 1; got {size}"
         )
+    # The opt-in size tolerance (#831): checked by the SAME reader every ingest
+    # path uses, against the spec as _normalise_chunk will record it (marker on,
+    # the tolerance filled in when only min_piece was sent), so what is accepted
+    # here is exactly what ingest accepts.
+    try:
+        semantic_cap_from_params(chunk.method, _with_tolerance_defaults(params, size),
+                                 recorded_size=size)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     if settings.chunk_max_tokens is not None:
         budget = max(1, settings.chunk_max_tokens - DEFAULT_TOKEN_RESERVE)
         if size > budget:
@@ -515,6 +530,28 @@ def _validate_semantic_cap(chunk: ChunkConfig) -> None:
                 f"minus a {DEFAULT_TOKEN_RESERVE}-token reserve); semantic chunk size "
                 f"is a cap, so use a size <= {budget}",
             )
+
+
+def _with_tolerance_defaults(params: dict, size: int) -> dict:
+    """``params`` as a NEW semantic collection records them: the size-cap marker
+    set and — when the request opts in to the size tolerance (#831) by sending
+    ``size_tolerance`` and/or ``min_piece`` — both recorded as concrete values
+    (tolerance :data:`DEFAULT_SIZE_TOLERANCE`, ``min_piece`` a quarter of
+    ``size``, when not sent). A key sent as ``null`` is dropped, so it hashes
+    like an absent one. Neither sent: the strict cap, no tolerance key at all."""
+    out = {k: v for k, v in params.items()
+           if not (k in SIZE_TOLERANCE_PARAMS and v is None)}
+    out.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
+    if any(k in out for k in SIZE_TOLERANCE_PARAMS):
+        out.setdefault(SIZE_TOLERANCE_PARAM, DEFAULT_SIZE_TOLERANCE)
+        out.setdefault(MIN_PIECE_PARAM, default_min_piece(size))
+        tol = out[SIZE_TOLERANCE_PARAM]
+        if isinstance(tol, int) and not isinstance(tol, bool):
+            out[SIZE_TOLERANCE_PARAM] = float(tol)  # 0 and 0.0 must hash alike
+        piece = out[MIN_PIECE_PARAM]
+        if isinstance(piece, float) and piece.is_integer():
+            out[MIN_PIECE_PARAM] = int(piece)
+    return out
 
 
 def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
@@ -541,7 +578,8 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
         # chunks were made uncapped), and an unrecorded split, bound or size would
         # follow a later change of default — one collection, two chunkings.
         size = chunk.size if chunk.size is not None else _default_semantic_size(announce=True)
-        params.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
+        # Marker, plus the #831 tolerance keys recorded concretely when asked for.
+        params = _with_tolerance_defaults(params, size)
         params.setdefault(CAP_SPLIT_PARAM, DEFAULT_CAP_SPLIT)
         params.setdefault(BREAKPOINT_CAP_PARAM, DEFAULT_BREAKPOINT_CAP)
         return chunk.model_copy(update={"params": params, "size": size})

@@ -134,9 +134,50 @@ BREAKPOINT_CAP_WINDOW = "window"
 BREAKPOINT_CAPS: tuple[str, ...] = (BREAKPOINT_CAP_SIZE, BREAKPOINT_CAP_WINDOW)
 DEFAULT_BREAKPOINT_CAP = BREAKPOINT_CAP_SIZE
 
+#: OPT-IN size tolerance and small-piece merge (#831), for a size-capped semantic
+#: collection that records ``chunk_params["size_tolerance"]``. ``chunk_size`` is
+#: then a TARGET, not a hard cap:
+#:
+#: * ceiling = ``min(floor(chunk_size * (1 + size_tolerance)), max_tokens)`` —
+#:   never above the window budget (:func:`semantic_ceiling`);
+#: * a block over the CEILING is split, by its ``cap_split`` strategy aimed at
+#:   the target (pieces <= ``chunk_size``); a block at or under it stays whole;
+#: * then a piece under ``min_piece`` tokens joins the neighbour across the
+#:   WEAKER boundary (the smaller breakpoint distance — already computed, no
+#:   extra embedding) if the result fits the ceiling, else the other neighbour if
+#:   that fits, else it stays (:func:`_merge_small_pieces`).
+#:
+#: **Absent** (every collection created before #831, and every new one that does
+#: not ask): the strict #829 cap, byte for byte.
+#:
+#: ``size_tolerance`` is a fraction in ``[0, MAX_SIZE_TOLERANCE]``; ``min_piece``
+#: is whole tokens in ``[0, chunk_size]`` (0 = never merge). Defaults when the
+#: setting is on (owner, 2026-10-27): tolerance 0.25, ``min_piece`` =
+#: ``chunk_size // 4`` (:func:`default_min_piece`).
+DEFAULT_SIZE_TOLERANCE = 0.25
+MAX_SIZE_TOLERANCE = 1.0
+MIN_PIECE_FRACTION = 0.25
+
+
+def default_min_piece(chunk_size: int) -> int:
+    """``min_piece`` when the tolerance is on and none is recorded: a quarter of
+    the target, rounded down (512 -> 128)."""
+    return int(chunk_size * MIN_PIECE_FRACTION)
+
+
+def semantic_ceiling(target: int, size_tolerance: float, max_tokens: int | None) -> int:
+    """The tolerant ceiling: ``floor(target * (1 + size_tolerance))``, clamped to
+    the window budget ``max_tokens`` when there is one. The epsilon keeps a
+    product that is mathematically whole (``100 * 1.1``) from rounding down."""
+    ceiling = math.floor(target * (1.0 + size_tolerance) + 1e-9)
+    return ceiling if max_tokens is None else min(ceiling, max_tokens)
+
+
 #: Version of :func:`semantic_chunking_provenance`'s record (the shard receipt's
-#: ``chunking`` object). Bump when a key's meaning changes.
-CHUNKING_PROVENANCE_VERSION = 1
+#: ``chunking`` object). Bump when a key's meaning changes or keys are added.
+#: v2 (#831) adds ``size_tolerance``, ``min_piece`` and ``ceiling`` (``null`` on
+#: a strict collection); a v1 object has none of them and was strict.
+CHUNKING_PROVENANCE_VERSION = 2
 
 
 def _validate_size_unit(
@@ -1104,6 +1145,66 @@ def _cap_unit_range(
     )
 
 
+def _merge_small_pieces(
+    text: str,
+    ranges: list[tuple[int, int]],
+    *,
+    min_piece: int,
+    ceiling: int,
+    token_counter: TokenCounter,
+    strength: Callable[[int], float],
+    barriers: frozenset[int] = frozenset(),
+) -> list[tuple[int, int]]:
+    """Merge every piece under ``min_piece`` tokens into a neighbour (#831).
+
+    ``ranges`` tile a span of ``text`` in order. A small piece joins the
+    neighbour across its WEAKER boundary — the smaller ``strength(offset)`` of
+    the char offset the two pieces meet at — when the joined text (counted
+    joined, not summed) is <= ``ceiling``; otherwise the other neighbour, if that
+    fits; otherwise it stays. Ties go to the smaller merged piece, then to the
+    left. After a merge the result is examined again (it may still be small), so
+    a run of small pieces coalesces as far as the ceiling allows.
+
+    ``barriers`` are offsets no merge may cross. SEAM for #828's document
+    structure: once sections exist, their start offsets go here so a piece never
+    merges across a section boundary. Nothing passes them today.
+
+    Pure range arithmetic plus token counts: no embedding.
+    """
+    if min_piece <= 0 or len(ranges) <= 1:
+        return list(ranges)
+    out = list(ranges)
+    count = [token_counter.count(text[s:e]) for s, e in out]
+    i = 0
+    while i < len(out):
+        if count[i] >= min_piece:
+            i += 1
+            continue
+        options: list[tuple[float, int, int, int]] = []  # (strength, merged, side, j)
+        for side, j in ((0, i - 1), (1, i + 1)):
+            if not 0 <= j < len(out):
+                continue
+            boundary = out[i][0] if side == 0 else out[i][1]
+            if boundary in barriers:
+                continue
+            a, b = (out[j][0], out[i][1]) if side == 0 else (out[i][0], out[j][1])
+            n = token_counter.count(text[a:b])
+            options.append((strength(boundary), n, side, j))
+        merged = False
+        for _strength, n, _side, j in sorted(options):
+            if n > ceiling:
+                continue
+            lo = min(i, j)
+            out[lo : lo + 2] = [(out[lo][0], out[lo + 1][1])]
+            count[lo : lo + 2] = [n]
+            i = lo  # re-examine the merged piece
+            merged = True
+            break
+        if not merged:
+            i += 1
+    return out
+
+
 def _balanced_unit_range(
     doc: Document,
     spans: list[tuple[int, int]],
@@ -1660,6 +1761,8 @@ class SemanticChunker:
         size_cap_tokens: int | None = None,
         cap_split: str = DEFAULT_CAP_SPLIT,
         breakpoint_cap_tokens: int | None = None,
+        size_tolerance: float | None = None,
+        min_piece_tokens: int | None = None,
     ) -> None:
         if cap_split not in CAP_SPLITS:
             raise ValueError(
@@ -1698,9 +1801,45 @@ class SemanticChunker:
                     f"budget): a chunk that size would overflow the model context. "
                     f"Use chunk_size <= {max_tokens}."
                 )
+        if min_piece_tokens is not None and size_tolerance is None:
+            raise ValueError(
+                "min_piece needs size_tolerance: the small-piece merge is part of "
+                "the opt-in size tolerance (#831)"
+            )
+        if size_tolerance is not None:
+            if size_cap_tokens is None:
+                # Marker discipline: only a recorded size cap has a target to be
+                # tolerant about; an uncapped collection is chunked as it always was.
+                raise ValueError(
+                    "size_tolerance needs a size cap (size_cap='tokens')"
+                )
+            if (isinstance(size_tolerance, bool)
+                    or not 0.0 <= size_tolerance <= MAX_SIZE_TOLERANCE):
+                raise ValueError(
+                    f"size_tolerance must be between 0 and {MAX_SIZE_TOLERANCE}; "
+                    f"got {size_tolerance!r}"
+                )
+            if min_piece_tokens is None:
+                min_piece_tokens = default_min_piece(size_cap_tokens)
+            if not 0 <= min_piece_tokens <= size_cap_tokens:
+                raise ValueError(
+                    f"min_piece must be between 0 and chunk_size ({size_cap_tokens}) "
+                    f"tokens; got {min_piece_tokens}"
+                )
         #: The per-chunk token cap a recorded ``size_cap='tokens'`` sets
-        #: (``chunk_size``), or ``None`` (legacy: only ``max_tokens`` caps).
+        #: (``chunk_size``), or ``None`` (legacy: only ``max_tokens`` caps). Under
+        #: a recorded ``size_tolerance`` it is the TARGET and
+        #: :attr:`ceiling_tokens` is the bound.
         self.size_cap_tokens = size_cap_tokens
+        #: The opt-in tolerance (#831), or ``None`` (strict #829 cap).
+        self.size_tolerance = size_tolerance
+        #: Pieces under this many tokens are merged (tolerance only), else ``None``.
+        self.min_piece_tokens = min_piece_tokens if size_tolerance is not None else None
+        #: The bound on every emitted chunk under the tolerance, else ``None``.
+        self.ceiling_tokens = (
+            semantic_ceiling(size_cap_tokens, size_tolerance, max_tokens)
+            if size_tolerance is not None and size_cap_tokens is not None else None
+        )
         self.cap_split = cap_split
         #: The extra bound on BREAKPOINT inputs a recorded ``breakpoint_cap='size'``
         #: sets (``chunk_size``), or ``None`` (bounded by the window only).
@@ -1806,6 +1945,10 @@ class SemanticChunker:
         cap = self._block_cap
         if cap is None or self.token_counter is None:
             return [_make_chunk(doc, start, end)]
+        if self.ceiling_tokens is not None and (
+            self.token_counter.count(doc.content[start:end]) <= self.ceiling_tokens
+        ):
+            return [_make_chunk(doc, start, end)]  # #831: fits the ceiling, kept whole
         return _token_split_span(doc, start, end, cap, self.token_counter)
 
     @property
@@ -1842,6 +1985,8 @@ class SemanticChunker:
         counter = self.token_counter
         if cap is None or counter is None:
             return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
+        if self.ceiling_tokens is not None:
+            return self._tolerant_block(doc, spans, lo, hi, distances)
         if self.cap_split == "greedy":
             # Same cap step as char-sized sentence/words (_cap_unit_range). The
             # legacy (no size cap) path is always this one, with cap = max_tokens.
@@ -1854,6 +1999,107 @@ class SemanticChunker:
         if distances is None:  # pragma: no cover — chunk() always passes them
             raise ValueError("cap_split='topic' needs the breakpoint distances")
         return self._topic_split(doc, spans, lo, hi, cap, distances)
+
+    def _tolerant_block(
+        self,
+        doc: Document,
+        spans: list[tuple[int, int]],
+        lo: int,
+        hi: int,
+        distances: Sequence[float] | None,
+    ) -> list[Chunk]:
+        """Emit block ``spans[lo:hi]`` under the opt-in size tolerance (#831).
+
+        A block at or under the ceiling is one chunk. A block over it is split
+        AIMING AT THE TARGET (``chunk_size``): its sentences over the target are
+        isolated first — each kept whole when it fits the ceiling, hard-split at
+        the target only when it does not — and each run of sentences between them
+        is kept whole if it fits the ceiling, else split by ``cap_split`` at the
+        target, exactly as the strict cap splits a block. So every piece is <= the
+        ceiling, and a cut falls inside a sentence only when that sentence alone
+        is over the ceiling. Small pieces are merged afterwards, across the whole
+        document (:meth:`chunk`).
+        """
+        assert self.token_counter is not None and self.size_cap_tokens is not None
+        assert self.ceiling_tokens is not None
+        counter, target, ceiling = self.token_counter, self.size_cap_tokens, self.ceiling_tokens
+        text = doc.content
+        start, end = spans[lo][0], spans[hi - 1][1]
+        if counter.count(text[start:end]) <= ceiling:
+            return [_make_chunk(doc, start, end)]
+        out: list[Chunk] = []
+        run = lo
+        for i in range(lo, hi):
+            s, e = spans[i]
+            n = counter.count(text[s:e])
+            if n <= target:
+                continue
+            if run < i:
+                out.extend(self._tolerant_run(doc, spans, run, i, distances))
+            out.extend([_make_chunk(doc, s, e)] if n <= ceiling
+                       else _token_split_span(doc, s, e, target, counter))
+            run = i + 1
+        if run < hi:
+            out.extend(self._tolerant_run(doc, spans, run, hi, distances))
+        return out
+
+    def _tolerant_run(
+        self,
+        doc: Document,
+        spans: list[tuple[int, int]],
+        a: int,
+        b: int,
+        distances: Sequence[float] | None,
+    ) -> list[Chunk]:
+        """A run of sentences each <= the target: whole if it fits the ceiling,
+        else split by ``cap_split`` with the target as the cap."""
+        assert self.token_counter is not None and self.size_cap_tokens is not None
+        assert self.ceiling_tokens is not None
+        counter, target = self.token_counter, self.size_cap_tokens
+        start, end = spans[a][0], spans[b - 1][1]
+        if counter.count(doc.content[start:end]) <= self.ceiling_tokens:
+            return [_make_chunk(doc, start, end)]
+        if self.cap_split == "greedy":
+            return _cap_unit_range(doc, spans, a, b, target, counter)
+        if self.cap_split == "balanced":
+            return _balanced_unit_range(doc, spans, a, b, target, counter)
+        if distances is None:  # pragma: no cover — chunk() always passes them
+            raise ValueError("cap_split='topic' needs the breakpoint distances")
+        return self._topic_split(doc, spans, a, b, target, distances)
+
+    def _merge_small(
+        self,
+        doc: Document,
+        chunks: list[Chunk],
+        spans: list[tuple[int, int]],
+        distances: Sequence[float],
+    ) -> list[Chunk]:
+        """The #831 small-piece merge over a document's emitted chunks.
+
+        A boundary at the start of sentence ``m`` is as strong as
+        ``distances[m - 1]`` (the breakpoint series already computed); a boundary
+        inside a sentence (a hard split) is the weakest there is. No barriers
+        are passed yet: see :func:`_merge_small_pieces` for the #828 seam.
+        """
+        assert self.token_counter is not None and self.ceiling_tokens is not None
+        assert self.min_piece_tokens is not None
+        sentence_at = {s: i for i, (s, _e) in reversed(list(enumerate(spans)))}
+
+        def strength(offset: int) -> float:
+            m = sentence_at.get(offset)
+            if m is None or m == 0:
+                return float("-inf")
+            return distances[m - 1]
+
+        ranges = [(c.start_char, c.end_char) for c in chunks]
+        merged = _merge_small_pieces(
+            doc.content, ranges, min_piece=self.min_piece_tokens,
+            ceiling=self.ceiling_tokens, token_counter=self.token_counter,
+            strength=strength,
+        )
+        if merged == ranges:
+            return chunks
+        return [_make_chunk(doc, s, e) for s, e in merged]
 
     def _topic_split(
         self,
@@ -2007,6 +2253,10 @@ class SemanticChunker:
         out: list[Chunk] = []
         for s, e in chunk_spans:
             out.extend(self._emit_block(doc, spans, first_of[s], past_of[e], distances))
+        if self.min_piece_tokens:
+            # #831: after min_chunk_length (chars, above) and the split (per block),
+            # small pieces join a neighbour across the weaker boundary.
+            out = self._merge_small(doc, out, spans, distances)
         return out
 
     def _breakpoint_groups(
@@ -2054,12 +2304,19 @@ def semantic_chunking_provenance(chunker: object) -> dict | None:
     (``chunk_size``), ``cap_split``, ``breakpoint_cap`` and the resolved budgets —
     the window budget (``window_budget``, i.e. ``max_tokens``) and the budget
     breakpoint inputs were actually bounded at (``breakpoint_input_budget``).
-    ``v`` is :data:`CHUNKING_PROVENANCE_VERSION`.
+    ``v`` is :data:`CHUNKING_PROVENANCE_VERSION`. Since v2 (#831) also the
+    opt-in tolerance: ``size_tolerance``, ``min_piece`` (tokens) and the applied
+    ``ceiling`` (tokens, already clamped to the window) — all ``None`` on a
+    strict or uncapped collection, where ``chunk_size`` is the hard cap. Under the
+    tolerance ``chunk_size`` is the target.
     """
     if not isinstance(chunker, SemanticChunker):
         return None
     capped = chunker.size_cap_tokens is not None
     return {
+        "size_tolerance": chunker.size_tolerance,
+        "min_piece": chunker.min_piece_tokens,
+        "ceiling": chunker.ceiling_tokens,
         "v": CHUNKING_PROVENANCE_VERSION,
         "method": "semantic_pooled" if chunker.pool_sentences else "semantic",
         "size_cap": SIZE_CAP_TOKENS if capped else None,
@@ -2100,6 +2357,8 @@ def make_chunker(
     size_cap: str | None = None,
     cap_split: str = DEFAULT_CAP_SPLIT,
     breakpoint_cap: str | None = None,
+    size_tolerance: float | None = None,
+    min_piece: int | None = None,
 ):
     """Build the chunker named by ``method``.
 
@@ -2142,6 +2401,10 @@ def make_chunker(
     :data:`CAP_SPLITS`. ``breakpoint_cap`` (semantic, with ``size_cap`` only):
     how breakpoint inputs are bounded, see :data:`BREAKPOINT_CAPS`; ``None``
     under a cap means :data:`DEFAULT_BREAKPOINT_CAP` (``"size"``).
+    ``size_tolerance`` / ``min_piece`` (semantic, with ``size_cap`` only; #831):
+    the opt-in tolerance — ``chunk_size`` becomes a target, chunks may reach the
+    ceiling, and pieces under ``min_piece`` tokens are merged (see
+    :data:`DEFAULT_SIZE_TOLERANCE`). ``None`` (default) is the strict cap.
     """
     if cap_split not in CAP_SPLITS:
         raise ValueError(f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}")
@@ -2153,11 +2416,12 @@ def make_chunker(
         )
     if method not in ("semantic", "semantic_pooled") and (
         size_cap is not None or cap_split != DEFAULT_CAP_SPLIT or breakpoint_cap is not None
+        or size_tolerance is not None or min_piece is not None
     ):
         # Same rule as size_unit: a knob this method ignores must not look applied.
         raise ValueError(
-            f"size_cap/cap_split/breakpoint_cap apply only to the semantic methods, "
-            f"not chunk_method={method!r}"
+            f"size_cap/cap_split/breakpoint_cap/size_tolerance/min_piece apply only "
+            f"to the semantic methods, not chunk_method={method!r}"
         )
     if size_cap is None and breakpoint_cap is not None:
         raise ValueError(
@@ -2241,5 +2505,7 @@ def make_chunker(
                 and (breakpoint_cap or DEFAULT_BREAKPOINT_CAP) == BREAKPOINT_CAP_SIZE
                 else None
             ),
+            size_tolerance=size_tolerance,
+            min_piece_tokens=min_piece,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")
