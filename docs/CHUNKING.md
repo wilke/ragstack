@@ -186,7 +186,13 @@ create a new one and ingest again
 of the chunk descriptor, the `spec_hash` and the physical name, and it is
 recorded in every manifest and in `GET /v1/collections`. Because a cap above
 the window is refused rather than clamped, the cap that is applied always equals
-the recorded *size*.
+the recorded *size*. A consequence for a semantic-default deployment
+(`CHUNK_METHOD=semantic` plus `CHUNK_SIZE`): a create that omits `chunk` now
+records the marker too, so its content address differs from the uncapped
+settings-derived default collection. It mints a separate store instead of
+re-mapping to that surface. The `ingest_shard.py` worker logs the cap and
+`cap_split` it applied, one stderr line per shard; the shard receipt has no
+field for them.
 
 ## Sentence segmentation
 

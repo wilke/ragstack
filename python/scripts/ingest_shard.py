@@ -180,7 +180,8 @@ def _build_chunker(args, spec=None, embed_fn=None):
     ``None`` for a semantic method reaches ``make_chunker``'s own
     ``requires an embed_fn`` refusal rather than being silently demoted.
     """
-    chunker, _counter, _max_tokens = build_chunker(
+    cap = _semantic_cap(spec, args.chunk_method)
+    chunker, _counter, max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
@@ -199,8 +200,19 @@ def _build_chunker(args, spec=None, embed_fn=None):
         # tool never read the spec at all, so that would have been a regression on
         # the path every current collection uses.
         **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
-        **_semantic_cap(spec, args.chunk_method),
+        **cap,
     )
+    if needs_embed_fn(args.chunk_method):
+        # One line per shard: which cap this worker actually applied. The receipt
+        # has no free-form chunker-params field, so stderr (kept by GoWe) is the
+        # record; an old image that predates the cap prints no such line.
+        if cap:
+            print(f"[chunker] {args.chunk_method}: size_cap={cap['size_cap']} "
+                  f"chunk_size={args.chunk_size} cap_split={cap['cap_split']} "
+                  f"(window budget {max_tokens})", file=sys.stderr)
+        else:
+            print(f"[chunker] {args.chunk_method}: no size_cap recorded; window-only "
+                  f"cap {max_tokens} tokens, greedy", file=sys.stderr)
     return chunker
 
 

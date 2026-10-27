@@ -443,3 +443,62 @@ def test_balanced_verifies_pieces_on_the_joined_text():
     # the second piece is 47 > 40, so balanced must go to 3 pieces.
     assert max(counter.count(c.content) for c in chunks) <= 40
     assert len(chunks) == 3 and _tiles(doc, chunks)
+
+
+def test_balanced_clamps_k_when_seams_inflate_the_joined_count():
+    """Three 3-token units under cap 3, where the seams make the block count 15:
+    ceil(15/3) = 5 > n = 3 pieces. k must be clamped to n (an unclamped k skipped
+    the loop and raised an AssertionError, a 500 at ingest); one unit per piece."""
+    text = "a b c. d e f. g h i."
+    doc = Document(id="clamp", content=text, metadata={})
+    counter = _SeamCounter()
+    assert counter.count(text) == 15
+    chunks = _capped("semantic", "balanced", cap=3, token_counter=counter).chunk(doc)
+    assert [c.content.strip() for c in chunks] == ["a b c.", "d e f.", "g h i."]
+    assert _tiles(doc, chunks) and max(counter.count(c.content) for c in chunks) <= 3
+
+
+def test_balanced_falls_back_to_one_unit_per_piece_when_nothing_else_fits():
+    """Four 1-token units, cap 4, joined 4 + 3*3 = 13 -> k starts at 4 = n."""
+    text = "a. b. c. d."
+    doc = Document(id="fb", content=text, metadata={})
+    counter = _SeamCounter()
+    chunks = _capped("semantic", "balanced", cap=4, token_counter=counter).chunk(doc)
+    assert max(counter.count(c.content) for c in chunks) <= 4 and _tiles(doc, chunks)
+
+
+@pytest.mark.parametrize("method", SEMANTIC)
+def test_api_refuses_a_marker_without_a_recorded_size(fake_backends, method):
+    entry = _entry(method, chunk_size=None, chunk_params={"size_cap": "tokens"})
+    with pytest.raises(ValueError, match="records no chunk_size"):
+        deps._chunker_for(entry, embed_fn=topic_embed_fn)
+
+
+@pytest.mark.parametrize("method", SEMANTIC)
+def test_topic_ties_go_to_the_earliest_cut(method):
+    """Equal distances at two gaps that balance the block equally (one 4-token
+    sentence either side of a 4-sentence middle): the earliest wins."""
+    # s0 | s1 s2 s3 s4 | s5 : vectors change at 0->1 and 4->5 by the same amount,
+    # and cutting before s1 or before s5 is equally (im)balanced by characters.
+    vecs = [[1.0, 0.0]] + [[0.0, 1.0]] * 4 + [[1.0, 0.0]]
+
+    def embed(texts):
+        return [list(vecs[int(t.split()[0][1:])]) for t in texts]
+
+    # Trailing space: every sentence is 10 chars, so both cuts are 10 | 50 apart.
+    doc = Document(id="tie", content="".join(f"s{i} a b c. " for i in range(6)), metadata={})
+    spans = _tiling_spans(doc.content)
+    kw = {"buffer_size": 0, "breakpoint_percentile_threshold": 100.0}
+    chunks = _capped(method, "topic", cap=20, embed=embed, **kw).chunk(doc)
+    assert chunks[1].start_char == spans[1][0], [c.start_char for c in chunks]
+
+
+def test_shard_logs_the_cap_it_applies(fake_backends, capsys):
+    spec = SimpleNamespace(chunk_params={"size_cap": "tokens", "cap_split": "topic"},
+                           chunk_size=20)
+    ingest_shard._build_chunker(_shard_args("semantic", 20), spec, embed_fn=topic_embed_fn)
+    assert "size_cap=tokens chunk_size=20 cap_split=topic" in capsys.readouterr().err
+    ingest_shard._build_chunker(_shard_args("semantic", 20),
+                                SimpleNamespace(chunk_params={}, chunk_size=20),
+                                embed_fn=topic_embed_fn)
+    assert "no size_cap recorded" in capsys.readouterr().err

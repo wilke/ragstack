@@ -1101,7 +1101,8 @@ def _balanced_unit_range(
     largest smallest piece) and then VERIFIED on the joined text; when a piece
     does not fit, k is raised. k = number of units always fits (each piece is
     then a single unit, whose joined count IS its own count), so the loop ends
-    and the never-exceed-``cap`` invariant is measured, not inferred.
+    and the never-exceed-``cap`` invariant is measured, not inferred. (k is
+    clamped to the number of units; at k = n the units are emitted one per piece.)
     """
     text = doc.content
     tok = [token_counter.count(text[s:e]) for s, e in spans[lo:hi]]
@@ -1138,17 +1139,19 @@ def _balanced_run(
     if total <= cap:
         return [_make_chunk(doc, spans[lo][0], spans[hi - 1][1])]
     n = hi - lo
-    k = max(2, -(-total // cap))
-    while k <= n:
+    # Clamp to n: seams can make the joined count exceed the sum of the units'
+    # own counts, so ceil(total / cap) may ask for more pieces than units.
+    k = max(2, min(n, -(-total // cap)))
+    while k < n:
         cuts = _balanced_cuts(weights, k, cap)
         if cuts is not None:
             pieces = [(lo + a, lo + b) for a, b in zip(cuts, cuts[1:], strict=False)]
             if all(joined(a, b) <= cap for a, b in pieces):
                 return [_make_chunk(doc, spans[a][0], spans[b - 1][1]) for a, b in pieces]
         k += 1
-    raise AssertionError(  # pragma: no cover — k == n always fits (single units)
-        f"balanced split found no partition of {n} units under cap {cap}"
-    )
+    # k == n: one unit per piece. Each fits — its count was measured on exactly
+    # this slice (``weights``) and every unit of a run is <= cap.
+    return [_make_chunk(doc, s, e) for s, e in spans[lo:hi]]
 
 
 def _balanced_cuts(weights: list[int], k: int, cap: int) -> list[int] | None:

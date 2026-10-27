@@ -526,3 +526,31 @@ def test_unmarked_semantic_entry_builds_uncapped(monkeypatch):
         embed_fn=embed,
     )
     assert new.size_cap_tokens == 512 and new.cap_split == "topic"
+
+
+@pytest.mark.asyncio
+async def test_semantic_server_default_cap_is_validated_at_create(
+    client, _admin, monkeypatch, tmp_path
+):
+    """A create that omits `chunk` takes the server default — which, for a semantic
+    default, now records the size-cap marker. Its size must be checked here like
+    an explicit one: CHUNK_SIZE=1024 over a 512-token budget used to mint the
+    collection (201) and then fail every ingest with a 400."""
+    from ragstack.api.collections import CollectionSpec
+
+    f = tmp_path / "libs.json"
+    monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
+    monkeypatch.setattr("ragstack.config.settings.chunk_method", "semantic")
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
+    monkeypatch.setattr("ragstack.config.settings.chunk_size", 1024)
+    await _register(client)
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
+    assert r.status_code == 400, r.text
+    assert "512" in r.json()["detail"]
+    # Control: a default size within the budget mints a capped collection.
+    monkeypatch.setattr("ragstack.config.settings.chunk_size", 512)
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "id": "dflt"})
+    assert r.status_code == 201, r.text
+    spec = next(CollectionSpec.model_validate(d) for d in json.loads(f.read_text()))
+    assert spec.chunk_size == 512
+    assert spec.chunk_params == {"size_cap": "tokens", "cap_split": "greedy"}

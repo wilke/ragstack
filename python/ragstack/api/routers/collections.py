@@ -724,11 +724,18 @@ async def create_collection(
             # set explicitly; the unconfigured default falls back instead.
             log.error("collection create: %s", e)
             raise HTTPException(503, e.client_detail) from None
-        chunk = _normalise_chunk(ChunkConfig(
+        default_chunk = ChunkConfig(
             method=default_method,
             size=settings.chunk_size,
             overlap=settings.chunk_overlap,
-        ))
+        )
+        if default_method in SEMANTIC_METHODS:
+            # The default spec gets the size-cap marker too, so its size must be a
+            # cap this deployment can honour — refuse here (400), not at every
+            # later ingest. Only the cap check: the other defaults were never
+            # validated here and are not re-judged by this change.
+            _validate_semantic_cap(default_chunk)
+        chunk = _normalise_chunk(default_chunk)
     if chunk.method in SEMANTIC_METHODS and chunk.overlap:
         # Semantic chunks do not overlap (only the oversized-document fixed_token
         # fallback uses it). Not refused: existing clients send 64 by habit.
