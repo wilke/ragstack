@@ -102,6 +102,7 @@ from ragstack.ingestion.chunkers import (
     SIZE_CAP_TOKENS,
     SIZE_CAPS,
     default_min_piece,
+    semantic_ceiling,
 )
 from ragstack.ingestion.tokenization import DEFAULT_TOKEN_RESERVE, TokenCounterUnavailable
 from ragstack.jobstore import KIND_GRAPH, JobStore
@@ -554,6 +555,29 @@ def _with_tolerance_defaults(params: dict, size: int) -> dict:
     return out
 
 
+def _announce_ceiling_clamp(params: dict, size: int) -> None:
+    """Log once, at create, when a recorded ``size_tolerance`` (#831) asks for a
+    ceiling above the per-chunk budget that ``CHUNK_MAX_TOKENS`` names: the
+    ceiling applied at ingest is clamped to that budget, so the recorded
+    tolerance is larger than the effective one. Not refused — the clamp is part
+    of the rule (the ceiling is never above the window). Same pattern as the
+    default-size clamp log (:func:`_default_semantic_size`). Silent when the
+    window is known only at ingest."""
+    tol = params.get(SIZE_TOLERANCE_PARAM)
+    if tol is None or settings.chunk_max_tokens is None:
+        return
+    budget = max(1, settings.chunk_max_tokens - DEFAULT_TOKEN_RESERVE)
+    wanted = semantic_ceiling(size, float(tol), None)
+    if wanted > budget:
+        log.info(
+            "collection create: size %d with size_tolerance %s asks for a ceiling of "
+            "%d tokens, above the per-chunk budget %d (CHUNK_MAX_TOKENS=%d); the "
+            "applied ceiling will be clamped to %d (effective tolerance below the "
+            "recorded one)",
+            size, tol, wanted, budget, settings.chunk_max_tokens, budget,
+        )
+
+
 def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
     """Drop ``size_unit`` when it equals the default (``chars``); on a semantic
     method, record the size cap and its default size (see the branch below).
@@ -580,6 +604,7 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
         size = chunk.size if chunk.size is not None else _default_semantic_size(announce=True)
         # Marker, plus the #831 tolerance keys recorded concretely when asked for.
         params = _with_tolerance_defaults(params, size)
+        _announce_ceiling_clamp(params, size)
         params.setdefault(CAP_SPLIT_PARAM, DEFAULT_CAP_SPLIT)
         params.setdefault(BREAKPOINT_CAP_PARAM, DEFAULT_BREAKPOINT_CAP)
         return chunk.model_copy(update={"params": params, "size": size})

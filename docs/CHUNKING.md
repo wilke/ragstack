@@ -324,6 +324,16 @@ the document. A cut falls inside a sentence only when that sentence alone is
 over the ceiling. A single-sentence document follows the same rule; the
 oversized-document fallback (`fixed_token`) is unchanged.
 
+**Tolerance 0 is its own setting, not a synonym for strict.** With
+`size_tolerance` 0 (and `min_piece` 0) the ceiling equals *size*, and for
+`greedy` and `balanced`, or any block with no sentence over *size*, the chunks
+are the strict ones. Under `topic` with a sentence over *size*, they can
+differ: the tolerant path isolates that sentence before the topic split, where
+the strict path reaches it by recursion. For example, at *size* 20, sentences
+of 6 | 6 | 60 tokens with a strong boundary after the first give
+5 + 5 + 20 + 20 + 19 strict and 10 + 20 + 20 + 19 at tolerance 0. Treat it as
+its own arm in an evaluation.
+
 **Recording.** The API records both keys as concrete numbers when a request
 sends either one (the other takes its default; a `null` counts as not sent).
 `size_tolerance` is stored as a float, so `0` and `0.0` give the same
@@ -332,7 +342,13 @@ without `size_tolerance` is chunked exactly as under the strict cap**, which
 includes every collection created before #831. The ceiling depends on the
 window, which may be known only at ingest, so it is not part of the spec; the
 shard receipt (`chunking.ceiling`) and the `[chunker] … ceiling=…` stderr line
-of `ingest_shard.py` record the applied value. The keys are read by the same
+of `ingest_shard.py` record the applied value. The in-process (non-GoWe)
+ingest path writes no receipt, so there the applied ceiling is derivable
+(*size*, `size_tolerance` and the model window) but not recorded. When
+`CHUNK_MAX_TOKENS` names the window at create and the asked-for ceiling is
+above the per-chunk budget, the create logs one INFO line saying the ceiling
+will be clamped to the budget; the recorded tolerance is then larger than the
+effective one. The keys are read by the same
 `semantic_cap_from_params` as the cap, on the API, in `ingest_shard.py` and in
 `ingest_jsonl.py` (`--semantic-size-tolerance` and `--semantic-min-piece`
 without a registry entry).

@@ -571,6 +571,28 @@ async def test_bad_size_tolerance_is_a_400(client, _admin, monkeypatch, tmp_path
     assert needle in r.json()["detail"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("size", "tol", "logged"), [
+    (512, 0.25, True),    # asks 640 > budget 512: clamp announced once
+    (400, 0.25, False),   # asks 500 <= 512: nothing to say
+    (512, None, False),   # strict: no tolerance, no line
+])
+async def test_ceiling_clamp_is_logged_once_at_create(client, _admin, monkeypatch, tmp_path,
+                                                      caplog, size, tol, logged):
+    monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 528)  # budget 512
+    params = {} if tol is None else {"size_tolerance": tol}
+    with caplog.at_level("INFO", logger="ragstack.api.routers.collections"):
+        r, spec = await _create_semantic(client, monkeypatch, tmp_path, "clamp", {
+            "method": "semantic", "size": size, "params": params})
+    assert r.status_code == 201, r.text
+    lines = [m.getMessage() for m in caplog.records
+             if "applied ceiling will be clamped" in m.getMessage()]
+    assert len(lines) == (1 if logged else 0), lines
+    if logged:
+        assert "ceiling of 640" in lines[0] and "clamped to 512" in lines[0]
+        assert spec.chunk_params["size_tolerance"] == 0.25  # recorded as asked
+
+
 def test_tolerant_entry_builds_tolerant_and_strict_entry_strict(monkeypatch):
     monkeypatch.setattr("ragstack.config.settings.chunk_max_tokens", 4096)
     monkeypatch.setattr("ragstack.config.settings.chunk_token_counter", "estimate")
