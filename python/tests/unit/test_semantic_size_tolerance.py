@@ -127,7 +127,8 @@ def test_every_chunk_fits_the_ceiling_and_the_window_and_tiles(
 
 @pytest.mark.parametrize("method", SEMANTIC)
 @pytest.mark.parametrize("cap_split", CAP_SPLITS)
-def test_no_cut_inside_a_sentence_that_fits_the_ceiling(method, cap_split):
+@pytest.mark.parametrize("min_piece", [None, 0])  # 0: no merge to mask a bad cut
+def test_no_cut_inside_a_sentence_that_fits_the_ceiling(method, cap_split, min_piece):
     """A 55-token sentence (over the target 48, under the ceiling 60) is never
     cut; a 70-token one (over the ceiling) is the only place a cut may fall
     inside a sentence."""
@@ -137,7 +138,7 @@ def test_no_cut_inside_a_sentence_that_fits_the_ceiling(method, cap_split):
                     + [f"t{i} a b c." for i in range(6)] + [over]
                     + [f"u{i} a b c." for i in range(6)])
     doc = Document(id="d", content=text, metadata={})
-    chunks = _make(method, cap_split).chunk(doc)
+    chunks = _make(method, cap_split, min_piece=min_piece).chunk(doc)
     assert _tiles(doc, chunks) and max(_counts(chunks)) <= 60
     edges = {e for _s, e in _tiling_spans(text)} | {0}
     over_s = text.index(over)
@@ -162,6 +163,16 @@ def test_a_block_between_target_and_ceiling_stays_whole(method, cap_split):
                           token_counter=COUNTER, size_cap="tokens", cap_split=cap_split)
     assert len(strict.chunk(doc)) == 2  # control: the strict cap splits it
     assert _counts(_make(method, cap_split).chunk(doc)) == [52]
+
+
+@pytest.mark.parametrize("method", SEMANTIC)
+@pytest.mark.parametrize("cap_split", CAP_SPLITS)
+def test_a_block_with_a_long_sentence_that_fits_the_ceiling_stays_whole(method, cap_split):
+    """8 + 50 tokens = 58 <= ceiling 60, though the second sentence alone is over
+    the target 48: one chunk, without relying on the merge (min_piece 0)."""
+    long = "Long " + " ".join(f"l{j}" for j in range(49)) + "."
+    doc = Document(id="w", content=" ".join(["s0 a b c.", "s1 a b c.", long]), metadata={})
+    assert _counts(_make(method, cap_split, min_piece=0).chunk(doc)) == [58]
 
 
 @pytest.mark.parametrize("method", SEMANTIC)
@@ -298,6 +309,15 @@ def test_merge_unit_weaker_side_then_fallback_then_stay():
     # Neither side fits a ceiling of 44: unchanged.
     assert _merge_small_pieces(text, ranges, min_piece=10, ceiling=44, token_counter=count,
                                strength=weak_left) == ranges
+
+
+def test_merge_unit_re_examines_a_merged_piece_that_is_still_small():
+    text = "v" * 30
+    count = SimpleNamespace(count=lambda s: len(s))
+    # (0,3) joins (3,6) -> 6 tokens, still under 8 -> it must go on to (6,30).
+    assert _merge_small_pieces(text, [(0, 3), (3, 6), (6, 30)], min_piece=8, ceiling=40,
+                               token_counter=count, strength=_strength({3: 0.1, 6: 0.5})) == [
+        (0, 30)]
 
 
 def test_merge_unit_coalesces_a_run_of_small_pieces():
