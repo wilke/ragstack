@@ -122,25 +122,25 @@ curl -s -X POST $BASE/v1/ingest/upload -H "$AUTH" \
 `.txt` happens to work without this because `curl` guesses `text/plain`; `.md`
 does not.
 
-**Whether Markdown keeps its markup depends on how it is ingested.** On a local
-backend, `.md` is read by the plain text loader and the markup survives verbatim
-(`ingestion/loaders.py:433`). On a GoWe deployment (`INGEST_BACKEND=gowe`, which
-is what the hackathon tenant runs) the file goes through the PDF extractor
-instead, and **what happens there depends on the extractor's PyMuPDF version**:
-on the deployed worker it opens the file and stores the **rendered** text —
-headings, `**bold**` and `-` bullets gone from what is indexed — while an older
-PyMuPDF refuses to open it at all and the item fails.
+**Markdown and plain text are stored verbatim — on a GoWe deployment, only
+once its worker image carries #828.** On a local backend, `.md` and `.txt` are
+read by the plain text loader and the file text survives byte for byte: markup,
+link targets, inline HTML and code. On a GoWe deployment (`INGEST_BACKEND=gowe`,
+which is what the hackathon tenant runs) the worker's extract step dispatches
+by suffix through the same loader map since #828, so it stores the same text.
 
-Both were observed: rendered text retrieved from the hackathon tenant, and a
-`could not open PDF` refusal reproduced locally on PyMuPDF 1.27. So do not
-assume either outcome for a GoWe deployment you have not tried. It matters only
-if you meant to match on the markup; for retrieval either is fine.
+Worker images built before #828 (up to `ragstack-tools-v1.6.16-b1`) send every
+file through the PDF extractor instead, and PyMuPDF 2 *renders* Markdown: on a
+336-page documentation collection that dropped about 10% of the tokens,
+including most link targets, inline HTML and some code — often exactly what a
+documentation question asks for. (PyMuPDF 1.27 refuses `.md` and the item
+fails.) On such a deployment, do not build a Markdown collection through GoWe.
 
 PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
 `UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
 `%PDF`, is `415`. ≤ 50 MB each (`413`), ≤ 50 files and ≤ 500 MB per request.
 An `.xml` file is accepted but has no loader yet: its *item* fails with
-`no loader for .xml`.
+`no loader for .xml` (on a GoWe deployment, since #828).
 
 Always pass `-F collection=…` as above. **If you omit it**, the upload goes to
 the first collection *you can write* — and if you own none, that is a `403`

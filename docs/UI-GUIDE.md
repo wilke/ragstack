@@ -97,9 +97,11 @@ completed, 0 failed, 3 pending. This is what you watch; it is not instant.*
   degraded path. Two things to know if you go that route:
   **you must declare the file's content type** (see
   [cookbook-users.md](cookbook-users.md) — `curl` guesses it from the extension
-  and guesses wrong for `.md`), and **Markdown arrives rendered, not verbatim**:
-  headings, `**bold**` and `-` bullets become plain text, so do not expect to
-  match on the markup later.
+  and guesses wrong for `.md`), and on worker images built before #828
+  **Markdown arrives rendered, not verbatim**: headings, `**bold**`, `-`
+  bullets, and also most link targets, inline HTML and some code are lost.
+  Once the deployment's worker image carries #828, Markdown and plain text are
+  stored verbatim, as on a local backend.
   **XML is the exception:** it passes the upload check and then fails during
   processing with "no loader for .xml". The open-access corpora were built from
   JATS offline through a separate workflow, not through this endpoint.
