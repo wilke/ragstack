@@ -146,7 +146,8 @@ export const SEMANTIC_PARAMS: readonly SemanticParamSpec[] = [
 ];
 
 // How a semantic block over the cap is split (chunk.params.cap_split, #829).
-// Mirrors CAP_SPLITS in python/ragstack/api/routers/collections.py.
+// Mirrors CAP_SPLITS in python/ragstack/ingestion/chunkers.py (parity test:
+// python/tests/api/test_chunk_choice.py).
 export const CAP_SPLITS = ["greedy", "balanced", "topic"] as const;
 export type CapSplit = (typeof CAP_SPLITS)[number];
 export const DEFAULT_CAP_SPLIT: CapSplit = "greedy";
@@ -156,6 +157,9 @@ export const CAP_SPLIT_HELP: Record<CapSplit, string> = {
   balanced: "Cut an oversized block into evenly sized pieces.",
   topic: "Cut an oversized block at its own largest topic shifts.",
 };
+
+// Far above any embedding window; stops a typo or an unsafe integer reaching the server.
+export const MAX_CAP_TOKENS = 1_000_000;
 
 export function isCapSplit(v: string): v is CapSplit {
   return (CAP_SPLITS as readonly string[]).includes(v);
@@ -225,6 +229,8 @@ export function validateChunkForm(form: ChunkForm): string | null {
       const v = parseIntStrict(cap);
       if (v === null) return "Max chunk size must be a whole number of tokens.";
       if (v < 1) return "Max chunk size must be at least 1 token.";
+      if (!Number.isSafeInteger(v) || v > MAX_CAP_TOKENS)
+        return `Max chunk size cannot exceed ${MAX_CAP_TOKENS.toLocaleString("en-US")} tokens.`;
     }
     if (!isCapSplit(form.capSplit)) return `Unknown split method "${form.capSplit}".`;
     for (const spec of SEMANTIC_PARAMS) {

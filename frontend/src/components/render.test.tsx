@@ -604,7 +604,7 @@ describe("static render", () => {
     );
     expect(html).toContain("Max chunk size (tokens)");
     expect(html).toContain("Split oversized blocks");
-    expect(html).toContain("refused by the server");
+    expect(html).toContain("is refused");
     expect(html).not.toContain("breakpoint_cap");
     const fixed = render(
       createElement(ChunkStrategyPicker, { idPrefix: "t", form: DEFAULT_CHUNK_FORM, onChange: () => {} }),

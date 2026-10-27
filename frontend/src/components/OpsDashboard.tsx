@@ -713,7 +713,7 @@ function Field({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
 // The full build spec of one collection: what it was built with, and whether
 // that is a verified record (an ingest wrote it) or a declaration (materialized
 // from the registry spec). Everything here is rendered as text.
-function CollectionDetail({ c }: { c: CollectionInfo }) {
+export function CollectionDetail({ c }: { c: CollectionInfo }) {
   const p = c.provenance ?? null;
   const params = p?.chunk_params ?? {};
   const paramText = Object.entries(params)

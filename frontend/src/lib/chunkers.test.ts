@@ -130,6 +130,11 @@ describe("semantic size cap + split (#829)", () => {
     expect(validateChunkForm(form({ method: "semantic", capSize: "0" }))).toMatch(/at least 1/i);
     expect(validateChunkForm(form({ method: "semantic", capSize: "-3" }))).toMatch(/at least 1/i);
     expect(validateChunkForm(form({ method: "semantic", capSize: "1.5" }))).toMatch(/whole number/i);
+    expect(validateChunkForm(form({ method: "semantic", capSize: "1000000" }))).toBeNull();
+    expect(validateChunkForm(form({ method: "semantic", capSize: "1000001" }))).toMatch(/cannot exceed/i);
+    expect(
+      validateChunkForm(form({ method: "semantic", capSize: "99999999999999999999" })),
+    ).toMatch(/cannot exceed/i);
     expect(
       validateChunkForm(form({ method: "semantic", capSplit: "bogus" as ChunkForm["capSplit"] })),
     ).toMatch(/split/i);

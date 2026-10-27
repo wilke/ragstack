@@ -2,7 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { OpsDashboard, PurgeConfirm } from "../OpsDashboard";
+import { CollectionDetail, OpsDashboard, PurgeConfirm } from "../OpsDashboard";
+import { LaneFacts } from "../CompareView";
+import type { CollectionInfo } from "../../api/client";
 
 // Ops carries the most operator jargon, so every section heading owns a help
 // affordance and each one announces WHICH section it explains. Static markup
@@ -72,5 +74,45 @@ describe("Ops help", () => {
     );
     expect(purge).not.toContain("aria-label=\"About");
     expect(purge).toContain("irreversible");
+  });
+});
+
+// Semantic size cap (#829) in the three views that name a collection's chunking.
+const base = { model: "test/sfr", dim: 8, default: false };
+const CAPPED: CollectionInfo = {
+  ...base, id: "capped", label: "Capped", chunk_method: "semantic", chunk_size: 512,
+  provenance: { chunk_method: "semantic", chunk_size: 512, chunk_params: { size_cap: "tokens", cap_split: "topic" } },
+};
+const LEGACY: CollectionInfo = {
+  ...base, id: "legacy", label: "Legacy", chunk_method: "semantic", chunk_size: 512,
+  provenance: { chunk_method: "semantic", chunk_size: 512, chunk_overlap: 64, chunk_params: {} },
+};
+const BARE: CollectionInfo = { ...base, id: "bare", label: "Bare", chunk_method: "semantic", chunk_size: 512 };
+
+describe("semantic size cap display", () => {
+  it("Ops table row", () => {
+    const html = render(createElement(OpsDashboard, { apiKey: "" }), (qc) =>
+      qc.setQueryData(["collections-ops", ""], { collections: [CAPPED, LEGACY, BARE] }),
+    );
+    expect(html).toContain("semantic · cap 512 tok · topic split");
+    expect(html).toContain("semantic · uncapped (legacy)");
+    expect(html).toContain("semantic/512"); // no provenance: nothing claimed, registry size shown
+  });
+
+  it("Ops detail 'size cap' row", () => {
+    const capped = render(createElement(CollectionDetail, { c: CAPPED }));
+    expect(capped).toContain("size cap");
+    expect(capped).toContain("cap 512 tok · topic split");
+    expect(render(createElement(CollectionDetail, { c: LEGACY }))).toContain("uncapped (legacy)");
+    expect(render(createElement(CollectionDetail, { c: BARE }))).not.toContain("size cap");
+  });
+
+  it("Compare lane header", () => {
+    expect(render(createElement(LaneFacts, { c: CAPPED }))).toContain("semantic · cap 512 tok · topic split");
+    expect(render(createElement(LaneFacts, { c: LEGACY }))).toContain("semantic · uncapped (legacy)");
+    const bare = render(createElement(LaneFacts, { c: BARE }));
+    expect(bare).toContain("semantic");
+    expect(bare).not.toContain("cap");
+    expect(bare).not.toContain("legacy");
   });
 });

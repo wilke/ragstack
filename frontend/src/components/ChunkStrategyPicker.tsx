@@ -160,7 +160,7 @@ export function ChunkStrategyPicker({
               />
               <p className="mt-1 text-[11px] leading-snug text-gray-400">
                 An upper bound on every chunk, counted in the embedding model's own tokens. Blank
-                uses the server's default. A size above the model's budget is refused by the server.
+                uses the server's default. A size above the embedding model's limit is refused: when the server already knows that limit, here when you create the collection, otherwise at the first upload.
               </p>
             </div>
             <div>
