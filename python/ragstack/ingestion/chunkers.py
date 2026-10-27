@@ -116,6 +116,28 @@ SIZE_CAPS: tuple[str, ...] = (SIZE_CAP_TOKENS,)
 CAP_SPLITS: tuple[str, ...] = ("greedy", "balanced", "topic")
 DEFAULT_CAP_SPLIT = "greedy"
 
+#: How the BREAKPOINT-EMBEDDING inputs (sentence buffers) of a size-capped
+#: semantic collection are bounded (``chunk_params["breakpoint_cap"]``). Only
+#: meaningful with a recorded ``size_cap``.
+#:
+#: ``size``   — DEFAULT. Bound each buffer at ``chunk_size`` tokens as well (its
+#:              first ``chunk_size`` tokens are embedded). This is exactly what the
+#:              confirmatory study's SEM512 arm ran — ``make_chunker("semantic",
+#:              max_tokens=512)`` bounded breakpoint inputs and chunks with one
+#:              number — so a rebuild with ``chunk_size=512`` reproduces it.
+#: ``window`` — bound buffers only at the model window (or a smaller breakpoint
+#:              model's window), as an uncapped collection does. Breakpoints are
+#:              then those of an uncapped collection; only the emitted chunks are
+#:              capped.
+BREAKPOINT_CAP_SIZE = "size"
+BREAKPOINT_CAP_WINDOW = "window"
+BREAKPOINT_CAPS: tuple[str, ...] = (BREAKPOINT_CAP_SIZE, BREAKPOINT_CAP_WINDOW)
+DEFAULT_BREAKPOINT_CAP = BREAKPOINT_CAP_SIZE
+
+#: Version of :func:`semantic_chunking_provenance`'s record (the shard receipt's
+#: ``chunking`` object). Bump when a key's meaning changes.
+CHUNKING_PROVENANCE_VERSION = 1
+
 
 def _validate_size_unit(
     size_unit: str, chunk_size: int, token_counter: TokenCounter | None
@@ -1636,6 +1658,7 @@ class SemanticChunker:
         chunk_overlap: int = 64,
         size_cap_tokens: int | None = None,
         cap_split: str = DEFAULT_CAP_SPLIT,
+        breakpoint_cap_tokens: int | None = None,
     ) -> None:
         if cap_split not in CAP_SPLITS:
             raise ValueError(
@@ -1648,6 +1671,14 @@ class SemanticChunker:
                 f"cap_split={cap_split!r} needs a size cap (size_cap='tokens'): "
                 f"without one, semantic blocks are split only at the model window, "
                 f"greedily, as before"
+            )
+        if breakpoint_cap_tokens is not None and (
+            size_cap_tokens is None or breakpoint_cap_tokens < 1
+        ):
+            # Only a recorded size cap may move breakpoints (marker discipline).
+            raise ValueError(
+                f"breakpoint_cap_tokens={breakpoint_cap_tokens} needs a size cap "
+                f"(size_cap='tokens') and must be >= 1"
             )
         if size_cap_tokens is not None:
             if token_counter is None:
@@ -1670,6 +1701,9 @@ class SemanticChunker:
         #: (``chunk_size``), or ``None`` (legacy: only ``max_tokens`` caps).
         self.size_cap_tokens = size_cap_tokens
         self.cap_split = cap_split
+        #: The extra bound on BREAKPOINT inputs a recorded ``breakpoint_cap='size'``
+        #: sets (``chunk_size``), or ``None`` (bounded by the window only).
+        self.breakpoint_cap_tokens = breakpoint_cap_tokens
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
         self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
@@ -1861,14 +1895,28 @@ class SemanticChunker:
             stack.append((a, cut))
         return out
 
+    @property
+    def breakpoint_budget(self) -> int | None:
+        """The token budget breakpoint inputs are bounded at: a smaller breakpoint
+        model's window, else ``max_tokens``; lowered to ``breakpoint_cap_tokens``
+        when a recorded ``breakpoint_cap='size'`` sets it."""
+        budget = self.breakpoint_max_tokens or self.max_tokens
+        if self.breakpoint_cap_tokens is not None:
+            budget = (self.breakpoint_cap_tokens if budget is None
+                      else min(budget, self.breakpoint_cap_tokens))
+        return budget
+
     def _cap_tokens(self, s: str) -> str:
         """Bound ``s`` to the BREAKPOINT embedder's token budget (first lossless
         piece) so a long buffer/sentence can't exceed its context window (HTTP 400).
         Uses breakpoint_max_tokens when set (a smaller breakpoint model), else
         max_tokens, and the breakpoint model's own tokenizer when given (so a
         tokenizer mismatch can't undercount). Only the similarity input is bounded —
-        never the emitted chunk text. No-op without a budget/counter (legacy)."""
-        budget = self.breakpoint_max_tokens or self.max_tokens
+        never the emitted chunk text. No-op without a budget/counter (legacy).
+        A recorded ``breakpoint_cap='size'`` lowers the budget to ``chunk_size``
+        (:attr:`breakpoint_cap_tokens`), reproducing ``make_chunker(max_tokens=
+        chunk_size)``."""
+        budget = self.breakpoint_budget
         counter = self.breakpoint_token_counter or self.token_counter
         if budget is not None and counter is not None:
             if counter.count(s) > budget:
@@ -1994,6 +2042,35 @@ class SemanticChunker:
         return merged
 
 
+def semantic_chunking_provenance(chunker: object) -> dict | None:
+    """What a semantic chunker APPLIES, for the shard receipt's ``chunking`` key.
+
+    ``None`` for any other chunker (the key is then omitted, so their receipts are
+    unchanged). For a semantic one: the method, whether a size cap is in force
+    (``size_cap`` ``None`` = the legacy window-only chunking), the cap in tokens
+    (``chunk_size``), ``cap_split``, ``breakpoint_cap`` and the resolved budgets —
+    the window budget (``window_budget``, i.e. ``max_tokens``) and the budget
+    breakpoint inputs were actually bounded at (``breakpoint_input_budget``).
+    ``v`` is :data:`CHUNKING_PROVENANCE_VERSION`.
+    """
+    if not isinstance(chunker, SemanticChunker):
+        return None
+    capped = chunker.size_cap_tokens is not None
+    return {
+        "v": CHUNKING_PROVENANCE_VERSION,
+        "method": "semantic_pooled" if chunker.pool_sentences else "semantic",
+        "size_cap": SIZE_CAP_TOKENS if capped else None,
+        "chunk_size": chunker.size_cap_tokens,
+        "cap_split": chunker.cap_split,
+        "breakpoint_cap": (
+            (BREAKPOINT_CAP_SIZE if chunker.breakpoint_cap_tokens is not None
+             else BREAKPOINT_CAP_WINDOW) if capped else None
+        ),
+        "window_budget": chunker.max_tokens,
+        "breakpoint_input_budget": chunker.breakpoint_budget,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
@@ -2019,6 +2096,7 @@ def make_chunker(
     size_unit: str = DEFAULT_SIZE_UNIT,
     size_cap: str | None = None,
     cap_split: str = DEFAULT_CAP_SPLIT,
+    breakpoint_cap: str | None = None,
 ):
     """Build the chunker named by ``method``.
 
@@ -2058,19 +2136,29 @@ def make_chunker(
     ``max_tokens``, never clamped. ``None`` (default): the historical behaviour,
     ``chunk_size`` feeds only the oversized-doc fallback. ``cap_split`` (semantic,
     with ``size_cap`` only): how an over-cap block is split, see
-    :data:`CAP_SPLITS`.
+    :data:`CAP_SPLITS`. ``breakpoint_cap`` (semantic, with ``size_cap`` only):
+    how breakpoint inputs are bounded, see :data:`BREAKPOINT_CAPS`; ``None``
+    under a cap means :data:`DEFAULT_BREAKPOINT_CAP` (``"size"``).
     """
     if cap_split not in CAP_SPLITS:
         raise ValueError(f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}")
     if size_cap is not None and size_cap not in SIZE_CAPS:
         raise ValueError(f"unknown size_cap {size_cap!r}; valid: {', '.join(SIZE_CAPS)}")
+    if breakpoint_cap is not None and breakpoint_cap not in BREAKPOINT_CAPS:
+        raise ValueError(
+            f"unknown breakpoint_cap {breakpoint_cap!r}; valid: {', '.join(BREAKPOINT_CAPS)}"
+        )
     if method not in ("semantic", "semantic_pooled") and (
-        size_cap is not None or cap_split != DEFAULT_CAP_SPLIT
+        size_cap is not None or cap_split != DEFAULT_CAP_SPLIT or breakpoint_cap is not None
     ):
         # Same rule as size_unit: a knob this method ignores must not look applied.
         raise ValueError(
-            f"size_cap/cap_split apply only to the semantic methods, not "
-            f"chunk_method={method!r}"
+            f"size_cap/cap_split/breakpoint_cap apply only to the semantic methods, "
+            f"not chunk_method={method!r}"
+        )
+    if size_cap is None and breakpoint_cap is not None:
+        raise ValueError(
+            f"breakpoint_cap={breakpoint_cap!r} needs a size cap (size_cap='tokens')"
         )
     if size_unit not in SIZE_UNITS:
         # Checked for every method, not only the two that read it: a typo must not
@@ -2144,5 +2232,11 @@ def make_chunker(
             chunk_overlap=chunk_overlap,
             size_cap_tokens=chunk_size if size_cap == SIZE_CAP_TOKENS else None,
             cap_split=cap_split,
+            breakpoint_cap_tokens=(
+                chunk_size
+                if size_cap == SIZE_CAP_TOKENS
+                and (breakpoint_cap or DEFAULT_BREAKPOINT_CAP) == BREAKPOINT_CAP_SIZE
+                else None
+            ),
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")

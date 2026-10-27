@@ -79,6 +79,7 @@ from ragstack.ingestion.chunker_config import (
     semantic_cap_from_params,
 )
 from ragstack.ingestion.chunkers import (
+    BREAKPOINT_CAPS,
     CAP_SPLITS,
     DEFAULT_CAP_SPLIT,
     SIZE_CAPS,
@@ -1200,29 +1201,36 @@ async def run(
 
 
 def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str]:
-    """The semantic size cap (``size_cap`` / ``cap_split``) this run chunks with.
+    """The semantic size cap (``size_cap`` / ``cap_split`` / ``breakpoint_cap``)
+    this run chunks with.
 
     Writing into a registry collection, the ENTRY is the source (its
     ``chunk_params``, read by the same ``semantic_cap_from_params`` the API and
     ``ingest_shard.py`` use), and a ``--semantic-size-cap`` /
-    ``--semantic-cap-split`` that contradicts it is refused with exit 2 — the cap
-    is collection identity, like ``size_unit``. With no entry the flags decide.
-    Neither set: ``{}``, the historical window-only chunking. A flag on a
-    non-semantic method is refused rather than ignored.
+    ``--semantic-cap-split`` / ``--semantic-breakpoint-cap`` that contradicts it
+    is refused with exit 2 — the cap is collection identity, like ``size_unit``.
+    With no entry the flags decide (an unset split/breakpoint flag under a cap
+    takes the same defaults the API records: ``greedy`` / ``size``). Neither set:
+    ``{}``, the historical window-only chunking. A flag on a non-semantic method
+    is refused rather than ignored.
     """
-    cap_flag = getattr(args, "semantic_size_cap", None)
-    split_flag = getattr(args, "semantic_cap_split", None)
+    flags = {
+        "size_cap": getattr(args, "semantic_size_cap", None),
+        "cap_split": getattr(args, "semantic_cap_split", None),
+        "breakpoint_cap": getattr(args, "semantic_breakpoint_cap", None),
+    }
+    given = {k: v for k, v in flags.items() if v}
     if not needs_embed_fn(args.chunk_method):
-        if cap_flag or split_flag:
-            print("error: --semantic-size-cap/--semantic-cap-split apply only to "
-                  "the semantic chunk methods", file=sys.stderr)
+        if given:
+            print("error: --semantic-size-cap/--semantic-cap-split/"
+                  "--semantic-breakpoint-cap apply only to the semantic chunk methods",
+                  file=sys.stderr)
             raise SystemExit(2)
         return {}
     try:
         if target is None:
-            flags = {k: v for k, v in (("size_cap", cap_flag), ("cap_split", split_flag)) if v}
             return semantic_cap_from_params(
-                args.chunk_method, flags, recorded_size=args.chunk_size
+                args.chunk_method, given, recorded_size=args.chunk_size
             )
         entry = semantic_cap_from_params(
             args.chunk_method, getattr(target.spec, "chunk_params", None),
@@ -1231,12 +1239,14 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, str
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         raise SystemExit(2) from None
+    # What the entry means for each key ({} = uncapped: no cap, greedy, no bound).
     want = {
         "size_cap": entry.get("size_cap"),
         "cap_split": entry.get("cap_split", DEFAULT_CAP_SPLIT),
+        "breakpoint_cap": entry.get("breakpoint_cap"),
     }
-    for key, flag in (("size_cap", cap_flag), ("cap_split", split_flag)):
-        if flag and flag != want[key]:
+    for key, flag in given.items():
+        if flag != want[key]:
             print(
                 f"error: refusing to ingest into collection {target.collection_id!r}: "
                 f"--semantic-{key.replace('_', '-')} {flag} contradicts the registry "
@@ -1423,6 +1433,11 @@ def main() -> None:
     p.add_argument("--semantic-cap-split", choices=CAP_SPLITS, default=None,
                    help="semantic, with --semantic-size-cap: how an over-cap block "
                         "is split — greedy (default), balanced, or topic.")
+    p.add_argument("--semantic-breakpoint-cap", choices=BREAKPOINT_CAPS, default=None,
+                   help="semantic, with --semantic-size-cap: 'size' (default) also "
+                        "bounds the breakpoint-embedding inputs at --chunk-size tokens "
+                        "(the study's SEM arms); 'window' bounds them at the model "
+                        "window only.")
     p.add_argument("--semantic-max-sentences", type=int, default=3000,
                    help="semantic: OVERSIZED-DOC FALLBACK. A doc that splits into more "
                         "than this many sentence spans is chunked with the fixed_token "

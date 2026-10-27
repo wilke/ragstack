@@ -53,7 +53,7 @@ from ragstack.ingestion.chunker_config import (
     needs_embed_fn,
     semantic_cap_from_params,
 )
-from ragstack.ingestion.chunkers import SIZE_UNITS
+from ragstack.ingestion.chunkers import SIZE_UNITS, semantic_chunking_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.loaders import JsonlLoader
@@ -154,7 +154,8 @@ def _size_unit(spec, method: str) -> str:
 
 
 def _semantic_cap(spec, method: str) -> dict:
-    """The semantic size cap (``size_cap`` / ``cap_split``), **from the registry
+    """The semantic size cap (``size_cap`` / ``cap_split`` / ``breakpoint_cap``),
+    **from the registry
     entry** — never a CLI flag, for the same reason as :func:`_semantic_params`.
     Read through :func:`~ragstack.ingestion.chunker_config.semantic_cap_from_params`,
     the function the API's in-process builder uses, so one recorded spec is capped
@@ -181,7 +182,7 @@ def _build_chunker(args, spec=None, embed_fn=None):
     ``requires an embed_fn`` refusal rather than being silently demoted.
     """
     cap = _semantic_cap(spec, args.chunk_method)
-    chunker, _counter, max_tokens = build_chunker(
+    chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
@@ -202,17 +203,16 @@ def _build_chunker(args, spec=None, embed_fn=None):
         **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
         **cap,
     )
-    if needs_embed_fn(args.chunk_method):
-        # One line per shard: which cap this worker actually applied. The receipt
-        # has no free-form chunker-params field, so stderr (kept by GoWe) is the
-        # record; an old image that predates the cap prints no such line.
-        if cap:
-            print(f"[chunker] {args.chunk_method}: size_cap={cap['size_cap']} "
-                  f"chunk_size={args.chunk_size} cap_split={cap['cap_split']} "
-                  f"(window budget {max_tokens})", file=sys.stderr)
-        else:
-            print(f"[chunker] {args.chunk_method}: no size_cap recorded; window-only "
-                  f"cap {max_tokens} tokens, greedy", file=sys.stderr)
+    applied = semantic_chunking_provenance(chunker)
+    if applied is not None:
+        # One line per shard: what this worker actually applied — the same record
+        # the receipt carries under `chunking` (amain). An image that predates the
+        # cap prints no such line and writes no such key.
+        print(f"[chunker] {applied['method']}: size_cap={applied['size_cap']} "
+              f"chunk_size={applied['chunk_size']} cap_split={applied['cap_split']} "
+              f"breakpoint_cap={applied['breakpoint_cap']} "
+              f"breakpoint_input_budget={applied['breakpoint_input_budget']} "
+              f"window_budget={applied['window_budget']}", file=sys.stderr)
     return chunker
 
 
@@ -331,6 +331,9 @@ async def amain(args, target=None) -> int:
     # #754, ADR-0011: what the step DID on this shard (None if off or never
     # applied; a degraded run is recorded with applied_batches: 0).
     receipt.enrichment = pipeline.glossary_provenance()
+    # What the semantic chunker applied (size cap, split, breakpoint bound, the
+    # resolved budgets); None for any other method, so their receipts are unchanged.
+    receipt.chunking = semantic_chunking_provenance(pipeline.chunker)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"

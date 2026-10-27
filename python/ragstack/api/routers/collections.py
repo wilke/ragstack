@@ -79,15 +79,19 @@ from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import (
+    BREAKPOINT_CAP_PARAM,
     CAP_SPLIT_PARAM,
+    SEMANTIC_CAP_PARAMS,
     SIZE_CAP_PARAM,
     parse_unsupported_methods,
     shard_refusal,
 )
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunkers import (
+    BREAKPOINT_CAPS,
     CAP_SPLITS,
     CHUNK_METHODS,
+    DEFAULT_BREAKPOINT_CAP,
     DEFAULT_CAP_SPLIT,
     DEFAULT_SIZE_UNIT,
     SIZE_CAP_TOKENS,
@@ -370,7 +374,7 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
         raise HTTPException(400, str(e)) from None
     params = chunk.params or {}
     if method not in SEMANTIC_METHODS:
-        for key in (SIZE_CAP_PARAM, CAP_SPLIT_PARAM):
+        for key in SEMANTIC_CAP_PARAMS:
             if key in params:
                 raise HTTPException(
                     400,
@@ -416,38 +420,52 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
             )
 
 
+#: Server-default methods whose ``CHUNK_SIZE`` counts CHARACTERS, so it cannot
+#: stand in for a semantic token cap (``sentence``/``words`` count chars unless a
+#: collection records ``size_unit='tokens'``, which a setting cannot).
+_CHAR_SIZED_DEFAULT_METHODS = ("fixed", "sentence", "words")
+
+
+def _default_semantic_size() -> int:
+    """The token cap a NEW semantic collection gets when the request names no size.
+
+    ``settings.chunk_size`` (``CHUNK_SIZE``, code default 512) — the size of the
+    deployment's default method, which is ``fixed_token`` (tokens) unless
+    ``CHUNK_METHOD`` says otherwise, and tokens too when ``CHUNK_METHOD`` is a
+    semantic one. When ``CHUNK_METHOD`` is a character-sized method, that number
+    is characters and is refused as a token cap (400 asking for an explicit
+    size) rather than reinterpreted.
+    """
+    if settings.chunk_method in _CHAR_SIZED_DEFAULT_METHODS:
+        raise HTTPException(
+            400,
+            f"a semantic collection needs a chunk size (a token cap), and this "
+            f"deployment's default CHUNK_SIZE={settings.chunk_size} counts characters "
+            f"(CHUNK_METHOD={settings.chunk_method!r}); send chunk.size in tokens",
+        )
+    return settings.chunk_size
+
+
 def _validate_semantic_cap(chunk: ChunkConfig) -> None:
     """400 for a semantic chunk config whose size cap cannot be honoured.
 
-    A NEW semantic collection's ``size``, when given, is a token cap
-    (``_normalise_chunk`` records ``size_cap='tokens'``), so it has to be a real
-    bound: >= 1, and — when
-    ``CHUNK_MAX_TOKENS`` names the window without a network call — no larger than
-    the per-chunk budget (window minus the specials reserve). Otherwise the
-    window is the embedding endpoint's, known only at ingest, where the same
-    refusal (``make_chunker``) answers 400 naming both numbers.
+    A NEW semantic collection's size is a token cap (``_normalise_chunk``
+    records ``size_cap='tokens'``); an omitted size is the deployment default
+    (:func:`_default_semantic_size`). Either way it has to be a real bound: >= 1,
+    and — when ``CHUNK_MAX_TOKENS`` names the window without a network call — no
+    larger than the per-chunk budget (window minus the specials reserve).
+    Otherwise the window is the embedding endpoint's, known only at ingest, where
+    the same refusal (``make_chunker``) answers 400 naming both numbers.
     """
     params = chunk.params or {}
-    cap = params.get(SIZE_CAP_PARAM)
-    if cap is not None and cap not in SIZE_CAPS:
-        raise HTTPException(
-            400, f"chunk param {SIZE_CAP_PARAM!r} must be one of {', '.join(SIZE_CAPS)}; got {cap!r}"
-        )
-    split = params.get(CAP_SPLIT_PARAM)
-    if split is not None and split not in CAP_SPLITS:
-        raise HTTPException(
-            400,
-            f"chunk param {CAP_SPLIT_PARAM!r} must be one of {', '.join(CAP_SPLITS)}; got {split!r}",
-        )
-    size = chunk.size
-    if size is None:
-        if cap is not None or split is not None:
+    for key, allowed in ((SIZE_CAP_PARAM, SIZE_CAPS), (CAP_SPLIT_PARAM, CAP_SPLITS),
+                         (BREAKPOINT_CAP_PARAM, BREAKPOINT_CAPS)):
+        value = params.get(key)
+        if value is not None and value not in allowed:
             raise HTTPException(
-                400,
-                f"chunk params {SIZE_CAP_PARAM!r}/{CAP_SPLIT_PARAM!r} need a chunk size: "
-                f"the size IS the token cap",
+                400, f"chunk param {key!r} must be one of {', '.join(allowed)}; got {value!r}"
             )
-        return  # no size, no cap: the model window is the only bound, as before
+    size = chunk.size if chunk.size is not None else _default_semantic_size()
     if size < 1:
         raise HTTPException(
             400, f"chunk size for {chunk.method!r} is a token cap and must be at least 1; got {size}"
@@ -466,7 +484,7 @@ def _validate_semantic_cap(chunk: ChunkConfig) -> None:
 
 def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
     """Drop ``size_unit`` when it equals the default (``chars``); on a semantic
-    method with a size, record the size-cap marker (see the branch below).
+    method, record the size cap and its default size (see the branch below).
 
     ``chunk_params`` feeds ``chunk_descriptor()`` -> ``spec_hash`` -> the physical
     name, so ``{}`` and ``{"size_unit": "chars"}`` would content-address the SAME
@@ -479,18 +497,19 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
     if params.get("size_unit") == DEFAULT_SIZE_UNIT:
         del params["size_unit"]
         return chunk.model_copy(update={"params": params})
-    if chunk.method in SEMANTIC_METHODS and chunk.size is not None:
-        # A NEW semantic collection with a size: that size is a token cap. Record
-        # the marker and the split strategy as concrete values. A collection
-        # without the marker keeps the historical window-only chunking forever
-        # (no semantic collection created before this recorded it, and their
-        # stored chunks were made uncapped), and an unrecorded split would follow
-        # a later change of default — one collection, two chunkings. A semantic
-        # create with NO size records no size and no marker: the model window
-        # stays the only bound (and the spec claims no size it does not use).
+    if chunk.method in SEMANTIC_METHODS:
+        # A NEW semantic collection: its size is a token cap (an omitted size is
+        # the deployment default, recorded as a number). Record the marker, the
+        # split strategy and the breakpoint bound as concrete values. A collection
+        # without the marker keeps the historical window-only chunking forever (no
+        # semantic collection created before this recorded it, and their stored
+        # chunks were made uncapped), and an unrecorded split, bound or size would
+        # follow a later change of default — one collection, two chunkings.
+        size = chunk.size if chunk.size is not None else _default_semantic_size()
         params.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
         params.setdefault(CAP_SPLIT_PARAM, DEFAULT_CAP_SPLIT)
-        return chunk.model_copy(update={"params": params})
+        params.setdefault(BREAKPOINT_CAP_PARAM, DEFAULT_BREAKPOINT_CAP)
+        return chunk.model_copy(update={"params": params, "size": size})
     return chunk
 
 

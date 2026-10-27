@@ -575,7 +575,7 @@ def _chunk_param_kwargs(
     # on both paths. {} for a collection that records no cap -> unchanged chunking.
     cap = semantic_cap_from_params(method, params, recorded_size=recorded_size)
     if cap:
-        used.update(("size_cap", "cap_split"))
+        used.update(("size_cap", "cap_split", "breakpoint_cap"))
         out.update(cap)
     ignored = sorted(set(params) - used)
     if ignored:

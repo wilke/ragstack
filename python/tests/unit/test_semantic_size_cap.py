@@ -329,7 +329,7 @@ def test_cap_params_apply_only_to_semantic():
     assert semantic_cap_from_params("fixed", {"size_cap": "x"}, recorded_size=1) == {}
     assert semantic_cap_from_params("semantic", {}, recorded_size=512) == {}
     assert semantic_cap_from_params("semantic", {"size_cap": "tokens"}, recorded_size=512) == {
-        "size_cap": "tokens", "cap_split": "greedy",
+        "size_cap": "tokens", "cap_split": "greedy", "breakpoint_cap": "size",
     }
 
 
@@ -404,10 +404,19 @@ def test_ingest_jsonl_cap_resolution():
     resolve = ingest_jsonl._semantic_cap_kwargs
     assert resolve(_jsonl_args(), None) == {}
     assert resolve(_jsonl_args(cap="tokens", split="topic"), None) == {
-        "size_cap": "tokens", "cap_split": "topic"}
+        "size_cap": "tokens", "cap_split": "topic", "breakpoint_cap": "size"}
+    no_entry = _jsonl_args(cap="tokens")
+    no_entry.semantic_breakpoint_cap = "window"
+    assert resolve(no_entry, None)["breakpoint_cap"] == "window"
     # The entry is the source; a flag that agrees is fine, one that contradicts exits 2.
-    entry = _target({"size_cap": "tokens", "cap_split": "balanced"})
-    assert resolve(_jsonl_args(), entry) == {"size_cap": "tokens", "cap_split": "balanced"}
+    entry = _target({"size_cap": "tokens", "cap_split": "balanced", "breakpoint_cap": "window"})
+    assert resolve(_jsonl_args(), entry) == {
+        "size_cap": "tokens", "cap_split": "balanced", "breakpoint_cap": "window"}
+    contradicting = _jsonl_args()
+    contradicting.semantic_breakpoint_cap = "size"
+    with pytest.raises(SystemExit) as e:
+        resolve(contradicting, entry)
+    assert e.value.code == 2
     assert resolve(_jsonl_args(split="balanced"), entry)["cap_split"] == "balanced"
     for bad in (_jsonl_args(split="greedy"), _jsonl_args(cap="tokens", split="topic")):
         with pytest.raises(SystemExit) as e:
@@ -497,8 +506,168 @@ def test_shard_logs_the_cap_it_applies(fake_backends, capsys):
     spec = SimpleNamespace(chunk_params={"size_cap": "tokens", "cap_split": "topic"},
                            chunk_size=20)
     ingest_shard._build_chunker(_shard_args("semantic", 20), spec, embed_fn=topic_embed_fn)
-    assert "size_cap=tokens chunk_size=20 cap_split=topic" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert ("size_cap=tokens chunk_size=20 cap_split=topic breakpoint_cap=size "
+            f"breakpoint_input_budget=20 window_budget={BUDGET}") in err
     ingest_shard._build_chunker(_shard_args("semantic", 20),
                                 SimpleNamespace(chunk_params={}, chunk_size=20),
                                 embed_fn=topic_embed_fn)
-    assert "no size_cap recorded" in capsys.readouterr().err
+    assert (f"size_cap=None chunk_size=None cap_split=greedy breakpoint_cap=None "
+            f"breakpoint_input_budget={BUDGET}") in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# breakpoint_cap: reproducing the study arm
+# --------------------------------------------------------------------------- #
+
+
+def _long_sentence_doc() -> Document:
+    """Twenty 100-word sentences: every buffer (buffer_size 3 -> up to 7
+    sentences) is far over 512 tokens, so bounding breakpoint inputs matters."""
+    words = [f"t{j % 37}" for j in range(99)]
+    text = " ".join(f"S{i} " + " ".join(words[i % 7:] + words[: i % 7]) + "." for i in range(20))
+    return Document(id="long", content=text, metadata={})
+
+
+def _hash_embed(record):
+    """Content-sensitive and deterministic: any change to an input moves its vector."""
+    import hashlib
+
+    def fn(texts):
+        record.extend(texts)
+        return [[(b - 128) / 128.0 for b in hashlib.sha256(t.encode()).digest()[:8]]
+                for t in texts]
+    return fn
+
+
+@pytest.mark.parametrize("method", SEMANTIC)
+def test_breakpoint_cap_size_reproduces_the_study_arm(method):
+    """SEM512 in the confirmatory study was make_chunker("semantic", max_tokens=512):
+    one number bounded the breakpoint inputs AND the chunks. A capped collection at
+    chunk_size=512 with breakpoint_cap="size" (the recorded default) under the real
+    window must reproduce it exactly — same embed inputs, same spans."""
+    doc = _long_sentence_doc()
+    common = {"chunk_size": 512, "chunk_overlap": 64, "token_counter": COUNTER,
+              "buffer_size": 3, "breakpoint_percentile_threshold": 80.0,
+              "min_chunk_length": 500}
+    arm_in: list = []
+    arm = make_chunker(method, embed_fn=_hash_embed(arm_in), max_tokens=512, **common)
+    cap_in: list = []
+    capped = make_chunker(method, embed_fn=_hash_embed(cap_in), max_tokens=4080,
+                          size_cap="tokens", breakpoint_cap="size", **common)
+    default_in: list = []
+    default = make_chunker(method, embed_fn=_hash_embed(default_in), max_tokens=4080,
+                           size_cap="tokens", **common)  # absent under a cap = "size"
+    win_in: list = []
+    window = make_chunker(method, embed_fn=_hash_embed(win_in), max_tokens=4080,
+                          size_cap="tokens", breakpoint_cap="window", **common)
+    a = _spans(arm.chunk(doc))
+    assert _spans(capped.chunk(doc)) == a and cap_in == arm_in
+    assert _spans(default.chunk(doc)) == a and default_in == arm_in
+    w = _spans(window.chunk(doc))
+    assert max(COUNTER.count(doc.content[s:e]) for s, e in w) <= 512
+    if method == "semantic":
+        # Non-vacuous: buffers really were over 512, so "window" embeds other text
+        # and (with this embedding) breaks elsewhere.
+        assert max(COUNTER.count(t) for t in win_in) > 512
+        assert max(COUNTER.count(t) for t in arm_in) <= 512
+        assert win_in != arm_in and w != a
+
+
+def test_breakpoint_cap_through_the_shared_reader(monkeypatch):
+    """The recorded spec, read by semantic_cap_from_params and built by
+    build_chunker (the path every tool takes), equals the study arm too."""
+    from ragstack.ingestion import chunker_config
+
+    monkeypatch.setattr(chunker_config, "make_token_counter", lambda *a, **k: COUNTER)
+    doc = _long_sentence_doc()
+    params = {"size_cap": "tokens", "cap_split": "greedy", "breakpoint_cap": "size"}
+    built, _c, budget = build_chunker(
+        "semantic", chunk_size=512, chunk_overlap=64, model=MODEL, max_tokens=4096,
+        embed_fn=_hash_embed([]), **semantic_cap_from_params("semantic", params,
+                                                             recorded_size=512),
+    )
+    assert budget == 4080
+    arm = make_chunker("semantic", chunk_size=512, chunk_overlap=64, max_tokens=512,
+                       token_counter=COUNTER, embed_fn=_hash_embed([]))
+    assert _spans(built.chunk(doc)) == _spans(arm.chunk(doc))
+
+
+def test_breakpoint_cap_needs_a_size_cap():
+    with pytest.raises(ValueError, match="needs a size cap"):
+        make_chunker("semantic", embed_fn=_constant_embed, breakpoint_cap="size")
+    with pytest.raises(ValueError, match="breakpoint_cap"):
+        semantic_cap_from_params("semantic", {"breakpoint_cap": "size"}, recorded_size=512)
+    with pytest.raises(ValueError, match="breakpoint_cap"):
+        semantic_cap_from_params("semantic", {"size_cap": "tokens", "breakpoint_cap": "all"},
+                                 recorded_size=512)
+    with pytest.raises(ValueError, match="breakpoint_cap"):
+        make_chunker("semantic", embed_fn=_constant_embed, size_cap="tokens",
+                     token_counter=COUNTER, breakpoint_cap="all")
+    with pytest.raises(ValueError, match="only to the semantic"):
+        make_chunker("words", breakpoint_cap="size", token_counter=COUNTER)
+    with pytest.raises(ValueError, match="needs a size cap"):
+        SemanticChunker(embed_fn=_constant_embed, breakpoint_cap_tokens=20)
+
+
+# --------------------------------------------------------------------------- #
+# Receipt provenance
+# --------------------------------------------------------------------------- #
+
+
+def test_receipt_records_the_applied_cap_and_round_trips():
+    from ragstack.ingestion.chunkers import semantic_chunking_provenance
+    from ragstack.ingestion.receipts import ShardReceipt
+
+    chunker = _capped("semantic_pooled", "topic", cap=48)
+    applied = semantic_chunking_provenance(chunker)
+    assert applied == {
+        "v": 1, "method": "semantic_pooled", "size_cap": "tokens", "chunk_size": 48,
+        "cap_split": "topic", "breakpoint_cap": "size", "window_budget": 80,
+        "breakpoint_input_budget": 48,
+    }
+    r = ShardReceipt("s1", "t", "completed", chunking=applied)
+    again = ShardReceipt.from_dict(json.loads(r.to_json()))
+    assert again.chunking == applied and again.to_json() == r.to_json()
+    # Uncapped semantic: recorded as no cap (null), not omitted.
+    legacy = semantic_chunking_provenance(
+        make_chunker("semantic", embed_fn=_constant_embed, max_tokens=80, token_counter=COUNTER))
+    assert legacy is not None and legacy["size_cap"] is None
+    assert legacy["breakpoint_cap"] is None and legacy["breakpoint_input_budget"] == 80
+    # Any other chunker: nothing to record.
+    assert semantic_chunking_provenance(make_chunker("fixed")) is None
+
+
+def test_an_old_receipt_without_chunking_still_reads_and_writes_unchanged():
+    from ragstack.ingestion.receipts import ShardReceipt
+
+    old = {"shard_id": "s0", "tenant": "t", "status": "completed", "n_docs": 1,
+           "n_chunks": 2, "chunk_ids": ["a", "b"], "docs": [], "n_docs_failed": 0,
+           "embedding_file": "", "error": "", "provenance": None}
+    r = ShardReceipt.from_dict(old)
+    assert r.chunking is None
+    out = json.loads(r.to_json())
+    assert "chunking" not in out and out == old
+
+
+def test_breakpoint_cap_window_reaches_the_chunker_on_every_path(fake_backends):
+    """`window` is the non-default value, so it proves the key is passed through
+    (an unpassed key would silently read as the default, `size`)."""
+    from ragstack.ingestion.chunkers import semantic_chunking_provenance
+
+    params = {"size_cap": "tokens", "cap_split": "greedy", "breakpoint_cap": "window"}
+    api = deps._chunker_for(_entry("semantic", chunk_size=20, chunk_params=params),
+                            embed_fn=topic_embed_fn)
+    shard = ingest_shard._build_chunker(
+        _shard_args("semantic", 20), SimpleNamespace(chunk_params=params, chunk_size=20),
+        embed_fn=topic_embed_fn)
+    direct, _c, _m = build_chunker(
+        "semantic", chunk_size=20, chunk_overlap=8, model=MODEL, base_url=ENDPOINT,
+        embed_fn=topic_embed_fn,
+        **semantic_cap_from_params("semantic", params, recorded_size=20))
+    for chunker in (api, shard, direct):
+        assert chunker.breakpoint_cap_tokens is None
+        assert chunker.breakpoint_budget == BUDGET and chunker.size_cap_tokens == 20
+        applied = semantic_chunking_provenance(chunker)
+        assert applied["breakpoint_cap"] == "window"
+        assert applied["breakpoint_input_budget"] == BUDGET

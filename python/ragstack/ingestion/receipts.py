@@ -108,13 +108,23 @@ class ShardReceipt:
     # before the field existed. INTERIM: folds into ADR-0011's
     # ``core.activity.params`` when ADR-0011 PR-3 lands.
     enrichment: dict | None = None
+    # What a SEMANTIC chunker applied on this shard
+    # (``chunkers.semantic_chunking_provenance``): ``{"v": 1, "method",
+    # "size_cap", "chunk_size", "cap_split", "breakpoint_cap", "window_budget",
+    # "breakpoint_input_budget"}`` — ``size_cap: null`` records the legacy,
+    # window-only chunking. ``None`` = not recorded: another method, or a receipt
+    # written before the key existed (a worker image without the size cap); then
+    # the key is omitted from the JSON, like ``enrichment``. ``v`` versions the
+    # object's own keys.
+    chunking: dict | None = None
 
     def to_json(self) -> str:
         # Deterministic (sorted, no timestamp) so a re-run against an unchanged
         # shard produces a byte-identical receipt — idempotent + diff-able.
         data = asdict(self)
-        if data.get("enrichment") is None:
-            data.pop("enrichment", None)
+        for optional in ("enrichment", "chunking"):
+            if data.get(optional) is None:
+                data.pop(optional, None)
         return json.dumps(data, indent=2, sort_keys=True)
 
     def write(self, path: str | Path) -> None:
@@ -149,6 +159,8 @@ class ShardReceipt:
                         else None),
             enrichment=(dict(d["enrichment"]) if isinstance(d.get("enrichment"), dict)
                         else None),
+            chunking=(dict(d["chunking"]) if isinstance(d.get("chunking"), dict)
+                      else None),
         )
 
     @classmethod

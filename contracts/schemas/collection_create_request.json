@@ -29,7 +29,7 @@
           "type": ["integer", "null"]
         },
         "params": {
-          "description": "Free-form extra chunker parameters. The semantic methods read buffer_size (1-50), breakpoint_percentile_threshold (1-100) and min_chunk_length (0-100000); anything omitted falls back to the server default. A semantic collection created with a size records size_cap=\"tokens\" (the size is then a per-chunk token cap, at most the embedding model's budget) and cap_split (greedy, balanced or topic; default greedy); both are refused on other methods. Unrecognised keys are accepted and stored as-is.",
+          "description": "Free-form extra chunker parameters. The semantic methods read buffer_size (1-50), breakpoint_percentile_threshold (1-100) and min_chunk_length (0-100000); anything omitted falls back to the server default. Every new semantic collection records size_cap=\"tokens\" (its size, or the deployment default size when omitted, is then a per-chunk token cap, at most the embedding model's budget), cap_split (greedy, balanced or topic; default greedy) and breakpoint_cap (size or window; default size: breakpoint-embedding inputs are bounded at the size too); all three are refused on other methods. Unrecognised keys are accepted and stored as-is.",
           "type": "object",
           "default": {}
         }
