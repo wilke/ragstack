@@ -204,3 +204,25 @@ def test_numeric_term_inside_another_number_is_not_a_leak() -> None:
     assert not px.term_in("18766", '{"x": -0.15718766176}')
     assert px.term_in("18766", '{"port": 18766}')
     assert px.term_in("acme", '{"x": "ACMEcorp"}')
+
+
+def test_short_private_quote_refuses(tmp_path: Path) -> None:
+    """A quote under six words is caught only by the normalised-substring check."""
+    src = make_src(tmp_path)
+    short = "widget reset key"
+    with (src / "part4-questions.jsonl").open("a") as f:
+        f.write(json.dumps({"record_id": "M001k0", "set": "M", "stratum": PRIV_STRATUM, "doc_id": DOC,
+                            "question": "q", "quote_a": short, "quote_b": "x", "gold": [short]}) + "\n")
+    p4 = part4_results()
+    p4["design"]["label"] = short
+    (src / "results-part4.json").write_text(json.dumps(p4))
+    dest = tmp_path / "out"
+    assert px.export(config(src), src, dest) != 0 and not dest.exists()
+
+
+def test_verbatim_value_is_still_term_checked(tmp_path: Path) -> None:
+    src = make_src(tmp_path)
+    cfg = config(src)
+    cfg["export_private_terms"] = ["acmecorp", "permutation"]   # a word inside the allowed TEST_DESC
+    dest = tmp_path / "out"
+    assert px.export(cfg, src, dest) == 2 and not dest.exists()

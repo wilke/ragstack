@@ -260,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     from ragstack.provenance import experiment_provenance
 
     harness = (src / "HARNESS-as-run.sha256").read_text().split()
-    prereg_sha = dict(zip(re.findall(r"^(\w{64})\s+PREREG", (src / "PREREG.sha256").read_text(), re.M),
+    # PREREG.sha256 is append-only: these five are its first five entries; later parts append more.
+    prereg_sha = dict(zip(re.findall(r"^(\w{64})\s+PREREG", (src / "PREREG.sha256").read_text(), re.M)[:5],
                           ["part1", "part2", "addendum_S", "part3", "k10"], strict=True))
 
     def src_entry(p: Path, data: dict[str, Any]) -> dict[str, Any]:

@@ -83,20 +83,42 @@ The owner is recruiting two or three more graders. Each will grade both the 100-
 if available". Nothing says how three graders combine. This proposal fixes that **before any of those
 grades exists**:
 
-**Part 4 (grader validation, frozen §5).**
-1. Each grader is analysed alone with the frozen rules (P_A, κ_B and the neither-model check), and every
-   grader's result is reported.
-2. Human–human agreement: pairwise κ(correct vs not) on part A and on part B, with 95% item-bootstrap
-   CIs, and Fleiss' κ when there are three graders.
-3. **The validation verdict** uses the item-wise **majority** label (correct vs not) across the graders.
-   With an even number of graders, an item they split on has no majority. Such items are excluded from
-   the verdict and counted.
-4. If the per-grader verdicts disagree with each other, the record says so beside the majority verdict.
-5. Grader notes that flag a reference problem are tallied by hand, per grader and by item id.
+**How the graders work.** Every grader uses the same pages and the same instructions, and grades every
+item, so both answers of each part-B pair are graded by everyone. Graders do not confer.
 
-**Addendum Q (exploratory).** Each labeller, the owner included, is compared with both classifiers. The
-record reports human–human κ, and the item-wise majority label of the human labellers against each
-classifier. The non-answer prevalence on the 40 pairs is reported per labeller and by majority.
+**Part 4 (grader validation, frozen §5).**
+1. **The verdict.** It is computed on the item-wise **majority** label, correct vs not:
+   - **P_A** is the share of the non-excluded part-A items on which the majority label sides with Sol;
+     the threshold is at least half;
+   - **κ_B** is computed against Sol over the non-excluded part-B items;
+   - the "neither model" check uses the same majority labels. Against Opus 4.8, it uses the part-B
+     items that Opus also graded.
+2. **Ties.** An item without a strict majority is excluded from the verdict and counted.
+3. **When the verdict is not evaluable.**
+   - If more than 20% of the part-A or part-B items are excluded, the majority verdict is **not
+     evaluable**. The record then reports each grader's verdict instead and says so. Split items are the
+     ambiguous ones, and excluding many of them would bias κ and P_A upward.
+   - If fewer than 10 Opus part-B items remain, the "neither model" check against Opus is not evaluable
+     (the 2026-10-26 rule). Each grader's κ against Opus is then reported descriptively.
+4. **Per-grader results are descriptive.** Each grader is also analysed alone with the frozen rules and
+   reported, but only the majority verdict decides. Several graders must not become several chances to
+   pass. If per-grader verdicts disagree with the majority, the record says so beside it.
+5. **Agreement between graders:**
+   - pairwise κ(correct vs not) on part A and on part B, with 95% item-bootstrap CIs;
+   - with three or more graders, Fleiss' κ, binary (correct vs not), and 4-class as a descriptive.
+6. **Notes.** Grader notes that flag a reference problem are tallied by hand, per grader and by item
+   id.
+
+With exactly two graders, the majority is unanimity. The 20% exclusion cap is what keeps that case
+honest.
+
+**Addendum Q (exploratory).**
+- Each labeller, the owner included, is compared with both classifiers.
+- The record reports human–human κ.
+- The majority human label is taken on **answer vs not** first, because a 3-class 2-1-1 split has no
+  majority. Ties are excluded and counted.
+- Non-answer prevalence on the 40 pairs is reported per labeller and by majority.
+- The owner is noted as not blind to the hypotheses.
 
 **Code consequence.** The addendum-Q import wrote to one fixed file, so a second labeller would have
 replaced the first. It gains `--out` and an export-id check. The owner's import was kept under its own

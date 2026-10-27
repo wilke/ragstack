@@ -48,7 +48,7 @@ LLM gateway.
   - Holm rather than a fixed sequence;
   - mid-p reported as a sensitivity only;
   - an output cap of 5M tokens, agreed with the gateway owner.
-- The prereg went through four Fable reviews (v1 → v4). The v1 review redesigned grading and analysis.
+- The prereg went through four Fable reviews: three of the prereg itself and one of the code. The v1 review redesigned grading and analysis.
   Among other things, it caught that a 64-token Sol limit would have silently dropped about 24% of
   grades.
 
