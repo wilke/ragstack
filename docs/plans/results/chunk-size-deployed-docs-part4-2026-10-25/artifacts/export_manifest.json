@@ -1,0 +1,107 @@
+{
+ "export_provenance": {
+  "citable": true,
+  "commit": "a62620576ac72874282df740b461b2e6f2108a99",
+  "describe": "v1.6.17-8-ga626205",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-10-27T17:21:39Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.17+a626205"
+ },
+ "files": {
+  "addq_summary.json": "3336d06d7ded14ee41b95985d70c3934007212fc1190e007581b26dac4a51607",
+  "gateway_usage_part4.json": "2ec87035bb6f8727d39b3a5b22f3c5767d5b6d1166dc229ccad86a6c8a2f7c15",
+  "part4_per_record.json": "8bc191077f346e72920d0077b70e9b60543058be163da2be2ecdc10a0ae31f88",
+  "part4_summary.json": "eba48a55b4451447e242a825cc22f469b1826c941bc0c2601a14d6b090c99dcf"
+ },
+ "inputs_sha256": {
+  "power_table": "7c91357b995ef08db72725c0160edc7e45c7280d7d625faa31d51273ed285557",
+  "private_config": "73560a3aec8b92fffefe6127e518b04cc7fb5059b2d87bd53b9f924906392fcf",
+  "questions": "b2fbbd564f1dd27e228bb5737041bab51c73691630ed66b2759b34d826465aa5",
+  "results_addq": "a076b03d2ce731c7a8022f55feea1e31fb71f3955f70ee40f04891a800a669b8",
+  "results_part4": "0319c5633820512603dfeca6a932aca44d86e5cd1198a013659dfc0f89ba7e83"
+ },
+ "redaction": {
+  "checks": [
+   "SAFE string rule on every key and value",
+   "private terms (config) in every string",
+   "private texts: normalised substring and any 6-word run, per file",
+   "UUID-shaped strings (any letter case), per file"
+  ],
+  "doc_ids": "salted sha256, 12 hex (salt private)",
+  "dropped": [
+   "question / quote / answer / chunk text",
+   "prompt text (prompt_sha256 kept)",
+   "prereg and input file names (sha256 kept)",
+   "host and provenance warnings",
+   "segmentation provenance",
+   "subsets (record-id lists and retest hash prefixes)",
+   "per-item reader prompt token counts"
+  ],
+  "provenance_fields": [
+   "commit",
+   "describe",
+   "dirty",
+   "untracked",
+   "citable",
+   "recorded_at",
+   "version"
+  ],
+  "skipped_keys": [
+   "base_url",
+   "es_url",
+   "file",
+   "filename",
+   "gateway_url",
+   "gen_url",
+   "host",
+   "hosts",
+   "image",
+   "installed_distribution",
+   "judge_url",
+   "producer",
+   "prompt",
+   "prompts",
+   "raw",
+   "segmentation",
+   "text",
+   "url",
+   "warnings"
+  ],
+  "stratum_labels": [
+   "cli",
+   "other",
+   "quickref",
+   "seed",
+   "topic",
+   "tutorial"
+  ],
+  "string_rule": "^[A-Za-z0-9_.+|~:=<>()%/,*# -]{0,80}$",
+  "verbatim_harness_strings": 12
+ },
+ "schema": "part4-public-export/1",
+ "status": {
+  "addendum_Q": "EXPLORATORY",
+  "part4": "CONFIRMATORY"
+ }
+}

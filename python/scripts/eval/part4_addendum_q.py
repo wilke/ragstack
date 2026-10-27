@@ -30,7 +30,7 @@ Subcommands::
     part4_addendum_q.py run [--resume] [--batch-calls N] [--batch-input-tokens N] [--batch-output-tokens N]
     part4_addendum_q.py analyse
     part4_addendum_q.py export-human OUT        # blinded sample, key in OUT's sibling <stem>.key.json
-    part4_addendum_q.py import-human GRADES --key KEY
+    part4_addendum_q.py import-human GRADES --key KEY [--items ITEMS] [--out PATH]
 
 The gateway client, pause triggers, state/resume checks and the append-only
 stores are part 4's (:class:`deployed_docs_part4.Gateway`, ``Control``,
@@ -60,6 +60,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import os
@@ -171,6 +172,29 @@ def refuse_in_repo(path: Path, what: str) -> None:
     rp = path.resolve()
     if rp == REPO or REPO in rp.parents:
         raise SystemExit(f"addq: refusing to write {what} inside the repository")
+
+
+def labelling_export_id(items_path: Path) -> str:
+    """The labelling page's id (``part4_grading_page/build.py --kind labelling``):
+    ``addq-`` + the first 12 hex of the items file's sha256."""
+    return "addq-" + hashlib.sha256(items_path.read_bytes()).hexdigest()[:12]
+
+
+def check_export_id(labels: dict[str, Any], items_path: Path | None, what: str) -> None:
+    """A labels file that names its ``export_id`` must name the one of ``items_path``.
+    Without ``items_path`` (or without an id in the file) the check is skipped, with a warning."""
+    got = labels.get("export_id")
+    if items_path is None:
+        print(f"addq import-human: WARNING: no --items given; the export id of {what} is not checked",
+              file=sys.stderr)
+        return
+    if got is None:
+        print(f"addq import-human: WARNING: {what} carries no export_id; not checked against the items file",
+              file=sys.stderr)
+        return
+    want = labelling_export_id(items_path)
+    if got != want:
+        raise SystemExit(f"addq import-human: {what} belongs to {got!r}, not to the items file's {want!r}")
 
 
 def notice(msg: str) -> None:
@@ -673,19 +697,26 @@ class AddQ:
         log(f"addq: human sample: {len(items)} pairs -> {path.name} (+ {kpath.name})")
         return EXIT_OK
 
-    def import_human(self, grades: Path, key_path: Path) -> int:
+    def import_human(self, grades: Path, key_path: Path, out: Path | None = None,
+                     items_path: Path | None = None) -> int:
         """Human labels (the export with ``label`` filled in, or ``{"grades": {item: label}}``)
-        against both classifiers; written to ``files.human_results`` and folded into the
-        results file by ``analyse``."""
+        against both classifiers; written to ``files.human_results`` (folded into the results
+        file by ``analyse``), or to ``out`` when given (a second grader's file; never inside the
+        repo). With ``items_path`` the labels file's ``export_id``, when it has one, must be
+        ``addq-`` + sha12 of that items file."""
+        if out is not None:
+            refuse_in_repo(out, "the human agreement")
+        g = json.loads(grades.read_text())
+        check_export_id(g, items_path, grades.name)
         self.load_inputs()
         self.st = self.stores()
-        g = json.loads(grades.read_text())
         items = ({str(k): v for k, v in g["grades"].items()} if "grades" in g
                  else {it["item"]: it["label"] for it in g["items"] if it.get("label") not in (None, "")})
         key = json.loads(key_path.read_text())["key"]
         res = {"schema": HUMAN_SCHEMA, **human_agreement(items, key, self.labels(), self.aq["kappa"])}
-        p4.write_json_atomic(self.path("human_results"), res)
-        log(f"addq: human agreement on {res['n_graded']} items -> {self.files['human_results']}")
+        dest = out if out is not None else self.path("human_results")
+        p4.write_json_atomic(dest, res)
+        log(f"addq: human agreement on {res['n_graded']} items -> {dest.name}")
         return EXIT_OK
 
 
@@ -714,6 +745,10 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     i = sub.add_parser("import-human", help="human labels vs the classifiers (JSON in, JSON out)")
     i.add_argument("grades")
     i.add_argument("--key", required=True, help="the export's <stem>.key.json")
+    i.add_argument("--items", default=None,
+                   help="the export's items file: the labels' export_id must be addq- + its sha12 (skipped if omitted)")
+    i.add_argument("--out", default=None,
+                   help="write the agreement here instead of files.human_results (e.g. a second grader; not in the repo)")
     args = ap.parse_args(argv)
     if not args.private_config:
         raise SystemExit("a private config is required: pass --private-config or set CHUNKTRIAL_PRIVATE_CONFIG")
@@ -728,7 +763,8 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         return aq.analyse_only()
     if args.cmd == "export-human":
         return aq.export_human(Path(args.out))
-    return aq.import_human(Path(args.grades), Path(args.key))
+    return aq.import_human(Path(args.grades), Path(args.key), Path(args.out) if args.out else None,
+                           Path(args.items) if args.items else None)
 
 
 if __name__ == "__main__":

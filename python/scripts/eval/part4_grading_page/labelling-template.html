@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quote Labelling</title>
+<style>
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --ink: #1d2320; --muted: #5d6762; --line: #d9ded9;
+  --accent: #2f6f5e; --accent-ink: #ffffff; --ref: #eef4f1; --ans: #f7f4ec; --focus: #2f6f5e;
+  --correct: #2e7d4f; --partial: #a86b12; --incorrect: #b23b3b; --abstained: #50606e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141816; --panel: #1c211f; --ink: #e4e9e6; --muted: #9aa5a0; --line: #2f3633;
+    --accent: #6fbfa6; --accent-ink: #0f1412; --ref: #1f2a26; --ans: #2a2720; --focus: #6fbfa6;
+    --correct: #6cc28e; --partial: #e0a64a; --incorrect: #e57a7a; --abstained: #9fb0bf;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141816; --panel: #1c211f; --ink: #e4e9e6; --muted: #9aa5a0; --line: #2f3633;
+  --accent: #6fbfa6; --accent-ink: #0f1412; --ref: #1f2a26; --ans: #2a2720; --focus: #6fbfa6;
+  --correct: #6cc28e; --partial: #e0a64a; --incorrect: #e57a7a; --abstained: #9fb0bf;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 48px; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+h1 { font-size: 1.35rem; margin: 0; text-wrap: balance; }
+.meta { color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+details.howto { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+details.howto summary { cursor: pointer; font-weight: 600; }
+details.howto dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0 4px; }
+details.howto dt { font-weight: 600; }
+details.howto dd { margin: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }
+.label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
+.question { font-size: 1.08rem; font-weight: 600; }
+.ref { background: var(--ref); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; }
+.ref p { margin: 0 0 8px; } .ref p:last-child { margin: 0; }
+.ans { background: var(--ans); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+.grades { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.grades button { font: inherit; padding: 10px 6px; border-radius: 6px; border: 2px solid var(--line);
+  background: var(--panel); color: var(--ink); cursor: pointer; }
+.grades button .k { display: block; font-size: .75rem; color: var(--muted); }
+.grades.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grades button[aria-pressed="true"][data-g="answer"] { border-color: var(--correct); color: var(--correct); }
+.grades button[aria-pressed="true"][data-g="setup"] { border-color: var(--partial); color: var(--partial); }
+.grades button[aria-pressed="true"][data-g="neither"] { border-color: var(--abstained); color: var(--abstained); }
+.grades button[aria-pressed="true"] { font-weight: 700; }
+textarea { width: 100%; min-height: 56px; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); resize: vertical; }
+input[type=text] { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.btn { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.status { color: var(--muted); font-size: .9rem; min-height: 1.4em; }
+.warn { border: 2px solid var(--incorrect); color: var(--ink); background: var(--panel); border-radius: 8px; padding: 10px 14px; }
+select { font: inherit; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); max-width: 100%; }
+@media (max-width: 560px) { .grades { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .bar > span { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Quote Labelling</h1>
+    <div class="meta" id="progress">0 of 0 labelled</div>
+  </header>
+  <div class="bar" aria-hidden="true"><span id="barfill"></span></div>
+
+  <details class="howto" open>
+    <summary>How to label</summary>
+    <p>Each item shows a user's <strong>question</strong> and <strong>one sentence</strong> from the documentation. Decide what the sentence does for that question. Don't think about any answer. Judge only the question and the sentence.</p>
+    <dl>
+      <dt>Answer</dt><dd>The sentence states something the user wants to find out, even if only part of it.</dd>
+      <dt>Setup</dt><dd>The sentence only describes something the question already says or assumes: a step the user has done or will do, the tool they're using, or the situation they're in. It tells the user nothing they asked to find out.</dd>
+      <dt>Neither</dt><dd>The sentence has nothing to do with the question.</dd>
+    </dl>
+    <p><strong>How to decide.</strong></p>
+    <ol>
+      <li>Rewrite the question in your head as "The user wants to know: …". What they want to know is the part after "know". Steps written as "after I …", "once I've …" or "when I use …" are the setup.</li>
+      <li>Ask: if the user read only this sentence, would they learn part of what they want to know? If yes, choose <strong>Answer</strong>. If it only restates their own setup, choose <strong>Setup</strong>.</li>
+      <li>If a sentence does both, choose <strong>Answer</strong>.</li>
+      <li>A sentence cut off mid-word still counts. Judge what it says.</li>
+    </ol>
+    <p><strong>Example (made up).</strong> Question: "After I upload my reads, how do I choose the reference genome?"</p>
+    <ul>
+      <li>"Click <strong>Upload</strong> to add files to your workspace." → <strong>Setup</strong>. It describes the step the question already assumes.</li>
+      <li>"Select the reference from the <strong>Reference</strong> drop-down." → <strong>Answer</strong>.</li>
+      <li>"The service supports paired-end libraries." → <strong>Neither</strong>. It is unrelated to choosing a reference.</li>
+    </ul>
+    <p>Keys: <strong>1–3</strong> choose a label, <strong>←/→</strong> move between items. Your labels are saved in this browser as you go. When you finish, press <strong>Export labels</strong> and keep the file.</p>
+  </details>
+
+  <div class="tools">
+    <label for="who">Your name</label>
+    <input type="text" id="who" autocomplete="name" placeholder="Name or initials">
+    <label for="jump">Go to</label>
+    <select id="jump"></select>
+  </div>
+
+  <main class="card" id="card" aria-live="polite">
+    <div>
+      <div class="label">Question</div>
+      <div class="question" id="q"></div>
+    </div>
+    <div>
+      <div class="label">Sentence from the documentation</div>
+      <div class="ref" id="ref"></div>
+    </div>
+    <div>
+      <div class="label" id="grade-label">Your label</div>
+      <div class="grades three" role="group" aria-labelledby="grade-label">
+        <button type="button" data-g="answer" aria-pressed="false">Answer<span class="k">1</span></button>
+        <button type="button" data-g="setup" aria-pressed="false">Setup<span class="k">2</span></button>
+        <button type="button" data-g="neither" aria-pressed="false">Neither<span class="k">3</span></button>
+      </div>
+    </div>
+    <div>
+      <label class="label" for="note">Note (optional)</label>
+      <textarea id="note" placeholder="Anything unclear about this item"></textarea>
+    </div>
+    <div class="nav">
+      <button type="button" class="btn" id="prev">← Previous</button>
+      <span class="meta" id="pos"></span>
+      <button type="button" class="btn" id="next">Next →</button>
+    </div>
+  </main>
+
+  <div class="tools">
+    <button type="button" class="btn primary" id="export">Export labels</button>
+    <button type="button" class="btn" id="nextopen">Next unlabelled</button>
+    <label class="btn" for="importf">Import a saved labels file</label>
+    <input type="file" id="importf" accept="application/json,.json" hidden>
+  </div>
+  <div class="status" id="status" role="status"></div>
+  <div class="warn" id="storagewarn" role="alert" hidden>This browser is not saving your progress. Press <strong>Export labels</strong> often, and keep the file. You can bring it back with <strong>Import a saved labels file</strong>.</div>
+</div>
+
+<script id="data" type="application/json">__ITEMS__</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("data").textContent);
+  var ITEMS = DATA.items;
+  var KEY = "quote-labelling:" + DATA.export_id;
+  var GRADES = ["answer", "setup", "neither"];
+  var state = { pos: 0, grades: {}, notes: {}, who: "" };
+
+  function storageBroken() { document.getElementById("storagewarn").hidden = false; }
+  function load() {
+    try {
+      var s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s && s.grades) state = s;
+      localStorage.setItem(KEY + ":probe", "1"); localStorage.removeItem(KEY + ":probe");
+    } catch (e) { storageBroken(); }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { storageBroken(); }
+  }
+  function say(t) { document.getElementById("status").textContent = t; }
+
+  function el(id) { return document.getElementById(id); }
+  function graded() { return ITEMS.filter(function (it) { return state.grades[it.item]; }).length; }
+
+  function renderJump() {
+    var sel = el("jump"); sel.innerHTML = "";
+    ITEMS.forEach(function (it, i) {
+      var o = document.createElement("option"); o.value = i;
+      o.textContent = "Item " + (i + 1) + (state.grades[it.item] ? " — " + state.grades[it.item] : "");
+      sel.appendChild(o);
+    });
+    sel.value = state.pos;
+  }
+
+  function render() {
+    var it = ITEMS[state.pos];
+    el("q").textContent = it.question;
+    el("ref").textContent = it.quote;
+    document.querySelectorAll(".grades button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(state.grades[it.item] === b.dataset.g));
+    });
+    el("note").value = state.notes[it.item] || "";
+    el("pos").textContent = "Item " + (state.pos + 1) + " of " + ITEMS.length;
+    var n = graded();
+    el("progress").textContent = n + " of " + ITEMS.length + " labelled";
+    el("barfill").style.width = (100 * n / ITEMS.length) + "%";
+    el("prev").disabled = state.pos === 0;
+    el("next").disabled = state.pos === ITEMS.length - 1;
+    renderJump();
+  }
+
+  function go(i) { state.pos = Math.max(0, Math.min(ITEMS.length - 1, i)); save(); render(); }
+  function grade(g) {
+    var it = ITEMS[state.pos];
+    state.grades[it.item] = g; save(); render();
+    say("Saved: item " + (state.pos + 1) + " is " + g + ".");
+  }
+
+  document.querySelectorAll(".grades button").forEach(function (b) {
+    b.addEventListener("click", function () { grade(b.dataset.g); });
+  });
+  el("prev").addEventListener("click", function () { go(state.pos - 1); });
+  el("next").addEventListener("click", function () { go(state.pos + 1); });
+  el("jump").addEventListener("change", function () { go(Number(this.value)); });
+  el("nextopen").addEventListener("click", function () {
+    for (var k = 1; k <= ITEMS.length; k++) {
+      var i = (state.pos + k) % ITEMS.length;
+      if (!state.grades[ITEMS[i].item]) { go(i); return; }
+    }
+    say("All items are labelled. Press Export labels and keep the file.");
+  });
+  el("note").addEventListener("input", function () {
+    var it = ITEMS[state.pos]; var v = this.value.trim();
+    if (v) state.notes[it.item] = this.value; else delete state.notes[it.item];
+    save();
+  });
+  el("who").value = state.who || "";
+  el("who").addEventListener("input", function () { state.who = this.value; save(); });
+
+  document.addEventListener("keydown", function (e) {
+    var t = e.target.tagName;
+    if (t === "TEXTAREA" || t === "INPUT" || t === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key >= "1" && e.key <= "3") { grade(GRADES[Number(e.key) - 1]); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { go(state.pos + 1); e.preventDefault(); }
+    else if (e.key === "ArrowLeft") { go(state.pos - 1); e.preventDefault(); }
+  });
+
+  el("export").addEventListener("click", function () {
+    var g = {}; ITEMS.forEach(function (it) { if (state.grades[it.item]) g[it.item] = state.grades[it.item]; });
+    var out = {
+      export_id: DATA.export_id, labeller: state.who || "", exported_at: new Date().toISOString(),
+      n_items: ITEMS.length, n_labelled: graded(), grades: g, notes: state.notes
+    };
+    var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "labels-" + DATA.export_id + "-" + (state.who || "grader").replace(/[^A-Za-z0-9_-]+/g, "_") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    say("Exported " + out.n_labelled + " of " + out.n_items + " labels." + (out.n_labelled < out.n_items ? " Some items are still unlabelled." : ""));
+  });
+
+  el("importf").addEventListener("change", function () {
+    var f = this.files && this.files[0]; if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      try {
+        var d = JSON.parse(r.result);
+        if (d.export_id !== DATA.export_id) { say("That file belongs to a different set of items. Nothing was imported."); return; }
+        var n = 0;
+        Object.keys(d.grades || {}).forEach(function (k) {
+          if (GRADES.indexOf(d.grades[k]) >= 0) { state.grades[k] = d.grades[k]; n++; }
+        });
+        Object.keys(d.notes || {}).forEach(function (k) { state.notes[k] = d.notes[k]; });
+        if (d.labeller && !state.who) { state.who = d.labeller; el("who").value = d.labeller; }
+        save(); render(); say("Imported " + n + " labels.");
+      } catch (e) { say("That file could not be read as a labels file."); }
+    };
+    r.readAsText(f);
+    this.value = "";
+  });
+
+  load();
+  if (state.pos >= ITEMS.length) state.pos = 0;
+  render();
+})();
+</script>
+</body>
+</html>

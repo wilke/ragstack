@@ -771,6 +771,74 @@ def test_human_import_kappa(cfg: Path, reference: tuple[Path, dict[str, Any]], t
         b.import_human(graded, tmp_path / "sample.key.json")
 
 
+def _page_labels(a: aq.AddQ, tmp_path: Path, export_id: str | None) -> tuple[Path, Path, Path]:
+    """A sample, and a labels file in the labelling page's shape (``grades`` dict, ``export_id``)."""
+    sample = tmp_path / "sample.json"
+    a.export_human(sample)
+    ex = json.loads(sample.read_text())
+    labels: dict[str, Any] = {"labeller": "x", "grades": {it["item"]: "answer" for it in ex["items"]}, "notes": {}}
+    if export_id is not None:
+        labels["export_id"] = export_id
+    lp = tmp_path / "labels.json"
+    lp.write_text(json.dumps(labels))
+    return sample, tmp_path / "sample.key.json", lp
+
+
+def test_human_import_out_keeps_graders_apart(cfg: Path, reference: tuple[Path, dict[str, Any]],
+                                              tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import shutil
+
+    out = tmp_path / "copy"
+    shutil.copytree(reference[0], out)
+    b = aq.AddQ(cfg, out, prov)
+    sample, key, lp = _page_labels(b, tmp_path, None)
+    sha12 = hashlib.sha256(sample.read_bytes()).hexdigest()[:12]
+    assert aq.labelling_export_id(sample) == "addq-" + sha12
+    lp.write_text(json.dumps(json.loads(lp.read_text()) | {"export_id": "addq-" + sha12}))
+    # default destination unchanged
+    assert b.import_human(lp, key) == aq.EXIT_OK
+    assert "not checked" in capsys.readouterr().err   # no --items: skipped, with a warning
+    first = (out / "addq-human.json").read_text()
+    # a second grader goes to --out; the first grader's file is untouched
+    second = tmp_path / "addq-human-grader2.json"
+    assert b.import_human(lp, key, out=second, items_path=sample) == aq.EXIT_OK
+    assert (out / "addq-human.json").read_text() == first
+    assert json.loads(second.read_text())["n_graded"] == 6
+    # the CLI flags reach the same code
+    third = tmp_path / "addq-human-grader3.json"
+    assert aq.main(["--private-config", str(cfg), "--out-dir", str(out), "import-human", str(lp), "--key", str(key),
+                    "--items", str(sample), "--out", str(third)], provenance=prov) == aq.EXIT_OK
+    assert third.read_text() == second.read_text()
+    assert (out / "addq-human.json").read_text() == first
+
+
+def test_human_import_out_refused_inside_the_repo(cfg: Path, reference: tuple[Path, dict[str, Any]],
+                                                  tmp_path: Path) -> None:
+    b = aq.AddQ(cfg, reference[0], prov)
+    _, key, lp = _page_labels(b, tmp_path, None)
+    inside = aq.REPO / "addq-human-should-not-exist.json"
+    with pytest.raises(SystemExit, match="inside the repository"):
+        b.import_human(lp, key, out=inside)
+    assert not inside.exists()
+
+
+def test_human_import_checks_the_export_id(cfg: Path, reference: tuple[Path, dict[str, Any]], tmp_path: Path,
+                                           capsys: pytest.CaptureFixture[str]) -> None:
+    import shutil
+
+    out = tmp_path / "copy"
+    shutil.copytree(reference[0], out)
+    b = aq.AddQ(cfg, out, prov)
+    sample, key, lp = _page_labels(b, tmp_path, "addq-000000000000")
+    with pytest.raises(SystemExit, match="belongs to 'addq-000000000000'"):
+        b.import_human(lp, key, out=tmp_path / "h.json", items_path=sample)
+    assert not (tmp_path / "h.json").exists()
+    # a labels file without an id: imported, with a warning
+    lp.write_text(json.dumps({k: v for k, v in json.loads(lp.read_text()).items() if k != "export_id"}))
+    assert b.import_human(lp, key, out=tmp_path / "h.json", items_path=sample) == aq.EXIT_OK
+    assert "carries no export_id" in capsys.readouterr().err
+
+
 # ------------------------------------------------------------------ review fixes
 
 
