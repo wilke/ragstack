@@ -12,7 +12,11 @@ structure's eventual home is **Shock**, in a later series, and this series only 
 serialisation that can go there unchanged, its code-point offsets converted to bytes by that
 series (Q1, §4.1; the Shock store,
 [#837](https://github.com/wilke/ragstack/issues/837), is set up before the open-access and
-ASM re-ingests); and `embed_shard.py` gains **registry resolution in this series** (PR 3), so the markers work on every ingest path (Q14, §7). No
+ASM re-ingests); and `embed_shard.py` gains **registry resolution in this series** (PR 3), so the markers work on every ingest path (Q14, §7).
+Corrected after implementing PR 1 ([#839](https://github.com/wilke/ragstack/pull/839)): §7.1's
+parent segment is lead text only and its merged chunks are owned per §6; `ingest_jsonl.py`'s one
+`Document` site; the two drop counters named consistently (§4, §8, §12); and no CWL declares a
+new tool input before the tools-image repin (§6, §7, §12, §13). No
 code. Written for the owner's review before the first PR of the series in §12. It folds in the owner's direction from the #828
 thread (document level, not format level; `Document.structure`; adapters; stamping by offset
 overlap; inferred structure for PDF and extracted text; captions; placement as an evaluation
@@ -116,7 +120,8 @@ new; the review found the first draft's answer could not work on GoWe):
 
 So the GoWe extract step gains no workflow input and no spec lookup (consistent with #829's
 rule that `chunk_params` are read from the registry entry, never from a CWL input; the
-registry *id* and *name* that PR 3 wires into the operator workflows' embed steps are not
+registry *id* and *name* that the repin step R wires into the operator workflows' embed steps
+(for PR 3's resolution) are not
 `chunk_params` — they say which entry to read, §7), the
 `text_render` marker is honoured where the entry is known, and the JSONL carries structure only
 for formats whose source is unavailable downstream.
@@ -272,8 +277,11 @@ side file that duplicates the record key.
 `pdf_extract.py` and `jats_extract.py` write the key when the document has structure;
 `JsonlLoader._document` reads it, **validates the invariants of §2 against `text` before
 accepting it**, and on any violation drops the structure (not the document) and counts it in a
-new `DropReport.structure_invalid` counter the shard prints, so a corrupt or stale structure is
-loud and the document still ingests as unstructured.
+new `DropReport.structure_invalid` counter (by reason) the shard prints, so a corrupt or stale
+structure is loud and the document still ingests as unstructured. `ingest_jsonl.py`, which does
+not use `JsonlLoader` (§8, path D), counts the same drops through the same reader as its own stat,
+`structure_dropped`, which appears in its run metrics only when non-zero. The two names are two
+counters for one event on two tools, not two spellings of one.
 
 **An old image drops the key silently.** `JsonlLoader._document` reads `text`, `path` and
 `metadata` and ignores every other key, so an ingest image without this series ingests a
@@ -433,7 +441,7 @@ keys. Absent is a state (`chunk_metadata.json`
 | `section_level` | integer | the owning section's `level` (tree depth, Q11; the raw rank is not stamped). |
 | `section_roles` | list of strings (`roles/1`) | the sorted union of the own `roles` of the owning section and every ancestor (§5, Q4), so a chunk in a subsection of *Methods* carries `methods`. `unknown` is dropped from the union whenever any other tag is in it, so `["unknown"]` means nothing on the path could be classified; `other` is kept (a titled section on the path matched no rule). Never empty for a structured document, because `classify_roles` runs on every structure before the stamp and the validator then asserts `roles is not None` on every section (without that, the stamp would have to map `None` to `unknown`, and an unclassified structure would pass silently as "nothing could be said"). |
 | `section_roles_version` | list of strings | the sorted distinct `role_source` values of the sections that contributed a tag to `section_roles`. The first list-valued `*_version` field (`symbol_glossary_version` is a string), so a filter on it means "some contributing producer". |
-| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more *segments* (§7.1: a leaf section, or a parent's own text outside its children), i.e. its text is owned by more than one section (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Expected on the first chunk of most titled parents, because a heading-only parent segment travels with the following segment (§7.1); not a defect signal. Decided, Q10. |
+| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more *segments* (§7.1: a leaf section, or a parent's lead text before its first child), i.e. its text belongs to more than one segment; the owner of such a chunk is still the one section the rule above picks — the deepest overlapping one, so a parent's lead text joined to its first child is owned by the child (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Expected on the first chunk of most titled parents, because a heading-only parent segment travels with the following segment (§7.1); not a defect signal. Decided, Q10. |
 | `block_types` | list of strings | the sorted distinct `kind`s of the blocks overlapping the chunk. |
 | `caption_labels` | list of strings | `label` of every `figure_caption` / `table_caption` block whose `start` lies inside the chunk (the label is at the start of a caption, so the chunk that holds the start holds the label). |
 | `refers_to` | list of strings | labels cited in the chunk's own `content`, normalised to the same form as `label` (`Fig. 3`, `FIG 3`, `Figure 3A`, `Figs. 2 and 3` → `Figure 3`, `Figure 2`, `Figure 3`). Computed from `content`, not from structure, but stamped only for structured documents so it is versioned with them. |
@@ -497,9 +505,18 @@ collection an ingest resolves to** (decided, Q3). Two consequences, accepted wit
 
 Stamping is controlled by a deployment setting, `STRUCTURE_METADATA=off|on`, with a matching
 `--structure-metadata` flag on `ingest_shard.py` / `embed_shard.py` / `ingest_jsonl.py` and a
-`structure_metadata` CWL input the API seeds from the setting when the registered workflow
-declares it — the `symbol_glossary` pattern (#783) exactly, including the ADR-0010 stamped-image
-gate on the declared-inputs check. Default `off` until the accuracy check (§10) has run; then
+`structure_metadata` CWL input the API seeds from the setting — the `symbol_glossary` pattern
+(#783), with one more gate: the API sends the input only when the registered workflow declares
+it **and** names a stamped tools image (ADR-0010 decision 4). The CWL input itself is **not**
+declared in the PR that adds the flag: a CWL declares a tool input only once the image it names
+carries the flag (ADR-0010 decision 4) — on the branch that repins to such an image or on any
+later branch (#765 repinned and declared `duplicate_policy` together; #784 declared
+`symbol_glossary` later, against an already-named image that had the flag). The shipped CWLs
+name `ragstack-tools-v1.6.16-b1.sif`, which has no `--structure-metadata`; declaring the input
+against it would make the API send it and every task exit 2 at argparse. So for this series the
+first opportunity is a repin, and the input is declared at the repin step **R** of §12 (or at
+any earlier repin to a tools tag cut after PR 1); until then GoWe ingests are unstamped (§7,
+release order). Default `off` until the accuracy check (§10) has run; then
 `on` for new ingests. **A marker overrides the setting** (§7): a collection whose `chunk_params`
 carry `structure_cuts` or `embed_heading_path` needs structure to chunk or embed at all, so the
 one reader returns `needs_structure=True` and the adapters run and the stamp is written whatever
@@ -590,7 +607,8 @@ that records none means `chars` — and refuses a contradicting `--chunk-size-un
 for an identity value on this tool). The embedding-file header gains a `chunking` object — the resolved
 `collection_id`, the method, size, overlap and size unit as applied, and from PR 4 the
 structure markers as applied, each key absent when not applied. The workflows wire what they
-already have into the embed step: `pdf-ingest.cwl` and `jats-ingest.cwl` bind their existing
+already have into the embed step — specified here, landed at the repin step R of §12, not in PR 3
+(§7 release order): `pdf-ingest.cwl` and `jats-ingest.cwl` bind their existing
 `collection_id` (and `registry`, or `registry_db` through the same `EnvVarRequirement` as their
 load step) into the embed step's tool; `embed-bulk.cwl` gains two **optional** workflow inputs,
 `collection_id` and `registry`. From PR 4 on, the resolved spec goes through
@@ -648,7 +666,10 @@ hand-run submissions:
    `pdf-ingest-scatter.cwl` (`ingest_shard.py`), so the gate is dormant; it keeps a future
    workflow swap from re-opening the hole.
 
-Consequence: once PR 3 and PR 4 ship, the markers work on paths A, B, C and D, including a
+Consequence: once PR 3 and PR 4 ship and the repin step R (§12) has wired the operator
+workflows' embed steps — path C through `jats-ingest.cwl`, `pdf-ingest.cwl` and
+`embed-bulk.cwl` needs R; paths A, B and D and `ingest-bulk.cwl` do not — the markers work on
+paths A, B, C and D, including a
 collection carrying only `structure_infer` (§9.5), so a text-only paper corpus can be inferred
 through the operator workflows too. The backstops refuse only what they cannot prove was built
 from the entry. Stamping (not identity) runs on path C through `iter_embed_source` when
@@ -674,10 +695,23 @@ checkout. Each can lag:
 | the **tools image** (`ingest_shard.py` / `embed_shard.py`) predates this series | on path B, all three markers are ignored *silently*: a marked collection is chunked unmarked and embedded without the prefix; a structured shard is ingested unstructured. On path C, a workflow that wires `--collection-id` into the embed step fails every embed task at argparse (loud); an unwired one embeds unmarked and `load_embeddings.py` refuses the file | receipt has no `chunking.structure_cuts` / `text_render` / `embed_heading_path` keys and no `enrichment.structure`; embedding-file header has no `chunking` object |
 | the **extract** half of the image (`pdf_extract.py` / `jats_extract.py`) predates it | no `structure` key in the shard, so PDF and JATS documents ingest unstructured; Markdown is unaffected (its adapter runs at ingest) | `enrichment.structure.structure_missing` counts them, `adapters` shows `pdf-layout/1: 0` |
 | the **server** predates it | no marker can be recorded at create; stamping on an ingest the server runs in-process is off | `GET /v1/collections` shows no marker; no `structure_version` on new chunks |
-| the **workflow text submitted** predates PR 3 (an operator submits from a checkout older than the deployed server release, so the embed step is not wired) | `embed_shard.py` runs unresolved, so a marked collection's file is embedded unmarked | `gowe_batch_ingest.py` refuses before submitting; `load_embeddings.py` refuses before writing; the header has no `collection_id` |
+| the **workflow text submitted** predates the tools-image repin that wires the embed step (§7 above; an operator submits from a checkout older than the deployed server release) | `embed_shard.py` runs unresolved, so a marked collection's file is embedded unmarked | `gowe_batch_ingest.py` refuses before submitting; `load_embeddings.py` refuses before writing; the header has no `collection_id` |
+
+**No PR that adds a tool flag edits a shipped CWL in the same PR.** A CWL text on `main` names a
+built tools image (ADR-0010 decision 4: the release that writes the image name asserts it tested
+the pairing), so a new tool flag (`--structure-metadata` from PR 1, `--collection-id` from PR 3)
+is declared or bound in a CWL only once the image the CWL names carries it — on the branch that
+repins to such an image, as #765 did for `duplicate_policy`, or on any later branch, as #784 did
+for `symbol_glossary` against an image that already had the flag. The PRs that add a flag add it
+to the tools, and the API side gates on what the registered text declares (§6). Since the image
+the shipped CWLs name (`ragstack-tools-v1.6.16-b1.sif`) has neither flag, the first opportunity
+in this series is a repin: the CWL edits — the `structure_metadata` input, PR 3's wiring and
+`embed-bulk.cwl`'s two inputs — land at the repin step **R** of §12. PR 1 pins this with
+`test_no_shipped_workflow_declares_it_until_the_image_repin` and PR 3 with a like pin on the
+embed steps' `collection_id` binding; R flips both.
 
 What must ship in what order. (1) The **tools image at tag T** carrying PR 3's
-`embed_shard.py` (and, for markers, PR 4's reader), since a workflow that passes
+`embed_shard.py` (and, for markers, PR 4's reader) — the image step R of §12 repins to — since a workflow that passes
 `--collection-id` to an older image fails. (2) The **server release at tag S**, which records
 markers at create (PR 4), carries the dispatch gate, and stamps and ships every CWL text with
 image T: the wiring of `collection_id`/`registry` into the embed steps of `jats-ingest.cwl` and
@@ -698,10 +732,11 @@ have:
 
 - **Preferred cut.** Before packing (`sentence`, `words`, `semantic*`) or sliding (`fixed_token`),
   the document is split into *segments*. A segment is a maximal offset range owned by exactly one
-  section: each **leaf** section is one segment, and a **parent's own text** — its heading and
-  lead paragraphs before its first child, and any text after its last child — is a segment of its
-  own, owned by the parent. (Invariant 3 does not make children partition their parent, so this
-  is where the parent's text goes; it is never folded into the first child.) Each segment is
+  section: each **leaf** section is one segment, and a **parent's lead text** — its heading and
+  lead paragraphs before its first child — is a segment of its own. (Invariant 3 does not make
+  children partition their parent, so this is where the parent's text goes; it is never folded
+  into the first child. A parent has no text after its last child: invariant 3 extends the last
+  child's `end` to its parent's `end`, so that range is always empty.) Each segment is
   chunked on its own with the collection's method and size, so a chunk never starts in one
   segment and ends in another. Offsets stay document-global (segments are offset ranges, not
   substrings), so ids are still `uuid5(doc_id:start:end)` and the chunks still tile the document.
@@ -709,9 +744,17 @@ have:
   exploratory run (#828 §4); that is the small-piece problem #831 addresses. Under
   `structure_cuts`, the #831 merge runs with one extra rule: a piece may merge with its neighbour
   only when both lie in the same segment, **or** both are whole segments under the same parent
-  (a parent's lead text with its first child, or two sibling leaves). The result of the second
-  kind is a chunk owned by the parent, and it is exactly when `section_crossing` fires: a chunk
-  that overlaps two or more segments. The merge never joins a fragment of one segment with a
+  (a parent's lead text with its first child, or two sibling leaves). A merge of the second kind
+  is exactly when `section_crossing` fires: a chunk that overlaps two or more segments. Its owner
+  is decided by §6's rule, which is authoritative here — the deepest overlapping section, then
+  the largest overlap, then the earliest — so a parent's lead text merged with its first child is
+  owned by the **child**, even when most of the chunk is the parent's lead text, and two merged
+  siblings are owned by the one with the larger share. The parent is not lost: its title is in
+  `section_path` and its own roles are in the `section_roles` union. `section_crossing: true`
+  marks every such chunk. The cutter itself never consults ownership (segments are offset
+  ranges), so §6 needs no change for PR 7; whether a mostly-lead-text chunk should carry the
+  parent's `section_title` is an open item for PR 7 to raise, with a stamp version bump, if its
+  evaluation shows it matters. The merge never joins a fragment of one segment with a
   fragment of another. Without #831's `size_tolerance` the merge target is `chunk_size` itself.
 - **Headings travel with their body.** A `heading` block is never a segment's whole content when
   the next block fits with it; the segmenter attaches a heading to the segment that follows it.
@@ -736,14 +779,14 @@ different coordinate system regardless, as every chunking change is.
 at the chunk loop identically on each — and there are three chunk loops, not one
 (`prepare_documents`, `iter_embed_source`, and `ingest_jsonl.py`'s own). The markers must
 reach each of them from the same registry entry through the same reader, which after PR 3
-they do (§7).
+they do (§7; for the operator workflows on path C, once the repin step R wires their embed steps).
 
 | path | where the adapter runs | how structure travels | what proves it |
 |---|---|---|---|
 | **A. API, in-process** | PDF and JATS: inside the loader `default_loader_registry()` dispatches to (`build_ingestor_for`); Markdown and extracted text: the pipeline's `attach_structure` step. The API calls these library functions directly; it never invokes a CWL tool (§7, *same code, not the same process*) | in memory, on `Document.structure` | the invariants (§2) on every loaded document; the parity tests below compare its output with B, C and D |
 | **B. API → GoWe** | PDF: `pdf_extract.py`, through the same registry (#830); Markdown: `attach_structure` inside `ingest_shard.py`'s pipeline, from the raw text the shard carries | PDF structure as the `"structure"` key in the shard JSONL → `JsonlLoader` validates and restores it; Markdown structure is built at ingest | **parity test:** `test_extract_text_parity.py` grows a structure half — for each fixture, the structure the GoWe path ends with equals the in-process structure field for field, and the stamped chunk metadata of the two paths is identical |
 | **C. operator CWL** (`jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl` on `embed_shard.py`; `ingest-bulk.cwl` on `ingest_shard.py`) | `jats_extract.py` (JATS adapter, §9.2) or `pdf_extract.py` | the same JSONL key → `embed_shard.py` → `run_embed_shard` → `IngestionPipeline.iter_embed_source`, which does **not** call `prepare_documents`; the `_stamp_structure` helper (§6) is therefore called from `iter_embed_source` too, next to its existing `_filter_boilerplate` / `_attach_glossary` calls. **Markers are read from the registry entry** (PR 3 gives `embed_shard.py` the resolution `ingest_shard.py` has; PR 4 routes it through `structure_from_params`), and the header's `chunking` object records what was applied; `load_embeddings.py`'s header-vs-entry check (§7) refuses anything else. `ingest-bulk.cwl` reads markers exactly as path B does | the same parity test, driven through `embed_shard.py` with a resolved entry; the load-time refusal test; the `gowe_batch_ingest.py` pre-check test |
-| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | the tool does **not** use `JsonlLoader` — it builds `Document` itself from `enrich(record)` at three sites — so it gets the structure key through the same shared reader `JsonlLoader` uses, `structure_from_record(record, text)` (validate, or drop with a counted `structure_dropped`); its own chunk loop calls `attach_structure`, `_stamp_structure` and the `embed_heading_path` prefix in `_embed_drop_bad`, and reads the markers through `structure_from_params`. Under `--no-index` (catalog only) it resolves no entry (`target = None`), so the markers cannot be read and the marker checks are skipped — a documented skip like `load_embeddings.py`'s memory backend, since nothing durable is written | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test, which feeds the same structured shard to all three |
+| **D. legacy `ingest_jsonl.py`** | none (it consumes JSONL) | the tool does **not** use `JsonlLoader` — it builds `Document` itself from `enrich(record)` at one site, the chunk branch of its read loop (the skip, filtered and resume branches build no `Document`; they call `deterministic_doc_id(...)` only, for their metrics rows) — so it gets the structure key through the same shared reader `JsonlLoader` uses, `structure_from_record(record, text)` (validate, or drop and count: on `JsonlLoader` as `DropReport.structure_invalid` by reason, on this tool as its `structure_dropped` stat, in the run metrics only when non-zero, §4); its own chunk loop calls `attach_structure`, `_stamp_structure` and the `embed_heading_path` prefix in `_embed_drop_bad`, and reads the markers through `structure_from_params`. Under `--no-index` (catalog only) it resolves no entry (`target = None`), so the markers cannot be read and the marker checks are skipped — a documented skip like `load_embeddings.py`'s memory backend, since nothing durable is written | #831's rule: the API, `ingest_shard` and `ingest_jsonl` are checked for parity in one test, which feeds the same structured shard to all three |
 
 **#833 and this design.** Three of its four findings touch structure directly.
 
@@ -1061,10 +1104,11 @@ every carrier hop is proven before the next adapter needs it.
 
 | PR | content | tests |
 |---|---|---|
-| **1 — model and stamp** | `Section` (with list-valued `roles` and the debugging `rank`)/`Block`/`DocumentStructure` (with `schema_version` and `content_sha256`)/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants 1–7) and `stamp` (`section_roles` as the union along the path, §6); the `rules/1` table, combined-heading tags and `classify_roles(sections)`; the pipeline helpers `attach_structure` and `_stamp_structure`, called from `prepare_documents` **and** `iter_embed_source`, and from `ingest_jsonl.py`'s loop; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key; one shared reader `structure_from_record(record, text)` (validate or drop with a counted `structure_dropped`) used by `JsonlLoader` **and** by `ingest_jsonl.py`'s three `Document(...)` construction sites, which bypass `JsonlLoader`; `STRUCTURE_METADATA` setting, `--structure-metadata` on `ingest_shard.py` / `embed_shard.py` / `ingest_jsonl.py`, the CWL input; receipt `enrichment.structure`; `payload_matches` treats a list `actual` as any-element (the prerequisite for any role filter, §6); the `jats.py` docstring rewrite (§4). No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition with extended ends, half-open, heading block first-in-section); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `section_roles` is the union of own tags along the path with `unknown` dropped beside any other tag (mutation: stamp own tags only → a chunk in a *Methods* subsection lacks `methods` → fails); `content_sha256` mismatch drops the structure; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` and `ingest_jsonl` both drop an invalid structure with a counted reason and keep the document, and ignore the key byte-for-byte when absent; the same structured shard stamps identically through `prepare_documents`, `iter_embed_source` and `ingest_jsonl` (the parity test feeds one shard to all three); `payload_matches` list test plus a conformance case; mutation: remove the validation and the test fails. |
+| **1 — model and stamp** | `Section` (with list-valued `roles` and the debugging `rank`)/`Block`/`DocumentStructure` (with `schema_version` and `content_sha256`)/`Document.structure`; `structure.py` with `validate_structure` (§2 invariants 1–7) and `stamp` (`section_roles` as the union along the path, §6); the `rules/1` table, combined-heading tags and `classify_roles(sections)`; the pipeline helpers `attach_structure` and `_stamp_structure`, called from `prepare_documents` **and** `iter_embed_source`, and from `ingest_jsonl.py`'s loop; schema: `chunk_metadata.json`, `metadata_schema.DECLARED_FIELDS`, ES mapping derived; `pdf_extract.py` writes the key; one shared reader `structure_from_record(record, text)` (validate or drop with a count: `DropReport.structure_invalid` by reason on `JsonlLoader`, the `structure_dropped` stat on `ingest_jsonl.py`, in its run metrics only when non-zero, §4) used by `JsonlLoader` **and** by `ingest_jsonl.py`'s one `Document(...)` construction, which bypasses `JsonlLoader` (its skip/resume branches only call `deterministic_doc_id(...)` for metrics rows); `STRUCTURE_METADATA` setting, `--structure-metadata` on `ingest_shard.py` / `embed_shard.py` / `ingest_jsonl.py`; the API-side gate (send `structure_metadata` only when the registered workflow declares it **and** names a stamped image) — but **no CWL input**: it is declared at the repin step R (or any earlier repin to a tools tag cut after this PR; §6, §7 release order), and the pin test `test_no_shipped_workflow_declares_it_until_the_image_repin` holds the line until then; receipt `enrichment.structure`; `payload_matches` treats a list `actual` as any-element (the prerequisite for any role filter, §6); the `jats.py` docstring rewrite (§4). No adapter yet: structure only arrives via JSONL or a test. | invariant property tests (nesting, partition with extended ends, half-open, heading block first-in-section); stamp is pure and total (every chunk of a structured doc gets `section_level`, `structure_source`, `structure_version`); owner-selection ties; `section_roles` is the union of own tags along the path with `unknown` dropped beside any other tag (mutation: stamp own tags only → a chunk in a *Methods* subsection lacks `methods` → fails); `content_sha256` mismatch drops the structure; `caption_labels`/`refers_to` normalisation table; schema pin test; `Document.model_dump()` byte-identical when `structure is None`; `JsonlLoader` and `ingest_jsonl` both drop an invalid structure with a counted reason and keep the document, and ignore the key byte-for-byte when absent; the same structured shard stamps identically through `prepare_documents`, `iter_embed_source` and `ingest_jsonl` (the parity test feeds one shard to all three); `payload_matches` list test plus a conformance case; mutation: remove the validation and the test fails. |
 | **2 — Markdown raw mode on both paths** | `markdown/1` raw mode in `attach_structure` under the `[markdown]` extra (preset + `table` + `front_matter` + `dollarmath`; BOM-shifted parse; title-only heading blocks; extended section ends; `Section.rank` recorded, never stamped); the refusal when the extra is missing and the adapter was asked for; parity test growth. | adversarial fixture (the one in `test_extract_text_parity.py`: BOM, front matter, CRLF, fences containing `#`, setext headings, tables, images, `$$` maths); front matter is a `front_matter` block and **not** a heading; heading blocks equal titles after inline-markup removal; structure built by `ingest_shard` from the shard equals the in-process structure field for field; stamped metadata identical on both paths; `STRUCTURE_METADATA=on` without the extra: refused, and `content` untouched. |
-| **3 — registry resolution in `embed_shard.py`** (new; before any marker exists) | `embed_shard.py` gains `ingest_target.add_arguments` and, with `--collection-id`, `ingest_target.resolve_or_exit` plus the same build-spec check `ingest_shard.py` passes (method, size, overlap, model); no store contact (`require_store_urls` is not called); `--create-via-api` refused; `size_unit` from the entry as `ingest_shard._size_unit` does, a contradicting `--chunk-size-unit` refused by the `ingest_jsonl._refuse_size_unit_mismatch` rule; the load-side size-unit comparison (`check_build` compares only method/size/overlap/model/dim, so this closes a pre-existing hole); the embedding-file header gains a `chunking` object (`collection_id` as resolved, method/size/overlap/size unit as applied); `load_embeddings.py` refuses a header whose `collection_id` or applied chunking contradicts the entry before any write (skipped, logged, under the memory backend); CWL: `pdf-ingest.cwl` and `jats-ingest.cwl` wire their existing `collection_id` and `registry` (or `registry_db` via the load step's `EnvVarRequirement`) into the embed step; `embed-bulk.cwl` gains optional `collection_id` and `registry` inputs (a workflow contract change, §7 release order); `gowe_batch_ingest.py` learns to read whether the submitted workflow's `embed_shard.py` step binds `collection_id` (used by PR 4's pre-check). | resolved run: chunker built from the entry, contradicting `--chunk-size` / `--chunk-size-unit` exits 2 before any embed (mutation: drop the build check → a contradicting flag embeds → fails); unresolved run (no `--collection-id`) is byte-identical to today's output apart from the header's `chunking` object; the embed step resolves the same entry as the load step for each of the three workflows (cwltool on a scratch sqlite registry); `load_embeddings` refuses a header naming another `collection_id` (mutation: drop the check → loads → fails); `load_embeddings` refuses a `sentence`/`words` file whose header's applied `size_unit` contradicts the entry (read method-conditionally, as `ingest_shard._size_unit`), and accepts any `size_unit` on a `fixed_token` entry (mutation: compare unconditionally → a `fixed_token` file with a junk unit is refused → fails; drop the comparison → a `tokens` file loads into a `chars` entry → fails); an old header (no `chunking` object) on an unmarked entry loads exactly as today; the workflow-wiring reader recognises the wired and unwired forms of all three workflow texts. |
-| **4 — `text_render` and the one reader** | `structure_from_params` (returns the four markers — `text_render`, `structure_cuts`, `embed_heading_path`, `structure_infer` — plus `needs_structure`); `text_render="markdown-plain/1"` stripped mode, applied at ingest from the record's suffix; API create validation and explicit recording; `ingest_shard`, `embed_shard` (through PR 3's resolved entry) and `ingest_jsonl` read through the reader and refuse contradicting flags; **path C backstops** (§7): the header's `chunking` object gains the markers as applied, `load_embeddings.py` refuses a marker mismatch between header and entry before any write, `gowe_batch_ingest.py` refuses a marked collection **before submitting** unless the workflow's `embed_shard.py` step binds `collection_id` (PR 3's reader), and the API's GoWe dispatch refuses a marked collection on a workflow whose `embed_shard.py` step is unwired; receipt `chunking` keys; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title exactly; absent marker → `content` byte-identical to `TextFileLoader` on both paths; the GoWe shard is identical with and without the marker (the extract step does not see it); unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven); **`load_embeddings` refuses** an embedding file whose header shows no markers against an entry that records one, and the reverse, with nothing written (mutation: drop the check → a marked entry accepts an unmarked file → fails); an unmarked entry with an old header (no `chunking` object) loads exactly as today; a marked entry chunks and embeds identically through `ingest_shard`, `embed_shard` (resolved) and `ingest_jsonl` (the markers' parity test); `gowe_batch_ingest.py` exits before any submission for a marked entry on an unwired workflow and submits on a wired one (mutation: drop the pre-check → a submission is built for the unwired text → fails). |
+| **3 — registry resolution in `embed_shard.py`** (new; before any marker exists) | `embed_shard.py` gains `ingest_target.add_arguments` and, with `--collection-id`, `ingest_target.resolve_or_exit` plus the same build-spec check `ingest_shard.py` passes (method, size, overlap, model); no store contact (`require_store_urls` is not called); `--create-via-api` refused; `size_unit` from the entry as `ingest_shard._size_unit` does, a contradicting `--chunk-size-unit` refused by the `ingest_jsonl._refuse_size_unit_mismatch` rule; the load-side size-unit comparison (`check_build` compares only method/size/overlap/model/dim, so this closes a pre-existing hole); the embedding-file header gains a `chunking` object (`collection_id` as resolved, method/size/overlap/size unit as applied); `load_embeddings.py` refuses a header whose `collection_id` or applied chunking contradicts the entry before any write (skipped, logged, under the memory backend); CWL: **none in this PR** — a pin test asserts no shipped embed step binds `collection_id` (R flips it); the CWL changes below are specified here and land at R (§7 release order): `pdf-ingest.cwl` and `jats-ingest.cwl` wire their existing `collection_id` and `registry` (or `registry_db` via the load step's `EnvVarRequirement`) into the embed step; `embed-bulk.cwl` gains optional `collection_id` and `registry` inputs (a workflow contract change, §7 release order); `gowe_batch_ingest.py` learns to read whether the submitted workflow's `embed_shard.py` step binds `collection_id` (used by PR 4's pre-check). | resolved run: chunker built from the entry, contradicting `--chunk-size` / `--chunk-size-unit` exits 2 before any embed (mutation: drop the build check → a contradicting flag embeds → fails); unresolved run (no `--collection-id`) is byte-identical to today's output apart from the header's `chunking` object; `load_embeddings` refuses a header naming another `collection_id` (mutation: drop the check → loads → fails); `load_embeddings` refuses a `sentence`/`words` file whose header's applied `size_unit` contradicts the entry (read method-conditionally, as `ingest_shard._size_unit`), and accepts any `size_unit` on a `fixed_token` entry (mutation: compare unconditionally → a `fixed_token` file with a junk unit is refused → fails; drop the comparison → a `tokens` file loads into a `chars` entry → fails); an old header (no `chunking` object) on an unmarked entry loads exactly as today; the workflow-wiring reader recognises the unwired form of all three shipped workflow texts and the wired forms as **test fixtures** (no shipped text is wired until R); the pin: no shipped CWL's embed step binds `collection_id` (flipped at R). The cwltool test that the embed step resolves the same entry as the load step needs wired texts and is R's. |
+| **4 — `text_render` and the one reader** | `structure_from_params` (returns the four markers — `text_render`, `structure_cuts`, `embed_heading_path`, `structure_infer` — plus `needs_structure`); `text_render="markdown-plain/1"` stripped mode, applied at ingest from the record's suffix; API create validation and explicit recording; `ingest_shard`, `embed_shard` (through PR 3's resolved entry) and `ingest_jsonl` read through the reader and refuse contradicting flags; **path C backstops** (§7): the header's `chunking` object gains the markers as applied, `load_embeddings.py` refuses a marker mismatch between header and entry before any write, `gowe_batch_ingest.py` refuses a marked collection **before submitting** unless the workflow's `embed_shard.py` step binds `collection_id` (PR 3's reader), and the API's GoWe dispatch refuses a marked collection on a workflow whose `embed_shard.py` step is unwired; receipt `chunking` keys; `CHUNKING.md` section. | every-word-survives test (links, code, cells, math); heading block text equals title exactly; absent marker → `content` byte-identical to `TextFileLoader` on both paths; the GoWe shard is identical with and without the marker (the extract step does not see it); unknown value → 400 / exit 2; `chunk_descriptor` changes with the marker (identity proven); **`load_embeddings` refuses** an embedding file whose header shows no markers against an entry that records one, and the reverse, with nothing written (mutation: drop the check → a marked entry accepts an unmarked file → fails); an unmarked entry with an old header (no `chunking` object) loads exactly as today; a marked entry chunks and embeds identically through `ingest_shard`, `embed_shard` (resolved) and `ingest_jsonl` (the markers' parity test); `gowe_batch_ingest.py` exits before any submission for a marked entry on an unwired workflow (a shipped text) and builds a submission for a wired one (a **fixture text**: no shipped text is wired until R) (mutation: drop the pre-check → a submission is built for the unwired text → fails). |
+| **R — tools-image repin** (release step, ADR-0010; not a feature PR) | The first tools tag cut from a tree containing PRs 1–4, so the image at T carries PR 3's `embed_shard.py` and PR 4's reader, as §7's ordering paragraph defines T; R therefore sits after PR 4. On the repin branch: every `dockerPull`/`dockerImageId` and `cwl/tool-image.receipt.json` name that image; every shard-tool workflow declares `structure_metadata`; `pdf-ingest.cwl` and `jats-ingest.cwl` wire `collection_id` and `registry` (or `registry_db` via the load step's `EnvVarRequirement`) into their embed steps; `embed-bulk.cwl` gains its two optional inputs; PR 1's `test_no_shipped_workflow_declares_it_until_the_image_repin` and PR 3's embed-step pin are flipped. `structure_metadata` alone may land earlier, at a repin to any tools tag cut after PR 1 (§7), in which case R carries only the rest. The server release that ships R is a tag S as usual; PR 10's stamp remains the final release of the series. | the embed step resolves the same entry as the load step for each of the three workflows (cwltool on a scratch sqlite registry; moved from PR 3); `gowe_batch_ingest.py` submits for a marked entry on each shipped, now-wired text (the wired half of PR 4's pre-check test, now on real texts); the flipped pins assert the inputs and bindings are present; a scratch GoWe ingest on a non-production tenant whose receipt and embedding-file header show the keys, before any marked collection is created on a GoWe tenant (§7). |
 | **5a — JATS parity (#833 items 1–2), a contract change** | `.xml` → `JatsLoader` in the registry; the in-process unknown-suffix fallback becomes a refusal with the shared error. Contract first: `contracts/openapi.yaml` wording for `/v1/ingest` by reference (a file with no loader is a failed item with `no loader for <suffix>`, where today it is ingested as text), a conformance case, then the Python change and the Go side's equivalent. | three-path parity test for a JATS fixture (in-process, `pdf_extract.py`, `jats_extract.py`): same `content`, same doc id, same metadata subset; unknown suffix refused identically on A and B; the conformance case passes against both implementations. |
 | **5b — JATS adapter** | `jats/1` from `Span` + `sec-type` → `declared/1` (split on `\|`, multiple tags); unit-record structures, whose `section_title` is the caption label (Q13); `jats_extract.py` writes the `structure` key on every record, and its `--spans-out` help and module docstring are rewritten (§4: the side file becomes a debugging duplicate of the key). | fixture with untitled `<sec>`, nested `<sec>`, `sec-type` present and absent, floats in `<floats-group>`; untitled section is a first-class section; `section_title` on article chunks is the heading, not the unit suffix; `materials\|methods` gives `[materials, methods]`; declared roles never overwritten or added to by rules. |
 | **6 — accuracy-check harness** | `scripts/eval/structure_accuracy.py`: label format (own role tags per section), per-tag κ / PABAK, the §10 metrics including the per-tag chunk-level gate (document-clustered Wilson interval) and the own-tag section diagnostic, the public export with the part-4 allow-list discipline; the labelling run itself is an owner-scheduled activity, its record a results directory. | metrics on a synthetic labelled fixture; the exporter refuses any string that is not a short safe token. |
@@ -1075,7 +1119,9 @@ every carrier hop is proven before the next adapter needs it.
 
 PRs 1–2 deliver the owner's minimum (section type as metadata, on Markdown, on both paths).
 PR 3 makes path C read the registry the way every other path does, before any marker exists to
-be missed; PR 4 adds the markers on all four paths at once. PRs 5a–6 make JATS and the accuracy
+be missed; PR 4 adds the markers on paths A, B and D at once, and on path C through the operator
+workflows once R wires their embed steps. R is the release step that repins the tools image and
+carries every CWL edit of PRs 1–4. PRs 5a–6 make JATS and the accuracy
 check real. PR 7 is the chunking change. PR 8 is the only one that can be wrong about a
 document, and it lands after the thing that measures it. (The draft numbered these 1–9 with
 PR 3 absent; old PR 3 is now 4, 4a/4b are 5a/5b, and 5–9 are 6–10.)
@@ -1096,7 +1142,8 @@ PR 3 absent; old PR 3 is now 4, 4a/4b are 5a/5b, and 5–9 are 6–10.)
   re-ingest, outside this series.
 - **A marker is a new collection**, by content address, exactly as `size_cap` is. Nothing
   converts in place; the UI's create form gains the three fields the way it gained `size_cap`.
-  A marked collection behaves the same on all four ingest paths once PR 3 and PR 4 ship (§7).
+  A marked collection behaves the same on all four ingest paths once PR 3 and PR 4 ship and the
+  repin step R wires the operator workflows' embed steps (§7, §12).
 - **Old receipts, manifests, embedding files and archives read unchanged**: every new key is
   optional and omitted when absent (`chunking`/`enrichment` precedent; an embedding file without
   the header's `chunking` object loads into an unmarked entry exactly as today). The archive
@@ -1108,8 +1155,10 @@ PR 3 absent; old PR 3 is now 4, 4a/4b are 5a/5b, and 5–9 are 6–10.)
   wired workflow, and the backstops refuse them otherwise.
 - **Workflow contracts.** `embed-bulk.cwl` gains two optional inputs (`collection_id`,
   `registry`); `jats-ingest.cwl` and `pdf-ingest.cwl` gain no workflow input, only bindings in
-  their embed step. All of them ship stamped in the server release at tag S, after the tools
-  image at tag T (ADR-0010, §7): a workflow text that passes `--collection-id` to an image older
+  their embed step; PR 1's `structure_metadata` input is declared by every shard-tool workflow.
+  Each lands only once the image the CWL names carries the flag it binds (ADR-0010 decision 4;
+  #765, #784; §7) — in this series at the repin step R (§12) — and ships stamped in the server release at tag
+  S, after the tools image at tag T: a workflow text that passes `--collection-id` to an image older
   than PR 3 fails at argparse, loudly, and a stamped release never pairs them.
 - **The embed step now needs the registry, per scatter task** — a worker-group precondition.
   For `jats-ingest.cwl` the sqlite `registry_db` is staged into every embed task through the
@@ -1241,8 +1290,9 @@ consequence for this note. Where a decision changed the recommendation, the chan
     resolution with #563's registry name), and builds its chunker and markers from the collection's spec through
     `structure_from_params`. The draft's refuse-on-path-C gates stay as backstops for old images,
     old workflow texts and hand-run submissions. *Consequence:* PR 3 is new and lands before the
-    markers (PR 4); once both ship, `structure_infer` and the other three markers work on all four
-    paths (§7, §8); the release order is the tools image at tag T, then the server release at tag
+    markers (PR 4); once both ship and the repin step R wires the operator workflows' embed
+    steps (§12), `structure_infer` and the other three markers work on all four paths (§7, §8);
+    the release order is the tools image at tag T, then the server release at tag
     S, which stamps and ships every CWL text — `embed-bulk.cwl`'s new optional inputs, a workflow
     contract change, included — and operators submit from that stamped tree (§7, §13). Path A calls the same library code
     in-process rather than invoking the CWL tool, and the parity tests (#833) are what prove the
