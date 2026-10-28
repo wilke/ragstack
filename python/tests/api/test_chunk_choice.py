@@ -60,6 +60,18 @@ def test_frontend_offers_exactly_the_server_chunk_methods():
     )
 
 
+def test_frontend_cap_splits_match_the_server():
+    """CAP_SPLITS is mirrored in TypeScript for the same reason as the method
+    list; a split added server-side must reach the picker."""
+    from ragstack.ingestion.chunkers import CAP_SPLITS
+
+    if not _TS.exists():  # pragma: no cover - python-only checkout
+        pytest.skip(f"frontend not present at {_TS}")
+    m = re.search(r"export const CAP_SPLITS = \[(.*?)\]", _TS.read_text(encoding="utf-8"), re.DOTALL)
+    assert m, "CAP_SPLITS array not found in frontend/src/lib/chunkers.ts"
+    assert tuple(re.findall(r'"([a-z_]+)"', m.group(1))) == tuple(CAP_SPLITS)
+
+
 # --------------------------------------------------------------------------- #
 # 2. A targeted ingest uses the COLLECTION's chunker (unit, offline)
 # --------------------------------------------------------------------------- #

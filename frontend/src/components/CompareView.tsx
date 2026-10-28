@@ -1,3 +1,4 @@
+import { describeSemanticCap } from "../lib/chunkers";
 import { MAX_TOPK } from "./QueryOptionsMenu";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -919,6 +920,22 @@ function LaneAnswer({ text }: { text: string }) {
   );
 }
 
+// The "model · dims · chunking · provenance" line under a lane's collection id.
+// A semantic collection names its recorded cap instead of the registry size,
+// which never applied to it (#829).
+export function LaneFacts({ c }: { c: CollectionInfo }) {
+  const p = c.provenance;
+  const method = p?.chunk_method ?? c.chunk_method;
+  const cap = describeSemanticCap(c);
+  return (
+    <div className="truncate">
+      {c.model.split("/").pop()} · {c.dim}d
+      {method ? ` · ${method}${cap ? " · " + cap : p?.chunk_size ? "/" + p.chunk_size : ""}` : ""}
+      {p ? (p.source === "ingest" ? " · verified" : " · config") : ""}
+    </div>
+  );
+}
+
 export function CompareView({
   apiKey,
   setApiKey,
@@ -1263,8 +1280,6 @@ export function CompareView({
               const isPreferred = preferred === lane.key;
               const target = laneTarget(lane);
               const c = targetInfo(collections.data, target);
-              const p = c?.provenance;
-              const method = p?.chunk_method ?? c?.chunk_method;
               return (
                 <div key={lane.key} className="bg-white px-5 pb-6 pt-[18px]">
                   {/* Lane header: letter badge · collection picker · remove */}
@@ -1303,13 +1318,7 @@ export function CompareView({
                     <div className="truncate" title={target.id ?? undefined}>
                       {target.id ?? "—"}
                     </div>
-                    {c ? (
-                      <div className="truncate">
-                        {c.model.split("/").pop()} · {c.dim}d
-                        {method ? ` · ${method}${p?.chunk_size ? "/" + p.chunk_size : ""}` : ""}
-                        {p ? (p.source === "ingest" ? " · verified" : " · config") : ""}
-                      </div>
-                    ) : null}
+                    {c ? <LaneFacts c={c} /> : null}
                   </div>
 
                   {/* Config chips + the per-lane edit popover */}

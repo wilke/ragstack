@@ -73,6 +73,15 @@ fixed when the collection is created — like the name, it is not editable later
 - **Chunk strategy.** Leave it on **Server default (recommended)**. The other
   option, **Choose a strategy (admin only)**, is exactly what it says; picking it
   without an admin credential returns a refusal.
+  For the two **Semantic** chunkers the form also shows **Max chunk size
+  (tokens)** and **Split oversized blocks** (greedy, balanced or topic). The size
+  is an upper bound on every chunk, counted in the embedding model's own tokens;
+  leave it blank for the server's default. A size above the embedding model's limit is
+  refused: when the server already knows that limit, as soon as you create the
+  collection, otherwise at the first upload. The form shows the server's reason as is. Both are fixed at
+  creation and listed afterwards with the collection's chunking (for example
+  `semantic · cap 512 tok · greedy split`); a semantic collection made before the
+  cap existed reads `uncapped (legacy)`. See [CHUNKING.md](CHUNKING.md#the-semantic-size-cap).
 
 The collection is **private to you** the moment it exists. Nobody else can read it,
 or even tell that it exists, until you share it.

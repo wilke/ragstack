@@ -26,10 +26,10 @@ export const CHUNK_METHODS = [
 export type ChunkMethod = (typeof CHUNK_METHODS)[number];
 
 // Methods whose boundaries come from embedding-similarity breakpoints rather
-// than a size budget. The form does not send `size`/`overlap` for these: the
-// server records the deployment's default size as the collection's token cap
-// (size_cap, #829 — clamped to a known window budget), and semantic chunks do
-// not overlap. Letting the user choose the cap here is a separate follow-up.
+// than a size budget. Their `size` is a per-chunk TOKEN CAP (size_cap, #829);
+// the form sends it only when the user fills it in (blank = the server records
+// its deployment default, clamped to a known window budget), and never sends an
+// `overlap` — semantic chunks do not overlap.
 const SEMANTIC_METHODS: readonly string[] = ["semantic", "semantic_pooled"];
 
 export function isSemanticMethod(method: string): boolean {
@@ -145,6 +145,26 @@ export const SEMANTIC_PARAMS: readonly SemanticParamSpec[] = [
   },
 ];
 
+// How a semantic block over the cap is split (chunk.params.cap_split, #829).
+// Mirrors CAP_SPLITS in python/ragstack/ingestion/chunkers.py (parity test:
+// python/tests/api/test_chunk_choice.py).
+export const CAP_SPLITS = ["greedy", "balanced", "topic"] as const;
+export type CapSplit = (typeof CAP_SPLITS)[number];
+export const DEFAULT_CAP_SPLIT: CapSplit = "greedy";
+
+export const CAP_SPLIT_HELP: Record<CapSplit, string> = {
+  greedy: "Fill each chunk up to the cap, then start the next. The default.",
+  balanced: "Cut an oversized block into evenly sized pieces.",
+  topic: "Cut an oversized block at its own largest topic shifts.",
+};
+
+// Far above any embedding window; stops a typo or an unsafe integer reaching the server.
+export const MAX_CAP_TOKENS = 1_000_000;
+
+export function isCapSplit(v: string): v is CapSplit {
+  return (CAP_SPLITS as readonly string[]).includes(v);
+}
+
 // --- Form state -------------------------------------------------------------
 // Everything is a string: these are raw <input> values, validated on submit so a
 // half-typed number never becomes NaN in the request body.
@@ -153,6 +173,9 @@ export interface ChunkForm {
   size: string;
   overlap: string;
   params: Record<string, string>;
+  // Semantic methods only. capSize blank = send no size (server default).
+  capSize: string;
+  capSplit: CapSplit;
 }
 
 // The one-click common path stays exactly what the UI used to hardcode.
@@ -161,6 +184,8 @@ export const DEFAULT_CHUNK_FORM: ChunkForm = {
   size: "512",
   overlap: "64",
   params: {},
+  capSize: "",
+  capSplit: DEFAULT_CAP_SPLIT,
 };
 
 function parseIntStrict(raw: string): number | null {
@@ -199,6 +224,15 @@ export function validateChunkForm(form: ChunkForm): string | null {
     if (size !== -1 && overlap >= size)
       return "Overlap must be smaller than the chunk size, or chunking never advances.";
   } else {
+    const cap = form.capSize.trim();
+    if (cap !== "") {
+      const v = parseIntStrict(cap);
+      if (v === null) return "Max chunk size must be a whole number of tokens.";
+      if (v < 1) return "Max chunk size must be at least 1 token.";
+      if (!Number.isSafeInteger(v) || v > MAX_CAP_TOKENS)
+        return `Max chunk size cannot exceed ${MAX_CAP_TOKENS.toLocaleString("en-US")} tokens.`;
+    }
+    if (!isCapSplit(form.capSplit)) return `Unknown split method "${form.capSplit}".`;
     for (const spec of SEMANTIC_PARAMS) {
       const raw = (form.params[spec.key] ?? "").trim();
       if (raw === "") continue; // blank → omitted → server default
@@ -217,7 +251,7 @@ export interface ChunkConfigBody {
   method: string;
   size?: number;
   overlap?: number;
-  params?: Record<string, number>;
+  params?: Record<string, number | string>;
 }
 
 /**
@@ -238,14 +272,20 @@ export function buildChunkConfig(form: ChunkForm): ChunkConfigBody {
       overlap: parseIntStrict(form.overlap) ?? undefined,
     };
   }
-  const params: Record<string, number> = {};
+  const params: Record<string, number | string> = {};
   for (const spec of SEMANTIC_PARAMS) {
     const raw = (form.params[spec.key] ?? "").trim();
     if (raw === "") continue;
     const v = spec.integer ? parseIntStrict(raw) : parseNumStrict(raw);
     if (v !== null) params[spec.key] = v;
   }
+  // cap_split is sent only when changed from the default. The server records
+  // the default concretely either way (setdefault in _normalise_chunk), so the
+  // spec hash is identical; omitting it keeps the default request unchanged.
+  if (form.capSplit !== DEFAULT_CAP_SPLIT) params.cap_split = form.capSplit;
   const body: ChunkConfigBody = { method: form.method };
+  const cap = parseIntStrict(form.capSize);
+  if (cap !== null && form.capSize.trim() !== "") body.size = cap;
   if (Object.keys(params).length > 0) body.params = params;
   return body;
 }
@@ -267,6 +307,23 @@ export interface ChunkingSource {
 }
 
 /**
+ * What a semantic collection recorded about its size cap: `cap 512 tok · greedy
+ * split`, or `uncapped (legacy)` when its params carry no `size_cap` (created
+ * before #829; its chunks were never bounded). "" for other methods, and when
+ * no params are known at all (no provenance), so nothing is claimed untruthfully.
+ */
+export function describeSemanticCap(c: ChunkingSource): string {
+  const p = c.provenance ?? null;
+  const method = p?.chunk_method ?? c.chunk_method ?? "";
+  if (!isSemanticMethod(method) || !p?.chunk_params) return "";
+  const raw = p.chunk_params;
+  if (raw.size_cap !== "tokens") return "uncapped (legacy)";
+  const size = p.chunk_size ?? c.chunk_size ?? null;
+  const split = typeof raw.cap_split === "string" ? raw.cap_split : DEFAULT_CAP_SPLIT;
+  return `${size != null ? `cap ${size} tok` : "capped"} · ${split} split`;
+}
+
+/**
  * One-line "how was this collection built" summary, e.g. `fixed_token · 512/64 tok`
  * or `semantic · buffer 3`. Prefers the manifest (what an ingest actually
  * recorded) over the registry label (what an operator asserted). Empty string
@@ -281,7 +338,9 @@ export function describeChunking(c: ChunkingSource): string {
     const bits = SEMANTIC_PARAMS.map((s) =>
       typeof raw[s.key] === "number" ? `${s.label.toLowerCase()} ${String(raw[s.key])}` : "",
     ).filter(Boolean);
-    return bits.length > 0 ? `${method} · ${bits.join(", ")}` : method;
+    const cap = describeSemanticCap(c);
+    const all = [cap, ...bits].filter(Boolean);
+    return all.length > 0 ? `${method} · ${all.join(", ")}` : method;
   }
   const size = p?.chunk_size ?? c.chunk_size ?? null;
   if (size == null) return method;

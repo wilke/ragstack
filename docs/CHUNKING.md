@@ -150,7 +150,7 @@ without a network call.
 **The default size.** A semantic collection created **without a size** gets
 the deployment's `CHUNK_SIZE` (`Settings.chunk_size`, 512 unless `tenant.env`
 sets it), recorded as a number together with the marker. This includes every
-semantic collection created from the UI, which sends no size, and a create that
+semantic collection created from the UI, which sends no size unless the user sets one, and a create that
 takes a semantic server default.
 
 When `CHUNK_MAX_TOKENS` names the window, a default above the per-chunk budget
