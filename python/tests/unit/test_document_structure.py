@@ -487,6 +487,82 @@ def test_roles_version_lists_every_contributing_producer() -> None:
     assert out["section_roles_version"] == ["declared/1", "rules/1"]
 
 
+def test_roles_version_omits_a_producer_whose_only_tag_was_dropped() -> None:
+    """Decision 6: a declared parent [methods] over an untitled child (rules/1 →
+    unknown, dropped from the union) is versioned by declared/1 alone.
+    MUTATION: list every producer on the path → ["declared/1", "rules/1"] → fails."""
+    em = Emitter()
+    em.section("Methods", 1, roles=["methods"], role_source="declared/1")
+    em.block("lead")
+    em.section(None, 2)
+    em.block("an untitled subsection body")
+    content, structure = em.build()
+    s = _classified(content, structure)
+    assert s.sections[1].roles == ["unknown"] and s.sections[1].role_source == "rules/1"
+    a, b = _range_of(content, "an untitled subsection body")
+    out = stamp(s, a, b, content[a:b])
+    assert out["section_roles"] == ["methods"]
+    assert out["section_roles_version"] == ["declared/1"]
+
+
+def _intro_siblings(n: int) -> list[Section]:
+    em = Emitter()
+    em.section(None, 1)
+    em.block("x")
+    for _ in range(n):
+        em.section("Introduction", 1)
+        em.block("b")
+    return em.build()[1].sections
+
+
+def test_classify_roles_is_linear_in_sibling_count() -> None:
+    """Thousands of same-parent "Introduction" siblings (no installation/usage
+    sibling, so no early exit) must classify in linear time: the structure key
+    is caller-supplied, and a quadratic sibling scan took ~40 s at 4000.
+    Robust on a loaded host: compares 4000 against 500 siblings (8x the work;
+    linear ≈ 8x the time, quadratic ≈ 64x) AND bounds the absolute time
+    generously."""
+    import time
+
+    def timed(n: int) -> float:
+        sections = _intro_siblings(n)
+        t0 = time.perf_counter()
+        classify_roles(sections)
+        took = time.perf_counter() - t0
+        assert all(x.roles == ["introduction"] for x in sections[1:])
+        return took
+
+    timed(200)  # warm-up
+    small = min(timed(500) for _ in range(3))
+    large = min(timed(4000) for _ in range(3))
+    assert large < 2.0, f"4000 siblings took {large:.2f}s"
+    assert large < 25 * max(small, 1e-4), (small, large)
+
+
+def test_stamping_a_3000_introduction_sibling_document_is_fast() -> None:
+    """The whole stamp path (classify, re-validate, index, stamp) on the
+    review's adversarial shape: well under the quadratic version's ~22 s."""
+    import time
+    from collections import Counter
+
+    em = Emitter()
+    em.section(None, 1)
+    em.block("x")
+    for _ in range(3000):
+        em.section("Introduction", 1)
+        em.block("b")
+    content, structure = em.build()
+    doc = Document(id="big", content=content, structure=structure)
+    chunks = RecursiveCharacterChunker(chunk_size=400, chunk_overlap=0).chunk(doc)
+    counts: Counter[str] = Counter()
+    t0 = time.perf_counter()
+    stamp_documents([doc], chunks, counts)
+    took = time.perf_counter() - t0
+    assert counts["chunks_stamped"] == len(chunks) and not any(
+        k.startswith("degraded") for k in counts)
+    assert took < 3.0, f"stamping took {took:.2f}s"
+
+
 def test_owner_is_the_deepest_section_even_against_a_larger_parent_overlap() -> None:
     content, structure = paper()
     s = _classified(content, structure)
@@ -603,7 +679,30 @@ def test_stamp_documents_is_all_or_nothing_per_document() -> None:
     counts: Counter[str] = Counter()
     stamp_documents([doc], chunks, counts)
     assert all(c.metadata == {"section_title": "table-2"} for c in chunks)
-    assert counts["degraded"] == 1 and counts["chunks_stamped"] == 0
+    assert counts["degraded:offsets"] == 1 and counts["chunks_stamped"] == 0
+    rec = structure_provenance(counts)
+    assert rec is not None
+    # Same shape as structure_invalid: a {reason: n} map, present only when non-zero.
+    assert rec["structure"]["degraded"] == {"offsets": 1}
+    assert "structure_invalid" not in rec["structure"]
+
+
+def test_degraded_reason_is_the_exception_class_for_a_non_invariant_failure(
+    monkeypatch,
+) -> None:
+    from collections import Counter
+
+    from ragstack.ingestion import structure as mod
+
+    def boom(*a, **k):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(mod, "classify_roles", boom)
+    content, structure = paper()
+    doc = Document(id="s", content=content, structure=structure)
+    counts: Counter[str] = Counter()
+    stamp_documents([doc], _chunked(doc), counts)
+    assert structure_provenance(counts)["structure"]["degraded"] == {"RuntimeError": 1}
 
 
 def test_provenance_is_none_when_nothing_ran_and_merges_with_the_glossary() -> None:

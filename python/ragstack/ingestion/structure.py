@@ -492,18 +492,19 @@ def classify_roles(sections: list[Section], *, inferred: bool = False) -> None:
     titled_top = [i for i, s in enumerate(sections) if s.level == 1 and s.title is not None]
     first_top = titled_top[0] if titled_top else None
     last_top = titled_top[-1] if titled_top else None
-    siblings: dict[int | None, list[int]] = {}
+    # One pass, O(n): for each parent, how many of its children classify as an
+    # installation/usage section. A per-section rescan of the siblings was
+    # quadratic in sibling count (thousands of "Introduction" siblings under the
+    # 1 MB ceiling took ~90 s per document, on the event loop).
+    is_docs = [s.title is not None and bool({"installation", "usage"} & set(classify_title(s.title)))
+               for s in sections]
+    docs_children: Counter[int | None] = Counter()
     for i, p in enumerate(parents):
-        siblings.setdefault(p, []).append(i)
+        if is_docs[i]:
+            docs_children[p] += 1
 
     def _docs_sibling(i: int) -> bool:
-        for j in siblings[parents[i]]:
-            title = sections[j].title
-            if j == i or title is None:
-                continue
-            if {"installation", "usage"} & set(classify_title(title)):
-                return True
-        return False
+        return docs_children[parents[i]] - (1 if is_docs[i] else 0) > 0
 
     for i, s in enumerate(sections):
         if s.roles is not None:
@@ -787,12 +788,12 @@ def stamp_documents(
     All-or-nothing per document: every stamp is computed before any is
     applied, so a structure that fails at stamp time (or a chunk whose offsets
     do not reproduce its text) leaves that document's chunks exactly as they
-    were — counted under ``degraded`` and logged, never fatal, the
+    were — counted under ``degraded:<reason>`` and logged, never fatal, the
     ``_attach_glossary`` contract.
 
     ``counts`` accumulates the receipt's ``enrichment.structure`` numbers:
     ``adapter:<name>`` per structured document, ``structure_missing`` per
-    document without one, ``chunks_stamped``, ``degraded``."""
+    document without one, ``chunks_stamped``, ``degraded:<reason>``."""
     docs = list(documents)
     by_doc: dict[str, list[Chunk]] = {}
     for c in chunks:
@@ -822,8 +823,11 @@ def stamp_documents(
                         "offsets", f"chunk {c.id} does not reproduce its document text")
                 stamps.append(index.stamp(c.start_char, c.end_char, c.content))
         except Exception as e:  # noqa: BLE001 - degrade the document, never fail the ingest
+            # Counted by reason, like ``structure_invalid``: the invariant
+            # label for a StructureInvalid, else the exception class name.
+            reason = e.reason if isinstance(e, StructureInvalid) else type(e).__name__
             if counts is not None:
-                counts["degraded"] += 1
+                counts[f"degraded:{reason}"] += 1
             log.warning("structure stamp skipped for %r: %s", doc.source or doc.id, e)
             continue
         for c, s in zip(mine, stamps, strict=True):
@@ -838,7 +842,7 @@ def structure_provenance(
     """The ``enrichment.structure`` record (§6) for what the step did since
     ``since``: ``{"structure": {"stamp": "stamp/1", "adapters": {name: n},
     "structure_missing": n, "chunks_stamped": n}}`` (plus ``degraded`` and
-    ``structure_invalid`` counts when non-zero). ``None`` when the step saw no
+    ``structure_invalid``, each a ``{reason: n}`` map, only when non-zero). ``None`` when the step saw no
     document. ``backend`` (the parser that built a structure) arrives with the
     first ingest adapter (PR 2); PR 1 runs none."""
     done = counts - (since or Counter())
@@ -852,8 +856,10 @@ def structure_provenance(
         "structure_missing": missing,
         "chunks_stamped": done["chunks_stamped"],
     }
-    if done["degraded"]:
-        rec["degraded"] = done["degraded"]
+    degraded = {k.split(":", 1)[1]: n for k, n in sorted(done.items())
+                if k.startswith("degraded:")}
+    if degraded:
+        rec["degraded"] = degraded
     invalid = {k.split(":", 1)[1]: n for k, n in sorted(done.items())
                if k.startswith("structure_invalid:")}
     if invalid:

@@ -966,7 +966,8 @@ async def run(
             # and AFTER the segmentation cache, so a cached segmentation stays a
             # pure function of the chunker config.
             if structure_on and chunks:
-                stamp_documents([doc], chunks, structure_counts)
+                # Off the event loop, as in the pipeline (the record is input).
+                await asyncio.to_thread(stamp_documents, [doc], chunks, structure_counts)
             # Chunk-level boilerplate flag/drop, per document — which is also the
             # granularity BoilerplateFilter's all-boilerplate guard needs. Counted
             # into `stats` (and reported in --run-metrics-out and the final line)

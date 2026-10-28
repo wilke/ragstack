@@ -296,7 +296,7 @@ class IngestionPipeline:
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
         produced = len(all_chunks)
-        self._stamp_structure(to_chunk, all_chunks)
+        await self._stamp_structure(to_chunk, all_chunks)
         kept = self._filter_boilerplate(all_chunks, source)
         self._attach_glossary(documents, kept, source)
         return kept, produced
@@ -465,7 +465,7 @@ class IngestionPipeline:
         if self.structure_metadata:
             attach_structure(documents, counts=self.structure_counts)
 
-    def _stamp_structure(self, documents: list[Document], chunks: list[Chunk]) -> None:
+    async def _stamp_structure(self, documents: list[Document], chunks: list[Chunk]) -> None:
         """Stamp the chunks of structured documents (#828 §6). The one helper
         both chunk loops call — :meth:`prepare_documents` (paths A, B) and
         :meth:`iter_embed_source` (path C) — between the chunk loop and
@@ -473,7 +473,10 @@ class IngestionPipeline:
         :func:`~ragstack.ingestion.structure.stamp_documents`. Off → no-op, and
         no chunk gets any structure key."""
         if self.structure_metadata and chunks:
-            stamp_documents(documents, chunks, self.structure_counts)
+            # Off the event loop, beside the chunker: the structure key is
+            # caller-supplied on the by-reference .jsonl path, so its cost
+            # must never stall the loop.
+            await asyncio.to_thread(stamp_documents, documents, chunks, self.structure_counts)
 
     def structure_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
         """The ``enrichment.structure`` step record (#828 §6) for what the step
@@ -581,7 +584,7 @@ class IngestionPipeline:
                 all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
             if not all_chunks:
                 continue
-            self._stamp_structure(group, all_chunks)
+            await self._stamp_structure(group, all_chunks)
             all_chunks = self._filter_boilerplate(all_chunks, source)
             if not all_chunks:
                 continue
