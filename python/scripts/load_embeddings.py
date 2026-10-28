@@ -365,12 +365,14 @@ async def amain(args, target=None) -> int:
     receipts: list = [None] * len(args.embeddings)
 
     # #847 G1: resolved and verified in main(), before any store was built.
+    # Passed only when given, so a load without --glossary-file makes exactly
+    # today's call.
     glossary = getattr(args, "glossary_attach", None)
+    extra = {"glossary": glossary} if glossary is not None else {}
 
     async def _one(i: int, path: str) -> None:
         async with sem:
-            r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant,
-                                    glossary=glossary)
+            r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant, **extra)
         receipts[i] = r
         print(f"[{path}] status={r.status} chunks={r.n_chunks}"
               + (f"  ERROR: {r.error}" if r.error else ""), flush=True)
