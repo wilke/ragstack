@@ -10,7 +10,7 @@ questions (§15). The decisions that moved the design: roles are a **list of tag
 down the section path (`section_roles`, Q4); **no backfill** of any collection (Q12); the
 structure's eventual home is **Shock**, in a later series, and this series only guarantees a
 serialisation that can go there unchanged, its code-point offsets converted to bytes by that
-series (Q1, §4.1); and `embed_shard.py` gains **registry
+series (Q1, §4.1; #837, set up before the open-access and ASM re-ingests); and `embed_shard.py` gains **registry
 resolution in this series** (PR 3), so the markers work on every ingest path (Q14, §7). No
 code. Written for the owner's review before the first PR of the series in §12. It folds in the owner's direction from the #828
 thread (document level, not format level; `Document.structure`; adapters; stamping by offset
@@ -313,7 +313,9 @@ What this series guarantees, so that series converts as little as possible:
    record around it. Its offsets, like `start_char`/`end_char`, are code points, so the Shock
    series will need a code-point→byte conversion (item 2). This series does not record byte
    offsets: they are derivable from `content`, and `content_sha256` verifies that the text they
-   are derived from is the right one (owner-visible item in §15).
+   are derived from is the right one. The owner decided the Shock series stores them (§15,
+   [#837](https://github.com/wilke/ragstack/issues/837)), and that the Shock store is set up
+   before the open-access and ASM re-ingests.
 2. **The offsets are the chunks' offsets.** Sections and blocks index the same `content` that
    `start_char`/`end_char` index, so the text node of `metadata-and-kg.md` §2b serves both
    without a second coordinate system. Offsets are Unicode code-point indices (Python `str`
@@ -1265,9 +1267,11 @@ these to carry the decisions above out; the owner confirmed each.
 - **`--collection-id` on `embed_shard.py` is opt-in per invocation** (§7, §13), so hand runs on
   unregistered scratch stores and existing input files keep working.
 
-**Open for the owner: byte offsets.** Structure offsets, like `start_char`/`end_char`, are
-code points; Shock's indices are byte ranges, so the Shock series needs a code-point→byte
-conversion (§4.1). *Recommendation:* do not record byte offsets in this series. They are
-derivable from `content` at any time, `content_sha256` verifies that the text they are derived
-from is the right one, and recording them now would add a second coordinate system to every
-section, block and chunk before anything reads it.
+**Byte offsets: decided by the owner (2026-10-27) — stored later, in the Shock series.**
+Structure offsets, like `start_char`/`end_char`, are code points; Shock's indices are byte
+ranges, so the Shock series ([#837](https://github.com/wilke/ragstack/issues/837)) adds the
+code-point→byte mapping when it writes text nodes (§4.1). This series records no byte offsets:
+they are derivable from `content` at any time, and `content_sha256` verifies that the text they
+are derived from is the right one. **Ordering:** the Shock store is set up *before* the
+open-access and ASM corpora are re-ingested, so those re-ingests (the only way an existing
+collection gets structure, Q12) write to it from the start rather than being re-ingested twice.
