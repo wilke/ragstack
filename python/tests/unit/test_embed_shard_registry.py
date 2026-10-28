@@ -237,24 +237,34 @@ def test_unresolved_run_is_todays_output_apart_from_the_chunking_object(
         embed, tmp_path, method, unit):
     """Without --collection-id: the header is the old one plus ``chunking`` (no
     ``collection_id`` in it), and every chunk line is byte-identical to the file
-    the same pipeline writes without a ``chunking`` object — i.e. resolution
-    changed nothing about what is chunked or embedded. (That the unresolved
-    chunker still takes the flag's unit is pinned by
-    ``test_chunk_size_unit_cli.test_embed_shard_tokens_is_threaded``.)"""
+    written by a chunker built the pre-PR way (``--chunk-size-unit`` as the
+    unit, no spec) with no ``chunking`` object — i.e. this PR changed nothing
+    about what an unresolved run chunks or embeds."""
     argv = ["--chunk-method", method, "--chunk-size", "120", "--chunk-overlap", "10",
             "--chunk-size-unit", unit]
     rc, out, _ = embed(*argv)
     assert rc == 0
     new = out.read_text(encoding="utf-8").splitlines(keepends=True)
 
-    # The baseline: the tool's own pipeline, written with no chunking object.
+    # The baseline: the tool's pipeline with the chunker built exactly as the
+    # pre-PR ``_build_chunker(args)`` built it (the flag's unit, no spec),
+    # written with no chunking object — the writer then emits the old header.
     import httpx
 
+    from ragstack.ingestion.chunker_config import build_chunker
+
     args = embed_cli.parse_args([str(tmp_path / "shard.jsonl"), *_OFFLINE, *argv])
+    todays_chunker, _c, _m = build_chunker(
+        args.chunk_method, chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
+        model=args.embedding_model, token_backend=args.chunk_token_counter,
+        max_tokens=args.chunk_max_tokens, base_url=args.embedding_url[0],
+        api_key=args.embedding_api_key, size_unit=args.chunk_size_unit,
+    )
 
     async def _baseline():
         async with httpx.AsyncClient() as http:
             pipeline = embed_cli._build_pipeline(args, http)
+            pipeline.chunker = todays_chunker
             await run_embed_shard(pipeline, str(tmp_path / "shard.jsonl"), args.tenant,
                                   "s", tmp_path / "old.emb.jsonl",
                                   group_size=embed_cli._derive_group_size(args))
