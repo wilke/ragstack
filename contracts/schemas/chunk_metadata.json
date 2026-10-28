@@ -128,7 +128,7 @@
     },
     "section_title": {
       "type": ["string", "null"],
-      "description": "The source document's own heading for the section this chunk came from — unrelated to `section`, which is a filter verdict.",
+      "description": "The source document's own heading for the section this chunk came from — unrelated to `section`, which is a filter verdict. Two producers: the JATS unit records (a table/figure record's unit SUFFIX, `table-2`, carried by the passthrough allow-list, on collections ingested before #828), and the document-structure stamp (#828 §6), which writes the OWNING section's title — omitted when that section is untitled — and, on a JATS unit record, the caption label (`Table 2`, decided Q13). `structure_version` tells the two apart.",
       "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
     },
     "is_boilerplate": {
@@ -139,6 +139,62 @@
     "symbol_glossary_version": {
       "type": ["string", "null"],
       "description": "The version of the per-document symbol glossary step that produced this chunk's top-level `symbol_glossary` text field (#754): `rules/1`, or `llm/1:<model>:<prompt hash>` when an offline LLM glossary was cached for the document. Stamped on EVERY chunk of a processed document, including chunks with an empty glossary, so absence means 'never processed' — row-level audit and what makes the backfill resumable.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section_path": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The owning section's heading path: the titles of its titled ancestors and its own title, outermost first (#828; `Install`, `Linux`, `From source`). A LIST, so a scalar filter matches any element. Stamped by the document-structure stamp only on chunks of a document that has a structure, and omitted when the path is empty (an untitled section with no titled ancestor). Absent means 'not processed', never 'no section'.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section_level": {
+      "type": ["integer", "null"],
+      "description": "The owning section's TREE DEPTH (1 = top level), not the heading rank the source wrote (#828, decided Q11). Stamped on every chunk of a structured document. Not a filter-side integer field yet (metadata_schema.KNOWN_INT_FIELDS), so a string filter value is a zero-hit read rather than a 400.",
+      "x-ragstack-elasticsearch": {"type": "long"}
+    },
+    "section_roles": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The `roles/1` tags of the owning section AND every ancestor, sorted and distinct (#828 §5, Q4): a chunk in a subsection of *Methods* carries `methods`. A LIST — `{\"section_roles\": \"methods\"}` matches a chunk tagged `[materials, methods]`. `unknown` appears only alone (nothing on the path could be classified); `other` means a titled section on the path matched no rule. Never empty on a structured document; absent on an unstructured one. A filter on it is only meaningful on a fully covered collection — see `structure_version`.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section_roles_version": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The producers of the tags in `section_roles`, sorted and distinct: `declared/1` (a JATS sec-type map), `rules/1` (the heading rule table), `llm/1:<model>:<prompt hash>`. The first list-valued `*_version` field, so a filter on it means 'some contributing producer was v'.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "section_crossing": {
+      "type": ["boolean", "null"],
+      "description": "Stamped ONLY when true (the `is_boilerplate` precedent, #828 Q10): the chunk overlaps two or more segments — a leaf section, or a parent's own text outside its children — so its text is owned by more than one section. Expected on the first chunk of most titled parents (a heading travels with the following text); not a defect signal. `{\"section_crossing\": false}` matches nothing.",
+      "x-ragstack-elasticsearch": {"type": "boolean"}
+    },
+    "block_types": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The sorted distinct kinds of the structure blocks the chunk overlaps (`prose`, `heading`, `code`, `list`, `quote`, `table`, `figure`, `figure_caption`, `table_caption`, `math`, `front_matter`). A list; omitted when the chunk overlaps no block.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "caption_labels": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The normalised labels (`Figure 3`, `Table S1`) of the figure/table captions whose start lies inside the chunk, sorted and distinct. Omitted when there are none.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "refers_to": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "The figure/table labels CITED in the chunk's own text, normalised to the caption-label form (`Fig. 3`, `FIG 3`, `Figure 3A`, `Figs. 2 and 3` -> `Figure 3`, `Figure 2`), sorted and distinct. Computed from the text but stamped only on chunks of structured documents, so it is versioned with them. Omitted when there are none.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "structure_source": {
+      "type": ["string", "null"],
+      "description": "Where the document's structure came from: `parsed` (a format that states it — Markdown, JATS) or `inferred` (a heuristic — PDF layout, extracted text). The field that lets a filter or an evaluation keep inferred structure out. Stamped on every chunk of a structured document.",
+      "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
+    },
+    "structure_version": {
+      "type": ["string", "null"],
+      "description": "`<adapter>;stamp/<n>`, e.g. `markdown/1;stamp/1`: which adapter built the structure and which stamp rules wrote these fields. Row-level audit like `symbol_glossary_version`; stamping is not collection identity, so a collection re-ingested into with stamping on is PARTIALLY covered and this is how to see it.",
       "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
     },
 

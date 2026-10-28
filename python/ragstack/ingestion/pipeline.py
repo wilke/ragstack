@@ -11,6 +11,11 @@ from typing import Any
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
+from ragstack.ingestion.structure import (
+    attach_structure,
+    stamp_documents,
+    structure_provenance,
+)
 from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
 from ragstack.ingestion.work_identity import (
     POLICY_OFF,
@@ -87,6 +92,7 @@ class IngestionPipeline:
         delete_prior: bool = True,
         glossary_attacher: SymbolGlossaryAttacher | None = None,
         work_identity: WorkIdentityStage | None = None,
+        structure_metadata: bool = False,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -117,6 +123,18 @@ class IngestionPipeline:
         # :meth:`glossary_provenance`, so a manifest or receipt never claims a
         # step that degraded on every batch (#754 review).
         self.glossary_counts: Counter[str] = Counter()
+        # Optional document-structure step (#828; STRUCTURE_METADATA /
+        # --structure-metadata). On: the ingest adapters run after load and DOI
+        # enrichment (``attach_structure``; none exist yet in PR 1, so only a
+        # structure that arrived with the document — the JSONL ``structure``
+        # key — is used), and every chunk of a structured document is stamped
+        # with section/role/block metadata between chunking and the boilerplate
+        # filter (``_stamp_structure``). Payload fields only: content, offsets,
+        # ids and the embedded text are unchanged, so it is not collection
+        # identity (Q3). Off (the default): the path is byte-for-byte what it
+        # was. ``structure_counts`` feeds the receipt's ``enrichment.structure``.
+        self.structure_metadata = structure_metadata
+        self.structure_counts: Counter[str] = Counter()
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
         # shared across collections, so triples must be stamped with it on write
@@ -270,6 +288,7 @@ class IngestionPipeline:
                 else readable_tenants(tenant_id),
                 policy=check.policy, source=source, seen=check.seen,
             )
+        self._attach_structure(to_chunk)
         all_chunks: list[Chunk] = []
         for doc in to_chunk:
             # Run chunking in a worker thread: chunkers are synchronous, and the
@@ -277,6 +296,7 @@ class IngestionPipeline:
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
         produced = len(all_chunks)
+        await self._stamp_structure(to_chunk, all_chunks)
         kept = self._filter_boilerplate(all_chunks, source)
         self._attach_glossary(documents, kept, source)
         return kept, produced
@@ -440,6 +460,38 @@ class IngestionPipeline:
         if result.chunks_with_glossary:
             log.info("ingest %r: symbol glossary %s", source, result.summary())
 
+    def _attach_structure(self, documents: list[Document]) -> None:
+        """Run the ingest adapters (#828 §2) when the structure step is on."""
+        if self.structure_metadata:
+            attach_structure(documents, counts=self.structure_counts)
+
+    async def _stamp_structure(self, documents: list[Document], chunks: list[Chunk]) -> None:
+        """Stamp the chunks of structured documents (#828 §6). The one helper
+        both chunk loops call — :meth:`prepare_documents` (paths A, B) and
+        :meth:`iter_embed_source` (path C) — between the chunk loop and
+        :meth:`_filter_boilerplate`; ``scripts/ingest_jsonl.py`` calls the same
+        :func:`~ragstack.ingestion.structure.stamp_documents`. Off → no-op, and
+        no chunk gets any structure key."""
+        if self.structure_metadata and chunks:
+            # Off the event loop, beside the chunker: the structure key is
+            # caller-supplied on the by-reference .jsonl path, so its cost
+            # must never stall the loop. The worker thread counts into a LOCAL
+            # Counter; the shared one is mutated only here, on the loop thread
+            # — a concurrent job's structure_provenance() iterates it
+            # (Counter.__sub__), and a thread inserting a key mid-iteration
+            # raises "dictionary changed size during iteration".
+            local: Counter[str] = Counter()
+            await asyncio.to_thread(stamp_documents, documents, chunks, local)
+            self.structure_counts.update(local)
+
+    def structure_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
+        """The ``enrichment.structure`` step record (#828 §6) for what the step
+        did since ``since`` (a copy of :attr:`structure_counts`); ``None`` when
+        the step is off or saw no document."""
+        if not self.structure_metadata:
+            return None
+        return structure_provenance(self.structure_counts, since)
+
     def glossary_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
         """The step record for a manifest/receipt ``enrichment`` (ADR-0011), from
         THIS pipeline's attacher, with what it did since ``since`` (a copy of
@@ -529,6 +581,7 @@ class IngestionPipeline:
         there is no prior data to protect)."""
         documents: list[Document] = self.loader.load(source)
         await self._apply_doi_enrichment(documents)
+        self._attach_structure(documents)
         step = max(1, group_size)
         for start in range(0, len(documents), step):
             group = documents[start : start + step]
@@ -537,6 +590,7 @@ class IngestionPipeline:
                 all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
             if not all_chunks:
                 continue
+            await self._stamp_structure(group, all_chunks)
             all_chunks = self._filter_boilerplate(all_chunks, source)
             if not all_chunks:
                 continue

@@ -86,6 +86,7 @@ from ragstack.ingestion.loaders import (
 )
 from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
+from ragstack.ingestion.structure import merge_enrichment, structure_metadata_enabled
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.ingestion.work_identity import (
     DUPLICATE_WORK,
@@ -98,7 +99,7 @@ from ragstack.ingestion.work_identity import (
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.store_routing import es_url_for, qdrant_url_for
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
-from ragstack.tool_image import declared_workflow_inputs
+from ragstack.tool_image import declared_workflow_inputs, names_stamped_image
 from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceClient,
@@ -196,6 +197,7 @@ async def _run_ingest(
         # what THIS job's pipeline did (duck-typed ingestors have none).
         pipeline = getattr(ingestor, "_pipeline", None)
         glossary_before = Counter(getattr(pipeline, "glossary_counts", None) or {})
+        structure_before = Counter(getattr(pipeline, "structure_counts", None) or {})
         results = await ingestor.ingest_manifest(
             manifest, job_id=job_id, tenant_id=tenant_id, **extra
         )
@@ -231,6 +233,11 @@ async def _run_ingest(
         # concurrent jobs on one pipeline, so the delta is approximate there.
         provenance_of = getattr(pipeline, "glossary_provenance", None)
         enrichment = provenance_of(glossary_before) if callable(provenance_of) else None
+        # #828: the structure step's record beside the glossary's, same rule.
+        structure_of = getattr(pipeline, "structure_provenance", None)
+        enrichment = merge_enrichment(
+            enrichment, structure_of(structure_before) if callable(structure_of) else None
+        )
         # Keyed on the SURFACE FLAG, not on `target is None` (#422 passes the
         # surface entry through now). The surface keeps the app-level manifest
         # it has always written — per-collection manifests/versions are for
@@ -791,6 +798,13 @@ def gowe_symbol_glossary(mode: str) -> str:
     return "rules" if mode == "rules" else "off"
 
 
+def gowe_structure_metadata(mode: str) -> str:
+    """The ``structure_metadata`` workflow input for ``STRUCTURE_METADATA``
+    (#828): ``on`` only for exactly ``on``, else ``off`` — the in-process
+    reading (``structure.structure_metadata_enabled``)."""
+    return "on" if structure_metadata_enabled(mode) else "off"
+
+
 def _gowe_inputs(
     entry: CollectionEntry,
     record: CollectionRecord,
@@ -801,6 +815,7 @@ def _gowe_inputs(
     max_chunks: int | None = None,
     duplicate_policy: str = POLICY_OFF,
     declared_inputs: set[str] | None = None,
+    stamped_image: bool = False,
 ) -> dict[str, Any]:
     """Per-job workflow inputs (cwl/pdf-ingest-scatter.cwl): the archive's
     identity (``version``/``collection_id``/``spec_hash``/``job_id``) and the
@@ -874,7 +889,18 @@ def _gowe_inputs(
     is submitted exactly as before. (The image pinned when this landed,
     ragstack-tools-v1.6.10-b1, already takes ``--symbol-glossary``.) An unknown mode is sent as ``off``, which
     is what ``deps._build_glossary_attacher`` turns it into in-process, and
-    never verbatim: the tool's argparse would exit 2 and fail every task."""
+    never verbatim: the tool's argparse would exit 2 and fail every task.
+
+    ``structure_metadata`` (#828): ``STRUCTURE_METADATA``, threaded to the
+    worker's ``--structure-metadata`` — the ``symbol_glossary`` pattern, sent
+    for both values and never verbatim (``gowe_structure_metadata``), with ONE
+    more gate: the registered text must also name a STAMPED tools image
+    (``stamped_image``, ``tool_image.names_stamped_image``; the
+    ``provenance_inputs`` gate, ADR-0010 decision 4). No deployed image takes
+    the flag yet, and an unstamped tree names ``ragstack-worker.sif``, which
+    may be any build; there the input stays null (the CWL declares it
+    optional, so the tool's default ``off`` applies) and the receipt's missing
+    ``enrichment.structure`` is the tell."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -904,6 +930,15 @@ def _gowe_inputs(
         inputs["duplicate_policy"] = duplicate_policy
     if "symbol_glossary" in (declared_inputs or set()):
         inputs["symbol_glossary"] = gowe_symbol_glossary(settings.symbol_glossary_extraction)
+    if "structure_metadata" in (declared_inputs or set()):
+        if stamped_image:
+            inputs["structure_metadata"] = gowe_structure_metadata(settings.structure_metadata)
+        elif structure_metadata_enabled(settings.structure_metadata):
+            log.warning(
+                "STRUCTURE_METADATA=on is not sent to the gowe ingest: the registered "
+                "workflow names no stamped tools image, so its image may predate "
+                "--structure-metadata (ADR-0010); chunks are ingested unstamped"
+            )
     if settings.doi_enrichment_enabled:
         inputs["doi_enrichment"] = True
         if settings.doi_enrichment_mailto:
@@ -1250,7 +1285,8 @@ async def ingest(
                 [WorkItem(item_id=ws_path(uri), source=uri)],
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
                              duplicate_policy=policy,
-                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl)),
+                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl),
+                             stamped_image=names_stamped_image(backend.workflow_cwl)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,
@@ -1718,7 +1754,8 @@ async def ingest_upload(
                 items,
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
                              duplicate_policy=policy,
-                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl)),
+                             declared_inputs=declared_workflow_inputs(backend.workflow_cwl),
+                             stamped_image=names_stamped_image(backend.workflow_cwl)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,

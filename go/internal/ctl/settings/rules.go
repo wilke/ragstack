@@ -131,6 +131,19 @@ const glossaryNote = " The glossary is a separate BM25 field (`symbol_glossary`)
 	"see docs/plans/symbol-glossary.md."
 
 var publicRules = map[string]PublicRule{
+	// #828: document-structure metadata on chunks.
+	"STRUCTURE_METADATA": {
+		Check: oneOf("off", "on"),
+		Scope: ScopeNewIngests,
+		Help: "off|on (default off): stamp section/role/block metadata (section_title, section_path, " +
+			"section_level, section_roles, block_types, caption_labels, refers_to, structure_source, " +
+			"structure_version) on the chunks of documents that carry a structure. Payload fields only: " +
+			"content, chunk ids and vectors are unchanged, so it forks no collection. Applies to documents " +
+			"ingested after `tenant restart <t> --only api`, in-process, and on a gowe tenant only when the " +
+			"registered workflow declares the `structure_metadata` input and names a stamped tools image. " +
+			"Chunks already indexed are never re-stamped (no backfill); a collection re-ingested into is " +
+			"then partially covered. See docs/plans/828-document-structure.md.",
+	},
 	// #754/#763: the per-document symbol glossary.
 	"SYMBOL_GLOSSARY_EXTRACTION": {
 		Check: oneOf("off", "rules"),

@@ -13,13 +13,95 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 
+class Section(BaseModel):
+    """One section of a document's structure (#828, design note §3).
+
+    ``start``/``end`` are a half-open range of Unicode code points into
+    ``Document.content`` — the coordinates ``Chunk.start_char``/``end_char``
+    use — so stamping a chunk is an offset-overlap computation, never a string
+    search. ``level`` is TREE DEPTH (1 = top level), not the heading rank the
+    source wrote; that is ``rank``, kept for debugging only and never stamped.
+    ``path`` holds the titles of the titled ancestors and this section,
+    outermost first (an untitled ancestor contributes nothing). ``roles`` are
+    this section's OWN ``roles/1`` tags — sorted, distinct, never empty, or
+    ``None`` while unclassified; the tags a chunk inherits from the sections
+    above it are added by the stamp, never written back here. The invariants
+    are checked by :func:`ragstack.ingestion.structure.validate_structure`.
+    """
+
+    start: int
+    end: int
+    level: int
+    title: str | None
+    path: list[str]
+    roles: list[str] | None
+    role_source: str | None
+    rank: int | None = None
+    locator: str | None = None
+
+
+#: The block kinds a :class:`Block` may carry (#828 §3).
+BLOCK_KINDS = (
+    "prose", "heading", "code", "list", "quote", "table", "figure",
+    "figure_caption", "table_caption", "math", "front_matter",
+)
+
+
+class Block(BaseModel):
+    """One block of a document's structure: a sequence element, not a tree
+    node. Blocks do not overlap, are sorted by ``start`` and need not cover the
+    text. ``label`` is set on captions only — the normalised label
+    (``Figure 3``, ``Table S1``)."""
+
+    start: int
+    end: int
+    kind: str
+    label: str | None = None
+
+
+#: ``DocumentStructure.schema_version`` this code writes and accepts.
+STRUCTURE_SCHEMA_VERSION = "ragstack.structure/1"
+
+
+class DocumentStructure(BaseModel):
+    """A document's structure as data (#828 §3): a section tree in document
+    pre-order (a container before its first child), a block sequence, where it
+    came from (``structure_source``: ``parsed`` | ``inferred``; ``adapter``: the
+    fine identity, ``markdown/1`` …) and the binding to ONE text
+    (``content_sha256``, the sha256 of the UTF-8 encoding of
+    ``Document.content``). ``model_dump()`` is the serialisation the JSONL
+    ``structure`` key carries and a later Shock series can store unchanged
+    (§4.1); ``schema_version`` versions it."""
+
+    schema_version: str = STRUCTURE_SCHEMA_VERSION
+    content_sha256: str
+    sections: list[Section]
+    blocks: list[Block]
+    structure_source: str
+    adapter: str
+
+
 class Document(BaseModel):
-    """A source document before chunking."""
+    """A source document before chunking.
+
+    ``structure`` (#828) is the document's own structure, or ``None`` =
+    *unknown* (never "one big section"). A ``None`` is OMITTED from
+    ``model_dump()`` — the ``Chunk.symbol_glossary`` / ``ScoredChunk.collection``
+    precedent — so every document dumped without structure is byte-identical to
+    one dumped before the field existed."""
 
     id: str
     content: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     source: str = ""
+    structure: DocumentStructure | SkipJsonSchema[None] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_structure(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if data.get("structure") is None:
+            data.pop("structure", None)
+        return data
 
 
 class Chunk(BaseModel):

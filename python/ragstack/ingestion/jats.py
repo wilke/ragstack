@@ -63,7 +63,11 @@ element, offsets into that text accumulated during the very walk that builds it
 (``article_prose`` and ``section_text`` are thin wrappers over the same walk, so
 the text cannot drift from the spans). Untitled sections and body-lead paragraphs
 are first-class spans — the section boundaries the flat text loses. Spans are
-opt-in (``article_records(..., with_spans=True)``) and never enter a record.
+opt-in (``article_records(..., with_spans=True)``) and never enter a record's
+``metadata``. Since #828 (docs/plans/828-document-structure.md §4) the JATS
+adapter's document structure, built from these spans, travels in the JSONL
+shard as the record's top-level ``structure`` key; the record dicts this module
+returns are unchanged by that (the key is added by the extract tool).
 
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
 carries no lxml guarantee. The one non-stdlib import is
@@ -700,8 +704,12 @@ def article_records(
     :class:`Span` list (offsets into that record's ``text``; ``[]`` when no
     article record is emitted). It is a parallel return, not a record key, on
     purpose: spans are large and are not a filterable field, so they must never
-    reach ``metadata`` or the JSONL shard — the record dicts are identical
-    either way.
+    reach ``metadata`` (what the passthrough allow-list, ``index_metadata`` and
+    the Elasticsearch mapping read) — the record dicts are identical either way.
+    They MAY reach the JSONL shard, but only as the document structure the JATS
+    adapter builds from them, in the record's top-level ``structure`` key
+    (#828 §4, which reverses the earlier "never the shard" half of this rule:
+    the shard is the only carrier from the extract step to the ingest step).
     """
     meta = merge_manifest(front_meta(root), pmcid, manifest)
     spans: list[Span] | None = [] if with_spans else None

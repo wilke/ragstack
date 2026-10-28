@@ -14,7 +14,7 @@ from ragstack.documents import (
 )
 from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.stores.filters import (
-    Not,
+    field_matches,
     payload_matches,
     validate_filter_values,
     validate_filters,
@@ -50,17 +50,8 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     stores/filters.py) and is the whole point for ``is_boilerplate``, a flag
     stamped only when true."""
     validate_filter_values(filters)
-    for key, value in filters.items():
-        actual = chunk.metadata.get(key)
-        if isinstance(value, Not):
-            if actual == value.value:
-                return False
-        elif isinstance(value, (list, tuple, set)):
-            if actual not in value:
-                return False
-        elif actual != value:
-            return False
-    return True
+    # A list-valued field matches by any element (#828; filters.field_matches).
+    return all(field_matches(chunk.metadata.get(key), value) for key, value in filters.items())
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

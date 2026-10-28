@@ -272,6 +272,8 @@ var public = set(
 	"RETRIEVAL_MAX_PER_DOC",
 	"RRF_K",
 	"SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS",
+	// Document-structure chunk metadata (#828; value rule in rules.go).
+	"STRUCTURE_METADATA",
 	// The per-document symbol glossary (#754/#763; value rules in rules.go).
 	"SYMBOL_GLOSSARY_CONFIG_JSON",
 	"SYMBOL_GLOSSARY_EXTRACTION",
