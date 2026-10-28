@@ -147,8 +147,11 @@ class IngestTarget:
         embedding_endpoints: list[str] | None = None,
         corpus: str = "",
         chunk_count: int | None = None,
+        enrichment: dict[str, Any] | None = None,
     ) -> str:
         """Record verified provenance for this store, arming ADR-0002's guard.
+        ``enrichment`` is the manifest's hash-excluded step record (ADR-0011),
+        e.g. the glossary file a load rendered from (#847).
 
         Written from the **registry entry**, so a store built by the bulk path
         and one built by the API are described identically — and so a later API
@@ -172,6 +175,7 @@ class IngestTarget:
             chunk_params=self.spec.chunk_params,
             corpus=corpus,
             chunk_count=chunk_count,
+            enrichment=enrichment,
         )
         write_manifest(manifest_dir, manifest)
         return manifest.spec_hash

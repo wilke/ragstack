@@ -47,6 +47,34 @@ from the collection's route (``QDRANT_COLLECTION_ROUTES`` /
 A collection is required on every backend; ``--vector-backend memory`` needs
 no URL.
 
+**Glossary from a file** (``--glossary-file``, #847 G1): every chunk's
+``symbol_glossary`` field and ``metadata.symbol_glossary_version`` are rendered
+from a ``glossary.jsonl`` (:mod:`ragstack.ingestion.glossary_file`) with the
+file's own config — positional, value-only, ``Glossary.for_chunk`` — instead of
+what the embedding file carries; the stamp is ``<glossary_version>@file/1``.
+Before any store is created or written, every document of every embedding file
+is checked, and one failing document refuses the whole load (exit 2):
+
+* *The text.* An embedding file holds chunks, not documents, so the text a
+  document's chunks were cut from is REASSEMBLED from them (``content`` pasted
+  by ``start_char``, ``ingestion/reassembly.py``, the backfill's procedure) and
+  its ``content_key`` compared with the row's ``text_sha256``. The chunkers
+  slice ``content`` from the document's own spans; when they tile it (every
+  chunker but ``fixed_token`` under a WordPiece tokenizer), the reassembly is
+  exact. When they do not, the row's masked identity (``text_chars`` +
+  ``text_ws_sha256``: whitespace and ignorable characters replaced by spaces,
+  offsets pinned) verifies it as ``verified_ws``. A document neither check
+  verifies is ``unverifiable`` when the reassembly has a gap (e.g.
+  ``--boilerplate drop``), refused unless ``--glossary-allow-unverifiable``,
+  and otherwise a real ``mismatch``, refused regardless.
+* *A document with no row* is refused, never given the rules instead: the file
+  is the record of what is attached, so a silent fallback would load a
+  glossary nothing records, and the absent row is itself evidence that the file
+  was built over another document set.
+
+Without ``--glossary-file`` the chunks load exactly as the embedding file holds
+them.
+
 Usage (substitute the stores you actually mean to write to)::
 
     python scripts/load_embeddings.py shard.s0.emb.jsonl shard.s1.emb.jsonl \
@@ -64,9 +92,16 @@ import sys
 
 from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap, effective_chunk_cap
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
-from ragstack.ingestion.embedding_file import read_header
+from ragstack.ingestion.embedding_file import EmbeddingFileError, read_header
+from ragstack.ingestion.glossary_file import (
+    GlossaryFileError,
+    file_provenance,
+    read_glossary_file,
+    resolve_documents,
+)
 from ragstack.ingestion.load_embeddings import (
     REPLAY_BATCH,
+    GlossaryAttach,
     ReplayRefused,
     run_load_file,
     run_replay,
@@ -74,6 +109,7 @@ from ragstack.ingestion.load_embeddings import (
 )
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
+from ragstack.ingestion.reassembly import Reassembled, reassemble
 from ragstack.ingestion.receipts import merge_summary
 from ragstack.ops import ingest_target
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
@@ -330,9 +366,15 @@ async def amain(args, target=None) -> int:
     sem = asyncio.Semaphore(max(1, args.file_concurrency))
     receipts: list = [None] * len(args.embeddings)
 
+    # #847 G1: resolved and verified in main(), before any store was built.
+    # Passed only when given, so a load without --glossary-file makes exactly
+    # today's call.
+    glossary = getattr(args, "glossary_attach", None)
+    extra = {"glossary": glossary} if glossary is not None else {}
+
     async def _one(i: int, path: str) -> None:
         async with sem:
-            r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant)
+            r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant, **extra)
         receipts[i] = r
         print(f"[{path}] status={r.status} chunks={r.n_chunks}"
               + (f"  ERROR: {r.error}" if r.error else ""), flush=True)
@@ -365,6 +407,9 @@ async def amain(args, target=None) -> int:
             await tindex.refresh()
             print("refresh_interval restored + index refreshed", flush=True)
     summary = merge_summary(receipts)
+    if glossary is not None:
+        # #847 G1: which file every chunk's glossary field was rendered from.
+        summary["glossary_file"] = glossary.provenance
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, sort_keys=True)
     print(f"loaded {summary['n_chunks']} chunk(s) from {summary['n_shards']} file(s); "
@@ -378,6 +423,11 @@ async def amain(args, target=None) -> int:
             manifest_dir,
             corpus=f"{summary['n_shards']} embedding file(s)",
             chunk_count=summary["n_chunks"],
+            # #847 G1: the hash-excluded enrichment record (ADR-0011) names
+            # the glossary file; absent without --glossary-file, as before.
+            **({"enrichment": {"symbol_glossary": {"source": "glossary_file",
+                                                   **glossary.provenance}}}
+               if glossary is not None else {}),
         )
         print(f"wrote provenance manifest ({spec_hash}) to {manifest_dir}", flush=True)
     if args.fail_on_error and summary["n_shards_failed"]:
@@ -480,6 +530,18 @@ def parse_args(argv=None):
                    help="write a provenance manifest here (defaults to "
                         "$COLLECTION_MANIFEST_DIR). Arms ADR-0002's build-spec "
                         "guard for this store; skipped if neither is set")
+    p.add_argument("--glossary-file", default=None,
+                   help="#847: render every chunk's symbol_glossary field and "
+                        "metadata.symbol_glossary_version from this glossary.jsonl "
+                        "(scripts/glossary_file.py) instead of what the embedding files "
+                        "carry. Before any write, each document is reassembled from its "
+                        "chunks and its text_sha256 checked against the file; a mismatch "
+                        "or a document with no row refuses the whole load (exit 2)")
+    p.add_argument("--glossary-allow-unverifiable", action="store_true",
+                   help="with --glossary-file: render documents whose chunks do not "
+                        "reassemble their full text (a gap or a length mismatch, e.g. "
+                        "--boilerplate drop), whose text_sha256 therefore cannot be "
+                        "checked. A complete reassembly that mismatches is refused regardless")
     ingest_target.add_arguments(p)
     add_provenance_arguments(p)
     return p.parse_args(argv)
@@ -505,10 +567,67 @@ def _refuse_header_mismatch(args, target) -> None:
             _refuse(str(e))
 
 
+def _documents_in(paths) -> list[Reassembled]:
+    """Every document of the embedding files, reassembled from its chunks
+    (``content`` + ``start_char``/``end_char``) — the text the chunks were cut
+    from, as far as the chunks can tell (see ``reassembly.reassemble``). Reads
+    line by line and keeps only the text fields, never the vectors. A document
+    split across files (the embed stage never does that) is reassembled from
+    all of its chunks."""
+    by_doc: dict[str, list[dict]] = {}
+    for path in paths:
+        read_header(path)
+        with open(path, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, start=1):
+                if lineno == 1 or not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise EmbeddingFileError(f"{path}:{lineno}: bad chunk: {e}") from e
+                by_doc.setdefault(str(rec.get("doc_id", "")), []).append(
+                    {k: rec.get(k) for k in ("content", "start_char", "end_char")})
+    return [reassemble(doc_id, rows) for doc_id, rows in sorted(by_doc.items())]
+
+
+def _resolve_glossary_file(args) -> GlossaryAttach:
+    """#847 G1: read the glossary file strictly and verify EVERY document of
+    EVERY embedding file against it — before any store is created or written.
+    Exit 2 on an unreadable file, a ``text_sha256`` mismatch, a document with no
+    row, or (without the override) a document whose text cannot be verified."""
+    try:
+        # Validate the whole file first, keeping no row, so a malformed file
+        # fails before any embedding file is parsed; then read it again keeping
+        # only this load's documents. Every load validates the whole file
+        # (twice) — the cost of one file per collection version, shard-wise.
+        read_glossary_file(args.glossary_file, doc_ids=())
+        docs = _documents_in(args.embeddings)
+        gfile = read_glossary_file(args.glossary_file, doc_ids=[d.doc_id for d in docs])
+    except (GlossaryFileError, EmbeddingFileError, OSError) as e:
+        _refuse(f"--glossary-file: {e}")
+    res = resolve_documents(gfile, docs, allow_unverifiable=args.glossary_allow_unverifiable)
+    if res.problems:
+        _refuse(res.refusal(repr(args.glossary_file)))
+    if res.unverified:
+        print(f"glossary file: {len(res.unverified)} document(s) rendered UNVERIFIED "
+              f"(--glossary-allow-unverifiable), e.g. {res.unverified[:5]}",
+              file=sys.stderr, flush=True)
+    c = res.counts()
+    print(f"glossary file {args.glossary_file}: {c['verified']} document(s) verified exactly, "
+          f"{c['verified_ws']} by the masked identity, {c['unverified']} unverified; "
+          "rendering from the file", flush=True)
+    return GlossaryAttach(res.glossaries, gfile.config, file_provenance(gfile, res))
+
+
 def main(argv=None, *, settings=None) -> int:
     args = parse_args(argv)
     if bool(args.replay) == bool(args.embeddings):
         raise SystemExit("give either embedding files or --replay VERSION_DIR..., not both/neither")
+    if args.glossary_file and args.replay:
+        _refuse("--glossary-file applies to embedding files; --replay restores archived "
+                "chunks as they were recorded")
+    if args.glossary_allow_unverifiable and not args.glossary_file:
+        _refuse("--glossary-allow-unverifiable needs --glossary-file")
     if args.replay and args.replay_batch < 1:
         raise SystemExit("--replay-batch must be >= 1")
     if args.vector_backend == "qdrant":
@@ -543,6 +662,10 @@ def main(argv=None, *, settings=None) -> int:
             # forked by a mismatched file.
             print("header chunking check skipped: --vector-backend memory resolves "
                   "no registry entry (#828)", file=sys.stderr, flush=True)
+    if args.glossary_file:
+        # #847 G1: every document verified against the file before amain
+        # builds (ensure_collection) or writes any store.
+        args.glossary_attach = _resolve_glossary_file(args)
     return asyncio.run(amain(args, target))
 
 

@@ -138,7 +138,7 @@
     },
     "symbol_glossary_version": {
       "type": ["string", "null"],
-      "description": "The version of the per-document symbol glossary step that produced this chunk's top-level `symbol_glossary` text field (#754): `rules/1`, or `llm/1:<model>:<prompt hash>` when an offline LLM glossary was cached for the document. Stamped on EVERY chunk of a processed document, including chunks with an empty glossary, so absence means 'never processed' — row-level audit and what makes the backfill resumable.",
+      "description": "The version of the per-document symbol glossary step that produced this chunk's top-level `symbol_glossary` text field (#754): `rules/1`, or `llm/1:<model>:<prompt hash>` when an offline LLM glossary was cached for the document. A chunk rendered at load from a `glossary.jsonl` file (#847) carries the file row's glossary version with the suffix `@file/1`, e.g. `rules/3@file/1`; the `llm/` prefix still marks an LLM glossary. Stamped on EVERY chunk of a processed document, including chunks with an empty glossary, so absence means 'never processed' — row-level audit and what makes the backfill resumable.",
       "x-ragstack-elasticsearch": {"type": "keyword", "ignore_above": 8191}
     },
     "section_path": {
