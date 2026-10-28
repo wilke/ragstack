@@ -377,6 +377,122 @@ def declared_workflow_inputs(cwl: str) -> set[str]:
     return set()
 
 
+#: The script whose step must receive the registry id for path C to read a
+#: collection's spec from the registry (#828 §7).
+EMBED_SHARD_SCRIPT = "embed_shard.py"
+
+
+def _names_script(base_command: Any, script: str) -> bool:
+    """Whether a CWL ``baseCommand`` (a string or a list) names ``script``."""
+    parts = [base_command] if isinstance(base_command, str) else base_command
+    if not isinstance(parts, list):
+        return False
+    return any(isinstance(p, str) and p.rsplit("/", 1)[-1] == script for p in parts)
+
+
+def _step_binds(step_in: Any, name: str) -> bool:
+    """Whether a workflow step's ``in:`` (mapping or list form) binds ``name``."""
+    if isinstance(step_in, dict):
+        return step_in.get(name) is not None
+    if isinstance(step_in, list):
+        return any(isinstance(i, dict) and i.get("id") == name for i in step_in)
+    return False
+
+
+#: The key :func:`embed_shard_step_wiring` reports when the text mentions
+#: ``embed_shard.py`` but no step could be read as running it.
+UNREADABLE_EMBED_STEP = "<unreadable>"
+
+
+def _mentions(node: Any, needle: str) -> bool:
+    """Whether any string key or scalar in a parsed YAML tree contains
+    ``needle`` (comments are gone by now, so a header comment never counts)."""
+    if isinstance(node, str):
+        return needle in node
+    if isinstance(node, dict):
+        return any(_mentions(k, needle) or _mentions(v, needle) for k, v in node.items())
+    if isinstance(node, list):
+        return any(_mentions(v, needle) for v in node)
+    return False
+
+
+def _uncommented_mention(cwl: str, needle: str) -> bool:
+    """Raw-text fallback for text that does not parse: ``needle`` on any line
+    outside a full-line comment."""
+    return any(needle in line for line in cwl.splitlines()
+               if not line.lstrip().startswith("#"))
+
+
+def _read_embed_steps(doc: Any) -> dict[str, bool | None]:
+    if not isinstance(doc, dict):
+        return {}
+    steps = doc.get("steps")
+    if isinstance(steps, dict):
+        items = [(str(k), v) for k, v in steps.items()]
+    elif isinstance(steps, list):
+        items = [(str(s.get("id")), s) for s in steps if isinstance(s, dict)]
+    else:
+        return {}
+    out: dict[str, bool | None] = {}
+    for sid, step in items:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, dict):
+            out[sid] = None
+            continue
+        if _names_script(run.get("baseCommand"), EMBED_SHARD_SCRIPT):
+            out[sid] = _step_binds(step.get("in"), "collection_id")
+    return out
+
+
+def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
+    """For each top-level step of a CWL ``Workflow`` that runs ``embed_shard.py``:
+    does its ``in:`` bind ``collection_id``? (#828 §7, PR 3.)
+
+    A step counts as an ``embed_shard.py`` step when its inline tool's
+    ``baseCommand`` names the script; it is **wired** when the step's ``in:``
+    binds ``collection_id`` — the registry id that lets the tool resolve the
+    collection's spec instead of embedding unresolved. That is a property of the
+    text about to be submitted, which is why the driver can read it reliably and
+    the image's age it cannot.
+
+    Returns ``{step id: wired}``, where ``None`` means "cannot be read from this
+    text", and a caller that must prove wiring treats any ``None`` as unwired
+    (fails closed):
+
+    * a step whose ``run`` is not inline (a reference to another file) is
+      reported under its own id as ``None``;
+    * when no step is recognised as running ``embed_shard.py`` but the script's
+      name still occurs in the document (outside comments), the result is
+      ``{UNREADABLE_EMBED_STEP: None}``. This covers the shapes this reader does
+      not parse: ``$graph``-packed documents (``cwltool --pack``), a script
+      passed through ``arguments:`` rather than ``baseCommand``, a shell
+      ``baseCommand`` (``[bash, -c, "python …/embed_shard.py"]``), an inline
+      nested sub-workflow, and text that is not YAML at all. A mention in a
+      ``doc:`` string also lands here — fail-closed by design.
+
+    Empty (``{}``) only when the text has no embed step and never names the
+    script. Used by ``gowe_batch_ingest.py``; the pre-check that acts on it is
+    #828 PR 4.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - pyyaml is a runtime dependency
+        return ({UNREADABLE_EMBED_STEP: None}
+                if _uncommented_mention(cwl, EMBED_SHARD_SCRIPT) else {})
+    try:
+        doc = yaml.safe_load(cwl)
+    except yaml.YAMLError:
+        return ({UNREADABLE_EMBED_STEP: None}
+                if _uncommented_mention(cwl, EMBED_SHARD_SCRIPT) else {})
+    out = _read_embed_steps(doc)
+    recognised = any(v is not None for v in out.values())
+    if not recognised and _mentions(doc, EMBED_SHARD_SCRIPT):
+        out[UNREADABLE_EMBED_STEP] = None
+    return out
+
+
 def names_stamped_image(cwl: str) -> bool:
     """Whether ``cwl`` names a STAMPED tools image
     (``ragstack-tools-<version>-b<N>.sif``) — the ADR-0010 declaration that the

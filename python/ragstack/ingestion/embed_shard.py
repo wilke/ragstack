@@ -31,6 +31,7 @@ async def run_embed_shard(
     shard_id: str,
     out_path: str | Path,
     group_size: int = 64,
+    chunking: dict | None = None,
 ) -> ShardReceipt:
     """Embed one shard → embedding file at ``out_path``; return its receipt.
 
@@ -53,9 +54,13 @@ async def run_embed_shard(
     should size this so a group yields at least ``len(endpoints) x
     request_batch`` chunks; ``scripts/embed_shard.py`` derives that
     automatically.
+
+    ``chunking`` (#828 PR 3) is written into the embedding-file header as is
+    (omitted when ``None``) — what ``scripts/embed_shard.py`` resolved and
+    applied, which the load step checks against the registry entry.
     """
     out = Path(out_path)
-    writer = EmbeddingFileWriter(out, tenant=tenant)
+    writer = EmbeddingFileWriter(out, tenant=tenant, chunking=chunking)
     chunk_ids: list[str] = []
     doc_ids: set[str] = set()
     try:

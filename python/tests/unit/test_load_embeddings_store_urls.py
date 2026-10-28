@@ -57,6 +57,15 @@ def _settings(explicit=(), **over):
     return SimpleNamespace(**base)
 
 
+def _old_header_file(path: Path) -> None:
+    """A pre-#828 embedding file (no header ``chunking`` object). Since #828
+    PR 3 ``main()`` reads every file's header before the load starts (the
+    header/registry check), so the file the spy-driven tests name must exist;
+    an old header is the one that check passes unconditionally."""
+    path.write_text('{"dim": 4, "schema": "ragstack.embedding_file/v1", "tenant": "public"}\n',
+                    encoding="utf-8")
+
+
 @pytest.fixture
 def run(monkeypatch, tmp_path):
     """Drive ``main()`` with a stubbed registry and a spy in place of ``amain``.
@@ -72,6 +81,7 @@ def run(monkeypatch, tmp_path):
     monkeypatch.setattr(load_cli, "amain", spy)
 
     def _run(argv, *, settings, specs=None):
+        _old_header_file(tmp_path / "e.emb.jsonl")
         monkeypatch.setattr(it, "load_specs",
                             lambda s=None: list(specs if specs is not None else [_spec()]))
         try:
@@ -303,6 +313,9 @@ def test_the_workflow_command_line_passes_both_urls_and_is_accepted(
 
     monkeypatch.delenv("RAGSTACK_COLLECTION_ID", raising=False)
     monkeypatch.setattr(it, "load_specs", lambda s=None: [_spec()])
+    monkeypatch.chdir(tmp_path)  # the CWL values name relative embedding files
+    for f in args.embeddings:
+        _old_header_file(tmp_path / f)
     reached: list = []
 
     async def spy(a, target=None):

@@ -21,6 +21,23 @@ Usage::
         --embedding-url http://localhost:9001 --chunk-method fixed_token \
         --chunk-size 256 --chunk-overlap 32 --out shard.s0.emb.jsonl \
         --receipt receipt.json
+
+**Registry resolution** (#828 PR 3). With ``--collection-id`` (and, as on the
+load step, ``--registry`` for a named registry) the tool resolves the registry
+entry the load step will write into, exactly as ``ingest_shard.py`` does, and
+checks ``--chunk-method``/``--chunk-size``/``--chunk-overlap``/
+``--embedding-model`` against it: a contradicting flag exits 2 before anything
+is embedded. ``size_unit`` then comes from the entry (``sentence``/``words``
+only; a contradicting ``--chunk-size-unit`` exits 2). Resolution reads the
+registry only — no store is contacted — and ``--create-via-api`` is refused,
+since an embed step must not mint a collection. Without ``--collection-id`` the
+tool behaves as before. ``--collection-id`` defaults from
+``RAGSTACK_COLLECTION_ID`` (the shared ``ingest_target.add_arguments``
+behaviour), so setting that variable on a worker turns resolution on; nothing
+sets it today. ``--registry`` without ``--collection-id`` is refused. Either way the embedding-file header carries a
+``chunking`` object: the resolved ``collection_id`` (only when resolved) and the
+method/size/overlap/size unit as applied, which ``load_embeddings.py`` checks
+against the entry before any write.
 """
 from __future__ import annotations
 
@@ -38,6 +55,7 @@ from ragstack.ingestion.chunker_config import (
     CHUNK_SIZE_UNIT_HELP,
     build_chunker,
     needs_embed_fn,
+    size_unit_from_params,
 )
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
@@ -50,10 +68,25 @@ from ragstack.ingestion.structure import (
     structure_metadata_enabled,
 )
 from ragstack.ingestion.symbol_glossary import attacher_from_mode
+from ragstack.ops import ingest_target
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
 
-def _build_chunker(args):
+def _size_unit(args, spec=None) -> str:
+    """What ``chunk_size`` counts. Resolved (a registry ``spec``): from the entry,
+    as ``ingest_shard._size_unit`` reads it — method-conditional, only
+    ``sentence``/``words`` read it, none recorded means ``chars``; ``main`` has
+    already refused a ``--chunk-size-unit`` that contradicts it. Unresolved: the
+    flag, as before #828 PR 3."""
+    if spec is None:
+        return getattr(args, "chunk_size_unit", "chars")
+    try:
+        return size_unit_from_params(args.chunk_method, getattr(spec, "chunk_params", None))
+    except ValueError as e:
+        raise SystemExit(f"collection {e}") from None
+
+
+def _build_chunker(args, spec=None):
     # A LOCAL refusal, on purpose (#609). ingest_shard.py now builds the breakpoint
     # embed bridge and can chunk semantically; THIS tool does not build one, so the
     # semantic methods have nothing to call here whatever a deployment's
@@ -79,13 +112,31 @@ def _build_chunker(args):
         max_tokens=args.chunk_max_tokens,
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
-        size_unit=getattr(args, "chunk_size_unit", "chars"),
+        size_unit=_size_unit(args, spec),
     )
     return chunker
 
 
-def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
-    chunker = _build_chunker(args)  # fail fast on a bad chunk config, before any I/O
+def _applied_chunking(args, chunker, target=None) -> dict:
+    """The header's ``chunking`` object (#828 PR 3): the ``collection_id``
+    resolved (only when one was), and the method, size, overlap and size unit
+    as APPLIED — size, overlap and unit read off the built chunker, so a key a
+    method does not apply (``size_unit`` on ``fixed``/``fixed_token``) is absent
+    rather than echoed from a flag the chunker ignored."""
+    out: dict = {}
+    if target is not None:
+        out["collection_id"] = target.collection_id
+    out["method"] = args.chunk_method
+    out["chunk_size"] = chunker.chunk_size
+    out["chunk_overlap"] = chunker.chunk_overlap
+    unit = getattr(chunker, "size_unit", None)
+    if unit is not None:
+        out["size_unit"] = unit
+    return out
+
+
+def _build_pipeline(args, http: httpx.AsyncClient, spec=None) -> IngestionPipeline:
+    chunker = _build_chunker(args, spec)  # fail fast on a bad chunk config, before any I/O
     # None -> scale with the fleet: 8 in-flight PER endpoint. A fixed total
     # silently caps a wider fleet at a narrower fleet's throughput.
     concurrency = args.embedding_max_concurrency or 8 * max(len(args.embedding_url), 1)
@@ -154,15 +205,18 @@ def _derive_group_size(args) -> int:
     return 128 * max(1, len(args.embedding_url))
 
 
-async def amain(args) -> int:
+async def amain(args, target=None) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
-        pipeline = _build_pipeline(args, http)
+        pipeline = _build_pipeline(args, http,
+                                   spec=target.spec if target is not None else None)
         shard_id = args.shard_id or os.path.basename(args.shard)
         group = args.embed_group_size or _derive_group_size(args)
         receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id,
-                                        args.out, group_size=group)
+                                        args.out, group_size=group,
+                                        chunking=_applied_chunking(args, pipeline.chunker,
+                                                                    target))
     # #754, ADR-0011: what the step DID on this shard (None if off or never
     # applied; a degraded run is recorded with applied_batches: 0).
     receipt.enrichment = merge_enrichment(pipeline.glossary_provenance(),
@@ -244,7 +298,41 @@ def parse_args(argv=None):
                         "JATS/PMC shard: content_type,pmcid,pmid,journal,publisher,"
                         "licence,section_title,sha256,source_url,graphic")
     add_doi_enrichment_args(p)
+    ingest_target.add_arguments(p)
     return p.parse_args(argv)
+
+
+def _resolve_target(args):
+    """The registry entry to embed for (#828 PR 3), or ``None`` without
+    ``--collection-id`` — the behaviour before this PR.
+
+    The same build-spec check ``ingest_shard.py`` passes (method, size, overlap,
+    model), then the ``--chunk-size-unit`` rule ``ingest_jsonl.py`` applies —
+    each a refusal (exit 2) before anything is embedded. No store is contacted:
+    resolution reads the registry, and ``require_store_urls`` is not called,
+    because this tool writes to no store."""
+    if getattr(args, "create_via_api", ""):
+        print("error: --create-via-api is refused by embed_shard.py: an embed step "
+              "must not mint a collection. Create it first (POST /v1/collections), "
+              "then pass its --collection-id.", file=sys.stderr)
+        raise SystemExit(2)
+    if not getattr(args, "collection_id", ""):
+        if getattr(args, "registry", ""):
+            # A registry with nothing to resolve in it is a mis-wired step, not
+            # an unresolved run: refuse rather than silently embed unresolved.
+            print("error: --registry needs --collection-id: embed_shard.py resolves "
+                  "a registry entry only for a named collection id.", file=sys.stderr)
+            raise SystemExit(2)
+        return None
+    target = ingest_target.resolve_or_exit(
+        args,
+        model=args.embedding_model,
+        chunk_method=args.chunk_method,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+    )
+    ingest_target.refuse_size_unit_mismatch(args, target)
+    return target
 
 
 def main(argv=None) -> int:
@@ -252,7 +340,8 @@ def main(argv=None) -> int:
     # #828 §6: a missing [markdown] extra with --structure-metadata on is a
     # refusal at configuration (exit 2), never a shard embedded unstructured.
     require_structure_backends_or_exit(args.structure_metadata)
-    return asyncio.run(amain(args))
+    target = _resolve_target(args)
+    return asyncio.run(amain(args, target))
 
 
 if __name__ == "__main__":
