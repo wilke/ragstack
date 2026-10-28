@@ -92,6 +92,7 @@ from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.structure import (
     attach_structure,
+    require_structure_backends_or_exit,
     stamp_documents,
     structure_from_record,
     structure_metadata_enabled,
@@ -655,7 +656,7 @@ async def run(
     # --structure-metadata off|on (#828). Off (the default): a record's
     # ``structure`` key is still validated and carried on the Document (and
     # counted when dropped), but no chunk is stamped. On: the ingest adapters
-    # run (none exist in PR 1) and every chunk of a structured document gets
+    # run (Markdown raw mode for `.md` records) and every chunk of a structured document gets
     # the section/role/block metadata, through the same stamp_documents the
     # pipeline's two chunk loops call. getattr: hand-built Namespaces (tests).
     structure_on = structure_metadata_enabled(getattr(args, "structure_metadata", "off"))
@@ -956,6 +957,16 @@ async def run(
             # embed bridge is safe for concurrent callers (one background loop);
             # seg_cache is thread-safe. On a cache hit the breakpoint embed is skipped.
             async with chunk_sem:
+                # #828 §2: the ingest adapters (Markdown raw mode for a `.md`
+                # record) run before chunking, off the loop and inside the
+                # semaphore like the chunker, counting into a LOCAL Counter
+                # merged on the loop thread (the pipeline's rule).
+                if structure_on:
+                    attached: Counter[str] = Counter()
+                    try:
+                        await asyncio.to_thread(attach_structure, [doc], None, attached)
+                    finally:
+                        structure_counts.update(attached)
                 if seg_cache is not None:
                     chunks = await asyncio.to_thread(
                         seg_cache.get_or_compute, doc, chunker.chunk
@@ -1108,8 +1119,6 @@ async def run(
                             source=record.get("path", "") or "",
                             structure=structure,
                         )
-                        if structure_on:
-                            attach_structure([doc], counts=structure_counts)
                         cat_row = (
                             json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
                             if catalog is not None else None
@@ -1570,6 +1579,9 @@ def main() -> None:
     p.add_argument("--checkpoint", type=Path, default=None,
                    help="checkpoint file (default: <input>.ckpt)")
     args = p.parse_args()
+    # #828 §6: a missing [markdown] extra with --structure-metadata on is a
+    # refusal at configuration (exit 2), before the registry or any store.
+    require_structure_backends_or_exit(args.structure_metadata)
     # Resolve (and if asked, create) the registry entry before any I/O (#263).
     # --no-index is catalog-only: it writes to no store, so it registers nothing.
     target = None if args.no_index else ingest_target.resolve_or_exit(

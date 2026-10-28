@@ -86,7 +86,12 @@ from ragstack.ingestion.loaders import (
 )
 from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
-from ragstack.ingestion.structure import merge_enrichment, structure_metadata_enabled
+from ragstack.ingestion.structure import (
+    StructureBackendUnavailable,
+    merge_enrichment,
+    require_structure_backends,
+    structure_metadata_enabled,
+)
 from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.ingestion.work_identity import (
     DUPLICATE_WORK,
@@ -439,6 +444,7 @@ async def _resolve_ingest_target(
     target = await _authorize_ingest_target(collection_id, principal, collections)
     if target.is_shared_surface:
         # The derived entry IS app.state's ingestor — same stores, no build.
+        _refuse_missing_structure_backend(prebuilt)
         return target, prebuilt
     try:
         run_ingestor = build_ingestor_for(app_state, target)
@@ -480,7 +486,26 @@ async def _resolve_ingest_target(
         ) from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+    _refuse_missing_structure_backend(run_ingestor)
     return target, run_ingestor
+
+
+def _refuse_missing_structure_backend(ingestor: Any) -> None:
+    """503 when the pipeline this LOCAL ingest will run has the structure step
+    on and an ingest adapter's parser is missing (#828 §6: "a missing parser is
+    a refusal, never a fallback"). Read from the pipeline that runs, not from
+    settings, so what is refused is exactly what would have run. Before the
+    job exists, so nothing is accepted that cannot run; the same 503 shape as
+    the token-counter refusal (operator-only, so no Retry-After). The GoWe
+    path does not parse here: its tools image refuses at configuration."""
+    pipeline = getattr(ingestor, "_pipeline", None)
+    if not getattr(pipeline, "structure_metadata", False):
+        return
+    try:
+        require_structure_backends()
+    except StructureBackendUnavailable as e:
+        log.warning("ingest refused: %s", e)
+        raise HTTPException(status_code=503, detail=e.client_detail) from None
 
 
 def _guard(entry: CollectionEntry) -> None:

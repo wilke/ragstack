@@ -125,9 +125,9 @@ class IngestionPipeline:
         self.glossary_counts: Counter[str] = Counter()
         # Optional document-structure step (#828; STRUCTURE_METADATA /
         # --structure-metadata). On: the ingest adapters run after load and DOI
-        # enrichment (``attach_structure``; none exist yet in PR 1, so only a
+        # enrichment (``attach_structure``: Markdown raw mode for ``.md``; a
         # structure that arrived with the document — the JSONL ``structure``
-        # key — is used), and every chunk of a structured document is stamped
+        # key — is never replaced), and every chunk of a structured document is stamped
         # with section/role/block metadata between chunking and the boilerplate
         # filter (``_stamp_structure``). Payload fields only: content, offsets,
         # ids and the embedded text are unchanged, so it is not collection
@@ -288,7 +288,7 @@ class IngestionPipeline:
                 else readable_tenants(tenant_id),
                 policy=check.policy, source=source, seen=check.seen,
             )
-        self._attach_structure(to_chunk)
+        await self._attach_structure(to_chunk)
         all_chunks: list[Chunk] = []
         for doc in to_chunk:
             # Run chunking in a worker thread: chunkers are synchronous, and the
@@ -460,10 +460,20 @@ class IngestionPipeline:
         if result.chunks_with_glossary:
             log.info("ingest %r: symbol glossary %s", source, result.summary())
 
-    def _attach_structure(self, documents: list[Document]) -> None:
-        """Run the ingest adapters (#828 §2) when the structure step is on."""
-        if self.structure_metadata:
-            attach_structure(documents, counts=self.structure_counts)
+    async def _attach_structure(self, documents: list[Document]) -> None:
+        """Run the ingest adapters (#828 §2: Markdown raw mode, ``markdown/1``)
+        when the structure step is on. Off the event loop, like the stamp: a
+        parse is linear in the text but a large Markdown file is still CPU
+        the loop must not wait on; and the thread counts into a LOCAL Counter
+        merged on the loop thread (the stamp's rule, #839 review). A missing
+        parser propagates (``StructureBackendUnavailable``): the item fails
+        loudly, never ingests its Markdown unstructured (§6)."""
+        if self.structure_metadata and documents:
+            local: Counter[str] = Counter()
+            try:
+                await asyncio.to_thread(attach_structure, documents, None, local)
+            finally:
+                self.structure_counts.update(local)
 
     async def _stamp_structure(self, documents: list[Document], chunks: list[Chunk]) -> None:
         """Stamp the chunks of structured documents (#828 §6). The one helper
@@ -581,7 +591,7 @@ class IngestionPipeline:
         there is no prior data to protect)."""
         documents: list[Document] = self.loader.load(source)
         await self._apply_doi_enrichment(documents)
-        self._attach_structure(documents)
+        await self._attach_structure(documents)
         step = max(1, group_size)
         for start in range(0, len(documents), step):
             group = documents[start : start + step]

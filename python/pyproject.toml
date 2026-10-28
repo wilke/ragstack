@@ -97,6 +97,18 @@ chunking = [
     # Punkt parameters are built in code. Both image defs install this extra.
     "nltk>=3.8",
 ]
+markdown = [
+    # The Markdown structure adapter, `markdown/1` (#828 §9.1): a CommonMark
+    # parse (commonmark preset + table) with the front_matter and dollarmath
+    # plugins. Imported lazily, only when STRUCTURE_METADATA / --structure-metadata
+    # is on; then a missing extra is a REFUSAL (503 / exit 2), never a regex
+    # fallback (#815). Bounded to the majors the adapter was tested on: the
+    # parse decides every section boundary, so a parser major is an adapter
+    # change, and `enrichment.structure.backend` records the versions that ran.
+    # NEITHER image def installs this extra yet (see the #828 PR 2 body).
+    "markdown-it-py>=4.0,<5",
+    "mdit-py-plugins>=0.5,<0.7",
+]
 tokenization = [
     # transformers.AutoTokenizer is the default token counter (HFTokenCounter):
     # it loads the *embedding model's* tokenizer for an exact token count so
@@ -135,7 +147,7 @@ dev = [
     "pyyaml>=6",
 ]
 all = [
-    "ragstack[vector,pdf,postgres,text,graph,embeddings,chunking,tokenization,queue,observability]",
+    "ragstack[vector,pdf,postgres,text,graph,embeddings,chunking,markdown,tokenization,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]

@@ -159,3 +159,20 @@ def record(content: str, structure: DocumentStructure | dict | None, *,
 
 def write_shard(path, records: list[dict]) -> None:
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+
+def hide_markdown_extra(monkeypatch) -> None:
+    """Make the ``[markdown]`` extra look uninstalled for one test: its
+    modules import as missing and the adapter's cached parser is dropped (both
+    restored by ``monkeypatch`` afterwards). Only the plugins are hidden: that
+    is the state of an env where ``markdown-it-py`` arrived through another
+    package (``rich``) but the extra was never installed. Works whether or not
+    the extra is really installed, so the refusal tests need no parser."""
+    import sys
+
+    from ragstack.ingestion import markdown_structure
+
+    for name in ("mdit_py_plugins", "mdit_py_plugins.front_matter",
+                 "mdit_py_plugins.dollarmath"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setattr(markdown_structure, "_parser_cache", None)

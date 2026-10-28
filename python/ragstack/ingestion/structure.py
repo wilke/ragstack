@@ -3,8 +3,11 @@
 The design is ``docs/plans/828-document-structure.md``; section numbers below
 refer to it. This module is format-agnostic: it reads a
 :class:`~ragstack.models.DocumentStructure` and nothing else about the source
-format. Adapters (Markdown, JATS, PDF, extracted text) arrive in later PRs and
-only ever FILL ``Document.structure``; everything here consumes it.
+format. Adapters only ever FILL ``Document.structure``; everything here
+consumes it. The ingest-time adapters are registered in
+:data:`INGEST_ADAPTERS` (Markdown raw mode, ``markdown/1``, lives in
+:mod:`ragstack.ingestion.markdown_structure`); JATS, PDF and extracted text
+arrive in later PRs.
 
 Four pieces:
 
@@ -33,6 +36,7 @@ import hashlib
 import json
 import logging
 import re
+import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -731,26 +735,126 @@ def stamp(structure: DocumentStructure, start_char: int, end_char: int,
 # The pipeline helpers (§6 "one helper, three call sites"; §2 attach_structure)
 # --------------------------------------------------------------------------- #
 
+class StructureBackendUnavailable(RuntimeError):
+    """An ingest adapter was asked to run (``STRUCTURE_METADATA=on``, later a
+    ``chunk_params`` marker) and its parser is not installed. A REFUSAL, never a
+    fallback to "no structure" or a regex (§6, #815): the API answers 503 with
+    :attr:`client_detail`, the bulk tools exit 2 at configuration. ``extra``
+    names the optional-dependency extra that carries the parser."""
+
+    def __init__(self, adapter: str, extra: str, detail: str) -> None:
+        self.adapter = adapter
+        self.extra = extra
+        self.client_detail = (
+            f"document-structure metadata is on (STRUCTURE_METADATA / "
+            f"--structure-metadata) but the {adapter} adapter's parser is not "
+            f"installed here: install the [{extra}] extra (pip install "
+            f"'ragstack[{extra}]'), or turn structure metadata off"
+        )
+        super().__init__(f"{self.client_detail} ({detail})")
+
+
+class IngestAdapter:
+    """One ingest-time adapter (§2's placement table): ``build`` returns a
+    structure for a document or ``None``; ``require`` raises
+    :class:`StructureBackendUnavailable` when its parser is missing; ``backend``
+    names the parser for ``enrichment.structure.backend``. A plain callable is
+    accepted wherever an adapter is (a test's fake): it needs no parser."""
+
+    def __init__(self, name: str, build: Callable[[Document], DocumentStructure | None], *,
+                 require: Callable[[], None] | None = None,
+                 backend: Callable[[], str] | None = None) -> None:
+        self.name = name
+        self._build = build
+        self._require = require
+        self._backend = backend
+
+    def __call__(self, doc: Document) -> DocumentStructure | None:
+        return self._build(doc)
+
+    def require(self) -> None:
+        if self._require is not None:
+            self._require()
+
+    def backend(self) -> str | None:
+        return self._backend() if self._backend is not None else None
+
+
+def _markdown_adapter() -> IngestAdapter:
+    """``markdown/1`` (§9.1), imported lazily so this module never needs the
+    ``[markdown]`` extra to be imported, only to run the adapter."""
+    from ragstack.ingestion import markdown_structure as md
+
+    def _require() -> None:
+        try:
+            md.require()
+        except md.MarkdownBackendMissing as e:
+            raise StructureBackendUnavailable(md.ADAPTER, md.EXTRA, str(e)) from None
+
+    def _build(doc: Document) -> DocumentStructure | None:
+        _require()
+        return md.markdown_structure(doc)
+
+    return IngestAdapter(md.ADAPTER, _build, require=_require, backend=md.backend)
+
+
+AdapterLike = IngestAdapter | Callable[[Document], DocumentStructure | None]
+
 #: Adapters that build a structure at INGEST from the text itself, keyed by the
-#: lower-cased suffix of ``Document.source`` (§2's placement table: Markdown,
-#: extracted text). Empty in PR 1 — structure arrives only through the JSONL
-#: ``structure`` key or a test. An adapter returns a structure or ``None``.
-INGEST_ADAPTERS: dict[str, Callable[[Document], DocumentStructure | None]] = {}
+#: lower-cased suffix of ``Document.source`` (§2's placement table). PR 2:
+#: Markdown raw mode (``.md``, the suffix ``default_loader_registry`` sends to
+#: ``TextFileLoader``). Extracted text (§9.5) joins under its own marker. An
+#: adapter returns a structure or ``None``.
+INGEST_ADAPTERS: dict[str, AdapterLike] = {".md": _markdown_adapter()}
+
+
+def require_structure_backends(adapters: Mapping[str, AdapterLike] | None = None) -> None:
+    """Raise :class:`StructureBackendUnavailable` unless every registered ingest
+    adapter's parser is installed. Called at CONFIGURATION, wherever the
+    structure step is turned on — the API before it accepts a local ingest, the
+    bulk tools before they read a record — so a missing extra refuses the run
+    whatever the batch holds, instead of silently ingesting its Markdown
+    unstructured (§6: "a refusal, never a fallback")."""
+    table = INGEST_ADAPTERS if adapters is None else adapters
+    for adapter in table.values():
+        require = getattr(adapter, "require", None)
+        if require is not None:
+            require()
+
+
+def require_structure_backends_or_exit(mode: str | None) -> None:
+    """The bulk tools' configuration check (``ingest_shard.py``,
+    ``embed_shard.py``, ``ingest_jsonl.py``): with ``--structure-metadata on``
+    and a parser missing, print the reason and exit 2 before any record is
+    read, any store is touched or any vector is computed. Off: nothing."""
+    if not structure_metadata_enabled(mode):
+        return
+    try:
+        require_structure_backends()
+    except StructureBackendUnavailable as e:
+        print(f"error: {e.client_detail}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 def attach_structure(
     documents: Iterable[Document],
-    adapters: Mapping[str, Callable[[Document], DocumentStructure | None]] | None = None,
+    adapters: Mapping[str, AdapterLike] | None = None,
     counts: Counter[str] | None = None,
 ) -> None:
     """Give every document that has no structure yet the one its suffix's
     ingest adapter builds (§2), validated before it is accepted; a structure
     that arrived with the document (the JSONL key, a PDF/JATS loader) is never
     replaced. Runs after load and DOI enrichment, before chunking, only when
-    the structure step is on. An adapter's invalid output is dropped and counted
-    under ``structure_invalid:<reason>`` in ``counts`` — the document stays
-    unstructured, never half-structured. With no adapter registered for a
-    suffix (every suffix, in PR 1) this is a no-op."""
+    the structure step is on. ``documents`` and their ``content`` are never
+    changed except for ``structure``.
+
+    An adapter's invalid output — or an adapter that raises on one document —
+    is dropped and counted under ``structure_invalid:<reason>`` in ``counts``
+    (the invariant label, else the exception class name): the document stays
+    unstructured, never half-structured, and the ingest goes on. A MISSING
+    PARSER is not such a failure: :class:`StructureBackendUnavailable`
+    propagates (the refusal). Each accepted structure counts
+    ``backend:<parser>`` when the adapter names one."""
     table = INGEST_ADAPTERS if adapters is None else adapters
     if not table:
         return
@@ -760,18 +864,24 @@ def attach_structure(
         adapter = table.get(Path(doc.source).suffix.lower())
         if adapter is None:
             continue
-        built = adapter(doc)
-        if built is None:
-            continue
         try:
+            built = adapter(doc)
+            if built is None:
+                continue
             validate_structure(built, doc.content)
-        except StructureInvalid as e:
+        except StructureBackendUnavailable:
+            raise
+        except Exception as e:  # noqa: BLE001 - one document degrades, never the ingest
+            reason = e.reason if isinstance(e, StructureInvalid) else type(e).__name__
             if counts is not None:
-                counts[f"structure_invalid:{e.reason}"] += 1
+                counts[f"structure_invalid:{reason}"] += 1
             log.warning("structure from the %s adapter dropped for %r: %s",
-                        built.adapter, doc.source, e)
+                        getattr(adapter, "name", "ingest"), doc.source, e)
             continue
         doc.structure = built
+        name = adapter.backend() if isinstance(adapter, IngestAdapter) else None
+        if counts is not None and name:
+            counts[f"backend:{name}"] += 1
 
 
 def stamp_documents(
@@ -843,8 +953,9 @@ def structure_provenance(
     ``since``: ``{"structure": {"stamp": "stamp/1", "adapters": {name: n},
     "structure_missing": n, "chunks_stamped": n}}`` (plus ``degraded`` and
     ``structure_invalid``, each a ``{reason: n}`` map, only when non-zero). ``None`` when the step saw no
-    document. ``backend`` (the parser that built a structure) arrives with the
-    first ingest adapter (PR 2); PR 1 runs none."""
+    document. ``backend`` names the parser(s) that built a structure (the
+    ``backend:<parser>`` counts :func:`attach_structure` keeps), present only
+    when an ingest adapter actually built one."""
     done = counts - (since or Counter())
     adapters = {k.split(":", 1)[1]: n for k, n in sorted(done.items()) if k.startswith("adapter:")}
     missing = done["structure_missing"]
@@ -864,6 +975,12 @@ def structure_provenance(
                if k.startswith("structure_invalid:")}
     if invalid:
         rec["structure_invalid"] = invalid
+    backends = sorted(k.split(":", 1)[1] for k, n in done.items()
+                      if k.startswith("backend:") and n)
+    if backends:
+        # The parser that built the structures (#815's audit): one string, the
+        # §6 shape; two only if two parser builds ran in one process.
+        rec["backend"] = ", ".join(backends)
     return {"structure": rec}
 
 
@@ -888,7 +1005,9 @@ def structure_metadata_enabled(mode: str | None) -> bool:
 __all__ = [
     "Block", "DocumentStructure", "Section",
     "STAMP_KEYS", "STAMP_VERSION", "ROLES_V1", "RULES_VERSION", "DECLARED_VERSION",
-    "StructureIndex", "StructureInvalid", "attach_structure", "citations",
+    "IngestAdapter", "StructureBackendUnavailable", "StructureIndex", "StructureInvalid",
+    "attach_structure", "citations", "require_structure_backends",
+    "require_structure_backends_or_exit",
     "classify_roles", "classify_title", "content_sha256", "merge_enrichment",
     "normalise_label", "normalise_title", "stamp", "stamp_documents",
     "structure_from_record", "structure_metadata_enabled", "structure_provenance",
