@@ -255,6 +255,12 @@ class Source(BaseModel):
     from, stamped only by a multi-collection request (``collections``) and
     omitted from the serialized form when ``None`` under the same rule — so a
     single-collection request's response is byte-identical to before.
+
+    ``symbol_glossary`` (#754) is the chunk's symbol glossary, set by
+    ``/v1/retrieve`` only when the request asked for it
+    (``include_symbol_glossary: true``) — and then on EVERY source, as ``""``
+    when the chunk has none, so "none" and "not requested" stay
+    distinguishable. ``None`` (not requested) is omitted under the same rule.
     """
 
     doc_id: str
@@ -263,10 +269,11 @@ class Source(BaseModel):
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
     # ``SkipJsonSchema[None]``: the served OpenAPI shows ``context`` (and
-    # ``collection``) as optional — not nullable — matching
-    # contracts/schemas/source.json.
+    # ``collection``, ``symbol_glossary``) as optional — not nullable —
+    # matching contracts/schemas/source.json.
     context: list[ContextChunk] | SkipJsonSchema[None] = None
     collection: str | SkipJsonSchema[None] = None
+    symbol_glossary: str | SkipJsonSchema[None] = None
 
     # Deliberately no return annotation: with one, pydantic replaces the model's
     # serialization JSON schema (what /openapi.json shows for Source) by the
@@ -275,7 +282,7 @@ class Source(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_absent_context(self, handler: SerializerFunctionWrapHandler):
         data = handler(self)
-        for key in ("context", "collection"):
+        for key in ("context", "collection", "symbol_glossary"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data

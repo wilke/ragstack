@@ -97,6 +97,11 @@
       "description": "Registered model id to rerank with for THIS request only. Unknown id 404; non-reranker model 400. See GET /v1/models/available.",
       "type": ["string", "null"],
       "default": null
+    },
+    "include_symbol_glossary": {
+      "description": "Return each source's symbol glossary (#754: the per-chunk definitions of the symbols/quantities it uses, built at ingest and stored in the text index's `symbol_glossary` field, never part of `content`). true: EVERY returned Source carries `symbol_glossary` — the chunk's glossary, or \"\" when it has none (a chunk without one, a graph pseudo-chunk, a collection with no text index, or a lookup that failed or timed out) — so \"none\" is distinguishable from \"not requested\". Filled AFTER fusion, rerank and the top_k cut, for the returned sources only, from each source's OWN collection's text index in one batched, tenant-scoped request per collection (a BM25 hit already carries it; a vector-only hit is looked up). Never fails the request: a text-index outage or timeout yields \"\" and HTTP 200. Ranking, scores, `content` and `metadata` are unchanged. false (default) leaves the response byte-identical to before the field existed (no `symbol_glossary` key at all). /v1/retrieve only.",
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": false

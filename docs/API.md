@@ -289,7 +289,13 @@ generation — `/v1/retrieve` never writes an answer.
 **Request** (`RetrieveRequest`): `query` (required), `top_k` (5), `filters` (`{}`),
 `use_graph` (true), plus the same `rewrite_strategies`, `collection`, `collections`,
 `retrieval_mode`, `rerank`, `rerank_candidates`, `context_window`,
-`exclude_boilerplate` and `reranker` fields as `/v1/query`. **Response**
+`exclude_boilerplate` and `reranker` fields as `/v1/query`, and one of its own:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `include_symbol_glossary` | bool | false | return each source's [symbol glossary](#symbol-glossary-include_symbol_glossary) as `symbol_glossary` — on **every** source, `""` when the chunk has none. `false` = response unchanged (no key). `/v1/retrieve` only |
+
+**Response**
 (`RetrieveResponse`): `{ sources[], degraded? }` — `degraded` exactly as on
 `/v1/query` (no `generation` entry, since nothing generates here).
 
@@ -416,6 +422,47 @@ its own: markers like `(55)` or `(3, 5)` also appear in ordinary **body** text a
 the source paper's in-text citations, and nothing pattern-based separates them
 from list enumerators. That is a separate defect; this flag only removes the
 bibliography passages themselves.
+
+### Symbol glossary (`include_symbol_glossary`)
+
+At ingest every chunk gets a **symbol glossary** (#754): the definitions, copied
+from its own document, of the symbols and quantities it uses — one
+`<symbol> — <definition>` line each, e.g. `Qb — the breathing flow rate`. It is
+indexed as its own BM25 field and read by the reranker, but it is never part of
+`content` and `/v1/retrieve` never returned it. `include_symbol_glossary: true`
+(`/v1/retrieve` only — not on `/v1/query`) puts it on the response:
+
+```bash
+curl -s "$BASE"/v1/retrieve \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"query": "breathing flow rate", "top_k": 3, "include_symbol_glossary": true}'
+# {"sources":[{"doc_id":"…","chunk_id":"…","content":"Qb = 0.5 m3/h …","score":0.71,
+#              "metadata":{…},"symbol_glossary":"Qb — the breathing flow rate"},
+#             {"doc_id":"…","chunk_id":"…","content":"…","score":0.40,
+#              "metadata":{…},"symbol_glossary":""}, …]}
+```
+
+* **Present on every source, or on none.** With the flag, *every* returned
+  source carries `symbol_glossary` — `""` when the chunk has none — so an
+  absent key means *not requested* and an empty string means *none*. Without
+  the flag (the default) no source carries the key and the response is
+  byte-identical to before the field existed.
+* **Ranking unchanged.** The glossary is fetched *after* fusion, rerank and the
+  `top_k` cut, for the returned sources only — never for the candidate pool —
+  so `sources` with and without the flag differ only by the added key.
+  `content`, `score` and `metadata` are untouched.
+* **Where it comes from.** A BM25 hit already carries its glossary; a
+  vector-only hit (the vector store holds none) is looked up in its collection's
+  text index — one batched, tenant-scoped request per collection, the same
+  lookup the reranker uses (`RERANK_GLOSSARY_TIMEOUT` bounds it). With
+  `collections`, each source is looked up in *its* collection with that
+  collection's scope. Graph pseudo-chunks and a collection without a text index
+  give `""`.
+* **Never fails the request.** A text-index outage or timeout yields `""` for
+  the affected sources and `200` — logged as one rate-limited warning per
+  collection per minute, never as a `5xx` and not reported in `degraded`.
+* The Go implementation accepts the field and ignores it (its retrieve handler
+  is a stub).
 
 ### Context expansion (`context_window`)
 
@@ -1764,6 +1811,7 @@ The remaining operator surface. All of these are **admin only** except
 | `metadata` | object | arbitrary per-chunk metadata (see below) |
 | `context` | object[] | **optional.** Neighbouring chunks of the same document, each `{ chunk_id, position, content }` and ordered by `position` (negative = before, positive = after). Present only when the request set `context_window > 0` **and** at least one neighbour is visible — never an empty list. See [Context expansion](#context-expansion-context_window) |
 | `collection` | string | **optional.** The registry id this source came from. Present only on a [multi-collection](#multi-collection-retrieval-collections) request (`collections`, #253); a single-collection response is unchanged |
+| `symbol_glossary` | string | **optional.** The chunk's [symbol glossary](#symbol-glossary-include_symbol_glossary) (#754). Present on **every** source if and only if the `/v1/retrieve` request set `include_symbol_glossary: true` — then `""` when the chunk has none. Absent otherwise |
 
 `doc_id`, `chunk_id`, `content` and `score` are required; the rest are optional.
 Schema: `contracts/schemas/source.json`.

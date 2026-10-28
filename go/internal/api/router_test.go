@@ -125,6 +125,64 @@ func TestRetrieveAcceptsRewriteStrategies(t *testing.T) {
 	}
 }
 
+// TestRetrieveAcceptsIncludeSymbolGlossary: `include_symbol_glossary` on
+// /v1/retrieve (#754), the same precedent as rewrite_strategies above — the
+// field is decoded into RetrieveRequest.IncludeSymbolGlossary (schema mirror),
+// the stub handler accepts it and ignores it (never a 422), and a Source's
+// SymbolGlossary serialises as the contract says: omitted when nil, "" when it
+// points at an empty string. The hydration itself is TODO(parity, #754).
+func TestRetrieveAcceptsIncludeSymbolGlossary(t *testing.T) {
+	var decoded api.RetrieveRequest
+	if err := json.Unmarshal(
+		[]byte(`{"query":"q","include_symbol_glossary":true}`), &decoded,
+	); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.IncludeSymbolGlossary {
+		t.Fatal("IncludeSymbolGlossary = false, want true")
+	}
+
+	r := newRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/retrieve",
+		strings.NewReader(`{"query":"What is RAG?","include_symbol_glossary":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["sources"]; !ok {
+		t.Fatal("missing 'sources' field")
+	}
+
+	// The response shape: absent key when not requested, "" when the chunk
+	// has none (a pointer to the empty string is NOT dropped by omitempty).
+	empty := ""
+	for _, tc := range []struct {
+		src  api.Source
+		want string
+	}{
+		{api.Source{DocID: "d", ChunkID: "c", Content: "x"}, `"symbol_glossary"`},
+		{api.Source{DocID: "d", ChunkID: "c", Content: "x", SymbolGlossary: &empty}, `"symbol_glossary":""`},
+	} {
+		out, err := json.Marshal(tc.src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		has := strings.Contains(string(out), tc.want)
+		if tc.src.SymbolGlossary == nil && has {
+			t.Fatalf("nil SymbolGlossary must be omitted, got %s", out)
+		}
+		if tc.src.SymbolGlossary != nil && !has {
+			t.Fatalf("empty SymbolGlossary must serialise as \"\", got %s", out)
+		}
+	}
+}
+
 func TestQueryMissingFieldReturns422(t *testing.T) {
 	r := newRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/query",
