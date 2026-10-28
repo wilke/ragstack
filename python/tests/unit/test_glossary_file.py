@@ -995,3 +995,16 @@ def test_created_must_be_utc(tmp_path: Path, created: str, ok: bool) -> None:
     else:
         with pytest.raises(GlossaryFileError, match="UTC"):
             read_glossary_file(path)
+
+
+def test_a_malformed_glossary_file_fails_before_the_embedding_files_are_read(
+        corpus: dict[str, Path], load: Any, tmp_path: Path, capsys: Any) -> None:
+    bad = tmp_path / "v2.jsonl"
+    bad.write_text(corpus["gfile"].read_text(encoding="utf-8").replace(SCHEMA, SCHEMA + "2"),
+                   encoding="utf-8")
+    garbage = tmp_path / "garbage.emb.jsonl"
+    garbage.write_text("not json\n", encoding="utf-8")
+    rc, _, reached = load(str(garbage), "--glossary-file", str(bad))
+    err = capsys.readouterr().err
+    assert rc == 2 and not reached
+    assert "unknown schema" in err and "garbage" not in err
