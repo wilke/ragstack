@@ -284,6 +284,10 @@ def test_unresolved_run_is_todays_output_apart_from_the_chunking_object(
     assert new[1:] == old[1:] and len(new) > 1
     new_header, old_header = json.loads(new[0]), json.loads(old[0])
     chunking = new_header.pop("chunking")
+    # #821 (v1.6.20): the header also carries the embed step's tool provenance.
+    from ragstack.provenance import PROVENANCE_KEYS
+
+    assert set(new_header.pop("provenance")) == set(PROVENANCE_KEYS)
     assert new_header == old_header and set(old_header) == {"schema", "tenant", "dim"}
     assert old[0] == json.dumps(old_header, sort_keys=True) + "\n"
     assert "collection_id" not in chunking
