@@ -4137,6 +4137,30 @@ components:
             404; non-reranker model 400. See GET /v1/models/available.
           type: [string, "null"]
           default: null
+        include_symbol_glossary:
+          description: >-
+            Return each source's symbol glossary (#754: the per-chunk
+            definitions of the symbols/quantities it uses, built at ingest and
+            stored in the text index's `symbol_glossary` field, never part of
+            `content`). true: EVERY returned Source carries `symbol_glossary` —
+            the chunk's glossary, or "" when it has none (a chunk without one,
+            a graph pseudo-chunk, a collection with no text index, or a lookup
+            that failed or timed out) — so "none" is distinguishable from "not
+            requested". Filled AFTER fusion, rerank and the top_k cut, for the
+            returned sources only, from each source's OWN collection's text
+            index in one batched, tenant-scoped request per collection (a BM25
+            hit already carries it; a vector-only hit is looked up). Never
+            fails the request: a text-index outage or timeout yields "" and
+            HTTP 200. `RERANK_GLOSSARY_TIMEOUT <= 0` turns the text-index
+            lookup off, which also blanks this flag: every source gets ""
+            with no warning and nothing in `degraded`. Context neighbours
+            (`sources[].context[]`, with context_window > 0) carry no
+            `symbol_glossary`. Ranking, scores, `content` and `metadata` are unchanged.
+            false (default) leaves the response byte-identical to before the
+            field existed (no `symbol_glossary` key at all). /v1/retrieve
+            only — not on /v1/query.
+          type: boolean
+          default: false
 
     RetrieveResponse:
       type: object
@@ -5591,6 +5615,19 @@ components:
             The registry collection id this source came from. Present only on a
             multi-collection request (`collections`, issue #253) — a
             single-collection request's response is unchanged.
+          type: string
+        symbol_glossary:
+          description: >-
+            The chunk's symbol glossary (#754): one `<symbol> — <definition>`
+            line per symbol the chunk uses, copied from its own document at
+            ingest; never part of `content`. Present on EVERY source if and
+            only if the /v1/retrieve request set `include_symbol_glossary:
+            true`, and then "" when the chunk has none (or the lookup was
+            unavailable) — so an absent key means "not requested", an empty
+            string means "none". Absent otherwise, so a request without the
+            flag gets a response byte-identical to before the field existed.
+            Also "" on every source when `RERANK_GLOSSARY_TIMEOUT <= 0` (the
+            lookup is off). Entries of `context[]` carry no `symbol_glossary`.
           type: string
         context:
           description: >-

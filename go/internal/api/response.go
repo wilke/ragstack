@@ -27,6 +27,12 @@ type Source struct {
 	// Context holds the source's neighbours (context_window > 0), ordered by
 	// Position; omitted when none were attached.
 	Context []ContextChunk `json:"context,omitempty"`
+	// SymbolGlossary (#754) is the chunk's symbol glossary, present on EVERY
+	// source iff the request set include_symbol_glossary — "" when the chunk
+	// has none, so it is a pointer: nil (not requested) is omitted, a pointer
+	// to "" is emitted as "". TODO(parity, #754): set by the real retrieve
+	// path; the stub handler returns no sources.
+	SymbolGlossary *string `json:"symbol_glossary,omitempty"`
 }
 
 // DegradedEntry is one stage of a query/retrieve request that fell back to a
