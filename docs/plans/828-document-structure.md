@@ -10,8 +10,9 @@ questions (§15). The decisions that moved the design: roles are a **list of tag
 down the section path (`section_roles`, Q4); **no backfill** of any collection (Q12); the
 structure's eventual home is **Shock**, in a later series, and this series only guarantees a
 serialisation that can go there unchanged, its code-point offsets converted to bytes by that
-series (Q1, §4.1; #837, set up before the open-access and ASM re-ingests); and `embed_shard.py` gains **registry
-resolution in this series** (PR 3), so the markers work on every ingest path (Q14, §7). No
+series (Q1, §4.1; the Shock store,
+[#837](https://github.com/wilke/ragstack/issues/837), is set up before the open-access and
+ASM re-ingests); and `embed_shard.py` gains **registry resolution in this series** (PR 3), so the markers work on every ingest path (Q14, §7). No
 code. Written for the owner's review before the first PR of the series in §12. It folds in the owner's direction from the #828
 thread (document level, not format level; `Document.structure`; adapters; stamping by offset
 overlap; inferred structure for PDF and extracted text; captions; placement as an evaluation
@@ -319,9 +320,10 @@ What this series guarantees, so that series converts as little as possible:
 2. **The offsets are the chunks' offsets.** Sections and blocks index the same `content` that
    `start_char`/`end_char` index, so the text node of `metadata-and-kg.md` §2b serves both
    without a second coordinate system. Offsets are Unicode code-point indices (Python `str`
-   semantics), exactly as `start_char`/`end_char` are today; a byte-addressed reader (Shock's
-   `size` and `subset` indices are byte ranges) converts both the same way, and that conversion
-   belongs to the Shock series, once, for chunks and structure alike.
+   semantics), exactly as `start_char`/`end_char` are today; the Shock series records the byte
+   offsets beside the text node (Shock's `size` and `subset` indices are byte ranges),
+   converting once, for chunks and structure alike
+   ([#837](https://github.com/wilke/ragstack/issues/837)).
 3. **The binding is checkable.** `content_sha256` (§2 invariant 7) lets a reader refuse a
    structure node paired with the wrong text node.
 4. **The section record carries what a graph would need**: own `roles`, `role_source`, `path`,
@@ -1224,7 +1226,8 @@ consequence for this note. Where a decision changed the recommendation, the chan
     stamped on chunks (§3, §9.1).
 12. **Backfill existing collections?** *Decision: no backfill for any collection.* Existing
     collections get structure only by re-ingest; the ASM and open-access corpora need a
-    separately planned re-ingest, outside this series. *Consequence:* the backfill script and
+    separately planned re-ingest, outside this series, after the Shock store exists
+    ([#837](https://github.com/wilke/ragstack/issues/837)). *Consequence:* the backfill script and
     steps are gone from §6, §12 and §13; mixed coverage arises only when someone re-ingests into
     an existing collection with stamping on, and the recommendation is to re-ingest into a new
     collection instead (§6).
