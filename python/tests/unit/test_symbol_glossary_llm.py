@@ -44,7 +44,7 @@ def test_prompt_requires_one_entry_per_symbol_and_resolves_respectively() -> Non
 
 def test_version_names_model_and_prompt() -> None:
     v = sgl.llm_version("RedHatAI/Scout")
-    assert v.startswith("llm/1:RedHatAI/Scout:") and len(v.split(":")[2]) == 12
+    assert v.startswith("llm/2:RedHatAI/Scout:") and len(v.split(":")[2]) == 12
     assert sgl.llm_version("RedHatAI/Scout") == v
 
 
@@ -130,7 +130,7 @@ def test_script_writes_only_cache_and_skips_cached(tmp_path, monkeypatch) -> Non
     calls: list[int] = []
 
     class _LLM(FakeLLM):
-        def __init__(self, base_url, model, http, api_key=None):  # noqa: ANN001
+        def __init__(self, base_url, model, http, api_key=None, extra_body=None):  # noqa: ANN001
             super().__init__(['[{"symbol": "Qb", "definition": "breathing flow rate"}]'])
             self.model = model
             calls.append(1)
@@ -158,7 +158,7 @@ def test_parse_response_recovers_latex_backslashes_and_trailing_values() -> None
 
 def test_version_folds_generation_limits() -> None:
     a = sgl.llm_version("m")
-    assert a.endswith(":w80000x4:t2048")
+    assert a.endswith(":w80000x4:t2048:k0:r0")
     assert sgl.llm_version("m", 40_000, 2, 1024) != a
 
 
@@ -183,7 +183,7 @@ def test_cut_off_records_are_retried_only_with_flag(tmp_path, monkeypatch) -> No
     calls: list[int] = []
 
     class _LLM(FakeLLM):
-        def __init__(self, base_url, model, http, api_key=None):  # noqa: ANN001
+        def __init__(self, base_url, model, http, api_key=None, extra_body=None):  # noqa: ANN001
             super().__init__(['[{"symbol": "Qb", "definition": "breathing flow rate"}]'], finish="length")
             self.model = model
             calls.append(1)

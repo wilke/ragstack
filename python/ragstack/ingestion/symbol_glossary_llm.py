@@ -1,13 +1,16 @@
 """The offline, document-level LLM symbol glossary (#754 fix A, owner decision
 2026-10-21: rules AND an LLM pass).
 
-Not an ingest step. Ingest and the GoWe workers have no LLM endpoint, and an
-in-process model call is not reproducible (ADR-0011). Instead
-``scripts/symbol_glossary_llm.py`` runs this over documents ahead of time and
-writes each result to a :class:`~ragstack.ingestion.symbol_glossary.SymbolGlossaryCache`
-keyed by ``sha256(document text)`` and :func:`llm_version` (``llm/1`` + model id
-+ prompt hash). Ingest reads that cache, prefers a hit, and otherwise falls back
-to the rules — so an ingest never waits on, or varies with, a model.
+Two callers. ``scripts/symbol_glossary_llm.py`` runs :func:`extract_with_llm`
+over documents ahead of time and writes each result to a
+:class:`~ragstack.ingestion.symbol_glossary.SymbolGlossaryCache` keyed by
+``sha256(document text)`` and :func:`llm_version`; ingest reads that cache,
+prefers a hit, and otherwise falls back to the rules. The workflow step
+(#847 G2, ``scripts/glossary_step.py`` via :mod:`ragstack.ingestion.glossary_step`)
+runs :func:`extract_document` — bounded calls, the cut-off split, the repair
+round, a record of every call — and writes a recorded ``glossary.jsonl``
+instead: the model's output is an artifact later steps consume, never a value
+recomputed on a rerun.
 
 A model *proposes*; the document *disposes*. Every proposed entry passes
 :func:`~ragstack.ingestion.symbol_glossary.validate_entries`: the symbol must
@@ -18,28 +21,36 @@ rate) is exactly a model being confidently wrong from prior knowledge.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+import time
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+import httpx
 
 from ragstack.ingestion.symbol_glossary import (
     DEFAULT_CONFIG,
+    GATE_REASONS,
     Definition,
     Glossary,
     GlossaryConfig,
     GlossaryEntry,
     validate_entries,
+    validate_entries_detailed,
 )
 
 log = logging.getLogger(__name__)
 
 #: The LLM step's own version, the first component of :func:`llm_version`. Bump
 #: on a change to parsing, windowing or validation; a prompt change is caught by
-#: the prompt hash on its own.
-LLM_EXTRACTOR = "llm/1"
+#: the prompt hash on its own. ``llm/2`` (#847 G2): the cut-off split retry, the
+#: repair round, and the version string's ``:k<thinking>:r<repair>`` fields.
+LLM_EXTRACTOR = "llm/2"
 
 SYSTEM_PROMPT = (
     "You build the symbol glossary of ONE scientific document. You copy from the "
@@ -66,12 +77,39 @@ DOCUMENT:
 >>>"""
 
 
+#: The repair round (#847 G2): entries the gate rejected go back to the model
+#: ONCE per round, each with the gate's reason, together with the window they
+#: were proposed from. The answer passes the same gate.
+REPAIR_PROMPT = """A checker compared your symbol list for this document with the document text and rejected the entries below. Each line gives the entry and the reason:
+- symbol_absent: the symbol does not occur in the document exactly as written;
+- not_specific: it is not a specific symbol (a plain word, a unit, a single letter);
+- implausible: the definition is not a short noun phrase (a value, a formula, a sentence);
+- word_not_in_document: a word of the definition does not occur in the document;
+- not_local: the definition's words do not occur near the symbol;
+- another_symbol_between: the document's phrase belongs to a different symbol.
+
+REJECTED:
+{rejected}
+
+Correct each entry the document supports: copy the symbol exactly as its characters appear in the document, and the definition from the document's own words near that symbol. Leave out every entry the document does not support. Never use your own knowledge.
+
+Answer with a JSON array and nothing else:
+[{{"symbol": "...", "definition": "..."}}]
+
+DOCUMENT:
+<<<
+{document}
+>>>"""
+
+
 def prompt_hash() -> str:
-    """12 hex chars identifying the prompt (system + user template)."""
+    """12 hex chars identifying the prompts (system + user + repair template)."""
     h = hashlib.sha256()
     h.update(SYSTEM_PROMPT.encode("utf-8"))
     h.update(b"\x00")
     h.update(USER_PROMPT.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(REPAIR_PROMPT.encode("utf-8"))
     return h.hexdigest()[:12]
 
 
@@ -80,19 +118,30 @@ DEFAULT_MAX_WINDOWS = 4
 DEFAULT_MAX_TOKENS = 2_048
 
 
+#: Characters shared by consecutive windows. Part of the ``llm/2`` extractor
+#: (not a knob): changing it is an extractor change.
+WINDOW_OVERLAP = 2_000
+
+
 def llm_version(
     model: str,
     window_chars: int = DEFAULT_WINDOW_CHARS,
     max_windows: int = DEFAULT_MAX_WINDOWS,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    *,
+    thinking: bool = False,
+    repair_rounds: int = 0,
 ) -> str:
     """The cache/provenance version of a glossary from ``model`` under this
     prompt AND these generation limits:
-    ``llm/1:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>``.
-    The limits change what the model sees and how much it may answer, so a
-    result produced under different limits is a different result."""
+    ``llm/2:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>:k<thinking 0|1>:r<repair rounds>``.
+    The limits change what the model sees and how much it may answer, thinking
+    and the repair round change what it answers, so a result produced under
+    different values is a different result. (The cut-off retry policy is not
+    in the string; the step records it per row.)"""
     return (f"{LLM_EXTRACTOR}:{model}:{prompt_hash()}"
-            f":w{window_chars}x{max_windows}:t{max_tokens}")
+            f":w{window_chars}x{max_windows}:t{max_tokens}"
+            f":k{int(bool(thinking))}:r{int(repair_rounds)}")
 
 
 def windows(text: str, size: int, overlap: int, max_windows: int) -> tuple[list[str], bool]:
@@ -142,7 +191,16 @@ def parse_response(text: str) -> list[tuple[str, str]]:
     documents."""
     body = _FENCE.sub("", text.strip())
     start, end = body.find("["), body.rfind("]")
-    if start < 0 or end <= start:
+    if start >= 0 and end <= start:
+        # An array that never closes: an answer cut off at max_tokens. Its
+        # complete objects are still proposals (llm/2); the gate decides.
+        data: Any = [d for d in (_loads_lenient(m.group(0))
+                                 for m in _OBJECT.finditer(body[start:])) if d]
+        if not data:
+            log.warning("LLM glossary answer had no complete JSON object")
+            return []
+        return _pairs(data)
+    if start < 0:
         log.warning("LLM glossary answer had no JSON array")
         return []
     data = _loads_lenient(body[start : end + 1])
@@ -152,6 +210,10 @@ def parse_response(text: str) -> list[tuple[str, str]]:
         if not data:
             log.warning("LLM glossary answer was not valid JSON")
             return []
+    return _pairs(data)
+
+
+def _pairs(data: Any) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for item in data if isinstance(data, list) else []:
         if not isinstance(item, dict):
@@ -185,14 +247,20 @@ async def extract_with_llm(
     *,
     config: GlossaryConfig | None = None,
     window_chars: int = DEFAULT_WINDOW_CHARS,
-    window_overlap: int = 2_000,
+    window_overlap: int = WINDOW_OVERLAP,
     max_windows: int = DEFAULT_MAX_WINDOWS,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    thinking: bool = False,
 ) -> tuple[Glossary, LLMGlossaryStats]:
     """One document → a validated :class:`Glossary` stamped
     :func:`llm_version`. Temperature 0. A long document is read in windows and
     the proposals unioned before validation. Raises only on transport errors
-    (the caller decides whether to retry or skip the document)."""
+    (the caller decides whether to retry or skip the document).
+
+    The offline cache path (``scripts/symbol_glossary_llm.py``): no cut-off
+    retry, no repair round (``:r0``). ``thinking`` only names what the
+    caller's client sends (``extra_body``) in the version; it sends nothing.
+    The workflow step uses :func:`extract_document`."""
     cfg = config or DEFAULT_CONFIG
     parts, truncated = windows(text, window_chars, window_overlap, max_windows)
     stats = LLMGlossaryStats(windows=len(parts), truncated=truncated)
@@ -211,9 +279,278 @@ async def extract_with_llm(
         proposed.extend(parse_response(answer))
     stats.proposed = len(proposed)
     glossary, stats.rejected = validate_entries(
-        proposed, text, llm_version(llm.model, window_chars, max_windows, max_tokens), cfg
+        proposed, text,
+        llm_version(llm.model, window_chars, max_windows, max_tokens, thinking=thinking), cfg
     )
     return glossary, stats
+
+
+# --- the bounded workflow step's extractor (#847 G2) --------------------------
+
+#: Call kinds in a call record.
+FIRST, SPLIT, REPAIR = "first", "split", "repair"
+#: Cut-off retry policies.
+CUTOFF_OFF, CUTOFF_SPLIT = "off", "split"
+CUTOFF_POLICIES = (CUTOFF_OFF, CUTOFF_SPLIT)
+#: Degrade reasons a call can end a document's LLM half with. ``http_<code>``
+#: (a 4xx other than 429, or 429 after the retries) and ``exception:<Class>``
+#: are formed at run time.
+ENDPOINT_UNAVAILABLE = "endpoint_unavailable"
+TIMEOUT = "timeout"
+BAD_RESPONSE = "bad_response"
+#: Transport retries per call (429, 5xx, connect): the sleeps between attempts.
+DEFAULT_BACKOFF = (2.0, 4.0)
+#: Rejected entries sent back in one repair call, at most (bounds the prompt).
+MAX_REPAIR_ENTRIES = 100
+
+
+class ChatClient(Protocol):
+    """What the step needs from a client: :meth:`ragstack.llm.OpenAILLM.complete_result`."""
+
+    model: str
+
+    async def complete_result(
+        self, messages: list[dict[str, str]], max_tokens: int = ..., temperature: float = ...,
+        *, timeout: float | None = ..., extra: dict[str, Any] | None = ...,
+    ) -> Any: ...
+
+
+@dataclass(frozen=True)
+class StepLimits:
+    """The step's generation limits, every one explicit (no defaults: #847
+    owner decision — the tool refuses a zero before any call)."""
+
+    window_chars: int
+    max_windows: int
+    max_tokens: int
+    timeout_s: float
+    thinking: bool
+    repair_rounds: int
+    cutoff_retry: str
+    seed: int | None = None
+    backoff: tuple[float, ...] = DEFAULT_BACKOFF
+
+    def version(self, model: str) -> str:
+        return llm_version(model, self.window_chars, self.max_windows, self.max_tokens,
+                           thinking=self.thinking, repair_rounds=self.repair_rounds)
+
+    def max_calls(self) -> int:
+        """The most model calls one document can make: per window the first
+        call, two split halves, and one repair call per round. Each call is
+        attempted at most ``1 + len(backoff)`` times."""
+        per_window = 1 + (2 if self.cutoff_retry == CUTOFF_SPLIT else 0) + self.repair_rounds
+        return self.max_windows * per_window
+
+    def max_attempts(self) -> int:
+        return self.max_calls() * (1 + len(self.backoff))
+
+
+@dataclass
+class CallRecord:
+    window: int
+    kind: str
+    status: str = "ok"
+    finish: str = ""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    ms: int = 0
+    retries: int = 0
+    reasoning: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+
+class CallFailed(Exception):
+    """A call ended the document's LLM half: ``reason`` is the degrade reason;
+    ``records`` every call the document made, the failed one last."""
+
+    def __init__(self, reason: str, records: list[CallRecord]) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.records = records
+
+
+@dataclass
+class DocumentOutcome:
+    """One document's LLM half."""
+
+    glossary: Glossary
+    windows: int
+    truncated: bool
+    proposed: int
+    kept: int
+    drops: dict[str, int]
+    cut_off: int
+    cut_off_unresolved: int
+    repair_proposed: int
+    records: list[CallRecord] = field(default_factory=list)
+
+    @property
+    def retries(self) -> int:
+        return sum(r.retries for r in self.records)
+
+
+def _int_or_none(v: Any) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+async def _call(
+    llm: ChatClient, messages: list[dict[str, str]], limits: StepLimits,
+    record: CallRecord, records: list[CallRecord],
+) -> Any:
+    """One call with the transport retries; appends ``record``. Raises
+    :class:`CallFailed` with the degrade reason when the call cannot be
+    completed. A cut-off (``finish_reason == "length"``) is NOT a failure,
+    even with no content; an empty answer that was not cut off is."""
+    records.append(record)
+    extra = {"seed": limits.seed} if limits.seed is not None else None
+    attempts = 1 + len(limits.backoff)
+    reason = ENDPOINT_UNAVAILABLE
+    for attempt in range(attempts):
+        t0 = time.monotonic()
+        try:
+            res = await llm.complete_result(messages, limits.max_tokens, 0.0,
+                                            timeout=limits.timeout_s, extra=extra)
+        except httpx.ConnectTimeout:
+            reason = ENDPOINT_UNAVAILABLE           # unreachable: retried
+        except httpx.TimeoutException:
+            record.ms += int((time.monotonic() - t0) * 1000)
+            record.status = TIMEOUT                 # already cost timeout_s: not retried
+            raise CallFailed(TIMEOUT, records) from None
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            if code == 429:
+                reason = "http_429"
+            elif code >= 500:
+                reason = ENDPOINT_UNAVAILABLE
+            else:
+                record.ms += int((time.monotonic() - t0) * 1000)
+                record.status = f"http_{code}"
+                raise CallFailed(record.status, records) from None
+        except httpx.TransportError:
+            reason = ENDPOINT_UNAVAILABLE
+        except ValueError:
+            record.ms += int((time.monotonic() - t0) * 1000)
+            record.status = BAD_RESPONSE
+            raise CallFailed(BAD_RESPONSE, records) from None
+        else:
+            record.ms += int((time.monotonic() - t0) * 1000)
+            record.finish = str(res.finish_reason or "")
+            usage = res.usage or {}
+            record.prompt_tokens = _int_or_none(usage.get("prompt_tokens"))
+            record.completion_tokens = _int_or_none(usage.get("completion_tokens"))
+            record.reasoning = bool(res.reasoning)
+            if not res.content and record.finish != "length":
+                # e.g. thinking left on: the answer went to reasoning_content
+                # and content is null. Nothing to parse, and not a cut-off.
+                record.status = BAD_RESPONSE
+                raise CallFailed(BAD_RESPONSE, records)
+            return res
+        record.ms += int((time.monotonic() - t0) * 1000)
+        if attempt < attempts - 1:
+            record.retries += 1
+            await asyncio.sleep(limits.backoff[attempt])
+    record.status = reason
+    raise CallFailed(reason, records)
+
+
+def halves(part: str) -> tuple[str, str]:
+    """``part`` split near its middle, at the nearest whitespace when there is
+    one within a tenth of the length (so a word is not cut), else exactly."""
+    mid = len(part) // 2
+    reach = max(1, len(part) // 10)
+    for d in range(reach + 1):
+        for i in (mid - d, mid + d):
+            if 0 < i < len(part) and part[i].isspace():
+                return part[:i], part[i:]
+    return part[:mid], part[mid:]
+
+
+def _messages(prompt: str) -> list[dict[str, str]]:
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+
+
+def _repair_prompt(rejected: list[tuple[str, str, str]], part: str) -> str:
+    lines = [f"- {json.dumps({'symbol': s, 'definition': d}, ensure_ascii=False)} — {why}"
+             for s, d, why in rejected[:MAX_REPAIR_ENTRIES]]
+    return REPAIR_PROMPT.format(rejected="\n".join(lines), document=part)
+
+
+async def extract_document(
+    llm: ChatClient, text: str, *, config: GlossaryConfig, limits: StepLimits,
+) -> DocumentOutcome:
+    """One document's LLM glossary under the step's bounds (#847 G2).
+
+    Per window (at most ``max_windows``): the first call; when it is cut off
+    (``finish_reason == "length"``) and the policy is ``split``, the window
+    is asked again as two halves at the same ``max_tokens`` — a half cut off
+    again is counted ``cut_off_unresolved``, never split further. Proposals
+    of every answer (a cut-off answer's salvaged objects included) are
+    unioned. Then up to ``repair_rounds`` rounds: per window, the entries of
+    that window the gate rejected go back once with the reasons; the answers
+    join the proposals. The glossary is the gate over ALL proposals, so its
+    ``drops`` count every rejected proposal by the gate's reason.
+
+    Raises :class:`CallFailed` (carrying every call record) when a call
+    cannot be completed; the caller degrades the document."""
+    parts, truncated = windows(text, limits.window_chars, WINDOW_OVERLAP, limits.max_windows)
+    version = limits.version(llm.model)
+    records: list[CallRecord] = []
+    by_window: list[list[tuple[str, str]]] = []
+    cut_off = unresolved = 0
+    for i, part in enumerate(parts):
+        props: list[tuple[str, str]] = []
+        res = await _call(llm, _messages(USER_PROMPT.format(document=part)), limits,
+                          CallRecord(i, FIRST), records)
+        props.extend(parse_response(res.content) if res.content else [])
+        if res.finish_reason == "length":
+            cut_off += 1
+            if limits.cutoff_retry == CUTOFF_SPLIT:
+                for half in halves(part):
+                    r2 = await _call(llm, _messages(USER_PROMPT.format(document=half)), limits,
+                                     CallRecord(i, SPLIT), records)
+                    props.extend(parse_response(r2.content) if r2.content else [])
+                    if r2.finish_reason == "length":
+                        unresolved += 1
+            else:
+                unresolved += 1
+        by_window.append(props)
+    repair_proposed = 0
+    pending = [list(p) for p in by_window]  # what the next round may send back
+    for _round in range(limits.repair_rounds):
+        nxt: list[list[tuple[str, str]]] = [[] for _ in parts]
+        for i, part in enumerate(parts):
+            if not pending[i]:
+                continue
+            _, rejected = validate_entries_detailed(pending[i], text, version, config)
+            uniq: list[tuple[str, str, str]] = []
+            seen: set[tuple[str, str]] = set()
+            for sym, defn, why in rejected:
+                if (sym, defn) not in seen:
+                    seen.add((sym, defn))
+                    uniq.append((sym, defn, why))
+            if not uniq:
+                continue
+            res = await _call(llm, _messages(_repair_prompt(uniq, part)), limits,
+                              CallRecord(i, REPAIR), records)
+            answers = parse_response(res.content) if res.content else []
+            repair_proposed += len(answers)
+            by_window[i].extend(answers)
+            nxt[i] = answers
+        pending = nxt
+        if not any(pending):
+            break
+    proposed = [p for props in by_window for p in props]
+    glossary, rejected = validate_entries_detailed(proposed, text, version, config)
+    drops = Counter(why for _, _, why in rejected)
+    return DocumentOutcome(
+        glossary=glossary, windows=len(parts), truncated=truncated,
+        proposed=len(proposed), kept=len(proposed) - len(rejected),
+        drops={k: drops[k] for k in GATE_REASONS if drops[k]},
+        cut_off=cut_off, cut_off_unresolved=unresolved, repair_proposed=repair_proposed,
+        records=records,
+    )
 
 
 def merged(rules: Glossary, llm: Glossary, config: GlossaryConfig | None = None) -> Glossary:

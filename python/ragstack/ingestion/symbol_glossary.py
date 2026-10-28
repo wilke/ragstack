@@ -919,6 +919,18 @@ def _another_symbol_between(canon: str, a: int, b: int, symbol: str) -> bool:
     return False
 
 
+#: Why the gate rejected a proposed entry — the keys of a glossary file row's
+#: ``drops`` (#847 G2). Checked in this order; the FIRST failing check names it.
+SYMBOL_ABSENT = "symbol_absent"                    # not a whole token of the document
+NOT_SPECIFIC = "not_specific"                      # fails the rules' specificity guard
+IMPLAUSIBLE = "implausible"                        # not a plausible definition phrase
+WORD_NOT_IN_DOCUMENT = "word_not_in_document"      # a definition word the document lacks
+NOT_LOCAL = "not_local"                            # words not near any use of the symbol
+ANOTHER_SYMBOL_BETWEEN = "another_symbol_between"  # the phrase names a different symbol
+GATE_REASONS = (SYMBOL_ABSENT, NOT_SPECIFIC, IMPLAUSIBLE, WORD_NOT_IN_DOCUMENT,
+                NOT_LOCAL, ANOTHER_SYMBOL_BETWEEN)
+
+
 def validate_entries(
     raw: Iterable[tuple[str, str] | tuple[str, str, int | None]],
     document_text: str,
@@ -943,44 +955,66 @@ def validate_entries(
       says it;
     * offset: the given one, else where the definition occurs verbatim in the
       document, else the symbol's first occurrence.
+
+    :func:`validate_entries_detailed` is the same gate with each rejection's
+    reason.
     """
+    glossary, rejected = validate_entries_detailed(raw, document_text, version, config)
+    return glossary, len(rejected)
+
+
+def validate_entries_detailed(
+    raw: Iterable[tuple[str, str] | tuple[str, str, int | None]],
+    document_text: str,
+    version: str,
+    config: GlossaryConfig | None = None,
+) -> tuple[Glossary, list[tuple[str, str, str]]]:
+    """:func:`validate_entries`, returning ``(glossary, rejected)`` where
+    ``rejected`` is ``[(symbol, definition, reason)]`` in input order — the
+    symbol and definition as PROPOSED, the reason one of :data:`GATE_REASONS`
+    (the first check that failed)."""
     cfg = config or DEFAULT_CONFIG
     canon, pos = canonical_map(document_text)
     canon_fold = canon.casefold()
     doc_words = {w.casefold() for w in _WORDS.findall(canon)}
     found: list[tuple[int, str, str]] = []
-    rejected = 0
+    rejected: list[tuple[str, str, str]] = []
     for item in raw:
-        sym, raw_def = item[0], item[1]
+        proposed_sym, raw_def = item[0], item[1]
         given = item[2] if len(item) > 2 else None  # type: ignore[misc]
-        sym = canonical_symbol(_TRAILING_ARGS.sub("", (sym or "").strip()))
+        sym = canonical_symbol(_TRAILING_ARGS.sub("", (proposed_sym or "").strip()))
         defn = _clean_definition(raw_def or "", cfg.max_definition_words)
         occ = symbol_pattern(sym).search(canon) if sym else None
-        ok = (
-            occ is not None
-            and is_specific_symbol(sym, allow_single_letter=cfg.allow_single_letter)
-            and _plausible_definition(defn, sym)
-            and _norm_words(defn) <= doc_words
-        )
+        reason: str | None = None
+        if occ is None:
+            reason = SYMBOL_ABSENT
+        elif not is_specific_symbol(sym, allow_single_letter=cfg.allow_single_letter):
+            reason = NOT_SPECIFIC
+        elif not _plausible_definition(defn, sym):
+            reason = IMPLAUSIBLE
+        elif not _norm_words(defn) <= doc_words:
+            reason = WORD_NOT_IN_DOCUMENT
+        ok = reason is None
         occurrences = [m.start() for m in symbol_pattern(sym).finditer(canon)] if ok else []
         pairs = _verbatim_pairs(defn, canon, occurrences, cfg.definition_window or len(canon)) if ok else []
         if ok and cfg.definition_window > 0:
-            ok = _near_symbol(defn, canon, occurrences, cfg.definition_window)
+            if not _near_symbol(defn, canon, occurrences, cfg.definition_window):
+                reason = NOT_LOCAL
             # A verbatim copy of the phrase sits next to the symbol only through
             # ANOTHER symbol (it names that one): reject. Paraphrases cannot be
             # checked this way — a known limitation, see the tests.
-            if ok and pairs:
+            elif pairs and not any(
                 # The region between the definition copy and the symbol: from
                 # the copy's END to the symbol, or from the symbol's end to
                 # the copy's start.
-                ok = any(
-                    not _another_symbol_between(
-                        canon, d1 if d1 <= o else o + len(sym), o if d1 <= o else d0, sym
-                    )
-                    for _, d0, d1, o in pairs
+                not _another_symbol_between(
+                    canon, d1 if d1 <= o else o + len(sym), o if d1 <= o else d0, sym
                 )
-        if not ok or occ is None:
-            rejected += 1
+                for _, d0, d1, o in pairs
+            ):
+                reason = ANOTHER_SYMBOL_BETWEEN
+        if reason is not None or occ is None:
+            rejected.append((str(proposed_sym or ""), str(raw_def or ""), reason or SYMBOL_ABSENT))
             continue
         if isinstance(given, int):
             offset = given
