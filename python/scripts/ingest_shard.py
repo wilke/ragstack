@@ -60,7 +60,11 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import ExtractReport, run_shard
-from ragstack.ingestion.structure import merge_enrichment, structure_metadata_enabled
+from ragstack.ingestion.structure import (
+    merge_enrichment,
+    require_structure_backends_or_exit,
+    structure_metadata_enabled,
+)
 from ragstack.ingestion.symbol_glossary import attacher_from_mode
 from ragstack.ingestion.work_identity import POLICIES, POLICY_OFF
 from ragstack.ops import ingest_target
@@ -491,6 +495,9 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    # #828 §6: a missing [markdown] extra with --structure-metadata on is a
+    # refusal at configuration (exit 2), never a shard ingested unstructured.
+    require_structure_backends_or_exit(args.structure_metadata)
     # Resolve the registry entry before embedding or writing anything (#263). The
     # in-memory backend owns no physical store, so it has nothing to register.
     target = (

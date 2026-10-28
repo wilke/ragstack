@@ -14,6 +14,7 @@ In-memory stores and fake embedders only; no live store, no network.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -34,6 +35,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import embed_shard  # noqa: E402
 import ingest_shard  # noqa: E402
 import pdf_extract  # noqa: E402
+
+#: Since #828 PR 2, ``--structure-metadata on`` on a shard tool refuses at
+#: configuration (exit 2) when the ``[markdown]`` extra is missing, whatever the
+#: shard holds — so the tests that run a tool with the step on need the extra.
+#: Their in-process twins above do not (the pipeline asks for the parser only
+#: when a ``.md`` document arrives).
+requires_markdown = pytest.mark.skipif(
+    importlib.util.find_spec("mdit_py_plugins") is None,
+    reason="--structure-metadata on refuses without the [markdown] extra",
+)
 
 
 class _Embedder:
@@ -292,6 +303,7 @@ def _run_ingest_shard(tmp_path: Path, monkeypatch, *extra: str) -> tuple[ShardRe
     return ShardReceipt.load(out), raw
 
 
+@requires_markdown
 def test_ingest_shard_records_enrichment_structure_when_on(tmp_path, monkeypatch) -> None:
     receipt, _ = _run_ingest_shard(tmp_path, monkeypatch, "--structure-metadata", "on")
     rec = receipt.enrichment["structure"]  # type: ignore[index]
@@ -305,6 +317,7 @@ def test_ingest_shard_off_receipt_is_unchanged(tmp_path, monkeypatch) -> None:
     assert receipt.enrichment is None and "enrichment" not in raw
 
 
+@requires_markdown
 def test_embed_shard_stamps_the_embedding_file(tmp_path, monkeypatch) -> None:
     """Path C: ``embed_shard.py`` → ``run_embed_shard`` → ``iter_embed_source``
     stamps, and the stamped chunks reach the embedding file the load step reads."""

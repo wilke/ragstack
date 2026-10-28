@@ -44,7 +44,11 @@ from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
-from ragstack.ingestion.structure import merge_enrichment, structure_metadata_enabled
+from ragstack.ingestion.structure import (
+    merge_enrichment,
+    require_structure_backends_or_exit,
+    structure_metadata_enabled,
+)
 from ragstack.ingestion.symbol_glossary import attacher_from_mode
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
@@ -244,7 +248,11 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    return asyncio.run(amain(parse_args(argv)))
+    args = parse_args(argv)
+    # #828 §6: a missing [markdown] extra with --structure-metadata on is a
+    # refusal at configuration (exit 2), never a shard embedded unstructured.
+    require_structure_backends_or_exit(args.structure_metadata)
+    return asyncio.run(amain(args))
 
 
 if __name__ == "__main__":

@@ -57,7 +57,11 @@ from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
-from ragstack.ingestion.structure import structure_metadata_enabled
+from ragstack.ingestion.structure import (
+    StructureBackendUnavailable,
+    require_structure_backends,
+    structure_metadata_enabled,
+)
 from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher, attacher_from_mode
 from ragstack.ingestion.tokenization import (
     TokenCounterUnavailable,
@@ -757,6 +761,18 @@ def _embed_fn_for(app_state: Any, entry: CollectionEntry) -> Any:
     if not needs_embed_fn(method):
         return None
     return _embed_bridge_for(app_state, entry)
+
+
+def _warn_missing_structure_backend() -> None:
+    """#828: STRUCTURE_METADATA=on without a parser surfaces at BOOT as a
+    WARNING, not only as the first ingest's 503. The server still starts (the
+    rest of it works) and the local ingest still refuses with 503."""
+    if not structure_metadata_enabled(settings.structure_metadata):
+        return
+    try:
+        require_structure_backends()
+    except StructureBackendUnavailable as e:
+        log.warning("%s; local ingests will be refused with 503", e)
 
 
 def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngestor:
@@ -2252,6 +2268,7 @@ async def lifespan(app: FastAPI):
         # #828: STRUCTURE_METADATA (payload only; "on" exactly, else off).
         structure_metadata=structure_metadata_enabled(settings.structure_metadata),
     )
+    _warn_missing_structure_backend()
 
     job_store = make_job_store(
         settings.job_store_backend, settings.job_store_path, settings.postgres_dsn
