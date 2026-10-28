@@ -47,6 +47,33 @@ from the collection's route (``QDRANT_COLLECTION_ROUTES`` /
 A collection is required on every backend; ``--vector-backend memory`` needs
 no URL.
 
+**Glossary from a file** (``--glossary-file``, #847 G1): every chunk's
+``symbol_glossary`` field and ``metadata.symbol_glossary_version`` are rendered
+from a ``glossary.jsonl`` (:mod:`ragstack.ingestion.glossary_file`) with the
+file's own config — positional, value-only, ``Glossary.for_chunk`` — instead of
+what the embedding file carries; the stamp is ``<glossary_version>@file/1``.
+Before any store is created or written, every document of every embedding file
+is checked, and one failing document refuses the whole load (exit 2):
+
+* *The text.* An embedding file holds chunks, not documents, so the text a
+  document's chunks were cut from is REASSEMBLED from them (``content`` pasted
+  by ``start_char``, ``ingestion/reassembly.py``, the backfill's procedure) and
+  its ``content_key`` compared with the row's ``text_sha256``. The chunkers
+  slice ``content`` from the document's own spans and cover it, so the
+  reassembly is exact for a complete set of chunks (outer whitespace is
+  stripped on both sides of the comparison). It is not when chunks are missing
+  (``--boilerplate drop``) or a chunk's length disagrees with its offsets: such
+  a document is ``unverifiable`` and refused unless
+  ``--glossary-allow-unverifiable``. A complete reassembly that hashes
+  differently is a real mismatch and is refused regardless.
+* *A document with no row* is refused, never given the rules instead: the file
+  is the record of what is attached, so a silent fallback would load a
+  glossary nothing records, and the absent row is itself evidence that the file
+  was built over another document set.
+
+Without ``--glossary-file`` the chunks load exactly as the embedding file holds
+them.
+
 Usage (substitute the stores you actually mean to write to)::
 
     python scripts/load_embeddings.py shard.s0.emb.jsonl shard.s1.emb.jsonl \

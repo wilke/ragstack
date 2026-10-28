@@ -31,6 +31,19 @@ Safety:
 * ``--refresh-off`` parks ``refresh_interval`` for the run and restores it after
   (``ElasticsearchTextIndex.bulk_load_refresh`` / ``restore_refresh``).
 
+**Re-attach from a glossary file** (``--glossary-file``, #847 G1): instead of
+building glossaries, render each chunk from a ``glossary.jsonl``
+(:mod:`ragstack.ingestion.glossary_file`) with the file's own config, stamped
+``<glossary_version>@file/1`` — an Elasticsearch-only update, no re-embed. A
+read-only pass over the whole index runs first, in a dry run too: every
+document is reassembled from its chunks and its ``content_key`` checked against
+the row's ``text_sha256``; a mismatch, a document with no row, or (unless
+``--glossary-allow-unverifiable``) a document whose chunks do not reassemble its
+full text refuses the run before any write, the mapping included. The same pass
+counts the LLM glossaries the file would replace by rules, and ``--apply`` is
+refused on any unless ``--replace-llm``. It does not combine with
+``--llm-cache`` or ``--config``.
+
 Sizing (plan §6): openchia, 16.5k chunks / 289 docs, is seconds. The 47.6M-chunk
 open-access index is ~95 GB scrolled and 47.6M partial updates (each a Lucene
 delete + reinsert): hours, ≥2× the index size in transient disk, and segment
@@ -52,9 +65,16 @@ import sys
 from collections import Counter
 from typing import Any
 
-from ragstack.ingestion.reassembly import iter_documents_sorted
+from ragstack.ingestion.glossary_file import (
+    GlossaryFile,
+    Resolution,
+    read_glossary_file,
+    resolve_documents,
+)
+from ragstack.ingestion.reassembly import Reassembled, iter_documents_sorted
 from ragstack.ingestion.symbol_glossary import (
     VERSION_KEY,
+    Glossary,
     SymbolGlossaryAttacher,
     SymbolGlossaryCache,
     config_from_json,
@@ -94,12 +114,15 @@ async def resolve_exactly(es: Any, name: str) -> None:
 
 
 def plan_updates(
-    attacher: SymbolGlossaryAttacher, text: str, rows: list[dict[str, Any]]
+    attacher: SymbolGlossaryAttacher, text: str, rows: list[dict[str, Any]],
+    glossary: Glossary | None = None,
 ) -> tuple[list[tuple[str, str, str]], Counter[str]]:
     """``[(es _id, rendered field, version)]`` for the chunks that need a write,
-    and counts. Pure — the testable core."""
+    and counts. Pure — the testable core. ``glossary`` (#847 G1, from a
+    glossary file, already verified and stamped) replaces building one."""
     counts: Counter[str] = Counter()
-    glossary = attacher.glossary_for(text)
+    if glossary is None:
+        glossary = attacher.glossary_for(text)
     out: list[tuple[str, str, str]] = []
     for row in rows:
         counts["chunks"] += 1
@@ -129,6 +152,12 @@ REPLACE_GUARD_MESSAGE = (
     "on purpose."
 )
 
+FILE_REPLACE_GUARD_MESSAGE = (
+    "refusing --apply: this run would replace the LLM glossary of {n} chunk(s) in {index!r} "
+    "with the rules-only glossaries --glossary-file {file!r} holds for their documents. "
+    "Nothing was written. Pass --replace-llm to replace them on purpose."
+)
+
 LLM_GUARD_MESSAGE = (
     "refusing --apply: {n} chunk(s) in {index!r} carry an LLM glossary (metadata.{key} = llm/…), "
     "and no --llm-cache was given. Without the cache those documents are re-planned from the "
@@ -144,6 +173,36 @@ async def count_llm_stamped(es: Any, index: str) -> int:
     return int(getattr(resp, "body", resp).get("count", 0))
 
 
+def _file_glossary(gfile: GlossaryFile, doc: Reassembled, allow_unverifiable: bool) -> Glossary:
+    """The stamped glossary for one reassembled document, or SystemExit."""
+    res = resolve_documents(gfile, [doc], allow_unverifiable=allow_unverifiable)
+    if res.problems:
+        raise SystemExit(res.refusal(repr(str(gfile.path))))
+    return res.glossaries[doc.doc_id]
+
+
+async def _verify_glossary_file(
+    es: Any, args: argparse.Namespace, gfile: GlossaryFile, attacher: SymbolGlossaryAttacher
+) -> int:
+    """#847 G1: a full read-only pass over the index BEFORE any write (the
+    mapping included): every document reassembled from its chunks and checked
+    against the file — a ``text_sha256`` mismatch, a document with no row, or
+    (without the override) an unverifiable reassembly refuses the run. Returns
+    how many llm/-stamped chunks the file's glossaries would replace by rules."""
+    res = Resolution()
+    replaced = 0
+    async for doc, rows in iter_documents_sorted(es, args.index):
+        one = resolve_documents(gfile, [doc], allow_unverifiable=args.glossary_allow_unverifiable)
+        res.problems += one.problems
+        res.unverified += one.unverified
+        if not one.problems:
+            replaced += plan_updates(attacher, doc.text, rows,
+                                     one.glossaries[doc.doc_id])[1]["chunks_llm_replaced"]
+    if res.problems:
+        raise SystemExit(res.refusal(repr(args.glossary_file)))
+    return replaced
+
+
 async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> dict[str, Any]:
     owned = es is None
     if es is None:
@@ -151,8 +210,12 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
 
         es = AsyncElasticsearch(hosts=args.es_url, request_timeout=120,
                                 api_key=os.environ.get("ELASTICSEARCH_API_KEY") or None)
+    glossary_file = getattr(args, "glossary_file", None)
+    gfile = read_glossary_file(glossary_file) if glossary_file else None
     cache = SymbolGlossaryCache(args.llm_cache) if args.llm_cache else None
-    attacher = SymbolGlossaryAttacher(config_from_json(args.config), cache)
+    # With a glossary file the file's own config renders every chunk.
+    attacher = SymbolGlossaryAttacher(
+        gfile.config if gfile is not None else config_from_json(args.config), cache)
     totals: Counter[str] = Counter()
     prior_refresh: str | None = None
     pending: list[dict[str, Any]] = []
@@ -170,7 +233,14 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
 
     try:
         await resolve_exactly(es, args.index)
-        if args.apply and not args.llm_cache and not getattr(args, "replace_llm", False):
+        if gfile is not None:
+            # Dry run and --apply alike: a file that does not match the index
+            # is refused before anything else happens.
+            replaced = await _verify_glossary_file(es, args, gfile, attacher)
+            if replaced and args.apply and not getattr(args, "replace_llm", False):
+                raise SystemExit(FILE_REPLACE_GUARD_MESSAGE.format(
+                    n=replaced, index=args.index, file=glossary_file))
+        elif args.apply and not args.llm_cache and not getattr(args, "replace_llm", False):
             # Without a cache every llm/-stamped chunk would be re-planned
             # (rules/… != llm/…), so "the index has any" == "this run would
             # overwrite some". Checked before the first write.
@@ -197,7 +267,9 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
             totals["docs"] += 1
             totals["reassembly_gaps"] += doc.gaps
             totals["reassembly_length_mismatches"] += doc.length_mismatches
-            updates, counts = plan_updates(attacher, doc.text, rows)
+            file_glossary = (_file_glossary(gfile, doc, args.glossary_allow_unverifiable)
+                             if gfile is not None else None)
+            updates, counts = plan_updates(attacher, doc.text, rows, file_glossary)
             totals.update(counts)
             totals["chunks_to_update"] += len(updates)
             if not args.apply:
@@ -232,6 +304,15 @@ def existing_cache_file(path: str) -> str:
     return path
 
 
+def existing_glossary_file(path: str) -> str:
+    """argparse type for ``--glossary-file``: an existing, non-empty file."""
+    if not os.path.isfile(path):
+        raise argparse.ArgumentTypeError(f"--glossary-file {path!r}: no such file")
+    if os.path.getsize(path) == 0:
+        raise argparse.ArgumentTypeError(f"--glossary-file {path!r}: the file is empty")
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--es-url", required=True, help="no default, deliberately")
@@ -240,6 +321,15 @@ def main(argv: list[str] | None = None) -> int:
     # would reject every run that omits the flag.
     p.add_argument("--llm-cache", default=None, type=existing_cache_file,
                    help="offline LLM glossary cache, read-only; must exist and be non-empty")
+    p.add_argument("--glossary-file", default=None, type=existing_glossary_file,
+                   help="#847: re-attach from this glossary.jsonl (scripts/glossary_file.py) "
+                        "instead of building glossaries: each document is reassembled from "
+                        "its chunks and its text_sha256 checked against the file in a "
+                        "read-only pass first; a mismatch or a document with no row refuses "
+                        "the run before any write. Renders with the file's own config")
+    p.add_argument("--glossary-allow-unverifiable", action="store_true",
+                   help="with --glossary-file: render documents whose chunks do not "
+                        "reassemble their full text (a gap or a length mismatch)")
     p.add_argument("--config", default="", help="GlossaryConfig overrides as JSON")
     p.add_argument("--batch-size", type=int, default=500)
     p.add_argument("--apply", action="store_true", help="WRITE. Without it this is a dry run.")
@@ -252,6 +342,11 @@ def main(argv: list[str] | None = None) -> int:
     bad = check_index_name(args.index)
     if bad:
         p.error(bad)
+    if args.glossary_file and (args.llm_cache or args.config):
+        p.error("--glossary-file renders from the file and its own config: it does not "
+                "combine with --llm-cache or --config")
+    if args.glossary_allow_unverifiable and not args.glossary_file:
+        p.error("--glossary-allow-unverifiable needs --glossary-file")
     if args.apply and args.confirm_index != args.index:
         p.error("--apply writes to the index: repeat its exact name with --confirm-index")
     store = None
