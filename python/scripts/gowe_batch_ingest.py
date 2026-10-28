@@ -187,6 +187,18 @@ def settled_store_counts(qdrant_url: str, es_url: str, store: str,
     return q, e
 
 
+def embed_step_wiring(cwl_path: str) -> dict[str, bool | None]:
+    """``{step id: wired}`` for each ``embed_shard.py`` step of the workflow text
+    about to be submitted — whether the step's ``in:`` binds ``collection_id``,
+    so the embed tool resolves the registry entry rather than embedding
+    unresolved (#828 §7). ``None`` for a step whose tool is not inline and so
+    cannot be read. Read here, not acted on: the refusal for a marked
+    collection on an unwired text is #828 PR 4."""
+    from ragstack.tool_image import embed_shard_step_wiring
+
+    return embed_shard_step_wiring(Path(cwl_path).read_text(encoding="utf-8"))
+
+
 def resolve_store_name(registry_db: str, collection_id: str) -> str:
     """The physical store name from the registry entry — the driver verifies
     counts against the same store the workflow writes, resolved the same way."""
