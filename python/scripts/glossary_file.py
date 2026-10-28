@@ -7,7 +7,9 @@ network, no model.
 pre-extracted JSONL files (``JsonlLoader``, the format the ingest tools read),
 the rules glossary, the offline LLM glossary when ``--llm-cache`` holds the
 document's exact text (re-validated against it, as ingest does), and the merged
-glossary — the one today's in-process attach would render. A file built with no
+glossary — the one today's in-process attach would render, except that a
+cached LLM glossary the gate keeps nothing of falls back to the rules here
+(``choose_merged``; the attach keeps the empty one). A file built with no
 cache therefore renders exactly the field today's ingest produces.
 
 ``verify`` reads a file strictly (schema version, every row, the header counts)

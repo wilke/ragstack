@@ -18,14 +18,20 @@ a document not finished by then is degraded ``deadline``.
 **Degrade, never fail.** A document whose LLM half cannot be completed gets
 ``llm: null``, ``merged = rules`` and ``degraded: <reason>``
 (``endpoint_unavailable``, ``timeout``, ``http_<code>``, ``bad_response``,
-``deadline``, ``model_not_served``, ``exception:<Class>``). The step still
-returns every row; the caller exits 0 and reports the counts. A model answer
-the gate keeps nothing of is NOT degraded: ``llm`` is then an empty glossary.
+``deadline``, ``model_not_served``, ``cut_off``, ``exception:<Class>``). The
+step still returns every row; the caller exits 0 and reports the counts.
+``cut_off``: every window had an unresolved cut-off (under ``split``, either
+half cut off again counts) and the gate kept nothing — the conservative side:
+a window one of whose halves answered is still counted as unresolved. Any other model answer the gate keeps
+nothing of is NOT degraded: ``llm`` is then an empty glossary, and ``merged``
+falls back to the rules (:func:`~ragstack.ingestion.glossary_file.choose_merged`).
 
 **Reuse.** ``reuse`` (a prior file of this step) supplies the LLM half of a
-document whose ``text_sha256`` and LLM version match and which was not
-degraded; the rules half is always recomputed. Only the other documents call
-the model — "a later run fills the LLM half" is one rerun with ``reuse``.
+document whose ``text_sha256`` and LLM version match, which was not degraded,
+and whose recorded cut-off policy and seed equal this run's (neither is in the
+version string, and both change the answer); the rules half is always
+recomputed. Only the other documents call the model — "a later run fills the
+LLM half" is one rerun with ``reuse``.
 """
 from __future__ import annotations
 
@@ -57,6 +63,7 @@ from ragstack.ingestion.symbol_glossary_llm import (
     ENDPOINT_UNAVAILABLE,
     LLM_EXTRACTOR,
     TIMEOUT,
+    WINDOW_OVERLAP,
     CallFailed,
     ChatClient,
     StepLimits,
@@ -67,6 +74,8 @@ log = logging.getLogger(__name__)
 
 DEADLINE = "deadline"
 MODEL_NOT_SERVED = "model_not_served"
+#: Every window ended with an unresolved cut-off and the gate kept nothing.
+CUT_OFF = "cut_off"
 SKIPPED_SHORT = "short"
 
 
@@ -146,6 +155,11 @@ def settings_problems(s: StepSettings) -> list[str]:
                         ("--llm-max-windows", lim.max_windows)):
         if not value or value <= 0:
             out.append(f"{flag} must be > 0 with --llm on (there is no default)")
+    if 0 < lim.window_chars <= WINDOW_OVERLAP:
+        # A window no longer than the overlap advances by one character:
+        # max_windows near-identical windows over the document's head.
+        out.append(f"--llm-window-chars must be > {WINDOW_OVERLAP} (the window overlap) "
+                   "with --llm on")
     if lim.repair_rounds < 0:
         out.append("--llm-repair-rounds must be >= 0")
     if lim.cutoff_retry not in CUTOFF_POLICIES:
@@ -278,8 +292,12 @@ async def run_step(
             return row(None, {}, None)
         assert lim is not None and llm is not None
         prior = reuse.rows.get(doc.doc_id) if reuse is not None else None
+        prior_llm = prior.provenance.get("llm") if prior is not None else None
         if (prior is not None and prior.text_sha256 == key and prior.degraded is None
-                and prior.llm is not None and prior.llm.version == version):
+                and prior.llm is not None and prior.llm.version == version
+                and isinstance(prior_llm, dict)
+                and prior_llm.get("cutoff_retry") == lim.cutoff_retry
+                and prior_llm.get("seed") == lim.seed):
             reused_ids.add(doc.doc_id)
             prov = {**dict(prior.provenance), "reused_from": reuse_sha256, "tool": tool,
                     "rules": {"version": EXTRACTOR_VERSION}}
@@ -320,6 +338,10 @@ async def run_step(
                   cut_off_unresolved=out.cut_off_unresolved, retries=out.retries,
                   reasoning_seen=sum(int(r.reasoning) for r in out.records),
                   ms=int((clock() - t0) * 1000))
+        if out.kept == 0 and out.windows and out.windows_cut_off_unresolved == out.windows:
+            # The model never finished an answer: not "found nothing".
+            lp["degraded_reason"] = CUT_OFF
+            return row(None, dict(out.drops), CUT_OFF)
         return row(out.glossary, dict(out.drops), None)
 
     rows = list(await asyncio.gather(*(one(d) for d in items)))
@@ -332,8 +354,10 @@ def _summary(rows: list[GlossaryRow], s: StepSettings, probe_rec: Probe | None,
     drops: Counter[str] = Counter()
     tallies: Counter[str] = Counter()
     for r in rows:
+        if r.doc_id in reused:
+            continue                    # its drops, calls and counts are the prior run's
         drops.update(r.drops)
-        lp = r.provenance.get("llm") if r.doc_id not in reused else None
+        lp = r.provenance.get("llm")
         if isinstance(lp, dict):
             tallies["llm_calls"] += len(lp.get("calls") or [])
             for k in ("proposed", "kept", "repair_proposed", "cut_off",

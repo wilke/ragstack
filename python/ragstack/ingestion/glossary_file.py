@@ -69,7 +69,7 @@ under whatever that default is when it is read. Writers write every key.
   rendering bisects on them), every offset a raw character offset into the
   document text — the coordinates of ``Chunk.start_char``. ``merged`` is what
   the load renders: :func:`choose_merged` — the LLM glossary when the row has
-  one, else the rules (today's attacher choice; both builders use it).
+  one with at least one entry, else the rules (both builders use it).
 * ``glossary_version`` repeats ``merged.version`` so a reader can filter rows
   without parsing the glossaries; a disagreement is refused.
 * ``drops``: entries dropped, by reason. ``{}`` where unknown. G1's builder
@@ -521,8 +521,9 @@ def build_row(doc_id: str, text: str, attacher: SymbolGlossaryAttacher) -> Gloss
     """One document's row from today's machinery: the rules glossary always,
     the cached LLM glossary when ``attacher.cache`` holds the text (re-validated
     against it, exactly as :meth:`SymbolGlossaryAttacher.glossary_for` does),
-    and ``merged`` = the glossary that method would return — so a file built
-    here renders exactly what today's in-process attach renders."""
+    and ``merged`` = :func:`choose_merged` — what today's in-process attach
+    renders, except for a cache hit the gate keeps nothing of: the attach
+    renders that empty LLM glossary, the file the rules (#850 review)."""
     cfg = attacher.config
     key = content_key(text)
     rules = extract_glossary(text, cfg)
@@ -543,18 +544,28 @@ def build_row(doc_id: str, text: str, attacher: SymbolGlossaryAttacher) -> Gloss
 
 
 def choose_merged(rules: Glossary, llm: Glossary | None) -> Glossary:
-    """The glossary a row renders: the LLM glossary when there is one (even an
-    empty one: the model found nothing the gate kept), else the rules — today's
-    attacher choice (:meth:`SymbolGlossaryAttacher.glossary_for`), kept by
-    owner decision for #847 G2. One function, so the builder and the workflow
-    step cannot drift.
+    """The glossary a row renders: the LLM glossary when it has at least one
+    entry, else the rules. One function, so the builder and the workflow step
+    cannot drift.
+
+    Prefer-LLM was kept by owner decision for #847 G2; the #850 review
+    changed what an EMPTY LLM half means. It used to win (``merged`` empty,
+    the rules' entries dropped, stamped ``llm/…``); now it falls back to the
+    rules (stamped ``rules/…``). The ``llm`` half and its provenance are still
+    recorded unchanged. This DIVERGES from the in-process cache path,
+    :meth:`SymbolGlossaryAttacher.glossary_for`, which still prefers an empty
+    cached LLM glossary — the rule the October rules+LLM arm was measured
+    under (see ``docs/plans/symbol-glossary-file.md``). A backfill of such a
+    row over an index stamped ``llm/…`` replaces an LLM stamp by rules, so
+    ``backfill_symbol_glossary.py --glossary-file --apply`` needs
+    ``--replace-llm`` there (its guard doing its job).
 
     The file keeps BOTH halves, so the choice can be re-decided later without
     re-running the model. TODO(#847): a union of the two
     (``symbol_glossary_llm.merged``) is a possible later change; if it lands,
     its version string must still START with ``llm/`` whenever it holds an LLM
     entry — the backfill's replace guards key on that prefix."""
-    return llm if llm is not None else rules
+    return llm if llm is not None and llm.entries else rules
 
 
 # --- combining files -----------------------------------------------------------

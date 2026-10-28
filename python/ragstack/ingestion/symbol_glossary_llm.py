@@ -34,12 +34,18 @@ from typing import Any, Protocol
 import httpx
 
 from ragstack.ingestion.symbol_glossary import (
+    ANOTHER_SYMBOL_BETWEEN,
     DEFAULT_CONFIG,
     GATE_REASONS,
+    IMPLAUSIBLE,
+    NOT_LOCAL,
+    SYMBOL_ABSENT,
+    WORD_NOT_IN_DOCUMENT,
     Definition,
     Glossary,
     GlossaryConfig,
     GlossaryEntry,
+    is_single_token_symbol,
     validate_entries,
     validate_entries_detailed,
 )
@@ -79,10 +85,14 @@ DOCUMENT:
 
 #: The repair round (#847 G2): entries the gate rejected go back to the model
 #: ONCE per round, each with the gate's reason, together with the window they
-#: were proposed from. The answer passes the same gate.
+#: were proposed from. The answer passes the same gate. Only REPAIRABLE
+#: rejections are sent (:func:`repairable`): never ``not_specific`` (a unit, a
+#: plain word, a single letter — no rewording makes it a symbol) or
+#: ``not_a_symbol`` (a term of the document, not a symbol). The #850 review
+#: dropped ``not_specific`` from the template's reason list, which changed the
+#: prompt hash and so every ``llm/2`` version string.
 REPAIR_PROMPT = """A checker compared your symbol list for this document with the document text and rejected the entries below. Each line gives the entry and the reason:
 - symbol_absent: the symbol does not occur in the document exactly as written;
-- not_specific: it is not a specific symbol (a plain word, a unit, a single letter);
 - implausible: the definition is not a short noun phrase (a value, a formula, a sentence);
 - word_not_in_document: a word of the definition does not occur in the document;
 - not_local: the definition's words do not occur near the symbol;
@@ -123,25 +133,32 @@ DEFAULT_MAX_TOKENS = 2_048
 WINDOW_OVERLAP = 2_000
 
 
+def thinking_code(thinking: bool | None) -> str:
+    """The version string's ``k`` field: ``0`` (thinking off was sent), ``1``
+    (on was sent), ``u`` (nothing sent: the server's own default)."""
+    return "u" if thinking is None else str(int(bool(thinking)))
+
+
 def llm_version(
     model: str,
     window_chars: int = DEFAULT_WINDOW_CHARS,
     max_windows: int = DEFAULT_MAX_WINDOWS,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     *,
-    thinking: bool = False,
+    thinking: bool | None = False,
     repair_rounds: int = 0,
 ) -> str:
     """The cache/provenance version of a glossary from ``model`` under this
     prompt AND these generation limits:
-    ``llm/2:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>:k<thinking 0|1>:r<repair rounds>``.
+    ``llm/2:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>:k<thinking 0|1|u>:r<repair rounds>``
+    (``ku``: no thinking switch was sent).
     The limits change what the model sees and how much it may answer, thinking
     and the repair round change what it answers, so a result produced under
     different values is a different result. (The cut-off retry policy is not
     in the string; the step records it per row.)"""
     return (f"{LLM_EXTRACTOR}:{model}:{prompt_hash()}"
             f":w{window_chars}x{max_windows}:t{max_tokens}"
-            f":k{int(bool(thinking))}:r{int(repair_rounds)}")
+            f":k{thinking_code(thinking)}:r{int(repair_rounds)}")
 
 
 def windows(text: str, size: int, overlap: int, max_windows: int) -> tuple[list[str], bool]:
@@ -324,7 +341,11 @@ class StepLimits:
     max_windows: int
     max_tokens: int
     timeout_s: float
-    thinking: bool
+    #: ``True``/``False``: ``chat_template_kwargs.enable_thinking`` is sent so;
+    #: ``None``: nothing is sent (a strict OpenAI-compatible server).
+    thinking: bool | None
+    #: Repair rounds. No measured gain yet: on the G2a live smoke one round
+    #: recovered nothing (#850). Keep 0 unless a run shows otherwise.
     repair_rounds: int
     cutoff_retry: str
     seed: int | None = None
@@ -385,6 +406,9 @@ class DocumentOutcome:
     cut_off_unresolved: int
     repair_proposed: int
     records: list[CallRecord] = field(default_factory=list)
+    #: Windows that ended with an unresolved cut-off (``off``: the first call
+    #: was cut off; ``split``: a half was cut off again).
+    windows_cut_off_unresolved: int = 0
 
     @property
     def retries(self) -> int:
@@ -471,6 +495,23 @@ def _messages(prompt: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
 
 
+#: Gate reasons a repair round may fix (with :func:`repairable`'s proviso for
+#: ``symbol_absent``).
+REPAIRABLE_REASONS = frozenset({WORD_NOT_IN_DOCUMENT, NOT_LOCAL, ANOTHER_SYMBOL_BETWEEN,
+                                IMPLAUSIBLE, SYMBOL_ABSENT})
+
+
+def repairable(symbol: str, reason: str) -> bool:
+    """Is a rejection worth sending back? ``word_not_in_document``,
+    ``not_local``, ``another_symbol_between``, ``implausible``, and
+    ``symbol_absent`` only for a single-token symbol (a model may have
+    mis-copied ``Qb``; a phrase that is not in the document is no symbol to
+    copy). Never ``not_specific`` or ``not_a_symbol``."""
+    if reason not in REPAIRABLE_REASONS:
+        return False
+    return reason != SYMBOL_ABSENT or is_single_token_symbol(symbol)
+
+
 def _repair_prompt(rejected: list[tuple[str, str, str]], part: str) -> str:
     lines = [f"- {json.dumps({'symbol': s, 'definition': d}, ensure_ascii=False)} — {why}"
              for s, d, why in rejected[:MAX_REPAIR_ENTRIES]]
@@ -488,8 +529,9 @@ async def extract_document(
     again is counted ``cut_off_unresolved``, never split further. Proposals
     of every answer (a cut-off answer's salvaged objects included) are
     unioned. Then up to ``repair_rounds`` rounds: per window, the entries of
-    that window the gate rejected go back once with the reasons; the answers
-    join the proposals. The glossary is the gate over ALL proposals, so its
+    that window the gate rejected for a :func:`repairable` reason go back
+    once with the reasons (a window with none makes no repair call); the
+    answers join the proposals. The glossary is the gate over ALL proposals, so its
     ``drops`` count every rejected proposal by the gate's reason.
 
     Raises :class:`CallFailed` (carrying every call record) when a call
@@ -498,7 +540,7 @@ async def extract_document(
     version = limits.version(llm.model)
     records: list[CallRecord] = []
     by_window: list[list[tuple[str, str]]] = []
-    cut_off = unresolved = 0
+    cut_off = unresolved = windows_unresolved = 0
     for i, part in enumerate(parts):
         props: list[tuple[str, str]] = []
         res = await _call(llm, _messages(USER_PROMPT.format(document=part)), limits,
@@ -506,6 +548,7 @@ async def extract_document(
         props.extend(parse_response(res.content) if res.content else [])
         if res.finish_reason == "length":
             cut_off += 1
+            before = unresolved
             if limits.cutoff_retry == CUTOFF_SPLIT:
                 for half in halves(part):
                     r2 = await _call(llm, _messages(USER_PROMPT.format(document=half)), limits,
@@ -515,6 +558,7 @@ async def extract_document(
                         unresolved += 1
             else:
                 unresolved += 1
+            windows_unresolved += int(unresolved > before)
         by_window.append(props)
     repair_proposed = 0
     pending = [list(p) for p in by_window]  # what the next round may send back
@@ -527,6 +571,8 @@ async def extract_document(
             uniq: list[tuple[str, str, str]] = []
             seen: set[tuple[str, str]] = set()
             for sym, defn, why in rejected:
+                if not repairable(sym, why):
+                    continue                    # no rewording fixes it: never sent
                 if (sym, defn) not in seen:
                     seen.add((sym, defn))
                     uniq.append((sym, defn, why))
@@ -549,7 +595,7 @@ async def extract_document(
         proposed=len(proposed), kept=len(proposed) - len(rejected),
         drops={k: drops[k] for k in GATE_REASONS if drops[k]},
         cut_off=cut_off, cut_off_unresolved=unresolved, repair_proposed=repair_proposed,
-        records=records,
+        records=records, windows_cut_off_unresolved=windows_unresolved,
     )
 
 

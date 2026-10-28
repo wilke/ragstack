@@ -922,13 +922,41 @@ def _another_symbol_between(canon: str, a: int, b: int, symbol: str) -> bool:
 #: Why the gate rejected a proposed entry — the keys of a glossary file row's
 #: ``drops`` (#847 G2). Checked in this order; the FIRST failing check names it.
 SYMBOL_ABSENT = "symbol_absent"                    # not a whole token of the document
+NOT_A_SYMBOL = "not_a_symbol"                      # in the document, but not ONE symbol token
 NOT_SPECIFIC = "not_specific"                      # fails the rules' specificity guard
 IMPLAUSIBLE = "implausible"                        # not a plausible definition phrase
 WORD_NOT_IN_DOCUMENT = "word_not_in_document"      # a definition word the document lacks
 NOT_LOCAL = "not_local"                            # words not near any use of the symbol
 ANOTHER_SYMBOL_BETWEEN = "another_symbol_between"  # the phrase names a different symbol
-GATE_REASONS = (SYMBOL_ABSENT, NOT_SPECIFIC, IMPLAUSIBLE, WORD_NOT_IN_DOCUMENT,
+GATE_REASONS = (SYMBOL_ABSENT, NOT_A_SYMBOL, NOT_SPECIFIC, IMPLAUSIBLE, WORD_NOT_IN_DOCUMENT,
                 NOT_LOCAL, ANOTHER_SYMBOL_BETWEEN)
+
+
+def _symbol_words(proposed: str) -> list[str]:
+    """The proposed symbol's canonical words (trailing arguments dropped),
+    split on whitespace — one word for a symbol, several for a term."""
+    return canonical_text(_TRAILING_ARGS.sub("", (proposed or "").strip())).split()
+
+
+def is_single_token_symbol(proposed: str) -> bool:
+    """Is the proposed symbol ONE symbol-shaped token (``Qb``, ``λv``, not
+    ``air change rate`` or ``concentration``)? Says nothing about whether the
+    document contains it."""
+    words = _symbol_words(proposed)
+    return len(words) == 1 and _SYMBOL_TOKEN.fullmatch(words[0]) is not None
+
+
+def _occurs_but_not_a_symbol(proposed: str, canon: str) -> bool:
+    """The #850 review's ``not_a_symbol``: the proposal is NOT one symbol
+    token (several words, or a word too long for a symbol), yet occurs in the
+    canonical document text verbatim (whitespace runs and case aside) as
+    whole tokens — a term of the document, not a symbol of it. A repair
+    round cannot turn it into a symbol, so it is never sent back."""
+    words = _symbol_words(proposed)
+    if not words or is_single_token_symbol(proposed):
+        return False
+    pattern = _NOT_TOKEN_BEFORE + r"\s+".join(re.escape(w) for w in words) + _NOT_TOKEN_AFTER
+    return re.search(pattern, canon, re.IGNORECASE) is not None
 
 
 def validate_entries(
@@ -972,7 +1000,17 @@ def validate_entries_detailed(
     """:func:`validate_entries`, returning ``(glossary, rejected)`` where
     ``rejected`` is ``[(symbol, definition, reason)]`` in input order — the
     symbol and definition as PROPOSED, the reason one of :data:`GATE_REASONS`
-    (the first check that failed)."""
+    (the first check that failed).
+
+    A symbol that is not a whole token of the document is ``not_a_symbol``
+    when the proposal is a TERM the document contains (several words, or one
+    word too long to be a symbol: ``air change rate``), else
+    ``symbol_absent``. The split is a label only: what is kept and what is
+    rejected is the same either way. The label depends on the document's
+    casing: the TERM test runs only when the case-sensitive symbol search
+    misses, so a single long word the document spells in the same case
+    (``Humidity``) is ``not_specific``, and in another case ``not_a_symbol``.
+    Both are unrepairable."""
     cfg = config or DEFAULT_CONFIG
     canon, pos = canonical_map(document_text)
     canon_fold = canon.casefold()
@@ -987,7 +1025,9 @@ def validate_entries_detailed(
         occ = symbol_pattern(sym).search(canon) if sym else None
         reason: str | None = None
         if occ is None:
-            reason = SYMBOL_ABSENT
+            # Only the LABEL depends on this; the entry is rejected either way.
+            reason = (NOT_A_SYMBOL if _occurs_but_not_a_symbol(str(proposed_sym or ""), canon)
+                      else SYMBOL_ABSENT)
         elif not is_specific_symbol(sym, allow_single_letter=cfg.allow_single_letter):
             reason = NOT_SPECIFIC
         elif not _plausible_definition(defn, sym):
@@ -1173,6 +1213,16 @@ class SymbolGlossaryAttacher:
         self.cache_version = cache_version
 
     def glossary_for(self, text: str) -> Glossary:
+        """The glossary for ``text``: the cached LLM glossary (re-validated)
+        when the cache holds one, EVEN AN EMPTY ONE, else the rules.
+
+        This in-process cache path keeps the original prefer-LLM rule, under
+        which the October rules+LLM arm was measured
+        (``scripts/eval/glossary_scratch_experiment.py``). The glossary FILE
+        diverges since the #850 review:
+        :func:`~ragstack.ingestion.glossary_file.choose_merged` falls back to
+        the rules when the LLM half is empty. Do not "fix" one to match the
+        other without re-deciding which rule the measured arm stands for."""
         if self.cache is not None:
             hit = self.cache.get(content_key(text), self.cache_version)
             if hit is not None:
