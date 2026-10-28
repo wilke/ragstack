@@ -1006,7 +1006,11 @@ def validate_entries_detailed(
     when the proposal is a TERM the document contains (several words, or one
     word too long to be a symbol: ``air change rate``), else
     ``symbol_absent``. The split is a label only: what is kept and what is
-    rejected is the same either way."""
+    rejected is the same either way. The label depends on the document's
+    casing: the TERM test runs only when the case-sensitive symbol search
+    misses, so a single long word the document spells in the same case
+    (``Humidity``) is ``not_specific``, and in another case ``not_a_symbol``.
+    Both are unrepairable."""
     cfg = config or DEFAULT_CONFIG
     canon, pos = canonical_map(document_text)
     canon_fold = canon.casefold()

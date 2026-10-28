@@ -34,8 +34,13 @@ from typing import Any, Protocol
 import httpx
 
 from ragstack.ingestion.symbol_glossary import (
+    ANOTHER_SYMBOL_BETWEEN,
     DEFAULT_CONFIG,
     GATE_REASONS,
+    IMPLAUSIBLE,
+    NOT_LOCAL,
+    SYMBOL_ABSENT,
+    WORD_NOT_IN_DOCUMENT,
     Definition,
     Glossary,
     GlossaryConfig,
@@ -492,8 +497,8 @@ def _messages(prompt: str) -> list[dict[str, str]]:
 
 #: Gate reasons a repair round may fix (with :func:`repairable`'s proviso for
 #: ``symbol_absent``).
-REPAIRABLE_REASONS = frozenset({"word_not_in_document", "not_local", "another_symbol_between",
-                                "implausible", "symbol_absent"})
+REPAIRABLE_REASONS = frozenset({WORD_NOT_IN_DOCUMENT, NOT_LOCAL, ANOTHER_SYMBOL_BETWEEN,
+                                IMPLAUSIBLE, SYMBOL_ABSENT})
 
 
 def repairable(symbol: str, reason: str) -> bool:
@@ -504,7 +509,7 @@ def repairable(symbol: str, reason: str) -> bool:
     copy). Never ``not_specific`` or ``not_a_symbol``."""
     if reason not in REPAIRABLE_REASONS:
         return False
-    return reason != "symbol_absent" or is_single_token_symbol(symbol)
+    return reason != SYMBOL_ABSENT or is_single_token_symbol(symbol)
 
 
 def _repair_prompt(rejected: list[tuple[str, str, str]], part: str) -> str:

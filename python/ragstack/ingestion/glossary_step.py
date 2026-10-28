@@ -20,8 +20,9 @@ a document not finished by then is degraded ``deadline``.
 (``endpoint_unavailable``, ``timeout``, ``http_<code>``, ``bad_response``,
 ``deadline``, ``model_not_served``, ``cut_off``, ``exception:<Class>``). The
 step still returns every row; the caller exits 0 and reports the counts.
-``cut_off``: every window ended with an unresolved cut-off and the gate kept
-nothing — the model never got to answer. Any other model answer the gate keeps
+``cut_off``: every window had an unresolved cut-off (under ``split``, either
+half cut off again counts) and the gate kept nothing — the conservative side:
+a window one of whose halves answered is still counted as unresolved. Any other model answer the gate keeps
 nothing of is NOT degraded: ``llm`` is then an empty glossary, and ``merged``
 falls back to the rules (:func:`~ragstack.ingestion.glossary_file.choose_merged`).
 

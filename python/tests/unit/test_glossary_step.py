@@ -983,3 +983,11 @@ def test_llm_thinking_tri_state_request_body_and_version(tmp_path: Path, fake_cl
             assert s.body["chat_template_kwargs"] == body
     versions = {r.llm.version for r in read_glossary_file(out).rows.values() if r.llm}
     assert len(versions) == 1 and f":{k}:r0" in versions.pop()
+
+
+def test_repairable_reasons_are_gate_reasons_and_exclude_the_unrepairable() -> None:
+    from ragstack.ingestion.symbol_glossary import GATE_REASONS, NOT_A_SYMBOL, NOT_SPECIFIC
+    from ragstack.ingestion.symbol_glossary_llm import REPAIRABLE_REASONS
+
+    assert REPAIRABLE_REASONS <= set(GATE_REASONS)
+    assert set(GATE_REASONS) - REPAIRABLE_REASONS == {NOT_SPECIFIC, NOT_A_SYMBOL}
