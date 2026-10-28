@@ -114,7 +114,11 @@ from ragstack.ingestion.load_embeddings import (
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.reassembly import Reassembled, reassemble
-from ragstack.ingestion.receipts import merge_summary
+from ragstack.ingestion.receipts import (
+    DuplicateReceiptError,
+    check_distinct_receipt_paths,
+    merge_summary,
+)
 from ragstack.ops import ingest_target
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.backpressure import BackpressuredVectorStore
@@ -647,6 +651,14 @@ def main(argv=None, *, settings=None) -> int:
         _refuse("--glossary-allow-unverifiable needs --glossary-file")
     if args.replay and args.replay_batch < 1:
         raise SystemExit("--replay-batch must be >= 1")
+    if args.embeddings:
+        # #852: the summary's merge_summary refuses a repeated shard id (each
+        # file's id is its path); refuse it HERE, before any store is touched,
+        # rather than after the same file was loaded twice.
+        try:
+            check_distinct_receipt_paths(list(args.embeddings), what="embedding files")
+        except DuplicateReceiptError as e:
+            _refuse(str(e))
     if args.vector_backend == "qdrant":
         # Resolve the registry entry before any store is created or written (#263).
         target = ingest_target.resolve_or_exit(args, settings=settings)

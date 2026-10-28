@@ -366,8 +366,9 @@ def write_version(
     object carries the merged file's schema and counts); none = no role, the
     manifest exactly as before.
     Raises :class:`ArchiveError` for no records, mixed dims, a record whose
-    dim disagrees with its file header, or glossary files that do not merge;
-    nothing is left behind on failure.
+    dim disagrees with its file header, glossary files that do not merge, or
+    (#852) several receipt paths resolving to one file or naming one
+    ``shard_id``; nothing is left behind on failure.
     """
     chunks_list = [Path(p) for p in chunks_paths]
     receipts_list = [Path(p) for p in receipt_paths]
@@ -379,6 +380,7 @@ def write_version(
     for p in [*chunks_list, *receipts_list, *glossary_list]:
         if not p.is_file():
             raise ArchiveError(f"{p}: no such file")
+    _check_receipts(receipts_list)
     manifest = _identity(collection_id, tenant, spec_hash, job_id, version, provenance)
     final = _version_dir(out_dir, version)
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -479,6 +481,37 @@ def _pack_chunks(vdir: Path, chunks_list: list[Path], nworkers: int) -> tuple[in
             pool.terminate()
             pool.join()
     return rows, dim, len(doc_ids), chunks_hw.sha.hexdigest(), chunks_hw.size
+
+
+def _check_receipts(receipts: list[Path]) -> None:
+    """#852: refuse, before anything is packed, receipts that are one receipt —
+    two paths resolving to one file (a gathered ``File[]`` staged flat by
+    basename), or two receipts naming the same ``shard_id``. Packing them
+    would array one task's receipt N times, and the API would read every other
+    task's documents as failed. A single receipt (verbatim copy; on
+    ``pdf-ingest.cwl`` a load summary with no ``shard_id``) is not checked;
+    an array element without a string ``shard_id`` is not compared."""
+    if len(receipts) < 2:
+        return
+    from ragstack.ingestion.receipts import (
+        DuplicateReceiptError,
+        check_distinct_receipt_paths,
+        check_distinct_shard_ids,
+    )
+
+    try:
+        check_distinct_receipt_paths(receipts)
+        ids: list[str] = []
+        for p in receipts:
+            try:
+                obj = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                raise ArchiveError(f"{p}: invalid receipt json: {e}") from e
+            if isinstance(obj, dict) and isinstance(obj.get("shard_id"), str):
+                ids.append(obj["shard_id"])
+        check_distinct_shard_ids(ids)
+    except DuplicateReceiptError as e:
+        raise ArchiveError(str(e)) from e
 
 
 def _write_receipt(dest: Path, receipts: list[Path]) -> tuple[str, int]:

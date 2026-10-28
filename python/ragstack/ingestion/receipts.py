@@ -15,6 +15,7 @@ stable contract shared by the CLI tool, the gather step, and — later — a
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -249,12 +250,56 @@ def parse_nothing_to_archive(text: str) -> dict[str, str]:
     return out
 
 
+#: The remedy every #852 refusal names. The cause it guards against: a
+#: scatter whose tasks all write ``--out receipt.json`` and glob
+#: ``receipt.json``, under an engine that stages a gathered ``File[]`` flat by
+#: basename (GoWe), hands the gather step N paths onto ONE surviving file.
+DUPLICATE_RECEIPT_REMEDY = (
+    "name each scatter task's receipt uniquely, e.g. "
+    "`--out $(inputs.shard.nameroot).receipt.json` with the matching glob (#852)")
+
+
+class DuplicateReceiptError(ValueError):
+    """Several receipts that are one receipt: paths resolving to one file, or
+    two receipts naming the same ``shard_id`` (#852). Counting them would
+    report one task's documents N times and every other task's as missing."""
+
+
+def check_distinct_receipt_paths(paths: list[str] | list[Path], *, what: str = "receipts") -> None:
+    """Refuse receipt ``paths`` of which two resolve to the same file.
+
+    cwltool stages colliding basenames into separate directories, so distinct
+    receipts arrive as distinct paths and pass; GoWe stages them onto one path,
+    which this refuses instead of arraying one receipt N times."""
+    seen: dict[Path, str] = {}
+    for p in paths:
+        key = Path(p).resolve()
+        if key in seen:
+            raise DuplicateReceiptError(
+                f"{what} staged onto one file: {seen[key]!r} and {str(p)!r} both "
+                f"resolve to {str(key)!r} ({len(paths)} path(s) given); "
+                f"{DUPLICATE_RECEIPT_REMEDY}")
+        seen[key] = str(p)
+
+
+def check_distinct_shard_ids(shard_ids: list[str]) -> None:
+    """Refuse two receipts with the same ``shard_id`` (#852)."""
+    dups = sorted(s for s, n in Counter(shard_ids).items() if n > 1)
+    if dups:
+        raise DuplicateReceiptError(
+            f"duplicate receipt shard_id(s) {dups} among {len(shard_ids)} receipt(s): "
+            f"the same receipt counted more than once; {DUPLICATE_RECEIPT_REMEDY}")
+
+
 def merge_summary(receipts: list[ShardReceipt]) -> dict:
     """Fold shard receipts into a run summary (the gather step's core).
 
     Reports totals and — crucially — the ids of any failed shards, so a bulk run
-    surfaces partial failure instead of silently under-ingesting.
+    surfaces partial failure instead of silently under-ingesting. Raises
+    :class:`DuplicateReceiptError` when two receipts share a ``shard_id``
+    (#852): one receipt staged N times would otherwise be counted N times.
     """
+    check_distinct_shard_ids([r.shard_id for r in receipts])
     failed = [r.shard_id for r in receipts if r.status != COMPLETED]
     return {
         "n_shards": len(receipts),

@@ -9,6 +9,11 @@ computation over the receipt files (no store/network), so it's CI-friendly.
 Usage::
 
     python scripts/merge_receipts.py r0.json r1.json ... --out summary.json
+
+Exits 3 (nothing written) when two receipt paths resolve to one file or two
+receipts share a ``shard_id`` (#852): a scatter whose tasks all write
+``receipt.json``, staged flat by basename, would otherwise be counted as one
+receipt N times.
 """
 from __future__ import annotations
 
@@ -17,7 +22,16 @@ import json
 import sys
 from pathlib import Path
 
-from ragstack.ingestion.receipts import ShardReceipt, merge_summary
+from ragstack.ingestion.receipts import (
+    DuplicateReceiptError,
+    ShardReceipt,
+    check_distinct_receipt_paths,
+    merge_summary,
+)
+
+#: Exit code for receipts that are one receipt (#852): paths resolving to one
+#: file, or a repeated ``shard_id``. Nothing is written.
+DUPLICATE_RECEIPTS_EXIT_CODE = 3
 
 
 def parse_args(argv=None):
@@ -32,8 +46,13 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    receipts = [ShardReceipt.load(p) for p in args.receipts]
-    summary = merge_summary(receipts)
+    try:
+        check_distinct_receipt_paths(args.receipts)
+        receipts = [ShardReceipt.load(p) for p in args.receipts]
+        summary = merge_summary(receipts)
+    except DuplicateReceiptError as e:
+        print(f"refused: {e}", file=sys.stderr, flush=True)
+        return DUPLICATE_RECEIPTS_EXIT_CODE
     Path(args.out).write_text(json.dumps(summary, indent=2, sort_keys=True),
                               encoding="utf-8")
     print(f"{summary['n_shards']} shards: {summary['n_docs']} docs, "
