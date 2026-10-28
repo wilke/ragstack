@@ -40,9 +40,9 @@ object per line.
 | `kind` | `"header"` |
 | `schema` | `"ragstack.glossary_file/v1"`. The reader refuses any other value. |
 | `producer` | Free text naming the tool and its version. |
-| `created` | ISO-8601 UTC. |
+| `created` | ISO-8601, and it must be UTC (`Z` or `+00:00`). |
 | `counts` | `documents`, `with_llm`, `degraded` and `merged_entries`. They must equal what the rows hold, so a truncated or spliced file is refused. |
-| `config` | The `GlossaryConfig` the producer used. The load renders with this config. An unknown key or a wrongly typed value is refused. A missing key takes the default. |
+| `config` | The `GlossaryConfig` the producer used. The load renders with this config. An unknown key or a wrongly typed value is refused. A missing key takes the reader's current default for that field, so a file that omits a key renders under whatever that default is at read time. The writer always writes every key. |
 
 **Every other line, one document.**
 
@@ -51,6 +51,8 @@ object per line.
 | `kind` | `"document"` |
 | `doc_id` | The document id. It is unique in the file. |
 | `text_sha256` | `content_key(text)`: sha256 of the UTF-8 text with outer whitespace stripped. This is the LLM cache's key. |
+| `text_chars` | The text's length in code points, before `content_key`'s strip. |
+| `text_ws_sha256` | The masked identity: sha256 of the text with every character of the mask class replaced by a space (see below). |
 | `glossary_version` | It must equal `merged.version`. |
 | `rules` | A glossary. |
 | `llm` | A glossary, or `null`. |
@@ -72,6 +74,26 @@ A glossary is `{"version": …, "entries": [{"symbol": …, "definitions": [{"te
 The writer validates every row with the reader's own parser, refuses a duplicate
 `doc_id`, and writes atomically: it writes a temporary file and renames it.
 
+**The masked identity.** `text_ws_sha256` is a second, gap-tolerant identity
+(`masked_key` in the module). Every character of the mask class is *replaced* by a
+space, not removed, so the hash also pins the offset of every other character. The
+class (`MASK_CLASS`, version `mask/1`) is fixed in the code, code point by code point,
+so the hash does not depend on the Python build's Unicode version:
+
+- Unicode White_Space: U+0009–000D, 0020, 0085, 00A0, 1680, 2000–200A, 2028, 2029,
+  202F, 205F, 3000;
+- Default_Ignorable_Code_Point (Unicode 15.1): U+00AD, 034F, 061C, 115F–1160,
+  17B4–17B5, 180B–180F, 200B–200F, 202A–202E, 2060–206F, 3164, FE00–FE0F, FEFF,
+  FFA0, FFF0–FFF8, 1BCA0–1BCA3, 1D173–1D17A, E0000–E0FFF;
+- the C0 and C1 controls (Cc): U+0000–001F, 007F–009F;
+- the remaining format characters (Cf, Unicode 15.1): U+0600–0605, 06DD, 070F,
+  0890–0891, 08E2, 110BD, 110CD, 13430–1343F, FFF9–FFFB;
+- U+FFFD, the replacement character.
+
+These are the characters a tokenizer's normaliser drops (BERT's cleanup removes Cc,
+Cf and U+FFFD) or its pre-tokenizer splits on (whitespace). They are therefore what
+a WordPiece offset mapping leaves in no chunk.
+
 **Symbols are not re-canonicalised on read.** They are stored as the canonical keys
 the extractors produce. If a future canonicalisation change re-canonicalised them on
 read, old files would become unreadable.
@@ -79,7 +101,9 @@ read, old files would become unreadable.
 **`merged` in G1.** It is the glossary that today's attacher would use for the
 document. That is the re-validated LLM glossary when the cache holds the document's
 text, and the rules glossary otherwise. G1 does not merge the two; how they are
-combined is G2's decision.
+combined is G2's decision. When G2 makes `merged` a union, its version string must
+still begin with `llm/` whenever it holds any LLM entry. Otherwise the backfill's
+`llm/` guards misfire: they would treat an LLM glossary as rules output.
 
 ## The version stamp
 
@@ -121,18 +145,30 @@ holds them; a byte-identity test checks this.
 
 **Where the text comes from.** An embedding file holds chunks, not documents. The text
 is reassembled from the chunks: `content` is pasted by `start_char`, as the backfill
-already does (`ingestion/reassembly.py`). The chunkers slice `content` from the
-document's own spans and cover the whole document, so a complete set of chunks
-reassembles the text exactly. The tests check this for the recursive, sentence and word
-chunkers. The two failure cases are handled differently:
+already does (`ingestion/reassembly.py`), with any gap filled with spaces. Each document
+is then checked in order:
 
-- **Unverifiable.** Chunks were dropped (`--boilerplate drop`), or a chunk's length
-  disagrees with its offsets. The reassembly reports a gap or a mismatch, and the
-  document is refused. `--glossary-allow-unverifiable` renders it anyway and logs it.
-- **Mismatch.** The reassembly is complete but hashes differently. That is a different
-  text, and it is refused even with the override. One case that cannot be detected: a
-  dropped *last* chunk leaves no gap, so it reads as a mismatch, which errs on the side
-  of refusing.
+1. **Verified.** The reassembly's `content_key` equals `text_sha256`. This exact check
+   holds only when the chunks *tile* the text. The recursive, sentence, word and
+   semantic chunkers do. `fixed_token` does only when its tokenizer's offset mapping
+   covers every character: a byte-level tokenizer (SFR-Mistral's) does, and a
+   WordPiece one (BGE's) does not. Under WordPiece, whitespace at a window boundary
+   (`\n`, `\t`, NBSP, CRLF) and characters the normaliser strips (a BOM, ZWSP, bidi
+   marks) fall in no chunk.
+2. **Verified by the masked identity (`verified_ws`).** No chunk reaches past
+   `text_chars`, and the masked reassembly, right-padded with spaces to `text_chars`,
+   hashes to `text_ws_sha256`. Every character outside the mask class is then at the
+   same offset in both texts, so the glossary's offsets are sound. Only whitespace and
+   ignorable characters that no chunk covered go unchecked. This is what verifies
+   `fixed_token` under WordPiece. A whitespace change *inside* a chunk shifts later
+   offsets, so it fails this check too.
+3. **Unverifiable.** Neither check passes, and the reassembly has a gap or a length
+   mismatch, for example chunks dropped by `--boilerplate drop`. The document is
+   refused; `--glossary-allow-unverifiable` renders it anyway and logs it.
+4. **Mismatch.** Neither check passes and the reassembly is complete. That is a
+   different text, and it is refused even with the override.
+
+The load reports how many documents fell into each verified kind.
 
 The other option was to read the source shard at load. It was rejected for two reasons:
 
@@ -149,6 +185,18 @@ the record of what is attached:
 A file that holds *more* documents than a load is normal: one file covers a collection
 version, and the load step loads one shard at a time.
 
+**Order and cost.** The glossary file is validated in full before any embedding file
+is parsed, so a malformed file fails fast. It is then read a second time, keeping only
+this load's rows. Every shard's load therefore validates the whole file twice. That is
+acceptable at today's sizes; a per-shard index could remove it later.
+
+**Provenance.** The load summary records the file under `glossary_file`: its path,
+sha256, schema, `producer`, `created`, `counts`, the `file/1` stamp, the mask version,
+and the counts of verified, verified_ws and unverified documents. When a manifest is
+written, the same record goes into its hash-excluded `enrichment.symbol_glossary`, with
+`source: glossary_file`. The backfill's report carries the same `glossary_file`
+record. Without the flag, none of this is written.
+
 `--replay` (restore) refuses `--glossary-file`. A restore puts back the archived chunks
 exactly as they were recorded.
 
@@ -158,8 +206,8 @@ exactly as they were recorded.
 re-embed. It runs in three steps:
 
 1. **A read-only pass over the whole index.** This pass runs in a dry run too. Each
-   document is reassembled from its chunks and checked against `F` under the same three
-   rules as the load: mismatch, missing and unverifiable.
+   document is reassembled from its chunks and checked against `F` exactly as the load
+   checks it: verified, verified_ws, unverifiable, mismatch and missing.
 2. **The replacement count.** The same pass counts the LLM glossaries that `F`'s
    rules-only rows would replace. `--apply` is refused if there are any, unless
    `--replace-llm` is given.

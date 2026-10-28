@@ -59,13 +59,14 @@ is checked, and one failing document refuses the whole load (exit 2):
   document's chunks were cut from is REASSEMBLED from them (``content`` pasted
   by ``start_char``, ``ingestion/reassembly.py``, the backfill's procedure) and
   its ``content_key`` compared with the row's ``text_sha256``. The chunkers
-  slice ``content`` from the document's own spans and cover it, so the
-  reassembly is exact for a complete set of chunks (outer whitespace is
-  stripped on both sides of the comparison). It is not when chunks are missing
-  (``--boilerplate drop``) or a chunk's length disagrees with its offsets: such
-  a document is ``unverifiable`` and refused unless
-  ``--glossary-allow-unverifiable``. A complete reassembly that hashes
-  differently is a real mismatch and is refused regardless.
+  slice ``content`` from the document's own spans; when they tile it (every
+  chunker but ``fixed_token`` under a WordPiece tokenizer), the reassembly is
+  exact. When they do not, the row's masked identity (``text_chars`` +
+  ``text_ws_sha256``: whitespace and ignorable characters replaced by spaces,
+  offsets pinned) verifies it as ``verified_ws``. A document neither check
+  verifies is ``unverifiable`` when the reassembly has a gap (e.g.
+  ``--boilerplate drop``), refused unless ``--glossary-allow-unverifiable``,
+  and otherwise a real ``mismatch``, refused regardless.
 * *A document with no row* is refused, never given the rules instead: the file
   is the record of what is attached, so a silent fallback would load a
   glossary nothing records, and the absent row is itself evidence that the file
