@@ -183,12 +183,13 @@ def _file_glossary(gfile: GlossaryFile, doc: Reassembled, allow_unverifiable: bo
 
 async def _verify_glossary_file(
     es: Any, args: argparse.Namespace, gfile: GlossaryFile, attacher: SymbolGlossaryAttacher
-) -> int:
+) -> tuple[int, int]:
     """#847 G1: a full read-only pass over the index BEFORE any write (the
     mapping included): every document reassembled from its chunks and checked
     against the file — a ``text_sha256`` mismatch, a document with no row, or
     (without the override) an unverifiable reassembly refuses the run. Returns
-    how many llm/-stamped chunks the file's glossaries would replace by rules."""
+    how many llm/-stamped chunks the file's glossaries would replace by rules,
+    and how many documents are rendered unverified (the override)."""
     res = Resolution()
     replaced = 0
     async for doc, rows in iter_documents_sorted(es, args.index):
@@ -200,7 +201,7 @@ async def _verify_glossary_file(
                                      one.glossaries[doc.doc_id])[1]["chunks_llm_replaced"]
     if res.problems:
         raise SystemExit(res.refusal(repr(args.glossary_file)))
-    return replaced
+    return replaced, len(res.unverified)
 
 
 async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> dict[str, Any]:
@@ -236,7 +237,9 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         if gfile is not None:
             # Dry run and --apply alike: a file that does not match the index
             # is refused before anything else happens.
-            replaced = await _verify_glossary_file(es, args, gfile, attacher)
+            replaced, unverified = await _verify_glossary_file(es, args, gfile, attacher)
+            if unverified:
+                totals["docs_glossary_unverified"] = unverified
             if replaced and args.apply and not getattr(args, "replace_llm", False):
                 raise SystemExit(FILE_REPLACE_GUARD_MESSAGE.format(
                     n=replaced, index=args.index, file=glossary_file))

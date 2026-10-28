@@ -697,3 +697,16 @@ def test_reassemble_from_es_rows_matches_the_embedding_path(corpus: dict[str, Pa
     rows = _es_rows(corpus["emb"])
     for doc_id, text in load_docs.items():
         assert reassemble(doc_id, [r for r in rows if r["doc_id"] == doc_id]).text == text
+
+
+def test_backfill_unverifiable_needs_the_override(corpus: dict[str, Path]) -> None:
+    rows = _es_rows(corpus["emb"])
+    doc = rows[0]["doc_id"]
+    mine = sorted((r for r in rows if r["doc_id"] == doc), key=lambda r: r["start_char"])
+    rows = [r for r in rows if r["_id"] != mine[1]["_id"]]  # a hole in one document
+    es = FakeES(rows)
+    with pytest.raises(SystemExit, match="unverifiable: 1"):
+        asyncio.run(bf.run(_bf_args(corpus["gfile"], apply=True), es=es))
+    assert es.bulks == [] and es.mappings == []
+    out = asyncio.run(bf.run(_bf_args(corpus["gfile"], glossary_allow_unverifiable=True), es=es))
+    assert out["docs_glossary_unverified"] == 1 and out["docs"] == 3
