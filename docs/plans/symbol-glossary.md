@@ -15,6 +15,12 @@ still defaults to 0. Collections ingested earlier have no glossary until backfil
 and a tenant must backfill them before raising the boost. Runbook:
 [`tenant-admin.md` §6d](../runbooks/tenant-admin.md#6d-symbol-glossary-754).
 
+Status note (2026-10-28, #847 G1): the glossary can now be kept as a file,
+`glossary.jsonl`, and attached from it at load (`load_embeddings.py --glossary-file`) or
+re-attached to an index (`backfill_symbol_glossary.py --glossary-file`). The format, the
+builder and the load-side checks are in [symbol-glossary-file.md](symbol-glossary-file.md).
+No workflow uses the file yet.
+
 ## The problem
 
 A paper defines a symbol once ("where Qb is the breathing flow rate"). A table caption

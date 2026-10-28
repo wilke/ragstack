@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+from ragstack.ingestion.chunkers import RecursiveCharacterChunker, SentenceChunker, WordChunker
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.embedding_file import read_embedding_file, write_embedding_file
 from ragstack.ingestion.glossary_file import (
@@ -50,7 +50,7 @@ from ragstack.ingestion.symbol_glossary import (
     SymbolGlossaryCache,
     content_key,
 )
-from ragstack.models import Chunk
+from ragstack.models import Chunk, Document
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -380,6 +380,21 @@ def test_reassembly_reproduces_the_documents_text(corpus: dict[str, Path]) -> No
     for doc in _reassembled(corpus["emb"]):
         assert doc.gaps == 0 and doc.length_mismatches == 0
         assert content_key(doc.text) == content_key(texts[doc.doc_id])
+
+
+@pytest.mark.parametrize("chunker", [
+    RecursiveCharacterChunker(chunk_size=120, chunk_overlap=20),
+    SentenceChunker(chunk_size=200, chunk_overlap=40),
+    WordChunker(chunk_size=25, chunk_overlap=5),
+], ids=["recursive", "sentence", "word"])
+@pytest.mark.parametrize("text", [DOC_A, DOC_B, "  \n\n" + DOC_C + "\n\n  "])
+def test_reassembly_is_exact_for_the_chunkers(chunker: Any, text: str) -> None:
+    """The load's text source: a complete set of chunks reassembles the text
+    the glossary file's text_sha256 was computed on."""
+    doc = Document(id="d", content=text, source="x")
+    r = reassemble("d", [c.model_dump() for c in chunker.chunk(doc)])
+    assert r.length_mismatches == 0
+    assert content_key(r.text) == content_key(text)
 
 
 # --- load_embeddings.py --glossary-file -----------------------------------------
