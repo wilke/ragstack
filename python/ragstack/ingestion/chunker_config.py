@@ -23,6 +23,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable, Collection
+from typing import Any
 
 from ragstack.ingestion.chunkers import (
     BREAKPOINT_CAPS,
@@ -31,8 +32,10 @@ from ragstack.ingestion.chunkers import (
     DEFAULT_BREAKPOINT_CAP,
     DEFAULT_CAP_SPLIT,
     DEFAULT_SIZE_UNIT,
+    MAX_SIZE_TOLERANCE,
     SIZE_CAPS,
     SIZE_UNITS,
+    default_min_piece,
     make_chunker,
 )
 from ragstack.ingestion.tokenization import (
@@ -85,11 +88,54 @@ CAP_SPLIT_PARAM = "cap_split"
 BREAKPOINT_CAP_PARAM = "breakpoint_cap"
 #: Every size-cap key, in the order the API records them.
 SEMANTIC_CAP_PARAMS: tuple[str, ...] = (SIZE_CAP_PARAM, CAP_SPLIT_PARAM, BREAKPOINT_CAP_PARAM)
+#: The OPT-IN size tolerance (#831): ``size_tolerance`` (a fraction) turns it on
+#: and ``min_piece`` (tokens) sets the merge threshold. Absent = the strict cap.
+SIZE_TOLERANCE_PARAM = "size_tolerance"
+MIN_PIECE_PARAM = "min_piece"
+SIZE_TOLERANCE_PARAMS: tuple[str, ...] = (SIZE_TOLERANCE_PARAM, MIN_PIECE_PARAM)
+
+
+def _size_tolerance_from_params(params: dict, recorded_size: int) -> dict[str, Any]:
+    """The tolerance kwargs (``size_tolerance``, ``min_piece``) of a CAPPED
+    semantic entry, or ``{}`` when it records no ``size_tolerance`` (strict).
+
+    ``size_tolerance``: a number in ``[0, MAX_SIZE_TOLERANCE]`` (not a bool).
+    ``min_piece``: whole tokens in ``[0, recorded_size]``; absent under a recorded
+    tolerance is :func:`~ragstack.ingestion.chunkers.default_min_piece` (the API
+    records it explicitly). A ``min_piece`` without ``size_tolerance`` is refused:
+    it would look applied while merging nothing.
+    """
+    tol = params.get(SIZE_TOLERANCE_PARAM)
+    piece = params.get(MIN_PIECE_PARAM)
+    if tol is None:
+        if piece is not None:
+            raise ValueError(
+                f"chunk param {MIN_PIECE_PARAM!r} needs {SIZE_TOLERANCE_PARAM!r}: the "
+                f"small-piece merge is part of the opt-in size tolerance"
+            )
+        return {}
+    if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not (
+        0.0 <= float(tol) <= MAX_SIZE_TOLERANCE
+    ):
+        raise ValueError(
+            f"chunk param {SIZE_TOLERANCE_PARAM!r} must be a number between 0 and "
+            f"{MAX_SIZE_TOLERANCE}; got {tol!r}"
+        )
+    if piece is None:
+        piece = default_min_piece(recorded_size)
+    if (isinstance(piece, bool) or not isinstance(piece, (int, float))
+            or (isinstance(piece, float) and not piece.is_integer())
+            or not 0 <= piece <= recorded_size):
+        raise ValueError(
+            f"chunk param {MIN_PIECE_PARAM!r} must be a whole number of tokens between "
+            f"0 and chunk_size ({recorded_size}); got {piece!r}"
+        )
+    return {"size_tolerance": float(tol), "min_piece": int(piece)}
 
 
 def semantic_cap_from_params(
     method: str | None, params: dict | None, *, recorded_size: int | None
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """The ``build_chunker`` kwargs (``size_cap``, ``cap_split``, ``breakpoint_cap``)
     a collection's
     recorded ``chunk_params`` set — THE one reader, for the API's in-process
@@ -116,6 +162,11 @@ def semantic_cap_from_params(
       be filled in differently by each path (the API's ``CHUNK_SIZE`` setting,
       the shard tool's workflow input) — one spec, two caps.
 
+    * The opt-in size tolerance (#831): ``size_tolerance`` / ``min_piece`` are
+      read only under a recorded cap (either one without ``size_cap`` is
+      refused, like ``cap_split``) and returned only when ``size_tolerance`` is
+      recorded — a strict entry returns exactly the three keys above.
+
     Raises ``ValueError`` naming the key (the API's 400; the shard tool turns it
     into a SystemExit).
     """
@@ -126,7 +177,9 @@ def semantic_cap_from_params(
     split = params.get(CAP_SPLIT_PARAM)
     bp = params.get(BREAKPOINT_CAP_PARAM)
     if cap is None:
-        for key, value in ((CAP_SPLIT_PARAM, split), (BREAKPOINT_CAP_PARAM, bp)):
+        for key, value in ((CAP_SPLIT_PARAM, split), (BREAKPOINT_CAP_PARAM, bp),
+                           (SIZE_TOLERANCE_PARAM, params.get(SIZE_TOLERANCE_PARAM)),
+                           (MIN_PIECE_PARAM, params.get(MIN_PIECE_PARAM))):
             if value is not None:
                 raise ValueError(
                     f"chunk param {key!r} needs {SIZE_CAP_PARAM!r}="
@@ -157,7 +210,9 @@ def semantic_cap_from_params(
             f"chunk param {BREAKPOINT_CAP_PARAM!r} must be one of "
             f"{', '.join(BREAKPOINT_CAPS)}; got {bp!r}"
         )
-    return {"size_cap": cap, "cap_split": split, "breakpoint_cap": bp}
+    out: dict[str, Any] = {"size_cap": cap, "cap_split": split, "breakpoint_cap": bp}
+    out.update(_size_tolerance_from_params(params, recorded_size))
+    return out
 
 
 #: Default for ``Settings.ingest_worker_unsupported_methods`` — see
@@ -428,6 +483,8 @@ def build_chunker(
     size_cap: str | None = None,
     cap_split: str = DEFAULT_CAP_SPLIT,
     breakpoint_cap: str | None = None,
+    size_tolerance: float | None = None,
+    min_piece: int | None = None,
     on_warn: Callable[[str], None] | None = None,
     require_window: bool = False,
 ) -> tuple[object, TokenCounter, int]:
@@ -446,7 +503,8 @@ def build_chunker(
     reads them through that one function, so a spec resolves the same way on the
     API and the bulk path. With ``size_cap="tokens"`` the semantic cap is
     ``chunk_size`` tokens, refused (``ValueError``) when it exceeds the resolved
-    budget returned here.
+    budget returned here. ``size_tolerance`` / ``min_piece`` (#831) come from
+    the same reader, and only when the entry records the tolerance.
     """
     warn = on_warn or (lambda m: print(m, file=sys.stderr))
     token_counter, resolved_max = resolve_chunk_sizing(
@@ -470,5 +528,7 @@ def build_chunker(
         size_cap=size_cap,
         cap_split=cap_split,
         breakpoint_cap=breakpoint_cap,
+        size_tolerance=size_tolerance,
+        min_piece=min_piece,
     )
     return chunker, token_counter, resolved_max

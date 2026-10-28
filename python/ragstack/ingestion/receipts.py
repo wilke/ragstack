@@ -109,10 +109,12 @@ class ShardReceipt:
     # ``core.activity.params`` when ADR-0011 PR-3 lands.
     enrichment: dict | None = None
     # What a SEMANTIC chunker applied on this shard
-    # (``chunkers.semantic_chunking_provenance``): ``{"v": 1, "method",
+    # (``chunkers.semantic_chunking_provenance``): ``{"v": 2, "method",
     # "size_cap", "chunk_size", "cap_split", "breakpoint_cap", "window_budget",
-    # "breakpoint_input_budget"}`` — ``size_cap: null`` records the legacy,
-    # window-only chunking. ``None`` = not recorded: another method, or a receipt
+    # "breakpoint_input_budget", "size_tolerance", "min_piece", "ceiling"}`` —
+    # ``size_cap: null`` records the legacy, window-only chunking; the three
+    # #831 tolerance keys are null on a strict (or uncapped) collection, and a
+    # v1 object (an image before #831) has none of them and was strict. ``None`` = not recorded: another method, or a receipt
     # written before the key existed (a worker image without the size cap); then
     # the key is omitted from the JSON, like ``enrichment``. ``v`` versions the
     # object's own keys.
