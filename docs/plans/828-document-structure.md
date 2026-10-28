@@ -530,8 +530,9 @@ deployment setting. What ran is recorded in the shard receipt under
 `enrichment.structure = {"stamp": "stamp/1", "adapters": {"markdown/1": n, ...},
 "structure_missing": n, "backend": "markdown-it-py/<ver>;mdit-py-plugins/<ver>"}` (both
 packages, because the plugins decide what front matter and `$$` become; present only when a
-parser actually built a structure; when more than one parser-backed adapter ran — from PR 5b
-on — the distinct backends are sorted and joined with `", "`) — the interim post-chunking
+parser actually built a structure; should a second parser-backed ingest adapter ever run in
+the same process, the distinct backends are sorted and joined with `", "` — JATS structure is
+built at extract, not through `attach_structure`, so PR 5b adds no second backend here) — the interim post-chunking
 enrichment slot `ShardReceipt.enrichment` already holds for the symbol glossary
 (`receipts.py`, "folds into ADR-0011's `core.activity.params` when ADR-0011 PR-3 lands") — and
 in the collection manifest.
@@ -870,9 +871,9 @@ unclosed `$$…` line turns every heading up to the next `$$` block into maths.
 fresh state per call, but each of markdown-it-py's `Ruler`s compiles its rule chains lazily on
 first use and publishes an empty cache before filling it, so a concurrent first parse can see an
 empty or partial chain and return a **truncated token stream** — a silently wrong structure the
-validator still accepts. So the parser is built into a local, warmed with one parse that
+validator still accepts. So the parser is built into a local, warmed with a block parse that
 exercises every enabled rule chain (core, block and inline, front matter, `$$` and `$m$`
-included), and only then published, all under a lock; nothing reconfigures it afterwards.
+included) and an inline parse (the setext first-line title path), and only then published, all under a lock; nothing reconfigures it afterwards.
 
 **The BOM.** `TextFileLoader` keeps the byte-order mark as `content[0]`. Fed to the parser it
 breaks the front-matter plugin (the opening `---` is no longer at column 0), and the front matter
