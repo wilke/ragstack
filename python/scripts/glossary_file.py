@@ -14,11 +14,16 @@ cache therefore renders exactly the field today's ingest produces.
 and, with ``--jsonl``, checks every document's ``text_sha256`` against the text
 the loader produces. Exit 1 on a mismatch or a document with no row.
 
+``merge`` (#847 G2) concatenates files — e.g. the per-batch files of one
+workflow run — into one, refusing a ``doc_id`` in two inputs and inputs built
+under different configs. Deterministic: the same inputs give the same bytes.
+
 Usage::
 
     python scripts/glossary_file.py build --jsonl docs.jsonl [--llm-cache cache.jsonl] \\
         --out glossary.jsonl
     python scripts/glossary_file.py verify glossary.jsonl [--jsonl docs.jsonl]
+    python scripts/glossary_file.py merge --out glossary.jsonl batch0.jsonl batch1.jsonl ...
 """
 from __future__ import annotations
 
@@ -32,6 +37,7 @@ from ragstack.ingestion.glossary_file import (
     GlossaryFileError,
     GlossaryRow,
     build_row,
+    merge_files,
     read_glossary_file,
     write_glossary_file,
 )
@@ -120,8 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("file")
     v.add_argument("--jsonl", action="append", default=[],
                    help="documents to check the rows' text_sha256 against; repeatable")
+    m = sub.add_parser("merge", help="concatenate glossary files into one")
+    m.add_argument("files", nargs="+")
+    m.add_argument("--out", required=True, help="the merged glossary.jsonl (atomically)")
     args = p.parse_args(argv)
     try:
+        if args.command == "merge":
+            counts = merge_files(args.files, args.out)
+            print(json.dumps({"out": args.out, "counts": counts}, sort_keys=True))
+            return 0
         if args.command == "build":
             counts = build(args)
             print(json.dumps({"out": args.out, "counts": counts}, sort_keys=True))
