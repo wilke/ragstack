@@ -149,7 +149,7 @@ below still records them as "an instrument that does not exist yet". They exist 
 `python/` only, exactly as the boundary in 4a requires:
 
 - **per-stage timings on every request** — `embed`, `vector`, `text`, `graph`, `fuse`,
-  `rerank`, `rewrite`, `authz`, `expand`, `generate` — rendered on the request summary
+  `rerank`, `rewrite`, `authz`, `expand`, `glossary`, `generate` — rendered on the request summary
   line as `<stage>_ms=<sum>/<count>` beside `wall_ms`, `inflight` and `self_ms`;
 - **`self_ms`**, the residual this decision's first trigger reads: wall time minus the
   *mean* of each recognised external stage;

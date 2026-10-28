@@ -4151,7 +4151,11 @@ components:
             index in one batched, tenant-scoped request per collection (a BM25
             hit already carries it; a vector-only hit is looked up). Never
             fails the request: a text-index outage or timeout yields "" and
-            HTTP 200. Ranking, scores, `content` and `metadata` are unchanged.
+            HTTP 200. `RERANK_GLOSSARY_TIMEOUT <= 0` turns the text-index
+            lookup off, which also blanks this flag: every source gets ""
+            with no warning and nothing in `degraded`. Context neighbours
+            (`sources[].context[]`, with context_window > 0) carry no
+            `symbol_glossary`. Ranking, scores, `content` and `metadata` are unchanged.
             false (default) leaves the response byte-identical to before the
             field existed (no `symbol_glossary` key at all). /v1/retrieve
             only — not on /v1/query.
@@ -5622,6 +5626,8 @@ components:
             unavailable) — so an absent key means "not requested", an empty
             string means "none". Absent otherwise, so a request without the
             flag gets a response byte-identical to before the field existed.
+            Also "" on every source when `RERANK_GLOSSARY_TIMEOUT <= 0` (the
+            lookup is off). Entries of `context[]` carry no `symbol_glossary`.
           type: string
         context:
           description: >-

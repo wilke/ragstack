@@ -268,6 +268,53 @@ async def test_lookup_covers_the_final_top_k_only_not_the_rerank_pool(
         assert len(gloss.calls) == 1
 
 
+async def test_lookup_covers_the_final_top_k_only_without_a_reranker(client, gloss):
+    """No reranker at all, six chunks, ``top_k=2``: the one lookup is over the
+    two returned ids. Pins that the ``top_k`` cut happens BEFORE the glossary
+    hydration (a hydration over the whole fused list would pass every other
+    test here)."""
+    vs = app.state.collections.resolve("gloss").vector_store
+    extra = [(f"c-x{i}", f"filler passage number {i}", "") for i in range(3)]
+    await _fill(vs, gloss, extra)
+    app.state.reranker = None
+    resp = await _retrieve(
+        client, collection="gloss", include_symbol_glossary=True, top_k=2,
+        retrieval_mode="vector",
+    )
+    sources = resp.json()["sources"]
+    assert len(sources) == 2 and all("symbol_glossary" in s for s in sources)
+    assert len(gloss.calls) == 1
+    assert len(gloss.calls[0][0]) <= 2
+
+
+async def test_glossary_stage_is_recorded_only_when_the_flag_is_on(client, gloss, caplog):
+    """The lookup is timed as the ``glossary`` stage (an external call ADR-0006
+    subtracts): on the request summary line with the flag, absent without."""
+    from ragstack.observability.context import RequestContextFilter
+
+    caplog.set_level(logging.INFO)
+    caplog.handler.addFilter(RequestContextFilter())
+
+    def stages() -> set[str]:
+        lines = [
+            r for r in caplog.records
+            if r.name == "ragstack.observability.middleware"
+            and r.getMessage() == "request complete"
+        ]
+        assert len(lines) == 1
+        return {
+            k[: -len("_ms")] for k in lines[0].__dict__
+            if k.endswith("_ms") and k not in ("wall_ms", "self_ms")
+        }
+
+    await _retrieve(client, collection="gloss", include_symbol_glossary=True,
+                    retrieval_mode="vector")
+    assert "glossary" in stages()
+    caplog.clear()
+    await _retrieve(client, collection="gloss", retrieval_mode="vector")
+    assert "glossary" not in stages()
+
+
 # --------------------------------------------------------------------------- #
 # Failure modes: never a 5xx
 # --------------------------------------------------------------------------- #

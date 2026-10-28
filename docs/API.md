@@ -454,13 +454,18 @@ curl -s "$BASE"/v1/retrieve \
 * **Where it comes from.** A BM25 hit already carries its glossary; a
   vector-only hit (the vector store holds none) is looked up in its collection's
   text index — one batched, tenant-scoped request per collection, the same
-  lookup the reranker uses (`RERANK_GLOSSARY_TIMEOUT` bounds it). With
+  lookup the reranker uses (`RERANK_GLOSSARY_TIMEOUT` bounds it;
+  `RERANK_GLOSSARY_TIMEOUT <= 0` turns the lookup off, which also blanks this
+  flag: every source gets `""`, with no warning and nothing in `degraded`). With
   `collections`, each source is looked up in *its* collection with that
   collection's scope. Graph pseudo-chunks and a collection without a text index
   give `""`.
 * **Never fails the request.** A text-index outage or timeout yields `""` for
   the affected sources and `200` — logged as one rate-limited warning per
   collection per minute, never as a `5xx` and not reported in `degraded`.
+* **Context neighbours carry none.** With `context_window > 0` and the flag,
+  the entries of `sources[].context[]` have no `symbol_glossary`; only the
+  returned sources do.
 * The Go implementation accepts the field and ignores it (its retrieve handler
   is a stub).
 

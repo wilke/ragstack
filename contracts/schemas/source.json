@@ -27,7 +27,7 @@
       "type": "string"
     },
     "symbol_glossary": {
-      "description": "The chunk's symbol glossary (#754): one `<symbol> — <definition>` line per symbol the chunk uses, copied from its own document at ingest; never part of `content`. Present on EVERY source if and only if the /v1/retrieve request set `include_symbol_glossary: true`, and then \"\" when the chunk has none (or the lookup was unavailable) — so an absent key means \"not requested\", an empty string means \"none\". Absent otherwise, so a request without the flag gets a response byte-identical to before the field existed.",
+      "description": "The chunk's symbol glossary (#754): one `<symbol> — <definition>` line per symbol the chunk uses, copied from its own document at ingest; never part of `content`. Present on EVERY source if and only if the /v1/retrieve request set `include_symbol_glossary: true`, and then \"\" when the chunk has none (or the lookup was unavailable) — so an absent key means \"not requested\", an empty string means \"none\". Absent otherwise, so a request without the flag gets a response byte-identical to before the field existed. Also \"\" on every source when `RERANK_GLOSSARY_TIMEOUT <= 0` (the lookup is off). Entries of `context[]` carry no `symbol_glossary`.",
       "type": "string"
     },
     "context": {

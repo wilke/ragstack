@@ -339,3 +339,11 @@ def test_a_query_that_is_not_utf8_encodable_still_hashes():
     the logging path — an observability feature must never be the thing that
     takes a request down."""
     assert len(query_sha("bad \ud800 surrogate")) == 8
+
+
+def test_glossary_is_a_registered_external_stage():
+    """``include_symbol_glossary`` on /v1/retrieve times its Elasticsearch read
+    as ``glossary``; dropping it from the registry would silently move that time
+    into the residual ADR-0006 reads as in-process work."""
+    assert "glossary" in EXTERNAL_STAGES
+    assert "glossary" in STAGE_NAMES
