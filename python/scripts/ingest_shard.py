@@ -60,6 +60,7 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import ExtractReport, run_shard
+from ragstack.ingestion.structure import merge_enrichment, structure_metadata_enabled
 from ragstack.ingestion.symbol_glossary import attacher_from_mode
 from ragstack.ingestion.work_identity import POLICIES, POLICY_OFF
 from ragstack.ops import ingest_target
@@ -272,7 +273,13 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
                              # chunk ids are unchanged either way.
                              glossary_attacher=attacher_from_mode(
                                  args.symbol_glossary, args.symbol_glossary_config,
-                                 args.symbol_glossary_cache))
+                                 args.symbol_glossary_cache),
+                             # #828: section/role/block metadata on the chunks of
+                             # documents whose record carries a `structure` key.
+                             # Payload only (not collection identity). getattr:
+                             # hand-built Namespaces in tests predate the flag.
+                             structure_metadata=structure_metadata_enabled(
+                                 getattr(args, "structure_metadata", "off")))
 
 
 def _build_bridge(args) -> SyncEmbedBridge:
@@ -333,7 +340,8 @@ async def amain(args, target=None) -> int:
     receipt.provenance = provenance_from_args(args)
     # #754, ADR-0011: what the step DID on this shard (None if off or never
     # applied; a degraded run is recorded with applied_batches: 0).
-    receipt.enrichment = pipeline.glossary_provenance()
+    receipt.enrichment = merge_enrichment(pipeline.glossary_provenance(),
+                                          pipeline.structure_provenance())
     # What the semantic chunker applied (size cap, split, breakpoint bound, the
     # resolved budgets); None for any other method, so their receipts are unchanged.
     receipt.chunking = semantic_chunking_provenance(pipeline.chunker)
@@ -421,6 +429,12 @@ def parse_args(argv=None):
     # API seeds that input from SYMBOL_GLOSSARY_EXTRACTION, so both paths agree.
     p.add_argument("--symbol-glossary", choices=["off", "rules"], default="rules",
                    help="per-document symbol glossary (rules, preferring a cached LLM glossary)")
+    # #828: document-structure metadata. Default off; the CWL passes its
+    # `structure_metadata` input here (the API seeds it from STRUCTURE_METADATA
+    # only for a stamped workflow that declares it — an older image has no flag).
+    p.add_argument("--structure-metadata", choices=["off", "on"], default="off",
+                   help="stamp section/role/block metadata on chunks of structured "
+                        "records (#828; payload only, not collection identity)")
     p.add_argument("--symbol-glossary-config", default="",
                    help="JSON object overriding GlossaryConfig")
     p.add_argument("--symbol-glossary-cache", default="",

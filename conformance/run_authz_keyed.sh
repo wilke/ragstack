@@ -184,6 +184,9 @@ export VECTOR_BACKEND=memory TEXT_BACKEND=memory GRAPH_BACKEND=memory
 export REQUIRE_DURABLE_BACKENDS=false
 export INGEST_ROOT="$WORK/ingest"
 mkdir -p "$INGEST_ROOT"
+# The suite may write by-reference fixtures here (test_list_field_filter.py):
+# the server confines /v1/ingest sources to this root, and this process booted it.
+export RAGSTACK_CONFORMANCE_INGEST_ROOT="$INGEST_ROOT"
 
 # ---------------------------------------------------------------------------- #
 # Boot

@@ -18,6 +18,7 @@ from ragstack.ingestion.enrich import (
     enrich,
     index_metadata,
 )
+from ragstack.ingestion.structure import structure_from_record
 from ragstack.models import Document
 from ragstack.protocols import DocumentLoader
 
@@ -310,13 +311,21 @@ class DropReport:
         is not an int. A **data** problem, usually a minority of records, and the
         count is the interesting part: ``pmid`` unusable on 3 of 40,000 records
         is noise, on 40,000 of 40,000 it is a broken extractor.
+
+    ``structure_invalid``
+        The record's top-level ``structure`` key (#828) was present but broke an
+        invariant (or was malformed, or too large), counted by the reason
+        :func:`~ragstack.ingestion.structure.structure_from_record` gave. The
+        STRUCTURE was dropped; the document itself was kept and ingests as
+        unstructured. A stale or corrupt structure is loud, never silent.
     """
 
     not_allowed: Counter[str] = field(default_factory=Counter)
     unusable: Counter[str] = field(default_factory=Counter)
+    structure_invalid: Counter[str] = field(default_factory=Counter)
 
     def __bool__(self) -> bool:
-        return bool(self.not_allowed or self.unusable)
+        return bool(self.not_allowed or self.unusable or self.structure_invalid)
 
     def summary(self) -> str:
         """One line for an operator log, or ``""`` when nothing was dropped."""
@@ -327,6 +336,10 @@ class DropReport:
         if self.unusable:
             parts.append("opted in but unusable: " + ", ".join(
                 f"{k} on {n} record(s)" for k, n in sorted(self.unusable.most_common())))
+        if self.structure_invalid:
+            parts.append("structure dropped, document kept: " + ", ".join(
+                f"{k} on {n} record(s)"
+                for k, n in sorted(self.structure_invalid.most_common())))
         return "; ".join(parts)
 
 
@@ -476,11 +489,19 @@ class JsonlLoader:
             key = str(Path(rec_path).resolve()) if Path(rec_path).is_absolute() else rec_path
         else:
             key = text
+        # #828: the record's top-level ``structure`` key, validated against
+        # ``text`` by the one shared reader. Absent → no structure, and the
+        # Document is byte-identical to one built before the key existed;
+        # invalid → the structure is dropped and counted, the document kept.
+        structure, reason = structure_from_record(record, text)
+        if reason is not None:
+            self.dropped.structure_invalid[reason] += 1
         return Document(
             id=deterministic_doc_id(key),
             content=text,
             metadata=self._metadata(enriched, record),
             source=rec_path,
+            structure=structure,
         )
 
 

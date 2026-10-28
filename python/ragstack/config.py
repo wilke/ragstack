@@ -569,6 +569,22 @@ class Settings(BaseSettings):
     # SYMBOL_GLOSSARY_CONFIG_JSON and SYMBOL_GLOSSARY_CACHE_PATH are in-process
     # only; a gowe worker runs the tool's default config and no LLM cache.
     symbol_glossary_extraction: str = "rules"
+
+    # --- Document-structure metadata (#828, docs/plans/828-document-structure.md) ---
+    # Stamp section/role/block metadata (section_title, section_path,
+    # section_level, section_roles, block_types, caption_labels, refers_to,
+    # structure_source, structure_version, …) on every chunk of a document that
+    # carries a structure. Payload fields only — content, offsets, chunk ids and
+    # vectors are unchanged — so it is NOT collection identity and turning it on
+    # forks nothing (decided, Q3). Chunks already indexed are never re-stamped
+    # (no backfill, Q12); re-ingest into a new collection to get full coverage.
+    #   off — (the default until the §10 accuracy check has run) no stamp
+    #   on  — stamp; anything else is read as off
+    # Both ingest paths follow it: in-process (deps), and gowe, where the API
+    # sends it as the `structure_metadata` workflow input only when the
+    # registered workflow declares it AND names a stamped tools image
+    # (ADR-0010: an image before #828 has no --structure-metadata flag).
+    structure_metadata: str = "off"
     # GlossaryConfig overrides as a JSON object; malformed JSON → defaults.
     symbol_glossary_config_json: str = ""
     # The offline LLM glossary cache (JSONL), read-only at ingest. Empty = none.

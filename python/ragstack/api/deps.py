@@ -57,6 +57,7 @@ from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
+from ragstack.ingestion.structure import structure_metadata_enabled
 from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher, attacher_from_mode
 from ragstack.ingestion.tokenization import (
     TokenCounterUnavailable,
@@ -793,6 +794,8 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         doi_enricher=getattr(app_state, "doi_enricher", None),
         boilerplate_filter=_build_boilerplate_filter(),
         glossary_attacher=_build_glossary_attacher(),
+        # #828: STRUCTURE_METADATA (payload only; "on" exactly, else off).
+        structure_metadata=structure_metadata_enabled(settings.structure_metadata),
     )
     return ShardedIngestor(
         pipeline,
@@ -2246,6 +2249,8 @@ async def lifespan(app: FastAPI):
         doi_enricher=doi_enricher,
         boilerplate_filter=_build_boilerplate_filter(),
         glossary_attacher=_build_glossary_attacher(),
+        # #828: STRUCTURE_METADATA (payload only; "on" exactly, else off).
+        structure_metadata=structure_metadata_enabled(settings.structure_metadata),
     )
 
     job_store = make_job_store(

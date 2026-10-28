@@ -62,7 +62,7 @@ import os
 import statistics
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -90,6 +90,13 @@ from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_pro
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
+from ragstack.ingestion.structure import (
+    attach_structure,
+    stamp_documents,
+    structure_from_record,
+    structure_metadata_enabled,
+    structure_provenance,
+)
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.metadata_schema import validate_chunks
 from ragstack.models import Chunk, Document
@@ -482,6 +489,10 @@ def _write_run_metrics(
         "chunks": chunks,
         "boilerplate_flagged": stats.get("boilerplate_flagged", 0),
         "boilerplate_dropped": stats.get("boilerplate_dropped", 0),
+        # #828: only when a structure was dropped, so a row from a run without
+        # structured records is byte-identical to one written before the key.
+        **({"structure_dropped": stats["structure_dropped"]}
+           if stats.get("structure_dropped") else {}),
         "failed_batches": len(failed_seqs),
         "failed_batch_seqs": sorted(failed_seqs),
         "wall_s": wall,
@@ -641,6 +652,17 @@ async def run(
     boilerplate = filter_from_mode(bp_mode, getattr(args, "boilerplate_config", ""))
     if boilerplate is not None:
         print(f"boilerplate detection: {bp_mode}", file=sys.stderr)
+    # --structure-metadata off|on (#828). Off (the default): a record's
+    # ``structure`` key is still validated and carried on the Document (and
+    # counted when dropped), but no chunk is stamped. On: the ingest adapters
+    # run (none exist in PR 1) and every chunk of a structured document gets
+    # the section/role/block metadata, through the same stamp_documents the
+    # pipeline's two chunk loops call. getattr: hand-built Namespaces (tests).
+    structure_on = structure_metadata_enabled(getattr(args, "structure_metadata", "off"))
+    structure_counts: Counter[str] = Counter()
+    structure_dropped: Counter[str] = Counter()
+    if structure_on:
+        print("structure metadata: on", file=sys.stderr)
     # Per-document metrics (optional). Append on resume so a resumed run adds to
     # the rows already written rather than truncating them.
     doc_metrics: DocMetricsWriter | None = None
@@ -940,6 +962,11 @@ async def run(
                     )
                 else:
                     chunks = await asyncio.to_thread(chunker.chunk, doc)
+            # #828: stamp BEFORE the boilerplate filter (the pipeline's order)
+            # and AFTER the segmentation cache, so a cached segmentation stays a
+            # pure function of the chunker config.
+            if structure_on and chunks:
+                stamp_documents([doc], chunks, structure_counts)
             # Chunk-level boilerplate flag/drop, per document — which is also the
             # granularity BoilerplateFilter's all-boilerplate guard needs. Counted
             # into `stats` (and reported in --run-metrics-out and the final line)
@@ -1061,12 +1088,23 @@ async def run(
                         dispatched_docs += 1
                     else:
                         text = record.get("text", "") or ""
+                        # #828: this tool does not use JsonlLoader, so it reads
+                        # the record's ``structure`` key through the same shared
+                        # reader (validate, or drop the structure and count it;
+                        # the document is kept either way).
+                        structure, dropped_reason = structure_from_record(record, text)
+                        if dropped_reason is not None:
+                            structure_dropped[dropped_reason] += 1
+                            stats["structure_dropped"] = stats.get("structure_dropped", 0) + 1
                         doc = Document(
                             id=deterministic_doc_id(_doc_id_key(record, text)),
                             content=text,
                             metadata=index_metadata(enriched),
                             source=record.get("path", "") or "",
+                            structure=structure,
                         )
+                        if structure_on:
+                            attach_structure([doc], counts=structure_counts)
                         cat_row = (
                             json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
                             if catalog is not None else None
@@ -1198,6 +1236,13 @@ async def run(
     if stats.get("boilerplate_flagged") or stats.get("boilerplate_dropped"):
         print(f"boilerplate: {stats['boilerplate_flagged']} chunks flagged, "
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
+    if structure_dropped:
+        print("structure dropped, document kept: " + ", ".join(
+            f"{k} on {n} record(s)" for k, n in sorted(structure_dropped.items())),
+            file=sys.stderr)
+    if structure_on:
+        print(f"structure: {json.dumps(structure_provenance(structure_counts), sort_keys=True)}",
+              file=sys.stderr)
 
 
 def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, Any]:
@@ -1323,6 +1368,13 @@ def main() -> None:
                         "index). Counts are reported at end-of-run and in "
                         "--run-metrics-out; a document that is ENTIRELY boilerplate "
                         "is never emptied.")
+    p.add_argument("--structure-metadata", choices=["off", "on"], default="off",
+                   help="#828: stamp section/role/block metadata on the chunks of "
+                        "documents whose record carries a valid `structure` key "
+                        "(section_title, section_path, section_level, section_roles, "
+                        "block_types, …). Payload only — content, ids and vectors are "
+                        "unchanged. A record's structure is validated (and dropped, "
+                        "counted, with the document kept) either way.")
     p.add_argument("--boilerplate-config", default="",
                    help="JSON object overriding BoilerplateConfig thresholds, e.g. "
                         "'{\"reference_density\": 15}'")

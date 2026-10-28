@@ -3754,7 +3754,11 @@ components:
             all refused with 400. Range operators such as `{"gte": 2025}` are
             NOT supported. Values match by type and are never coerced: `year`
             is an integer field, so `{"year": "2025"}` is a 400 rather than a
-            silent zero-hit read (#471).
+            silent zero-hit read (#471). Against a LIST-valued metadata field
+            (`authors`, `keywords`, `section_roles`, `section_path`,
+            `block_types`, …) a scalar matches when ANY element equals it and
+            a list when any element is a member — the same on every store and
+            on context expansion (#828).
           type: object
           additionalProperties:
             anyOf:
@@ -4015,7 +4019,11 @@ components:
             all refused with 400. Range operators such as `{"gte": 2025}` are
             NOT supported. Values match by type and are never coerced: `year`
             is an integer field, so `{"year": "2025"}` is a 400 rather than a
-            silent zero-hit read (#471).
+            silent zero-hit read (#471). Against a LIST-valued metadata field
+            (`authors`, `keywords`, `section_roles`, `section_path`,
+            `block_types`, …) a scalar matches when ANY element equals it and
+            a list when any element is a member — the same on every store and
+            on context expansion (#828).
           type: object
           additionalProperties:
             anyOf:

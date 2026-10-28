@@ -22,7 +22,8 @@ so a GoWe-built Markdown collection held different text (and different chunks)
 than the same files ingested in-process.
 
 The output is a **JSONL shard** in the exact ``{"text", "path", "metadata"}``
-shape that ``scripts/ingest_shard.py`` / ``scripts/embed_shard.py`` consume via
+shape (plus a top-level ``"structure"`` key when the loader built a document
+structure, #828 §4) that ``scripts/ingest_shard.py`` / ``scripts/embed_shard.py`` consume via
 :class:`ragstack.ingestion.loaders.JsonlLoader`.
 
 **No OCR.** A scanned / image-only PDF, an unreadable file, a file with an
@@ -112,7 +113,8 @@ def extract_documents(
     what this tool mostly sees.
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts (the shape
-    ``JsonlLoader`` consumes). ``skipped`` are ``{"path", "reason", "error"}``
+    ``JsonlLoader`` consumes), with a ``"structure"`` key added when the loader
+    built a document structure (#828 §4). ``skipped`` are ``{"path", "reason", "error"}``
     dicts for files with no extractable text or that could not be opened
     (scanned/image-only PDFs, empty files, unsupported suffixes): ``reason`` is
     the human message, ``error`` a constant per-item job error (a
@@ -157,13 +159,21 @@ def extract_documents(
                                  EMPTY_TEXT_ERROR))
             continue
         for doc in kept:
-            records.append(
-                {
-                    "text": doc.content,
-                    "path": doc.source,
-                    "metadata": dict(doc.metadata),
-                }
-            )
+            record = {
+                "text": doc.content,
+                "path": doc.source,
+                "metadata": dict(doc.metadata),
+            }
+            # #828 §4: the loader's structure rides the shard as a FOURTH
+            # top-level key (never inside ``metadata``: that is what the
+            # passthrough allow-list, index_metadata and the ES mapping read).
+            # Only when the loader built one, so a record without structure is
+            # byte-identical to one written before the key existed. No loader
+            # builds one yet (the PDF adapter is PR 8); Markdown structure is
+            # built at ingest, never here.
+            if doc.structure is not None:
+                record["structure"] = doc.structure.model_dump()
+            records.append(record)
     return records, skipped
 
 

@@ -44,7 +44,9 @@ Grammar:
 
 List/tuple/set values match by membership (MatchAny — used for tenant reads:
 own + public); an *empty* list matches nothing, not "unconstrained" (#196:
-membership in the empty set is false). A scalar value is an exact match. Keep
+membership in the empty set is false). A scalar value is an exact match. A
+LIST-valued payload field matches by any element (:func:`field_matches`, #828),
+as it does in both stores. Keep
 this value grammar in sync with ``_build_filter`` and ``_matches`` for the
 keys they both already support.
 
@@ -386,6 +388,31 @@ def validate_filter_values(filters: Mapping[str, Any] | None) -> None:
             _check_value(key, value, in_list=False)
 
 
+def field_matches(actual: Any, value: Any) -> bool:
+    """Does one payload value ``actual`` satisfy one ALREADY-VALIDATED filter
+    value? The single reading both Python predicates (:func:`payload_matches`
+    and ``stores/memory._matches``) use.
+
+    A LIST-valued ``actual`` (``authors``, ``keywords``, and the #828 structure
+    fields ``section_roles``, ``section_path``, ``block_types``, …) matches by
+    ANY ELEMENT, which is what Qdrant's ``match`` and an Elasticsearch ``term``
+    on a multi-valued keyword already do: a scalar filter matches when some
+    element equals it, a list filter when some element is a member, and a
+    :class:`Not` excludes the record when some element equals the negated
+    value (``must_not`` semantics). Before #828 PR 1 these predicates compared
+    the whole list (``actual != value``), so a list field never matched a scalar
+    filter in memory or on ``get_chunks`` re-checks while both store legs
+    did — a role filter, the first use of the structure metadata, would have
+    disagreed between the retrieval legs and context expansion.
+    A scalar ``actual`` is compared exactly as before."""
+    many = isinstance(actual, (list, tuple))
+    if isinstance(value, Not):
+        return not (value.value in actual if many else actual == value.value)
+    if isinstance(value, (list, tuple, set)):
+        return any(a in value for a in actual) if many else actual in value
+    return value in actual if many else actual == value
+
+
 def payload_matches(metadata: Mapping[str, Any], filters: Mapping[str, Any] | None) -> bool:
     """Does ``metadata`` (a Chunk's metadata dict — the same shape from both
     stores; see ``_chunk_from_payload`` in stores/qdrant.py) satisfy every key
@@ -409,14 +436,10 @@ def payload_matches(metadata: Mapping[str, Any], filters: Mapping[str, Any] | No
             # ``must_not`` and ES's ``bool.must_not`` do (module docstring):
             # ``actual`` is then ``None``, which is never == a valid scalar.
             _check_negation(key, value)
-            if actual == value.value:
-                return False
         elif isinstance(value, (list, tuple, set)):
             _check_list(key, value)
-            if actual not in value:
-                return False
         else:
             _check_value(key, value, in_list=False)
-            if actual != value:
-                return False
+        if not field_matches(actual, value):
+            return False
     return True

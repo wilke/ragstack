@@ -377,6 +377,17 @@ def declared_workflow_inputs(cwl: str) -> set[str]:
     return set()
 
 
+def names_stamped_image(cwl: str) -> bool:
+    """Whether ``cwl`` names a STAMPED tools image
+    (``ragstack-tools-<version>-b<N>.sif``) — the ADR-0010 declaration that the
+    named image supports this workflow text (decision 4). The gate a workflow
+    input for a NEW tool flag needs on top of being declared: an unstamped tree
+    names ``ragstack-worker.sif``, which a worker's ``--image-dir`` may resolve
+    to a build that predates the flag (argparse exit 2 on every task)."""
+    name = tool_image_of(cwl)
+    return name is not None and STAMPED_IMAGE_RE.match(name) is not None
+
+
 def provenance_inputs(
     cwl: str, cwl_path: str | os.PathLike[str] | None, workflow_id: str,
 ) -> dict[str, str | None]:

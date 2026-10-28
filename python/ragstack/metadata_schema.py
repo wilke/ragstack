@@ -281,6 +281,21 @@ DECLARED_FIELDS: dict[str, DeclaredField] = {
         # #754: which glossary produced the chunk's `symbol_glossary` field
         # (`rules/1`, `llm/1:<model>:<prompt hash>`); absent = never processed.
         _f("symbol_glossary_version", "string"),
+        # #828: the document-structure stamp (ingestion/structure.stamp). Every
+        # field is stamped only on a chunk of a document that HAS a structure,
+        # so absence is "not processed", never "no section". `section_title`
+        # (above) is also written by the stamp. `section_level` is NOT in
+        # KNOWN_INT_FIELDS (that widens the filter-side 400; its own note).
+        _f("section_path", "string", array=True),
+        _f("section_level", "integer"),
+        _f("section_roles", "string", array=True),
+        _f("section_roles_version", "string", array=True),
+        _f("section_crossing", "boolean"),
+        _f("block_types", "string", array=True),
+        _f("caption_labels", "string", array=True),
+        _f("refers_to", "string", array=True),
+        _f("structure_source", "string"),
+        _f("structure_version", "string"),
         # Provenance of the artifact.
         _f("source_path", "string"),
         _f("filename", "string"),
