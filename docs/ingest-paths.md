@@ -144,7 +144,7 @@ Where each step runs, path by path:
 | **6. Contract check** (#603/#604) | `index_chunks` → `validate_chunks` | Same, in the worker's `index_chunks` | Same: `ingest_shard.py` and `load_embeddings.py` both write through `index_chunks` | Its own call: `validate_chunks(kept, where="ingest_jsonl")` |
 | **7. Write** | The entry's stores, as resolved by the API | The URLs the API seeds per run (#407) | The registry-resolved stores. `load_embeddings.py` **requires** a URL per leg (#636) | A registry route, else `--qdrant-url` / `--es-url`, which **default to localhost** (#454). ES only with `--text-backend elasticsearch` (default `none`) |
 | **8. Archive** | none | `versions/<n>/`, recorded on the registry | `pdf-ingest.cwl` only, not recorded | none |
-| **Chunk cap** (#291) | Yes, once per job | Yes, per task (`--max-chunks`) | `load_embeddings.py`: yes. `ingest_shard.py`: only if `max_chunks` is passed (default 0 = off) | **No** |
+| **Chunk cap** (#291) | Yes, once per job | Yes, per task (`--max-chunks`) | Only if a cap is passed (`--max-chunks`, default 0 = off) or the registry entry sets an override, on both `load_embeddings.py` and `ingest_shard.py` (#849) | **No** |
 | **Duplicate guard** (#747) | Yes: `DUPLICATE_POLICY` (default `refuse`), per request `duplicate_policy` | Admission pre-check on file names; the worker check (`--duplicate-policy`) only once the registered CWL declares `duplicate_policy` (the tools-image repin) | `ingest_shard.py --duplicate-policy`, default `off` | **No** |
 
 What each step means:
@@ -783,10 +783,22 @@ the job row (`GET /v1/jobs`). Per path:
 |---|---|---|
 | API, local (`POST /v1/ingest`, `/v1/ingest/upload`) | `ShardedIngestor.ingest_manifest` — the manifest is the job: every remaining item is loaded + chunked (text only, no GPU, no store), one count, then the admitted job embeds and indexes the very chunks it was sized from (`IngestionPipeline.ingest_prepared`) — nothing is loaded twice | post-chunk, pre-quarantine (a conservative overcount) |
 | API, gowe | the API derives the cap per job and passes it as the workflow input `max_chunks` → `ingest_shard --max-chunks`; each scattered task counts once and refuses its own shard (`run_shard`); the API lifts the receipt's label onto the job | post-embed, exact — per task, so concurrent tasks may collectively overshoot by the other tasks' shards |
-| bulk (`scripts/load_embeddings.py`) | the invocation is the job: the files' header counts are summed, one count before the first file is read; refused = exit 1 + `chunk_cap` in the summary. User-created here = `spec.owner` set and neither the backfill owner nor an `ADMIN_SUBJECTS` entry (no ACL/user store in a CLI) | the files' header `count`s |
+| bulk (`scripts/load_embeddings.py`) | the invocation is the job: the files' header counts are summed, one count before the first file is read; refused = exit 1. The cap is `--max-chunks N` (default 0 = off), or the registry entry's explicit override, which wins (`0` = exempt). Nothing is derived from the worker's settings (#849). Every summary, refused or not, records `chunk_cap: {effective, source}` (`source`: `input` / `registry_override` / `none`), and so does the manifest the load writes (`limits.chunk_cap`); a refusal adds `live`/`incoming`/`cap`/`would_fit` | the files' header `count`s |
 | operator `ingest_shard.py` (path C, `ingest-bulk.cwl`) | only when `--max-chunks` / the `max_chunks` input is passed; the default `0` is unlimited, and `ingest-bulk.cwl` does not expose it | post-embed, per shard |
 | `ingest_jsonl.py` (path D), `ingest_chunks.py` | **not capped** | — |
 | replay (`--replay`, restore) | **never capped** — it restores what was already admitted | — |
+
+**The rule (#849): a workflow carries no policy of its own.** A limit a workflow step
+acts on is an input with a `0`/off default, never a deployment default the tool reads from
+the worker's environment. Who is capped, and at what, is decided by whoever submits the
+workflow: the API for user jobs (it derives the cap above and passes `max_chunks`), the
+operator for bulk jobs. The registry entry's explicit override is per-collection data the
+tool already resolves, so it still applies. A pin test
+(`tests/unit/test_cwl_scripts_read_no_policy.py`) checks that no script a CWL runs, nor any
+module it imports, reads `settings.max_chunks_per_collection` or
+`settings.graph_max_triples_per_collection`. Until the next tools-image repin, the
+`jats-ingest.cwl` and `ingest-bulk.cwl` workflows do not declare `max_chunks`, so a load
+through them is capped only by an entry override.
 
 A byte-identical re-ingest at the cap is refused too (delete-prior would net to zero, but
 `incoming` is what the job would write): the conservative reading of "refuse the whole

@@ -956,7 +956,8 @@ def test_the_manifest_names_the_file(corpus: dict[str, Path], tmp_path: Path,
         return "h"
 
     target = SimpleNamespace(collection="scratch-g1", write_manifest=write_manifest)
-    monkeypatch.setattr(load_cli, "_chunk_cap_for", lambda t: None)
+    monkeypatch.setattr(load_cli, "_chunk_cap_for",
+                        lambda a, t: (None, {"effective": 0, "source": "none"}))
     args = load_cli.parse_args([str(corpus["emb"]), "--out", str(tmp_path / "s.json"),
                                 "--vector-backend", "memory", "--text-backend", "memory",
                                 "--manifest-dir", str(tmp_path / "m"),
