@@ -399,32 +399,31 @@ def _step_binds(step_in: Any, name: str) -> bool:
     return False
 
 
-def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
-    """For each top-level step of a CWL ``Workflow`` that runs ``embed_shard.py``:
-    does its ``in:`` bind ``collection_id``? (#828 §7, PR 3.)
+#: The key :func:`embed_shard_step_wiring` reports when the text mentions
+#: ``embed_shard.py`` but no step could be read as running it.
+UNREADABLE_EMBED_STEP = "<unreadable>"
 
-    A step counts as an ``embed_shard.py`` step when its inline tool's
-    ``baseCommand`` names the script; it is **wired** when the step's ``in:``
-    binds ``collection_id`` — the registry id that lets the tool resolve the
-    collection's spec instead of embedding unresolved. That is a property of the
-    text about to be submitted, which is why the driver can read it reliably and
-    the image's age it cannot.
 
-    Returns ``{step id: wired}``. A step whose ``run`` is not inline (a
-    reference to another file) cannot be read from this text, and is reported as
-    ``None`` so a caller that must prove wiring fails closed rather than taking
-    an unreadable step for "no embed step". Empty when the text is not YAML or
-    not a workflow, or has no such step. Used by ``gowe_batch_ingest.py``; the
-    pre-check that acts on it is #828 PR 4.
-    """
-    try:
-        import yaml
-    except ImportError:  # pragma: no cover - pyyaml is a runtime dependency
-        return {}
-    try:
-        doc = yaml.safe_load(cwl)
-    except yaml.YAMLError:
-        return {}
+def _mentions(node: Any, needle: str) -> bool:
+    """Whether any string key or scalar in a parsed YAML tree contains
+    ``needle`` (comments are gone by now, so a header comment never counts)."""
+    if isinstance(node, str):
+        return needle in node
+    if isinstance(node, dict):
+        return any(_mentions(k, needle) or _mentions(v, needle) for k, v in node.items())
+    if isinstance(node, list):
+        return any(_mentions(v, needle) for v in node)
+    return False
+
+
+def _uncommented_mention(cwl: str, needle: str) -> bool:
+    """Raw-text fallback for text that does not parse: ``needle`` on any line
+    outside a full-line comment."""
+    return any(needle in line for line in cwl.splitlines()
+               if not line.lstrip().startswith("#"))
+
+
+def _read_embed_steps(doc: Any) -> dict[str, bool | None]:
     if not isinstance(doc, dict):
         return {}
     steps = doc.get("steps")
@@ -444,6 +443,53 @@ def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
             continue
         if _names_script(run.get("baseCommand"), EMBED_SHARD_SCRIPT):
             out[sid] = _step_binds(step.get("in"), "collection_id")
+    return out
+
+
+def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
+    """For each top-level step of a CWL ``Workflow`` that runs ``embed_shard.py``:
+    does its ``in:`` bind ``collection_id``? (#828 §7, PR 3.)
+
+    A step counts as an ``embed_shard.py`` step when its inline tool's
+    ``baseCommand`` names the script; it is **wired** when the step's ``in:``
+    binds ``collection_id`` — the registry id that lets the tool resolve the
+    collection's spec instead of embedding unresolved. That is a property of the
+    text about to be submitted, which is why the driver can read it reliably and
+    the image's age it cannot.
+
+    Returns ``{step id: wired}``, where ``None`` means "cannot be read from this
+    text", and a caller that must prove wiring treats any ``None`` as unwired
+    (fails closed):
+
+    * a step whose ``run`` is not inline (a reference to another file) is
+      reported under its own id as ``None``;
+    * when no step is recognised as running ``embed_shard.py`` but the script's
+      name still occurs in the document (outside comments), the result is
+      ``{UNREADABLE_EMBED_STEP: None}``. This covers the shapes this reader does
+      not parse: ``$graph``-packed documents (``cwltool --pack``), a script
+      passed through ``arguments:`` rather than ``baseCommand``, a shell
+      ``baseCommand`` (``[bash, -c, "python …/embed_shard.py"]``), an inline
+      nested sub-workflow, and text that is not YAML at all. A mention in a
+      ``doc:`` string also lands here — fail-closed by design.
+
+    Empty (``{}``) only when the text has no embed step and never names the
+    script. Used by ``gowe_batch_ingest.py``; the pre-check that acts on it is
+    #828 PR 4.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - pyyaml is a runtime dependency
+        return ({UNREADABLE_EMBED_STEP: None}
+                if _uncommented_mention(cwl, EMBED_SHARD_SCRIPT) else {})
+    try:
+        doc = yaml.safe_load(cwl)
+    except yaml.YAMLError:
+        return ({UNREADABLE_EMBED_STEP: None}
+                if _uncommented_mention(cwl, EMBED_SHARD_SCRIPT) else {})
+    out = _read_embed_steps(doc)
+    recognised = any(v is not None for v in out.values())
+    if not recognised and _mentions(doc, EMBED_SHARD_SCRIPT):
+        out[UNREADABLE_EMBED_STEP] = None
     return out
 
 

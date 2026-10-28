@@ -31,7 +31,10 @@ is embedded. ``size_unit`` then comes from the entry (``sentence``/``words``
 only; a contradicting ``--chunk-size-unit`` exits 2). Resolution reads the
 registry only — no store is contacted — and ``--create-via-api`` is refused,
 since an embed step must not mint a collection. Without ``--collection-id`` the
-tool behaves as before. Either way the embedding-file header carries a
+tool behaves as before. ``--collection-id`` defaults from
+``RAGSTACK_COLLECTION_ID`` (the shared ``ingest_target.add_arguments``
+behaviour), so setting that variable on a worker turns resolution on; nothing
+sets it today. ``--registry`` without ``--collection-id`` is refused. Either way the embedding-file header carries a
 ``chunking`` object: the resolved ``collection_id`` (only when resolved) and the
 method/size/overlap/size unit as applied, which ``load_embeddings.py`` checks
 against the entry before any write.
@@ -314,6 +317,12 @@ def _resolve_target(args):
               "then pass its --collection-id.", file=sys.stderr)
         raise SystemExit(2)
     if not getattr(args, "collection_id", ""):
+        if getattr(args, "registry", ""):
+            # A registry with nothing to resolve in it is a mis-wired step, not
+            # an unresolved run: refuse rather than silently embed unresolved.
+            print("error: --registry needs --collection-id: embed_shard.py resolves "
+                  "a registry entry only for a named collection id.", file=sys.stderr)
+            raise SystemExit(2)
         return None
     target = ingest_target.resolve_or_exit(
         args,

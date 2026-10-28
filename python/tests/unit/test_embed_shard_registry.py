@@ -30,7 +30,7 @@ from ragstack.collection_store import CollectionSpec, SqliteCollectionStore
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.embedding_file import SCHEMA, read_embedding_file, read_header
 from ragstack.ops import ingest_target as it
-from ragstack.tool_image import embed_shard_step_wiring
+from ragstack.tool_image import UNREADABLE_EMBED_STEP, embed_shard_step_wiring
 
 ROOT = Path(__file__).resolve().parents[2]
 CWL_DIR = ROOT.parent / "cwl"
@@ -207,6 +207,15 @@ def test_create_via_api_is_refused(registry, embed, capsys, monkeypatch):
                           "--create-via-api", DEAD)
     assert rc == 2 and not made and not out.exists()
     assert "--create-via-api" in capsys.readouterr().err
+
+
+def test_registry_without_collection_id_is_refused(registry, embed, capsys):
+    """A named registry with no id to resolve is a mis-wired step; it must not
+    fall through to an unresolved run. Mutation: drop the refusal → rc 0 and
+    an embedding file → this fails."""
+    rc, out, made = embed("--registry", REG, "--chunk-method", "sentence")
+    assert rc == 2 and not made and not out.exists()
+    assert "--registry needs --collection-id" in capsys.readouterr().err
 
 
 def test_an_unknown_id_is_refused_before_any_embed(registry, embed, capsys):
@@ -473,6 +482,48 @@ def test_the_reader_ignores_other_tools_and_reports_unreadable_steps():
     assert embed_shard_step_wiring("- a list, not a workflow") == {}
 
 
+_SCRIPT = "/opt/ragstack/scripts/embed_shard.py"
+#: Shapes the reader does not parse. Each names embed_shard.py, so each must
+#: read as unreadable (fail closed), never as "no embed step".
+UNPARSED_SHAPES = {
+    "packed-graph": (
+        "cwlVersion: v1.2\n$graph:\n- id: main\n  class: Workflow\n  inputs: []\n"
+        "  outputs: []\n  steps:\n  - id: embed\n    in: []\n    out: []\n"
+        "    run: '#embed_tool'\n- id: embed_tool\n  class: CommandLineTool\n"
+        f"  baseCommand: [python, {_SCRIPT}]\n  inputs: []\n  outputs: []\n"
+    ),
+    "script-in-arguments": _workflow(
+        "{shard: shards}", base="python").replace(
+        "      outputs: {}\n", f"      arguments: [{_SCRIPT}]\n      outputs: {{}}\n"),
+    "shell-baseCommand": _workflow(
+        "{shard: shards}", base=f'[bash, -c, "python {_SCRIPT} $0"]'),
+    "nested-subworkflow": (
+        "cwlVersion: v1.2\nclass: Workflow\ninputs: {}\noutputs: {}\nsteps:\n"
+        "  outer:\n    in: {}\n    out: []\n    run:\n      class: Workflow\n"
+        "      inputs: {}\n      outputs: {}\n      steps:\n        embed:\n"
+        "          in: {}\n          out: []\n          run:\n"
+        "            class: CommandLineTool\n"
+        f"            baseCommand: [python, {_SCRIPT}]\n"
+        "            inputs: {}\n            outputs: {}\n"
+    ),
+    "not-yaml": f"steps: [unclosed\n  baseCommand: {_SCRIPT}\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNPARSED_SHAPES))
+def test_an_unparsed_shape_naming_the_script_fails_closed(name):
+    """Mutation: drop the fallback → these read ``{}`` ("no embed step"), which
+    PR 4's pre-check would take as nothing to refuse → this fails."""
+    wiring = embed_shard_step_wiring(UNPARSED_SHAPES[name])
+    assert wiring.get(UNREADABLE_EMBED_STEP, False) is None, wiring
+    assert not any(wiring.values())
+
+
+def test_a_comment_naming_the_script_is_not_a_mention():
+    text = "# feeds embed_shard.py downstream\n" + OTHER_TOOL
+    assert embed_shard_step_wiring(text) == {}
+
+
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
 def test_the_reader_sees_each_shipped_embed_workflow_as_unwired(name):
     """Through the driver's own entry point, on the real texts."""
@@ -484,11 +535,15 @@ def test_the_reader_sees_each_shipped_embed_workflow_as_unwired(name):
     assert list(wiring.values()) == [False], wiring
 
 
-def test_the_reader_finds_no_embed_step_in_the_shard_tool_workflows():
-    for name in ("ingest-bulk.cwl", "pdf-ingest-scatter.cwl", "load-embeddings.cwl"):
-        path = CWL_DIR / name
-        if path.is_file():
-            assert gbi.embed_step_wiring(str(path)) == {}, name
+def test_every_other_shipped_workflow_reads_as_no_embed_step():
+    """``{}`` for every shipped CWL but the three embed workflows — including
+    ``pdf-extract.cwl``, whose header COMMENT names embed_shard.py."""
+    if not CWL_DIR.is_dir():
+        pytest.skip("no cwl/ in this checkout")
+    others = [p for p in sorted(CWL_DIR.glob("*.cwl")) if p.name not in EMBED_WORKFLOWS]
+    assert any(p.name == "pdf-extract.cwl" for p in others)
+    for path in others:
+        assert gbi.embed_step_wiring(str(path)) == {}, path.name
 
 
 # --------------------------------------------------------------------------- #
