@@ -26,6 +26,12 @@ Layout of one version directory::
                          extract-graph step ran over this version: one
                          ``Triple`` record per line (the #347 evidence fields
                          included), gzip, mtime=0
+      glossary.jsonl     the symbol glossary file (#847 G2) the chunks'
+                         ``symbol_glossary`` field was rendered from, when the
+                         workflow ran the glossary step: the per-batch files
+                         merged (``glossary_file.merge_files``). Role
+                         ``glossary``; hashed and verified like every file.
+                         Absent on versions without the step
 
 A tombstone version holds only ``manifest.json`` + ``tombstone.json``.
 
@@ -114,6 +120,7 @@ VECTORS_NAME = "vectors.f32"
 RECEIPT_NAME = "receipt.json"
 TOMBSTONE_NAME = "tombstone.json"
 TRIPLES_NAME = "triples.jsonl.gz"
+GLOSSARY_NAME = "glossary.jsonl"
 
 # Roles in manifest["files"]. "triples" (the graph leg, #350) is written by
 # write_triples after the chunk version exists — never by write_version.
@@ -123,6 +130,7 @@ ROLE_VECTORS = "vectors"
 ROLE_RECEIPT = "receipt"
 ROLE_TOMBSTONE = "tombstone"
 ROLE_TRIPLES = "triples"
+ROLE_GLOSSARY = "glossary"
 
 CHUNKS_COMPRESSION = "gzip"
 SUPPORTED_CHUNKS_COMPRESSION = ("gzip",)
@@ -338,6 +346,7 @@ def write_version(
     job_id: str = "",
     workers: int | None = None,
     provenance: dict[str, Any] | None = None,
+    glossary_paths: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Pack embedding files (+ the load receipt) into ``<out_dir>/<version>/``.
 
@@ -352,16 +361,22 @@ def write_version(
     ``provenance`` (ADR-0010 decision 8) is recorded verbatim under the
     manifest's ``provenance`` key — :func:`ragstack.provenance.tool_provenance`
     builds it; omitted, the key is absent and readers see "unknown".
-    Raises :class:`ArchiveError` for no records, mixed dims, or a record whose
-    dim disagrees with its file header; nothing is left behind on failure.
+    ``glossary_paths`` (#847 G2): the glossary step's per-batch files, merged
+    into ``glossary.jsonl`` (role ``glossary``; the manifest's ``glossary``
+    object carries the merged file's schema and counts); none = no role, the
+    manifest exactly as before.
+    Raises :class:`ArchiveError` for no records, mixed dims, a record whose
+    dim disagrees with its file header, or glossary files that do not merge;
+    nothing is left behind on failure.
     """
     chunks_list = [Path(p) for p in chunks_paths]
     receipts_list = [Path(p) for p in receipt_paths]
+    glossary_list = [Path(p) for p in glossary_paths]
     if not chunks_list:
         raise ArchiveError("at least one embedding file is required")
     if not receipts_list:
         raise ArchiveError("at least one receipt is required")
-    for p in [*chunks_list, *receipts_list]:
+    for p in [*chunks_list, *receipts_list, *glossary_list]:
         if not p.is_file():
             raise ArchiveError(f"{p}: no such file")
     manifest = _identity(collection_id, tenant, spec_hash, job_id, version, provenance)
@@ -393,12 +408,30 @@ def write_version(
             "graph": False,
             "has_tombstone": False,
         })
+        if glossary_list:
+            _add_glossary(tmp, manifest, glossary_list)
         _write_json(tmp / MANIFEST_NAME, manifest)
         _publish(tmp, final)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return manifest
+
+
+def _add_glossary(vdir: Path, manifest: dict[str, Any], paths: list[Path]) -> None:
+    """Merge the per-batch glossary files into ``vdir/glossary.jsonl`` and
+    record the role, its sha256/bytes and ``manifest["glossary"]``."""
+    from ragstack.ingestion.glossary_file import SCHEMA, GlossaryFileError, merge_files
+
+    try:
+        counts = merge_files(paths, vdir / GLOSSARY_NAME)
+    except (GlossaryFileError, OSError) as e:
+        raise ArchiveError(f"glossary: {e}") from e
+    sha, size = _sha256_file(vdir / GLOSSARY_NAME)
+    manifest["files"][ROLE_GLOSSARY] = GLOSSARY_NAME
+    manifest["sha256"][GLOSSARY_NAME] = sha
+    manifest["bytes"][GLOSSARY_NAME] = size
+    manifest["glossary"] = {"schema": SCHEMA, "files_merged": len(paths), "counts": counts}
 
 
 def _pack_chunks(vdir: Path, chunks_list: list[Path], nworkers: int) -> tuple[int, int, int, str, int]:
