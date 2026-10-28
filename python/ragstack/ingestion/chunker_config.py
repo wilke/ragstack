@@ -296,6 +296,43 @@ CHUNK_SIZE_UNIT_HELP = (
     "is split. --chunk-overlap stays chars. Ignored by other methods."
 )
 
+#: The methods whose ``chunk_size`` unit is selectable (#318 P1); every other
+#: method ignores ``size_unit``.
+SIZE_UNIT_METHODS: tuple[str, ...] = ("sentence", "words")
+
+
+def size_unit_from_params(method: str | None, params: Any) -> str:
+    """What ``chunk_size`` counts for ``method``, read from a registry entry's
+    ``chunk_params`` — the one reader for this identity value (#318, #828 PR 3).
+
+    **Method-conditional.** Only ``sentence``/``words`` read the unit:
+    ``create_collection`` persists ``chunk_params`` for any method but validates
+    them only for the methods that use them, so a ``fixed``/``fixed_token``
+    collection can legitimately carry junk here, and reading it unconditionally
+    would refuse work on the path every current collection uses. For any other
+    method this returns ``"chars"`` without looking. An entry that records no
+    unit means ``"chars"``, the historical behaviour every existing collection
+    was built with. A recorded value that is not a unit raises ``ValueError``
+    naming the key.
+
+    Called by ``ingest_shard._size_unit``, by
+    :func:`ragstack.ops.ingest_target.refuse_size_unit_mismatch` (``ingest_jsonl``
+    and ``embed_shard``) and by the load-side header check
+    (:func:`ragstack.ops.ingest_target.check_header_chunking`), so the three
+    readings cannot drift apart.
+    """
+    if method not in SIZE_UNIT_METHODS:
+        return DEFAULT_SIZE_UNIT
+    unit = dict(params or {}).get("size_unit")
+    if unit is None:
+        return DEFAULT_SIZE_UNIT
+    if unit not in SIZE_UNITS:
+        raise ValueError(
+            f"chunk_params['size_unit'] must be one of {', '.join(SIZE_UNITS)}; "
+            f"got {unit!r}"
+        )
+    return str(unit)
+
 
 def resolve_token_backend(
     method: str, token_backend: str, model: str | None,

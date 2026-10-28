@@ -377,6 +377,76 @@ def declared_workflow_inputs(cwl: str) -> set[str]:
     return set()
 
 
+#: The script whose step must receive the registry id for path C to read a
+#: collection's spec from the registry (#828 §7).
+EMBED_SHARD_SCRIPT = "embed_shard.py"
+
+
+def _names_script(base_command: Any, script: str) -> bool:
+    """Whether a CWL ``baseCommand`` (a string or a list) names ``script``."""
+    parts = [base_command] if isinstance(base_command, str) else base_command
+    if not isinstance(parts, list):
+        return False
+    return any(isinstance(p, str) and p.rsplit("/", 1)[-1] == script for p in parts)
+
+
+def _step_binds(step_in: Any, name: str) -> bool:
+    """Whether a workflow step's ``in:`` (mapping or list form) binds ``name``."""
+    if isinstance(step_in, dict):
+        return step_in.get(name) is not None
+    if isinstance(step_in, list):
+        return any(isinstance(i, dict) and i.get("id") == name for i in step_in)
+    return False
+
+
+def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
+    """For each top-level step of a CWL ``Workflow`` that runs ``embed_shard.py``:
+    does its ``in:`` bind ``collection_id``? (#828 §7, PR 3.)
+
+    A step counts as an ``embed_shard.py`` step when its inline tool's
+    ``baseCommand`` names the script; it is **wired** when the step's ``in:``
+    binds ``collection_id`` — the registry id that lets the tool resolve the
+    collection's spec instead of embedding unresolved. That is a property of the
+    text about to be submitted, which is why the driver can read it reliably and
+    the image's age it cannot.
+
+    Returns ``{step id: wired}``. A step whose ``run`` is not inline (a
+    reference to another file) cannot be read from this text, and is reported as
+    ``None`` so a caller that must prove wiring fails closed rather than taking
+    an unreadable step for "no embed step". Empty when the text is not YAML or
+    not a workflow, or has no such step. Used by ``gowe_batch_ingest.py``; the
+    pre-check that acts on it is #828 PR 4.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - pyyaml is a runtime dependency
+        return {}
+    try:
+        doc = yaml.safe_load(cwl)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    steps = doc.get("steps")
+    if isinstance(steps, dict):
+        items = [(str(k), v) for k, v in steps.items()]
+    elif isinstance(steps, list):
+        items = [(str(s.get("id")), s) for s in steps if isinstance(s, dict)]
+    else:
+        return {}
+    out: dict[str, bool | None] = {}
+    for sid, step in items:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, dict):
+            out[sid] = None
+            continue
+        if _names_script(run.get("baseCommand"), EMBED_SHARD_SCRIPT):
+            out[sid] = _step_binds(step.get("in"), "collection_id")
+    return out
+
+
 def names_stamped_image(cwl: str) -> bool:
     """Whether ``cwl`` names a STAMPED tools image
     (``ragstack-tools-<version>-b<N>.sif``) — the ADR-0010 declaration that the

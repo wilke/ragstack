@@ -52,8 +52,9 @@ from ragstack.ingestion.chunker_config import (
     build_chunker,
     needs_embed_fn,
     semantic_cap_from_params,
+    size_unit_from_params,
 )
-from ragstack.ingestion.chunkers import SIZE_UNITS, semantic_chunking_provenance
+from ragstack.ingestion.chunkers import semantic_chunking_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.loaders import JsonlLoader
@@ -122,10 +123,6 @@ def _semantic_params(spec) -> dict:
     return out
 
 
-#: The methods whose ``chunk_size`` unit is selectable (#318 P1).
-_SIZE_UNIT_METHODS = ("sentence", "words")
-
-
 def _size_unit(spec, method: str) -> str:
     """What ``chunk_size`` counts, **from the registry entry** — never a CLI flag.
 
@@ -142,20 +139,16 @@ def _size_unit(spec, method: str) -> str:
     use them, so a ``fixed`` collection can legitimately carry junk here — reading
     it unconditionally would refuse a shard on the path every current collection
     uses. Absent (or no spec) → ``"chars"``, the historical behaviour. A bad value
-    raises here, naming the key, rather than mid-shard.
+    raises here, naming the key, rather than mid-shard. The rule itself is
+    :func:`~ragstack.ingestion.chunker_config.size_unit_from_params`, shared with
+    ``embed_shard.py``, ``ingest_jsonl.py`` and ``load_embeddings.py`` (#828 PR 3).
     """
-    if method not in _SIZE_UNIT_METHODS or spec is None:
+    if spec is None:
         return "chars"
-    params = dict(getattr(spec, "chunk_params", None) or {})
-    unit = params.get("size_unit")
-    if unit is None:
-        return "chars"
-    if unit not in SIZE_UNITS:
-        raise SystemExit(
-            f"collection chunk_params['size_unit'] must be one of "
-            f"{', '.join(SIZE_UNITS)}; got {unit!r}"
-        )
-    return str(unit)
+    try:
+        return size_unit_from_params(method, getattr(spec, "chunk_params", None))
+    except ValueError as e:
+        raise SystemExit(f"collection {e}") from None
 
 
 def _semantic_cap(spec, method: str) -> dict:

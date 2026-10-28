@@ -13,7 +13,11 @@ Format — newline-delimited JSON (JSONL), streamable and human-inspectable:
     {"id":...,"doc_id":...,"content":...,"embedding":[...],"metadata":{...}, ...}
     ...
 
-Line 1 is a **header** (schema tag + embedding dim + count + tenant); every
+Line 1 is a **header** (schema tag + embedding dim + count + tenant, and since
+#828 PR 3 an optional ``chunking`` object: the registry ``collection_id`` the
+embed step resolved, when it resolved one, and the ``method`` / ``chunk_size`` /
+``chunk_overlap`` / ``size_unit`` it applied, each key absent when not applied;
+``scripts/load_embeddings.py`` checks it against the registry entry); every
 subsequent line is one embedded :class:`~ragstack.models.Chunk` (``model_dump``).
 The header ``dim`` is the guard that catches the classic footgun — loading a file
 of 768-d BGE vectors into a 4096-d SFR collection — before a single point is
@@ -131,9 +135,14 @@ class EmbeddingFileWriter:
     :meth:`close`. Not concurrency-safe: drive it from a single task.
     """
 
-    def __init__(self, path: str | Path, *, tenant: str = "") -> None:
+    def __init__(self, path: str | Path, *, tenant: str = "",
+                 chunking: dict | None = None) -> None:
         self._path = Path(path)
         self._tenant = tenant
+        # #828 PR 3: what the embed step resolved and applied (see
+        # ``scripts/embed_shard.py``); omitted from the header when None, so a
+        # writer that is not given one writes exactly the old header.
+        self._chunking = chunking
         self._fh: TextIO | None = None
         self._dim: int | None = None
         self.count = 0
@@ -145,6 +154,8 @@ class EmbeddingFileWriter:
             self._dim = len(chunk.embedding)
             self._fh = self._path.open("w", encoding="utf-8")
             header = {"schema": SCHEMA, "tenant": self._tenant, "dim": self._dim}
+            if self._chunking is not None:
+                header["chunking"] = self._chunking
             self._fh.write(json.dumps(header, sort_keys=True) + "\n")
         elif len(chunk.embedding) != self._dim:
             raise EmbeddingFileError(

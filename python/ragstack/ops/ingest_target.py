@@ -896,6 +896,131 @@ def resolve_or_exit(args: Any, *, settings: Any | None = None, **build: Any) -> 
     return target
 
 
+def refuse_size_unit_mismatch(args: Any, target: IngestTarget | None) -> None:
+    """Refuse a ``--chunk-size-unit`` that contradicts the registry entry (#318).
+
+    ``size_unit`` is collection identity (same method/size/overlap, ~8x different
+    chunks on a path that always resolves a token budget), and the entry records
+    it in ``chunk_params["size_unit"]`` — which ``ingest_shard.py`` reads as its
+    one source. :meth:`IngestTarget.check_build` compares method/size/overlap
+    only, so without this a ``tokens`` run would pass the ADR-0002 guard into a
+    ``chars`` collection (or the reverse) and mix two chunkings in one index.
+
+    Only ``sentence``/``words`` read the unit
+    (:func:`~ragstack.ingestion.chunker_config.size_unit_from_params`). An entry
+    that records none means ``chars`` — the historical behaviour every existing
+    collection was built with — so on an existing entry ``--chunk-size-unit
+    tokens`` is refused unless the entry says ``tokens``. Exits 2 like
+    :func:`resolve_or_exit`. ``target is None`` (nothing resolved) has nothing to
+    contradict.
+
+    Shared by ``ingest_jsonl.py`` (where it was written) and ``embed_shard.py``
+    (#828 PR 3), the two tools that keep the flag beside a registry entry.
+    """
+    import sys
+
+    from ragstack.ingestion.chunker_config import size_unit_from_params
+
+    if target is None:
+        return
+    method = getattr(args, "chunk_method", None)
+    params = getattr(target.spec, "chunk_params", None)
+    try:
+        entry_unit = size_unit_from_params(method, params)
+    except ValueError as e:
+        print(f"error: collection {target.collection_id!r} {e}", file=sys.stderr)
+        raise SystemExit(2) from None
+    if method not in ("sentence", "words"):
+        return
+    recorded = dict(params or {}).get("size_unit")
+    flag = getattr(args, "chunk_size_unit", "chars")
+    if flag != entry_unit:
+        print(
+            f"error: refusing to ingest into collection {target.collection_id!r}: "
+            f"--chunk-size-unit {flag} contradicts the registry entry, which records "
+            f"size_unit={entry_unit!r}"
+            f"{'' if recorded is not None else ' (none recorded, so chars)'}. "
+            f"The unit is part of the collection's identity (ADR-0002); match the "
+            f"entry, or create a collection whose chunk params say "
+            f"size_unit={flag!r}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def check_header_chunking(header: dict[str, Any], target: IngestTarget, *,
+                          path: str = "") -> None:
+    """Refuse an embedding file whose header contradicts the registry entry
+    (#828 PR 3) — ADR-0002's build-spec guard extended by one object.
+
+    ``embed_shard.py`` writes a ``chunking`` object into the header: the
+    ``collection_id`` it resolved (only when it resolved one) and the method,
+    ``chunk_size``, ``chunk_overlap`` and ``size_unit`` it applied (a key it did
+    not apply is absent). The load step refuses, before any write:
+
+    * a ``collection_id`` other than the entry's — the embed and load steps
+      resolved different entries;
+    * an applied method/size/overlap the entry contradicts, by
+      :meth:`IngestTarget.check_build`'s rule (unset on either side is not a
+      mismatch);
+    * an applied ``size_unit`` the entry contradicts, read method-conditionally
+      by :func:`~ragstack.ingestion.chunker_config.size_unit_from_params`: only a
+      ``sentence``/``words`` entry has a unit to contradict, and one that records
+      none means ``chars``. ``check_build`` never compared the unit, so this
+      closes the hole where a ``--chunk-size-unit tokens`` embed run loaded into
+      a ``chars`` entry.
+
+    A header with no ``chunking`` object (an image older than #828 PR 3) has
+    nothing to contradict and loads exactly as before. Raises
+    :class:`TargetError`.
+    """
+    from ragstack.ingestion.chunker_config import size_unit_from_params
+
+    chunking = header.get("chunking")
+    if chunking is None:
+        return
+    where = f"{path}: " if path else ""
+    if not isinstance(chunking, dict):
+        raise TargetError(
+            f"{where}embedding-file header 'chunking' must be an object; got "
+            f"{type(chunking).__name__}"
+        )
+    cid = chunking.get("collection_id")
+    if cid is not None and cid != target.collection_id:
+        raise TargetError(
+            f"{where}refusing to load into collection {target.collection_id!r}: "
+            f"the embedding file was built for collection {cid!r} (its header's "
+            "chunking.collection_id). The embed and load steps resolved different "
+            "registry entries; point both at the same collection id and registry."
+        )
+    try:
+        target.check_build(
+            chunk_method=chunking.get("method"),
+            chunk_size=chunking.get("chunk_size"),
+            chunk_overlap=chunking.get("chunk_overlap"),
+        )
+    except TargetError as e:
+        raise TargetError(f"{where}embedding-file header: {e}") from None
+    applied_unit = chunking.get("size_unit")
+    method = target.spec.chunk_method or chunking.get("method")
+    try:
+        entry_unit = size_unit_from_params(method, target.spec.chunk_params)
+    except ValueError as e:
+        raise TargetError(f"collection {target.collection_id!r} {e}") from None
+    if method in ("sentence", "words") and applied_unit is not None \
+            and applied_unit != entry_unit:
+        recorded = dict(target.spec.chunk_params or {}).get("size_unit")
+        raise TargetError(
+            f"{where}refusing to load into collection {target.collection_id!r}: "
+            f"the embedding file was chunked with size_unit={applied_unit!r}, but "
+            f"the registry entry records size_unit={entry_unit!r}"
+            f"{'' if recorded is not None else ' (none recorded, so chars)'}. "
+            "The unit is part of the collection's identity (ADR-0002); re-embed "
+            "under the entry's unit, or load into a collection that records "
+            f"size_unit={applied_unit!r}."
+        )
+
+
 def _checked(target: IngestTarget, args: Any) -> IngestTarget:
     """Refuse a physical name on the command line that contradicts the entry.
 

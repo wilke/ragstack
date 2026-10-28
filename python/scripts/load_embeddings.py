@@ -491,6 +491,20 @@ def _refuse(message: str) -> None:
     raise SystemExit(2)
 
 
+def _refuse_header_mismatch(args, target) -> None:
+    """Exit 2 if any embedding file's header ``chunking`` object contradicts the
+    registry entry (#828 PR 3): a different ``collection_id``, or an applied
+    method/size/overlap/size unit the entry contradicts. Every file is checked
+    before any write. A header with no ``chunking`` object (an older embed
+    image) has nothing to contradict and loads as before. ``--replay`` reads
+    archive versions, not embedding files, so there is nothing to check."""
+    for f in args.embeddings:
+        try:
+            ingest_target.check_header_chunking(read_header(f), target, path=f)
+        except ingest_target.TargetError as e:
+            _refuse(str(e))
+
+
 def main(argv=None, *, settings=None) -> int:
     args = parse_args(argv)
     if bool(args.replay) == bool(args.embeddings):
@@ -510,6 +524,10 @@ def main(argv=None, *, settings=None) -> int:
             )
         except ingest_target.TargetError as e:
             _refuse(str(e))
+        # #828 PR 3: the embed step's header says which entry it resolved and
+        # what chunking it applied; refuse a file that contradicts this entry
+        # before any store is created or written.
+        _refuse_header_mismatch(args, target)
     else:
         # The in-memory backend owns no physical store and has nothing to
         # register or connect to, so it needs no URL. It still needs a
@@ -519,6 +537,12 @@ def main(argv=None, *, settings=None) -> int:
                     "a load that names no collection is refused rather than guessed "
                     "(#636).")
         target = None
+        if args.embeddings:
+            # Nothing resolved, so nothing to check the headers against; the
+            # memory backend owns no physical store, so nothing durable can be
+            # forked by a mismatched file.
+            print("header chunking check skipped: --vector-backend memory resolves "
+                  "no registry entry (#828)", file=sys.stderr, flush=True)
     return asyncio.run(amain(args, target))
 
 
