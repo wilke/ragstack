@@ -57,6 +57,8 @@ class GlossaryAttach:
 
     glossaries: dict[str, Glossary]
     config: GlossaryConfig
+    #: What the load summary and manifest record about the file.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 async def run_load_file(

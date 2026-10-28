@@ -27,9 +27,13 @@ from ragstack.ingestion.glossary_file import (
     MISSING,
     SCHEMA,
     UNVERIFIABLE,
+    VERIFIED,
+    VERIFIED_WS,
     GlossaryFileError,
     GlossaryRow,
     build_row,
+    check_document,
+    masked_key,
     read_glossary_file,
     resolve_documents,
     stamp_version,
@@ -130,7 +134,8 @@ def _row(doc_id: str = "d1", **kw: Any) -> GlossaryRow:
     rules = _multi_def_glossary(EXTRACTOR_VERSION)
     llm = _multi_def_glossary("llm/1:m:abc:w80000x4:t2048")
     base: dict[str, Any] = {
-        "doc_id": doc_id, "text_sha256": content_key(doc_id), "rules": rules, "llm": llm,
+        "doc_id": doc_id, "text_sha256": content_key(doc_id), "text_chars": len(doc_id),
+        "text_ws_sha256": masked_key(doc_id), "rules": rules, "llm": llm,
         "merged": llm, "drops": {"revalidation": 2},
         "provenance": {"source": "llm_cache", "x": [1, {"y": None}]}, "degraded": None}
     base.update(kw)
@@ -519,6 +524,7 @@ def test_load_refuses_a_text_sha256_mismatch_before_any_write(
         corpus: dict[str, Path], load: Any, capsys: Any) -> None:
     def tamper(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows[0]["text_sha256"] = content_key("some other text")
+        rows[0]["text_ws_sha256"] = masked_key("some other text")
         return rows
 
     bad = _rewrite_rows(corpus["gfile"], corpus["dir"] / "bad.jsonl", tamper)
@@ -664,6 +670,7 @@ def test_backfill_refuses_a_mismatch_before_any_write(corpus: dict[str, Path],
                                                       apply: bool) -> None:
     def tamper(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows[-1]["text_sha256"] = content_key("another text")
+        rows[-1]["text_ws_sha256"] = masked_key("another text")
         return rows
 
     bad = _rewrite_rows(corpus["gfile"], corpus["dir"] / "bad.jsonl", tamper)
@@ -725,3 +732,266 @@ def test_backfill_unverifiable_needs_the_override(corpus: dict[str, Path]) -> No
     assert es.bulks == [] and es.mappings == []
     out = asyncio.run(bf.run(_bf_args(corpus["gfile"], glossary_allow_unverifiable=True), es=es))
     assert out["docs_glossary_unverified"] == 1 and out["docs"] == 3
+
+
+# --- review fixes (#848): fixed_token under a WordPiece-style offset mapping ----
+
+
+class _FakeTokenCounter:
+    """A fast-tokenizer stand-in for ``FixedTokenWindowChunker``: pieces of at
+    most three characters with their character offsets.
+
+    ``wordpiece``: whitespace and Cc/Cf characters (BOM, ZWSP, bidi marks,
+    form feed) belong to NO token — what BERT's normaliser and whitespace
+    pre-tokenizer do, so window boundaries leave them uncovered. ``bytelevel``:
+    every character belongs to a token (leading whitespace rides on the next
+    piece), as with a byte-level sentencepiece tokenizer."""
+
+    def __init__(self, style: str) -> None:
+        import re
+        import unicodedata
+
+        self.style = style
+        if style == "wordpiece":
+            skip = "".join(chr(c) for c in range(0x110000)
+                           if chr(c).isspace() or unicodedata.category(chr(c)) in ("Cc", "Cf"))
+            self._re = re.compile(f"[^{re.escape(skip)}]{{1,3}}")
+        else:
+            self._re = re.compile(r"\s*\S{1,3}|\s+")
+
+    def _offsets(self, text: str) -> list[tuple[int, int]]:
+        return [(m.start(), m.end()) for m in self._re.finditer(text)]
+
+    def _tokenizer(self) -> Any:
+        def encode(text: str, return_offsets_mapping: bool = True,
+                   add_special_tokens: bool = False) -> dict[str, Any]:
+            return {"offset_mapping": self._offsets(text)}
+        return encode
+
+    def count(self, text: str) -> int:
+        return len(self._offsets(text))
+
+
+_FT_PARA = ("We write the flux as N = Qb Cq, where Qb is the breathing flow rate and Cq is "
+            "the quanta concentration. In Table 1, Qb = 0.5 m3/h and Cq = 30 per m3.")
+_FT_DOCS = {
+    "newline boundaries": "\n\n".join(f"Section {i}\n\n{_FT_PARA}" for i in range(6)),
+    "crlf": "\r\n\r\n".join(f"Section {i}\r\n{_FT_PARA}" for i in range(6)),
+    "tabs": "\n".join(["a\tb\tc\t1.5"] * 30 + [_FT_PARA]),
+    "nbsp": (_FT_PARA.replace(" ", " ") + "\n") * 4,
+    "trailing zwsp": _FT_PARA + "​",
+    "leading bom": "﻿" + _FT_PARA,
+    "leading rlo": "‮" + _FT_PARA,
+    "trailing formfeed": _FT_PARA + "\x0c",
+}
+
+
+def _ft_check(style: str, overlap: int, text: str) -> tuple[str, Any]:
+    from ragstack.ingestion.chunkers import FixedTokenWindowChunker
+
+    chunker = FixedTokenWindowChunker(8, overlap, token_counter=_FakeTokenCounter(style))
+    chunks = chunker.chunk(Document(id="d", content=text, source="x"))
+    for c in chunks:
+        assert text[c.start_char:c.end_char] == c.content
+    row = build_row("d", text, SymbolGlossaryAttacher())
+    r = reassemble("d", [c.model_dump() for c in chunks])
+    return check_document(row, r), r
+
+
+@pytest.mark.parametrize("overlap", [0, 3])
+@pytest.mark.parametrize("name", list(_FT_DOCS))
+def test_fixed_token_wordpiece_is_verified_by_the_masked_identity(name: str, overlap: int) -> None:
+    kind, r = _ft_check("wordpiece", overlap, _FT_DOCS[name])
+    assert kind in (VERIFIED, VERIFIED_WS), (kind, r.gaps)
+
+
+@pytest.mark.parametrize("overlap", [0, 3])
+@pytest.mark.parametrize("name", list(_FT_DOCS))
+def test_fixed_token_bytelevel_verifies_exactly(name: str, overlap: int) -> None:
+    kind, r = _ft_check("bytelevel", overlap, _FT_DOCS[name])
+    assert kind == VERIFIED and r.gaps == 0
+
+
+@pytest.mark.parametrize("name", ["trailing zwsp", "leading bom", "newline boundaries",
+                                  "tabs", "nbsp", "crlf"])
+def test_the_wordpiece_cases_need_the_fallback(name: str) -> None:
+    """Each named case fails the EXACT check and passes only the masked one."""
+    kind, r = _ft_check("wordpiece", 0, _FT_DOCS[name])
+    assert kind == VERIFIED_WS and r.gaps
+
+
+def test_a_trailing_zwsp_with_no_gap_is_no_longer_a_mismatch() -> None:
+    """No whitespace inside, so the chunks tile the text up to the ZWSP: no
+    gap at all, and the exact check alone would have called it a MISMATCH —
+    a hard refusal the override could not lift."""
+    text = "Qb=0.5;Cq=30;λv=0.3." + "\u200b"
+    kind, r = _ft_check("wordpiece", 0, text)
+    assert r.gaps == 0 and len(r.text) == len(text) - 1
+    assert kind == VERIFIED_WS
+
+
+def test_the_masked_identity_still_refuses_a_real_difference() -> None:
+    text = _FT_DOCS["newline boundaries"]
+    _, r = _ft_check("wordpiece", 0, text)
+    other = build_row("d", text.replace("breathing", "breathinG", 1), SymbolGlossaryAttacher())
+    assert check_document(other, r) == "unverifiable"   # gaps: the override could apply
+    longer = build_row("d", text[:-5], SymbolGlossaryAttacher())  # chunks reach past the text
+    assert check_document(longer, r) != VERIFIED_WS
+    # Whitespace moved INSIDE a covered region shifts every later offset: refused.
+    shifted = build_row("d", text.replace("We write", "We  write", 1), SymbolGlossaryAttacher())
+    assert check_document(shifted, r) not in (VERIFIED, VERIFIED_WS)
+
+
+def test_load_of_a_fixed_token_wordpiece_shard_verifies_and_records_it(
+        tmp_path: Path, load: Any) -> None:
+    from ragstack.ingestion.chunkers import FixedTokenWindowChunker
+
+    shard = _write_jsonl(tmp_path / "ft.jsonl", {"a": _FT_DOCS["newline boundaries"],
+                                                 "b": _FT_DOCS["trailing zwsp"]})
+    pipeline = IngestionPipeline(
+        loader=JsonlLoader(),
+        chunker=FixedTokenWindowChunker(8, 0, token_counter=_FakeTokenCounter("wordpiece")),
+        embedder=_FakeEmbedder(), vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(), glossary_attacher=SymbolGlossaryAttacher())
+    emb = tmp_path / "ft.emb.jsonl"
+    assert asyncio.run(run_embed_shard(pipeline, str(shard), "public", "s0", emb)).status \
+        == "completed"
+    gpath = tmp_path / "g.jsonl"
+    assert gf_cli.main(["build", "--jsonl", str(shard), "--out", str(gpath)]) == 0
+    rc, chunks, _ = load(str(emb), "--glossary-file", str(gpath))
+    assert rc == 0 and chunks
+    today = _by_id(read_embedding_file(emb)[0])
+    assert all(c.symbol_glossary == today[c.id].symbol_glossary for c in chunks)
+    prov = json.loads((tmp_path / "summary.json").read_text())["glossary_file"]
+    assert prov["documents"] == {"verified": 0, "verified_ws": 2, "unverified": 0}
+
+
+# --- review fixes (#848): the header config is what renders ----------------------
+
+
+def _positional_off_file(corpus: dict[str, Path]) -> Path:
+    out = corpus["dir"] / "pos_off.jsonl"
+    assert gf_cli.main(["build", "--jsonl", str(corpus["shard"]), "--config",
+                        '{"positional": false}', "--out", str(out)]) == 0
+    assert read_glossary_file(out).config.positional is False
+    return out
+
+
+def _expected_under(gpath: Path, chunks: list[Chunk]) -> dict[str, str]:
+    g = read_glossary_file(gpath)
+    return {c.id: g.rows[c.doc_id].merged.for_chunk(c.content, g.config, start_char=c.start_char)
+            for c in chunks}
+
+
+def test_load_renders_with_the_header_config(corpus: dict[str, Path], load: Any) -> None:
+    gpath = _positional_off_file(corpus)
+    today = _by_id(read_embedding_file(corpus["emb"])[0])
+    rc, chunks, _ = load(str(corpus["emb"]), "--glossary-file", str(gpath))
+    assert rc == 0 and chunks
+    expected = _expected_under(gpath, chunks)
+    assert {c.id: c.symbol_glossary for c in chunks} == expected
+    # Under positional=False a twice-defined symbol renders both definitions:
+    # the field differs from today's (positional) one on some chunk.
+    assert any(c.symbol_glossary != today[c.id].symbol_glossary for c in chunks)
+
+
+def test_backfill_renders_with_the_header_config(corpus: dict[str, Path]) -> None:
+    gpath = _positional_off_file(corpus)
+    chunks, _ = read_embedding_file(corpus["emb"])
+    expected = _expected_under(gpath, chunks)
+    es = FakeES(_es_rows(corpus["emb"]))
+    asyncio.run(bf.run(_bf_args(gpath, apply=True), es=es))
+    got = {r["_id"].split(":", 1)[1]: r["symbol_glossary"] or "" for r in es.rows}
+    assert got == expected
+    assert any(c.symbol_glossary != expected[c.id] for c in chunks)
+
+
+# --- review fixes (#848): --replay refuses --glossary-file -------------------------
+
+
+def test_replay_refuses_a_glossary_file(corpus: dict[str, Path], load: Any,
+                                        capsys: Any) -> None:
+    rc, _, reached = load("--replay", str(corpus["dir"]), "--glossary-file",
+                          str(corpus["gfile"]))
+    assert rc == 2 and not reached
+    assert "--replay" in capsys.readouterr().err
+
+
+# --- review fixes (#848): provenance -------------------------------------------------
+
+
+def test_load_and_backfill_record_the_file(corpus: dict[str, Path], load: Any,
+                                          tmp_path: Path) -> None:
+    from ragstack.ingestion.glossary_file import file_sha256
+
+    rc, _, _ = load(str(corpus["emb"]), "--glossary-file", str(corpus["gfile"]))
+    assert rc == 0
+    prov = json.loads((tmp_path / "summary.json").read_text())["glossary_file"]
+    header = read_glossary_file(corpus["gfile"]).header
+    assert prov["sha256"] == file_sha256(corpus["gfile"])
+    assert prov["path"] == str(corpus["gfile"]) and prov["file_stamp"] == FILE_STAMP
+    assert (prov["producer"], prov["created"], prov["counts"]) == \
+        (header["producer"], header["created"], header["counts"])
+    assert prov["documents"] == {"verified": 3, "verified_ws": 0, "unverified": 0}
+    out = asyncio.run(bf.run(_bf_args(corpus["gfile"]), es=FakeES(_es_rows(corpus["emb"]))))
+    assert out["glossary_file"]["sha256"] == prov["sha256"]
+    assert out["glossary_file"]["documents"]["verified"] == 3
+
+
+def test_a_load_without_the_flag_records_no_file(corpus: dict[str, Path], load: Any,
+                                                 tmp_path: Path) -> None:
+    assert load(str(corpus["emb"]))[0] == 0
+    assert "glossary_file" not in json.loads((tmp_path / "summary.json").read_text())
+
+
+def test_the_manifest_names_the_file(corpus: dict[str, Path], tmp_path: Path,
+                                     monkeypatch: Any) -> None:
+    """``write_manifest`` gets the file's record as hash-excluded enrichment."""
+    from types import SimpleNamespace
+
+    seen: dict[str, Any] = {}
+
+    def write_manifest(manifest_dir: str, **kw: Any) -> str:
+        seen.update(kw)
+        return "h"
+
+    target = SimpleNamespace(collection="scratch-g1", write_manifest=write_manifest)
+    monkeypatch.setattr(load_cli, "_chunk_cap_for", lambda t: None)
+    args = load_cli.parse_args([str(corpus["emb"]), "--out", str(tmp_path / "s.json"),
+                                "--vector-backend", "memory", "--text-backend", "memory",
+                                "--manifest-dir", str(tmp_path / "m"),
+                                "--glossary-file", str(corpus["gfile"])])
+    args.glossary_attach = load_cli._resolve_glossary_file(args)
+    assert asyncio.run(load_cli.amain(args, target)) == 0
+    rec = seen["enrichment"]["symbol_glossary"]
+    assert rec["source"] == "glossary_file" and rec["file_stamp"] == FILE_STAMP
+    seen.clear()
+    plain = load_cli.parse_args([str(corpus["emb"]), "--out", str(tmp_path / "s.json"),
+                                 "--vector-backend", "memory", "--text-backend", "memory",
+                                 "--manifest-dir", str(tmp_path / "m")])
+    assert asyncio.run(load_cli.amain(plain, target)) == 0
+    assert "enrichment" not in seen
+
+
+# --- review fixes (#848): trivial ----------------------------------------------------
+
+
+def test_a_lone_surrogate_is_a_glossary_file_error(tmp_path: Path) -> None:
+    bad = _row("d1", merged=Glossary((GlossaryEntry("Qb", (Definition("rate \ud800", 1),)),), "v"))
+    with pytest.raises(GlossaryFileError, match="surrogate"):
+        write_glossary_file(tmp_path / "g.jsonl", [bad], producer="t")
+    assert not (tmp_path / "g.jsonl").exists()
+
+
+@pytest.mark.parametrize("created, ok", [
+    ("2026-10-28T00:00:00Z", True), ("2026-10-28T00:00:00+00:00", True),
+    ("2026-10-28T02:00:00+02:00", False), ("2026-10-28T00:00:00", False),
+])
+def test_created_must_be_utc(tmp_path: Path, created: str, ok: bool) -> None:
+    lines = _mutate(_good_lines(tmp_path), 0, _set("created", created))
+    path = _write_lines(tmp_path / "x.jsonl", lines)
+    if ok:
+        read_glossary_file(path)
+    else:
+        with pytest.raises(GlossaryFileError, match="UTC"):
+            read_glossary_file(path)

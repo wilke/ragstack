@@ -94,6 +94,7 @@ from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.embedding_file import EmbeddingFileError, read_header
 from ragstack.ingestion.glossary_file import (
     GlossaryFileError,
+    file_provenance,
     read_glossary_file,
     resolve_documents,
 )
@@ -405,6 +406,9 @@ async def amain(args, target=None) -> int:
             await tindex.refresh()
             print("refresh_interval restored + index refreshed", flush=True)
     summary = merge_summary(receipts)
+    if glossary is not None:
+        # #847 G1: which file every chunk's glossary field was rendered from.
+        summary["glossary_file"] = glossary.provenance
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, sort_keys=True)
     print(f"loaded {summary['n_chunks']} chunk(s) from {summary['n_shards']} file(s); "
@@ -418,6 +422,11 @@ async def amain(args, target=None) -> int:
             manifest_dir,
             corpus=f"{summary['n_shards']} embedding file(s)",
             chunk_count=summary["n_chunks"],
+            # #847 G1: the hash-excluded enrichment record (ADR-0011) names
+            # the glossary file; absent without --glossary-file, as before.
+            **({"enrichment": {"symbol_glossary": {"source": "glossary_file",
+                                                   **glossary.provenance}}}
+               if glossary is not None else {}),
         )
         print(f"wrote provenance manifest ({spec_hash}) to {manifest_dir}", flush=True)
     if args.fail_on_error and summary["n_shards_failed"]:
@@ -586,6 +595,11 @@ def _resolve_glossary_file(args) -> GlossaryAttach:
     Exit 2 on an unreadable file, a ``text_sha256`` mismatch, a document with no
     row, or (without the override) a document whose text cannot be verified."""
     try:
+        # Validate the whole file first, keeping no row, so a malformed file
+        # fails before any embedding file is parsed; then read it again keeping
+        # only this load's documents. Every load validates the whole file
+        # (twice) — the cost of one file per collection version, shard-wise.
+        read_glossary_file(args.glossary_file, doc_ids=())
         docs = _documents_in(args.embeddings)
         gfile = read_glossary_file(args.glossary_file, doc_ids=[d.doc_id for d in docs])
     except (GlossaryFileError, EmbeddingFileError, OSError) as e:
@@ -597,9 +611,11 @@ def _resolve_glossary_file(args) -> GlossaryAttach:
         print(f"glossary file: {len(res.unverified)} document(s) rendered UNVERIFIED "
               f"(--glossary-allow-unverifiable), e.g. {res.unverified[:5]}",
               file=sys.stderr, flush=True)
-    print(f"glossary file {args.glossary_file}: {len(res.glossaries)} document(s) verified "
-          f"(text_sha256), rendering from the file", flush=True)
-    return GlossaryAttach(res.glossaries, gfile.config)
+    c = res.counts()
+    print(f"glossary file {args.glossary_file}: {c['verified']} document(s) verified exactly, "
+          f"{c['verified_ws']} by the masked identity, {c['unverified']} unverified; "
+          "rendering from the file", flush=True)
+    return GlossaryAttach(res.glossaries, gfile.config, file_provenance(gfile, res))
 
 
 def main(argv=None, *, settings=None) -> int:

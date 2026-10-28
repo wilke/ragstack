@@ -68,6 +68,7 @@ from typing import Any
 from ragstack.ingestion.glossary_file import (
     GlossaryFile,
     Resolution,
+    file_provenance,
     read_glossary_file,
     resolve_documents,
 )
@@ -183,7 +184,7 @@ def _file_glossary(gfile: GlossaryFile, doc: Reassembled, allow_unverifiable: bo
 
 async def _verify_glossary_file(
     es: Any, args: argparse.Namespace, gfile: GlossaryFile, attacher: SymbolGlossaryAttacher
-) -> tuple[int, int]:
+) -> tuple[int, Resolution]:
     """#847 G1: a full read-only pass over the index BEFORE any write (the
     mapping included): every document reassembled from its chunks and checked
     against the file — a ``text_sha256`` mismatch, a document with no row, or
@@ -196,12 +197,14 @@ async def _verify_glossary_file(
         one = resolve_documents(gfile, [doc], allow_unverifiable=args.glossary_allow_unverifiable)
         res.problems += one.problems
         res.unverified += one.unverified
+        for k, v in one.verified.items():
+            res.verified[k] += v
         if not one.problems:
             replaced += plan_updates(attacher, doc.text, rows,
                                      one.glossaries[doc.doc_id])[1]["chunks_llm_replaced"]
     if res.problems:
         raise SystemExit(res.refusal(repr(args.glossary_file)))
-    return replaced, len(res.unverified)
+    return replaced, res
 
 
 async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> dict[str, Any]:
@@ -219,6 +222,7 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         gfile.config if gfile is not None else config_from_json(args.config), cache)
     totals: Counter[str] = Counter()
     prior_refresh: str | None = None
+    file_record: dict[str, Any] | None = None
     pending: list[dict[str, Any]] = []
 
     async def flush() -> None:
@@ -237,9 +241,10 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         if gfile is not None:
             # Dry run and --apply alike: a file that does not match the index
             # is refused before anything else happens.
-            replaced, unverified = await _verify_glossary_file(es, args, gfile, attacher)
-            if unverified:
-                totals["docs_glossary_unverified"] = unverified
+            replaced, resolution = await _verify_glossary_file(es, args, gfile, attacher)
+            if resolution.unverified:
+                totals["docs_glossary_unverified"] = len(resolution.unverified)
+            file_record = file_provenance(gfile, resolution)
             if replaced and args.apply and not getattr(args, "replace_llm", False):
                 raise SystemExit(FILE_REPLACE_GUARD_MESSAGE.format(
                     n=replaced, index=args.index, file=glossary_file))
@@ -293,6 +298,8 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         if owned:
             await es.close()
     result = {"index": args.index, "dry_run": not args.apply, **dict(sorted(totals.items()))}
+    if file_record is not None:
+        result["glossary_file"] = file_record
     return result
 
 

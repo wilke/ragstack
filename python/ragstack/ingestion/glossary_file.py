@@ -26,12 +26,16 @@ refused). ``config`` is the :class:`~ragstack.ingestion.symbol_glossary.Glossary
 the producer extracted and validated under; the load renders with the SAME
 config, so the file alone determines every chunk's field. A key the reader does
 not know is refused (a newer config it cannot honour); a missing key takes the
-default.
+reader's current DEFAULT for that field — so a file that omits a key renders
+under whatever that default is when it is read. Writers write every key.
+``created`` must be UTC (``Z`` or ``+00:00``).
 
 **Every further line, one document**::
 
     {"kind": "document", "doc_id": "...",
      "text_sha256": "<64 hex>",
+     "text_chars": <int>,
+     "text_ws_sha256": "<64 hex>",
      "glossary_version": "<= merged.version>",
      "rules":  GLOSSARY,
      "llm":    GLOSSARY | null,
@@ -49,6 +53,15 @@ default.
   the document text the glossary was built on — sha256 of the UTF-8 text with
   outer whitespace stripped — the same key the LLM cache uses. A load refuses a
   row whose ``text_sha256`` does not match the text its chunks were cut from.
+* ``text_chars`` and ``text_ws_sha256`` are the second, gap-tolerant identity
+  (:func:`masked_key`): the text's length in code points (before
+  ``content_key``'s strip) and the sha256 of the text with every character of
+  :data:`MASK_CLASS` (Unicode White_Space, Default_Ignorable_Code_Point, the
+  Cc and Cf controls, U+FFFD) REPLACED by a space — replaced, not removed, so
+  the hash also pins where every other character sits. It verifies a document
+  whose chunks do not tile its text: ``fixed_token`` under a WordPiece
+  tokenizer leaves whitespace and normaliser-stripped characters at window
+  boundaries in no chunk (see :func:`check_document`).
 * ``rules`` / ``llm`` / ``merged`` serialise a :class:`Glossary` losslessly:
   entries sorted by symbol (strictly ascending, so unique), each symbol's
   definitions in document order (offsets non-decreasing; the positional
@@ -75,17 +88,20 @@ canonical text exactly as the in-memory glossary does.
 ``rules/3@file/1`` or ``llm/1:<model>:<hash>:w80000x4:t2048@file/1``. The
 suffix keeps the existing prefix semantics (``llm/…`` still means "an LLM
 glossary", which the backfill's replace guard relies on) and says the field came
-from a file rather than from an in-process attach.
+from a file rather than from an in-process attach. Whatever G2 makes ``merged``
+(a union of the two halves), its version string must still BEGIN with ``llm/``
+whenever it holds any LLM entry, or the backfill's ``llm/`` guards misfire.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -115,10 +131,53 @@ FILE_STAMP = "file/1"
 _HEADER_KEYS = frozenset({"kind", "schema", "producer", "created", "counts", "config"})
 _COUNT_KEYS = frozenset({"documents", "with_llm", "degraded", "merged_entries"})
 _ROW_KEYS = frozenset({
-    "kind", "doc_id", "text_sha256", "glossary_version", "rules", "llm", "merged",
-    "drops", "provenance", "degraded",
+    "kind", "doc_id", "text_sha256", "text_chars", "text_ws_sha256", "glossary_version",
+    "rules", "llm", "merged", "drops", "provenance", "degraded",
 })
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+#: The characters :func:`masked_key` replaces by a space. Fixed here, code point
+#: by code point, rather than read from ``unicodedata`` at run time: the hash is
+#: durable, and must not change with the Python build's Unicode version.
+#:
+#: * Unicode White_Space (PropList.txt): U+0009-000D, 0020, 0085, 00A0, 1680,
+#:   2000-200A, 2028, 2029, 202F, 205F, 3000;
+#: * Default_Ignorable_Code_Point (DerivedCoreProperties.txt, Unicode 15.1):
+#:   U+00AD, 034F, 061C, 115F-1160, 17B4-17B5, 180B-180F, 200B-200F, 202A-202E,
+#:   2060-206F, 3164, FE00-FE0F, FEFF, FFA0, FFF0-FFF8, 1BCA0-1BCA3,
+#:   1D173-1D17A, E0000-E0FFF;
+#: * the C0/C1 controls (Cc): U+0000-001F, 007F-009F;
+#: * the format characters (Cf, Unicode 15.1) not already above: U+0600-0605,
+#:   06DD, 070F, 0890-0891, 08E2, 110BD, 110CD, 13430-1343F, FFF9-FFFB;
+#: * U+FFFD, the replacement character.
+#:
+#: These are what a tokenizer's normaliser drops or a pre-tokenizer splits on
+#: (BERT's ``clean_text`` removes Cc/Cf and U+FFFD; whitespace falls between
+#: tokens), so they are what a WordPiece offset mapping leaves uncovered. Bump
+#: :data:`MASK_VERSION` (and the schema) on any change.
+MASK_CLASS = (
+    "\u0000-\u0020\u007f-\u00a0\u00ad\u034f\u061c\u115f\u1160\u1680"
+    "\u17b4\u17b5\u180b-\u180f\u2000-\u200f\u2028-\u202f\u205f-\u206f"
+    "\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\ufffd"
+    "\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2"
+    "\U000110bd\U000110cd\U00013430-\U0001343f"
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
+)
+MASK_VERSION = "mask/1"
+_MASK = re.compile(f"[{MASK_CLASS}]")
+
+
+def masked_key(text: str, length: int | None = None) -> str:
+    """sha256 of ``text`` with every :data:`MASK_CLASS` character replaced by a
+    space, right-padded with spaces to ``length`` code points when given.
+    Position-preserving: equal keys mean every other character is at the same
+    offset. Encoded as UTF-8 with ``surrogatepass`` so a lone surrogate hashes
+    instead of raising."""
+    masked = _MASK.sub(" ", text)
+    if length is not None and len(masked) < length:
+        masked += " " * (length - len(masked))
+    return hashlib.sha256(masked.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 class GlossaryFileError(ValueError):
@@ -137,6 +196,8 @@ class GlossaryRow:
 
     doc_id: str
     text_sha256: str
+    text_chars: int
+    text_ws_sha256: str
     rules: Glossary
     llm: Glossary | None
     merged: Glossary
@@ -184,6 +245,8 @@ def row_to_obj(row: GlossaryRow) -> dict[str, Any]:
         "kind": "document",
         "doc_id": row.doc_id,
         "text_sha256": row.text_sha256,
+        "text_chars": row.text_chars,
+        "text_ws_sha256": row.text_ws_sha256,
         "glossary_version": row.glossary_version,
         "rules": glossary_to_obj(row.rules),
         "llm": glossary_to_obj(row.llm) if row.llm is not None else None,
@@ -195,7 +258,12 @@ def row_to_obj(row: GlossaryRow) -> dict[str, Any]:
 
 
 def _dumps(obj: dict[str, Any]) -> str:
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    out = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    try:
+        out.encode("utf-8")
+    except UnicodeEncodeError as e:  # a lone surrogate: not representable in UTF-8
+        raise GlossaryFileError(f"not representable as UTF-8 (lone surrogate?): {e}") from e
+    return out
 
 
 # --- validation ---------------------------------------------------------------
@@ -259,6 +327,10 @@ def parse_row(obj: Any, where: str) -> GlossaryRow:
     sha = obj["text_sha256"]
     _need(isinstance(sha, str) and _SHA256.fullmatch(sha) is not None, where,
           "'text_sha256' must be 64 lowercase hex characters")
+    chars, ws = obj["text_chars"], obj["text_ws_sha256"]
+    _need(_is_int(chars) and chars >= 0, where, "'text_chars' must be a non-negative integer")
+    _need(isinstance(ws, str) and _SHA256.fullmatch(ws) is not None, where,
+          "'text_ws_sha256' must be 64 lowercase hex characters")
     rules = _parse_glossary(obj["rules"], f"{where}.rules")
     llm = None if obj["llm"] is None else _parse_glossary(obj["llm"], f"{where}.llm")
     merged = _parse_glossary(obj["merged"], f"{where}.merged")
@@ -272,8 +344,8 @@ def parse_row(obj: Any, where: str) -> GlossaryRow:
     degraded = obj["degraded"]
     _need(degraded is None or (isinstance(degraded, str) and bool(degraded)), where,
           "'degraded' must be null or a non-empty reason")
-    return GlossaryRow(doc_id, sha, rules, llm, merged, dict(drops), dict(obj["provenance"]),
-                       degraded)
+    return GlossaryRow(doc_id, sha, chars, ws, rules, llm, merged, dict(drops),
+                       dict(obj["provenance"]), degraded)
 
 
 def config_from_header(obj: Any, where: str) -> GlossaryConfig:
@@ -304,10 +376,11 @@ def _parse_header(obj: Any, where: str) -> tuple[dict[str, Any], GlossaryConfig]
           "'producer' must be a non-empty string")
     created = obj["created"]
     try:
-        ok = isinstance(created, str) and datetime.fromisoformat(created) is not None
+        parsed = datetime.fromisoformat(created) if isinstance(created, str) else None
     except ValueError:
-        ok = False
-    _need(ok, where, f"'created' must be an ISO-8601 time, got {created!r}")
+        parsed = None
+    _need(parsed is not None and parsed.utcoffset() == timedelta(0), where,
+          f"'created' must be an ISO-8601 UTC time (Z or +00:00), got {created!r}")
     counts = obj["counts"]
     _need(isinstance(counts, dict) and set(counts) == _COUNT_KEYS
           and all(_is_int(v) and v >= 0 for v in counts.values()), where,
@@ -400,13 +473,17 @@ def write_glossary_file(
         with os.fdopen(body_fd, "w", encoding="utf-8") as body:
             for n, row in enumerate(rows, start=1):
                 obj = row_to_obj(row)
-                parse_row(json.loads(_dumps(obj)), f"{p}: row {n}")
+                try:
+                    line = _dumps(obj)
+                except GlossaryFileError as e:
+                    raise GlossaryFileError(f"{p}: row {n} ({row.doc_id!r}): {e}") from e
+                parse_row(json.loads(line), f"{p}: row {n}")
                 if row.doc_id in seen:
                     raise GlossaryFileError(f"{p}: row {n}: duplicate doc_id {row.doc_id!r}")
                 seen.add(row.doc_id)
                 for k, v in _counts([row]).items():
                     tally[k] += v
-                body.write(_dumps(obj) + "\n")
+                body.write(line + "\n")
         header = {"kind": "header", "schema": SCHEMA, "producer": producer, "created": created,
                   "counts": tally, "config": config_dict(config)}
         _parse_header(json.loads(_dumps(header)), f"{p}: header")
@@ -452,8 +529,11 @@ def build_row(doc_id: str, text: str, attacher: SymbolGlossaryAttacher) -> Gloss
             drops["revalidation"] = rejected
         provenance = {"source": "llm_cache", "config": "header",
                       "llm_cache_meta": attacher.cache.meta(key, version)}
-    return GlossaryRow(doc_id, key, rules, llm, llm if llm is not None else rules,
-                       drops, provenance, None)
+    # TODO(#847 G2): when merged becomes a union of rules and LLM entries, its
+    # version must still start with "llm/" whenever it holds an LLM entry — the
+    # backfill's replace guards key on that prefix.
+    return GlossaryRow(doc_id, key, len(text), masked_key(text), rules, llm,
+                       llm if llm is not None else rules, drops, provenance, None)
 
 
 # --- the load-side check and render -------------------------------------------
@@ -466,6 +546,10 @@ def build_row(doc_id: str, text: str, attacher: SymbolGlossaryAttacher) -> Gloss
 #: length mismatch) and hashes differently, so whether the texts differ cannot
 #: be told.
 MISSING, MISMATCH, UNVERIFIABLE = "missing", "mismatch", "unverifiable"
+#: Verified outcomes: ``verified`` — the exact ``text_sha256`` matched;
+#: ``verified_ws`` — it did not, but the masked identity did (see
+#: :func:`check_document`).
+VERIFIED, VERIFIED_WS = "verified", "verified_ws"
 
 
 @dataclass
@@ -478,6 +562,11 @@ class Resolution:
     problems: list[tuple[str, str]] = field(default_factory=list)
     #: doc_ids rendered although unverifiable (only with the override).
     unverified: list[str] = field(default_factory=list)
+    #: How each rendered document was verified: VERIFIED / VERIFIED_WS counts.
+    verified: dict[str, int] = field(default_factory=lambda: {VERIFIED: 0, VERIFIED_WS: 0})
+
+    def counts(self) -> dict[str, int]:
+        return {**self.verified, "unverified": len(self.unverified)}
 
     def refusal(self, source: str, limit: int = 5) -> str:
         by: dict[str, list[str]] = {}
@@ -493,12 +582,32 @@ class Resolution:
                 "(pass --glossary-allow-unverifiable to render those anyway).")
 
 
-def check_document(row: GlossaryRow | None, doc: Reassembled) -> str | None:
-    """The problem kind for one document, or ``None`` when its row verifies."""
+def check_document(row: GlossaryRow | None, doc: Reassembled) -> str:
+    """How one document's row checks against the text reassembled from its
+    chunks: VERIFIED, VERIFIED_WS, or a problem kind.
+
+    1. ``content_key(reassembled) == text_sha256``: VERIFIED. This exact check
+       holds whenever the chunks TILE the text — every chunker whose spans cover
+       it (recursive, sentence, word, semantic), and ``fixed_token`` only when
+       its tokenizer's offset mapping covers every character (a byte-level
+       tokenizer does; a WordPiece one does not).
+    2. Otherwise, when no chunk reaches past ``text_chars`` and
+       :func:`masked_key` of the reassembly (gaps are filled with spaces;
+       padded with spaces to ``text_chars``) equals ``text_ws_sha256``:
+       VERIFIED_WS. Every character outside :data:`MASK_CLASS` is then at the
+       same offset in both, so the glossary's offsets are sound; only
+       whitespace and ignorable characters the chunks never covered are
+       unchecked. This is what verifies ``fixed_token`` under WordPiece: a
+       window boundary on ``\n``/``\t``/NBSP, a leading BOM, a trailing ZWSP.
+    3. Otherwise UNVERIFIABLE when the reassembly has a gap or a length
+       mismatch (the override may render it), else MISMATCH (always refused)."""
     if row is None:
         return MISSING
     if content_key(doc.text) == row.text_sha256:
-        return None
+        return VERIFIED
+    if len(doc.text) <= row.text_chars and \
+            masked_key(doc.text, row.text_chars) == row.text_ws_sha256:
+        return VERIFIED_WS
     return UNVERIFIABLE if (doc.gaps or doc.length_mismatches) else MISMATCH
 
 
@@ -515,13 +624,37 @@ def resolve_documents(
         kind = check_document(row, doc)
         if kind == UNVERIFIABLE and allow_unverifiable:
             res.unverified.append(doc.doc_id)
-            kind = None
-        if kind is not None:
+        elif kind in (VERIFIED, VERIFIED_WS):
+            res.verified[kind] += 1
+        else:
             res.problems.append((doc.doc_id, kind))
             continue
         assert row is not None
         res.glossaries[doc.doc_id] = row.stamped()
     return res
+
+
+def file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def file_provenance(gfile: GlossaryFile, resolution: Resolution) -> dict[str, Any]:
+    """What a load or backfill records about the file it rendered from."""
+    return {
+        "path": str(gfile.path),
+        "sha256": file_sha256(gfile.path),
+        "schema": gfile.header["schema"],
+        "producer": gfile.header["producer"],
+        "created": gfile.header["created"],
+        "counts": dict(gfile.header["counts"]),
+        "file_stamp": FILE_STAMP,
+        "mask": MASK_VERSION,
+        "documents": resolution.counts(),
+    }
 
 
 def render_chunks(
