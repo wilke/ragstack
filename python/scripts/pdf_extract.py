@@ -66,6 +66,7 @@ from ragstack.ingestion.loaders import (
     default_loader_registry,
     no_loader_error,
 )
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
 def iter_pdf_paths(inputs: list[str], recursive: bool = False) -> list[Path]:
@@ -213,6 +214,9 @@ def main(argv=None) -> int:
     records, skipped = extract_documents(paths)
     write_jsonl(records, args.out)
     report = build_report(records, skipped, args.out, inputs=paths)
+    # ADR-0010 decision 8, #821: which workflow and which tools image
+    # extracted this shard (never all-null: segmenter_version is always known).
+    report["provenance"] = provenance_from_args(args)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, sort_keys=True)
@@ -247,6 +251,7 @@ def parse_args(argv=None):
         action="store_true",
         help="recurse into subdirectories when an input is a directory",
     )
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 

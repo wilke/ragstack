@@ -32,6 +32,7 @@ async def run_embed_shard(
     out_path: str | Path,
     group_size: int = 64,
     chunking: dict | None = None,
+    provenance: dict | None = None,
 ) -> ShardReceipt:
     """Embed one shard → embedding file at ``out_path``; return its receipt.
 
@@ -58,9 +59,18 @@ async def run_embed_shard(
     ``chunking`` (#828 PR 3) is written into the embedding-file header as is
     (omitted when ``None``) — what ``scripts/embed_shard.py`` resolved and
     applied, which the load step checks against the registry entry.
+    ``provenance`` (#821) likewise goes into the header (omitted when ``None``)
+    and onto the returned receipt, failed or not.
     """
     out = Path(out_path)
-    writer = EmbeddingFileWriter(out, tenant=tenant, chunking=chunking)
+    writer = EmbeddingFileWriter(out, tenant=tenant, chunking=chunking, provenance=provenance)
+    receipt = await _embed(pipeline, shard_path, tenant, shard_id, out, writer, group_size)
+    receipt.provenance = provenance
+    return receipt
+
+
+async def _embed(pipeline: IngestionPipeline, shard_path: str, tenant: str, shard_id: str,
+                 out: Path, writer: EmbeddingFileWriter, group_size: int) -> ShardReceipt:
     chunk_ids: list[str] = []
     doc_ids: set[str] = set()
     try:

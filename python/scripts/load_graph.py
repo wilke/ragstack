@@ -39,6 +39,7 @@ from ragstack.graph.archive_load import LOAD_BATCH, load_triples
 from ragstack.graph.budget import GRAPH_CAP_REFUSED_EXIT_CODE, GraphCapExceeded
 from ragstack.ingestion.archive import ArchiveCorrupt, ArchiveError, verify_triples
 from ragstack.ops import ingest_target
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 REFUSED_EXIT_CODE = 3
 
@@ -62,6 +63,7 @@ def parse_args(argv=None):
                    help=f"triples per add_triples call (default {LOAD_BATCH})")
     p.add_argument("--out", default="graph-load-summary.json", help="summary path")
     ingest_target.add_arguments(p)
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 
@@ -125,7 +127,9 @@ async def amain(args, manifest: dict, collection: str) -> int:
     except GraphCapExceeded as e:
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump({"mode": "graph", "status": "refused", "graph_cap": e.detail(),
-                       "collection": collection}, fh, indent=2, sort_keys=True)
+                       "collection": collection,
+                       "provenance": provenance_from_args(args)},
+                      fh, indent=2, sort_keys=True)
         print(str(e), file=sys.stderr, flush=True)
         print(f"refused: nothing loaded → {args.out}", flush=True)
         return GRAPH_CAP_REFUSED_EXIT_CODE
@@ -136,7 +140,9 @@ async def amain(args, manifest: dict, collection: str) -> int:
         if hasattr(store, "close"):
             await store.close()
     with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump({**summary.as_dict(), "status": "completed"}, fh, indent=2, sort_keys=True)
+        # ADR-0010 decision 8, #821: which workflow and tools image loaded it.
+        json.dump({**summary.as_dict(), "status": "completed",
+                   "provenance": provenance_from_args(args)}, fh, indent=2, sort_keys=True)
     print(f"loaded {summary.n_triples} triple(s) into {collection!r} "
           f"(live before: {summary.live_before}, cap: {summary.cap}) → {args.out}", flush=True)
     return 0

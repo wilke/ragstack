@@ -310,3 +310,25 @@ def merge_summary(receipts: list[ShardReceipt]) -> dict:
         "failed_shards": sorted(failed),
         "errors": {r.shard_id: r.error for r in receipts if r.error},
     }
+
+
+def distinct_provenance(records: list[dict | None]) -> tuple[list[dict], int]:
+    """The distinct tool-provenance objects of ``records`` (receipts' or
+    embedding-file headers' ``provenance``, each normalised by
+    :func:`ragstack.provenance.read_provenance`), sorted, and how many records
+    carried none (#821). A record "carries none" when it normalises to
+    :func:`~ragstack.provenance.unknown_provenance` — every field null, which
+    is what a receipt written by a tool without the flags (before v1.6.20's
+    ``embed_shard``) reads as."""
+    from ragstack.provenance import read_provenance, unknown_provenance
+
+    unknown = unknown_provenance()
+    seen: dict[str, dict] = {}
+    missing = 0
+    for rec in records:
+        prov = read_provenance({"provenance": rec})
+        if prov == unknown:
+            missing += 1
+            continue
+        seen.setdefault(json.dumps(prov, sort_keys=True), prov)
+    return [seen[k] for k in sorted(seen)], missing

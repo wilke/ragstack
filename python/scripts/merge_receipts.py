@@ -14,6 +14,10 @@ Exits 3 (nothing written) when two receipt paths resolve to one file or two
 receipts share a ``shard_id`` (#852): a scatter whose tasks all write
 ``receipt.json``, staged flat by basename, would otherwise be counted as one
 receipt N times.
+
+The summary records ``provenance`` (this step's own tool provenance,
+ADR-0010 decision 8) and ``shard_provenance`` (the distinct provenance objects
+of the receipts, sorted) with ``n_shards_without_provenance`` (#821).
 """
 from __future__ import annotations
 
@@ -26,8 +30,10 @@ from ragstack.ingestion.receipts import (
     DuplicateReceiptError,
     ShardReceipt,
     check_distinct_receipt_paths,
+    distinct_provenance,
     merge_summary,
 )
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 #: Exit code for receipts that are one receipt (#852): paths resolving to one
 #: file, or a repeated ``shard_id``. Nothing is written.
@@ -41,6 +47,7 @@ def parse_args(argv=None):
     p.add_argument("--out", default="summary.json", help="output summary path")
     p.add_argument("--fail-on-shard-error", action="store_true",
                    help="exit non-zero if any shard failed (for a gating workflow)")
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 
@@ -53,6 +60,13 @@ def main(argv=None) -> int:
     except DuplicateReceiptError as e:
         print(f"refused: {e}", file=sys.stderr, flush=True)
         return DUPLICATE_RECEIPTS_EXIT_CODE
+    # ADR-0010 decision 8, #821: this gather step's own record, and which
+    # image(s) wrote the shard receipts it folded (distinct, sorted), plus how
+    # many carried no provenance at all.
+    summary["provenance"] = provenance_from_args(args)
+    shard_prov, without = distinct_provenance([r.provenance for r in receipts])
+    summary["shard_provenance"] = shard_prov
+    summary["n_shards_without_provenance"] = without
     Path(args.out).write_text(json.dumps(summary, indent=2, sort_keys=True),
                               encoding="utf-8")
     print(f"{summary['n_shards']} shards: {summary['n_docs']} docs, "
