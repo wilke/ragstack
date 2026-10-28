@@ -136,6 +136,14 @@ whose target is in the top 50 for a run or keyword query; "entered" = newly in t
 `best_fields` was worse than `most_fields` at every boost. Merging rules and LLM (a
 union) was not better than rules+LLM.
 
+**Which "rules+LLM" rule these arms measured.** The arm ran through
+`SymbolGlossaryAttacher.glossary_for`, which uses the cached LLM glossary whenever
+the cache holds one, even when that glossary is empty. On a 260-document sample,
+that rule emptied 7 documents, which lost 9 of the sample's 136 rules entries. The
+glossary file's rule (`choose_merged`, changed after the #850 review) falls back to
+the rules when the LLM half is empty, so a file-based rules+LLM run is not this arm
+exactly. See the paragraph on `merged` in [symbol-glossary-file.md](symbol-glossary-file.md).
+
 **Dense and hybrid** (the same embedder, SFR-Embedding-Mistral; scratch Qdrant; hybrid is
 RRF with k=60 of the BM25 and dense top 200, with no reranker, so it is not the live
 pipeline):

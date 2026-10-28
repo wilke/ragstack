@@ -26,8 +26,15 @@ and certificate environment variables (``trust_env=False``). No key, userinfo
 or query string reaches a log, the summary or the file; the endpoint is
 recorded as ``host:port``.
 
-Exit codes: 0 = the file was written (some documents may be degraded);
-2 = a configuration refusal, before any call; 3 = the shard is unreadable.
+Exit codes: 0 = the file was written (some documents may be degraded; a
+shard with no parseable document — blank, or malformed throughout — is
+ZERO rows and exit 0: the ingest step decides that batch's fate);
+2 = a configuration refusal, before any call; 3 = the shard is missing or
+not UTF-8, or has a duplicate document id.
+
+``--llm-repair-rounds`` > 0 has no measured gain yet: on the G2a live smoke
+one round recovered nothing. It sends back only rejections a rewording can
+fix (never ``not_specific`` or ``not_a_symbol``).
 
 Usage::
 
@@ -85,6 +92,8 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: Sleeps between a call's attempts (429, 5xx, connect): part of the step's
 #: bound, not a knob. A module constant so the tests run without sleeping.
 BACKOFF: tuple[float, ...] = DEFAULT_BACKOFF
+#: ``--llm-thinking`` → ``StepLimits.thinking`` (``None``: send nothing).
+_THINKING: dict[str, bool | None] = {"off": False, "on": True, "unset": None}
 
 
 def _http_client(timeout_s: float, concurrency: int) -> httpx.AsyncClient:
@@ -130,10 +139,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--llm-max-windows", type=int, default=0,
                    help="windows per document (the tail past them is not read and is "
                         "recorded as truncated); required (> 0) with --llm on")
-    p.add_argument("--llm-thinking", choices=["off", "on"], default="off",
-                   help="off sends chat_template_kwargs.enable_thinking=false")
+    p.add_argument("--llm-thinking", choices=["off", "on", "unset"], default="off",
+                   help="off/on send chat_template_kwargs.enable_thinking=false/true (vLLM); "
+                        "unset sends no chat_template_kwargs (a strict OpenAI-compatible "
+                        "server). Recorded as k0/k1/ku in the version")
     p.add_argument("--llm-repair-rounds", type=int, default=0,
-                   help="rounds sending the gate's rejections back with the reasons (0 = none)")
+                   help="rounds sending the gate's repairable rejections back with the "
+                        "reasons (0 = none). No measured gain yet")
     p.add_argument("--llm-cutoff-retry", choices=list(CUTOFF_POLICIES), default=CUTOFF_OFF,
                    help="split: re-ask a window cut off at max_tokens as two halves, once")
     p.add_argument("--llm-deadline-s", type=float, default=0.0,
@@ -146,7 +158,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="send this seed with every call (omitted = no seed sent)")
     p.add_argument("--reuse", default="",
                    help="a prior glossary.jsonl of this step: rows whose text_sha256 and LLM "
-                        "version match (and were not degraded) keep their LLM half; only the "
+                        "version match, that were not degraded, and whose recorded cut-off "
+                        "policy and seed equal this run's keep their LLM half; only the "
                         "other documents call the model. Needs --llm on")
     add_provenance_arguments(p)
     return p.parse_args(argv)
@@ -171,7 +184,7 @@ def _settings(args: argparse.Namespace) -> StepSettings:
     limits = StepLimits(
         window_chars=args.llm_window_chars, max_windows=args.llm_max_windows,
         max_tokens=args.llm_max_tokens, timeout_s=args.llm_timeout_s,
-        thinking=args.llm_thinking == "on", repair_rounds=args.llm_repair_rounds,
+        thinking=_THINKING[args.llm_thinking], repair_rounds=args.llm_repair_rounds,
         cutoff_retry=args.llm_cutoff_retry, seed=args.llm_seed, backoff=BACKOFF,
     ) if llm else None
     return StepSettings(llm=llm, endpoint=args.llm_endpoint, model=args.llm_model,
@@ -236,7 +249,9 @@ async def amain(args: argparse.Namespace) -> int:
     if settings.llm:
         assert settings.limits is not None
         api_key = os.environ.get(args.llm_api_key_env) or None
-        extra = {"chat_template_kwargs": {"enable_thinking": settings.limits.thinking}}
+        thinking = settings.limits.thinking
+        extra = (None if thinking is None
+                 else {"chat_template_kwargs": {"enable_thinking": thinking}})
         async with _http_client(settings.limits.timeout_s, settings.concurrency) as http:
             client = OpenAILLM(settings.endpoint, settings.model, http, api_key=api_key,
                                extra_body=extra)

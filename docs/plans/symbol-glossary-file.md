@@ -108,12 +108,56 @@ would make `r̄` equal to `r ` at an uncovered boundary, and we chose not to.
 the extractors produce. If a future canonicalisation change re-canonicalised them on
 read, old files would become unreadable.
 
-**`merged` in G1.** It is the glossary that today's attacher would use for the
-document. That is the re-validated LLM glossary when the cache holds the document's
-text, and the rules glossary otherwise. G1 does not merge the two; how they are
-combined is G2's decision. When G2 makes `merged` a union, its version string must
-still begin with `llm/` whenever it holds any LLM entry. Otherwise the backfill's
-`llm/` guards misfire: they would treat an LLM glossary as rules output.
+**`merged`.** It is `choose_merged(rules, llm)`, which both the G1 builder and the
+G2a step use. It is the LLM glossary when that glossary has at least one entry, and
+the rules glossary otherwise. When the LLM half is present but empty (the gate kept
+nothing), the row records that empty `llm` half and its provenance unchanged, and
+`merged` is the rules glossary, stamped `rules/3@file/1`.
+
+That last case changed after the #850 review. Before it, an empty LLM glossary won:
+`merged` was empty, the row was stamped `llm/…`, and the rules' entries for that
+document were dropped. This old prefer-LLM-even-if-empty rule is still the rule of
+the in-process cache path (`SymbolGlossaryAttacher.glossary_for`), which this change
+leaves alone. So the two now diverge on that one case:
+
+- **The October "rules+LLM" arm used the old rule.** It was built by
+  `scripts/eval/glossary_scratch_experiment.py` through `glossary_for`
+  ([symbol-glossary.md](symbol-glossary.md#the-experiment-2026-10-21)).
+- **How much it matters.** On a 260-document sample (an `llm/1` cache from
+  thinking-off calls; the rules half recomputed with `rules/3`), the old rule
+  emptied 7 documents, which lost 9 of the sample's 136 rules entries.
+- **The backfill guard.** `backfill_symbol_glossary.py --glossary-file --apply`
+  over an index that was stamped `llm/…` refuses such a row without
+  `--replace-llm`, because the row now carries a rules stamp. That is the guard
+  doing its job.
+
+The file keeps both halves, so a later union is a re-render, not a re-run. If
+`merged` ever becomes a union, its version string must still begin with `llm/`
+whenever it holds any LLM entry. Otherwise the backfill's `llm/` guards misfire:
+they would treat an LLM glossary as rules output.
+
+**Changes after the #850 review.** These change the step's behaviour, not the file
+format:
+
+- **Degraded `cut_off`.** A document whose every window ended in an unresolved
+  cut-off, with nothing kept, is degraded `cut_off`. It gets the rules and
+  `llm: null`, and is not recorded as a success.
+- **`--reuse`.** A prior row is reused only when its `text_sha256` and LLM version
+  match and its recorded `cutoff_retry` and `seed` equal this run's.
+- **Window floor.** `--llm-window-chars` must be greater than the 2,000-character
+  window overlap.
+- **Thinking flag.** `--llm-thinking unset` sends no `chat_template_kwargs`. The
+  version string records this as `ku`, next to `k0` and `k1`.
+- **The gate's labels.** A proposed "symbol" that is really a term the document
+  contains (`air change rate`) is labelled `not_a_symbol`, not `symbol_absent`. The
+  label is the only thing that changes: what the gate keeps and rejects stays the
+  same.
+- **The repair round.** It sends back only rejections a rewording can fix:
+  `word_not_in_document`, `not_local`, `another_symbol_between`, `implausible`, and
+  `symbol_absent` for a single-token symbol. When none is left, it makes no call.
+  `not_specific` was dropped from the repair prompt's list of reasons. That changed
+  the prompt hash, and with it every `llm/2` version string. `--llm-repair-rounds` > 0
+  has no measured gain yet.
 
 ## The version stamp
 

@@ -51,6 +51,7 @@ from ragstack.ingestion.symbol_glossary import (
 )
 from ragstack.llm import OpenAILLM
 from tests.glossary_llm_support import ENDPOINT, MODEL, Answer, Fail, FakeOpenAI, Status
+from tests.unit.test_glossary_file import FakeES, _bf_args, _es_rows, bf, corpus  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -341,7 +342,9 @@ def test_a_never_ending_cut_off_stays_bounded(tmp_path: Path) -> None:
     llm = rows[0].provenance["llm"]
     assert len(fake.chats) == 3 and [c["kind"] for c in llm["calls"]] == ["first", "split", "split"]
     assert llm["cut_off"] == 1 and llm["cut_off_unresolved"] == 2
-    assert rows[0].degraded is None and rows[0].llm is not None and rows[0].llm.entries == ()
+    # never an answer: degraded cut_off (#850 review), the rules stand in
+    assert rows[0].degraded == "cut_off" and rows[0].llm is None
+    assert rows[0].merged == rows[0].rules
 
 
 def test_without_split_a_cut_off_is_recorded_not_retried(tmp_path: Path) -> None:
@@ -356,7 +359,7 @@ def test_calls_per_document_never_exceed_the_bound(tmp_path: Path) -> None:
     """An adversarial server: every call is 429'd twice, then cut off with
     entries the gate rejects (so every repair round fires). The requests per
     document never exceed ``max_calls x (1 + retries)``."""
-    long_doc = {"alpha": DOCS["alpha"] * 6}
+    long_doc = {"alpha": DOCS["alpha"] * 10}
     counter = {"n": 0}
 
     class Adversary(FakeOpenAI):
@@ -364,7 +367,9 @@ def test_calls_per_document_never_exceed_the_bound(tmp_path: Path) -> None:
             counter["n"] += 1
             return Status(429) if counter["n"] % 3 else Answer(BAD, finish="length")
 
-    lim = _limits(window_chars=1000, max_windows=3, cutoff_retry="split", repair_rounds=2)
+    # 2500 > WINDOW_OVERLAP: the PR's 1000 was a degenerate window that the
+    # tool now refuses (#850 review)
+    lim = _limits(window_chars=2500, max_windows=3, cutoff_retry="split", repair_rounds=2)
     fake = Adversary()
     rows, _ = _run(fake, long_doc, shard=_shard(tmp_path, long_doc),
                    settings=_settings(limits=lim))
@@ -411,6 +416,7 @@ def test_version_string_changes_with_thinking_and_repair() -> None:
     assert base.startswith("llm/2:m:") and base.endswith(":w80000x4:t4096:k0:r0")
     assert sgl.llm_version("m", 80_000, 4, 4096, thinking=True).endswith(":k1:r0")
     assert sgl.llm_version("m", 80_000, 4, 4096, repair_rounds=1).endswith(":k0:r1")
+    assert sgl.llm_version("m", 80_000, 4, 4096, thinking=None).endswith(":k" + "u:r0")
     assert _limits(thinking=True, repair_rounds=1).version("m").endswith(
         ":w80000x4:t4096:k1:r1")
     # the prompt hash covers the repair template
@@ -652,12 +658,13 @@ def test_ingest_shard_renders_from_the_glossary_file(tmp_path: Path, monkeypatch
     assert rec["applied_batches"] == 1
 
 
+@pytest.mark.parametrize("bulk", [False, True], ids=["upload", "bulk-jsonl"])
 def test_ingest_shard_refuses_a_mismatched_glossary_file_before_embedding(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, bulk: bool
 ) -> None:
     emb = _CountingEmbedder()
     monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: emb)
-    shard = _shard(tmp_path)
+    shard = _shard(tmp_path, bulk=bulk)
     good = _llm_file(tmp_path, shard)
     lines = good.read_text(encoding="utf-8").splitlines()
     row = json.loads(lines[2])
@@ -673,12 +680,12 @@ def test_ingest_shard_refuses_a_mismatched_glossary_file_before_embedding(
     assert receipt["error"].startswith("glossary_file_mismatch: mismatch=1")
     assert "glossary_file_mismatch" in capsys.readouterr().err
     # a file over another document set: missing rows, same refusal
-    other = _shard(tmp_path, {"delta": _doc("Delta")}, name="other.jsonl")
+    other = _shard(tmp_path, {"delta": _doc("Delta")}, name="other.jsonl", bulk=bulk)
     elsewhere = _llm_file(tmp_path, other, name="elsewhere.jsonl")
     assert ingest_shard.main(_ingest_argv(shard, tmp_path, "--glossary-file",
                                           str(elsewhere))) == 6
     assert "missing=3" in json.loads((tmp_path / "receipt.json").read_text())["error"]
-    assert emb.calls == 0
+    assert emb.calls == 0 and not (tmp_path / "batch.emb.jsonl").exists()
 
 
 def test_ingest_shard_glossary_file_flag_rules(tmp_path: Path, monkeypatch) -> None:
@@ -758,3 +765,221 @@ def test_pack_puts_the_glossary_in_the_version_and_the_manifest_role_verifies(
     assert ROLE_GLOSSARY not in plain["files"] and "glossary" not in plain
     # a doc_id in two files refuses the pack
     assert archive_cli.main([*argv, str(gpath)]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# #850 review follow-ups
+# --------------------------------------------------------------------------- #
+
+# A document that also names a TERM a model may offer as a symbol.
+TERM_DOC = {"alpha": DOCS["alpha"] + " the air change rate λa and the viral deactivation rate λv."}
+# What the gate rejects, by reason, for TERM_DOC.
+MIXED = [{"symbol": "λv", "definition": "ventilation rate"},       # word_not_in_document
+         {"symbol": "λq", "definition": "rate"},                   # symbol_absent, one token
+         {"symbol": "air change rate", "definition": "air change"},  # not_a_symbol
+         {"symbol": "rate", "definition": "breathing flow"},       # not_specific
+         {"symbol": "ventilation speed", "definition": "air"}]     # symbol_absent, a phrase
+UNREPAIRABLE = [MIXED[2], MIXED[3], MIXED[4]]
+
+
+def test_empty_llm_half_falls_back_to_rules(tmp_path: Path) -> None:
+    """Finding 1: a model answer the gate keeps nothing of is recorded as an
+    empty LLM half, but ``merged`` is the rules (stamp ``rules/3``), not an
+    empty glossary that drops the rules' entries."""
+    one = {"alpha": DOCS["alpha"]}
+    rows, summary = _run(FakeOpenAI(default=Answer([])), one, shard=_shard(tmp_path, one))
+    r = rows[0]
+    assert r.rules.entries, "the synthetic document has rules entries"
+    assert r.degraded is None
+    assert r.llm is not None and r.llm.entries == () and r.llm.version.startswith("llm/2:")
+    assert r.provenance["llm"]["kept"] == 0                   # the LLM half is recorded as is
+    assert r.merged == r.rules and r.glossary_version == EXTRACTOR_VERSION
+    assert stamp_version(r.glossary_version) == "rules/3@file/1"
+    assert summary["merged_entries"] == len(r.rules.entries) and summary["with_llm"] == 1
+
+
+@pytest.mark.parametrize("policy", ["off", "split"])
+def test_all_windows_cut_off_unresolved_is_degraded_cut_off(tmp_path: Path, policy: str) -> None:
+    """Finding 1: every window cut off with nothing kept is a model that never
+    answered — degraded ``cut_off``, the rules stand in, not a success with an
+    empty glossary. A cut-off whose salvaged objects the gate keeps is not."""
+    one = {"alpha": DOCS["alpha"]}
+    rows, summary = _run(FakeOpenAI(default=Answer("[", finish="length")), one,
+                         shard=_shard(tmp_path, one),
+                         settings=_settings(limits=_limits(cutoff_retry=policy)))
+    r = rows[0]
+    assert r.degraded == "cut_off" and r.llm is None and r.merged == r.rules
+    assert r.provenance["llm"]["degraded_reason"] == "cut_off"
+    assert summary["degraded_reasons"] == {"cut_off": 1}
+    # salvaged objects survive the gate: not degraded
+    rows, _ = _run(FakeOpenAI(default=Answer(GOOD, finish="length")), one,
+                   shard=_shard(tmp_path, one),
+                   settings=_settings(limits=_limits(cutoff_retry=policy)))
+    assert rows[0].degraded is None and rows[0].llm is not None and rows[0].llm.entries
+
+
+def test_backfill_of_an_empty_llm_half_over_an_llm_stamped_index_needs_replace_llm(
+    corpus: dict[str, Path],  # noqa: F811 — the fixture imported above
+) -> None:
+    """Finding 1, the consequence: a row whose LLM half is empty now renders
+    the rules (``rules/…``), so a backfill over an index stamped ``llm/…``
+    would replace an LLM stamp — the guard refuses without ``--replace-llm``."""
+    docs = {d.id: d.content for d in JsonlLoader().load(str(corpus["shard"]))}
+    rows, _ = _run(FakeOpenAI(default=Answer([])), docs, shard=corpus["shard"])
+    assert all(r.llm is not None and r.glossary_version == EXTRACTOR_VERSION for r in rows)
+    from ragstack.ingestion.glossary_file import write_glossary_file
+
+    gpath = corpus["dir"] / "empty-llm.jsonl"
+    write_glossary_file(gpath, rows, producer="test")
+    es_rows = _es_rows(corpus["emb"])
+    for r in es_rows:
+        r["metadata"][VERSION_KEY] = "llm/1:m:abc"
+    es = FakeES(es_rows)
+    with pytest.raises(SystemExit, match="--replace-llm"):
+        asyncio.run(bf.run(_bf_args(gpath, apply=True), es=es))
+    assert es.bulks == []
+    out = asyncio.run(bf.run(_bf_args(gpath, apply=True, replace_llm=True), es=es))
+    assert out["chunks_written"] == len(es_rows)
+
+
+def test_a_term_in_the_document_is_not_a_symbol_not_symbol_absent() -> None:
+    """Finding 2: the label. A phrase the document contains is ``not_a_symbol``;
+    ``symbol_absent`` stays for what the document does not contain."""
+    text = TERM_DOC["alpha"]
+    raw = [(e["symbol"], e["definition"]) for e in MIXED] + [("Humidity", "x")]
+    _, rejected = validate_entries_detailed(raw, text, "v")
+    assert {s: why for s, _, why in rejected} == {
+        "λv": WORD_NOT_IN_DOCUMENT, "λq": SYMBOL_ABSENT, "air change rate": "not_a_symbol",
+        "rate": "not_specific", "ventilation speed": SYMBOL_ABSENT,
+        "Humidity": "not_a_symbol"}
+
+
+def test_the_not_a_symbol_label_changes_no_decision(monkeypatch) -> None:
+    """Finding 2: relabelling only. With the new label switched off (the
+    9de253c gate), the kept glossary and the rejected entries are identical,
+    and every reason is the same except symbol_absent -> not_a_symbol."""
+    import ragstack.ingestion.symbol_glossary as sg
+
+    text = TERM_DOC["alpha"] + " Qb(t) and Q b are the same; lambda v too."
+    raw = ([(e["symbol"], e["definition"]) for e in MIXED + GOOD + BAD]
+           + [("Qb(t)", "breathing flow rate"), ("Q b", "breathing flow rate"),
+              ("the virions", "deactivated"), ("", "rate"), ("λv", "")])
+    new_g, new_rej = validate_entries_detailed(raw, text, "v")
+    with monkeypatch.context() as m:
+        m.setattr(sg, "_occurs_but_not_a_symbol", lambda *a: False)
+        old_g, old_rej = validate_entries_detailed(raw, text, "v")
+    assert new_g == old_g and new_g.entries
+    assert [(s, d) for s, d, _ in new_rej] == [(s, d) for s, d, _ in old_rej]
+    changed = {(o, n) for (_, _, o), (_, _, n) in zip(old_rej, new_rej, strict=True) if o != n}
+    assert changed == {(SYMBOL_ABSENT, "not_a_symbol")}
+    assert validate_entries(raw, text, "v") == (new_g, len(new_rej))
+
+
+def test_the_repair_payload_sends_only_repairable_reasons(tmp_path: Path) -> None:
+    """Finding 2: the repair prompt carries word_not_in_document and a
+    single-token symbol_absent, never not_specific, not_a_symbol or a phrase
+    the document does not contain."""
+    fake = FakeOpenAI([(lambda p: "REJECTED:" in p, [Answer(GOOD)])], default=Answer(MIXED))
+    rows, _ = _run(fake, TERM_DOC, shard=_shard(tmp_path, TERM_DOC),
+                   settings=_settings(limits=_limits(repair_rounds=1)))
+    repair = [s for s in fake.chats if "REJECTED:" in s.prompt]
+    assert len(repair) == 1
+    sent = repair[0].prompt.split("REJECTED:")[1].split("Correct each entry")[0]
+    assert "— word_not_in_document" in sent and "— symbol_absent" in sent
+    assert '"λq"' in sent and '"λv"' in sent
+    for absent in ("not_specific", "not_a_symbol", "air change rate", "ventilation speed",
+                   '"symbol": "rate"'):
+        assert absent not in sent, absent
+    assert "not_specific" not in sgl.REPAIR_PROMPT
+    assert rows[0].drops["not_a_symbol"] == 1 and rows[0].drops["not_specific"] == 1
+
+
+def test_no_repair_call_when_nothing_is_repairable(tmp_path: Path) -> None:
+    fake = FakeOpenAI(default=Answer(UNREPAIRABLE + GOOD))
+    rows, _ = _run(fake, TERM_DOC, shard=_shard(tmp_path, TERM_DOC),
+                   settings=_settings(limits=_limits(repair_rounds=2)))
+    assert [s for s in fake.chats if "REJECTED:" in s.prompt] == []
+    assert [c["kind"] for c in rows[0].provenance["llm"]["calls"]] == ["first"]
+    assert rows[0].llm is not None and set(rows[0].llm.as_dict()) == {"λv", "Qb"}
+
+
+def test_reuse_respects_cutoff_policy_and_seed(tmp_path: Path, fake_cli) -> None:
+    """Finding 3 (the review's probe, inverted): a prior file built with cut-off
+    ``off`` and no seed is NOT reused by a run with ``split`` or with a seed —
+    neither is in the version string, both change the answer."""
+    shard = _shard(tmp_path)
+    first = tmp_path / "first.jsonl"
+    fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(shard, first, "--llm-cutoff-retry", "off")) == 0
+    for extra in (["--llm-cutoff-retry", "split"], ["--llm-seed", "7"],
+                  ["--llm-cutoff-retry", "split", "--llm-seed", "7"]):
+        fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+        out = tmp_path / "second.jsonl"
+        assert step_cli.main(_llm_argv(shard, out, "--reuse", str(first), *extra)) == 0
+        assert len(fake.chats) == 3, extra                     # every document recomputed
+        assert not any(r.provenance["reused_from"] for r in read_glossary_file(out).rows.values())
+    # the same policy and seed still reuse
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(shard, tmp_path / "third.jsonl", "--reuse", str(first),
+                                   "--llm-cutoff-retry", "off")) == 0
+    assert fake.chats == []
+
+
+@pytest.mark.parametrize("chars,rc", [("1000", 2), ("2000", 2), ("2001", 0)])
+def test_a_window_no_longer_than_the_overlap_refuses(tmp_path: Path, fake_cli, chars: str,
+                                                     rc: int, capsys) -> None:
+    """Finding 5: a window <= WINDOW_OVERLAP advances one character per window."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    argv = _llm_argv(_shard(tmp_path), tmp_path / "g.jsonl")
+    argv[argv.index("--llm-window-chars") + 1] = chars
+    assert step_cli.main(argv) == rc
+    if rc == 2:
+        assert fake.seen == [] and "--llm-window-chars must be > 2000" in capsys.readouterr().err
+
+
+def test_summary_drops_exclude_reused_rows(tmp_path: Path, fake_cli) -> None:
+    """Finding 11: like proposed/kept/calls, ``drops`` counts this run's work only."""
+    shard = _shard(tmp_path)
+    first = tmp_path / "first.jsonl"
+    fake_cli(FakeOpenAI([(_about("Beta"), [Fail(httpx.ReadTimeout)])],
+                        default=Answer(GOOD + BAD)))
+    assert step_cli.main(_llm_argv(shard, first)) == 0
+    fake_cli(FakeOpenAI(default=Answer(GOOD + BAD)))
+    second = tmp_path / "second.jsonl"
+    assert step_cli.main(_llm_argv(shard, second, "--reuse", str(first))) == 0
+    summary = json.loads(second.with_suffix(".summary.json").read_text())
+    assert summary["reused"] == 2 and summary["proposed"] == 4 and summary["llm_calls"] == 1
+    assert summary["drops"] == {"symbol_absent": 1, "word_not_in_document": 1}
+
+
+def test_a_malformed_shard_is_zero_rows_and_exit_0(tmp_path: Path) -> None:
+    """Finding 12: kept as is, and documented on the exit-code line."""
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("not json\n{\n", encoding="utf-8")
+    out = tmp_path / "g.jsonl"
+    assert step_cli.main([str(bad), "--out", str(out)]) == 0
+    assert read_glossary_file(out).header["counts"]["documents"] == 0
+    assert "malformed throughout" in (step_cli.__doc__ or "")
+
+
+@pytest.mark.parametrize("flag,body,k", [
+    ("off", {"enable_thinking": False}, "k0"),
+    ("on", {"enable_thinking": True}, "k1"),
+    ("unset", None, "ku"),
+])
+def test_llm_thinking_tri_state_request_body_and_version(tmp_path: Path, fake_cli, flag: str,
+                                                         body: Any, k: str) -> None:
+    """Finding 13: ``unset`` sends no ``chat_template_kwargs`` at all (a strict
+    OpenAI-compatible server is not sent an unknown field); the version's
+    ``k`` field records which."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    out = tmp_path / "g.jsonl"
+    assert step_cli.main(_llm_argv(_shard(tmp_path), out, "--llm-thinking", flag)) == 0
+    assert fake.chats
+    for s in fake.chats:
+        if body is None:
+            assert "chat_template_kwargs" not in s.body
+        else:
+            assert s.body["chat_template_kwargs"] == body
+    versions = {r.llm.version for r in read_glossary_file(out).rows.values() if r.llm}
+    assert len(versions) == 1 and f":{k}:r0" in versions.pop()
