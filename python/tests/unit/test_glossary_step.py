@@ -991,3 +991,31 @@ def test_repairable_reasons_are_gate_reasons_and_exclude_the_unrepairable() -> N
 
     assert REPAIRABLE_REASONS <= set(GATE_REASONS)
     assert set(GATE_REASONS) - REPAIRABLE_REASONS == {NOT_SPECIFIC, NOT_A_SYMBOL}
+
+
+# --------------------------------------------------------------------------- #
+# v1.6.20 Gap A: the receipt carries the degraded reasons
+# --------------------------------------------------------------------------- #
+
+
+def test_receipt_from_a_glossary_file_carries_degraded_reasons(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On the upload path the archive is the only output, so the receipt's
+    ``enrichment.symbol_glossary`` is where the API reads the counts: it must
+    carry the per-reason tally ``glossary-summary.json`` has, and the
+    distinct glossary versions."""
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _CountingEmbedder())
+    shard = _shard(tmp_path)
+    out = tmp_path / "g.jsonl"
+    fake = FakeOpenAI([(_about("Beta"), [Status(400)])], default=Answer(GOOD))
+    rows, summ = _run(fake, shard=shard)
+    from ragstack.ingestion.glossary_file import write_glossary_file
+
+    write_glossary_file(out, rows, producer="test")
+    assert ingest_shard.main(_ingest_argv(shard, tmp_path, "--glossary-file", str(out))) == 0
+    rec = json.loads((tmp_path / "receipt.json").read_text())["enrichment"]["symbol_glossary"]
+    assert rec["degraded_reasons"] == summ["degraded_reasons"]
+    assert sum(rec["degraded_reasons"].values()) == rec["counts"]["degraded"] == 1
+    assert rec["glossary_versions"] == sorted({r.glossary_version for r in rows})
+    assert len(rec["glossary_versions"]) == 2       # rules (the degraded doc) + llm
