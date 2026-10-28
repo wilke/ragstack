@@ -42,10 +42,21 @@ from typing import Any
 from ragstack.ingestion import archive
 from ragstack.ingestion.archive import ArchiveCorrupt, ArchiveError
 from ragstack.ingestion.embedding_file import EmbeddingFileError, read_embedding_file
+from ragstack.ingestion.glossary_file import render_chunks
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt
+from ragstack.ingestion.symbol_glossary import Glossary, GlossaryConfig
 from ragstack.models import Chunk
 from ragstack.provenance import read_provenance
+
+
+@dataclass(frozen=True)
+class GlossaryAttach:
+    """The resolved glossary file for a load (#847 G1): each document's stamped
+    glossary and the file's own config, which every chunk is rendered with."""
+
+    glossaries: dict[str, Glossary]
+    config: GlossaryConfig
 
 
 async def run_load_file(
@@ -53,12 +64,19 @@ async def run_load_file(
     embedding_path: str | Path,
     file_id: str,
     tenant: str | None = None,
+    glossary: GlossaryAttach | None = None,
 ) -> ShardReceipt:
     """Load one embedding file into the stores via ``pipeline.index_chunks``.
 
     ``tenant`` defaults to the file header's tenant (embed_source stamped it on
     the chunks); pass it only to override. Returns a receipt whose
     ``embedding_file`` echoes the input and ``n_chunks`` is what was indexed.
+
+    ``glossary`` (#847 G1): when given, every chunk's ``symbol_glossary`` and
+    ``metadata.symbol_glossary_version`` are re-rendered from the glossary file
+    (already resolved and verified for every document, before any write, by
+    ``scripts/load_embeddings.py``) instead of what the embedding file carries.
+    ``None`` leaves the chunks exactly as read.
     """
     try:
         chunks, header = read_embedding_file(embedding_path)
@@ -81,6 +99,13 @@ async def run_load_file(
     # matches the header (the default, non-override path).
     for c in chunks:
         c.metadata["tenant_id"] = tenant
+    if glossary is not None:
+        try:
+            render_chunks(chunks, glossary.glossaries, glossary.config)
+        except Exception as e:  # noqa: BLE001 — an unresolved document fails just this file
+            return ShardReceipt(file_id, tenant, FAILED, n_docs=n_docs, n_chunks=len(chunks),
+                                embedding_file=str(embedding_path),
+                                error=f"glossary: {type(e).__name__}: {e}")
     try:
         chunk_ids = await pipeline.index_chunks(chunks, tenant_id=tenant)
     except Exception as e:  # noqa: BLE001 — isolate the file; the engine retries
