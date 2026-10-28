@@ -156,6 +156,12 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 #: (BERT's ``clean_text`` removes Cc/Cf and U+FFFD; whitespace falls between
 #: tokens), so they are what a WordPiece offset mapping leaves uncovered. Bump
 #: :data:`MASK_VERSION` (and the schema) on any change.
+#:
+#: Deliberately NOT masked: combining marks (Mn) and private-use characters
+#: (Co). BGE/WordPiece leaves those uncovered too; at a document's edge or an
+#: overlap-0 window boundary such a document is UNVERIFIABLE, so the override
+#: applies, and SFR (byte-level, the default stack) verifies it exactly.
+#: Masking them would make ``r̄`` equal ``r `` at an uncovered boundary.
 MASK_CLASS = (
     "\u0000-\u0020\u007f-\u00a0\u00ad\u034f\u061c\u115f\u1160\u1680"
     "\u17b4\u17b5\u180b-\u180f\u2000-\u200f\u2028-\u202f\u205f-\u206f"
@@ -599,8 +605,14 @@ def check_document(row: GlossaryRow | None, doc: Reassembled) -> str:
        whitespace and ignorable characters the chunks never covered are
        unchecked. This is what verifies ``fixed_token`` under WordPiece: a
        window boundary on ``\n``/``\t``/NBSP, a leading BOM, a trailing ZWSP.
-    3. Otherwise UNVERIFIABLE when the reassembly has a gap or a length
-       mismatch (the override may render it), else MISMATCH (always refused)."""
+    3. Otherwise UNVERIFIABLE when the reassembly is incomplete — a gap, a
+       length mismatch, or SHORTER than ``text_chars`` (a dropped last chunk,
+       or a trailing character no token covers that the mask does not list,
+       e.g. a private-use U+F0B7 bullet or a combining accent under
+       WordPiece) — so the override may render it; else MISMATCH (always
+       refused). A reassembly LONGER than ``text_chars`` is never verified by
+       step 2 (the ``<=`` guard short-circuits it, and the length-preserving
+       masked hash could not match anyway)."""
     if row is None:
         return MISSING
     if content_key(doc.text) == row.text_sha256:
@@ -608,7 +620,8 @@ def check_document(row: GlossaryRow | None, doc: Reassembled) -> str:
     if len(doc.text) <= row.text_chars and \
             masked_key(doc.text, row.text_chars) == row.text_ws_sha256:
         return VERIFIED_WS
-    return UNVERIFIABLE if (doc.gaps or doc.length_mismatches) else MISMATCH
+    incomplete = doc.gaps or doc.length_mismatches or len(doc.text) < row.text_chars
+    return UNVERIFIABLE if incomplete else MISMATCH
 
 
 def resolve_documents(

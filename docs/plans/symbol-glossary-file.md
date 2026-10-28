@@ -94,6 +94,12 @@ These are the characters a tokenizer's normaliser drops (BERT's cleanup removes 
 Cf and U+FFFD) or its pre-tokenizer splits on (whitespace). They are therefore what
 a WordPiece offset mapping leaves in no chunk.
 
+Combining marks (Mn) and private-use characters (Co) are deliberately not in the
+class, although BGE/WordPiece leaves them uncovered too. At a document's edge or at
+an overlap-0 window boundary such a document is unverifiable, so the override
+applies, and SFR (byte-level, the default stack) verifies it exactly. Masking them
+would make `r̄` equal to `r ` at an uncovered boundary, and we chose not to.
+
 **Symbols are not re-canonicalised on read.** They are stored as the canonical keys
 the extractors produce. If a future canonicalisation change re-canonicalised them on
 read, old files would become unreadable.
@@ -160,11 +166,16 @@ is then checked in order:
    hashes to `text_ws_sha256`. Every character outside the mask class is then at the
    same offset in both texts, so the glossary's offsets are sound. Only whitespace and
    ignorable characters that no chunk covered go unchecked. This is what verifies
-   `fixed_token` under WordPiece. A whitespace change *inside* a chunk shifts later
-   offsets, so it fails this check too.
-3. **Unverifiable.** Neither check passes, and the reassembly has a gap or a length
-   mismatch, for example chunks dropped by `--boilerplate drop`. The document is
-   refused; `--glossary-allow-unverifiable` renders it anyway and logs it.
+   `fixed_token` under WordPiece. A whitespace change inside a chunk that alters the
+   length shifts later offsets, so it fails this check. A same-length swap within the
+   mask class (`\n\n` for two spaces, a space for an NBSP) passes `verified_ws` by
+   design: no offset moves.
+3. **Unverifiable.** Neither check passes, and the reassembly is incomplete: it has a
+   gap, a length mismatch, or it is shorter than `text_chars`. Examples are chunks
+   dropped by `--boilerplate drop`, a dropped last chunk, and a trailing character
+   that no token covers and the mask does not list (a private-use U+F0B7 bullet, or a
+   combining accent, under WordPiece). The document is refused;
+   `--glossary-allow-unverifiable` renders it anyway and logs it.
 4. **Mismatch.** Neither check passes and the reassembly is complete. That is a
    different text, and it is refused even with the override.
 

@@ -1008,3 +1008,116 @@ def test_a_malformed_glossary_file_fails_before_the_embedding_files_are_read(
     err = capsys.readouterr().err
     assert rc == 2 and not reached
     assert "unknown schema" in err and "garbage" not in err
+
+
+# --- #848 follow-up: a short reassembly is unverifiable, not a mismatch -------------
+
+
+@pytest.mark.parametrize("tail", ["", "́"], ids=["U+F0B7", "U+0301"])
+def test_a_trailing_uncovered_unmasked_character_is_unverifiable(tail: str) -> None:
+    """A tokenizer that leaves a trailing private-use bullet or combining accent
+    in no token makes the reassembly one character short, with no gap. That is
+    incomplete, so UNVERIFIABLE (the override applies), never a hard MISMATCH.
+    The mask deliberately does not list Mn/Co."""
+    text = "where Qb is the breathing flow rate. Qb = 0.5 m3/h." + tail
+    row = build_row("d", text, SymbolGlossaryAttacher())
+    short = reassemble("d", [{"content": text[:-1], "start_char": 0,
+                              "end_char": len(text) - 1}])
+    assert short.gaps == 0 and short.length_mismatches == 0
+    assert check_document(row, short) == UNVERIFIABLE
+    assert resolve_documents(read_glossary_file_rows({"d": row}), [short],
+                             allow_unverifiable=True).unverified == ["d"]
+
+
+def read_glossary_file_rows(rows: dict[str, GlossaryRow]) -> Any:
+    from ragstack.ingestion.glossary_file import GlossaryFile
+
+    return GlossaryFile(Path("mem"), {}, DEFAULT_CONFIG, rows)
+
+
+def test_a_dropped_last_chunk_is_unverifiable(corpus: dict[str, Path]) -> None:
+    chunks, _ = read_embedding_file(corpus["emb"])
+    doc = max({c.doc_id for c in chunks}, key=lambda d: sum(c.doc_id == d for c in chunks))
+    mine = sorted((c for c in chunks if c.doc_id == doc), key=lambda c: c.start_char)
+    gfile = read_glossary_file(corpus["gfile"])
+    r = reassemble(doc, [c.model_dump() for c in mine[:-1]])
+    assert r.gaps == 0 and len(r.text) < gfile.rows[doc].text_chars
+    assert check_document(gfile.rows[doc], r) == UNVERIFIABLE
+
+
+def test_a_longer_reassembly_is_never_verified() -> None:
+    """Chunks reaching past text_chars are never verified, even when the
+    extra character is masked and the exact key matches after the strip."""
+    text = "where Qb is the breathing flow rate. Qb = 0.5 m3/h."
+    row = build_row("d", text, SymbolGlossaryAttacher())
+    longer = reassemble("d", [{"content": text + " ", "start_char": 0,
+                               "end_char": len(text) + 1}])
+    assert content_key(longer.text) == row.text_sha256  # equal after the strip...
+    padded = reassemble("d", [{"content": text + "​", "start_char": 0,
+                               "end_char": len(text) + 1}])
+    assert check_document(row, padded) == MISMATCH      # ...but past text_chars
+
+
+def test_a_same_length_swap_within_the_mask_passes_by_design() -> None:
+    text = "where Qb is the breathing flow rate.\n\nQb = 0.5 m3/h."
+    row = build_row("d", text, SymbolGlossaryAttacher())
+    swapped = reassemble("d", [{"content": text.replace("\n\n", "  ").replace(" is", " is"),
+                                "start_char": 0, "end_char": len(text)}])
+    assert check_document(row, swapped) == VERIFIED_WS
+
+
+# --- #848 follow-up: the real tokenizers, offline only --------------------------------
+
+
+def _offline_counter(model: str, monkeypatch: Any) -> Any:
+    """An HFTokenCounter whose tokenizer comes from the local HF cache ONLY
+    (``local_files_only``; HF_HUB_OFFLINE set), or a skip."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    try:
+        from transformers import AutoTokenizer
+
+        from ragstack.ingestion.tokenization import HFTokenCounter
+
+        tok = AutoTokenizer.from_pretrained(model, local_files_only=True)
+    except Exception as e:  # noqa: BLE001 — not cached / no transformers: skip
+        pytest.skip(f"{model} tokenizer not available offline ({type(e).__name__})")
+    counter = HFTokenCounter(model)
+    counter._tok = tok
+    return counter
+
+
+_REAL_PARA = ("We write the exhaled flux as N = Qb Cq, where Qb is the breathing flow rate "
+              "and Cq is the quanta concentration. In Table 1, Qb = 0.5 m3/h.")
+_REAL_WS = {
+    "paragraphs": "\n\n".join(f"Section {i}\n\n{_REAL_PARA}" for i in range(8)),
+    "crlf": "\r\n\r\n".join(f"Section {i}\r\n\r\n{_REAL_PARA}" for i in range(8)),
+    "trailing zwsp": _REAL_PARA + "​",
+    "leading bom": "﻿" + _REAL_PARA,
+}
+_REAL_EDGE = {"pua bullet": _REAL_PARA + "", "combining acute": _REAL_PARA + " café"}
+
+
+def _real_kind(counter: Any, text: str, size: int, overlap: int) -> str:
+    from ragstack.ingestion.chunkers import FixedTokenWindowChunker
+
+    chunks = FixedTokenWindowChunker(size, overlap, token_counter=counter).chunk(
+        Document(id="d", content=text, source="x"))
+    return check_document(build_row("d", text, SymbolGlossaryAttacher()),
+                          reassemble("d", [c.model_dump() for c in chunks]))
+
+
+@pytest.mark.parametrize("model", ["BAAI/bge-base-en-v1.5", "Salesforce/SFR-Embedding-Mistral"])
+def test_real_tokenizers_offline(model: str, monkeypatch: Any) -> None:
+    counter = _offline_counter(model, monkeypatch)
+    docs = {**_REAL_WS, **_REAL_EDGE}
+    if "SFR" in model:
+        for name, text in docs.items():
+            for size, ov in ((64, 0), (64, 8)):
+                assert _real_kind(counter, text, size, ov) == VERIFIED, (name, size, ov)
+        return
+    kinds = {name: _real_kind(counter, text, 64, 0) for name, text in _REAL_WS.items()}
+    assert all(k in (VERIFIED, VERIFIED_WS) for k in kinds.values()), kinds
+    assert VERIFIED_WS in kinds.values(), kinds
+    for name, text in _REAL_EDGE.items():
+        assert _real_kind(counter, text, 64, 0) == UNVERIFIABLE, name
