@@ -66,6 +66,11 @@ from pathlib import Path
 
 from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap
 from ragstack.ingestion.embedding_file import write_embedding_file
+from ragstack.ingestion.glossary_file import (
+    GlossaryFile,
+    format_glossary_refusal,
+    resolve_from_documents,
+)
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import (
@@ -129,6 +134,7 @@ async def run_shard(
     report: ExtractReport | None = None,
     max_chunks: int = 0,
     duplicate_policy: str = POLICY_OFF,
+    glossary: GlossaryFile | None = None,
 ) -> ShardReceipt:
     """Ingest one shard (a batch of documents) through ``pipeline`` and return
     its receipt — see the module docstring for the per-document rules.
@@ -164,6 +170,17 @@ async def run_shard(
     ``readable_tenants(tenant)``. A refused document is per-document DATA —
     its row carries the refusal, the batch goes on and the task completes
     (no new exit code: unlike the cap, a duplicate is not a whole-job refusal).
+
+    ``glossary`` (#847 G2, ``ingest_shard --glossary-file``): the glossary
+    file the workflow's glossary step wrote for THIS shard. Right after the
+    load, before any embed, every loaded document is checked directly
+    (``content_key(doc.content) == row.text_sha256``); a document with no row
+    or a mismatched row refuses the WHOLE batch — a ``failed`` receipt whose
+    error starts ``glossary_file_mismatch`` (the CLI exits
+    ``GLOSSARY_REFUSED_EXIT_CODE``). The step reads the same shard with the
+    same loader, so a refusal can only be a tool or wiring bug. Rendering
+    itself is the pipeline's attacher (``FileGlossaryAttacher``, set by the
+    caller).
 
     ``report`` folds the extract stage's skipped files into the receipt as
     failed rows (their constant errors verbatim) and lets an empty shard — a
@@ -207,6 +224,11 @@ async def run_shard(
         # Every document failed at the extract stage, each for its own reason
         # (the rows carry them): a processed batch, not a failed task.
         return processed_empty()
+    if glossary is not None:
+        res = resolve_from_documents(glossary, docs)
+        if res.problems:
+            # Before the embed: nothing was computed, nothing written.
+            return failed_batch(format_glossary_refusal(res))
 
     try:
         kept, produced, quarantined = await pipeline.embed_documents(

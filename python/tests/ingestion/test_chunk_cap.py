@@ -371,14 +371,40 @@ def cap_settings(monkeypatch):
     return settings
 
 
-def test_cli_cap_derivation(cap_settings):
-    assert load_cli._chunk_cap_for(None) is None                       # memory backend
-    assert load_cli._chunk_cap_for(_target(_spec())) == 10             # user-created
-    assert load_cli._chunk_cap_for(_target(_spec(owner=""))) is None   # curated
-    assert load_cli._chunk_cap_for(_target(_spec(owner="legacy:admin"))) is None
-    assert load_cli._chunk_cap_for(_target(_spec(owner="bvbrc:root@patricbrc.org"))) is None
-    assert load_cli._chunk_cap_for(_target(_spec(owner="", max_chunks=3))) == 3  # override
-    assert load_cli._chunk_cap_for(_target(_spec(max_chunks=0))) is None          # exempt
+def _cap(argv: list[str], target):
+    return load_cli._chunk_cap_for(load_cli.parse_args(["f.emb.jsonl", *argv]), target)
+
+
+def test_load_embeddings_cap_comes_from_the_flag_or_the_entry_only(cap_settings):
+    """#849: the worker's settings (here a 10-chunk default, a backfill owner
+    and an admin list) decide nothing. The entry's explicit override wins
+    (0 = exempt); else --max-chunks; else no cap — for a user-created entry
+    too, whose owner the tool no longer inspects."""
+    none = {"effective": 0, "source": "none"}
+    assert _cap([], None) == (None, none)                                    # memory backend
+    assert _cap([], _target(_spec())) == (None, none)                        # user-created: no flag, no cap
+    assert _cap(["--max-chunks", "7"], _target(_spec())) == (7, {"effective": 7, "source": "input"})
+    assert _cap(["--max-chunks", "7"], None) == (7, {"effective": 7, "source": "input"})
+    assert _cap(["--max-chunks", "7"], _target(_spec(owner="", max_chunks=3))) == (
+        3, {"effective": 3, "source": "registry_override"})                  # override wins
+    assert _cap(["--max-chunks", "7"], _target(_spec(max_chunks=0))) == (
+        None, {"effective": 0, "source": "registry_override"})               # exempt wins
+    assert _cap(["--max-chunks", "0"], _target(_spec())) == (None, none)
+
+
+def test_load_embeddings_reads_no_cap_setting(cap_settings, monkeypatch):
+    """The derivation is gone, not merely shadowed: a settings object that
+    raises on the three #849 attributes is never touched by the cap path."""
+    import ragstack.config as config_mod
+
+    class _Trap:
+        def __getattr__(self, name):
+            if name in ("max_chunks_per_collection", "admin_subjects", "acl_backfill_owner"):
+                raise AssertionError(f"load_embeddings read settings.{name}")
+            return getattr(cap_settings, name)
+
+    monkeypatch.setattr(config_mod, "settings", _Trap())
+    assert _cap(["--max-chunks", "5"], _target(_spec())) == (5, {"effective": 5, "source": "input"})
 
 
 async def test_bulk_load_is_refused_whole_before_the_first_read(tmp_path, cap_settings, capsys):
@@ -387,7 +413,8 @@ async def test_bulk_load_is_refused_whole_before_the_first_read(tmp_path, cap_se
     embed_file(f2, 6, start=6)
     out = tmp_path / "summary.json"
     args = load_cli.parse_args([str(f1), str(f2), "--vector-backend", "memory",
-                                "--text-backend", "memory", "--out", str(out)])
+                                "--text-backend", "memory", "--out", str(out),
+                                "--max-chunks", "10"])
     vstore = CountingVectorStore()
     real = load_cli._build_pipeline
 
@@ -405,15 +432,29 @@ async def test_bulk_load_is_refused_whole_before_the_first_read(tmp_path, cap_se
     assert vstore._chunks == [] and vstore.calls == {"count": 1}
     summary = json.loads(out.read_text())
     assert summary["chunk_cap"] == {"error": "chunk_cap_exceeded", "live": 0, "incoming": 12,
-                                    "cap": 10, "would_fit": 10}
+                                    "cap": 10, "would_fit": 10, "effective": 10,
+                                    "source": "input"}
     assert summary["n_shards_failed"] == 2 and summary["n_chunks"] == 0
     assert capsys.readouterr().err.startswith("chunk_cap_exceeded: live=0 incoming=12 cap=10")
 
-    # The override lifts it: the same files load in full.
+    # The override lifts it: the same files load in full, and the summary
+    # records which cap applied although it did not bite (#849).
+    args = load_cli.parse_args([str(f1), str(f2), "--vector-backend", "memory",
+                                "--text-backend", "memory", "--out", str(out),
+                                "--max-chunks", "10"])
+    rc = await load_cli.amain(args, _target(_spec(max_chunks=0)))
+    done = json.loads(out.read_text())
+    assert rc == 0 and done["n_chunks"] == 12
+    assert done["chunk_cap"] == {"effective": 0, "source": "registry_override"}
+
+    # Without the flag a user-created entry is uncapped: the worker's
+    # 10-chunk setting (cap_settings) no longer reaches the load (#849).
     args = load_cli.parse_args([str(f1), str(f2), "--vector-backend", "memory",
                                 "--text-backend", "memory", "--out", str(out)])
-    rc = await load_cli.amain(args, _target(_spec(max_chunks=0)))
-    assert rc == 0 and json.loads(out.read_text())["n_chunks"] == 12
+    rc = await load_cli.amain(args, _target(_spec()))
+    done = json.loads(out.read_text())
+    assert rc == 0 and done["n_chunks"] == 12
+    assert done["chunk_cap"] == {"effective": 0, "source": "none"}
 
 
 async def test_replay_is_never_capped(tmp_path, cap_settings):

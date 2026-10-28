@@ -9,6 +9,7 @@ placeholder, so this is opt-in.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -22,6 +23,25 @@ _SYSTEM_PROMPT = (
     "context passages. If the context does not contain the answer, say you don't "
     "know rather than inventing one. Cite the passages you used as [n]."
 )
+
+
+@dataclass
+class ChatResult:
+    """One chat-completions answer, with what the transport saw.
+
+    ``content`` may be EMPTY here (unlike :meth:`OpenAILLM.complete_detailed`,
+    which raises on it): a caller that classifies outcomes — the glossary step
+    (#847) — needs to tell "cut off before any content" (``finish_reason ==
+    "length"``) from "a thinking model answered into ``reasoning_content``
+    and left ``content`` null" (``reasoning`` true) from a plain empty answer.
+    ``usage`` is the response's ``usage`` object as sent (``{}`` when absent).
+    """
+
+    content: str
+    finish_reason: str
+    usage: dict[str, Any] = field(default_factory=dict)
+    reasoning: bool = False
+    model: str = ""
 
 
 class OpenAILLM:
@@ -61,6 +81,7 @@ class OpenAILLM:
         messages: list[dict[str, str]],
         max_tokens: int = 512,
         temperature: float = 0.0,
+        timeout: float | None = None,
     ) -> tuple[str, str]:
         """``(text, finish_reason)``.
 
@@ -69,7 +90,37 @@ class OpenAILLM:
         answer by looking at the text. For a prose answer that is a cosmetic
         truncation; for a TSV extraction table it silently removes ROWS, and the
         caller has no way to tell a short table from a cut-off one.
+
+        ``timeout`` (seconds) overrides the HTTP client's own timeout for this
+        request; ``None`` uses the client's. There used to be a hard-coded 120 s
+        here, which silently overrode every caller's ``--timeout`` (#847).
         """
+        result = await self.complete_result(messages, max_tokens, temperature, timeout=timeout)
+        if not result.content:
+            # Read the reason FIRST so it can be named. `length` with an empty
+            # body is the worst truncation case — the model produced nothing
+            # usable because the ceiling was too low — and it used to surface as
+            # a generic failure, i.e. the one case the truncation signal most
+            # needed to describe was the one it could not reach.
+            raise ValueError(
+                f"LLM returned an empty answer (finish_reason={result.finish_reason or 'unset'!s})"
+            )
+        return result.content, result.finish_reason
+
+    async def complete_result(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+        *,
+        timeout: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> ChatResult:
+        """The answer as a :class:`ChatResult`. Raises ``httpx`` errors (status,
+        transport, timeout) and ``ValueError`` for a response with no choices;
+        an empty ``content`` is returned, not raised (see :class:`ChatResult`).
+        ``extra``: per-request top-level fields (e.g. ``seed``), merged after
+        :attr:`extra_body`."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -81,9 +132,10 @@ class OpenAILLM:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 **self.extra_body,
+                **(extra or {}),
             },
             headers=headers,
-            timeout=120.0,
+            timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
         )
         r.raise_for_status()
         # Don't trust the response shape: some OpenAI-compatible servers return no
@@ -91,21 +143,19 @@ class OpenAILLM:
         # tool_calls). Surface a clear error the caller can degrade on rather than
         # an IndexError / a None answer that fails response validation downstream.
         data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("LLM response is not a JSON object")
         choices = data.get("choices") or []
-        if not choices:
+        if not choices or not isinstance(choices[0], dict):
             raise ValueError("LLM response contained no choices")
         finish_reason = choices[0].get("finish_reason") or ""
-        content = (choices[0].get("message") or {}).get("content")
-        if not content:
-            # Read the reason FIRST so it can be named. `length` with an empty
-            # body is the worst truncation case — the model produced nothing
-            # usable because the ceiling was too low — and it used to surface as
-            # a generic failure, i.e. the one case the truncation signal most
-            # needed to describe was the one it could not reach.
-            raise ValueError(
-                f"LLM returned an empty answer (finish_reason={finish_reason or 'unset'!s})"
-            )
-        return content, finish_reason
+        message = choices[0].get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else None
+        reasoning = bool(isinstance(message, dict) and (
+            message.get("reasoning_content") or message.get("reasoning")))
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return ChatResult(content if isinstance(content, str) else "", str(finish_reason),
+                          dict(usage or {}), reasoning, str(data.get("model") or ""))
 
     async def complete_text(
         self, prompt: str, max_tokens: int = 512, temperature: float = 0.0

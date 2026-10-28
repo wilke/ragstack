@@ -18,8 +18,16 @@ Documents come from either
   ``start_char`` (what the backfill reads, so its key matches the backfill's).
 
 The cache key is ``sha256(document text)`` and the record's version is
-``llm/1:<model>:<prompt hash>``; a document already cached at this version is
-skipped, so a re-run is free and resumable.
+:func:`~ragstack.ingestion.symbol_glossary_llm.llm_version` (``llm/2:<model>:<prompt
+hash>:w..x..:t..:k<thinking>:r0``); a document already cached at this version
+is skipped, so a re-run is free and resumable.
+
+Superseded for workflows by ``scripts/glossary_step.py`` (#847 G2), which
+writes a recorded ``glossary.jsonl`` instead of a scratch cache, with the
+cut-off retry and the repair round. This script stays for the offline cache.
+``--timeout`` is the per-request timeout (it used to be overridden by a
+hard-coded 120 s in the client); ``--llm-thinking off`` (default) sends
+``chat_template_kwargs.enable_thinking=false``.
 
 The LLM endpoint and model default to ``LLM_ENDPOINT`` / ``LLM_MODEL`` from the
 environment (e.g. ``set -a; . /rag/data/tenants/dev/config/tenant.env``). A key,
@@ -85,7 +93,9 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
     if not endpoint or not model:
         raise SystemExit("set --llm-endpoint/--llm-model or LLM_ENDPOINT/LLM_MODEL")
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or None
-    version = llm_version(model, args.window_chars, args.max_windows, args.max_tokens)
+    thinking = args.llm_thinking == "on"
+    version = llm_version(model, args.window_chars, args.max_windows, args.max_tokens,
+                          thinking=thinking)
     config = config_from_json(args.config)
     cache = SymbolGlossaryCache(args.cache, writable=True)
     counts = {"documents": 0, "cached": 0, "cached_cut_off": 0, "extracted": 0, "failed": 0, "entries": 0,
@@ -95,7 +105,8 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
     log.info("LLM glossary %s at %s -> %s", version, endpoint, args.cache)
 
     async with httpx.AsyncClient(timeout=args.timeout) as http:
-        llm = OpenAILLM(endpoint, model, http, api_key=api_key)
+        llm = OpenAILLM(endpoint, model, http, api_key=api_key,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": thinking}})
 
         async def one(doc_id: str, text: str) -> None:
             key = content_key(text)
@@ -106,6 +117,7 @@ async def run(args: argparse.Namespace) -> dict[str, int]:
                         glossary, stats = await extract_with_llm(
                             llm, text, config=config, window_chars=args.window_chars,
                             max_windows=args.max_windows, max_tokens=args.max_tokens,
+                            thinking=thinking,
                         )
                         break
                     except Exception as e:  # noqa: BLE001 — one document never sinks the run
@@ -164,7 +176,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--window-chars", type=int, default=80_000)
     p.add_argument("--max-windows", type=int, default=4)
     p.add_argument("--max-tokens", type=int, default=2_048)
-    p.add_argument("--timeout", type=float, default=300.0)
+    p.add_argument("--timeout", type=float, default=300.0, help="per-request timeout, seconds")
+    p.add_argument("--llm-thinking", choices=["off", "on"], default="off",
+                   help="off sends chat_template_kwargs.enable_thinking=false (a reasoning "
+                        "model then answers into content); recorded in the version (:k0/:k1)")
     p.add_argument("--limit", type=int, default=0, help="extract at most N uncached documents")
     p.add_argument("--doc-id", action="append", help="only these doc ids (repeatable)")
     p.add_argument("--retry-truncated", action="store_true",

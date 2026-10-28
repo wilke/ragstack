@@ -7,9 +7,10 @@ makes the glossary a recorded artifact instead: a file produced once over a
 collection version's documents, kept beside ``chunks.jsonl.gz``, and rendered
 onto the chunks by the LOAD step. This module is that file's versioned
 contract — the format, a strict reader, a writer that writes only what the
-reader accepts, and the load-side checks. G2 adds the model step that produces
-such files; G1's producer is ``scripts/glossary_file.py build``, which converts
-what exists today (the rules, plus an optional offline LLM cache) into one.
+reader accepts, and the load-side checks. Producers: ``scripts/glossary_file.py
+build`` (G1), which converts what exists today (the rules, plus an optional
+offline LLM cache) into one, and the workflow step ``scripts/glossary_step.py``
+(G2), which runs the model itself.
 
 Format — newline-delimited JSON, UTF-8, one object per line, keys sorted:
 
@@ -44,7 +45,7 @@ under whatever that default is when it is read. Writers write every key.
      "provenance": {...},
      "degraded": null | "<reason>"}
 
-    GLOSSARY = {"version": "rules/3" | "llm/1:<model>:<hash>:w..x..:t..",
+    GLOSSARY = {"version": "rules/3" | "llm/<n>:<model>:<hash>:w..x..:t..[:k..:r..]",
                 "entries": [{"symbol": "<canonical key>",
                              "definitions": [{"text": "...", "offset": <int>}, ...]},
                             ...]}
@@ -67,12 +68,14 @@ under whatever that default is when it is read. Writers write every key.
   definitions in document order (offsets non-decreasing; the positional
   rendering bisects on them), every offset a raw character offset into the
   document text — the coordinates of ``Chunk.start_char``. ``merged`` is what
-  the load renders. In G1 it is the glossary today's attacher would use: the
-  re-validated LLM glossary when the cache holds the document, else the rules.
+  the load renders: :func:`choose_merged` — the LLM glossary when the row has
+  one, else the rules (today's attacher choice; both builders use it).
 * ``glossary_version`` repeats ``merged.version`` so a reader can filter rows
   without parsing the glossaries; a disagreement is refused.
-* ``drops``: entries dropped, by reason. ``{}`` where unknown (G1: only the
-  re-validation of a cached LLM glossary is known, as ``revalidation``).
+* ``drops``: entries dropped, by reason. ``{}`` where unknown. G1's builder
+  knows only the re-validation of a cached LLM glossary (``revalidation``);
+  the G2 step records the gate's reasons
+  (:data:`~ragstack.ingestion.symbol_glossary.GATE_REASONS`).
 * ``provenance``: free-form, recorded and never interpreted by the reader.
 * ``degraded``: ``null``, or why the document did not get its full glossary
   (G2: the endpoint failed and the rules stood in).
@@ -535,11 +538,59 @@ def build_row(doc_id: str, text: str, attacher: SymbolGlossaryAttacher) -> Gloss
             drops["revalidation"] = rejected
         provenance = {"source": "llm_cache", "config": "header",
                       "llm_cache_meta": attacher.cache.meta(key, version)}
-    # TODO(#847 G2): when merged becomes a union of rules and LLM entries, its
-    # version must still start with "llm/" whenever it holds an LLM entry — the
-    # backfill's replace guards key on that prefix.
     return GlossaryRow(doc_id, key, len(text), masked_key(text), rules, llm,
-                       llm if llm is not None else rules, drops, provenance, None)
+                       choose_merged(rules, llm), drops, provenance, None)
+
+
+def choose_merged(rules: Glossary, llm: Glossary | None) -> Glossary:
+    """The glossary a row renders: the LLM glossary when there is one (even an
+    empty one: the model found nothing the gate kept), else the rules — today's
+    attacher choice (:meth:`SymbolGlossaryAttacher.glossary_for`), kept by
+    owner decision for #847 G2. One function, so the builder and the workflow
+    step cannot drift.
+
+    The file keeps BOTH halves, so the choice can be re-decided later without
+    re-running the model. TODO(#847): a union of the two
+    (``symbol_glossary_llm.merged``) is a possible later change; if it lands,
+    its version string must still START with ``llm/`` whenever it holds an LLM
+    entry — the backfill's replace guards key on that prefix."""
+    return llm if llm is not None else rules
+
+
+# --- combining files -----------------------------------------------------------
+
+
+def merge_files(paths: Iterable[str | Path], out: str | Path) -> dict[str, int]:
+    """Concatenate glossary files (e.g. one per batch of a workflow run) into
+    one, written atomically at ``out``. Every input is read strictly. Refused
+    (:class:`GlossaryFileError`): no input, a ``doc_id`` in two inputs, inputs
+    whose ``config`` differs (one file renders under one config).
+
+    Deterministic: rows in input order, ``producer`` = ``merge(<the inputs'
+    distinct producers, sorted>)``, ``created`` = the latest input's — so the
+    same inputs give a byte-identical file (the archive's rule)."""
+    files = [read_glossary_file(p) for p in paths]
+    if not files:
+        raise GlossaryFileError("merge: no input files")
+    config = files[0].config
+    for f in files[1:]:
+        if f.config != config:
+            raise GlossaryFileError(
+                f"merge: {f.path} was built under a different config than {files[0].path} "
+                f"({config_dict(f.config)} != {config_dict(config)})")
+    seen: dict[str, Path] = {}
+    for f in files:
+        for doc_id in f.rows:
+            if doc_id in seen:
+                raise GlossaryFileError(
+                    f"merge: doc_id {doc_id!r} is in both {seen[doc_id]} and {f.path}")
+            seen[doc_id] = f.path
+    producers = sorted({f.header["producer"] for f in files})
+    created = max((f.header["created"] for f in files),
+                  key=lambda c: datetime.fromisoformat(c))
+    rows = (row for f in files for row in f.rows.values())
+    return write_glossary_file(out, rows, producer=f"merge({', '.join(producers)})",
+                               config=config, created=created)
 
 
 # --- the load-side check and render -------------------------------------------
@@ -645,6 +696,101 @@ def resolve_documents(
         assert row is not None
         res.glossaries[doc.doc_id] = row.stamped()
     return res
+
+
+def resolve_from_documents(gfile: GlossaryFile, docs: Iterable[Any]) -> Resolution:
+    """The DIRECT check, for a step that holds the documents themselves (the
+    coupled ``ingest_shard --glossary-file``): ``content_key(doc.content) ==
+    row.text_sha256`` or the document is a problem — ``missing`` (no row) or
+    ``mismatch``. Stronger than the reassembly check: nothing is
+    unverifiable. ``docs`` are :class:`~ragstack.models.Document` (``id`` +
+    ``content``). Pure: decides, writes nothing."""
+    res = Resolution()
+    for doc in docs:
+        row = gfile.rows.get(doc.id)
+        if row is None:
+            res.problems.append((doc.id, MISSING))
+        elif content_key(doc.content) != row.text_sha256:
+            res.problems.append((doc.id, MISMATCH))
+        else:
+            res.verified[VERIFIED] += 1
+            res.glossaries[doc.id] = row.stamped()
+    return res
+
+
+#: The receipt / batch error label when ``ingest_shard --glossary-file`` refuses
+#: a batch: the file has no row, or a mismatched row, for a loaded document.
+#: That can only be a tool or wiring bug (the step reads the same shard), so it
+#: is a batch-level error with its own exit code.
+GLOSSARY_FILE_MISMATCH = "glossary_file_mismatch"
+GLOSSARY_REFUSED_EXIT_CODE = 6
+
+
+def is_glossary_refusal(error: str | None) -> bool:
+    return bool(error) and str(error).startswith(GLOSSARY_FILE_MISMATCH)
+
+
+def format_glossary_refusal(res: Resolution, limit: int = 5) -> str:
+    by: dict[str, list[str]] = {}
+    for doc_id, kind in res.problems:
+        by.setdefault(kind, []).append(doc_id)
+    parts = [f"{kind}={len(ids)} (e.g. {', '.join(repr(i) for i in ids[:limit])})"
+             for kind, ids in sorted(by.items())]
+    return f"{GLOSSARY_FILE_MISMATCH}: {'; '.join(parts)}"
+
+
+class FileGlossaryAttacher:
+    """Renders chunks from a glossary file — the attacher the coupled ingest
+    (``ingest_shard --glossary-file``) hands its pipeline in place of a
+    :class:`SymbolGlossaryAttacher`. Same ``apply`` / ``provenance`` surface,
+    so ``IngestionPipeline._attach_glossary`` runs it after the boilerplate
+    filter, before the embed — the embedding file and the archive carry the
+    rendered field.
+
+    The caller checked every document against the file first
+    (:func:`resolve_from_documents`); ``apply`` checks the text identity again
+    on the documents it renders, and raises on a difference (the pipeline then
+    degrades the batch to no glossary and records it, never renders a
+    glossary at the wrong offsets)."""
+
+    def __init__(self, gfile: GlossaryFile) -> None:
+        self.gfile = gfile
+        self.config = gfile.config
+
+    def apply(self, documents: Iterable[Any], chunks: Iterable[Chunk]) -> Any:
+        from ragstack.ingestion.symbol_glossary import AttachResult
+
+        result = AttachResult()
+        by_doc: dict[str, list[Chunk]] = {}
+        for chunk in chunks:
+            by_doc.setdefault(chunk.doc_id, []).append(chunk)
+        glossaries: dict[str, Glossary] = {}
+        for doc in documents:
+            if doc.id not in by_doc:
+                continue
+            row = self.gfile.rows.get(doc.id)
+            if row is None or content_key(doc.content) != row.text_sha256:
+                raise GlossaryFileError(
+                    f"document {doc.id!r}: no matching row in {self.gfile.path}")
+            glossaries[doc.id] = row.stamped()
+            if row.llm is None:
+                result.docs_rules += 1
+            else:
+                result.docs_cached += 1
+            result.versions.add(row.glossary_version)
+            result.ambiguous_symbols += len(row.merged.ambiguous_symbols)
+        rendered = [c for doc_id in glossaries for c in by_doc[doc_id]]
+        result.chunks_with_glossary = render_chunks(rendered, glossaries, self.config)
+        return result
+
+    def provenance(self) -> dict[str, Any]:
+        h = self.gfile.header
+        return {"symbol_glossary": {
+            "source": "glossary_file", "path": str(self.gfile.path),
+            "sha256": file_sha256(self.gfile.path), "schema": h["schema"],
+            "producer": h["producer"], "created": h["created"], "counts": dict(h["counts"]),
+            "file_stamp": FILE_STAMP, "config": config_dict(self.config),
+        }}
 
 
 def file_sha256(path: str | Path) -> str:

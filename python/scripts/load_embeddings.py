@@ -16,14 +16,18 @@ this tool. Until then it loads at full rate (safe on an uncapped Qdrant).
 Idempotent: deterministic ids + upsert-only + per-doc delete-prior, so re-running
 (engine retry / resume) overwrites in place.
 
-**Chunk cap** (#291): a load into a USER-CREATED collection is bounded by the
-collection's chunk cap — the registry entry's ``max_chunks`` override, else
-``MAX_CHUNKS_PER_COLLECTION`` (50,000) when the entry records a creator
-(``owner``) who is not the backfill owner or an ``ADMIN_SUBJECTS`` entry. The
-invocation is the job: the files' header ``count`` values are summed, ONE live
-``count()`` is taken before the first file is read, and a load that would cross
-the cap is refused whole (exit 1, nothing written, the summary and stderr report
-``live``/``incoming``/``cap``/``would_fit`` under ``chunk_cap_exceeded``).
+**Chunk cap** (#291, #849): the cap is ``--max-chunks N`` (default 0 = off) —
+an INPUT, decided by whoever submits the load (the API for a user job, the
+operator for a bulk job), never derived here from the worker's settings. The
+registry entry's explicit ``max_chunks`` override still wins (``0`` = exempt):
+it is per-collection data the tool already resolves, not deployment policy.
+The invocation is the job: the files' header ``count`` values are summed, ONE
+live ``count()`` is taken before the first file is read, and a load that would
+cross the cap is refused whole (exit 1, nothing written, the summary and stderr
+report ``live``/``incoming``/``cap``/``would_fit`` under ``chunk_cap_exceeded``).
+Every summary — refused or not — and the manifest record the cap applied:
+``chunk_cap: {effective, source}``, ``source`` one of ``input`` /
+``registry_override`` / ``none`` (``effective`` 0 = unlimited).
 ``--replay`` is never capped: it restores what was already admitted.
 
 **Replay mode** (``--replay``, #358): instead of embedding files, an ORDERED list
@@ -90,7 +94,7 @@ import json
 import os
 import sys
 
-from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap, effective_chunk_cap
+from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.embedding_file import EmbeddingFileError, read_header
 from ragstack.ingestion.glossary_file import (
@@ -294,27 +298,27 @@ async def _replay(args, target) -> int:
     return 0
 
 
-def _chunk_cap_for(target) -> int | None:
-    """The cap this load is bounded by (``None`` = unlimited): the entry's
-    ``max_chunks`` override, else the deployment default for a user-created
-    entry. "User-created" here is decided from the spec-recorded creator and
-    settings alone (no ACL / user store in a CLI): a non-empty ``owner`` that is
-    neither the backfill owner nor an ``ADMIN_SUBJECTS`` entry. An admin whose
-    role comes only from a stored ``users.role`` grant is therefore capped on
-    this path unless the entry carries an override — the conservative side."""
-    if target is None:
-        return None
-    from ragstack.config import settings
+#: Where the cap a load applied came from (#849).
+CAP_FROM_INPUT, CAP_FROM_REGISTRY, CAP_NONE = "input", "registry_override", "none"
 
-    spec = target.spec
-    owner = getattr(spec, "owner", "") or ""
-    user_created = bool(owner) and owner != settings.acl_backfill_owner and (
-        owner not in set(settings.admin_subjects or ())
-    )
-    return effective_chunk_cap(
-        override=getattr(spec, "max_chunks", None), user_created=user_created,
-        default_cap=settings.max_chunks_per_collection,
-    )
+
+def _chunk_cap_for(args, target) -> tuple[int | None, dict]:
+    """The cap this load is bounded by (``None`` = unlimited) and its record
+    ``{"effective": N, "source": ...}`` (``effective`` 0 = unlimited).
+
+    Precedence (#849): the registry entry's explicit ``max_chunks`` override
+    (``0`` = exempt), else ``--max-chunks`` (0 = off). Nothing comes from the
+    worker's settings: who is capped, at what, is the submitter's policy —
+    the API derives it per job and passes it, as it does for ``ingest_shard``."""
+    spec = getattr(target, "spec", None) if target is not None else None
+    override = getattr(spec, "max_chunks", None)
+    if override is not None:
+        cap = int(override) if int(override) > 0 else None
+        return cap, {"effective": cap or 0, "source": CAP_FROM_REGISTRY}
+    flag = max(0, int(getattr(args, "max_chunks", 0) or 0))
+    if flag:
+        return flag, {"effective": flag, "source": CAP_FROM_INPUT}
+    return None, {"effective": 0, "source": CAP_NONE}
 
 
 def _file_chunk_count(path: str) -> int:
@@ -327,10 +331,12 @@ def _file_chunk_count(path: str) -> int:
         return max(0, sum(1 for line in fh if line.strip()) - 1)
 
 
-async def _refuse_over_cap(args, pipeline, cap: int | None) -> int | None:
+async def _refuse_over_cap(args, pipeline, cap: int | None, record: dict) -> int | None:
     """The bulk path's cap gate (#291): sum the files' header counts, take ONE
     live count, and refuse the whole invocation before the first file is read
-    when it would cross ``cap``. Returns an exit code on refusal, else None."""
+    when it would cross ``cap``. Returns an exit code on refusal, else None.
+    ``record`` is :func:`_chunk_cap_for`'s, merged into the refusal's
+    ``chunk_cap``."""
     if cap is None:
         return None
     incoming = sum(_file_chunk_count(f) for f in args.embeddings)
@@ -341,7 +347,7 @@ async def _refuse_over_cap(args, pipeline, cap: int | None) -> int | None:
         summary = {
             "n_shards": len(files), "n_shards_failed": len(files), "n_docs": 0,
             "n_chunks": 0, "failed_shards": sorted(files),
-            "errors": dict.fromkeys(files, str(e)), "chunk_cap": e.detail(),
+            "errors": dict.fromkeys(files, str(e)), "chunk_cap": {**e.detail(), **record},
         }
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, indent=2, sort_keys=True)
@@ -356,7 +362,8 @@ async def amain(args, target=None) -> int:
         return await _replay(args, target)
     pipeline = await _build_pipeline(args, target)
     # The chunk cap (#291): whole-invocation, one count, before the first read.
-    refused = await _refuse_over_cap(args, pipeline, _chunk_cap_for(target))
+    cap, cap_record = _chunk_cap_for(args, target)
+    refused = await _refuse_over_cap(args, pipeline, cap, cap_record)
     if refused is not None:
         return refused
     # Files hold disjoint document sets and chunk ids are deterministic, so
@@ -407,6 +414,8 @@ async def amain(args, target=None) -> int:
             await tindex.refresh()
             print("refresh_interval restored + index refreshed", flush=True)
     summary = merge_summary(receipts)
+    # #849: the cap this load applied, recorded whether or not it bit.
+    summary["chunk_cap"] = cap_record
     if glossary is not None:
         # #847 G1: which file every chunk's glossary field was rendered from.
         summary["glossary_file"] = glossary.provenance
@@ -423,6 +432,7 @@ async def amain(args, target=None) -> int:
             manifest_dir,
             corpus=f"{summary['n_shards']} embedding file(s)",
             chunk_count=summary["n_chunks"],
+            limits={"chunk_cap": cap_record},
             # #847 G1: the hash-excluded enrichment record (ADR-0011) names
             # the glossary file; absent without --glossary-file, as before.
             **({"enrichment": {"symbol_glossary": {"source": "glossary_file",
@@ -455,6 +465,13 @@ def parse_args(argv=None):
     p.add_argument("--out", default="load-summary.json", help="output summary path")
     p.add_argument("--tenant", default=None,
                    help="override tenant (default: each file's header tenant)")
+    p.add_argument("--max-chunks", type=int, default=0,
+                   help="per-collection chunk cap (#291, #849): refuse this load, whole, "
+                        "when the collection's live chunk count plus the files' chunks "
+                        "would exceed N (one count, before any write; exit 1). 0 (default) "
+                        "= off. The registry entry's explicit max_chunks override wins "
+                        "(0 = exempt). Nothing is derived from this worker's settings: the "
+                        "submitter (the API, or the operator) decides the cap")
     p.add_argument("--fail-on-error", action="store_true",
                    help="exit non-zero if any file failed to load")
     p.add_argument("--backpressure", action="store_true",

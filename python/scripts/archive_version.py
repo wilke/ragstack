@@ -11,7 +11,8 @@ Two modes, mutually exclusive:
 
 * **chunk version** — ``--chunks <emb.jsonl...> --receipt <receipt.json...>``
   writes ``chunks.jsonl.gz`` + ``vectors.f32`` + ``receipt.json`` +
-  ``manifest.json``;
+  ``manifest.json`` (+ ``glossary.jsonl`` with ``--glossary-file``, #847 G2:
+  the glossary step's per-batch files merged; role ``glossary``);
   When the embedding files hold NO chunk at all (every document of the run
   failed on its own — all duplicates, all scanned) there is nothing to
   archive: the tool exits ``NOTHING_TO_ARCHIVE_EXIT_CODE`` (5) and prints
@@ -103,6 +104,10 @@ def parse_args(argv=None):
     p.add_argument("--receipt", nargs="+", default=[], metavar="RECEIPT_JSON",
                    help="the load stage's receipt(s): one is copied verbatim, several are "
                         "written as a JSON array")
+    p.add_argument("--glossary-file", nargs="+", default=[], metavar="GLOSSARY_JSONL",
+                   help="#847: the glossary step's file(s) for this version's documents; "
+                        "merged into glossary.jsonl (role 'glossary'). A doc_id in two "
+                        "files, or files built under different configs, refuses (exit 1)")
     p.add_argument("--tombstone", default=None, metavar="DOC_IDS_JSON",
                    help="tombstone mode: JSON list of removed doc ids (no chunks/receipt)")
     p.add_argument("--out", default=".", help="parent directory for <N>/ (default: cwd)")
@@ -118,8 +123,8 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if args.tombstone and (args.chunks or args.receipt):
-        raise SystemExit("--tombstone is exclusive with --chunks/--receipt")
+    if args.tombstone and (args.chunks or args.receipt or args.glossary_file):
+        raise SystemExit("--tombstone is exclusive with --chunks/--receipt/--glossary-file")
     if not args.tombstone and not (args.chunks and args.receipt):
         raise SystemExit("need --chunks and --receipt (chunk version) or --tombstone")
     # ADR-0010 decision 8: what built this version — the submission inputs the
@@ -137,7 +142,7 @@ def main(argv=None) -> int:
                 args.out, args.version, args.chunks, args.receipt,
                 collection_id=args.collection_id, tenant=args.tenant,
                 spec_hash=args.spec_hash, job_id=args.job_id, workers=args.workers,
-                provenance=provenance,
+                provenance=provenance, glossary_paths=args.glossary_file,
             )
     except EmptyVersionError as e:
         # Every document of the run failed on its own (#768): all refused as

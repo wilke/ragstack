@@ -57,6 +57,14 @@ from ragstack.ingestion.chunker_config import (
 from ragstack.ingestion.chunkers import semantic_chunking_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
+from ragstack.ingestion.glossary_file import (
+    GLOSSARY_REFUSED_EXIT_CODE,
+    FileGlossaryAttacher,
+    GlossaryFile,
+    GlossaryFileError,
+    is_glossary_refusal,
+    read_glossary_file,
+)
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
@@ -268,15 +276,51 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
                              # --symbol-glossary off). The glossary is its own
                              # BM25 field: content, the embedded text and the
                              # chunk ids are unchanged either way.
-                             glossary_attacher=attacher_from_mode(
-                                 args.symbol_glossary, args.symbol_glossary_config,
-                                 args.symbol_glossary_cache),
+                             # #847 G2: with --glossary-file the chunks are
+                             # rendered from the glossary step's file instead
+                             # (_glossary_attacher; off still means off).
+                             glossary_attacher=_glossary_attacher(args),
                              # #828: section/role/block metadata on the chunks of
                              # documents whose record carries a `structure` key.
                              # Payload only (not collection identity). getattr:
                              # hand-built Namespaces in tests predate the flag.
                              structure_metadata=structure_metadata_enabled(
                                  getattr(args, "structure_metadata", "off")))
+
+
+def _glossary_attacher(args):
+    """The pipeline's glossary step: ``None`` when ``--symbol-glossary off``
+    (a file is then ignored), the file's renderer when ``--glossary-file`` was
+    read (``args.glossary``, by :func:`main`), else today's rules attacher."""
+    if args.symbol_glossary == "off":
+        return None
+    gfile = getattr(args, "glossary", None)
+    if gfile is not None:
+        return FileGlossaryAttacher(gfile)
+    return attacher_from_mode(args.symbol_glossary, args.symbol_glossary_config,
+                              args.symbol_glossary_cache)
+
+
+def _read_glossary_file(args) -> GlossaryFile | None:
+    """``--glossary-file``, read strictly — or ``None``. Exit 2 (a
+    configuration refusal, before any store or embedder is touched) on an
+    unreadable file or on a flag it does not combine with: the file carries
+    its own config, and a cache would be a second LLM source."""
+    if not args.glossary_file:
+        return None
+    if args.symbol_glossary == "off":
+        print("[ingest_shard] --symbol-glossary off: --glossary-file ignored", file=sys.stderr)
+        return None
+    if args.symbol_glossary_config or args.symbol_glossary_cache:
+        print("error: --glossary-file carries its own config and LLM half; it does not "
+              "combine with --symbol-glossary-config / --symbol-glossary-cache",
+              file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    try:
+        return read_glossary_file(args.glossary_file)
+    except (GlossaryFileError, OSError) as e:
+        print(f"error: --glossary-file: {e}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
 
 
 def _build_bridge(args) -> SyncEmbedBridge:
@@ -319,7 +363,8 @@ async def amain(args, target=None) -> int:
                                       embedding_file=args.embedding_file or None,
                                       report=report, max_chunks=max(0, args.max_chunks),
                                       duplicate_policy=getattr(args, "duplicate_policy",
-                                                               POLICY_OFF))
+                                                               POLICY_OFF),
+                                      glossary=getattr(args, "glossary", None))
     finally:
         if bridge is not None:
             # close() can raise RuntimeError of its own: after thread.join(5.0)
@@ -376,6 +421,11 @@ async def amain(args, target=None) -> int:
         # the first part of stderr on the submission's error record).
         print(receipt.error, file=sys.stderr, flush=True)
         return CAP_REFUSED_EXIT_CODE
+    if is_glossary_refusal(receipt.error):
+        # #847 G2: the glossary file does not match the batch — a tool or
+        # wiring bug, never data. Its own exit code, the line on stderr.
+        print(receipt.error, file=sys.stderr, flush=True)
+        return GLOSSARY_REFUSED_EXIT_CODE
     return 0 if receipt.status == COMPLETED else 1
 
 
@@ -436,6 +486,13 @@ def parse_args(argv=None):
                    help="JSON object overriding GlossaryConfig")
     p.add_argument("--symbol-glossary-cache", default="",
                    help="offline LLM glossary cache (scripts/symbol_glossary_llm.py), read-only")
+    p.add_argument("--glossary-file", default="",
+                   help="#847: render every chunk's symbol_glossary field from this "
+                        "glossary.jsonl (scripts/glossary_step.py over THIS shard) instead "
+                        "of extracting it here. Every loaded document is checked against "
+                        "the file before any embed; a missing or mismatched row refuses "
+                        f"the batch (exit {GLOSSARY_REFUSED_EXIT_CODE}). Ignored with "
+                        "--symbol-glossary off")
     p.add_argument("--chunk-method", default="fixed_token")
     # Breakpoint-embed fan-out, semantic methods only. These change REQUEST
     # GRANULARITY, not vectors: the bridge re-concatenates sub-batch results in
@@ -491,6 +548,8 @@ def main(argv=None) -> int:
     # #828 §6: a missing [markdown] extra with --structure-metadata on is a
     # refusal at configuration (exit 2), never a shard ingested unstructured.
     require_structure_backends_or_exit(args.structure_metadata)
+    # #847 G2: read (strictly) before anything is resolved, embedded or written.
+    args.glossary = _read_glossary_file(args)
     # Resolve the registry entry before embedding or writing anything (#263). The
     # in-memory backend owns no physical store, so it has nothing to register.
     target = (

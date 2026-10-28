@@ -148,10 +148,13 @@ class IngestTarget:
         corpus: str = "",
         chunk_count: int | None = None,
         enrichment: dict[str, Any] | None = None,
+        limits: dict[str, Any] | None = None,
     ) -> str:
         """Record verified provenance for this store, arming ADR-0002's guard.
         ``enrichment`` is the manifest's hash-excluded step record (ADR-0011),
-        e.g. the glossary file a load rendered from (#847).
+        e.g. the glossary file a load rendered from (#847). ``limits`` is the
+        hash-excluded record of the limits the writing step applied, e.g. the
+        load's ``chunk_cap`` (#849).
 
         Written from the **registry entry**, so a store built by the bulk path
         and one built by the API are described identically — and so a later API
@@ -176,6 +179,7 @@ class IngestTarget:
             corpus=corpus,
             chunk_count=chunk_count,
             enrichment=enrichment,
+            limits=limits,
         )
         write_manifest(manifest_dir, manifest)
         return manifest.spec_hash

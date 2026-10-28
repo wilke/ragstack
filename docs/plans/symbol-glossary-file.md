@@ -6,10 +6,14 @@ from a file on two paths:
 - the bulk load (`load_embeddings.py --glossary-file`);
 - the Elasticsearch-only re-attach (`backfill_symbol_glossary.py --glossary-file`).
 
-G2 (the model step that produces the file inside a workflow) and G3 (the ADR-0011
-amendment and the migration note) are not built yet. No CWL or tools image takes the
-new flags yet. Under ADR-0010 decision 4, no CWL declares a flag before its image
-carries it.
+G2a (the step as a tool, not yet wired) is built: `scripts/glossary_step.py` writes
+the file from a shard, rules plus an optional bounded LLM pass with per-document
+degrade; `ingest_shard.py --glossary-file` renders from it on the coupled path;
+`archive_version.py --glossary-file` packs it into the version (role `glossary`); and
+`glossary_file.py merge` combines per-batch files. G2b (the CWL wiring and the API
+inputs) waits for the tools-image repin, and G3 (the ADR-0011 amendment and the
+migration note) is not built yet. Under ADR-0010 decision 4, no CWL declares a flag
+before its image carries it.
 
 Background: [symbol-glossary.md](symbol-glossary.md) describes the glossary itself (#754).
 Issue #847 describes the design.

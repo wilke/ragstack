@@ -107,12 +107,17 @@ class CollectionManifest(BaseModel):
     #: this record folds into ``core.activity.params`` of the ingest activity and
     #: this field goes away; readers should not build on it beyond that.
     enrichment: dict[str, Any] = Field(default_factory=dict)
+    #: The limits the writing step applied (#849), e.g. a bulk load's
+    #: ``{"chunk_cap": {"effective": N, "source": "input"|"registry_override"|"none"}}``.
+    #: Hash-excluded like ``enrichment``, and omitted from dumps when empty.
+    limits: dict[str, Any] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
     def _omit_empty_enrichment(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         data = handler(self)
-        if not data.get("enrichment"):
-            data.pop("enrichment", None)
+        for key in ("enrichment", "limits"):
+            if not data.get(key):
+                data.pop(key, None)
         return data  # type: ignore[no-any-return]
 
 
@@ -132,6 +137,7 @@ def make_ingest_manifest(
     ragstack_version: str = "",
     source: str = "ingest",
     enrichment: dict[str, Any] | None = None,
+    limits: dict[str, Any] | None = None,
 ) -> CollectionManifest:
     """Build a verified manifest for a just-ingested collection, stamped with the
     current time and the build spec's content hash. The single constructor shared
@@ -157,6 +163,7 @@ def make_ingest_manifest(
         ragstack_version=ragstack_version,
         source=source,
         enrichment=dict(enrichment or {}),
+        limits=dict(limits or {}),
     )
 
 
