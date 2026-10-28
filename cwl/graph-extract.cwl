@@ -148,8 +148,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.16-b1.sif
-          dockerImageId: ragstack-tools-v1.6.16-b1.sif
+          dockerPull: ragstack-tools-v1.6.18-b1.sif
+          dockerImageId: ragstack-tools-v1.6.18-b1.sif
         NetworkAccess:
           networkAccess: true
       permanentFailCodes: [3, 4]
@@ -231,8 +231,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.16-b1.sif
-          dockerImageId: ragstack-tools-v1.6.16-b1.sif
+          dockerPull: ragstack-tools-v1.6.18-b1.sif
+          dockerImageId: ragstack-tools-v1.6.18-b1.sif
         NetworkAccess:
           networkAccess: true
       # 3 = the leg failed verification (permanent); 4 = the graph budget
