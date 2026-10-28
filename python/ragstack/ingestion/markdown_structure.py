@@ -80,11 +80,33 @@ class MarkdownBackendMissing(ImportError):
     """The ``[markdown]`` extra is not installed."""
 
 
+#: Parsed once, inside the lock, before the parser is published: it touches
+#: every rule chain the configuration enables (core; block incl. front matter,
+#: heading, setext, list, quote, fence, indented code, table, math block, html;
+#: inline incl. emphasis, code, link, image, autolink, html, math inline; the
+#: inline post-processors), so each ``Ruler`` has compiled its cache.
+_WARM_UP = (
+    "---\nk: v\n---\n"
+    "# a *b* `c` [l](u) ![i](p) <http://x> <kbd>k</kbd> $m$ &amp; \\*\n\n"
+    "Setext\n===\n\n"
+    "- d\n- e\n\n1. f\n\n> g\n\n```\nh\n```\n\n    i\n\n"
+    "| f | g |\n|---|---|\n| h | i |\n\n"
+    "$$\nh\n$$\n\n<div>j</div>\n\n---\n\n[r]: http://y\n"
+)
+
+
 def _parser() -> MarkdownIt:
     """The one configured parser, built on first use. Raises
-    :class:`MarkdownBackendMissing` when the extra is absent. ``MarkdownIt.parse``
-    builds a fresh state per call and does not mutate the instance, so one
-    instance serves concurrent worker threads."""
+    :class:`MarkdownBackendMissing` when the extra is absent.
+
+    Thread safety: ``MarkdownIt.parse`` builds a fresh state per call, but each
+    ``Ruler`` compiles its rule chains LAZILY on first use, publishing an empty
+    cache dict before filling it — a concurrent first parse can see an empty or
+    partial chain and return a silently wrong token stream (which the validator
+    would accept). So the parser is built into a local, warmed with a parse that
+    compiles every ruler, and only then published, all under the lock. After
+    that nothing mutates it (``enable``/``disable``/``use`` are never called
+    again), so one instance serves concurrent worker threads."""
     global _parser_cache
     with _lock:
         if _parser_cache is None:
@@ -94,12 +116,18 @@ def _parser() -> MarkdownIt:
                 from mdit_py_plugins.front_matter import front_matter_plugin
             except ImportError as e:
                 raise MarkdownBackendMissing(str(e)) from e
-            _parser_cache = (
+            parser = (
                 MarkdownIt("commonmark")
                 .enable("table")
                 .use(front_matter_plugin)
-                .use(dollarmath_plugin)
+                # allow_blank_lines=False: with the plugin's default (True), a
+                # line opening with `$$` that does not close on that line runs
+                # across blank lines to the next line ending in `$$`, turning
+                # every heading in between into "math" (review of #843).
+                .use(dollarmath_plugin, allow_blank_lines=False)
             )
+            parser.parse(_WARM_UP)
+            _parser_cache = parser
         return _parser_cache
 
 
@@ -193,8 +221,12 @@ def _plain(children: Sequence[Token] | None, *, first_line: bool = False) -> str
 
 
 def _title(inline: Token, *, first_line: bool) -> str | None:
-    title = _plain(inline.children, first_line=first_line).strip()
-    return title or None
+    title = _plain(inline.children, first_line=first_line)
+    if first_line:
+        # An inline span (code, maths) can cross the line break with no
+        # softbreak token between; the first-line rule still holds.
+        title = title.split("\n", 1)[0]
+    return title.strip() or None
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +237,7 @@ def _atx_block(lines: _Lines, line: int, raw: str) -> tuple[int, int] | None:
     """The title-only span of an ATX heading: ``raw`` (the parser's inline
     content, already without markup around it) located after the ``#`` run."""
     off, text = lines.text(line)
+    text = text.replace("\x00", "\ufffd")  # the parser's NUL rule; 1:1, columns kept
     i = len(text) - len(text.lstrip(" \t"))
     while i < len(text) and text[i] == "#":
         i += 1
@@ -220,6 +253,7 @@ def _atx_block(lines: _Lines, line: int, raw: str) -> tuple[int, int] | None:
 def _setext_block(lines: _Lines, line: int, inline: Token) -> tuple[int, int] | None:
     """The span of a setext heading's FIRST line's text (the title rule)."""
     off, text = lines.text(line)
+    text = text.replace("\x00", "\ufffd")  # the parser's NUL rule; 1:1, columns kept
     start = len(text) - len(text.lstrip())
     body = text.strip()
     kids = inline.children or []
@@ -396,7 +430,10 @@ def _sections(content: str, heads: list[tuple[int, int, str | None, int]]) -> li
     n = len(content)
     raw: list[dict[str, Any]] = []
     first = heads[0][0] if heads else n
-    if not heads or content[:first].lstrip(_BOM).strip():
+    # CommonMark blank = spaces and tabs (plus terminators): a form feed or a
+    # Unicode space before the first heading is TEXT the parser puts in a
+    # paragraph, so it needs its untitled section (str.strip() would drop it).
+    if not heads or content[:first].lstrip(_BOM).strip(" \t\r\n"):
         raw.append({"start": 0, "end": first, "rank": None, "title": None,
                     "depth": 1, "path": [], "line": 0})
     stack: list[dict[str, Any]] = []

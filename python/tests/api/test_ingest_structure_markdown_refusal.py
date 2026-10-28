@@ -95,3 +95,20 @@ async def test_per_collection_ingest_is_503_when_the_extra_is_missing(
     r = await client.post("/v1/ingest", json={"source": str(_md(tmp_path)),
                                               "collection": "mdcol"})
     assert r.status_code == 200, r.text
+
+
+def test_boot_warns_when_the_step_is_on_and_the_extra_is_missing(monkeypatch, caplog) -> None:
+    """Surfaced at boot (WARNING), not only on the first ingest's 503."""
+    import logging
+
+    from ragstack.api import deps
+
+    hide_markdown_extra(monkeypatch)
+    monkeypatch.setattr(settings, "structure_metadata", "on")
+    with caplog.at_level(logging.WARNING, logger=deps.log.name):
+        deps._warn_missing_structure_backend()
+    assert any("[markdown]" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    monkeypatch.setattr(settings, "structure_metadata", "off")
+    deps._warn_missing_structure_backend()
+    assert not caplog.records

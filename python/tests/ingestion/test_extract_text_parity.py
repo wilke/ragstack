@@ -76,13 +76,16 @@ _MARKDOWN = (
     "- item one\n"
     "  1. nested <kbd>Ctrl</kbd>\n"
     "\n"
+    "$$E = mc^2$$ and $x_i$\n"
+    "<!-- an html comment -->\n"
+    "<details><summary>More</summary>hidden body</details>\n"
     # #828 PR 2: what the structure adapter must parse, not pattern-match —
     # setext headings, a `#` line inside a fence, a thematic break that is not
     # a setext underline, image-only paragraphs with captions, `$$` block maths
-    # and an ATX heading with a closing sequence. BEFORE the `$$E…$$ and $x_i$`
-    # line below: that line opens a dollarmath block that runs to the next line
-    # ending in `$$` (the plugin's rule), so a `$$` block after it would be
-    # swallowed into it.
+    # and an ATX heading with a closing sequence. The `$$` block sits AFTER the
+    # `$$E = mc^2$$ and $x_i$` line on purpose: with dollarmath's default
+    # allow_blank_lines=True that line opened a math block running to the next
+    # line ending in `$$`, swallowing every heading in between (review of #843).
     "\n"
     "Setext title\n"
     "============\n"
@@ -112,9 +115,6 @@ _MARKDOWN = (
     "\n"
     "Closing text.\n"
     "\n"
-    "$$E = mc^2$$ and $x_i$\n"
-    "<!-- an html comment -->\n"
-    "<details><summary>More</summary>hidden body</details>\n"
 )
 
 _TEXT = (

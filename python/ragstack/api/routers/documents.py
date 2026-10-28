@@ -499,6 +499,7 @@ def _refuse_missing_structure_backend(ingestor: Any) -> None:
     the token-counter refusal (operator-only, so no Retry-After). The GoWe
     path does not parse here: its tools image refuses at configuration."""
     pipeline = getattr(ingestor, "_pipeline", None)
+    # No `_pipeline` (a duck-typed test ingestor) means no structure step to run.
     if not getattr(pipeline, "structure_metadata", False):
         return
     try:

@@ -13,6 +13,9 @@ needs no parser).
 from __future__ import annotations
 
 import random
+import sys
+import threading
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -88,8 +91,8 @@ FIXTURE_HEADING_TEXT = [
 ]
 FIXTURE_BLOCK_KINDS = [
     "front_matter", "heading", "prose", "heading", "prose", "code", "code", "table",
-    "quote", "list", "heading", "prose", "code", "heading", "figure_caption", "figure",
-    "figure", "figure_caption", "math", "prose", "heading", "prose", "prose", "prose",
+    "quote", "list", "prose", "prose", "prose", "heading", "prose", "code", "heading",
+    "figure_caption", "figure", "figure", "figure_caption", "math", "prose", "heading",
     "prose",
 ]
 
@@ -440,3 +443,113 @@ def test_random_markdown_gives_a_valid_structure_with_exact_titles(seed) -> None
     assert _headings(text, s) == [raw for _t, raw, _r in heads]
     classify_roles(s.sections)
     validate_structure(s, text, require_roles=True)
+
+
+# --------------------------------------------------------------------------- #
+# Review of #843
+# --------------------------------------------------------------------------- #
+
+def test_an_unclosed_dollar_line_does_not_swallow_headings_across_blank_lines() -> None:
+    """MUTATION: dollarmath's default ``allow_blank_lines=True`` → the
+    ``$$E…`` line opens a math block running to the closing ``$$`` line, and
+    the heading between is gone (one untitled section, one math block)."""
+    text = "$$E = mc^2$$ and text\n\n# Heading\n\ntext\n\n$$\na\n$$\n"
+    s = _build(text)
+    assert _outline(s) == [(None, 1, None), ("Heading", 1, 1)]
+    assert [(b.kind, text[b.start:b.end]) for b in s.blocks] == [
+        ("prose", "$$E = mc^2$$ and text\n"), ("heading", "Heading"), ("prose", "text\n"),
+        ("math", "$$\na\n$$\n")]
+
+
+@pytest.mark.parametrize("text, outline", [
+    # A space-only line is CommonMark-blank: no preamble.
+    (" \n# Title\n\nBody\n", [("Title", 1, 1)]),
+    # A form feed is not blank to CommonMark: it is a paragraph, so it needs
+    # its own untitled section (else the heading is not its section's first
+    # block and the whole structure is refused).
+    ("\x0c\n# Title\n", [(None, 1, None), ("Title", 1, 1)]),
+    ("\u00a0\n# Title\n", [(None, 1, None), ("Title", 1, 1)]),
+])
+def test_the_preamble_rule_uses_commonmark_blankness(text, outline) -> None:
+    """MUTATION: ``str.strip()`` (Unicode whitespace) for the preamble test →
+    the form-feed / NBSP cases lose their preamble → invariant 5 → fails."""
+    assert _outline(_build(text)) == outline
+
+
+def test_a_setext_title_stops_at_the_first_line_inside_an_inline_span() -> None:
+    """``$y\nx$`` is one math_inline token spanning the line break, so no
+    softbreak marks the end of the first line. MUTATION: no split → the title
+    is ``'a y\nx b'``."""
+    text = "a $y\nx$ b\n===\n"
+    s = _build(text)
+    assert [x.title for x in s.sections] == ["a y"]
+    assert _headings(text, s) == ["a $y"]
+
+
+@pytest.mark.parametrize("text", ["# T\x00x\n\nb\n", "T\x00x\n===\n"])
+def test_a_nul_in_a_heading_keeps_the_structure(text) -> None:
+    """The parser reads NUL as U+FFFD (1:1, so columns hold); the heading-span
+    check compares against the same replacement. The title is the PARSE's text
+    (``U+FFFD``); the block covers the raw source. MUTATION: compare against
+    the raw line → ValueError → the structure is dropped → fails."""
+    s = _build(text)
+    assert [x.title for x in s.sections] == ["T\ufffdx"]
+    assert _headings(text, s) == ["T\x00x"]
+
+
+def test_concurrent_first_use_of_a_fresh_parser_gives_identical_structures(
+    monkeypatch,
+) -> None:
+    """``Ruler`` compiles its chains lazily and publishes an empty cache before
+    filling it, so a concurrent FIRST parse could see an empty or partial chain
+    and return a silently wrong (but valid) structure. The parser is warmed
+    inside the lock before it is published. MUTATION: publish before warming
+    (or drop the warm-up) → wrong structures at a high rate under this test's
+    slowed compile and tiny switch interval."""
+    from markdown_it import ruler as ruler_mod
+
+    text = ("# Title\n\nBody *x* `y` [l](u).\n\n## Sub\n\n- a\n- b\n\n```\n# c\n```\n\n"
+            "> q\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n$$\nm\n$$\n")
+    doc = _doc(text)
+    md.reset_parser()
+    expected = md.markdown_structure(doc)
+    assert expected is not None
+    expected_dump = expected.model_dump()
+
+    real_compile = ruler_mod.Ruler.__compile__
+
+    def slow_compile(self):  # noqa: ANN001
+        # markdown-it publishes an empty cache dict, then fills it. Hold that
+        # window open so a concurrent getRules() would see it.
+        self.__cache__ = {}
+        time.sleep(0.002)
+        real_compile(self)
+
+    monkeypatch.setattr(ruler_mod.Ruler, "__compile__", slow_compile)
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    wrong = 0
+    try:
+        for _ in range(40):
+            md.reset_parser()
+            results: list[object] = [None] * 8
+            barrier = threading.Barrier(8)
+
+            def run(i: int, barrier=barrier, results=results) -> None:  # noqa: ANN001
+                barrier.wait()
+                try:
+                    r = md.markdown_structure(doc)
+                    results[i] = r.model_dump() if r is not None else None
+                except Exception as e:  # noqa: BLE001
+                    results[i] = f"{type(e).__name__}: {e}"
+
+            threads = [threading.Thread(target=run, args=(i,)) for i in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            wrong += sum(r != expected_dump for r in results)
+    finally:
+        sys.setswitchinterval(old_interval)
+        md.reset_parser()
+    assert wrong == 0

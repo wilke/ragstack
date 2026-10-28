@@ -107,7 +107,7 @@ markdown = [
     # change, and `enrichment.structure.backend` records the versions that ran.
     # NEITHER image def installs this extra yet (see the #828 PR 2 body).
     "markdown-it-py>=4.0,<5",
-    "mdit-py-plugins>=0.5,<0.7",
+    "mdit-py-plugins>=0.6,<0.7",
 ]
 tokenization = [
     # transformers.AutoTokenizer is the default token counter (HFTokenCounter):
