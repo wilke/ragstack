@@ -322,3 +322,71 @@ def test_embed_shard_stamps_the_embedding_file(tmp_path, monkeypatch) -> None:
     chunk_rows = [x for x in lines if "metadata" in x]
     assert chunk_rows and all("structure_version" in x["metadata"] for x in chunk_rows)
     assert ShardReceipt.load(receipt).enrichment["structure"]["adapters"] == {"test/1": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Counters: mutated on the loop thread only (review of #839)
+# --------------------------------------------------------------------------- #
+#
+# stamp_documents runs in a worker thread (asyncio.to_thread). If it counted
+# straight into the pipeline's shared Counter, a concurrent job's
+# structure_provenance() — Counter.__sub__, which iterates it — could see a key
+# inserted mid-iteration: "dictionary changed size during iteration". So each
+# thread counts into a local Counter that the loop thread merges afterwards.
+
+
+async def test_pipeline_stamp_thread_never_touches_the_shared_counter(
+    tmp_path, monkeypatch
+) -> None:
+    """MUTATION: hand ``self.structure_counts`` to the thread again → the
+    identity assertion fails."""
+    from ragstack.ingestion import pipeline as pipeline_mod
+    from ragstack.ingestion import structure as structure_mod
+
+    content, structure = paper()
+    shard = tmp_path / "s.jsonl"
+    write_shard(shard, [record(content, structure)])
+    for run in ("prepare", "iter"):
+        pipe = _pipeline()
+        seen: list[bool] = []
+
+        def spy(documents, chunks, counts, _pipe=pipe, _seen=seen):
+            before = dict(_pipe.structure_counts)
+            _seen.append(counts is not _pipe.structure_counts)
+            structure_mod.stamp_documents(documents, chunks, counts)
+            # The shared counter is still untouched while the thread runs.
+            assert dict(_pipe.structure_counts) == before
+            assert counts["chunks_stamped"] > 0
+
+        monkeypatch.setattr(pipeline_mod, "stamp_documents", spy)
+        if run == "prepare":
+            await pipe.prepare_source(str(shard))
+        else:
+            async for _ in pipe.iter_embed_source(str(shard)):
+                pass
+        assert seen and all(seen), run
+        # ... and the loop thread merged it afterwards.
+        assert pipe.structure_counts["chunks_stamped"] > 0, run
+        assert pipe.structure_provenance()["structure"]["adapters"] == {"test/1": 1}
+
+
+async def test_ingest_jsonl_stamp_thread_counts_locally(tmp_path, monkeypatch) -> None:
+    from ragstack.ingestion import structure as structure_mod
+
+    content, structure = paper()
+    shard = tmp_path / "s.jsonl"
+    write_shard(shard, [record(content, structure),
+                        record(content, structure, path="/corpus/second.pdf")])
+    received: list[object] = []
+
+    def spy(documents, chunks, counts):
+        received.append(counts)
+        structure_mod.stamp_documents(documents, chunks, counts)
+
+    monkeypatch.setattr(ingest_jsonl, "stamp_documents", spy)
+    chunks, _ = await _via_ingest_jsonl(shard, tmp_path, monkeypatch, tag="spy")
+    assert len(received) == 2
+    # A fresh local Counter per document, never one shared across threads.
+    assert received[0] is not received[1]
+    assert all(sum(c.values()) for c in received)  # type: ignore[attr-defined]
+    assert any("structure_version" in c.metadata for c in chunks)

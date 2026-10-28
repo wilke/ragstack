@@ -962,12 +962,16 @@ async def run(
                     )
                 else:
                     chunks = await asyncio.to_thread(chunker.chunk, doc)
-            # #828: stamp BEFORE the boilerplate filter (the pipeline's order)
-            # and AFTER the segmentation cache, so a cached segmentation stays a
-            # pure function of the chunker config.
-            if structure_on and chunks:
-                # Off the event loop, as in the pipeline (the record is input).
-                await asyncio.to_thread(stamp_documents, [doc], chunks, structure_counts)
+                # #828: stamp BEFORE the boilerplate filter (the pipeline's
+                # order) and AFTER the segmentation cache, so a cached
+                # segmentation stays a pure function of the chunker config.
+                # Inside the semaphore, so CPU-bound stamping is bounded by
+                # --chunk-concurrency too; off the loop, into a LOCAL Counter
+                # merged on the loop thread (the pipeline's rule).
+                if structure_on and chunks:
+                    local: Counter[str] = Counter()
+                    await asyncio.to_thread(stamp_documents, [doc], chunks, local)
+                    structure_counts.update(local)
             # Chunk-level boilerplate flag/drop, per document — which is also the
             # granularity BoilerplateFilter's all-boilerplate guard needs. Counted
             # into `stats` (and reported in --run-metrics-out and the final line)

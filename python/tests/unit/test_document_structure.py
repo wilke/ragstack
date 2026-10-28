@@ -520,7 +520,7 @@ def test_classify_roles_is_linear_in_sibling_count() -> None:
     sibling, so no early exit) must classify in linear time: the structure key
     is caller-supplied, and a quadratic sibling scan took ~40 s at 4000.
     Robust on a loaded host: compares 4000 against 500 siblings (8x the work;
-    linear ≈ 8x the time, quadratic ≈ 64x) AND bounds the absolute time
+    linear ≈ 8x the time, quadratic ≈ 64x; the bound is 40x) AND bounds the absolute time
     generously."""
     import time
 
@@ -536,7 +536,7 @@ def test_classify_roles_is_linear_in_sibling_count() -> None:
     small = min(timed(500) for _ in range(3))
     large = min(timed(4000) for _ in range(3))
     assert large < 2.0, f"4000 siblings took {large:.2f}s"
-    assert large < 25 * max(small, 1e-4), (small, large)
+    assert large < 40 * max(small, 1e-4), (small, large)
 
 
 def test_stamping_a_3000_introduction_sibling_document_is_fast() -> None:

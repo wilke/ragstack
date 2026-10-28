@@ -475,8 +475,14 @@ class IngestionPipeline:
         if self.structure_metadata and chunks:
             # Off the event loop, beside the chunker: the structure key is
             # caller-supplied on the by-reference .jsonl path, so its cost
-            # must never stall the loop.
-            await asyncio.to_thread(stamp_documents, documents, chunks, self.structure_counts)
+            # must never stall the loop. The worker thread counts into a LOCAL
+            # Counter; the shared one is mutated only here, on the loop thread
+            # — a concurrent job's structure_provenance() iterates it
+            # (Counter.__sub__), and a thread inserting a key mid-iteration
+            # raises "dictionary changed size during iteration".
+            local: Counter[str] = Counter()
+            await asyncio.to_thread(stamp_documents, documents, chunks, local)
+            self.structure_counts.update(local)
 
     def structure_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
         """The ``enrichment.structure`` step record (#828 §6) for what the step
