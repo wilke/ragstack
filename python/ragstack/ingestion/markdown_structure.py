@@ -93,6 +93,7 @@ _WARM_UP = (
     "| f | g |\n|---|---|\n| h | i |\n\n"
     "$$\nh\n$$\n\n<div>j</div>\n\n---\n\n[r]: http://y\n"
 )
+_WARM_UP_INLINE = "a *b* `c` [l](u) ![i](p) <http://x> <kbd>k</kbd> $m$ &amp; \\*"
 
 
 def _parser() -> MarkdownIt:
@@ -127,6 +128,7 @@ def _parser() -> MarkdownIt:
                 .use(dollarmath_plugin, allow_blank_lines=False)
             )
             parser.parse(_WARM_UP)
+            parser.parseInline(_WARM_UP_INLINE)  # the setext first-line title path
             _parser_cache = parser
         return _parser_cache
 
@@ -202,16 +204,13 @@ _TEXTUAL = frozenset({"text", "code_inline", "math_inline", "math_inline_double"
                       "text_special"})
 
 
-def _plain(children: Sequence[Token] | None, *, first_line: bool = False) -> str:
+def _plain(children: Sequence[Token] | None) -> str:
     """The visible text of inline ``children`` with the markup removed —
     emphasis, links, inline HTML tags dropped; code and maths verbatim; an
-    image contributes its alt text. ``first_line`` stops at the first line
-    break (the setext title rule)."""
+    image contributes its alt text."""
     out: list[str] = []
     for t in children or ():
         if t.type in _BREAKS:
-            if first_line:
-                break
             out.append("\n" if t.type == "hardbreak" else " ")
         elif t.type in _TEXTUAL:
             out.append(t.content)
@@ -220,13 +219,21 @@ def _plain(children: Sequence[Token] | None, *, first_line: bool = False) -> str
     return "".join(out)
 
 
-def _title(inline: Token, *, first_line: bool) -> str | None:
-    title = _plain(inline.children, first_line=first_line)
-    if first_line:
-        # An inline span (code, maths) can cross the line break with no
-        # softbreak token between; the first-line rule still holds.
-        title = title.split("\n", 1)[0]
-    return title.strip() or None
+def _title(children: Sequence[Token] | None) -> str | None:
+    return _plain(children).strip() or None
+
+
+def _first_line_title(body: str, env: dict[str, Any]) -> str | None:
+    """A setext heading's title: the plain text of its FIRST SOURCE LINE only
+    (§9.1's first-line rule), whatever the inline spans of the whole heading
+    do. A code span, a maths span or a raw HTML tag may cross the line break
+    with no break token between, so cutting the whole heading's inline
+    stream cannot find the line end; parsing the first line on its own can.
+    ``env`` is the document parse's environment (its link reference
+    definitions), so ``[text][ref]`` reads exactly as it does in a one-line
+    ATX heading with the same text."""
+    [inline] = _parser().parseInline(body, env)
+    return _title(inline.children)
 
 
 # --------------------------------------------------------------------------- #
@@ -250,8 +257,9 @@ def _atx_block(lines: _Lines, line: int, raw: str) -> tuple[int, int] | None:
     return off + start, off + start + len(raw)
 
 
-def _setext_block(lines: _Lines, line: int, inline: Token) -> tuple[int, int] | None:
-    """The span of a setext heading's FIRST line's text (the title rule)."""
+def _setext_block(lines: _Lines, line: int, inline: Token) -> tuple[int, int, str] | None:
+    """The span of a setext heading's FIRST line's text (the title rule), and
+    that text as the parser saw it (NUL as U+FFFD)."""
     off, text = lines.text(line)
     text = text.replace("\x00", "\ufffd")  # the parser's NUL rule; 1:1, columns kept
     start = len(text) - len(text.lstrip())
@@ -264,7 +272,7 @@ def _setext_block(lines: _Lines, line: int, inline: Token) -> tuple[int, int] | 
         return None
     if not inline.content.startswith(body):
         raise ValueError(f"heading on line {line + 1}: title span does not match the parse")
-    return off + start, off + start + len(body)
+    return off + start, off + start + len(body), body
 
 
 # --------------------------------------------------------------------------- #
@@ -339,7 +347,8 @@ def markdown_structure(doc: Document) -> DocumentStructure | None:
         return None
     shift = 1 if content.startswith(_BOM) else 0
     src = _PARSER_NEWLINES.sub("\n", content[shift:])
-    tokens = _parser().parse(src)
+    env: dict[str, Any] = {}
+    tokens = _parser().parse(src, env)
     lines = _Lines(content, shift)
 
     blocks: list[Block] = []
@@ -353,10 +362,14 @@ def markdown_structure(doc: Document) -> DocumentStructure | None:
         if t.type == "heading_open":
             assert inline is not None
             rank = int(t.tag[1:])
-            setext = t.markup in ("=", "-")
-            title = _title(inline, first_line=setext)
-            span = _setext_block(lines, t.map[0], inline) if setext \
-                else _atx_block(lines, t.map[0], inline.content)
+            span: tuple[int, int] | None
+            if t.markup in ("=", "-"):  # setext
+                sx = _setext_block(lines, t.map[0], inline)
+                span = (sx[0], sx[1]) if sx is not None else None
+                title = _first_line_title(sx[2], env) if sx is not None else None
+            else:
+                span = _atx_block(lines, t.map[0], inline.content)
+                title = _title(inline.children)
             if title is None or span is None:
                 title = None  # an empty heading opens an untitled section
             else:
@@ -372,12 +385,18 @@ def markdown_structure(doc: Document) -> DocumentStructure | None:
                 blocks.append(Block(start=lo, end=hi, kind="prose"))
                 continue
             alt_label = _figure_label(_plain(image.children))
-            if alt_label is not None and inline.content.startswith("![" + image.content + "]"):
+            prefix = next((p for p in ("![", "[![")
+                           if inline.content.startswith(p + image.content + "]")), None)
+            if alt_label is not None and prefix is not None:
                 # The alt text is the caption: one span cannot be two kinds
                 # (blocks do not overlap), so the alt is the figure_caption and
-                # the rest of the paragraph (the target) the figure.
+                # the rest of the paragraph AFTER it (`](target)`, or
+                # `](target)](link)` for a linked image) the figure. The
+                # opening `![` / `[![` before the alt is in no block (blocks
+                # need not cover the text). An alt caption wins over a label
+                # in the following paragraph, which stays prose.
                 off, text = lines.text(t.map[0])
-                a = off + (len(text) - len(text.lstrip())) + 2
+                a = off + (len(text) - len(text.lstrip())) + len(prefix)
                 a_end = _content_offset(lines, a, len(image.content))
                 blocks.append(Block(start=a, end=a_end, kind="figure_caption", label=alt_label))
                 blocks.append(Block(start=a_end, end=hi, kind="figure"))

@@ -476,16 +476,6 @@ def test_the_preamble_rule_uses_commonmark_blankness(text, outline) -> None:
     assert _outline(_build(text)) == outline
 
 
-def test_a_setext_title_stops_at_the_first_line_inside_an_inline_span() -> None:
-    """``$y\nx$`` is one math_inline token spanning the line break, so no
-    softbreak marks the end of the first line. MUTATION: no split → the title
-    is ``'a y\nx b'``."""
-    text = "a $y\nx$ b\n===\n"
-    s = _build(text)
-    assert [x.title for x in s.sections] == ["a y"]
-    assert _headings(text, s) == ["a $y"]
-
-
 @pytest.mark.parametrize("text", ["# T\x00x\n\nb\n", "T\x00x\n===\n"])
 def test_a_nul_in_a_heading_keeps_the_structure(text) -> None:
     """The parser reads NUL as U+FFFD (1:1, so columns hold); the heading-span
@@ -553,3 +543,84 @@ def test_concurrent_first_use_of_a_fresh_parser_gives_identical_structures(
         sys.setswitchinterval(old_interval)
         md.reset_parser()
     assert wrong == 0
+
+
+# --------------------------------------------------------------------------- #
+# Review of #844 (the docs PR) against #843
+# --------------------------------------------------------------------------- #
+
+def _atx_title(first_line: str) -> str | None:
+    """What a one-line ATX heading with this text is titled — the reference
+    the setext first-line rule must agree with."""
+    s = _build(f"# {first_line}\n")
+    return s.sections[0].title
+
+
+@pytest.mark.parametrize("text, first_line, title", [
+    # a maths span crossing the line break
+    ("a $y\nx$ b\n===\n", "a $y", "a $y"),
+    # a code span crossing it: markdown-it turns its newline into a space
+    ("Title `a\nb` more\n===\n", "Title `a", "Title `a"),
+    # a raw HTML tag crossing it: the tag is dropped, line 2's text is not
+    ('Title <span\nclass="x">more</span>\n===\n', "Title <span", "Title <span"),
+    # an ordinary two-line setext heading
+    ("First *line*\nsecond line\n===\n", "First *line*", "First line"),
+])
+def test_a_setext_title_is_the_plain_text_of_its_first_source_line_only(
+    text, first_line, title
+) -> None:
+    """MUTATION: take the title from the whole heading's inline stream (cut at
+    the first break or at a ``\\n``) → the code-span and HTML cases read
+    ``Title a b more`` / ``Title more`` → fails."""
+    s = _build(text)
+    assert _headings(text, s) == [first_line]
+    assert [x.title for x in s.sections] == [title]
+    assert s.sections[0].title == _atx_title(first_line)
+
+
+def test_a_setext_first_line_resolves_reference_links_like_atx() -> None:
+    text = "See [the guide][g]\nmore\n===\n\n[g]: https://example.org/g\n"
+    s = _build(text)
+    assert s.sections[0].title == "See the guide"
+
+
+def _figure_blocks(text: str) -> list[tuple[str, str | None, str]]:
+    s = _build(text)
+    return [(b.kind, b.label, text[b.start:b.end]) for b in s.blocks]
+
+
+def test_a_linked_image_with_a_labelled_alt_is_split_into_caption_and_figure() -> None:
+    """MUTATION: gate the alt caption on an unlinked ``![`` only → the linked
+    image is one bare figure and its label is lost → fails."""
+    text = "[![Figure 1: x](p.png)](https://example.org/u)\n"
+    assert _figure_blocks(text) == [
+        ("figure_caption", "Figure 1", "Figure 1: x"),
+        ("figure", None, "](p.png)](https://example.org/u)\n"),
+    ]
+
+
+def test_an_unlinked_image_with_a_labelled_alt_is_split_into_caption_and_figure() -> None:
+    text = "![Figure 2. y](q.png)\n"
+    assert _figure_blocks(text) == [
+        ("figure_caption", "Figure 2", "Figure 2. y"),
+        ("figure", None, "](q.png)\n"),
+    ]
+
+
+def test_a_linked_image_without_a_label_is_one_figure() -> None:
+    text = "[![a diagram](p.png)](https://example.org/u)\n\nplain text after\n"
+    assert _figure_blocks(text) == [
+        ("figure", None, "[![a diagram](p.png)](https://example.org/u)\n"),
+        ("prose", None, "plain text after\n"),
+    ]
+
+
+def test_an_alt_caption_wins_over_a_labelled_following_paragraph() -> None:
+    """Precedence: when both carry a label, the alt is the caption and the
+    following paragraph stays prose (one figure, one caption)."""
+    text = "![Figure 3. alt caption](r.png)\n\nFigure 3: also looks like a caption.\n"
+    assert _figure_blocks(text) == [
+        ("figure_caption", "Figure 3", "Figure 3. alt caption"),
+        ("figure", None, "](r.png)\n"),
+        ("prose", None, "Figure 3: also looks like a caption.\n"),
+    ]
