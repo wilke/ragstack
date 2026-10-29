@@ -139,6 +139,115 @@ def thinking_code(thinking: bool | None) -> str:
     return "u" if thinking is None else str(int(bool(thinking)))
 
 
+#: Request fields the step itself sets; an extra body may not override them.
+CORE_REQUEST_FIELDS = frozenset({"model", "messages", "max_tokens", "temperature", "seed"})
+#: Key names an extra body is refused for, at any depth (camelCase split into
+#: words, case-insensitive, ``-`` read as ``_``): the body is recorded verbatim
+#: in every row and in the summary, so it must never carry a credential. The
+#: names directly under a JSON-schema ``properties`` object are schema field
+#: names, not credentials, and are not matched (their values still are).
+_SECRET_KEYS = frozenset({"api_key", "apikey", "authorization", "auth", "token", "secret",
+                          "password", "passwd", "bearer", "credential", "credentials", "x_api_key", "key"})
+_SECRET_SUFFIXES = ("_token", "_secret", "_password", "_api_key", "_apikey", "_key",
+                    "_authorization", "_credential", "_credentials")
+
+
+class ExtraBodyError(ValueError):
+    """An ``--llm-extra-body`` the step refuses (exit 2, before any call)."""
+
+
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _secret_like(key: str) -> bool:
+    """``accessToken`` / ``api-secret`` / ``Authorization`` / ``key`` → True."""
+    k = _CAMEL.sub("_", key.strip()).lower().replace("-", "_")
+    return k in _SECRET_KEYS or k.endswith(_SECRET_SUFFIXES)
+
+
+def _secret_paths(obj: Any, path: str = "", *, schema_names: bool = False) -> list[str]:
+    """Paths of credential-like keys in ``obj``. ``schema_names``: ``obj`` is
+    a JSON-schema ``properties`` object, whose keys are field names (a
+    ``response_format`` schema may well name a field ``token``) — skipped, but
+    each value is still scanned."""
+    out: list[str] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            here = f"{path}.{k}" if path else str(k)
+            if not schema_names and _secret_like(str(k)):
+                out.append(here)
+            out += _secret_paths(v, here,
+                                 schema_names=(not schema_names and k == "properties"
+                                               and isinstance(v, dict)))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            out += _secret_paths(v, f"{path}[{i}]")
+    return out
+
+
+def parse_extra_body(raw: str) -> dict[str, Any] | None:
+    """``--llm-extra-body``: a JSON object of extra top-level request fields
+    for the chat-completions call (e.g. ``{"reasoning_effort": "low"}`` or a
+    ``response_format``), or ``None`` for an empty flag. Refused: invalid
+    JSON, anything but an object, a key the step sets itself
+    (:data:`CORE_REQUEST_FIELDS`), and any key, at any depth, that looks like
+    a credential — the body is recorded verbatim, so it must never carry one.
+    An empty object is ``None`` (nothing is sent, nothing is recorded)."""
+    if not raw.strip():
+        return None
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ExtraBodyError(f"--llm-extra-body: bad JSON: {e}") from e
+    if not isinstance(obj, dict):
+        raise ExtraBodyError(
+            f"--llm-extra-body must be a JSON object, not {type(obj).__name__}")
+    core = sorted(CORE_REQUEST_FIELDS & set(obj))
+    if core:
+        raise ExtraBodyError(
+            f"--llm-extra-body may not set {core}: the step sets those itself "
+            "(use --llm-model / --llm-max-tokens / --llm-seed)")
+    secrets = _secret_paths(obj)
+    if secrets:
+        raise ExtraBodyError(
+            f"--llm-extra-body may not carry credential-like keys {secrets}: it is recorded "
+            "verbatim in every row and the summary. Pass the key via --llm-api-key-env")
+    return obj or None
+
+
+def merge_extra_body(extra: dict[str, Any] | None,
+                     thinking: bool | None) -> dict[str, Any] | None:
+    """The extra top-level fields every call sends: ``extra`` plus
+    ``--llm-thinking``'s ``chat_template_kwargs.enable_thinking`` (when not
+    ``unset``). Precedence: the core fields (model, messages, max_tokens,
+    temperature, and a per-request seed) are the step's and an extra body may
+    not name them (:func:`parse_extra_body`); ``chat_template_kwargs`` is
+    merged key by key, and ``enable_thinking`` belongs to ``--llm-thinking``:
+    an extra body that also sets it is refused unless the flag is ``unset``.
+    ``None`` when nothing is to be sent."""
+    out: dict[str, Any] = json.loads(json.dumps(extra)) if extra else {}
+    ctk = out.get("chat_template_kwargs")
+    if ctk is not None and not isinstance(ctk, dict):
+        # Whatever --llm-thinking says: a server reads it as an object.
+        raise ExtraBodyError("--llm-extra-body: chat_template_kwargs must be an object")
+    if thinking is not None:
+        if isinstance(ctk, dict) and "enable_thinking" in ctk:
+            raise ExtraBodyError(
+                "--llm-extra-body sets chat_template_kwargs.enable_thinking, which "
+                "--llm-thinking owns: pass --llm-thinking unset to set it in the body")
+        out["chat_template_kwargs"] = {**(ctk or {}), "enable_thinking": thinking}
+    return out or None
+
+
+def extra_body_hash(extra: dict[str, Any] | None) -> str | None:
+    """8 hex chars of the canonical JSON of an extra body (``None`` for none):
+    the ``+e`` suffix of the version string's ``k`` field."""
+    if not extra:
+        return None
+    canon = json.dumps(extra, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
+
+
 def llm_version(
     model: str,
     window_chars: int = DEFAULT_WINDOW_CHARS,
@@ -147,18 +256,22 @@ def llm_version(
     *,
     thinking: bool | None = False,
     repair_rounds: int = 0,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     """The cache/provenance version of a glossary from ``model`` under this
     prompt AND these generation limits:
-    ``llm/2:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>:k<thinking 0|1|u>:r<repair rounds>``
-    (``ku``: no thinking switch was sent).
-    The limits change what the model sees and how much it may answer, thinking
-    and the repair round change what it answers, so a result produced under
-    different values is a different result. (The cut-off retry policy is not
-    in the string; the step records it per row.)"""
+    ``llm/2:<model>:<prompt hash>:w<window chars>x<max windows>:t<max tokens>:k<thinking 0|1|u>[+e<extra hash>]:r<repair rounds>``
+    (``ku``: no thinking switch was sent; ``+e<8 hex>``: an ``--llm-extra-body``
+    was sent, :func:`extra_body_hash` of it — absent without one, so every
+    version written before the flag existed is unchanged).
+    The limits change what the model sees and how much it may answer, thinking,
+    the extra body and the repair round change what it answers, so a result
+    produced under different values is a different result. (The cut-off retry
+    policy is not in the string; the step records it per row.)"""
+    eh = extra_body_hash(extra_body)
     return (f"{LLM_EXTRACTOR}:{model}:{prompt_hash()}"
             f":w{window_chars}x{max_windows}:t{max_tokens}"
-            f":k{thinking_code(thinking)}:r{int(repair_rounds)}")
+            f":k{thinking_code(thinking)}{f'+e{eh}' if eh else ''}:r{int(repair_rounds)}")
 
 
 def windows(text: str, size: int, overlap: int, max_windows: int) -> tuple[list[str], bool]:
@@ -350,10 +463,14 @@ class StepLimits:
     cutoff_retry: str
     seed: int | None = None
     backoff: tuple[float, ...] = DEFAULT_BACKOFF
+    #: ``--llm-extra-body`` as given (validated by :func:`parse_extra_body`),
+    #: WITHOUT the thinking key; ``None``: none. In the version (``+e``).
+    extra_body: dict[str, Any] | None = field(default=None, hash=False)
 
     def version(self, model: str) -> str:
         return llm_version(model, self.window_chars, self.max_windows, self.max_tokens,
-                           thinking=self.thinking, repair_rounds=self.repair_rounds)
+                           thinking=self.thinking, repair_rounds=self.repair_rounds,
+                           extra_body=self.extra_body)
 
     def max_calls(self) -> int:
         """The most model calls one document can make: per window the first

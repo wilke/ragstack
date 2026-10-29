@@ -45,6 +45,12 @@ Usage::
         --llm-timeout-s 300 --llm-max-tokens 4096 --llm-window-chars 80000 \\
         --llm-max-windows 4 --llm-concurrency 16 --llm-thinking off \\
         --llm-repair-rounds 1 --llm-cutoff-retry split
+
+``--llm-extra-body JSON`` (default none) sends extra top-level request fields
+— another model's reasoning switch, a ``response_format`` — with every call.
+It is recorded verbatim (row ``provenance.llm.extra_body``, summary
+``settings.extra_body``) and its hash is in the version (``k0+e<8 hex>``), so
+**it must never carry credentials**; credential-like keys are refused (exit 2).
 """
 from __future__ import annotations
 
@@ -75,7 +81,10 @@ from ragstack.ingestion.symbol_glossary_llm import (
     CUTOFF_POLICIES,
     DEFAULT_BACKOFF,
     LLM_EXTRACTOR,
+    ExtraBodyError,
     StepLimits,
+    merge_extra_body,
+    parse_extra_body,
 )
 from ragstack.llm import OpenAILLM
 from ragstack.provenance import (
@@ -156,6 +165,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "as skipped); 0 = every document")
     p.add_argument("--llm-seed", type=int, default=None,
                    help="send this seed with every call (omitted = no seed sent)")
+    p.add_argument("--llm-extra-body", default="", metavar="JSON",
+                   help="a JSON object of extra top-level fields sent with every call "
+                        "(e.g. {\"reasoning_effort\": \"low\"}); default none. Recorded "
+                        "verbatim in every row and the summary and hashed into the version "
+                        "(k..+e<8 hex>), so it MUST NOT carry credentials: credential-like "
+                        "keys (api_key, authorization, token, ...) are refused, as are the "
+                        "fields the step sets (model, messages, max_tokens, temperature, "
+                        "seed). chat_template_kwargs merges with --llm-thinking, which owns "
+                        "enable_thinking (set it here only with --llm-thinking unset). "
+                        "Needs --llm on")
     p.add_argument("--reuse", default="",
                    help="a prior glossary.jsonl of this step: rows whose text_sha256 and LLM "
                         "version match, that were not degraded, and whose recorded cut-off "
@@ -179,13 +198,14 @@ def _config(raw: str) -> GlossaryConfig:
         raise GlossaryFileError(f"--config: bad JSON: {e}") from e
 
 
-def _settings(args: argparse.Namespace) -> StepSettings:
+def _settings(args: argparse.Namespace, extra_body: dict[str, Any] | None = None) -> StepSettings:
     llm = args.llm == "on"
     limits = StepLimits(
         window_chars=args.llm_window_chars, max_windows=args.llm_max_windows,
         max_tokens=args.llm_max_tokens, timeout_s=args.llm_timeout_s,
         thinking=_THINKING[args.llm_thinking], repair_rounds=args.llm_repair_rounds,
         cutoff_retry=args.llm_cutoff_retry, seed=args.llm_seed, backoff=BACKOFF,
+        extra_body=extra_body,
     ) if llm else None
     return StepSettings(llm=llm, endpoint=args.llm_endpoint, model=args.llm_model,
                         api_key_env=args.llm_api_key_env if llm else "",
@@ -210,8 +230,19 @@ def _load(shard: str) -> list[Any]:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    settings = _settings(args)
-    problems = settings_problems(settings)
+    problems: list[str] = []
+    extra_body: dict[str, Any] | None = None
+    request_extra: dict[str, Any] | None = None
+    try:
+        extra_body = parse_extra_body(args.llm_extra_body)
+        request_extra = merge_extra_body(extra_body, _THINKING[args.llm_thinking])
+    except ExtraBodyError as e:
+        problems.append(str(e))
+        extra_body = None
+    if args.llm_extra_body.strip() and args.llm != "on":
+        problems.append("--llm-extra-body needs --llm on")
+    settings = _settings(args, extra_body)
+    problems += settings_problems(settings)
     if args.reuse and not settings.llm:
         problems.append("--reuse needs --llm on (it reuses LLM halves)")
     if settings.llm and not _ENV_NAME.fullmatch(args.llm_api_key_env or ""):
@@ -249,9 +280,9 @@ async def amain(args: argparse.Namespace) -> int:
     if settings.llm:
         assert settings.limits is not None
         api_key = os.environ.get(args.llm_api_key_env) or None
-        thinking = settings.limits.thinking
-        extra = (None if thinking is None
-                 else {"chat_template_kwargs": {"enable_thinking": thinking}})
+        # --llm-extra-body merged with --llm-thinking (merge_extra_body states
+        # the precedence); None sends nothing extra.
+        extra = request_extra
         async with _http_client(settings.limits.timeout_s, settings.concurrency) as http:
             client = OpenAILLM(settings.endpoint, settings.model, http, api_key=api_key,
                                extra_body=extra)

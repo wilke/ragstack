@@ -114,7 +114,12 @@ from ragstack.ingestion.load_embeddings import (
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.reassembly import Reassembled, reassemble
-from ragstack.ingestion.receipts import merge_summary
+from ragstack.ingestion.receipts import (
+    DuplicateReceiptError,
+    check_distinct_receipt_paths,
+    distinct_provenance,
+    merge_summary,
+)
 from ragstack.ops import ingest_target
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.backpressure import BackpressuredVectorStore
@@ -321,6 +326,24 @@ def _chunk_cap_for(args, target) -> tuple[int | None, dict]:
     return None, {"effective": 0, "source": CAP_NONE}
 
 
+def _record_provenance(args, summary: dict) -> None:
+    """ADR-0010 decision 8, #821: the load summary says which workflow and
+    which tools image loaded it (``provenance``, this step's own record) and
+    which image(s) embedded the files it loaded (``embed_provenance``: the
+    distinct header ``provenance`` objects, sorted, plus
+    ``n_files_without_provenance`` for files whose header carries none — an
+    embed step older than v1.6.20, or a file that cannot be read)."""
+    summary["provenance"] = provenance_from_args(args)
+    headers: list[dict | None] = []
+    for f in args.embeddings:
+        try:
+            headers.append(read_header(f).get("provenance"))
+        except (OSError, EmbeddingFileError):
+            headers.append(None)
+    summary["embed_provenance"], summary["n_files_without_provenance"] = \
+        distinct_provenance(headers)
+
+
 def _file_chunk_count(path: str) -> int:
     """Chunks in one embedding file: the header's ``count`` (what
     ``write_embedding_file`` records), else one line per record."""
@@ -349,6 +372,7 @@ async def _refuse_over_cap(args, pipeline, cap: int | None, record: dict) -> int
             "n_chunks": 0, "failed_shards": sorted(files),
             "errors": dict.fromkeys(files, str(e)), "chunk_cap": {**e.detail(), **record},
         }
+        _record_provenance(args, summary)
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, indent=2, sort_keys=True)
         print(str(e), file=sys.stderr, flush=True)
@@ -416,6 +440,7 @@ async def amain(args, target=None) -> int:
     summary = merge_summary(receipts)
     # #849: the cap this load applied, recorded whether or not it bit.
     summary["chunk_cap"] = cap_record
+    _record_provenance(args, summary)
     if glossary is not None:
         # #847 G1: which file every chunk's glossary field was rendered from.
         summary["glossary_file"] = glossary.provenance
@@ -647,6 +672,14 @@ def main(argv=None, *, settings=None) -> int:
         _refuse("--glossary-allow-unverifiable needs --glossary-file")
     if args.replay and args.replay_batch < 1:
         raise SystemExit("--replay-batch must be >= 1")
+    if args.embeddings:
+        # #852: the summary's merge_summary refuses a repeated shard id (each
+        # file's id is its path); refuse it HERE, before any store is touched,
+        # rather than after the same file was loaded twice.
+        try:
+            check_distinct_receipt_paths(list(args.embeddings), what="embedding files")
+        except DuplicateReceiptError as e:
+            _refuse(str(e))
     if args.vector_backend == "qdrant":
         # Resolve the registry entry before any store is created or written (#263).
         target = ingest_target.resolve_or_exit(args, settings=settings)

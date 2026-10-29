@@ -991,3 +991,197 @@ def test_repairable_reasons_are_gate_reasons_and_exclude_the_unrepairable() -> N
 
     assert REPAIRABLE_REASONS <= set(GATE_REASONS)
     assert set(GATE_REASONS) - REPAIRABLE_REASONS == {NOT_SPECIFIC, NOT_A_SYMBOL}
+
+
+# --------------------------------------------------------------------------- #
+# v1.6.20 Gap A: the receipt carries the degraded reasons
+# --------------------------------------------------------------------------- #
+
+
+def test_receipt_from_a_glossary_file_carries_degraded_reasons(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On the upload path the archive is the only output, so the receipt's
+    ``enrichment.symbol_glossary`` is where the API reads the counts: it must
+    carry the per-reason tally ``glossary-summary.json`` has, and the
+    distinct glossary versions."""
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _CountingEmbedder())
+    shard = _shard(tmp_path)
+    out = tmp_path / "g.jsonl"
+    fake = FakeOpenAI([(_about("Beta"), [Status(400)])], default=Answer(GOOD))
+    rows, summ = _run(fake, shard=shard)
+    from ragstack.ingestion.glossary_file import write_glossary_file
+
+    write_glossary_file(out, rows, producer="test")
+    assert ingest_shard.main(_ingest_argv(shard, tmp_path, "--glossary-file", str(out))) == 0
+    rec = json.loads((tmp_path / "receipt.json").read_text())["enrichment"]["symbol_glossary"]
+    assert rec["degraded_reasons"] == summ["degraded_reasons"]
+    assert sum(rec["degraded_reasons"].values()) == rec["counts"]["degraded"] == 1
+    assert rec["glossary_versions"] == sorted({r.glossary_version for r in rows})
+    assert len(rec["glossary_versions"]) == 2       # rules (the degraded doc) + llm
+
+
+# --------------------------------------------------------------------------- #
+# v1.6.20: --llm-extra-body
+# --------------------------------------------------------------------------- #
+
+EXTRA = {"reasoning_effort": "low", "chat_template_kwargs": {"custom": 1}}
+
+
+def test_llm_extra_body_is_sent_and_recorded(tmp_path: Path, fake_cli) -> None:
+    """Sent with every call, merged with --llm-thinking's key; recorded in
+    every row's provenance.llm and the summary settings; its hash is in the
+    version's ``k`` field (``k0+e<8 hex>``)."""
+    from ragstack.ingestion.symbol_glossary_llm import extra_body_hash
+
+    shard = _shard(tmp_path)
+    out = tmp_path / "g.jsonl"
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(shard, out, "--llm-thinking", "off",
+                                   "--llm-extra-body", json.dumps(EXTRA))) == 0
+    assert fake.chats
+    for seen in fake.chats:
+        assert seen.body["reasoning_effort"] == "low"
+        assert seen.body["chat_template_kwargs"] == {"custom": 1, "enable_thinking": False}
+        assert seen.body["model"] == MODEL                     # core fields untouched
+    eh = extra_body_hash(EXTRA)
+    assert eh is not None and len(eh) == 8
+    version = _limits(thinking=False, extra_body=EXTRA).version(MODEL)
+    assert f":k0+e{eh}:r0" in version
+    rows = read_glossary_file(out).rows.values()
+    for row in rows:
+        assert row.provenance["llm"]["extra_body"] == EXTRA
+        assert row.llm is not None and row.llm.version == version
+    summary = json.loads(out.with_suffix(".summary.json").read_text())
+    assert summary["settings"]["extra_body"] == EXTRA
+    assert summary["settings"]["version"] == version
+    # without the flag: nothing extra sent, nothing recorded, the old version string
+    plain = tmp_path / "plain.jsonl"
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(shard, plain)) == 0
+    assert all("reasoning_effort" not in s.body for s in fake.chats)
+    assert all(r.provenance["llm"]["extra_body"] is None
+               for r in read_glossary_file(plain).rows.values())
+    assert _limits().version(MODEL) == sgl.llm_version(MODEL, 80_000, 4, 4096,
+                                                       thinking=False, repair_rounds=0)
+    assert "+e" not in _limits().version(MODEL)
+
+
+def test_llm_extra_body_with_thinking_unset_may_set_enable_thinking(
+        tmp_path: Path, fake_cli) -> None:
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    body = {"chat_template_kwargs": {"enable_thinking": True}}
+    assert step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl", "--llm-thinking",
+                                   "unset", "--llm-extra-body", json.dumps(body))) == 0
+    assert all(s.body["chat_template_kwargs"] == {"enable_thinking": True} for s in fake.chats)
+    assert ":ku+e" in json.loads((tmp_path / "g.summary.json").read_text())["settings"]["version"]
+
+
+@pytest.mark.parametrize("raw,needle", [
+    ("[1, 2]", "must be a JSON object"),
+    ('"low"', "must be a JSON object"),
+    ("{not json", "bad JSON"),
+    ('{"model": "other"}', "may not set ['model']"),
+    ('{"max_tokens": 9, "temperature": 1}', "may not set ['max_tokens', 'temperature']"),
+    ('{"seed": 1}', "may not set ['seed']"),
+    ('{"messages": []}', "may not set ['messages']"),
+    ('{"api_key": "x"}', "credential-like keys ['api_key']"),
+    ('{"extra_headers": {"Authorization": "Bearer x"}}', "extra_headers.Authorization"),
+    ('{"opts": [{"access_token": "x"}]}', "opts[0].access_token"),
+    ('{"token": "x"}', "credential-like keys ['token']"),
+    ('{"chat_template_kwargs": {"enable_thinking": true}}', "--llm-thinking owns"),
+])
+def test_llm_extra_body_refusals(tmp_path: Path, fake_cli, capsys, raw: str,
+                                 needle: str) -> None:
+    """Refused with exit 2 before any call (the probe included)."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    rc = step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl",
+                                 "--llm-extra-body", raw))
+    assert rc == 2 and fake.seen == []
+    assert needle in capsys.readouterr().err
+    assert not (tmp_path / "g.jsonl").exists()
+
+
+def test_llm_extra_body_needs_llm_on(tmp_path: Path, capsys) -> None:
+    rc = step_cli.main([str(_shard(tmp_path)), "--out", str(tmp_path / "g.jsonl"),
+                        "--llm-extra-body", '{"reasoning_effort": "low"}'])
+    assert rc == 2 and "--llm-extra-body needs --llm on" in capsys.readouterr().err
+
+
+def test_reuse_does_not_reuse_rows_with_a_different_extra_body(tmp_path: Path,
+                                                               fake_cli) -> None:
+    shard = _shard(tmp_path)
+    first = tmp_path / "first.jsonl"
+    fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(shard, first, "--llm-extra-body", json.dumps(EXTRA))) == 0
+    for extra in ([], ["--llm-extra-body", '{"reasoning_effort": "high"}']):
+        fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+        out = tmp_path / "second.jsonl"
+        assert step_cli.main(_llm_argv(shard, out, "--reuse", str(first), *extra)) == 0
+        assert len(fake.chats) == 3, extra                     # every document recomputed
+        assert not any(r.provenance["reused_from"] for r in read_glossary_file(out).rows.values())
+    # the same body (keys in another order: same canonical hash) still reuses
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    same = json.dumps(dict(reversed(list(EXTRA.items()))))
+    assert step_cli.main(_llm_argv(shard, tmp_path / "third.jsonl", "--reuse", str(first),
+                                   "--llm-extra-body", same)) == 0
+    assert fake.chats == []
+
+
+# --- review follow-ups (#853) ------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw,needle", [
+    ('{"accessToken": "x"}', "accessToken"),
+    ('{"apiSecret": "x"}', "apiSecret"),
+    ('{"extra": {"authToken": "x"}}', "extra.authToken"),
+    ('{"key": "x"}', "credential-like keys ['key']"),
+    ('{"APIKey": "x"}', "APIKey"),
+    ('{"access_key": "x"}', "access_key"),
+    ('{"aws_secret_access_key": "x"}', "aws_secret_access_key"),
+    ('{"privateKey": "x"}', "privateKey"),
+    ('{"credential": "x"}', "credential"),
+    ('{"passwd": "x"}', "passwd"),
+    ('{"HTTPAuthorization": "x"}', "HTTPAuthorization"),
+    ('{"response_format": {"type": "json_schema", "json_schema": {"schema": {"properties":'
+     ' {"token": {"type": "string", "api_key": "x"}}}}}}',
+     "response_format.json_schema.schema.properties.token.api_key"),
+])
+def test_llm_extra_body_refuses_camel_case_and_bare_key_secrets(
+        tmp_path: Path, fake_cli, capsys, raw: str, needle: str) -> None:
+    """camelCase is split before matching; a bare ``key`` is refused; under a
+    schema's ``properties`` the field NAMES are skipped but their values are
+    still scanned (the last case)."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    rc = step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl",
+                                 "--llm-extra-body", raw))
+    assert rc == 2 and fake.seen == []
+    assert needle in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [
+    # a response_format schema whose fields are named like credentials
+    '{"response_format": {"type": "json_schema", "json_schema": {"name": "g", "schema":'
+    ' {"type": "object", "properties": {"token": {"type": "string"},'
+    ' "key": {"type": "string"}, "password": {"type": "string"}},'
+    ' "required": ["token"]}}}}',
+    '{"maxCompletionTokens": 10, "top_k": 5, "keyword": "x", "reasoning_effort": "low"}',
+])
+def test_llm_extra_body_accepts_schema_field_names_and_token_counts(
+        tmp_path: Path, fake_cli, raw: str) -> None:
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl",
+                                   "--llm-extra-body", raw)) == 0
+    assert fake.chats and all(
+        set(json.loads(raw)) <= set(s.body) for s in fake.chats)
+
+
+@pytest.mark.parametrize("thinking", ["unset", "off", "on"])
+def test_llm_extra_body_chat_template_kwargs_must_be_an_object(
+        tmp_path: Path, fake_cli, capsys, thinking: str) -> None:
+    """Refused whatever --llm-thinking says, ``unset`` included."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    rc = step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl", "--llm-thinking",
+                                 thinking, "--llm-extra-body", '{"chat_template_kwargs": "x"}'))
+    assert rc == 2 and fake.seen == []
+    assert "chat_template_kwargs must be an object" in capsys.readouterr().err

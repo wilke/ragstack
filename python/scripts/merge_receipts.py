@@ -9,6 +9,16 @@ computation over the receipt files (no store/network), so it's CI-friendly.
 Usage::
 
     python scripts/merge_receipts.py r0.json r1.json ... --out summary.json
+
+Exits 3 when two receipt paths resolve to one file or two receipts share a
+``shard_id`` (#852), writing a refusal summary instead (``status:
+"refused"``, the duplicate paths or ids, ``n_receipts_given``, provenance): a scatter whose tasks all write
+``receipt.json``, staged flat by basename, would otherwise be counted as one
+receipt N times.
+
+The summary records ``provenance`` (this step's own tool provenance,
+ADR-0010 decision 8) and ``shard_provenance`` (the distinct provenance objects
+of the receipts, sorted) with ``n_shards_without_provenance`` (#821).
 """
 from __future__ import annotations
 
@@ -17,7 +27,18 @@ import json
 import sys
 from pathlib import Path
 
-from ragstack.ingestion.receipts import ShardReceipt, merge_summary
+from ragstack.ingestion.receipts import (
+    DuplicateReceiptError,
+    ShardReceipt,
+    check_distinct_receipt_paths,
+    distinct_provenance,
+    merge_summary,
+)
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
+
+#: Exit code for receipts that are one receipt (#852): paths resolving to one
+#: file, or a repeated ``shard_id``. Only the refusal summary is written.
+DUPLICATE_RECEIPTS_EXIT_CODE = 3
 
 
 def parse_args(argv=None):
@@ -27,13 +48,34 @@ def parse_args(argv=None):
     p.add_argument("--out", default="summary.json", help="output summary path")
     p.add_argument("--fail-on-shard-error", action="store_true",
                    help="exit non-zero if any shard failed (for a gating workflow)")
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    receipts = [ShardReceipt.load(p) for p in args.receipts]
-    summary = merge_summary(receipts)
+    try:
+        check_distinct_receipt_paths(args.receipts)
+        receipts = [ShardReceipt.load(p) for p in args.receipts]
+        summary = merge_summary(receipts)
+    except DuplicateReceiptError as e:
+        # A refusal summary, as load_embeddings' cap refusal writes one, so the
+        # gather step's output says WHY instead of being absent.
+        refusal = {"status": "refused", "error": str(e), "duplicate_kind": e.kind,
+                   "duplicates": e.duplicates, "n_receipts_given": len(args.receipts),
+                   "provenance": provenance_from_args(args)}
+        Path(args.out).write_text(json.dumps(refusal, indent=2, sort_keys=True),
+                                  encoding="utf-8")
+        print(f"refused: {e}", file=sys.stderr, flush=True)
+        print(f"refused: nothing merged → {args.out}", flush=True)
+        return DUPLICATE_RECEIPTS_EXIT_CODE
+    # ADR-0010 decision 8, #821: this gather step's own record, and which
+    # image(s) wrote the shard receipts it folded (distinct, sorted), plus how
+    # many carried no provenance at all.
+    summary["provenance"] = provenance_from_args(args)
+    shard_prov, without = distinct_provenance([r.provenance for r in receipts])
+    summary["shard_provenance"] = shard_prov
+    summary["n_shards_without_provenance"] = without
     Path(args.out).write_text(json.dumps(summary, indent=2, sort_keys=True),
                               encoding="utf-8")
     print(f"{summary['n_shards']} shards: {summary['n_docs']} docs, "

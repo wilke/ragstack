@@ -84,6 +84,7 @@ from ragstack.ingestion.jats import (
     DEFAULT_MIN_UNIT_CHARS,
     convert_file,
 )
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
 def load_manifest(path: str | Path) -> dict[str, dict]:
@@ -277,6 +278,9 @@ def main(argv=None) -> int:
     if span_rows is not None:
         write_jsonl(span_rows, args.spans_out)
     report = build_report(records, skipped, len(items), args.out)
+    # ADR-0010 decision 8, #821: which workflow and which tools image
+    # extracted this shard (never all-null: segmenter_version is always known).
+    report["provenance"] = provenance_from_args(args)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, sort_keys=True)
@@ -361,6 +365,7 @@ def parse_args(argv=None):
     p.add_argument("--max-fail-rate", type=float, default=0.01,
                    help="exit non-zero if more than this fraction of articles fail "
                         "to parse (0 disables)")
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 

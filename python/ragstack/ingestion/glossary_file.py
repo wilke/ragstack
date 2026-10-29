@@ -102,6 +102,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
@@ -227,12 +228,21 @@ class GlossaryRow:
 class GlossaryFile:
     """A file read by :func:`read_glossary_file`. ``rows`` may hold a subset of
     the file's documents (``doc_ids`` filter); ``header['counts']`` always
-    describes the whole file, which was validated in full."""
+    describes the whole file, which was validated in full.
+
+    ``degraded_reasons`` and ``glossary_versions`` are tallied by the reader
+    over EVERY row of the file, like ``header['counts']`` and unlike ``rows``:
+    the per-reason count of the rows' ``degraded`` values (a degraded row is
+    one whose LLM half failed and fell back to the rules; ``counts['degraded']``
+    is their sum), and the sorted distinct ``merged.version`` strings. They
+    are derived, not stored: the file format is unchanged."""
 
     path: Path
     header: dict[str, Any]
     config: GlossaryConfig
     rows: dict[str, GlossaryRow]
+    degraded_reasons: dict[str, int] = field(default_factory=dict)
+    glossary_versions: list[str] = field(default_factory=list)
 
 
 # --- serialisation ------------------------------------------------------------
@@ -422,6 +432,8 @@ def read_glossary_file(path: str | Path, *, doc_ids: Iterable[str] | None = None
     rows: dict[str, GlossaryRow] = {}
     seen: set[str] = set()
     tally = dict.fromkeys(_COUNT_KEYS, 0)
+    reasons: Counter[str] = Counter()
+    versions: set[str] = set()
     with p.open(encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             where = f"{p}:{lineno}"
@@ -440,6 +452,9 @@ def read_glossary_file(path: str | Path, *, doc_ids: Iterable[str] | None = None
             seen.add(row.doc_id)
             for k, v in _counts([row]).items():
                 tally[k] += v
+            if row.degraded is not None:
+                reasons[row.degraded] += 1
+            versions.add(row.glossary_version)
             if keep is None or row.doc_id in keep:
                 rows[row.doc_id] = row
     if header is None:
@@ -448,7 +463,9 @@ def read_glossary_file(path: str | Path, *, doc_ids: Iterable[str] | None = None
         raise GlossaryFileError(
             f"{p}: header counts {header['counts']} != rows {tally} "
             "(a truncated or spliced file)")
-    return GlossaryFile(p, header, config, rows)
+    return GlossaryFile(p, header, config, rows,
+                        degraded_reasons=dict(sorted(reasons.items())),
+                        glossary_versions=sorted(versions))
 
 
 def utc_now() -> str:
@@ -800,6 +817,8 @@ class FileGlossaryAttacher:
             "source": "glossary_file", "path": str(self.gfile.path),
             "sha256": file_sha256(self.gfile.path), "schema": h["schema"],
             "producer": h["producer"], "created": h["created"], "counts": dict(h["counts"]),
+            "degraded_reasons": dict(self.gfile.degraded_reasons),
+            "glossary_versions": list(self.gfile.glossary_versions),
             "file_stamp": FILE_STAMP, "config": config_dict(self.config),
         }}
 
@@ -821,6 +840,8 @@ def file_provenance(gfile: GlossaryFile, resolution: Resolution) -> dict[str, An
         "producer": gfile.header["producer"],
         "created": gfile.header["created"],
         "counts": dict(gfile.header["counts"]),
+        "degraded_reasons": dict(gfile.degraded_reasons),
+        "glossary_versions": list(gfile.glossary_versions),
         "file_stamp": FILE_STAMP,
         "mask": MASK_VERSION,
         "documents": resolution.counts(),

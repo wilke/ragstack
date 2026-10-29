@@ -29,7 +29,9 @@ falls back to the rules (:func:`~ragstack.ingestion.glossary_file.choose_merged`
 **Reuse.** ``reuse`` (a prior file of this step) supplies the LLM half of a
 document whose ``text_sha256`` and LLM version match, which was not degraded,
 and whose recorded cut-off policy and seed equal this run's (neither is in the
-version string, and both change the answer); the rules half is always
+version string, and both change the answer), as does its recorded extra body
+(which is in the version, as ``+e<hash>``; compared as well, so a row recorded
+before the flag existed reuses only into a run without one); the rules half is always
 recomputed. Only the other documents call the model — "a later run fills the
 LLM half" is one rerun with ``reuse``.
 """
@@ -119,6 +121,7 @@ class StepSettings:
                 window_chars=lim.window_chars, max_windows=lim.max_windows,
                 thinking=lim.thinking, repair_rounds=lim.repair_rounds,
                 cutoff_retry=lim.cutoff_retry, seed=lim.seed,
+                extra_body=lim.extra_body,
                 version=lim.version(self.model),
             )
         return rec
@@ -275,6 +278,7 @@ async def run_step(
                 "served": probe_rec.served if probe_rec else None,
                 "thinking": lim.thinking, "repair_rounds": lim.repair_rounds,
                 "cutoff_retry": lim.cutoff_retry, "seed": lim.seed,
+                "extra_body": lim.extra_body,
                 "windows": 0, "truncated": False, "calls": [], "proposed": 0, "kept": 0,
                 "repair_proposed": 0, "cut_off": 0, "cut_off_unresolved": 0, "retries": 0,
                 "reasoning_seen": 0, "ms": 0, "skipped": None, "degraded_reason": None}
@@ -297,7 +301,8 @@ async def run_step(
                 and prior.llm is not None and prior.llm.version == version
                 and isinstance(prior_llm, dict)
                 and prior_llm.get("cutoff_retry") == lim.cutoff_retry
-                and prior_llm.get("seed") == lim.seed):
+                and prior_llm.get("seed") == lim.seed
+                and prior_llm.get("extra_body") == lim.extra_body):
             reused_ids.add(doc.doc_id)
             prov = {**dict(prior.provenance), "reused_from": reuse_sha256, "tool": tool,
                     "rules": {"version": EXTRACTOR_VERSION}}

@@ -69,6 +69,7 @@ from ragstack.ingestion.structure import (
 )
 from ragstack.ingestion.symbol_glossary import attacher_from_mode
 from ragstack.ops import ingest_target
+from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
 
@@ -213,10 +214,17 @@ async def amain(args, target=None) -> int:
                                    spec=target.spec if target is not None else None)
         shard_id = args.shard_id or os.path.basename(args.shard)
         group = args.embed_group_size or _derive_group_size(args)
+        # ADR-0010 decision 8, #821: which workflow and which tools image
+        # embedded this shard — on the receipt AND in the embedding file's
+        # header, which is how the record reaches the load step's summary.
+        # Never all-null: segmenter_version is always known, and inside an
+        # image the RELEASE fields are too, even with no flags seeded.
+        provenance = provenance_from_args(args)
         receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id,
                                         args.out, group_size=group,
                                         chunking=_applied_chunking(args, pipeline.chunker,
-                                                                    target))
+                                                                    target),
+                                        provenance=provenance)
     # #754, ADR-0011: what the step DID on this shard (None if off or never
     # applied; a degraded run is recorded with applied_batches: 0).
     receipt.enrichment = merge_enrichment(pipeline.glossary_provenance(),
@@ -299,6 +307,7 @@ def parse_args(argv=None):
                         "licence,section_title,sha256,source_url,graphic")
     add_doi_enrichment_args(p)
     ingest_target.add_arguments(p)
+    add_provenance_arguments(p)
     return p.parse_args(argv)
 
 

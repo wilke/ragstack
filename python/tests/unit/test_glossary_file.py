@@ -1122,3 +1122,35 @@ def test_real_tokenizers_offline(model: str, monkeypatch: Any) -> None:
     assert VERIFIED_WS in kinds.values(), kinds
     for name, text in _REAL_EDGE.items():
         assert _real_kind(counter, text, 64, 0) == UNVERIFIABLE, name
+
+
+# --- v1.6.20 Gap A: the load summary carries the degraded reasons -----------------
+
+
+def test_load_summary_glossary_file_carries_degraded_reasons(
+        corpus: dict[str, Path], load: Any, tmp_path: Path) -> None:
+    """The bulk/JATS load records ``degraded_reasons`` and the distinct
+    ``glossary_version``s of the WHOLE file (not just the rows it loaded),
+    so the API can lift them from the load summary without the step's
+    ``glossary-summary.json``."""
+    import dataclasses
+
+    g = read_glossary_file(corpus["gfile"])
+    rows = sorted(g.rows.values(), key=lambda r: r.doc_id)
+    rows = [dataclasses.replace(rows[0], degraded="timeout"),
+            dataclasses.replace(rows[1], degraded="timeout"), *rows[2:]]
+    extra = build_row("zz-not-loaded", "An unrelated document. " + PAD,
+                      SymbolGlossaryAttacher())
+    rows.append(dataclasses.replace(extra, degraded="http_400"))
+    gpath = tmp_path / "degraded.jsonl"
+    write_glossary_file(gpath, rows, producer="test", config=g.config)
+    rc, chunks, _ = load(str(corpus["emb"]), "--glossary-file", str(gpath))
+    assert rc == 0 and chunks
+    prov = json.loads((tmp_path / "summary.json").read_text())["glossary_file"]
+    assert prov["degraded_reasons"] == {"http_400": 1, "timeout": 2}
+    assert sum(prov["degraded_reasons"].values()) == prov["counts"]["degraded"] == 3
+    assert prov["glossary_versions"] == [EXTRACTOR_VERSION]
+    # a file with nothing degraded records an empty object, not a missing key
+    assert load(str(corpus["emb"]), "--glossary-file", str(corpus["gfile"]))[0] == 0
+    clean = json.loads((tmp_path / "summary.json").read_text())["glossary_file"]
+    assert clean["degraded_reasons"] == {} and clean["glossary_versions"] == [EXTRACTOR_VERSION]

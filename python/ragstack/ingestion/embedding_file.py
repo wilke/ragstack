@@ -17,7 +17,10 @@ Line 1 is a **header** (schema tag + embedding dim + count + tenant, and since
 #828 PR 3 an optional ``chunking`` object: the registry ``collection_id`` the
 embed step resolved, when it resolved one, and the ``method`` / ``chunk_size`` /
 ``chunk_overlap`` / ``size_unit`` it applied, each key absent when not applied;
-``scripts/load_embeddings.py`` checks it against the registry entry); every
+``scripts/load_embeddings.py`` checks it against the registry entry; and since
+#821 an optional ``provenance`` object: the embed step's
+``ragstack.provenance.tool_provenance`` record, which the load step lists in
+its summary's ``embed_provenance``); every
 subsequent line is one embedded :class:`~ragstack.models.Chunk` (``model_dump``).
 The header ``dim`` is the guard that catches the classic footgun — loading a file
 of 768-d BGE vectors into a 4096-d SFR collection — before a single point is
@@ -136,13 +139,17 @@ class EmbeddingFileWriter:
     """
 
     def __init__(self, path: str | Path, *, tenant: str = "",
-                 chunking: dict | None = None) -> None:
+                 chunking: dict | None = None, provenance: dict | None = None) -> None:
         self._path = Path(path)
         self._tenant = tenant
         # #828 PR 3: what the embed step resolved and applied (see
         # ``scripts/embed_shard.py``); omitted from the header when None, so a
         # writer that is not given one writes exactly the old header.
         self._chunking = chunking
+        # #821: the embed step's tool provenance (``ragstack.provenance.
+        # tool_provenance``), so the load step can record which image embedded
+        # each file it loads. Omitted when None, like ``chunking``.
+        self._provenance = provenance
         self._fh: TextIO | None = None
         self._dim: int | None = None
         self.count = 0
@@ -156,6 +163,8 @@ class EmbeddingFileWriter:
             header = {"schema": SCHEMA, "tenant": self._tenant, "dim": self._dim}
             if self._chunking is not None:
                 header["chunking"] = self._chunking
+            if self._provenance is not None:
+                header["provenance"] = self._provenance
             self._fh.write(json.dumps(header, sort_keys=True) + "\n")
         elif len(chunk.embedding) != self._dim:
             raise EmbeddingFileError(
