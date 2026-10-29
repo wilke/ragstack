@@ -357,8 +357,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -420,8 +420,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -508,7 +508,7 @@ steps:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
         - {position: 15, prefix: --shard-id, valueFrom: $(inputs.shard.nameroot)}
-        - {position: 16, prefix: --out, valueFrom: receipt.json}
+        - {position: 16, prefix: --out, valueFrom: $(inputs.shard.nameroot).receipt.json}
         # The archive step's input (#357): the embedded chunks of the batch's
         # SUCCESSFUL documents, written between the embed and the upsert halves.
         - {position: 17, prefix: --embedding-file, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
@@ -517,7 +517,7 @@ steps:
           type: File
           doc: "ShardReceipt JSON (status/n_docs/n_docs_failed/n_chunks/chunk_ids/docs
             — a row per document with its own error + chunk_ids)."
-          outputBinding: {glob: receipt.json}
+          outputBinding: {glob: $(inputs.shard.nameroot).receipt.json}
         embeddings:
           type: File
           doc: "ragstack.embedding_file/v1 JSONL of this batch's embedded chunks."
@@ -543,8 +543,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       # Exit 5 = nothing to archive (#768): every document of the run failed on
       # its own (all refused as duplicates, all scanned), the receipts name each

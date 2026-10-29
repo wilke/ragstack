@@ -172,8 +172,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -217,8 +217,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
@@ -257,12 +257,12 @@ steps:
           inputBinding: {prefix: --symbol-glossary, position: 15}
       arguments:
         - {position: 10, prefix: --out, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
-        - {position: 11, prefix: --receipt, valueFrom: receipt.json}
+        - {position: 11, prefix: --receipt, valueFrom: $(inputs.shard.nameroot).receipt.json}
       outputs:
         # File[] (a 1-element array) so it feeds load's File[] input directly,
         # matching embed-bulk.cwl's File[] embeddings output.
         embeddings: {type: "File[]", outputBinding: {glob: $(inputs.shard.nameroot).emb.jsonl}}
-        receipt: {type: File, outputBinding: {glob: receipt.json}}
+        receipt: {type: File, outputBinding: {glob: $(inputs.shard.nameroot).receipt.json}}
 
   load:
     doc: "Upsert the embedding file into Qdrant/ES -> load summary."
@@ -282,8 +282,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/load_embeddings.py]
@@ -343,8 +343,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       inputs:
         version: {type: string, inputBinding: {prefix: --version, position: 1}}

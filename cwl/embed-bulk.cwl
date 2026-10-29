@@ -59,7 +59,7 @@ inputs:
 
 steps:
   embed_shard:
-    doc: "Embed one JSONL shard -> <shard>.emb.jsonl + receipt.json (no store contact)."
+    doc: "Embed one JSONL shard -> <shard>.emb.jsonl + <shard>.receipt.json (no store contact)."
     scatter: shard
     in:
       shard: shards
@@ -76,8 +76,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
@@ -135,7 +135,7 @@ steps:
           valueFrom: $(inputs.shard.nameroot).emb.jsonl
         - position: 11
           prefix: --receipt
-          valueFrom: receipt.json
+          valueFrom: $(inputs.shard.nameroot).receipt.json
       outputs:
         embeddings:
           type: File
@@ -144,7 +144,7 @@ steps:
         receipt:
           type: File
           outputBinding:
-            glob: receipt.json
+            glob: $(inputs.shard.nameroot).receipt.json
 
   merge:
     doc: "Gather per-shard receipts -> run summary (totals + failed shards)."
@@ -155,8 +155,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:

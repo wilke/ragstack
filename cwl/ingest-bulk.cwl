@@ -115,7 +115,7 @@ inputs:
 
 steps:
   ingest_shard:
-    doc: "Ingest one JSONL shard -> receipt.json (stateless, idempotent)."
+    doc: "Ingest one JSONL shard -> <shard>.receipt.json (stateless, idempotent)."
     scatter: shard
     in:
       shard: shards
@@ -137,8 +137,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -174,9 +174,9 @@ steps:
           inputBinding: {prefix: --symbol-glossary, position: 17}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
-        - {position: 12, prefix: --out, valueFrom: receipt.json}
+        - {position: 12, prefix: --out, valueFrom: $(inputs.shard.nameroot).receipt.json}
       outputs:
-        receipt: {type: File, outputBinding: {glob: receipt.json}}
+        receipt: {type: File, outputBinding: {glob: $(inputs.shard.nameroot).receipt.json}}
 
   merge:
     doc: "Gather per-shard receipts -> run summary (totals + failed shards)."
@@ -187,8 +187,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.18-b1.sif
-          dockerImageId: ragstack-tools-v1.6.18-b1.sif
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:
