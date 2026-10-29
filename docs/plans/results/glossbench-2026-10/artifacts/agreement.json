@@ -1,0 +1,356 @@
+{
+ "artifact_provenance": {
+  "label": "EXPLORATORY",
+  "what": "step 6: between-model agreement on canonical symbol keys",
+  "source_sha256": "02293c1ed5f7d5d9baee70bacc113dfeeef8d1d2554aa58cf258cef9704a4d9b",
+  "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
+  "citable": false,
+  "citable_reason": "analysis ran from a scratch script outside the repository (not a clean tree); EXPLORATORY, no pre-registration: not citable as a result",
+  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: 2eb6e6b4fa5e8d70b4557ebd5a358477c862255d)"
+ },
+ "corpora": {
+  "ASM-1000": {
+   "definition_rule": "casefolded, whitespace-collapsed text; 'first' = first definition in document order equal; 'any' = any definition equal",
+   "documents": 1000,
+   "documents_compared": 998,
+   "excluded_degraded_in_any": 2,
+   "models": [
+    "scout",
+    "qwen38",
+    "qwen36"
+   ],
+   "pairwise": {
+    "qwen38~qwen36": {
+     "definition_any_identical_share": 0.6952,
+     "definition_first_identical_share": 0.6689,
+     "docs_with_nonempty_union": 595,
+     "jaccard_doc_mean": 0.396,
+     "jaccard_micro": 0.3972,
+     "shared_symbols": 912
+    },
+    "scout~qwen36": {
+     "definition_any_identical_share": 0.5782,
+     "definition_first_identical_share": 0.5574,
+     "docs_with_nonempty_union": 585,
+     "jaccard_doc_mean": 0.3094,
+     "jaccard_micro": 0.3002,
+     "shared_symbols": 671
+    },
+    "scout~qwen38": {
+     "definition_any_identical_share": 0.6147,
+     "definition_first_identical_share": 0.6013,
+     "docs_with_nonempty_union": 531,
+     "jaccard_doc_mean": 0.2569,
+     "jaccard_micro": 0.2723,
+     "shared_symbols": 449
+    }
+   },
+   "rules_vs_llm": {
+    "qwen36": {
+     "intersection": 94,
+     "llm_symbols": 2008,
+     "rules_symbols": 199,
+     "share_of_llm": 0.0468,
+     "share_of_rules": 0.4724
+    },
+    "qwen38": {
+     "intersection": 85,
+     "llm_symbols": 1200,
+     "rules_symbols": 199,
+     "share_of_llm": 0.0708,
+     "share_of_rules": 0.4271
+    },
+    "scout": {
+     "intersection": 50,
+     "llm_symbols": 898,
+     "rules_symbols": 199,
+     "share_of_llm": 0.0557,
+     "share_of_rules": 0.2513
+    }
+   },
+   "three_way": {
+    "found_by_exactly_one_model": {
+     "qwen36": 824,
+     "qwen38": 238,
+     "scout": 177
+    },
+    "intersection": 399,
+    "symbols_by_models_found": {
+     "1": 1239,
+     "2": 835,
+     "3": 399
+    },
+    "three_way_share": 0.1613,
+    "union": 2473
+   }
+  },
+  "docs-A": {
+   "definition_rule": "casefolded, whitespace-collapsed text; 'first' = first definition in document order equal; 'any' = any definition equal",
+   "documents": 336,
+   "documents_compared": 336,
+   "excluded_degraded_in_any": 0,
+   "models": [
+    "scout",
+    "qwen38",
+    "qwen36"
+   ],
+   "pairwise": {
+    "qwen38~qwen36": {
+     "definition_any_identical_share": 0.4,
+     "definition_first_identical_share": 0.4,
+     "docs_with_nonempty_union": 13,
+     "jaccard_doc_mean": 0.2538,
+     "jaccard_micro": 0.4688,
+     "shared_symbols": 15
+    },
+    "scout~qwen36": {
+     "definition_any_identical_share": 0.5294,
+     "definition_first_identical_share": 0.5294,
+     "docs_with_nonempty_union": 15,
+     "jaccard_doc_mean": 0.32,
+     "jaccard_micro": 0.5484,
+     "shared_symbols": 17
+    },
+    "scout~qwen38": {
+     "definition_any_identical_share": 0.8421,
+     "definition_first_identical_share": 0.8421,
+     "docs_with_nonempty_union": 16,
+     "jaccard_doc_mean": 0.25,
+     "jaccard_micro": 0.5278,
+     "shared_symbols": 19
+    }
+   },
+   "rules_vs_llm": {
+    "qwen36": {
+     "intersection": 1,
+     "llm_symbols": 20,
+     "rules_symbols": 3,
+     "share_of_llm": 0.05,
+     "share_of_rules": 0.3333
+    },
+    "qwen38": {
+     "intersection": 1,
+     "llm_symbols": 27,
+     "rules_symbols": 3,
+     "share_of_llm": 0.037,
+     "share_of_rules": 0.3333
+    },
+    "scout": {
+     "intersection": 1,
+     "llm_symbols": 28,
+     "rules_symbols": 3,
+     "share_of_llm": 0.0357,
+     "share_of_rules": 0.3333
+    }
+   },
+   "three_way": {
+    "found_by_exactly_one_model": {
+     "qwen36": 3,
+     "qwen38": 8,
+     "scout": 7
+    },
+    "intersection": 15,
+    "symbols_by_models_found": {
+     "1": 18,
+     "2": 6,
+     "3": 15
+    },
+    "three_way_share": 0.3846,
+    "union": 39
+   }
+  },
+  "OA-1000": {
+   "definition_rule": "casefolded, whitespace-collapsed text; 'first' = first definition in document order equal; 'any' = any definition equal",
+   "documents": 12560,
+   "documents_compared": 1593,
+   "excluded_degraded_in_any": 10967,
+   "models": [
+    "scout",
+    "qwen38",
+    "qwen36"
+   ],
+   "pairwise": {
+    "qwen38~qwen36": {
+     "definition_any_identical_share": 0.742,
+     "definition_first_identical_share": 0.731,
+     "docs_with_nonempty_union": 825,
+     "jaccard_doc_mean": 0.5901,
+     "jaccard_micro": 0.5884,
+     "shared_symbols": 2167
+    },
+    "scout~qwen36": {
+     "definition_any_identical_share": 0.6239,
+     "definition_first_identical_share": 0.6142,
+     "docs_with_nonempty_union": 813,
+     "jaccard_doc_mean": 0.3716,
+     "jaccard_micro": 0.371,
+     "shared_symbols": 1348
+    },
+    "scout~qwen38": {
+     "definition_any_identical_share": 0.7053,
+     "definition_first_identical_share": 0.697,
+     "docs_with_nonempty_union": 781,
+     "jaccard_doc_mean": 0.3567,
+     "jaccard_micro": 0.3769,
+     "shared_symbols": 1208
+    }
+   },
+   "rules_vs_llm": {
+    "qwen36": {
+     "intersection": 466,
+     "llm_symbols": 3209,
+     "rules_symbols": 601,
+     "share_of_llm": 0.1452,
+     "share_of_rules": 0.7754
+    },
+    "qwen38": {
+     "intersection": 479,
+     "llm_symbols": 2641,
+     "rules_symbols": 601,
+     "share_of_llm": 0.1814,
+     "share_of_rules": 0.797
+    },
+    "scout": {
+     "intersection": 293,
+     "llm_symbols": 1772,
+     "rules_symbols": 601,
+     "share_of_llm": 0.1653,
+     "share_of_rules": 0.4875
+    }
+   },
+   "three_way": {
+    "found_by_exactly_one_model": {
+     "qwen36": 790,
+     "qwen38": 362,
+     "scout": 312
+    },
+    "intersection": 1096,
+    "symbols_by_models_found": {
+     "1": 1464,
+     "2": 1435,
+     "3": 1096
+    },
+    "three_way_share": 0.2743,
+    "union": 3995
+   }
+  },
+  "papers-OC": {
+   "definition_rule": "casefolded, whitespace-collapsed text; 'first' = first definition in document order equal; 'any' = any definition equal",
+   "documents": 275,
+   "documents_compared": 275,
+   "excluded_degraded_in_any": 0,
+   "models": [
+    "scout",
+    "qwen38",
+    "qwen36"
+   ],
+   "pairwise": {
+    "qwen38~qwen36": {
+     "definition_any_identical_share": 0.7393,
+     "definition_first_identical_share": 0.7288,
+     "docs_with_nonempty_union": 190,
+     "jaccard_doc_mean": 0.7788,
+     "jaccard_micro": 0.7882,
+     "shared_symbols": 1630
+    },
+    "scout~qwen36": {
+     "definition_any_identical_share": 0.6444,
+     "definition_first_identical_share": 0.618,
+     "docs_with_nonempty_union": 189,
+     "jaccard_doc_mean": 0.5258,
+     "jaccard_micro": 0.5114,
+     "shared_symbols": 987
+    },
+    "scout~qwen38": {
+     "definition_any_identical_share": 0.6639,
+     "definition_first_identical_share": 0.6425,
+     "docs_with_nonempty_union": 190,
+     "jaccard_doc_mean": 0.5107,
+     "jaccard_micro": 0.5094,
+     "shared_symbols": 979
+    }
+   },
+   "rules_vs_llm": {
+    "qwen36": {
+     "intersection": 708,
+     "llm_symbols": 1857,
+     "rules_symbols": 866,
+     "share_of_llm": 0.3813,
+     "share_of_rules": 0.8176
+    },
+    "qwen38": {
+     "intersection": 714,
+     "llm_symbols": 1841,
+     "rules_symbols": 866,
+     "share_of_llm": 0.3878,
+     "share_of_rules": 0.8245
+    },
+    "scout": {
+     "intersection": 485,
+     "llm_symbols": 1060,
+     "rules_symbols": 866,
+     "share_of_llm": 0.4575,
+     "share_of_rules": 0.56
+    }
+   },
+   "three_way": {
+    "found_by_exactly_one_model": {
+     "qwen36": 182,
+     "qwen38": 174,
+     "scout": 36
+    },
+    "intersection": 942,
+    "symbols_by_models_found": {
+     "1": 392,
+     "2": 770,
+     "3": 942
+    },
+    "three_way_share": 0.4477,
+    "union": 2104
+   }
+  }
+ },
+ "label": "EXPLORATORY",
+ "provenance": {
+  "citable": false,
+  "citable_reason": "scratch analysis script outside the repository (untracked); round 1 is EXPLORATORY with no pre-registration",
+  "commit": "4a0571b1383739393c6623385b8d7477910cd252",
+  "describe": null,
+  "dirty": false,
+  "image": {
+   "build": "1",
+   "build_date": "2026-10-29T01:12:10Z",
+   "commit": "4a0571b1383739393c6623385b8d7477910cd252",
+   "version": "v1.6.20"
+  },
+  "in_image": true,
+  "installed_distribution": "1.6.20",
+  "python": "3.12.16",
+  "recorded_at": "2026-10-29T05:21:16Z",
+  "schema": 1,
+  "script": {
+   "sha256": "c99be55e509c391d9f72dab9de0424f922b1c2f9a84d19b98ad590f84b6ec74e",
+   "tracked": false
+  },
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.10.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "image",
+  "untracked": null,
+  "version": "v1.6.20",
+  "warnings": [
+   "no git checkout: git missing, or this package's checkout is not the top level of a working tree"
+  ]
+ }
+}

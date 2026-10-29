@@ -1,0 +1,704 @@
+{
+ "artifact_provenance": {
+  "label": "EXPLORATORY",
+  "what": "step 7: docs-A retrieval-only re-score, counts-only copy (per-item and stratum labels removed)",
+  "source_sha256": "c411633b3f18f4e1dce3e08a946ca8da33e2f8e35428a3634c5dc1e24ece1301",
+  "source_full_sha256": "86ff45517f20cb21ab222a7949584ebf07350ee7714b7a44fac723d6fa41de33",
+  "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
+  "citable": true,
+  "citable_reason": "harness ran from a clean detached worktree at db97c28 (dirty false, untracked 0)",
+  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: 2eb6e6b4fa5e8d70b4557ebd5a358477c862255d)"
+ },
+ "chunks_with_glossary": {
+  "qwen36": {
+   "T512o0": 1
+  },
+  "qwen38": {
+   "T512o0": 1
+  },
+  "rules": {
+   "T512o0": 1
+  },
+  "scout": {
+   "T512o0": 1
+  }
+ },
+ "citable": true,
+ "config_sha256": "3cc8d93be0a29ac4d301402a2d531a33f230a8506fae5ba78e66f1e4a4e9efeb",
+ "contrasts": {
+  "qwen36-vs-rules": {
+   "T512o0": {
+    "B4096": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    },
+    "k10": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    }
+   }
+  },
+  "qwen38-vs-rules": {
+   "T512o0": {
+    "B4096": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    },
+    "k10": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    }
+   }
+  },
+  "scout-vs-rules": {
+   "T512o0": {
+    "B4096": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    },
+    "k10": {
+     "alternative": "two-sided",
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "gained": 0,
+     "lost": 0,
+     "min_attainable_p": {
+      "discordant": 0,
+      "mcnemar_two_sided": 1.0,
+      "n_pages_nonzero": 0,
+      "regime": "exact",
+      "sign_flip": 1.0
+     },
+     "n": 735,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "n_pages": 208,
+     "n_pages_nonzero": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "seed": 261025,
+     "type": "superiority"
+    }
+   }
+  }
+ },
+ "design": {
+  "allow_unverifiable": false,
+  "analysis": {
+   "ci_level": 0.9,
+   "n_boot": 10000,
+   "n_perm": 10000
+  },
+  "arms": [
+   "T512o0"
+  ],
+  "conditions": {
+   "B4096": {
+    "budget": 4096
+   },
+   "k10": {
+    "top": 10
+   }
+  },
+  "family": {
+   "alternative": "two-sided",
+   "arms": 1,
+   "budget_conditions": 2,
+   "correction": "none (exploratory): read every p against n_tests",
+   "definition": "arms x budget conditions x non-reference glossary conditions, each contrasted with the reference",
+   "non_reference_conditions": 3
+  },
+  "n_tests": 6,
+  "seed": 261025
+ },
+ "exploratory": true,
+ "found": {
+  "qwen36": {
+   "T512o0": {
+    "B4096": 0.8204,
+    "k10": 0.8463
+   }
+  },
+  "qwen38": {
+   "T512o0": {
+    "B4096": 0.8204,
+    "k10": 0.8463
+   }
+  },
+  "rules": {
+   "T512o0": {
+    "B4096": 0.8204,
+    "k10": 0.8463
+   }
+  },
+  "scout": {
+   "T512o0": {
+    "B4096": 0.8204,
+    "k10": 0.8463
+   }
+  }
+ },
+ "glossary_conditions": [
+  {
+   "allow_unverifiable": false,
+   "config": {
+    "allow_single_letter": false,
+    "attach_only_with_value": true,
+    "definition_window": 200,
+    "max_chars_per_chunk": 1200,
+    "max_definition_words": 12,
+    "max_definitions_per_symbol": 5,
+    "max_entries_per_chunk": 12,
+    "positional": true,
+    "rule_appositive": true,
+    "rule_is_the": true,
+    "rule_parenthetical": true,
+    "rule_respectively": true,
+    "rule_where": true
+   },
+   "counts": {
+    "degraded": 0,
+    "documents": 336,
+    "merged_entries": 3,
+    "with_llm": 0
+   },
+   "created": "2026-10-29T04:22:09Z",
+   "degraded_reasons": {},
+   "documents": {
+    "unverified": 0,
+    "verified": 336,
+    "verified_ws": 0
+   },
+   "file_stamp": "file/1",
+   "glossary_versions": [
+    "rules/3"
+   ],
+   "mask": "mask/1",
+   "name": "rules",
+   "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+   "rows_outside_pages": 0,
+   "schema": "ragstack.glossary_file/v1",
+   "sha256": "bafe5ca9170ea1777b25e9ccded04ad49246dc9dd0646650cc3a268737c8e99f"
+  },
+  {
+   "allow_unverifiable": false,
+   "config": {
+    "allow_single_letter": false,
+    "attach_only_with_value": true,
+    "definition_window": 200,
+    "max_chars_per_chunk": 1200,
+    "max_definition_words": 12,
+    "max_definitions_per_symbol": 5,
+    "max_entries_per_chunk": 12,
+    "positional": true,
+    "rule_appositive": true,
+    "rule_is_the": true,
+    "rule_parenthetical": true,
+    "rule_respectively": true,
+    "rule_where": true
+   },
+   "counts": {
+    "degraded": 0,
+    "documents": 336,
+    "merged_entries": 30,
+    "with_llm": 336
+   },
+   "created": "2026-10-29T04:36:33Z",
+   "degraded_reasons": {},
+   "documents": {
+    "unverified": 0,
+    "verified": 336,
+    "verified_ws": 0
+   },
+   "file_stamp": "file/1",
+   "glossary_versions": [
+    "llm/2:RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic:dcb924271b1e:w80000x4:t4096:k0:r0",
+    "rules/3"
+   ],
+   "mask": "mask/1",
+   "name": "scout",
+   "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+   "rows_outside_pages": 0,
+   "schema": "ragstack.glossary_file/v1",
+   "sha256": "a20abeb7766ef711249688362859c2cc5ced0bafbef6f1167f66f58ca1e40d39"
+  },
+  {
+   "allow_unverifiable": false,
+   "config": {
+    "allow_single_letter": false,
+    "attach_only_with_value": true,
+    "definition_window": 200,
+    "max_chars_per_chunk": 1200,
+    "max_definition_words": 12,
+    "max_definitions_per_symbol": 5,
+    "max_entries_per_chunk": 12,
+    "positional": true,
+    "rule_appositive": true,
+    "rule_is_the": true,
+    "rule_parenthetical": true,
+    "rule_respectively": true,
+    "rule_where": true
+   },
+   "counts": {
+    "degraded": 0,
+    "documents": 336,
+    "merged_entries": 29,
+    "with_llm": 336
+   },
+   "created": "2026-10-29T04:38:46Z",
+   "degraded_reasons": {},
+   "documents": {
+    "unverified": 0,
+    "verified": 336,
+    "verified_ws": 0
+   },
+   "file_stamp": "file/1",
+   "glossary_versions": [
+    "llm/2:Qwen3.8-27B:dcb924271b1e:w80000x4:t4096:k0:r0",
+    "rules/3"
+   ],
+   "mask": "mask/1",
+   "name": "qwen38",
+   "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+   "rows_outside_pages": 0,
+   "schema": "ragstack.glossary_file/v1",
+   "sha256": "94831fa8cf628034eaad2c525579b58b459cf389378a7275ab038d1e8069e0e0"
+  },
+  {
+   "allow_unverifiable": false,
+   "config": {
+    "allow_single_letter": false,
+    "attach_only_with_value": true,
+    "definition_window": 200,
+    "max_chars_per_chunk": 1200,
+    "max_definition_words": 12,
+    "max_definitions_per_symbol": 5,
+    "max_entries_per_chunk": 12,
+    "positional": true,
+    "rule_appositive": true,
+    "rule_is_the": true,
+    "rule_parenthetical": true,
+    "rule_respectively": true,
+    "rule_where": true
+   },
+   "counts": {
+    "degraded": 0,
+    "documents": 336,
+    "merged_entries": 22,
+    "with_llm": 336
+   },
+   "created": "2026-10-29T04:35:04Z",
+   "degraded_reasons": {},
+   "documents": {
+    "unverified": 0,
+    "verified": 336,
+    "verified_ws": 0
+   },
+   "file_stamp": "file/1",
+   "glossary_versions": [
+    "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0",
+    "rules/3"
+   ],
+   "mask": "mask/1",
+   "name": "qwen36",
+   "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+   "rows_outside_pages": 0,
+   "schema": "ragstack.glossary_file/v1",
+   "sha256": "73ddaa5e8ab0c84e8f10a4a932b1676cbfe27172c102e7c05f693fb1be0c996b"
+  }
+ ],
+ "index": {
+  "chunks": 1113,
+  "docs": 336,
+  "reassembly_failed": 0
+ },
+ "manifest": {
+  "docs": 336,
+  "drift_docs": 672,
+  "manifest": "checked"
+ },
+ "manipulation_check": {
+  "T512o0": {
+   "chunks": 1113,
+   "expected": 1113,
+   "ok": true
+  }
+ },
+ "note": "retrieval-only: found = every gold quote in the delivered context (part 4's reader-independent metric); one glossary file per condition; contrasts are two-sided against the reference",
+ "power": "no power computation for this re-score. The part-4 power table (`part4 --power-table`, prereg §6) is the reference for the design's sensitivity. A null here is readable only where min_attainable_p is below the threshold and the discordant count could carry an effect the reader cares about; with few non-zero pages or few discordants, no outcome can be significant and a null says nothing.",
+ "provenance": {
+  "citable": true,
+  "commit": "db97c2814676cce3d29589f1810843d251ad9a93",
+  "describe": "v1.6.21-4-gdb97c28",
+  "dirty": false,
+  "glossary_files": {
+   "qwen36": {
+    "allow_unverifiable": false,
+    "config": {
+     "allow_single_letter": false,
+     "attach_only_with_value": true,
+     "definition_window": 200,
+     "max_chars_per_chunk": 1200,
+     "max_definition_words": 12,
+     "max_definitions_per_symbol": 5,
+     "max_entries_per_chunk": 12,
+     "positional": true,
+     "rule_appositive": true,
+     "rule_is_the": true,
+     "rule_parenthetical": true,
+     "rule_respectively": true,
+     "rule_where": true
+    },
+    "counts": {
+     "degraded": 0,
+     "documents": 336,
+     "merged_entries": 22,
+     "with_llm": 336
+    },
+    "created": "2026-10-29T04:35:04Z",
+    "degraded_reasons": {},
+    "documents": {
+     "unverified": 0,
+     "verified": 336,
+     "verified_ws": 0
+    },
+    "file_stamp": "file/1",
+    "glossary_versions": [
+     "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0",
+     "rules/3"
+    ],
+    "mask": "mask/1",
+    "name": "qwen36",
+    "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+    "rows_outside_pages": 0,
+    "schema": "ragstack.glossary_file/v1",
+    "sha256": "73ddaa5e8ab0c84e8f10a4a932b1676cbfe27172c102e7c05f693fb1be0c996b"
+   },
+   "qwen38": {
+    "allow_unverifiable": false,
+    "config": {
+     "allow_single_letter": false,
+     "attach_only_with_value": true,
+     "definition_window": 200,
+     "max_chars_per_chunk": 1200,
+     "max_definition_words": 12,
+     "max_definitions_per_symbol": 5,
+     "max_entries_per_chunk": 12,
+     "positional": true,
+     "rule_appositive": true,
+     "rule_is_the": true,
+     "rule_parenthetical": true,
+     "rule_respectively": true,
+     "rule_where": true
+    },
+    "counts": {
+     "degraded": 0,
+     "documents": 336,
+     "merged_entries": 29,
+     "with_llm": 336
+    },
+    "created": "2026-10-29T04:38:46Z",
+    "degraded_reasons": {},
+    "documents": {
+     "unverified": 0,
+     "verified": 336,
+     "verified_ws": 0
+    },
+    "file_stamp": "file/1",
+    "glossary_versions": [
+     "llm/2:Qwen3.8-27B:dcb924271b1e:w80000x4:t4096:k0:r0",
+     "rules/3"
+    ],
+    "mask": "mask/1",
+    "name": "qwen38",
+    "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+    "rows_outside_pages": 0,
+    "schema": "ragstack.glossary_file/v1",
+    "sha256": "94831fa8cf628034eaad2c525579b58b459cf389378a7275ab038d1e8069e0e0"
+   },
+   "rules": {
+    "allow_unverifiable": false,
+    "config": {
+     "allow_single_letter": false,
+     "attach_only_with_value": true,
+     "definition_window": 200,
+     "max_chars_per_chunk": 1200,
+     "max_definition_words": 12,
+     "max_definitions_per_symbol": 5,
+     "max_entries_per_chunk": 12,
+     "positional": true,
+     "rule_appositive": true,
+     "rule_is_the": true,
+     "rule_parenthetical": true,
+     "rule_respectively": true,
+     "rule_where": true
+    },
+    "counts": {
+     "degraded": 0,
+     "documents": 336,
+     "merged_entries": 3,
+     "with_llm": 0
+    },
+    "created": "2026-10-29T04:22:09Z",
+    "degraded_reasons": {},
+    "documents": {
+     "unverified": 0,
+     "verified": 336,
+     "verified_ws": 0
+    },
+    "file_stamp": "file/1",
+    "glossary_versions": [
+     "rules/3"
+    ],
+    "mask": "mask/1",
+    "name": "rules",
+    "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+    "rows_outside_pages": 0,
+    "schema": "ragstack.glossary_file/v1",
+    "sha256": "bafe5ca9170ea1777b25e9ccded04ad49246dc9dd0646650cc3a268737c8e99f"
+   },
+   "scout": {
+    "allow_unverifiable": false,
+    "config": {
+     "allow_single_letter": false,
+     "attach_only_with_value": true,
+     "definition_window": 200,
+     "max_chars_per_chunk": 1200,
+     "max_definition_words": 12,
+     "max_definitions_per_symbol": 5,
+     "max_entries_per_chunk": 12,
+     "positional": true,
+     "rule_appositive": true,
+     "rule_is_the": true,
+     "rule_parenthetical": true,
+     "rule_respectively": true,
+     "rule_where": true
+    },
+    "counts": {
+     "degraded": 0,
+     "documents": 336,
+     "merged_entries": 30,
+     "with_llm": 336
+    },
+    "created": "2026-10-29T04:36:33Z",
+    "degraded_reasons": {},
+    "documents": {
+     "unverified": 0,
+     "verified": 336,
+     "verified_ws": 0
+    },
+    "file_stamp": "file/1",
+    "glossary_versions": [
+     "llm/2:RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic:dcb924271b1e:w80000x4:t4096:k0:r0",
+     "rules/3"
+    ],
+    "mask": "mask/1",
+    "name": "scout",
+    "producer": "scripts/glossary_step.py v1.6.20 (extractor rules/3, llm/2)",
+    "rows_outside_pages": 0,
+    "schema": "ragstack.glossary_file/v1",
+    "sha256": "a20abeb7766ef711249688362859c2cc5ced0bafbef6f1167f66f58ca1e40d39"
+   }
+  },
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-10-29T14:33:11Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.21+db97c28",
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ },
+ "questions": {
+  "n_valid": 735,
+  "sha256": "b2fbbd564f1dd27e228bb5737041bab51c73691630ed66b2759b34d826465aa5"
+ },
+ "reference_condition": "rules",
+ "schema": "part4-glossary/1",
+ "note_counts_only": "counts-only copy of the full step-7 result (per_item and stratum labels removed); docs-A alias",
+ "found_counts": {
+  "rules": {
+   "B4096": 603,
+   "k10": 622
+  },
+  "scout": {
+   "B4096": 603,
+   "k10": 622
+  },
+  "qwen38": {
+   "B4096": 603,
+   "k10": 622
+  },
+  "qwen36": {
+   "B4096": 603,
+   "k10": 622
+  }
+ }
+}
