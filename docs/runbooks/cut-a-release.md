@@ -309,6 +309,8 @@ The script (`python/scripts/stamp_tool_image.py`, `--help` [exercised]):
 - writes the receipt's `name` into every `dockerPull` **and** every
   `dockerImageId` in `cwl/*.cwl`. On a scratch copy of today's tree it stamped
   all 12 `.cwl` files: 23 `dockerPull` sites and 23 `dockerImageId` sites
+  (v1.6.21 adds `cwl/glossary-step.cwl` and the inlined glossary steps: 13 files,
+  30 sites of each kind)
   [exercised];
 - writes the receipt as given (keys sorted) to **`cwl/tool-image.receipt.json`**.
   This is the committed receipt that decision 8 needs (§ 8);

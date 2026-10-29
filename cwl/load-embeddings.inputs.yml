@@ -17,3 +17,9 @@ fail_on_error: true
 # found it adds latency without preventing drops below crash-scale. Set true for a
 # very large corpus on a capped Qdrant.
 backpressure: false
+# #849: the chunk cap is the submitter's decision; 0 = none (the registry
+# entry's explicit max_chunks override still applies).
+# max_chunks: 0
+# #847: render every chunk's glossary field from embed-bulk.cwl's merged
+# `glossary_file` output (each document's text_sha256 is checked first).
+# glossary_file: {class: File, path: /rag/cache/load12/glossary/glossary.jsonl}

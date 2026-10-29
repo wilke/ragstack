@@ -25,6 +25,7 @@ tool + receipts).
 | `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
 | `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-BATCH (#203 Option B; `batch_size: 1` is Option A).** The workflow groups `pdfs` into batches of `batch_size` (default 20, an ExpressionTool step) and scatters: one batch → one extract task → one `ingest_shard` task → **one receipt with a row per document**, then packs into the versioned archive — the workflow's **only** output, whose `receipt.json` array the API maps back per document. A scanned PDF fails alone; a task fails only when every document of its batch failed. The PDF workflow the API drives under `INGEST_BACKEND=gowe` (below). |
 | `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
+| `glossary-step.cwl` | **Symbol glossary step (#847 G2b).** One JSONL shard → `<nameroot>.glossary.jsonl` (`ragstack.glossary_file/1`: rules + optional LLM entries, merged glossary, drops by reason, provenance, `degraded`) + `<nameroot>.glossary-summary.json`. Inlined as the `glossary` step of `pdf-ingest-scatter`, `ingest-bulk`, `jats-ingest` and `embed-bulk` (keep in sync). `glossary_llm: "off"` (default) = rules only, offline; `"on"` asks an OpenAI-compatible endpoint, bounded by the `glossary_llm_*` inputs (0/null defaults; required with `on`, or exit 2), degrading per document, never failing for a model error. Exit 2 = config refusal, 3 = unreadable shard (both permanent). The key comes from the variable `glossary_llm_api_key_env` names (worker `--secret-file`), never an input. |
 | `archive-collection.cwl` | **Archive step (#357, phase 2 of #353).** Pack the embed stage's embedding file(s) + the load receipt(s) into one `Directory` named by the version number (`manifest.json`, `chunks.jsonl.gz`, `vectors.f32`, `receipt.json` — the `ragstack-archive/1` format, [`docs/ingest-paths.md`](../docs/ingest-paths.md#archive-format)). Inlined as the last step of both `pdf-ingest*.cwl`, whose `archive: Directory` workflow output GoWe post-stages to `<output_destination>/<version>/`. |
 | `restore-collection.cwl` | **Restore workflow (#358, phase 2 of #353).** Single task: `load_embeddings.py --replay` over the collection's archive `versions/<n>/` directories, submitted by the API **as the user** with `ws://` `Directory[]` inputs the engine pre-stages with the submitter's token (no task sees it). Every version is verified — sha256s, vectors geometry, and `manifest.spec_hash == spec_hash` (the registry row's) — **before any write**; a failure exits 3 with an `ArchiveCorrupt:`/`SpecMismatch:` line and the API marks the collection `lost`. Then, in order: chunk versions replace their documents and upsert both legs (deterministic ids — a re-run converges), tombstone versions delete by doc id. The physical stores come from the registry entry named by `collection_id` (#263). |
 | `archive-tombstone.cwl` | **Delete version (#357).** Same tool in tombstone mode: a list of removed doc ids → a `Directory` named by the version holding only `manifest.json` + `tombstone.json`. |
@@ -633,6 +634,33 @@ The two step tools live in the ragstack package's script tree:
   `metrics.json` files and writes `report.md` (metrics table + paired-bootstrap
   difference CIs + Holm-corrected Wilcoxon), reusing the harness's assemblers and
   the `_stats` layer. Pure computation — no GPU/store/network.
+
+### The glossary step, receipt names and the new inputs (v1.6.21, #847 / #849 / #852 / #821)
+
+- **Glossary.** Each shard workflow runs the glossary step per shard and renders every
+  chunk's `symbol_glossary` field from its file: `ingest_shard --glossary-file` on the
+  coupled path (exit 6 = the file does not match the batch, permanent), `merge_glossary`
+  (`glossary_file.py merge`) → `load_embeddings --glossary-file` on the decoupled one.
+  The upload workflow's version folder now holds `glossary.jsonl` (role `glossary`).
+  Paths, the API settings and the bulk-plane limitation:
+  [`docs/ingest-paths.md` § Symbol glossary from the glossary step](../docs/ingest-paths.md#symbol-glossary-from-the-glossary-step-847-g2b).
+- **Known limitation (bulk plane).** On `jats-ingest` / `embed-bulk` + `load-embeddings`,
+  `symbol_glossary="off"` does not suppress the field at load: it governs only
+  `embed_shard`'s in-process pass, which the file overrides whenever `glossary_file` is
+  bound (no `when:`, no JS). A follow-up.
+- **Per-task names (#852).** Every scattered step names its outputs by the shard:
+  `$(inputs.shard.nameroot).receipt.json`, `.glossary.jsonl`, `.glossary-summary.json`.
+  GoWe stages a gathered `File[]` flat by basename, so a constant name collapsed N tasks'
+  receipts onto one (and the v1.6.20 tools now refuse that shape). Shard basenames must be
+  distinct.
+- **Limits are inputs (#849).** `max_chunks` (default 0) on `ingest-bulk`, `jats-ingest`
+  and `load-embeddings` (already on `pdf-ingest-scatter`); the 16 `glossary_llm*` knobs on
+  the four glossary workflows. `tests/unit/test_cwl_limits_are_inputs.py` holds the rule.
+- **Provenance (#821).** `workflow_id` / `tool_image` / `tool_image_digest` (nullable) on
+  the bulk workflows too, bound on every script step except `merge_glossary`.
+  `gowe_batch_ingest.py` seeds `tool_image`/`tool_image_digest` from the stamped tree
+  (and `workflow_id` with `--workflow-id`), and records the load's glossary counts per
+  batch in its ledger.
 
 ## Running it
 
