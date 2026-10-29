@@ -2,12 +2,14 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-10-24
-**Deployed:** seven tenants, image mode, all on server tag
+**Last updated:** 2026-10-29
+**Deployed:** seven tenants, image mode. Six are on server tag
 [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**): the API
 from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools image
 `ragstack-tools-v1.6.13-b1.sif`. `dev` first (2026-10-22T13:32Z), then `asm-next` (15:45Z),
 then `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` (17:25:33–17:27:04Z).
+**`dev` alone has moved on since and runs server tag `v1.6.21` (see below); the rest wait for
+the owner's "Roll fleet".**
 They sit behind the nginx gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
 `https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
 view; trust it over this table.
@@ -40,6 +42,19 @@ it as documentation. The upgrade procedure is
 current-state snapshot: the open PR stack, the chunking study's stopped confirmation run, the
 one human task that is blocking, live infrastructure, and the failures this line of work
 already made. This file remains the long-form project history.
+
+**Released; deployed on `dev` only (2026-10-28/29): tools tag `v1.6.18` → `ragstack-tools-v1.6.18-b1.sif`,
+server tag `v1.6.19` → `ragstack-server-v1.6.19-b1.sif` (dev ≈04:25Z 2026-10-28, `update-code dev` job
+01M60C2V7E2WVJ6510FH7Z3W9A), then tools image `ragstack-tools-v1.6.20-b1.sif` and server tag `v1.6.21` →
+`ragstack-server-v1.6.21-b1.sif` (dev on the owner's "Upgrade dev", 2026-10-28/29; the v1.6.21 UI artifact is
+prepared for the fleet). `asm-next`, `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` stay on v1.6.14
+until the owner's "Roll fleet"; the post-roll soak legs on v1.6.21 have not been run
+([handoff](docs/runbooks/handoff-2026-10-29-chunking-release-1.6.21-dev.md)).** Dev-only settings:
+`MAX_COLLECTIONS_PER_OWNER=100` (admins exempt, no per-user override), `MAX_COLLECTIONS=150` tenant-wide,
+`MAX_CHUNKS_PER_COLLECTION=0` (cap off; the per-collection override is registry `collections.max_chunks`).
+Caveats: tenant-level GoWe jobs report `chunk_ids=[]`, so verify chunk counts in Qdrant; API-key
+principals cannot upload on dev (GoWe needs a person's BV-BRC token); the GoWe
+worker cap for bulk loads ([#849](https://github.com/wilke/ragstack/issues/849)) is not yet verified fixed on dev.
 
 **Released; deployed on `dev` only (2026-10-24 02:57Z): tools tag `v1.6.16` → `ragstack-tools-v1.6.16-b1.sif`
 (in `/scout/containers/ragstack`), server tag `v1.6.17` → `ragstack-server-v1.6.17-b1.sif` (`update-code dev`
@@ -353,6 +368,10 @@ Tags between `v0.15.0` and `v1.6.7` are not in this table: their notes are the [
 | [`v1.6.12`](https://github.com/wilke/ragstack/releases/tag/v1.6.12) | `6bf8acc` | 2026-10-22 | **Server tag** (ADR-0010; version bump only, #785). No tools tag: the CWLs keep naming **`ragstack-tools-v1.6.10-b1.sif`**, which already takes `--symbol-glossary`. Server image `ragstack-server-v1.6.12-b1.sif` (sha256 `ac2e3fa4…0a89f61d`, built 2026-10-22T03:33:29Z); UI artifact `v1.6.12-6bf8acc0f2d9`. **Symbol glossary extraction on by default** (#783, PR #784): `SYMBOL_GLOSSARY_EXTRACTION` defaults to `rules` on both ingest paths, and the ingest CWLs declare a `symbol_glossary` input that the API sends on GoWe uploads. `TEXT_SYMBOL_GLOSSARY_BOOST` stays 0, so search is unchanged; opt out with `ragstack-ctl env set <t> SYMBOL_GLOSSARY_EXTRACTION off`. Verified on dev with a scratch GoWe upload: the glossary was attached without a backfill. **ctl** (#775, PR #781): `env set` knows the glossary settings. Deployed fleet-wide ≈03:38Z, dev first. Known issue #790: the rules extractor misses definitions wrapped across a line break. |
 | [`v1.6.13`](https://github.com/wilke/ragstack/releases/tag/v1.6.13) | `e69d856` | 2026-10-22 | **Tools tag** (ADR-0010; version bump only, #795). No server release is cut from this tag. Tools image **`ragstack-tools-v1.6.13-b1.sif`** (sha256 `a319652e…7a95d`, built 2026-10-22T12:58:10Z, in `/scout/containers/ragstack/`, linked for `ragstack-dev` and `ragstack-hackathon`). **Symbol glossary `rules/3`** (#790, PR #794): definitions wrapped across a line break are found (on dev openchia's text 971 entries instead of 690, 344 chunks with a glossary instead of 272); the backfill refuses to overwrite `llm/…` glossaries without the same `--llm-cache` or `--replace-llm`. Also in the tree: #792 (server side, ships in v1.6.14), docs #787 and #791. |
 | [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) | `baf7174` | 2026-10-22 | **Server tag** (ADR-0010, #796): the CWL names **`ragstack-tools-v1.6.13-b1.sif`** (46 sites in 12 files plus the receipt), so GoWe uploads get `rules/3`. Server image `ragstack-server-v1.6.14-b1.sif` (sha256 `b21951e9…3247d`, built 2026-10-22T13:09:14Z). **The reranker reads the symbol glossary, on by default** (#792): `content + "\n" + symbol_glossary` (offline trial on dev openchia, re-run against answer-quote gold on 2026-10-22, after the second dedup: 53 → 65 of 155 found, 13 gained and 1 lost; shuffled control 57). Vector-only candidates are hydrated from ES with a tenant-scoped lookup bounded by `RERANK_GLOSSARY_TIMEOUT` (default 2 s). Opt out with `RERANK_INCLUDE_SYMBOL_GLOSSARY=false`. Reranked order changes on collections with glossaries. **#793** (#751 PR-3): degraded state on query and retrieve, and deep-health dependency checks; `/v1/health/deep` still answers 200 when degraded. On dev since 13:32Z, verified with a scratch GoWe upload: two wrapped definitions found, stamped `rules/3`, with `rerank=on` at startup. Deployed fleet-wide 2026-10-22 (asm-next 15:45Z; demo, elrond, clark, lucid-next, hackathon 17:25–17:27Z). |
+| [`v1.6.18`](https://github.com/wilke/ragstack/releases/tag/v1.6.18) | `b1a7279` | 2026-10-28 | **Tools tag** (ADR-0010; version bump only, #841). No server release is cut from this tag. Tools image **`ragstack-tools-v1.6.18-b1.sif`** (sha256 `9633ff75…2d74f15a`). Its tree carries the chunking changes that server tag v1.6.19 ships (#829, #830, #836). Post-build checks: no new CLI flag, the default cap, a chunking v2 receipt, `.md` extraction byte-identical, goldens v2 0 diffs, regression 9/9. |
+| [`v1.6.19`](https://github.com/wilke/ragstack/releases/tag/v1.6.19) | `9394a18` | 2026-10-28 | **Server tag** (ADR-0010; restamp + bump, #842): the CWL names **`ragstack-tools-v1.6.18-b1.sif`**. Server image `ragstack-server-v1.6.19-b1.sif` (sha256 `c9fd52d9…c68bafa5`). **Semantic token cap** (#829): new `semantic` collections record `size_cap: tokens`, `cap_split: greedy`, `breakpoint_cap: size`, with `size` default 512. **Markdown on the GoWe path** (#830): `.md` uploads are extracted correctly (dev: 1,113 chunks against 1,023 on v1.6.17). **`size_tolerance` / `min_piece`** (#836) under `chunk.params`, receipt chunking v2; refused on non-semantic methods; `overlap >= size` is a 400. #839 and #840 landed after the tag and are not in it. Deployed on dev only (≈04:25Z, `update-code dev` job 01M60C2V7E2WVJ6510FH7Z3W9A). |
+| [`v1.6.20`](https://github.com/wilke/ragstack/releases/tag/v1.6.20) | `4a0571b` | 2026-10-29 | **Tools tag** (ADR-0010; the merge of #853). No server release is cut from this tag. Tools image **`ragstack-tools-v1.6.20-b1.sif`** (sha256 `1dbb8539…40ec95e6`). Adds the glossary step flags, `--glossary-file`, `--max-chunks` (default 0) and `--workflow-id`, and the #852 receipt guard. |
+| [`v1.6.21`](https://github.com/wilke/ragstack/releases/tag/v1.6.21) | `0e22c55` | 2026-10-29 | **Server tag** (ADR-0010; G2b, #854): renames the receipts (#852) and stamps the CWL with **`ragstack-tools-v1.6.20-b1.sif`**. Also in the tree: the glossary step in the shard workflows, driven by the API when `SYMBOL_GLOSSARY_EXTRACTION=llm` (#847), job `warnings`, `max_chunks` on the bulk CWLs (#849) and bulk provenance (#821). Server image `ragstack-server-v1.6.21-b1.sif` (sha256 `19571ef4…8efe62ef`). Deployed on dev only (owner "Upgrade dev", 2026-10-28/29); the v1.6.21 UI artifact is prepared for the fleet, which stays on v1.6.14 until the owner's "Roll fleet". Post-roll soak legs not yet run ([handoff](docs/runbooks/handoff-2026-10-29-chunking-release-1.6.21-dev.md)). |
 
 ## Production layout (`/rag/`)
 
