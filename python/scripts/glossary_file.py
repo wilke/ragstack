@@ -20,12 +20,22 @@ the loader produces. Exit 1 on a mismatch or a document with no row.
 workflow run — into one, refusing a ``doc_id`` in two inputs and inputs built
 under different configs. Deterministic: the same inputs give the same bytes.
 
+``rederive`` (glossary benchmark round 2) writes a new file from an existing
+one with ``merged`` re-decided from the two halves every row already holds:
+``--merge llm-only`` (the PURE LLM glossary: the LLM half only, no rules
+fallback — an empty or absent LLM half renders ""), ``rules-only``, ``merged``
+(today's rule, :func:`choose_merged`) or ``none`` (empty everywhere). No model
+is called. Every row's version is marked ``+merge=<mode>`` and the producer
+names the mode and the source's sha256, so the files, and a census of an index
+loaded from one, tell the arms apart. Prints the counts and a per-row census.
+
 Usage::
 
     python scripts/glossary_file.py build --jsonl docs.jsonl [--llm-cache cache.jsonl] \\
         --out glossary.jsonl
     python scripts/glossary_file.py verify glossary.jsonl [--jsonl docs.jsonl]
     python scripts/glossary_file.py merge --out glossary.jsonl batch0.jsonl batch1.jsonl ...
+    python scripts/glossary_file.py rederive --merge llm-only glossary.jsonl --out pure.jsonl
 """
 from __future__ import annotations
 
@@ -36,11 +46,13 @@ import sys
 from collections.abc import Iterator
 
 from ragstack.ingestion.glossary_file import (
+    MERGE_MODES,
     GlossaryFileError,
     GlossaryRow,
     build_row,
     merge_files,
     read_glossary_file,
+    rederive_file,
     write_glossary_file,
 )
 from ragstack.ingestion.loaders import JsonlLoader
@@ -131,8 +143,17 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("merge", help="concatenate glossary files into one")
     m.add_argument("files", nargs="+")
     m.add_argument("--out", required=True, help="the merged glossary.jsonl (atomically)")
+    r = sub.add_parser("rederive",
+                       help="a new glossary.jsonl with merged re-decided from the halves")
+    r.add_argument("file", help="the source glossary.jsonl (read strictly, never written)")
+    r.add_argument("--merge", required=True, choices=MERGE_MODES,
+                   help="llm-only = pure LLM (no rules fallback); rules-only; merged; none")
+    r.add_argument("--out", required=True, help="the re-derived glossary.jsonl (atomically)")
     args = p.parse_args(argv)
     try:
+        if args.command == "rederive":
+            print(json.dumps(rederive_file(args.file, args.out, args.merge), sort_keys=True))
+            return 0
         if args.command == "merge":
             counts = merge_files(args.files, args.out)
             print(json.dumps({"out": args.out, "counts": counts}, sort_keys=True))

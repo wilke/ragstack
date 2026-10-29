@@ -44,6 +44,24 @@ counts the LLM glossaries the file would replace by rules, and ``--apply`` is
 refused on any unless ``--replace-llm``. It does not combine with
 ``--llm-cache`` or ``--config``.
 
+**The shuffled control** (``--shuffle-rendered SEED``, with ``--glossary-file``
+only; glossary benchmark round 2): the read-only verification pass also
+renders every chunk's field from the file, and the rendered NON-EMPTY fields
+are permuted among the chunks that carry one
+(:func:`ragstack.ingestion.glossary_shuffle.shuffle_rendered`, seeded,
+deterministic; chunks keyed by ES ``_id``). The write pass then writes each
+chunk the string the permutation assigns it — chunks with an empty field stay
+empty, so the populated set, the multiset of strings and the length
+distribution are unchanged. Every chunk is stamped
+``<glossary_version>@file/1+shuf/1:<seed>:<perm12>``, distinct from the true
+file's stamp, so a census shows which arm the index holds. The result records
+the seed, ``permutation_sha256``, the residual fixed points and the multiset
+hash under ``shuffle``. The guards are the same as without it: dry run by
+default, ``--confirm-index``, and the LLM-replace refusal (the stamp keeps the
+version's ``llm/`` / ``rules/`` prefix, so the guard counts exactly what it
+counts unshuffled). A chunk whose true rendering differs between the two passes
+(the index changed underneath) stops the run.
+
 Sizing (plan §6): openchia, 16.5k chunks / 289 docs, is seconds. The 47.6M-chunk
 open-access index is ~95 GB scrolled and 47.6M partial updates (each a Lucene
 delete + reinsert): hours, ≥2× the index size in transient disk, and segment
@@ -71,6 +89,12 @@ from ragstack.ingestion.glossary_file import (
     file_provenance,
     read_glossary_file,
     resolve_documents,
+)
+from ragstack.ingestion.glossary_shuffle import (
+    ShuffleError,
+    ShuffleResult,
+    check_seed,
+    shuffle_rendered,
 )
 from ragstack.ingestion.reassembly import Reassembled, iter_documents_sorted
 from ragstack.ingestion.symbol_glossary import (
@@ -114,33 +138,44 @@ async def resolve_exactly(es: Any, name: str) -> None:
         raise SystemExit(f"refusing: {name!r} resolves to {sorted(keys)}, not exactly itself")
 
 
+def render_rows(attacher: SymbolGlossaryAttacher, rows: list[dict[str, Any]],
+                glossary: Glossary) -> list[str]:
+    """Each row's rendered field under ``glossary`` (the backfill's rendering)."""
+    return [glossary.for_chunk(str(row.get("content") or ""), attacher.config,
+                               start_char=int(row.get("start_char") or 0)) for row in rows]
+
+
 def plan_updates(
     attacher: SymbolGlossaryAttacher, text: str, rows: list[dict[str, Any]],
-    glossary: Glossary | None = None,
+    glossary: Glossary | None = None, shuffle: ShuffleResult | None = None,
 ) -> tuple[list[tuple[str, str, str]], Counter[str]]:
     """``[(es _id, rendered field, version)]`` for the chunks that need a write,
     and counts. Pure — the testable core. ``glossary`` (#847 G1, from a
-    glossary file, already verified and stamped) replaces building one."""
+    glossary file, already verified and stamped) replaces building one.
+    ``shuffle`` (round 2's control) replaces each chunk's rendered field by the
+    one the permutation assigns it and appends its stamp suffix to the version;
+    :class:`ShuffleError` when a chunk's true rendering is not the one the
+    shuffle was planned on."""
     counts: Counter[str] = Counter()
     if glossary is None:
         glossary = attacher.glossary_for(text)
+    version = glossary.version + (shuffle.stamp_suffix() if shuffle is not None else "")
     out: list[tuple[str, str, str]] = []
-    for row in rows:
+    for row, rendered in zip(rows, render_rows(attacher, rows, glossary), strict=True):
+        if shuffle is not None:
+            rendered = shuffle.rendered(str(row["_id"]), rendered)
         counts["chunks"] += 1
-        rendered = glossary.for_chunk(
-            str(row.get("content") or ""), attacher.config, start_char=int(row.get("start_char") or 0)
-        )
         if rendered:
             counts["chunks_with_glossary"] += 1
         stored_version = (row.get("metadata") or {}).get(VERSION_KEY)
         stored_field = row.get("symbol_glossary") or ""
-        if stored_version == glossary.version and stored_field == rendered:
+        if stored_version == version and stored_field == rendered:
             counts["chunks_current"] += 1
             continue
-        if str(stored_version or "").startswith("llm/") and not glossary.version.startswith("llm/"):
+        if str(stored_version or "").startswith("llm/") and not version.startswith("llm/"):
             # an LLM glossary in the index that this run would replace by rules
             counts["chunks_llm_replaced"] += 1
-        out.append((str(row["_id"]), rendered, glossary.version))
+        out.append((str(row["_id"]), rendered, version))
     counts[f"docs_{'llm' if glossary.version.startswith('llm/') else 'rules'}"] += 1
     return out, counts
 
@@ -183,14 +218,17 @@ def _file_glossary(gfile: GlossaryFile, doc: Reassembled, allow_unverifiable: bo
 
 
 async def _verify_glossary_file(
-    es: Any, args: argparse.Namespace, gfile: GlossaryFile, attacher: SymbolGlossaryAttacher
+    es: Any, args: argparse.Namespace, gfile: GlossaryFile, attacher: SymbolGlossaryAttacher,
+    fields: dict[str, str] | None = None,
 ) -> tuple[int, Resolution]:
     """#847 G1: a full read-only pass over the index BEFORE any write (the
     mapping included): every document reassembled from its chunks and checked
     against the file — a ``text_sha256`` mismatch, a document with no row, or
     (without the override) an unverifiable reassembly refuses the run. Returns
     how many llm/-stamped chunks the file's glossaries would replace by rules,
-    and how many documents are rendered unverified (the override)."""
+    and how many documents are rendered unverified (the override). With
+    ``fields`` (a dict), every chunk's true rendered field is collected into it
+    by ES ``_id`` — the input of ``--shuffle-rendered``."""
     res = Resolution()
     replaced = 0
     async for doc, rows in iter_documents_sorted(es, args.index):
@@ -200,8 +238,14 @@ async def _verify_glossary_file(
         for k, v in one.verified.items():
             res.verified[k] += v
         if not one.problems:
-            replaced += plan_updates(attacher, doc.text, rows,
-                                     one.glossaries[doc.doc_id])[1]["chunks_llm_replaced"]
+            glossary = one.glossaries[doc.doc_id]
+            replaced += plan_updates(attacher, doc.text, rows, glossary)[1]["chunks_llm_replaced"]
+            if fields is not None:
+                for row, rendered in zip(rows, render_rows(attacher, rows, glossary), strict=True):
+                    key = str(row["_id"])
+                    if key in fields:
+                        raise SystemExit(f"refusing --shuffle-rendered: chunk _id {key!r} seen twice")
+                    fields[key] = rendered
     if res.problems:
         raise SystemExit(res.refusal(repr(args.glossary_file)))
     return replaced, res
@@ -223,6 +267,8 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
     totals: Counter[str] = Counter()
     prior_refresh: str | None = None
     file_record: dict[str, Any] | None = None
+    shuffle_seed = getattr(args, "shuffle_rendered", None)
+    shuffle: ShuffleResult | None = None
     pending: list[dict[str, Any]] = []
 
     async def flush() -> None:
@@ -241,7 +287,11 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
         if gfile is not None:
             # Dry run and --apply alike: a file that does not match the index
             # is refused before anything else happens.
-            replaced, resolution = await _verify_glossary_file(es, args, gfile, attacher)
+            fields: dict[str, str] | None = {} if shuffle_seed else None
+            replaced, resolution = await _verify_glossary_file(es, args, gfile, attacher, fields)
+            if shuffle_seed:
+                assert fields is not None
+                shuffle = shuffle_rendered(fields, shuffle_seed)
             if resolution.unverified:
                 totals["docs_glossary_unverified"] = len(resolution.unverified)
             file_record = file_provenance(gfile, resolution)
@@ -277,7 +327,10 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
             totals["reassembly_length_mismatches"] += doc.length_mismatches
             file_glossary = (_file_glossary(gfile, doc, args.glossary_allow_unverifiable)
                              if gfile is not None else None)
-            updates, counts = plan_updates(attacher, doc.text, rows, file_glossary)
+            try:
+                updates, counts = plan_updates(attacher, doc.text, rows, file_glossary, shuffle)
+            except ShuffleError as e:
+                raise SystemExit(f"refusing --shuffle-rendered: {e}") from e
             totals.update(counts)
             totals["chunks_to_update"] += len(updates)
             if not args.apply:
@@ -300,6 +353,8 @@ async def run(args: argparse.Namespace, es: Any = None, store: Any = None) -> di
     result = {"index": args.index, "dry_run": not args.apply, **dict(sorted(totals.items()))}
     if file_record is not None:
         result["glossary_file"] = file_record
+    if shuffle is not None:
+        result["shuffle"] = shuffle.record()
     return result
 
 
@@ -340,6 +395,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--glossary-allow-unverifiable", action="store_true",
                    help="with --glossary-file: render documents whose chunks do not "
                         "reassemble their full text (a gap or a length mismatch)")
+    p.add_argument("--shuffle-rendered", default=None, metavar="SEED",
+                   help="with --glossary-file: the shuffled control — permute the rendered "
+                        "non-empty fields among the chunks that carry one (seeded, "
+                        "deterministic); stamps '+shuf/1:<SEED>:<perm>' after '@file/1'")
     p.add_argument("--config", default="", help="GlossaryConfig overrides as JSON")
     p.add_argument("--batch-size", type=int, default=500)
     p.add_argument("--apply", action="store_true", help="WRITE. Without it this is a dry run.")
@@ -355,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.glossary_file and (args.llm_cache or args.config):
         p.error("--glossary-file renders from the file and its own config: it does not "
                 "combine with --llm-cache or --config")
+    if args.shuffle_rendered is not None:
+        if not args.glossary_file:
+            p.error("--shuffle-rendered needs --glossary-file")
+        try:
+            check_seed(args.shuffle_rendered)
+        except ShuffleError as e:
+            p.error(str(e))
     if args.glossary_allow_unverifiable and not args.glossary_file:
         p.error("--glossary-allow-unverifiable needs --glossary-file")
     if args.apply and args.confirm_index != args.index:

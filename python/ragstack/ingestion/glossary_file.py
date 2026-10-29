@@ -94,6 +94,13 @@ glossary", which the backfill's replace guard relies on) and says the field came
 from a file rather than from an in-process attach. Whatever G2 makes ``merged``
 (a union of the two halves), its version string must still BEGIN with ``llm/``
 whenever it holds any LLM entry, or the backfill's ``llm/`` guards misfire.
+
+**Re-derived files** (:func:`rederive_file`, ``glossary_file.py rederive``)
+re-decide ``merged`` from the two halves a row already holds, under a named
+rule (:data:`MERGE_MODES`), and mark it: ``merged.version`` =
+``<base>+merge=<mode>`` — e.g. the pure LLM arm
+``llm/2:<model>:<hash>:w80000x4:t4096:k0:r0+merge=llm-only@file/1`` on a chunk.
+The ``llm/`` prefix is kept wherever the base is an LLM version.
 """
 from __future__ import annotations
 
@@ -583,6 +590,109 @@ def choose_merged(rules: Glossary, llm: Glossary | None) -> Glossary:
     its version string must still START with ``llm/`` whenever it holds an LLM
     entry — the backfill's replace guards key on that prefix."""
     return llm if llm is not None and llm.entries else rules
+
+
+# --- re-deriving ``merged`` under another rule ---------------------------------
+
+#: The merge rules :func:`rederive_file` can apply. ``merged`` is
+#: :func:`choose_merged` (the LLM half when it has an entry, else the rules);
+#: ``llm-only`` is the PURE LLM glossary — the LLM half alone, no rules
+#: fallback, so a document whose LLM half is empty or absent renders "";
+#: ``rules-only`` is the rules half alone; ``none`` renders "" everywhere.
+MERGE_MODES = ("llm-only", "rules-only", "merged", "none")
+
+#: The marker a re-derived row's ``merged.version`` carries:
+#: ``<base version>+merge=<mode>``. It sits BEFORE the ``@file/1`` stamp, so a
+#: census of ``metadata.symbol_glossary_version`` tells every re-derived arm
+#: apart from the others and from a file the step wrote directly. The base keeps
+#: its prefix (``llm/…`` stays ``llm/…``), which the backfill's replace guard
+#: keys on.
+MERGE_MARK = "+merge="
+
+#: The base version of a re-derived glossary that has no half to name:
+#: ``none`` mode, or ``llm-only`` on a document whose row records no LLM
+#: version at all.
+NO_GLOSSARY_VERSION = "none"
+
+
+def _llm_version_of(row: GlossaryRow) -> str | None:
+    """The LLM version of a row: its LLM half's, else the one the step recorded
+    in ``provenance.llm.version`` when it did not run the model on the document
+    (``skipped``, a degraded call) — so a pure file stamps the same model on
+    every document."""
+    if row.llm is not None:
+        return row.llm.version
+    llm = row.provenance.get("llm") if isinstance(row.provenance, dict) else None
+    v = llm.get("version") if isinstance(llm, dict) else None
+    return v if isinstance(v, str) and v.startswith("llm/") else None
+
+
+def rederive_row(row: GlossaryRow, mode: str) -> GlossaryRow:
+    """``row`` with ``merged`` re-decided under ``mode`` (:data:`MERGE_MODES`)
+    and its version marked ``+merge=<mode>``. Both halves, the drops, the
+    identity and ``degraded`` are kept unchanged; ``provenance`` gains a
+    ``rederived`` record (the mode and the source row's ``glossary_version``)."""
+    if mode == "merged":
+        chosen: Glossary = choose_merged(row.rules, row.llm)
+        entries, base = chosen.entries, chosen.version
+    elif mode == "llm-only":
+        entries = row.llm.entries if row.llm is not None else ()
+        base = _llm_version_of(row) or NO_GLOSSARY_VERSION
+    elif mode == "rules-only":
+        entries, base = row.rules.entries, row.rules.version
+    elif mode == "none":
+        entries, base = (), NO_GLOSSARY_VERSION
+    else:
+        raise GlossaryFileError(f"unknown merge mode {mode!r} (one of {', '.join(MERGE_MODES)})")
+    base = base.split(MERGE_MARK, 1)[0]
+    merged = Glossary(tuple(entries), f"{base}{MERGE_MARK}{mode}")
+    prov = {**row.provenance,
+            "rederived": {"merge": mode, "source_glossary_version": row.glossary_version}}
+    return GlossaryRow(row.doc_id, row.text_sha256, row.text_chars, row.text_ws_sha256,
+                       row.rules, row.llm, merged, dict(row.drops), prov, row.degraded)
+
+
+def rederive_file(src: str | Path, out: str | Path, mode: str) -> dict[str, Any]:
+    """Write ``out`` from ``src`` with every row re-derived under ``mode``
+    (:func:`rederive_row`). Offline; no model call. The header keeps the
+    source's config and ``created`` (so the same input gives the same bytes);
+    the producer names the mode and the source's sha256 and producer.
+
+    Refused (:class:`GlossaryFileError`): an unknown mode; ``llm-only`` on a
+    file in which no row has an LLM half or records an LLM version (a rules
+    file — its pure LLM arm would be empty by construction, almost certainly
+    the wrong input); ``out`` resolving to ``src``.
+
+    Returns the counts plus a census of what the mode did per row:
+    ``rows_with_entries``, ``rows_empty`` and, for ``llm-only``,
+    ``llm_absent`` (no LLM half: skipped or degraded), ``llm_empty`` (the LLM
+    half kept nothing) and ``degraded``."""
+    if mode not in MERGE_MODES:
+        raise GlossaryFileError(f"unknown merge mode {mode!r} (one of {', '.join(MERGE_MODES)})")
+    sp, op = Path(src), Path(out)
+    if op.exists() and op.resolve() == sp.resolve():
+        raise GlossaryFileError(f"rederive: --out {op} is the input file")
+    gfile = read_glossary_file(sp)
+    rows = list(gfile.rows.values())
+    if mode == "llm-only" and not any(_llm_version_of(r) for r in rows):
+        raise GlossaryFileError(
+            f"rederive --merge llm-only: {sp} has no LLM half in any row (a rules-only file?)")
+    new = [rederive_row(r, mode) for r in rows]
+    census: Counter[str] = Counter()
+    for r, n in zip(rows, new, strict=True):
+        census["rows_with_entries" if n.merged.entries else "rows_empty"] += 1
+        if mode == "llm-only":
+            census["llm_absent"] += int(r.llm is None)
+            census["llm_empty"] += int(r.llm is not None and not r.llm.entries)
+            census["degraded"] += int(r.degraded is not None)
+    src_sha = file_sha256(sp)
+    producer = (f"scripts/glossary_file.py rederive --merge {mode} "
+                f"(source sha256 {src_sha}; source producer: {gfile.header['producer']})")
+    counts = write_glossary_file(op, new, producer=producer, config=gfile.config,
+                                 created=gfile.header["created"])
+    return {"out": str(op), "merge": mode, "source": str(sp), "source_sha256": src_sha,
+            "counts": counts, "census": dict(sorted(census.items())),
+            "glossary_versions": sorted({n.glossary_version for n in new})}
 
 
 # --- combining files -----------------------------------------------------------
