@@ -110,10 +110,10 @@ This supersedes the status of 2026-10-27, which is kept below.
   - κ_B = 0.467 [0.233, 0.680];
   - κ against Opus 4.8 = 0.613 [0.14, 1.0], on 16 items;
   - per-grader verdict: **"not validated"**.
-- **Addendum Q: the second labeller.** All descriptive and exploratory:
+- **Addendum Q: the second labeller.** All descriptive and exploratory; every κ here is on answer vs not (the 3-class κ are FNKM–Opus 5.5 0.82 and owner–FNKM 0.55, with 7 three-class disagreements):
   - FNKM against Sol, answer vs not: κ 1.0;
-  - FNKM against Opus 5.5: κ 0.91;
-  - the owner against FNKM: κ 0.66 [0.35, 0.92]. They disagree on 5 of 40;
+  - FNKM against Opus 5.5, answer vs not: κ 0.91;
+  - the owner against FNKM, answer vs not: κ 0.66 [0.35, 0.92]. They disagree on 5 of 40 on answer vs not;
   - the non-answer rate: the owner 30% [17, 47] and FNKM 17.5% [7, 33], both on the 40 pairs; the
     majority 20% [8, 37] on n = 35, because the 5 disagreements have no majority.
 - **The owner-only wording is now contested.** In the 2026-10-27 entry, and in *Open questions*, the
