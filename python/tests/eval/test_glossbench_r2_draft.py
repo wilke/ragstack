@@ -185,7 +185,7 @@ def test_every_body_carries_the_gateway_terms_and_no_glossary(tmp_path: Path) ->
     assert run(path, "draft", "--set", "O", "--notice-acknowledged", gw=gw) == 0
     assert gw.bodies and all(u == "http://127.0.0.1:18999/v1/chat/completions" for u in gw.urls)
     for b in gw.bodies:
-        assert b["fallback_model"] == "" and b["max_tokens"] == 1024 and b["temperature"] == 0
+        assert b["fallback_model"] == "" and b["max_tokens"] == 4096 and b["temperature"] == 0
         assert b["model"] == "Gemini 2.5 Pro"
         text = json.dumps(b["messages"]).casefold()
         for banned in ("glossary", "rules", "qwen", "scout", "frontier", "symbol_glossary", "arm"):
@@ -325,6 +325,59 @@ def test_budget_counts_prior_usage_and_calls(tmp_path: Path) -> None:
     assert json.loads((out(cfg) / "draft-state-O.json").read_text())["reason"] == "call_cap"
 
 
+def test_prior_usage_is_read_from_earlier_stages_files(tmp_path: Path) -> None:
+    """``prior_gateway_usage`` as paths: this script's totals JSON, part 4's shape, a
+    flat dict file and a frontier ``glossary.jsonl`` are summed, recorded with their
+    sha256, and count toward the caps. The stage's own record is refused."""
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / "draft-totals-A.json").write_text(json.dumps(
+        {"totals": {"since_start": {"gateway_calls": 3, "gateway_prompt_tokens": 1000, "gateway_completion_tokens": 10}}}))
+    (prior / "part4-state.json").write_text(json.dumps(
+        {"since_start": {"gateway_calls": 2, "gateway_prompt_tokens": 500, "gateway_completion_tokens": 5}}))
+    (prior / "hand.json").write_text(json.dumps({"calls": 1, "prompt_tokens": 100, "completion_tokens": 1}))
+    rows = [{"kind": "header", "schema": "x"},
+            {"kind": "document", "doc_id": "d1", "provenance": {"llm": {"calls": [
+                {"prompt_tokens": 700, "completion_tokens": 7, "retries": 1}, {"prompt_tokens": 300, "completion_tokens": 3}]}}},
+            {"kind": "document", "doc_id": "d2", "provenance": {"llm": None}}]
+    (prior / "frontier.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    files = [str(prior / n) for n in ("draft-totals-A.json", "part4-state.json", "hand.json", "frontier.jsonl")]
+    res = dr.resolve_prior_usage(files)
+    assert (res["calls"], res["prompt_tokens"], res["completion_tokens"]) == (3 + 2 + 1 + 3, 2600, 26)
+    assert [s["name"] for s in res["sources"]] == [Path(f).name for f in files]
+    assert all(len(s["sha256"]) == 64 for s in res["sources"])
+    assert dr.resolve_prior_usage({"calls": 1, "prompt_tokens": 2, "completion_tokens": 3, "files": files[:1]}) \
+        == {"calls": 4, "prompt_tokens": 1002, "completion_tokens": 13, "sources": res["sources"][:1]}
+    assert dr.resolve_prior_usage(None)["calls"] == 0 and dr.resolve_prior_usage({})["sources"] == []
+    with pytest.raises(SystemExit, match="not found"):
+        dr.resolve_prior_usage(str(prior / "missing.json"))
+    with pytest.raises(SystemExit, match="unknown keys"):
+        dr.resolve_prior_usage({"call": 1})
+    (prior / "bad.json").write_text(json.dumps({"something": 1}))
+    with pytest.raises(SystemExit, match="no totals"):
+        dr.resolve_prior_usage(str(prior / "bad.json"))
+    with pytest.raises(SystemExit, match="own record"):
+        dr.resolve_prior_usage(files[:1], own_files=[prior / "draft-totals-A.json"])
+    # through the run: 1000 + 500 + 100 + 1000 = 2600 prior input tokens against a 2500 cap -> pause at once
+    path, cfg = setup(tmp_path, limits={"input_token_cap": 2500, "prior_gateway_usage": files})
+    gw = FakeGateway()
+    run(path, "preflight", "--stage", "draft", "--set", "O")
+    assert run(path, "draft", "--set", "O", "--notice-acknowledged", gw=gw) == 75
+    assert not gw.bodies
+    tot = json.loads((out(cfg) / "draft-totals-O.json").read_text())
+    assert tot["prior_gateway_usage"]["prompt_tokens"] == 2600 and len(tot["prior_gateway_usage"]["sources"]) == 4
+    assert tot["cumulative_with_prior"]["gateway_prompt_tokens"] == 2600
+    # the stage's own totals file as a prior is refused (a resume already carries it)
+    own = tmp_path / "own"
+    path2, cfg2 = setup(own, limits={"prior_gateway_usage": [str(own / "out" / "draft-totals-O.json")]})
+    (own / "out" / "draft-totals-O.json").write_text(json.dumps({"calls": 1, "prompt_tokens": 1, "completion_tokens": 1}))
+    run(path2, "preflight", "--stage", "draft", "--set", "O")
+    gw2 = FakeGateway()
+    with pytest.raises(SystemExit, match="own record"):
+        run(path2, "draft", "--set", "O", "--notice-acknowledged", gw=gw2)
+    assert not gw2.bodies
+
+
 def test_failures_in_a_row_pause(tmp_path: Path) -> None:
     path, cfg = setup(tmp_path)
     gw = FakeGateway(lambda user, n: "500")
@@ -380,6 +433,43 @@ def test_layer1_reject_is_redrawn_once_with_its_reasons(tmp_path: Path) -> None:
     redraw_prompts = [b["messages"][-1]["content"] for b in gw.bodies if "rejected" in b["messages"][-1]["content"]]
     assert redraw_prompts and all("the question contained the symbol" in p for p in redraw_prompts)
     assert not [r for r in rows if r["attempt"] == 3]
+
+
+def test_redraw_is_once_and_attempts_are_countable(tmp_path: Path) -> None:
+    """A drafter that leaks the symbol every time: exactly two attempts per symbol
+    chunk, both logged, and the summary gives attempts per accepted record."""
+    path, cfg = setup(tmp_path)
+
+    class AlwaysLeaky(FakeGateway):
+        async def post(self, url: str, json: dict[str, Any]) -> FakeResp:  # noqa: A002
+            r = await super().post(url, json)
+            user = json["messages"][-1]["content"]
+            if r.status_code == 200 and "WITHOUT a symbol" not in user:
+                d = __import__("json").loads(r._payload["choices"][0]["message"]["content"])
+                if "question" in d:
+                    d["question"] = d["question"].rstrip("?") + f" ({d['symbol']})?"
+                    r._payload["choices"][0]["message"]["content"] = __import__("json").dumps(d)
+            return r
+
+    gw = AlwaysLeaky()
+    run(path, "preflight", "--stage", "draft", "--set", "O")
+    assert run(path, "draft", "--set", "O", "--notice-acknowledged", gw=gw) == 0
+    rows = drafts(cfg)
+    sym = [r for r in rows if r["stratum"] != "S3" and r["draft"] and "question" in r["draft"]]
+    per_chunk = Counter(r["chunk_id"] for r in sym)
+    assert per_chunk and set(per_chunk.values()) == {2}               # one redraw, never a third
+    assert all("symbol_in_question" in r["l1_inline"]["reasons"] for r in sym)
+    assert len(gw.bodies) == len(rows)                                  # one gateway call per logged attempt
+    assert run(path, "check", "--set", "O") == 0
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FakeCLI()) == 0
+    assert run(path, "summary", "--set", "O") == 0
+    s = json.loads((out(cfg) / "acceptance-summary-O.json").read_text())["counts"]
+    assert s["draft_attempts"]["S1"] == 2 * len({r["chunk_id"] for r in sym if r["stratum"] == "S1"})
+    assert s["attempts_by_number"]["a2"] == len(per_chunk)
+    assert s["accepted"].get("S1", 0) == 0 and s["attempts_per_accepted_by_stratum"]["S1"] is None
+    assert s["attempts_per_accepted"] == sum(s["draft_attempts"].values()) / s["accepted_total"]  # S3 accepted only
+    assert s["gateway_calls_per_accepted"] >= s["attempts_per_accepted"]
 
 
 # ------------------------------------------------------------------ the whole chain
@@ -567,6 +657,7 @@ def test_layer1_passes_a_good_record(tmp_path: Path) -> None:
     ({"binding_terms": ["glide velocity"]}, "binding_word_not_in_paper"),
     ({"symbol": ""}, "symbol_missing"),
     ({"symbol": "Zk"}, "symbol_not_in_chunk"),
+    ({"quote": "small in that season (p = 0.01)", "value": "0.01"}, "quote_not_in_source"),
 ])
 def test_layer1_reason_codes(tmp_path: Path, change: dict[str, Any], code: str) -> None:
     c, idx = _index(tmp_path)
@@ -605,6 +696,34 @@ def test_layer1_s3_rules(tmp_path: Path) -> None:
     assert _l1(c, idx, d, chunk, "S3")["verdict"] == "pass"
     assert "s3_has_symbol" in _l1(c, idx, {**d, "symbol": "Wg"}, chunk, "S3")["reasons"]
     assert "number_in_question" in _l1(c, idx, {**d, "question": "Was the gust eleven knots?"}, chunk, "S3")["reasons"]
+    # a quote that states a value through a symbol is not words-only; a stoplisted statistic is
+    vs_chunk = next(x for x in c.paper_chunks("PMC1") if "Nb = 11" in x.content)
+    vs = {"question": "How many samples were taken in that season?", "quote": "number of samples Nb = 11",
+          "quantity": "number of samples", "value": "11", "binding_terms": ["number of samples"], "symbol": ""}
+    assert "s3_value_statement" in _l1(c, idx, vs, vs_chunk, "S3")["reasons"]
+    p_chunk = next(x for x in c.paper_chunks("PMC1") if "(p = 0.01)" in x.content)
+    pv = {"question": "What significance level did that season's small sample give?",
+          "quote": "season (p = 0.01)", "quantity": "significance level", "value": "0.01",
+          "binding_terms": ["season"], "symbol": ""}
+    assert "s3_value_statement" not in _l1(c, idx, pv, p_chunk, "S3")["reasons"]
+    assert "s3_value_statement" in _l1(c, idx, pv, p_chunk, "S3", vs_stoplist=[])["reasons"]
+
+
+def test_checks_use_the_pool_headers_stoplist(tmp_path: Path) -> None:
+    """One statistical stoplist per round: the drafter's layer-1 checks read the list
+    the pool recorded, not a second copy of the default."""
+    pv = {"question": "What significance level did that season's small sample give?", "quote": "season (p = 0.01)",
+          "quantity": "significance level", "value": "0.01", "binding_terms": ["season"], "symbol": ""}
+    seen = {}
+    for name, pc in (("default", None), ("none", {"vs_stoplist": []})):
+        path, cfg = setup(tmp_path / name, pool_cfg=pc)
+        r = dr.Run(cfg, g.file_sha(path), out(cfg), "O", provenance=lambda: PROV)
+        r.load()
+        _ = r.corpus
+        chunk = next(x for x in r.corpus.paper_chunks("PMC1") if "(p = 0.01)" in x.content)
+        seen[name] = ck.layer1(pv, None, stratum="S3", paper="PMC1", source_chunk=chunk, idx=r.idx, cfg=r.checks_cfg)
+    assert seen["default"]["verdict"] == "pass"
+    assert "s3_value_statement" in seen["none"]["reasons"]
 
 
 def test_lexical_leak_guard(tmp_path: Path) -> None:
@@ -618,8 +737,17 @@ def test_lexical_leak_guard(tmp_path: Path) -> None:
     assert n == 5 and ov == pytest.approx(2 / 5)                    # {measured, qb, 0, 15, m}; "s" is a stop word
     assert "lexical_leak" in _l1(c, idx, {**d, "question": "How was it measured, in m, for qb?"},
                                  chunk)["reasons"]
-    # the threshold is a strict "> 50%": exactly half passes
+    # the threshold is a strict "> 50%": exactly half passes, 3 of 5 is rejected
     assert ck.leak_overlap("alpha", "alpha beta", set())[0] == 0.5
+    half = {**d, "question": "How fast did the folded boats go, as measured in the calm case, in m?"}
+    r = _l1(c, idx, half, chunk)   # distinctive {measured, qb, 0, 15, m}; question has measured, m -> 2/5
+    assert r["leak_overlap"] == pytest.approx(0.4) and r["leak_ok"] is True
+    r = _l1(c, idx, {**d, "question": "How fast was qb measured in the calm case, in m?"}, chunk)
+    assert r["leak_overlap"] == pytest.approx(0.6) and r["leak_ok"] is False and "lexical_leak" in r["reasons"]
+    r = _l1(c, idx, {**d, "question": "How fast did the boats go in the calm case, in m?"}, chunk, leak_threshold=0.1)
+    assert r["leak_overlap"] == pytest.approx(0.2) and r["leak_ok"] is False
+    r = _l1(c, idx, {**d, "question": "How fast did the boats go in the calm case, in m?"}, chunk, leak_threshold=0.2)
+    assert r["leak_ok"] is True                                        # exactly at the threshold passes
 
 
 def test_symbol_collision_and_multi_value_flag(tmp_path: Path) -> None:
@@ -628,6 +756,33 @@ def test_symbol_collision_and_multi_value_flag(tmp_path: Path) -> None:
     assert ck.symbol_collision("Kd", texts, 0.5) is True
     assert ck.symbol_collision("Kd", texts[:1][0].split(" Later")[:1], 0.5) is False
     assert ck.symbol_values("Kd", texts) == {"0.2", "0.4"}
+
+
+def test_symbol_collision_is_a_flag_by_default_and_a_question_to_the_verifier() -> None:
+    """Default ``flag``: the record population does not depend on the rules arm's
+    definition sentences; the collision goes to the verifier as a note. ``reject``
+    and ``off`` remain configurable."""
+    assert ck.CHECK_DEFAULTS["collision"] == "flag"
+    text = ("Dye study. where Kd is the decay constant of the dye. " + sup.FILLER
+            + "Binding. where Kd is the dissociation rate of the ligand. " + sup.FILLER
+            + "In the bright case we found Kd = 0.2 per hour for the dye. " + sup.FILLER)
+    rows = [g.parse_chunk(r, "t") for r in sup.chunk_rows("k1", text, "PMCK")]
+    c = g.build_corpus(rows, "path_root")
+    idx = ck.PaperIndex(c, 200)
+    chunk = next(x for x in rows if "Kd = 0.2" in x.content)
+    d = {"question": "What decay constant of the dye was found in the bright case?", "quote": "found Kd = 0.2 per hour",
+         "quantity": "decay constant", "value": "0.2 per hour", "binding_terms": ["decay constant"], "symbol": "Kd"}
+    r = ck.layer1(d, None, stratum="S1", paper="PMCK", source_chunk=chunk, idx=idx, cfg={})
+    assert r["verdict"] == "pass" and "symbol_collision" in r["flags"] and "symbol_collision" not in r["reasons"]
+    r2 = ck.layer1(d, None, stratum="S1", paper="PMCK", source_chunk=chunk, idx=idx, cfg={"collision": "reject"})
+    assert r2["verdict"] == "reject" and "symbol_collision" in r2["reasons"]
+    r3 = ck.layer1(d, None, stratum="S1", paper="PMCK", source_chunk=chunk, idx=idx, cfg={"collision": "off"})
+    assert "symbol_collision" not in r3["flags"] and "symbol_collision" not in r3["reasons"]
+    plain = ck.verify_prompt(d, chunk.content, text[:200], "")
+    noted = ck.verify_prompt(d, chunk.content, text[:200], "", flags=r["flags"])
+    assert "NOTE:" not in plain and "symbol_unique" in noted and "more than one way" in noted
+    assert "glossary" not in noted.casefold() and "SYMBOL: Kd" in noted
+    assert "same_case" in ck.verify_prompt(d, chunk.content, "", "", flags=["multi_value"])
 
 
 def test_cross_record_duplicates_and_shared_chunks() -> None:

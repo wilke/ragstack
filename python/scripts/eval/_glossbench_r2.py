@@ -284,18 +284,28 @@ _TOKEN_RUN = re.compile(rf"{_NOT_TOKEN_BEFORE}[\w{_BARS}]+")
 _VALUE_TAIL = re.compile(r"\s*(?:\([^()\n]{0,20}\))?\s*[=≈≃~∼]\s*[-−+]?\s*\.?\d")
 _HAS_LETTER = re.compile(r"[^\W\d_]")
 
+#: Statistical tokens that do NOT make a chunk a value statement (pre-registered
+#: stoplist): ``p = 0.03`` or ``n = 12`` is a test statistic or a count, not a
+#: symbol-bound quantity of the paper. Compared in canonical form, case-sensitive
+#: (``F`` the statistic is listed; ``f`` a frequency is not). Configurable per run
+#: (``pool.vs_stoplist``); the pool header records the list used.
+STAT_TOKENS: frozenset[str] = frozenset(
+    canonical_text(t) for t in """p n N df R2 R² r t F z χ2 χ² chi2 CI SD SE SEM OR HR RR IQR AUC""".split())
 
-def value_statements(text: str) -> list[str]:
+
+def value_statements(text: str, stoplist: Iterable[str] | None = None) -> list[str]:
     """The tokens of ``text`` that state a value: canonical text, every token
     (a run of word characters and bars) that contains a letter and is not a
-    unit, followed by ``[=≈≃~∼]`` and a number — the library's
-    :func:`~ragstack.ingestion.symbol_glossary.value_pattern` applied to the
-    chunk's own tokens (prereg §3.1 step 1). Sorted, distinct. Uses no glossary."""
+    unit or a stoplisted statistical token, followed by ``[=≈≃~∼]`` and a
+    number — the library's :func:`~ragstack.ingestion.symbol_glossary.value_pattern`
+    applied to the chunk's own tokens (prereg §3.1 step 1). Sorted, distinct.
+    Uses no glossary. ``stoplist`` defaults to :data:`STAT_TOKENS`."""
     canon = canonical_text(text)
+    stop = STAT_TOKENS if stoplist is None else frozenset(canonical_text(t) for t in stoplist)
     found: set[str] = set()
     for m in _TOKEN_RUN.finditer(canon):
         tok = m.group(0)
-        if not _HAS_LETTER.search(tok) or tok in _UNITS:
+        if not _HAS_LETTER.search(tok) or tok in _UNITS or tok in stop:
             continue
         if _VALUE_TAIL.match(canon, m.end()) and value_pattern(tok).match(canon, m.start()):
             found.add(tok)
@@ -316,10 +326,10 @@ def has_number(text: str) -> bool:
     return any(w in NUMBER_WORDS for w in re.findall(r"[a-z]+", text.casefold()))
 
 
-def words_only_candidate(text: str) -> bool:
+def words_only_candidate(text: str, stoplist: Iterable[str] | None = None) -> bool:
     """An S3 candidate chunk: no value statement, yet a number is printed in it
     (the drafter then looks for a quantity named in words)."""
-    return not value_statements(text) and has_number(text)
+    return not value_statements(text, stoplist) and has_number(text)
 
 
 # ------------------------------------------------------------ normalisation

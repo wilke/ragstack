@@ -39,8 +39,39 @@ def test_value_statements_use_no_glossary_and_skip_units() -> None:
     assert g.value_statements("λv(r) = 0.3/h and λ_a ≈ .2") == ["λa", "λv"]
     assert g.value_statements("a volume of 500 mL = 3 doses") == []      # a unit is not a symbol
     assert g.value_statements("p < 0.05 and x = y") == []                 # comparison; no number
-    assert g.value_statements("n = 12 samples; R2 = 0.93") == ["R2", "n"]
     assert g.value_statements("10 = 10") == []                            # a bare number
+
+
+def test_statistical_stoplist_is_not_a_value_statement() -> None:
+    """The pre-registered stoplist: a test statistic or a count with a value is not a
+    symbol-bound quantity. Default list, canonical forms, case, and a configured list."""
+    stat = "p = 0.03, n = 12, N = 40, df = 3, R2 = 0.93, R² = 0.9, r = 0.4, t = 2.1, F = 4.4, z = 1.9, " \
+           "χ² = 3.1, χ2 = 3.0, chi2 = 2.9, CI = 95, SD = 1.2, SE = 0.3, SEM = 0.2, OR = 1.4, HR = 0.8, " \
+           "RR = 1.1, IQR = 4, AUC = 0.91"
+    assert g.value_statements(stat) == []
+    assert g.value_statements(stat + " and Qb = 0.5") == ["Qb"]
+    assert not g.words_only_candidate("n = 12 and Qb = 0.5")             # Qb keeps it a value statement
+    assert g.words_only_candidate("n = 12 samples were taken")            # a stoplisted count: S3 material
+    assert g.value_statements("P = 2 kPa and f = 50 Hz") == ["P", "f"]    # case-sensitive: P pressure, f frequency
+    assert g.value_statements("n = 12; R2 = 0.93", stoplist=()) == ["R2", "n"]        # no stoplist
+    assert g.value_statements("n = 12; R2 = 0.93; Qb = 1", stoplist=["Qb"]) == ["R2", "n"]
+    assert sorted(g.STAT_TOKENS) == pool.DEFAULTS["vs_stoplist"]
+
+
+def test_stoplist_is_configurable_and_recorded(tmp_path: Path) -> None:
+    """Default: ``p`` and ``n`` state no value (the fixture's ``p = 0.0i`` and the
+    stoplisted-count variant); configured empty: they do, and the header says so."""
+    m, out, _, _ = _build(tmp_path / "a")
+    header, rows = _pool_rows(out)
+    assert header["vs_stoplist"] == sorted(g.STAT_TOKENS) == m["design"]["vs_stoplist"]
+    assert not any("p" in r["vs_tokens"] for r in rows)
+    m2, out2, _, _ = _build(tmp_path / "b", pool={"vs_stoplist": []})
+    header2, rows2 = _pool_rows(out2)
+    assert header2["vs_stoplist"] == [] and m2["design"]["vs_stoplist"] == []
+    assert any("p" in r["vs_tokens"] for r in rows2)
+    assert m2["counts"]["vs_chunks_corpus"] > m["counts"]["vs_chunks_corpus"]
+    with pytest.raises(SystemExit, match="unknown keys"):
+        sup.make_config(tmp_path / "c", pool={"stoplist": []}) and pool.pool_config({"pool": {"stoplist": []}})
 
 
 def test_build_counts_strata_and_gate(tmp_path: Path) -> None:

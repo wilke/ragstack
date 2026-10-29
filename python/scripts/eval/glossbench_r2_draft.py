@@ -32,7 +32,9 @@ lets in-flight calls finish and write, writes the state and the totals, exits
 after 3 backoffs, and the budget: cumulative gateway input tokens >=
 ``input_token_cap`` (default 5.0M) or output >= ``output_token_cap`` (0.75M) or
 calls >= ``call_cap`` (4,000), counted across resumes plus
-``prior_gateway_usage`` (what earlier steps of the round spent). Exit 1 = hard
+``prior_gateway_usage`` (what earlier steps of the round spent: a path or list of
+paths to their totals JSON / the frontier ``glossary.jsonl``, summed automatically
+by :func:`resolve_prior_usage`; a hand-entered dict is also accepted). Exit 1 = hard
 stop (frozen-prereg sha mismatch, a resume against a different commit, config
 or pool, a failed isolation check). ``--resume`` continues a paused run.
 
@@ -76,7 +78,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -106,7 +108,9 @@ ISOLATION_FACTOR = 2.0
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
 
 DEFAULTS: dict[str, Any] = {
-    "drafter": {"model": "Gemini 2.5 Pro", "tag": "gemini25pro", "max_tokens": 1024, "temperature": 0,
+    # max_tokens 4096: Gemini 2.5 Pro's hidden thinking can spend ~1024 before any visible
+    # output, and a cut answer is dropped, not retried. Always set (operator term).
+    "drafter": {"model": "Gemini 2.5 Pro", "tag": "gemini25pro", "max_tokens": 4096, "temperature": 0,
                 "base_url": None, "inflight": 4, "max_attempts_per_chunk": 2, "empty_retry_s": 2.0,
                 "attempts_factor": 1.3, "est_output_tokens": 250, "passes": 2},
     "verifier": {"model": "claude-opus-5-5", "cli": "claude", "inflight": 3, "timeout_s": 300,
@@ -167,18 +171,95 @@ class Paths:
 
 # ------------------------------------------------------------------ control
 
+PRIOR_KEYS = ("calls", "prompt_tokens", "completion_tokens")
+
+
+def _usage_of_file(path: Path) -> dict[str, int]:
+    """The gateway usage one earlier-stage file records, as ``{calls, prompt_tokens,
+    completion_tokens}``. Accepted shapes: this script's totals/state JSON or part
+    4's (``totals.since_start.gateway_*`` or ``since_start.gateway_*``); a flat
+    ``{calls, prompt_tokens, completion_tokens}`` JSON; a ``glossary.jsonl`` written
+    by the glossary step (the frontier batch: every row's ``provenance.llm.calls``
+    summed, each call record counting ``1 + retries`` calls)."""
+    if path.suffix == ".jsonl":
+        u = Counter()
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("kind") == "header":
+                    continue
+                lp = (row.get("provenance") or {}).get("llm")
+                for call in (lp or {}).get("calls") or []:
+                    u["calls"] += 1 + int(call.get("retries") or 0)
+                    u["prompt_tokens"] += int(call.get("prompt_tokens") or 0)
+                    u["completion_tokens"] += int(call.get("completion_tokens") or 0)
+        return {k: int(u[k]) for k in PRIOR_KEYS}
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(obj, dict):
+        raise SystemExit(f"prior_gateway_usage: {path.name}: not a JSON object")
+    since = (obj.get("totals") or {}).get("since_start") if isinstance(obj.get("totals"), dict) else None
+    since = since if since is not None else obj.get("since_start")
+    if isinstance(since, dict):
+        return {k: int(since.get(f"gateway_{k}") or 0) for k in PRIOR_KEYS}
+    if all(k in obj for k in PRIOR_KEYS):
+        return {k: int(obj[k]) for k in PRIOR_KEYS}
+    raise SystemExit(f"prior_gateway_usage: {path.name}: no totals.since_start, since_start or "
+                     f"{{{', '.join(PRIOR_KEYS)}}} found")
+
+
+def resolve_prior_usage(spec: Any, own_files: Sequence[Path] = ()) -> dict[str, Any]:
+    """``limits.prior_gateway_usage``: a hand-entered ``{calls, prompt_tokens,
+    completion_tokens}`` dict, or a path / list of paths to earlier stages' files
+    (see :func:`_usage_of_file`), summed. A dict may also carry ``"files": [...]``,
+    added to its numbers. ``own_files`` (this stage's own state/totals) are refused:
+    a resume already carries them. Returns ``{"calls", "prompt_tokens",
+    "completion_tokens", "sources": [{name, sha256, usage}]}``."""
+    total = Counter()
+    sources: list[dict[str, Any]] = []
+    paths: list[str] = []
+    if spec is None or spec == {} or spec == []:
+        pass
+    elif isinstance(spec, str):
+        paths = [spec]
+    elif isinstance(spec, list):
+        paths = [str(p) for p in spec]
+    elif isinstance(spec, dict):
+        unknown = set(spec) - {*PRIOR_KEYS, "files"}
+        if unknown:
+            raise SystemExit(f"prior_gateway_usage: unknown keys {sorted(unknown)}")
+        total.update({k: int(spec.get(k) or 0) for k in PRIOR_KEYS})
+        paths = [str(p) for p in (spec.get("files") or [])]
+    else:
+        raise SystemExit("prior_gateway_usage: a dict, a path or a list of paths")
+    own = {p.resolve() for p in own_files}
+    for p in paths:
+        path = Path(p)
+        if not path.is_file():
+            raise SystemExit(f"prior_gateway_usage: file not found: {path}")
+        if path.resolve() in own:
+            raise SystemExit(f"prior_gateway_usage: {path.name} is this stage's own record (a resume "
+                             "already carries it); list earlier stages and other sets only")
+        usage = _usage_of_file(path)
+        total.update(usage)
+        sources.append({"name": path.name, "sha256": g.file_sha(path), "usage": usage})
+    return {**{k: int(total[k]) for k in PRIOR_KEYS}, "sources": sources}
+
+
 class R2Control(p4.Control):
     """Part 4's pause triggers, plus the round's cumulative budget: gateway input
     tokens, output tokens and calls since the first segment, plus the usage of
-    earlier steps (``prior_gateway_usage``)."""
+    earlier steps (``prior_gateway_usage``, resolved by :func:`resolve_prior_usage`)."""
 
-    def __init__(self, limits: dict[str, Any], pause_path: Path, prev_totals: dict[str, int] | None) -> None:
+    def __init__(self, limits: dict[str, Any], pause_path: Path, prev_totals: dict[str, int] | None,
+                 own_files: Sequence[Path] = ()) -> None:
         super().__init__({**limits, "output_token_cap": None}, pause_path, prev_totals)
         self.caps = limits
-        prior = limits.get("prior_gateway_usage") or {}
-        self.prior = Counter({"gateway_calls": int(prior.get("calls", 0)),
-                              "gateway_prompt_tokens": int(prior.get("prompt_tokens", 0)),
-                              "gateway_completion_tokens": int(prior.get("completion_tokens", 0))})
+        self.prior_resolved = resolve_prior_usage(limits.get("prior_gateway_usage"), own_files)
+        self.prior = Counter({"gateway_calls": self.prior_resolved["calls"],
+                              "gateway_prompt_tokens": self.prior_resolved["prompt_tokens"],
+                              "gateway_completion_tokens": self.prior_resolved["completion_tokens"]})
 
     def cumulative(self) -> Counter[str]:
         return self.prior + self.prev + self.seg
@@ -264,6 +345,8 @@ class Run:
     def load(self) -> None:
         self.header, self.pool = read_pool(self.p.pool)
         self.pool_sha = g.file_sha(self.p.pool)
+        # the pool's statistical stoplist is the one the checks use (one list per round)
+        self.checks_cfg = {**self.cfg["checks"], "vs_stoplist": self.header.get("vs_stoplist")}
         self.sampled = [r for r in self.pool if r["sampled"]]
         self.sampled.sort(key=lambda r: (r["paper"], r["stratum"], r["sample_rank"], r["chunk_id"]))
 
@@ -409,7 +492,8 @@ class Run:
             g.log(f"{stage} --resume: no state file")
             return EXIT_HARD_STOP
         self.gate(stage, acknowledged, self.prev_state)
-        self.control = R2Control(self.cfg["limits"], self.p.pause, prev_tot)
+        self.control = R2Control(self.cfg["limits"], self.p.pause, prev_tot,
+                                 own_files=(self.p.state(stage), self.p.totals(stage)))
         frozen = self.cfg["prereg"].get("sha256")
         if frozen and frozen != self.prereg:
             self.write_state(stage, "hard_stop", "prereg_sha_mismatch")
@@ -462,6 +546,7 @@ class Run:
         g.write_json_atomic(self.p.totals(stage), {
             "schema": TOTALS_SCHEMA, "stage": stage, "set": self.set, "status": status, "reason": reason,
             "totals": self.control.totals(), "cumulative_with_prior": dict(self.control.cumulative()),
+            "prior_gateway_usage": self.control.prior_resolved,
             "rows": len(rows), "row_status": dict(sorted(statuses.items())),
             "served_models": dict(sorted(served.items())),
             "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in rows), 4) if stage == "verify" else None,
@@ -547,7 +632,7 @@ class Run:
             status = "ok"
         draft, err = ck.parse_draft(text) if status == "ok" else (None, None)
         l1 = (ck.layer1(draft, err, stratum=r["stratum"], paper=r["paper"],
-                        source_chunk=self.corpus.chunks[r["chunk_id"]], idx=self.idx, cfg=self.cfg["checks"])
+                        source_chunk=self.corpus.chunks[r["chunk_id"]], idx=self.idx, cfg=self.checks_cfg)
               if status == "ok" else {"verdict": "dropped", "reasons": [status], "flags": []})
         return {"k": k, "record_id": record_id(self.set, r["chunk_id"], attempt), "set": self.set,
                 "chunk_id": r["chunk_id"], "paper": r["paper"], "doc_id": r["doc_id"], "stratum": r["stratum"],
@@ -591,7 +676,7 @@ class Run:
                                             "verdict": "dropped", "reasons": [row["status"]], "flags": [], **base})
                 continue
             l1 = ck.layer1(row["draft"], row["parse_error"], stratum=row["stratum"], paper=row["paper"],
-                           source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.cfg["checks"])
+                           source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.checks_cfg)
             records.append({**row, "l1": l1})
         ck.cross_record(records)
         for r in records:
@@ -623,7 +708,8 @@ class Run:
     def verify_prompt(self, rec: dict[str, Any]) -> str:
         c = self.corpus
         head = c.paper_texts(rec["paper"])[0][: int(self.cfg["verifier"]["head_chars"])]
-        return ck.verify_prompt(rec["draft"], c.chunks[rec["chunk_id"]].content, head, c.title(rec["paper"]))
+        return ck.verify_prompt(rec["draft"], c.chunks[rec["chunk_id"]].content, head, c.title(rec["paper"]),
+                                flags=rec["l1"].get("flags") or ())
 
     def cli_cwd(self) -> Path:
         v = self.cfg["verifier"]
@@ -808,7 +894,10 @@ class Run:
         overlaps = sorted(float(r["leak_overlap"]) for r in rows if r["layer"] == "l1"
                           and r.get("leak_overlap") is not None)
         sampled = Counter(r["stratum"] for r in self.sampled)
-        attempts = Counter(r["stratum"] for r in self.drafts().rows.values())
+        draft_rows = list(self.drafts().rows.values())
+        attempts = Counter(r["stratum"] for r in draft_rows)            # every attempt, dropped ones included
+        attempt_no = Counter(f"a{r['attempt']}" for r in draft_rows)
+        http_calls = sum(int(r.get("http_attempts") or 1) for r in draft_rows)
         accepted = Counter(r["stratum"] for r in acc)
         prov = self.provenance()
 
@@ -822,7 +911,11 @@ class Run:
                        "papers_with_accepted": len({r["paper"] for r in acc}),
                        "yield_per_sampled_chunk": {s: (accepted[s] / sampled[s]) if sampled[s] else None
                                                    for s in sorted(sampled)},
-                       "attempts_per_accepted": (sum(attempts.values()) / len(acc)) if acc else None},
+                       "attempts_per_accepted": (sum(attempts.values()) / len(acc)) if acc else None,
+                       "attempts_per_accepted_by_stratum": {s: (attempts[s] / accepted[s]) if accepted[s] else None
+                                                            for s in sorted(attempts)},
+                       "attempts_by_number": dict(sorted(attempt_no.items())),
+                       "gateway_calls_per_accepted": (http_calls / len(acc)) if acc else None},
             "rejects_by_code": {k: dict(v) for k, v in sorted(by_code.items())},
             "flags_on_l1_passes": {k: dict(v) for k, v in sorted(flags.items())},
             "lexical_overlap": {"threshold": self.cfg["checks"]["leak_threshold"], "n": len(overlaps),

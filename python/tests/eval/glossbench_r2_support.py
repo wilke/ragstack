@@ -34,14 +34,16 @@ FILLER = ("The pond survey ran over three summers and the boats were counted by 
 
 def paper_text(i: int) -> str:
     """One synthetic article: a defined symbol with a value (S1 material), an
-    undefined single letter with a value (S2), and a words-only quantity (S3)."""
+    undefined symbol with a value (S2; ``Nb``, not the stoplisted ``n``), a
+    stoplisted statistic with a value (``p``: no value statement) and a
+    words-only quantity (S3)."""
     return (
         f"Drift of paper boats, study {i}. "
         "where Qb is the boat drift speed of a paper boat on still water. "
         + FILLER
         + f"In the calm case we measured Qb = 0.{i}5 m/s for the folded boats. "
         + FILLER
-        + f"The number of samples n = 1{i} was small in that season. "
+        + f"The number of samples Nb = 1{i} was small in that season (p = 0.0{i}). "
         + FILLER + FILLER
         + f"The pond keeper reported a wind gust of eleven knots near jetty {i} on the last day. "
         + FILLER
@@ -129,8 +131,8 @@ def make_config(tmp: Path, *, n_papers: int = 6, arms_empty: bool = False, with_
 
 # ------------------------------------------------------------------ a fake drafter
 
-QUANTITY = {"Qb": "boat drift speed", "n": "number of samples", "Sa": "sail angle"}
-_VS = re.compile(r"\b(Qb|n|Sa)\s*=\s*(\d[\d.]*\s*(?:m/s|degrees)?)")
+QUANTITY = {"Qb": "boat drift speed", "Nb": "number of samples", "Sa": "sail angle"}
+_VS = re.compile(r"\b(Qb|Nb|Sa)\s*=\s*(\d[\d.]*\s*(?:m/s|degrees)?)")
 
 
 def fake_draft(passage: str) -> dict[str, Any]:
@@ -149,7 +151,7 @@ def fake_draft(passage: str) -> dict[str, Any]:
     lo = max(0, m.start() - 12)
     quote = body[lo:m.end()]
     q = {"Qb": "How fast did the folded paper boats drift in the calm case?",
-         "n": "How many samples were taken in that season?",
+         "Nb": "How many samples were taken in that season?",
          "Sa": "At what sail angle were the boats fixed?"}[sym]
     return {"question": q, "quote": quote, "quantity": QUANTITY[sym], "value": val,
             "binding_terms": [QUANTITY[sym]], "symbol": sym}

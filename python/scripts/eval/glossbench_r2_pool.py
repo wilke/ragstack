@@ -53,7 +53,12 @@ Config (private JSON; see :mod:`_glossbench_r2`)::
     corpora.<set>           {chunks: [paths], expected_chunks, paper_key ("doc_id" | "path_root"),
                              arms: {arm: glossary.jsonl}, exclude_papers: path | null}
     pool                    {seed_base, n_papers, min_vs_chunks, s1_per_paper, s2_per_paper,
-                             s3_per_paper, reach_gate, reach_arms}   (defaults: DEFAULTS)
+                             s3_per_paper, reach_gate, reach_arms, vs_stoplist}   (defaults: DEFAULTS)
+
+``vs_stoplist`` (default :data:`_glossbench_r2.STAT_TOKENS`: p, n, N, df, R2, r,
+t, F, z, χ2, chi2, CI, SD, SE, SEM, OR, HR, RR, IQR, AUC) names statistical
+tokens that do not make a chunk a value statement; the header and the manifest
+record the list used, and the drafter's layer-1 checks read it from the header.
 """
 from __future__ import annotations
 
@@ -92,6 +97,8 @@ DEFAULTS: dict[str, Any] = {
     "s3_per_paper": 2,
     "reach_gate": 150,
     "reach_arms": ["rules", "scoutp", "qwen38p", "qwen36p", FRONTIER_ARM],
+    #: statistical tokens that do not make a value statement (``_glossbench_r2.STAT_TOKENS``)
+    "vs_stoplist": sorted(g.STAT_TOKENS),
 }
 
 
@@ -161,12 +168,13 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
                          "manipulation check failed")
     corpus = g.build_corpus(rows, cc.get("paper_key", "doc_id"))
     exclude, exclude_sha = read_exclusions(cc.get("exclude_papers"))
+    stoplist = [str(t) for t in pc["vs_stoplist"]]
 
     # 1. value statements (no glossary) and the eval papers
     vs: dict[str, list[str]] = {}
     vs_count: Counter[str] = Counter()
     for c in rows:
-        toks = g.value_statements(c.content)
+        toks = g.value_statements(c.content, stoplist)
         if toks:
             vs[c.chunk_id] = toks
             vs_count[corpus.doc_paper[c.doc_id]] += 1
@@ -189,7 +197,7 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
     for p in papers:
         for c in corpus.paper_chunks(p):
             toks = vs.get(c.chunk_id)
-            if toks is None and not g.words_only_candidate(c.content):
+            if toks is None and not g.words_only_candidate(c.content, stoplist):
                 continue
             reach = {a: render_reach(gl, gf, c) for a, (gf, gl, _) in arms.items()}
             stratum = ("S1" if any(reach.values()) else "S2") if toks else "S3"
@@ -235,7 +243,7 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
     pool_path = out / f"pool-{set_}.jsonl"
     header = {"kind": "header", "schema": POOL_SCHEMA, "set": set_, "created": created, "reading": reading,
               "seed": seed, "eval_papers": papers, "reach_arms": reach_arms,
-              "paper_key": cc.get("paper_key", "doc_id"),
+              "paper_key": cc.get("paper_key", "doc_id"), "vs_stoplist": stoplist,
               "inputs_sha256": {"chunks": [g.file_sha(x) for x in cc["chunks"]], "exclude_papers": exclude_sha,
                                 "arms": {a: file_sha256(arm_paths[a]) for a in reach_arms}},
               "commit": prov.get("commit")}
@@ -253,6 +261,7 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
                    "paper_key": cc.get("paper_key", "doc_id"), "seed": seed,
                    "chunk_seed": f"{seed}|chunks|<stratum>|<paper>",
                    "value_statement": "value_pattern on the chunk's own tokens (no glossary)",
+                   "vs_stoplist": stoplist,
                    "attachment": "for_chunk, value-only (file config)"},
         "manipulation": {"chunks": len(rows), "expected_chunks": expected,
                          "match": None if expected is None else len(rows) == int(expected),

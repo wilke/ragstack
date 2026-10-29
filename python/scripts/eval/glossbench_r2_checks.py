@@ -29,7 +29,8 @@ that applies is recorded):
 ``s3_has_symbol``           S3: a symbol was given
 ``s3_value_statement``      S3: the quote holds a symbol value statement
 ``symbol_collision``        the paper's own definition sentences give the symbol two
-                            unrelated definitions (where detectable; ``collision``)
+                            unrelated definitions (where detectable); a reject only
+                            under ``collision: reject`` — by default a flag (below)
 ``binding_terms_invalid``   not 1–3 terms of 1–4 words
 ``binding_word_not_in_paper``  a binding word the paper does not contain
 ``lexical_leak``            question shares > ``leak_threshold`` of the quote's
@@ -37,11 +38,12 @@ that applies is recorded):
 ``duplicate_question``      (cross-record) same question, same paper, earlier record kept
 ==========================  =====================================================
 
-Flags (counted, never a reject): ``multi_value`` (the symbol states two or more
-different values in the paper: case/scenario ambiguity for layer 2 to judge),
-``scenario_terms`` (the quote names a case/scenario/condition word the question
-does not), ``shared_chunk`` (cross-record: two accepted records share a gold
-chunk).
+Flags (counted, never a reject): ``symbol_collision`` (default mode ``flag``: the
+verifier is asked the ``symbol_unique`` question with a note), ``multi_value``
+(the symbol states two or more different values in the paper: case/scenario
+ambiguity for layer 2 to judge, also noted in its prompt), ``scenario_terms``
+(the quote names a case/scenario/condition word the question does not),
+``shared_chunk`` (cross-record: two accepted records share a gold chunk).
 """
 from __future__ import annotations
 
@@ -75,11 +77,16 @@ CHECK_DEFAULTS: dict[str, Any] = {
     "top_frequent": 200,
     "max_binding_terms": 3,
     "max_binding_words": 4,
-    #: "reject" | "flag" | "off": the symbol-collision check (see :func:`symbol_collision`)
-    "collision": "reject",
+    #: "flag" | "reject" | "off": the symbol-collision check (see :func:`symbol_collision`).
+    #: Default ``flag``: the check reads the rules extractor's definition sentences, so a
+    #: reject would make the record population depend on the ``rules`` arm; a flagged
+    #: collision goes to the verifier prompt as a question instead (``symbol_unique``).
+    "collision": "flag",
     #: definitions of one symbol whose content-word Jaccard is below this are "unrelated"
     "collision_jaccard": 0.5,
 }
+#: ``layer1`` also reads ``vs_stoplist`` (the pool header's statistical stoplist) from
+#: its cfg; absent, :data:`_glossbench_r2.STAT_TOKENS` applies.
 
 REDRAW_EXEMPT = frozenset({"no_quantity"})
 FIELDS = ("question", "quote", "quantity", "value", "binding_terms", "symbol")
@@ -183,17 +190,27 @@ Answer with a JSON object only, exactly these keys:
 - "reason": at most 25 words, pointing to the paper's own words."""
 
 VERIFY_KEYS = ("supports", "single_reading", "same_case", "symbol_unique")
+#: Layer-1 flags that become a question to the verifier (never a glossary, never an arm).
+FLAG_NOTES = {
+    "symbol_collision": ("A mechanical check found the paper's own text defining this symbol in more "
+                         "than one way. Decide \"symbol_unique\" from the text with particular care."),
+    "multi_value": ("A mechanical check found the paper stating more than one value for this symbol. "
+                    "Decide \"same_case\" with particular care."),
+}
 
 
-def verify_prompt(rec: Mapping[str, Any], passage: str, head: str, title: str) -> str:
+def verify_prompt(rec: Mapping[str, Any], passage: str, head: str, title: str,
+                  flags: Sequence[str] = ()) -> str:
     sym = rec.get("symbol") or ""
+    notes = "".join(f"NOTE: {FLAG_NOTES[f]}\n" for f in FLAG_NOTES if f in flags)
     return (f"BEGINNING OF THE PAPER{' (title: ' + title + ')' if title else ''}:\n<<<\n{head}\n>>>\n\n"
             f"PASSAGE:\n<<<\n{passage}\n>>>\n\n"
             f"QUESTION: {rec['question']}\n"
             f"QUANTITY ASKED: {rec['quantity']}\n"
             f"ANSWER: {rec['value']}\n"
             f"SYMBOL: {sym if sym else '(none)'}\n"
-            f"QUOTE: {rec['quote']}\n\n"
+            f"QUOTE: {rec['quote']}\n"
+            f"{notes}\n"
             "Check the record. Answer with the JSON object only.")
 
 
@@ -360,7 +377,7 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
     if stratum == "S3":
         if sym:
             reasons.append("s3_has_symbol")
-        if g.value_statements(quote):
+        if g.value_statements(quote, c.get("vs_stoplist")):
             reasons.append("s3_value_statement")
     else:
         if not sym:
