@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary Gold Labels</title>
+<style>
+:root{
+  --bg:#f6f7f5; --panel:#ffffff; --ink:#1d2321; --ink2:#4b5551; --muted:#7a847f; --rule:#dfe3e0;
+  --accent:#1f6f5c; --accent-ink:#ffffff; --accent-soft:#e2f0eb;
+  --ok:#2e7d4f; --ok-soft:#e3f2e8; --bad:#b4442f; --bad-soft:#f8e6e1; --nas:#7a5c12; --nas-soft:#f6eed9;
+  --part:#2f62a8; --part-soft:#e3ebf7; --mark:#ffe58a; --mark-cur:#ffb84d; --focus:#2f6fd0;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121615; --panel:#1a1f1d; --ink:#e4e9e6; --ink2:#b3bcb7; --muted:#86908b; --rule:#2c3330;
+    --accent:#5fbf9f; --accent-ink:#0d1412; --accent-soft:#1d332c;
+    --ok:#6cc48d; --ok-soft:#1b3024; --bad:#ec8a73; --bad-soft:#3a211b; --nas:#d9b65a; --nas-soft:#342b14;
+    --part:#8fb3ec; --part-soft:#1c2a40; --mark:#6b5a12; --mark-cur:#a8661a; --focus:#7aa8f0;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121615; --panel:#1a1f1d; --ink:#e4e9e6; --ink2:#b3bcb7; --muted:#86908b; --rule:#2c3330;
+  --accent:#5fbf9f; --accent-ink:#0d1412; --accent-soft:#1d332c;
+  --ok:#6cc48d; --ok-soft:#1b3024; --bad:#ec8a73; --bad-soft:#3a211b; --nas:#d9b65a; --nas-soft:#342b14;
+  --part:#8fb3ec; --part-soft:#1c2a40; --mark:#6b5a12; --mark-cur:#a8661a; --focus:#7aa8f0;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);display:grid;grid-template-rows:auto 1fr;}
+header.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--rule);background:var(--panel)}
+header.top h1{font-size:16px;font-weight:600;margin:0;letter-spacing:.01em}
+.private{font:500 11px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--bad);border:1px solid currentColor;border-radius:3px;padding:3px 6px}
+.progress{display:flex;align-items:center;gap:8px;color:var(--ink2);font-variant-numeric:tabular-nums;font-size:13px}
+.bar{width:140px;height:6px;background:var(--rule);border-radius:3px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);width:0}
+.spacer{flex:1}
+button,.btn{font:500 13px/1 var(--sans);color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:7px 11px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button:focus-visible,textarea:focus-visible,a:focus-visible,.item:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.layout{display:grid;grid-template-columns:200px minmax(320px,440px) 1fr;min-height:0}
+nav.docs{border-right:1px solid var(--rule);overflow:auto;padding:8px 0;background:var(--panel)}
+nav.docs a{display:flex;justify-content:space-between;gap:8px;padding:7px 14px;color:var(--ink2);text-decoration:none;font:400 13px/1.3 var(--mono)}
+nav.docs a .n{font:400 12px var(--sans);color:var(--muted);font-variant-numeric:tabular-nums}
+nav.docs a.cur{background:var(--accent-soft);color:var(--ink);font-weight:500}
+nav.docs a.done .n{color:var(--ok)}
+nav.docs .grp{font:600 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 14px 4px}
+section.items{border-right:1px solid var(--rule);overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.dochead h2{margin:0;font:600 18px var(--mono)}
+.dochead p{margin:2px 0 0;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+details.help{font-size:13px;color:var(--ink2);background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:8px 10px}
+details.help summary{cursor:pointer;font-weight:500;color:var(--ink)}
+details.help kbd{font:12px var(--mono);border:1px solid var(--rule);border-radius:3px;padding:0 4px;background:var(--bg)}
+.item{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;display:grid;gap:8px;cursor:default}
+.item.cur{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.item .top{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.item .iid{font:12px var(--mono);color:var(--muted)}
+.item .sym{font:500 15px var(--mono);background:var(--bg);border:1px solid var(--rule);border-radius:4px;padding:1px 6px;overflow-wrap:anywhere}
+.item .def{font-family:var(--serif);font-size:15px;color:var(--ink);overflow-wrap:anywhere}
+.item .hits{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-left:auto}
+.labels{display:flex;gap:6px;flex-wrap:wrap}
+.labels button{flex:1 1 auto;min-width:88px}
+.labels button[data-v="correct"][aria-pressed="true"]{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+.labels button[data-v="partial"][aria-pressed="true"]{background:var(--part-soft);border-color:var(--part);color:var(--part)}
+.labels button[data-v="wrong"][aria-pressed="true"]{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.labels button[data-v="not-a-symbol"][aria-pressed="true"]{background:var(--nas-soft);border-color:var(--nas);color:var(--nas)}
+textarea{width:100%;font:13px/1.4 var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--rule);border-radius:6px;padding:6px 8px;resize:vertical;min-height:32px}
+.missed{background:var(--panel);border:1px dashed var(--muted);border-radius:8px;padding:10px 12px}
+.missed label{font-weight:500;font-size:13px;display:block;margin-bottom:4px}
+.missed small{color:var(--muted)}
+.pager{display:flex;gap:8px;justify-content:space-between}
+section.text{overflow:auto;padding:0;display:flex;flex-direction:column;min-width:0}
+.texthead{position:sticky;top:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--rule);font-size:13px;color:var(--ink2);z-index:1}
+.texthead .find{font:500 13px var(--mono);color:var(--ink)}
+.texthead input{font:13px var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--rule);border-radius:6px;padding:5px 8px;width:180px}
+pre.doc{margin:0;padding:18px 24px 60px;white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.6 var(--serif);color:var(--ink);max-width:80ch}
+mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
+mark.cur{background:var(--mark-cur);outline:2px solid var(--mark-cur)}
+.toast{position:fixed;bottom:16px;right:16px;background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:6px;font-size:13px;opacity:0;transition:opacity .2s}
+.toast.on{opacity:1}
+@media (prefers-reduced-motion: reduce){.toast{transition:none}}
+@media (max-width: 900px){
+  body{grid-template-rows:auto auto}
+  .layout{grid-template-columns:1fr}
+  nav.docs{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid var(--rule);padding:0}
+  nav.docs .grp{display:none}
+  nav.docs a{white-space:nowrap}
+  section.items,section.text{border-right:0;overflow:visible}
+  pre.doc{padding:16px}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Glossary gold labels</h1>
+  <span class="private">Private · stays on host</span>
+  <div class="progress"><div class="bar"><i id="bar"></i></div><span id="prog">0 / 0</span></div>
+  <div class="spacer"></div>
+  <label class="btn" for="imp">Load CSV</label><input id="imp" type="file" accept=".csv,text/csv" hidden>
+  <button id="theme" title="Toggle theme">Theme</button>
+  <button id="exp" class="primary">Export CSV</button>
+</header>
+<div class="layout">
+  <nav class="docs" id="docs" aria-label="Documents"></nav>
+  <section class="items" id="items" aria-label="Items"></section>
+  <section class="text" id="textpane" aria-label="Document text">
+    <div class="texthead">
+      <span>Highlighting <span class="find" id="findlbl">—</span></span>
+      <span id="hitlbl"></span>
+      <button id="prevhit" title="Previous occurrence (p)">◀ prev</button>
+      <button id="nexthit" title="Next occurrence (n)">next ▶</button>
+      <div class="spacer"></div>
+      <input id="search" type="search" placeholder="find in text…" aria-label="Find in text">
+    </div>
+    <pre class="doc" id="doc"></pre>
+  </section>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+const DATA = /*__DATA__*/null;
+const KEY = DATA.storage_key; // one key per labelling round: labels never carry over between rounds
+const LABELS = ["correct","partial","wrong","not-a-symbol"];
+let state = {labels:{}, notes:{}, missed:{}, doc:0, item:0};
+try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s) state = Object.assign(state, s); } catch(e) {}
+function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) {} }
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const k = (d,i) => d + "|" + i;
+let hits = [], hitIdx = -1, findTerm = "";
+
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("on"); clearTimeout(toast.h); toast.h=setTimeout(()=>t.classList.remove("on"),1600); }
+
+function progress(){
+  let tot=0, done=0;
+  DATA.docs.forEach(d => d.items.forEach(it => { tot++; if (state.labels[k(d.id,it.id)]) done++; }));
+  $("prog").textContent = `${done} / ${tot} labelled`;
+  $("bar").style.width = (tot ? 100*done/tot : 0) + "%";
+}
+function renderNav(){
+  const nav = $("docs"); nav.innerHTML = ""; let grp = "";
+  DATA.docs.forEach((d,ix) => {
+    const g = d.group || d.id.replace(/-\d+$/, "");
+    if (g !== grp){ grp = g; const h=document.createElement("div"); h.className="grp"; h.textContent=g; nav.appendChild(h); }
+    const n = d.items.filter(it => state.labels[k(d.id,it.id)]).length;
+    const a = document.createElement("a"); a.href="#"; a.className = (ix===state.doc?"cur ":"") + (n===d.items.length?"done":"");
+    a.innerHTML = `<span>${esc(d.id)}</span><span class="n">${n}/${d.items.length}</span>`;
+    a.onclick = e => { e.preventDefault(); openDoc(ix, 0); };
+    nav.appendChild(a);
+  });
+}
+function renderItems(){
+  const d = DATA.docs[state.doc], box = $("items");
+  box.innerHTML = `<div class="dochead"><h2>${esc(d.id)}</h2><p>${d.chars.toLocaleString()} characters · ${d.items.length} item${d.items.length===1?"":"s"}</p></div>
+  <details class="help"${state.doc===0?" open":""}><summary>How to label</summary>${DATA.instructions}
+  <p>Keys: <kbd>j</kbd>/<kbd>k</kbd> next/previous item · <kbd>1</kbd> correct · <kbd>2</kbd> partial · <kbd>3</kbd> wrong · <kbd>4</kbd> not-a-symbol · <kbd>n</kbd>/<kbd>p</kbd> next/previous occurrence · <kbd>]</kbd>/<kbd>[</kbd> next/previous document. Work saves in this browser; use <b>Export CSV</b> to hand it back.</p></details>`;
+  d.items.forEach((it, ix) => {
+    const key = k(d.id,it.id), cur = state.labels[key] || "";
+    const el = document.createElement("div"); el.className = "item" + (ix===state.item?" cur":""); el.tabIndex = 0; el.dataset.ix = ix;
+    el.innerHTML = `<div class="top"><span class="iid">${esc(it.id)}</span><span class="sym">${esc(it.symbol)}</span><span class="hits" data-h></span></div>
+      <div class="def">${esc(it.definition)}</div>
+      <div class="labels">${LABELS.map((v,j)=>`<button data-v="${v}" aria-pressed="${cur===v}" title="key ${j+1}">${v}</button>`).join("")}</div>
+      <textarea rows="1" placeholder="note (optional)" aria-label="Note for ${esc(it.id)}">${esc(state.notes[key]||"")}</textarea>`;
+    el.querySelectorAll(".labels button").forEach(b => b.onclick = ev => { ev.stopPropagation(); setLabel(ix, b.dataset.v); });
+    el.querySelector("textarea").oninput = ev => { state.notes[key] = ev.target.value; save(); };
+    el.addEventListener("click", ev => { if (ev.target.tagName!=="TEXTAREA") selectItem(ix); });
+    el.addEventListener("focus", () => { if (state.item!==ix) selectItem(ix, true); });
+    const n = countIn(d.text, it.symbol); el.querySelector("[data-h]").textContent = n ? `${n}× in text` : "not found in text";
+    box.appendChild(el);
+  });
+  if (DATA.missed) {
+  const m = document.createElement("div"); m.className="missed";
+  m.innerHTML = `<label for="missed">Missed symbols</label><textarea id="missed" rows="3" placeholder="symbol = definition; symbol = definition">${esc(state.missed[d.id]||"")}</textarea><small>Symbols the document defines that no item covers.</small>`;
+  box.appendChild(m);
+  m.querySelector("textarea").oninput = ev => { state.missed[d.id] = ev.target.value; save(); };
+  }
+  const pg = document.createElement("div"); pg.className="pager";
+  pg.innerHTML = `<button ${state.doc===0?"disabled":""} id="pd">◀ previous document</button><button ${state.doc===DATA.docs.length-1?"disabled":""} id="nd" class="primary">next document ▶</button>`;
+  box.appendChild(pg);
+  $("pd").onclick = () => openDoc(state.doc-1, 0); $("nd").onclick = () => openDoc(state.doc+1, 0);
+}
+// Length-preserving fold of Greek/math compatibility variants, so ϕ finds φ, ∆ finds Δ, µ finds μ.
+const FOLD = {"ϕ":"φ","ɸ":"φ","∆":"Δ","µ":"μ","ϵ":"ε","ϑ":"θ","ϱ":"ρ","ϖ":"π","ϰ":"κ","−":"-","–":"-","‐":"-","‑":"-"};
+const fold = s => s.replace(/[ϕɸ∆µϵϑϱϖϰ−–‐‑]/g, c => FOLD[c]);
+function countIn(text, term){ if(!term) return 0; const t=fold(text), f=fold(term); let n=0, i=0; while((i=t.indexOf(f,i))!==-1){ n++; i+=f.length; } return n; }
+function renderText(term){
+  const text = DATA.docs[state.doc].text; findTerm = term || "";
+  $("findlbl").textContent = findTerm || "—";
+  if (!findTerm){ $("doc").innerHTML = esc(text); hits=[]; hitIdx=-1; $("hitlbl").textContent=""; return; }
+  let out = "", i = 0, j, n = 0; const ft = fold(text), ff = fold(findTerm);
+  while ((j = ft.indexOf(ff, i)) !== -1){ out += esc(text.slice(i,j)) + `<mark id="h${n}">${esc(text.slice(j, j+ff.length))}</mark>`; n++; i = j + ff.length; }
+  out += esc(text.slice(i)); $("doc").innerHTML = out;
+  hits = Array.from({length:n}, (_,x)=>x); hitIdx = -1;
+  $("hitlbl").textContent = n ? `0 of ${n}` : "not in text";
+  if (n) step(1);
+}
+function step(dir){
+  if (!hits.length) return;
+  const old = document.getElementById("h"+hitIdx); if (old) old.classList.remove("cur");
+  hitIdx = (hitIdx + dir + hits.length) % hits.length;
+  const m = document.getElementById("h"+hitIdx); m.classList.add("cur");
+  m.scrollIntoView({block:"center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+  $("hitlbl").textContent = `${hitIdx+1} of ${hits.length}`;
+}
+function selectItem(ix, fromFocus){
+  state.item = ix; save();
+  document.querySelectorAll(".item").forEach(e => e.classList.toggle("cur", +e.dataset.ix===ix));
+  const el = document.querySelector(`.item[data-ix="${ix}"]`);
+  if (el && !fromFocus){ el.focus({preventScroll:true}); el.scrollIntoView({block:"nearest"}); }
+  $("search").value = "";
+  renderText(DATA.docs[state.doc].items[ix].symbol);
+}
+function setLabel(ix, v){
+  const d = DATA.docs[state.doc], key = k(d.id, d.items[ix].id);
+  state.labels[key] = state.labels[key]===v ? "" : v; save();
+  document.querySelectorAll(`.item[data-ix="${ix}"] .labels button`).forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v===state.labels[key])));
+  progress(); renderNav();
+}
+function openDoc(ix, item){
+  state.doc = Math.max(0, Math.min(DATA.docs.length-1, ix)); state.item = item; save();
+  renderNav(); renderItems(); $("textpane").scrollTop = 0;
+  if (DATA.docs[state.doc].items.length) selectItem(Math.min(item, DATA.docs[state.doc].items.length-1)); else renderText("");
+}
+function csvCell(s){ s = s==null ? "" : String(s); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
+function exportCSV(){
+  const lines = [DATA.header.map(csvCell).join(",")];
+  DATA.docs.forEach(d => {
+    d.items.forEach(it => { const key=k(d.id,it.id); lines.push([d.id,it.id,it.symbol,it.definition,state.labels[key]||"",state.notes[key]||""].map(csvCell).join(",")); });
+    if (DATA.missed) lines.push([d.id,"missed","","","",state.missed[d.id]||""].map(csvCell).join(","));
+  });
+  const blob = new Blob([lines.join("\n")+"\n"], {type:"text/csv"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = DATA.export_name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000); toast("Exported " + DATA.export_name);
+}
+function parseCSV(t){
+  const rows=[]; let row=[], f="", q=false;
+  for (let i=0;i<t.length;i++){ const c=t[i];
+    if (q){ if (c==='"'){ if (t[i+1]==='"'){ f+='"'; i++; } else q=false; } else f+=c; }
+    else if (c==='"') q=true; else if (c===','){ row.push(f); f=""; } else if (c==='\n'){ row.push(f); rows.push(row); row=[]; f=""; } else if (c!=='\r') f+=c; }
+  if (f||row.length){ row.push(f); rows.push(row); } return rows;
+}
+$("imp").onchange = ev => {
+  const file = ev.target.files[0]; if (!file) return;
+  file.text().then(t => {
+    let n=0; parseCSV(t).slice(1).forEach(r => {
+      if (r.length<6) return;
+      if (r[1]==="missed"){ state.missed[r[0]] = r[5]; return; }
+      const key=k(r[0],r[1]); if (LABELS.includes(r[4])){ state.labels[key]=r[4]; n++; } state.notes[key]=r[5];
+    });
+    save(); openDoc(state.doc, state.item); progress(); toast(`Loaded ${n} labels`);
+  });
+};
+$("exp").onclick = exportCSV;
+$("prevhit").onclick = () => step(-1); $("nexthit").onclick = () => step(1);
+$("search").oninput = ev => renderText(ev.target.value);
+$("theme").onclick = () => {
+  const r=document.documentElement, dark = r.dataset.theme ? r.dataset.theme==="dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark"; try{ localStorage.setItem(KEY+"-theme", r.dataset.theme); }catch(e){}
+};
+try { const th = localStorage.getItem(KEY+"-theme"); if (th) document.documentElement.dataset.theme = th; } catch(e) {}
+document.addEventListener("keydown", ev => {
+  if (["TEXTAREA","INPUT"].includes(ev.target.tagName) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const d = DATA.docs[state.doc];
+  if (ev.key==="j") selectItem(Math.min(d.items.length-1, state.item+1));
+  else if (ev.key==="k") selectItem(Math.max(0, state.item-1));
+  else if (["1","2","3","4"].includes(ev.key) && d.items.length) setLabel(state.item, LABELS[+ev.key-1]);
+  else if (ev.key==="n") step(1); else if (ev.key==="p") step(-1);
+  else if (ev.key==="]") openDoc(state.doc+1, 0); else if (ev.key==="[") openDoc(state.doc-1, 0);
+  else return;
+  ev.preventDefault();
+});
+progress(); openDoc(state.doc, state.item);
+</script>
+</body>
+</html>
