@@ -71,8 +71,14 @@ string, `llm/2:<model>:dcb924271b1e:w80000x4:t4096:k0:r0`:
 - `--llm-min-chars 1500` on OA-1000 only, because JATS float units are documents there;
 - no extra request body.
 
-The step ran from the tools image `ragstack-tools-v1.6.20-b1` (commit 4a0571b). Its glossary and
-backfill modules are byte-identical to main at 0e22c55.
+The step ran from the tools image `ragstack-tools-v1.6.20-b1` (commit 4a0571b). Six modules in it are
+byte-identical to main at 0e22c55:
+- `ingestion/glossary_step.py`;
+- `symbol_glossary.py`;
+- `symbol_glossary_llm.py`;
+- `glossary_file.py`;
+- `scripts/glossary_step.py`;
+- `scripts/backfill_symbol_glossary.py`.
 
 **The merge rule.** For each document, the `merged` glossary is the LLM half if that half has at least
 one entry, and otherwise the rules half. So every LLM condition is a **mixture** of LLM-glossaried and
@@ -128,7 +134,7 @@ the restore, as a noise control.
 - **Rubric v1.** Three labels: `correct`, `wrong`, `not-a-symbol`. Acronyms counted as not-a-symbol.
   - Claude 60/60 documents ($10.78); Codex 60/60, as 7 + 53 after a rate-limit stop; Gemini 58/60. Two
     documents failed twice, both with invalid labels.
-  - The owner labelled 40 entries, and then 42. Owner-vs-judge κ was about 0.05–0.13 for Claude and
+  - The owner labelled 40 entries, and then 42. Owner-vs-judge κ was about 0.03–0.13 for Claude and
     Codex, and 0.28–0.38 for Gemini, on 36–42 items. These come from private label files and are not
     committed, so read them as a lab-book note only.
   - The confusions were systematic:
@@ -155,7 +161,7 @@ the restore, as a noise control.
   - Gemini 57/60, 17:30:44–17:41:50Z. Three documents returned incomplete answers twice.
 
   The analysis is [artifacts/gold-r3.json](artifacts/gold-r3.json). See [Part 4](#part-4-gold-precision).
-- **Gateway audit.** The gateway's operator audited the Gemini v1 window, 16:02:41–16:13:47Z:
+- **Gateway audit.** OpenChia, which operates the gateway, audited the Gemini v1 window, 16:02:41–16:13:47Z:
   - 63 calls were routed: 62 succeeded, and 1 provider error returned no answer;
   - the token counts were identical to ours: 713,499 in and 19,743 out;
   - no model was substituted.
@@ -242,7 +248,9 @@ records.
 
 | contrast | arm | gained / lost | p | power floor |
 |---|---|---|---|---|
-| scout vs rules | bm25 | 20 / 15 | 0.50 | 24 / 11 of 35 |
+| scout vs rules | base | not reported by OpenChia (net +3; see the bootstrap rows below) | | |
+| | bm25 | 20 / 15 | 0.50 | 24 / 11 of 35 |
+| | norerank | not reported by OpenChia (net +8; see the bootstrap rows below) | | |
 | qwen38 vs rules | base | 20 / 4 | .002 | |
 | | bm25 | 27 / 10 | .008 | |
 | | norerank | 25 / 6 | .001 | |
@@ -286,7 +294,8 @@ there is **no corpus-level claim**. Within that paper, OpenChia resampled record
   which OpenChia's proxy in point 4 measures directly. It is not the merge-rule mixture on the gold
   documents: all 7 source papers are LLM-glossed under all three models (point 2).
 - **BM25 beat the reranked default in every condition** (62/52, 67/55, 79/68, 82/70). On the live
-  papers-OC collection it was 85 against 65. On this corpus the reranker costs recall. That is a larger
+  papers-OC collection it was 85 against 65. That figure is OpenChia's earlier live-collection
+  measurement: external, and not re-measured here. On this corpus the reranker costs recall. That is a larger
   effect than any glossary difference here, and it deserves its own look ([What's next](#whats-next),
   item d).
 
@@ -331,7 +340,10 @@ entry correctness did not predict retrieval usefulness (exploratory).
 - **Precision is the right headline for a glossary people read**, such as a glossary panel or a tooltip.
 - **Retrieval is the right headline for search.**
 
-On both measures, both Qwen models come out on top, and they are indistinguishable from each other.
+- **On retrieval**, both Qwen models beat rules and Scout within the one paper.
+- **On precision**, Qwen3.6 separates from Scout on strict and lenient precision, and on harm only at
+  the edge. Qwen3.8 separates from Scout only on lenient precision.
+- **The two Qwen models are indistinguishable** from each other on every measure (exploratory).
 
 ## OpenChia's review, 2026-10-29
 
@@ -402,8 +414,8 @@ that round 1 cannot tell apart. It is not a quality ranking. The Qwen3.6-over-Qw
   privately. This benchmark's own wall times can't confirm it, because Qwen3.8 ran at half the
   concurrency.
 - **Capacity:** the vLLM operator's serving numbers, reported to us and not in this record, show that the
-  Qwen3.6 endpoint (:8004) has headroom. The Qwen3.8 endpoint (:8008) is shared with interactive users and
-  limited to 8 requests in flight. For Qwen3.6 at 4,096 tokens, the #847 throughput measurement gave 5,131
+  Qwen3.6 endpoint has headroom. The Qwen3.8 endpoint is shared with interactive users and limited to
+  8 requests in flight. For Qwen3.6 at 4,096 tokens, the #847 throughput measurement gave 5,131
   documents/h at concurrency 16 and 6,847 at concurrency 32.
 
 So the two are indistinguishable, and the recommendation is to pick the faster one, which has headroom.
@@ -414,9 +426,13 @@ The final choice between Qwen3.6 and Qwen3.8 comes last, after the steps below, 
 
 - **One run per condition.** The rules repeat gives a noise floor of 0–2 records on papers-OC. Nothing
   else was repeated, and the LLM runs' own run-to-run variance was not measured.
-- **Multiplicity.** About 18 papers-OC comparisons were made, uncorrected. The six qwen-vs-rules
-  p-values at 0.015 or below would survive a Bonferroni correction over 18 only at p ≤ 0.0028. That means
-  four of the six: qwen38 base and norerank, qwen36 base and bm25.
+- **Multiplicity.**
+  - About 18 papers-OC comparisons were made, uncorrected. For two of them, scout vs rules on base and on
+    norerank, OpenChia reported no per-record split, only the within-paper bootstrap net (+3 and +8).
+  - Six qwen-vs-rules p-values are at 0.015 or below. A Bonferroni correction over 18 needs p ≤ 0.0028,
+    which four of the six meet: qwen38 base and norerank, and qwen36 base and bm25.
+  - The 18 gold difference CIs (6 pairs × 3 measures) are uncorrected too. The Scout-vs-Qwen3.6 harm CI,
+    [−0.047, −0.001], would not survive any correction.
 - **Reach.** 138 of 155 records come from one paper, and the paper-clustered CIs all reach 0. The
   retrieval effect is shown **for one paper only**.
 - **The chunking.** The papers-OC bench copy is chunked differently from the live collection, so the

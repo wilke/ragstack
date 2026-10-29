@@ -39,13 +39,22 @@ repository, not from a clean tree. Under the provenance rule in `docs/papers/REA
 `citable: false`. They can be reported in the lab book, but no claim may point at them.
 
 The step-7 harness ran at db97c28 with `dirty: false` and `untracked: 0`, so its run is citable. The
-committed copy has the per-item and stratum fields removed. The private full result has sha256 prefix
-`86ff4551`.
+committed copy has the per-item and stratum fields removed.
+
+In `docsA-found.json` there are two hashes:
+- `artifact_provenance.source_full_sha256` (`86ff4551…`) is the private full result;
+- `source_sha256` (`c411633b…`) is the private counts-only intermediate derived from that full result. The
+  committed file was made from the intermediate.
 
 **How the public copies were made.** They were produced mechanically from the private files:
 - corpus keys were renamed to the aliases;
 - every path, host and endpoint field was dropped;
-- `precision_by_corpus_majority` was turned from `"a/b"` strings into `{correct, n}`.
+- `precision_by_corpus_majority` was turned from `"a/b"` strings into `{correct, n}`;
+- in `docsA-found.json`, the `note_counts_only` string was rewritten so that it no longer names the private
+  file;
+- in `gold-r1.json`, the Gemini input hash is kept under the neutral key `labels-gemini.jsonl`. The private
+  file name carried a gateway name. The value is the sha256 of the private Gemini rubric-1 label file,
+  unchanged.
 
 None of them holds a symbol, a definition, a judge's reason, a document id, a question id or a title.
 That was checked by listing every string value in every file.

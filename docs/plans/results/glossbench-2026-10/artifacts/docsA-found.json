@@ -3,6 +3,7 @@
   "label": "EXPLORATORY",
   "what": "step 7: docs-A retrieval-only re-score, counts-only copy (per-item and stratum labels removed)",
   "source_sha256": "c411633b3f18f4e1dce3e08a946ca8da33e2f8e35428a3634c5dc1e24ece1301",
+  "source_full_sha256": "86ff45517f20cb21ab222a7949584ebf07350ee7714b7a44fac723d6fa41de33",
   "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
   "citable": true,
   "citable_reason": "harness ran from a clean detached worktree at db97c28 (dirty false, untracked 0)",
