@@ -869,8 +869,10 @@ def _gowe_inputs(
 
     ``max_chunks`` (#291): the job's chunk cap, threaded to the worker's
     ``ingest_shard --max-chunks`` — the worker has the store URLs, so it
-    performs the same one-count check before its first write. Sent only when
-    a cap applies (the workflow input defaults to 0 = unlimited).
+    performs the same one-count check before its first write. Sent on every
+    submission when the registered workflow declares the input (#849: 0 =
+    unlimited, sent explicitly — the submitter's decision is on the record);
+    to an older text that does not declare it, only when a cap applies.
 
     ``doi_enrichment`` (#596): whether the worker resolves each DISTINCT DOI to
     a title/authors/journal/pmid/pmcid. It has to travel on the submission for
@@ -948,7 +950,12 @@ def _gowe_inputs(
         inputs["chunk_size"] = entry.chunk_size
     if entry.chunk_overlap is not None:
         inputs["chunk_overlap"] = entry.chunk_overlap
-    if max_chunks is not None and max_chunks > 0:
+    if "max_chunks" in (declared_inputs or set()):
+        # #849: the submitter decides the cap, and says so every time — 0 is
+        # "no cap", sent explicitly, so the run's inputs snapshot records the
+        # decision rather than the workflow default.
+        inputs["max_chunks"] = int(max_chunks or 0)
+    elif max_chunks is not None and max_chunks > 0:
         inputs["max_chunks"] = int(max_chunks)
     if settings.collection_registry_name:
         inputs["registry"] = settings.collection_registry_name

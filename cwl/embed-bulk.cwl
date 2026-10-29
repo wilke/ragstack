@@ -56,6 +56,20 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
+  # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
+  # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
+  # null unless the driver is told it. All optional: null omits the flag.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to (null on a bulk run
+      unless the driver is given it)."
+  tool_image:
+    type: ["null", string]
+    doc: "The stamped tools image name the text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json."
 
 steps:
   embed_shard:
@@ -71,6 +85,9 @@ steps:
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
       symbol_glossary: symbol_glossary
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -129,6 +146,21 @@ steps:
           inputBinding:
             prefix: --symbol-glossary
             position: 12
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 13
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 14
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 15
       arguments:
         - position: 10
           prefix: --out
@@ -150,6 +182,9 @@ steps:
     doc: "Gather per-shard receipts -> run summary (totals + failed shards)."
     in:
       receipts: embed_shard/receipt
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -163,6 +198,21 @@ steps:
           type: File[]
           inputBinding:
             position: 2
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 4
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 5
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 6
       arguments:
         - position: 3
           prefix: --out

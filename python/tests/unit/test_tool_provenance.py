@@ -578,6 +578,16 @@ def test_check_refuses_a_stale_receipt_on_an_unstamped_tree(tree: Path) -> None:
     ("graph-extract.cwl", "extract", "extract_graph.py"),
     ("restore-collection.cwl", "replay", "load_embeddings.py"),
     ("pdf-ingest.cwl", "pack", "archive_version.py"),
+    # #821: the bulk/JATS plane declares and binds them too (G2b).
+    ("jats-ingest.cwl", "extract", "jats_extract.py"),
+    ("jats-ingest.cwl", "embed", "embed_shard.py"),
+    ("jats-ingest.cwl", "merge", "merge_receipts.py"),
+    ("jats-ingest.cwl", "load", "load_embeddings.py"),
+    ("embed-bulk.cwl", "embed_shard", "embed_shard.py"),
+    ("embed-bulk.cwl", "merge", "merge_receipts.py"),
+    ("ingest-bulk.cwl", "ingest_shard", "ingest_shard.py"),
+    ("ingest-bulk.cwl", "merge", "merge_receipts.py"),
+    ("load-embeddings.cwl", "load", "load_embeddings.py"),
 ])
 def test_registered_workflows_declare_and_bind_the_inputs(wf_name, step, tool_script) -> None:
     wf = yaml.safe_load((CWL_DIR / wf_name).read_text(encoding="utf-8"))

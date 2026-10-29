@@ -322,3 +322,31 @@ async def test_gowe_real_engine_failure_exit_4_reaches_the_job(client, gowe):  #
     assert job.error == CHUNK_CAP_EXCEEDED and job.archive_ref == ""
     assert {i.error for i in app.state.job_store._items[job_id].values()} == {line}
     assert gowe["workspace"].reads == []  # nothing delivered, nothing read
+
+
+async def test_a_declaring_workflow_gets_max_chunks_on_every_submission(
+        client, gowe, monkeypatch):  # noqa: F811
+    """#849: when the registered text DECLARES ``max_chunks`` (the repo's
+    scatter CWL does), the API sends it every time — ``0`` for "no cap" too —
+    so the submission's inputs record the submitter's decision and never lean
+    on the workflow default. An older text that does not declare it keeps the
+    pre-#849 rule (sent only when a cap applies; the test above)."""
+    from pathlib import Path
+
+    from ragstack.config import settings
+
+    scatter = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
+    if not scatter.is_file():
+        pytest.skip("no cwl/ in this checkout")
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", scatter.read_text())
+    inner = gowe["store"]._inner
+    await inner.put(gowe["spec"].model_copy(update={"max_chunks": 0}))
+    assert (await _upload(client, "a.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 0
+    await inner.put(gowe["spec"])
+    monkeypatch.setattr(settings, "max_chunks_per_collection", 0)
+    assert (await _upload(client, "b.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 0
+    await inner.put(gowe["spec"].model_copy(update={"max_chunks": 7}))
+    assert (await _upload(client, "c.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 7

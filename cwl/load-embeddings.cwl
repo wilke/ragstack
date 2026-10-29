@@ -84,6 +84,38 @@ inputs:
     default: false
     doc: "Hold each upsert until the collection is green (#141). OFF by default;
       set true for a very large corpus on a capped Qdrant."
+  glossary_file:
+    type: ["null", File]
+    doc: "#847: a glossary.jsonl (the `glossary_file.py merge` of the glossary
+      step's per-shard files, e.g. embed-bulk.cwl's `glossary_file` output).
+      When given, every chunk's symbol_glossary field is rendered from it,
+      overriding what the embedding files carry; each document's text_sha256
+      is checked before any write and a mismatch refuses the load (exit 2).
+      Null = the embedding files' own field."
+  max_chunks:
+    type: int
+    default: 0
+    doc: "Per-collection chunk cap (#291, #849), passed to load_embeddings
+      --max-chunks: the load refuses, whole and before any write, when the
+      collection's live chunk count plus the files' chunks would exceed it.
+      0 (the default) = no cap from this input; the registry entry's explicit
+      max_chunks override still applies. The submitter decides the cap (the
+      API for user jobs, the operator for bulk jobs); nothing is derived from
+      the worker."
+  # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
+  # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
+  # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
+  # null unless the driver is told it. All optional: null omits the flag.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to (null on a bulk run
+      unless the driver is given it)."
+  tool_image:
+    type: ["null", string]
+    doc: "The stamped tools image name the text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json."
 
 steps:
   load:
@@ -99,6 +131,11 @@ steps:
       es_url: es_url
       fail_on_error: fail_on_error
       backpressure: backpressure
+      glossary_file: glossary_file
+      max_chunks: max_chunks
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -159,6 +196,32 @@ steps:
           inputBinding:
             prefix: --registry
             position: 12
+        glossary_file:
+          type: ["null", File]
+          inputBinding:
+            prefix: --glossary-file
+            position: 13
+        max_chunks:
+          type: int
+          default: 0
+          inputBinding:
+            prefix: --max-chunks
+            position: 14
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 15
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 16
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 17
       arguments:
         - position: 10
           prefix: --out

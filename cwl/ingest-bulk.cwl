@@ -112,6 +112,29 @@ inputs:
     doc: "Per-document symbol glossary passed to ingest_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  max_chunks:
+    type: int
+    default: 0
+    doc: "Per-collection chunk cap (#291, #849), passed to the tool's
+      --max-chunks: the task refuses its shard, whole, when the collection's
+      live chunk count plus the shard's chunks would exceed it. 0 (the default)
+      = no cap from this input; the registry entry's explicit max_chunks
+      override still applies. The submitter decides the cap (the API for user
+      jobs, the operator for bulk jobs); nothing is derived from the worker."
+  # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
+  # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
+  # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
+  # null unless the driver is told it. All optional: null omits the flag.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to (null on a bulk run
+      unless the driver is given it)."
+  tool_image:
+    type: ["null", string]
+    doc: "The stamped tools image name the text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json."
 
 steps:
   ingest_shard:
@@ -132,6 +155,10 @@ steps:
       collection_id: collection_id
       registry: registry
       symbol_glossary: symbol_glossary
+      max_chunks: max_chunks
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [receipt]
     run:
       class: CommandLineTool
@@ -142,6 +169,9 @@ steps:
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
+      # Exit 4 = the shard was refused at the chunk cap (#291): never worth a
+      # retry. GoWe parses but does not yet honour this; cwltool does.
+      permanentFailCodes: [4]
       inputs:
         shard: {type: File, inputBinding: {position: 2}}
         collection: {type: string, inputBinding: {prefix: --collection, position: 3}}
@@ -172,6 +202,18 @@ steps:
           type: string
           default: "rules"
           inputBinding: {prefix: --symbol-glossary, position: 17}
+        # #849: exit 4 on a refusal (permanentFailCodes below).
+        max_chunks: {type: int, default: 0, inputBinding: {prefix: --max-chunks, position: 19}}
+        # Provenance (ADR-0010 decision 8, #821): recorded on the receipt.
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 20}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 21}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 22}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: $(inputs.shard.nameroot).receipt.json}
@@ -182,6 +224,9 @@ steps:
     doc: "Gather per-shard receipts -> run summary (totals + failed shards)."
     in:
       receipts: ingest_shard/receipt
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -194,6 +239,15 @@ steps:
         receipts:
           type: File[]
           inputBinding: {position: 2}
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 4}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 5}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 6}
       arguments:
         - {position: 3, prefix: --out, valueFrom: summary.json}
       outputs:

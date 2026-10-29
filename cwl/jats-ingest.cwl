@@ -134,6 +134,30 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  max_chunks:
+    type: int
+    default: 0
+    doc: "Per-collection chunk cap (#291, #849), passed to load_embeddings
+      --max-chunks: the load refuses, whole and before any write, when the
+      collection's live chunk count plus the files' chunks would exceed it.
+      0 (the default) = no cap from this input; the registry entry's explicit
+      max_chunks override still applies. The submitter decides the cap (the
+      API for user jobs, the operator for bulk jobs); nothing is derived from
+      the worker."
+  # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
+  # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
+  # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
+  # null unless the driver is told it. All optional: null omits the flag.
+  workflow_id:
+    type: ["null", string]
+    doc: "The GoWe workflow id this submission was pinned to (null on a bulk run
+      unless the driver is given it)."
+  tool_image:
+    type: ["null", string]
+    doc: "The stamped tools image name the text's DockerRequirement names."
+  tool_image_digest:
+    type: ["null", string]
+    doc: "Its sha256 from the committed cwl/tool-image.receipt.json."
 
 steps:
   extract:
@@ -145,6 +169,9 @@ steps:
     in:
       shard: shards
       corpus: corpus
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [jsonl, skips]
     run:
       class: CommandLineTool
@@ -164,6 +191,21 @@ steps:
           inputBinding:
             prefix: --corpus
             position: 3
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 6
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 7
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 8
       arguments:
         - position: 4
           prefix: --out
@@ -197,6 +239,9 @@ steps:
       embedding_api_key: embedding_api_key
       metadata_passthrough: metadata_passthrough
       symbol_glossary: symbol_glossary
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -260,6 +305,21 @@ steps:
           inputBinding:
             prefix: --symbol-glossary
             position: 13
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 14
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 15
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 16
       arguments:
         - position: 11
           prefix: --out
@@ -281,6 +341,9 @@ steps:
     doc: "Gather per-shard embed receipts -> run summary."
     in:
       receipts: embed/receipt
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -294,6 +357,21 @@ steps:
           type: File[]
           inputBinding:
             position: 2
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 4
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 5
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 6
       arguments:
         - position: 3
           prefix: --out
@@ -320,6 +398,10 @@ steps:
       no_delete_prior: no_delete_prior
       file_concurrency: file_concurrency
       bulk_refresh: bulk_refresh
+      max_chunks: max_chunks
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
     out: [summary]
     run:
       class: CommandLineTool
@@ -382,6 +464,27 @@ steps:
           inputBinding:
             prefix: --bulk-refresh
             position: 10
+        max_chunks:
+          type: int
+          default: 0
+          inputBinding:
+            prefix: --max-chunks
+            position: 14
+        workflow_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --workflow-id
+            position: 15
+        tool_image:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image
+            position: 16
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding:
+            prefix: --tool-image-digest
+            position: 17
       arguments:
         - position: 11
           prefix: --out
