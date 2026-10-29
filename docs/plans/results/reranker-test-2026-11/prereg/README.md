@@ -7,9 +7,11 @@ bm25-vs-rerank contrast has not been computed.
 |---|---|---|
 | [PREREG-reranker-test.md](PREREG-reranker-test.md) | record (frozen on the owner's go) | the design: decomposition, hypotheses, arms, sets, measures, analysis, gates, code pin, decisions |
 | [PLAN-reranker-test.md](PLAN-reranker-test.md) | **lab book** (dated, superseded-not-deleted) | ordered steps, owners, compute, risks — not a design constraint |
+| [power-table-reranker.json](power-table-reranker.json) | planning aid | `reranker_test.py power-table --pages 208 --questions-n 735 --delta 0.05 --alpha 0.05 --n-sims 2000 --n-flips 2000 --seed 261029`, run at `9d78672` from a clean tree (`citable: true`); the run re-computes it on the realised layout (`--gold`) beside the results |
 
-The power table is produced by the committed code at freeze time (`reranker_test.py power-table`) and is
-saved beside the results, not here.
+**Code still to merge before freezing** (prereg §9, second table): the inactive-reranker gate, the
+glossary-boost behavioural probe, and Holm at p = 1.0 for gated members — one in-flight PR; its number
+is written here on merge.
 
 ## Freeze procedure
 
@@ -50,3 +52,16 @@ Substance, not wording:
   longer appear.
 - **Decisions section** replaces the separate decisions file; D6 records that the host question is moot
   under the lifted copy rule.
+
+## v1.1 — review of 2026-10-29 (same day)
+
+- **Two manipulation checks are required code, not analysis rules**: the inactive-reranker gate (A4-50
+  vs A3, A5-50 vs A0; fires → the arm's hypotheses GNE at p = 1.0) and a behavioural probe that
+  `TEXT_SYMBOL_GLOSSARY_BOOST` is active (ships at 0.0, not in `/v1/config`; fails → hard stop). Both
+  are an in-flight PR and precede the freeze (D13).
+- **Holm is always over three**; a gated or absent member enters at p = 1.0 (D14), the same rule as
+  round 2. The code's evaluable-members Holm is a sensitivity until the PR lands.
+- **The power table is committed here** from the committed code at `9d78672` (clean tree) instead of
+  deferred to freeze time.
+- **`--prefer live` pinned**: the API's own reranked capture is the arm wherever it exists.
+- **R2-P** carries round 2's status label and is exploratory unless round 2's addendum promotes P.

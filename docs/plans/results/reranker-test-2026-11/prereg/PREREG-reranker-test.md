@@ -3,12 +3,17 @@
 > **Public copy, drafted for freezing.** Frozen on the owner's go, as written: its sha256 and a UTC
 > timestamp go into a private `PREREG.sha256` kept with the outputs, and the sha is then recorded at the
 > top of this file and in `README.md` (the part-4 procedure). Freezing happens **after** the harness of §9
-> is on `main` (it is: #862 at `e3002ba`) and **before** any arm in §3 is run on any set in §4. Any later
-> change is a `DEVIATIONS.md` entry. The file names no tenant, collection, host, endpoint, product or
-> gateway owner; the partner that holds the papers-OC collection is "the partner".
+> is on `main` (#862 at `e3002ba`; the two manipulation checks of §9's second table are an in-flight PR
+> and must be merged first) and **before** any arm in §3 is run on any set in §4. Any later change is a
+> `DEVIATIONS.md` entry. The file names no tenant, collection, host, endpoint, product or gateway owner;
+> the partner that holds the papers-OC collection is "the partner".
 
 **v1 (this text):** the v0 draft of 2026-10-29 revised against the merged harness
 (`python/scripts/eval/reranker_test.py`, #862) and the owner's decisions of the same day (§12).
+**v1.1 (review of 2026-10-29, same day):** the two manipulation checks of §3 and §8 made required code
+with their failure rules; the Holm rule of §6 pinned to the round-2 convention; the power table of §7
+computed from the committed code and committed beside this file; `--prefer live` pinned in §3; set P's
+round-2 status label carried into §4. No other number or rule changed.
 
 **Status.** CONFIRMATORY for H1–H3 on set **docs-A/T512o0** (family A) and, when they exist, on the
 round-2 multi-paper sets (family B, §4). Everything on the partner's 155-record set is EXPLORATORY.
@@ -133,13 +138,28 @@ run, exit 1):** RRF k 60; multiplier 2; `RERANK_CANDIDATES` 50; `RETRIEVAL_MAX_P
 in-process route uses them directly (`--multiplier`). `--expect KEY=VALUE` overrides an expected value
 and is itself recorded.
 
+**The glossary boost is proven, not declared.** `TEXT_SYMBOL_GLOSSARY_BOOST` ships at **0.0**
+(`python/ragstack/config.py`) and `/v1/config` does not expose it, so on the API route a declared 1.0
+is unverified. Before the first captured list on any API-route set, `pools` runs a **behavioural probe**
+(in-flight PR, §9 second table): a `bm25` request whose only match is a term that occurs in a known
+chunk's rendered glossary field and nowhere in its content must return that chunk; query, chunk id and
+outcome are recorded. On the papers-OC bench copy at `rules/3@file/1` the probe term comes from a
+rules-glossaried chunk; on docs-A the API route is not used (the arms are in-process, where
+`--glossary-boost` is applied directly and the probe is `not applicable`, recorded). **A failed probe is
+a hard stop (exit 1, configuration error), not a gate**: no list captured from that server process is a
+§3 arm.
+
+**Which list is A4-D / A5-D when both exist.** `stats --prefer live` (the default) is pinned: the API's
+own reranked capture (`--live`) is the arm wherever it was captured; the offline rerank stands in only
+where no live capture exists (docs-A, depth 200, the A7 renderings), and the output names the route.
+
 ## 4. Evaluation sets
 
 | set | holder | records / clusters | role |
 |---|---|---|---|
 | **docs-A / T512o0** — the part-4 question set (735 questions on 208 pages; `--part4-arm T512o0 --private-config`), retrieval-only, in-process arms as the part-4 harness builds them; the glossary reaches 1 chunk in 1,113 (lab book Part 2), so this set isolates fusion and reranker from the glossary | ours (private; alias only) | 735 / 208 pages | **family A, confirmatory**; L (live chunking) as replication (§12 D2) |
 | **P: the partner's 155** on the papers-OC bench copy (14,456 chunks @512) | the partner's set, now held **privately on our host** (its user lifted the "never copy" rule for our private experiments repository; lab book addendum 2026-10-29) — never in this public repository | 155 / 7 papers (138 in one; 73 distinct queries) | exploratory; corpus-level claim is GATE-NOT-EVALUABLE (§8) |
-| **R2:** round-2 multi-paper sets — O (OA-1000), A (ASM-1000), P (papers-OC) of `../../glossbench-round2-2026-11/prereg/PREREG-glossbench-round2.md` | ours | ≈ 250 records × 25 papers per set (planned) | **family B, confirmatory**; a set is admitted when its records are frozen (round 2's `accepted-<set>.jsonl`) before any §3 arm has run on it |
+| **R2:** round-2 multi-paper sets — O (OA-1000), A (ASM-1000), P (papers-OC) of `../../glossbench-round2-2026-11/prereg/PREREG-glossbench-round2.md` | ours | ≈ 250 records × 25 papers per set (planned); R2-P is drafted against the partner's binding and carries round 2's P label *scripted-clean, judged sample of 50, error rate X% (95% CI …)* beside every figure (round 2 §3.4) | **family B, confirmatory** for O and A; R2-P is admitted to family B only if round 2's own addendum promotes P before any P record is drafted, else exploratory; a set is admitted when its records are frozen (round 2's `accepted-<set>.jsonl`) before any §3 arm has run on it |
 
 **Set P runs on our host, every leg through our API against the bench copy.** The partner's retrieval
 gateway **clamps `top_k` to 10** (the depth read-back guard in `pools` exists because a gateway once
@@ -179,11 +199,15 @@ paper (P).
 
 **Test.** Sign-flip permutation over cluster sums of d ∈ {−1, 0, +1}, 10,000 flips (`--n-perm`), seed
 261029 (`SEED`), exact by enumeration at ≤ 20 non-zero clusters; one-sided for H1, H2; H3 shifts each d by
-+δ. p = (1 + #{≥ observed}) / (1 + flips); no mid-p in the decision (mid-p reported as sensitivity). Holm
-over H1–H3 within a set, run over the hypotheses that are neither GATE-NOT-EVALUABLE nor absent (the
-output names each). Exact McNemar and the cluster bootstrap (percentile, 10,000, `--ci-level 0.90`
-two-sided = the one-sided 95% bound for H3) are reported, never decide. The machinery is the part-4 code
-(`deployed_docs_part4`, `chunktrial_stats`), **imported, not copied**.
++δ (`chunktrial_stats.noninferiority_test`; its docstring states the shift-to-null construction is
+approximate for d ∈ {−1, 0, +1}, so the level is nominal). p = (1 + #{≥ observed}) / (1 + flips); no
+mid-p in the decision (mid-p reported as sensitivity). **Holm over H1–H3 within a set, always over
+three** — the round-2 convention: a GATE-NOT-EVALUABLE or absent member enters at **p = 1.0**, so a
+gate never makes the other two easier. `stats` at `e3002ba` runs Holm over the evaluable members only
+(`family.note`); that reading is reported as a sensitivity, and the p = 1.0 rule is the decision — the
+in-flight PR (§9) makes it the code's default. Exact McNemar and the cluster bootstrap (percentile,
+10,000, `--ci-level 0.90` two-sided = the one-sided 95% bound for H3) are reported, never decide. The
+machinery is the part-4 code (`deployed_docs_part4`, `chunktrial_stats`), **imported, not copied**.
 
 **Gold rule.** `--gold-rule any` (a record counts when any gold chunk is placed); `all` is reported as a
 sensitivity.
@@ -196,16 +220,29 @@ beside them; none is called a finding.
 
 ## 7. Power floor
 
-Computed by the committed code before the first arm runs (`reranker_test.py power-table --pages 208
---questions-n 735 --delta 0.05 --alpha 0.05 --n-sims 2000 --n-flips 2000 --seed 261029 --out
-power-table-reranker.json`; `--gold` takes the realised cluster layout instead) and saved beside the
-results. Approximate reading before that table exists (design assumption): with discordance .15 (≈ 110
-discordant questions) a two-sided exact split needs ≈ 66/44 (net 22, 3% of questions); clustering by page
-costs more. docs-A's reranked arm is near ceiling (`found` 622 of 735 at k10 in round 1's step 7, lab
-book Part 2), so discordance may be low; the table says what was resolvable, and an unresolved H is
-reported as unresolved with its floor, never as a null. For P, the minimum attainable paper-clustered
-two-sided p with 7 clusters is 2/128 = 0.016 and the dominant paper decides the sign: corpus-level
-inference is not available (§8).
+Computed by the committed code (`reranker_test.py power-table --pages 208 --questions-n 735 --delta
+0.05 --alpha 0.05 --n-sims 2000 --n-flips 2000 --seed 261029 --out power-table-reranker.json`) at
+`9d78672` from a clean tree (`citable: true`) and committed beside this file as
+`power-table-reranker.json` (sha256 `29e67f01…`; its provenance block has `host`, `image` and
+`installed_distribution` redacted, as part 4's public export does); the run re-computes it on the realised cluster
+layout (`--gold`) and saves that beside the results. It is a design assumption for the planned layout
+(208 pages, 735 questions, 4 or 3 per page), Holm worst case α/3, part 4's `simulate_power`; the
+`discordant_share` is part 4's 2s − 1. From the committed table (ICC 0 rows; the ICC rows are within
+0.03 of them):
+
+| | discordance .05 | .10 | .15 | .20 | .25 |
+|---|---|---|---|---|---|
+| H1/H2 superiority, gain share .65 (`discordant_share` .3) | .32 | .63 | .83 | .92 | .97 |
+| same, gain share .75 (.5) | .80 | .98 | 1.0 | 1.0 | 1.0 |
+| H3 NI, δ .05, true net 0 | 1.0 | .98 | .90 | .81 | .71 |
+| H3 NI, δ .05, true net −.02 | .91 | .65 | .49 | .37 | .31 |
+
+docs-A's reranked arm is near ceiling (`found` 622 of 735 at k10 in round 1's step 7, lab book Part
+2), so discordance may be low; at discordance .05 only a lopsided split (gain share ≥ .75) is
+resolvable, and an unresolved H is reported as unresolved with its floor, never as a null. For P, the
+minimum attainable paper-clustered two-sided p with 7 clusters is 2/128 = 0.016 and the dominant paper
+decides the sign: corpus-level inference is not available (§8). For the R2 sets the floor is round 2's
+planning table (its prereg §7) until the realised layout exists.
 
 ## 8. Exclusions and GATE-NOT-EVALUABLE
 
@@ -222,11 +259,15 @@ inference is not available (§8).
   On **docs-A** the reference is the part-4 retrieval store — `rerank --identity-reference
   part4-retrieval.jsonl --identity-arm T512o0`, part 4's own reranked lists per question — because the
   docs-A arms are in-process and have no live A4-50.
-- **A wired-but-inactive reranker** answers `rerank=true` with the fused order. **A4-50 is
-  GATE-NOT-EVALUABLE when its list equals A3's (the fused 50-pool's own order) on every record.** The
-  round-2 runner enforces the same rule in code (`found10.py`: `base` identical to `norerank`); for this
-  harness it is a stated analysis rule, checked from `stats`' per-record ranks, and `reranker_test.py` at
-  `e3002ba` has no automated gate for it.
+- **A wired-but-inactive reranker** answers `rerank=true` with the fused order. **The inactive-reranker
+  gate** (in-flight PR, §9 second table; the round-2 runner already has it in code, `found10.py`: `base`
+  identical to `norerank`) compares every reranked list with the pool it was built on: **A4-50 is
+  GATE-NOT-EVALUABLE when its top 10 equals A3's (the fused 50-pool's own order) on every record, and
+  A5-50 when its top 10 equals A0's on every record.** When the gate fires, every hypothesis that names
+  the gated arm is GATE-NOT-EVALUABLE on that set — H1 and H3 for A4-50 or A5-50; H2 (ceilings only)
+  is untouched — and enters Holm at p = 1.0 (§6). The gate is checked from the per-record ranks before
+  any contrast is computed; `reranker_test.py` at `e3002ba` has no automated gate for it, which is why
+  the PR is required before freezing.
 - Absent is written as *absent*: a set not yet frozen (R2), a judge not run (E7), a second reranker not
   deployed (A8), a fuse variant with a missing input, a depth the route cannot reach (P at 200).
 
@@ -242,6 +283,15 @@ inference is not available (§8).
 | `census` | XLM-R lengths, `> MAX_LENGTH` count, neighbour hits | `--lists`, `--gold`, `--tokenizer`, `--max-length`, `--pool-keys`, `--renderings` |
 | `stats` | decomposition, rank-of-gold, H1–H3 (Holm), exploratory contrasts, per-record ranks | `--lists`, `--gold`, `--set-label`, `--depths`, `--prefer live\|offline`, `--gold-rule any\|all`, `--delta 0.05`, `--alpha 0.05`, `--n-perm 10000`, `--n-boot 10000`, `--ci-level 0.90`, `--seed 261029`, `--repeat`, `--per-record` |
 | `power-table` | the §7 floor | `--pages 208`, `--questions-n 735`, `--gold`, `--delta`, `--alpha`, `--n-sims`, `--n-flips`, `--seed` |
+
+**Not yet on `main`; required before freezing** (in flight; the PR number is recorded in `README.md`
+on merge, and every run is at or after its merge commit):
+
+| item | where | failure rule |
+|---|---|---|
+| inactive-reranker gate (§8): reranked top 10 equal to its pool's own order on every record | `reranker_test.py stats` | the arm and every H naming it GATE-NOT-EVALUABLE on that set, p = 1.0 in Holm |
+| glossary-boost behavioural probe (§3) | `reranker_test.py pools --backend api` (and `found10.py`, round 2) | hard stop, exit 1; nothing from that server process is an arm |
+| Holm with GNE / absent members at p = 1.0 as the default (§6) | `reranker_test.py stats` | — (until merged, the decision is computed by hand from the output's p values and recorded) |
 
 Every output embeds `experiment_provenance()`; outputs carry ids, ranks and counts only (`--omit-text`
 checks the written JSON for any query or quote text, escaped forms included). Citable only from a clean
@@ -292,3 +342,5 @@ The owner accepted every recommended default. Fixed at freezing; a later change 
 | D10 | depth-200 arms on set P | **cap at 100 on P**; 200 on docs-A in-process only |
 | D11 | where the record lives | **this folder**, `docs/plans/results/reranker-test-2026-11/`; glossbench's lab book links to it |
 | D12 | noise-floor repeats | **A0 and A4-50 repeated once per set** |
+| D13 | manipulation checks | **both required in code before freezing** (§9 second table): the inactive-reranker gate (fires → the arm's hypotheses GNE at p = 1.0) and the glossary-boost probe (fails → hard stop) |
+| D14 | Holm with a gated member | **p = 1.0, Holm always over three** (round 2's rule); the code's evaluable-members Holm is a sensitivity until the PR lands |

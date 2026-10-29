@@ -52,6 +52,20 @@ family).
 | 16 | Optional: the partner's acceptance of P (if it decides to); P's status label set accordingly | partner, O | no |
 | 17 | Model decision (the partner's point e): cost, speed, licence, these results | O | no |
 
+## Addendum, 2026-10-29 (review): set P under the partner's sampled acceptance
+
+Prereg §3.4 (v1.1). Steps 8 and 16 above are superseded as follows; the rest stands.
+
+| # | step | owner | calls | in | notes |
+|---|---|---|---|---|---|
+| 8a | **Set-P harness**: field-restricted drafter mode, `field_not_in_binding`, `terms_leak`, dimension check, `in_set` 13/13 assertion, constants cap, 2 : 1 quota, adapter to the partner's record format | S, F review | — | — | before 8b; PR number into `README.md` |
+| 8b | **Pilot**: ≈ 50 records from 2–3 papers → layers 1–3 → adapter → the partner's scripted checks; format only, data for no hypothesis; pilot papers into `exclude_papers` | S, partner | ~70 | ~0.1M | after freeze |
+| 8 | **Draft P** against `binding_fields_261029.json` (sha re-recorded), 25 papers, the S3 quota per D16 | S, notice | ~500 | ~0.5M | within the partner's standing approval |
+| 16 | **The partner's acceptance**: scripted checks on every accepted record + a judged sample of 50 (seed recorded) → rejects with reasons, sample error rate with 95% CI → P's status label | partner, O | — | — | before any P retrieval (step 13) |
+
+Also before freezing (both preregs): the in-flight PR with the glossary-boost probe (`found10.py`,
+`reranker_test.py`) and the inactive-reranker gate (`reranker_test.py`).
+
 ## What must be committed before any citable run
 
 Everything in prereg §9, on `main` at one commit ≥ `e3002ba`; runs from a clean worktree or a tools image
@@ -61,11 +75,11 @@ at or after it. Round 1's scratch analyses are `citable: false` for exactly this
 
 | lost | fallback |
 |---|---|
-| frontier glossary (step 5) incomplete | `frontierp` → GATE-NOT-EVALUABLE; H2 enters Holm at p = 1.0; dropping it (Holm over 3) is a logged config deviation |
+| frontier glossary (step 5) incomplete | `frontierp` → GATE-NOT-EVALUABLE; H2 enters Holm at p = 1.0; the family stays four (prereg §7, v1.1) |
 | drafter (7–8) | Claude Opus 5.5 via the CLI (`judge.py` transport; ≈ $20 for 1,500 drafts, estimate); still a non-arm family; then the verifier must move to Codex `gpt-6-astra` (CLI) — the same vendor as the GPT-5.5 arm, which would be stated |
 | verifier (9) | already off-gateway |
 | Gemini judge (10) | two judges (Claude, Codex CLI) + the owner adjudicates splits blind; stated in the sentence |
-| the partner's acceptance of P | P stays *measured against an unreviewed set* |
+| the partner's acceptance of P (§3.4 b) does not happen | P's label is *our three-layer check only, not accepted by the partner*; P stays outside F and is never called equivalent to the 155-record set |
 
 ## Timeline sketch (UTC)
 

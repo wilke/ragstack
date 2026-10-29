@@ -24,8 +24,11 @@ The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`)
    <UTC>` note at the top of the prereg. The prereg body itself is not touched; any later change is a
    `DEVIATIONS.md` entry.
 
-Preconditions, both met at `e3002ba`: every module of prereg §9 is on `main` (#861–#865) with unit tests
-and a review; the owner's decisions (prereg §11) are folded in.
+Preconditions: every module of prereg §9's first table is on `main` at `e3002ba` (#861–#865) with unit
+tests and a review; the owner's decisions (prereg §11) are folded in. **Still to merge before freezing:**
+the glossary-boost behavioural probe in `found10.py` (prereg §5 M1, §9 second table; one in-flight PR,
+its number written here on merge). The set-P binding mode (prereg §3.4) is needed before P's pilot, not
+before the freeze; O and A do not wait for it.
 
 ## What changed from the v0 draft (2026-10-29, same day)
 
@@ -61,3 +64,21 @@ Substance, not wording:
 - **Holm**: a gated H2 enters at p = 1.0; shrinking the family is a logged config deviation (was "F
   shrinks to 3").
 - **Decisions section** replaces the separate decisions file.
+
+## v1.1 — review of 2026-10-29 (same day)
+
+- **Set P redesigned around the partner's answer (prereg §3.4, D4, D14–D16):** the partner accepts P in a
+  sampled form — scripted checks on every record plus a judged random sample of 50 with its seed; P's
+  label is *scripted-clean, judged sample of 50, error rate X% (95% CI …)*, printed beside every P
+  number; P is never called equivalent to the 155-record set. P's drafter is restricted to the partner's
+  fresh binding export `binding_fields_261029.json` (26 fields, sha in the prereg; 13 covered / 13
+  uncovered asserted; 4 constants capped at 2; the 10 new-ground fields at 2 : 1; definition-words
+  questions with a terms-leak guard; value as printed, dimension-checked). A ≈ 50-record pilot from 2–3
+  papers runs after freezing as a format check and is data for no hypothesis. S3 on P is named as the
+  stratum of interest with its honest size (≈ 50 records, exploratory). The P addendum deadline moves
+  from "before P's first retrieval" to "before any P record is drafted".
+- **Glossary-boost behavioural probe** required in `found10.py` before freezing (ships at 0.0, not in
+  `/v1/config`); a failed probe is a hard stop. The inactive-reranker rule is named as already in code.
+- **Holm is always over four**; a gated member enters at p = 1.0 and the family is never shrunk after a
+  result is seen (the v1 text allowed a logged shrink to Holm over 3).
+- The 2,234-field count is labelled a review measurement, not a committed artifact.

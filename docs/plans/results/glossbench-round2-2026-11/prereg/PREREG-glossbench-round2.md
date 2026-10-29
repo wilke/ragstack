@@ -4,13 +4,17 @@
 > its sha256 and a UTC timestamp go into a private `PREREG.sha256` kept with the outputs, and the sha is
 > then recorded at the top of this file and in the directory's `README.md` (the part-4 procedure,
 > `../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`). Freezing happens **after** every module of
-> §9 is on `main` (it is, at `e3002ba`) and **before** any eval paper is sampled, any question is
+> §9 is on `main` (the harness is, at `e3002ba`; the two manipulation-check additions of §9's last row
+> are an in-flight PR and must be merged first) and **before** any eval paper is sampled, any question is
 > generated or any gateway glossary call is made. Any later change is a `DEVIATIONS.md` entry, never an
 > edit. The file names no tenant, collection, host, endpoint, product or gateway owner; the partner that
 > holds the papers-OC collection is "the partner" or "the papers-OC owner".
 
 **v1 (this text):** the v0 draft of 2026-10-29 revised against the merged harness (#861–#865) and the
 owner's decisions of the same day (§11). Changes of substance against v0 are listed in `README.md`.
+**v1.1 (review of 2026-10-29, same day):** the set-P design of §3.4 (the partner's sampled acceptance
+and its binding export), the two manipulation checks of §5 and §8, and the Holm rule of §7 pinned;
+no other number or rule changed.
 
 **Terms.** *Arm*: a glossary condition (per document; one glossary file serves every chunk size).
 *Record*: one question with its gold quote, gold chunk(s), the quantity asked and its binding term(s).
@@ -79,11 +83,11 @@ from it:
 |---|---|---|---|
 | **O** | OA-1000 (12,560 article + float units; 32,765 chunks @512 — lab book, corpus table) | ~250 from 25 papers | *our three-layer check* (§3.3), owner-spot-checked |
 | **A** | ASM-1000 (1,000 articles; 27,418 chunks @512) | ~250 from 25 papers | *our three-layer check*, owner-spot-checked |
-| **P** | papers-OC (275 papers; 14,456 chunks @512) | ~200 drafted-and-accepted from 15–25 papers | **reviewed-by-holder** if the partner runs its acceptance pass; otherwise **measured against an unreviewed set**. The partner has **not decided** (§11 D4); the label is set when it does, and every P number carries it |
+| **P** | papers-OC (275 papers; 14,456 chunks @512) | ~200 drafted-and-accepted from 15–25 papers, drafted **against the partner's binding** (§3.4) | **scripted-clean, judged sample of 50, error rate X% (95% CI …)** — the partner's sampled acceptance (§3.4, §11 D4). Every P number carries that label and rate; P is **never called equivalent** to the 155-record set |
 | R1 | the partner's round-1 155-record set (7 papers, 138 of 155 from one; lab book Part 3) | as is | reviewed-by-holder; **replication only**, one-paper reach stated |
 
-Set P is **outside F** unless an addendum frozen before P's first retrieval promotes it. The partner
-advised starting with O and A, which need nothing from it.
+Set P is **outside F** unless an addendum frozen **before any P record is drafted** (pilot included)
+promotes it. The partner advised starting with O and A, which need nothing from it.
 
 **Where sets run.** All four run **on our host**, through the committed runner (§5) against bench copies
 of the three indices. The partner's user has lifted the "never copy" rule on the 155-record set for this
@@ -222,8 +226,77 @@ Reported: validity with a Wilson 95% CI. **Rule:** validity below **0.85** at th
 every result from that set carry *validity below threshold* in the sentence; the set is not rebuilt
 (that would be a forking path).
 
-**Optional layer 4, set P only:** the partner's acceptance pass. If it runs, P's status is
-*reviewed-by-holder*; if not, *measured against an unreviewed set*. Undecided at freezing (§11 D4).
+**Layer 4, set P only:** the partner's sampled acceptance, §3.4.
+
+### 3.4 Set P: the partner's binding, its sampled acceptance, and the pilot (§11 D4, D14–D16)
+
+Set P differs from O and A in three fixed ways. O and A keep the open value-statement design of §3.1–3.3
+unchanged.
+
+**(a) The drafter is restricted to the partner's binding quantities.** The field list is the partner's
+fresh binding export `binding_fields_261029.json` (sha256
+`08309d0f4221be499b1a54f8b5ed3b28940808d8b268ee85d0990085d70c6443`, **26** numeric fields; a named
+input held privately, its sha256 re-recorded by the drafter at drafting time and a mismatch refused). It
+is **not** the field list of the held 155-record set. Each row carries the field name, its canonical
+unit, the binding's one-line definition and its extraction terms. Rules, frozen now:
+
+- A record's `field` must be one of the 26; a quantity outside the file is rejected (`field_not_in_binding`).
+  That refusal is what excludes model conditions (not numbers) and the binding's non-researchable
+  fields; the prereg names no field as a target beyond the quota list below.
+- The record's `binding_terms` are the field's **extraction terms** from the file, not the drafter's.
+- The question is written in the **definition's own words**. A layer-1 guard rejects a question whose
+  overlap with the field's extraction terms exceeds the leak threshold (**0.5**, `leak_threshold`, the
+  same stemming as the wording proxy, §5 M2) — copying the terms would flatter any glossary that uses
+  them (`terms_leak`).
+- `value` is recorded **as printed, with the printed unit**. Unit compatibility with the canonical unit
+  is checked **by dimension** (`unit_dimension_mismatch`, a reject); a `ventilation_flow_m3_s` quote
+  printed in air changes per hour is recorded as printed and **flagged** `different_dimension`, not
+  rejected.
+- The file carries no in-set or constant flag. `in_set` is computed from the held set's fields and
+  **asserted 13 covered / 13 uncovered** at drafting time (a different split stops the run). The
+  **4 constants** — gravity (covered), air density, air viscosity, particle density (uncovered) — come
+  from an explicit config list and are **capped at 2 records each**.
+- **Quotas favour the 10 new-ground fields 2 : 1** over the covered ones: `clearance_fraction`,
+  `exposure_time_s`, `filter_efficiency`, `initial_concentration_quanta_m3`, `neighbor_distance_m`,
+  `occupant_count`, `recirculation_flow_m3_s`, `risk_tolerance`, `susceptible_count`,
+  `ventilation_flow_m3_s`. Field names are generic model quantities and may appear in public files;
+  no partner-identifying text does. Quotas are not weighted by the held set's field frequencies.
+- The pool (§3.1) stays arm-blind and unchanged; the restriction acts on the drafter's prompt and on
+  layer 1 only.
+
+**(b) Acceptance: the partner's scripted checks on every record plus a judged random sample of 50.**
+The partner's scripted checks are: the quote is verbatim under NFKC with case and whitespace folded,
+with a first-or-last-60% rule for a quote cut by a boundary; the quote prints a number with a unit; the
+field maps to a quantity in the binding; the source resolves; no duplicate source + quote + field. Then
+a random sample of **50** accepted records, seed recorded, is judged. What comes back: accept or reject
+with a reason for every scripted reject and every sampled record; for everything else, the sample's
+error rate with a 95% CI. P's status label is therefore **"scripted-clean, judged sample of 50, error
+rate X% (95% CI …)"**, printed beside every P number. Our own layers 1–3 run first and unchanged; a
+record the partner rejects is excluded and counted by reason. The partner's 60% rule is its acceptance
+rule only: our gold stays *quote-bearing chunks only* (§3.3), so a `cut_by_boundary` record never
+reaches the partner. Records go to the partner in its format through a committed adapter from
+`accepted-P.jsonl`: `id`, `question`, `source {doc_id, locator}` (locator a PMC id or DOI), `quote`,
+`field`, `case`, `model`, `prompt_sha256`.
+
+**(c) A pilot batch first.** About **50** records from **2–3** papers are drafted, checked and sent
+through the adapter before full set-P drafting, to prove the format end to end. The pilot runs **after
+freezing**, is part of the plan (`PLAN-round2.md`), and is **data for no hypothesis**: its records are
+not in `accepted-P.jsonl` and its papers are excluded from P's paper sample (`exclude_papers`).
+
+**S3 on P carries the key test, and it is small.** The partner's own analysis (external, not re-measured
+here) found that the symbol glossary names the asked quantity for 65–68% of its pairs and that every
+failure was a quantity printed **without a symbol** — the words-only case. On P the words-only stratum
+S3 is therefore the stratum of interest, and its planned size is **≈ 50 records** (`s3_per_paper` 2 ×
+25 papers, before rejects). That is a **descriptive, exploratory** stratum: a paired contrast on ≈ 50
+records from 25 papers can resolve only a near-total gain (at discordance .17 about 8 discordant
+records, all of one sign, is the floor at α .05); the planning table's rows do not apply to it, and the
+realised `mde_split` is quoted beside every S3-on-P figure. A larger S3 quota on P needs a per-set
+override of `pool.s3_per_paper` (code) and a number from the owner — open at v1.1 (§11 D16).
+
+**Code this section needs** (not on `main` at `e3002ba`; §9, last row): the field-restricted drafter
+mode, `field_not_in_binding`, `terms_leak`, the dimension check and flag, the `in_set` assertion and the
+constants cap, the quota, and the adapter. P's pilot is refused until they are merged and named in
+`README.md`; O and A do not wait for them.
 
 ## 4. Arms
 
@@ -295,7 +368,8 @@ every result from that set carry *validity below threshold* in the sentence; the
 - **Wording proxy vs the partner's reference** (behavioural differential found in the review of #861,
   stated with every proxy figure): identical tokenisation, stemming and normalisation. Ours scores every
   glossary line; theirs keeps the **first definition per normalised symbol** — no repeated symbol
-  occurred in 2,234 real rendered fields, so no practical effect is expected. Their caller **drops
+  occurred in 2,234 real rendered fields (a count from the #861 review, not a committed artifact), so no
+  practical effect is expected. Their caller **drops
   binding terms of ≤ 3 characters and adds a field-name term**; ours scores `binding_terms` as the
   drafter gave them. The proxy was reimplemented from the written spec; no partner code was consulted.
 
@@ -315,8 +389,17 @@ Every request also carries `use_graph false`, `rewrite_strategies ["passthrough"
 (`FIXED_REQUEST`). A record is *found* under an arm if any gold chunk is at rank ≤ 10 of the served list;
 ranks to the served depth are recorded per record. Chunk ids and text are identical across arms; only
 the glossary field differs. **The glossary field boost** is the bench server's `TEXT_SYMBOL_GLOSSARY_BOOST`
-(1 on the bench copies in round 1's step 8, lab book); the runner does not read it back, so it is copied
-into the private config and recorded before the first call (design requirement).
+(1 on the bench copies in round 1's step 8, lab book). Its shipped default is **0.0**
+(`python/ragstack/config.py`) and `/v1/config` does not expose it, so a bench server launched without
+the setting would silently run the `bm25` condition with the field unweighted. The runner therefore
+**proves the boost is active behaviourally** before the first call of every arm × corpus run (the probe
+in `found10.py`, an in-flight PR, §9 last row): a `bm25` request whose only match is a term that occurs
+in the attached arm's rendered glossary field of a known chunk and nowhere in that chunk's content must
+return that chunk. The probe's query, chunk id and outcome are recorded in the run summary. **A failed
+probe is a hard stop (exit 1, configuration error), not a gate**; nothing from that server process is a
+result. For `none` (every field empty) the probe is `not applicable` and recorded so; the boost reading
+for that run is the probes of the arms run immediately before and after it on the same server process
+(pid recorded). The configured value is also copied into the private config and recorded.
 
 Controls built into the runner, all refusals before the first call or hard stops during it:
 - **Which arm is attached:** the swap record written by `glossbench/swap.sh` (dry run → apply →
@@ -392,9 +475,11 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
   corpora never share one): per paper, sum the record differences d ∈ {−1, 0, +1}; flip paper sums
   10,000 times (`n_perm`), seed 261101; exact enumeration when ≤ 20 papers are non-zero; p = (1 + #{≥
   obs}) / (1 + 10,000); no mid-p in the decision (mid-p reported as sensitivity). H2 shifts every d by +δ
-  and tests one-sided > 0 (`chunktrial_stats.noninferiority_test`). **Holm over H1–H4**, α 0.05; a
-  missing or gated p enters Holm as **1.0**, so the family never shrinks silently — dropping a member is a
-  deviation made in the config and logged, not an analysis choice.
+  and tests one-sided > 0 (`chunktrial_stats.noninferiority_test`; the shift-to-null construction is
+  approximate for d ∈ {−1, 0, +1}, as that function's docstring states, so the level is nominal).
+  **Holm over H1–H4**, α 0.05, **always over four**: a missing or gated p enters Holm as **1.0**. The
+  family is not shrunk after any result is seen; a Holm over the evaluable members is reported as a
+  sensitivity reading only, never as the decision.
 - **Intervals:** net share (gained − lost)/n, paper-cluster percentile bootstrap, 10,000 (`n_boot`), seed
   261101, 90% two-sided (`ci_level`; the matching one-sided 95% bound for H2). Exact McNemar beside,
   descriptive.
@@ -437,7 +522,9 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
 - **Manipulation checks, before any retrieval:** chunk counts of the three indices equal round 1's
   (32,765 / 27,418 / 14,456; `expected_chunks`); the stamp census shows one arm at a time (`swap.sh`,
   `verify_swap_record`); every glossary file resolves every document (`verified == docs`, `unverified
-  0`); the reach gate (§3.1 step 4).
+  0`); the reach gate (§3.1 step 4); the **glossary-boost probe** (§5 M1) per arm × corpus run; and,
+  from the run itself, the **inactive-reranker rule** — `base` identical to `norerank` on every record
+  makes `base` GATE-NOT-EVALUABLE for that arm × corpus (`found10.py`, in code at `e3002ba`).
 - **Gateway terms, enforced in code** (`R2Gateway`, `judge.py`): `fallback_model ""`, `max_tokens`
   always, ≤ 4 in flight, empty = failure → retry once → skip after two; **5 failures in a row or > 20 in
   total pauses** (`max_fail_consecutive`, `max_fail_total`); HTTP 429/quota after 3 backoffs (30 s, 120 s,
@@ -453,16 +540,17 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
   estimate is ~1.3M input for the frontier batch, ~1.0M for drafting O and A, ~0.5M for P and ~0.7M for
   the Gemini judge pass (PLAN, Phase 1; design assumptions from round 1's measured rates). Resume only
   after a fresh notice.
-- **Hard stops** (exit 1, no resume without a logged decision): a manipulation-check mismatch; > 2% of
-  retrieval calls failing after retries; a frozen-prereg sha mismatch (`prereg.sha256` in the private
-  config); a resume against a different commit, config or pool; a failed isolation check.
+- **Hard stops** (exit 1, no resume without a logged decision): a manipulation-check mismatch; a failed
+  glossary-boost probe (§5 M1); > 2% of retrieval calls failing after retries; a frozen-prereg sha
+  mismatch (`prereg.sha256` in the private config); a resume against a different commit, config or
+  pool; a failed isolation check; on P, a binding-file sha mismatch or an `in_set` split other than
+  13 / 13 (§3.4).
 - **Exclusions, fixed now:** records rejected by §3.3; records whose gold chunk is absent from an index
   (none expected: same chunks); judge items with a `split` majority.
 - **GATE-NOT-EVALUABLE:** a corpus whose S1 < 150 (retrieval leg); a contrast whose minimum attainable p
   > α; an arm/condition whose served depth fell short; `base` identical to `norerank` on every record;
   `frontierp` if the gateway closes before its batch completes — then H2 is GATE-NOT-EVALUABLE and
-  enters Holm at p = 1.0; shrinking F to H1, H3, H4 (Holm over 3) is a config change, logged as a
-  deviation.
+  enters Holm at p = 1.0 (§7); F stays H1–H4.
 - **Set P absent** if neither drafting nor acceptance happens: the report says the papers-OC leg rests
   on R1 (one paper) only.
 
@@ -482,8 +570,16 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
 | read-only chunk export | `python/scripts/eval/glossbench/export_chunks.py` | #865 |
 | statistics | `python/scripts/eval/chunktrial_stats.py` via `deployed_docs_part4.contrast_test` (part 4's, unchanged) | — |
 
+**Not yet on `main`; required before freezing (manipulation checks) or before P's pilot (set P):**
+
+| item | module | PR |
+|---|---|---|
+| glossary-boost behavioural probe (§5 M1, hard stop on failure) | `python/scripts/eval/glossbench/found10.py` (and `reranker_test.py`, the sibling prereg) | in flight; number recorded in `README.md` on merge |
+| set-P binding mode: `field_not_in_binding`, `terms_leak`, dimension check + `different_dimension` flag, `in_set` assertion, constants cap, 2 : 1 quota, partner-format adapter (§3.4) | `python/scripts/eval/glossbench_r2_draft.py`, `glossbench_r2_checks.py` | not started; P's pilot waits for it |
+
 **Pin.** Every run from one `main` commit **at or after `e3002ba`** in a clean worktree (`dirty false,
-untracked 0`) or from a tools image built from a tools tag at or after it (ADR-0010 order). Every output
+untracked 0`) or from a tools image built from a tools tag at or after it (ADR-0010 order); a run that
+uses a row of the second table runs at or after that row's merge commit. Every output
 embeds `experiment_provenance()`; glossary files carry `producer` and `tool`; `citable` is read from the
 record (`_glossbench_r2.citable`). Scratch-script analyses are **not citable** (round 1's lesson); every
 analysis here is a committed script.
@@ -500,7 +596,8 @@ freeze record), `PLAN-round2.md` (lab-book tier), `power_sim.py` + `power_sim.js
   experiments repository (the partner's user lifted the "never copy" rule for it, lab book addendum of
   2026-10-29) and are **never** copied into this public repository; the public record holds counts and
   ids only.
-- **Our sets O, A and any unreviewed P** hold article text (quotes): private, never in the public record.
+- **Our sets O, A and P** hold article text (quotes): private, never in the public record; the binding
+  export is held privately too (its sha256 is public).
   Every private output is refused inside the repository (`refuse_in_repo`). Public artifacts hold
   counts, rates, κ, CIs, model ids, version strings and sha256 hashes only, checked by listing every
   string value (`_glossbench_r2.string_values`).
@@ -520,7 +617,7 @@ freezing; a later change is a deviation.
 | D1 | frontier glossary model | **GPT-5.5** (reason in §4) |
 | D2 | frontier scope | **eval papers only** (~1.3M input, design estimate); whole corpora (~27M) is a separate ask, not planned |
 | D3 | drafter / verifier families | **Gemini 2.5 Pro drafts (gateway); Claude Opus 5.5 verifies (CLI, off-gateway)** |
-| D4 | set P acceptance | **ask the partner; proceed without waiting.** The partner has not yet decided; P's status label follows its answer |
+| D4 | set P acceptance | **the partner's sampled acceptance** (§3.4 b): scripted checks on every record plus a judged random sample of 50 with its seed; P's label is *scripted-clean, judged sample of 50, error rate X% (95% CI …)*; P is never called equivalent to the 155-record set (settled 2026-10-29, after v1) |
 | D5 | H2 form and margin | **non-inferiority, δ = 0.05 net share** |
 | D6 | confirmatory population | **S1**, S2 thinly sampled as the tie/distractor check |
 | D7 | arms in the family | **{rules, qwen36p, frontierp, qwen36p-shuf}**; `qwen38p`, `scoutp`, `none` secondary |
@@ -529,4 +626,7 @@ freezing; a later change is a deviation.
 | D10 | owner labelling | **40 blind items (κ) + 40 spot-check records per set; a second rater if available** |
 | D11 | judges | **three (Claude CLI, Codex CLI, Gemini gateway), majority; vendor-overlap flag and a table without the overlapping judge** |
 | D12 | Qwen arm in the family | **Qwen3.6** (`qwen38p` secondary) |
-| D13 | freeze gate | **after all §9 code is merged** — satisfied at `e3002ba` |
+| D13 | freeze gate | **after all §9 code is merged** — the harness at `e3002ba`; the glossary-boost probe (§9, second table) still to merge |
+| D14 | set-P drafting population | **the partner's binding export** `binding_fields_261029.json` (26 fields, sha in §3.4), not the held set's fields; constants capped at 2; the 10 new-ground fields at 2 : 1; definition-words questions with the terms-leak guard; value as printed, dimension-checked |
+| D15 | set-P pilot | **≈ 50 records from 2–3 papers after freezing**, format check only, data for no hypothesis; its papers excluded from P |
+| D16 | S3 quota on P | **open**: the plan is `s3_per_paper` 2 (≈ 50 records, exploratory); a larger P-specific quota needs a per-set override (code) and the owner's number before P's pilot |
