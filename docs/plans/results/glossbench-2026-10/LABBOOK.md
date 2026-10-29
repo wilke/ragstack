@@ -496,3 +496,43 @@ This is OpenChia's order, adopted.
 | Pure-LLM condition (no rules fallback) | not started; needed before any corpus-wide claim |
 | Round 2 (multi-paper, pre-registered) | not started |
 | Default glossary model | lab-book recommendation: Qwen3.6, operational, exploratory |
+
+## Addendum, 2026-10-29 (evening): "85 against 65" pairs two different tests
+
+Corrected by OpenChia on 2026-10-29. Part 3's reading, the Threats section and What's next item (d) quote
+"85 against 65 on the live papers-OC collection" as a BM25-against-reranked comparison, and attribute it
+to OpenChia. Both parts are wrong. The two numbers come from different tests:
+
+- **85 of 155** is BM25 alone with the glossary field boost raised from **0 to 1** (28 → 85; review point
+  5). No reranker is involved.
+- **65 of 155** is the **reranker** with `content` + `symbol_glossary` as its input, against 53 for
+  `content` alone and 57 for a shuffled glossary. It reranks a **50-candidate pool that holds a gold
+  chunk for only 105 of the 155 records**, so no reranker could exceed 105 at that depth. The 50-pool's
+  own fused top 10, unreranked, finds 33.
+
+The source is [Test 3 in the symbol-glossary plan](../../symbol-glossary.md). It was measured **on this
+host** by another session, against the quote gold. It was not measured through OpenChia's gateway, which
+has never served a 50-candidate pool.
+
+So "85 against 65" is **not** evidence that the reranker costs recall on the live collection. It is
+withdrawn as a contrast wherever it appears above. The bench-copy figures in Part 3 (62/52, 67/55, 79/68,
+82/70) are unaffected and stand as recorded: one run each, uncorrected, exploratory. What's next item (d)
+now reads: *a dedicated test of the reranker that reports the candidate pool's ceiling (gold present at
+depth D) beside every reranked figure.* That test is being pre-registered separately.
+
+The earlier text stays in place; this entry supersedes it.
+
+## Addendum, 2026-10-29 (evening): status
+
+- **Round 2 and the reranker test are being pre-registered.** Both drafts follow OpenChia's order:
+  - multi-paper evaluation sets;
+  - a pure-LLM condition;
+  - the wording proxy with a shuffled-glossary control;
+  - precision kept separate from retrieval;
+  - the model choice last.
+
+  The harness code comes first, then a review, then the freeze. No gateway call and no store write
+  happens before the freeze.
+- **OpenChia's user lifted the "never copy" rule** on its 155-record evaluation set for this project's
+  **private** experiments repository. Answer quotes still never go into a public repository; this record
+  keeps counts and ids only.
