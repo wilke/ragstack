@@ -50,6 +50,19 @@ conditions, every test two-sided and uncorrected (exploratory). Each contrast
 carries ``min_attainable_p``: the sign-flip floor in the regime its p was
 computed in (``exact`` or ``monte_carlo``) and the exact McNemar floor.
 
+**The shuffled control** (``--shuffle-rendered NAME=SEED``, repeatable; glossary
+benchmark round 2): condition NAME's rendered fields are permuted, per arm (each
+arm is its own index), among the chunks of that arm that carry a non-empty one
+(:func:`ragstack.ingestion.glossary_shuffle.shuffle_rendered`, keyed by chunk
+id, seeded, deterministic): the populated chunks and the multiset of strings
+are unchanged, only which chunk carries which string. To contrast true with
+shuffled, pass the same file under two names (``qwen36p=F``,
+``qwen36p-shuf=F``) and shuffle the second. The backfill's flag takes a bare
+SEED (one index per run); here several conditions share a run, so the flag
+names its condition. Each shuffled condition's record carries ``shuffle``:
+per arm, the seed, ``permutation_sha256``, populated/empty counts, residual
+fixed points and the multiset hash.
+
 Exit codes: 0 done; 1 the manipulation check or the same-chunks check failed;
 6 (``GLOSSARY_REFUSED_EXIT_CODE``) a glossary file was refused. Nothing is
 built or retrieved before every file has resolved.
@@ -66,7 +79,7 @@ import json
 import re
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +143,43 @@ def parse_specs(values: list[str] | None) -> list[tuple[str, Path]]:
     if not out:
         raise SystemExit("part4-glossary needs at least one --glossary-file NAME=PATH")
     return out
+
+
+def parse_shuffles(values: list[str] | None, names: list[str]) -> dict[str, str]:
+    """``NAME=SEED`` per ``--shuffle-rendered``; NAME must be a declared condition."""
+    from ragstack.ingestion.glossary_shuffle import ShuffleError, check_seed
+
+    out: dict[str, str] = {}
+    for v in values or []:
+        name, sep, seed = v.partition("=")
+        if not sep or name not in names:
+            raise SystemExit(f"--shuffle-rendered wants NAME=SEED with NAME one of the "
+                             f"--glossary-file conditions {names}, got {v!r}")
+        if name in out:
+            raise SystemExit(f"--shuffle-rendered: condition {name!r} given twice")
+        try:
+            out[name] = check_seed(seed)
+        except ShuffleError as e:
+            raise SystemExit(f"--shuffle-rendered {name}: {e}") from e
+    return out
+
+
+def shuffle_arms(arms: dict[str, list[C]], seed: str) -> tuple[dict[str, list[C]], dict[str, Any]]:
+    """Every arm's rendered glossary fields permuted among its populated chunks
+    (new :class:`C` objects; the input is not mutated). Returns the arms and the
+    per-arm :meth:`ShuffleResult.record`."""
+    from ragstack.ingestion.glossary_shuffle import shuffle_rendered
+
+    out: dict[str, list[C]] = {}
+    records: dict[str, Any] = {}
+    for a, chunks in arms.items():
+        fields = {c.id: c.glossary for c in chunks}
+        if len(fields) != len(chunks):
+            raise SystemExit(f"part4-glossary: arm {a} has duplicate chunk ids; cannot shuffle")
+        res = shuffle_rendered(fields, seed)
+        out[a] = [replace(c, glossary=res.rendered(c.id, c.glossary)) for c in chunks]
+        records[a] = res.record()
+    return out, records
 
 
 def resolve_condition(name: str, path: Path, pages: dict[str, dict[str, Any]],
@@ -212,7 +262,8 @@ def manifest_check(pages: dict[str, dict[str, Any]], path: Path) -> dict[str, An
 
 
 def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]], *,
-            allow_unverifiable: bool = False, results: str = DEFAULT_RESULTS) -> int:
+            allow_unverifiable: bool = False, results: str = DEFAULT_RESULTS,
+            shuffles: Mapping[str, str] | None = None) -> int:
     from ragstack.ingestion.glossary_file import GLOSSARY_REFUSED_EXIT_CODE
 
     cfg = dt.load_private_config(str(cfg_path))
@@ -242,6 +293,13 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
             f"versions {gc.record['glossary_versions']}")
     arm_names, conditions = list(p4c["arms"]), p4c["conditions"]
     built = {gc.name: env.build_arms(pages, arm_names, gc.glossaries, gc.config) for gc in conds}
+    for gc in conds:
+        if gc.name in (shuffles or {}):
+            seed = (shuffles or {})[gc.name]
+            built[gc.name], per_arm = shuffle_arms(built[gc.name], seed)
+            gc.record["shuffle"] = {"seed": seed, "arms": per_arm}
+            log(f"part4-glossary: {gc.name}: shuffled rendered fields, seed {seed!r}, "
+                f"{ {a: r['permutation_sha256'][:12] for a, r in per_arm.items()} }")
     ref = conds[0].name
     exp = p4c["expected_chunks"]
     manip = {a: {"chunks": len(built[ref].get(a, [])), "expected": exp.get(a),
@@ -301,6 +359,7 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
         "provenance": prov, "citable": citable,
         "glossary_conditions": [gc.record for gc in conds],
         "reference_condition": ref,
+        "shuffled_conditions": dict(shuffles or {}),
         "design": {"arms": arm_names, "conditions": conditions, "seed": seed,
                    "analysis": {k: an[k] for k in ("n_perm", "n_boot", "ci_level")},
                    "allow_unverifiable": allow_unverifiable,
@@ -349,9 +408,11 @@ def production_genv(out: Path, embed_urls: str, rerank_url: str) -> GEnv:
 def cmd_part4_glossary(args: argparse.Namespace) -> int:
     out = Path(args.out_dir)
     specs = parse_specs(args.glossary_file)
+    shuffles = parse_shuffles(getattr(args, "shuffle_rendered", None), [n for n, _ in specs])
     env = production_genv(out, args.embed_urls, args.rerank_url)
     return rescore(Path(args.private_config), out, env, specs,
-                   allow_unverifiable=args.glossary_allow_unverifiable, results=args.results)
+                   allow_unverifiable=args.glossary_allow_unverifiable, results=args.results,
+                   shuffles=shuffles)
 
 
 def add_parser(sub: Any) -> None:
@@ -363,5 +424,8 @@ def add_parser(sub: Any) -> None:
                    help="a glossary condition: NAME and its glossary.jsonl (repeatable; the first is the reference)")
     r.add_argument("--glossary-allow-unverifiable", action="store_true",
                    help="render pages whose live chunks do not reassemble their full text (else refused)")
+    r.add_argument("--shuffle-rendered", action="append", metavar="NAME=SEED", default=None,
+                   help="the shuffled control: permute condition NAME's rendered glossary fields "
+                        "among each arm's populated chunks, seeded (repeatable)")
     r.add_argument("--results", default=DEFAULT_RESULTS,
                    help=f"results file (relative to the output directory; default {DEFAULT_RESULTS})")

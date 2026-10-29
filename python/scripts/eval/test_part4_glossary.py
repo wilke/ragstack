@@ -421,6 +421,54 @@ def test_rescore_records_the_files_in_the_results_and_the_provenance(setup: tupl
     assert res["contrasts"]["reworded-vs-rules"]["L"]["k1"]["min_attainable_p"]["mcnemar_two_sided"] == 1.0
 
 
+def test_shuffle_rendered_permutes_each_arms_populated_fields(tmp_path: Path) -> None:
+    """Round 2's shuffled control in the in-memory harness: per arm, the populated
+    chunks and the multiset of strings are unchanged, the assignment is not, the
+    chunks are untouched, the same seed gives the same arms."""
+    pg = pages()
+    g = p4g.resolve_condition("r", reworded_file(tmp_path / "r.jsonl"), pg)
+    arms = p4g.make_build(tmp_path, [])(pg, ["L", "T128o0", "T512o0"], g.glossaries, g.config)
+    before = {a: [(c.id, c.content, c.glossary) for c in cs] for a, cs in arms.items()}
+    shuf, rec = p4g.shuffle_arms(arms, "261101|shuf")
+    again, rec2 = p4g.shuffle_arms(arms, "261101|shuf")
+    assert {a: [(c.id, c.content, c.glossary) for c in cs] for a, cs in arms.items()} == before  # not mutated
+    assert rec == rec2 and [[c.glossary for c in cs] for cs in shuf.values()] == \
+        [[c.glossary for c in cs] for cs in again.values()]
+    moved_any = False
+    for a, cs in arms.items():
+        true = {c.id: c.glossary for c in cs}
+        new = {c.id: c.glossary for c in shuf[a]}
+        assert [(c.id, c.content) for c in shuf[a]] == [(c.id, c.content) for c in cs]
+        assert {k for k, v in new.items() if v} == {k for k, v in true.items() if v}
+        assert Counter(v for v in new.values() if v) == Counter(v for v in true.values() if v)
+        moved = sum(1 for k in true if true[k] and new[k] != true[k])
+        assert moved == rec[a]["populated"] - rec[a]["fixed_points"]
+        moved_any |= moved > 0
+        assert rec[a]["seed"] == "261101|shuf" and len(rec[a]["permutation_sha256"]) == 64
+    assert moved_any, "the fixture must render at least two distinct fields in some arm"
+
+
+def test_rescore_records_the_shuffled_condition(setup: tuple[Path, Path], tmp_path: Path) -> None:
+    cfg, out = setup
+    fb = reworded_file(tmp_path / "reworded.jsonl")
+    w = World()
+    rc = p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), [("true", fb), ("shuf", fb)],
+                     shuffles={"shuf": "261101|shuf"})
+    assert rc == p4g.EXIT_OK
+    res = json.loads((out / p4g.DEFAULT_RESULTS).read_text())
+    assert res["shuffled_conditions"] == {"shuf": "261101|shuf"}
+    rec = next(x for x in res["glossary_conditions"] if x["name"] == "shuf")["shuffle"]
+    assert rec["seed"] == "261101|shuf" and set(rec["arms"]) == {"L", "T512o0"}
+    assert "shuffle" not in next(x for x in res["glossary_conditions"] if x["name"] == "true")
+    assert res["provenance"]["glossary_files"]["shuf"]["shuffle"] == rec
+    # field population per arm is the true condition's
+    assert res["chunks_with_glossary"]["shuf"] == res["chunks_with_glossary"]["true"]
+    for bad in (["nope=1"], ["shuf"], ["shuf=a:b"], ["shuf=1", "shuf=2"]):
+        with pytest.raises(SystemExit):
+            p4g.parse_shuffles(bad, ["true", "shuf"])
+    assert p4g.parse_shuffles(None, ["true"]) == {}
+
+
 def test_a_mismatch_refuses_before_anything_is_built_or_scored(setup: tuple[Path, Path], tmp_path: Path) -> None:
     cfg, out = setup
     other = dict(TEXTS, d1=TEXTS["d1"].replace("0.3", "0.4"))
@@ -466,8 +514,9 @@ def test_cli_wires_the_subcommand_and_leaves_part4_alone(monkeypatch: pytest.Mon
     monkeypatch.setattr(p4g, "cmd_part4_glossary", fake)
     assert dt.main(["--private-config", str(cfg), "--out-dir", str(out), "part4-glossary",
                     "--glossary-file", "a=/x/a.jsonl", "--glossary-file", "b=/x/b.jsonl",
-                    "--glossary-allow-unverifiable"]) == 0
+                    "--glossary-allow-unverifiable", "--shuffle-rendered", "b=261101|shuf"]) == 0
     assert seen["glossary_file"] == ["a=/x/a.jsonl", "b=/x/b.jsonl"] and seen["glossary_allow_unverifiable"]
+    assert seen["shuffle_rendered"] == ["b=261101|shuf"]
     assert p4g.parse_specs(seen["glossary_file"]) == [("a", Path("/x/a.jsonl")), ("b", Path("/x/b.jsonl"))]
     for bad in (["noequals"], ["a=/x", "a=/y"], ["=/x"], []):
         with pytest.raises(SystemExit):
