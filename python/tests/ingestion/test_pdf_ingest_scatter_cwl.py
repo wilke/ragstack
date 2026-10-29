@@ -90,8 +90,12 @@ def test_archive_is_the_only_workflow_output(wf: dict) -> None:
     assert pack_in["chunks"] == "ingest/embeddings"
     assert pack_in["version"] == "version"
     ingest = _steps(wf)["ingest"]
-    assert ingest["scatter"] == ["shard", "report"] and ingest["scatterMethod"] == "dotproduct"
+    # #847 G2: the batch's glossary file is the third dotproduct source.
+    assert ingest["scatter"] == ["shard", "report", "glossary"]
+    assert ingest["scatterMethod"] == "dotproduct"
     assert ingest["in"]["shard"] == "extract/shard"
+    assert ingest["in"]["glossary"] == "glossary/glossary"
+    assert pack_in["glossary"] == "glossary/glossary"
     assert "merge" not in _steps(wf)  # a summary nobody may expose = a dead task
 
 
@@ -174,6 +178,9 @@ def test_network_access_only_where_needed(wf: dict) -> None:
     reqs = {n: s["run"]["requirements"] for n, s in _steps(wf).items()}
     assert "NetworkAccess" not in reqs["extract"]
     assert reqs["ingest"]["NetworkAccess"]["networkAccess"] is True
+    # #847 G2: the glossary step may call a model endpoint (glossary_llm=on).
+    assert reqs["glossary"]["NetworkAccess"]["networkAccess"] is True
+    assert "NetworkAccess" not in reqs["pack"]
 
 
 def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> None:

@@ -144,6 +144,18 @@
 # `extract` is pure local I/O (PyMuPDF) and gets neither; `batch` is an
 # ExpressionTool the engine evaluates in-process (no container, no task).
 #
+# GLOSSARY (#847 G2). A `glossary` step runs per batch between extract and
+# ingest (cwl/glossary-step.cwl, inlined): the shard -> `<batch>.glossary.jsonl`
+# (the rules glossary; with glossary_llm="on" also the LLM half, degrading per
+# document, never failing the task). `ingest` renders every chunk's
+# symbol_glossary field FROM that file (`ingest_shard --glossary-file`; exit 6
+# when the file does not match the batch), and `pack` merges the per-batch files
+# into the version's glossary.jsonl (manifest role `glossary`), so a restore
+# brings the glossary back with the chunks. With glossary_llm="off" (the
+# default) the step still runs, rules-only and offline; chunks are stamped
+# `rules/3@file/1`. With symbol_glossary="off" the step still runs and the file
+# is still archived, but ingest_shard ignores it: no chunk carries the field.
+#
 # SELF-CONTAINED: every step's tool is inlined (no `run: <file>.cwl`), because
 # GoWeClient.register_workflow POSTs the CWL text and an external reference cannot
 # be resolved engine-side. `cwl/pdf-extract.cwl` is the extract tool standalone —
@@ -308,6 +320,84 @@ inputs:
       same paper ingested into three collections resolves once. Must be a path
       the worker image has bound; omitted = in-process only, which still costs
       one lookup per distinct DOI per task, not per chunk."
+  # #847 G2: the glossary step's knobs (see cwl/glossary-step.cwl). With
+  # glossary_llm="off" (the default) the step is rules-only — no network, every
+  # limit below ignored — so zero defaults are legal; with "on" the submitter
+  # must give the endpoint, the model and every limit marked required, or the
+  # task exits 2 before any call (#849: the workflow carries no policy).
+  # The key travels by NAME only; the API seeds these from
+  # SYMBOL_GLOSSARY_LLM_* (documents.py::_gowe_inputs).
+  glossary_llm:
+    type: string
+    default: "off"
+    doc: "off (default): rules only, no network. on: also the LLM glossary from
+      glossary_llm_endpoint. A quoted string, not a boolean: the tool takes
+      --llm off|on, and an unquoted off would be a YAML 1.1 boolean."
+  glossary_llm_endpoint:
+    type: ["null", string]
+    doc: "OpenAI-compatible base URL, as seen from the worker (required with
+      glossary_llm=on). Recorded as host:port only. Never a credential."
+  glossary_llm_model:
+    type: ["null", string]
+    doc: "The served model id (required with glossary_llm=on)."
+  glossary_llm_api_key_env:
+    type: string
+    default: OPENAI_API_KEY
+    doc: "The NAME of the environment variable holding the key — never the key:
+      the worker injects it from its --secret-file. Unset or empty = no
+      Authorization header."
+  glossary_llm_concurrency:
+    type: int
+    default: 0
+    doc: "Documents in flight per task (0 = 1)."
+  glossary_llm_timeout_s:
+    type: float
+    default: 0.0
+    doc: "Per-call timeout in seconds; required (> 0) with glossary_llm=on."
+  glossary_llm_max_tokens:
+    type: int
+    default: 0
+    doc: "max_tokens per call; required (> 0) with glossary_llm=on."
+  glossary_llm_window_chars:
+    type: int
+    default: 0
+    doc: "Characters per window; required (> 2000, the overlap) with glossary_llm=on."
+  glossary_llm_max_windows:
+    type: int
+    default: 0
+    doc: "Windows per document (the tail is recorded as truncated); required
+      (> 0) with glossary_llm=on."
+  glossary_llm_thinking:
+    type: string
+    default: "off"
+    doc: "off|on|unset: chat_template_kwargs.enable_thinking (vLLM); unset sends
+      none (a strict OpenAI-compatible server)."
+  glossary_llm_repair_rounds:
+    type: int
+    default: 0
+    doc: "Rounds sending the gate's repairable rejections back (0 = none; no
+      measured gain yet)."
+  glossary_llm_cutoff_retry:
+    type: string
+    default: "off"
+    doc: "off|split: re-ask a window cut off at max_tokens as two halves, once."
+  glossary_llm_deadline_s:
+    type: float
+    default: 0.0
+    doc: "Wall-clock bound on the task's model calls (0 = none beyond the per-call
+      bounds); documents not done by then degrade 'deadline'."
+  glossary_llm_min_chars:
+    type: int
+    default: 0
+    doc: "Documents shorter than this skip the model (0 = every document). On
+      jats-ingest set it (e.g. 1500) to keep table/figure units off the model."
+  glossary_llm_seed:
+    type: ["null", int]
+    doc: "Send this seed with every call (null = none sent)."
+  glossary_llm_extra_body:
+    type: ["null", string]
+    doc: "A JSON object of extra request fields, recorded verbatim and hashed into
+      the version — never credentials (the tool refuses credential-like keys)."
 
 steps:
   batch:
@@ -383,16 +473,100 @@ steps:
             scanned PDF), which ingest_shard folds into the receipt."
           outputBinding: {glob: $(inputs.batch_id).report.json}
 
+  glossary:
+    doc: "One batch's shard -> its glossary.jsonl (the rules glossary, plus
+      the LLM half with glossary_llm=on) + a summary. Rules-only by default:
+      no network, seconds."
+    scatter: shard
+    in:
+      shard: extract/shard
+      glossary_llm: glossary_llm
+      glossary_llm_endpoint: glossary_llm_endpoint
+      glossary_llm_model: glossary_llm_model
+      glossary_llm_api_key_env: glossary_llm_api_key_env
+      glossary_llm_concurrency: glossary_llm_concurrency
+      glossary_llm_timeout_s: glossary_llm_timeout_s
+      glossary_llm_max_tokens: glossary_llm_max_tokens
+      glossary_llm_window_chars: glossary_llm_window_chars
+      glossary_llm_max_windows: glossary_llm_max_windows
+      glossary_llm_thinking: glossary_llm_thinking
+      glossary_llm_repair_rounds: glossary_llm_repair_rounds
+      glossary_llm_cutoff_retry: glossary_llm_cutoff_retry
+      glossary_llm_deadline_s: glossary_llm_deadline_s
+      glossary_llm_min_chars: glossary_llm_min_chars
+      glossary_llm_seed: glossary_llm_seed
+      glossary_llm_extra_body: glossary_llm_extra_body
+      workflow_id: workflow_id
+      tool_image: tool_image
+      tool_image_digest: tool_image_digest
+    out: [glossary, summary]
+    # INLINED copy of cwl/glossary-step.cwl — keep in sync.
+    run:
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: ragstack-tools-v1.6.20-b1.sif
+          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+        NetworkAccess:
+          networkAccess: true
+      baseCommand: [python, /opt/ragstack/scripts/glossary_step.py]
+      # Exit 2 = a configuration refusal before any call (glossary_llm=on
+      # without its endpoint/model/limits, a bad extra body); 3 = the shard is
+      # unreadable or repeats a document id. Neither is worth a retry. An
+      # unreachable or failing model is NOT an exit: the documents degrade to
+      # the rules glossary and the task exits 0 (counts in the summary).
+      permanentFailCodes: [2, 3]
+      inputs:
+        shard: {type: File, inputBinding: {position: 1}}
+        glossary_llm: {type: string, default: "off", inputBinding: {prefix: --llm, position: 3}}
+        glossary_llm_endpoint: {type: ["null", string], inputBinding: {prefix: --llm-endpoint, position: 4}}
+        glossary_llm_model: {type: ["null", string], inputBinding: {prefix: --llm-model, position: 5}}
+        glossary_llm_api_key_env: {type: string, default: OPENAI_API_KEY, inputBinding: {prefix: --llm-api-key-env, position: 6}}
+        glossary_llm_concurrency: {type: int, default: 0, inputBinding: {prefix: --llm-concurrency, position: 7}}
+        glossary_llm_timeout_s: {type: float, default: 0.0, inputBinding: {prefix: --llm-timeout-s, position: 8}}
+        glossary_llm_max_tokens: {type: int, default: 0, inputBinding: {prefix: --llm-max-tokens, position: 9}}
+        glossary_llm_window_chars: {type: int, default: 0, inputBinding: {prefix: --llm-window-chars, position: 10}}
+        glossary_llm_max_windows: {type: int, default: 0, inputBinding: {prefix: --llm-max-windows, position: 11}}
+        glossary_llm_thinking: {type: string, default: "off", inputBinding: {prefix: --llm-thinking, position: 12}}
+        glossary_llm_repair_rounds: {type: int, default: 0, inputBinding: {prefix: --llm-repair-rounds, position: 13}}
+        glossary_llm_cutoff_retry: {type: string, default: "off", inputBinding: {prefix: --llm-cutoff-retry, position: 14}}
+        glossary_llm_deadline_s: {type: float, default: 0.0, inputBinding: {prefix: --llm-deadline-s, position: 15}}
+        glossary_llm_min_chars: {type: int, default: 0, inputBinding: {prefix: --llm-min-chars, position: 16}}
+        glossary_llm_seed: {type: ["null", int], inputBinding: {prefix: --llm-seed, position: 17}}
+        glossary_llm_extra_body: {type: ["null", string], inputBinding: {prefix: --llm-extra-body, position: 18}}
+        workflow_id:
+          type: ["null", string]
+          inputBinding: {prefix: --workflow-id, position: 19}
+        tool_image:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image, position: 20}
+        tool_image_digest:
+          type: ["null", string]
+          inputBinding: {prefix: --tool-image-digest, position: 21}
+      arguments:
+        # Per-shard names (#852): GoWe stages a gathered File[] flat by
+        # basename, so a constant name would leave ONE file for N tasks.
+        - {position: 2, prefix: --out, valueFrom: $(inputs.shard.nameroot).glossary.jsonl}
+        - {position: 22, prefix: --summary, valueFrom: $(inputs.shard.nameroot).glossary-summary.json}
+      outputs:
+        glossary:
+          type: File
+          outputBinding: {glob: $(inputs.shard.nameroot).glossary.jsonl}
+        summary:
+          type: File
+          outputBinding: {glob: $(inputs.shard.nameroot).glossary-summary.json}
+
   ingest:
     doc: "One shard (a batch) -> Qdrant/ES upsert + ONE ShardReceipt with a row
       per document + the batch's embedding file (stateless, idempotent). Exits
       non-zero only for a batch-level error; an all-failed batch completes with
       every row errored (see the header)."
-    scatter: [shard, report]
+    scatter: [shard, report, glossary]
     scatterMethod: dotproduct
     in:
       shard: extract/shard
       report: extract/report
+      glossary: glossary/glossary
       collection: collection
       es_index: es_index
       tenant: tenant
@@ -428,8 +602,10 @@ steps:
       # Exit 4 = the batch was refused at the per-collection chunk cap (#291):
       # a whole-job refusal by spec, never worth a retry. GoWe parses but does
       # not yet honour this; cwltool does, and the API classifies the exit code
-      # off the submission's error record either way.
-      permanentFailCodes: [4]
+      # off the submission's error record either way. Exit 6 = the glossary
+      # file does not match the batch (#847: a wiring bug, never data) —
+      # deterministic too.
+      permanentFailCodes: [4, 6]
       inputs:
         shard: {type: File, inputBinding: {position: 2}}
         report:
@@ -504,6 +680,12 @@ steps:
           type: string
           default: "rules"
           inputBinding: {prefix: --symbol-glossary, position: 28}
+        # #847 G2: the glossary step's file for THIS shard; every chunk's
+        # symbol_glossary field is rendered from it. A missing or mismatched
+        # row refuses the batch with exit 6 (a wiring bug, never data).
+        glossary:
+          type: File
+          inputBinding: {prefix: --glossary-file, position: 29}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
@@ -530,6 +712,7 @@ steps:
       version: version
       chunks: ingest/embeddings
       receipt: ingest/receipt
+      glossary: glossary/glossary
       collection_id: collection_id
       tenant: tenant
       spec_hash: spec_hash
@@ -575,6 +758,11 @@ steps:
         tool_image_digest:
           type: ["null", string]
           inputBinding: {prefix: --tool-image-digest, position: 11}
+        # #847 G2: the per-batch glossary files, merged into the version's
+        # glossary.jsonl (manifest role `glossary`) beside chunks.jsonl.gz.
+        glossary:
+          type: "File[]"
+          inputBinding: {prefix: --glossary-file, position: 12}
       arguments:
         - {position: 8, prefix: --out, valueFrom: "."}
       outputs:
