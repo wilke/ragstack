@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import found10 as f10  # noqa: E402
 import found10_analysis as fa  # noqa: E402
+import glossary_boost_probe as gbp  # noqa: E402
 
 API = "http://api.invalid"
 ES = "http://es.invalid"
@@ -81,6 +82,8 @@ class FakeAPI:
                 else httpx.Response(403, json={})
         body = json.loads(req.content)
         self.calls.append(body)
+        if not str(body["query"]).startswith("q"):
+            return self.probe(body)
         if self.status != 200:
             return httpx.Response(self.status, json={"detail": "x"}, headers={"X-Request-Id": "rid"})
         if self.degraded_times:
@@ -98,8 +101,42 @@ class FakeAPI:
         return httpx.Response(200, json={"sources": src}, headers={"X-Request-Id": "rid"})
 
 
+    # ---- the boost probe: a bm25 index over PROBE_CHUNKS with the glossary field at ``boost``
+    boost = 1.0
+    drop: set[str] = set()  # chunks the index does not return (a partially attached field)
+    probe_top_k: int | None = None  # a response echoing this top_k (a clamp)
+
+    def probe(self, body: dict[str, Any]) -> httpx.Response:
+        assert body["retrieval_mode"] == "bm25" and body["rerank"] is False and body["top_k"] == 10
+        assert body["use_graph"] is False and body["collection"] == "coll-o"
+        tok = body["query"].lower()
+        hits = [c for c, content, g in PROBE_CHUNKS
+                if tok in gbp.content_terms(content) or (self.boost > 0 and tok in gbp.glossary_tokens(g))]
+        hits = [c for c in hits if c not in self.drop][: body["top_k"]]
+        out: dict[str, Any] = {"sources": [{"chunk_id": c, "doc_id": "d", "content": "", "score": 1.0,
+                                            "metadata": {}} for c in hits]}
+        if self.probe_top_k is not None:
+            out["top_k"] = self.probe_top_k
+        return httpx.Response(200, json=out)
+
+
+#: synthetic chunks: each of p0-p3 carries a glossary-only token; p4's token is also in
+#: p5's content (never a probe); p5 has no glossary
+PROBE_CHUNKS = [
+    ("p0", "the valve opens at dawn", "Kv — kelvinate"),
+    ("p1", "pressure falls slowly", "Pd — pascalite (kPa)"),
+    ("p2", "a third plain chunk", "Ej — joulemeter"),
+    ("p3", "a fourth plain chunk", "Rx — ohmicity, of it"),
+    ("p4", "nothing special", "Fz — faradism"),
+    ("p5", "this text mentions faradism openly", ""),
+]
+
+
 def run(tmp: Path, api: FakeAPI, conf: dict[str, Any] | None = None, sw: dict[str, Any] | None = None,
-        arm: str = "armx", repeat: int | None = None) -> int:
+        arm: str = "armx", repeat: int | None = None, **probe: Any) -> int:
+    """``probe``: the Runner's boost-probe arguments; by default the boost is declared
+    (the probe is exercised by its own tests below)."""
+    probe = {"boost_declared": 1.0, **probe}
     conf = conf or cfg()
     tmp.mkdir(parents=True, exist_ok=True)
     sp = tmp / f"swap-{arm}.json"
@@ -111,7 +148,8 @@ def run(tmp: Path, api: FakeAPI, conf: dict[str, Any] | None = None, sw: dict[st
     async def nosleep(_: float) -> None:
         return None
 
-    r = f10.Runner(conf, QUESTIONS, "O", arm, tmp / "out", sp, repeat=repeat, client_factory=factory, sleep=nosleep)
+    r = f10.Runner(conf, QUESTIONS, "O", arm, tmp / "out", sp, repeat=repeat, client_factory=factory, sleep=nosleep,
+                   **probe)
     return asyncio.run(r.run())
 
 
@@ -415,3 +453,163 @@ def test_cmd_analyse_end_to_end(tmp_path: Path) -> None:
     assert (h1["gained"], h1["lost"]) == (3, 0)
     assert h1["n_pages_nonzero"] == 2 and h1["status"] == fa.GATE
     assert set(res["runs"]) == {"O/armx", "O/rules"} and "provenance" in res
+
+
+# ------------------------------------------------------------- glossary boost read-back
+def _summary(tmp: Path) -> dict[str, Any]:
+    return json.loads((tmp / "out/O/armx.summary.json").read_text())
+
+
+def test_boost_probe_active_is_recorded_and_measures(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    assert run(tmp_path, api, probe_chunks=PROBE_CHUNKS, boost_declared=None, probe_source="test") == f10.EXIT_OK
+    bc = _summary(tmp_path)["manipulation_check"]["glossary_boost"]
+    assert bc["status"] == "active" and bc["n_probes"] == 4 and bc["n_passed"] == 4 and bc["gate"] is None
+    assert {p["chunk_id"] for p in bc["probes"]} == {"p0", "p1", "p2", "p3"}  # p4's token is in p5's content
+    assert all(p["rank"] == 1 and p["requested"] == 10 and p["served"] == 1 for p in bc["probes"])
+    # token hashes, never the text
+    blob = (tmp_path / "out/O/armx.summary.json").read_text()
+    assert "kelvinate" not in blob and gbp.token_sha("kelvinate") in blob
+    assert all(c["gate"] is None for c in _summary(tmp_path)["conditions"].values())
+    # the probes ran before the first measurement call
+    first_measure = next(i for i, c in enumerate(api.calls) if c["query"].startswith("q"))
+    assert all(not c["query"].startswith("q") for c in api.calls[:first_measure]) and first_measure == 4
+
+
+def test_boost_probe_inactive_stops_before_measuring(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    api.boost = 0.0  # the server default: the glossary field is never consulted
+    with pytest.raises(f10.Refused, match="inactive"):
+        run(tmp_path, api, probe_chunks=PROBE_CHUNKS, boost_declared=None)
+    assert not [c for c in api.calls if c["query"].startswith("q")]
+    rec = json.loads((tmp_path / "out/O/armx.boost-check.json").read_text())
+    bc = rec["manipulation_check"]["glossary_boost"]
+    assert bc["status"] == "inactive" and bc["n_passed"] == 0 and all(p["result"] == "fail" for p in bc["probes"])
+    assert not (tmp_path / "out/O/armx.summary.json").exists()
+    # cmd_run turns the refusal into exit 1
+    assert "kelvinate" not in (tmp_path / "out/O/armx.boost-check.json").read_text()
+
+
+def test_boost_probe_mixed_stops(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    api.drop = {"p2"}
+    with pytest.raises(f10.Refused, match="mixed"):
+        run(tmp_path, api, probe_chunks=PROBE_CHUNKS, boost_declared=None)
+    bc = json.loads((tmp_path / "out/O/armx.boost-check.json").read_text())["manipulation_check"]["glossary_boost"]
+    assert bc["status"] == "mixed" and bc["n_passed"] == 3
+    assert not [c for c in api.calls if c["query"].startswith("q")]
+
+
+def test_boost_probe_depth_echo_short_is_an_error(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    api.probe_top_k = 5  # a gateway clamping 10 -> 5
+    with pytest.raises(f10.Refused, match="error"):
+        run(tmp_path, api, probe_chunks=PROBE_CHUNKS, boost_declared=None)
+
+
+def test_boost_probe_not_testable_gates_every_condition(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    few = PROBE_CHUNKS[:2] + PROBE_CHUNKS[4:]  # two qualifying chunks < 3
+    assert run(tmp_path, api, probe_chunks=few, boost_declared=None) == f10.EXIT_OK
+    s = _summary(tmp_path)
+    bc = s["manipulation_check"]["glossary_boost"]
+    assert bc["status"] == "not_testable" and bc["gate"] and bc["n_probes"] == 0
+    assert all(fa.GATE in c["gate"] and "boost" in c["gate"] for c in s["conditions"].values())
+    assert not [c for c in api.calls if not c["query"].startswith("q")]  # no probe call
+    _, gated, _ = f10.collect(tmp_path / "out", [dict(q) for q in QUESTIONS])
+    assert {"armx|base", "armx|bm25", "armx|norerank"} <= set(gated)
+
+
+def test_boost_probe_not_testable_with_declared_boost(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    assert run(tmp_path, api, probe_chunks=None, probe_unavailable="no --chunk-export given",
+               boost_declared=1.0) == f10.EXIT_OK
+    bc = _summary(tmp_path)["manipulation_check"]["glossary_boost"]
+    assert bc["status"] == "declared" and bc["declared"] == 1.0 and bc["gate"] is None
+    assert bc["declared_label"].startswith("declared") and bc["reason"] == "no --chunk-export given"
+    assert all(c["gate"] is None for c in _summary(tmp_path)["conditions"].values())
+    with pytest.raises(f10.Refused, match="boost <= 0"):
+        run(tmp_path / "z", FakeAPI(RANKS), boost_declared=0.0)
+
+
+def test_pick_probes_caps_at_max_probes() -> None:
+    many = [(f"c{i}", "plain words only", f"S{i} \u2014 zzprobe{i}x token") for i in range(5)]
+    picked, _ = gbp.pick_probes(many)
+    assert len(picked) == gbp.MAX_PROBES and gbp.PROBE_REQUEST["top_k"] == 10
+
+
+def test_pick_probes_rules() -> None:
+    rows = [("a", "content Alpha", "S \u2014 alpha (betagamma)"),        # alpha in content; betagamma ok
+            ("b", "x", "T \u2014 x-ray flow/rate 12345 caf\u00e9s abc"),   # nothing qualifies
+            ("c", "y", "U \u2014 betagamma"),                               # same token: distinct tokens only
+            ("d", "z", "V \u2014 epsilonz")]                               # df 1 comes first
+    picked, st = gbp.pick_probes(rows)
+    got = [(p["chunk_id"], p["token"], p["glossary_df"]) for p in picked]
+    assert got[0] == ("d", "epsilonz", 1)
+    assert got[1:] in ([("a", "betagamma", 2)], [("c", "betagamma", 2)])
+    assert st["chunks_with_a_qualifying_token"] == 3
+    # df above the probe depth is never a probe
+    crowd = [(f"k{i}", "x", "V \u2014 crowded") for i in range(11)]
+    assert gbp.pick_probes(crowd)[0] == []
+
+
+def _world(tmp: Path) -> tuple[Path, Path, list[dict[str, Any]]]:
+    from ragstack.ingestion.glossary_file import build_row, write_glossary_file
+    from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
+
+    pad = " ".join(["plain filler words keep these chunks apart"] * 4)
+    text = ("We use Kv, where Kv is the valve flow coefficient, and Pd, where Pd is the pressure "
+            "drop.\n" + pad + "\nTable 1: Kv = 0.8 here.\n" + pad + "\nAnd Pd = 12 there.\n" + pad)
+    step = len(text) // 4 + 1
+    rows = [{"chunk_id": f"d0-{i}", "doc_id": "d0", "content": text[s:s + step], "start_char": s,
+             "end_char": min(s + step, len(text))} for i, s in enumerate(range(0, len(text), step))]
+    ex = tmp / "export.jsonl"
+    ex.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    g = tmp / "g.jsonl"
+    write_glossary_file(g, [build_row("d0", text, SymbolGlossaryAttacher())], producer="synthetic rules")
+    return ex, g, rows
+
+
+def test_probe_candidates_render_from_the_glossary_file(tmp_path: Path) -> None:
+    ex, g, rows = _world(tmp_path)
+    conf = cfg()
+    conf["arms"]["armx"]["glossary_file_sha256"]["O"] = f10.sha256_file(g)
+    chunks, why, src = f10.probe_candidates(conf, "O", "armx", swap(), str(ex), str(g), None)
+    assert why is None and "rendered offline" in src and len(chunks) == len(rows)
+    rendered = {c: f for c, _, f in chunks}
+    assert any(rendered.values()) and all(isinstance(v, str) for v in rendered.values())
+    # the arm's file only
+    conf["arms"]["armx"]["glossary_file_sha256"]["O"] = "0" * 64
+    with pytest.raises(f10.Refused, match="sha256"):
+        f10.probe_candidates(conf, "O", "armx", swap(), str(ex), str(g), None)
+    # nothing to render from
+    assert f10.probe_candidates(conf, "O", "armx", swap(), None, None, None)[:2] == (None, "no --chunk-export given")
+    # the rendered-fields export route
+    rf = tmp_path / "fields.jsonl"
+    rf.write_text("".join(json.dumps({"chunk_id": r["chunk_id"], "symbol_glossary": "S \u2014 kelvinate"}) + "\n"
+                          for r in rows))
+    chunks, why, src = f10.probe_candidates(conf, "O", "armx", swap(), str(ex), None, str(rf))
+    assert why is None and {f for _, _, f in chunks} == {"S \u2014 kelvinate"}
+
+
+def test_probe_candidates_shuffled_arm_reproduces_the_backfill_permutation(tmp_path: Path) -> None:
+    from ragstack.ingestion.glossary_shuffle import shuffle_rendered
+
+    ex, g, rows = _world(tmp_path)
+    conf = cfg()
+    conf["arms"]["armx"].update(shuffle_seed=SEED, glossary_file_sha256={"O": f10.sha256_file(g)})
+    conf["corpora"]["O"]["es_id_prefix"] = "t:"
+    true, _, _ = f10.probe_candidates(cfg(arms={"armx": {**conf["arms"]["armx"], "shuffle_seed": None},
+                                                 "rules": conf["arms"]["rules"]}),
+                                      "O", "armx", swap(), str(ex), str(g), None)
+    want = shuffle_rendered({"t:" + c: f for c, _, f in true}, SEED)
+    sw = swap(apply={"dry_run": False, "shuffle": {"seed": SEED, "permutation_sha256": want.permutation_sha256}})
+    chunks, why, src = f10.probe_candidates(conf, "O", "armx", sw, str(ex), str(g), None)
+    assert why is None and "shuffle" in src
+    assert {c: f for c, _, f in chunks} == {c: want.assignment.get("t:" + c, "") for c, _, _ in true}
+    # a different key prefix gives a different permutation: not testable, never a wrong probe
+    conf["corpora"]["O"]["es_id_prefix"] = "u:"
+    chunks, why, _ = f10.probe_candidates(conf, "O", "armx", sw, str(ex), str(g), None)
+    assert want.populated == 2 and chunks is None and "permutation differs" in why
+    sw2 = swap(apply={"dry_run": False, "shuffle": {"seed": SEED}})
+    assert "no permutation_sha256" in f10.probe_candidates(conf, "O", "armx", sw2, str(ex), str(g), None)[1]
