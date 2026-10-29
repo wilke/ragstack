@@ -147,8 +147,9 @@ CORE_REQUEST_FIELDS = frozenset({"model", "messages", "max_tokens", "temperature
 #: names directly under a JSON-schema ``properties`` object are schema field
 #: names, not credentials, and are not matched (their values still are).
 _SECRET_KEYS = frozenset({"api_key", "apikey", "authorization", "auth", "token", "secret",
-                          "password", "bearer", "credentials", "x_api_key", "key"})
-_SECRET_SUFFIXES = ("_token", "_secret", "_password", "_api_key", "_apikey")
+                          "password", "passwd", "bearer", "credential", "credentials", "x_api_key", "key"})
+_SECRET_SUFFIXES = ("_token", "_secret", "_password", "_api_key", "_apikey", "_key",
+                    "_authorization", "_credential", "_credentials")
 
 
 class ExtraBodyError(ValueError):
