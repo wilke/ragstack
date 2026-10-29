@@ -25,8 +25,10 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from ragstack.ingestion.archive import RECEIPT_NAME, ArchiveError, write_version
 from ragstack.ingestion.gowe_backend import NO_RECEIPT_ENTRY, map_receipt_entries
@@ -175,11 +177,10 @@ def test_merge_receipts_refuses_duplicate_shard_ids(tmp_path: Path, capsys) -> N
     out = tmp_path / "summary.json"
     assert merge_receipts.main([str(a), str(b), "--out", str(out)]) \
         == merge_receipts.DUPLICATE_RECEIPTS_EXIT_CODE == 3
-    assert not out.exists()
     assert "duplicate receipt shard_id" in capsys.readouterr().err
     # one file named N times: refused by path, before it is even parsed twice
     assert merge_receipts.main([str(a), str(a), "--out", str(out)]) == 3
-    assert "staged onto one file" in capsys.readouterr().err and not out.exists()
+    assert "staged onto one file" in capsys.readouterr().err
     # distinct receipts, same basename, different dirs: the cwltool shape passes
     c = _write(tmp_path / "t2" / "receipt.json", _batch("s1", "b.pdf"))
     assert merge_receipts.main([str(a), str(c), "--out", str(out)]) == 0
@@ -209,13 +210,57 @@ def test_load_refuses_one_embedding_file_named_twice_before_any_store(
 #: The first tools image whose pack/gather refuse receipts staged onto one file.
 GUARD_IMAGE = (1, 6, 20)
 _STAMPED = re.compile(r"ragstack-tools-v(\d+)\.(\d+)\.(\d+)-b\d+\.sif")
-_CONSTANT_RECEIPT = re.compile(r"(glob|valueFrom):\s*receipt\.json\b")
+_NAMING_KEYS = ("glob", "valueFrom")
+
+
+def _walk(node: Any):
+    """Every ``(key, value)`` pair of a parsed YAML document, at any depth."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k, v
+            yield from _walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk(v)
+
+
+def _is_constant_receipt(value: Any) -> bool:
+    values = value if isinstance(value, list) else [value]
+    return any(isinstance(v, str) and v.strip() == "receipt.json" for v in values)
 
 
 def constant_receipt_names_under_scatter(text: str) -> bool:
     """Whether a workflow scatters a step AND names a receipt with the
-    constant ``receipt.json`` — the shape GoWe stages onto one file."""
-    return bool(re.search(r"^\s*scatter:", text, re.M)) and bool(_CONSTANT_RECEIPT.search(text))
+    constant ``receipt.json`` (a ``glob`` or ``valueFrom``, in any YAML form:
+    plain, quoted, flow list, block list) — the shape GoWe stages onto one
+    file. Parsed, not grepped, so quoting and list forms cannot hide it."""
+    pairs = list(_walk(yaml.safe_load(text)))
+    return (any(k == "scatter" for k, _ in pairs)
+            and any(k in _NAMING_KEYS and _is_constant_receipt(v) for k, v in pairs))
+
+
+_FORM = ("steps:\n  ingest:\n    scatter: shard\n    run:\n      outputs:\n"
+         "        receipt:\n          type: File\n          outputBinding:\n"
+         "            glob: {glob}\n")
+
+
+@pytest.mark.parametrize("form", [
+    "receipt.json", '"receipt.json"', "'receipt.json'", "[receipt.json]",
+    '["receipt.json"]', "\n              - receipt.json",
+])
+def test_the_detector_sees_every_yaml_form(form: str) -> None:
+    """Plain, double- and single-quoted, flow list and block list."""
+    text = _FORM.format(glob=form)
+    assert constant_receipt_names_under_scatter(text), text
+    assert not constant_receipt_names_under_scatter(
+        text.replace("receipt.json", "$(inputs.shard.nameroot).receipt.json"))
+    assert not constant_receipt_names_under_scatter(text.replace("    scatter: shard\n", ""))
+
+
+def test_the_detector_sees_a_quoted_valuefrom() -> None:
+    text = ("steps:\n  s:\n    scatter: shard\n    run:\n      arguments:\n"
+            "        - {prefix: --out, valueFrom: \"receipt.json\"}\n")
+    assert constant_receipt_names_under_scatter(text)
 
 
 def test_the_detector_sees_the_shape() -> None:
@@ -244,3 +289,51 @@ def test_cwl_receipt_names_are_unique_once_the_image_guards() -> None:
         f"onto one file (#852), but {offenders} still name a scattered receipt "
         "`receipt.json`: rename to `$(inputs.shard.nameroot).receipt.json` in the same "
         "release that stamps the image")
+
+
+# --------------------------------------------------------------------------- #
+# review follow-ups (#853)
+# --------------------------------------------------------------------------- #
+
+
+def test_merge_receipts_refusal_writes_a_refusal_summary(tmp_path: Path) -> None:
+    """Exit 3 still, but the gather step's output says why, as the load's cap
+    refusal does: status, the duplicates, how many receipts, provenance."""
+    a = _write(tmp_path / "t0" / "receipt.json", _batch("s0", "a.pdf"))
+    b = _write(tmp_path / "t1" / "receipt.json", _batch("s0", "b.pdf"))
+    out = tmp_path / "summary.json"
+    assert merge_receipts.main([str(a), str(b), "--out", str(out),
+                                "--workflow-id", "wf_853"]) == 3
+    s = json.loads(out.read_text())
+    assert s["status"] == "refused" and s["duplicate_kind"] == "shard_id"
+    assert s["duplicates"] == ["s0"] and s["n_receipts_given"] == 2
+    assert s["provenance"]["workflow_id"] == "wf_853"
+    assert "n_shards" not in s                    # nothing was merged
+    assert merge_receipts.main([str(a), str(a), "--out", str(out)]) == 3
+    s = json.loads(out.read_text())
+    assert s["duplicate_kind"] == "path" and s["duplicates"] == [str(a)]
+    assert s["n_receipts_given"] == 2
+
+
+def test_duplicate_shard_id_message_names_the_ids_and_the_basename_remedy(
+        tmp_path: Path) -> None:
+    """The bulk tools default ``--shard-id`` to the shard's basename, so two
+    DISTINCT shards ``a/x.jsonl`` and ``b/x.jsonl`` collide: the message lists
+    the colliding ids and names distinct basenames / ``--shard-id`` as the fix,
+    not only the receipt rename."""
+    _embed_file(tmp_path / "a.emb.jsonl", 3)
+    paths = [_write(tmp_path / d / "receipt.json", _batch(sid, f"{d}.pdf"))
+             for d, sid in (("a", "x.jsonl"), ("b", "x.jsonl"), ("c", "y.jsonl"),
+                            ("d", "y.jsonl"))]
+    calls = (
+        lambda: merge_summary([ShardReceipt.load(str(p)) for p in paths]),
+        lambda: write_version(tmp_path / "out", 1, [tmp_path / "a.emb.jsonl"], paths,
+                              collection_id="c", tenant="public", workers=1),
+    )
+    for call in calls:
+        with pytest.raises((DuplicateReceiptError, ArchiveError)) as e:
+            call()
+        msg = str(e.value)
+        assert "['x.jsonl', 'y.jsonl']" in msg
+        assert "distinct basenames" in msg and "--shard-id" in msg
+        assert "nameroot).receipt.json" in msg        # the staging remedy still named

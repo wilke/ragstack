@@ -10,8 +10,9 @@ Usage::
 
     python scripts/merge_receipts.py r0.json r1.json ... --out summary.json
 
-Exits 3 (nothing written) when two receipt paths resolve to one file or two
-receipts share a ``shard_id`` (#852): a scatter whose tasks all write
+Exits 3 when two receipt paths resolve to one file or two receipts share a
+``shard_id`` (#852), writing a refusal summary instead (``status:
+"refused"``, the duplicate paths or ids, ``n_receipts_given``, provenance): a scatter whose tasks all write
 ``receipt.json``, staged flat by basename, would otherwise be counted as one
 receipt N times.
 
@@ -36,7 +37,7 @@ from ragstack.ingestion.receipts import (
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 #: Exit code for receipts that are one receipt (#852): paths resolving to one
-#: file, or a repeated ``shard_id``. Nothing is written.
+#: file, or a repeated ``shard_id``. Only the refusal summary is written.
 DUPLICATE_RECEIPTS_EXIT_CODE = 3
 
 
@@ -58,7 +59,15 @@ def main(argv=None) -> int:
         receipts = [ShardReceipt.load(p) for p in args.receipts]
         summary = merge_summary(receipts)
     except DuplicateReceiptError as e:
+        # A refusal summary, as load_embeddings' cap refusal writes one, so the
+        # gather step's output says WHY instead of being absent.
+        refusal = {"status": "refused", "error": str(e), "duplicate_kind": e.kind,
+                   "duplicates": e.duplicates, "n_receipts_given": len(args.receipts),
+                   "provenance": provenance_from_args(args)}
+        Path(args.out).write_text(json.dumps(refusal, indent=2, sort_keys=True),
+                                  encoding="utf-8")
         print(f"refused: {e}", file=sys.stderr, flush=True)
+        print(f"refused: nothing merged → {args.out}", flush=True)
         return DUPLICATE_RECEIPTS_EXIT_CODE
     # ADR-0010 decision 8, #821: this gather step's own record, and which
     # image(s) wrote the shard receipts it folded (distinct, sorted), plus how

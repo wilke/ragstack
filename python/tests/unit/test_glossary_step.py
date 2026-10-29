@@ -1126,3 +1126,56 @@ def test_reuse_does_not_reuse_rows_with_a_different_extra_body(tmp_path: Path,
     assert step_cli.main(_llm_argv(shard, tmp_path / "third.jsonl", "--reuse", str(first),
                                    "--llm-extra-body", same)) == 0
     assert fake.chats == []
+
+
+# --- review follow-ups (#853) ------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw,needle", [
+    ('{"accessToken": "x"}', "accessToken"),
+    ('{"apiSecret": "x"}', "apiSecret"),
+    ('{"extra": {"authToken": "x"}}', "extra.authToken"),
+    ('{"key": "x"}', "credential-like keys ['key']"),
+    ('{"APIKey": "x"}', "APIKey"),
+    ('{"response_format": {"type": "json_schema", "json_schema": {"schema": {"properties":'
+     ' {"token": {"type": "string", "api_key": "x"}}}}}}',
+     "response_format.json_schema.schema.properties.token.api_key"),
+])
+def test_llm_extra_body_refuses_camel_case_and_bare_key_secrets(
+        tmp_path: Path, fake_cli, capsys, raw: str, needle: str) -> None:
+    """camelCase is split before matching; a bare ``key`` is refused; under a
+    schema's ``properties`` the field NAMES are skipped but their values are
+    still scanned (the last case)."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    rc = step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl",
+                                 "--llm-extra-body", raw))
+    assert rc == 2 and fake.seen == []
+    assert needle in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [
+    # a response_format schema whose fields are named like credentials
+    '{"response_format": {"type": "json_schema", "json_schema": {"name": "g", "schema":'
+    ' {"type": "object", "properties": {"token": {"type": "string"},'
+    ' "key": {"type": "string"}, "password": {"type": "string"}},'
+    ' "required": ["token"]}}}}',
+    '{"maxCompletionTokens": 10, "top_k": 5, "keyword": "x", "reasoning_effort": "low"}',
+])
+def test_llm_extra_body_accepts_schema_field_names_and_token_counts(
+        tmp_path: Path, fake_cli, raw: str) -> None:
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    assert step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl",
+                                   "--llm-extra-body", raw)) == 0
+    assert fake.chats and all(
+        set(json.loads(raw)) <= set(s.body) for s in fake.chats)
+
+
+@pytest.mark.parametrize("thinking", ["unset", "off", "on"])
+def test_llm_extra_body_chat_template_kwargs_must_be_an_object(
+        tmp_path: Path, fake_cli, capsys, thinking: str) -> None:
+    """Refused whatever --llm-thinking says, ``unset`` included."""
+    fake = fake_cli(FakeOpenAI(default=Answer(GOOD)))
+    rc = step_cli.main(_llm_argv(_shard(tmp_path), tmp_path / "g.jsonl", "--llm-thinking",
+                                 thinking, "--llm-extra-body", '{"chat_template_kwargs": "x"}'))
+    assert rc == 2 and fake.seen == []
+    assert "chat_template_kwargs must be an object" in capsys.readouterr().err

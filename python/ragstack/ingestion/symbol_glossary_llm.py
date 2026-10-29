@@ -141,11 +141,13 @@ def thinking_code(thinking: bool | None) -> str:
 
 #: Request fields the step itself sets; an extra body may not override them.
 CORE_REQUEST_FIELDS = frozenset({"model", "messages", "max_tokens", "temperature", "seed"})
-#: Key names an extra body is refused for, at any depth (case-insensitive,
-#: ``-`` read as ``_``): the body is recorded verbatim in every row and in the
-#: summary, so it must never carry a credential.
+#: Key names an extra body is refused for, at any depth (camelCase split into
+#: words, case-insensitive, ``-`` read as ``_``): the body is recorded verbatim
+#: in every row and in the summary, so it must never carry a credential. The
+#: names directly under a JSON-schema ``properties`` object are schema field
+#: names, not credentials, and are not matched (their values still are).
 _SECRET_KEYS = frozenset({"api_key", "apikey", "authorization", "auth", "token", "secret",
-                          "password", "bearer", "credentials", "x_api_key"})
+                          "password", "bearer", "credentials", "x_api_key", "key"})
 _SECRET_SUFFIXES = ("_token", "_secret", "_password", "_api_key", "_apikey")
 
 
@@ -153,19 +155,29 @@ class ExtraBodyError(ValueError):
     """An ``--llm-extra-body`` the step refuses (exit 2, before any call)."""
 
 
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
 def _secret_like(key: str) -> bool:
-    k = key.strip().lower().replace("-", "_")
+    """``accessToken`` / ``api-secret`` / ``Authorization`` / ``key`` → True."""
+    k = _CAMEL.sub("_", key.strip()).lower().replace("-", "_")
     return k in _SECRET_KEYS or k.endswith(_SECRET_SUFFIXES)
 
 
-def _secret_paths(obj: Any, path: str = "") -> list[str]:
+def _secret_paths(obj: Any, path: str = "", *, schema_names: bool = False) -> list[str]:
+    """Paths of credential-like keys in ``obj``. ``schema_names``: ``obj`` is
+    a JSON-schema ``properties`` object, whose keys are field names (a
+    ``response_format`` schema may well name a field ``token``) — skipped, but
+    each value is still scanned."""
     out: list[str] = []
     if isinstance(obj, dict):
         for k, v in obj.items():
             here = f"{path}.{k}" if path else str(k)
-            if _secret_like(str(k)):
+            if not schema_names and _secret_like(str(k)):
                 out.append(here)
-            out += _secret_paths(v, here)
+            out += _secret_paths(v, here,
+                                 schema_names=(not schema_names and k == "properties"
+                                               and isinstance(v, dict)))
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
             out += _secret_paths(v, f"{path}[{i}]")
@@ -213,10 +225,11 @@ def merge_extra_body(extra: dict[str, Any] | None,
     an extra body that also sets it is refused unless the flag is ``unset``.
     ``None`` when nothing is to be sent."""
     out: dict[str, Any] = json.loads(json.dumps(extra)) if extra else {}
+    ctk = out.get("chat_template_kwargs")
+    if ctk is not None and not isinstance(ctk, dict):
+        # Whatever --llm-thinking says: a server reads it as an object.
+        raise ExtraBodyError("--llm-extra-body: chat_template_kwargs must be an object")
     if thinking is not None:
-        ctk = out.get("chat_template_kwargs")
-        if ctk is not None and not isinstance(ctk, dict):
-            raise ExtraBodyError("--llm-extra-body: chat_template_kwargs must be an object")
         if isinstance(ctk, dict) and "enable_thinking" in ctk:
             raise ExtraBodyError(
                 "--llm-extra-body sets chat_template_kwargs.enable_thinking, which "

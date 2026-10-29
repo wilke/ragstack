@@ -257,12 +257,26 @@ def parse_nothing_to_archive(text: str) -> dict[str, str]:
 DUPLICATE_RECEIPT_REMEDY = (
     "name each scatter task's receipt uniquely, e.g. "
     "`--out $(inputs.shard.nameroot).receipt.json` with the matching glob (#852)")
+#: The remedy for a repeated ``shard_id`` between DISTINCT receipt files: the
+#: bulk tools default ``--shard-id`` to the shard's basename, so two shards
+#: ``a/x.jsonl`` and ``b/x.jsonl`` collide although they are two receipts.
+SHARD_ID_REMEDY = (
+    "if these are distinct shards, give them distinct basenames or pass a unique "
+    "`--shard-id` per task (the default is the shard's basename); if they are one "
+    f"receipt staged several times, {DUPLICATE_RECEIPT_REMEDY}")
 
 
 class DuplicateReceiptError(ValueError):
     """Several receipts that are one receipt: paths resolving to one file, or
     two receipts naming the same ``shard_id`` (#852). Counting them would
-    report one task's documents N times and every other task's as missing."""
+    report one task's documents N times and every other task's as missing.
+    ``kind`` is ``"path"`` or ``"shard_id"``; ``duplicates`` the colliding
+    paths (as given) or ids, sorted."""
+
+    def __init__(self, message: str, *, kind: str, duplicates: list[str]) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.duplicates = duplicates
 
 
 def check_distinct_receipt_paths(paths: list[str] | list[Path], *, what: str = "receipts") -> None:
@@ -278,7 +292,8 @@ def check_distinct_receipt_paths(paths: list[str] | list[Path], *, what: str = "
             raise DuplicateReceiptError(
                 f"{what} staged onto one file: {seen[key]!r} and {str(p)!r} both "
                 f"resolve to {str(key)!r} ({len(paths)} path(s) given); "
-                f"{DUPLICATE_RECEIPT_REMEDY}")
+                f"{DUPLICATE_RECEIPT_REMEDY}",
+                kind="path", duplicates=sorted({seen[key], str(p)}))
         seen[key] = str(p)
 
 
@@ -288,7 +303,8 @@ def check_distinct_shard_ids(shard_ids: list[str]) -> None:
     if dups:
         raise DuplicateReceiptError(
             f"duplicate receipt shard_id(s) {dups} among {len(shard_ids)} receipt(s): "
-            f"the same receipt counted more than once; {DUPLICATE_RECEIPT_REMEDY}")
+            f"counting them would count one shard more than once; {SHARD_ID_REMEDY}",
+            kind="shard_id", duplicates=dups)
 
 
 def merge_summary(receipts: list[ShardReceipt]) -> dict:
