@@ -414,9 +414,10 @@ def test_rescore_records_the_files_in_the_results_and_the_provenance(setup: tupl
         for cond, t in by_cond.items():
             assert t["alternative"] == "two-sided", (a, cond)
             k, d = t["n_pages_nonzero"], t["gained"] + t["lost"]
-            assert t["min_attainable_p"] == {"sign_flip_exact": 1.0 if k == 0 else 2.0 ** (1 - k),
-                                             "mcnemar_two_sided": 1.0 if d == 0 else 2.0 ** (1 - d),
-                                             "n_pages_nonzero": k, "discordant": d}
+            m = t["min_attainable_p"]
+            assert (m["n_pages_nonzero"], m["discordant"]) == (k, d)
+            assert m["regime"] == ("exact" if t["p_exact"] is not None else "monte_carlo")
+            assert m["sign_flip"] <= t["p"] and m["mcnemar_two_sided"] <= t["p_mcnemar_two_sided"]
     assert res["contrasts"]["reworded-vs-rules"]["L"]["k1"]["min_attainable_p"]["mcnemar_two_sided"] == 1.0
 
 
@@ -492,14 +493,33 @@ def test_the_manipulation_check_hard_stops_before_retrieval(tmp_path: Path) -> N
     assert not (out / p4g.DEFAULT_RESULTS).exists()
 
 
-def test_results_inside_the_repository_are_refused(setup: tuple[Path, Path], tmp_path: Path) -> None:
+def test_results_inside_the_repository_are_refused(setup: tuple[Path, Path], tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, out = setup
-    inside = sat._REPO_PY.parent / "part4-glossary-should-not-exist.json"
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "python").mkdir(parents=True)
+    # "the repository" is sat._REPO_PY.parent: point it at a scratch tree, so a
+    # regression writes there and never into the real checkout
+    monkeypatch.setattr(sat, "_REPO_PY", fake_repo / "python")
+    inside = fake_repo / "part4-glossary-results.json"
     w = World()
-    try:
-        with pytest.raises(SystemExit, match="inside the repository"):
-            p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), [("r", rules_file(tmp_path / "r.jsonl"))],
-                        results=str(inside))
-        assert not inside.exists() and w.calls["load"] == 0
-    finally:
-        inside.unlink(missing_ok=True)  # a regression must not leave a file in the checkout
+    with pytest.raises(SystemExit, match="inside the repository"):
+        p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), [("r", rules_file(tmp_path / "r.jsonl"))],
+                    results=str(inside))
+    assert not inside.exists() and w.calls["load"] == 0
+
+
+@pytest.mark.parametrize("k", [10, 20, 21, 40])
+def test_the_sign_flip_floor_is_what_the_test_can_return(k: int) -> None:
+    """Every page gains: the most extreme outcome, so the test's own p IS the
+    attainable minimum, in the exact regime (k <= 20) and the Monte-Carlo one."""
+    import chunktrial_stats as cs
+
+    an = {"n_perm": 999, "n_boot": 50, "ci_level": 0.9, "delta": 0.05, "alpha": 0.05}
+    t = p4g.with_floor(p4.contrast_test([f"page{i}" for i in range(k)], [1] * k, [0] * k, "superiority", an, 7,
+                                        alternative=p4g.ALTERNATIVE))
+    real = cs.sign_flip_test([1.0] * k, n_flips=999, seed=7, alternative="two-sided")
+    m = t["min_attainable_p"]
+    assert m["regime"] == ("exact" if k <= cs.EXACT_MAX_PAGES else "monte_carlo")
+    assert m["sign_flip"] == pytest.approx(real["p"]) == pytest.approx(t["p"])
+    assert m["mcnemar_two_sided"] == pytest.approx(t["p_mcnemar_two_sided"]) == pytest.approx(2.0 ** (1 - k))

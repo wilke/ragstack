@@ -47,7 +47,8 @@ in the part-4 output directory is written.
 
 Multiplicity: ``design.n_tests`` = arms x budget conditions x non-reference
 conditions, every test two-sided and uncorrected (exploratory). Each contrast
-carries ``min_attainable_p`` (the exact sign-flip and McNemar floors).
+carries ``min_attainable_p``: the sign-flip floor in the regime its p was
+computed in (``exact`` or ``monte_carlo``) and the exact McNemar floor.
 
 Exit codes: 0 done; 1 the manipulation check or the same-chunks check failed;
 6 (``GLOSSARY_REFUSED_EXIT_CODE``) a glossary file was refused. Nothing is
@@ -173,21 +174,30 @@ POWER_NOTE = ("no power computation for this re-score. The part-4 power table (`
               "significant and a null says nothing.")
 
 
-def min_attainable_p(n_pages_nonzero: int, discordant: int) -> dict[str, Any]:
-    """The smallest p each two-sided test can return here: the exact sign-flip test
-    over k non-zero pages, ``2^(1-k)`` (the observed vector and its mirror), and the
-    exact McNemar test over D discordant questions, ``2^(1-D)``; 1 when k or D is 0."""
-    def floor(n: int) -> float:
+def min_attainable_p(n_pages_nonzero: int, discordant: int, *, exact: bool, n_flips: int) -> dict[str, Any]:
+    """The smallest p each two-sided test can return here.
+
+    * ``sign_flip``: the page sign-flip test's ``p`` as :func:`chunktrial_stats.sign_flip_test`
+      computes it. In the ``exact`` regime (k <= ``EXACT_MAX_PAGES`` non-zero pages,
+      enumerated) the floor is ``2^(1-k)`` (the observed vector and its mirror; 1 at
+      k = 0). In the ``monte_carlo`` regime p = (1 + #) / (1 + n_flips), so the floor
+      is ``1 / (1 + n_flips)`` whatever k is.
+    * ``mcnemar_two_sided``: the exact McNemar test over D discordant questions,
+      ``2^(1-D)``; 1 when D is 0."""
+    def floor2(n: int) -> float:
         return 1.0 if n <= 0 else min(1.0, 2.0 ** (1 - n))
 
-    return {"sign_flip_exact": floor(n_pages_nonzero), "mcnemar_two_sided": floor(discordant),
+    return {"sign_flip": floor2(n_pages_nonzero) if exact else 1.0 / (1 + n_flips),
+            "regime": "exact" if exact else "monte_carlo",
+            "mcnemar_two_sided": floor2(discordant),
             "n_pages_nonzero": n_pages_nonzero, "discordant": discordant}
 
 
 def with_floor(test: dict[str, Any]) -> dict[str, Any]:
     if "gained" in test:
-        test["min_attainable_p"] = min_attainable_p(int(test["n_pages_nonzero"]),
-                                                    int(test["gained"]) + int(test["lost"]))
+        test["min_attainable_p"] = min_attainable_p(
+            int(test["n_pages_nonzero"]), int(test["gained"]) + int(test["lost"]),
+            exact=test.get("p_exact") is not None, n_flips=int(test["n_flips"]))
     return test
 
 
