@@ -60,6 +60,9 @@ func TestSurfaceClassTable(t *testing.T) {
 		{"PROMPT_TEMPLATES_FILE", true, SurfacePath},
 		{"GOWE_IMAGE_DIRS", true, SurfaceImageDirs},
 		{"QDRANT_COLLECTION_ROUTES", false, SurfaceRoutes}, {"ES_COLLECTION_ROUTES", true, SurfaceRoutes},
+		{"SYMBOL_GLOSSARY_LLM_ENDPOINT", true, SurfaceURL},
+		{"SYMBOL_GLOSSARY_LLM_API_KEY_ENV", false, SurfaceEnvName},
+		{"SYMBOL_GLOSSARY_LLM_API_KEY_ENV", true, SurfaceEnvName},
 	}
 	for _, c := range cases {
 		got, _, ok := SurfaceClassOf(c.key, c.image)
@@ -226,6 +229,21 @@ func TestSurfaceURLHosts(t *testing.T) {
 		k, v, _ := strings.Cut(kv, "=")
 		if got := SurfaceURLHosts(k, v); !reflect.DeepEqual(got, want) {
 			t.Errorf("SurfaceURLHosts(%s) = %v, want %v", kv, got, want)
+		}
+	}
+}
+
+// #847 G2b review: SYMBOL_GLOSSARY_LLM_API_KEY_ENV names the worker variable
+// sent as the glossary model's bearer — an identifier, CLI-only.
+func TestValidateSurfaceEnvName(t *testing.T) {
+	for _, v := range []string{"OPENAI_API_KEY", "GLOSSARY_KEY", "_K", "k2"} {
+		if got, err := ValidateSurface("SYMBOL_GLOSSARY_LLM_API_KEY_ENV", v, SurfaceContext{}); err != nil || got != v {
+			t.Errorf("%q refused: %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "sk-123", "2KEY", "A B", "A=B", "$HOME", " K", "K\n"} {
+		if _, err := ValidateSurface("SYMBOL_GLOSSARY_LLM_API_KEY_ENV", v, SurfaceContext{}); err == nil {
+			t.Errorf("%q accepted", v)
 		}
 	}
 }

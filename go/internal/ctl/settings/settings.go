@@ -66,9 +66,16 @@ var publicDespitePattern = set(
 	"EMBEDDING_CHARS_PER_TOKEN",
 	"GOWE_RECEIPTS_OUTPUT_KEY",
 	"GOWE_SHARDS_INPUT_KEY",
-	// #847 G2b: the NAME of the worker-side variable holding the glossary
-	// model's key (default OPENAI_API_KEY) — an identifier sent as a workflow
-	// input, never the key itself.
+)
+
+// surfaceDespitePattern are executable-surface settings whose NAME trips
+// secretPattern but whose value is an identifier, never a credential.
+var surfaceDespitePattern = set(
+	// #847 G2b: the NAME of the worker-side variable the glossary step sends
+	// as its model's bearer (default OPENAI_API_KEY). Not the key — but it
+	// decides WHICH worker secret leaves for SYMBOL_GLOSSARY_LLM_ENDPOINT, so
+	// it is CLI-only, beside that endpoint (an HTTP caller must not be able to
+	// point it at another credential the worker holds).
 	"SYMBOL_GLOSSARY_LLM_API_KEY_ENV",
 )
 
@@ -109,7 +116,7 @@ var executableSurface = set(
 	// #847 G2b: the glossary step's model endpoint. The API sends it to every
 	// gowe ingest as a workflow input, so it decides where the WORKERS connect:
 	// LLM_ENDPOINT's class, CLI-only, held to CTL_ALLOWED_ENDPOINT_HOSTS.
-	"SYMBOL_GLOSSARY_LLM_ENDPOINT",
+	"SYMBOL_GLOSSARY_LLM_ENDPOINT", "SYMBOL_GLOSSARY_LLM_API_KEY_ENV",
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"PORT", "ROOT_PATH",
 )
@@ -286,7 +293,6 @@ var public = set(
 	"SYMBOL_GLOSSARY_CONFIG_JSON",
 	"SYMBOL_GLOSSARY_EXTRACTION",
 	// #847 G2b: the glossary step's model and limits (value rules in rules.go).
-	"SYMBOL_GLOSSARY_LLM_API_KEY_ENV",
 	"SYMBOL_GLOSSARY_LLM_INPUTS_JSON",
 	"SYMBOL_GLOSSARY_LLM_MODEL",
 	"TENANT_COLLECTIONS",
@@ -311,7 +317,7 @@ func Classify(key string) Class {
 	if secretExplicit[key] {
 		return Secret
 	}
-	if secretPattern.MatchString(key) && !publicDespitePattern[key] {
+	if secretPattern.MatchString(key) && !publicDespitePattern[key] && !surfaceDespitePattern[key] {
 		return Secret
 	}
 	if executableSurface[key] {
