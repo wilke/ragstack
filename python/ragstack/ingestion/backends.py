@@ -135,6 +135,41 @@ def make_ingest_backend(
 _RESERVED_STATIC_INPUTS = frozenset({"qdrant_url", "es_url"})
 
 
+def _refuse_unusable_glossary_config(
+    settings: Settings, cwl: str, static_inputs: dict[str, object]
+) -> None:
+    """#847 G2b, the #407 rule for the glossary step: refuse at boot what
+    would be inert or would fail every task. The ``glossary_llm*`` inputs are
+    seeded per run (``documents._gowe_inputs``) and a per-run input wins the
+    merge, so setting them in GOWE_WORKFLOW_INPUTS_JSON does nothing. With
+    ``SYMBOL_GLOSSARY_EXTRACTION=llm`` the endpoint/model/knob settings must be
+    able to drive the REGISTERED text: it must declare ``glossary_llm`` and
+    name a stamped image (else the mode is inert), and every knob key must be
+    a declared input of the right type (else the tool exits 2 on every task)."""
+    from ragstack.ingestion.glossary_inputs import (
+        ALL_GLOSSARY_INPUTS,
+        glossary_settings_problems,
+    )
+    from ragstack.tool_image import declared_workflow_inputs, names_stamped_image
+
+    reserved = sorted(k for k in ALL_GLOSSARY_INPUTS if k in static_inputs)
+    if reserved:
+        raise ValueError(
+            f"gowe_workflow_inputs_json may not set {', '.join(reserved)}: the glossary "
+            "step's inputs are seeded per run from SYMBOL_GLOSSARY_EXTRACTION and "
+            "SYMBOL_GLOSSARY_LLM_ENDPOINT / _MODEL / _API_KEY_ENV / _INPUTS_JSON and "
+            "would override these keys silently. Set those settings instead."
+        )
+    problems = glossary_settings_problems(settings, declared_workflow_inputs(cwl))
+    if (getattr(settings, "symbol_glossary_extraction", "") == "llm"
+            and not names_stamped_image(cwl)):
+        problems.append("the registered workflow names no stamped tools image, so its "
+                        "image may predate the glossary step (ADR-0010); llm would be inert")
+    if problems:
+        raise ValueError("SYMBOL_GLOSSARY_EXTRACTION=llm cannot drive the gowe workflow: "
+                         + "; ".join(problems))
+
+
 def _make_gowe_backend(
     settings: Settings, http: httpx.AsyncClient | None
 ) -> IngestBackend:
@@ -181,6 +216,8 @@ def _make_gowe_backend(
             "Remove them from GOWE_WORKFLOW_INPUTS_JSON and set those settings instead; "
             "the blob remains for genuine per-deployment extras."
         )
+
+    _refuse_unusable_glossary_config(settings, cwl, static_inputs)
 
     client = GoWeClient(
         base_url=settings.gowe_url, token=settings.gowe_token or None, http=http

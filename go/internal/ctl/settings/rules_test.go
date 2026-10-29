@@ -27,7 +27,7 @@ func TestValidatePublic(t *testing.T) {
 	ok := map[string][]string{
 		// Decimal forms Python's float() and pydantic also accept (#781 review).
 		"TEXT_SYMBOL_GLOSSARY_BOOST": {"0", "1", "1.5", "1_000", "+1", ".5", "5.", "1e3", "1E-2", "-0", "2.5e+1"},
-		"SYMBOL_GLOSSARY_EXTRACTION": {"off", "rules"},
+		"SYMBOL_GLOSSARY_EXTRACTION": {"off", "rules", "llm"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"", `{}`, `{"definition_window":200}`,
 			`{"attach_only_with_value":true,"rule_respectively":false}`},
 		"DUPLICATE_POLICY":               {"refuse", "allow", "off", "Refuse"},
@@ -51,7 +51,7 @@ func TestValidatePublic(t *testing.T) {
 			"1__0", "_1", "1_", ".", "e3", "1e",
 			// whitespace and control characters (ValidatePublic, for every ruled key)
 			" 2 ", "1 ", "1\n", "1\r"},
-		"SYMBOL_GLOSSARY_EXTRACTION": {"on", "llm", "RULES", "", " rules", "rules\n"},
+		"SYMBOL_GLOSSARY_EXTRACTION": {"on", "LLM", "RULES", "", " rules", "rules\n"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"{", "null", `"x"`, "[]", `{"definiton_window":200}`, " {}",
 			"{}\n"},
 		"DUPLICATE_POLICY":               {"skip", "", " refuse", "allow\n"},

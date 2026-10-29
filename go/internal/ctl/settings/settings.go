@@ -66,6 +66,10 @@ var publicDespitePattern = set(
 	"EMBEDDING_CHARS_PER_TOKEN",
 	"GOWE_RECEIPTS_OUTPUT_KEY",
 	"GOWE_SHARDS_INPUT_KEY",
+	// #847 G2b: the NAME of the worker-side variable holding the glossary
+	// model's key (default OPENAI_API_KEY) — an identifier sent as a workflow
+	// input, never the key itself.
+	"SYMBOL_GLOSSARY_LLM_API_KEY_ENV",
 )
 
 // executableSurface keys decide what runs or where the process connects.
@@ -102,6 +106,10 @@ var executableSurface = set(
 	"QDRANT_URL", "ELASTICSEARCH_URL", "NEO4J_URI", "REDIS_URL",
 	"EMBEDDING_ENDPOINTS", "EMBEDDING_SIDECAR_URL", "CROSSENCODER_SIDECAR_URL",
 	"LLM_ENDPOINT", "GOWE_URL", "WORKSPACE_URL", "MODEL_URL_ALLOWLIST",
+	// #847 G2b: the glossary step's model endpoint. The API sends it to every
+	// gowe ingest as a workflow input, so it decides where the WORKERS connect:
+	// LLM_ENDPOINT's class, CLI-only, held to CTL_ALLOWED_ENDPOINT_HOSTS.
+	"SYMBOL_GLOSSARY_LLM_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"PORT", "ROOT_PATH",
 )
@@ -277,6 +285,10 @@ var public = set(
 	// The per-document symbol glossary (#754/#763; value rules in rules.go).
 	"SYMBOL_GLOSSARY_CONFIG_JSON",
 	"SYMBOL_GLOSSARY_EXTRACTION",
+	// #847 G2b: the glossary step's model and limits (value rules in rules.go).
+	"SYMBOL_GLOSSARY_LLM_API_KEY_ENV",
+	"SYMBOL_GLOSSARY_LLM_INPUTS_JSON",
+	"SYMBOL_GLOSSARY_LLM_MODEL",
 	"TENANT_COLLECTIONS",
 	"TENANT_MAX_CONCURRENCY",
 	"TEXT_BACKEND",

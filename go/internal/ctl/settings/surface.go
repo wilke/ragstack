@@ -112,16 +112,17 @@ var (
 
 // surfaceURLKeys maps each single-URL key to the schemes it accepts.
 var surfaceURLKeys = map[string][]string{
-	"LLM_ENDPOINT":                httpSchemes,
-	"GOWE_URL":                    httpSchemes,
-	"WORKSPACE_URL":               httpSchemes,
-	"QDRANT_URL":                  httpSchemes,
-	"ELASTICSEARCH_URL":           httpSchemes,
-	"NEO4J_URI":                   neo4jSchemes,
-	"REDIS_URL":                   redisSchemes,
-	"EMBEDDING_SIDECAR_URL":       httpSchemes,
-	"CROSSENCODER_SIDECAR_URL":    httpSchemes,
-	"OTEL_EXPORTER_OTLP_ENDPOINT": httpSchemes,
+	"LLM_ENDPOINT":                 httpSchemes,
+	"SYMBOL_GLOSSARY_LLM_ENDPOINT": httpSchemes,
+	"GOWE_URL":                     httpSchemes,
+	"WORKSPACE_URL":                httpSchemes,
+	"QDRANT_URL":                   httpSchemes,
+	"ELASTICSEARCH_URL":            httpSchemes,
+	"NEO4J_URI":                    neo4jSchemes,
+	"REDIS_URL":                    redisSchemes,
+	"EMBEDDING_SIDECAR_URL":        httpSchemes,
+	"CROSSENCODER_SIDECAR_URL":     httpSchemes,
+	"OTEL_EXPORTER_OTLP_ENDPOINT":  httpSchemes,
 }
 
 var surfaceURLListKeys = map[string]bool{"EMBEDDING_ENDPOINTS": true, "MODEL_URL_ALLOWLIST": true}

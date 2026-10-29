@@ -1387,10 +1387,18 @@ def _build_glossary_attacher() -> SymbolGlossaryAttacher | None:
     ``rules`` is the default since #783. ``rules`` prefers an offline LLM glossary from
     ``SYMBOL_GLOSSARY_CACHE_PATH`` when it holds one for the document's exact
     text. A bad mode is logged and treated as off: a typo in an env var must not
-    take the API down."""
+    take the API down.
+
+    ``llm`` (#847 G2b) reads as ``rules`` here: the model step exists only as
+    a workflow step (INGEST_BACKEND=gowe), and the in-process ingest renders
+    the rules half, as the workflow does for a degraded document. Before G2b
+    ``attacher_from_mode`` raised on it and the glossary was OFF. The one
+    WARNING is :func:`_log_glossary_config`'s (this runs per collection)."""
+    from ragstack.ingestion.glossary_inputs import in_process_glossary_mode
+
     try:
         attacher = attacher_from_mode(
-            settings.symbol_glossary_extraction,
+            in_process_glossary_mode(settings.symbol_glossary_extraction),
             settings.symbol_glossary_config_json,
             settings.symbol_glossary_cache_path,
         )
@@ -1412,8 +1420,28 @@ def _log_glossary_config() -> None:
     restart looked the same in its log as one where it had. This line is
     printed every boot, on or off. An unknown mode is shown as the ``off`` it
     becomes. It names settings, never values from secrets.env."""
+    from ragstack.ingestion.backends import ingest_backend_name
+    from ragstack.ingestion.glossary_step import endpoint_name
+
     mode = settings.symbol_glossary_extraction
-    extraction = mode if mode in ("off", "rules") else f"off (unknown mode {mode!r})"
+    extraction = mode if mode in ("off", "rules", "llm") else f"off (unknown mode {mode!r})"
+    if mode == "llm":
+        # #847 G2b. Names the endpoint as host:port and the key by its
+        # variable NAME — never a value.
+        knobs = (settings.symbol_glossary_llm_inputs_json or "").strip()
+        log.info(
+            "symbol glossary llm step: endpoint=%s model=%s api_key_env=%s knobs=%s",
+            endpoint_name(settings.symbol_glossary_llm_endpoint)
+            if settings.symbol_glossary_llm_endpoint else "unset",
+            settings.symbol_glossary_llm_model or "unset",
+            settings.symbol_glossary_llm_api_key_env,
+            "SYMBOL_GLOSSARY_LLM_INPUTS_JSON" if knobs not in ("", "{}") else "defaults",
+        )
+        if ingest_backend_name(settings) != "gowe":
+            log.warning(
+                "SYMBOL_GLOSSARY_EXTRACTION=llm on INGEST_BACKEND=%s: the model step exists "
+                "only as a workflow step (INGEST_BACKEND=gowe); this API's in-process "
+                "ingest uses the rules glossary", ingest_backend_name(settings))
     log.info(
         "symbol glossary config: extraction=%s boost=%g llm_cache=%s config_json=%s rerank=%s",
         extraction,

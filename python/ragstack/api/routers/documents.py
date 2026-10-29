@@ -70,6 +70,8 @@ from ragstack.ingestion.chunker_config import (
     shard_refusal,
 )
 from ragstack.ingestion.enrich import resolve_profile
+from ragstack.ingestion.glossary_file import GLOSSARY_FILE_MISMATCH, is_glossary_refusal
+from ragstack.ingestion.glossary_inputs import glossary_inputs, in_process_glossary_mode
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
     GoWeBackend,
@@ -818,10 +820,16 @@ async def _reserve_version(entry: CollectionEntry, collection_store: CollectionS
 
 def gowe_symbol_glossary(mode: str) -> str:
     """The ``symbol_glossary`` workflow input for ``SYMBOL_GLOSSARY_EXTRACTION``
-    (#783): ``rules`` only for exactly ``rules``, else ``off`` — the in-process
-    reading (``attacher_from_mode`` accepts exactly ``off``/``rules`` and
-    ``deps`` degrades anything else to off)."""
-    return "rules" if mode == "rules" else "off"
+    (#783): ``rules`` for ``rules`` and for ``llm``, else ``off`` — the
+    in-process reading (``in_process_glossary_mode`` maps ``llm`` to
+    ``rules``; ``attacher_from_mode`` accepts exactly ``off``/``rules`` and
+    ``deps`` degrades anything else to off).
+
+    ``llm`` MUST be ``rules`` here (#847 G2b): ``ingest_shard`` ignores
+    ``--glossary-file`` under ``--symbol-glossary off``, so sending ``off``
+    would compute the model's glossary and discard it. The model half itself
+    is switched by the separate ``glossary_llm`` input."""
+    return "rules" if in_process_glossary_mode(mode) == "rules" else "off"
 
 
 def gowe_structure_metadata(mode: str) -> str:
@@ -842,6 +850,8 @@ def _gowe_inputs(
     duplicate_policy: str = POLICY_OFF,
     declared_inputs: set[str] | None = None,
     stamped_image: bool = False,
+    n_items: int = 1,
+    batch_size: int = 20,
 ) -> dict[str, Any]:
     """Per-job workflow inputs (cwl/pdf-ingest-scatter.cwl): the archive's
     identity (``version``/``collection_id``/``spec_hash``/``job_id``) and the
@@ -928,7 +938,16 @@ def _gowe_inputs(
     the flag yet, and an unstamped tree names ``ragstack-worker.sif``, which
     may be any build; there the input stays null (the CWL declares it
     optional, so the tool's default ``off`` applies) and the receipt's missing
-    ``enrichment.structure`` is the tell."""
+    ``enrichment.structure`` is the tell.
+
+    ``glossary_llm`` (#847 G2b): the glossary step's model switch, sent for
+    both values when the registered text declares it AND names a stamped
+    image (the ``structure_metadata`` gate). ``on`` exactly when
+    ``SYMBOL_GLOSSARY_EXTRACTION=llm``, with the endpoint, the model, the key's
+    NAME and the limits (:func:`~ragstack.ingestion.glossary_inputs.glossary_inputs`;
+    the boot check refused anything they could not drive). The concurrency is
+    split over the run's ``ceil(n_items / batch_size)`` tasks. An undeclaring
+    text gets exactly the inputs it got before."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -972,6 +991,13 @@ def _gowe_inputs(
                 "workflow names no stamped tools image, so its image may predate "
                 "--structure-metadata (ADR-0010); chunks are ingested unstamped"
             )
+    declared = declared_inputs or set()
+    if "glossary_llm" in declared and stamped_image:
+        mode = settings.symbol_glossary_extraction
+        inputs["glossary_llm"] = "on" if mode == "llm" else "off"
+        if mode == "llm":
+            n_batches = max(1, -(-max(1, n_items) // max(1, batch_size)))
+            inputs.update(glossary_inputs(settings, declared, n_batches=n_batches))
     if settings.doi_enrichment_enabled:
         inputs["doi_enrichment"] = True
         if settings.doi_enrichment_mailto:
@@ -979,6 +1005,29 @@ def _gowe_inputs(
         if settings.doi_enrichment_cache_dir:
             inputs["doi_cache_dir"] = settings.doi_enrichment_cache_dir
     return inputs
+
+
+def _degraded_text(glossary: dict[str, Any]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in (glossary.get("degraded_reasons") or {}).items()) \
+        or "no reason recorded"
+
+
+def _glossary_endpoint_name() -> str:
+    from ragstack.ingestion.glossary_step import endpoint_name
+
+    url = settings.symbol_glossary_llm_endpoint
+    return endpoint_name(url) if url else "unset"
+
+
+def _batch_size(backend: GoWeBackend) -> int:
+    """The scatter workflow's ``batch_size`` as this deployment submits it
+    (GOWE_WORKFLOW_INPUTS_JSON, else the workflow default 20) — what the
+    glossary concurrency split divides by."""
+    try:
+        size = int((backend.static_inputs or {}).get("batch_size") or 20)
+    except (TypeError, ValueError):
+        size = 20
+    return size if size > 0 else 20
 
 
 def _gowe_backend(http_request: Request) -> GoWeBackend:
@@ -1075,6 +1124,21 @@ async def _run_gowe_ingest(
             # The worker refused the shard(s) at the chunk cap (#291): the
             # receipts carry the numbers per item; the job carries the label.
             fields["error"] = CHUNK_CAP_EXCEEDED
+        elif final == FAILED and any(is_glossary_refusal(r.error) for r in run.results):
+            # #847 G2b: ingest_shard refused a batch whose glossary file does
+            # not match it (exit 6) — a wiring bug, never data; the items carry
+            # the detail, the job the label.
+            fields["error"] = GLOSSARY_FILE_MISMATCH
+        if run.glossary and run.glossary.get("degraded"):
+            # The model half degraded for some documents: they carry the rules
+            # glossary and the run completed. Said once per job, naming the
+            # endpoint (host:port, never a credential) and the reasons.
+            log.warning(
+                "ingest job %s: symbol glossary DEGRADED to the rules glossary for %d of "
+                "%d document(s) (%s) — glossary endpoint %s",
+                job_id, run.glossary["degraded"],
+                run.glossary.get("counts", {}).get("documents", 0),
+                _degraded_text(run.glossary), _glossary_endpoint_name())
         if run.archive_ref:
             fields["archive_ref"] = run.archive_ref
         if len(run.results) == 1 and run.results[0].status == COMPLETED:
@@ -1319,7 +1383,8 @@ async def ingest(
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
                              duplicate_policy=policy,
                              declared_inputs=declared_workflow_inputs(backend.workflow_cwl),
-                             stamped_image=names_stamped_image(backend.workflow_cwl)),
+                             stamped_image=names_stamped_image(backend.workflow_cwl),
+                             n_items=1, batch_size=_batch_size(backend)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,
@@ -1788,7 +1853,8 @@ async def ingest_upload(
                 _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap,
                              duplicate_policy=policy,
                              declared_inputs=declared_workflow_inputs(backend.workflow_cwl),
-                             stamped_image=names_stamped_image(backend.workflow_cwl)),
+                             stamped_image=names_stamped_image(backend.workflow_cwl),
+                             n_items=len(items), batch_size=_batch_size(backend)),
                 token,
                 f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
                 entry,

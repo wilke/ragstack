@@ -670,7 +670,7 @@ func TestPlanEnvSetSymbolGlossaryKeys(t *testing.T) {
 		{"TEXT_SYMBOL_GLOSSARY_BOOST", "0x1p4", "not a number"},
 		{"TEXT_SYMBOL_GLOSSARY_BOOST", "1\n", "whitespace"},
 		{"DOI_ENRICHMENT_PUBMED_IDS", " true ", "whitespace"},
-		{"SYMBOL_GLOSSARY_EXTRACTION", "llm", "off|rules"},
+		{"SYMBOL_GLOSSARY_EXTRACTION", "LLM", "off|rules|llm"},
 		{"SYMBOL_GLOSSARY_EXTRACTION", "Rules", "off|rules"},
 		{"SYMBOL_GLOSSARY_EXTRACTION", "", "off|rules"},
 		{"SYMBOL_GLOSSARY_CONFIG_JSON", "{not json", "JSON object"},
@@ -686,6 +686,13 @@ func TestPlanEnvSetSymbolGlossaryKeys(t *testing.T) {
 	err := planErr(t, oc, "env-set", map[string]any{"key": "SYMBOL_GLOSSARY_CACHE_PATH", "value": "/x"})
 	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "executable-surface") {
 		t.Errorf("env-set SYMBOL_GLOSSARY_CACHE_PATH = %v, want the executable-surface refusal", err)
+	}
+	// #847 G2b: the glossary model endpoint decides where the WORKERS connect —
+	// LLM_ENDPOINT's class, CLI-only.
+	err = planErr(t, oc, "env-set", map[string]any{"key": "SYMBOL_GLOSSARY_LLM_ENDPOINT",
+		"value": "http://model.invalid:8000"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "executable-surface") {
+		t.Errorf("env-set SYMBOL_GLOSSARY_LLM_ENDPOINT = %v, want the executable-surface refusal", err)
 	}
 }
 

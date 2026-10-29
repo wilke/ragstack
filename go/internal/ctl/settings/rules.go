@@ -146,9 +146,11 @@ var publicRules = map[string]PublicRule{
 	},
 	// #754/#763: the per-document symbol glossary.
 	"SYMBOL_GLOSSARY_EXTRACTION": {
-		Check: oneOf("off", "rules"),
+		Check: oneOf("off", "rules", "llm"),
 		Scope: ScopeNewIngests,
-		Help: "off|rules (default rules, #783). Applies to documents ingested after " +
+		Help: "off|rules|llm (default rules, #783). llm (#847 G2b): a gowe tenant's workflow " +
+			"glossary step also asks SYMBOL_GLOSSARY_LLM_ENDPOINT/_MODEL (both required, or the API " +
+			"refuses to boot); in-process it reads as rules. Applies to documents ingested after " +
 			"`tenant restart <t> --only api`, on both ingest paths: in-process, and a gowe tenant's worker " +
 			"ingest, which receives it as the `symbol_glossary` workflow input when the registered " +
 			"pdf-ingest-scatter workflow declares it. Chunks already indexed are unchanged until they are " +
