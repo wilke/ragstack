@@ -128,3 +128,10 @@ name before this change.
 
 The owner approved the proposal above as amended after the Fable review of PR #827, with no changes. No
 grade from the new graders existed at that point. From now on it is the rule. Changing it is a deviation.
+
+## Decision, 2026-10-29T17:54:39Z: when the part-4 grader set closes (owner: "at least two more graders"); logged after FNKM's file, before any other new grade
+- **Known at this point:** FNKM returned both questionnaires on 2026-10-29. FNKM's per-grader part-4 result is known to the analyst and the owner: P_A 22/40, κ_B 0.47, κ vs Opus 0.61 on 16 items, per-grader verdict "not validated" (descriptive under the approved rule). No grade from any other new grader exists.
+- **Grader set:** FNKM plus the next TWO graders whose complete part-4 grades file (100/100) is received. All grade every item with the same page and instructions and do not confer, as approved 2026-10-27.
+- **When the verdict is computed:** exactly once, when the second additional complete file arrives, over those three graders, under the approved majority rule (strict majority on correct-vs-not, ties excluded and counted, not evaluable above 20% exclusions). Files arriving later are reported descriptively and do not change the verdict.
+- **If fewer than two arrive:** the owner sets a closing date, and it is logged here before any newly arrived file is opened. Until the verdict is computed, #827 stays PROVISIONAL and the record states FNKM's per-grader result as descriptive only.
+- **Addendum Q:** the same set (owner, FNKM, plus the next two complete labellers). The majority on answer-vs-not is recomputed once at the same time.

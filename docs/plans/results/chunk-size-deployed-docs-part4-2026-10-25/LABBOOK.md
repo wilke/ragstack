@@ -9,6 +9,19 @@ history, the decisions and what happens next.
 All times are UTC. "The owner" is the project owner. "The gateway owner" is the session that operates the
 LLM gateway.
 
+## Status, 2026-10-29
+
+This supersedes the status of 2026-10-27, which is kept below.
+
+| | |
+|---|---|
+| Part 4, confirmatory, model-graded | **complete.** H2, H3 and H4 confirmed; H1 not confirmed. Unchanged. |
+| Addendum Q, exploratory | **complete.** It now has a second labeller (FNKM), descriptive. |
+| Human grader validation (prereg §5) | **waiting for two more graders.** FNKM's per-grader result is descriptive only. |
+| Grader set | **fixed** on 2026-10-29T17:54:39Z: FNKM plus the next two complete files. See [DEVIATIONS.md](DEVIATIONS.md). |
+| Public record | provisional. #827 stays PROVISIONAL. |
+| Rebuild recommendation | **provisional:** cap at 512 tokens, unchanged |
+
 ## Status, 2026-10-27
 
 | | |
@@ -87,6 +100,40 @@ LLM gateway.
 - The owner is recruiting 2–3 more graders for both questionnaires, and asked for a provisional write-up
   now, with the human checks marked pending. This folder is that write-up.
 
+### 2026-10-29: the first additional grader (FNKM); the grader set is fixed
+
+- **FNKM returned both questionnaires** on 2026-10-29: the 100-item part-4 page and the 40-pair
+  addendum-Q page.
+- **FNKM's part-4 result.** This is one grader, so it is **descriptive** under the approved rule. Only the
+  majority verdict decides.
+  - P_A = 22/40 = 0.55 [0.385, 0.707];
+  - κ_B = 0.467 [0.233, 0.680];
+  - κ against Opus 4.8 = 0.613 [0.14, 1.0], on 16 items;
+  - per-grader verdict: **"not validated"**.
+- **Addendum Q: the second labeller.** All descriptive and exploratory:
+  - FNKM against Sol, answer vs not: κ 1.0;
+  - FNKM against Opus 5.5: κ 0.91;
+  - the owner against FNKM: κ 0.66 [0.35, 0.92]. They disagree on 5 of 40;
+  - the non-answer rate: the owner 30% [17, 47] and FNKM 17.5% [7, 33], both on the 40 pairs; the
+    majority 20% [8, 37] on n = 35, because the 5 disagreements have no majority.
+- **The owner-only wording is now contested.** In the 2026-10-27 entry, and in *Open questions*, the
+  record says the classifiers "turned out lenient" and that the defect depresses accuracy "about twice"
+  the classifiers' rate. Both rest on the owner's labels alone. The second labeller does not support them:
+  - FNKM agrees with Sol perfectly and with Opus 5.5 at κ 0.91;
+  - FNKM's non-answer rate, 17.5%, is close to the classifiers' 14%, not twice it.
+
+  Both statements are therefore **contested** until the remaining labellers are in. RESULTS.md is not
+  edited here. Any correction to it will come as a dated change once the verdict is computed.
+- **The grader set is fixed.** At 2026-10-29T17:54:39Z, after FNKM's file and before any other new
+  grade, the owner fixed it: "at least two more graders". The set is FNKM plus the next two graders whose
+  complete files arrive. The verdict is computed once, over those three. See
+  [DEVIATIONS.md](DEVIATIONS.md). **The verdict waits for two more graders. #827 stays PROVISIONAL.**
+- **Analysis provenance.**
+  - The analysis ran at commit db97c28: a clean tree, citable, with the import and analysis scripts
+    unchanged.
+  - The private outputs stay on the host, under the study's private human-grading directory
+    (`analysis-261029/`). Their receipt has sha256 prefix `38e63e1a`.
+
 ## Decision ledger
 
 | when | decision | by | why |
@@ -101,6 +148,7 @@ LLM gateway.
 | 10-27 | write the record now, provisional; 2–3 more graders handle both questionnaires | owner | |
 | 10-27 | how several graders combine (per grader, plus a majority verdict) | proposed | must be fixed before any grade exists |
 | 10-27 | the multi-grader rule, as tightened by the Fable review of #827, approved | owner ("approve grader rule") | no grade from the new graders existed |
+| 10-29 | the grader set: FNKM plus the next two complete files; the verdict is computed once, over those three | owner ("at least two more graders") | logged after FNKM's file, before any other new grade |
 
 ## What happens next
 
@@ -123,6 +171,8 @@ LLM gateway.
 
 - How much does the reference-quote defect depress absolute accuracy? The owner's labels suggest about
   twice the classifiers' rate. The graders' labels will narrow that.
+  - *2026-10-29: "about twice" is now **contested**. The second labeller's non-answer rate is 17.5%, against
+    the owner's 30% and the classifiers' 14%. See the 2026-10-29 entry.*
 - Is the B2048 result, where large chunks lose by 7–13 points, a property of this collection's very
   large live chunks, or general? This is a question for the cross-corpus study.
 - Does H1 (512 over 128) depend on the budget? It is not confirmed at B4096. It is strong at k10, but
