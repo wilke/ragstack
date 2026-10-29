@@ -82,6 +82,13 @@ class IngestJob(BaseModel):
     # — a multi-hour extraction must not freeze the owner's uploads. Not on
     # IngestResponse.
     kind: str = ""
+    # Caller-safe notes on a run that SUCCEEDED with a caveat (#847 G2b): e.g.
+    # "symbol_glossary_degraded: timeout=2 (endpoint host:port)" when the
+    # glossary step's model half degraded for some documents. Labels and counts
+    # only, like ``error`` — never a raw message. On IngestResponse and JobSummary
+    # (contracts/schemas/ingest_response.json, jobs_response.json). [] on rows
+    # written before the column existed.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class JobItem(BaseModel):
@@ -137,7 +144,8 @@ _JOBS_DDL = (
     "  archive_ref TEXT NOT NULL DEFAULT '',"
     "  updated_at TEXT NOT NULL DEFAULT '',"
     "  collection_id TEXT NOT NULL DEFAULT '',"
-    "  kind TEXT NOT NULL DEFAULT ''"
+    "  kind TEXT NOT NULL DEFAULT '',"
+    "  warnings TEXT NOT NULL DEFAULT '[]'"
     ")"
 )
 # Column -> DDL fragment, applied via ensure_columns_* (collection_store.py) so
@@ -150,6 +158,7 @@ _JOBS_COLUMNS: dict[str, str] = {
     "updated_at": "TEXT NOT NULL DEFAULT ''",  # #202: last write (staleness for count_active)
     "collection_id": "TEXT NOT NULL DEFAULT ''",  # #359: eviction's in-flight check
     "kind": "TEXT NOT NULL DEFAULT ''",  # #350: "" ingest | "graph" extraction
+    "warnings": "TEXT NOT NULL DEFAULT '[]'",  # #847: JSON list of caller-safe notes
 }
 # count_active's lookup (#202) is (tenant_id, status) — indexed so the per-upload
 # admission check stays a point lookup as the jobs table grows. Both dialects
@@ -175,6 +184,7 @@ _JOB_ITEMS_DDL = (
 # updatable set and the chunk_ids serialization convention live in one place.
 _JOB_UPDATE_COLUMNS = (
     "status", "source", "chunk_ids", "error", "archive_ref", "updated_at", "collection_id",
+    "warnings",
 )
 
 
@@ -188,8 +198,9 @@ def _prepare_job_update(fields: dict[str, object]) -> dict[str, object]:
     The dialect-independent half of update(); each SQL store renders its own
     placeholders from the returned dict's keys."""
     sets = {k: v for k, v in fields.items() if k in _JOB_UPDATE_COLUMNS}
-    if "chunk_ids" in sets:
-        sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
+    for key in ("chunk_ids", "warnings"):
+        if key in sets:
+            sets[key] = json.dumps(sets[key])
     if sets:
         # Every write bumps the stamp unless the caller sets it explicitly
         # (tests back-date jobs that way).
@@ -501,7 +512,7 @@ class SqliteJobStore:
     @staticmethod
     def _row_to_job(row: tuple) -> IngestJob:
         (job_id, status, source, chunk_ids, error, tenant_id, archive_ref, updated_at,
-         collection_id, kind) = row
+         collection_id, kind, warnings) = row
         return IngestJob(
             job_id=job_id,
             status=status,
@@ -513,6 +524,7 @@ class SqliteJobStore:
             updated_at=updated_at,
             collection_id=collection_id,
             kind=kind or "",
+            warnings=json.loads(warnings or "[]"),
         )
 
     def _create_sync(
@@ -537,7 +549,7 @@ class SqliteJobStore:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at, collection_id, kind"
+                " updated_at, collection_id, kind, warnings"
                 " FROM jobs WHERE job_id = ?",
                 (job_id,),
             )
@@ -571,7 +583,7 @@ class SqliteJobStore:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at, collection_id, kind"
+                " updated_at, collection_id, kind, warnings"
                 " FROM jobs ORDER BY rowid DESC LIMIT ?",
                 (limit,),
             )
@@ -784,7 +796,7 @@ class PostgresJobStore:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at, collection_id, kind"
+                " updated_at, collection_id, kind, warnings"
                 " FROM jobs WHERE job_id = $1",
                 job_id,
             )
@@ -802,6 +814,7 @@ class PostgresJobStore:
                 updated_at=row["updated_at"],
                 collection_id=row["collection_id"],
                 kind=row["kind"] or "",
+                warnings=json.loads(row["warnings"] or "[]"),
             )
         )
         return _apply_tenant_scope(job, tenant_id, is_admin)
@@ -816,7 +829,7 @@ class PostgresJobStore:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at, collection_id, kind"
+                " updated_at, collection_id, kind, warnings"
                 " FROM jobs ORDER BY ctid DESC LIMIT $1",
                 limit,
             )
@@ -832,6 +845,7 @@ class PostgresJobStore:
                 updated_at=r["updated_at"],
                 collection_id=r["collection_id"],
                 kind=r["kind"] or "",
+                warnings=json.loads(r["warnings"] or "[]"),
             )
             for r in rows
         ]

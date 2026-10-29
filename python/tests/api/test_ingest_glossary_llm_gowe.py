@@ -363,6 +363,25 @@ async def test_degraded_counts_become_a_job_warning(
     assert "2 of 2 document(s)" in lines[0]
     assert "endpoint_unavailable=1, timeout=1" in lines[0]
     assert "glossary-model.invalid:8004" in lines[0]
+    # #847: the same note on the job, on the poll and on /v1/jobs (caller-safe:
+    # counts, reason labels, host:port).
+    note = ("symbol_glossary_degraded: 2 of 2 document(s) (endpoint_unavailable=1, "
+            "timeout=1) endpoint glossary-model.invalid:8004")
+    assert body["warnings"] == [note]
+    job = await app.state.job_store.get(r.json()["job_id"])
+    assert job.warnings == [note]
+    from ragstack.api.routers.jobs import list_jobs
+
+    listed = {j.job_id: j for j in (await list_jobs(limit=25,
+                                                    job_store=app.state.job_store)).jobs}
+    assert listed[r.json()["job_id"]].model_dump()["warnings"] == [note]
+
+
+async def test_a_clean_run_has_no_warnings(client, gowe, llm) -> None:  # noqa: F811
+    _glossary_receipts(gowe["engine"], [{}])
+    r = await _upload(client, "a.pdf")
+    body = await _poll(client, r.json()["job_id"], AUTH)
+    assert body["status"] == "completed" and body["warnings"] == []
 
 
 async def test_glossary_summary_of_sums_the_receipts() -> None:

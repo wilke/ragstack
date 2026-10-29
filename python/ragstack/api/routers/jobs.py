@@ -31,6 +31,8 @@ class JobSummary(BaseModel):
     error: str
     chunks: int  # chunk_ids stamped on the job record (single-doc runs)
     items: JobItemCounts  # per-item counts (resumable manifest runs; zeros otherwise)
+    # Caller-safe notes on a run that completed with a caveat (#847 G2b).
+    warnings: list[str] = []
 
 
 class JobsResponse(BaseModel):
@@ -58,5 +60,6 @@ async def list_jobs(
                 completed=counts.get(COMPLETED, 0),
                 failed=counts.get(FAILED, 0),
             ),
+            warnings=list(j.warnings),
         ))
     return JobsResponse(jobs=out)

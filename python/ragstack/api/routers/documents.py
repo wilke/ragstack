@@ -1007,6 +1007,19 @@ def _gowe_inputs(
     return inputs
 
 
+#: The job warning label for a run whose glossary model half degraded (#847).
+SYMBOL_GLOSSARY_DEGRADED = "symbol_glossary_degraded"
+
+
+def glossary_degraded_warning(glossary: dict[str, Any], endpoint: str) -> str:
+    """``symbol_glossary_degraded: <n> of <m> document(s) (<reason>=<k>, ...)
+    endpoint <host:port>`` — counts, reason labels and host:port only: the
+    reasons are the step's constant labels, never a message."""
+    return (f"{SYMBOL_GLOSSARY_DEGRADED}: {glossary.get('degraded', 0)} of "
+            f"{(glossary.get('counts') or {}).get('documents', 0)} document(s) "
+            f"({_degraded_text(glossary)}) endpoint {endpoint}")
+
+
 def _degraded_text(glossary: dict[str, Any]) -> str:
     return ", ".join(f"{k}={v}" for k, v in (glossary.get("degraded_reasons") or {}).items()) \
         or "no reason recorded"
@@ -1139,6 +1152,8 @@ async def _run_gowe_ingest(
                 job_id, run.glossary["degraded"],
                 run.glossary.get("counts", {}).get("documents", 0),
                 _degraded_text(run.glossary), _glossary_endpoint_name())
+            fields["warnings"] = [glossary_degraded_warning(run.glossary,
+                                                            _glossary_endpoint_name())]
         if run.archive_ref:
             fields["archive_ref"] = run.archive_ref
         if len(run.results) == 1 and run.results[0].status == COMPLETED:
@@ -1300,6 +1315,11 @@ class IngestResponse(BaseModel):
     #: the explicit path it is the id the caller sent. Optional in the schema, so
     #: the Go stub need not emit it.
     collection: str | None = None
+    #: Caller-safe notes on a run that completed with a caveat (#847 G2b), e.g.
+    #: ``symbol_glossary_degraded: timeout=2 (endpoint host:port)``. Always
+    #: present here (``[]`` when none); optional in the schema, so the Go stub
+    #: need not emit it.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DocumentInfo(BaseModel):
@@ -1988,6 +2008,7 @@ async def ingest_status(
         # The row's own stamp, so a poll answers "where did this land?" with the
         # same id the 202 did. Legacy rows carry "" — report null, not "".
         collection=job.collection_id or None,
+        warnings=job.warnings,
     )
 
 

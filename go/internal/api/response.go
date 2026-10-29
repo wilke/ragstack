@@ -86,6 +86,10 @@ type IngestResponse struct {
 	ChunkIDs   []string          `json:"chunk_ids"`
 	Items      *IngestItemCounts `json:"items"`
 	Collection *string           `json:"collection"`
+	// Warnings are caller-safe notes on a job that completed with a caveat
+	// (#847: the glossary step degraded some documents to the rules glossary).
+	// Optional in the contract; the Go stub records none, so it is omitted.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // IngestItemCounts is per-document progress for a batch/directory ingest.

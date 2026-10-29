@@ -30,6 +30,12 @@
       },
       "additionalProperties": false
     },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Caller-safe notes on a job that completed with a caveat (#847): e.g. `symbol_glossary_degraded: 2 of 40 document(s) (timeout=2) endpoint host:port` when the glossary step's model half degraded for some documents (they carry the rules glossary). Labels, counts and host:port only, never a raw message or a credential. Optional: an implementation that records none may omit it."
+    },
     "collection": {
       "type": ["string", "null"],
       "description": "The collection this job actually targets. Only meaningful when the request omitted `collection` \u2014 that is the case where the SERVER chose. The id is always one from the caller's own GET /v1/collections listing, so echoing it discloses nothing."

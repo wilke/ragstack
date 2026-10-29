@@ -5509,6 +5509,12 @@ components:
             `collection` — that is the case where the server chose, and the
             chosen id is always one from the caller's own GET /v1/collections
             listing, so echoing it discloses nothing.
+        warnings:
+          type: array
+          items: { type: string }
+          default: []
+          description: >-
+            Caller-safe notes on a job that completed with a caveat (#847): e.g. `symbol_glossary_degraded: 2 of 40 document(s) (timeout=2) endpoint host:port` when the glossary step's model half degraded for some documents (they carry the rules glossary). Labels, counts and host:port only, never a raw message or a credential. Optional: an implementation that records none may omit it.
 
     DocumentInfo:
       type: object
@@ -5645,6 +5651,12 @@ components:
           type: integer
           description: Count of chunk_ids stamped on the job record (single-doc runs).
         items: { $ref: "#/components/schemas/JobItemCounts" }
+        warnings:
+          type: array
+          items: { type: string }
+          default: []
+          description: >-
+            Caller-safe notes on a job that completed with a caveat (#847): e.g. `symbol_glossary_degraded: 2 of 40 document(s) (timeout=2) endpoint host:port` when the glossary step's model half degraded for some documents (they carry the rules glossary). Labels, counts and host:port only, never a raw message or a credential. Optional: an implementation that records none may omit it.
       additionalProperties: false
 
     JobsResponse:
