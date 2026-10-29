@@ -28,6 +28,8 @@ Subcommands:
 * ``addendum-s``, ``part3``, ``k10``: see the redacted pre-registrations.
 * ``part4``: the confirmatory part 4, in :mod:`deployed_docs_part4` (pause and
   resume; exit 75 = paused). Its config keys are documented there.
+* ``part4-glossary``: a retrieval-only re-score of part 4's questions with the
+  glossary rendered from one glossary FILE per condition, in :mod:`part4_glossary`.
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -486,7 +489,18 @@ def arm_name(fam: str, s: int, ov: int) -> str:
 ARMS = tuple(arm_name(f, s, ov) for f in FAMILIES for s in SIZES for ov in (0, s // 8))
 
 
-def build_arms(pages: dict[str, dict[str, Any]]) -> tuple[dict[str, list[C]], dict[str, Any]]:
+def build_arms(pages: dict[str, dict[str, Any]], *, glossaries: Mapping[str, Any] | None = None,
+               glossary_config: Any = None) -> tuple[dict[str, list[C]], dict[str, Any]]:
+    """L (the live chunks) + the T/X arms of every page.
+
+    Without ``glossaries`` (every subcommand but ``part4-glossary``): L carries the
+    live ``symbol_glossary`` field and T/X the in-process rules/3 glossary.
+    With ``glossaries`` (doc_id -> the stamped :class:`Glossary` a verified
+    glossary file resolved, :mod:`part4_glossary`) and that file's
+    ``glossary_config``, EVERY arm is rendered from the file: L at each live
+    row's ``start_char``, exactly as ``backfill_symbol_glossary --glossary-file``
+    renders it, and T/X at each chunk's ``start_char``, as the load's
+    ``render_chunks`` does. Chunk ids and text do not depend on the glossary."""
     from ragstack.ingestion.chunkers import FixedTokenWindowChunker
     from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
     from ragstack.ingestion.tokenization import make_token_counter
@@ -495,13 +509,22 @@ def build_arms(pages: dict[str, dict[str, Any]]) -> tuple[dict[str, list[C]], di
     counter = make_token_counter("hf", model=sat.SFR_MODEL)
     chunkers = {(s, ov): FixedTokenWindowChunker(s, ov, token_counter=counter) for s in SIZES for ov in (0, s // 8)}
     att = SymbolGlossaryAttacher()  # rules/3, no LLM cache
+    gcfg = att.config if glossaries is None else glossary_config
     arms: dict[str, list[C]] = {"L": [], **{a: [] for a in ARMS}}
     st: Counter[str] = Counter()
     for did, p in sorted(pages.items()):
-        for n, r in enumerate(p["rows"]):
-            arms["L"].append(C(f"L|{did}|{n}", did, str(r["content"]), "", str(r.get("symbol_glossary") or "")))
-        text = p["text"]
-        g = att.glossary_for(text)
+        if glossaries is None:
+            for n, r in enumerate(p["rows"]):
+                arms["L"].append(C(f"L|{did}|{n}", did, str(r["content"]), "", str(r.get("symbol_glossary") or "")))
+            text = p["text"]
+            g = att.glossary_for(text)
+        else:
+            g = glossaries[did]
+            for n, r in enumerate(p["rows"]):
+                arms["L"].append(C(f"L|{did}|{n}", did, str(r["content"]), "",
+                                   g.for_chunk(str(r.get("content") or ""), gcfg,
+                                               start_char=int(r.get("start_char") or 0))))
+            text = p["text"]
         secs = md_sections(text)
         st["pages_with_heading"] += int(any(h for _, h, _ in secs))
         st["sections"] += len(secs)
@@ -509,13 +532,13 @@ def build_arms(pages: dict[str, dict[str, Any]]) -> tuple[dict[str, list[C]], di
             a = arm_name("T", s, ov)
             for n, ch in enumerate(ck.chunk(Document(id=did, content=text))):
                 arms[a].append(C(f"{a}|{did}|{n}", did, ch.content, "",
-                                 g.for_chunk(ch.content, att.config, start_char=ch.start_char)))
+                                 g.for_chunk(ch.content, gcfg, start_char=ch.start_char)))
             a = arm_name("X", s, ov)
             n = 0
             for off, head, seg in secs:
                 for ch in ck.chunk(Document(id=did, content=seg)):
                     arms[a].append(C(f"{a}|{did}|{n}", did, ch.content, head,
-                                     g.for_chunk(ch.content, att.config, start_char=off + ch.start_char)))
+                                     g.for_chunk(ch.content, gcfg, start_char=off + ch.start_char)))
                     n += 1
     tok = counter._tokenizer()
     for cs in arms.values():
@@ -1188,7 +1211,10 @@ def p3_generate(out: Path, pages: dict[str, dict[str, Any]], page_tokens: dict[s
     return gen
 
 
-def build_sem_arms(out: Path, pages: dict[str, dict[str, Any]], urls: list[str]) -> dict[str, list[C]]:
+def build_sem_arms(out: Path, pages: dict[str, dict[str, Any]], urls: list[str], *,
+                   glossaries: Mapping[str, Any] | None = None, glossary_config: Any = None) -> dict[str, list[C]]:
+    """SEM512 / SEM256. ``glossaries`` / ``glossary_config``: as :func:`build_arms`
+    (``None``: the in-process rules/3 glossary, unchanged)."""
     from ragstack.ingestion.chunkers import make_chunker
     from ragstack.ingestion.symbol_glossary import SymbolGlossaryAttacher
     from ragstack.ingestion.tokenization import make_token_counter
@@ -1220,14 +1246,15 @@ def build_sem_arms(out: Path, pages: dict[str, dict[str, Any]], urls: list[str])
         return store.matrix(list(texts)).tolist()
 
     att = SymbolGlossaryAttacher()
+    gcfg = att.config if glossaries is None else glossary_config
     arms: dict[str, list[C]] = {a: [] for a in want}
     for a in want:
         ck = make_chunker("semantic", embed_fn=real_fn, **kwargs(a))
         for did, p in sorted(pages.items()):
-            g = att.glossary_for(p["text"])
+            g = att.glossary_for(p["text"]) if glossaries is None else glossaries[did]
             for n, ch in enumerate(ck.chunk(Document(id=did, content=p["text"]))):
                 arms[a].append(C(f"{a}|{did}|{n}", did, ch.content, "",
-                                 g.for_chunk(ch.content, att.config, start_char=ch.start_char)))
+                                 g.for_chunk(ch.content, gcfg, start_char=ch.start_char)))
     tok = counter._tokenizer()
     for cs in arms.values():
         for i in range(0, len(cs), 512):
@@ -2368,8 +2395,10 @@ def main(argv: list[str] | None = None) -> int:
             r.add_argument("--opus-cap-since", type=float, default=None,
                            help="epoch seconds of the go; earlier call-log rows don't count toward the cap")
     import deployed_docs_part4 as p4
+    import part4_glossary as p4g
 
     p4.add_part4_parser(sub)
+    p4g.add_parser(sub)
     args = ap.parse_args(argv)
     cfg = load_private_config(args.private_config)
     if args.out_dir is None:
@@ -2384,7 +2413,8 @@ def main(argv: list[str] | None = None) -> int:
     elif getattr(args, "opus", False) or getattr(args, "opus_test_one", False) or getattr(args, "probe_keys", ""):
         raise SystemExit("--opus/--opus-test-one need --opus-cap-since (the go time) for the output-token stop")
     return {"prepare": cmd_prepare, "run": cmd_run, "addendum-s": cmd_addendum_s,
-            "part3": cmd_part3, "k10": cmd_k10, "part4": p4.cmd_part4}[args.cmd](args)
+            "part3": cmd_part3, "k10": cmd_k10, "part4": p4.cmd_part4,
+            "part4-glossary": p4g.cmd_part4_glossary}[args.cmd](args)
 
 
 if __name__ == "__main__":
