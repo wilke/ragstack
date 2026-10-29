@@ -1,0 +1,545 @@
+{
+ "artifact_provenance": {
+  "label": "EXPLORATORY",
+  "what": "gold precision, rubric v3 (final)",
+  "source_sha256": "e93dc7a4f779c858856faecfed6c014cc91b244f3947a0078fc3e223d8a93b13",
+  "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
+  "citable": false,
+  "citable_reason": "analysis ran from a scratch script outside the repository (not a clean tree); EXPLORATORY, no pre-registration: not citable as a result",
+  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: PENDING)",
+  "analysis_script_sha256": "f8737c9515246122b9ee45b3090a22cc1bbb3eccc04ff775eac07139df15138c"
+ },
+ "exploratory": true,
+ "rubric": 3,
+ "seed": 20261028,
+ "documents": 60,
+ "items": 528,
+ "labelled": {
+  "claude": 528,
+  "codex": 528,
+  "gemini": 335
+ },
+ "label_mix": {
+  "claude": {
+   "not-a-symbol": 36,
+   "correct": 367,
+   "partial": 97,
+   "wrong": 28
+  },
+  "codex": {
+   "not-a-symbol": 45,
+   "correct": 348,
+   "partial": 104,
+   "wrong": 31
+  },
+  "gemini": {
+   "partial": 45,
+   "correct": 231,
+   "wrong": 31,
+   "not-a-symbol": 28
+  }
+ },
+ "majority_mix": {
+  "split": 25,
+  "correct": 352,
+  "partial": 85,
+  "wrong": 32,
+  "not-a-symbol": 34
+ },
+ "per_arm": {
+  "claude": {
+   "rules": {
+    "n": 107,
+    "strict": 0.626,
+    "lenient": 0.813,
+    "harm": 0.131,
+    "not_a_symbol": 0.056
+   },
+   "scout": {
+    "n": 196,
+    "strict": 0.755,
+    "lenient": 0.893,
+    "harm": 0.031,
+    "not_a_symbol": 0.077
+   },
+   "qwen38": {
+    "n": 264,
+    "strict": 0.784,
+    "lenient": 0.966,
+    "harm": 0.023,
+    "not_a_symbol": 0.011
+   },
+   "qwen36": {
+    "n": 284,
+    "strict": 0.859,
+    "lenient": 0.94,
+    "harm": 0.011,
+    "not_a_symbol": 0.049
+   }
+  },
+  "codex": {
+   "rules": {
+    "n": 107,
+    "strict": 0.598,
+    "lenient": 0.785,
+    "harm": 0.168,
+    "not_a_symbol": 0.047
+   },
+   "scout": {
+    "n": 196,
+    "strict": 0.73,
+    "lenient": 0.867,
+    "harm": 0.031,
+    "not_a_symbol": 0.102
+   },
+   "qwen38": {
+    "n": 264,
+    "strict": 0.754,
+    "lenient": 0.955,
+    "harm": 0.015,
+    "not_a_symbol": 0.03
+   },
+   "qwen36": {
+    "n": 284,
+    "strict": 0.81,
+    "lenient": 0.93,
+    "harm": 0.014,
+    "not_a_symbol": 0.056
+   }
+  },
+  "gemini": {
+   "rules": {
+    "n": 60,
+    "strict": 0.55,
+    "lenient": 0.617,
+    "harm": 0.3,
+    "not_a_symbol": 0.083
+   },
+   "scout": {
+    "n": 149,
+    "strict": 0.792,
+    "lenient": 0.899,
+    "harm": 0.027,
+    "not_a_symbol": 0.074
+   },
+   "qwen38": {
+    "n": 171,
+    "strict": 0.807,
+    "lenient": 0.953,
+    "harm": 0.029,
+    "not_a_symbol": 0.018
+   },
+   "qwen36": {
+    "n": 182,
+    "strict": 0.83,
+    "lenient": 0.912,
+    "harm": 0.022,
+    "not_a_symbol": 0.066
+   }
+  },
+  "majority": {
+   "rules": {
+    "n": 103,
+    "strict": 0.621,
+    "lenient": 0.786,
+    "harm": 0.165,
+    "not_a_symbol": 0.049
+   },
+   "scout": {
+    "n": 189,
+    "strict": 0.767,
+    "lenient": 0.889,
+    "harm": 0.032,
+    "not_a_symbol": 0.079
+   },
+   "qwen38": {
+    "n": 258,
+    "strict": 0.791,
+    "lenient": 0.961,
+    "harm": 0.027,
+    "not_a_symbol": 0.012
+   },
+   "qwen36": {
+    "n": 272,
+    "strict": 0.871,
+    "lenient": 0.941,
+    "harm": 0.011,
+    "not_a_symbol": 0.048
+   }
+  }
+ },
+ "ci95_doc_bootstrap": {
+  "majority": {
+   "rules": {
+    "strict": [
+     0.484,
+     0.702
+    ],
+    "lenient": [
+     0.614,
+     0.872
+    ],
+    "harm": [
+     0.083,
+     0.299
+    ]
+   },
+   "scout": {
+    "strict": [
+     0.652,
+     0.856
+    ],
+    "lenient": [
+     0.811,
+     0.939
+    ],
+    "harm": [
+     0.007,
+     0.063
+    ]
+   },
+   "qwen38": {
+    "strict": [
+     0.679,
+     0.879
+    ],
+    "lenient": [
+     0.923,
+     0.985
+    ],
+    "harm": [
+     0.007,
+     0.057
+    ]
+   },
+   "qwen36": {
+    "strict": [
+     0.805,
+     0.915
+    ],
+    "lenient": [
+     0.884,
+     0.978
+    ],
+    "harm": [
+     0.0,
+     0.025
+    ]
+   }
+  }
+ },
+ "by_corpus_majority": {
+  "docs-A": {
+   "rules": {
+    "not-a-symbol": 2,
+    "correct": 1
+   },
+   "scout": {
+    "not-a-symbol": 4,
+    "correct": 8,
+    "partial": 4,
+    "wrong": 1
+   },
+   "qwen38": {
+    "partial": 3,
+    "wrong": 2,
+    "correct": 6,
+    "not-a-symbol": 2
+   },
+   "qwen36": {
+    "not-a-symbol": 1,
+    "correct": 6,
+    "partial": 3
+   }
+  },
+  "papers-OC": {
+   "rules": {
+    "wrong": 15,
+    "correct": 53,
+    "partial": 15
+   },
+   "scout": {
+    "correct": 95,
+    "partial": 16,
+    "wrong": 3
+   },
+   "qwen38": {
+    "correct": 161,
+    "partial": 32,
+    "wrong": 3
+   },
+   "qwen36": {
+    "correct": 175,
+    "partial": 12,
+    "wrong": 2
+   }
+  },
+  "OA-1000": {
+   "rules": {
+    "partial": 2,
+    "wrong": 2,
+    "correct": 6,
+    "not-a-symbol": 1
+   },
+   "scout": {
+    "not-a-symbol": 8,
+    "wrong": 2,
+    "partial": 2,
+    "correct": 32
+   },
+   "qwen38": {
+    "partial": 3,
+    "correct": 24,
+    "not-a-symbol": 1
+   },
+   "qwen36": {
+    "not-a-symbol": 9,
+    "correct": 32,
+    "partial": 2,
+    "wrong": 1
+   }
+  },
+  "ASM-1000": {
+   "rules": {
+    "not-a-symbol": 2,
+    "correct": 4
+   },
+   "scout": {
+    "correct": 10,
+    "not-a-symbol": 3,
+    "partial": 1
+   },
+   "qwen38": {
+    "correct": 13,
+    "wrong": 2,
+    "partial": 6
+   },
+   "qwen36": {
+    "correct": 24,
+    "partial": 2,
+    "not-a-symbol": 3
+   }
+  }
+ },
+ "diffs_majority": {
+  "qwen38-scout": {
+   "strict": [
+    -0.061,
+    0.113
+   ],
+   "lenient": [
+    0.022,
+    0.143
+   ],
+   "harm": [
+    -0.033,
+    0.026
+   ]
+  },
+  "qwen36-scout": {
+   "strict": [
+    0.027,
+    0.19
+   ],
+   "lenient": [
+    0.007,
+    0.105
+   ],
+   "harm": [
+    -0.047,
+    -0.001
+   ]
+  },
+  "qwen36-qwen38": {
+   "strict": [
+    -0.014,
+    0.175
+   ],
+   "lenient": [
+    -0.075,
+    0.022
+   ],
+   "harm": [
+    -0.043,
+    0.001
+   ]
+  },
+  "qwen38-rules": {
+   "strict": [
+    0.069,
+    0.298
+   ],
+   "lenient": [
+    0.087,
+    0.345
+   ],
+   "harm": [
+    -0.275,
+    -0.054
+   ]
+  },
+  "qwen36-rules": {
+   "strict": [
+    0.161,
+    0.374
+   ],
+   "lenient": [
+    0.061,
+    0.314
+   ],
+   "harm": [
+    -0.292,
+    -0.076
+   ]
+  },
+  "scout-rules": {
+   "strict": [
+    0.024,
+    0.289
+   ],
+   "lenient": [
+    -0.002,
+    0.273
+   ],
+   "harm": [
+    -0.275,
+    -0.049
+   ]
+  }
+ },
+ "judge_kappa": {
+  "claude~codex": {
+   "4-label": {
+    "kappa": 0.767,
+    "agree": 0.884,
+    "n": 528
+   },
+   "partial=correct": {
+    "kappa": 0.818,
+    "agree": 0.956,
+    "n": 528
+   }
+  },
+  "claude~gemini": {
+   "4-label": {
+    "kappa": 0.732,
+    "agree": 0.869,
+    "n": 335
+   },
+   "partial=correct": {
+    "kappa": 0.779,
+    "agree": 0.934,
+    "n": 335
+   }
+  },
+  "codex~gemini": {
+   "4-label": {
+    "kappa": 0.692,
+    "agree": 0.845,
+    "n": 335
+   },
+   "partial=correct": {
+    "kappa": 0.727,
+    "agree": 0.913,
+    "n": 335
+   }
+  }
+ },
+ "vs_owner": {
+  "claude": {
+   "4-label": {
+    "kappa": 0.512,
+    "agree": 0.69,
+    "n": 42
+   },
+   "partial=correct": {
+    "kappa": 0.681,
+    "agree": 0.857,
+    "n": 42
+   },
+   "confusion_owner_to_judge": {
+    "correct->partial": 6,
+    "not-a-symbol->correct": 2,
+    "partial->correct": 1,
+    "partial->wrong": 1,
+    "wrong->correct": 1,
+    "wrong->partial": 2
+   }
+  },
+  "codex": {
+   "4-label": {
+    "kappa": 0.569,
+    "agree": 0.738,
+    "n": 42
+   },
+   "partial=correct": {
+    "kappa": 0.697,
+    "agree": 0.857,
+    "n": 42
+   },
+   "confusion_owner_to_judge": {
+    "correct->partial": 3,
+    "correct->wrong": 1,
+    "not-a-symbol->correct": 2,
+    "partial->correct": 2,
+    "partial->not-a-symbol": 1,
+    "wrong->partial": 2
+   }
+  },
+  "gemini": {
+   "4-label": {
+    "kappa": 0.607,
+    "agree": 0.762,
+    "n": 42
+   },
+   "partial=correct": {
+    "kappa": 0.617,
+    "agree": 0.81,
+    "n": 42
+   },
+   "confusion_owner_to_judge": {
+    "correct->not-a-symbol": 1,
+    "correct->partial": 1,
+    "correct->wrong": 2,
+    "not-a-symbol->correct": 2,
+    "partial->correct": 1,
+    "partial->wrong": 1,
+    "wrong->correct": 1,
+    "wrong->partial": 1
+   }
+  },
+  "majority": {
+   "4-label": {
+    "kappa": 0.606,
+    "agree": 0.756,
+    "n": 41
+   },
+   "partial=correct": {
+    "kappa": 0.696,
+    "agree": 0.854,
+    "n": 41
+   },
+   "confusion_owner_to_judge": {
+    "correct->partial": 3,
+    "correct->wrong": 1,
+    "not-a-symbol->correct": 2,
+    "partial->correct": 1,
+    "partial->wrong": 1,
+    "wrong->correct": 1,
+    "wrong->partial": 1
+   }
+  }
+ },
+ "inputs_sha256": {
+  "labels-claude-r3.jsonl": "6ad9b4bc44ce7c1161991dfb2c92c84e77c0197d8f10ad8132296b2fc4117ff5",
+  "labels-codex-r3.jsonl": "d4c5d135e98303aa8e51e3e5128b8b1793878dc22dc65c4ba161eb4ba19e5a39",
+  "labels-gemini-r3.jsonl": "5983a7561ace3912a732f209b999db7ff5142cd3cb4f9620e8e6f232f7d0d5ae",
+  "human_labels-3.csv": "fdabacb53f84d0f158790ce490628edd1c0494f831ad0ff4107d5f14e7678ad0"
+ },
+ "owner_mix": {
+  "partial": 4,
+  "correct": 24,
+  "wrong": 5,
+  "not-a-symbol": 9
+ }
+}

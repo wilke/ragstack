@@ -1,0 +1,328 @@
+{
+ "artifact_provenance": {
+  "label": "EXPLORATORY",
+  "what": "gold precision, rubric v1 (superseded by rubric v3; kept for the rubric history)",
+  "source_sha256": "ddc228ec3c913fc6379c7574313c928ae544247da96a3c363ef15b55997e680a",
+  "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
+  "citable": false,
+  "citable_reason": "analysis ran from a scratch script outside the repository (not a clean tree); EXPLORATORY, no pre-registration: not citable as a result",
+  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: PENDING)",
+  "analysis_script_sha256": "b36bc728fd341309533c5f6b3c7365a676b0cfdef923754c6d0dfc783444ee67"
+ },
+ "exploratory": true,
+ "seed": 20261028,
+ "documents": 60,
+ "items": 528,
+ "labelled_items": {
+  "claude": 528,
+  "codex": 528,
+  "gemini": 373
+ },
+ "label_mix": {
+  "claude": {
+   "not-a-symbol": 107,
+   "correct": 393,
+   "wrong": 28
+  },
+  "codex": {
+   "not-a-symbol": 121,
+   "correct": 375,
+   "wrong": 32
+  },
+  "gemini": {
+   "correct": 296,
+   "wrong": 52,
+   "not-a-symbol": 25
+  }
+ },
+ "majority_mix": {
+  "not-a-symbol": 104,
+  "correct": 387,
+  "wrong": 29,
+  "split": 8
+ },
+ "precision": {
+  "claude": {
+   "rules": {
+    "correct": 84,
+    "n": 107,
+    "p": 0.785
+   },
+   "scout": {
+    "correct": 143,
+    "n": 196,
+    "p": 0.73
+   },
+   "qwen38": {
+    "correct": 227,
+    "n": 264,
+    "p": 0.86
+   },
+   "qwen36": {
+    "correct": 229,
+    "n": 284,
+    "p": 0.806
+   }
+  },
+  "codex": {
+   "rules": {
+    "correct": 81,
+    "n": 107,
+    "p": 0.757
+   },
+   "scout": {
+    "correct": 134,
+    "n": 196,
+    "p": 0.684
+   },
+   "qwen38": {
+    "correct": 223,
+    "n": 264,
+    "p": 0.845
+   },
+   "qwen36": {
+    "correct": 226,
+    "n": 284,
+    "p": 0.796
+   }
+  },
+  "gemini": {
+   "rules": {
+    "correct": 39,
+    "n": 64,
+    "p": 0.609
+   },
+   "scout": {
+    "correct": 140,
+    "n": 163,
+    "p": 0.859
+   },
+   "qwen38": {
+    "correct": 167,
+    "n": 186,
+    "p": 0.898
+   },
+   "qwen36": {
+    "correct": 174,
+    "n": 199,
+    "p": 0.874
+   }
+  },
+  "majority": {
+   "rules": {
+    "correct": 79,
+    "n": 101,
+    "p": 0.782
+   },
+   "scout": {
+    "correct": 143,
+    "n": 196,
+    "p": 0.73
+   },
+   "qwen38": {
+    "correct": 226,
+    "n": 262,
+    "p": 0.863
+   },
+   "qwen36": {
+    "correct": 229,
+    "n": 284,
+    "p": 0.806
+   }
+  }
+ },
+ "precision_ci95_doc_bootstrap": {
+  "claude": {
+   "rules": [
+    0.603,
+    0.872
+   ],
+   "scout": [
+    0.549,
+    0.852
+   ],
+   "qwen38": [
+    0.758,
+    0.923
+   ],
+   "qwen36": [
+    0.653,
+    0.898
+   ]
+  },
+  "codex": {
+   "rules": [
+    0.618,
+    0.833
+   ],
+   "scout": [
+    0.496,
+    0.814
+   ],
+   "qwen38": [
+    0.738,
+    0.913
+   ],
+   "qwen36": [
+    0.634,
+    0.891
+   ]
+  },
+  "gemini": {
+   "rules": [
+    0.452,
+    0.743
+   ],
+   "scout": [
+    0.761,
+    0.932
+   ],
+   "qwen38": [
+    0.816,
+    0.948
+   ],
+   "qwen36": [
+    0.775,
+    0.944
+   ]
+  },
+  "majority": {
+   "rules": [
+    0.611,
+    0.875
+   ],
+   "scout": [
+    0.549,
+    0.848
+   ],
+   "qwen38": [
+    0.763,
+    0.926
+   ],
+   "qwen36": [
+    0.653,
+    0.898
+   ]
+  }
+ },
+ "precision_by_corpus_majority": {
+  "docs-A": {
+   "rules": {
+    "correct": 1,
+    "n": 3
+   },
+   "scout": {
+    "correct": 10,
+    "n": 17
+   },
+   "qwen38": {
+    "correct": 9,
+    "n": 13
+   },
+   "qwen36": {
+    "correct": 7,
+    "n": 11
+   }
+  },
+  "papers-OC": {
+   "rules": {
+    "correct": 67,
+    "n": 81
+   },
+   "scout": {
+    "correct": 117,
+    "n": 120
+   },
+   "qwen38": {
+    "correct": 192,
+    "n": 199
+   },
+   "qwen36": {
+    "correct": 198,
+    "n": 199
+   }
+  },
+  "OA-1000": {
+   "rules": {
+    "correct": 7,
+    "n": 11
+   },
+   "scout": {
+    "correct": 13,
+    "n": 44
+   },
+   "qwen38": {
+    "correct": 15,
+    "n": 28
+   },
+   "qwen36": {
+    "correct": 17,
+    "n": 44
+   }
+  },
+  "ASM-1000": {
+   "rules": {
+    "correct": 4,
+    "n": 6
+   },
+   "scout": {
+    "correct": 3,
+    "n": 15
+   },
+   "qwen38": {
+    "correct": 10,
+    "n": 22
+   },
+   "qwen36": {
+    "correct": 7,
+    "n": 30
+   }
+  }
+ },
+ "kappa_pairwise": {
+  "claude~codex": {
+   "kappa": 0.834,
+   "n": 528
+  },
+  "claude~gemini": {
+   "kappa": 0.375,
+   "n": 373
+  },
+  "codex~gemini": {
+   "kappa": 0.335,
+   "n": 373
+  }
+ },
+ "fleiss_kappa_all3": {
+  "kappa": 0.511,
+  "n": 373
+ },
+ "diff_ci95_majority": {
+  "qwen36-scout": [
+   -0.033,
+   0.184
+  ],
+  "qwen38-scout": [
+   0.033,
+   0.253
+  ],
+  "qwen36-qwen38": [
+   -0.161,
+   0.015
+  ],
+  "qwen36-rules": [
+   -0.112,
+   0.177
+  ],
+  "scout-rules": [
+   -0.217,
+   0.141
+  ]
+ },
+ "inputs_sha256": {
+  "labels-claude.jsonl": "bf690c742db225d408b3283e3c0f947cd9d03b3ef3a397fd65d11eccd2d3a878",
+  "labels-codex.jsonl": "4f6548560de466520ed20b81a09f1986ba3d38ecfdb13f4f9d114056eb96af24",
+  "labels-gemini.jsonl": "8d58bbefcb02c922eedfe7fd8e00c14e1fa4115f7a137c6d9cfada009441396a",
+  "item_arms.json": "0d58c22600857b18e5a980f57e06b8b627024c2ec57480abf984e19a26cf2139"
+ }
+}
