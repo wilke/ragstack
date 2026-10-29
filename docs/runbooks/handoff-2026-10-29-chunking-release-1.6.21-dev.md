@@ -31,7 +31,12 @@ There is no server image for v1.6.18 or v1.6.20 (tools tags), and no tools image
 
 **v1.6.20 tools content:** the glossary step flags, `--glossary-file`, `--max-chunks` (default 0), `--workflow-id`, and the #852 receipt guard.
 
-**v1.6.21 content (G2b, #854):** renames the receipts and stamps the CWL with `ragstack-tools-v1.6.20-b1.sif`.
+**v1.6.21 content (G2b, #854, from `git log v1.6.19..v1.6.21`):**
+- Stamps the CWL with `ragstack-tools-v1.6.20-b1.sif` and uses per-task receipt names (#852).
+- #847 G2b: the glossary step in the four shard workflows; the API drives it when `SYMBOL_GLOSSARY_EXTRACTION=llm`; job `warnings` on the ingest and jobs responses.
+- #849: `max_chunks` on the bulk CWLs (`ingest-bulk`, `jats-ingest`, `load-embeddings`); when the registered text declares it, the API sends it on every submission (0 = no cap).
+- #821: tool provenance on the bulk/JATS plane CWLs.
+- Dev leaves `SYMBOL_GLOSSARY_EXTRACTION` unset (default `rules`), so the LLM glossary path is not active there.
 
 ## What is live where
 
@@ -82,6 +87,6 @@ The post-roll soak legs on v1.6.21 have **not** been run on dev. Run them before
 ## Open items
 
 - **Fleet roll** to v1.6.21 waits for the owner's "Roll fleet". Six tenants are still on v1.6.14.
-- **#849 GoWe worker cap:** it is open whether tools v1.6.20 fixes it for bulk loads.
+- **#849 GoWe worker cap:** v1.6.21 sends `max_chunks` on bulk submissions, but it is not yet verified on dev that a bulk load is no longer capped.
 - **GoWe job reporting:** tenant-level GoWe jobs report `chunk_ids=[]`; verify counts in Qdrant.
 - **Dev uploads:** API-key principals cannot upload on dev; GoWe needs a person's BV-BRC token.
