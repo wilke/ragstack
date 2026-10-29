@@ -17,15 +17,22 @@ An ``httpx.MockTransport`` handler that speaks the contract the real servers
 Outcomes are scripted per request: :class:`Answer`, :class:`Status` (429,
 500, 503, 401, ...), :class:`Fail` (raise ``httpx.ConnectError`` /
 ``httpx.ReadTimeout`` — what the transport raises for a refused connection or
-a server slower than the timeout). Every request is recorded with its JSON
+a server slower than the timeout). :func:`serve` puts the same fake behind a
+real socket on 127.0.0.1 for a child process (the cwltool end-to-end run).
+Every request is recorded with its JSON
 body, its per-request timeout (``request.extensions["timeout"]``) and whether
 it carried an ``Authorization`` header.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpx
@@ -142,3 +149,58 @@ class FakeOpenAI:
                       "completion_tokens": len(text) // 4,
                       "total_tokens": len(seen.prompt) // 4 + len(text) // 4},
         })
+
+
+#: How long a ``Fail(ReadTimeout)`` holds the socket open under :func:`serve`:
+#: longer than any per-call timeout the tests give the client.
+SERVE_TIMEOUT_HOLD_S = 8.0
+
+
+@contextmanager
+def serve(fake: FakeOpenAI) -> Iterator[str]:
+    """``fake`` on a real socket: a ``ThreadingHTTPServer`` on 127.0.0.1 and an
+    ephemeral port, yielding its base URL. Each HTTP request becomes an
+    ``httpx.Request`` handed to :meth:`FakeOpenAI.handle` (so ``seen`` records
+    it as in the in-process tests); ``Fail(ConnectError)`` closes the socket
+    without answering, ``Fail(ReadTimeout)`` holds it past the client's
+    timeout. Shut down on exit."""
+    lock = threading.Lock()
+
+    class Handler(BaseHTTPRequestHandler):
+        def _serve(self) -> None:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n) if n else b""
+            req = httpx.Request(self.command, f"http://fake{self.path}",
+                                headers=dict(self.headers.items()), content=body)
+            try:
+                with lock:   # FakeOpenAI's scripted outcomes are not thread-safe
+                    resp = asyncio.run(fake.handle(req))
+            except httpx.ReadTimeout:
+                time.sleep(SERVE_TIMEOUT_HOLD_S)
+                self.close_connection = True
+                return
+            except httpx.TransportError:
+                self.close_connection = True
+                return
+            data = resp.content
+            self.send_response(resp.status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        do_GET = _serve
+        do_POST = _serve
+
+        def log_message(self, *a: Any) -> None:  # quiet
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()

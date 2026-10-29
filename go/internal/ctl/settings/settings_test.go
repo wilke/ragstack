@@ -38,6 +38,10 @@ func TestClassify(t *testing.T) {
 		"QDRANT_URL":      ExecutableSurface, "ELASTICSEARCH_URL": ExecutableSurface, "NEO4J_URI": ExecutableSurface,
 		"EMBEDDING_ENDPOINTS": ExecutableSurface, "EMBEDDING_SIDECAR_URL": ExecutableSurface, "CROSSENCODER_SIDECAR_URL": ExecutableSurface,
 		"LLM_ENDPOINT": ExecutableSurface, "GOWE_URL": ExecutableSurface, "WORKSPACE_URL": ExecutableSurface,
+		// #847 G2b: where the workers connect for the glossary model, and WHICH
+		// worker variable is sent as its bearer — both CLI-only.
+		"SYMBOL_GLOSSARY_LLM_ENDPOINT": ExecutableSurface, "SYMBOL_GLOSSARY_LLM_API_KEY_ENV": ExecutableSurface,
+		"SYMBOL_GLOSSARY_LLM_MODEL": Public, "SYMBOL_GLOSSARY_LLM_INPUTS_JSON": Public,
 		"MODEL_URL_ALLOWLIST": ExecutableSurface, "PORT": ExecutableSurface, "ROOT_PATH": ExecutableSurface,
 		// public (config.py Settings fields)
 		"DEFAULT_ROLE": Public, "IDENTITY_PROVIDER": Public, "ADMIN_SUBJECTS": Public, "MAX_COLLECTIONS": Public,

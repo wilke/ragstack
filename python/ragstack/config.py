@@ -566,9 +566,34 @@ class Settings(BaseSettings):
     # Both ingest paths follow it: in-process (deps._build_glossary_attacher) and
     # gowe, where the API sends it as the `symbol_glossary` workflow input
     # (documents.py::_gowe_inputs) when the registered workflow declares it.
+    #   llm   — #847 G2b: on INGEST_BACKEND=gowe the workflow's glossary step
+    #           also asks a model (SYMBOL_GLOSSARY_LLM_* below); the chunks get
+    #           the rules glossary where the model degrades. In-process
+    #           (INGEST_BACKEND=local) there is no model step: llm reads as
+    #           rules, with one WARNING at startup.
+    # Anything else reads as off (a typo must not take the API down).
     # SYMBOL_GLOSSARY_CONFIG_JSON and SYMBOL_GLOSSARY_CACHE_PATH are in-process
     # only; a gowe worker runs the tool's default config and no LLM cache.
     symbol_glossary_extraction: str = "rules"
+    # --- The glossary step's model (#847 G2b; SYMBOL_GLOSSARY_EXTRACTION=llm) ---
+    # Sent per submission as workflow inputs (documents.py::_gowe_inputs). No
+    # fallback to LLM_ENDPOINT / LLM_MODEL (#363: a default that resolves to
+    # another service is how tests and tenants reached production): with llm on
+    # a gowe backend both must be set, or the API refuses to boot.
+    symbol_glossary_llm_endpoint: str = ""
+    symbol_glossary_llm_model: str = ""
+    # The NAME of the worker-side environment variable holding the key (the
+    # worker's --secret-file injects it). Never the key: workflow inputs are an
+    # immutable, UI-rendered snapshot.
+    symbol_glossary_llm_api_key_env: str = "OPENAI_API_KEY"
+    # The step's limits as a JSON object keyed by the CWL input names
+    # (glossary_llm_concurrency, _timeout_s, _max_tokens, _window_chars,
+    # _max_windows, _thinking, _repair_rounds, _cutoff_retry, _deadline_s,
+    # _min_chars, _seed, _extra_body); omitted keys take
+    # ragstack.ingestion.glossary_inputs.GLOSSARY_LLM_DEFAULTS. Validated at boot
+    # (unknown key, wrong type, undeclared input → refuse). Concurrency is the
+    # tenant's TOTAL documents in flight, split across a run's batches.
+    symbol_glossary_llm_inputs_json: str = "{}"
 
     # --- Document-structure metadata (#828, docs/plans/828-document-structure.md) ---
     # Stamp section/role/block metadata (section_title, section_path,

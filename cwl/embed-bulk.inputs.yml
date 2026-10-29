@@ -12,3 +12,18 @@ embedding_url:
   - http://localhost:9002
 # Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
 embedding_api_key: CHANGE-ME-EMBED-API-KEY
+# #847 G2b: the glossary step. "off" (the default) = rules only, offline. With
+# "on" give the endpoint, the model and every limit (the tool refuses 0 with
+# "on"); the key travels by NAME — the worker's --secret-file sets it.
+# glossary_llm: "off"
+# glossary_llm_endpoint: http://CHANGE-ME-MODEL:8000
+# glossary_llm_model: CHANGE-ME
+# glossary_llm_api_key_env: OPENAI_API_KEY
+# glossary_llm_concurrency: 16
+# glossary_llm_timeout_s: 300.0
+# glossary_llm_max_tokens: 4096
+# glossary_llm_window_chars: 80000
+# glossary_llm_max_windows: 4
+# glossary_llm_thinking: "off"
+# glossary_llm_repair_rounds: 0
+# glossary_llm_cutoff_retry: split

@@ -1,8 +1,8 @@
 {
   "build": "1",
-  "build_date": "2026-10-28T03:42:38Z",
-  "commit": "b1a727976fe2f83db9791ff4020068eca216b760",
-  "name": "ragstack-tools-v1.6.18-b1.sif",
-  "sha256": "9633ff7581f02474b4b304fea2e317ff896c1888ce8ef6abd2559b0f2d74f15a",
-  "version": "v1.6.18"
+  "build_date": "2026-10-29T01:12:10Z",
+  "commit": "4a0571b1383739393c6623385b8d7477910cd252",
+  "name": "ragstack-tools-v1.6.20-b1.sif",
+  "sha256": "1dbb8539ad166dcc4a1161c737db03575dbd12a09d8850c103e9b71b40ec95e6",
+  "version": "v1.6.20"
 }

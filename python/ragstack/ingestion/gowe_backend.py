@@ -61,6 +61,11 @@ from ragstack.ingestion.chunk_cap import (
     CHUNK_CAP_EXCEEDED,
     is_cap_refusal,
 )
+from ragstack.ingestion.glossary_file import (
+    GLOSSARY_FILE_MISMATCH,
+    GLOSSARY_REFUSED_EXIT_CODE,
+    is_glossary_refusal,
+)
 from ragstack.ingestion.gowe_client import (
     OUTPUT_UPLOAD_FAILED,
     GoWeClient,
@@ -140,6 +145,9 @@ class GoWeRun:
     #: ``ws://`` URI of the ``versions/<n>/`` folder holding this run's archive
     #: (``""`` when the run had no ``output_destination`` or did not complete).
     archive_ref: str = ""
+    #: The glossary step's record summed over the readable receipts
+    #: (:func:`glossary_summary_of`), or ``None`` when no receipt carries one.
+    glossary: dict[str, Any] | None = None
 
 
 class GoWeBackend:
@@ -306,7 +314,8 @@ class GoWeBackend:
             # and fail every item under the cap label, which the API lifts
             # onto the job. Whole-submission failure is right here: a cap
             # refusal is a whole-job refusal by spec.
-            reason = cap_refusal_of(final) or f"gowe submission {state}"
+            reason = (cap_refusal_of(final) or glossary_refusal_of(final)
+                      or f"gowe submission {state}")
             # A run in which every document failed ON ITS OWN (all refused
             # as duplicates, all scanned) reaches the archive step with no
             # chunk to pack, and it exits NOTHING_TO_ARCHIVE_EXIT_CODE with
@@ -328,11 +337,12 @@ class GoWeBackend:
             )
         if output_destination:
             archive_ref = self._archive_ref(output_destination, job.get("version"))
-            results = await self._map_archive_receipts(
+            entries, label = await self._read_archive_receipts(
                 items, archive_ref, token, workspace or self.workspace
             )
+            results = map_receipt_entries(items, entries, label=label)
             return GoWeRun(results=results, submission_id=sub_id, state=state,
-                           archive_ref=archive_ref)
+                           archive_ref=archive_ref, glossary=glossary_summary_of(entries))
         results = await self._map_outputs(items, final, token=token)
         return GoWeRun(results=results, submission_id=sub_id, state=state)
 
@@ -392,6 +402,18 @@ class GoWeBackend:
         non-list/dict shape, or receipts that name NONE of the items is a
         :class:`GoWeContractError`; a malformed entry or an unmatched item
         fails only the items it concerns. See :func:`map_receipt_entries`."""
+        entries, label = await self._read_archive_receipts(items, archive_ref, token, workspace)
+        return map_receipt_entries(items, entries, label=label)
+
+    async def _read_archive_receipts(
+        self,
+        items: list[WorkItem],
+        archive_ref: str,
+        token: str | None,
+        workspace: WorkspaceClient | None,
+    ) -> tuple[list[Any], str]:
+        """``(receipt entries, their path)`` from ``<archive>/receipt.json``;
+        the :class:`GoWeContractError` cases of :meth:`_map_archive_receipts`."""
         if workspace is None:
             raise GoWeContractError(
                 "no Workspace client to read the archive's receipts with — GoWeBackend "
@@ -414,7 +436,7 @@ class GoWeBackend:
                 f"{path} holds no receipt for {len(items)} work item(s); "
                 f"the archive does not satisfy the per-item receipts contract"
             )
-        return map_receipt_entries(items, entries, label=path)
+        return entries, path
 
     async def _map_outputs(
         self, items: list[WorkItem], submission: dict[str, Any], *, token: str | None = None
@@ -660,6 +682,59 @@ def cap_refusal_of(submission: dict[str, Any]) -> str | None:
             if is_cap_refusal(line):
                 return line
     return CHUNK_CAP_EXCEEDED
+
+
+def glossary_refusal_of(submission: dict[str, Any]) -> str | None:
+    """The glossary-file refusal a FAILED submission carries, or ``None``
+    (#847 G2b): ``ingest_shard --glossary-file`` exits
+    ``GLOSSARY_REFUSED_EXIT_CODE`` (6) when the glossary step's file has no
+    row, or a mismatched row, for a loaded document — a tool or wiring bug,
+    never data. The sibling of :func:`cap_refusal_of`: the exit code decides
+    (:func:`tool_exit_code`), the first ``glossary_file_mismatch:`` stderr
+    line supplies the detail, else the bare label. (``load_embeddings
+    --glossary-file`` refuses with exit 2 instead; it is not API-driven.)"""
+    if tool_exit_code(submission) != GLOSSARY_REFUSED_EXIT_CODE:
+        return None
+    ctx, message = _failure_context(submission)
+    for text in (str(ctx.get("stderr") or ""), message):
+        for line in _tool_lines(text):
+            if is_glossary_refusal(line):
+                return line
+    return GLOSSARY_FILE_MISMATCH
+
+
+def glossary_summary_of(entries: list[Any]) -> dict[str, Any] | None:
+    """The glossary step's record over a run's receipts (#847 G2b): every
+    readable receipt's ``enrichment.symbol_glossary`` from a glossary FILE,
+    summed — ``counts`` per key, ``degraded_reasons`` per reason, the union of
+    ``glossary_versions`` — plus ``batches`` (receipts that carry one) and
+    ``batches_without_glossary``. ``degraded`` is ``counts.degraded``, lifted
+    for the caller. ``None`` when no receipt carries a file record (an
+    older workflow, or ``symbol_glossary off``)."""
+    counts: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    versions: set[str] = set()
+    batches = without = 0
+    for entry in entries:
+        enr = entry.get("enrichment") if isinstance(entry, dict) else None
+        g = enr.get("symbol_glossary") if isinstance(enr, dict) else None
+        if not isinstance(g, dict) or g.get("source") != "glossary_file":
+            without += 1
+            continue
+        batches += 1
+        for k, v in (g.get("counts") or {}).items():
+            if isinstance(v, int) and not isinstance(v, bool):
+                counts[k] = counts.get(k, 0) + v
+        for k, v in (g.get("degraded_reasons") or {}).items():
+            if isinstance(v, int) and not isinstance(v, bool):
+                reasons[str(k)] = reasons.get(str(k), 0) + v
+        versions.update(str(v) for v in (g.get("glossary_versions") or []))
+    if not batches:
+        return None
+    return {"counts": counts, "degraded": counts.get("degraded", 0),
+            "degraded_reasons": dict(sorted(reasons.items())),
+            "glossary_versions": sorted(versions), "batches": batches,
+            "batches_without_glossary": without}
 
 
 def nothing_to_archive_of(submission: dict[str, Any]) -> dict[str, str] | None:

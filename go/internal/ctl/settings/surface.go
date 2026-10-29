@@ -53,6 +53,9 @@ const (
 	// SurfaceRoutes: QDRANT_/ES_COLLECTION_ROUTES, a JSON object of physical
 	// store name -> SurfaceURL.
 	SurfaceRoutes
+	// SurfaceEnvName: the NAME of an environment variable (an identifier),
+	// e.g. which worker secret the glossary step sends as its bearer.
+	SurfaceEnvName
 )
 
 func (c SurfaceClass) String() string {
@@ -69,6 +72,8 @@ func (c SurfaceClass) String() string {
 		return "image-dirs"
 	case SurfaceRoutes:
 		return "routes"
+	case SurfaceEnvName:
+		return "env-name"
 	default:
 		return "refused"
 	}
@@ -112,21 +117,28 @@ var (
 
 // surfaceURLKeys maps each single-URL key to the schemes it accepts.
 var surfaceURLKeys = map[string][]string{
-	"LLM_ENDPOINT":                httpSchemes,
-	"GOWE_URL":                    httpSchemes,
-	"WORKSPACE_URL":               httpSchemes,
-	"QDRANT_URL":                  httpSchemes,
-	"ELASTICSEARCH_URL":           httpSchemes,
-	"NEO4J_URI":                   neo4jSchemes,
-	"REDIS_URL":                   redisSchemes,
-	"EMBEDDING_SIDECAR_URL":       httpSchemes,
-	"CROSSENCODER_SIDECAR_URL":    httpSchemes,
-	"OTEL_EXPORTER_OTLP_ENDPOINT": httpSchemes,
+	"LLM_ENDPOINT":                 httpSchemes,
+	"SYMBOL_GLOSSARY_LLM_ENDPOINT": httpSchemes,
+	"GOWE_URL":                     httpSchemes,
+	"WORKSPACE_URL":                httpSchemes,
+	"QDRANT_URL":                   httpSchemes,
+	"ELASTICSEARCH_URL":            httpSchemes,
+	"NEO4J_URI":                    neo4jSchemes,
+	"REDIS_URL":                    redisSchemes,
+	"EMBEDDING_SIDECAR_URL":        httpSchemes,
+	"CROSSENCODER_SIDECAR_URL":     httpSchemes,
+	"OTEL_EXPORTER_OTLP_ENDPOINT":  httpSchemes,
 }
 
 var surfaceURLListKeys = map[string]bool{"EMBEDDING_ENDPOINTS": true, "MODEL_URL_ALLOWLIST": true}
 
 var surfaceRouteKeys = map[string]bool{"QDRANT_COLLECTION_ROUTES": true, "ES_COLLECTION_ROUTES": true}
+
+// surfaceEnvNameKeys hold an environment variable NAME (#847 G2b).
+var surfaceEnvNameKeys = map[string]bool{"SYMBOL_GLOSSARY_LLM_API_KEY_ENV": true}
+
+// envVarName is what a POSIX shell (and the tool's own check) accepts as a name.
+var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // physicalStoreName is a routing table's KEY: the physical Qdrant collection
 // or Elasticsearch index name (python/ragstack/store_routing.py), which is
@@ -160,6 +172,8 @@ func SurfaceClassOf(key string, imageRow bool) (class SurfaceClass, why string, 
 		return SurfaceRoutes, "", true
 	case surfaceURLListKeys[key]:
 		return SurfaceURLList, "", true
+	case surfaceEnvNameKeys[key]:
+		return SurfaceEnvName, "", true
 	}
 	if _, isURL := surfaceURLKeys[key]; isURL {
 		return SurfaceURL, "", true
@@ -243,6 +257,12 @@ func ValidateSurface(key, value string, c SurfaceContext) (string, error) {
 		return strings.Join(dirs, ","), nil
 	case SurfaceRoutes:
 		return value, checkRoutes(key, value, c.AllowedHosts)
+	case SurfaceEnvName:
+		if !envVarName.MatchString(value) {
+			return "", fmt.Errorf("%s=%q: must be an environment variable NAME "+
+				"([A-Za-z_][A-Za-z0-9_]*), never a value", key, value)
+		}
+		return value, nil
 	}
 	return "", fmt.Errorf("%s: unhandled class %s", key, class)
 }

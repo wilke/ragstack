@@ -10,10 +10,13 @@ G2a (the step as a tool, not yet wired) is built: `scripts/glossary_step.py` wri
 the file from a shard, rules plus an optional bounded LLM pass with per-document
 degrade; `ingest_shard.py --glossary-file` renders from it on the coupled path;
 `archive_version.py --glossary-file` packs it into the version (role `glossary`); and
-`glossary_file.py merge` combines per-batch files. G2b (the CWL wiring and the API
-inputs) waits for the tools-image repin, and G3 (the ADR-0011 amendment and the
-migration note) is not built yet. Under ADR-0010 decision 4, no CWL declares a flag
-before its image carries it.
+`glossary_file.py merge` combines per-batch files. G2b (server release v1.6.21,
+stamping `ragstack-tools-v1.6.20-b1.sif`) is built: the step is wired into
+`pdf-ingest-scatter.cwl`, `ingest-bulk.cwl`, `jats-ingest.cwl` and `embed-bulk.cwl`
+(`cwl/glossary-step.cwl` standalone), and the API drives it with
+`SYMBOL_GLOSSARY_EXTRACTION=llm` and `SYMBOL_GLOSSARY_LLM_*`
+([ingest-paths.md § Symbol glossary from the glossary step](../ingest-paths.md#symbol-glossary-from-the-glossary-step-847-g2b)).
+G3 (the ADR-0011 amendment and the migration note) is not built yet.
 
 Background: [symbol-glossary.md](symbol-glossary.md) describes the glossary itself (#754).
 Issue #847 describes the design.

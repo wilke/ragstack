@@ -94,7 +94,7 @@ async def test_gowe_value_matches_the_in_process_reading(monkeypatch) -> None:
     attacher would be built."""
     from ragstack.api import deps
 
-    for mode in ("rules", "off", "bogus", "", "RULES"):
+    for mode in ("rules", "off", "llm", "bogus", "", "RULES"):
         monkeypatch.setattr(deps.settings, "symbol_glossary_extraction", mode)
         on_in_process = deps._build_glossary_attacher() is not None
         assert (gowe_symbol_glossary(mode) == "rules") == on_in_process, mode

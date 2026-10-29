@@ -784,7 +784,8 @@ the job row (`GET /v1/jobs`). Per path:
 | API, local (`POST /v1/ingest`, `/v1/ingest/upload`) | `ShardedIngestor.ingest_manifest` — the manifest is the job: every remaining item is loaded + chunked (text only, no GPU, no store), one count, then the admitted job embeds and indexes the very chunks it was sized from (`IngestionPipeline.ingest_prepared`) — nothing is loaded twice | post-chunk, pre-quarantine (a conservative overcount) |
 | API, gowe | the API derives the cap per job and passes it as the workflow input `max_chunks` → `ingest_shard --max-chunks`; each scattered task counts once and refuses its own shard (`run_shard`); the API lifts the receipt's label onto the job | post-embed, exact — per task, so concurrent tasks may collectively overshoot by the other tasks' shards |
 | bulk (`scripts/load_embeddings.py`) | the invocation is the job: the files' header counts are summed, one count before the first file is read; refused = exit 1. The cap is `--max-chunks N` (default 0 = off), or the registry entry's explicit override, which wins (`0` = exempt). Nothing is derived from the worker's settings (#849). Every summary, refused or not, records `chunk_cap: {effective, source}` (`source`: `input` / `registry_override` / `none`), and so does the manifest the load writes (`limits.chunk_cap`); a refusal adds `live`/`incoming`/`cap`/`would_fit` | the files' header `count`s |
-| operator `ingest_shard.py` (path C, `ingest-bulk.cwl`) | only when `--max-chunks` / the `max_chunks` input is passed; the default `0` is unlimited, and `ingest-bulk.cwl` does not expose it | post-embed, per shard |
+| operator `ingest_shard.py` (path C, `ingest-bulk.cwl`) | the `max_chunks` workflow input (default `0` = unlimited) → `ingest_shard --max-chunks`; a refusal exits 4 (`permanentFailCodes`) | post-embed, per shard |
+| operator `jats-ingest.cwl` / `load-embeddings.cwl` | the `max_chunks` workflow input (default `0`) → `load_embeddings --max-chunks` (the bulk row above) | the files' header `count`s |
 | `ingest_jsonl.py` (path D), `ingest_chunks.py` | **not capped** | — |
 | replay (`--replay`, restore) | **never capped** — it restores what was already admitted | — |
 
@@ -796,14 +797,65 @@ operator for bulk jobs. The registry entry's explicit override is per-collection
 tool already resolves, so it still applies. A pin test
 (`tests/unit/test_cwl_scripts_read_no_policy.py`) checks that no script a CWL runs, nor any
 module it imports, reads `settings.max_chunks_per_collection` or
-`settings.graph_max_triples_per_collection`. Until the next tools-image repin, the
-`jats-ingest.cwl` and `ingest-bulk.cwl` workflows do not declare `max_chunks`, so a load
-through them is capped only by an entry override.
+`settings.graph_max_triples_per_collection`. A second pin
+(`tests/unit/test_cwl_limits_are_inputs.py`) walks every `cwl/*.cwl`: each `--max-chunks`,
+`--max-triples` and glossary-step limit binding is sourced from a top-level input of the
+same name with a `0` (or null) default, and none is hardcoded in `arguments`. Since
+v1.6.21 every chunk-loading workflow declares `max_chunks`; when the registered text
+declares it, the API sends it on every submission, `0` included.
 
 A byte-identical re-ingest at the cap is refused too (delete-prior would net to zero, but
 `incoming` is what the job would write): the conservative reading of "refuse the whole
 batch". `max_chunks_per_collection=0` disables the default deployment-wide (overrides still
 apply). The value is exposed by `GET /v1/config`.
+
+---
+
+## Symbol glossary from the glossary step (#847 G2b)
+
+Since v1.6.21 every shard workflow runs `glossary_step.py` (`cwl/glossary-step.cwl`,
+inlined) once per shard and renders each chunk's `symbol_glossary` field **from its
+file**, so the glossary is a recorded artifact rather than a value recomputed inside the
+ingest. Design and file format: [plans/symbol-glossary-file.md](plans/symbol-glossary-file.md).
+
+| Workflow | Where the step runs | Who renders from the file | Archived |
+|---|---|---|---|
+| `pdf-ingest-scatter.cwl` (API uploads) | per batch, between `extract` and `ingest` | `ingest_shard --glossary-file` (dotproduct with the batch; exit 6 on a mismatched file) | `pack` merges the per-batch files into the version's `glossary.jsonl` (manifest role `glossary`) |
+| `ingest-bulk.cwl` | per shard, before `ingest_shard` | `ingest_shard --glossary-file` | no archive on this plane |
+| `jats-ingest.cwl` | per extracted shard, in parallel with `embed`; `merge_glossary` gathers | `load_embeddings --glossary-file` (exit 2 on a mismatch) | output `glossary_file` |
+| `embed-bulk.cwl` → `load-embeddings.cwl` | per shard, in parallel with `embed_shard`; `merge_glossary` gathers | `load_embeddings --glossary-file` when the operator hands `embed-bulk`'s `glossary_file` output to `load-embeddings`' optional `glossary_file` input | output `glossary_file` |
+
+`glossary_llm` (`"off"` default) switches the model half. Off, the step is rules-only and
+offline, and chunks are stamped `rules/3@file/1` (the visible stamp change of this
+release). On, the step calls an OpenAI-compatible endpoint, bounded by the
+`glossary_llm_*` inputs (all `0`/null by default; required with `on`), and a document
+whose call fails gets the rules glossary with `degraded: <reason>` — the task never fails
+for it. The API sends `glossary_llm: "on"` when `SYMBOL_GLOSSARY_EXTRACTION=llm` on a
+`gowe` backend, with `SYMBOL_GLOSSARY_LLM_ENDPOINT` / `_MODEL` / `_API_KEY_ENV` (a variable
+**name**; the worker's `--secret-file` holds the key) and the limits from
+`SYMBOL_GLOSSARY_LLM_INPUTS_JSON` over `glossary_inputs.GLOSSARY_LLM_DEFAULTS`; the boot
+check refuses settings the registered text cannot run. In ragstack-ctl,
+`SYMBOL_GLOSSARY_LLM_ENDPOINT` and `SYMBOL_GLOSSARY_LLM_API_KEY_ENV` are executable-surface
+(CLI-only): the second chooses WHICH worker secret is sent as the model's bearer, so an
+HTTP caller may not redirect it, and its value must be a variable name
+(`^[A-Za-z_][A-Za-z0-9_]*$`); `_MODEL` and `_INPUTS_JSON` are public, with value rules that
+mirror the API's boot check. `symbol_glossary` is then sent
+as `rules` (under `off` `ingest_shard` ignores the file). On `INGEST_BACKEND=local`,
+`llm` reads as `rules` with one startup WARNING: the model step exists only as a workflow
+step. A job whose documents degraded logs one WARNING naming the endpoint (host:port) and
+the reasons, and lists them in the job's `warnings`.
+
+**Known limitation (bulk plane).** On `jats-ingest.cwl` and `embed-bulk.cwl` +
+`load-embeddings.cwl`, `symbol_glossary` governs only `embed_shard`'s in-process pass,
+which the load then overrides from the file: `symbol_glossary="off"` does **not** suppress
+the field at load (`load_embeddings` has no such switch, and the CWL cannot make the file
+binding conditional without a JS `valueFrom`, unverified on GoWe). "No glossary at all" on
+the bulk plane is a follow-up. Uploads and `ingest-bulk.cwl` honour `off`: the step still
+runs and the file is still archived, but no chunk carries the field.
+
+Shard basenames must be distinct on every plane: per-task outputs are named
+`<nameroot>.receipt.json` / `.glossary.jsonl` because GoWe stages a gathered `File[]` flat
+by basename (#852).
 
 ---
 

@@ -293,9 +293,46 @@ def make_batches(plan_dir: str, batch_size: int) -> list[tuple[str, list[str]]]:
     return batches
 
 
-def render_inputs(template: dict, shard_paths: list[str], out_path: str) -> None:
+#: Template keys the driver owns: the per-batch shards, and the provenance the
+#: stamped tree states (#821). A template carrying one would pin every batch
+#: to it — or record an image the CWL does not name.
+DRIVER_OWNED_KEYS = ("shards", "tool_image", "tool_image_digest")
+
+
+def provenance_seed(cwl_path: str | None, workflow_id: str = "") -> dict[str, Any]:
+    """The provenance inputs (#821, ADR-0010 decision 8) for a submission of
+    ``cwl_path``: ``tool_image`` and ``tool_image_digest`` from the stamped
+    tree (the text's image name, the committed receipt's sha256 when it names
+    that image), restricted to the names the workflow declares — and nothing
+    on an unstamped tree (``tool_image.provenance_inputs``, the API's own
+    rule). ``workflow_id`` only when given: ``gowe submit`` registers and
+    submits in one call, so the ``wf_`` id is not known beforehand."""
+    if not cwl_path:
+        return {}
+    from ragstack.tool_image import provenance_inputs
+
+    try:
+        text = Path(cwl_path).read_text(encoding="utf-8")
+    except OSError as e:
+        # `gowe submit` reads the same path and fails on it; say why here.
+        print(f"warning: {cwl_path}: unreadable ({e}); seeding no provenance inputs",
+              file=sys.stderr, flush=True)
+        return {}
+    seeds: dict[str, Any] = provenance_inputs(text, cwl_path, workflow_id)
+    if seeds.get("workflow_id") is None:
+        seeds.pop("workflow_id", None)
+    return seeds
+
+
+def render_inputs(template: dict, shard_paths: list[str], out_path: str,
+                  *, cwl_path: str | None = None, workflow_id: str = "") -> None:
+    owned = [k for k in DRIVER_OWNED_KEYS if k in template]
+    if owned:
+        raise SystemExit(f"--inputs-template must not contain {', '.join(map(repr, owned))}; "
+                         "the driver fills them")
     doc = dict(template)
     doc["shards"] = [{"class": "File", "location": p} for p in shard_paths]
+    doc.update(provenance_seed(cwl_path, workflow_id))
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)  # JSON is valid YAML; no dependency needed
 
@@ -307,6 +344,16 @@ def render_inputs(template: dict, shard_paths: list[str], out_path: str) -> None
 def _last_status(ledger_path: str, batch: str) -> str | None:
     """The batch's most recent recorded status ('done' | 'failed' | 'timeout')."""
     return read_ledger(ledger_path).get(batch, {}).get("status")
+
+
+def glossary_of(summary: dict | None) -> dict | None:
+    """The load summary's glossary record (#847): the file's ``counts`` and
+    ``degraded_reasons`` — which documents got the model's half and why the
+    others did not. ``None`` when the load rendered from no file."""
+    gf = (summary or {}).get("glossary_file")
+    if not isinstance(gf, dict):
+        return None
+    return {"counts": gf.get("counts"), "degraded_reasons": gf.get("degraded_reasons") or {}}
 
 
 def run_batch(args, template: dict, store: str, key: str,
@@ -327,7 +374,8 @@ def run_batch(args, template: dict, store: str, key: str,
         print(f"[{key}] re-attaching to {sub_id}", flush=True)
     else:
         inputs_path = os.path.join(args.out, f"inputs-{key}.json")
-        render_inputs(template, shard_paths, inputs_path)
+        render_inputs(template, shard_paths, inputs_path, cwl_path=args.cwl,
+                      workflow_id=args.workflow_id)
         sub_id = submit(args.gowe_bin, args.server, args.cwl, inputs_path, args.group)
         print(f"[{key}] submitted {sub_id} ({len(shard_paths)} shards)", flush=True)
     state = poll(args.gowe_bin, args.server, sub_id,
@@ -351,6 +399,9 @@ def run_batch(args, template: dict, store: str, key: str,
     row.update(qdrant_after=q1, es_after=e1,
                loaded_chunks=(summary or {}).get("n_chunks"),
                delta=q1 - q0)
+    glossary = glossary_of(summary)
+    if glossary is not None:
+        row["glossary"] = glossary
     if ok and q1 != e1:
         # Leg disagreement is data loss in one store; a small/zero DELTA is not
         # (an idempotent re-run legitimately advances by less than n_chunks).
@@ -372,6 +423,7 @@ def run_batch(args, template: dict, store: str, key: str,
     append_ledger(ledger_path, row)
     print(f"[{key}] {row['status']}: state={state} delta={row['delta']} "
           f"legs={q1}/{e1} wall={row['wall_s']}s"
+          + (f" glossary={json.dumps(glossary, sort_keys=True)}" if glossary else "")
           + (f" ERROR: {row.get('error')}" if not ok else ""), flush=True)
     return ok
 
@@ -417,6 +469,11 @@ def main(argv=None) -> int:
                         "resolve the run-as uid for ~5 s (transient LDAP), and its "
                         "three in-worker retries all fell inside that window. "
                         "Timeouts are NOT retried here — they re-attach instead.")
+    p.add_argument("--workflow-id", default="",
+                   help="record this GoWe workflow id on every batch's receipts (#821); "
+                        "default none — `gowe submit` registers and submits in one call, "
+                        "so the id is not known beforehand. tool_image/tool_image_digest "
+                        "are seeded from the stamped tree regardless")
     p.add_argument("--dry-run", action="store_true",
                    help="print the batch plan and per-batch shard counts; submit nothing")
     args = p.parse_args(argv)
@@ -425,10 +482,13 @@ def main(argv=None) -> int:
 
     with open(args.inputs_template, encoding="utf-8") as fh:
         template = yaml.safe_load(fh)
-    if "shards" in template:
+    owned = [k for k in DRIVER_OWNED_KEYS if k in template]
+    if owned:
         # A template that already lists shards would silently pin every batch to
-        # the same files — the exact class of mistake a driver exists to prevent.
-        raise SystemExit("--inputs-template must not contain 'shards'; the driver fills them")
+        # the same files — the exact class of mistake a driver exists to prevent;
+        # one that names a tools image would record an image the CWL may not name.
+        raise SystemExit(f"--inputs-template must not contain {', '.join(map(repr, owned))}; "
+                         "the driver fills them")
     for req in ("collection_id", "registry_db", "qdrant_url", "es_url"):
         if req not in template:
             raise SystemExit(f"--inputs-template missing {req!r}")

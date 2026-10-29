@@ -27,7 +27,7 @@ func TestValidatePublic(t *testing.T) {
 	ok := map[string][]string{
 		// Decimal forms Python's float() and pydantic also accept (#781 review).
 		"TEXT_SYMBOL_GLOSSARY_BOOST": {"0", "1", "1.5", "1_000", "+1", ".5", "5.", "1e3", "1E-2", "-0", "2.5e+1"},
-		"SYMBOL_GLOSSARY_EXTRACTION": {"off", "rules"},
+		"SYMBOL_GLOSSARY_EXTRACTION": {"off", "rules", "llm"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"", `{}`, `{"definition_window":200}`,
 			`{"attach_only_with_value":true,"rule_respectively":false}`},
 		"DUPLICATE_POLICY":               {"refuse", "allow", "off", "Refuse"},
@@ -51,7 +51,7 @@ func TestValidatePublic(t *testing.T) {
 			"1__0", "_1", "1_", ".", "e3", "1e",
 			// whitespace and control characters (ValidatePublic, for every ruled key)
 			" 2 ", "1 ", "1\n", "1\r"},
-		"SYMBOL_GLOSSARY_EXTRACTION": {"on", "llm", "RULES", "", " rules", "rules\n"},
+		"SYMBOL_GLOSSARY_EXTRACTION": {"on", "LLM", "RULES", "", " rules", "rules\n"},
 		"SYMBOL_GLOSSARY_CONFIG_JSON": {"{", "null", `"x"`, "[]", `{"definiton_window":200}`, " {}",
 			"{}\n"},
 		"DUPLICATE_POLICY":               {"skip", "", " refuse", "allow\n"},
@@ -125,6 +125,102 @@ func TestGlossaryConfigKeysMatchPython(t *testing.T) {
 	for k := range glossaryConfigKeys {
 		if !py[k] {
 			t.Errorf("glossaryConfigKeys lists %s, which is not a GlossaryConfig field", k)
+		}
+	}
+}
+
+// #847 G2b review: the glossary step's model and knob settings are checked at
+// `env set`, not first at the tenant's next boot.
+func TestGlossaryLLMRules(t *testing.T) {
+	ok := map[string][]string{
+		"SYMBOL_GLOSSARY_LLM_MODEL": {"org/model-7b", "Qwen/Qwen3.6-35B-A3B", "m"},
+		"SYMBOL_GLOSSARY_LLM_INPUTS_JSON": {"", "{}", `{"glossary_llm_max_tokens":8192}`,
+			`{"glossary_llm_timeout_s":30.5,"glossary_llm_deadline_s":0,"glossary_llm_thinking":"unset"}`,
+			`{"glossary_llm_timeout_s":300}`, `{"glossary_llm_cutoff_retry":"off","glossary_llm_seed":7}`,
+			`{"glossary_llm_concurrency":32,"glossary_llm_min_chars":1500,"glossary_llm_window_chars":80000}`,
+			`{"glossary_llm_extra_body":"{\"reasoning_effort\":\"low\"}"}`,
+			`{"glossary_llm_extra_body":"{\"response_format\":{\"schema\":{\"properties\":{\"token\":{\"type\":\"string\"}}}}}"}`},
+	}
+	bad := map[string][]string{
+		"SYMBOL_GLOSSARY_LLM_MODEL": {"", "a model", "m\tx", "m\x01"},
+		"SYMBOL_GLOSSARY_LLM_INPUTS_JSON": {"[1]", "{", "null", `"x"`,
+			`{"glossary_llm_bogus":1}`, `{"glossary_llm_endpoint":"http://x:1"}`, `{"glossary_llm":"on"}`,
+			`{"glossary_llm_max_tokens":"4096"}`, `{"glossary_llm_max_tokens":1.5}`,
+			`{"glossary_llm_max_tokens":true}`, `{"glossary_llm_concurrency":-1}`,
+			`{"glossary_llm_timeout_s":"30"}`, `{"glossary_llm_timeout_s":0}`,
+			`{"glossary_llm_thinking":"maybe"}`, `{"glossary_llm_cutoff_retry":1}`,
+			`{"glossary_llm_window_chars":1000}`, `{"glossary_llm_max_windows":0}`,
+			`{"glossary_llm_extra_body":"[1]"}`, `{"glossary_llm_extra_body":{"a":1}}`,
+			`{"glossary_llm_extra_body":"{\"model\":\"x\"}"}`,
+			`{"glossary_llm_extra_body":"{\"api_key\":\"x\"}"}`,
+			`{"glossary_llm_extra_body":"{\"headers\":{\"accessToken\":\"x\"}}"}`},
+	}
+	for k, vs := range ok {
+		if Classify(k) != Public {
+			t.Errorf("%s classifies as %s", k, Classify(k))
+		}
+		for _, v := range vs {
+			if err := ValidatePublic(k, v); err != nil {
+				t.Errorf("%s=%q refused: %v", k, v, err)
+			}
+		}
+	}
+	for k, vs := range bad {
+		for _, v := range vs {
+			if err := ValidatePublic(k, v); err == nil {
+				t.Errorf("%s=%q accepted", k, v)
+			}
+		}
+	}
+}
+
+// glossaryInputsPy is python/ragstack/ingestion/glossary_inputs.py.
+const glossaryInputsPy = "../../../../python/ragstack/ingestion/glossary_inputs.py"
+
+// TestGlossaryLLMKnobsMatchPython: the knob names, types and choices
+// SYMBOL_GLOSSARY_LLM_INPUTS_JSON may carry are the API's own
+// (glossary_inputs.KNOB_TYPES / KNOB_CHOICES), so a knob added there is not
+// refused by the ctl and one removed is not accepted.
+func TestGlossaryLLMKnobsMatchPython(t *testing.T) {
+	b, err := os.ReadFile(glossaryInputsPy)
+	if err != nil {
+		t.Fatalf("read %s: %v", glossaryInputsPy, err)
+	}
+	src := string(b)
+	block := func(name string) string {
+		start := strings.Index(src, "\n"+name+":")
+		if start < 0 {
+			t.Fatalf("%s: no %s", glossaryInputsPy, name)
+		}
+		end := strings.Index(src[start:], "\n}\n")
+		return src[start : start+end]
+	}
+	typ := regexp.MustCompile(`"(glossary_llm_[a-z_]+)":\s*(int|float|str),`)
+	py := map[string]string{}
+	for _, m := range typ.FindAllStringSubmatch(block("KNOB_TYPES"), -1) {
+		py[m[1]] = m[2]
+	}
+	if len(py) < 10 {
+		t.Fatalf("parsed only %d KNOB_TYPES entries", len(py))
+	}
+	if len(py) != len(glossaryLLMKnobs) {
+		t.Errorf("KNOB_TYPES has %d knobs, glossaryLLMKnobs %d", len(py), len(glossaryLLMKnobs))
+	}
+	for k, v := range py {
+		if glossaryLLMKnobs[k] != v {
+			t.Errorf("knob %s: python %s, ctl %q", k, v, glossaryLLMKnobs[k])
+		}
+	}
+	choice := regexp.MustCompile(`"(glossary_llm_[a-z_]+)":\s*\(([^)]*)\)`)
+	for _, m := range choice.FindAllStringSubmatch(block("KNOB_CHOICES"), -1) {
+		var want []string
+		for _, s := range strings.Split(m[2], ",") {
+			if s = strings.Trim(strings.TrimSpace(s), `"`); s != "" {
+				want = append(want, s)
+			}
+		}
+		if strings.Join(want, "|") != strings.Join(glossaryLLMChoices[m[1]], "|") {
+			t.Errorf("choices %s: python %v, ctl %v", m[1], want, glossaryLLMChoices[m[1]])
 		}
 	}
 }

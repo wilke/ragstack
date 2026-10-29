@@ -17,8 +17,10 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Restart scopes: what has to happen before a new value is in effect.
@@ -127,6 +129,204 @@ func glossaryConfigJSON(v string) error {
 	return nil
 }
 
+// glossaryLLMKnobs are the keys SYMBOL_GLOSSARY_LLM_INPUTS_JSON may set and
+// their Python types — python/ragstack/ingestion/glossary_inputs.py's
+// KNOB_TYPES, kept in step by TestGlossaryLLMKnobsMatchPython. The API refuses
+// to BOOT on anything else, so the ctl refuses it at `env set` instead.
+var glossaryLLMKnobs = map[string]string{
+	"glossary_llm_concurrency":   "int",
+	"glossary_llm_timeout_s":     "float",
+	"glossary_llm_max_tokens":    "int",
+	"glossary_llm_window_chars":  "int",
+	"glossary_llm_max_windows":   "int",
+	"glossary_llm_thinking":      "str",
+	"glossary_llm_repair_rounds": "int",
+	"glossary_llm_cutoff_retry":  "str",
+	"glossary_llm_deadline_s":    "float",
+	"glossary_llm_min_chars":     "int",
+	"glossary_llm_seed":          "int",
+	"glossary_llm_extra_body":    "str",
+}
+
+// glossaryLLMChoices are glossary_inputs.KNOB_CHOICES.
+var glossaryLLMChoices = map[string][]string{
+	"glossary_llm_thinking":     {"off", "on", "unset"},
+	"glossary_llm_cutoff_retry": {"off", "split"},
+}
+
+// glossaryLLMPositive must be > 0 when given (the tool refuses 0 with --llm on);
+// glossaryWindowOverlap is symbol_glossary_llm.WINDOW_OVERLAP.
+var glossaryLLMPositive = set("glossary_llm_timeout_s", "glossary_llm_max_tokens",
+	"glossary_llm_window_chars", "glossary_llm_max_windows")
+
+const glossaryWindowOverlap = 2000
+
+// glossaryInputsJSON is empty or a JSON object of known knobs with the API's
+// types (glossary_inputs.glossary_settings_problems): an int is a JSON
+// integer, a float any number, never a boolean, none negative; the choices;
+// the required limits > 0; the window longer than the overlap; extra_body a
+// JSON-object string that sets no request field the step owns and carries no
+// credential-like key.
+func glossaryInputsJSON(v string) error {
+	if v == "" {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(v))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil || m == nil {
+		return fmt.Errorf("not a JSON object (the API refuses to boot)")
+	}
+	for _, k := range keysOf(m) {
+		want, known := glossaryLLMKnobs[k]
+		if !known {
+			return fmt.Errorf("%q is not a glossary step knob (the API refuses to boot); known: %s",
+				k, strings.Join(keysOf(glossaryLLMKnobs), ", "))
+		}
+		if err := glossaryKnobValue(k, want, m[k]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func glossaryKnobValue(k, want string, raw any) error {
+	switch want {
+	case "int", "float":
+		n, ok := raw.(json.Number)
+		if !ok {
+			return fmt.Errorf("%s must be %s", k, want)
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return fmt.Errorf("%s must be %s", k, want)
+		}
+		if want == "int" {
+			if _, err := n.Int64(); err != nil {
+				return fmt.Errorf("%s must be int", k)
+			}
+		}
+		if f < 0 {
+			return fmt.Errorf("%s must be >= 0", k)
+		}
+		if glossaryLLMPositive[k] && f <= 0 {
+			return fmt.Errorf("%s must be > 0 with llm on", k)
+		}
+		if k == "glossary_llm_window_chars" && f <= glossaryWindowOverlap {
+			return fmt.Errorf("%s must be > %d (the window overlap)", k, glossaryWindowOverlap)
+		}
+	case "str":
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("%s must be str", k)
+		}
+		if choices, ok := glossaryLLMChoices[k]; ok && !contains(choices, s) {
+			return fmt.Errorf("%s must be one of %s", k, strings.Join(choices, "|"))
+		}
+		if k == "glossary_llm_extra_body" {
+			return glossaryExtraBody(s)
+		}
+	}
+	return nil
+}
+
+// glossaryCoreFields are symbol_glossary_llm.CORE_REQUEST_FIELDS.
+var glossaryCoreFields = set("model", "messages", "max_tokens", "temperature", "seed")
+
+// The credential-like key rule of symbol_glossary_llm._secret_like.
+var (
+	glossarySecretKeys = set("api_key", "apikey", "authorization", "auth", "token", "secret",
+		"password", "passwd", "bearer", "credential", "credentials", "x_api_key", "key")
+	glossarySecretSuffixes = []string{"_token", "_secret", "_password", "_api_key", "_apikey", "_key",
+		"_authorization", "_credential", "_credentials"}
+	camelBoundary = regexp.MustCompile(`([a-z0-9])([A-Z])|([A-Z])([A-Z][a-z])`)
+)
+
+func secretLikeKey(key string) bool {
+	k := camelBoundary.ReplaceAllString(strings.TrimSpace(key), "${1}${3}_${2}${4}")
+	k = strings.ReplaceAll(strings.ToLower(k), "-", "_")
+	if glossarySecretKeys[k] {
+		return true
+	}
+	for _, s := range glossarySecretSuffixes {
+		if strings.HasSuffix(k, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func secretPaths(obj any, schemaNames bool) []string {
+	var out []string
+	switch o := obj.(type) {
+	case map[string]any:
+		for k, v := range o {
+			if !schemaNames && secretLikeKey(k) {
+				out = append(out, k)
+			}
+			_, isMap := v.(map[string]any)
+			out = append(out, secretPaths(v, !schemaNames && k == "properties" && isMap)...)
+		}
+	case []any:
+		for _, v := range o {
+			out = append(out, secretPaths(v, false)...)
+		}
+	}
+	return out
+}
+
+func glossaryExtraBody(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(s), &obj); err != nil || obj == nil {
+		return fmt.Errorf("glossary_llm_extra_body must be a JSON object string")
+	}
+	for k := range obj {
+		if glossaryCoreFields[k] {
+			return fmt.Errorf("glossary_llm_extra_body may not set %q: the step sets it itself", k)
+		}
+	}
+	if p := secretPaths(obj, false); len(p) > 0 {
+		sort.Strings(p)
+		return fmt.Errorf("glossary_llm_extra_body may not carry credential-like keys %v", p)
+	}
+	return nil
+}
+
+// glossaryModel is a served model id: non-empty, no whitespace, no control
+// character (it is sent verbatim as the request's `model`).
+func glossaryModel(v string) error {
+	if v == "" {
+		return fmt.Errorf("empty (with SYMBOL_GLOSSARY_EXTRACTION=llm the API refuses to boot)")
+	}
+	for _, r := range v {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("a model id has no whitespace or control character")
+		}
+	}
+	return nil
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func keysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 const glossaryNote = " The glossary is a separate BM25 field (`symbol_glossary`) on the text index; " +
 	"see docs/plans/symbol-glossary.md."
 
@@ -146,9 +346,11 @@ var publicRules = map[string]PublicRule{
 	},
 	// #754/#763: the per-document symbol glossary.
 	"SYMBOL_GLOSSARY_EXTRACTION": {
-		Check: oneOf("off", "rules"),
+		Check: oneOf("off", "rules", "llm"),
 		Scope: ScopeNewIngests,
-		Help: "off|rules (default rules, #783). Applies to documents ingested after " +
+		Help: "off|rules|llm (default rules, #783). llm (#847 G2b): a gowe tenant's workflow " +
+			"glossary step also asks SYMBOL_GLOSSARY_LLM_ENDPOINT/_MODEL (both required, or the API " +
+			"refuses to boot); in-process it reads as rules. Applies to documents ingested after " +
 			"`tenant restart <t> --only api`, on both ingest paths: in-process, and a gowe tenant's worker " +
 			"ingest, which receives it as the `symbol_glossary` workflow input when the registered " +
 			"pdf-ingest-scatter workflow declares it. Chunks already indexed are unchanged until they are " +
@@ -163,6 +365,23 @@ var publicRules = map[string]PublicRule{
 			"GlossaryConfig field. Unlike SYMBOL_GLOSSARY_EXTRACTION, it affects only in-process API ingests " +
 			"after `tenant restart <t> --only api` (a gowe worker runs the default config); the backfill " +
 			"script takes its own --config." + glossaryNote,
+	},
+	// #847 G2b: the glossary step's model and limits (gowe, llm mode).
+	"SYMBOL_GLOSSARY_LLM_MODEL": {
+		Check: glossaryModel,
+		Scope: ScopeNewIngests,
+		Help: "the served model id the glossary step asks (#847 G2b), sent as a workflow input with " +
+			"SYMBOL_GLOSSARY_EXTRACTION=llm on a gowe tenant; required there (no fallback to LLM_MODEL). " +
+			"Applies to ingests after `tenant restart <t> --only api`.",
+	},
+	"SYMBOL_GLOSSARY_LLM_INPUTS_JSON": {
+		Check: glossaryInputsJSON,
+		Scope: ScopeNewIngests,
+		Help: "the glossary step's limits as a JSON object keyed by the workflow input names " +
+			"(glossary_llm_concurrency, _timeout_s, _max_tokens, _window_chars, _max_windows, _thinking, " +
+			"_repair_rounds, _cutoff_retry, _deadline_s, _min_chars, _seed, _extra_body); omitted keys take " +
+			"the API's defaults. Concurrency is the tenant's TOTAL in flight, split across a run's batches. " +
+			"Applies to ingests after `tenant restart <t> --only api`.",
 	},
 	"TEXT_SYMBOL_GLOSSARY_BOOST": {
 		Check: nonNegativeFloat,

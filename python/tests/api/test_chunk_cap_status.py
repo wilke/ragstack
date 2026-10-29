@@ -141,7 +141,7 @@ async def test_local_refusal_surfaces_on_the_job_status(client, principals, _cle
     # The poll response keeps its contract shape; the reason is on the job.
     # (`collection` joined the shape in #422 — the job row's own stamp, so a
     # poll answers "where did this land?" with the same id the 202 did.)
-    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection"}
+    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection", "warnings"}
     assert body["collection"] == "lib"
     assert body["status"] == "failed" and body["chunk_ids"] == []
     assert body["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
@@ -242,7 +242,7 @@ async def test_gowe_receipt_label_is_lifted_onto_the_job(client, gowe):  # noqa:
     assert r.status_code == 202, r.text
     job_id = r.json()["job_id"]
     body = await _poll(client, job_id, AUTH)
-    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection"}
+    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection", "warnings"}
     assert body["status"] == "failed"
     assert body["items"] == {"total": 2, "completed": 0, "failed": 2, "pending": 0}
     job = await app.state.job_store.get(job_id)
@@ -322,3 +322,31 @@ async def test_gowe_real_engine_failure_exit_4_reaches_the_job(client, gowe):  #
     assert job.error == CHUNK_CAP_EXCEEDED and job.archive_ref == ""
     assert {i.error for i in app.state.job_store._items[job_id].values()} == {line}
     assert gowe["workspace"].reads == []  # nothing delivered, nothing read
+
+
+async def test_a_declaring_workflow_gets_max_chunks_on_every_submission(
+        client, gowe, monkeypatch):  # noqa: F811
+    """#849: when the registered text DECLARES ``max_chunks`` (the repo's
+    scatter CWL does), the API sends it every time — ``0`` for "no cap" too —
+    so the submission's inputs record the submitter's decision and never lean
+    on the workflow default. An older text that does not declare it keeps the
+    pre-#849 rule (sent only when a cap applies; the test above)."""
+    from pathlib import Path
+
+    from ragstack.config import settings
+
+    scatter = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
+    if not scatter.is_file():
+        pytest.skip("no cwl/ in this checkout")
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", scatter.read_text())
+    inner = gowe["store"]._inner
+    await inner.put(gowe["spec"].model_copy(update={"max_chunks": 0}))
+    assert (await _upload(client, "a.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 0
+    await inner.put(gowe["spec"])
+    monkeypatch.setattr(settings, "max_chunks_per_collection", 0)
+    assert (await _upload(client, "b.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 0
+    await inner.put(gowe["spec"].model_copy(update={"max_chunks": 7}))
+    assert (await _upload(client, "c.pdf")).status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["max_chunks"] == 7

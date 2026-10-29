@@ -337,3 +337,44 @@ def test_duplicate_shard_id_message_names_the_ids_and_the_basename_remedy(
         assert "['x.jsonl', 'y.jsonl']" in msg
         assert "distinct basenames" in msg and "--shard-id" in msg
         assert "nameroot).receipt.json" in msg        # the staging remedy still named
+
+
+def _scattered_constant_globs(doc: dict) -> list[str]:
+    """``step:output`` for every output of a SCATTERED step whose glob is a
+    constant (no ``$(inputs.…)``): GoWe stages the gathered ``File[]`` flat by
+    basename, so N tasks' files would collapse onto one."""
+    out = []
+    for sname, step in (doc.get("steps") or {}).items():
+        run = step.get("run")
+        if "scatter" not in step or not isinstance(run, dict):
+            continue
+        for oname, o in (run.get("outputs") or {}).items():
+            glob = ((o or {}).get("outputBinding") or {}).get("glob") if isinstance(o, dict) else None
+            globs = glob if isinstance(glob, list) else [glob]
+            if any(isinstance(g, str) and "$(" not in g for g in globs):
+                out.append(f"{sname}:{oname}")
+    return out
+
+
+#: Pre-existing, outside the ingest planes: the SciFact chunking eval scatters
+#: ``chunk_one`` over configs with a constant ``metrics`` glob. It is a hand-run
+#: (cwltool) study workflow, not registered with GoWe; renaming it is not this
+#: release's change. Pinned exactly, so a new constant name there still fails.
+KNOWN_EVAL_CONSTANT = ["chunk_one:metrics"]
+
+
+def test_glossary_outputs_are_named_per_batch() -> None:
+    """#847 G2b rides on #852: the glossary step is scattered, so its file and
+    summary are named by the shard (``<nameroot>.glossary.jsonl``) — and, more
+    generally, no scattered step of any workflow globs a constant name. The
+    one gather (``merge_glossary``) may: it is a single task."""
+    offenders = {p.name: bad for p in sorted((REPO / "cwl").glob("*.cwl"))
+                 if (bad := _scattered_constant_globs(yaml.safe_load(p.read_text())))}
+    assert offenders.pop("eval-scifact-chunking.cwl", None) in (None, KNOWN_EVAL_CONSTANT)
+    assert not offenders, offenders
+    wf = yaml.safe_load((REPO / "cwl" / "pdf-ingest-scatter.cwl").read_text())
+    assert wf["steps"]["glossary"]["run"]["outputs"]["glossary"]["outputBinding"]["glob"] \
+        == "$(inputs.shard.nameroot).glossary.jsonl"
+    bad = {"steps": {"g": {"scatter": "shard", "run": {"outputs": {
+        "glossary": {"type": "File", "outputBinding": {"glob": "glossary.jsonl"}}}}}}}
+    assert _scattered_constant_globs(bad) == ["g:glossary"]
