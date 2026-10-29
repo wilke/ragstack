@@ -302,6 +302,8 @@ def test_api_pools_record_requested_and_served(data: dict[str, Any]) -> None:
     assert out["manipulation"]["ok"] and m.max_inflight <= rt.MAX_INFLIGHT
     live_bodies = [b for meth, p, b in m.calls if p == "/v1/retrieve" and b.get("rerank")]
     assert live_bodies and all(b["rerank_candidates"] == 20 and b["top_k"] == 10 for b in live_bodies)
+    # the two prereg legs only: the server's use_graph default (true) is pinned off on every request
+    assert all(b["use_graph"] is False for meth, p, b in m.calls if p == "/v1/retrieve")
     assert "queries" not in out  # --omit-text is the default
 
 
@@ -390,6 +392,21 @@ def test_omit_text_refuses_a_leak(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="query/quote"):
         rt.write_out(tmp_path / "x.json", {"oops": "the a private quote text"}, q, True)
     rt.write_out(tmp_path / "y.json", {"oops": "the a private quote text"}, q, False)
+
+
+@pytest.mark.parametrize("text", ['He said "hello there" to me', "path C:\\Users\\private\\quote",
+                                  "line one\nline two of a quote", "Größe µ ≤ 4096 tokens — ünïcode"])
+def test_omit_text_catches_json_escaped_forms(tmp_path: Path, text: str) -> None:
+    """JSON escapes quotes, backslashes, newlines and (ensure_ascii) non-ASCII: a
+    plain substring scan of the serialised JSON misses those texts. Remove the
+    escaped forms from the scan and this test fails."""
+    q = [{"id": "r", "query": text, "quotes": [text]}]
+    assert rt.check_no_text({"oops": text}, [text]) == [text[:40]]
+    assert rt.check_no_text({"oops": {"nested": [1, text]}}, [text]) == [text[:40]]
+    with pytest.raises(SystemExit, match="query/quote"):
+        rt.write_out(tmp_path / "x.json", {"oops": text}, q, True)
+    assert not (tmp_path / "x.json").exists()
+    assert rt.check_no_text({"fine": "nothing private here at all"}, [text]) == []
 
 
 # ------------------------------------------------------------------ rerank via a mock sidecar
@@ -486,6 +503,38 @@ def test_rerank_identity_gate_failure_stops_everything(data: dict[str, Any]) -> 
     out = json.loads((data["dir"] / "rr.json").read_text())
     assert out["identity_gate"]["status"] == "fail" and out["status"] == "identity_gate_failed"
     assert out["lists"] == {}
+
+
+def test_identity_reference_from_part4_retrieval_store(data: dict[str, Any], tmp_path: Path) -> None:
+    """docs-A has no live API: the reference is the part-4 retrieval store
+    (``{"k": "retrieval|<qid>|<arm>", "rr": [...]}`` rows) selected by arm."""
+    write_pools(data)
+    pools = json.loads((data["dir"] / "pools.json").read_text())
+    live = pools["lists"].pop("live:hybrid@50")
+    pools["depth"].pop("live:hybrid@50")
+    (data["dir"] / "pools.json").write_text(json.dumps(pools))
+    ref = tmp_path / "part4-retrieval.jsonl"
+    rows = [{"k": f"retrieval|{rid}|T512o0", "rr": lst} for rid, lst in live.items()]
+    rows += [{"k": f"retrieval|{rid}|T128o0", "rr": list(reversed(lst))} for rid, lst in live.items()]
+    rows += [{"k": "generation|q0|-|-|-", "x": 1}]
+    ref.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert rt.load_identity_reference(ref, "T512o0") == live
+    with pytest.raises(SystemExit, match="identity-arm"):
+        rt.load_identity_reference(ref)
+    with pytest.raises(SystemExit, match="no retrieval rows"):
+        rt.load_identity_reference(ref, "nope")
+    m = sidecar_server()
+    try:
+        assert rt.main(rerank_argv(data, m.url, "--jobs", "hybrid@50:content+gloss", "--identity-reference", str(ref),
+                                   "--identity-arm", "T512o0")) == 0
+        out = json.loads((data["dir"] / "rr.json").read_text())
+        assert out["identity_gate"]["status"] == "pass"
+        assert out["identity_gate"]["reference"] == "file:part4-retrieval.jsonl|T512o0"
+        # the other arm's lists are reversed: the gate fails and nothing else is sent
+        assert rt.main(rerank_argv(data, m.url, "--jobs", "hybrid@50:content+gloss", "--identity-reference", str(ref),
+                                   "--identity-arm", "T128o0")) == 1
+    finally:
+        m.close()
 
 
 def test_rerank_refuses_a_different_model(data: dict[str, Any]) -> None:
@@ -661,6 +710,50 @@ def test_stats_absent_arm_and_offline_route() -> None:
     assert res["arms"]["A4-50"]["route"] == "offline"
     assert res["hypotheses"]["H1"]["status"] == rt.GNE
     assert "identity gate failed" in res["hypotheses"]["H1"]["gate"]
+
+
+def test_stats_absent_identity_gate_blocks_family_with_offline_arms() -> None:
+    """Owner decision: with A4-50 / A5-50 from the offline rerank, an ABSENT (or
+    failed) identity gate makes H1-H3 GATE-NOT-EVALUABLE; API-live arms need no
+    gate. Remove the family gate and this test fails."""
+    L, gold = hand_case()
+    off = dict(L)
+    off["rr:hybrid@50:content+gloss"] = off.pop("live:hybrid@50")
+    off["rr:bm25@50:content+gloss"] = off.pop("live:bm25@50")
+    for identity in (None, {"status": "absent"}):
+        res = rt.analyse(off, {k: {"status": "ok"} for k in off}, gold, depths=[10, 50, 100], an=AN, seed=1,
+                         identity=identity)
+        assert [h["status"] for h in res["hypotheses"].values()] == [rt.GNE] * 3
+        assert all(any("identity gate absent" in g for g in h["gate"]) for h in res["hypotheses"].values())
+        assert res["family"]["tested"] == [] and res["family"]["offline_arms"] == ["A4-50", "A5-50"]
+        assert res["arms"]["A4-50"]["identity_gate"] == "absent"
+    ok = rt.analyse(off, {k: {"status": "ok"} for k in off}, gold, depths=[10, 50, 100], an=AN, seed=1,
+                    identity={"status": "pass"})
+    assert ok["hypotheses"]["H1"]["status"] == "confirmed" and ok["family"]["tested"] == ["H1", "H3"]
+    # the same tables from the API's own lists: no reranked arm is offline, the gate is not needed
+    live = rt.analyse(L, {k: {"status": "ok"} for k in L}, gold, depths=[10, 50, 100], an=AN, seed=1, identity=None)
+    assert live["hypotheses"]["H1"]["status"] == "confirmed" and live["family"]["offline_arms"] == []
+
+
+def test_a7_arms_are_labelled_exploratory(data: dict[str, Any]) -> None:
+    write_pools(data)
+    m = sidecar_server()
+    try:
+        assert rt.main(rerank_argv(data, m.url, "--jobs", "hybrid@50:gloss-only,hybrid@50:content+gloss")) == 0
+    finally:
+        m.close()
+    rr = json.loads((data["dir"] / "rr.json").read_text())
+    d = rr["depth"]["rr:hybrid@50:gloss-only"]
+    assert d["role"] == "exploratory" and d["empty_passages"] > 0
+    assert "role" not in rr["depth"]["rr:hybrid@50:content+gloss"]
+    lists = [str(data["dir"] / "pools.json"), str(data["dir"] / "rr.json")]
+    assert rt.main(["stats", "--lists", *lists, "--gold", str(data["dir"] / "gold.json"), "--set-label", "synthetic",
+                    "--depths", "10,20,50", "--n-perm", "100", "--n-boot", "100",
+                    "--out", str(data["dir"] / "res.json")]) == 0
+    arms = json.loads((data["dir"] / "res.json").read_text())["arms"]
+    assert arms["A7-gloss-only"]["role"].startswith("exploratory") and "empty passage" in arms["A7-gloss-only"]["note"]
+    assert arms["A7-content+gloss"]["role"].startswith("exploratory") and "note" not in arms["A7-content+gloss"]
+    assert "role" not in arms["A4-50"]
 
 
 def test_attainable_floor() -> None:

@@ -433,10 +433,21 @@ def depth_status(requested: int, served: dict[str, int], exhausted: set[str], sh
             "under_served_ids": sorted(short_bad)[:50], "status": st}
 
 
+def _serialised_forms(text: str) -> set[str]:
+    """The ways ``text`` can appear inside a JSON document: verbatim, and
+    JSON-escaped with and without ``ensure_ascii`` (quotes, backslashes and
+    newlines become ``\\"``, ``\\\\``, ``\\n``; non-ASCII may become ``\\uXXXX``)."""
+    return {text, json.dumps(text, ensure_ascii=False)[1:-1], json.dumps(text)[1:-1]}
+
+
 def check_no_text(obj: Any, texts: Iterable[str], min_len: int = 12) -> list[str]:
-    """Texts (queries, quotes) of at least ``min_len`` chars that occur in the JSON of ``obj``."""
-    blob = json.dumps(obj, ensure_ascii=False)
-    return sorted({t[:40] for t in texts if len(t) >= min_len and t in blob})
+    """Texts (queries, quotes) of at least ``min_len`` chars that occur in the JSON
+    of ``obj`` as :func:`deployed_docs_part4.write_json_atomic` serialises it, in
+    any of their serialised forms (a plain substring scan would miss a quote that
+    contains ``"``, ``\\`` or a newline, because JSON escapes them)."""
+    blob = json.dumps(obj, indent=1, sort_keys=True, default=str)
+    return sorted({t[:40] for t in texts
+                   if len(t) >= min_len and any(f in blob for f in _serialised_forms(t))})
 
 
 def write_out(path: Path, obj: dict[str, Any], questions: list[dict[str, Any]] | None, omit_text: bool) -> None:
@@ -608,12 +619,16 @@ def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], le
         raise SystemExit(f"the API route caps pool depth at MAX_TOP_K={API_MAX_TOP_K} (asked {dmax}); "
                          "depth-200 pools run in-process")
     reqs: list[tuple[str, int, dict[str, Any]]] = []  # (key, requested served depth, body)
+    # ``use_graph=false`` pins the two legs the prereg defines (BM25, dense): the
+    # server's default is ``true``, and a configured graph store would otherwise
+    # add a third leg the in-process route and the offline rerank do not have.
     for leg in legs:
         for D in (depths if leg == "hybrid" else [dmax]):
-            reqs.append((f"{leg}@{D}", D, {"top_k": D, "rerank": False, "retrieval_mode": leg}))
+            reqs.append((f"{leg}@{D}", D, {"top_k": D, "rerank": False, "retrieval_mode": leg,
+                                           "use_graph": False}))
     for leg, D in live:
         reqs.append((f"live:{leg}@{D}", TOP, {"top_k": TOP, "rerank": True, "rerank_candidates": D,
-                                              "retrieval_mode": leg}))
+                                              "retrieval_mode": leg, "use_graph": False}))
     jobs = [(k, want, body, q) for k, want, body in reqs for q in questions]
     lists: dict[str, dict[str, list[str]]] = defaultdict(dict)
     served: dict[str, dict[str, int]] = defaultdict(dict)
@@ -921,6 +936,32 @@ def parse_jobs(spec: str, lists: dict[str, Any], depths: Sequence[int]) -> list[
     return jobs
 
 
+def load_identity_reference(path: Path, arm: str | None = None) -> dict[str, list[str]]:
+    """The reference reranked lists for the identity gate: ``{rid: [ids]}``, a
+    lists file (its ``live:hybrid@50``), or the part-4 retrieval store
+    (``part4-retrieval.jsonl``: rows ``{"k": "retrieval|<qid>|<arm>", "rr": [...]}``,
+    the reranked list per question; ``arm`` selects the arm, e.g. ``T512o0``)."""
+    if path.suffix == ".jsonl":
+        if not arm:
+            raise SystemExit("--identity-reference is a part-4 retrieval store: --identity-arm ARM is required")
+        out: dict[str, list[str]] = {}
+        for row in dp4.read_jsonl_repair_tail(path):
+            k = str(row.get("k", "")).split("|")
+            if len(k) == 3 and k[0] == "retrieval" and k[2] == arm:
+                out[k[1]] = [str(x) for x in row["rr"]]
+        if not out:
+            raise SystemExit(f"{path.name}: no retrieval rows for arm {arm!r}")
+        return out
+    ref = json.loads(path.read_text())
+    if isinstance(ref, dict) and "lists" in ref:
+        ref = ref["lists"].get("live:hybrid@50")
+        if ref is None:
+            raise SystemExit(f"{path.name}: lists file without live:hybrid@50")
+    if not isinstance(ref, dict):
+        raise SystemExit(f"{path.name}: not a {{rid: [ids]}} map")
+    return {str(k): [str(x) for x in v] for k, v in ref.items()}
+
+
 def identity_gate(live: dict[str, list[str]], offline: dict[str, list[str]], probes: Sequence[str]) -> dict[str, Any]:
     rows = {}
     for rid in probes:
@@ -1015,9 +1056,8 @@ def cmd_rerank(args: argparse.Namespace) -> int:
     # ---- identity gate first
     ref_key, ref = None, None
     if args.identity_reference:
-        ref = json.loads(Path(args.identity_reference).read_text())
-        ref = ref.get("lists", {}).get("live:hybrid@50", ref) if isinstance(ref, dict) else ref
-        ref_key = f"file:{Path(args.identity_reference).name}"
+        ref = load_identity_reference(Path(args.identity_reference), args.identity_arm)
+        ref_key = f"file:{Path(args.identity_reference).name}" + (f"|{args.identity_arm}" if args.identity_arm else "")
     elif "live:hybrid@50" in lists:
         ref, ref_key = lists["live:hybrid@50"], "live:hybrid@50"
     pool50 = pool_list(lists, "hybrid", 50)
@@ -1049,6 +1089,11 @@ def cmd_rerank(args: argparse.Namespace) -> int:
         base = src["depth"].get(pool_source_key(lists, leg, D) or "", {})
         out["depth"][key] = {"pool": pool_source_key(lists, leg, D), "pool_depth": D,
                              "status": base.get("status", "unknown")}
+        if rend == "gloss-only":
+            # exploratory only: a glossary-less chunk is scored on an EMPTY passage
+            out["depth"][key]["role"] = "exploratory"
+            out["depth"][key]["empty_passages"] = sum(
+                1 for ids in pools.values() for x in ids if not corpus.by_id[x].glossary)
     if "rr:hybrid@50:content+gloss" in out["lists"] and "live:hybrid@50" in lists:
         a, b = out["lists"]["rr:hybrid@50:content+gloss"], lists["live:hybrid@50"]
         common = sorted(set(a) & set(b))
@@ -1227,7 +1272,11 @@ def arm_map(lists: dict[str, Any], depths: Sequence[int], prefer: str = "live") 
     for rend in RENDERINGS:
         k = f"rr:hybrid@50:{rend}"
         if k in lists:
-            out[f"A7-{rend}"] = {"key": k, "route": "offline", "pool": ("hybrid", 50) if have_pool("hybrid", 50) else None}
+            out[f"A7-{rend}"] = {"key": k, "route": "offline", "pool": ("hybrid", 50) if have_pool("hybrid", 50) else None,
+                                 "role": "exploratory (E2: reranker input)"}
+            if rend == "gloss-only":
+                out[f"A7-{rend}"]["note"] = ("exploratory only: a glossary-less chunk is scored on an empty passage; "
+                                             "not a reranker-input variant of the shipped path")
     for k in lists:
         if k.startswith("fuse:"):
             out[k[5:]] = {"key": k, "route": "offline fuse", "pool": None}
@@ -1337,7 +1386,16 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
             ranks[name] = rk
         arm_out[name] = {"list": spec["key"], "route": spec["route"], "summary": rank_summary(rk, llen),
                          "gate": list_status(spec["key"]) or None,
-                         "identity_gate": gate_status if spec["route"].startswith("offline") else None}
+                         "identity_gate": gate_status if spec["route"].startswith("offline") else None,
+                         **{k: spec[k] for k in ("role", "note") if k in spec}}
+    # The confirmatory family needs a PASSED identity gate when any of its reranked
+    # arms (A4-50, A5-50) is the offline rerank rather than the API's own list: an
+    # absent or failed gate makes H1-H3 GATE-NOT-EVALUABLE on this set (owner
+    # decision; supply --identity-reference to `rerank` to run the gate).
+    family_offline = [a for a in ("A4-50", "A5-50") if (arm_out.get(a) or {}).get("route") == "offline"]
+    family_gate = ([f"identity gate {gate_status}: {', '.join(family_offline)} reranked offline "
+                    "(run the gate with --identity-reference)"]
+                   if family_offline and gate_status != "pass" else [])
     # ceilings (A10) and decompositions
     ceilings: dict[str, Any] = {}
     for leg in LEGS:
@@ -1379,7 +1437,7 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
         if a is None or b is None:
             hyps[h] = {**base, "status": "absent", "p": None}
             continue
-        reasons = arm_gate(*spec["a"]) + arm_gate(*spec["b"])
+        reasons = arm_gate(*spec["a"]) + arm_gate(*spec["b"]) + list(family_gate)
         if n_clusters < MIN_CLUSTERS:
             reasons.append(f"fewer than {MIN_CLUSTERS} clusters ({n_clusters})")
         r = run_contrast(clusters, a, b, spec["type"], an, seed)
@@ -1420,7 +1478,7 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
            "n_clusters": n_clusters, "gold_rule": rule, "arms": arm_out, "ceilings": ceilings,
            "decomposition": decomp, "hypotheses": hyps, "exploratory": expl,
            "family": {"procedure": "Holm over H1-H3", "alpha": alpha, "delta": float(an["delta"]),
-                      "tested": testable,
+                      "tested": testable, "identity_gate": gate_status, "offline_arms": family_offline,
                       "note": "Holm runs over the hypotheses that are not GATE-NOT-EVALUABLE or absent"}}
     if per_record:
         out["per_record"] = {r: {"cluster": recs[r]["cluster"], **{a: ranks[a][r] for a in ranks}} for r in rids}
@@ -1588,7 +1646,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--jobs", default="hybrid@*:content+gloss,bm25@*:content+gloss,vector@50:content+gloss,hybrid@50:*",
                    help="LEG@D:RENDERING items; * for every depth / rendering")
     p.add_argument("--cache", required=True, help="score cache JSONL (hash-keyed)")
-    p.add_argument("--identity-reference", help="live A4-50 lists ({rid: [ids]} or a lists file) when not captured")
+    p.add_argument("--identity-reference", help="reference reranked lists when live A4-50 was not captured: "
+                   "{rid: [ids]}, a lists file, or a part-4 retrieval store (.jsonl, with --identity-arm)")
+    p.add_argument("--identity-arm", help="the part-4 arm to read from a .jsonl --identity-reference (e.g. T512o0)")
     p.add_argument("--probe-ids", help="comma-separated probe record ids (default: 3 seeded)")
     p.add_argument("--inflight", type=int, default=MAX_INFLIGHT)
     p.add_argument("--expect-model", default=RERANKER_MODEL)
