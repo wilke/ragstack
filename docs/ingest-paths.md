@@ -834,7 +834,12 @@ for it. The API sends `glossary_llm: "on"` when `SYMBOL_GLOSSARY_EXTRACTION=llm`
 `gowe` backend, with `SYMBOL_GLOSSARY_LLM_ENDPOINT` / `_MODEL` / `_API_KEY_ENV` (a variable
 **name**; the worker's `--secret-file` holds the key) and the limits from
 `SYMBOL_GLOSSARY_LLM_INPUTS_JSON` over `glossary_inputs.GLOSSARY_LLM_DEFAULTS`; the boot
-check refuses settings the registered text cannot run. `symbol_glossary` is then sent
+check refuses settings the registered text cannot run. In ragstack-ctl,
+`SYMBOL_GLOSSARY_LLM_ENDPOINT` and `SYMBOL_GLOSSARY_LLM_API_KEY_ENV` are executable-surface
+(CLI-only): the second chooses WHICH worker secret is sent as the model's bearer, so an
+HTTP caller may not redirect it, and its value must be a variable name
+(`^[A-Za-z_][A-Za-z0-9_]*$`); `_MODEL` and `_INPUTS_JSON` are public, with value rules that
+mirror the API's boot check. `symbol_glossary` is then sent
 as `rules` (under `off` `ingest_shard` ignores the file). On `INGEST_BACKEND=local`,
 `llm` reads as `rules` with one startup WARNING: the model step exists only as a workflow
 step. A job whose documents degraded logs one WARNING naming the endpoint (host:port) and

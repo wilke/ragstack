@@ -83,8 +83,9 @@ class IngestJob(BaseModel):
     # IngestResponse.
     kind: str = ""
     # Caller-safe notes on a run that SUCCEEDED with a caveat (#847 G2b): e.g.
-    # "symbol_glossary_degraded: timeout=2 (endpoint host:port)" when the
-    # glossary step's model half degraded for some documents. Labels and counts
+    # "symbol_glossary_degraded: <n> of <m> document(s) (<reason>=<k>, …)
+    # endpoint <host:port>" when the glossary step's model half degraded for
+    # some documents. Labels and counts
     # only, like ``error`` — never a raw message. On IngestResponse and JobSummary
     # (contracts/schemas/ingest_response.json, jobs_response.json). [] on rows
     # written before the column existed.

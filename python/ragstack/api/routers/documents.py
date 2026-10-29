@@ -1316,7 +1316,8 @@ class IngestResponse(BaseModel):
     #: the Go stub need not emit it.
     collection: str | None = None
     #: Caller-safe notes on a run that completed with a caveat (#847 G2b), e.g.
-    #: ``symbol_glossary_degraded: timeout=2 (endpoint host:port)``. Always
+    #: ``symbol_glossary_degraded: <n> of <m> document(s) (<reason>=<k>, …)
+    #: endpoint <host:port>``. Always
     #: present here (``[]`` when none); optional in the schema, so the Go stub
     #: need not emit it.
     warnings: list[str] = Field(default_factory=list)
