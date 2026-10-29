@@ -37,8 +37,10 @@ from ragstack.ingestion.glossary_file import (  # noqa: E402
     write_glossary_file,
 )
 from ragstack.ingestion.symbol_glossary import (  # noqa: E402
+    DEFAULT_CONFIG,
     Definition,
     Glossary,
+    GlossaryConfig,
     GlossaryEntry,
     SymbolGlossaryAttacher,
 )
@@ -85,10 +87,10 @@ def rules_file(path: Path, texts: dict[str, str] | None = None) -> Path:
     return path
 
 
-def reworded_file(path: Path, word: str = "zebrine") -> Path:
+def reworded_file(path: Path, word: str = "zebrine", config: GlossaryConfig | None = None) -> Path:
     """The same documents with an LLM half whose definitions are reworded: a
     second condition that differs only in what the glossary field says."""
-    att = SymbolGlossaryAttacher()
+    att = SymbolGlossaryAttacher(config) if config is not None else SymbolGlossaryAttacher()
     rows = []
     for d, t in sorted(TEXTS.items()):
         r = build_row(d, t, att)
@@ -212,8 +214,33 @@ def test_without_glossaries_the_arms_are_byte_identical(tmp_path: Path, fake_sem
 
 
 def test_with_a_file_the_arms_render_as_the_backfill_and_the_load(tmp_path: Path, fake_sem: None) -> None:
+    assert_renders_as_backfill_and_load(tmp_path, reworded_file(tmp_path / "g.jsonl"))
+
+
+#: Non-default on the two knobs the fixture can see: positional choice of
+#: definition (Kv is defined twice) and the per-chunk entry cap (Kv and Pd share a chunk).
+ODD_CONFIG = GlossaryConfig(positional=False, max_entries_per_chunk=1)
+
+
+def test_the_files_header_config_renders_every_arm(tmp_path: Path, fake_sem: None) -> None:
+    """The file's header config, not the default, is what the arms render under."""
+    path = reworded_file(tmp_path / "odd.jsonl", config=ODD_CONFIG)
+    assert read_glossary_file(path).config == ODD_CONFIG != DEFAULT_CONFIG
+    assert_renders_as_backfill_and_load(tmp_path, path)
     pg = pages()
-    path = reworded_file(tmp_path / "g.jsonl")
+    gc = p4g.resolve_condition("odd", path, pg)
+    odd, _ = dt.build_arms(pg, glossaries=gc.glossaries, glossary_config=gc.config)
+    dflt, _ = dt.build_arms(pg, glossaries=gc.glossaries, glossary_config=DEFAULT_CONFIG)
+    for name in ("L", "T128o0", "X128o16"):
+        assert [c.glossary for c in odd[name]] != [c.glossary for c in dflt[name]], name
+        assert all(c.glossary.count("\n") == 0 for c in odd[name]), name  # max_entries_per_chunk=1
+    sem_odd = dt.build_sem_arms(tmp_path, pg, [], glossaries=gc.glossaries, glossary_config=gc.config)
+    sem_dflt = dt.build_sem_arms(tmp_path, pg, [], glossaries=gc.glossaries, glossary_config=DEFAULT_CONFIG)
+    assert [c.glossary for c in sem_odd["SEM256"]] != [c.glossary for c in sem_dflt["SEM256"]]
+
+
+def assert_renders_as_backfill_and_load(tmp_path: Path, path: Path) -> None:
+    pg = pages()
     gc = p4g.resolve_condition("x", path, pg)
     gfile = read_glossary_file(path)
     arms, _ = dt.build_arms(pg, glossaries=gc.glossaries, glossary_config=gc.config)
@@ -379,6 +406,18 @@ def test_rescore_records_the_files_in_the_results_and_the_provenance(setup: tupl
     assert set(res["contrasts"]) == {"reworded-vs-rules"}
     assert res["contrasts"]["reworded-vs-rules"]["L"]["k1"]["gained"] >= 1
     assert res["chunks_with_glossary"]["rules"] == res["chunks_with_glossary"]["reworded"]
+    # multiplicity and the power floor
+    fam = res["design"]["family"]
+    assert res["design"]["n_tests"] == 2 * 2 * 1 == fam["arms"] * fam["budget_conditions"] * fam["non_reference_conditions"]
+    assert fam["alternative"] == "two-sided" and "power-table" in res["power"]
+    for a, by_cond in res["contrasts"]["reworded-vs-rules"].items():
+        for cond, t in by_cond.items():
+            assert t["alternative"] == "two-sided", (a, cond)
+            k, d = t["n_pages_nonzero"], t["gained"] + t["lost"]
+            assert t["min_attainable_p"] == {"sign_flip_exact": 1.0 if k == 0 else 2.0 ** (1 - k),
+                                             "mcnemar_two_sided": 1.0 if d == 0 else 2.0 ** (1 - d),
+                                             "n_pages_nonzero": k, "discordant": d}
+    assert res["contrasts"]["reworded-vs-rules"]["L"]["k1"]["min_attainable_p"]["mcnemar_two_sided"] == 1.0
 
 
 def test_a_mismatch_refuses_before_anything_is_built_or_scored(setup: tuple[Path, Path], tmp_path: Path) -> None:
@@ -436,3 +475,31 @@ def test_cli_wires_the_subcommand_and_leaves_part4_alone(monkeypatch: pytest.Mon
     monkeypatch.setattr(p4, "cmd_part4", lambda a: called.setdefault("part4", sorted(vars(a))) and 0)
     dt.main(["--private-config", str(cfg), "--out-dir", str(out), "part4"])
     assert "glossary_file" not in called["part4"]
+
+
+def test_the_manipulation_check_hard_stops_before_retrieval(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "part4-questions.jsonl").write_text("".join(json.dumps(q) + "\n" for q in QUESTIONS))
+    pg = pages()
+    g = p4g.resolve_condition("r", rules_file(tmp_path / "count.jsonl"), pg)
+    arms = p4g.make_build(tmp_path, [])(pg, ["L", "T512o0"], g.glossaries, g.config)
+    wrong = {a: len(cs) + (a == "T512o0") for a, cs in arms.items()}
+    cfg = write_config(tmp_path / "config.json", wrong, {"k1": {"top": 1}})
+    w = World()
+    assert p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), [("r", tmp_path / "count.jsonl")]) == p4g.EXIT_HARD_STOP
+    assert w.calls["build"] == 1 and w.calls["retrieve"] == 0
+    assert not (out / p4g.DEFAULT_RESULTS).exists()
+
+
+def test_results_inside_the_repository_are_refused(setup: tuple[Path, Path], tmp_path: Path) -> None:
+    cfg, out = setup
+    inside = sat._REPO_PY.parent / "part4-glossary-should-not-exist.json"
+    w = World()
+    try:
+        with pytest.raises(SystemExit, match="inside the repository"):
+            p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), [("r", rules_file(tmp_path / "r.jsonl"))],
+                        results=str(inside))
+        assert not inside.exists() and w.calls["load"] == 0
+    finally:
+        inside.unlink(missing_ok=True)  # a regression must not leave a file in the checkout

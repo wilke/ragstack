@@ -29,6 +29,25 @@ arm. For each file:
 
 Chunk ids and text are the same under every condition (checked); only the
 glossary field, and so the BM25 glossary leg and the reranker passage, differ.
+The BM25 glossary leg uses part 4's harness constant
+(``section_aware_trial.GLOSSARY_BOOST`` = 1), not the library default
+``TEXT_SYMBOL_GLOSSARY_BOOST`` = 0.0: the re-score models a boost-1
+deployment.
+
+With any ``--glossary-file``, L is re-rendered from the file too, so "the live
+field as served" is not one of the conditions. To compare against what is
+served, pass a rules file built from the live text (``glossary_file.py build``
+over the reassembled pages) as a condition.
+
+Caches: like part 4, retrieval appends to the output directory's ``emb/`` and
+``rerank_cache.jsonl``. Embeddings key on the chunk text (the same under every
+condition); rerank entries key on sha256(question + passage), and the passage
+includes the glossary, so no condition reads another's scores. Nothing else
+in the part-4 output directory is written.
+
+Multiplicity: ``design.n_tests`` = arms x budget conditions x non-reference
+conditions, every test two-sided and uncorrected (exploratory). Each contrast
+carries ``min_attainable_p`` (the exact sign-flip and McNemar floors).
 
 Exit codes: 0 done; 1 the manipulation check or the same-chunks check failed;
 6 (``GLOSSARY_REFUSED_EXIT_CODE``) a glossary file was refused. Nothing is
@@ -146,6 +165,32 @@ def resolve_condition(name: str, path: Path, pages: dict[str, dict[str, Any]],
     return GlossaryCondition(name, path, dict(res.glossaries), gfile.config, record)
 
 
+ALTERNATIVE = "two-sided"
+POWER_NOTE = ("no power computation for this re-score. The part-4 power table (`part4 --power-table`, prereg §6) "
+              "is the reference for the design's sensitivity. A null here is readable only where "
+              "min_attainable_p is below the threshold and the discordant count could carry an effect "
+              "the reader cares about; with few non-zero pages or few discordants, no outcome can be "
+              "significant and a null says nothing.")
+
+
+def min_attainable_p(n_pages_nonzero: int, discordant: int) -> dict[str, Any]:
+    """The smallest p each two-sided test can return here: the exact sign-flip test
+    over k non-zero pages, ``2^(1-k)`` (the observed vector and its mirror), and the
+    exact McNemar test over D discordant questions, ``2^(1-D)``; 1 when k or D is 0."""
+    def floor(n: int) -> float:
+        return 1.0 if n <= 0 else min(1.0, 2.0 ** (1 - n))
+
+    return {"sign_flip_exact": floor(n_pages_nonzero), "mcnemar_two_sided": floor(discordant),
+            "n_pages_nonzero": n_pages_nonzero, "discordant": discordant}
+
+
+def with_floor(test: dict[str, Any]) -> dict[str, Any]:
+    if "gained" in test:
+        test["min_attainable_p"] = min_attainable_p(int(test["n_pages_nonzero"]),
+                                                    int(test["gained"]) + int(test["lost"]))
+    return test
+
+
 def manifest_check(pages: dict[str, dict[str, Any]], path: Path) -> dict[str, Any]:
     """Part 4's manifest, checked and never written (the part-4 outputs are read-only here)."""
     man = {d: {"chunks": len(p["rows"]), "sha256": dt.sha(p["text"])} for d, p in sorted(pages.items())}
@@ -227,11 +272,12 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
     contrasts: dict[str, Any] = {}
     for gc in conds[1:]:
         contrasts[f"{gc.name}-vs-{ref}"] = {
-            a: {cond: p4.contrast_test([doc_of[q] for q in qids],
-                                       [int(bool(per_item[q][gc.name][a][cond]["found"])) for q in qids],
-                                       [int(bool(per_item[q][ref][a][cond]["found"])) for q in qids],
-                                       "superiority", an, seed, alternative="two-sided")
+            a: {cond: with_floor(p4.contrast_test([doc_of[q] for q in qids],
+                                                  [int(bool(per_item[q][gc.name][a][cond]["found"])) for q in qids],
+                                                  [int(bool(per_item[q][ref][a][cond]["found"])) for q in qids],
+                                                  "superiority", an, seed, alternative=ALTERNATIVE))
                 for cond in conditions} for a in arm_names}
+    n_tests = len(arm_names) * len(conditions) * (len(conds) - 1)
     records = {gc.name: gc.record for gc in conds}
     prov = {**env.provenance(), "glossary_files": records}
     citable = bool(prov.get("commit")) and prov.get("dirty") is False and prov.get("untracked") == 0
@@ -247,7 +293,14 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
         "reference_condition": ref,
         "design": {"arms": arm_names, "conditions": conditions, "seed": seed,
                    "analysis": {k: an[k] for k in ("n_perm", "n_boot", "ci_level")},
-                   "allow_unverifiable": allow_unverifiable},
+                   "allow_unverifiable": allow_unverifiable,
+                   "n_tests": n_tests,
+                   "family": {"definition": "arms x budget conditions x non-reference glossary conditions, "
+                                            "each contrasted with the reference",
+                              "arms": len(arm_names), "budget_conditions": len(conditions),
+                              "non_reference_conditions": len(conds) - 1, "alternative": ALTERNATIVE,
+                              "correction": "none (exploratory): read every p against n_tests"}},
+        "power": POWER_NOTE,
         "index": {k: v for k, v in imeta.items() if k != "reassembly_failed_ids"},
         "manifest": man,
         "manipulation_check": manip,
