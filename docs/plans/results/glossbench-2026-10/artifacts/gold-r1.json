@@ -6,7 +6,7 @@
   "public_copy": "counts-only: corpus keys aliased (docs-A, papers-OC, OA-1000, ASM-1000); path, host and endpoint fields removed; no symbol, definition, reason, document id, question id or title is present",
   "citable": false,
   "citable_reason": "analysis ran from a scratch script outside the repository (not a clean tree); EXPLORATORY, no pre-registration: not citable as a result",
-  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: PENDING)",
+  "private_data": "wilke/ragstack-experiments, glossbench-2026-10/ (commit: 2eb6e6b4fa5e8d70b4557ebd5a358477c862255d)",
   "analysis_script_sha256": "b36bc728fd341309533c5f6b3c7365a676b0cfdef923754c6d0dfc783444ee67"
  },
  "exploratory": true,

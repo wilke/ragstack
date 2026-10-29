@@ -14,7 +14,7 @@ precision against a gold sample, and retrieval.
 | Lab book (design, chronology, results, threats, next steps) | [LABBOOK.md](LABBOOK.md) |
 | Counts-only artifacts | [artifacts/](artifacts/) |
 | papers-OC retrieval (external) | OpenChia's write-up, `docs/reviews/bench-glossary-261029.md` in OpenChia's episode-study repository, merge 257a27e. External pointer, not fetched by us. |
-| Raw data (private) | wilke/ragstack-experiments, glossbench-2026-10/ (commit: PENDING) |
+| Raw data (private) | wilke/ragstack-experiments, glossbench-2026-10/ (commit: 2eb6e6b4fa5e8d70b4557ebd5a358477c862255d) |
 | Code | `python/scripts/glossary_step.py`, `python/scripts/backfill_symbol_glossary.py`, `python/scripts/eval/deployed_docs_part4.py` with `--glossary-file` (#856) |
 
 ## Artifacts
