@@ -20,15 +20,19 @@ import found10_analysis as fa  # noqa: E402
 API = "http://api.invalid"
 ES = "http://es.invalid"
 INDEX = "ragstack_lib_bench_synthetic"
-GOOD_STAMP = "llm/2:ModelX:abc@file/1"
+GOOD_STAMP = "llm/2:ModelX:abc+merge=llm-only@file/1"      # a pure (re-derived) arm, as the backfill stamps it
+BARE_STAMP = "none+merge=llm-only@file/1"                  # a document with no LLM version at all, same arm
+SEED = "261101|shuf"
+PERM = "1aef9aca491b3025740ecf294964a0a6c87132757234c74ba600884769da7ba3"
+SHUF_SUFFIX = f"+shuf/1:{SEED}:{PERM[:12]}"
 
 
 def cfg(**over: Any) -> dict[str, Any]:
     c = {
         "api": {"base_url": API, "retries": 1, "retry_backoff_s": 0},
         "corpora": {"O": {"collection": "coll-o", "index": INDEX, "expected_chunks": 100}},
-        "arms": {"armx": {"stamp_prefixes": ["llm/2:ModelX:"], "glossary_file_sha256": {"O": "f" * 64},
-                          "shuffle_seed": None},
+        "arms": {"armx": {"stamp_prefixes": ["llm/2:ModelX:"], "stamps": ["none"], "merge": "llm-only",
+                          "glossary_file_sha256": {"O": "f" * 64}, "shuffle_seed": None},
                  "rules": {"stamps": ["rules/3@file/1"], "glossary_file_sha256": {"O": "e" * 64},
                            "shuffle_seed": None}},
         "conditions": {c: {"top_k": 20} for c in ("base", "bm25", "norerank")},
@@ -40,15 +44,17 @@ def cfg(**over: Any) -> dict[str, Any]:
 def swap(**over: Any) -> dict[str, Any]:
     s = {"schema": f10.SWAP_SCHEMA, "arm": "armx", "index": INDEX, "shuffle_seed": None,
          "utc_start": "2026-11-01T00:00:00Z", "utc_end": "2026-11-01T00:01:00Z",
-         "apply": {"dry_run": False, "errors": 0, "glossary_file": {"sha256": "f" * 64}},
-         "census_after": {"total": 100, "stamps": {GOOD_STAMP: 90, "llm/2:ModelX:abc@file/1#b": 10}}}
+         "glossary_file": {"path": "g.jsonl", "sha256": "f" * 64},
+         "apply": {"dry_run": False, "chunks_to_update": 100, "chunks_written": 100,
+                   "glossary_file": {"sha256": "f" * 64}},
+         "census_after": {"total": 100, "stamps": {GOOD_STAMP: 90, BARE_STAMP: 10}}}
     s.update(over)
     return s
 
 
 QUESTIONS = [
-    {"record_id": f"r{i}", "corpus": "O", "paper": f"p{i // 2}", "stratum": "S1", "question": f"q{i}",
-     "gold_chunk_ids": [f"g{i}"]} for i in range(6)
+    {"record_id": f"r{i}", "set": "O", "corpus": "O", "paper": f"p{i // 2}", "stratum": "S1", "question": f"q{i}",
+     "gold_chunks": [f"g{i}"]} for i in range(6)
 ]
 
 
@@ -61,7 +67,8 @@ class FakeAPI:
         self.calls: list[dict[str, Any]] = []
         self.status = 200
         self.degraded_times = 0
-        self.census = {"total": 100, "stamps": {GOOD_STAMP: 90, "llm/2:ModelX:abc@file/1#b": 10}}
+        self.inactive_reranker = False
+        self.census = {"total": 100, "stamps": {GOOD_STAMP: 90, BARE_STAMP: 10}}
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         if req.url.host == "es.invalid":
@@ -81,6 +88,8 @@ class FakeAPI:
             return httpx.Response(200, json={"sources": [], "degraded": [{"component": "rerank", "reason": "x"}]})
         rid = "r" + body["query"][1:]
         ids = [f"x{k}" for k in range(self.depth)]
+        if body.get("rerank") and not self.inactive_reranker:
+            ids[-1], ids[-2] = ids[-2], ids[-1]  # the reranker moves something: base != norerank
         rk = self.ranks.get(rid)
         if rk is not None and rk <= self.depth:
             ids[rk - 1] = "g" + rid[1:]
@@ -121,6 +130,15 @@ def test_verify_swap_record_accepts_a_good_record() -> None:
     (lambda s: s["apply"]["glossary_file"].update(sha256="0" * 64), "sha256"),
     (lambda s: s.update(shuffle_seed="261101|shuf"), "shuffle seed"),
     (lambda s: s["apply"].update(errors=3), "errors"),
+    (lambda s: s["apply"].update(chunks_written=99), "wrote 99 of 100"),
+    (lambda s: s["apply"].update(shuffle={"seed": SEED, "stamp_suffix": SHUF_SUFFIX}), "true \\(unshuffled\\) arm"),
+    (lambda s: s["apply"]["glossary_file"].update(sha256="f" * 63 + "0"), "other than the one swap.sh hashed"),
+    # the same file loaded WITHOUT the re-derive marker is not the pure arm
+    (lambda s: s["census_after"].update(stamps={"llm/2:ModelX:abc@file/1": 100}), "does not allow"),
+    # a merged (today's rule) file passed off as pure
+    (lambda s: s["census_after"].update(stamps={"llm/2:ModelX:abc+merge=merged@file/1": 100}), "does not allow"),
+    # a shuffled index passed off as the true arm
+    (lambda s: s["census_after"].update(stamps={GOOD_STAMP + SHUF_SUFFIX: 100}), "does not allow"),
     (lambda s: s["apply"].update(dry_run=True), "dry_run"),
     (lambda s: s.update(schema="other/1"), "schema"),
 ])
@@ -131,21 +149,91 @@ def test_verify_swap_record_refuses(mutate: Any, needle: str) -> None:
         f10.verify_swap_record(s, cfg(), "O", "armx")
 
 
-def test_shuffled_arm_is_told_apart_by_its_seed() -> None:
+def shuffled_swap(**over: Any) -> dict[str, Any]:
+    """The swap record of the shuffled control: the backfill's own shuffle record and
+    every census stamp carrying its suffix."""
+    s = swap(arm="armx-shuf", shuffle_seed=SEED,
+             census_after={"total": 100, "stamps": {GOOD_STAMP + SHUF_SUFFIX: 90, BARE_STAMP + SHUF_SUFFIX: 10}})
+    s["apply"] = {**s["apply"], "shuffle": {"scheme": "shuf/1", "seed": SEED, "populated": 100, "empty": 0,
+                                            "moved": 100, "fixed_points": 0, "fixed_points_before_repair": 3,
+                                            "permutation_sha256": PERM, "multiset_sha256": "m" * 64,
+                                            "stamp_suffix": SHUF_SUFFIX}}
+    s.update(over)
+    return s
+
+
+def test_shuffled_arm_is_told_apart_by_seed_record_and_stamp() -> None:
     conf = cfg()
-    conf["arms"]["armx-shuf"] = {**conf["arms"]["armx"], "shuffle_seed": "261101|shuf"}
-    # the true arm's record (same stamps, same file) does not pass as the shuffled arm
-    with pytest.raises(f10.Refused):
+    conf["arms"]["armx-shuf"] = {**conf["arms"]["armx"], "shuffle_seed": SEED}
+    v = f10.verify_swap_record(shuffled_swap(), conf, "O", "armx-shuf")
+    assert v["shuffle_suffix"] == SHUF_SUFFIX
+    # the true arm's record (same file, unshuffled stamps) does not pass as the shuffled arm
+    with pytest.raises(f10.Refused, match="shuffle seed"):
         f10.verify_swap_record(swap(arm="armx-shuf"), conf, "O", "armx-shuf")
-    f10.verify_swap_record(swap(arm="armx-shuf", shuffle_seed="261101|shuf"), conf, "O", "armx-shuf")
+    # the seed on the record alone is not enough: the backfill's shuffle record must name it ...
+    bad = shuffled_swap()
+    bad["apply"]["shuffle"]["seed"] = "261101|other"
+    with pytest.raises(f10.Refused, match="shuffle record names seed"):
+        f10.verify_swap_record(bad, conf, "O", "armx-shuf")
+    # ... and the stamps must carry exactly its suffix (another permutation is another index)
+    bad = shuffled_swap(census_after={"total": 100, "stamps": {GOOD_STAMP + f"+shuf/1:{SEED}:000000000000": 100}})
+    with pytest.raises(f10.Refused, match="does not allow"):
+        f10.verify_swap_record(bad, conf, "O", "armx-shuf")
+    # and a shuffled index does not pass as the true arm
+    with pytest.raises(f10.Refused, match="true \\(unshuffled\\) arm"):
+        f10.verify_swap_record(shuffled_swap(arm="armx", shuffle_seed=None), conf, "O", "armx")
+
+
+def test_split_stamp_grammar() -> None:
+    assert f10.split_stamp("rules/3@file/1") == ("rules/3", None, None)
+    assert f10.split_stamp("llm/2:M:x:w80000x4:t4096:k0:r0+merge=llm-only@file/1") == \
+        ("llm/2:M:x:w80000x4:t4096:k0:r0", "llm-only", None)
+    assert f10.split_stamp("none+merge=none@file/1") == ("none", "none", None)
+    assert f10.split_stamp(f"rules/3@file/1{SHUF_SUFFIX}") == ("rules/3", None, (SEED, PERM[:12]))
+    for bad in ("rules/3", "@file/1", "rules/3@file/1#b", "rules/3+merge=odd@file/1", "rules/3@file/1+shuf/1:s",
+                "rules/3@file/1+shuf/2:s:0123456789ab"):
+        assert f10.split_stamp(bad) is None, bad
 
 
 def test_stamp_allowed() -> None:
-    a = {"stamps": ["rules/3@file/1"], "stamp_prefixes": ["llm/2:M:"]}
+    a = {"stamps": ["rules/3@file/1"], "stamp_prefixes": ["llm/2:M:"]}       # no merge key: marker unconstrained
     assert f10.stamp_allowed("rules/3@file/1", a)
     assert f10.stamp_allowed("llm/2:M:x@file/1", a)
+    assert f10.stamp_allowed("llm/2:M:x+merge=llm-only@file/1", a)
     assert not f10.stamp_allowed("rules/3", a)
     assert not f10.stamp_allowed("<none>", a) and not f10.stamp_allowed(None, a)
+    assert not f10.stamp_allowed("rules/3@file/1" + SHUF_SUFFIX, a)         # a true arm: no suffix
+    pure = {"stamp_prefixes": ["llm/2:M:"], "stamps": ["none"], "merge": "llm-only", "shuffle_seed": None}
+    assert f10.stamp_allowed("llm/2:M:x+merge=llm-only@file/1", pure)
+    assert f10.stamp_allowed("none+merge=llm-only@file/1", pure)
+    assert not f10.stamp_allowed("llm/2:M:x@file/1", pure)                  # unmarked = not the pure file
+    assert not f10.stamp_allowed("llm/2:M:x+merge=merged@file/1", pure)
+    assert not f10.stamp_allowed("none+merge=none@file/1", pure)
+    rules = {"stamps": ["rules/3"], "merge": None, "shuffle_seed": None}
+    assert f10.stamp_allowed("rules/3@file/1", rules)
+    assert not f10.stamp_allowed("rules/3+merge=rules-only@file/1", rules)
+    shuf = {**pure, "shuffle_seed": SEED}
+    st = "llm/2:M:x+merge=llm-only@file/1" + SHUF_SUFFIX
+    assert f10.stamp_allowed(st, shuf) and f10.stamp_allowed(st, shuf, SHUF_SUFFIX)
+    assert not f10.stamp_allowed(st, shuf, f"+shuf/1:{SEED}:000000000000")
+    assert not f10.stamp_allowed("llm/2:M:x+merge=llm-only@file/1", shuf)
+    assert not f10.stamp_allowed("llm/2:M:x+merge=llm-only@file/1+shuf/1:other:0123456789ab", shuf)
+
+
+def test_load_questions_takes_the_drafters_records(tmp_path: Path) -> None:
+    q = tmp_path / "accepted-O.jsonl"
+    q.write_text(json.dumps({"record_id": "O-1", "set": "O", "paper": "P", "stratum": "S1", "question": "q",
+                             "gold_chunks": ["c1"], "binding_terms": ["x"], "quantity": "x"}) + "\n")
+    r = f10.load_questions([q])[0]
+    assert r["corpus"] == "O" and r["gold_chunks"] == ["c1"] and r["binding_terms"] == ["x"]
+    q.write_text(json.dumps({"record_id": "O-1", "set": "O", "paper": "P", "stratum": "S1", "question": "q",
+                             "gold_chunk_ids": ["c1"]}) + "\n")
+    with pytest.raises(f10.Refused, match="gold_chunks"):
+        f10.load_questions([q])
+    q.write_text(json.dumps({"record_id": "O-1", "paper": "P", "stratum": "S1", "question": "q",
+                             "gold_chunks": ["c1"]}) + "\n")
+    with pytest.raises(f10.Refused, match="'set'"):
+        f10.load_questions([q])
 
 
 def test_load_config_requires_base_url(tmp_path: Path) -> None:
@@ -193,6 +281,28 @@ def test_run_complete_and_analyse(tmp_path: Path) -> None:
     per, gated, runs = f10.collect(tmp_path / "out", [dict(q) for q in QUESTIONS])
     assert runs["O/armx"]["status"] == "complete" and not gated
     assert per["r1"]["armx"]["found"] == {"base": 1, "bm25": 1, "norerank": 1}
+    # the wording proxy's results JSON is the proxy outcome (its per_record[rid][arm]["pass"])
+    px = tmp_path / "proxy.json"
+    px.write_text(json.dumps({"schema": "wording-proxy/1", "per_record": {
+        "r0": {"armx": {"pass": True, "match": {"chunk_id": "g0", "symbol": "x", "term": "t"}}, "rules": {"pass": False}},
+        "r1": {"armx": {"pass": False}}, "zz": {"armx": {"pass": True}}}}))
+    per, _, _ = f10.collect(tmp_path / "out", [dict(q) for q in QUESTIONS], px)
+    assert per["r0"]["armx"]["proxy"] == 1 and per["r0"]["rules"]["proxy"] == 0 and per["r1"]["armx"]["proxy"] == 0
+    assert per["r2"]["armx"]["proxy"] is None and "zz" not in per
+    px.write_text("".join(json.dumps({"record_id": "r0", "arm": "armx", "pass": True}) + "\n"))  # the old JSONL guess
+    with pytest.raises(f10.Refused, match="wording-proxy"):
+        f10.collect(tmp_path / "out", [dict(q) for q in QUESTIONS], px)
+
+
+def test_inactive_reranker_gates_base(tmp_path: Path) -> None:
+    api = FakeAPI(RANKS)
+    api.inactive_reranker = True  # `rerank: true` answered with the RRF order on every record
+    assert run(tmp_path, api) == f10.EXIT_OK
+    s = json.loads((tmp_path / "out/O/armx.summary.json").read_text())
+    assert s["conditions"]["base"]["gate"] and "reranker was not active" in s["conditions"]["base"]["gate"]
+    assert s["conditions"]["base"]["identical_to_norerank"] == {"records": 6, "identical": 6}
+    assert s["conditions"]["norerank"]["gate"] is None
+    assert s["server_assumed"]["retrieval_candidate_multiplier"] == 2 and s["server_assumed"]["rrf_k"] == 60
 
 
 def test_depth_short_gates_the_condition(tmp_path: Path) -> None:
@@ -287,7 +397,8 @@ def test_cmd_analyse_end_to_end(tmp_path: Path) -> None:
     for arm, ranks in (("armx", RANKS), ("rules", dict.fromkeys(RANKS))):
         api = FakeAPI(ranks, stamp=GOOD_STAMP if arm == "armx" else "rules/3@file/1")
         sw = swap(arm=arm) if arm == "armx" else swap(
-            arm="rules", apply={"dry_run": False, "errors": 0, "glossary_file": {"sha256": "e" * 64}},
+            arm="rules", glossary_file={"path": "r.jsonl", "sha256": "e" * 64},
+            apply={"dry_run": False, "glossary_file": {"sha256": "e" * 64}},
             census_after={"total": 100, "stamps": {"rules/3@file/1": 100}})
         assert run(tmp_path, api, conf=conf, sw=sw, arm=arm) == f10.EXIT_OK
     q = tmp_path / "q.jsonl"

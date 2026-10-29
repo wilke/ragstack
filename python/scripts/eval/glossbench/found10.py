@@ -18,16 +18,42 @@ chunk counts, stamps and glossary-file hashes come from ``--private-config``
 (see ``examples/found10-config.example.json``); the API key, if any, from the
 environment variable the config names.
 
+**Inputs from the sibling tools (one record schema, no adapters).** Questions
+are the drafter's accepted records (``glossbench_r2_draft.py summary`` →
+``accepted-<set>.jsonl``), which are also what ``wording_proxy.py --records``
+reads: ``record_id``, ``set`` (the corpus alias; ``corpus`` is accepted as a
+synonym), ``paper``, ``stratum``, ``question``, ``gold_chunks`` (the
+quote-bearing chunk ids) — plus the proxy's ``binding_terms`` / ``quantity``
+and the drafter's ``quote`` / ``value`` / ``symbol`` / ``doc_id`` /
+``source_chunk_id`` / ``flags``, which this runner carries but does not read.
+The proxy outcome (``analyse --proxy``) is the proxy tool's own results JSON
+(``schema wording-proxy/1``, ``per_record[record_id][arm]["pass"]``).
+
+**Stamps** are the backfill's, which the glossary tools make distinct per arm:
+``<version>@file/1`` for a file loaded as is (``rules/3@file/1``); a re-derived
+file (``glossary_file.py rederive --merge <mode>``) marks the version
+``<base>+merge=<mode>`` BEFORE ``@file/1`` (the pure arm:
+``llm/2:<model>:…+merge=llm-only@file/1``; a document with no LLM version at
+all: ``none+merge=llm-only@file/1``); the shuffled control
+(``backfill … --shuffle-rendered SEED``) appends ``+shuf/1:<seed>:<perm12>``
+AFTER ``@file/1``. An arm's config says what its stamps must look like —
+``stamps`` / ``stamp_prefixes`` for the base version, ``merge`` (a mode or
+``null`` = no marker) and ``shuffle_seed`` (a seed or ``null`` = no suffix) —
+and :func:`stamp_allowed` checks all three parts, so a pure arm's file loaded
+unmarked, a merged file passed off as pure, or a true index passed off as the
+shuffled one is refused on the stamp itself, not only on the swap record.
+
 **Which arm is attached (refuse otherwise).** Before the first call:
 
 1. the swap record (written by ``swap.sh`` after the backfill's apply and
    census) must name this arm and this corpus's index, show a post-apply census
    whose total equals the corpus's expected chunk count and whose every
-   ``metadata.symbol_glossary_version`` stamp is one the arm config allows (an
-   unstamped chunk never is), a glossary-file sha256 equal to the arm's for
-   this corpus, the arm's shuffle seed (``null`` for a true arm; the stamps of a
-   shuffled arm equal its source arm's, so this field is what tells them
-   apart), and an apply with no errors;
+   ``metadata.symbol_glossary_version`` stamp is allowed as above (an unstamped
+   chunk never is), a glossary-file sha256 equal to the arm's for this corpus,
+   the arm's shuffle seed (``null`` for a true arm) — which must also be the seed
+   the backfill's own ``shuffle`` record names, with every census stamp ending
+   in that record's ``stamp_suffix`` — and an apply (``dry_run false``) whose
+   ``chunks_written`` equals its ``chunks_to_update``;
 2. optionally (``census.es_url`` in the config) the runner reads the same
    census from the index itself, read-only (one ``terms`` aggregation), before
    the first call and after the last: both must equal the swap record's.
@@ -39,13 +65,22 @@ environment variable the config names.
    does not touch, so they are counted, not enforced.
 
 **Depth read-back.** Each condition requests ``top_k`` (default 50, with
-``rerank_candidates`` 50 for ``base``: the server's legs then fetch
-``2 × 50`` each, RRF-fuse, cut to 50, rerank: prereg §5's pipeline) and the
-runner records the number of sources actually served. A served depth below the
+``rerank_candidates`` 50 for ``base``: the server's pool depth is
+``max(top_k, rerank_candidates)`` = 50, each leg fetches ``top_k ×
+retrieval_candidate_multiplier`` = 2 × 50, RRF (k 60) fuses, the pool is cut to
+50 and reranked, then cut to ``top_k``: prereg §5's pipeline) and the runner
+records the number of sources actually served. A served depth below the
 requested one marks that arm/condition **GATE-NOT-EVALUABLE** (its records
 stay in the file; the analysis does not test it). A response with a
 ``degraded`` entry (e.g. the reranker fell back to RRF order) is not the
 condition: it is retried and, if still degraded, recorded as a failed call.
+Two things the API does not expose are **assumed and recorded, not read
+back**: the per-leg multiplier (2) and the RRF constant (60) are server
+settings absent from ``/v1/config``; the operator pins them from the tenant
+env in the private config (``server_assumed``) and the summary repeats them.
+A reranker that is wired but inactive answers ``rerank: true`` silently with
+the RRF order, so after the run ``base`` is gated when its ranked list equals
+``norerank``'s on every record.
 
 **Failures, pause, resume.** A transport error, 5xx or degraded response is
 retried (``api.retries``, backoff); a 4xx is a configuration error and stops
@@ -66,6 +101,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -96,7 +132,19 @@ FOUND_K = 10
 SWAP_SCHEMA = "glossbench-swap/1"
 ROW_SCHEMA = "glossbench-r2-found10-row/1"
 SUMMARY_SCHEMA = "glossbench-r2-found10-run/1"
+PROXY_SCHEMA = "wording-proxy/1"
 VERSION_KEY = "symbol_glossary_version"
+#: the glossary tools' stamp grammar (ragstack.ingestion.glossary_file / glossary_shuffle):
+#: ``<base>[+merge=<mode>]@file/1[+shuf/1:<seed>:<12 hex>]``
+FILE_STAMP = "@file/1"
+MERGE_MARK = "+merge="
+SHUF_MARK = "+shuf/1:"
+MERGE_MODES = ("llm-only", "rules-only", "merged", "none")
+_SHUF_TAIL = re.compile(r"\+shuf/1:(?P<seed>[A-Za-z0-9|._+-]{1,64}):(?P<perm>[0-9a-f]{12})")
+#: the record fields this runner reads (the drafter writes them; the proxy reads the same file)
+RECORD_FIELDS = ("record_id", "paper", "stratum", "question", "gold_chunks")
+#: server settings prereg §5 relies on that /v1/config does not expose: pinned by the operator
+DEFAULT_SERVER_ASSUMED = {"retrieval_candidate_multiplier": 2, "rrf_k": 60}
 
 DEFAULT_CONDITIONS: dict[str, dict[str, Any]] = {
     "base": {"retrieval_mode": "hybrid", "rerank": True, "rerank_candidates": 50, "top_k": 50},
@@ -134,13 +182,21 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if int(spec["top_k"]) < FOUND_K:
             raise Refused(f"condition {c}: top_k {spec['top_k']} < {FOUND_K}")
     cfg.setdefault("hit_stamp_conditions", ["bm25"])
+    cfg["server_assumed"] = {**DEFAULT_SERVER_ASSUMED, **(cfg.get("server_assumed") or {})}
+    for arm, acfg in cfg["arms"].items():
+        mode = acfg.get("merge")
+        if mode is not None and mode not in MERGE_MODES:
+            raise Refused(f"arms.{arm}.merge {mode!r} is not one of {MERGE_MODES} or null")
     return cfg
 
 
 def load_questions(paths: Sequence[Path]) -> list[dict[str, Any]]:
-    """Records: ``{record_id, corpus, paper, stratum, question, gold_chunk_ids: [..]}``.
-    ``gold_chunk_ids`` are the quote-bearing chunk(s) of the 512 index (prereg §3.3
-    gold width); never empty. Record ids are unique across all files."""
+    """The drafter's accepted records (one JSONL line each): ``record_id``, ``set``
+    (the corpus alias — ``corpus`` is accepted as a synonym and ``corpus`` is what
+    the record carries from here on), ``paper``, ``stratum``, ``question`` and
+    ``gold_chunks``, the quote-bearing chunk id(s) of the 512 index (prereg §3.3
+    gold width; never empty). Other fields (``binding_terms``, ``quantity``,
+    ``quote``, …) are kept untouched. Record ids are unique across all files."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for p in paths:
@@ -148,15 +204,22 @@ def load_questions(paths: Sequence[Path]) -> list[dict[str, Any]]:
             if not line.strip():
                 continue
             r = json.loads(line)
-            for k in ("record_id", "corpus", "paper", "stratum", "question", "gold_chunk_ids"):
+            if "gold_chunk_ids" in r and "gold_chunks" not in r:
+                raise Refused(f"{p.name}:{i}: record names 'gold_chunk_ids'; the field is 'gold_chunks' "
+                              "(the drafter's and the wording proxy's name)")
+            for k in RECORD_FIELDS:
                 if k not in r:
                     raise Refused(f"{p.name}:{i}: record lacks {k!r}")
-            if not r["gold_chunk_ids"] or not all(isinstance(x, str) and x for x in r["gold_chunk_ids"]):
-                raise Refused(f"{p.name}:{i}: gold_chunk_ids must be a non-empty list of ids")
+            corpus = r.get("corpus", r.get("set"))
+            if not isinstance(corpus, str) or not corpus:
+                raise Refused(f"{p.name}:{i}: record lacks 'set' (or 'corpus')")
+            if not isinstance(r["gold_chunks"], list) or not r["gold_chunks"] \
+                    or not all(isinstance(x, str) and x for x in r["gold_chunks"]):
+                raise Refused(f"{p.name}:{i}: gold_chunks must be a non-empty list of ids")
             if r["record_id"] in seen:
                 raise Refused(f"{p.name}:{i}: duplicate record_id {r['record_id']!r}")
             seen.add(r["record_id"])
-            out.append(r)
+            out.append({**r, "corpus": corpus})
     return out
 
 
@@ -173,14 +236,53 @@ def arm_label(arm: str, repeat: int | None) -> str:
 
 
 # --------------------------------------------------------------------------- census
-def stamp_allowed(stamp: str | None, arm_cfg: Mapping[str, Any]) -> bool:
-    """An exact stamp of ``stamps`` or one starting with a ``stamp_prefixes`` entry.
-    ``None`` / ``"<none>"`` (an unstamped chunk) is never allowed."""
+def split_stamp(stamp: str) -> tuple[str, str | None, tuple[str, str] | None] | None:
+    """``<base>[+merge=<mode>]@file/1[+shuf/1:<seed>:<perm12>]`` → ``(base, mode,
+    (seed, perm))``; ``None`` when the stamp is not a backfill file stamp."""
+    base, sep, tail = stamp.partition(FILE_STAMP)
+    if not sep or not base:
+        return None
+    mode = None
+    if MERGE_MARK in base:
+        base, _, mode = base.rpartition(MERGE_MARK)
+        if mode not in MERGE_MODES or not base:
+            return None
+    shuf = None
+    if tail:
+        m = _SHUF_TAIL.fullmatch(tail)
+        if m is None:
+            return None
+        shuf = (m.group("seed"), m.group("perm"))
+    return base, mode, shuf
+
+
+def stamp_allowed(stamp: str | None, arm_cfg: Mapping[str, Any], shuffle_suffix: str | None = None) -> bool:
+    """Every part of the stamp is the arm's: the base version is an exact ``stamps``
+    entry or starts with a ``stamp_prefixes`` entry; the merge marker is the arm's
+    ``merge`` (a mode, or ``null`` = no marker; an arm config without the key
+    constrains nothing); the shuffle suffix is present with the arm's
+    ``shuffle_seed`` (and equals ``shuffle_suffix``, the backfill's own
+    ``stamp_suffix``, when given) or absent for a true arm. ``None`` /
+    ``"<none>"`` (an unstamped chunk) and anything not in the stamp grammar is
+    never allowed."""
     if not stamp or stamp == "<none>":
         return False
-    if stamp in (arm_cfg.get("stamps") or []):
-        return True
-    return any(stamp.startswith(p) for p in (arm_cfg.get("stamp_prefixes") or []) if p)
+    parts = split_stamp(stamp)
+    if parts is None:
+        return False
+    base, mode, shuf = parts
+    exact = arm_cfg.get("stamps") or []
+    prefixes = [p for p in (arm_cfg.get("stamp_prefixes") or []) if p]
+    if not (stamp in exact or base in exact or any(base.startswith(p) for p in prefixes)):
+        return False
+    if "merge" in arm_cfg and mode != arm_cfg["merge"]:
+        return False
+    seed = arm_cfg.get("shuffle_seed")
+    if seed is None:
+        return shuf is None
+    if shuf is None or shuf[0] != seed:
+        return False
+    return shuffle_suffix is None or stamp.endswith(shuffle_suffix)
 
 
 def verify_swap_record(record: Mapping[str, Any], cfg: Mapping[str, Any], corpus: str, arm: str) -> dict[str, Any]:
@@ -214,26 +316,43 @@ def verify_swap_record(record: Mapping[str, Any], cfg: Mapping[str, Any], corpus
         problems.append(f"census total {total} != expected chunks {exp}")
     if stamps and sum(stamps.values()) != total:
         problems.append(f"census stamp counts sum {sum(stamps.values())} != total {total}")
-    bad = sorted(s for s in stamps if not stamp_allowed(s, acfg))
-    if bad:
-        problems.append(f"census carries stamps the arm does not allow: {bad}")
     apply = record.get("apply") or {}
     if apply.get("dry_run") is not False:
         problems.append("swap record has no applied backfill (apply.dry_run is not false)")
     if apply.get("errors") or apply.get("failed"):
         problems.append(f"backfill apply reported errors={apply.get('errors')} failed={apply.get('failed')}")
-    gf_sha = ((apply.get("glossary_file") or {}).get("sha256")
-              or (record.get("glossary_file") or {}).get("sha256"))
+    if "chunks_written" in apply and apply.get("chunks_written") != apply.get("chunks_to_update"):
+        problems.append(f"backfill apply wrote {apply.get('chunks_written')} of "
+                        f"{apply.get('chunks_to_update')} planned chunks")
+    gf_apply = (apply.get("glossary_file") or {}).get("sha256")
+    gf_rec = (record.get("glossary_file") or {}).get("sha256")
+    if gf_apply and gf_rec and gf_apply != gf_rec:
+        problems.append("the backfill rendered a file other than the one swap.sh hashed")
+    gf_sha = gf_apply or gf_rec
     want_sha = (acfg.get("glossary_file_sha256") or {}).get(corpus)
     if not want_sha:
         problems.append(f"arms.{arm}.glossary_file_sha256.{corpus} is not set")
     elif gf_sha != want_sha:
         problems.append("glossary file sha256 of the swap != the arm's declared file")
-    if record.get("shuffle_seed") != acfg.get("shuffle_seed"):
-        problems.append(f"shuffle seed {record.get('shuffle_seed')!r} != the arm's {acfg.get('shuffle_seed')!r}")
+    seed = acfg.get("shuffle_seed")
+    if record.get("shuffle_seed") != seed:
+        problems.append(f"shuffle seed {record.get('shuffle_seed')!r} != the arm's {seed!r}")
+    shuffle = apply.get("shuffle")
+    suffix: str | None = None
+    if seed is not None:
+        if not isinstance(shuffle, dict) or shuffle.get("seed") != seed:
+            problems.append(f"the backfill's own shuffle record names seed {None if not shuffle else shuffle.get('seed')!r}, "
+                            f"not {seed!r}")
+        else:
+            suffix = str(shuffle.get("stamp_suffix") or f"{SHUF_MARK}{seed}:{str(shuffle.get('permutation_sha256'))[:12]}")
+    elif shuffle:
+        problems.append("the backfill applied a shuffle but the arm is a true (unshuffled) arm")
+    bad = sorted(s for s in stamps if not stamp_allowed(s, acfg, suffix))
+    if bad:
+        problems.append(f"census carries stamps the arm does not allow: {bad}")
     if problems:
         raise Refused("census check failed: " + "; ".join(problems))
-    return {"total": total, "stamps": dict(stamps)}
+    return {"total": total, "stamps": dict(stamps), "shuffle_suffix": suffix}
 
 
 async def live_census(client: httpx.AsyncClient, es_url: str, index: str) -> dict[str, Any]:
@@ -301,6 +420,7 @@ class Runner:
         self.stop_reason: str | None = None
         self.hard_stop: str | None = None
         self.config_error: str | None = None
+        self.shuffle_suffix: str | None = None
 
     def _default_client(self) -> httpx.AsyncClient:
         api = self.cfg["api"]
@@ -339,7 +459,7 @@ class Runner:
                     if degraded:
                         last_err = f"degraded: {degraded}"
                     else:
-                        sc = score_response(d.get("sources") or [], rec["gold_chunk_ids"], int(spec["top_k"]))
+                        sc = score_response(d.get("sources") or [], rec["gold_chunks"], int(spec["top_k"]))
                         return {"failed": False, "attempts": attempt, "request_id": rid,
                                 "latency_ms": round(1000 * (time.monotonic() - t0), 1), **sc}
             if attempt <= self.retries:
@@ -357,14 +477,16 @@ class Runner:
     def _check_hit_stamps(self, cond: str, res: Mapping[str, Any]) -> None:
         if cond not in self.cfg["hit_stamp_conditions"] or res.get("failed"):
             return
-        bad = sorted(s for s in res.get("hit_stamps", {}) if not stamp_allowed(s, self.acfg))
+        bad = sorted(s for s in res.get("hit_stamps", {}) if not stamp_allowed(s, self.acfg, self.shuffle_suffix))
         if bad:
             self.hard_stop = (f"a served {cond} hit carries stamp(s) {bad} that arm {self.arm!r} does not allow: "
                               "the index does not hold the declared arm")
 
     async def run(self) -> int:
         swap = json.loads(self.swap_record_path.read_text(encoding="utf-8"))
-        census = verify_swap_record(swap, self.cfg, self.corpus, self.arm)
+        verified = verify_swap_record(swap, self.cfg, self.corpus, self.arm)
+        self.shuffle_suffix = verified["shuffle_suffix"]
+        census = {"total": verified["total"], "stamps": verified["stamps"]}
         self.out_dir.mkdir(parents=True, exist_ok=True)
         done = {r["key"]: r for r in read_jsonl_repair_tail(self.rows_path)} if self.rows_path.exists() else {}
         census_cfg = self.cfg.get("census") or {}
@@ -460,6 +582,17 @@ class Runner:
                 "depth_short": short, "depth_over": over, "hit_stamps": dict(stamps),
                 "hit_stamps_enforced": cond in self.cfg["hit_stamp_conditions"], "gate": gate}
         complete = all(per_cond[c]["rows"] == expected for c in per_cond)
+        # a reranker that is wired but inactive answers `rerank: true` with the RRF
+        # order: `base` identical to `norerank` on every record is not the condition
+        if complete and {"base", "norerank"} <= set(per_cond):
+            by_key = {(r["record_id"], r["condition"]): r for r in done.values() if not r.get("failed")}
+            pairs = [(by_key.get((rid, "base")), by_key.get((rid, "norerank"))) for rid in {k[0] for k in by_key}]
+            pairs = [(x, y) for x, y in pairs if x is not None and y is not None]
+            same = sum(x.get("ranked_chunk_ids") == y.get("ranked_chunk_ids") for x, y in pairs)
+            per_cond["base"]["identical_to_norerank"] = {"records": len(pairs), "identical": same}
+            if pairs and same == len(pairs) and not per_cond["base"]["gate"]:
+                per_cond["base"]["gate"] = (f"{fa.GATE}: the base ranking equals the norerank ranking on every "
+                                            f"record ({same}/{len(pairs)}): the reranker was not active")
         failed_share = n_failed / n_calls if n_calls else 0.0
         if complete and failed_share > MAX_FAILED_SHARE and not self.hard_stop:
             self.hard_stop = f"{n_failed}/{n_calls} retrieval calls failed (> {MAX_FAILED_SHARE:.0%})"
@@ -471,12 +604,15 @@ class Runner:
             "collection": self.ccfg["collection"], "index": self.ccfg.get("index"),
             "found_k": FOUND_K, "conditions": per_cond, "calls": n_calls, "failed_calls": n_failed,
             "failed_share": round(failed_share, 5),
+            "server_assumed": {**self.cfg["server_assumed"],
+                               "note": "not exposed by /v1/config; pinned by the operator from the server's env"},
             "census": {"verified": census, "source": "swap_record+live" if live_before is not None else "swap_record",
                        "live_before": live_before, "live_after": live_after,
                        "swap_record_sha256": sha256_file(self.swap_record_path),
                        "swap_utc": {k: swap.get(k) for k in ("utc_start", "utc_end")},
                        "glossary_file_sha256": (self.acfg.get("glossary_file_sha256") or {}).get(self.corpus),
-                       "shuffle_seed": self.acfg.get("shuffle_seed"), "allowed_stamps": self.acfg.get("stamps"),
+                       "shuffle_seed": self.acfg.get("shuffle_seed"), "shuffle_stamp_suffix": self.shuffle_suffix,
+                       "merge": self.acfg.get("merge"), "allowed_stamps": self.acfg.get("stamps"),
                        "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes")},
             "server": server, "utc": now_iso(), "provenance": prov,
             "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0),
@@ -503,7 +639,8 @@ def collect(out: Path, records: Sequence[Mapping[str, Any]], proxy: Path | None 
 
     Only ``complete`` runs are read; any other status is listed and the label's
     arm/condition is gated for that corpus. A condition the run marked gated
-    (depth read-back) is gated. ``proxy`` rows: ``{record_id, arm, pass}``."""
+    (depth read-back) is gated. ``proxy`` is the wording proxy's results JSON
+    (``schema wording-proxy/1``): ``per_record[record_id][arm]["pass"]``."""
     by_id = {r["record_id"]: r for r in records}
     per_record: dict[str, dict[str, dict[str, Any]]] = {rid: {} for rid in by_id}
     gated: dict[str, str] = {}
@@ -530,13 +667,16 @@ def collect(out: Path, records: Sequence[Mapping[str, Any]], proxy: Path | None 
             slot = per_record[r["record_id"]].setdefault(s["run_label"], {"found": {}, "proxy": None})
             slot["found"][r["condition"]] = None if r.get("failed") else int(r["found10"])
     if proxy is not None:
-        for line in proxy.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
+        px = json.loads(proxy.read_text(encoding="utf-8"))
+        if not isinstance(px, dict) or px.get("schema") != PROXY_SCHEMA or not isinstance(px.get("per_record"), dict):
+            raise Refused(f"{proxy.name}: not a wording-proxy results file (schema {PROXY_SCHEMA!r} with per_record)")
+        for rid, arms in px["per_record"].items():
+            if rid not in per_record:
                 continue
-            p = json.loads(line)
-            if p["record_id"] in per_record:
-                per_record[p["record_id"]].setdefault(p["arm"], {"found": {}, "proxy": None})["proxy"] = (
-                    None if p.get("pass") is None else int(bool(p["pass"])))
+            for arm, j in arms.items():
+                v = j.get("pass") if isinstance(j, dict) else None
+                per_record[rid].setdefault(arm, {"found": {}, "proxy": None})["proxy"] = (
+                    None if v is None else int(bool(v)))
     return per_record, gated, runs
 
 
@@ -582,8 +722,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="measure one arm on one corpus through the served API")
     r.add_argument("--private-config", required=True)
-    r.add_argument("--questions", required=True)
-    r.add_argument("--corpus", required=True, help="corpus alias, e.g. O or A")
+    r.add_argument("--questions", required=True, help="the drafter's accepted-<set>.jsonl")
+    r.add_argument("--corpus", required=True, help="corpus alias (the records' `set`), e.g. O or A")
     r.add_argument("--arm", required=True, help="arm name as in the private config")
     r.add_argument("--swap-record", required=True, help="the swap.sh record of the arm now attached")
     r.add_argument("--out", required=True)
@@ -593,7 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a.add_argument("--private-config", required=True)
     a.add_argument("--questions", required=True, nargs="+")
     a.add_argument("--out", required=True, help="the run directory")
-    a.add_argument("--proxy", default=None, help="per-record wording-proxy pass JSONL {record_id, arm, pass}")
+    a.add_argument("--proxy", default=None, help="the wording proxy's results JSON (wording_proxy.py --out)")
     a.add_argument("--results", default=None)
     a.add_argument("--no-power", action="store_true")
     a.add_argument("--power-sims", type=int, default=2000)

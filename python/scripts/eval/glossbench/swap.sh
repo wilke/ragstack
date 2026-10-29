@@ -18,6 +18,10 @@
 # collection's index, never an alias); --apply always carries --confirm-index; every apply is
 # preceded by its dry run and a stamp census and followed by the same census; a failed step stops.
 # The census is one read-only `terms` aggregation on metadata.symbol_glossary_version.
+# The record is refused (exit 1, no swap.json) when the backfill's own output disagrees with the
+# command line: its `shuffle.seed` is not the --shuffle-rendered seed (or a shuffle was applied for a
+# true arm), the apply wrote fewer chunks than it planned, or the dry run and the apply planned
+# different counts (the index changed in between).
 # Output (mode 0600): DIR/<arm>.{dryrun,apply}.{json,err}, DIR/<arm>.swap.json, DIR/LOG.md lines.
 set -euo pipefail
 umask 077
@@ -71,7 +75,7 @@ log "dryrun $("$py" -c "import json,sys; d=json.load(open(sys.argv[1])); print({
 # shellcheck disable=SC2086
 $backfill --es-url "$es" --index "$idx" --glossary-file "$gfile" --apply --confirm-index "$idx" "${extra[@]}" \
   > "$rdir/$arm.apply.json" 2> "$rdir/$arm.apply.err" || { log "APPLY FAILED $arm"; exit 4; }
-log "apply $("$py" -c "import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ('dry_run','docs','chunks','chunks_with_glossary','chunks_written','chunks_to_update','chunks_current','errors','failed')})" "$rdir/$arm.apply.json")"
+log "apply $("$py" -c "import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ('dry_run','docs','chunks','chunks_with_glossary','chunks_written','chunks_to_update','chunks_current','chunks_llm_replaced','reassembly_gaps')}, 'shuffle', (d.get('shuffle') or {}).get('stamp_suffix'))" "$rdir/$arm.apply.json")"
 sleep 2
 after=$(census); log "census-after $after"
 end=$(ts)
@@ -80,10 +84,24 @@ end=$(ts)
   "$rdir/$arm.dryrun.json" "$rdir/$arm.apply.json" "$before" "$after" "${extra[@]}" <<'PY'
 import json, os, sys
 dst, arm, idx, gfile, gsha, shuffle, start, end, dry, app, before, after, *extra = sys.argv[1:]
+seed, dryrun, apply = json.loads(shuffle), json.load(open(dry)), json.load(open(app))
+# The backfill's own account must agree with what this script asked for and planned:
+# the shuffle it applied (seed) is the one on the command line, and the apply wrote
+# every chunk the plan named. A disagreement is not recorded as a swap.
+got = (apply.get("shuffle") or {}).get("seed")
+if got != seed:
+    sys.exit(f"REFUSE: the backfill applied shuffle seed {got!r}, the command line said {seed!r}")
+if apply.get("dry_run") is not False:
+    sys.exit("REFUSE: the apply output is not an applied run (dry_run is not false)")
+if "chunks_written" in apply and apply.get("chunks_written") != apply.get("chunks_to_update"):
+    sys.exit(f"REFUSE: apply wrote {apply.get('chunks_written')} of {apply.get('chunks_to_update')} planned chunks")
+if "chunks_to_update" in dryrun and dryrun.get("chunks_to_update") != apply.get("chunks_to_update"):
+    sys.exit(f"REFUSE: the dry run planned {dryrun.get('chunks_to_update')} chunks, the apply {apply.get('chunks_to_update')}: "
+             "the index changed between them")
 rec = {"schema": "glossbench-swap/1", "arm": arm, "index": idx,
-       "glossary_file": {"path": gfile, "sha256": gsha}, "shuffle_seed": json.loads(shuffle),
+       "glossary_file": {"path": gfile, "sha256": gsha}, "shuffle_seed": seed,
        "backfill_extra_args": extra, "utc_start": start, "utc_end": end,
-       "census_before": json.loads(before), "dryrun": json.load(open(dry)), "apply": json.load(open(app)),
+       "census_before": json.loads(before), "dryrun": dryrun, "apply": apply,
        "census_after": json.loads(after)}
 fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as fh:

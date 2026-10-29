@@ -4,6 +4,7 @@ fake ``curl`` and a fake backfill on PATH."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -21,6 +22,9 @@ import found10 as f10  # noqa: E402
 import judge as jd  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+SEED = "261101|shuf"
+PERM = "1aef9aca491b3025740ecf294964a0a6c87132757234c74ba600884769da7ba3"
+SUFFIX = f"+shuf/1:{SEED}:{PERM[:12]}"
 
 
 # ------------------------------------------------------------- rubric / parsing
@@ -171,8 +175,8 @@ def _exe(p: Path, body: str) -> None:
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
 
 
-def _swap(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}"}
+def _swap(tmp: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", **(env or {})}
     return subprocess.run(["bash", str(HERE / "swap.sh"), *args], capture_output=True, text=True, env=env)
 
 
@@ -180,11 +184,20 @@ def _swap(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def fakes(tmp_path: Path) -> Path:
     (tmp_path / "bin").mkdir()
     # a fake ES census (curl) and a fake backfill that records its argv
+    # the census shows the shuffled control's stamps; the fake backfill answers as the real one does
+    # (its `shuffle` record names the seed it was given) unless FAKE_SEED overrides the seed it reports
     _exe(tmp_path / "bin/curl", 'echo \'{"hits":{"total":{"value":100}},"aggregations":{"v":{"buckets":'
-                                '[{"key":"llm/2:M:x@file/1","doc_count":100}]}}}\'\n')
+                                f'[{{"key":"llm/2:M:x+merge=llm-only@file/1{SUFFIX}","doc_count":100}}]}}}}}}\'\n')
     _exe(tmp_path / "bin/fakebackfill", f'echo "$@" >> {tmp_path}/argv.log\n'
-         'if [[ " $* " == *" --apply "* ]]; then echo \'{"dry_run": false, "chunks": 100, "glossary_file": '
-         '{"sha256": "SHA"}}\'; else echo \'{"dry_run": true, "chunks": 100}\'; fi\n')
+         'args=" $* "; seed=; gf=; while [ $# -gt 0 ]; do [ "$1" = --shuffle-rendered ] && seed=$2; '
+         '[ "$1" = --glossary-file ] && gf=$2; shift; done\n'
+         'sha=$(sha256sum "$gf" | cut -d" " -f1)\n'
+         'seed=${FAKE_SEED-$seed}\n'
+         'shuf=; [ -n "$seed" ] && shuf=", \\"shuffle\\": {\\"scheme\\": \\"shuf/1\\", \\"seed\\": \\"$seed\\", '
+         f'\\"permutation_sha256\\": \\"{PERM}\\", \\"stamp_suffix\\": \\"+shuf/1:$seed:{PERM[:12]}\\"}}"\n'
+         'if [[ "$args" == *" --apply "* ]]; then echo "{\\"dry_run\\": false, \\"chunks\\": 100, \\"chunks_to_update\\": 100, '
+         '\\"chunks_written\\": ${FAKE_WRITTEN-100}, \\"glossary_file\\": {\\"sha256\\": \\"${FAKE_SHA-$sha}\\"}$shuf}"; '
+         'else echo "{\\"dry_run\\": true, \\"chunks\\": 100, \\"chunks_to_update\\": 100$shuf}"; fi\n')
     (tmp_path / "g.jsonl").write_text('{"x": 1}\n')
     return tmp_path
 
@@ -211,11 +224,41 @@ def test_swap_writes_a_record_the_runner_accepts(fakes: Path) -> None:
     assert len(argv) == 2 and "--apply" not in argv[0]
     assert f"--apply --confirm-index {idx}" in argv[1] and "--shuffle-rendered 261101|shuf" in argv[1]
     rec = json.loads((fakes / "rec/armx.swap.json").read_text())
-    assert rec["shuffle_seed"] == "261101|shuf" and rec["census_after"]["total"] == 100
+    assert rec["shuffle_seed"] == SEED and rec["census_after"]["total"] == 100
+    gsha = hashlib.sha256((fakes / "g.jsonl").read_bytes()).hexdigest()
+    assert rec["apply"]["shuffle"]["seed"] == SEED and rec["glossary_file"]["sha256"] == gsha
+    assert rec["apply"]["glossary_file"]["sha256"] == gsha            # the real backfill hashes the same file
     assert oct((fakes / "rec/armx.swap.json").stat().st_mode & 0o777) == "0o600"
     cfg = f10.normalise_config({
         "api": {"base_url": "http://api.invalid"},
         "corpora": {"O": {"collection": "c", "index": idx, "expected_chunks": 100}},
-        "arms": {"armx": {"stamp_prefixes": ["llm/2:M:"], "glossary_file_sha256": {"O": "SHA"},
-                          "shuffle_seed": "261101|shuf"}}})
-    assert f10.verify_swap_record(rec, cfg, "O", "armx") == {"total": 100, "stamps": {"llm/2:M:x@file/1": 100}}
+        "arms": {"armx": {"stamp_prefixes": ["llm/2:M:"], "merge": "llm-only", "glossary_file_sha256": {"O": gsha},
+                          "shuffle_seed": SEED}}})
+    assert f10.verify_swap_record(rec, cfg, "O", "armx") == {
+        "total": 100, "stamps": {f"llm/2:M:x+merge=llm-only@file/1{SUFFIX}": 100}, "shuffle_suffix": SUFFIX}
+
+
+def test_swap_refuses_when_the_backfill_disagrees(fakes: Path) -> None:
+    idx = "ragstack_lib_bench_synthetic"
+    common = ["--arm", "armx", "--glossary-file", str(fakes / "g.jsonl"), "--index", idx, "--es-url",
+              "http://es.invalid", "--backfill", "fakebackfill", "--record-dir", str(fakes / "rec")]
+    # the backfill applied another seed than the one on the command line
+    r = _swap(fakes, *common, "--", "--shuffle-rendered", SEED, env={"FAKE_SEED": "261101|other"})
+    assert r.returncode == 1 and "applied shuffle seed" in r.stderr and not (fakes / "rec/armx.swap.json").exists()
+    # a shuffle applied although none was asked for (a true arm)
+    r = _swap(fakes, *common, env={"FAKE_SEED": SEED})
+    assert r.returncode == 1 and "applied shuffle seed" in r.stderr
+    # fewer chunks written than planned
+    r = _swap(fakes, *common, "--", "--shuffle-rendered", SEED, env={"FAKE_WRITTEN": "99"})
+    assert r.returncode == 1 and "wrote 99 of 100" in r.stderr and not (fakes / "rec/armx.swap.json").exists()
+    # the backfill rendered another file than the one swap.sh hashed: swap.sh records it, the runner refuses
+    r = _swap(fakes, *common, "--", "--shuffle-rendered", SEED, env={"FAKE_SHA": "0" * 64})
+    assert r.returncode == 0, r.stderr
+    rec = json.loads((fakes / "rec/armx.swap.json").read_text())
+    cfg = f10.normalise_config({
+        "api": {"base_url": "http://api.invalid"},
+        "corpora": {"O": {"collection": "c", "index": idx, "expected_chunks": 100}},
+        "arms": {"armx": {"stamp_prefixes": ["llm/2:M:"], "merge": "llm-only", "shuffle_seed": SEED,
+                          "glossary_file_sha256": {"O": rec["glossary_file"]["sha256"]}}}})
+    with pytest.raises(f10.Refused, match="other than the one swap.sh hashed"):
+        f10.verify_swap_record(rec, cfg, "O", "armx")

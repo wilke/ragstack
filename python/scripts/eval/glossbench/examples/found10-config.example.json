@@ -1,5 +1,5 @@
 {
-  "_comment": "Synthetic example. The real file is private: base URL, collection ids, index names, hashes. Every value below is a placeholder.",
+  "_comment": "Synthetic example. The real file is private: base URL, collection ids, index names, hashes. Every value below is a placeholder. Stamps follow the glossary tools' grammar <base>[+merge=<mode>]@file/1[+shuf/1:<seed>:<perm12>]: `stamps`/`stamp_prefixes` constrain <base>, `merge` the marker (a mode or null), `shuffle_seed` the suffix (a seed or null).",
   "api": {
     "base_url": "http://127.0.0.1:PORT",
     "api_key_env": "GLOSSBENCH_API_KEY",
@@ -10,6 +10,11 @@
   },
   "census": {
     "es_url": "http://127.0.0.1:ES_PORT"
+  },
+  "server_assumed": {
+    "_comment": "settings /v1/config does not expose; copy them from the server's env, they are recorded in every summary",
+    "retrieval_candidate_multiplier": 2,
+    "rrf_k": 60
   },
   "corpora": {
     "O": {"collection": "<collection id of the OA-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 32765},
@@ -22,9 +27,17 @@
   },
   "hit_stamp_conditions": ["bm25"],
   "arms": {
-    "rules": {"stamps": ["rules/3@file/1"], "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}, "shuffle_seed": null},
-    "qwen36p": {"stamp_prefixes": ["llm/2:Qwen3.6-35B-A3B:"], "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}, "shuffle_seed": null},
-    "qwen36p-shuf": {"stamp_prefixes": ["llm/2:Qwen3.6-35B-A3B:"], "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}, "shuffle_seed": "261101|shuf"}
+    "none": {"stamps": ["none"], "merge": "none", "shuffle_seed": null,
+             "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}},
+    "rules": {"stamps": ["rules/3"], "merge": null, "shuffle_seed": null,
+              "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}},
+    "qwen36p": {"stamp_prefixes": ["llm/2:<qwen36 model id>:"], "stamps": ["none"], "merge": "llm-only", "shuffle_seed": null,
+                "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}},
+    "qwen36p-shuf": {"stamp_prefixes": ["llm/2:<qwen36 model id>:"], "stamps": ["none"], "merge": "llm-only", "shuffle_seed": "261101|shuf",
+                     "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}},
+    "frontierp": {"_comment": "eval papers carry the frontier model, distractors qwen36p (prereg §4, a stated mixture)",
+                  "stamp_prefixes": ["llm/2:<frontier model id>:", "llm/2:<qwen36 model id>:"], "stamps": ["none"], "merge": "llm-only", "shuffle_seed": null,
+                  "glossary_file_sha256": {"O": "<sha256>", "A": "<sha256>"}}
   },
   "analysis": {
     "alpha": 0.05,
