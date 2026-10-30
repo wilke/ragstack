@@ -72,8 +72,10 @@ question and arm, preceded by one ``part4-glossary-retrieval|-|-|-|-`` header ro
 carrying the provenance (the reader skips rows that are not ``retrieval``). The
 lists are the very ones the re-score above consumed, not recomputed. The file is
 written atomically, mode 0600, only after the results; it must end ``.jsonl``,
-lie outside the repository and not be the part-4 store itself. Without the flag
-nothing changes: the results file does not mention it.
+lie outside the repository, not be the part-4 store itself and not exist yet
+(the gate records a reference by file name only, so a reference is written
+once; remove it to rewrite). Without the flag nothing changes: the results file
+does not mention it.
 
 Exit codes: 0 done; 1 the manipulation check or the same-chunks check failed;
 6 (``GLOSSARY_REFUSED_EXIT_CODE``) a glossary file was refused. Nothing is
@@ -277,7 +279,9 @@ def manifest_check(pages: dict[str, dict[str, Any]], path: Path) -> dict[str, An
 
 def check_retrieval_path(path: Path, repo: Path, part4_store: Path | None) -> Path:
     """Where ``--write-retrieval`` may write: a ``.jsonl`` (the reader's store form)
-    outside the repository, and never the part-4 retrieval store itself."""
+    outside the repository, never the part-4 retrieval store itself, and not an
+    existing file: ``reranker_test`` records the gate's reference by file name
+    only, so a reference replaced in place would be untraceable."""
     rp = path.resolve()
     if rp.suffix != ".jsonl":
         raise SystemExit("part4-glossary: --write-retrieval must end .jsonl (the part-4 retrieval-store form)")
@@ -287,6 +291,9 @@ def check_retrieval_path(path: Path, repo: Path, part4_store: Path | None) -> Pa
         raise SystemExit("part4-glossary: refusing to overwrite the part-4 retrieval store")
     if not rp.parent.is_dir():
         raise SystemExit("part4-glossary: --write-retrieval: the directory does not exist")
+    if rp.exists():
+        raise SystemExit(f"part4-glossary: --write-retrieval: {rp} exists; an identity reference is written once "
+                         "(remove it to rewrite)")
     return rp
 
 

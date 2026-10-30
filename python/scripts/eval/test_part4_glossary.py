@@ -650,10 +650,12 @@ def test_write_retrieval_refusals_come_before_any_work(setup: tuple[Path, Path],
     fake_repo = tmp_path / "repo"
     (fake_repo / "python").mkdir(parents=True)
     monkeypatch.setattr(sat, "_REPO_PY", fake_repo / "python")
+    (tmp_path / "taken.jsonl").write_text("")
     cases = [({"write_retrieval": str(fake_repo / "x.jsonl")}, "inside the repository"),
              ({"write_retrieval": str(tmp_path / "x.json")}, "must end .jsonl"),
              ({"write_retrieval": str(out / "part4-retrieval.jsonl")}, "part-4 retrieval store"),
              ({"write_retrieval": str(tmp_path / "nodir" / "x.jsonl")}, "does not exist"),
+             ({"write_retrieval": str(tmp_path / "taken.jsonl")}, "written once"),
              ({"write_retrieval": str(tmp_path / "x.jsonl"), "write_retrieval_condition": "nope"},
               "not a --glossary-file condition"),
              ({"write_retrieval_condition": "rules"}, "needs --write-retrieval")]
@@ -663,6 +665,27 @@ def test_write_retrieval_refusals_come_before_any_work(setup: tuple[Path, Path],
             p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), specs, **kw)
         assert w.calls["load"] == 0, kw
     assert not list(fake_repo.glob("*.jsonl")) and not (out / "part4-retrieval.jsonl").exists()
+    assert (tmp_path / "taken.jsonl").read_text() == ""  # the existing file is untouched
+
+
+def test_write_retrieval_store_keeps_the_full_depth_behind_a_non_retrieval_header(tmp_path: Path) -> None:
+    """The writer is the only place a list could be cut: the reranked 50-list goes
+    out whole (the gate reads its top 10, the budget cells read deeper), and the
+    header row is literally not a ``retrieval`` row, so the loader skips it by
+    kind rather than by an arm that happens not to match."""
+    import reranker_test as rt
+
+    ids = [f"T512o0|d|{i}" for i in range(50)]
+    lists = {"T512o0": {"q0": ids, "q1": ids[::-1]}, "L": {"q0": ids[:25], "q1": ids[25:]}}
+    store = tmp_path / "ref.jsonl"
+    assert p4g.write_retrieval_store(store, {"schema": p4g.RETRIEVAL_SCHEMA}, lists, ["q0", "q1"]) == 4
+    rows = [json.loads(x) for x in store.read_text().splitlines()]
+    assert rows[0]["k"] == "part4-glossary-retrieval|-|-|-|-" and rows[0]["schema"] == p4g.RETRIEVAL_SCHEMA
+    assert [r["k"] for r in rows[1:]] == ["retrieval|q0|T512o0|-|-", "retrieval|q1|T512o0|-|-",
+                                          "retrieval|q0|L|-|-", "retrieval|q1|L|-|-"]
+    assert rt.load_identity_reference(store, "T512o0") == {"q0": ids, "q1": ids[::-1]}
+    assert rt.load_identity_reference(store, "L") == {"q0": ids[:25], "q1": ids[25:]}
+    assert (store.stat().st_mode & 0o777) == 0o600
 
 
 def test_cli_wires_write_retrieval(monkeypatch: pytest.MonkeyPatch, setup: tuple[Path, Path]) -> None:
