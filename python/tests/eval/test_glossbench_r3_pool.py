@@ -266,14 +266,13 @@ def test_exclusions_from_several_files(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- outputs
-def test_dry_writes_the_manifest_only_and_fields_mode_needs_dry(tmp_path: Path) -> None:
+def test_dry_writes_the_manifest_only_and_fields_mode_is_set_p_only(tmp_path: Path) -> None:
     m, out, _ = build(tmp_path / "a", dry=True)
     assert m["reading"] == "dry" and m["pool_sha256"] is None and not (out / "pool-O.jsonl").exists()
     assert m["gate"]["gold_differs_sampled"] == 15
     cfg, _ = world(tmp_path / "b", draft_mode="fields")
-    with pytest.raises(SystemExit, match="fields mode"):
+    with pytest.raises(SystemExit, match="set P only"):               # round 2's rule (fields mode: test_..._r3_draft)
         pool.build(cfg, "O", g.out_dir(cfg), provenance=lambda: PROV)
-    assert pool.build(cfg, "O", g.out_dir(cfg), dry=True, provenance=lambda: PROV)["design"]["fields_mode"]
 
 
 def test_manifest_is_counts_only_and_ranked(tmp_path: Path) -> None:

@@ -75,9 +75,13 @@ pre-registered ones in :data:`DEFAULTS` per set and per key; the effective
 values are in the header and the manifest. ``reach_arms`` names further arms
 (e.g. ``rules-value``, ``rules-mention``) whose reach is printed, descriptively.
 
-Fields mode (``corpora.<set>.draft_mode: fields``, set P) plans per-field
-drafting jobs that this pool does not plan: such a set is built ``--dry`` only
-(manifest, no pool file) until the drafter's round-3 item lands.
+Fields mode (``corpora.<set>.draft_mode: fields``, set P): populations,
+eligibility, paper sample and gate are the same; round 2's arm-blind lexical
+prefilter names each population chunk's candidate fields and round 2's quota plan
+(:func:`glossbench_r2_fields.plan_strata`, on the strata V / M_num) assigns
+``v_per_paper`` / ``m_per_paper`` jobs per paper and stratum. A chunk with a job is
+"sampled" (the gate counts those chunks); the header carries the field plan and
+specs the drafter reads, as in round 2.
 """
 from __future__ import annotations
 
@@ -95,6 +99,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import _glossbench_r2 as g  # noqa: E402
+import glossbench_r2_fields as fl  # noqa: E402
 import glossbench_r2_pool as r2  # noqa: E402
 
 from ragstack.ingestion.glossary_file import (  # noqa: E402
@@ -270,12 +275,12 @@ def _quantiles(xs: list[int]) -> dict[str, float] | None:
 
 # --------------------------------------------------------------------------- build
 def build(cfg: dict[str, Any], set_: str, out: Path, *, dry: bool = False, corpus_reach: bool = False,
-          provenance: Any = None) -> dict[str, Any]:
+          provenance: Any = None, in_set_records: str | None = None) -> dict[str, Any]:
     pc = pool_config(cfg, set_)
     cc = g.corpus_config(cfg, set_)
-    fields_mode = cc.get("draft_mode") == "fields"
-    if fields_mode and not dry:
-        raise SystemExit(f"set {set_}: fields mode is not planned by the round-3 pool yet; build it --dry")
+    fc = fl.field_config(cc, set_)
+    fields_mode = fc is not None
+    fres = fl.resolve_fields(fc, in_set_records) if fc is not None else None
     rows = g.read_chunks(cc["chunks"])
     expected = cc.get("expected_chunks")
     if expected is not None and len(rows) != int(expected):
@@ -339,14 +344,35 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, dry: bool = False, corpu
                          "gold_differs": fields_[va] != fields_[ma],
                          "sampled": False, "sample_rank": None})
 
-    # 4. the seeded chunk sample
+    # 4. the seeded chunk sample (open mode) / the per-field job plan (fields mode)
     by_key = {r["chunk_id"]: r for r in pool}
-    for p in papers:
-        for s in STRATA:
-            ids = [r["chunk_id"] for r in pool if r["paper"] == p and r["stratum"] == s]
-            for rank, cid in enumerate(r2.seeded_order(ids, f"{seed}|chunks|{s}|{p}")):
-                by_key[cid]["sample_rank"] = rank
-                by_key[cid]["sampled"] = rank < int(pc[QUOTA_KEY[s]])
+    field_plan: dict[str, Any] | None = None
+    per_paper_q = {s: int(pc[QUOTA_KEY[s]]) for s in STRATA}
+    if fres is not None:
+        assert fc is not None
+        # round 2's fields machinery on round 3's strata: the arm-blind lexical prefilter
+        # names each population chunk's candidate fields; the quota plan assigns the jobs
+        # (v_per_paper / m_per_paper jobs per paper and stratum); a chunk with a job is sampled
+        names = set(fl.planned_names(fres["fields"], fc))
+        planned = [f for f in fres["fields"] if f.field in names]
+        for r in pool:
+            r["field_candidates"] = fl.candidate_fields(corpus.chunks[r["chunk_id"]].content, planned)
+            r["field_jobs"] = []
+        tj = fc.get("target_jobs")
+        targets = fl.cell_targets(papers, per_paper_q, None if tj is None else int(tj))
+        field_plan, jobs = fl.plan_strata(fres["fields"], fc, [r for r in pool if r["field_candidates"]],
+                                          targets, seed)
+        field_plan["per_paper"] = per_paper_q
+        for cid, fs in jobs.items():
+            by_key[cid]["field_jobs"] = fs
+            by_key[cid]["sampled"] = True
+    else:
+        for p in papers:
+            for s in STRATA:
+                ids = [r["chunk_id"] for r in pool if r["paper"] == p and r["stratum"] == s]
+                for rank, cid in enumerate(r2.seeded_order(ids, f"{seed}|chunks|{s}|{p}")):
+                    by_key[cid]["sample_rank"] = rank
+                    by_key[cid]["sampled"] = rank < int(pc[QUOTA_KEY[s]])
 
     # 5. counts and the gate
     def tally(sel: list[dict[str, Any]]) -> dict[str, Any]:
@@ -406,7 +432,15 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, dry: bool = False, corpu
                   "vs_stoplist": stoplist, "strata": list(STRATA),
                   "inputs_sha256": {"chunks": [g.file_sha(x) for x in cc["chunks"]], "exclude_papers": exclude_shas,
                                     "arms": {a: file_sha256(arm_paths[a]) for a in arms}},
-                  "commit": prov.get("commit"), "quotas_per_paper": quotas, "draft_mode": "open"}
+                  "commit": prov.get("commit"), "quotas_per_paper": quotas,
+                  "draft_mode": "fields" if fres is not None else "open"}
+        if fres is not None:
+            assert field_plan is not None
+            fnames = set(field_plan["fields"])
+            header.update({"fields_sha256": fres["sha256"], "field_plan": field_plan, "in_set": fres["in_set"],
+                           "constants": fres["constants"], "new_ground": fres["new_ground"],
+                           "field_specs": [f.as_dict() for f in fres["fields"] if f.field in fnames],
+                           "prefilter": r2.PREFILTER_NOTE})
         pool_path = out / f"pool-{set_}.jsonl"
         tmp = pool_path.with_suffix(".jsonl.tmp")
         with tmp.open("w", encoding="utf-8") as fh:
@@ -447,6 +481,13 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, dry: bool = False, corpu
         "per_paper_by_rank": per_paper,
         "gate": gate,
         "corpus_reach": corpus_block,
+        "fields": None if fres is None else {
+            "draft_mode": "fields", "fields_sha256": fres["sha256"], "in_set": fres["in_set"],
+            "constants": fres["constants"], "new_ground": fres["new_ground"],
+            "plan": {**{k: v for k, v in (field_plan or {}).items() if k != "cells"},
+                     "cells": fl.anonymised_cells(field_plan or {"cells": {}})},
+            "jobs": sum(len(r.get("field_jobs") or []) for r in pool), "prefilter": r2.PREFILTER_NOTE,
+            "sampled_means": "a chunk with at least one field job"},
         "arms": {a: {"sha256": file_sha256(arm_paths[a]), "producer": arms[a][0].header.get("producer"),
                      "glossary_versions": arms[a][0].glossary_versions, "attachment": rules[a],
                      "file_counts": dict(arms[a][0].header.get("counts") or {})} for a in arms},
@@ -466,12 +507,15 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="eval papers + V/M_num pool + quotas + gold-differs gate for one set")
     b.add_argument("--set", required=True, choices=g.SETS)
     b.add_argument("--dry", action="store_true", help="the manifest only (no pool file to draft from)")
+    b.add_argument("--in-set-records", default=None,
+                   help="fields mode: the held set's records (JSONL); in_set is computed from them, sha recorded")
     b.add_argument("--corpus-reach", action="store_true",
                    help="also count every arm's chunks with a field over the whole corpus, by population")
     args = ap.parse_args(argv)
     cfg, _ = g.load_config(args.private_config)
     out = g.out_dir(cfg, args.out_dir)
-    m = build(cfg, args.set, out, dry=args.dry, corpus_reach=args.corpus_reach)
+    m = build(cfg, args.set, out, dry=args.dry, corpus_reach=args.corpus_reach,
+              in_set_records=args.in_set_records)
     print(json.dumps({"set": m["set"], "reading": m["reading"], "counts": {
         k: m["counts"][k] for k in ("papers_eligible", "eval_papers", "population_corpus")},
         "gate": m["gate"]}, sort_keys=True))

@@ -118,6 +118,8 @@ PARTNER_VERDICTS_SCHEMA = "glossbench-r2-partner-verdicts/1"
 PARTNER_VERDICTS = ("accept", "reject")
 PARTNER_BASES = ("scripted", "sampled")
 PILOT_DEFAULT_RECORDS, PILOT_DEFAULT_PAPERS = 50, 3
+#: the round-3 pool's header schema (glossbench_r3_pool.POOL_SCHEMA)
+R3_POOL_SCHEMA = "glossbench-r3-pool/1"
 #: prereg §3.5 (frozen 39c579e1) and DEVIATIONS D-1: the set-P promotion condition is the
 #: Wilson 95% upper bound of the partner's judged pilot error rate <= 0.15 with at least 30
 #: judged; computed from the raw counts at z = 1.959963984540054, compared at full float
@@ -385,6 +387,9 @@ class Run:
         # the pool's statistical stoplist is the one the checks use (one list per round)
         self.checks_cfg = {**self.cfg["checks"], "vs_stoplist": self.header.get("vs_stoplist")}
         self.mode = self.header.get("draft_mode", "open")
+        #: round 3's pool (glossbench_r3_pool.py): strata V / M_num; M_num chunks carry the
+        #: paper's symbols they mention (``sigma_tokens``) and ask for ``symbol_is_the_quantity``
+        self.round3 = self.header.get("schema") == R3_POOL_SCHEMA
         cc = g.corpus_config(self.raw_cfg, self.set)
         self.fc = fl.field_config(cc, self.set)
         if (self.fc is not None) != (self.mode == "fields"):
@@ -487,7 +492,12 @@ class Run:
         prev = None if previous is None else {"reasons": previous["l1_inline"]["reasons"],
                                               "draft": previous.get("draft")}
         if r.get("field") is not None:
+            if r["stratum"] == "M_num":
+                return ck.field_draft_messages(c.content, self.specs[r["field"]], prev, symbol_bound=True)
             return ck.field_draft_messages(c.content, self.specs[r["field"]], prev)
+        if r["stratum"] == "M_num":
+            return ck.draft_messages(c.content, r["stratum"], r["vs_tokens"], prev,
+                                     sigma_tokens=r.get("sigma_tokens") or [])
         return ck.draft_messages(c.content, r["stratum"], r["vs_tokens"], prev)
 
     # -------------------------------------------------------- preflight
@@ -728,7 +738,12 @@ class Run:
         else:
             status = "ok"
         spec = self.specs.get(r["field"]) if r.get("field") is not None else None
-        draft, err = ck.parse_draft(text, "fields" if spec else "open") if status == "ok" else (None, None)
+        if status != "ok":
+            draft, err = None, None
+        elif r["stratum"] == "M_num":
+            draft, err = ck.parse_draft(text, "fields" if spec else "open", symbol_bound=True)
+        else:
+            draft, err = ck.parse_draft(text, "fields" if spec else "open")
         if spec is not None and draft is not None and not draft.get("none"):
             draft["binding_terms"] = list(spec.terms)      # the field's terms, never model-invented
         l1 = (ck.layer1(draft, err, stratum=r["stratum"], paper=r["paper"],
@@ -1041,6 +1056,9 @@ class Run:
                                 "quantiles": {f"p{int(p * 100)}": q(p) for p in (0.1, 0.25, 0.5, 0.75, 0.9)},
                                 "over_threshold": sum(1 for x in overlaps if x > self.cfg["checks"]["leak_threshold"])},
             "draft_mode": self.mode, "pilot": self.pilot is not None,
+            **({"round3": {"symbol_bound_by_stratum": {
+                s: dict(Counter(str(r["draft"].get(ck.SYMBOL_BOUND_KEY)) for r in acc if r["l1"]["stratum"] == s))
+                for s in ck.R3_STRATA}}} if self.round3 else {}),
             "fields": None if self.mode != "fields" else {
                 "fields_sha256": self.fields_sha,
                 "jobs_by_field": dict(sorted(Counter(j["field"] for j in self.sampled).items())),
