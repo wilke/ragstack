@@ -52,6 +52,11 @@ Subcommands (each writes one JSON file; every file embeds
     never text). The in-process route uses ``--glossary-boost`` directly.
     The gold (chunk ids per quote, by the parts 2-4 normalisation) is computed
     here against the full chunk dump and written beside the lists.
+    ``--questions-format partner-held --pairs PAIRS.jsonl`` reads set P as the
+    partner holds it (records joined to pairs by ``pair``; cluster = the pair's
+    paper locator; gold = ``expected.quote`` resolved in the dump by the
+    partner's quote rule; the records' live-collection ``gold_chunk_ids`` are
+    ignored; unresolved records are excluded and counted).
 
 ``rerank``
     Rerank captured pools through the cross-encoder sidecar with the five input
@@ -124,6 +129,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -333,21 +339,122 @@ def load_questions(path: Path, fields: dict[str, str | None], set_field: str | N
     return out, meta
 
 
+#: ``--questions-format partner-held``: the partner's held record file joined to its pairs file.
+PARTNER_HELD = "partner-held"
+#: the partner's quote-gold rule, reimplemented (its behaviour, not its text): see :func:`partner_norm`.
+PARTNER_QUOTE_RULE = ("partner-quote/1: NFKC, every whitespace run -> one space, strip, casefold; a chunk is gold "
+                      "when its equally normalised content contains the quote, or its first or last "
+                      "ceil(0.6 * len) characters")
+
+
+def partner_norm(text: str) -> str:
+    """The partner's quote normalisation: NFKC, each whitespace run collapsed to
+    one space, stripped, casefolded. (Unlike :func:`section_aware_trial.norm`,
+    which removes whitespace, so the 60% cut lands on a different character.)"""
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
+
+
+def load_partner_held(path: Path, pairs_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Set P as the partner holds it: records ``record_id, pair, kind, origin,
+    query, gold_chunk_ids[, gold_rule]`` joined by ``pair`` to the pairs file
+    (``id``, ``field``, ``paper{pmcid, locator, ...}``, ``expected{quote,
+    quote_variants}``). The query is the record's; the cluster is the pair's
+    paper locator (``pmcid`` when it has none); the quote is the pair's
+    ``expected.quote`` (the partner's rule reads no variant; variants are counted
+    only). The record's ``gold_chunk_ids`` are live-collection ids and are
+    ignored (counted): gold is resolved against the bench dump by
+    :data:`PARTNER_QUOTE_RULE` in :func:`build_gold`. A ``gold_rule`` of
+    ``any``/``all`` is kept per record; any other value is a description and is
+    counted, not applied. A record whose pair is missing stops the run."""
+    rows = read_jsonl(path)
+    pairs: dict[str, dict[str, Any]] = {}
+    for prow in read_jsonl(pairs_path):
+        pid = prow.get("id")
+        if pid in (None, ""):
+            raise SystemExit(f"{pairs_path.name}: a pair lacks 'id'")
+        if str(pid) in pairs:
+            raise SystemExit(f"{pairs_path.name}: duplicate pair id")
+        pairs[str(pid)] = prow
+    out: list[dict[str, Any]] = []
+    cnt: Counter[str] = Counter()
+    for r in rows:
+        for k in ("record_id", "pair", "query"):
+            if r.get(k) in (None, ""):
+                raise SystemExit(f"{path.name}: a record lacks {k!r} (keys {sorted(r)})")
+        p = pairs.get(str(r["pair"]))
+        if p is None:
+            raise SystemExit(f"{path.name}: record {r['record_id']} names a pair absent from {pairs_path.name}")
+        paper: dict[str, Any] = p["paper"] if isinstance(p.get("paper"), dict) else {}
+        cluster = paper.get("locator") or paper.get("pmcid")
+        if not cluster:
+            raise SystemExit(f"{pairs_path.name}: pair of record {r['record_id']} has no paper locator/pmcid")
+        cnt["cluster_from_locator" if paper.get("locator") else "cluster_from_pmcid"] += 1
+        exp: dict[str, Any] = p["expected"] if isinstance(p.get("expected"), dict) else {}
+        quote = exp.get("quote")
+        quotes = [str(quote)] if isinstance(quote, str) and partner_norm(quote) else []
+        if exp.get("quote_variants"):
+            cnt["pairs_with_quote_variants_unused"] += 1
+        if r.get("gold_chunk_ids"):
+            cnt["live_gold_chunk_ids_ignored"] += 1
+        rule = r.get("gold_rule")
+        if rule in ("any", "all"):
+            cnt[f"gold_rule_{rule}"] += 1
+        elif rule not in (None, ""):
+            cnt["gold_rule_descriptive_not_applied"] += 1
+            rule = None
+        out.append({"id": str(r["record_id"]), "query": str(r["query"]), "cluster": str(cluster),
+                    "quotes": quotes, "gold_chunk_ids": [], "valid": r.get("valid", True) is not False,
+                    "match": PARTNER_HELD, "rule": rule, "pair": str(r["pair"])})
+    ids = [q["id"] for q in out]
+    if len(set(ids)) != len(ids):
+        raise SystemExit("question file: duplicate record ids")
+    meta = {"sha256": sha256_file(path), "rows": len(rows), "records": len(out), "skipped_other_set": 0,
+            "set_filter": None, "format": PARTNER_HELD, "pairs_sha256": sha256_file(pairs_path),
+            "pairs": len(pairs), "pairs_used": len({q["pair"] for q in out}), "quote_rule": PARTNER_QUOTE_RULE,
+            "counts": dict(sorted(cnt.items())),
+            "distinct_queries": len({q["query"] for q in out}), "clusters": len({q["cluster"] for q in out})}
+    return out, meta
+
+
+def questions_from_args(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    fmt = getattr(args, "questions_format", None) or "plain"
+    pairs = getattr(args, "pairs", None)
+    if fmt == PARTNER_HELD:
+        if not pairs:
+            raise SystemExit("--questions-format partner-held needs --pairs PAIRS.jsonl")
+        if args.set_field or any(question_fields(args).values()):
+            raise SystemExit("--questions-format partner-held fixes its fields: drop --*-field / --set-field")
+        return load_partner_held(Path(args.questions), Path(pairs))
+    if pairs:
+        raise SystemExit("--pairs is only read with --questions-format partner-held")
+    return load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+
+
 def build_gold(questions: list[dict[str, Any]], corpus: Corpus) -> dict[str, Any]:
     """Gold chunk ids per quote under the parts 2-4 rule (NFKC, casefold, all
     whitespace removed; a quote cut by a chunk boundary counts when its first or
-    last 60% is in the chunk: :func:`section_aware_trial.hit`). A record whose
-    quotes match no chunk is excluded (``no_gold_chunk_in_index``)."""
+    last 60% is in the chunk: :func:`section_aware_trial.hit`), or, for a
+    ``partner-held`` record, the partner's rule (:data:`PARTNER_QUOTE_RULE`;
+    same containment test over :func:`partner_norm`). A record whose quotes
+    match no chunk is excluded (``no_gold_chunk_in_index``). A record's own
+    ``rule`` (``any``/``all``) is carried into its gold entry."""
     ntext = {c.id: sat.norm(c.content) for c in corpus.chunks}
+    ptext: dict[str, str] | None = None
     recs: dict[str, Any] = {}
     excl: Counter[str] = Counter()
     for q in questions:
         quotes: list[list[str]] = []
         source = "quote"
+        partner = q.get("match") == PARTNER_HELD
+        if partner and ptext is None:
+            ptext = {c.id: partner_norm(c.content) for c in corpus.chunks}
         if q["quotes"]:
             for qt in q["quotes"]:
-                nq = sat.norm(qt)
-                quotes.append(sorted(cid for cid, t in ntext.items() if sat.hit(nq, t)))
+                if partner:
+                    nq, texts, source = partner_norm(qt), ptext, "quote:" + PARTNER_HELD
+                else:
+                    nq, texts = sat.norm(qt), ntext
+                quotes.append(sorted(cid for cid, t in (texts or {}).items() if sat.hit(nq, t)))
         elif q["gold_chunk_ids"]:
             source = "ids"
             quotes.append(sorted(x for x in q["gold_chunk_ids"] if x in corpus.by_id))
@@ -362,13 +469,17 @@ def build_gold(questions: list[dict[str, Any]], corpus: Corpus) -> dict[str, Any
             excl[reason] += 1
         recs[q["id"]] = {"cluster": q["cluster"], "query_sha": sha(q["query"])[:16], "gold_source": source,
                          "quotes": quotes, "excluded": reason}
+        if q.get("rule"):
+            recs[q["id"]]["rule"] = q["rule"]
     return {"records": recs, "excluded": dict(excl), "n": len(recs),
             "n_included": sum(1 for r in recs.values() if not r["excluded"])}
 
 
 def rank_of_gold(lst: Sequence[str], rec: dict[str, Any], rule: str = "any") -> int | None:
     """1-based rank of the first gold chunk (``any``), or of the last quote to be
-    covered (``all``: every quote needs one of its chunks); None if not in ``lst``."""
+    covered (``all``: every quote needs one of its chunks); None if not in ``lst``.
+    A record's own ``rule`` (from its question file's ``gold_rule``) wins over ``rule``."""
+    rule = rec.get("rule") or rule
     pos: dict[str, int] = {}
     for i, cid in enumerate(lst, 1):
         pos.setdefault(cid, i)
@@ -770,7 +881,7 @@ def parse_live(spec: str | None) -> list[tuple[str, int]]:
 
 
 def cmd_pools(args: argparse.Namespace) -> int:
-    questions, qmeta = load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+    questions, qmeta = questions_from_args(args)
     corpus = load_corpus(args)
     depths = sorted({int(x) for x in args.depths.split(",")})
     legs = [x for x in args.legs.split(",") if x]
@@ -1048,15 +1159,24 @@ def parse_jobs(spec: str, lists: dict[str, Any], depths: Sequence[int]) -> list[
 def load_identity_reference(path: Path, arm: str | None = None) -> dict[str, list[str]]:
     """The reference reranked lists for the identity gate: ``{rid: [ids]}``, a
     lists file (its ``live:hybrid@50``), or the part-4 retrieval store
-    (``part4-retrieval.jsonl``: rows ``{"k": "retrieval|<qid>|<arm>", "rr": [...]}``,
-    the reranked list per question; ``arm`` selects the arm, e.g. ``T512o0``)."""
+    (``part4-retrieval.jsonl``: rows ``{"k": ckey("retrieval", qid, arm), "rr": [...]}``,
+    the reranked list per question; ``arm`` selects the arm, e.g. ``T512o0``).
+    The key is the part-4 writer's own :func:`deployed_docs_part4.ckey`, five
+    fields ``retrieval|<qid>|<arm>|-|-``; a ``retrieval`` row whose key is not
+    exactly that form (re-built through ``ckey``) is refused, not skipped."""
     if path.suffix == ".jsonl":
         if not arm:
             raise SystemExit("--identity-reference is a part-4 retrieval store: --identity-arm ARM is required")
         out: dict[str, list[str]] = {}
         for row in dp4.read_jsonl_repair_tail(path):
-            k = str(row.get("k", "")).split("|")
-            if len(k) == 3 and k[0] == "retrieval" and k[2] == arm:
+            key = str(row.get("k", ""))
+            k = key.split("|")
+            if k[0] != "retrieval":
+                continue
+            if len(k) != 5 or key != dp4.ckey("retrieval", k[1], k[2]):
+                raise SystemExit(f"{path.name}: retrieval row key is not the part-4 ckey form "
+                                 f"'retrieval|<qid>|<arm>|-|-' ({len(k)} fields)")
+            if k[2] == arm:
                 out[k[1]] = [str(x) for x in row["rr"]]
         if not out:
             raise SystemExit(f"{path.name}: no retrieval rows for arm {arm!r}")
@@ -1138,7 +1258,7 @@ def sidecar_record(sc: Sidecar, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_rerank(args: argparse.Namespace) -> int:
-    questions, qmeta = load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+    questions, qmeta = questions_from_args(args)
     corpus = load_corpus(args)
     src = load_lists([args.pools])
     if src["manipulation"] is not None and not src["manipulation"].get("ok", False):
@@ -1333,7 +1453,7 @@ def census(corpus: Corpus, questions: list[dict[str, Any]], lists: dict[str, Any
 
 
 def cmd_census(args: argparse.Namespace) -> int:
-    questions, qmeta = load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+    questions, qmeta = questions_from_args(args)
     corpus = load_corpus(args)
     src = load_lists(args.lists)
     gold = json.loads(Path(args.gold).read_text())
@@ -1830,7 +1950,7 @@ def cmd_part4_rescore(args: argparse.Namespace) -> int:
     mapping = parse_part4_map(args.map)
     path = Path(args.part4_result)
     obj = json.loads(path.read_text(encoding="utf-8"))
-    questions, qmeta = (load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+    questions, qmeta = (questions_from_args(args)
                         if args.questions else (None, None))
     clusters = {q["id"]: q["cluster"] for q in questions} if questions else None
     an = {"n_perm": args.n_perm, "n_boot": args.n_boot, "ci_level": args.ci_level, "delta": args.delta,
@@ -1912,6 +2032,11 @@ def _q_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cluster-field", help="cluster (page / paper); default: cluster|paper|doc_id")
     p.add_argument("--set-field", help="keep only rows whose SET_FIELD equals --set-value")
     p.add_argument("--set-value")
+    p.add_argument("--questions-format", choices=("plain", PARTNER_HELD), default="plain",
+                   help="plain: one JSONL of records with quotes; partner-held: the partner's held record file "
+                        "joined by 'pair' to --pairs (query from the record, paper locator as cluster, "
+                        "expected.quote resolved in the dump by the partner's rule; live gold ids ignored)")
+    p.add_argument("--pairs", help="partner-held only: the pairs JSONL (id, paper, expected.quote)")
     p.add_argument("--omit-text", action=argparse.BooleanOptionalAction, default=True,
                    help="keep query and quote text out of every output (default on; checked before writing)")
 
