@@ -706,9 +706,14 @@ def test_abbreviation_terms_are_a_hard_reject(tmp_path: Path) -> None:
                          cfg={}, field=spec)
 
     for q in ("What was the ACH in the classroom?", "What was lambda_{a} in the classroom?",
-              "What was λ a for the room?"):
+              "What was λ a for the room?",
+              # the usual way to introduce an abbreviation: in brackets after the words; the
+              # share alone (1 of 3 own words) would not reject it
+              "What was the air exchange rate (ACH) of the classroom in the winter?",
+              "What was the air changes per hour [ACH] of the classroom?"):
         r = l1(q)
         assert "term_abbreviation" in r["reasons"], (q, r)
+    assert fl.abbreviation_in_question("What was the rate (ACH)?", V2_AIR_EXCHANGE_TERMS) == ["ach"]
     ok = l1("What was the air changes per hour of the room?")
     assert ok["verdict"] == "pass" and ok["term_leak"] == 0.0, ok
     # a token, not a substring: "teach" does not contain the term "ach"

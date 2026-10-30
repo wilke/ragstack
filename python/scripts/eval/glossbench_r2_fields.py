@@ -674,13 +674,19 @@ def abbreviation_like(term: str) -> bool:
     return any(c.isdigit() or c in _SYMBOLISH or not c.isascii() for c in t)
 
 
+#: punctuation stripped from a token's ends; brackets included, so a parenthesised
+#: abbreviation ("air exchange rate (ACH)") is the token ``ach``, not ``(ach)``
+_TOKEN_EDGE = ".,;:!?\"'()[]"
+
+
 def _q_tokens(text: str) -> list[str]:
-    return [w.strip(".,;:!?\"'") for w in unicodedata.normalize("NFKC", text).casefold().split()]
+    return [w.strip(_TOKEN_EDGE) for w in unicodedata.normalize("NFKC", text).casefold().split()]
 
 
 def abbreviation_in_question(question: str, terms: Iterable[str]) -> list[str]:
     """The abbreviation-like terms (:func:`abbreviation_like`) the question contains as
-    whole tokens (NFKC, casefold; a multi-token term as a token run)."""
+    whole tokens (NFKC, casefold, edge punctuation and brackets stripped; a multi-token
+    term as a token run)."""
     q = [t for t in _q_tokens(question) if t]
     hits = []
     for term in terms:
