@@ -1,0 +1,181 @@
+{
+  "_comment": "Synthetic example, glossary benchmark round 3 (the attachment rule is the arm). The real file is private. Stamps follow <base>[+merge=<mode>][+attach=<rule>]@file/1[+shuf/1:<seed>:<perm12>]; an arm with the `attach` key (a rule, or null = no slot: the round-2 file loaded as is, the served value rule) is checked on the slot, and with --glossary-file the file's header rule must be the arm's. `analysis.round: 3` selects the round-3 family.",
+  "api": {
+    "base_url": "http://127.0.0.1:PORT",
+    "api_key_env": "GLOSSBENCH_API_KEY",
+    "auth_header": "x-api-key",
+    "timeout_s": 120,
+    "inflight": 4,
+    "retries": 3,
+    "retry_backoff_s": 2.0
+  },
+  "census": {
+    "es_url": "http://127.0.0.1:ES_PORT"
+  },
+  "server_assumed": {
+    "_comment": "settings /v1/config does not expose; copy them from the server's env, they are recorded in every summary",
+    "retrieval_candidate_multiplier": 2,
+    "rrf_k": 60
+  },
+  "corpora": {
+    "O": {
+      "collection": "<collection id of the OA-1000 bench copy>",
+      "index": "ragstack_lib_bench_<...>",
+      "expected_chunks": 32765,
+      "es_id_prefix": "<tenant>:"
+    },
+    "P": {
+      "collection": "<collection id of the papers-OC bench copy>",
+      "index": "ragstack_lib_bench_<...>",
+      "expected_chunks": 14456,
+      "es_id_prefix": "<tenant>:"
+    }
+  },
+  "conditions": {
+    "base": {
+      "retrieval_mode": "hybrid",
+      "rerank": true,
+      "rerank_candidates": 50,
+      "top_k": 50
+    },
+    "bm25": {
+      "retrieval_mode": "bm25",
+      "rerank": false,
+      "top_k": 50
+    },
+    "norerank": {
+      "retrieval_mode": "hybrid",
+      "rerank": false,
+      "top_k": 50
+    }
+  },
+  "hit_stamp_conditions": [
+    "bm25"
+  ],
+  "arms": {
+    "value": {
+      "stamp_prefixes": [
+        "llm/2:<qwen36 model id>:"
+      ],
+      "stamps": [
+        "none"
+      ],
+      "merge": "llm-only",
+      "attach": null,
+      "shuffle_seed": null,
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    },
+    "mention": {
+      "stamp_prefixes": [
+        "llm/2:<qwen36 model id>:"
+      ],
+      "stamps": [
+        "none"
+      ],
+      "merge": "llm-only",
+      "attach": "mention",
+      "shuffle_seed": null,
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    },
+    "mention-shuf": {
+      "stamp_prefixes": [
+        "llm/2:<qwen36 model id>:"
+      ],
+      "stamps": [
+        "none"
+      ],
+      "merge": "llm-only",
+      "attach": "mention",
+      "shuffle_seed": "261103|shuf",
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    },
+    "none": {
+      "stamps": [
+        "none"
+      ],
+      "merge": "none",
+      "attach": null,
+      "shuffle_seed": null,
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    },
+    "rules-value": {
+      "stamps": [
+        "rules/3"
+      ],
+      "merge": null,
+      "attach": null,
+      "shuffle_seed": null,
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    },
+    "rules-mention": {
+      "stamps": [
+        "rules/3"
+      ],
+      "merge": null,
+      "attach": "mention",
+      "shuffle_seed": null,
+      "glossary_file_sha256": {
+        "O": "<sha256>",
+        "P": "<sha256>"
+      }
+    }
+  },
+  "analysis": {
+    "round": 3,
+    "alpha": 0.05,
+    "n_perm": 10000,
+    "n_boot": 10000,
+    "ci_level": 0.9,
+    "seed": 261103,
+    "family_corpora": [
+      "O"
+    ],
+    "family_condition": "base",
+    "hypotheses": {
+      "H1": [
+        "mention",
+        "value",
+        "superiority",
+        "found",
+        [
+          "M_num"
+        ]
+      ],
+      "H2": [
+        "mention",
+        "value",
+        "two-sided",
+        "found",
+        [
+          "V"
+        ]
+      ],
+      "H3": [
+        "mention",
+        "mention-shuf",
+        "superiority",
+        "found",
+        [
+          "V",
+          "M_num"
+        ]
+      ]
+    },
+    "repeat_arm": "value"
+  }
+}

@@ -47,6 +47,12 @@ AFTER ``@file/1``. An arm's config says what its stamps must look like —
 and :func:`stamp_allowed` checks all three parts, so a pure arm's file loaded
 unmarked, a merged file passed off as pure, or a true index passed off as the
 shuffled one is refused on the stamp itself, not only on the swap record.
+Round 3 adds the attachment slot (``glossary_file.py rederive --attach``):
+``<base>[+merge=<mode>][+attach=<rule>]@file/1[+shuf…]``; an arm whose config
+has ``attach`` (a rule, or ``null`` = no slot) is checked on it too, and an arm
+config without the key keeps round 2's grammar, in which an attach slot is
+refused. With ``--glossary-file``, the file's header rule must also be the
+arm's (:func:`check_arm_file_attach`).
 
 **Which arm is attached (refuse otherwise).** Before the first call:
 
@@ -100,7 +106,11 @@ permutation is reproduced and hash-checked against the swap record) or
 (``mixed``); either way ``<label>.boost-check.json`` records the probes (token
 hashes, never text). Fewer than 3 qualifying chunks → ``not_testable``: every
 condition is GATE-NOT-EVALUABLE unless ``--boost-declared X``, then recorded
-as ``declared``. The summary carries it under ``manipulation_check``.
+as ``declared``. The summary carries it under ``manipulation_check``. A mention
+arm (round 3) renders each entry on every chunk that mentions its symbol, so a
+token's glossary frequency rises past 10: ``--probe-max-glossaries N`` widens the
+rule to N glossaries and the probe's ``top_k`` to N with it (default 10, round
+2's probe); still ``not_testable`` → ``--boost-declared``, as above.
 
 **Failures, pause, resume.** A transport error, 5xx or degraded response is
 retried (``api.retries``, backoff); a 4xx is a configuration error and stops
@@ -161,6 +171,10 @@ FILE_STAMP = "@file/1"
 MERGE_MARK = "+merge="
 SHUF_MARK = "+shuf/1:"
 MERGE_MODES = ("llm-only", "rules-only", "merged", "none")
+#: round 3: ``glossary_file.py rederive --attach <rule>`` marks the version ``+attach=<rule>``
+#: after any merge marker: ``<base>[+merge=<mode>][+attach=<rule>]@file/1[+shuf/1:…]``
+ATTACH_MARK = "+attach="
+ATTACH_RULES = ("value", "mention")
 _SHUF_TAIL = re.compile(r"\+shuf/1:(?P<seed>[A-Za-z0-9|._+-]{1,64}):(?P<perm>[0-9a-f]{12})")
 #: the record fields this runner reads (the drafter writes them; the proxy reads the same file)
 RECORD_FIELDS = ("record_id", "paper", "stratum", "question", "gold_chunks")
@@ -237,6 +251,9 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
         mode = acfg.get("merge")
         if mode is not None and mode not in MERGE_MODES:
             raise Refused(f"arms.{arm}.merge {mode!r} is not one of {MERGE_MODES} or null")
+        rule = acfg.get("attach")
+        if rule is not None and rule not in ATTACH_RULES:
+            raise Refused(f"arms.{arm}.attach {rule!r} is not one of {ATTACH_RULES} or null")
     return cfg
 
 
@@ -306,6 +323,25 @@ def split_stamp(stamp: str) -> tuple[str, str | None, tuple[str, str] | None] | 
     return base, mode, shuf
 
 
+def split_stamp_attach(stamp: str) -> tuple[str, str | None, str | None, tuple[str, str] | None] | None:
+    """The round-3 grammar ``<base>[+merge=<mode>][+attach=<rule>]@file/1[+shuf/1:<seed>:<perm12>]``
+    → ``(base, mode, rule, (seed, perm))``; ``None`` when the stamp is not in it.
+    :func:`split_stamp` (round 2) is unchanged and does not read an attach slot."""
+    head, sep, tail = stamp.partition(FILE_STAMP)
+    if not sep or not head:
+        return None
+    rule = None
+    if ATTACH_MARK in head:
+        head, _, rule = head.rpartition(ATTACH_MARK)
+        if rule not in ATTACH_RULES or not head:
+            return None
+    parts = split_stamp(head + FILE_STAMP + tail)
+    if parts is None:
+        return None
+    base, mode, shuf = parts
+    return base, mode, rule, shuf
+
+
 def stamp_allowed(stamp: str | None, arm_cfg: Mapping[str, Any], shuffle_suffix: str | None = None) -> bool:
     """Every part of the stamp is the arm's: the base version is an exact ``stamps``
     entry or starts with a ``stamp_prefixes`` entry; the merge marker is the arm's
@@ -314,13 +350,28 @@ def stamp_allowed(stamp: str | None, arm_cfg: Mapping[str, Any], shuffle_suffix:
     ``shuffle_seed`` (and equals ``shuffle_suffix``, the backfill's own
     ``stamp_suffix``, when given) or absent for a true arm. ``None`` /
     ``"<none>"`` (an unstamped chunk) and anything not in the stamp grammar is
-    never allowed."""
+    never allowed.
+
+    Round 3: an arm config WITH the ``attach`` key reads the attach slot
+    (:func:`split_stamp_attach`) and requires it to be exactly ``attach`` (a
+    rule, or ``null`` = no slot: the served value rule of a file loaded as is),
+    so a value file passed off as the mention arm, or the reverse, is refused
+    on the stamp. Without the key the round-2 grammar applies unchanged: a
+    stamp with an attach slot is not in it and is never allowed."""
     if not stamp or stamp == "<none>":
         return False
-    parts = split_stamp(stamp)
-    if parts is None:
-        return False
-    base, mode, shuf = parts
+    if "attach" in arm_cfg:
+        parts4 = split_stamp_attach(stamp)
+        if parts4 is None or parts4[2] != arm_cfg["attach"]:
+            return False
+        base, mode, _, shuf = parts4
+    else:
+        parts = split_stamp(stamp)
+        # round 2's split_stamp reads an unmerged ``rules/3+attach=mention`` as a base: refuse
+        # the slot here, so a loose ``stamp_prefixes`` entry cannot admit a re-configured file
+        if parts is None or ATTACH_MARK in stamp:
+            return False
+        base, mode, shuf = parts
     exact = arm_cfg.get("stamps") or []
     prefixes = [p for p in (arm_cfg.get("stamp_prefixes") or []) if p]
     if not (stamp in exact or base in exact or any(base.startswith(p) for p in prefixes)):
@@ -459,7 +510,7 @@ class Runner:
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  probe_chunks: Sequence[tuple[str, str, str]] | None = None,
                  probe_unavailable: str | None = None, probe_source: str | None = None,
-                 boost_declared: float | None = None) -> None:
+                 boost_declared: float | None = None, probe_max_glossaries: int = gbp.PROBE_TOP_K) -> None:
         self.cfg, self.corpus, self.arm = cfg, corpus, arm
         self.label = arm_label(arm, repeat)
         self.records = [r for r in records if r["corpus"] == corpus]
@@ -492,6 +543,10 @@ class Runner:
         self.probe_unavailable = probe_unavailable
         self.probe_source = probe_source
         self.boost_declared = boost_declared
+        try:
+            self.probe_request = gbp.probe_request(probe_max_glossaries)
+        except gbp.ProbeUnavailable as e:
+            raise Refused(f"--probe-max-glossaries: {e}") from e
         if boost_declared is not None and boost_declared <= 0:
             raise Refused(f"--boost-declared {boost_declared:g}: a boost <= 0 never consults the glossary field")
         self.boost_check: dict[str, Any] | None = None
@@ -622,7 +677,7 @@ class Runner:
                           ) -> tuple[dict[str, Any] | None, str | None]:
         """One read-only bm25 probe query, retried like a measurement call; a 4xx is
         a configuration error."""
-        body = request_body(gbp.PROBE_REQUEST, token, self.ccfg["collection"])
+        body = request_body(self.probe_request, token, self.ccfg["collection"])
         url = f"{self.cfg['api']['base_url'].rstrip('/')}/v1/retrieve"
         last = None
         for attempt in range(1, self.retries + 2):
@@ -645,7 +700,8 @@ class Runner:
         """The behavioural read-back of TEXT_SYMBOL_GLOSSARY_BOOST, before the first
         measurement call (at most ``inflight`` probes in flight)."""
         probes, ready = gbp.plan(self.probe_chunks, declared=self.boost_declared,
-                                 unavailable=self.probe_unavailable, source=self.probe_source)
+                                 unavailable=self.probe_unavailable, source=self.probe_source,
+                                 max_glossaries=self.probe_request["top_k"])
         if not probes:
             assert ready is not None
             return ready
@@ -654,7 +710,7 @@ class Runner:
         async def one(p: Mapping[str, Any]) -> dict[str, Any]:
             async with sem:
                 resp, err = await self._probe_call(client, p["token"])
-            return gbp.judge(p, resp, err)
+            return gbp.judge(p, resp, err, requested=int(self.probe_request["top_k"]))
 
         results = list(await asyncio.gather(*(one(p) for p in probes)))
         return gbp.finish(probes, results, ready or {})
@@ -748,7 +804,9 @@ class Runner:
                        "glossary_file_sha256": (self.acfg.get("glossary_file_sha256") or {}).get(self.corpus),
                        "shuffle_seed": self.acfg.get("shuffle_seed"), "shuffle_stamp_suffix": self.shuffle_suffix,
                        "merge": self.acfg.get("merge"), "allowed_stamps": self.acfg.get("stamps"),
-                       "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes")},
+                       "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes"),
+                       # round 3 only (an arm config with the key): the attachment rule checked
+                       **({"attach": self.acfg["attach"] or "value"} if "attach" in self.acfg else {})},
             "manipulation_check": {"glossary_boost": self.boost_check},
             "server": server, "config_readable": bool(server.get("config_readable")),
             "auth": auth_record(self.cfg["api"]), "utc": now_iso(), "provenance": prov,
@@ -817,6 +875,36 @@ def collect(out: Path, records: Sequence[Mapping[str, Any]], proxy: Path | None 
     return per_record, gated, runs
 
 
+def check_arm_file_attach(path: Path, arm_cfg: Mapping[str, Any]) -> str | None:
+    """Round 3: the arm file's header attachment rule is the arm's declared ``attach``
+    (``null`` = the served ``value`` rule) and every ``+attach=`` mark in the file agrees
+    with the header. Returns the rule; ``None`` (nothing checked) for an arm config without
+    the ``attach`` key. Raises :class:`Refused`."""
+    if "attach" not in arm_cfg:
+        return None
+    from ragstack.ingestion.glossary_file import (
+        GlossaryFileError,
+        attach_mark_problems,
+        attach_rule_of_config,
+        read_glossary_file,
+    )
+
+    try:
+        gf = read_glossary_file(path)
+    except (GlossaryFileError, OSError) as e:
+        raise Refused(f"glossary file {path.name}: {e}") from e
+    want = arm_cfg["attach"] or "value"
+    rule = attach_rule_of_config(gf.config)
+    if rule != want:
+        raise Refused(f"glossary file {path.name}: its header renders under {rule!r} attachment, the arm "
+                      f"declares {want!r}")
+    bad = attach_mark_problems(gf)
+    if bad:
+        raise Refused(f"glossary file {path.name}: {len(bad)} row(s) carry an attach mark that disagrees with "
+                      f"the header (e.g. {bad[0]})")
+    return rule
+
+
 def probe_candidates(cfg: Mapping[str, Any], corpus: str, arm: str, swap: Mapping[str, Any],
                      chunk_export: str | None, glossary_file: str | None, rendered_fields: str | None
                      ) -> tuple[list[tuple[str, str, str]] | None, str | None, str | None]:
@@ -845,6 +933,7 @@ def probe_candidates(cfg: Mapping[str, Any], corpus: str, arm: str, swap: Mappin
             want = ((cfg["arms"].get(arm) or {}).get("glossary_file_sha256") or {}).get(corpus)
             if sha256_file(Path(glossary_file)) != want:
                 raise Refused("--glossary-file is not the arm's declared glossary file (sha256 differs)")
+            check_arm_file_attach(Path(glossary_file), cfg["arms"].get(arm) or {})
             fields, _ = wp.fields_from_glossary_file(Path(glossary_file), rows, allow_unverifiable=bool(
                 (cfg.get("probe") or {}).get("glossary_allow_unverifiable")))
             source = "chunk export + glossary file rendered offline (the backfill's rendering)"
@@ -876,7 +965,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                                                        args.glossary_file, args.rendered_fields)
         runner = Runner(cfg, records, args.corpus, args.arm, Path(args.out), Path(args.swap_record),
                         repeat=args.repeat, probe_chunks=chunks, probe_unavailable=unavailable,
-                        probe_source=source, boost_declared=args.boost_declared)
+                        probe_source=source, boost_declared=args.boost_declared,
+                        probe_max_glossaries=args.probe_max_glossaries)
         return asyncio.run(runner.run())
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr, flush=True)
@@ -890,8 +980,10 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     records = load_questions([Path(q) for q in args.questions])
     out = Path(args.out)
     per_record, gated, runs = collect(out, records, Path(args.proxy) if args.proxy else None)
-    result = fa.analyse(records, per_record, cfg.get("analysis"), gated, power=not args.no_power,
-                        power_sims=args.power_sims)
+    # round 3 (prereg round 3 §7): ``analysis.round: 3`` selects the attachment-rule family
+    analyse = fa.analyse_r3 if (cfg.get("analysis") or {}).get("round") == 3 else fa.analyse
+    result = analyse(records, per_record, cfg.get("analysis"), gated, power=not args.no_power,
+                     power_sims=args.power_sims)
     prov = experiment_provenance()
     result["runs"] = runs
     result["inputs_sha256"] = {Path(q).name: sha256_file(Path(q)) for q in args.questions}
@@ -928,6 +1020,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--boost-declared", type=float, default=None,
                    help="the server's TEXT_SYMBOL_GLOSSARY_BOOST, used only when the probe is not testable "
                         "(recorded as declared, not read back)")
+    r.add_argument("--probe-max-glossaries", type=int, default=gbp.PROBE_TOP_K,
+                   help="boost probe: a probe token may occur in up to N rendered glossaries and the probe asks "
+                        f"top_k N (default {gbp.PROBE_TOP_K}, round 2's probe; widen it for a mention arm, "
+                        f"whose fields repeat on every mention; max {gbp.MAX_GLOSSARIES_CAP})")
     r.set_defaults(func=cmd_run)
     a = sub.add_parser("analyse", help="paired contrasts, Holm, NI, power from the run files")
     a.add_argument("--private-config", required=True)
