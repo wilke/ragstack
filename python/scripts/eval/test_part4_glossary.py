@@ -572,3 +572,106 @@ def test_the_sign_flip_floor_is_what_the_test_can_return(k: int) -> None:
     assert m["regime"] == ("exact" if k <= cs.EXACT_MAX_PAGES else "monte_carlo")
     assert m["sign_flip"] == pytest.approx(real["p"]) == pytest.approx(t["p"])
     assert m["mcnemar_two_sided"] == pytest.approx(t["p_mcnemar_two_sided"]) == pytest.approx(2.0 ** (1 - k))
+
+
+# ------------------------------------------------- --write-retrieval (identity reference)
+
+
+def recording_env(w: World, tmp: Path) -> tuple[p4g.GEnv, list[tuple[str, dict[str, list[str]]]]]:
+    """make_env, with every retrieve call's (arm, returned lists) recorded in call order."""
+    env = make_env(w, es_rows(), tmp)
+    seen: list[tuple[str, dict[str, list[str]]]] = []
+    inner = env.retrieve
+
+    def retrieve(arm: str, chunks: list[C], recs: list[dict[str, Any]]) -> dict[str, list[str]]:
+        got = inner(arm, chunks, recs)
+        seen.append((arm, {k: list(v) for k, v in got.items()}))
+        return got
+
+    return p4g.GEnv(env.load_pages, env.build_arms, env.ntok, retrieve, env.provenance), seen
+
+
+def test_write_retrieval_leaves_the_results_byte_identical(setup: tuple[Path, Path], tmp_path: Path) -> None:
+    cfg, out = setup
+    specs = [("rules", rules_file(tmp_path / "rules.jsonl")), ("reworded", reworded_file(tmp_path / "rw.jsonl"))]
+    assert p4g.rescore(cfg, out, make_env(World(), es_rows(), tmp_path), specs, results="without.json") == p4g.EXIT_OK
+    store = tmp_path / "ref" / "identity.jsonl"
+    store.parent.mkdir()
+    assert p4g.rescore(cfg, out, make_env(World(), es_rows(), tmp_path), specs, results="with.json",
+                       write_retrieval=str(store)) == p4g.EXIT_OK
+    assert (out / "with.json").read_bytes() == (out / "without.json").read_bytes()
+    assert store.is_file() and (store.stat().st_mode & 0o777) == 0o600
+    assert [p.name for p in store.parent.iterdir()] == ["identity.jsonl"]  # no temp file left
+    # without the flag, nothing but the results is written
+    assert sorted(p.name for p in out.iterdir()) == sorted(
+        ["PREREG-synthetic.md", "part4-questions.jsonl", "without.json", "with.json"])
+
+
+@pytest.mark.parametrize("which", [None, "reworded"])
+def test_write_retrieval_round_trips_through_the_reranker_loader(setup: tuple[Path, Path], tmp_path: Path,
+                                                                  which: str | None) -> None:
+    """part4_glossary's writer -> reranker_test.load_identity_reference -> the very
+    lists the re-score consumed for that condition, per arm."""
+    import reranker_test as rt
+
+    cfg, out = setup
+    specs = [("rules", rules_file(tmp_path / "rules.jsonl")), ("reworded", reworded_file(tmp_path / "rw.jsonl"))]
+    env, seen = recording_env(World(), tmp_path)
+    store = tmp_path / "identity.jsonl"
+    assert p4g.rescore(cfg, out, env, specs, write_retrieval=str(store),
+                       write_retrieval_condition=which) == p4g.EXIT_OK
+    arms = ["L", "T512o0"]
+    assert [a for a, _ in seen] == arms * 2  # conditions in order, arms in order
+    cond = which or "rules"
+    mine = seen[:2] if cond == "rules" else seen[2:]
+    other = seen[2:] if cond == "rules" else seen[:2]
+    valid = ["q0", "q1"]
+    for arm, lists in mine:
+        assert rt.load_identity_reference(store, arm) == {q: lists[q] for q in valid}
+    # the two conditions rank differently somewhere, so the selection is observable
+    assert any(m[1] != o[1] for m, o in zip(mine, other, strict=True))
+    rows = [json.loads(x) for x in store.read_text().splitlines()]
+    head = rows[0]
+    assert head["k"] == p4.ckey(p4g.RETRIEVAL_HEADER_STEP, "-") and head["schema"] == p4g.RETRIEVAL_SCHEMA
+    assert head["glossary_condition"] == cond and head["reference_condition"] == "rules"
+    assert head["glossary_file"]["sha256"] == file_sha256(dict(specs)[cond])
+    assert head["provenance"]["commit"] == "f" * 40 and head["citable"] is True
+    assert head["results"]["sha256"] == p4.file_sha(out / p4g.DEFAULT_RESULTS)
+    assert head["arms"] == arms and head["n_questions"] == 2
+    assert [r["k"] for r in rows[1:]] == [p4.ckey("retrieval", q, a) for a in arms for q in valid]
+    with pytest.raises(SystemExit, match="no retrieval rows"):
+        rt.load_identity_reference(store, "T1024o0")
+
+
+def test_write_retrieval_refusals_come_before_any_work(setup: tuple[Path, Path], tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, out = setup
+    specs = [("rules", rules_file(tmp_path / "rules.jsonl"))]
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "python").mkdir(parents=True)
+    monkeypatch.setattr(sat, "_REPO_PY", fake_repo / "python")
+    cases = [({"write_retrieval": str(fake_repo / "x.jsonl")}, "inside the repository"),
+             ({"write_retrieval": str(tmp_path / "x.json")}, "must end .jsonl"),
+             ({"write_retrieval": str(out / "part4-retrieval.jsonl")}, "part-4 retrieval store"),
+             ({"write_retrieval": str(tmp_path / "nodir" / "x.jsonl")}, "does not exist"),
+             ({"write_retrieval": str(tmp_path / "x.jsonl"), "write_retrieval_condition": "nope"},
+              "not a --glossary-file condition"),
+             ({"write_retrieval_condition": "rules"}, "needs --write-retrieval")]
+    for kw, msg in cases:
+        w = World()
+        with pytest.raises(SystemExit, match=msg):
+            p4g.rescore(cfg, out, make_env(w, es_rows(), tmp_path), specs, **kw)
+        assert w.calls["load"] == 0, kw
+    assert not list(fake_repo.glob("*.jsonl")) and not (out / "part4-retrieval.jsonl").exists()
+
+
+def test_cli_wires_write_retrieval(monkeypatch: pytest.MonkeyPatch, setup: tuple[Path, Path]) -> None:
+    cfg, out = setup
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(p4g, "rescore", lambda *a, **kw: seen.update(kw) or 0)
+    monkeypatch.setattr(p4g, "production_genv", lambda *a: None)
+    base = ["--private-config", str(cfg), "--out-dir", str(out), "part4-glossary", "--glossary-file", "a=/x/a.jsonl"]
+    assert dt.main(base) == 0
+    assert seen["write_retrieval"] is None and seen["write_retrieval_condition"] is None
+    assert dt.main([*base, "--write-retrieval", "/x/ref.jsonl", "--write-retrieval-condition", "a"]) == 0
+    assert seen["write_retrieval"] == "/x/ref.jsonl" and seen["write_retrieval_condition"] == "a"
