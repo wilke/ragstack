@@ -91,6 +91,8 @@ def test_verdicts_and_eligibility() -> None:
     assert bx.ineligible(f10.request_body(f10.DEFAULT_CONDITIONS["norerank"], "q", "c"))
     assert bx.ineligible({**base, "use_graph": True})
     assert bx.ineligible({**base, "rewrite_strategies": ["hyde"]})
+    assert bx.ineligible({**base, "collections": ["c", "d"]})
+    assert bx.ineligible({**base, "retrieval_mode": "hybrid"})
 
 
 # ------------------------------------------------------------- found10 runs
@@ -216,3 +218,18 @@ def test_a_count_client_with_a_credential_is_refused(tmp_path: Path) -> None:
 def test_bm25_scope_config_is_validated() -> None:
     with pytest.raises(f10.Refused, match="bm25_scope"):
         t.cfg(corpora={"O": {"collection": "c", "index": t.INDEX, "bm25_scope": {"tenant": ""}}})
+
+
+def test_bm25_scope_must_see_the_indexs_tenant() -> None:
+    """A scope that cannot read the tenant that stamped the index (``es_id_prefix``)
+    undercounts, and an undercount equal to the served length would pass as
+    exhausted: refused at config time. The stamping tenant may be the caller's or a
+    shared collection's owner (an extra tenant)."""
+    base = {"collection": "c", "index": t.INDEX}
+    with pytest.raises(f10.Refused, match="es_id_prefix"):
+        t.cfg(corpora={"O": {**base, "es_id_prefix": "owner-t:", "bm25_scope": {"tenant": TENANT}}})
+    for scope in ({"tenant": "owner-t"}, {"tenant": TENANT, "extra_tenants": ["owner-t"]}):
+        c = t.cfg(corpora={"O": {**base, "es_id_prefix": "owner-t:", "bm25_scope": scope}})
+        assert c["corpora"]["O"]["bm25_scope"] == scope
+    # without a prefix nothing can be cross-checked; the scope is taken as declared
+    t.cfg(corpora={"O": {**base, "bm25_scope": {"tenant": TENANT}}})

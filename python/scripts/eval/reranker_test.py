@@ -817,6 +817,7 @@ class ExhaustionVerifier:
         self.tenant, self.extra = tenant, list(extra_tenants or [])
         self.http = http or httpx.Client(timeout=120, headers={"Content-Type": "application/json"})
         self.counts = 0
+        self._lock = threading.Lock()  # called from capture_api's worker threads
 
     def __call__(self, body: Mapping[str, Any], requested: int, served: int) -> dict[str, Any]:
         why = bx.ineligible(body) or (None if self.boost is not None else "glossary boost sign unknown")
@@ -828,7 +829,8 @@ class ExhaustionVerifier:
         count, error = None, None
         try:
             r = self.http.post(bx.count_url(self.es_url, self.index), json={"query": query})
-            self.counts += 1
+            with self._lock:
+                self.counts += 1
             if r.status_code != 200:
                 error = f"HTTP {r.status_code}"  # never the body: an ES error can echo the query
             else:

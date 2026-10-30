@@ -253,7 +253,10 @@ def test_pool_prefix_for_single_legs_only() -> None:
 # ------------------------------------------------------------------ API pools: depth read-back
 
 
-def api_server(clamp: int | None = None, degraded: bool = False, config: dict[str, Any] | None = None) -> Mock:
+def api_server(clamp: int | None = None, degraded: bool = False, config: dict[str, Any] | None = None,
+               echo_top_k: bool = False) -> Mock:
+    """``echo_top_k``: the response echoes the (clamped) ``top_k`` it served, as a
+    gateway that clamps openly does."""
     ids = [r["chunk_id"] for r in make_rows()]
 
     def h(method: str, path: str, body: Any) -> tuple[int, Any]:
@@ -266,6 +269,8 @@ def api_server(clamp: int | None = None, degraded: bool = False, config: dict[st
             order = sorted(ids, key=lambda x: (hash((seed, x)) % 997, x))
             resp: dict[str, Any] = {"sources": [{"chunk_id": x, "doc_id": "d", "content": "", "score": 0,
                                                  "metadata": {}} for x in order[:k]]}
+            if echo_top_k:
+                resp["top_k"] = k
             if degraded and body.get("rerank"):
                 resp["degraded"] = [{"component": "rerank", "reason": "down"}]
             return 200, resp
@@ -1316,6 +1321,33 @@ def test_api_unverifiable_bm25_stays_under_served(data: dict[str, Any], case: st
         rec = next(iter(d["exhaustion"]["per_record"].values()))
         assert rec["scope"] == "unscoped_upper_bound"
         assert rec.get("error") == ("HTTP 500" if case == "es_error" else None)
+
+
+def test_api_short_top_k_echo_is_a_clamp_not_a_count(data: dict[str, Any]) -> None:
+    """A server that echoes a top_k below the one asked for has said it clamped: no
+    count is made and the list stays under-served, whatever the index would say."""
+    api, es = api_server(clamp=20, echo_top_k=True), es_server(20)
+    try:
+        assert _exh_pools(data, api, es, "--allow-short", "--bm25-tenant", "tenant-synthetic") == 0
+    finally:
+        api.close()
+        es.close()
+    assert es.calls == []
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    d = out["depth"]["bm25@40"]
+    assert d["status"] == rt.GNE and d["n_under_served"] == 10 and d["response_top_k"] == [20]
+    assert "exhaustion" not in d and out["exhaustion_counts"] == 0
+
+
+def test_es_url_and_es_index_go_together(data: dict[str, Any]) -> None:
+    api = api_server()
+    try:
+        for half in (("--es-url", "http://es.invalid"), ("--es-index", ES_INDEX)):
+            with pytest.raises(SystemExit, match="go together"):
+                rt.main(pools_argv(data, api.url, "--boost-declared", "1.0", *half))
+    finally:
+        api.close()
+    assert not any(p == "/v1/retrieve" for _, p, _ in api.calls)
 
 
 def test_api_nothing_short_means_no_count(data: dict[str, Any]) -> None:

@@ -273,6 +273,18 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
                                       and scope["tenant"]
                                       and isinstance(scope.get("extra_tenants") or [], list)):
             raise Refused(f"corpora.{name}.bm25_scope must be {{\"tenant\": <id>, \"extra_tenants\": [...]}}")
+        # The exhaustion count is only as exact as its scope: a scope that cannot see
+        # the bench's own chunks undercounts, and an undercount that happens to equal
+        # the served length would read as exhausted. ``es_id_prefix`` is ``<tenant>:``
+        # for the tenant that stamped the index (stores/elasticsearch.py ``_es_id``), so
+        # when both are declared that tenant must be readable under the scope.
+        prefix = ccfg.get("es_id_prefix")
+        if scope is not None and prefix:
+            stamped = str(prefix).rstrip(":")
+            readable = bx.readable_tenants(scope["tenant"], list(scope.get("extra_tenants") or []) or None)
+            if stamped not in readable:
+                raise Refused(f"corpora.{name}.bm25_scope {readable} does not include the index's tenant "
+                              f"{stamped!r} (es_id_prefix): the exhaustion count could not see the bench's chunks")
     return cfg
 
 
