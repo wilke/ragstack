@@ -164,6 +164,23 @@ def test_check_arm_file_attach(tmp_path: Path) -> None:
         f10.check_arm_file_attach(forged, ARMS_R3["mention"])
 
 
+def test_probe_candidates_check_the_arm_files_rule(tmp_path: Path) -> None:
+    """``--glossary-file`` is refused when the file's header rule is not the arm's, even
+    when its sha256 is the one the arm declares (a config pointing at the wrong file)."""
+    from test_found10 import _world
+
+    ex, g, rows = _world(tmp_path)                       # a rules file: the served value rule
+    for attach, ok in ((None, True), ("mention", False)):
+        conf = cfg(arms={"armx": {"stamps": ["rules/3"], "merge": None, "attach": attach, "shuffle_seed": None,
+                                  "glossary_file_sha256": {"O": f10.sha256_file(g)}}})
+        if ok:
+            chunks, why, _ = f10.probe_candidates(conf, "O", "armx", swap(), str(ex), str(g), None)
+            assert why is None and len(chunks) == len(rows)
+        else:
+            with pytest.raises(f10.Refused, match="declares 'mention'"):
+                f10.probe_candidates(conf, "O", "armx", swap(), str(ex), str(g), None)
+
+
 # --------------------------------------------------------------------------- the boost probe
 def test_probe_defaults_are_round2s() -> None:
     assert gbp.probe_request() == gbp.PROBE_REQUEST and gbp.PROBE_REQUEST["top_k"] == 10

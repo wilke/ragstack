@@ -201,6 +201,16 @@ def test_version_attach_and_mark_problems(tmp_path: Path) -> None:
                                                EXTRACTOR_VERSION), None)],
                         producer="t", config=replace(DEFAULT_CONFIG, attach_only_with_value=False))
     assert attach_mark_problems(read_glossary_file(p)) == ["'x': unmarked, header rule mention"]
+    # the reverse forgery: a value header over rows marked mention
+    q = tmp_path / "g.jsonl"
+    write_glossary_file(q, [_row("x", Glossary((GlossaryEntry("Qb", (Definition("rate", 0),)),),
+                                               f"{EXTRACTOR_VERSION}+attach=mention"), None)], producer="t")
+    assert attach_mark_problems(read_glossary_file(q)) == ["'x': marked +attach=mention, header rule value"]
+    # a value header over rows marked value, and an unmarked value file, are consistent
+    r = tmp_path / "h.jsonl"
+    write_glossary_file(r, [_row("x", Glossary((GlossaryEntry("Qb", (Definition("rate", 0),)),),
+                                               f"{EXTRACTOR_VERSION}+attach=value"), None)], producer="t")
+    assert attach_mark_problems(read_glossary_file(r)) == []
 
 
 def test_attach_refusals(src: Path, tmp_path: Path) -> None:  # noqa: F811
@@ -212,6 +222,8 @@ def test_attach_refusals(src: Path, tmp_path: Path) -> None:  # noqa: F811
         rederive_file(src, src, attach="mention")
     with pytest.raises(GlossaryFileError, match="name a merge mode"):
         rederive_row(_rows()[0], None)
+    with pytest.raises(GlossaryFileError, match="unknown attach rule"):
+        rederive_row(_rows()[0], None, attach="document")
     assert not (tmp_path / "o.jsonl").exists()
     assert tuple(ATTACH_RULES) == ("value", "mention")
 

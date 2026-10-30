@@ -243,10 +243,35 @@ def test_arm_pair_identity_is_enforced(tmp_path: Path) -> None:
     bad["corpora"]["O"]["arms"]["mention"] = str(other)
     with pytest.raises(SystemExit, match="differ in more than the attach mark"):
         pool.build(bad, "O", g.out_dir(cfg), provenance=lambda: PROV)
+    # the reverse: the mention file declared as both arms
+    bad["corpora"]["O"]["arms"] = {"value": str(data / "mention.jsonl"), "mention": str(data / "mention.jsonl")}
+    with pytest.raises(SystemExit, match="value arm's header rule is 'mention'"):
+        pool.build(bad, "O", g.out_dir(cfg), provenance=lambda: PROV)
+    # a mention file whose header differs in more than the rule is not the same glossary re-configured
+    rows = [json.loads(x) for x in (data / "mention.jsonl").read_text().splitlines()]
+    rows[0]["config"]["max_entries_per_chunk"] = 3
+    capped = data / "capped.jsonl"
+    capped.write_text("".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows))
+    bad["corpora"]["O"]["arms"] = {"value": str(data / "value.jsonl"), "mention": str(capped)}
+    with pytest.raises(SystemExit, match=r"differ beyond the attachment rule: \['max_entries_per_chunk'\]"):
+        pool.build(bad, "O", g.out_dir(cfg), provenance=lambda: PROV)
     # round 2's pool still refuses a mention file (unchanged)
     corpus = g.build_corpus(g.read_chunks(cfg["corpora"]["O"]["chunks"]), "doc_id")
     with pytest.raises(SystemExit, match="not value-only"):
         r2pool.load_arm(str(data / "mention.jsonl"), {"d1"}, corpus, "mention")
+
+
+def test_arm_files_must_resolve_every_rendered_document(tmp_path: Path) -> None:
+    """An arm file that does not resolve a dense paper's document (here: the export's text of
+    one chunk differs from what the glossaries were built on) stops the build."""
+    cfg, data = world(tmp_path)
+    chunks = Path(cfg["corpora"]["O"]["chunks"][0])
+    rows = [json.loads(x) for x in chunks.read_text().splitlines()]
+    last = [r for r in rows if r["id"] == "d1-c11"][0]
+    last["content"] = last["content"].replace("pond keeper", "lake keeper")
+    chunks.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with pytest.raises(SystemExit, match="does not resolve every document"):
+        pool.build(cfg, "O", g.out_dir(cfg), provenance=lambda: PROV)
 
 
 def test_chunk_count_check(tmp_path: Path) -> None:
