@@ -129,3 +129,46 @@ the watch pauses a set, that pause is a new entry here, and so is any `--accept-
 
 **Effect on the design.** None on any hypothesis, arm, measure or threshold. O still carries F, and A is
 still descriptive only.
+
+## D-4, 2026-10-30T17:50:56Z: the pilot's verification rerun, the partner's format check, and layer-1 changes (#880, merge `1627f9d`)
+
+**The verification rerun.** Resuming the pilot's paused `verify` at `b501ec7` was refused, correctly, by
+the run-state commit check: the run had started at `6e620c2`. Verification was restarted fresh, using the
+code's own route (a new output directory, with the pool and draft files copied byte-identical; no state
+file was edited). The first attempt's outputs are kept unchanged. Of the 7 layer-1 passes:
+- 4 passed the Claude CLI verifier;
+- 2 were rejected for single reading;
+- 1 was refused by Claude's usage-policy safeguard and passed by the Codex fallback.
+
+The 5 passes were exported to the papers-OC owner as a format check only. Each record carries a
+provenance note: drafted before #878, not from the population of any later set, never pooled.
+
+**The partner's format check.**
+- The partner's scripted checks passed all 5 records. Its hand judgement rejected 2: one quote gives a
+  regulatory threshold for the wrong quantity ("wrong field"; the question and the quote agree, and only
+  the field's meaning is wrong), and one gives an open bound ("not a value").
+- Our `import-partner-verdicts` ran end to end on the partner's file and computed the label
+  "scripted-clean, judged sample of 5, error rate 40.0% (95% CI 11.8–76.9)". These figures are not used
+  for anything: n = 5, and the records come from the replaced sampler.
+- The check also found that the export carried no verifier provenance.
+
+**What changed (#880, merge `1627f9d`).**
+1. Every exported record now carries `verifier`, `verifier_refused` and `verifier_model`.
+2. A new layer-1 reject, `value_is_bound`, applies when the record's `value` field (never the quote)
+   expresses a bound rather than a value. That covers a bound word in the 3 tokens before the number, a
+   trailing "or more" or similar, count phrases such as "fewer than", and a bound symbol directly before
+   the number. Ranges pass.
+   - Two fields are exempt (`bound_ok_fields`), because their definitions are themselves a target or a
+     ceiling: `clearance_fraction` and `risk_tolerance`.
+   - The rule applies to every record in open mode, so it changes which O and A records pass layer 1.
+   - Disabling it (`value_bound: off`) is recorded in the acceptance summary and logged as a warning.
+3. A new layer-1 flag (not a reject), `empty_case`, is set on every empty `case` in fields mode.
+4. `export-partner` and `import-partner-verdicts` now refuse to write any path the run itself writes.
+   The partner's verdict file sat under exactly the import's output name.
+
+**Effect on the pilot.** Applied to the pilot's 16 drafted records, `value_is_bound` would have rejected
+3, including the record the partner rejected as "not a value".
+
+**What was known.** The pilot's 5 verdicts. No O or A record had been drafted, and no retrieval had run on
+any round-3 set. The rule is in force for every O, A and later P record. The pilot keeps its layer-1
+verdicts as logged, and is not re-scored.
