@@ -573,7 +573,8 @@ def test_fields_chain_and_partner_export(tmp_path: Path) -> None:
     assert unresolved and on_record["refused"] == {"unresolved_locator": unresolved}
     assert len(rows) == len(acc) - unresolved == on_record["exported"]
     for r in rows:
-        assert set(r) == {"id", "question", "source", "quote", "field", "case", "model", "prompt_sha256", "value"}
+        assert set(r) == {"id", "question", "source", "quote", "field", "case", "model", "prompt_sha256", "value",
+                          "verifier", "verifier_refused", "verifier_model"}
         assert r["source"]["locator"] == f"PMC10{r['source']['doc_id'][1:]}" and r["model"] == SERVED
     assert any(r["case"] == "winter case" for r in rows)
     # candidates = the layer-1 passes

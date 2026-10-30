@@ -1339,6 +1339,7 @@ class Run:
                 # layer 2's verifier (rows logged before the field existed: claude); None for a candidate
                 "verifier": (r["l2"].get("verifier") or "claude") if r.get("l2") else None,
                 "verifier_refused": (r.get("l2") or {}).get("verifier_refused"),
+                "verifier_model": (r.get("l2") or {}).get("served_model"),
                 "gold_chunks": r["l1"]["gold_chunk_ids"], "flags": r["l1"]["flags"]}
 
     def summary(self) -> int:
@@ -1481,13 +1482,34 @@ class Run:
 
 
     # -------------------------------------------------------- the papers-OC owner's format
+    def own_paths(self) -> set[Path]:
+        """Every file this run writes (the set's and the pilot's), with the ``.tmp`` its
+        atomic write goes through: a partner file given as one of them would be overwritten
+        (the set-P pilot's export path once equalled the export manifest's)."""
+        out: set[Path] = set()
+        for label in (self.set, f"{self.set}-pilot"):
+            p = Paths(self.out, label)
+            names = ["pool", "drafts", "calls", "verify_rows", "acceptance", "accepted", "summary",
+                     "spot_results", "pause", "partner_export", "partner_verdicts"]
+            files = [getattr(p, n) for n in names] + [f(st) for st in STAGES
+                                                      for f in (p.state, p.preflight, p.totals)]
+            out |= {x.resolve() for f in files for x in (f, f.with_suffix(f.suffix + ".tmp"))}
+        return out
+
+    def refuse_own_path(self, path: Path, what: str) -> None:
+        cand = {path.resolve(), path.with_suffix(path.suffix + ".tmp").resolve()}
+        if cand & self.own_paths():
+            raise SystemExit(f"{what} {path} is (or would overwrite) a file this run writes: refused")
+
     def export_partner(self, path: Path, candidates: bool = False) -> int:
         """Accepted records (default) or the layer-1 passes (``candidates``) as the
         papers-OC owner's JSONL: ``id, question, source{doc_id, locator}, quote, field,
         case, model, prompt_sha256`` (+ ``value`` as printed, + ``pilot: true`` on a
-        pilot's records). A record whose PMC id / DOI cannot be resolved from its
+        pilot's records, + the verifier provenance :func:`verifier_provenance`). The
+        output may not be a file the run writes itself (:meth:`own_paths`). A record whose PMC id / DOI cannot be resolved from its
         document's chunk metadata or doc_id is refused and counted."""
         g.refuse_in_repo(path, "the partner export")
+        self.refuse_own_path(path, "export-partner: the output")
         self.load()
         if self.mode != "fields":
             raise SystemExit("export-partner: the partner format names a field; the set is not in draft_mode fields")
@@ -1514,7 +1536,7 @@ class Run:
             row = {"id": r["record_id"], "question": r["question"],
                    "source": {"doc_id": r["doc_id"], "locator": loc}, "quote": r["quote"], "field": r["field"],
                    "case": r.get("case") or "", "model": r.get("model"), "prompt_sha256": r.get("prompt_sha256"),
-                   "value": r["value"]}
+                   "value": r["value"], **verifier_provenance(r)}
             if self.pilot is not None:
                 row["pilot"] = True
             rows.append(row)
@@ -1541,6 +1563,7 @@ class Run:
         error rate is errors/n with a Wilson 95% interval, and the set's status label
         is ``scripted-clean, judged sample of N, error rate X% (95% CI a–b)`` (a, b in
         percent)."""
+        self.refuse_own_path(path, "import-partner-verdicts: the verdicts file")
         if not self.p.partner_export.is_file():
             raise SystemExit("import-partner-verdicts: no partner export on record; run export-partner first")
         exp = json.loads(self.p.partner_export.read_text(encoding="utf-8"))
@@ -1596,6 +1619,18 @@ class Run:
                   f"wilson95_upper={promotion['upper_bound_6dp']} -> {'met' if promotion['met'] else 'not met'}",
                   flush=True)
         return EXIT_OK
+
+
+def verifier_provenance(r: dict[str, Any]) -> dict[str, Any]:
+    """The export's verifier provenance: ``verifier`` (claude | codex; None for a layer-1
+    candidate), ``verifier_refused`` (the verifiers that refused the record, possibly
+    empty) and ``verifier_model`` (the served model, when the l2 row recorded one)."""
+    ref = r.get("verifier_refused")
+    out: dict[str, Any] = {"verifier": r.get("verifier"),
+                           "verifier_refused": [] if not ref else ([ref] if isinstance(ref, str) else list(ref))}
+    if r.get("verifier_model"):
+        out["verifier_model"] = r["verifier_model"]
+    return out
 
 
 def _l2_by_verifier(rows: list[dict[str, Any]]) -> dict[str, Counter[str]]:
