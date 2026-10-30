@@ -1,0 +1,767 @@
+{
+ "schema": "glossbench-r2-reach/1",
+ "artifact_provenance": {
+  "label": "RECORD — descriptive counts; no hypothesis tested (reach gate GATE-NOT-EVALUABLE on every set)",
+  "what": "counts-only copy of the three arm-blind pool manifests of glossary-model benchmark round 2 (prereg §3.1; dry reading, without the frontierp file), plus the S1 upper bound of DEVIATIONS.md D-5",
+  "derived_by": "artifacts/make_reach_r2.py (this directory), a mechanical copy: no number is computed that is not a copied count, a copied share, or vs_chunks_eval compared with the gate threshold",
+  "source_sha256": {
+   "pool-manifest-O.json": "1630b491f2c1c77c13cbd76f6dcc4ecbb9feb70b54ee2d557713fa22b85f740b",
+   "pool-manifest-A.json": "9481de4baff285850a9d42ac7fb8dc4cff962276ca7305c29db92ef485f662fd",
+   "pool-manifest-P.json": "3676faa8dd1dc8e72a7c2e85a4dcdc4fa09e5d86a0232fc5d847c37c5286a15a"
+  },
+  "source_commits": [
+   "0a7a7f32e053d2aa6b3dc003a0d99073fe8fa9c6"
+  ],
+  "public_copy": "counts only: no chunk id, document id, paper id, title, path, host, index, collection, endpoint or field name of the partner's binding export is present; per-paper cells dropped; provenance host/image/installed_distribution redacted as in part 4's public export",
+  "citable": true,
+  "citable_reason": "every manifest records provenance.citable true: the pool build ran from a clean detached worktree (dirty false, untracked 0) at the commit in source_commits; not from a versioned tools image (in_image false, warning 'not in an image' kept in each provenance block)",
+  "private_data": "the manifests, the pools (ids, offsets, strata, reach booleans) and the arm files stay with the run outputs, off GitHub"
+ },
+ "sets": {
+  "O": {
+   "set": "O",
+   "corpus": "OA-1000",
+   "reading": "dry",
+   "created": "2026-10-30T02:49:21Z",
+   "schema_of_source": "glossbench-r2-pool-manifest/1",
+   "pool_sha256": "fb8122b34223954f355c89ab41dd35e23bac668cbf11d2a0a1f0ac0f474443a5",
+   "eval_papers_sha256": "f2e1e37657645157a4098f416a81c21baa693c7eade5ee7c42745b31f99237d2",
+   "design": {
+    "n_papers": 25,
+    "min_vs_chunks": 3,
+    "paper_key": "path_root",
+    "seed": "261101|O",
+    "chunk_seed": "261101|O|chunks|<stratum>|<paper>",
+    "reach_gate": 150,
+    "reach_arms_configured": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p",
+     "frontierp"
+    ],
+    "reach_arms_present": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p"
+    ],
+    "quotas_per_paper": {
+     "s1_per_paper": 12,
+     "s2_per_paper": 2,
+     "s3_per_paper": 2
+    },
+    "quotas_overridden": [],
+    "attachment": "for_chunk, value-only (file config)",
+    "value_statement": "value_pattern on the chunk's own tokens (no glossary)",
+    "vs_stoplist_n": 20
+   },
+   "counts": {
+    "chunks": 32765,
+    "documents": 12560,
+    "papers": 1000,
+    "papers_with_vs": 673,
+    "eligible_papers": 384,
+    "excluded_papers": 0,
+    "eval_papers": 25,
+    "vs_chunks_corpus": 3369,
+    "vs_chunks_eval": 144,
+    "strata": {
+     "S1": 12,
+     "S2": 132,
+     "S3": 539
+    },
+    "sampled": {
+     "S1": 12,
+     "S2": 49,
+     "S3": 50
+    }
+   },
+   "gate": {
+    "reading": "dry",
+    "s1": 12,
+    "status": "GATE-NOT-EVALUABLE",
+    "threshold": 150
+   },
+   "s1_upper_bound": {
+    "value": 144,
+    "rule": "S1 is a subset of the value-statement chunks of the eval papers (prereg §3.1 step 3), so S1 <= vs_chunks_eval under any set of reach arms, frontierp included",
+    "threshold": 150,
+    "attainable_under_any_arm": false
+   },
+   "manipulation": {
+    "chunks": 32765,
+    "expected_chunks": 32765,
+    "match": true,
+    "arm_resolution": {
+     "qwen36p": {
+      "unverified": 0,
+      "verified": 266,
+      "verified_ws": 0
+     },
+     "qwen38p": {
+      "unverified": 0,
+      "verified": 266,
+      "verified_ws": 0
+     },
+     "rules": {
+      "unverified": 0,
+      "verified": 266,
+      "verified_ws": 0
+     },
+     "scoutp": {
+      "unverified": 0,
+      "verified": 266,
+      "verified_ws": 0
+     }
+    }
+   },
+   "arms": {
+    "qwen36p": {
+     "sha256": "4c6f8bef8861223716ae1cf717024098e26c42ca27b8eedf43b757219c4b489f",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 2,
+      "documents": 12560,
+      "merged_entries": 3209,
+      "with_llm": 1593
+     }
+    },
+    "qwen38p": {
+     "sha256": "514e75749271c12c2b53e07a716e1d32fcffa757c737a724e4e0abe932a33281",
+     "glossary_versions": [
+      "llm/2:Qwen3.8-27B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 12560,
+      "merged_entries": 2641,
+      "with_llm": 1595
+     }
+    },
+    "rules": {
+     "sha256": "5facfee4041e4c03b39d495d24e59ee2d39e6aed116187670aa4a8c12011a509",
+     "glossary_versions": [
+      "rules/3"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 12560,
+      "merged_entries": 764,
+      "with_llm": 0
+     }
+    },
+    "scoutp": {
+     "sha256": "64dbfdfe8d060db1122d963c35be8e8fe912cc9b0e139dde26cacb7f7bc47052",
+     "glossary_versions": [
+      "llm/2:RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 12560,
+      "merged_entries": 1772,
+      "with_llm": 1595
+     }
+    }
+   },
+   "reach": {
+    "qwen36p": {
+     "eval_papers": {
+      "vs_chunks": 144,
+      "vs_chunks_reached": 6,
+      "share": 0.041666666666666664
+     },
+     "corpus": {
+      "vs_chunks": 3369,
+      "vs_chunks_reached": 298,
+      "share": 0.08845354704660137
+     }
+    },
+    "qwen38p": {
+     "eval_papers": {
+      "vs_chunks": 144,
+      "vs_chunks_reached": 12,
+      "share": 0.08333333333333333
+     },
+     "corpus": {
+      "vs_chunks": 3369,
+      "vs_chunks_reached": 317,
+      "share": 0.09409320273078065
+     }
+    },
+    "rules": {
+     "eval_papers": {
+      "vs_chunks": 144,
+      "vs_chunks_reached": 2,
+      "share": 0.013888888888888888
+     },
+     "corpus": {
+      "vs_chunks": 3369,
+      "vs_chunks_reached": 104,
+      "share": 0.03086969427129712
+     }
+    },
+    "scoutp": {
+     "eval_papers": {
+      "vs_chunks": 144,
+      "vs_chunks_reached": 7,
+      "share": 0.04861111111111111
+     },
+     "corpus": {
+      "vs_chunks": 3369,
+      "vs_chunks_reached": 215,
+      "share": 0.06381715642623924
+     }
+    }
+   },
+   "provenance": {
+    "citable": true,
+    "commit": "0a7a7f32e053d2aa6b3dc003a0d99073fe8fa9c6",
+    "describe": "v1.6.21-46-g0a7a7f3",
+    "dirty": false,
+    "in_image": false,
+    "python": "3.12.13",
+    "recorded_at": "2026-10-30T02:49:21Z",
+    "schema": 1,
+    "segmentation": [
+     {
+      "backend": "punkt",
+      "kind": "sentences",
+      "n_docs": 5,
+      "n_spans": 40,
+      "nltk": "3.9.4",
+      "producer": "ragstack.ingestion.chunkers.sentence_spans",
+      "sample": "canonical-1",
+      "segmenter_version": "punkt-abbrev-v1",
+      "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+      "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+     }
+    ],
+    "source": "git",
+    "untracked": 0,
+    "version": "v1.6.21+0a7a7f3",
+    "warnings": [
+     "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+     "host",
+     "image",
+     "installed_distribution"
+    ]
+   }
+  },
+  "A": {
+   "set": "A",
+   "corpus": "ASM-1000",
+   "reading": "dry",
+   "created": "2026-10-30T02:49:29Z",
+   "schema_of_source": "glossbench-r2-pool-manifest/1",
+   "pool_sha256": "42272b8aeaee4fc3a782b4e379b8cc38b203faeade3d61eb9b70e24c6b5f5f39",
+   "eval_papers_sha256": "413958f02cc9ed0ee4ba7d54d3c8f1edd5886f1f3580fd1ce12085e45202616d",
+   "design": {
+    "n_papers": 25,
+    "min_vs_chunks": 3,
+    "paper_key": "doc_id",
+    "seed": "261101|A",
+    "chunk_seed": "261101|A|chunks|<stratum>|<paper>",
+    "reach_gate": 150,
+    "reach_arms_configured": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p",
+     "frontierp"
+    ],
+    "reach_arms_present": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p"
+    ],
+    "quotas_per_paper": {
+     "s1_per_paper": 12,
+     "s2_per_paper": 2,
+     "s3_per_paper": 2
+    },
+    "quotas_overridden": [],
+    "attachment": "for_chunk, value-only (file config)",
+    "value_statement": "value_pattern on the chunk's own tokens (no glossary)",
+    "vs_stoplist_n": 20
+   },
+   "counts": {
+    "chunks": 27418,
+    "documents": 1000,
+    "papers": 1000,
+    "papers_with_vs": 140,
+    "eligible_papers": 38,
+    "excluded_papers": 0,
+    "eval_papers": 25,
+    "vs_chunks_corpus": 341,
+    "vs_chunks_eval": 119,
+    "strata": {
+     "S1": 3,
+     "S2": 116,
+     "S3": 920
+    },
+    "sampled": {
+     "S1": 3,
+     "S2": 50,
+     "S3": 50
+    }
+   },
+   "gate": {
+    "reading": "dry",
+    "s1": 3,
+    "status": "GATE-NOT-EVALUABLE",
+    "threshold": 150
+   },
+   "s1_upper_bound": {
+    "value": 119,
+    "rule": "S1 is a subset of the value-statement chunks of the eval papers (prereg §3.1 step 3), so S1 <= vs_chunks_eval under any set of reach arms, frontierp included",
+    "threshold": 150,
+    "attainable_under_any_arm": false
+   },
+   "manipulation": {
+    "chunks": 27418,
+    "expected_chunks": 27418,
+    "match": true,
+    "arm_resolution": {
+     "qwen36p": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "qwen38p": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "rules": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "scoutp": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     }
+    }
+   },
+   "arms": {
+    "qwen36p": {
+     "sha256": "59d5ce2ee9eba1deb598d50fe35de0a6fb0abe68822cd171f95097844a2ee1d4",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 2,
+      "documents": 1000,
+      "merged_entries": 2008,
+      "with_llm": 998
+     }
+    },
+    "qwen38p": {
+     "sha256": "6aaabb38c6c5f0b545d843c0e2acb6d1ac9b1afbe79e7c97b2ea5065e5078182",
+     "glossary_versions": [
+      "llm/2:Qwen3.8-27B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 1000,
+      "merged_entries": 1200,
+      "with_llm": 1000
+     }
+    },
+    "rules": {
+     "sha256": "e17725422ebdfe59d7e9ae1cd958c6e147ca287a594fcab15eef8dbc8d1e1d7e",
+     "glossary_versions": [
+      "rules/3"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 1000,
+      "merged_entries": 199,
+      "with_llm": 0
+     }
+    },
+    "scoutp": {
+     "sha256": "847729790debc726c84f00f52f0a4e79a3b6799540ba9df2520c4962e0639c52",
+     "glossary_versions": [
+      "llm/2:RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 1000,
+      "merged_entries": 898,
+      "with_llm": 1000
+     }
+    }
+   },
+   "reach": {
+    "qwen36p": {
+     "eval_papers": {
+      "vs_chunks": 119,
+      "vs_chunks_reached": 2,
+      "share": 0.01680672268907563
+     },
+     "corpus": {
+      "vs_chunks": 341,
+      "vs_chunks_reached": 7,
+      "share": 0.020527859237536656
+     }
+    },
+    "qwen38p": {
+     "eval_papers": {
+      "vs_chunks": 119,
+      "vs_chunks_reached": 3,
+      "share": 0.025210084033613446
+     },
+     "corpus": {
+      "vs_chunks": 341,
+      "vs_chunks_reached": 7,
+      "share": 0.020527859237536656
+     }
+    },
+    "rules": {
+     "eval_papers": {
+      "vs_chunks": 119,
+      "vs_chunks_reached": 2,
+      "share": 0.01680672268907563
+     },
+     "corpus": {
+      "vs_chunks": 341,
+      "vs_chunks_reached": 3,
+      "share": 0.008797653958944282
+     }
+    },
+    "scoutp": {
+     "eval_papers": {
+      "vs_chunks": 119,
+      "vs_chunks_reached": 2,
+      "share": 0.01680672268907563
+     },
+     "corpus": {
+      "vs_chunks": 341,
+      "vs_chunks_reached": 5,
+      "share": 0.01466275659824047
+     }
+    }
+   },
+   "provenance": {
+    "citable": true,
+    "commit": "0a7a7f32e053d2aa6b3dc003a0d99073fe8fa9c6",
+    "describe": "v1.6.21-46-g0a7a7f3",
+    "dirty": false,
+    "in_image": false,
+    "python": "3.12.13",
+    "recorded_at": "2026-10-30T02:49:29Z",
+    "schema": 1,
+    "segmentation": [
+     {
+      "backend": "punkt",
+      "kind": "sentences",
+      "n_docs": 5,
+      "n_spans": 40,
+      "nltk": "3.9.4",
+      "producer": "ragstack.ingestion.chunkers.sentence_spans",
+      "sample": "canonical-1",
+      "segmenter_version": "punkt-abbrev-v1",
+      "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+      "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+     }
+    ],
+    "source": "git",
+    "untracked": 0,
+    "version": "v1.6.21+0a7a7f3",
+    "warnings": [
+     "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+     "host",
+     "image",
+     "installed_distribution"
+    ]
+   }
+  },
+  "P": {
+   "set": "P",
+   "corpus": "papers-OC",
+   "reading": "dry",
+   "created": "2026-10-30T02:58:04Z",
+   "schema_of_source": "glossbench-r2-pool-manifest/1",
+   "pool_sha256": "14f89665d44dcb36e21559d8806efbc922568cbfabf54b08117c93e3aefac76a",
+   "eval_papers_sha256": "58f94fa834da821d97dec30205656333355f1beb8f47c0324ef45033f17d96db",
+   "design": {
+    "n_papers": 25,
+    "min_vs_chunks": 3,
+    "paper_key": "doc_id",
+    "seed": "261101|P",
+    "chunk_seed": "261101|P|chunks|<stratum>|<paper>",
+    "reach_gate": 150,
+    "reach_arms_configured": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p",
+     "frontierp"
+    ],
+    "reach_arms_present": [
+     "rules",
+     "scoutp",
+     "qwen38p",
+     "qwen36p"
+    ],
+    "quotas_per_paper": {
+     "s1_per_paper": 12,
+     "s2_per_paper": 2,
+     "s3_per_paper": 6
+    },
+    "quotas_overridden": [
+     "s3_per_paper"
+    ],
+    "attachment": "for_chunk, value-only (file config)",
+    "value_statement": "value_pattern on the chunk's own tokens (no glossary)",
+    "vs_stoplist_n": 20
+   },
+   "counts": {
+    "chunks": 14456,
+    "documents": 275,
+    "papers": 275,
+    "papers_with_vs": 226,
+    "eligible_papers": 253,
+    "excluded_papers": 7,
+    "eval_papers": 25,
+    "vs_chunks_corpus": 3142,
+    "vs_chunks_eval": 72,
+    "strata": {
+     "S1": 12,
+     "S2": 60,
+     "S3": 786
+    },
+    "sampled": {
+     "S1": 10,
+     "S2": 31,
+     "S3": 126
+    }
+   },
+   "gate": {
+    "reading": "dry",
+    "s1": 12,
+    "status": "GATE-NOT-EVALUABLE",
+    "threshold": 150
+   },
+   "s1_upper_bound": {
+    "value": 72,
+    "rule": "S1 is a subset of the value-statement chunks of the eval papers (prereg §3.1 step 3), so S1 <= vs_chunks_eval under any set of reach arms, frontierp included",
+    "threshold": 150,
+    "attainable_under_any_arm": false
+   },
+   "manipulation": {
+    "chunks": 14456,
+    "expected_chunks": 14456,
+    "match": true,
+    "arm_resolution": {
+     "qwen36p": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "qwen38p": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "rules": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     },
+     "scoutp": {
+      "unverified": 0,
+      "verified": 25,
+      "verified_ws": 0
+     }
+    }
+   },
+   "arms": {
+    "qwen36p": {
+     "sha256": "d29d245daed428ea601bba29295b366c904594d4e08f63f1ff98a8313c61f286",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 275,
+      "merged_entries": 1857,
+      "with_llm": 275
+     }
+    },
+    "qwen38p": {
+     "sha256": "6e3dbe3882785567af147b53589d6e9e0c4d9b939dcad6264dc6f4d9c4afbd18",
+     "glossary_versions": [
+      "llm/2:Qwen3.8-27B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 275,
+      "merged_entries": 1841,
+      "with_llm": 275
+     }
+    },
+    "rules": {
+     "sha256": "0e351ee49409a033a2ebe36761480bc181bdca2b68f193137c9342eaf387b2e0",
+     "glossary_versions": [
+      "rules/3"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 275,
+      "merged_entries": 866,
+      "with_llm": 0
+     }
+    },
+    "scoutp": {
+     "sha256": "b1fbef6747e301ddf590a38f2a7270118817b82f008d270f754305348d2592ba",
+     "glossary_versions": [
+      "llm/2:RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "file_counts": {
+      "degraded": 0,
+      "documents": 275,
+      "merged_entries": 1060,
+      "with_llm": 275
+     }
+    }
+   },
+   "reach": {
+    "qwen36p": {
+     "eval_papers": {
+      "vs_chunks": 72,
+      "vs_chunks_reached": 11,
+      "share": 0.1527777777777778
+     },
+     "corpus": "absent"
+    },
+    "qwen38p": {
+     "eval_papers": {
+      "vs_chunks": 72,
+      "vs_chunks_reached": 12,
+      "share": 0.16666666666666666
+     },
+     "corpus": "absent"
+    },
+    "rules": {
+     "eval_papers": {
+      "vs_chunks": 72,
+      "vs_chunks_reached": 5,
+      "share": 0.06944444444444445
+     },
+     "corpus": "absent"
+    },
+    "scoutp": {
+     "eval_papers": {
+      "vs_chunks": 72,
+      "vs_chunks_reached": 8,
+      "share": 0.1111111111111111
+     },
+     "corpus": "absent"
+    }
+   },
+   "provenance": {
+    "citable": true,
+    "commit": "0a7a7f32e053d2aa6b3dc003a0d99073fe8fa9c6",
+    "describe": "v1.6.21-46-g0a7a7f3",
+    "dirty": false,
+    "in_image": false,
+    "python": "3.12.13",
+    "recorded_at": "2026-10-30T02:58:04Z",
+    "schema": 1,
+    "segmentation": [
+     {
+      "backend": "punkt",
+      "kind": "sentences",
+      "n_docs": 5,
+      "n_spans": 40,
+      "nltk": "3.9.4",
+      "producer": "ragstack.ingestion.chunkers.sentence_spans",
+      "sample": "canonical-1",
+      "segmenter_version": "punkt-abbrev-v1",
+      "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+      "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+     }
+    ],
+    "source": "git",
+    "untracked": 0,
+    "version": "v1.6.21+0a7a7f3",
+    "warnings": [
+     "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+     "host",
+     "image",
+     "installed_distribution"
+    ]
+   },
+   "fields_mode": {
+    "draft_mode": "fields",
+    "fields_sha256": "1c3778918c76ae206de0fb1b66e256da33faebf8840d6c49ca232552b2911dfa",
+    "n_fields": 26,
+    "n_new_ground": 10,
+    "n_constants": 4,
+    "constant_cap": 2,
+    "weights": {
+     "new_ground": 2.0,
+     "other": 1.0
+    },
+    "in_set": {
+     "counts": {
+      "false": 13,
+      "true": 13,
+      "unknown": 0
+     },
+     "expected": {
+      "false": 13,
+      "true": 13
+     },
+     "records": 65,
+     "records_sha256": "f8d3b7f15144ed4ba23b2519751c2d9860c11acf131aadfddf75c6988eeebef5",
+     "records_without_key": 0,
+     "record_fields_outside_list": 0
+    },
+    "jobs": 226,
+    "plan": {
+     "total_target": 500,
+     "realised": 226,
+     "per_paper": {
+      "S1": 12,
+      "S2": 2,
+      "S3": 6
+     },
+     "strata": {
+      "S1": {
+       "realised": 31,
+       "shortfall": 265,
+       "target": 300,
+       "unplaced": 264
+      },
+      "S2": {
+       "realised": 47,
+       "shortfall": 17,
+       "target": 50,
+       "unplaced": 0
+      },
+      "S3": {
+       "realised": 148,
+       "shortfall": 4,
+       "target": 150,
+       "unplaced": 0
+      }
+     }
+    }
+   }
+  }
+ }
+}
