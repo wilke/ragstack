@@ -82,6 +82,21 @@ A reranker that is wired but inactive answers ``rerank: true`` silently with
 the RRF order, so after the run ``base`` is gated when its ranked list equals
 ``norerank``'s on every record.
 
+**Glossary boost read-back** (:mod:`glossary_boost_probe`). The BM25 glossary
+field boost (``TEXT_SYMBOL_GLOSSARY_BOOST``, default 0: the field is then never
+consulted and every arm collapses) is not in ``/v1/config`` either, so before
+the first measurement call the runner probes it behaviourally: up to 5 chunks
+whose rendered field holds a token found in no chunk's content are queried in
+``bm25`` mode with that token alone (``top_k`` 10); the boost is active iff
+each chunk comes back. Candidates need ``--chunk-export`` plus the arm's
+``--glossary-file`` (rendered offline as the backfill renders; a shuffled arm's
+permutation is reproduced and hash-checked against the swap record) or
+``--rendered-fields``. None returned → exit 1 (``inactive``); some → exit 1
+(``mixed``); either way ``<label>.boost-check.json`` records the probes (token
+hashes, never text). Fewer than 3 qualifying chunks → ``not_testable``: every
+condition is GATE-NOT-EVALUABLE unless ``--boost-declared X``, then recorded
+as ``declared``. The summary carries it under ``manipulation_check``.
+
 **Failures, pause, resume.** A transport error, 5xx or degraded response is
 retried (``api.retries``, backoff); a 4xx is a configuration error and stops
 the run (exit 1). A record whose call still fails is ``failed`` (excluded
@@ -120,6 +135,7 @@ for _p in (_HERE, _EVAL):
         sys.path.insert(0, str(_p))
 
 import found10_analysis as fa  # noqa: E402
+import glossary_boost_probe as gbp  # noqa: E402
 from deployed_docs_part4 import (  # noqa: E402
     append_fsync,
     read_jsonl_repair_tail,
@@ -395,7 +411,10 @@ class Runner:
     def __init__(self, cfg: dict[str, Any], records: list[dict[str, Any]], corpus: str, arm: str,
                  out: Path, swap_record_path: Path, repeat: int | None = None,
                  client_factory: Callable[[], httpx.AsyncClient] | None = None,
-                 sleep: Callable[[float], Any] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Any] = asyncio.sleep,
+                 probe_chunks: Sequence[tuple[str, str, str]] | None = None,
+                 probe_unavailable: str | None = None, probe_source: str | None = None,
+                 boost_declared: float | None = None) -> None:
         self.cfg, self.corpus, self.arm = cfg, corpus, arm
         self.label = arm_label(arm, repeat)
         self.records = [r for r in records if r["corpus"] == corpus]
@@ -421,6 +440,15 @@ class Runner:
         self.hard_stop: str | None = None
         self.config_error: str | None = None
         self.shuffle_suffix: str | None = None
+        # the glossary-boost read-back (glossary_boost_probe): candidates are
+        # (chunk_id, content, the rendered field the index holds for this arm)
+        self.probe_chunks = probe_chunks
+        self.probe_unavailable = probe_unavailable
+        self.probe_source = probe_source
+        self.boost_declared = boost_declared
+        if boost_declared is not None and boost_declared <= 0:
+            raise Refused(f"--boost-declared {boost_declared:g}: a boost <= 0 never consults the glossary field")
+        self.boost_check: dict[str, Any] | None = None
 
     def _default_client(self) -> httpx.AsyncClient:
         api = self.cfg["api"]
@@ -502,6 +530,15 @@ class Runner:
                 if live_before != census:
                     raise Refused(f"live census {live_before} != the swap record's {census}")
             server = await self._server_info(client)
+            self.boost_check = await self._boost_probe(client)
+            if self.boost_check["status"] in gbp.STOP:
+                write_json_atomic(self.out_dir / f"{self.label}.boost-check.json",
+                                  {"schema": "glossbench-r2-boost-check/1", "corpus": self.corpus,
+                                   "arm": self.arm, "run_label": self.label, "utc": now_iso(),
+                                   "manipulation_check": {"glossary_boost": self.boost_check}})
+                raise Refused(f"glossary boost check: {self.boost_check['status']} - "
+                              f"{self.boost_check['reason']} (nothing measured; "
+                              f"{self.label}.boost-check.json has the probes)")
             jobs = [(rec, cond) for rec in self.records for cond in self.cfg["conditions"]
                     if f"{rec['record_id']}|{cond}" not in done]
             sem = asyncio.Semaphore(self.inflight)
@@ -533,6 +570,47 @@ class Runner:
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")
         return self._finish(done, swap, census, live_before, live_after, server)
+
+    async def _probe_call(self, client: httpx.AsyncClient, token: str
+                          ) -> tuple[dict[str, Any] | None, str | None]:
+        """One read-only bm25 probe query, retried like a measurement call; a 4xx is
+        a configuration error."""
+        body = request_body(gbp.PROBE_REQUEST, token, self.ccfg["collection"])
+        url = f"{self.cfg['api']['base_url'].rstrip('/')}/v1/retrieve"
+        last = None
+        for attempt in range(1, self.retries + 2):
+            try:
+                r = await client.post(url, json=body)
+            except httpx.HTTPError as e:
+                last = f"{type(e).__name__}"
+            else:
+                if 400 <= r.status_code < 500:
+                    raise Refused(f"HTTP {r.status_code} on the boost probe (request id "
+                                  f"{r.headers.get('X-Request-Id')}) - a configuration error")
+                if r.status_code < 500:
+                    return r.json(), None
+                last = f"HTTP {r.status_code}"
+            if attempt <= self.retries:
+                await self._sleep(self.backoff * attempt)
+        return None, last
+
+    async def _boost_probe(self, client: httpx.AsyncClient) -> dict[str, Any]:
+        """The behavioural read-back of TEXT_SYMBOL_GLOSSARY_BOOST, before the first
+        measurement call (at most ``inflight`` probes in flight)."""
+        probes, ready = gbp.plan(self.probe_chunks, declared=self.boost_declared,
+                                 unavailable=self.probe_unavailable, source=self.probe_source)
+        if not probes:
+            assert ready is not None
+            return ready
+        sem = asyncio.Semaphore(self.inflight)
+
+        async def one(p: Mapping[str, Any]) -> dict[str, Any]:
+            async with sem:
+                resp, err = await self._probe_call(client, p["token"])
+            return gbp.judge(p, resp, err)
+
+        results = list(await asyncio.gather(*(one(p) for p in probes)))
+        return gbp.finish(probes, results, ready or {})
 
     def _sigterm(self) -> None:
         self.stop_reason = self.stop_reason or "SIGTERM"
@@ -593,6 +671,12 @@ class Runner:
             if pairs and same == len(pairs) and not per_cond["base"]["gate"]:
                 per_cond["base"]["gate"] = (f"{fa.GATE}: the base ranking equals the norerank ranking on every "
                                             f"record ({same}/{len(pairs)}): the reranker was not active")
+        # the glossary boost could not be read back and was not declared: every
+        # condition has a BM25 leg, so none is the pre-registered condition
+        bgate = (self.boost_check or {}).get("gate")
+        if bgate:
+            for c in per_cond.values():
+                c["gate"] = c["gate"] or f"{fa.GATE}: {bgate}"
         failed_share = n_failed / n_calls if n_calls else 0.0
         if complete and failed_share > MAX_FAILED_SHARE and not self.hard_stop:
             self.hard_stop = f"{n_failed}/{n_calls} retrieval calls failed (> {MAX_FAILED_SHARE:.0%})"
@@ -614,6 +698,7 @@ class Runner:
                        "shuffle_seed": self.acfg.get("shuffle_seed"), "shuffle_stamp_suffix": self.shuffle_suffix,
                        "merge": self.acfg.get("merge"), "allowed_stamps": self.acfg.get("stamps"),
                        "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes")},
+            "manipulation_check": {"glossary_boost": self.boost_check},
             "server": server, "utc": now_iso(), "provenance": prov,
             "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0),
         }
@@ -680,12 +765,66 @@ def collect(out: Path, records: Sequence[Mapping[str, Any]], proxy: Path | None 
     return per_record, gated, runs
 
 
+def probe_candidates(cfg: Mapping[str, Any], corpus: str, arm: str, swap: Mapping[str, Any],
+                     chunk_export: str | None, glossary_file: str | None, rendered_fields: str | None
+                     ) -> tuple[list[tuple[str, str, str]] | None, str | None, str | None]:
+    """``(chunk_id, content, rendered field)`` for every chunk of the index, for the
+    boost probe: content from the chunk export (``export_chunks.py``, which never
+    exports the glossary), the field either rendered offline from the arm's
+    glossary file exactly as the backfill renders it (the file's sha256 must be
+    the arm's; a shuffled arm's permutation is reproduced over the backfill's
+    keys, ``corpora.<c>.es_id_prefix`` + chunk id, and must hash to the swap
+    record's) or read from an export of rendered fields ``{chunk_id,
+    symbol_glossary}``. Returns ``(None, reason, None)`` when not available. The
+    swap record itself carries counts only, no rendered field."""
+    import wording_proxy as wp
+
+    if not chunk_export:
+        return None, "no --chunk-export given", None
+    if not (glossary_file or rendered_fields):
+        return None, "--chunk-export without --glossary-file or --rendered-fields", None
+    rows = read_jsonl_repair_tail(Path(chunk_export))
+    try:
+        if rendered_fields:
+            fields = wp.fields_from_export(Path(rendered_fields))
+            source = "chunk export + rendered-fields export"
+        else:
+            assert glossary_file is not None
+            want = ((cfg["arms"].get(arm) or {}).get("glossary_file_sha256") or {}).get(corpus)
+            if sha256_file(Path(glossary_file)) != want:
+                raise Refused("--glossary-file is not the arm's declared glossary file (sha256 differs)")
+            fields, _ = wp.fields_from_glossary_file(Path(glossary_file), rows, allow_unverifiable=bool(
+                (cfg.get("probe") or {}).get("glossary_allow_unverifiable")))
+            source = "chunk export + glossary file rendered offline (the backfill's rendering)"
+            seed = (cfg["arms"].get(arm) or {}).get("shuffle_seed")
+            if seed is not None:
+                perm = ((swap.get("apply") or {}).get("shuffle") or {}).get("permutation_sha256")
+                # the backfill keys its shuffle by Elasticsearch ``_id`` = ``<tenant>:<chunk_id>``
+                # (stores/elasticsearch.py ``_es_id``), so the prefix is the index's tenant + ``:``
+                prefix = (cfg["corpora"].get(corpus) or {}).get("es_id_prefix")
+                if not prefix:
+                    raise gbp.ProbeUnavailable(f"shuffled arm: corpora.{corpus}.es_id_prefix is not set (the "
+                                               "backfill keys the permutation by ES _id, '<tenant>:' + chunk id)")
+                fields = gbp.fields_with_shuffle(fields, str(seed), prefix, perm)
+                source += " + the backfill's shuffle, reproduced and hash-verified"
+    except wp.ProxyInputError as e:
+        raise Refused(f"boost probe candidates: {e}") from e
+    except gbp.ProbeUnavailable as e:
+        return None, str(e), None
+    return [(str(r["chunk_id"]), str(r.get("content") or ""), fields.get(str(r["chunk_id"]), ""))
+            for r in rows], None, source
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     try:
         cfg = load_config(Path(args.private_config))
         records = load_questions([Path(args.questions)])
+        swap = json.loads(Path(args.swap_record).read_text(encoding="utf-8"))
+        chunks, unavailable, source = probe_candidates(cfg, args.corpus, args.arm, swap, args.chunk_export,
+                                                       args.glossary_file, args.rendered_fields)
         runner = Runner(cfg, records, args.corpus, args.arm, Path(args.out), Path(args.swap_record),
-                        repeat=args.repeat)
+                        repeat=args.repeat, probe_chunks=chunks, probe_unavailable=unavailable,
+                        probe_source=source, boost_declared=args.boost_declared)
         return asyncio.run(runner.run())
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr, flush=True)
@@ -728,6 +867,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--swap-record", required=True, help="the swap.sh record of the arm now attached")
     r.add_argument("--out", required=True)
     r.add_argument("--repeat", type=int, default=None, help="repeat number (2 = the noise-floor repeat)")
+    r.add_argument("--chunk-export", default=None,
+                   help="export_chunks.py output (every chunk of the index): the boost probe's content side")
+    r.add_argument("--glossary-file", default=None,
+                   help="the arm's glossary file (sha256 must be the arm's): fields rendered offline for the probe")
+    r.add_argument("--rendered-fields", default=None,
+                   help="instead of --glossary-file: an export of rendered fields {chunk_id, symbol_glossary}")
+    r.add_argument("--boost-declared", type=float, default=None,
+                   help="the server's TEXT_SYMBOL_GLOSSARY_BOOST, used only when the probe is not testable "
+                        "(recorded as declared, not read back)")
     r.set_defaults(func=cmd_run)
     a = sub.add_parser("analyse", help="paired contrasts, Holm, NI, power from the run files")
     a.add_argument("--private-config", required=True)

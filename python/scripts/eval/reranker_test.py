@@ -37,6 +37,19 @@ Subcommands (each writes one JSON file; every file embeds
     The section-3 manipulation check (RRF k, multiplier, rerank candidates,
     per-doc cap, boilerplate demotion, glossary boost, glossary-in-reranker) is
     logged before anything is retrieved; a mismatch stops the run (exit 1).
+
+    **Glossary boost read-back** (API route; :mod:`glossary_boost_probe`).
+    ``/v1/config`` does not expose ``TEXT_SYMBOL_GLOSSARY_BOOST`` (default 0:
+    the field is then never consulted), so after the manipulation check the
+    harness probes it: up to 5 dump chunks whose stored ``symbol_glossary``
+    holds a token found in no chunk's content are queried ``bm25`` at
+    ``top_k`` 10 with that token alone; each must come back. None does
+    (``inactive``) or some do (``mixed``) or a probe fails its depth read-back
+    (``error``): exit 1 before any pool is captured. Fewer than 3 qualifying
+    chunks: ``not_testable``, and every bm25/hybrid-derived list is
+    GATE-NOT-EVALUABLE in ``stats`` unless ``--boost-declared X`` (then
+    ``declared``). Recorded under ``manipulation.boost_check`` (token hashes,
+    never text). The in-process route uses ``--glossary-boost`` directly.
     The gold (chunk ids per quote, by the parts 2-4 normalisation) is computed
     here against the full chunk dump and written beside the lists.
 
@@ -64,7 +77,11 @@ Subcommands (each writes one JSON file; every file embeds
 
 ``stats``
     found@k, ceiling@D, the ``n = (n - ceiling) + ordering loss + found@10``
-    decomposition, rank-of-gold summaries, H1-H3 (Holm over 3) with the part-4
+    decomposition, the inactive-reranker gate (a reranked list -- API A4/A5/A6
+    or offline A7 -- whose top 10 equals its un-reranked pool's top 10 on every
+    record is GATE-NOT-EVALUABLE, and so is every hypothesis and fuse built on
+    it: a wired-but-inactive reranker answers ``rerank=true`` with the fused
+    order), rank-of-gold summaries, H1-H3 (Holm over 3) with the part-4
     sign-flip / bootstrap / McNemar machinery imported from
     :mod:`deployed_docs_part4`, exploratory contrasts (uncorrected, Bonferroni
     count beside), per-record gold ranks by id, and every GATE-NOT-EVALUABLE
@@ -106,6 +123,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import deployed_docs_part4 as dp4  # noqa: E402
+import glossary_boost_probe as gbp  # noqa: E402
 import section_aware_trial as sat  # noqa: E402
 from section_aware_trial import C  # noqa: E402
 
@@ -664,6 +682,37 @@ def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], le
     return dict(lists), depth
 
 
+def api_boost_probe(api: Api, corpus: Corpus, declared: float | None) -> dict[str, Any]:
+    """The behavioural read-back of the BM25 glossary boost (module docstring,
+    ``pools``): candidates from the chunk dump's stored fields, at most
+    ``api.inflight`` probes in flight."""
+    chunks: list[tuple[str, str, str]] | None = None
+    unavailable = None
+    if corpus.meta.get("source") == "part4":
+        unavailable = "part-4 chunks are built in-process; their ids are not the index's"
+    else:
+        chunks = [(c.id, c.content, c.glossary) for c in corpus.chunks]
+    try:
+        probes, ready = gbp.plan(chunks, declared=declared, unavailable=unavailable,
+                                 source="chunk dump (--chunks): the stored symbol_glossary")
+    except gbp.ProbeUnavailable as e:
+        raise SystemExit(str(e)) from e
+    if not probes:
+        assert ready is not None
+        return ready
+
+    def one(p: dict[str, Any]) -> dict[str, Any]:
+        try:
+            resp = api.retrieve({**gbp.PROBE_REQUEST, "query": p["token"], "use_graph": False})
+        except RuntimeError as e:
+            return gbp.judge(p, None, str(e)[:200])
+        return gbp.judge(p, resp)
+
+    with ThreadPoolExecutor(max_workers=api.inflight) as ex:
+        results = list(ex.map(one, probes))
+    return gbp.finish(probes, results, ready or {})
+
+
 def parse_live(spec: str | None) -> list[tuple[str, int]]:
     out = []
     for it in (spec or "").split(","):
@@ -709,6 +758,15 @@ def cmd_pools(args: argparse.Namespace) -> int:
                       questions, args.omit_text)
             log("manipulation check mismatch: stopped before any retrieval")
             return EXIT_FAIL
+        bc = api_boost_probe(api, corpus, args.boost_declared)
+        manip["boost_check"] = bc
+        log(f"glossary boost check: {bc['status']} ({bc['n_passed']}/{bc['n_probes']} probes returned their chunk)")
+        if bc["status"] in gbp.STOP:
+            manip["ok"] = False
+            write_out(Path(args.out), {**out, "provenance": provenance(), "status": "boost_check_failed",
+                                       "api_calls": api.calls}, questions, args.omit_text)
+            log(f"glossary boost check {bc['status']}: {bc['reason']}; stopped before any pool was captured")
+            return EXIT_FAIL
         lists, depth = capture_api(api, questions, depths, legs, parse_live(args.live))
         out["api_calls"] = api.calls
     else:
@@ -719,6 +777,9 @@ def cmd_pools(args: argparse.Namespace) -> int:
                     "retrieval_demote_boilerplate": False, "text_symbol_glossary_boost": args.glossary_boost,
                     "rerank_include_symbol_glossary": True}
         manip = manipulation_check(observed, expected, dict.fromkeys(observed, "in-process"))
+        manip["boost_check"] = {"check": gbp.CHECK, "status": "in-process", "boost_check": "in-process",
+                                "boost": args.glossary_boost, "gate": None,
+                                "note": "the in-process BM25 applies --glossary-boost itself"}
         out["manipulation"] = manip
         log(f"manipulation check: {json.dumps(manip)}")
         if not manip["ok"]:
@@ -1349,11 +1410,69 @@ HYPOTHESES = {
 }
 
 
+def inactive_reranker(lists: dict[str, Any], rids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Per reranked list (``live:`` API A4/A5/A6, ``rr:`` offline A7 and its
+    A4/A5 stand-ins): how many records' top 10 equal the un-reranked pool's top
+    10. ``gated`` when that is every record: a wired-but-inactive reranker
+    answers ``rerank=true`` with the fused order (found10.py gates ``base``
+    identical to ``norerank`` the same way; mirrored here, not imported: that
+    runner compares whole served lists of one request shape, this harness top
+    10s against a separately captured pool)."""
+    out: dict[str, dict[str, Any]] = {}
+    for key, per in lists.items():
+        kind, leg, d, _ = parse_key(key)
+        if kind not in ("live", "rr"):
+            continue
+        pool = pool_list(lists, leg, d)
+        if pool is None:
+            continue
+        common = [r for r in rids if r in per and r in pool]
+        same = sum(per[r][:TOP] == pool[r][:TOP] for r in common)
+        out[key] = {"pool": pool_source_key(lists, leg, d), "records": len(common), "identical_top10": same,
+                    "gated": bool(common) and same == len(common)}
+    return out
+
+
+def holm_family(hyps: dict[str, dict[str, Any]], order: Sequence[str], alpha: float) -> list[str]:
+    """Holm over the whole confirmatory family, in place. A gated or absent
+    member (or one without a p) enters at p = 1.0, so the family size never
+    shrinks (found10's convention; prereg). Sets ``p_holm`` / ``significant``
+    and the mid-p ``holm_mid`` / ``significant_mid`` on every member that has
+    a p, plus the labelled sensitivity ``holm_drop_gated`` (Holm over the
+    evaluable members only, the old behaviour) on the evaluable ones. Returns
+    the evaluable members."""
+    def p_of(h: str, key: str) -> float:
+        r = hyps[h]
+        v = r.get(key)
+        return 1.0 if (r.get("p") is None or r.get("gate") or r.get("status") == "absent" or v is None) \
+            else float(v)
+
+    testable = [h for h in order if hyps[h].get("p") is not None and not hyps[h].get("gate")
+                and hyps[h].get("status") != "absent"]
+    hm = cs.holm([p_of(h, "p") for h in order], alpha)
+    hmid = cs.holm([p_of(h, "p_mid") for h in order], alpha)
+    for i, h in enumerate(order):
+        if hyps[h].get("p") is None:
+            continue
+        hyps[h].update(p_holm=hm["p_adj"][i], significant=bool(hm["reject"][i]),
+                       holm_mid=hmid["p_adj"][i], significant_mid=bool(hmid["reject"][i]),
+                       holm_entered_as=None if h in testable else 1.0)
+    if testable:
+        drop = cs.holm([float(hyps[h]["p"]) for h in testable], alpha)
+        for h, padj, rej in zip(testable, drop["p_adj"], drop["reject"], strict=True):
+            hyps[h]["holm_drop_gated"] = {"p_holm": padj, "significant": bool(rej), "m": len(testable),
+                                          "label": "sensitivity: gated/absent members dropped from the family"}
+    return testable
+
+
 def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, Any], *, depths: Sequence[int],
             an: dict[str, Any], seed: int, rule: str = "any", prefer: str = "live",
-            identity: dict[str, Any] | None = None, per_record: bool = True) -> dict[str, Any]:
+            identity: dict[str, Any] | None = None, per_record: bool = True,
+            boost_check: dict[str, Any] | None = None) -> dict[str, Any]:
     recs = gold["records"]
     rids = sorted(r for r, g in recs.items() if not g["excluded"])
+    inactive = inactive_reranker(lists, rids)
+    boost_gate = (boost_check or {}).get("gate")
     clusters = [recs[r]["cluster"] for r in rids]
     n_clusters = len(set(clusters))
     arms = arm_map(lists, depths, prefer)
@@ -1372,6 +1491,14 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
                 reasons.append(f"depth read-back: an input of {key} under-served")
         if kind in ("rr", "fuse") and gate_status == "fail":
             reasons.append("identity gate failed")
+        inputs = [key] + (list((depth_info.get(key) or {}).get("inputs") or []) if kind == "fuse" else [])
+        for k in inputs:
+            if (inactive.get(k) or {}).get("gated"):
+                i = inactive[k]
+                reasons.append(f"inactive reranker: {k} top {TOP} equals its un-reranked pool {i['pool']} "
+                               f"on every record ({i['identical_top10']}/{i['records']})")
+        if boost_gate and (kind == "fuse" or leg in ("bm25", "hybrid")):
+            reasons.append(f"glossary boost: {boost_gate}")
         return reasons
 
     ranks: dict[str, dict[str, int | None]] = {}
@@ -1387,6 +1514,7 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
         arm_out[name] = {"list": spec["key"], "route": spec["route"], "summary": rank_summary(rk, llen),
                          "gate": list_status(spec["key"]) or None,
                          "identity_gate": gate_status if spec["route"].startswith("offline") else None,
+                         "identical_to_pool": inactive.get(spec["key"]),
                          **{k: spec[k] for k in ("role", "note") if k in spec}}
     # The confirmatory family needs a PASSED identity gate when any of its reranked
     # arms (A4-50, A5-50) is the offline rerank rather than the API's own list: an
@@ -1445,13 +1573,7 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
         if spec["type"] == "superiority" and m is not None and not attainable(int(m), alpha / len(HYPOTHESES)):
             reasons.append(f"{m} non-zero clusters: alpha/{len(HYPOTHESES)} not attainable")
         hyps[h] = {**base, **r, "gate": reasons or None}
-    testable = [h for h in HYPOTHESES if hyps[h].get("p") is not None and not hyps[h].get("gate")]
-    if testable:
-        hm = cs.holm([hyps[h]["p"] for h in testable], alpha)
-        hmid = cs.holm([hyps[h].get("p_mid", 1.0) for h in testable], alpha)
-        for h, padj, rej, pm, rm in zip(testable, hm["p_adj"], hm["reject"], hmid["p_adj"], hmid["reject"],
-                                         strict=True):
-            hyps[h].update(p_holm=padj, significant=bool(rej), holm_mid=pm, significant_mid=bool(rm))
+    testable = holm_family(hyps, list(HYPOTHESES), alpha)
     for r in hyps.values():
         if r.get("status") == "absent":
             continue
@@ -1477,9 +1599,13 @@ def analyse(lists: dict[str, Any], depth_info: dict[str, Any], gold: dict[str, A
     out = {"n_records": len(recs), "n_included": len(rids), "excluded": gold.get("excluded", {}),
            "n_clusters": n_clusters, "gold_rule": rule, "arms": arm_out, "ceilings": ceilings,
            "decomposition": decomp, "hypotheses": hyps, "exploratory": expl,
+           "inactive_reranker": inactive, "boost_check": boost_check,
            "family": {"procedure": "Holm over H1-H3", "alpha": alpha, "delta": float(an["delta"]),
                       "tested": testable, "identity_gate": gate_status, "offline_arms": family_offline,
-                      "note": "Holm runs over the hypotheses that are not GATE-NOT-EVALUABLE or absent"}}
+                      "family_size": len(HYPOTHESES),
+                      "note": ("Holm over all of H1-H3: a GATE-NOT-EVALUABLE or absent member enters at p = 1.0 "
+                               "(the family never shrinks silently; found10's convention, prereg). "
+                               "holm_drop_gated is the sensitivity that drops those members instead")}}
     if per_record:
         out["per_record"] = {r: {"cluster": recs[r]["cluster"], **{a: ranks[a][r] for a in ranks}} for r in rids}
     return out
@@ -1505,8 +1631,13 @@ def cmd_stats(args: argparse.Namespace) -> int:
     depths = sorted({int(x) for x in args.depths.split(",")})
     an = {"n_perm": args.n_perm, "n_boot": args.n_boot, "ci_level": args.ci_level, "delta": args.delta,
           "alpha": args.alpha}
+    boost_check = (src["manipulation"] or {}).get("boost_check")
+    if boost_check is None and any(h.get("backend") == "api" for h in src["headers"]):
+        boost_check = {"status": "absent", "boost_check": "absent",
+                       "gate": "an API pools file without the glossary boost read-back (it predates the probe)"}
     res = analyse(src["lists"], src["depth"], gold, depths=depths, an=an, seed=args.seed, rule=args.gold_rule,
-                  prefer=args.prefer, identity=src["identity_gate"], per_record=args.per_record)
+                  prefer=args.prefer, identity=src["identity_gate"], per_record=args.per_record,
+                  boost_check=boost_check)
     if args.repeat:
         rep = load_lists(args.repeat)
         res["repeat"] = repeat_check(src["lists"], rep["lists"], gold, args.gold_rule)
@@ -1631,6 +1762,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--emb-dir", help="embedding cache directory (hash-keyed, no text)")
     p.add_argument("--multiplier", type=int, default=PREREG_SETTINGS["retrieval_candidate_multiplier"])
     p.add_argument("--glossary-boost", type=float, default=PREREG_SETTINGS["text_symbol_glossary_boost"])
+    p.add_argument("--boost-declared", type=float, default=None,
+                   help="API route: the server's TEXT_SYMBOL_GLOSSARY_BOOST, used only when the behavioural probe "
+                        "is not testable (recorded as declared, not read back)")
     p.add_argument("--allow-short", action="store_true",
                    help="keep under-served lists, marked GATE-NOT-EVALUABLE, instead of failing")
     p.add_argument("--out", required=True)
