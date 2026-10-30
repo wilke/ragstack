@@ -75,6 +75,33 @@ def test_the_window_is_three_tokens() -> None:
     assert ck.value_bound("at least x y 5") is None                       # "at least" ends 3 before; starts 4
 
 
+@pytest.mark.parametrize("value,bound", [
+    ("2 m or more", "or more"), ("10 or fewer people", "or fewer"), ("3 people at most", "at most"),
+    ("0.31 m3/s or more", "or more"),                                  # m3's exponent is not a number
+    ("5 m and above", "and above"), ("fewer than 20 people", "fewer than"),
+    ("no fewer than 20", "no fewer than"), ("a minimum of 5 m", "minimum of"),
+])
+def test_trailing_and_count_bounds(value: str, bound: str) -> None:
+    assert ck.value_bound(value) == bound
+
+
+def test_a_trailing_bound_is_read_only_within_the_window() -> None:
+    assert ck.value_bound("2 m tall, 3 m or more") == "or more"            # governs the 3
+    assert ck.value_bound("2 a b c or more") is None                       # four tokens after
+    assert ck.value_bound("2 m or 3 more") is None                         # the window stops at 3
+
+
+def test_a_bound_symbol_must_be_the_last_character_before_the_number() -> None:
+    assert ck.value_bound("< a 5") is None
+    assert ck.value_bound("≥ ref, 5 m") is None
+
+
+def test_an_unknown_value_bound_mode_is_refused(tmp_path: Path) -> None:
+    c, idx, fs = _bound_paper(tmp_path)
+    with pytest.raises(ValueError, match="value_bound"):
+        _l1(c, idx, VALUE_BOUND, _chunk(c, "stayed above 0.31"), fs["ventilation_flow_m3_s"], value_bound=False)
+
+
 # ------------------------------------------------------------------ value_is_bound / empty_case in layer 1
 
 def _bound_paper(tmp: Path) -> tuple[g.Corpus, ck.PaperIndex, dict[str, fl.FieldSpec]]:

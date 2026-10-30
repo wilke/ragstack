@@ -61,9 +61,14 @@ whole phrase (:data:`BOUND_PHRASES`, whole words, case-insensitive) lies within 
 :data:`BOUND_WINDOW` (3) word tokens immediately before the number, with no other
 number among those tokens (the window stops at the nearest earlier number). A
 bound SYMBOL (:data:`BOUND_SYMBOLS`; ``<=``/``>=`` too) governs it when it is the
-last non-space character before the number. So ``more than 5 m`` and ``<0.05`` are
-bounds, ``over the course of 2 h`` is not (``over`` is four tokens before ``2``), and
-a range ``0.3–0.5`` is not (the dash is not a bound).
+last non-space character before the number. A TRAILING bound phrase
+(:data:`BOUND_SUFFIXES`, ``or more``, ``at most``) governs it when the whole phrase lies
+within the :data:`BOUND_WINDOW` word tokens immediately after the number, the window
+stopping at the next number (a digit run glued to a letter, the ``3`` of ``m3``, is a
+unit exponent and neither counts nor stops it). So ``more than 5 m``, ``<0.05`` and
+``2 m or more`` are bounds, ``over the course of 2 h`` is not (``over`` is four tokens
+before ``2``), ``5 m above the floor`` is not (a lone ``above`` after the number is not
+a trailing bound), and a range ``0.3–0.5`` is not (the dash is not a bound).
 
 **Fields mode** (set P, :mod:`glossbench_r2_fields`): the drafter is asked for a
 value of a NAMED field, given its name, definition and unit — no glossary, no
@@ -146,7 +151,13 @@ BOUND_OK_FIELDS: tuple[str, ...] = ("clearance_fraction", "risk_tolerance")
 BOUND_WINDOW = 3
 BOUND_PHRASES: tuple[str, ...] = (
     "beyond", "above", "below", "over", "under", "more than", "less than", "greater than", "at least",
-    "at most", "up to", "lower than", "higher than", "exceeding", "exceeds", "no more than", "not less than")
+    "at most", "up to", "lower than", "higher than", "exceeding", "exceeds", "no more than", "not less than",
+    "fewer than", "no fewer than", "no less than", "not more than", "minimum of", "maximum of")
+#: a bound phrase AFTER the number ("2 m or more", "3 people at most")
+BOUND_SUFFIXES: tuple[str, ...] = (
+    "or more", "or less", "or fewer", "or greater", "or higher", "or lower", "or longer", "or shorter",
+    "or above", "or below", "or over", "or under", "and above", "and below", "and over", "and under",
+    "at most", "at least", "or later", "or earlier")
 BOUND_SYMBOLS: tuple[str, ...] = ("<", ">", "≤", "≥", "≲", "≳", "⩽", "⩾")
 #: ``layer1`` also reads ``vs_stoplist`` (the pool header's statistical stoplist) from
 #: its cfg; absent, :data:`_glossbench_r2.STAT_TOKENS` applies.
@@ -432,6 +443,15 @@ _BOUND_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
 _BOUND_SYMBOL = re.compile(r"(?:[<>]=?|[≤≥≲≳⩽⩾])\s*[-−+]?\s*$")
 #: longest first: "no more than" is reported as itself, not as "more than"
 _BOUND_SPLIT = tuple(sorted((tuple(p.split()) for p in BOUND_PHRASES), key=lambda t: -len(t)))
+_SUFFIX_SPLIT = tuple(tuple(p.split()) for p in BOUND_SUFFIXES)
+
+
+def _phrase_in(window: list[str], phrases: tuple[tuple[str, ...], ...]) -> str | None:
+    for phrase in phrases:
+        n = len(phrase)
+        if any(tuple(window[k:k + n]) == phrase for k in range(len(window) - n + 1)):
+            return " ".join(phrase)
+    return None
 
 
 def value_bound(value: str) -> str | None:
@@ -451,10 +471,18 @@ def value_bound(value: str) -> str | None:
             if is_num[j]:
                 break
             window.insert(0, toks[j].group(0))
-        for phrase in _BOUND_SPLIT:
-            n = len(phrase)
-            if any(tuple(window[k:k + n]) == phrase for k in range(len(window) - n + 1)):
-                return " ".join(phrase)
+        hit = _phrase_in(window, _BOUND_SPLIT)
+        if hit is None:
+            after: list[str] = []
+            for j in range(i + 1, len(toks)):
+                if is_num[j] and toks[j].start() > 0 and text[toks[j].start() - 1].isalpha():
+                    continue                                    # a unit exponent: m3, s-1 is not one
+                if is_num[j] or len(after) == BOUND_WINDOW:
+                    break
+                after.append(toks[j].group(0))
+            hit = _phrase_in(after, _SUFFIX_SPLIT)
+        if hit is not None:
+            return hit
     return None
 
 
