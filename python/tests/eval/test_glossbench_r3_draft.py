@@ -320,7 +320,8 @@ def test_fields_chain_pilot_and_partner_round_trip(tmp_path: Path) -> None:
     assert run(path, "export-partner", "--set", "P", str(exp)) == 0
     rows = jsonl(exp)
     assert rows and all(set(r) == {"id", "question", "source", "quote", "field", "case", "model",
-                                   "prompt_sha256", "value"} for r in rows)
+                                   "prompt_sha256", "value", "verifier", "verifier_refused",
+                                   "verifier_model"} for r in rows)
     vp = tmp_path / "verdicts.json"
     vp.write_text(json.dumps({"records": [{"id": r["id"], "verdict": "accept", "basis": "sampled"} for r in rows],
                               "sample": {"n": len(rows), "errors": 0, "seed": "s"}}))

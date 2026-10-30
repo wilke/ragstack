@@ -44,7 +44,31 @@ that applies is recorded):
 ``term_abbreviation``       fields mode: the question contains an abbreviation- or
                             symbol-like term of the field (``ACH``, ``lambda_{a}``) as a
                             whole token (:func:`glossbench_r2_fields.abbreviation_in_question`)
+``value_is_bound``          the ``value`` states a bound, not a scalar: an inequality
+                            governs one of its numbers (:func:`value_bound`). Read from
+                            the ``value`` field only — never the quote, whose prose may
+                            carry bound words elsewhere. Every record in open mode; in
+                            fields mode every field except ``bound_ok_fields`` (fields
+                            whose own definition is a limit or a threshold, where a
+                            bound-shaped value can be the answer; default
+                            :data:`BOUND_OK_FIELDS`). ``value_bound: off`` disables it
+                            (a run whose layer-1 log predates the rule)
 ==========================  =====================================================
+
+**Governing window** (``value_is_bound``). A number of the value is a digit run
+(``0.05``, ``1,000``) or a number word (``two``). A bound WORD governs it when the
+whole phrase (:data:`BOUND_PHRASES`, whole words, case-insensitive) lies within the
+:data:`BOUND_WINDOW` (3) word tokens immediately before the number, with no other
+number among those tokens (the window stops at the nearest earlier number). A
+bound SYMBOL (:data:`BOUND_SYMBOLS`; ``<=``/``>=`` too) governs it when it is the
+last non-space character before the number. A TRAILING bound phrase
+(:data:`BOUND_SUFFIXES`, ``or more``, ``at most``) governs it when the whole phrase lies
+within the :data:`BOUND_WINDOW` word tokens immediately after the number, the window
+stopping at the next number (a digit run glued to a letter, the ``3`` of ``m3``, is a
+unit exponent and neither counts nor stops it). So ``more than 5 m``, ``<0.05`` and
+``2 m or more`` are bounds, ``over the course of 2 h`` is not (``over`` is four tokens
+before ``2``), ``5 m above the floor`` is not (a lone ``above`` after the number is not
+a trailing bound), and a range ``0.3–0.5`` is not (the dash is not a bound).
 
 **Fields mode** (set P, :mod:`glossbench_r2_fields`): the drafter is asked for a
 value of a NAMED field, given its name, definition and unit — no glossary, no
@@ -62,7 +86,13 @@ verifier is asked the ``symbol_unique`` question with a note), ``multi_value``
 (the symbol states two or more different values in the paper: case/scenario
 ambiguity for layer 2 to judge, also noted in its prompt), ``scenario_terms``
 (the quote names a case/scenario/condition word the question does not),
-``shared_chunk`` (cross-record: two accepted records share a gold chunk).
+``shared_chunk`` (cross-record: two accepted records share a gold chunk),
+``empty_case`` (fields mode: the draft's ``case`` is empty). The intended rule is
+"``case`` empty while the paper has more than one scenario", but the number of
+scenarios a paper has is not mechanically computable (``multi_value`` sees only
+symbol value statements; scenario words in the text are not a count), so EVERY
+empty ``case`` in fields mode is flagged and layer 2's ``same_case`` decides. Open
+mode drafts have no ``case`` and never carry the flag.
 """
 from __future__ import annotations
 
@@ -106,7 +136,29 @@ CHECK_DEFAULTS: dict[str, Any] = {
     "collision_jaccard": 0.5,
     #: fields mode: the term-leak guard's threshold (">=": half the question's own words is a leak)
     "term_leak_threshold": 0.5,
+    #: "reject" | "off": the ``value_is_bound`` check (:func:`value_bound`)
+    "value_bound": "reject",
+    #: fields mode: fields the ``value_is_bound`` check skips (see :data:`BOUND_OK_FIELDS`)
+    "bound_ok_fields": None,
 }
+
+#: Fields whose own definition is a limit or a threshold, so a bound-shaped value may be
+#: the right answer: ``risk_tolerance`` (a tolerated expected number of transmissions, a
+#: ceiling: "below 0.1" states it) and ``clearance_fraction`` (the fraction to be removed
+#: that defines the clearance time, a target: "at least 99%" states it). Every other field
+#: of the v2 list is a measured or model quantity that needs one scalar.
+BOUND_OK_FIELDS: tuple[str, ...] = ("clearance_fraction", "risk_tolerance")
+BOUND_WINDOW = 3
+BOUND_PHRASES: tuple[str, ...] = (
+    "beyond", "above", "below", "over", "under", "more than", "less than", "greater than", "at least",
+    "at most", "up to", "lower than", "higher than", "exceeding", "exceeds", "no more than", "not less than",
+    "fewer than", "no fewer than", "no less than", "not more than", "minimum of", "maximum of")
+#: a bound phrase AFTER the number ("2 m or more", "3 people at most")
+BOUND_SUFFIXES: tuple[str, ...] = (
+    "or more", "or less", "or fewer", "or greater", "or higher", "or lower", "or longer", "or shorter",
+    "or above", "or below", "or over", "or under", "and above", "and below", "and over", "and under",
+    "at most", "at least", "or later", "or earlier")
+BOUND_SYMBOLS: tuple[str, ...] = ("<", ">", "≤", "≥", "≲", "≳", "⩽", "⩾")
 #: ``layer1`` also reads ``vs_stoplist`` (the pool header's statistical stoplist) from
 #: its cfg; absent, :data:`_glossbench_r2.STAT_TOKENS` applies.
 
@@ -165,6 +217,7 @@ _REASON_WORDS = {
     "unit_incompatible": "the value was not copied with a printed unit of the quantity's kind",
     "term_leak": "the question used other names for the quantity instead of the definition's words",
     "term_abbreviation": "the question used an abbreviation or symbol for the quantity",
+    "value_is_bound": "the value was a bound (such as \"more than 5\"), not a single value",
 }
 
 DRAFT_SYSTEM_FIELDS = """You write one question for a benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
@@ -386,6 +439,53 @@ def question_prints_number(question: str, value: str) -> bool:
     return bool(vw & qw)
 
 
+_BOUND_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
+_BOUND_SYMBOL = re.compile(r"(?:[<>]=?|[≤≥≲≳⩽⩾])\s*[-−+]?\s*$")
+#: longest first: "no more than" is reported as itself, not as "more than"
+_BOUND_SPLIT = tuple(sorted((tuple(p.split()) for p in BOUND_PHRASES), key=lambda t: -len(t)))
+_SUFFIX_SPLIT = tuple(tuple(p.split()) for p in BOUND_SUFFIXES)
+
+
+def _phrase_in(window: list[str], phrases: tuple[tuple[str, ...], ...]) -> str | None:
+    for phrase in phrases:
+        n = len(phrase)
+        if any(tuple(window[k:k + n]) == phrase for k in range(len(window) - n + 1)):
+            return " ".join(phrase)
+    return None
+
+
+def value_bound(value: str) -> str | None:
+    """The bound phrase or symbol that governs a number of ``value`` (the module
+    docstring's governing window), or ``None`` when the value states no bound."""
+    text = unicodedata.normalize("NFKC", value).casefold()
+    toks = list(_BOUND_TOKEN.finditer(text))
+    is_num = [t.group(0)[0].isdigit() or t.group(0) in g.NUMBER_WORDS for t in toks]
+    for i, t in enumerate(toks):
+        if not is_num[i]:
+            continue
+        m = _BOUND_SYMBOL.search(text[: t.start()])
+        if m:
+            return m.group(0).strip().rstrip("-−+").strip()
+        window: list[str] = []
+        for j in range(i - 1, max(-1, i - 1 - BOUND_WINDOW), -1):
+            if is_num[j]:
+                break
+            window.insert(0, toks[j].group(0))
+        hit = _phrase_in(window, _BOUND_SPLIT)
+        if hit is None:
+            after: list[str] = []
+            for j in range(i + 1, len(toks)):
+                if is_num[j] and toks[j].start() > 0 and text[toks[j].start() - 1].isalpha():
+                    continue                                    # a unit exponent: m3, s-1 is not one
+                if is_num[j] or len(after) == BOUND_WINDOW:
+                    break
+                after.append(toks[j].group(0))
+            hit = _phrase_in(after, _SUFFIX_SPLIT)
+        if hit is not None:
+            return hit
+    return None
+
+
 def leak_overlap(question: str, quote: str, frequent: set[str]) -> tuple[float, int]:
     """(share of the quote's distinctive tokens that the question contains, |distinctive|).
     Distinctive = quote tokens not among the paper's most frequent; 0.0 when none."""
@@ -507,6 +607,15 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
         reasons.append("quantity_not_in_quote")
     if q and value and question_prints_number(q, value):
         reasons.append("number_in_question")
+    # the value is a scalar, not a bound (the value field only; never the quote)
+    if c["value_bound"] not in ("reject", "off"):
+        raise ValueError(f"checks.value_bound must be 'reject' or 'off', not {c['value_bound']!r}")
+    bound_ok = c["bound_ok_fields"] if c["bound_ok_fields"] is not None else BOUND_OK_FIELDS
+    if c["value_bound"] != "off" and value and not (field is not None and field.field in bound_ok):
+        b = value_bound(value)
+        if b is not None:
+            out["value_bound"] = b
+            reasons.append("value_is_bound")
     # the symbol
     texts = idx.c.paper_texts(paper)
     r3 = stratum in R3_STRATA
@@ -536,6 +645,8 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
         out["flags"].append("scenario_terms")
     if field is not None:
         # fields mode: the printed unit, the term-leak guard; binding terms are the field's
+        if not (draft.get("case") or "").strip():
+            out["flags"].append("empty_case")
         u = fl.unit_check(value, field.unit)
         out["unit_check"] = u
         if u == "incompatible":
