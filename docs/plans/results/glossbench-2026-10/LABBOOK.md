@@ -536,3 +536,36 @@ The earlier text stays in place; this entry supersedes it.
 - **OpenChia's user lifted the "never copy" rule** on its 155-record evaluation set for this project's
   **private** experiments repository. Answer quotes still never go into a public repository; this record
   keeps counts and ids only.
+
+## Addendum, 2026-10-30: round 2 stopped at its reach gate; the reranker test has not started
+
+Both pre-registrations froze at 2026-10-30T02:19:33Z (commit 9e109c3). What happened next is in their own
+records; this entry only points at them.
+
+- **Round 2 is closed — GATE-NOT-EVALUABLE on every set, no confirmatory hypothesis tested.** The record
+  is [`../glossbench-round2-2026-11/RESULTS.md`](../glossbench-round2-2026-11/RESULTS.md); its deviations
+  D-1 to D-5 are in [`../glossbench-round2-2026-11/DEVIATIONS.md`](../glossbench-round2-2026-11/DEVIATIONS.md);
+  the only artifact is the counts-only
+  [`reach-r2.json`](../glossbench-round2-2026-11/artifacts/reach-r2.json). In one line each:
+  - the 25 eval papers of each set hold **144 / 119 / 72** value-statement chunks (OA-1000 / ASM-1000 /
+    papers-OC), so the confirmatory stratum S1 could never reach the gate of 150 under any glossary arm.
+    The gate was unattainable by construction of the sample — a design error the frozen text did not catch,
+    knowable before freezing from a count that was not run (D-5). The owner stopped the round at the gate:
+    no drafting, no pilot, no swap, no retrieval, no proxy, no precision;
+  - the one batch that ran, GPT-5.5 on the 26 set-O documents, hit `max_tokens` 4,096 on 30 of 58 calls
+    (the papers-OC owner's gateway audit, external); its glossaries are truncated outputs, not a measure
+    of the model (D-4);
+  - descriptively, the served value-only attachment reaches **8.8 %** of OA-1000's value-statement
+    chunks under pure Qwen3.6 and **2.1 %** of ASM-1000's (rules 3.1 % / 0.9 %). Part 3's papers-OC gain
+    was therefore measured on a question set concentrated on glossaried chunks; the R1 set's own
+    attachment rate was not measured (absent).
+- **The reranker test has not run an arm.** Its preparation found three input problems before `pools`
+  (the part-4 identity reference's key layout, the held set's live-collection ids and missing quotes,
+  the docs-A cluster field); the fixes are PR #871 (merged `b300d0e`, 2026-10-30T03:32:47Z). Its deviations D-1 to
+  D-3 — the pre-committed re-score yields A4-50 only; the reader fixes and pin; **set P's gold uses the
+  papers-OC owner's actual quote rule (whitespace collapsed, 60 % boundary clause), which differs from the
+  rule the frozen Terms name on 16 of 155 records** — are in
+  [`../reranker-test-2026-11/DEVIATIONS.md`](../reranker-test-2026-11/DEVIATIONS.md).
+- **What's next, item (a)** (a multi-paper evaluation set) is not done: round 2 did not produce one.
+  Round 3 is to be pre-registered with the value-statement count per paper measured before its sample
+  size, gate and population are frozen. Items (b)–(e) are unchanged; (d) is the reranker test above.
