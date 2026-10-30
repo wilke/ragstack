@@ -221,6 +221,12 @@ def test_a_codex_verified_record_is_distinguishable_in_the_export(tmp_path: Path
     assert {r["verifier_model"] for r in cl} == {"claude-opus-5-5"}
 
 
+def test_the_summary_records_the_value_bound_rule(tmp_path: Path) -> None:
+    path, cfg = _p_chain(tmp_path, r2f.OkCLI())
+    summ = json.loads((Path(cfg["out_dir"]) / "acceptance-summary-P.json").read_text())
+    assert summ["layer1_rules"] == {"value_bound": "reject", "bound_ok_fields": sorted(ck.BOUND_OK_FIELDS)}
+
+
 def test_candidates_export_has_no_verifier(tmp_path: Path) -> None:
     path, cfg = _p_chain(tmp_path, r2f.OkCLI())
     exp = tmp_path / "cand.jsonl"

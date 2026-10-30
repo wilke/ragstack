@@ -958,6 +958,9 @@ class Run:
         drafts = self.drafts()
         records: list[dict[str, Any]] = []
         log = self.acceptance()
+        if self.cfg["checks"]["value_bound"] == "off":
+            g.log("check: checks.value_bound is OFF (only for a layer-1 log that predates the rule); "
+                  "bound-shaped values will pass layer 1")
         added = 0
         for row in sorted(drafts.rows.values(), key=lambda x: (x["paper"], x["record_id"])):
             base = {"record_id": row["record_id"], "set": self.set, "paper": row["paper"],
@@ -983,6 +986,11 @@ class Run:
                                         "attempt": r["attempt"], "t": g.now_iso()})
         g.log(f"check set={self.set}: {len(records)} drafts checked, {added} new log rows")
         return EXIT_OK
+
+    def layer1_rules(self) -> dict[str, Any]:
+        c = self.cfg["checks"]
+        ok = c["bound_ok_fields"] if c["bound_ok_fields"] is not None else ck.BOUND_OK_FIELDS
+        return {"value_bound": c["value_bound"], "bound_ok_fields": sorted(ok)}
 
     def spec_of(self, row: dict[str, Any]) -> fl.FieldSpec | None:
         f = row.get("field")
@@ -1413,6 +1421,8 @@ class Run:
                 "pilot_plan": self.pilot_plan},
             "pool_sha256": self.pool_sha, "accepted_sha256": g.file_sha(self.p.accepted),
             "config_sha256": self.cfg_sha, "provenance": prov, "citable": g.citable(prov),
+            # the rules a reader cannot see in config_sha256 alone (defaults apply when unset)
+            "layer1_rules": self.layer1_rules(),
         }
         g.write_json_atomic(self.p.summary, summary)
         g.log(f"summary set={self.set}: {len(acc)} accepted")
