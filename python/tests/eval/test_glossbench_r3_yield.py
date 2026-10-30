@@ -56,6 +56,8 @@ ODD = fl.FieldSpec("odd_unit", "furlong/fortnight", "an unmappable unit", ("vent
     ("A pump moved 0.5 m3/s of water.", FLOW, True, True),                # no term: eligible (terms only rank)
     ("The ventilation rate gave 2 air changes per hour.", FLOW, True, True),  # ACH vs m3/s: related
     ("λa = 0.65 h−1 in the room.", FLOW, True, True),                     # h^-1: related to a volume flow
+    ("Qv was 5 m³ per hour.", FLOW, True, True),                          # "per <unit>" inside a unit
+    ("Qv was 5 L/s.", FLOW, True, True),
     ("The ventilation rate was 12 m in height.", FLOW, False, True),       # a term, an incompatible unit
     ("The ventilation rate was raised.", FLOW, False, False),              # no number at all
     ("Twenty-one students shared the room.", PEOPLE, True, True),           # count: a number word, no unit
@@ -70,6 +72,35 @@ def test_eligibility_is_a_compatible_printed_number(text: str, spec: fl.FieldSpe
     assert fl.field_eligible(text, spec) is want
     assert (spec.field in fl.eligible_fields(text, [spec])) is want
     assert fl.prefilter(text, spec) is round2                            # round 2's rule is unchanged
+
+
+AER = fl.FieldSpec("air_exchange_rate_s", "1/s", "air exchange rate", ("air exchange rate",))
+
+
+@pytest.mark.parametrize("text,want", [
+    ("It was 0.65/h at night.", True),                                   # "/<time unit>"
+    ("It was 0.65 per hour at night.", True),                            # "per <time unit>"
+    ("It was 0.5 /h.", True),
+    ("We set 20 AC/h in the ward.", True),                               # AC/h
+    ("We set 6 AC [Air Changes]/h in the ward.", True),                  # a bracketed gloss in between
+    ("We set 6 AC (air changes) per hour.", True),
+    ("Three per day were flushed.", True),                               # a number word, per day
+    ("It was 2 h−1, 3 ACH and 4 min−1.", True),                         # the forms accepted before
+    ("It was 0.65/m2 on the floor.", False),                             # "/m2" is not a rate
+    ("It was 0.65 per m2 on the floor.", False),
+    ("It was 0.65 per cent.", False),                                    # "per" + an unknown word
+    ("We set 20 AC units.", False),                                      # AC without "/h"
+])
+def test_rate_units_with_a_leading_slash_or_per(text: str, want: bool) -> None:
+    assert fl.field_eligible(text, AER) is want
+
+
+def test_round2_parser_is_unchanged() -> None:
+    # round 2's layer-1 unit check reads parse_unit, not the round-3 extension
+    assert fl.parse_unit("/h") is None and fl.parse_unit("per hour") is None
+    assert fl.unit_check("0.65/h", "1/s") == "incompatible"
+    assert fl.parse_unit_r3("/h") == {"T": -1} and fl.parse_unit_r3("AC/h") == {"T": -1}
+    assert fl.parse_unit_r3("/") is None and fl.parse_unit_r3("per") is None
 
 
 def test_term_matching_is_the_wording_proxys() -> None:
@@ -354,8 +385,11 @@ class Clis:
     codex answers ``codex_verdict`` (or fails with ``codex_rc``)."""
 
     def __init__(self, refuse: Any, codex_ctx: int = 2600, codex_rc: int = 0, codex_verdict: Any = OK_VERDICT,
-                 refusal_shape: str = "json") -> None:
+                 refusal_shape: str = "json", codex_stderr: str = "codex: boom", codex_timeout: bool = False,
+                 codex_seq: list[Any] | None = None) -> None:
         self.refuse, self.codex_ctx, self.codex_rc, self.codex_verdict = refuse, codex_ctx, codex_rc, codex_verdict
+        self.codex_stderr, self.codex_timeout = codex_stderr, codex_timeout
+        self.codex_seq = list(codex_seq or [])          # answers consumed first, in call order
         self.refusal_shape = refusal_shape
         self.claude: list[dict[str, Any]] = []
         self.codex: list[dict[str, Any]] = []
@@ -385,9 +419,15 @@ class Clis:
                                                    if c.startswith("model_instructions_file="))).read_text()})
         try:
             time.sleep(0.02)
+            if self.codex_timeout:
+                import subprocess
+
+                raise subprocess.TimeoutExpired(cmd, 300)
             if self.codex_rc:
-                return SimpleNamespace(returncode=self.codex_rc, stdout="", stderr="codex: boom")
-            Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps(self.codex_verdict))
+                return SimpleNamespace(returncode=self.codex_rc, stdout="", stderr=self.codex_stderr)
+            with self.lock:
+                answer = self.codex_seq.pop(0) if self.codex_seq else self.codex_verdict
+            Path(cmd[cmd.index("-o") + 1]).write_text(answer if isinstance(answer, str) else json.dumps(answer))
             ev = [{"type": "thread.started", "thread_id": "t"}, {"type": "turn.started"},
                   {"type": "item.completed", "item": {"type": "agent_message", "text": "{}"}},
                   {"type": "turn.completed", "usage": {"input_tokens": self.codex_ctx, "output_tokens": 40}}]
@@ -473,12 +513,17 @@ def test_a_refused_first_record_does_not_fail_the_isolation_probe(tmp_path: Path
     assert len(l2) == 30 and all(r["verifier"] == "codex" and r["verdict"] == "pass" for r in l2)
 
 
-def test_codex_failure_is_verifier_unavailable_not_accepted(tmp_path: Path) -> None:
+CODEX_POLICY = "ERROR: This request was flagged as potentially violating our usage policy."
+
+
+def test_a_codex_refusal_is_verifier_unavailable_not_accepted(tmp_path: Path) -> None:
     path, cfg = _drafted(tmp_path)
-    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=Clis(dusk, codex_rc=1)) == 0
+    clis = Clis(dusk, codex_rc=1, codex_stderr=CODEX_POLICY)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
     cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
-    assert len(cx) == 3 and all(r["verdict"] == "unavailable" and r["reasons"] == ["verifier_unavailable"]
-                                for r in cx)
+    assert len(cx) == len(clis.codex) == 3                               # definitive: no retry
+    assert all(r["verdict"] == "unavailable" and r["reasons"] == ["verifier_unavailable"]
+               and r["unavailable_reason"] == "codex_refused" for r in cx)
     assert run(path, "summary", "--set", "O") == 0
     s = json.loads((Path(cfg["out_dir"]) / "acceptance-summary-O.json").read_text())
     assert s["excluded"] == {"verifier_unavailable": 3}                  # excluded with that reason ...
@@ -487,11 +532,45 @@ def test_codex_failure_is_verifier_unavailable_not_accepted(tmp_path: Path) -> N
     assert len(acc) == 27 and not any("dusk" in a["question"] for a in acc)
 
 
-def test_codex_unparseable_is_verifier_unavailable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind,clis_kw", [
+    ("limit", {"codex_rc": 1, "codex_stderr": "ERROR: 429 Too Many Requests: rate limit reached"}),
+    ("timeout", {"codex_timeout": True}),
+    ("error", {"codex_rc": 1, "codex_stderr": "codex: connection reset"}),
+])
+def test_a_codex_limit_timeout_or_error_pauses_and_the_record_is_retried(tmp_path: Path, kind: str,
+                                                                        clis_kw: dict[str, Any]) -> None:
+    path, cfg = _drafted(tmp_path)
+    out = Path(cfg["out_dir"])
+    clis = Clis(dusk, **clis_kw)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 75
+    st = json.loads((out / "verify-state-O.json").read_text())
+    assert st["status"] == "paused" and st["reason"] == f"codex_{kind}"
+    assert len(clis.codex) == 1                                          # stopped at the first failure
+    l2 = l2_rows(cfg)
+    assert not any(r["verifier"] == "codex" or r["verdict"] == "unavailable" for r in l2)   # left pending
+    # resume (fresh preflight): Claude refuses again, codex now answers; the records are verified
+    assert run(path, "preflight", "--stage", "verify", "--set", "O") == 0
+    ok = Clis(dusk)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", cli=ok) == 0
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == 3 and all(r["verdict"] == "pass" for r in cx) and len(l2_rows(cfg)) == 30
+
+
+def test_codex_malformed_twice_is_verifier_unavailable(tmp_path: Path) -> None:
     path, cfg = _drafted(tmp_path)
     clis = Clis(dusk, codex_verdict={"supports": "yes"})
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
-    assert all(r["verdict"] == "unavailable" for r in l2_rows(cfg) if r["verifier"] == "codex")
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == 3 and len(clis.codex) == 6                         # each record asked twice
+    assert all(r["verdict"] == "unavailable" and r["unavailable_reason"] == "codex_malformed_twice" for r in cx)
+
+
+def test_codex_malformed_once_is_retried(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(dusk, codex_seq=["not json at all"])
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == 3 and all(r["verdict"] == "pass" for r in cx) and len(clis.codex) == 4
 
 
 def test_codex_isolation_failure_is_a_hard_stop(tmp_path: Path) -> None:

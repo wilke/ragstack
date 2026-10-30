@@ -78,8 +78,10 @@ cwd). One codex call at a time (it answers 429 at 3). The first codex call of a 
 passes its own isolation check (Codex's fixed harness overhead,
 ``verifier.codex_overhead_tokens``, and no tool event). Every verify row and ``l2`` log
 row records ``verifier: claude | codex`` and, for a codex row, Claude's refusal text.
-A codex failure (an error, a limit, a timeout, an unparseable answer) makes the record
-``verifier_unavailable``: logged as verdict ``unavailable``, reported, never accepted.
+A codex limit, timeout or transport error pauses the run (exit 75) with the record still
+pending, retried on resume. Only a definitive codex failure — codex refuses the record
+too, or answers empty / malformed twice — makes it ``verifier_unavailable``: logged as
+verdict ``unavailable`` with the reason, excluded (not rejected), never accepted.
 In the set-P pilot one record was refused deterministically and the run paused on it
 for ever as a ``cli_error``.
 
@@ -168,6 +170,10 @@ REFUSAL_RE = re.compile(
     r"safeguards?\b.{0,40}\bflagged|flagged\b.{0,40}\b(?:usage|acceptable use) polic|"
     r"usage polic(?:y|ies)|acceptable use polic(?:y|ies)|/legal/aup\b|\(AUP\)|\bAUP\b", re.I)
 
+#: codex refusing the record too (a policy block in its error events or stderr): definitive
+CODEX_REFUSAL_RE = re.compile(
+    REFUSAL_RE.pattern + r"|content.?polic|policy.?violation|cyber.?(?:safety|polic)|refus(?:ed|al)\b|"
+    r"invalid_prompt|flagged as potentially", re.I)
 #: what the codex fallback switches off (the gold-labelling judge's proven list)
 CODEX_DISABLED_FEATURES = (
     "shell_tool", "unified_exec", "apps", "plugins", "remote_plugin", "multi_agent", "goals", "hooks",
@@ -1109,7 +1115,7 @@ class Run:
                 p = self.cli_runner(self.codex_cmd(cwd, sysfile, schema, last), input=prompt, capture_output=True,
                                     text=True, cwd=str(cwd), timeout=int(v["timeout_s"]))
             except subprocess.TimeoutExpired:
-                return {"status": "error", "error": "timeout"}
+                return {"status": "timeout", "error": "timeout"}
             events = []
             for line in (p.stdout or "").splitlines():
                 try:
@@ -1121,7 +1127,9 @@ class Run:
             errs = [e for e in events if e.get("type") in ("error", "turn.failed")]
             errtext = json.dumps(errs)[:1500] + (p.stderr or "")[-1500:]
             if p.returncode != 0 or errs:
-                return {"status": "limit" if LIMIT_RE.search(errtext) else "error", "error": errtext.strip()[:300]}
+                st = ("refused" if CODEX_REFUSAL_RE.search(errtext) else
+                      "limit" if LIMIT_RE.search(errtext) else "error")
+                return {"status": st, "error": errtext.strip()[:300]}
             text = last.read_text(encoding="utf-8") if last.exists() else ""
         usage: dict[str, Any] = {}
         for e in events:
@@ -1225,11 +1233,13 @@ class Run:
                           "cost_usd": last.get("cost_usd"), "attempts": last["attempt"],
                           "verifier": last["verifier"], "verifier_refused": "claude" if refusal is not None else None,
                           "refusal_text": refusal, "error": last.get("error"),
+                          "unavailable_reason": last.get("unavailable_reason"),
                           "prompt_sha256": g.sha_text(prompt), "t": g.now_iso()})
                 self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": l2_verdict,
                                    "reasons": reasons, "flags": [], "fields": verdict, "served_model": last.get("model"),
                                    "verifier": last["verifier"],
                                    "verifier_refused": "claude" if refusal is not None else None,
+                                   "unavailable_reason": last.get("unavailable_reason"),
                                    "record_id": rid, "set": self.set, "paper": rec["paper"],
                                    "stratum": rec["l1"]["stratum"], "attempt": rec["attempt"], "t": g.now_iso()})
             return "refused" if refusal is not None else "done"
@@ -1257,41 +1267,54 @@ class Run:
 
     def codex_verify(self, prompt: str, cwd: Path, checked: dict[str, bool], hard: list[str]) -> dict[str, Any]:
         """The codex fallback for one refused record, one codex call at a time. Returns the
-        ``last`` row for the record (``unavailable`` on any codex failure), or ``{}`` when
-        the run is stopping before the call."""
+        ``last`` row for the record, or ``{}`` when the record stays PENDING (re-issued on
+        resume): the run is stopping, or codex hit a limit, a timeout or a transport error —
+        those stop the run (a pause, exit 75), never exclude the record. Only a definitive
+        codex failure makes the record ``unavailable``: codex refuses it too, or its answer
+        is empty or malformed twice."""
         with self._codex_lock:
-            with self._lock:
-                if self.control.stopped() or hard:
-                    return {}
-                self.control.account("codex")
-            try:
-                res = self.call_codex(prompt, cwd)
-            except Exception as e:  # noqa: BLE001 - any codex failure leaves the record unverified
-                res = {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
-            if any(cwd.iterdir()):
+            for attempt in (1, 2):
                 with self._lock:
-                    hard.append("verifier_cwd_written_by_codex")
-                    self.control.stop("verifier_cwd_written_by_codex")
-                return {}
-            with self._lock:
-                base = {**res, "attempt": 1, "verifier": "codex"}
-                if res["status"] in ("error", "limit"):
-                    self.control.seg["codex_failures"] += 1
-                    return {**base, "verdict": None, "parse_error": None, "unavailable": True}
-                self.control.account("codex", int(res.get("context_tokens") or 0),
-                                     int(res.get("output_tokens") or 0), call=False)
-                if not checked["done"]:
-                    iso = self.isolation(prompt, res, float(self.cfg["verifier"]["codex_overhead_tokens"]))
-                    checked["done"] = True
-                    if not iso["PASS"]:
-                        hard.append("codex_isolation_failed")
-                        self.control.stop("codex_isolation_failed")
+                    if self.control.stopped() or hard:
                         return {}
-                verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
-                if verdict is None:
-                    self.control.seg["codex_failures"] += 1
-                    return {**base, "verdict": None, "parse_error": err, "unavailable": True}
-                return {**base, "verdict": verdict, "parse_error": None}
+                    self.control.account("codex")
+                try:
+                    res = self.call_codex(prompt, cwd)
+                except Exception as e:  # noqa: BLE001 - a transport failure: pause, the record stays pending
+                    res = {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+                if any(cwd.iterdir()):
+                    with self._lock:
+                        hard.append("verifier_cwd_written_by_codex")
+                        self.control.stop("verifier_cwd_written_by_codex")
+                    return {}
+                with self._lock:
+                    base = {**res, "attempt": attempt, "verifier": "codex"}
+                    if res["status"] in ("limit", "timeout", "error"):
+                        self.control.seg[f"codex_{res['status']}"] += 1
+                        self.control.stop(f"codex_{res['status']}")
+                        return {}
+                    if res["status"] == "refused":
+                        self.control.seg["codex_refusals"] += 1
+                        return {**base, "verdict": None, "parse_error": None, "unavailable": True,
+                                "unavailable_reason": "codex_refused"}
+                    self.control.account("codex", int(res.get("context_tokens") or 0),
+                                         int(res.get("output_tokens") or 0), call=False)
+                    if not checked["done"]:
+                        iso = self.isolation(prompt, res, float(self.cfg["verifier"]["codex_overhead_tokens"]))
+                        checked["done"] = True
+                        if not iso["PASS"]:
+                            hard.append("codex_isolation_failed")
+                            self.control.stop("codex_isolation_failed")
+                            return {}
+                    verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" \
+                        else (None, "empty")
+                    if verdict is not None:
+                        return {**base, "verdict": verdict, "parse_error": None}
+                    self.control.seg["codex_malformed"] += 1
+                    if attempt == 2:
+                        return {**base, "verdict": None, "parse_error": err, "unavailable": True,
+                                "unavailable_reason": "codex_malformed_twice"}
+        return {}
 
     # -------------------------------------------------------- summary
     def accepted(self) -> list[dict[str, Any]]:

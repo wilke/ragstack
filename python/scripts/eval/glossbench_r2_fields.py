@@ -363,7 +363,7 @@ def _unit_like(tok: str) -> bool:
     return bool(_UNIT_LIKE.match(t)) and (len(t) <= 5 or "/" in t or any(c.isdigit() for c in t))
 
 
-def units_in(text: str) -> list[tuple[str, str, Dim | None, bool]]:
+def units_in(text: str, parser: Any = None) -> list[tuple[str, str, Dim | None, bool]]:
     """Every number printed in ``text`` with the unit that follows it:
     ``(number, unit text, dimension, unit_like)``. The longest run of up to four
     following tokens that parses wins; none parses -> dimension ``None`` with
@@ -377,7 +377,7 @@ def units_in(text: str) -> list[tuple[str, str, Dim | None, bool]]:
         found: tuple[str, Dim | None] = ("", {})
         for j in range(min(4, len(toks)), 0, -1):
             cand = " ".join(toks[:j])
-            d = parse_unit(cand)
+            d = (parser or parse_unit)(cand)
             if d is not None:
                 found = (cand, d)
                 break
@@ -497,12 +497,39 @@ def compatible(d: Dim | None, fd: tuple[tuple[str, int], ...] | None) -> bool:
     return k is not None and (k == fd or (k, fd) in RELATED)
 
 
+#: "20 AC/h", "AC [Air Changes]/h", "AC (air changes) per hour": air changes per hour
+_AC_PER_H = re.compile(r"\bAC\s*(?:\[[^\]\n]{0,40}\]|\([^)\n]{0,40}\))?\s*(?:/|\bper\b)\s*(?:hours?|hrs?|h)\b",
+                       re.I)
+_LEADING_PER = re.compile(r"^(?:/|per\s+)", re.I)
+
+
+def r3_text(text: str) -> str:
+    """The text round 3's eligibility reads: NFKC, and an ``AC .../h`` air-change rate
+    (a bracketed gloss allowed between ``AC`` and ``/h``) written as ``ACH``."""
+    return _AC_PER_H.sub("ACH", unicodedata.normalize("NFKC", text))
+
+
+def parse_unit_r3(text: str) -> Dim | None:
+    """:func:`parse_unit` plus a unit that starts with ``/`` or ``per`` (``0.65/h``,
+    ``0.65 per hour``, ``3 per day``: the reciprocal, ``1/<unit>``) and ``AC/h``. Round
+    3's eligibility only: round 2's :func:`unit_check` (layer 1) keeps :func:`parse_unit`."""
+    t = _AC_PER_H.sub("ACH", unicodedata.normalize("NFKC", text).strip())
+    m = _LEADING_PER.match(t)
+    if m:
+        rest = t[m.end():].strip()
+        if not rest or rest.startswith("/"):
+            return None
+        t = "1/" + rest
+    return parse_unit(t)
+
+
 def numbers_at(text: str) -> list[tuple[int, int, str, Dim | None]]:
-    """``(start, end, unit text, dimension)`` of every number :func:`units_in` reads, with
-    its offsets in the NFKC-normalised text (same order, same parse)."""
-    t = unicodedata.normalize("NFKC", text)
+    """``(start, end, unit text, dimension)`` of every number round 3 reads, with its
+    offsets in :func:`r3_text` (same order and parse as :func:`units_in` on that text,
+    with :func:`parse_unit_r3`)."""
+    t = r3_text(text)
     spans = sorted([(m.start(), m.end()) for m in _NUM.finditer(t)] + [(m.start(), m.end()) for m in _NUM_WORD.finditer(t)])
-    return [(s, e, u, d) for (s, e), (_, u, d, _) in zip(spans, units_in(text), strict=True)]
+    return [(s, e, u, d) for (s, e), (_, u, d, _) in zip(spans, units_in(t, parse_unit_r3), strict=True)]
 
 
 def eligible_fields(text: str, fields: Sequence[FieldSpec]) -> list[str]:
@@ -539,7 +566,7 @@ def job_class(text: str, f: FieldSpec) -> str:
     * ``eligible`` — a compatible number, bound to nothing (:func:`eligible_fields`);
     * ``ineligible`` — no compatible number."""
     fd = field_dim(f)
-    t = unicodedata.normalize("NFKC", text)
+    t = r3_text(text)
     hits = [(s, u) for s, _, u, d in numbers_at(text) if compatible(d, fd)]
     if not hits:
         return "ineligible"
