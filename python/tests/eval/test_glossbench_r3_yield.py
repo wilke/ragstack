@@ -536,6 +536,9 @@ def test_a_codex_refusal_is_verifier_unavailable_not_accepted(tmp_path: Path) ->
     ("limit", {"codex_rc": 1, "codex_stderr": "ERROR: 429 Too Many Requests: rate limit reached"}),
     ("timeout", {"codex_timeout": True}),
     ("error", {"codex_rc": 1, "codex_stderr": "codex: connection reset"}),
+    ("error", {"codex_rc": 1, "codex_stderr": "error sending request: tcp connect error: Connection refused "
+                                              "(os error 111)"}),
+    ("limit", {"codex_rc": 1, "codex_stderr": "request refused: 429 Too Many Requests"}),
 ])
 def test_a_codex_limit_timeout_or_error_pauses_and_the_record_is_retried(tmp_path: Path, kind: str,
                                                                         clis_kw: dict[str, Any]) -> None:

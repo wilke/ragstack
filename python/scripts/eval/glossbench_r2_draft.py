@@ -170,9 +170,11 @@ REFUSAL_RE = re.compile(
     r"safeguards?\b.{0,40}\bflagged|flagged\b.{0,40}\b(?:usage|acceptable use) polic|"
     r"usage polic(?:y|ies)|acceptable use polic(?:y|ies)|/legal/aup\b|\(AUP\)|\bAUP\b", re.I)
 
-#: codex refusing the record too (a policy block in its error events or stderr): definitive
+#: codex refusing the record too (a policy block in its error events or stderr): definitive.
+#: No bare "refused"/"refusal": a transport error ("Connection refused", os error 111) must
+#: pause, not exclude the record.
 CODEX_REFUSAL_RE = re.compile(
-    REFUSAL_RE.pattern + r"|content.?polic|policy.?violation|cyber.?(?:safety|polic)|refus(?:ed|al)\b|"
+    REFUSAL_RE.pattern + r"|content.?polic|policy.?violation|cyber.?(?:safety|polic)|"
     r"invalid_prompt|flagged as potentially", re.I)
 #: what the codex fallback switches off (the gold-labelling judge's proven list)
 CODEX_DISABLED_FEATURES = (
