@@ -6,6 +6,13 @@ later changes go to `DEVIATIONS.md`, except the set-P promotion addendum under i
 freeze, no eval paper had been sampled for drafting, no question generated and no gateway call made; the
 offline dry-run counts in the prereg were the only round-3 data seen.
 
+**Run: COMPLETE, 2026-10-30** (retrieval and analysis at `6b434e8`, clean). The record is
+[`../RESULTS.md`](../RESULTS.md). Family F on set O: H1 **not confirmed** (power .90 at the planned
+effect); H2 and H3 **GATE-NOT-EVALUABLE**. Set A ran as the descriptive leg, with the D-6 caveat. Set P
+stopped at its pilot and was not promoted (D-1), so no promotion addendum is appended here. Deviations
+D-1 to D-6 are in [`../DEVIATIONS.md`](../DEVIATIONS.md). The counts-only artifact is in
+[`../artifacts/`](../artifacts/).
+
 | file | tier | what |
 |---|---|---|
 | [PREREG-glossbench-round3.md](PREREG-glossbench-round3.md) | record (frozen on the owner's go) | the design: hypotheses, sets, arms, measures, analysis, stops, code pin, decisions |
