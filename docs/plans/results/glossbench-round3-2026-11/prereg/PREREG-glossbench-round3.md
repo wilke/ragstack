@@ -1,12 +1,14 @@
-# Pre-registration, glossary attachment benchmark round 3 — DRAFT v1, 2026-10-30. Not frozen.
+# Pre-registration, glossary attachment benchmark round 3 — DRAFT v2, 2026-10-30. Not frozen.
 
 > **Public copy, drafted for freezing.** Same procedure as round 2 (`../../glossbench-round2-2026-11/prereg/README.md`,
 > *Freeze procedure*): on the owner's go the text as it stands is frozen, its sha256 and a UTC timestamp go
 > into a private `PREREG.sha256` kept with the outputs, and the sha is recorded in this directory's
 > `README.md` — **never in this file** (the drafter hashes `prereg.file` whole and refuses on a mismatch,
 > §8, so a note at its top would make the committed file fail its own check). Freezing happens **after**
-> every module of §9 is on `main` — it is: **#874** at merge **`898e34d`** (2026-10-30; commits `1390051`,
-> `bc9be96`, `cc955ea`) on top of round 2's harness (#861–#868, #870) — and **before** any eval paper is
+> every module of §9 is on `main` — **#874** at merge **`898e34d`** (2026-10-30; commits `1390051`,
+> `bc9be96`, `cc955ea`) on top of round 2's harness (#861–#868, #870) is; the BM25 exhaustion verifier
+> (**#877**, `exp/found10-exhaustion`, §5 note 3) is in review and its merge is `README.md` precondition 4 —
+> and **before** any eval paper is
 > sampled, any question is generated or any gateway call is made. Any later change is a `DEVIATIONS.md`
 > entry, never an edit, with one pre-stated exception: the set-P promotion addendum of §3.5, whose every
 > term is fixed here. The file names no tenant, host, endpoint, product or gateway owner; the bench copies
@@ -14,10 +16,15 @@
 > chunk count be fixed at the freeze; the partner that holds the papers-OC collection is "the papers-OC
 > owner".
 
-**v1 (this text):** the v0 draft of 2026-10-29 revised against the merged code (#874, `898e34d`), the
-owner's decisions of 2026-10-30 (§11), the papers-OC owner's input and its user's volume approval of
-2026-10-30 (§3.3, §8, §11), and the **offline dry run of the committed pool on the real round-2 inputs**
-(*What had been seen*, §3.1 step 5). Changes of substance against v0 are listed in `README.md`.
+**v1:** the v0 draft of 2026-10-29 revised against the merged code (#874, `898e34d`), the owner's
+decisions of 2026-10-30 (§11), the papers-OC owner's input and its user's volume approval of 2026-10-30
+(§3.3, §8, §11), and the **offline dry run of the committed pool on the real round-2 inputs** (*What had
+been seen*, §3.1 step 5). **v2 (this text):** v1 with its two open preconditions closed or specified — the
+**fields-mode dry build of P** and the **offline boost-probe candidate counts** (both at `898e34d`, clean,
+`citable true`; §3.1 step 5, §5 note 2), the **BM25 exhaustion verifier** of #877 specified as it is written
+(§5 note 3) — and the reranker test's finished record (#876, merge `734cfa6`) cited where round 3 leans on it
+(§5 note 1). No hypothesis, arm, measure, threshold or seed changed between v1 and v2. Changes of substance
+against v0 and v1 are listed in `README.md`.
 
 **Terms** are round 2's (`../../glossbench-round2-2026-11/prereg/PREREG-glossbench-round2.md`, *Terms*:
 arm, record, paper, pure, stamp, SFR, gold normalisation), plus: *attachment rule*: how a document's
@@ -33,21 +40,26 @@ a number. *Gold differs*: a sampled chunk whose rendered field differs between t
 **What had been seen before writing.** All of round 1 (`../../glossbench-2026-10/LABBOOK.md`); round 2's
 frozen prereg, its `RESULTS.md` and `DEVIATIONS.md` (S1 = 12 / 3 / 12 against a gate of 150: every
 retrieval leg GATE-NOT-EVALUABLE by construction of the sample; no record drafted, no retrieval run; the
-GPT-5.5 batch cut at `max_tokens` on 30 of 58 calls); the reranker test's record to its D-4 and its run of
-2026-10-30 (§5); the offline planning counts of 2026-10-29 (`R3-COUNTS.md` in this directory: chunks with
-a field per attachment rule × arm × corpus, per-paper densities, sampled pool sizes, power); and the
-**offline dry run of 2026-10-30** of the committed pool builder (`glossbench_r3_pool.py build --dry
---corpus-reach`, review of #874 at `bc9be96`, clean tree, `citable true`) on the real round-2 chunk exports
-and arm files — **counts only, no text, no model, store, API or gateway call**:
+GPT-5.5 batch cut at `max_tokens` on 30 of 58 calls); the reranker test's **finished record**
+(`../../reranker-test-2026-11/RESULTS.md`, #876, merge `734cfa6`, with its `DEVIATIONS.md` D-1 to D-7;
+what round 3 takes from it is in §5 and nothing in it adds a hypothesis here); the offline planning counts
+of 2026-10-29 (`R3-COUNTS.md` in this directory: chunks with a field per attachment rule × arm × corpus,
+per-paper densities, sampled pool sizes, power); the **offline dry run of 2026-10-30** of the committed
+pool builder (`glossbench_r3_pool.py build --dry --corpus-reach`, review of #874 at `bc9be96`, clean tree,
+`citable true`) on the real round-2 chunk exports and arm files; and its **re-run at `898e34d`** (clean,
+`citable true`; O and A re-confirmed, **P rebuilt in fields mode**, the mode the final P build uses) —
+**counts only, no text, no model, store, API or gateway call**:
 
 | set | eligible papers | sampled chunks V / M_num | **gold differs** (gate) | per stratum V / M_num | chunks with a field, corpus-wide: `value` / `mention` |
 |---|---|---|---|---|---|
 | O | **288** of 1,000 | 241 / 293 | **151** (≥ 100) | 72 / 79 (≥ 40 each) | 300 / 5,918 |
 | A | **28** of 1,000 | 50 / 150 | **56** (≥ 40) | 16 / 40 | 7 / 6,246 |
-| P | **109** of 275 (7 excluded, §3.1 step 2) | 139 / 145 (open-mode build, §3.1 step 5) | **116** (≥ 60) | 56 / 60 | 509 / 2,236 |
+| P | **109** of 275 (7 excluded, §3.1 step 2) | 108 / 112 (**fields-mode** build at `898e34d`, 300 jobs; §3.1 step 5) | **80** (≥ 60) | 42 / 38 | 509 / 2,236 |
 
-Every gate is **attainable with the sampled sets this design draws** — the count round 2 did not run
-before freezing (its `DEVIATIONS.md` D-5) has been run here. **No retrieval result under any attachment
+The P row is the fields-mode reading; the open-mode dry run at `bc9be96` read 116 (56 / 60) on 139 / 145
+sampled chunks, and §3.1 step 5 says why the two differ. Every gate is **attainable with the sampled sets
+this design draws** — the count round 2 did not run before freezing (its `DEVIATIONS.md` D-5) has been run
+here, in the mode each set is built in. **No retrieval result under any attachment
 rule other than the served one exists**, apart from the #754 design experiment (mention attachment at
 boost 2 lifted whole symbol-dense papers into the top 10 on a development copy; a design note, not a
 result). Round 3's design is chosen because of these counts, and it is a fair test because every record
@@ -114,7 +126,7 @@ one more reason the copy is the fixed object):
 | set | corpus | bench collection (chunks @512) | papers | records drafted (target) | role | status label |
 |---|---|---|---|---|---|---|
 | **O** | OA-1000 (12,560 units) | `bench-oa-tok512o0-261028` (**32,765**) | **50** | 50 × (6 V + 6 M_num) ≈ 530 (dry run: 534 sampled chunks) | **carries F** | *our three-layer check*, owner-spot-checked |
-| **P** | papers-OC (275 papers) | `bench-openchia-tok512o0-261028` (**14,456**) | 25 | 25 × (6 + 6) ≈ 280 jobs, fields mode (§3.3) | replication; promotable (§3.5) | *scripted-clean, judged sample of 50, error rate X% (95% CI …)* |
+| **P** | papers-OC (275 papers) | `bench-openchia-tok512o0-261028` (**14,456**) | 25 | 25 × (6 + 6) = 300 jobs, fields mode (§3.3; dry build: 300 jobs on 220 sampled chunks) | replication; promotable (§3.5) | *scripted-clean, judged sample of 50, error rate X% (95% CI …)* |
 | **A** | ASM-1000 (1,000 articles) | `bench-asm-tok512o0-261028` (**27,418**) | 25 of 28 eligible | 25 × (2 V + 6 M_num) = 200 | **descriptive only** | *our three-layer check*; **floor quoted beside every number** |
 | R1 | the papers-OC owner's 155-record set (7 papers, 138 from one) | the papers-OC bench copy | as is | — | replication, one-paper reach stated | reviewed-by-holder |
 
@@ -151,7 +163,8 @@ manifest (`quotas_per_paper`, `quotas_overridden`).
    `papers_dense_without_glossary`, `papers_eligible`). The last condition is symmetric between the arms
    (a paper with an empty glossary is a tie on every gold chunk under both) and is the papers-OC owner's
    density criterion made explicit. Dry run: **O 288** (348 dense, 60 without a glossary), **A 28** (37,
-   9), **P 109**. **Exclusions on P** (`exclude_papers`, one or several files, `read_exclusions`; the
+   9), **P 109** (136 dense, 27 without a glossary; the same 109 in the open-mode and the fields-mode
+   build — eligibility does not depend on the mode). **Exclusions on P** (`exclude_papers`, one or several files, `read_exclusions`; the
    reader skips blank and `#` lines): the **7 papers of the papers-OC owner's R1 gold**, mapped to the
    bench copy by PMC id as round 2's D-3 records (the committed exclusion file carries 8 lines: the 7 ids
    and one `#` comment line; manifest `excluded_papers 7`); 3 of the 7 were otherwise eligible (112
@@ -172,14 +185,26 @@ manifest (`quotas_per_paper`, `quotas_overridden`).
    (`gate.status`, `gate.reason`). No paper is added after the gate is read. The gate is on *gold
    differs*, not on reach, because a record whose gold field is identical under both arms can differ
    only through distractors; the per-arm reach is printed beside it (sampled and pool-wide, per stratum).
-   **Dry-run readings (2026-10-30, same seeds and sizes as here):** O **151** (V 72, M_num 79); A **56**
-   (16, 40); P **116** (56, 60) — every gate `EVALUABLE`, O with a margin of 51 over its gate and 32 over
-   its per-stratum gates. Planning expectation from `R3-COUNTS.md` § 5 was O ≈ 150 [p5 ≈ 123], A ≈ 61,
-   P ≈ 85; the dry run is one seeded draw and agrees. **One caveat, stated so it cannot surprise:** the P
-   dry run was built in **open** mode (its config carried no field list); the final P build is in fields
-   mode, whose prefilter admits fewer chunks (round 2 saw 72 of 117 V chunks admitted on P), and its
-   gate reading is the one that counts. The pre-freeze check in `README.md` (precondition 3) repeats the
-   P dry build in fields mode; its reading is recorded there before the freeze.
+   **Dry-run readings (2026-10-30, same seeds and sizes as here; at `898e34d`, clean, `citable true`):**
+   O **151** (V 72, M_num 79); A **56** (16, 40); **P 80 (V 42, M_num 38) in fields mode** — every gate
+   `EVALUABLE`, O with a margin of 51 over its gate and 32 over its per-stratum gates, P with a margin of
+   20. Planning expectation from `R3-COUNTS.md` § 5 was O ≈ 150 [p5 ≈ 123], A ≈ 61, P ≈ 85; the dry run
+   is one seeded draw and agrees on all three. **Why P reads 80 and not the 116 of the first dry run:**
+   the `bc9be96` dry run built P in **open** mode (its config carried no field list) and sampled 139 V /
+   145 M_num chunks; the fields-mode build, the mode the final P build uses, plans 300 jobs (150 per
+   stratum; the V plan 4 short of its quota) on **108 V / 112 M_num** sampled chunks, because the
+   arm-blind lexical prefilter admits only the population chunks that name a candidate binding field
+   (round 2 saw the same narrowing: 72 of 117 V chunks admitted on P). The gold-differs *share* of the
+   sampled chunks is nearly unchanged between the two builds (V 42 / 108 = 39 % against 56 / 139 = 40 %;
+   M_num 38 / 112 = 34 % against 60 / 145 = 41 %); the count fell because fewer chunks are sampled, not
+   because the prefilter selects chunks the glossary does not reach. 80 is the reading that counts, and it
+   is the one quoted everywhere in this text; 116 is history. Fields-mode build detail, from the manifest
+   (counts only): `in_set` split 13 / 13 asserted; realised jobs per field — the 10 new-ground fields
+   carry 255 jobs (51, 44, 42, 35, 30, 16, 14, 11, 9, 3), the 12 `in_set` fields 41, the 4 constants 4
+   (cap 2 per constant respected), 3 fields 0; per-arm reach on the sampled chunks, `value` / `mention`:
+   V 36 / 57, M_num 0 / 38 (the M_num gold-differs count equals the mention reach, as §3 predicts). The
+   manifests of this dry run are private (`pool-manifest-P.json` sha256 `3369a867…`, `-O` `30822bc1…`,
+   `-A` `32a23e2c…`); the public record is these counts with those shas.
 6. **Manipulation checks** (all refusals, `SystemExit`, before anything is written): the export's chunk
    count equals `expected_chunks` (32,765 / 27,418 / 14,456; dry run `match true` on all three); the two
    attachment arms are **one glossary under two rules** (`arm_pair_problems`: the value arm's header rule
@@ -333,35 +358,88 @@ hard stop), with four notes fixed here:
    `RERANK_INCLUDE_SYMBOL_GLOSSARY` (default on), with hydration of vector-only candidates from the text
    index, so `mention` changes the reranker's input on every chunk it reaches; `norerank` isolates the
    BM25 side and both are reported. The cross-encoder sidecar's `MAX_LENGTH` is 4,096 tokens (the
-   reranker test's census: no passage over it), so no passage is truncated.
+   reranker test's census, #876: no query–passage pair over 745 XLM-R tokens in any rendering on either
+   set), so no passage is truncated. **What the reranker test's record (#876, `734cfa6`) adds, and what it
+   does not:** on the papers-OC bench copy, *descriptively and under gates that make it untestable* (7
+   clusters, 19 exhausted `bm25@100` lists), what the reranker reads over the same 50 candidates changed
+   found@10 — `content` 43, `content+gloss` 52, `content+shuffled` 41 of 153 under `rules/3` — and the
+   reranked arms' loss against BM25's own order was **ordering, not the pool** (the fused and BM25 pools
+   held gold for 83 and 82 records at depth 50). Round 3 takes from this only that **attachment is a
+   reranker-side manipulation as much as a BM25-side one** — `mention` puts glossary text in front of the
+   cross-encoder on 15–23 % of chunks instead of 0.03–3.5 % — which is why `base`, `norerank` and `bm25`
+   are all run and reported per arm. It is an **exploratory** reading from one run on one corpus; it adds
+   **no hypothesis** to F or to the secondaries. On docs-A the same record found the shipped default well
+   ahead of BM25 alone (its H1 and H2 reversed, H3 confirmed), with a glossary on 1 of 1,113 chunks — a
+   result about fusion and the reranker, not about attachment, and not used here.
 2. **The boost probe may be structurally `not_testable` under either rule.** The probe
    (`glossary_boost_probe.py`, #867) wants a glossary token that occurs in no chunk's content and in at
    most 10 glossaries. The reranker test's run of 2026-10-30 found **0 qualifying chunks** on the
    papers-OC bench copy under `rules/3` (14,456 chunks, 241 glossaried: every ≥ 5-character ASCII
    glossary token also occurs in some chunk's content) — `not_testable` is a property of that corpus and
    glossary, not a failed check, and the reranker test continued with `--boost-declared 1.0` (reading
-   `declared`; its D-5, pending at the time of writing). Under mention a token's glossary frequency rises
-   further. Round 3 therefore: (a) runs the probe's candidate search **offline** on every arm × corpus
-   before the freeze (`pick_probes` on the chunk export plus the rendered fields; `README.md`
-   precondition 3) and records the qualifying count per cell; (b) widens the rule where it helps with
-   `--probe-max-glossaries N` (#874; N ≤ 100, the probe's `top_k` follows N;
-   `test_mention_rendering_is_not_testable_at_10_and_testable_when_widened`), the N used recorded in the
-   summary's `request`; (c) where still `not_testable`, passes `--boost-declared` with the configured
-   `TEXT_SYMBOL_GLOSSARY_BOOST` copied into the private config, the reading **`declared`** printed beside
-   every `bm25` figure of that cell. `inactive`, `mixed` and `error` remain hard stops.
+   `declared`; its **D-6**, now in the merged record, #876). Under mention a token's glossary frequency
+   rises further. **The candidate search was run offline before the freeze** (`glossary_boost_probe.pick_probes`
+   on each corpus's chunk export plus each arm's rendered fields, at `898e34d`, clean; counts only; the
+   private `probe-candidates` file has sha256 `e4966c6c…`). Chunks with a qualifying token, per arm, against
+   the probe's minimum of **3** (`MIN_PROBES`):
+
+   | corpus | `value` | `mention` | `mention-shuf` | `rules-value` | `rules-mention` |
+   |---|---|---|---|---|---|
+   | O | 0 | 2 | 2 | 0 | 0 |
+   | A | 0 | **18** | **18** | 0 | 0 |
+   | P | 0 | 1 | 1 | 0 | 0 |
+
+   (`none` renders no field and has no cell; `mention-shuf` permutes `mention`'s fields among the same
+   chunks, so its candidate set is `mention`'s.) The probe is therefore **structurally `not_testable` in
+   every cell except A × `mention` and A × `mention-shuf`**. The zeros under both value rules repeat the
+   D-6 mechanism — every candidate token also occurs in some chunk's content — which no widening of the
+   glossary-frequency cap can change. **Pre-declared, so no run-time decision is left:** (a) the cells with
+   fewer than 3 candidates run with the boost **declared**: `--boost-declared 1` with the value copied into
+   the private config, the value being the server release serving the bench copies (**v1.6.21**), which sets
+   `TEXT_SYMBOL_GLOSSARY_BOOST` to 1 by management declaration; the reading **`declared`** is printed
+   beside every `bm25` figure of that cell, never `pass`; (b) the two A × mention cells run the probe
+   (`--probe-max-glossaries` left at the default; the request is recorded in the summary) and take its
+   reading, `pass` or otherwise — `inactive`, `mixed` and `error` remain hard stops there; a `not_testable`
+   on a stored field whose offline rendering had 18 candidates is a swap fault, caught by the census, and
+   the leg is not scored; (c) on every leg the admin `/v1/config` is read **at the start and at the end**
+   and the two reads must be identical (the reranker test's eight identical reads, hash prefix
+   `f85cf2e2f73c36ab`, are the model); a difference stops the leg, which is re-run after the cause is
+   found and recorded as a deviation. (d) **Behavioural evidence, descriptive and not a gate:** where note 3's
+   verifier has counted a short `bm25` list, a second read-only `_count` of the same clause restricted to
+   `content` may be made beside it (the verifier itself makes one count, with the server's full clause);
+   the server's count above the content-only count means glossary-only matches were served, i.e. the
+   glossary field is queried (boost > 0) — the reranker test saw this on 2 of its 5 exhaustion queries
+   (D-6). When such a comparison is available it is printed beside the `declared` label of that cell; it
+   says nothing about the boost's magnitude and lifts no label. No short list, no comparison: *absent*.
 3. **A short `bm25` list may be exhaustion, not a clamp.** The reranker test saw `bm25@100` served
    short on 19 of 155 held records (5 distinct queries; 23, 36 and 79 hits) on the papers-OC bench copy,
    and verified by a **read-only `_count` of the server's BM25 clause on the bench index** that every
-   served length equalled the match count (its D-6, pending): the lists were exhausted, not clamped. The
-   runner's depth read-back at `898e34d` marks an arm × condition GATE-NOT-EVALUABLE when any record is
-   served short of the requested 50 and has **no exhaustion path**. Rule, fixed now: a `bm25` list
-   shorter than 50 is GATE-NOT-EVALUABLE for that arm × condition **unless every short query is verified
-   exhausted** by that read-only count (served length = match count), in which case the record is scored
-   on the served list (a gold chunk absent from a complete match list is *not found*) and the condition
-   is not gated; the verification (query sha256, served length, count) is recorded beside every `bm25`
-   figure. The verifying script is a freeze precondition (`README.md`, precondition 4, **open at v1**);
-   without it, `bm25` on P is expected to gate on short lists and is reported so. `base` and `norerank`
-   fuse a dense leg of full depth and are not at risk.
+   served length equalled the match count (its **D-5**, #876): the lists were exhausted, not clamped —
+   and, because that verification was done by hand beside the harness, the harness's mark stood and every
+   set-P hypothesis there carried `bm25@100 under-served` regardless. The runner's depth read-back at
+   `898e34d` marks an arm × condition GATE-NOT-EVALUABLE when any record is served short of the requested
+   50 and has **no exhaustion path**. **#877** (`exp/found10-exhaustion`; `python/scripts/eval/bm25_exhaustion.py`,
+   `found10._verify_exhaustion`) puts that path in the runner, and its merge is a freeze precondition
+   (`README.md`, precondition 4; **in review at v2**). Rule, fixed now, as #877 writes it: with
+   `census.es_url` set, a `bm25` list served shorter than requested costs **one read-only `_count`** on
+   the arm's bench index, with the server's own BM25 query for that question (the store's `_build_query`
+   / `_text_clause`, imported, not copied; filters assembled as `/v1/retrieve` assembles them), sent by the
+   credential-free census client; eligible are `bm25`-mode, passthrough, single-collection requests, which
+   is every `bm25` leg here. Verdicts: count **= served → `exhausted_verified`**, the list is complete,
+   the record is scored on it (a gold chunk absent from a complete match list is *not found*) and the
+   list does not count as short, so the condition is not gated; count **> served on the exact tenant scope
+   → `clamp`**, a **hard stop** (the run exits; nothing from it is scored until the cause is found); anything
+   else (no count, an unknown boost sign, an unscoped bound above the served length) → `under_served`, and
+   the arm × condition stays GATE-NOT-EVALUABLE. **`corpora.<c>.bm25_scope` (`tenant`, `extra_tenants`)
+   is set for every leg in the private config**, so every count is on the exact scope and never the
+   unscoped upper bound (which can verify exhaustion but can never claim a clamp). Each such row records
+   `exhaustion` {requested, served, es_count, verdict, scope, clause} — never the query text — and
+   `collect()` reports `exhausted_verified` and `exhaustion_verdicts` beside `depth_short` per cell; both
+   are printed beside every `bm25` figure. Hybrid and vector lists keep the gate as before. If #877 is not
+   merged at the freeze, the rule's "without it" branch applies: a short `bm25` list gates its arm ×
+   condition and `bm25` on P is expected to gate on short lists and is reported so (reranker test D-5:
+   19 of 155 records; the same bench copy). `base` and `norerank` fuse a dense leg of full depth and are
+   not at risk.
 4. **Gold rule on P** as §3.3: round 2's normalisation for our gold; the papers-OC owner's rule for its
    acceptance; named beside every P figure.
 
@@ -410,7 +488,11 @@ on the realised layout, one- or two-sided as the member is, `--power-sims 2000`)
 A round-1-sized effect (d .17, share .85) is resolved on O with power ≥ .92 in every member; a d .10 /
 share .70 effect is not (≤ .33), and such a result ends *not confirmed* with its floor. H3 pools the
 strata (≈ 410 accepted on O) and is at least as powered as H1. The dry run's sampled layout (534 chunks
-on O) is within 2 % of the planning draw's (528), so the table stands as the pre-freeze expectation.
+on O) is within 2 % of the planning draw's (528), so the table stands as the pre-freeze expectation. On P
+the fields-mode layout is **300 jobs over 220 sampled chunks** (several jobs can share a chunk, so a gold
+chunk can be shared by records; clustering is by paper, so the sign-flip test is unaffected), ≈ 230
+accepted records against the planning rows' ≈ 230 (106 + 124); the P rows stand as the expectation, and
+`power.realised` on the accepted layout is the committed figure.
 
 ## 8. Stopping, exclusion, gates
 
@@ -433,7 +515,8 @@ precondition for any future gateway glossary arm (D11).
 **GATE-NOT-EVALUABLE:** a set below its gold-differs gate; a contrast whose minimum attainable p > α; an
 arm × condition whose served depth fell short and was not verified exhausted (§5 note 3); a `bm25` cell
 whose boost probe is `not_testable` without a declared boost (§5 note 2); `base` identical to `norerank`
-on every record. **Absent** is written *absent*, never a blank.
+on every record. **Hard stops added at v2** (§5 notes 2–3): an exhaustion `clamp` verdict; two admin
+`/v1/config` reads of one leg that differ. **Absent** is written *absent*, never a blank.
 
 ## 9. Code, pin, provenance
 
@@ -449,13 +532,21 @@ at `e3002ba`, #867 `48d5c73`, #868 `b5251db`, #870 `d87a02e`) and:
 | drafter on the round-3 pool: `R3_POOL_SCHEMA`, M_num prompts (`DRAFT_SYSTEM_MNUM`, `DRAFT_SYSTEM_FIELDS_MNUM`, `_MNUM_TASK`), `SYMBOL_BOUND_KEY` parsed as a boolean, layer 1 on `R3_STRATA`, the summary's `round3.symbol_bound_by_stratum` | `python/scripts/eval/glossbench_r2_draft.py`, `glossbench_r2_checks.py`; tests `python/tests/eval/test_glossbench_r3_draft.py` | #874, `bc9be96` |
 | six guards the review's mutation probe found untested (attach slot compared; round-2 arm refuses the slot; file rule vs declared; mark vs header; unknown rule; probe bounds) | the three test files above | #874, `cc955ea` |
 
-**Required before freezing, not on `main` at `898e34d`** (`README.md` preconditions 3–4): the offline
-fields-mode P dry build and the offline boost-probe candidate counts (runs of committed code, no new
-code); the read-only BM25 exhaustion verifier of §5 note 3 (new code, one small PR, or the rule's
-"without it" branch applies).
+**Done since v1, no new code on `main`** (`README.md` precondition 3, **met** at `898e34d`): the offline
+fields-mode P dry build and the offline boost-probe candidate counts are runs of the committed code on
+the private inputs, clean tree, `citable true`; their readings are in §3.1 step 5 and §5 note 2 and their
+private files are named there by sha256.
 
-**Pin.** Every run from one `main` commit **at or after `898e34d`** (and at or after the exhaustion
-verifier's merge, if it is merged) in a clean worktree (`dirty false, untracked 0`) or from a tools image
+**Required before freezing, not on `main` at `734cfa6`** (`README.md` precondition 4): the read-only BM25
+exhaustion verifier of §5 note 3 — **#877** (`exp/found10-exhaustion`: `python/scripts/eval/bm25_exhaustion.py`,
+`found10._verify_exhaustion`, `corpora.<c>.bm25_scope`, `census.es_url`; tests
+`glossbench/test_found10_exhaustion.py`), in review. If it is not merged, the rule's "without it" branch
+applies and that is recorded in `README.md` as the owner's decision. `main` moved from `898e34d` to
+`734cfa6` by **#876** (the reranker test's record), which changed no code under `python/`; every module,
+flag, key and reason code named here reads the same at both.
+
+**Pin.** Every run from one `main` commit **at or after `898e34d`** (and at or after #877's merge, if it
+is merged) in a clean worktree (`dirty false, untracked 0`) or from a tools image
 built from a tools tag at or after it (ADR-0010 order). Every output embeds `experiment_provenance()`;
 glossary files carry `producer` and `tool`; `citable` is read from the record (`_glossbench_r2.citable`).
 
