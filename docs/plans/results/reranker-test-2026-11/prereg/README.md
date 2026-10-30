@@ -2,6 +2,8 @@
 
 **Status: FROZEN `5dfe9e65c96add94a550a7a040d8a425c99d949194b4e5b851f26483f15ad230` at 2026-10-30T02:19:33Z on the owner's go (commit 9e109c3).** The pre-registration file is unchanged since that commit and is never edited; later changes go to `DEVIATIONS.md`. At the freeze, no arm of §3 had been run on any set of §4 and the docs-A bm25-vs-rerank contrast had not been computed.
 
+**Run: COMPLETE, 2026-10-30** (at `f408b7a`, clean). The record is [`../RESULTS.md`](../RESULTS.md): family A tested on docs-A / T512o0 (H3 confirmed; H1, H2 not confirmed, direction reversed), set P GATE-NOT-EVALUABLE and reported descriptively, family B absent. Deviations D-1 to D-7 in [`../DEVIATIONS.md`](../DEVIATIONS.md); counts-only artifacts in [`../artifacts/`](../artifacts/).
+
 | file | tier | what |
 |---|---|---|
 | [PREREG-reranker-test.md](PREREG-reranker-test.md) | record (frozen on the owner's go) | the design: decomposition, hypotheses, arms, sets, measures, analysis, gates, code pin, decisions |
