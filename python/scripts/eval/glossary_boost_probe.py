@@ -21,8 +21,12 @@ chunk cannot be returned.
 
 **Verdict.** Every probe returns its chunk -> ``active``. None does ->
 ``inactive`` (the harness stops, exit 1). Some do -> ``mixed`` (stop and
-report). A probe whose call failed, came back ``degraded`` or echoed a
-``top_k`` below the requested one -> ``error`` (stop). Fewer than
+report). A probe whose call failed, came back ``degraded``, served more than
+the requested depth, or echoed a ``top_k`` below the requested one ->
+``error`` (stop). (``/v1/retrieve`` echoes no ``top_k`` today -- the response
+schema is closed -- so the echo branch is defensive; the served count is the
+read-back. A clamp below the requested depth makes the probe FAIL, never pass:
+the chunk is missing, which is the conservative direction.) Fewer than
 :data:`MIN_PROBES` qualifying chunks -> ``not_testable``: the boost-dependent
 arms are GATE-NOT-EVALUABLE unless the operator passes ``--boost-declared X``
 (then ``declared``, recorded as such, not read back).
@@ -52,7 +56,10 @@ PROBE_REQUEST = {"retrieval_mode": "bm25", "rerank": False, "top_k": PROBE_TOP_K
 
 _WORD = re.compile(r"\w+")
 _ALNUM = re.compile(r"[0-9A-Za-z]+")
-_STRIP = string.punctuation + "—–‘’“”"
+# Outer punctuation the standard analyzer (UAX#29) treats as a word boundary.
+# ``_`` is NOT stripped: it is ExtendNumLet, which joins one-sidedly (``_abc``
+# and ``abc_`` are indexed whole), so a piece carrying one is never a probe.
+_STRIP = string.punctuation.replace("_", "") + "—–‘’“”"
 
 
 class ProbeUnavailable(Exception):  # noqa: N818 - a reason, not a failure

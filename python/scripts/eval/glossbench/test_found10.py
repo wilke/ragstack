@@ -548,6 +548,9 @@ def test_pick_probes_rules() -> None:
     assert got[0] == ("d", "epsilonz", 1)
     assert got[1:] in ([("a", "betagamma", 2)], [("c", "betagamma", 2)])
     assert st["chunks_with_a_qualifying_token"] == 3
+    # an underscore joins under UAX#29 (ExtendNumLet): ``_alpha_`` is indexed whole,
+    # so stripping it would query a term the index does not hold (a false fail)
+    assert gbp.glossary_tokens("_alpha_ beta_ _gamma delta_x (epsilon) zetas.") == {"epsilon", "zetas"}
     # df above the probe depth is never a probe
     crowd = [(f"k{i}", "x", "V \u2014 crowded") for i in range(11)]
     assert gbp.pick_probes(crowd)[0] == []

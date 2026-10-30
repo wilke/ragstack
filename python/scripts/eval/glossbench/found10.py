@@ -799,7 +799,12 @@ def probe_candidates(cfg: Mapping[str, Any], corpus: str, arm: str, swap: Mappin
             seed = (cfg["arms"].get(arm) or {}).get("shuffle_seed")
             if seed is not None:
                 perm = ((swap.get("apply") or {}).get("shuffle") or {}).get("permutation_sha256")
-                prefix = str((cfg["corpora"].get(corpus) or {}).get("es_id_prefix") or "")
+                # the backfill keys its shuffle by Elasticsearch ``_id`` = ``<tenant>:<chunk_id>``
+                # (stores/elasticsearch.py ``_es_id``), so the prefix is the index's tenant + ``:``
+                prefix = (cfg["corpora"].get(corpus) or {}).get("es_id_prefix")
+                if not prefix:
+                    raise gbp.ProbeUnavailable(f"shuffled arm: corpora.{corpus}.es_id_prefix is not set (the "
+                                               "backfill keys the permutation by ES _id, '<tenant>:' + chunk id)")
                 fields = gbp.fields_with_shuffle(fields, str(seed), prefix, perm)
                 source += " + the backfill's shuffle, reproduced and hash-verified"
     except wp.ProxyInputError as e:

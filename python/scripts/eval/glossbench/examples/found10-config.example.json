@@ -17,8 +17,10 @@
     "rrf_k": 60
   },
   "corpora": {
-    "O": {"collection": "<collection id of the OA-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 32765},
-    "A": {"collection": "<collection id of the ASM-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 27418}
+    "O": {"collection": "<collection id of the OA-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 32765,
+          "es_id_prefix": "<tenant>:"},
+    "A": {"collection": "<collection id of the ASM-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 27418,
+          "es_id_prefix": "<tenant>:"}
   },
   "conditions": {
     "base": {"retrieval_mode": "hybrid", "rerank": true, "rerank_candidates": 50, "top_k": 50},
