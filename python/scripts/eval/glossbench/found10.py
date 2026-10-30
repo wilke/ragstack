@@ -82,7 +82,19 @@ retrieval_candidate_multiplier`` = 2 × 50, RRF (k 60) fuses, the pool is cut to
 50 and reranked, then cut to ``top_k``: prereg §5's pipeline) and the runner
 records the number of sources actually served. A served depth below the
 requested one marks that arm/condition **GATE-NOT-EVALUABLE** (its records
-stay in the file; the analysis does not test it). A response with a
+stay in the file; the analysis does not test it) -- unless the list is a
+``bm25`` list verified **exhausted** (:mod:`bm25_exhaustion`): with
+``census.es_url`` set, a short ``bm25`` list costs ONE read-only ``_count``
+on the arm's bench index, with the server's own BM25 query for that question
+(``ragstack.stores.elasticsearch._build_query``; the tenant scope from
+``corpora.<c>.bm25_scope`` = ``{"tenant": ..., "extra_tenants": [...]}``, else
+an unscoped upper bound), sent by the census client (no credential). Count ==
+served -> ``exhausted_verified``: the list is complete, the record is found on
+it or not, and the list does not count as short; count > served on the exact
+scope -> a clamp, a hard stop; anything else (no count, no known boost sign,
+an unscoped bound above the served length) stays under-served. Each such row
+carries ``exhaustion`` {requested, served, es_count, verdict, scope, clause},
+never the query text. Hybrid and vector lists keep the gate. A response with a
 ``degraded`` entry (e.g. the reranker fell back to RRF order) is not the
 condition: it is retried and, if still degraded, recorded as a failed call.
 Two things the API does not expose are **assumed and recorded, not read
@@ -149,6 +161,7 @@ for _p in (_HERE, _EVAL):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import bm25_exhaustion as bx  # noqa: E402
 import found10_analysis as fa  # noqa: E402
 import glossary_boost_probe as gbp  # noqa: E402
 from deployed_docs_part4 import (  # noqa: E402
@@ -254,6 +267,12 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
         rule = acfg.get("attach")
         if rule is not None and rule not in ATTACH_RULES:
             raise Refused(f"arms.{arm}.attach {rule!r} is not one of {ATTACH_RULES} or null")
+    for name, ccfg in cfg["corpora"].items():
+        scope = ccfg.get("bm25_scope")
+        if scope is not None and not (isinstance(scope, dict) and isinstance(scope.get("tenant"), str)
+                                      and scope["tenant"]
+                                      and isinstance(scope.get("extra_tenants") or [], list)):
+            raise Refused(f"corpora.{name}.bm25_scope must be {{\"tenant\": <id>, \"extra_tenants\": [...]}}")
     return cfg
 
 
@@ -658,6 +677,11 @@ class Runner:
                     except Refused as e:
                         self.config_error = self.config_error or str(e)
                         return
+                    try:
+                        await self._verify_exhaustion(es_client, rec, cond, res)
+                    except bx.CredentialRefused as e:
+                        self.config_error = self.config_error or f"exhaustion count: {e}"
+                        return
                     self._check_hit_stamps(cond, res)
                     row = self._row(rec, cond, res)
                     append_fsync(self.rows_path, row)
@@ -672,6 +696,58 @@ class Runner:
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")
         return self._finish(done, swap, census, live_before, live_after, server)
+
+    def _exhaustion_boost(self) -> float | None:
+        """The glossary boost the count query uses. Matching depends only on its sign
+        (:mod:`bm25_exhaustion`): ``active`` (read back > 0) or ``declared`` give a
+        positive value; anything else is unknown (``None``: not verifiable)."""
+        bc = self.boost_check or {}
+        if bc.get("status") == "declared" and bc.get("declared"):
+            return float(bc["declared"])
+        if bc.get("status") == "active":
+            return float(bc.get("declared") or 1.0)
+        return None
+
+    async def _verify_exhaustion(self, es_client: httpx.AsyncClient, rec: Mapping[str, Any], cond: str,
+                                 res: dict[str, Any]) -> None:
+        """A short ``bm25`` list: one read-only ``_count`` (module docstring, *Depth
+        read-back*). Sets ``res["exhaustion"]`` and ``res["exhausted_verified"]``; a
+        clamp is a hard stop. Nothing for any other list."""
+        es_url = (self.cfg.get("census") or {}).get("es_url")
+        spec = self.cfg["conditions"][cond]
+        if (res.get("failed") or not res.get("depth_short") or not es_url
+                or spec.get("retrieval_mode") != "bm25"):
+            return
+        body = request_body(spec, rec["question"], self.ccfg["collection"])
+        requested, served = int(res["requested"]), int(res["served"])
+        boost = self._exhaustion_boost()
+        why = bx.ineligible(body) or (None if boost is not None else
+                                      f"glossary boost sign unknown (boost check {(self.boost_check or {}).get('status')})")
+        if why:
+            res["exhaustion"] = bx.record(requested, served, None, None, boost, reason=why)
+            res["exhausted_verified"] = False
+            return
+        assert boost is not None
+        scope_cfg = self.ccfg.get("bm25_scope") or {}
+        query, scope = bx.count_query(rec["question"], body, boost, scope_cfg.get("tenant"),
+                                      scope_cfg.get("extra_tenants"))
+        bx.refuse_credentials(es_client.headers, AUTH_HEADERS.values())
+        count: int | None = None
+        error = None
+        try:
+            r = await es_client.post(bx.count_url(es_url, self.ccfg["index"]), json={"query": query})
+            if r.status_code != 200:
+                error = f"HTTP {r.status_code}"  # never the body: an ES error can echo the query
+            else:
+                count = bx.parse_count(r.json())
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            error = type(e).__name__
+        res["exhaustion"] = bx.record(requested, served, count, scope, boost, error=error)
+        res["exhausted_verified"] = res["exhaustion"]["verdict"] == bx.EXHAUSTED
+        if res["exhaustion"]["verdict"] == bx.CLAMP:
+            self.hard_stop = self.hard_stop or (
+                f"{cond} record {rec['record_id']}: served {served} of {requested} but the index matches "
+                f"{count} ({scope}): a clamp, not exhaustion")
 
     async def _probe_call(self, client: httpx.AsyncClient, token: str
                           ) -> tuple[dict[str, Any] | None, str | None]:
@@ -746,7 +822,10 @@ class Runner:
         for cond in self.cfg["conditions"]:
             rows = [r for r in done.values() if r["condition"] == cond]
             ok = [r for r in rows if not r.get("failed")]
-            short = sum(bool(r.get("depth_short")) for r in ok)
+            # a short bm25 list verified exhausted is the complete list: not short
+            exhausted = sum(bool(r.get("depth_short") and r.get("exhausted_verified")) for r in ok)
+            short = sum(bool(r.get("depth_short") and not r.get("exhausted_verified")) for r in ok)
+            verdicts = Counter(str((r.get("exhaustion") or {}).get("verdict")) for r in ok if r.get("exhaustion"))
             over = sum(bool(r.get("depth_over")) for r in ok)
             stamps: Counter[str] = Counter()
             for r in ok:
@@ -764,7 +843,8 @@ class Runner:
                 "served_min": min((r["served"] for r in ok), default=None),
                 "served_max": max((r["served"] for r in ok), default=None),
                 "requested": int(self.cfg["conditions"][cond]["top_k"]),
-                "depth_short": short, "depth_over": over, "hit_stamps": dict(stamps),
+                "depth_short": short, "depth_over": over, "exhausted_verified": exhausted,
+                "exhaustion_verdicts": dict(verdicts), "hit_stamps": dict(stamps),
                 "hit_stamps_enforced": cond in self.cfg["hit_stamp_conditions"], "gate": gate}
         complete = all(per_cond[c]["rows"] == expected for c in per_cond)
         # a reranker that is wired but inactive answers `rerank: true` with the RRF
@@ -834,7 +914,8 @@ def collect(out: Path, records: Sequence[Mapping[str, Any]], proxy: Path | None 
 
     Only ``complete`` runs are read; any other status is listed and the label's
     arm/condition is gated for that corpus. A condition the run marked gated
-    (depth read-back) is gated. ``proxy`` is the wording proxy's results JSON
+    (depth read-back) is gated; a short ``bm25`` list verified exhausted does not
+    gate (the run counts it complete, :mod:`bm25_exhaustion`). ``proxy`` is the wording proxy's results JSON
     (``schema wording-proxy/1``): ``per_record[record_id][arm]["pass"]``."""
     by_id = {r["record_id"]: r for r in records}
     per_record: dict[str, dict[str, dict[str, Any]]] = {rid: {} for rid in by_id}

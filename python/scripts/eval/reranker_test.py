@@ -30,9 +30,17 @@ Subcommands (each writes one JSON file; every file embeds
     ``GATE-NOT-EVALUABLE`` and every arm built on it inherits the mark. (A
     gateway once clamped ``top_k`` 100 to 10 silently; this is the guard.) The
     in-process route can tell a corpus that simply has fewer matching chunks
-    (``exhausted``, allowed) from a clamp; the API route cannot, so any short
-    API list counts as under-served. A response carrying ``degraded`` entries
-    (e.g. a reranker fallback) is under-served too.
+    (``exhausted``, allowed) from a clamp; the API route cannot from the
+    response alone, so a short API list counts as under-served -- unless
+    ``--es-url``/``--es-index`` are given, when a short plain ``bm25@D`` list
+    costs ONE read-only ``_count`` on the index with the server's own BM25 query
+    (:mod:`bm25_exhaustion`; ``--bm25-tenant``/``--bm25-extra-tenant`` for the
+    exact scope, else an unscoped upper bound), sent by a client with no
+    credential: count == served -> ``exhausted`` (allowed); count > served on
+    the exact scope -> a clamp, exit 1 even with ``--allow-short``. Per-list
+    records go under ``exhaustion`` (counts and verdict, never the query).
+    Hybrid, vector and live lists keep the gate. A response carrying
+    ``degraded`` entries (e.g. a reranker fallback) is under-served too.
 
     The section-3 manipulation check (RRF k, multiplier, rerank candidates,
     per-doc cap, boilerplate demotion, glossary boost, glossary-in-reranker) is
@@ -131,7 +139,7 @@ import threading
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +151,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import bm25_exhaustion as bx  # noqa: E402
 import deployed_docs_part4 as dp4  # noqa: E402
 import glossary_boost_probe as gbp  # noqa: E402
 import section_aware_trial as sat  # noqa: E402
@@ -786,8 +795,52 @@ class Api:
         raise RuntimeError(f"/v1/retrieve failed after {self.retries} tries: {last}")
 
 
+def exhaustion_boost(bc: Mapping[str, Any], declared: float | None) -> float | None:
+    """The boost the count query uses; matching depends only on its sign. ``None``
+    (unknown) unless the probe read it back as active or it was declared."""
+    if bc.get("status") == "declared" and bc.get("declared"):
+        return float(bc["declared"])
+    if bc.get("status") == "active":
+        return float(declared or 1.0)
+    return None
+
+
+class ExhaustionVerifier:
+    """One read-only ``_count`` per short plain ``bm25`` list (module docstring). Its
+    client carries no credential; one that does is refused before any request."""
+
+    def __init__(self, es_url: str, index: str, boost: float | None, tenant: str | None = None,
+                 extra_tenants: Sequence[str] | None = None, http: Any = None) -> None:
+        import httpx
+
+        self.es_url, self.index, self.boost = es_url, index, boost
+        self.tenant, self.extra = tenant, list(extra_tenants or [])
+        self.http = http or httpx.Client(timeout=120, headers={"Content-Type": "application/json"})
+        self.counts = 0
+
+    def __call__(self, body: Mapping[str, Any], requested: int, served: int) -> dict[str, Any]:
+        why = bx.ineligible(body) or (None if self.boost is not None else "glossary boost sign unknown")
+        if why:
+            return bx.record(requested, served, None, None, self.boost, reason=why)
+        assert self.boost is not None
+        query, scope = bx.count_query(str(body["query"]), body, self.boost, self.tenant, self.extra)
+        bx.refuse_credentials(self.http.headers, AUTH_HEADERS.values())
+        count, error = None, None
+        try:
+            r = self.http.post(bx.count_url(self.es_url, self.index), json={"query": query})
+            self.counts += 1
+            if r.status_code != 200:
+                error = f"HTTP {r.status_code}"  # never the body: an ES error can echo the query
+            else:
+                count = bx.parse_count(r.json())
+        except Exception as e:  # noqa: BLE001 - recorded; the list stays under-served
+            error = type(e).__name__
+        return bx.record(requested, served, count, scope, self.boost, error=error)
+
+
 def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], legs: list[str],
-                live: list[tuple[str, int]]) -> tuple[dict[str, Any], dict[str, Any]]:
+                live: list[tuple[str, int]], verifier: ExhaustionVerifier | None = None
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
     dmax = max(depths)
     if dmax > API_MAX_TOP_K:
         raise SystemExit(f"the API route caps pool depth at MAX_TOP_K={API_MAX_TOP_K} (asked {dmax}); "
@@ -807,6 +860,8 @@ def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], le
     lists: dict[str, dict[str, list[str]]] = defaultdict(dict)
     served: dict[str, dict[str, int]] = defaultdict(dict)
     bad: dict[str, set[str]] = defaultdict(set)
+    exhausted: dict[str, set[str]] = defaultdict(set)
+    exhaustion: dict[str, dict[str, Any]] = defaultdict(dict)
     echoed: dict[str, set[Any]] = defaultdict(set)
     degraded: Counter[str] = Counter()
     lock = threading.Lock()
@@ -816,7 +871,15 @@ def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], le
         resp = api.retrieve({**body, "query": q["query"]})
         ids = [str(s["chunk_id"]) for s in resp.get("sources", [])]
         echo = resp.get("top_k")
+        # only a list short by its length alone (no degraded entry, no short top_k echo)
+        # of a plain bm25 pool can be verified exhausted
+        rec = None
+        if (verifier is not None and k.startswith("bm25@") and len(ids) < want and not resp.get("degraded")
+                and (echo is None or int(echo) >= int(body["top_k"]))):
+            rec = verifier({**body, "query": q["query"]}, want, len(ids))
         with lock:
+            if rec is not None:
+                exhaustion[k][q["id"]] = rec
             lists[k][q["id"]] = ids
             served[k][q["id"]] = len(ids)
             if echo is not None:
@@ -825,16 +888,21 @@ def capture_api(api: Api, questions: list[dict[str, Any]], depths: list[int], le
             if resp.get("degraded"):
                 degraded[k] += 1
                 short = True
-            if short:
+            if short and rec is not None and rec["verdict"] == bx.EXHAUSTED:
+                exhausted[k].add(q["id"])
+            elif short:
                 bad[k].add(q["id"])
 
     with ThreadPoolExecutor(max_workers=api.inflight) as ex:
         list(ex.map(one, jobs))
     depth = {}
     for k, want, _ in reqs:
-        depth[k] = {**depth_status(want, served[k], set(), bad[k]),
+        depth[k] = {**depth_status(want, served[k], exhausted[k], bad[k]),
                     "response_top_k": sorted(echoed[k]) if echoed[k] else None,
                     "degraded_responses": degraded[k]}
+        if k in exhaustion:
+            verdicts = Counter(r["verdict"] for r in exhaustion[k].values())
+            depth[k]["exhaustion"] = {"verdicts": dict(verdicts), "per_record": exhaustion[k]}
     return dict(lists), depth
 
 
@@ -926,8 +994,16 @@ def cmd_pools(args: argparse.Namespace) -> int:
                                        "api_calls": api.calls}, questions, args.omit_text)
             log(f"glossary boost check {bc['status']}: {bc['reason']}; stopped before any pool was captured")
             return EXIT_FAIL
-        lists, depth = capture_api(api, questions, depths, legs, parse_live(args.live))
+        verifier = None
+        if bool(args.es_url) != bool(args.es_index):
+            raise SystemExit("--es-url and --es-index go together (the exhaustion count needs both)")
+        if args.es_url:
+            verifier = ExhaustionVerifier(args.es_url, args.es_index, exhaustion_boost(bc, args.boost_declared),
+                                          args.bm25_tenant, args.bm25_extra_tenant)
+        lists, depth = capture_api(api, questions, depths, legs, parse_live(args.live), verifier)
         out["api_calls"] = api.calls
+        if verifier is not None:
+            out["exhaustion_counts"] = verifier.counts
     else:
         if args.live:
             raise SystemExit("--live needs the API backend (the in-process route has no live reranker)")
@@ -960,16 +1036,23 @@ def cmd_pools(args: argparse.Namespace) -> int:
     gold = build_gold(questions, corpus)
     gold_out = {"schema": GOLD_SCHEMA, "provenance": provenance(), "questions": qmeta, "corpus": corpus.meta, **gold}
     under = sorted(k for k, v in depth.items() if v["status"] == "under-served")
+    clamps = sorted(k for k, v in depth.items() if (v.get("exhaustion") or {}).get("verdicts", {}).get(bx.CLAMP))
     out["provenance"] = provenance()
     for k in under:
         depth[k]["status"] = GNE if args.allow_short else "under-served"
     out["status"] = "complete" if not under else ("complete_with_gate" if args.allow_short else "under_served")
+    if clamps:
+        out["status"] = "clamp"
+        out["clamped_lists"] = clamps
     write_out(Path(args.out), out, questions, args.omit_text)
     write_out(Path(args.gold_out), gold_out, questions, args.omit_text)
     for k in under:
         d = depth[k]
         log(f"DEPTH READ-BACK: {k} requested {d['requested']}, served min {d['served_min']} "
             f"({d['n_under_served']} records short)")
+    if clamps:
+        log(f"CLAMP: {clamps}: the index matches more chunks than were served; failing the run")
+        return EXIT_FAIL
     if under and not args.allow_short:
         log("under-served lists: failing the run (use --allow-short to keep them marked GATE-NOT-EVALUABLE)")
         return EXIT_FAIL
@@ -2083,6 +2166,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "is not testable (recorded as declared, not read back)")
     p.add_argument("--allow-short", action="store_true",
                    help="keep under-served lists, marked GATE-NOT-EVALUABLE, instead of failing")
+    p.add_argument("--es-url", help="API route: the text index host, for the read-only BM25 exhaustion count "
+                                    "(no credential is sent to it)")
+    p.add_argument("--es-index", help="API route: the collection's text index name (with --es-url)")
+    p.add_argument("--bm25-tenant", help="the caller's tenant: makes the exhaustion count exact (else an "
+                                         "unscoped upper bound, which can verify exhaustion but never a clamp)")
+    p.add_argument("--bm25-extra-tenant", action="append", default=[],
+                   help="a further readable tenant the server adds (a shared collection's owner); repeatable")
     p.add_argument("--out", required=True)
     p.add_argument("--gold-out", required=True)
     p.set_defaults(fn=cmd_pools)
