@@ -1,0 +1,4251 @@
+{
+ "artifact_provenance": {
+  "citable": true,
+  "citable_reason": "every source output records provenance.citable true (clean tree, untracked 0, commit f408b7a); not from a versioned tools image (in_image false, warning kept). Set P is exploratory by design (prereg Status); citable means reproducible from a pinned clean tree, not confirmatory",
+  "derived_by": "artifacts/make_rr_artifacts.py (this directory): a mechanical copy of the summary blocks; no analysis except the gold-size count and the hand-copied D-5 block",
+  "label": "RECORD \u2014 the dedicated reranker test (prereg frozen 2026-10-30T02:19:33Z); counts-only copy of the harness outputs",
+  "private_data": "the full outputs (per-record ranks and verdicts, per-cluster sums, ids) stay with the run outputs, off GitHub",
+  "public_copy": "no query, quote or chunk text; no record, question, probe or chunk id; no path, host, image, endpoint, tenant, collection or index name; provenance host/image/installed_distribution/python redacted as in part 4's public export",
+  "source_sha256": {
+   "P-census-r2.json": "35d8a7a36df707e0b8399b8c78b33a2294eaa743537c63067709b2beb97728c7",
+   "P-fuse-r2.json": "b4b7b566d739975c4ad9b6ad4acd6740c9c71e9ee82da5a0f059340cf016b8b3",
+   "P-gold-r2.json": "e3848cccd636de2d8ab15285e82db1775869bcda029f377eae10bb65e3188eb7",
+   "P-pools-r2.json": "6b5032d05623e8e2319c01e48ef31b94c7beac87800af081d32642f96f4932d3",
+   "P-pools-r2rep.json": "06562068628c65480b1f53b815ddf9026112738f6e0037f4fc709717d7480353",
+   "P-rerank-r2.json": "db97ddb0a20cfd9fa5f12432a4bf62efdb3b964ea9bf077f1a8e81f5e838f591",
+   "P-stats-r2-goldall.json": "7a10f5f5fa14ff7d0fcf60d033a211203b33d9eb04bd028148e88dd19f40e43f",
+   "P-stats-r2.json": "2f22a1e40ddc9f4d39e30c6eda8218998aaee68a462af19ee6c2c0687c1b71ec"
+  }
+ },
+ "census": {
+  "corpus": {
+   "chunks": 14456,
+   "chunks_with_glossary": 241,
+   "chunks_with_neighbour_links": 14448,
+   "sha256": "cf40b91624ed6ca08533edd2211e2359c785b24c666326f0d5b222b4491bb60f",
+   "source": "dump"
+  },
+  "max_length": 4096,
+  "max_length_source": "declared (--max-length)",
+  "neighbour_hits": {
+   "bm25@100": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 27
+   },
+   "hybrid@10": {
+    "of_which_not_found10": 6,
+    "records_with_neighbour_in_top10": 22
+   },
+   "hybrid@100": {
+    "of_which_not_found10": 8,
+    "records_with_neighbour_in_top10": 22
+   },
+   "hybrid@20": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 21
+   },
+   "hybrid@50": {
+    "of_which_not_found10": 11,
+    "records_with_neighbour_in_top10": 23
+   },
+   "live:bm25@50": {
+    "of_which_not_found10": 4,
+    "records_with_neighbour_in_top10": 21
+   },
+   "live:hybrid@50": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 21
+   },
+   "live:vector@50": {
+    "of_which_not_found10": 8,
+    "records_with_neighbour_in_top10": 14
+   },
+   "rr:bm25@100:content+gloss": {
+    "of_which_not_found10": 8,
+    "records_with_neighbour_in_top10": 25
+   },
+   "rr:bm25@10:content+gloss": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 27
+   },
+   "rr:bm25@20:content+gloss": {
+    "of_which_not_found10": 5,
+    "records_with_neighbour_in_top10": 21
+   },
+   "rr:bm25@50:content+gloss": {
+    "of_which_not_found10": 4,
+    "records_with_neighbour_in_top10": 21
+   },
+   "rr:hybrid@100:content+gloss": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 24
+   },
+   "rr:hybrid@10:content+gloss": {
+    "of_which_not_found10": 6,
+    "records_with_neighbour_in_top10": 22
+   },
+   "rr:hybrid@20:content+gloss": {
+    "of_which_not_found10": 5,
+    "records_with_neighbour_in_top10": 21
+   },
+   "rr:hybrid@50:content": {
+    "of_which_not_found10": 10,
+    "records_with_neighbour_in_top10": 20
+   },
+   "rr:hybrid@50:content+gloss": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 21
+   },
+   "rr:hybrid@50:content+shuffled": {
+    "of_which_not_found10": 8,
+    "records_with_neighbour_in_top10": 18
+   },
+   "rr:hybrid@50:gloss+content": {
+    "of_which_not_found10": 9,
+    "records_with_neighbour_in_top10": 19
+   },
+   "rr:hybrid@50:gloss-only": {
+    "of_which_not_found10": 9,
+    "records_with_neighbour_in_top10": 25
+   },
+   "rr:vector@50:content+gloss": {
+    "of_which_not_found10": 8,
+    "records_with_neighbour_in_top10": 14
+   },
+   "vector@100": {
+    "of_which_not_found10": 7,
+    "records_with_neighbour_in_top10": 7
+   }
+  },
+  "pair_tokens": {
+   "bm25@50|content": {
+    "max": 718,
+    "median": 518.0,
+    "n": 7394,
+    "over_max_length": 0,
+    "p95": 598.0
+   },
+   "bm25@50|content+gloss": {
+    "max": 734,
+    "median": 523.0,
+    "n": 7394,
+    "over_max_length": 0,
+    "p95": 605.0
+   },
+   "bm25@50|content+shuffled": {
+    "max": 745,
+    "median": 520.0,
+    "n": 7394,
+    "over_max_length": 0,
+    "p95": 603.0
+   },
+   "bm25@50|gloss+content": {
+    "max": 734,
+    "median": 523.0,
+    "n": 7394,
+    "over_max_length": 0,
+    "p95": 605.0
+   },
+   "bm25@50|gloss-only": {
+    "max": 131,
+    "median": 8.0,
+    "n": 7394,
+    "over_max_length": 0,
+    "p95": 94.0
+   },
+   "hybrid@50|content": {
+    "max": 717,
+    "median": 519.0,
+    "n": 7750,
+    "over_max_length": 0,
+    "p95": 610.0
+   },
+   "hybrid@50|content+gloss": {
+    "max": 733,
+    "median": 523.0,
+    "n": 7750,
+    "over_max_length": 0,
+    "p95": 615.5499999999993
+   },
+   "hybrid@50|content+shuffled": {
+    "max": 744,
+    "median": 521.0,
+    "n": 7750,
+    "over_max_length": 0,
+    "p95": 612.0
+   },
+   "hybrid@50|gloss+content": {
+    "max": 733,
+    "median": 523.0,
+    "n": 7750,
+    "over_max_length": 0,
+    "p95": 615.5499999999993
+   },
+   "hybrid@50|gloss-only": {
+    "max": 131,
+    "median": 8.0,
+    "n": 7750,
+    "over_max_length": 0,
+    "p95": 87.0
+   }
+  },
+  "passage_tokens": {
+   "content": {
+    "max": 681,
+    "median": 483.0,
+    "n": 14456,
+    "over_max_length": 0,
+    "p95": 546.0
+   },
+   "content+gloss": {
+    "max": 681,
+    "median": 483.0,
+    "n": 14456,
+    "over_max_length": 0,
+    "p95": 546.0
+   },
+   "content+shuffled": {
+    "max": 681,
+    "median": 483.0,
+    "n": 14456,
+    "over_max_length": 0,
+    "p95": 546.0
+   },
+   "gloss+content": {
+    "max": 681,
+    "median": 483.0,
+    "n": 14456,
+    "over_max_length": 0,
+    "p95": 546.0
+   },
+   "gloss-only": {
+    "max": 46,
+    "median": 0.0,
+    "n": 14456,
+    "over_max_length": 0,
+    "p95": 0.0
+   }
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:30:49Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "tokenizer": "bge-reranker-v2-m3 (XLM-R)"
+ },
+ "d5_exhaustion_check": {
+  "queries_where_most_fields_count_exceeds_content_only": 2,
+  "rows": [
+   {
+    "count_content_only": 22,
+    "count_most_fields": 23,
+    "records": 2,
+    "served": 23
+   },
+   {
+    "count_content_only": 23,
+    "count_most_fields": 23,
+    "records": 2,
+    "served": 23
+   },
+   {
+    "count_content_only": 17,
+    "count_most_fields": 23,
+    "records": 4,
+    "served": 23
+   },
+   {
+    "count_content_only": 36,
+    "count_most_fields": 36,
+    "records": 10,
+    "served": 36
+   },
+   {
+    "count_content_only": 79,
+    "count_most_fields": 79,
+    "records": 1,
+    "served": 79
+   }
+  ],
+  "served_equals_count_most_fields_on_all": true,
+  "source": "run log, hand-copied (not a harness output); DEVIATIONS.md D-5",
+  "verdict": "verified exhausted (not a clamp); the harness mark GATE-NOT-EVALUABLE stands as written",
+  "what": "for each distinct short bm25@100 query: the served list length against the index's own document count for the server's most_fields clause (content + symbol_glossary) and for content only"
+ },
+ "fuse": {
+  "depth": {
+   "fuse:A9-bm25": {
+    "inputs": [
+     "rr:hybrid@50:content+gloss",
+     "bm25@50"
+    ],
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "fuse:A9-fused": {
+    "inputs": [
+     "rr:hybrid@50:content+gloss",
+     "hybrid@50"
+    ],
+    "status": "ok"
+   }
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:30:22Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "variants": {
+   "A9-bm25": {
+    "first": "rr:hybrid@50:content+gloss",
+    "rrf_k": 60,
+    "second": "bm25@50",
+    "status": "ok"
+   },
+   "A9-fused": {
+    "first": "rr:hybrid@50:content+gloss",
+    "rrf_k": 60,
+    "second": "hybrid@50",
+    "status": "ok"
+   }
+  }
+ },
+ "gold": {
+  "corpus": {
+   "chunks": 14456,
+   "chunks_with_glossary": 241,
+   "chunks_with_neighbour_links": 14448,
+   "sha256": "cf40b91624ed6ca08533edd2211e2359c785b24c666326f0d5b222b4491bb60f",
+   "source": "dump"
+  },
+  "excluded": {
+   "no_gold_chunk_in_index": 2
+  },
+  "n": 155,
+  "n_included": 153,
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:26:49Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "sizes": {
+   "chunks_per_record": {
+    "eq1": 87,
+    "gt10": 7,
+    "histogram": {
+     "1": 87,
+     "11": 3,
+     "2": 56,
+     "32": 2,
+     "4": 3,
+     "50": 2
+    },
+    "max": 50,
+    "median": 1,
+    "min": 1,
+    "n": 153,
+    "p90": 2.0
+   },
+   "docs_per_record": {
+    "eq1": 87,
+    "gt10": 4,
+    "histogram": {
+     "1": 87,
+     "18": 2,
+     "2": 56,
+     "27": 2,
+     "3": 3,
+     "4": 3
+    },
+    "max": 27,
+    "median": 1,
+    "min": 1,
+    "n": 153,
+    "p90": 2.0
+   },
+   "quotes_per_record": {
+    "1": 153
+   },
+   "what": "distinct gold chunk ids per included record (and the documents they belong to); quotes per record"
+  }
+ },
+ "pools": {
+  "api_calls": 1395,
+  "backend": "api",
+  "config_readable": false,
+  "config_status": 403,
+  "corpus": {
+   "chunks": 14456,
+   "chunks_with_glossary": 241,
+   "chunks_with_neighbour_links": 14448,
+   "sha256": "cf40b91624ed6ca08533edd2211e2359c785b24c666326f0d5b222b4491bb60f",
+   "source": "dump"
+  },
+  "depth": {
+   "bm25@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 19,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 23,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "hybrid@10": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "hybrid@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   },
+   "hybrid@20": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 20,
+    "response_top_k": null,
+    "served_max": 20,
+    "served_min": 20,
+    "status": "ok"
+   },
+   "hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 50,
+    "response_top_k": null,
+    "served_max": 50,
+    "served_min": 50,
+    "status": "ok"
+   },
+   "live:bm25@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:vector@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "vector@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   }
+  },
+  "depths": [
+   10,
+   20,
+   50,
+   100
+  ],
+  "legs": [
+   "bm25",
+   "vector",
+   "hybrid"
+  ],
+  "manipulation": {
+   "boost_check": {
+    "boost_check": "declared",
+    "candidates_source": "chunk dump (--chunks): the stored symbol_glossary",
+    "check": "glossary_boost_behavioural_probe",
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "min_probes": 3,
+    "n_passed": 0,
+    "n_probes": 0,
+    "note": "the probe shows the boost is > 0; its magnitude is the declared value",
+    "reason": "0 chunk(s) qualify, fewer than 3",
+    "selection": {
+     "chunks": 14456,
+     "chunks_with_a_qualifying_token": 0,
+     "chunks_with_glossary": 241,
+     "max_glossary_df": 10,
+     "min_token_len": 5
+    },
+    "status": "declared",
+    "verdict": null
+   },
+   "max_top_k_declared": 100,
+   "ok": true,
+   "reranker_model": "BAAI/bge-reranker-v2-m3",
+   "values": {
+    "rerank_candidates": {
+     "expected": 50,
+     "observed": 50,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "rerank_include_symbol_glossary": {
+     "expected": true,
+     "observed": true,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_candidate_multiplier": {
+     "expected": 2,
+     "observed": 2,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_demote_boilerplate": {
+     "expected": false,
+     "observed": false,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_max_per_doc": {
+     "expected": 0,
+     "observed": 0,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "rrf_k": {
+     "expected": 60,
+     "observed": 60,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "text_symbol_glossary_boost": {
+     "expected": 1.0,
+     "observed": 1.0,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    }
+   }
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:26:49Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "questions": {
+   "clusters": 7,
+   "counts": {
+    "cluster_from_locator": 155,
+    "live_gold_chunk_ids_ignored": 155,
+    "pairs_with_quote_variants_unused": 16
+   },
+   "distinct_queries": 73,
+   "format": "partner-held",
+   "pairs": 65,
+   "pairs_sha256": "f8d3b7f15144ed4ba23b2519751c2d9860c11acf131aadfddf75c6988eeebef5",
+   "pairs_used": 57,
+   "quote_rule": "partner-quote/1: NFKC, every whitespace run -> one space, strip, casefold; a chunk is gold when its equally normalised content contains the quote, or its first or last ceil(0.6 * len) characters",
+   "records": 155,
+   "rows": 155,
+   "set_filter": null,
+   "sha256": "c720261e39b87b2d35fd838d9960db2af485eb86a73ee7900ba7caa006dd9664",
+   "skipped_other_set": 0
+  },
+  "status": "complete_with_gate"
+ },
+ "pools_repeat": {
+  "api_calls": 1395,
+  "depth": {
+   "bm25@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 19,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 23,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "hybrid@10": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "hybrid@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   },
+   "hybrid@20": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 20,
+    "response_top_k": null,
+    "served_max": 20,
+    "served_min": 20,
+    "status": "ok"
+   },
+   "hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 50,
+    "response_top_k": null,
+    "served_max": 50,
+    "served_min": 50,
+    "status": "ok"
+   },
+   "live:bm25@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:vector@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "vector@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_records": 155,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   }
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:28:08Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "status": "complete_with_gate"
+ },
+ "rerank": {
+  "depth": {
+   "rr:bm25@100:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 100,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@10:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 10,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@20:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 20,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@50:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 50,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:hybrid@100:content+gloss": {
+    "pool": "hybrid@100",
+    "pool_depth": 100,
+    "status": "ok"
+   },
+   "rr:hybrid@10:content+gloss": {
+    "pool": "hybrid@10",
+    "pool_depth": 10,
+    "status": "ok"
+   },
+   "rr:hybrid@20:content+gloss": {
+    "pool": "hybrid@20",
+    "pool_depth": 20,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content+gloss": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content+shuffled": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:gloss+content": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:gloss-only": {
+    "empty_passages": 6400,
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "role": "exploratory",
+    "status": "ok"
+   },
+   "rr:vector@50:content+gloss": {
+    "pool": "vector@100",
+    "pool_depth": 50,
+    "status": "ok"
+   }
+  },
+  "identity_all": {
+   "equal_top10": 155,
+   "n": 155
+  },
+  "identity_gate": {
+   "n_probes": 3,
+   "probes_equal": 3,
+   "probes_same_set": 3,
+   "reference": "live:hybrid@50",
+   "status": "pass"
+  },
+  "jobs": [
+   "hybrid@10:content+gloss",
+   "hybrid@20:content+gloss",
+   "hybrid@50:content+gloss",
+   "hybrid@100:content+gloss",
+   "bm25@10:content+gloss",
+   "bm25@20:content+gloss",
+   "bm25@50:content+gloss",
+   "bm25@100:content+gloss",
+   "vector@50:content+gloss",
+   "hybrid@50:content",
+   "hybrid@50:gloss+content",
+   "hybrid@50:content+shuffled",
+   "hybrid@50:gloss-only"
+  ],
+  "pools_input": [
+   {
+    "backend": "api",
+    "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+    "file": "P-pools-r2.json",
+    "kind": "pools",
+    "sha256": "6b5032d05623e8e2319c01e48ef31b94c7beac87800af081d32642f96f4932d3"
+   }
+  ],
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:30:12Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "shuffle": {
+   "bearers": 241,
+   "chars_total": 11261,
+   "seed": 261029,
+   "sha256": "e6db1ecb7a6662e4c24920fbf3cd5c5bc9d7931e7edee7b03b355b270ad6029f",
+   "unchanged": 4,
+   "unit": "string"
+  },
+  "sidecar": {
+   "batch_size": 32,
+   "device": "cuda:0",
+   "expected_model": "BAAI/bge-reranker-v2-m3",
+   "expected_snapshot": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+   "fp16": true,
+   "installed": {
+    "sentence_transformers": "5.6.0",
+    "torch": "2.12.1",
+    "transformers": "5.12.1"
+   },
+   "max_length": 4096,
+   "model": "BAAI/bge-reranker-v2-m3",
+   "ready": {
+    "device": "cuda:0",
+    "error": null,
+    "http": 200,
+    "loaded": true,
+    "status": "ok"
+   },
+   "requirements_pin_sentence_transformers": ">=3.0,<4",
+   "sentence_transformers_outside_pin": true,
+   "settings_source": "declared from the sidecar's launch environment (/ready does not expose them)",
+   "snapshot": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+  },
+  "sidecar_calls": 1183,
+  "sidecar_pairs": 55350,
+  "status": "complete"
+ },
+ "schema": "reranker-test-public/1",
+ "set": "papers-OC",
+ "stats": {
+  "analysis": {
+   "alpha": 0.05,
+   "ci_level": 0.9,
+   "delta": 0.05,
+   "n_boot": 10000,
+   "n_perm": 10000,
+   "seed": 261029,
+   "test": "cluster sign-flip permutation (standard p; exact when <= 20 non-zero clusters), cluster bootstrap percentile CI, McNemar descriptive (deployed_docs_part4.contrast_test)"
+  },
+  "arms": {
+   "A0": {
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "identical_to_pool": null,
+    "identity_gate": null,
+    "list": "bm25@100",
+    "route": "pool prefix",
+    "summary": {
+     "found@10": 61,
+     "found@20": null,
+     "found@5": 46,
+     "found@50": null,
+     "found_in_list": 61,
+     "iqr": [
+      1.0,
+      5.0
+     ],
+     "median_rank": 2.0,
+     "mrr50": 0.19706141715945638,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A1": {
+    "gate": null,
+    "identical_to_pool": null,
+    "identity_gate": null,
+    "list": "vector@100",
+    "route": "pool prefix",
+    "summary": {
+     "found@10": 9,
+     "found@20": null,
+     "found@5": 6,
+     "found@50": null,
+     "found_in_list": 9,
+     "iqr": [
+      1.0,
+      8.0
+     ],
+     "median_rank": 2.0,
+     "mrr50": 0.033877995642701525,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A2": {
+    "gate": null,
+    "identical_to_pool": null,
+    "identity_gate": null,
+    "list": "hybrid@10",
+    "route": "pool",
+    "summary": {
+     "found@10": 50,
+     "found@20": null,
+     "found@5": 32,
+     "found@50": null,
+     "found_in_list": 50,
+     "iqr": [
+      3.0,
+      7.0
+     ],
+     "median_rank": 5.0,
+     "mrr50": 0.09831154684095861,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A3": {
+    "gate": null,
+    "identical_to_pool": null,
+    "identity_gate": null,
+    "list": "hybrid@50",
+    "route": "pool prefix",
+    "summary": {
+     "found@10": 20,
+     "found@20": null,
+     "found@5": 14,
+     "found@50": null,
+     "found_in_list": 20,
+     "iqr": [
+      2.0,
+      6.0
+     ],
+     "median_rank": 3.0,
+     "mrr50": 0.05758896151053014,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A4-10": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@10",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@10:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 50,
+     "found@20": null,
+     "found@5": 39,
+     "found@50": null,
+     "found_in_list": 50,
+     "iqr": [
+      1.0,
+      4.75
+     ],
+     "median_rank": 2.0,
+     "mrr50": 0.18020541549953314,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A4-100": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@100",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@100:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 54,
+     "found@20": 65,
+     "found@5": 37,
+     "found@50": 81,
+     "found_in_list": 93,
+     "iqr": [
+      2.0,
+      33.0
+     ],
+     "median_rank": 9.0,
+     "mrr50": 0.18078757699480374,
+     "n": 153,
+     "share_rank_11_50": 0.17647058823529413
+    }
+   },
+   "A4-20": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@20",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@20:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 54,
+     "found@20": 65,
+     "found@5": 41,
+     "found@50": null,
+     "found_in_list": 65,
+     "iqr": [
+      1.0,
+      8.0
+     ],
+     "median_rank": 4.0,
+     "mrr50": 0.18103356605375062,
+     "n": 153,
+     "share_rank_11_50": 0.0718954248366013
+    }
+   },
+   "A4-50": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": null,
+    "list": "live:hybrid@50",
+    "route": "api",
+    "summary": {
+     "found@10": 52,
+     "found@20": null,
+     "found@5": 38,
+     "found@50": null,
+     "found_in_list": 52,
+     "iqr": [
+      1.0,
+      6.25
+     ],
+     "median_rank": 2.5,
+     "mrr50": 0.17660805062765847,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A5-10": {
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@10:content+gloss under-served"
+    ],
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "bm25@100",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:bm25@10:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 61,
+     "found@20": null,
+     "found@5": 51,
+     "found@50": null,
+     "found_in_list": 61,
+     "iqr": [
+      2.0,
+      5.0
+     ],
+     "median_rank": 3.0,
+     "mrr50": 0.18005239132690115,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A5-100": {
+    "gate": [
+     "depth read-back: rr:bm25@100:content+gloss under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "bm25@100",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:bm25@100:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 59,
+     "found@20": 67,
+     "found@5": 38,
+     "found@50": 86,
+     "found_in_list": 94,
+     "iqr": [
+      2.0,
+      28.0
+     ],
+     "median_rank": 9.0,
+     "mrr50": 0.1943288731723454,
+     "n": 153,
+     "share_rank_11_50": 0.17647058823529413
+    }
+   },
+   "A5-20": {
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@20:content+gloss under-served"
+    ],
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "bm25@100",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:bm25@20:content+gloss",
+    "route": "offline",
+    "summary": {
+     "found@10": 62,
+     "found@20": 75,
+     "found@5": 36,
+     "found@50": null,
+     "found_in_list": 75,
+     "iqr": [
+      2.0,
+      9.0
+     ],
+     "median_rank": 6.0,
+     "mrr50": 0.17812825910091132,
+     "n": 153,
+     "share_rank_11_50": 0.08496732026143791
+    }
+   },
+   "A5-50": {
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "bm25@100",
+     "records": 153
+    },
+    "identity_gate": null,
+    "list": "live:bm25@50",
+    "route": "api",
+    "summary": {
+     "found@10": 54,
+     "found@20": null,
+     "found@5": 36,
+     "found@50": null,
+     "found_in_list": 54,
+     "iqr": [
+      1.0,
+      7.0
+     ],
+     "median_rank": 3.0,
+     "mrr50": 0.1660312273057371,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A6": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "vector@100",
+     "records": 153
+    },
+    "identity_gate": null,
+    "list": "live:vector@50",
+    "route": "api",
+    "summary": {
+     "found@10": 15,
+     "found@20": null,
+     "found@5": 14,
+     "found@50": null,
+     "found_in_list": 15,
+     "iqr": [
+      1.0,
+      3.5
+     ],
+     "median_rank": 1.0,
+     "mrr50": 0.06618425147836912,
+     "n": 153,
+     "share_rank_11_50": 0.0
+    }
+   },
+   "A7-content": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@50:content",
+    "role": "exploratory (E2: reranker input)",
+    "route": "offline",
+    "summary": {
+     "found@10": 43,
+     "found@20": 56,
+     "found@5": 34,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      2.0,
+      29.0
+     ],
+     "median_rank": 10.0,
+     "mrr50": 0.17568251390191625,
+     "n": 153,
+     "share_rank_11_50": 0.26143790849673204
+    }
+   },
+   "A7-content+gloss": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@50:content+gloss",
+    "role": "exploratory (E2: reranker input)",
+    "route": "offline",
+    "summary": {
+     "found@10": 52,
+     "found@20": 64,
+     "found@5": 38,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      2.0,
+      17.0
+     ],
+     "median_rank": 7.0,
+     "mrr50": 0.18682000663332354,
+     "n": 153,
+     "share_rank_11_50": 0.20261437908496732
+    }
+   },
+   "A7-content+shuffled": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@50:content+shuffled",
+    "role": "exploratory (E2: reranker input)",
+    "route": "offline",
+    "summary": {
+     "found@10": 41,
+     "found@20": 57,
+     "found@5": 31,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      2.0,
+      30.0
+     ],
+     "median_rank": 13.0,
+     "mrr50": 0.16753143596087802,
+     "n": 153,
+     "share_rank_11_50": 0.27450980392156865
+    }
+   },
+   "A7-gloss+content": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 0,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@50:gloss+content",
+    "role": "exploratory (E2: reranker input)",
+    "route": "offline",
+    "summary": {
+     "found@10": 40,
+     "found@20": 59,
+     "found@5": 33,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      2.0,
+      21.5
+     ],
+     "median_rank": 11.0,
+     "mrr50": 0.1743722850727232,
+     "n": 153,
+     "share_rank_11_50": 0.28104575163398693
+    }
+   },
+   "A7-gloss-only": {
+    "gate": null,
+    "identical_to_pool": {
+     "gated": false,
+     "identical_top10": 22,
+     "pool": "hybrid@50",
+     "records": 153
+    },
+    "identity_gate": "pass",
+    "list": "rr:hybrid@50:gloss-only",
+    "note": "exploratory only: a glossary-less chunk is scored on an empty passage; not a reranker-input variant of the shipped path",
+    "role": "exploratory (E2: reranker input)",
+    "route": "offline",
+    "summary": {
+     "found@10": 55,
+     "found@20": 61,
+     "found@5": 45,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      2.0,
+      24.0
+     ],
+     "median_rank": 5.0,
+     "mrr50": 0.1872111431918064,
+     "n": 153,
+     "share_rank_11_50": 0.1830065359477124
+    }
+   },
+   "A9-bm25": {
+    "gate": [
+     "depth read-back: fuse:A9-bm25 under-served",
+     "depth read-back: an input of fuse:A9-bm25 under-served"
+    ],
+    "identical_to_pool": null,
+    "identity_gate": "pass",
+    "list": "fuse:A9-bm25",
+    "route": "offline fuse",
+    "summary": {
+     "found@10": 62,
+     "found@20": 80,
+     "found@5": 46,
+     "found@50": 83,
+     "found_in_list": 85,
+     "iqr": [
+      2.0,
+      11.0
+     ],
+     "median_rank": 5.0,
+     "mrr50": 0.19636829838288175,
+     "n": 153,
+     "share_rank_11_50": 0.13725490196078433
+    }
+   },
+   "A9-fused": {
+    "gate": null,
+    "identical_to_pool": null,
+    "identity_gate": "pass",
+    "list": "fuse:A9-fused",
+    "route": "offline fuse",
+    "summary": {
+     "found@10": 44,
+     "found@20": 65,
+     "found@5": 29,
+     "found@50": 83,
+     "found_in_list": 83,
+     "iqr": [
+      4.0,
+      18.0
+     ],
+     "median_rank": 9.0,
+     "mrr50": 0.1356310215563288,
+     "n": 153,
+     "share_rank_11_50": 0.2549019607843137
+    }
+   }
+  },
+  "boost_check": {
+   "boost_check": "declared",
+   "candidates_source": "chunk dump (--chunks): the stored symbol_glossary",
+   "check": "glossary_boost_behavioural_probe",
+   "declared": 1.0,
+   "declared_label": "declared (--boost-declared), not read back",
+   "gate": null,
+   "min_probes": 3,
+   "n_passed": 0,
+   "n_probes": 0,
+   "note": "the probe shows the boost is > 0; its magnitude is the declared value",
+   "reason": "0 chunk(s) qualify, fewer than 3",
+   "selection": {
+    "chunks": 14456,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 241,
+    "max_glossary_df": 10,
+    "min_token_len": 5
+   },
+   "status": "declared",
+   "verdict": null
+  },
+  "ceilings": {
+   "bm25@10": {
+    "ceiling": 61,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@100": {
+    "ceiling": 94,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@20": {
+    "ceiling": 75,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@50": {
+    "ceiling": 82,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "hybrid@10": {
+    "ceiling": 50,
+    "from": "hybrid@10",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@100": {
+    "ceiling": 93,
+    "from": "hybrid@100",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@20": {
+    "ceiling": 65,
+    "from": "hybrid@20",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@50": {
+    "ceiling": 83,
+    "from": "hybrid@50",
+    "gate": null,
+    "n": 153
+   },
+   "vector@10": {
+    "ceiling": 9,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@100": {
+    "ceiling": 34,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@20": {
+    "ceiling": 12,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@50": {
+    "ceiling": 19,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   }
+  },
+  "decomposition": {
+   "A4-10": {
+    "ceiling": 50,
+    "found@10": 50,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 103,
+    "ordering_loss": 0,
+    "pool": "hybrid@10"
+   },
+   "A4-100": {
+    "ceiling": 93,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 60,
+    "ordering_loss": 39,
+    "pool": "hybrid@100"
+   },
+   "A4-20": {
+    "ceiling": 65,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 88,
+    "ordering_loss": 11,
+    "pool": "hybrid@20"
+   },
+   "A4-50": {
+    "ceiling": 83,
+    "found@10": 52,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 31,
+    "pool": "hybrid@50"
+   },
+   "A5-10": {
+    "ceiling": 61,
+    "found@10": 61,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 92,
+    "ordering_loss": 0,
+    "pool": "bm25@10"
+   },
+   "A5-100": {
+    "ceiling": 94,
+    "found@10": 59,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 59,
+    "ordering_loss": 35,
+    "pool": "bm25@100"
+   },
+   "A5-20": {
+    "ceiling": 75,
+    "found@10": 62,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 78,
+    "ordering_loss": 13,
+    "pool": "bm25@20"
+   },
+   "A5-50": {
+    "ceiling": 82,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 71,
+    "ordering_loss": 28,
+    "pool": "bm25@50"
+   },
+   "A6": {
+    "ceiling": 19,
+    "found@10": 15,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 134,
+    "ordering_loss": 4,
+    "pool": "vector@50"
+   },
+   "A7-content": {
+    "ceiling": 83,
+    "found@10": 43,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 40,
+    "pool": "hybrid@50"
+   },
+   "A7-content+gloss": {
+    "ceiling": 83,
+    "found@10": 52,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 31,
+    "pool": "hybrid@50"
+   },
+   "A7-content+shuffled": {
+    "ceiling": 83,
+    "found@10": 41,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 42,
+    "pool": "hybrid@50"
+   },
+   "A7-gloss+content": {
+    "ceiling": 83,
+    "found@10": 40,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 43,
+    "pool": "hybrid@50"
+   },
+   "A7-gloss-only": {
+    "ceiling": 83,
+    "found@10": 55,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 28,
+    "pool": "hybrid@50"
+   }
+  },
+  "depth_read_back": {
+   "bm25@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 19,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 23,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "fuse:A9-bm25": {
+    "inputs": [
+     "rr:hybrid@50:content+gloss",
+     "bm25@50"
+    ],
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "fuse:A9-fused": {
+    "inputs": [
+     "rr:hybrid@50:content+gloss",
+     "hybrid@50"
+    ],
+    "status": "ok"
+   },
+   "hybrid@10": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "hybrid@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   },
+   "hybrid@20": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 20,
+    "response_top_k": null,
+    "served_max": 20,
+    "served_min": 20,
+    "status": "ok"
+   },
+   "hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 50,
+    "response_top_k": null,
+    "served_max": 50,
+    "served_min": 50,
+    "status": "ok"
+   },
+   "live:bm25@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:hybrid@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "live:vector@50": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 10,
+    "response_top_k": null,
+    "served_max": 10,
+    "served_min": 10,
+    "status": "ok"
+   },
+   "rr:bm25@100:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 100,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@10:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 10,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@20:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 20,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:bm25@50:content+gloss": {
+    "pool": "bm25@100",
+    "pool_depth": 50,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "rr:hybrid@100:content+gloss": {
+    "pool": "hybrid@100",
+    "pool_depth": 100,
+    "status": "ok"
+   },
+   "rr:hybrid@10:content+gloss": {
+    "pool": "hybrid@10",
+    "pool_depth": 10,
+    "status": "ok"
+   },
+   "rr:hybrid@20:content+gloss": {
+    "pool": "hybrid@20",
+    "pool_depth": 20,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content+gloss": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:content+shuffled": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:gloss+content": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:hybrid@50:gloss-only": {
+    "pool": "hybrid@50",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "rr:vector@50:content+gloss": {
+    "pool": "vector@100",
+    "pool_depth": 50,
+    "status": "ok"
+   },
+   "vector@100": {
+    "degraded_responses": 0,
+    "n_exhausted": 0,
+    "n_under_served": 0,
+    "requested": 100,
+    "response_top_k": null,
+    "served_max": 100,
+    "served_min": 100,
+    "status": "ok"
+   }
+  },
+  "excluded": {
+   "no_gold_chunk_in_index": 2
+  },
+  "exploratory": {
+   "A0 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.21052631578947367,
+     0.07719298245614035
+    ],
+    "ci_level": 0.9,
+    "gained": 20,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 11,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 9,
+    "net_share": 0.058823529411764705,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.14961278438568115,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A1 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.38162544169611307,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 55,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -52,
+    "net_share": -0.33986928104575165,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 2.2598589666245061e-13,
+    "p_mcnemar_two_sided": 2.2598589666245061e-13,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A1 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.30714285714285716,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 2,
+    "gate": null,
+    "lost": 45,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -43,
+    "net_share": -0.28104575163398693,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.6044054973463062e-11,
+    "p_mcnemar_two_sided": 1.6044054973463062e-11,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A2 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.0912280701754386,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 14,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -11,
+    "net_share": -0.0718954248366013,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.012725830078125,
+    "p_mcnemar_two_sided": 0.012725830078125,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A2 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.014285714285714285,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 14,
+    "gate": null,
+    "lost": 16,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -2,
+    "net_share": -0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.855535551905632,
+    "p_mcnemar_two_sided": 0.855535551905632,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A3 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.3031026252983294,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 5,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 46,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -41,
+    "net_share": -0.2679738562091503,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 2.3280151140170346e-09,
+    "p_mcnemar_two_sided": 2.3280151140170346e-09,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A3 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.22857142857142856,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 4,
+    "gate": null,
+    "lost": 36,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -32,
+    "net_share": -0.20915032679738563,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.8570244719740003e-07,
+    "p_mcnemar_two_sided": 1.8570244719740003e-07,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-10 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.0912280701754386,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 14,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -11,
+    "net_share": -0.0718954248366013,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.012725830078125,
+    "p_mcnemar_two_sided": 0.012725830078125,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-10 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.014285714285714285,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 14,
+    "gate": null,
+    "lost": 16,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -2,
+    "net_share": -0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.855535551905632,
+    "p_mcnemar_two_sided": 0.855535551905632,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-100 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.06315789473684211,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 14,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 21,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -7,
+    "net_share": -0.0457516339869281,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.31050465907901525,
+    "p_mcnemar_two_sided": 0.31050465907901525,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-100 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.014285714285714285
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": null,
+    "lost": 1,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": 2,
+    "net_share": 0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.625,
+    "p_mcnemar_two_sided": 0.625,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-20 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.06315789473684211,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 10,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -7,
+    "net_share": -0.0457516339869281,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.09228515625,
+    "p_mcnemar_two_sided": 0.09228515625,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-20 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.014285714285714285
+    ],
+    "ci_level": 0.9,
+    "gained": 10,
+    "gate": null,
+    "lost": 8,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": 2,
+    "net_share": 0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.8145294189453125,
+    "p_mcnemar_two_sided": 0.8145294189453125,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A4-50 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.07719298245614035,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 20,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -9,
+    "net_share": -0.058823529411764705,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.14961278438568115,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-10 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 0,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@10:content+gloss under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 0,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 0,
+    "net": 0,
+    "net_share": 0.0,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-10 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.21052631578947367,
+     0.07719298245614035
+    ],
+    "ci_level": 0.9,
+    "gained": 20,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@10:content+gloss under-served"
+    ],
+    "lost": 11,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 9,
+    "net_share": 0.058823529411764705,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.14961278438568115,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-100 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.03333333333333333,
+     0.2777777777777778
+    ],
+    "ci_level": 0.9,
+    "gained": 18,
+    "gate": [
+     "depth read-back: rr:bm25@100:content+gloss under-served",
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 20,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 3,
+    "net": -2,
+    "net_share": -0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.8714146793645341,
+    "p_mcnemar_two_sided": 0.8714146793645341,
+    "p_mid": 0.875,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-100 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.10526315789473684
+    ],
+    "ci_level": 0.9,
+    "gained": 7,
+    "gate": [
+     "depth read-back: rr:bm25@100:content+gloss under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 0,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 7,
+    "net_share": 0.0457516339869281,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 0.5,
+    "p_exact": 0.5,
+    "p_mcnemar": 0.015625,
+    "p_mcnemar_two_sided": 0.015625,
+    "p_mid": 0.25,
+    "p_perm": 0.506049395060494,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-20 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.1111111111111111
+    ],
+    "ci_level": 0.9,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@20:content+gloss under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 10,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": 1,
+    "net_share": 0.006535947712418301,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-20 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.18181818181818182,
+     0.09333333333333334
+    ],
+    "ci_level": 0.9,
+    "gained": 16,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: rr:bm25@20:content+gloss under-served"
+    ],
+    "lost": 6,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 3,
+    "net": 10,
+    "net_share": 0.06535947712418301,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 0.75,
+    "p_exact": 0.75,
+    "p_mcnemar": 0.052478790283203125,
+    "p_mcnemar_two_sided": 0.052478790283203125,
+    "p_mid": 0.625,
+    "p_perm": 0.7487251274872513,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-50 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.056140350877192984,
+     0.10526315789473684
+    ],
+    "ci_level": 0.9,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 18,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -7,
+    "net_share": -0.0457516339869281,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.26493089646101,
+    "p_mcnemar_two_sided": 0.26493089646101,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A5-50 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.10526315789473684,
+     0.021052631578947368
+    ],
+    "ci_level": 0.9,
+    "gained": 4,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 2,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 2,
+    "net_share": 0.013071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.6875,
+    "p_mcnemar_two_sided": 0.6875,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A6 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.34385964912280703,
+     0.29411764705882354
+    ],
+    "ci_level": 0.9,
+    "gained": 6,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 52,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 3,
+    "net": -46,
+    "net_share": -0.3006535947712418,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 3.158189820773316e-10,
+    "p_mcnemar_two_sided": 3.158189820773316e-10,
+    "p_mid": 0.875,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A6 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.26968973747016706,
+     0.1111111111111111
+    ],
+    "ci_level": 0.9,
+    "gained": 4,
+    "gate": null,
+    "lost": 41,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -37,
+    "net_share": -0.24183006535947713,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 9.334883088740753e-09,
+    "p_mcnemar_two_sided": 9.334883088740753e-09,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.14035087719298245,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 10,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 28,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -18,
+    "net_share": -0.11764705882352941,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.0050976432976312935,
+    "p_mcnemar_two_sided": 0.0050976432976312935,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.06428571428571428,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 2,
+    "gate": null,
+    "lost": 11,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -9,
+    "net_share": -0.058823529411764705,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.0224609375,
+    "p_mcnemar_two_sided": 0.0224609375,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content+gloss - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.07719298245614035,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 20,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -9,
+    "net_share": -0.058823529411764705,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.14961278438568115,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content+gloss - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 0,
+    "gate": null,
+    "lost": 0,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 0,
+    "net": 0,
+    "net_share": 0.0,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content+shuffled - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.1543859649122807,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 10,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 30,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -20,
+    "net_share": -0.13071895424836602,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.0022214337732293643,
+    "p_mcnemar_two_sided": 0.0022214337732293643,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-content+shuffled - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.07857142857142857,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 3,
+    "gate": null,
+    "lost": 14,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -11,
+    "net_share": -0.0718954248366013,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.012725830078125,
+    "p_mcnemar_two_sided": 0.012725830078125,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-gloss+content - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.16140350877192983,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 32,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -21,
+    "net_share": -0.13725490196078433,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.001913961001264397,
+    "p_mcnemar_two_sided": 0.001913961001264397,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-gloss+content - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.08571428571428572,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 1,
+    "gate": null,
+    "lost": 13,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -12,
+    "net_share": -0.0784313725490196,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.0018310546875,
+    "p_mcnemar_two_sided": 0.0018310546875,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-gloss-only - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.04912280701754386,
+     0.10526315789473684
+    ],
+    "ci_level": 0.9,
+    "gained": 7,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 13,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -6,
+    "net_share": -0.0392156862745098,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.26317596435546875,
+    "p_mcnemar_two_sided": 0.26317596435546875,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A7-gloss-only - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.10526315789473684,
+     0.028070175438596492
+    ],
+    "ci_level": 0.9,
+    "gained": 21,
+    "gate": null,
+    "lost": 18,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 3,
+    "net_share": 0.0196078431372549,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.7492586247608415,
+    "p_mcnemar_two_sided": 0.7492586247608415,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A9-bm25 - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     0.0,
+     0.007142857142857143
+    ],
+    "ci_level": 0.9,
+    "gained": 6,
+    "gate": [
+     "depth read-back: fuse:A9-bm25 under-served",
+     "depth read-back: an input of fuse:A9-bm25 under-served",
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 5,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": 1,
+    "net_share": 0.006535947712418301,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A9-bm25 - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.21052631578947367,
+     0.08421052631578947
+    ],
+    "ci_level": 0.9,
+    "gained": 16,
+    "gate": [
+     "depth read-back: fuse:A9-bm25 under-served",
+     "depth read-back: an input of fuse:A9-bm25 under-served"
+    ],
+    "lost": 6,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 10,
+    "net_share": 0.06535947712418301,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.052478790283203125,
+    "p_mcnemar_two_sided": 0.052478790283203125,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A9-fused - A0": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.13333333333333333,
+     0.21052631578947367
+    ],
+    "ci_level": 0.9,
+    "gained": 5,
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "lost": 22,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": -17,
+    "net_share": -0.1111111111111111,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.0015137195587158203,
+    "p_mcnemar_two_sided": 0.0015137195587158203,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   },
+   "A9-fused - A4-50": {
+    "alternative": "two-sided",
+    "bonferroni_m": 38,
+    "ci": [
+     -0.05714285714285714,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "gained": 4,
+    "gate": null,
+    "lost": 12,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 1,
+    "net": -8,
+    "net_share": -0.05228758169934641,
+    "note": "exploratory: uncorrected p; not a finding",
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mcnemar": 0.076812744140625,
+    "p_mcnemar_two_sided": 0.076812744140625,
+    "p_mid": 0.5,
+    "p_perm": 1.0,
+    "seed": 261029,
+    "type": "superiority"
+   }
+  },
+  "family": {
+   "alpha": 0.05,
+   "delta": 0.05,
+   "family_size": 3,
+   "identity_gate": "pass",
+   "note": "Holm over all of H1-H3: a GATE-NOT-EVALUABLE or absent member enters at p = 1.0 (the family never shrinks silently; found10's convention, prereg). holm_drop_gated is the sensitivity that drops those members instead",
+   "offline_arms": [],
+   "procedure": "Holm over H1-H3",
+   "tested": []
+  },
+  "gold_input": {
+   "questions": {
+    "clusters": 7,
+    "counts": {
+     "cluster_from_locator": 155,
+     "live_gold_chunk_ids_ignored": 155,
+     "pairs_with_quote_variants_unused": 16
+    },
+    "distinct_queries": 73,
+    "format": "partner-held",
+    "pairs": 65,
+    "pairs_sha256": "f8d3b7f15144ed4ba23b2519751c2d9860c11acf131aadfddf75c6988eeebef5",
+    "pairs_used": 57,
+    "quote_rule": "partner-quote/1: NFKC, every whitespace run -> one space, strip, casefold; a chunk is gold when its equally normalised content contains the quote, or its first or last ceil(0.6 * len) characters",
+    "records": 155,
+    "rows": 155,
+    "set_filter": null,
+    "sha256": "c720261e39b87b2d35fd838d9960db2af485eb86a73ee7900ba7caa006dd9664",
+    "skipped_other_set": 0
+   },
+   "sha256": "e3848cccd636de2d8ab15285e82db1775869bcda029f377eae10bb65e3188eb7"
+  },
+  "gold_rule": "any",
+  "hypotheses": {
+   "H1": {
+    "alternative": "greater",
+    "ci": [
+     -0.21052631578947367,
+     0.07719298245614035
+    ],
+    "ci_level": 0.9,
+    "contrast": "A0:found10 - A4-50:found10",
+    "gained": 20,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)",
+     "2 non-zero clusters: alpha/3 not attainable"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 11,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 9,
+    "net_share": 0.058823529411764705,
+    "p": 0.5,
+    "p_exact": 0.5,
+    "p_holm": 1.0,
+    "p_mcnemar": 0.07480639219284058,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.375,
+    "p_perm": 0.5004499550044995,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "found@10(A0) - found@10(A4-50) > 0",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "superiority"
+   },
+   "H2": {
+    "alternative": "greater",
+    "ci": [
+     -0.09090909090909091,
+     0.08333333333333333
+    ],
+    "ci_level": 0.9,
+    "contrast": "bm25:ceiling50 - hybrid:ceiling50",
+    "gained": 2,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)",
+     "3 non-zero clusters: alpha/3 not attainable"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 3,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 3,
+    "net": -1,
+    "net_share": -0.006535947712418301,
+    "p": 0.875,
+    "p_exact": 0.875,
+    "p_holm": 1.0,
+    "p_mcnemar": 0.8125,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.6875,
+    "p_perm": 0.8736126387361264,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "ceiling@50(hybrid) - ceiling@50(bm25) < 0, tested as bm25 - hybrid > 0",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "superiority"
+   },
+   "H3": {
+    "alpha": 0.05,
+    "ci": [
+     -0.056140350877192984,
+     0.10526315789473684
+    ],
+    "ci_level": 0.9,
+    "ci_lower_above_minus_delta": false,
+    "contrast": "A5-50:found10 - A0:found10",
+    "delta": 0.05,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 18,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 7,
+    "net": -7,
+    "net_share": -0.0457516339869281,
+    "p": 0.265625,
+    "p_exact": 0.265625,
+    "p_holm": 1.0,
+    "p_mcnemar_two_sided": 0.26493089646101,
+    "p_mid": 0.26171875,
+    "p_perm": 0.26407359264073593,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "found@10(A5-50) - found@10(A0) > -delta",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "noninferiority"
+   }
+  },
+  "identity_gate": {
+   "n_probes": 3,
+   "probes_equal": 3,
+   "probes_same_set": 3,
+   "reference": "live:hybrid@50",
+   "status": "pass"
+  },
+  "inactive_reranker": {
+   "live:bm25@50": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "bm25@100",
+    "records": 153
+   },
+   "live:hybrid@50": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "live:vector@50": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "vector@100",
+    "records": 153
+   },
+   "rr:bm25@100:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "bm25@100",
+    "records": 153
+   },
+   "rr:bm25@10:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "bm25@100",
+    "records": 153
+   },
+   "rr:bm25@20:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "bm25@100",
+    "records": 153
+   },
+   "rr:bm25@50:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "bm25@100",
+    "records": 153
+   },
+   "rr:hybrid@100:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@100",
+    "records": 153
+   },
+   "rr:hybrid@10:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@10",
+    "records": 153
+   },
+   "rr:hybrid@20:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@20",
+    "records": 153
+   },
+   "rr:hybrid@50:content": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "rr:hybrid@50:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "rr:hybrid@50:content+shuffled": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "rr:hybrid@50:gloss+content": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "rr:hybrid@50:gloss-only": {
+    "gated": false,
+    "identical_top10": 22,
+    "pool": "hybrid@50",
+    "records": 153
+   },
+   "rr:vector@50:content+gloss": {
+    "gated": false,
+    "identical_top10": 0,
+    "pool": "vector@100",
+    "records": 153
+   }
+  },
+  "inputs": [
+   {
+    "backend": "api",
+    "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+    "file": "P-pools-r2.json",
+    "kind": "pools",
+    "sha256": "6b5032d05623e8e2319c01e48ef31b94c7beac87800af081d32642f96f4932d3"
+   },
+   {
+    "backend": null,
+    "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+    "file": "P-rerank-r2.json",
+    "kind": "rerank",
+    "sha256": "db97ddb0a20cfd9fa5f12432a4bf62efdb3b964ea9bf077f1a8e81f5e838f591"
+   },
+   {
+    "backend": null,
+    "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+    "file": "P-fuse-r2.json",
+    "kind": "fuse",
+    "sha256": "b4b7b566d739975c4ad9b6ad4acd6740c9c71e9ee82da5a0f059340cf016b8b3"
+   }
+  ],
+  "manipulation_check": {
+   "boost_check": {
+    "boost_check": "declared",
+    "candidates_source": "chunk dump (--chunks): the stored symbol_glossary",
+    "check": "glossary_boost_behavioural_probe",
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "min_probes": 3,
+    "n_passed": 0,
+    "n_probes": 0,
+    "note": "the probe shows the boost is > 0; its magnitude is the declared value",
+    "reason": "0 chunk(s) qualify, fewer than 3",
+    "selection": {
+     "chunks": 14456,
+     "chunks_with_a_qualifying_token": 0,
+     "chunks_with_glossary": 241,
+     "max_glossary_df": 10,
+     "min_token_len": 5
+    },
+    "status": "declared",
+    "verdict": null
+   },
+   "max_top_k_declared": 100,
+   "ok": true,
+   "reranker_model": "BAAI/bge-reranker-v2-m3",
+   "values": {
+    "rerank_candidates": {
+     "expected": 50,
+     "observed": 50,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "rerank_include_symbol_glossary": {
+     "expected": true,
+     "observed": true,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_candidate_multiplier": {
+     "expected": 2,
+     "observed": 2,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_demote_boilerplate": {
+     "expected": false,
+     "observed": false,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "retrieval_max_per_doc": {
+     "expected": 0,
+     "observed": 0,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "rrf_k": {
+     "expected": 60,
+     "observed": 60,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    },
+    "text_symbol_glossary_boost": {
+     "expected": 1.0,
+     "observed": 1.0,
+     "ok": true,
+     "source": "declared (--server-settings)"
+    }
+   }
+  },
+  "n_clusters": 7,
+  "n_included": 153,
+  "n_records": 155,
+  "provenance": {
+   "citable": true,
+   "commit": "f408b7ab0442fab0daa7be3e14041b876ca1d8f5",
+   "describe": "v1.6.21-59-gf408b7a",
+   "dirty": false,
+   "in_image": false,
+   "recorded_at": "2026-10-30T14:30:50Z",
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution",
+    "python",
+    "nested path keys"
+   ],
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+f408b7a",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ]
+  },
+  "repeat": {
+   "bm25@100": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "hybrid@10": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "hybrid@100": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 3
+   },
+   "hybrid@20": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "hybrid@50": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 3
+   },
+   "live:bm25@50": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "live:hybrid@50": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "live:vector@50": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   },
+   "vector@100": {
+    "found10_differs": 0,
+    "n": 153,
+    "top10_differs": 0
+   }
+  },
+  "reranker": {
+   "expected_snapshot": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+   "model": "BAAI/bge-reranker-v2-m3",
+   "sidecar": {
+    "batch_size": 32,
+    "device": "cuda:0",
+    "expected_model": "BAAI/bge-reranker-v2-m3",
+    "expected_snapshot": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "fp16": true,
+    "installed": {
+     "sentence_transformers": "5.6.0",
+     "torch": "2.12.1",
+     "transformers": "5.12.1"
+    },
+    "max_length": 4096,
+    "model": "BAAI/bge-reranker-v2-m3",
+    "ready": {
+     "device": "cuda:0",
+     "error": null,
+     "http": 200,
+     "loaded": true,
+     "status": "ok"
+    },
+    "requirements_pin_sentence_transformers": ">=3.0,<4",
+    "sentence_transformers_outside_pin": true,
+    "settings_source": "declared from the sidecar's launch environment (/ready does not expose them)",
+    "snapshot": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+   }
+  },
+  "schema": "reranker-results/1",
+  "set": "papers-OC",
+  "shuffle": {
+   "bearers": 241,
+   "chars_total": 11261,
+   "seed": 261029,
+   "sha256": "e6db1ecb7a6662e4c24920fbf3cd5c5bc9d7931e7edee7b03b355b270ad6029f",
+   "unchanged": 4,
+   "unit": "string"
+  }
+ },
+ "stats_gold_rule_all": {
+  "arms_found": {
+   "A0": {
+    "found@10": 61,
+    "found@20": null,
+    "found@5": 46,
+    "found@50": null,
+    "found_in_list": 61,
+    "iqr": [
+     1.0,
+     5.0
+    ],
+    "median_rank": 2.0,
+    "mrr50": 0.19706141715945638,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A1": {
+    "found@10": 9,
+    "found@20": null,
+    "found@5": 6,
+    "found@50": null,
+    "found_in_list": 9,
+    "iqr": [
+     1.0,
+     8.0
+    ],
+    "median_rank": 2.0,
+    "mrr50": 0.033877995642701525,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A2": {
+    "found@10": 50,
+    "found@20": null,
+    "found@5": 32,
+    "found@50": null,
+    "found_in_list": 50,
+    "iqr": [
+     3.0,
+     7.0
+    ],
+    "median_rank": 5.0,
+    "mrr50": 0.09831154684095861,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A3": {
+    "found@10": 20,
+    "found@20": null,
+    "found@5": 14,
+    "found@50": null,
+    "found_in_list": 20,
+    "iqr": [
+     2.0,
+     6.0
+    ],
+    "median_rank": 3.0,
+    "mrr50": 0.05758896151053014,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A4-10": {
+    "found@10": 50,
+    "found@20": null,
+    "found@5": 39,
+    "found@50": null,
+    "found_in_list": 50,
+    "iqr": [
+     1.0,
+     4.75
+    ],
+    "median_rank": 2.0,
+    "mrr50": 0.18020541549953314,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A4-100": {
+    "found@10": 54,
+    "found@20": 65,
+    "found@5": 37,
+    "found@50": 81,
+    "found_in_list": 93,
+    "iqr": [
+     2.0,
+     33.0
+    ],
+    "median_rank": 9.0,
+    "mrr50": 0.18078757699480374,
+    "n": 153,
+    "share_rank_11_50": 0.17647058823529413
+   },
+   "A4-20": {
+    "found@10": 54,
+    "found@20": 65,
+    "found@5": 41,
+    "found@50": null,
+    "found_in_list": 65,
+    "iqr": [
+     1.0,
+     8.0
+    ],
+    "median_rank": 4.0,
+    "mrr50": 0.18103356605375062,
+    "n": 153,
+    "share_rank_11_50": 0.0718954248366013
+   },
+   "A4-50": {
+    "found@10": 52,
+    "found@20": null,
+    "found@5": 38,
+    "found@50": null,
+    "found_in_list": 52,
+    "iqr": [
+     1.0,
+     6.25
+    ],
+    "median_rank": 2.5,
+    "mrr50": 0.17660805062765847,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A5-10": {
+    "found@10": 61,
+    "found@20": null,
+    "found@5": 51,
+    "found@50": null,
+    "found_in_list": 61,
+    "iqr": [
+     2.0,
+     5.0
+    ],
+    "median_rank": 3.0,
+    "mrr50": 0.18005239132690115,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A5-100": {
+    "found@10": 59,
+    "found@20": 67,
+    "found@5": 38,
+    "found@50": 86,
+    "found_in_list": 94,
+    "iqr": [
+     2.0,
+     28.0
+    ],
+    "median_rank": 9.0,
+    "mrr50": 0.1943288731723454,
+    "n": 153,
+    "share_rank_11_50": 0.17647058823529413
+   },
+   "A5-20": {
+    "found@10": 62,
+    "found@20": 75,
+    "found@5": 36,
+    "found@50": null,
+    "found_in_list": 75,
+    "iqr": [
+     2.0,
+     9.0
+    ],
+    "median_rank": 6.0,
+    "mrr50": 0.17812825910091132,
+    "n": 153,
+    "share_rank_11_50": 0.08496732026143791
+   },
+   "A5-50": {
+    "found@10": 54,
+    "found@20": null,
+    "found@5": 36,
+    "found@50": null,
+    "found_in_list": 54,
+    "iqr": [
+     1.0,
+     7.0
+    ],
+    "median_rank": 3.0,
+    "mrr50": 0.1660312273057371,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A6": {
+    "found@10": 15,
+    "found@20": null,
+    "found@5": 14,
+    "found@50": null,
+    "found_in_list": 15,
+    "iqr": [
+     1.0,
+     3.5
+    ],
+    "median_rank": 1.0,
+    "mrr50": 0.06618425147836912,
+    "n": 153,
+    "share_rank_11_50": 0.0
+   },
+   "A7-content": {
+    "found@10": 43,
+    "found@20": 56,
+    "found@5": 34,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     2.0,
+     29.0
+    ],
+    "median_rank": 10.0,
+    "mrr50": 0.17568251390191625,
+    "n": 153,
+    "share_rank_11_50": 0.26143790849673204
+   },
+   "A7-content+gloss": {
+    "found@10": 52,
+    "found@20": 64,
+    "found@5": 38,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     2.0,
+     17.0
+    ],
+    "median_rank": 7.0,
+    "mrr50": 0.18682000663332354,
+    "n": 153,
+    "share_rank_11_50": 0.20261437908496732
+   },
+   "A7-content+shuffled": {
+    "found@10": 41,
+    "found@20": 57,
+    "found@5": 31,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     2.0,
+     30.0
+    ],
+    "median_rank": 13.0,
+    "mrr50": 0.16753143596087802,
+    "n": 153,
+    "share_rank_11_50": 0.27450980392156865
+   },
+   "A7-gloss+content": {
+    "found@10": 40,
+    "found@20": 59,
+    "found@5": 33,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     2.0,
+     21.5
+    ],
+    "median_rank": 11.0,
+    "mrr50": 0.1743722850727232,
+    "n": 153,
+    "share_rank_11_50": 0.28104575163398693
+   },
+   "A7-gloss-only": {
+    "found@10": 55,
+    "found@20": 61,
+    "found@5": 45,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     2.0,
+     24.0
+    ],
+    "median_rank": 5.0,
+    "mrr50": 0.1872111431918064,
+    "n": 153,
+    "share_rank_11_50": 0.1830065359477124
+   },
+   "A9-bm25": {
+    "found@10": 62,
+    "found@20": 80,
+    "found@5": 46,
+    "found@50": 83,
+    "found_in_list": 85,
+    "iqr": [
+     2.0,
+     11.0
+    ],
+    "median_rank": 5.0,
+    "mrr50": 0.19636829838288175,
+    "n": 153,
+    "share_rank_11_50": 0.13725490196078433
+   },
+   "A9-fused": {
+    "found@10": 44,
+    "found@20": 65,
+    "found@5": 29,
+    "found@50": 83,
+    "found_in_list": 83,
+    "iqr": [
+     4.0,
+     18.0
+    ],
+    "median_rank": 9.0,
+    "mrr50": 0.1356310215563288,
+    "n": 153,
+    "share_rank_11_50": 0.2549019607843137
+   }
+  },
+  "ceilings": {
+   "bm25@10": {
+    "ceiling": 61,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@100": {
+    "ceiling": 94,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@20": {
+    "ceiling": 75,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "bm25@50": {
+    "ceiling": 82,
+    "from": "bm25@100",
+    "gate": [
+     "depth read-back: bm25@100 under-served"
+    ],
+    "n": 153
+   },
+   "hybrid@10": {
+    "ceiling": 50,
+    "from": "hybrid@10",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@100": {
+    "ceiling": 93,
+    "from": "hybrid@100",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@20": {
+    "ceiling": 65,
+    "from": "hybrid@20",
+    "gate": null,
+    "n": 153
+   },
+   "hybrid@50": {
+    "ceiling": 83,
+    "from": "hybrid@50",
+    "gate": null,
+    "n": 153
+   },
+   "vector@10": {
+    "ceiling": 9,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@100": {
+    "ceiling": 34,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@20": {
+    "ceiling": 12,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   },
+   "vector@50": {
+    "ceiling": 19,
+    "from": "vector@100",
+    "gate": null,
+    "n": 153
+   }
+  },
+  "decomposition": {
+   "A4-10": {
+    "ceiling": 50,
+    "found@10": 50,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 103,
+    "ordering_loss": 0,
+    "pool": "hybrid@10"
+   },
+   "A4-100": {
+    "ceiling": 93,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 60,
+    "ordering_loss": 39,
+    "pool": "hybrid@100"
+   },
+   "A4-20": {
+    "ceiling": 65,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 88,
+    "ordering_loss": 11,
+    "pool": "hybrid@20"
+   },
+   "A4-50": {
+    "ceiling": 83,
+    "found@10": 52,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 31,
+    "pool": "hybrid@50"
+   },
+   "A5-10": {
+    "ceiling": 61,
+    "found@10": 61,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 92,
+    "ordering_loss": 0,
+    "pool": "bm25@10"
+   },
+   "A5-100": {
+    "ceiling": 94,
+    "found@10": 59,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 59,
+    "ordering_loss": 35,
+    "pool": "bm25@100"
+   },
+   "A5-20": {
+    "ceiling": 75,
+    "found@10": 62,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 78,
+    "ordering_loss": 13,
+    "pool": "bm25@20"
+   },
+   "A5-50": {
+    "ceiling": 82,
+    "found@10": 54,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 71,
+    "ordering_loss": 28,
+    "pool": "bm25@50"
+   },
+   "A6": {
+    "ceiling": 19,
+    "found@10": 15,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 134,
+    "ordering_loss": 4,
+    "pool": "vector@50"
+   },
+   "A7-content": {
+    "ceiling": 83,
+    "found@10": 43,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 40,
+    "pool": "hybrid@50"
+   },
+   "A7-content+gloss": {
+    "ceiling": 83,
+    "found@10": 52,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 31,
+    "pool": "hybrid@50"
+   },
+   "A7-content+shuffled": {
+    "ceiling": 83,
+    "found@10": 41,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 42,
+    "pool": "hybrid@50"
+   },
+   "A7-gloss+content": {
+    "ceiling": 83,
+    "found@10": 40,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 43,
+    "pool": "hybrid@50"
+   },
+   "A7-gloss-only": {
+    "ceiling": 83,
+    "found@10": 55,
+    "found_but_not_in_captured_pool": 0,
+    "identity": true,
+    "n": 153,
+    "not_in_pool": 70,
+    "ordering_loss": 28,
+    "pool": "hybrid@50"
+   }
+  },
+  "gold_rule": "all",
+  "hypotheses": {
+   "H1": {
+    "alternative": "greater",
+    "ci": [
+     -0.21052631578947367,
+     0.07719298245614035
+    ],
+    "ci_level": 0.9,
+    "contrast": "A0:found10 - A4-50:found10",
+    "gained": 20,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)",
+     "2 non-zero clusters: alpha/3 not attainable"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 11,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 2,
+    "net": 9,
+    "net_share": 0.058823529411764705,
+    "p": 0.5,
+    "p_exact": 0.5,
+    "p_holm": 1.0,
+    "p_mcnemar": 0.07480639219284058,
+    "p_mcnemar_two_sided": 0.14961278438568115,
+    "p_mid": 0.375,
+    "p_perm": 0.5004499550044995,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "found@10(A0) - found@10(A4-50) > 0",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "superiority"
+   },
+   "H2": {
+    "alternative": "greater",
+    "ci": [
+     -0.09090909090909091,
+     0.08333333333333333
+    ],
+    "ci_level": 0.9,
+    "contrast": "bm25:ceiling50 - hybrid:ceiling50",
+    "gained": 2,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)",
+     "3 non-zero clusters: alpha/3 not attainable"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 3,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 3,
+    "net": -1,
+    "net_share": -0.006535947712418301,
+    "p": 0.875,
+    "p_exact": 0.875,
+    "p_holm": 1.0,
+    "p_mcnemar": 0.8125,
+    "p_mcnemar_two_sided": 1.0,
+    "p_mid": 0.6875,
+    "p_perm": 0.8736126387361264,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "ceiling@50(hybrid) - ceiling@50(bm25) < 0, tested as bm25 - hybrid > 0",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "superiority"
+   },
+   "H3": {
+    "alpha": 0.05,
+    "ci": [
+     -0.056140350877192984,
+     0.10526315789473684
+    ],
+    "ci_level": 0.9,
+    "ci_lower_above_minus_delta": false,
+    "contrast": "A5-50:found10 - A0:found10",
+    "delta": 0.05,
+    "gained": 11,
+    "gate": [
+     "depth read-back: bm25@100 under-served",
+     "depth read-back: bm25@100 under-served",
+     "fewer than 8 clusters (7)"
+    ],
+    "holm_entered_as": 1.0,
+    "holm_mid": 1.0,
+    "lost": 18,
+    "n": 153,
+    "n_boot": 10000,
+    "n_flips": 10000,
+    "n_pages": 7,
+    "n_pages_nonzero": 7,
+    "net": -7,
+    "net_share": -0.0457516339869281,
+    "p": 0.265625,
+    "p_exact": 0.265625,
+    "p_holm": 1.0,
+    "p_mcnemar_two_sided": 0.26493089646101,
+    "p_mid": 0.26171875,
+    "p_perm": 0.26407359264073593,
+    "seed": 261029,
+    "significant": false,
+    "significant_mid": false,
+    "statement": "found@10(A5-50) - found@10(A0) > -delta",
+    "status": "GATE-NOT-EVALUABLE",
+    "type": "noninferiority"
+   }
+  }
+ }
+}
