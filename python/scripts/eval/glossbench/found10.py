@@ -406,7 +406,14 @@ def verify_swap_record(record: Mapping[str, Any], cfg: Mapping[str, Any], corpus
 
 
 async def live_census(client: httpx.AsyncClient, es_url: str, index: str) -> dict[str, Any]:
-    """Read-only: one ``terms`` aggregation on the stamp, ``size 0``."""
+    """Read-only: one ``terms`` aggregation on the stamp, ``size 0``. ``client`` is the
+    INDEX client (:meth:`Runner._default_census_client`), never the API client: the
+    API credential must not reach the index host, so a client carrying one of
+    :data:`AUTH_HEADERS` is refused here whatever built it."""
+    carried = sorted(h for h in AUTH_HEADERS.values() if h in client.headers)
+    if carried:
+        raise Refused(f"live census: the index client carries {carried}; the API credential "
+                      "must never be sent to the index host")
     body = {"size": 0, "track_total_hits": True,
             "aggs": {"v": {"terms": {"field": f"metadata.{VERSION_KEY}", "size": 100, "missing": "<none>"}}}}
     r = await client.post(f"{es_url.rstrip('/')}/{index}/_search", json=body)
@@ -439,12 +446,16 @@ def score_response(sources: Sequence[Mapping[str, Any]], gold: Sequence[str], re
 
 
 class Runner:
-    """One (corpus, arm[, repeat]) run. ``client`` is injectable (tests use
-    ``httpx.MockTransport``)."""
+    """One (corpus, arm[, repeat]) run. Two HTTP clients, both injectable (tests use
+    ``httpx.MockTransport``): ``client_factory`` builds the API client, which alone
+    carries the credential (:func:`auth_headers`); ``census_client_factory`` builds
+    the index client for :func:`live_census`, which carries none (the index needs
+    no key, and the API credential must never reach another host)."""
 
     def __init__(self, cfg: dict[str, Any], records: list[dict[str, Any]], corpus: str, arm: str,
                  out: Path, swap_record_path: Path, repeat: int | None = None,
                  client_factory: Callable[[], httpx.AsyncClient] | None = None,
+                 census_client_factory: Callable[[], httpx.AsyncClient] | None = None,
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  probe_chunks: Sequence[tuple[str, str, str]] | None = None,
                  probe_unavailable: str | None = None, probe_source: str | None = None,
@@ -469,6 +480,7 @@ class Runner:
         self.retries = int(api["retries"])
         self.backoff = float(api["retry_backoff_s"])
         self._client_factory = client_factory or self._default_client
+        self._census_client_factory = census_client_factory or self._default_census_client
         self._sleep = sleep
         self.stop_reason: str | None = None
         self.hard_stop: str | None = None
@@ -485,9 +497,16 @@ class Runner:
         self.boost_check: dict[str, Any] | None = None
 
     def _default_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+        """The API client: the only one that carries the credential."""
         api = self.cfg["api"]
         headers = {"Content-Type": "application/json", **auth_headers(api)}
         return httpx.AsyncClient(timeout=float(api["timeout_s"]), headers=headers, transport=transport)
+
+    def _default_census_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+        """The index client for :func:`live_census`: NO credential header. The census
+        index needs none, and the API credential is for the API host only."""
+        return httpx.AsyncClient(timeout=float(self.cfg["api"]["timeout_s"]),
+                                 headers={"Content-Type": "application/json"}, transport=transport)
 
     # ---- one retrieval with retries
     async def _call(self, client: httpx.AsyncClient, rec: Mapping[str, Any], cond: str) -> dict[str, Any]:
@@ -552,9 +571,9 @@ class Runner:
             loop.add_signal_handler(signal.SIGTERM, self._sigterm)
         except (NotImplementedError, RuntimeError):  # pragma: no cover - non-main thread / platform
             pass
-        async with self._client_factory() as client:
+        async with self._client_factory() as client, self._census_client_factory() as es_client:
             if census_cfg.get("es_url"):
-                live_before = await live_census(client, census_cfg["es_url"], self.ccfg["index"])
+                live_before = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
                 if live_before != census:
                     raise Refused(f"live census {live_before} != the swap record's {census}")
             server = await self._server_info(client)
@@ -593,7 +612,7 @@ class Runner:
             if self.config_error:
                 raise Refused(self.config_error)
             if census_cfg.get("es_url") and not self.stop_reason:
-                live_after = await live_census(client, census_cfg["es_url"], self.ccfg["index"])
+                live_after = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
                 if live_after != census:
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")

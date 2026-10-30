@@ -148,8 +148,8 @@ def run(tmp: Path, api: FakeAPI, conf: dict[str, Any] | None = None, sw: dict[st
     async def nosleep(_: float) -> None:
         return None
 
-    r = f10.Runner(conf, QUESTIONS, "O", arm, tmp / "out", sp, repeat=repeat, client_factory=factory, sleep=nosleep,
-                   **probe)
+    r = f10.Runner(conf, QUESTIONS, "O", arm, tmp / "out", sp, repeat=repeat, client_factory=factory,
+                   census_client_factory=factory, sleep=nosleep, **probe)
     return asyncio.run(r.run())
 
 
@@ -624,17 +624,24 @@ TOKEN = "un=synthetic-user|tokenid=0000|sig=SYNTHETICSIGNATUREVALUE"
 
 
 class AuthFakeAPI(FakeAPI):
+    """FakeAPI that records every request's headers (``seen``) and, with the host and
+    path, every request made (``trace``), whichever host it went to."""
+
     def __init__(self, *a: Any, **k: Any) -> None:
         super().__init__(*a, **k)
         self.seen: list[dict[str, str]] = []
+        self.trace: list[tuple[str, str, dict[str, str]]] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         self.seen.append(dict(req.headers))
+        self.trace.append((str(req.url.host), req.url.path, dict(req.headers)))
         return super().__call__(req)
 
 
-def run_default_client(tmp: Path, api: FakeAPI, conf: dict[str, Any]) -> int:
-    """Like :func:`run`, but through the Runner's OWN client (its auth headers), transport mocked."""
+def run_default_client(tmp: Path, api: FakeAPI, conf: dict[str, Any], **probe: Any) -> int:
+    """Like :func:`run`, but through the Runner's OWN clients (the API client's auth
+    headers, the census client's lack of them), transports mocked."""
+    probe = {"boost_declared": 1.0, **probe}
     tmp.mkdir(parents=True, exist_ok=True)
     sp = tmp / "swap-armx.json"
     sp.write_text(json.dumps(swap()))
@@ -642,9 +649,54 @@ def run_default_client(tmp: Path, api: FakeAPI, conf: dict[str, Any]) -> int:
     async def nosleep(_: float) -> None:
         return None
 
-    r = f10.Runner(conf, QUESTIONS, "O", "armx", tmp / "out", sp, sleep=nosleep, boost_declared=1.0)
+    r = f10.Runner(conf, QUESTIONS, "O", "armx", tmp / "out", sp, sleep=nosleep, **probe)
     r._client_factory = lambda: r._default_client(httpx.MockTransport(api))
+    r._census_client_factory = lambda: r._default_census_client(httpx.MockTransport(api))
     return asyncio.run(r.run())
+
+
+CREDENTIAL_HEADERS = {h.lower() for h in f10.AUTH_HEADERS.values()}
+
+
+@pytest.mark.parametrize("choice", ["authorization", "x-api-key"])
+def test_credential_reaches_the_api_host_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                              choice: str) -> None:
+    """A full run with the live census on, the boost probe exercised (probe
+    candidates, not a declaration), /v1/version + /v1/config and every retrieval:
+    the credential is on every request to the API host and on NO request to any
+    other host (the census index)."""
+    monkeypatch.setenv("F10_TEST_TOKEN", TOKEN)
+    api = AuthFakeAPI(RANKS)
+    conf = cfg(api={"base_url": API, "retries": 1, "retry_backoff_s": 0, "api_key_env": "F10_TEST_TOKEN",
+                    "auth_header": choice}, census={"es_url": ES})
+    assert run_default_client(tmp_path, api, conf, boost_declared=None, probe_chunks=PROBE_CHUNKS) == f10.EXIT_OK
+    hosts = {h for h, _, _ in api.trace}
+    assert hosts == {"api.invalid", "es.invalid"}
+    es_reqs = [(p, hd) for h, p, hd in api.trace if h == "es.invalid"]
+    api_reqs = [(p, hd) for h, p, hd in api.trace if h == "api.invalid"]
+    assert len(es_reqs) == 2 and all(p == f"/{INDEX}/_search" for p, _ in es_reqs)  # census before + after
+    assert all(not (CREDENTIAL_HEADERS & {k.lower() for k in hd}) for _, hd in es_reqs), es_reqs
+    assert {p for p, _ in api_reqs} == {"/v1/version", "/v1/config", "/v1/retrieve"}
+    assert all(hd.get(choice) == TOKEN for _, hd in api_reqs)
+    s = json.loads((tmp_path / "out/O/armx.summary.json").read_text())
+    assert s["census"]["source"] == "swap_record+live"
+    assert s["manipulation_check"]["glossary_boost"]["status"] == "active"  # the probes ran, through the API client
+    for f in tmp_path.rglob("*"):
+        if f.is_file():
+            assert TOKEN not in f.read_text(errors="replace"), f
+
+
+def test_live_census_refuses_a_client_that_carries_a_credential() -> None:
+    """Defence in depth: whoever builds the census client, one carrying an API
+    credential is refused before the request is made."""
+    api = AuthFakeAPI(RANKS)
+    for header in f10.AUTH_HEADERS.values():
+        client = httpx.AsyncClient(headers={header: TOKEN}, transport=httpx.MockTransport(api))
+        with pytest.raises(f10.Refused, match="must never be sent to the index host"):
+            asyncio.run(f10.live_census(client, ES, INDEX))
+    assert api.trace == []
+    clean = httpx.AsyncClient(headers={"Content-Type": "application/json"}, transport=httpx.MockTransport(api))
+    assert asyncio.run(f10.live_census(clean, ES, INDEX))["total"] == 100
 
 
 @pytest.mark.parametrize("choice,header,other", [("authorization", "authorization", "x-api-key"),

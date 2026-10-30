@@ -1063,6 +1063,32 @@ def test_a_named_but_unset_credential_is_refused_before_any_call(data: dict[str,
         rt.build_parser().parse_args(["pools", "--auth-header", "bearer", "--questions", "q", "--out", "o"])
 
 
+def test_credential_is_confined_to_the_api_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The credential lives on ``Api``'s client only: the reranker sidecar client
+    (the other HTTP client in this module) is built without it, and a request to
+    the sidecar host carries no credential header."""
+    import httpx
+
+    trace: list[tuple[str, dict[str, str]]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        trace.append((str(req.url.host), dict(req.headers)))
+        return httpx.Response(200, json={"ready": True})
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    api = rt.Api("http://api.invalid", TOKEN, None, 2, auth_header="authorization")
+    rr = rt.Sidecar("http://rr.invalid", 2)
+    assert api.http.headers["authorization"] == TOKEN
+    names = {h.lower() for h in rt.AUTH_HEADERS.values()}
+    assert not (names & {k.lower() for k in rr.http.headers})
+    assert rr.ready()["http"] == 200 and api.config() == {"ready": True}
+    by_host = dict(trace)
+    assert set(by_host) == {"api.invalid", "rr.invalid"}
+    assert by_host["api.invalid"].get("authorization") == TOKEN
+    assert not (names & {k.lower() for k in by_host["rr.invalid"]})
+
+
 def test_no_credential_sends_no_header(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     h = AuthAPI()
     assert _auth_pools(data, monkeypatch, h) == 0  # pools_argv passes --api-key-env ''

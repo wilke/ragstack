@@ -1722,7 +1722,11 @@ PART4_RESCORE_SCHEMA = "reranker-part4-rescore/1"
 D3_ARMS = ("A0", "A2", "A4-50")
 PART4_FOUND_RULE = ("part-4 found: every gold quote of the record occurs (parts 2-4 normalisation, text hit) "
                     "in the chunks of the cell's delivered context; for a top-10 cell that is the top 10 of "
-                    "the cell's ranked list. Not the gold-chunk-id rule of `stats` (gold rule 'any').")
+                    "the cell's ranked list. Not the gold-chunk-id rule of `stats` (gold rule 'any'): it is "
+                    "an ALL-quotes rule (nearest `stats` analogue: --gold-rule all), and a text hit counts "
+                    "any chunk whose text holds the quote, so a quote whose text recurs in another chunk "
+                    "(overlap, repeated passages) can be found without the gold chunk id being in the top "
+                    "10. The file holds no ranks or chunk ids, so this cannot be re-scored by id here.")
 
 
 def parse_part4_map(items: list[str] | None) -> dict[str, str]:
