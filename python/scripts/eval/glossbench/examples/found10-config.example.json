@@ -19,7 +19,7 @@
   },
   "corpora": {
     "O": {"collection": "<collection id of the OA-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 32765,
-          "es_id_prefix": "<tenant>:"},
+          "es_id_prefix": "<tenant>:", "bm25_scope": {"tenant": "<tenant>", "extra_tenants": []}},
     "A": {"collection": "<collection id of the ASM-1000 bench copy>", "index": "ragstack_lib_bench_<...>", "expected_chunks": 27418,
           "es_id_prefix": "<tenant>:"}
   },
