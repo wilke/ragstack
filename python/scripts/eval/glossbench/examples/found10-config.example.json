@@ -3,6 +3,7 @@
   "api": {
     "base_url": "http://127.0.0.1:PORT",
     "api_key_env": "GLOSSBENCH_API_KEY",
+    "auth_header": "x-api-key",
     "timeout_s": 120,
     "inflight": 4,
     "retries": 3,

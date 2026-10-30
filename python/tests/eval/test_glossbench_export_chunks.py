@@ -182,3 +182,124 @@ def test_cli_requires_config_no_defaults(tmp_path: Path) -> None:
                                "allowed_index_prefixes": ["bench-"], "out": str(tmp_path / "o.jsonl")}))
     with pytest.raises(SystemExit, match="allow-listed"):
         ec.main(["--private-config", str(cfg)])
+
+
+# --- --with-glossary: the reranker test's chunk dump (post-freeze tooling addition) ---------
+
+def _src_full(i: int, n: int) -> dict:
+    """A chunk as the text index stores it: the glossary at top level, its stamp and the
+    neighbour links in metadata (``ragstack.stores.elasticsearch`` / ``metadata_schema``)."""
+    d = _src(i)
+    doc, first, last = i // 3, (i // 3) * 3, min((i // 3) * 3 + 2, n - 1)
+    if i % 2 == 0:
+        d["symbol_glossary"] = f"Qb — breathing rate {i}"
+    d["metadata"].update({"symbol_glossary_version": "rules/3@file/1", "tenant_id": "t",
+                          "prev_chunk_id": f"d{doc}-c{i - 1}" if i > first else None,
+                          "next_chunk_id": f"d{doc}-c{i + 1}" if i < last else None})
+    return d
+
+
+def _filter(src: dict, includes: list[str]) -> dict:
+    """``_source.includes`` as Elasticsearch applies it (top-level and ``metadata.*`` paths)."""
+    out: dict = {}
+    for f in includes:
+        if f.startswith("metadata."):
+            k = f.split(".", 1)[1]
+            if k in (src.get("metadata") or {}):
+                out.setdefault("metadata", {})[k] = src["metadata"][k]
+        elif f in src:
+            out[f] = src[f]
+    return out
+
+
+class FilteringES(FakeES):
+    """FakeES whose documents carry the glossary and which honours ``_source.includes``."""
+
+    def __init__(self, n: int) -> None:
+        super().__init__(n)
+        self.docs = [_src_full(i, n) for i in range(n)]
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        resp = super().__call__(req)
+        body = self.bodies[-1]
+        if req.url.path == "/_search":
+            data = resp.json()
+            for h in data["hits"]["hits"]:
+                h["_source"] = _filter(h["_source"], body["_source"]["includes"])
+            return httpx.Response(200, json=data)
+        return resp
+
+
+def gclient(fake: FakeES) -> httpx.Client:
+    return ec.make_client("http://es.invalid", INDEX, "k", inner=httpx.MockTransport(fake), with_glossary=True)
+
+
+def test_default_mode_never_requests_the_glossary_even_when_the_index_has_one(tmp_path: Path) -> None:
+    fake = FilteringES(9)
+    run(fake, tmp_path)
+    searches = [b for b in fake.bodies if "size" in b]
+    assert searches and all(b["_source"]["includes"] == ec.SOURCE_INCLUDES for b in searches)
+    assert all("symbol_glossary" not in json.dumps(b) and "_chunk_id" not in json.dumps(b) for b in searches)
+    rows = [json.loads(x) for x in (tmp_path / "out" / "chunks.jsonl").read_text().splitlines()]
+    assert all("symbol_glossary" not in json.dumps(r) and "prev_chunk_id" not in r["metadata"] for r in rows)
+    # the glossary code path exists, but a default-mode client cannot carry its field list
+    with pytest.raises(SystemExit, match="guard"):
+        ec.export(client(FilteringES(3)), INDEX, PREFIXES, tmp_path / "o" / "dump-x.jsonl", with_glossary=True)
+    with pytest.raises(SystemExit, match="guard"):
+        client(fake).post("/_search", json={"pit": {"id": "x"},
+                                            "_source": {"includes": ec.GLOSSARY_SOURCE_INCLUDES}})
+
+
+def test_with_glossary_dump_rows_and_manifest(tmp_path: Path) -> None:
+    fake = FilteringES(7)
+    out = tmp_path / "out" / "dump-docs-A.jsonl"
+    m = ec.export(gclient(fake), INDEX, PREFIXES, out, "docs-A", 3, with_glossary=True)
+    assert all(b["_source"]["includes"] == ec.GLOSSARY_SOURCE_INCLUDES for b in fake.bodies if "size" in b)
+    rows = [json.loads(x) for x in out.read_text().splitlines()]
+    assert rows[0]["symbol_glossary"] == "Qb — breathing rate 0" and rows[1]["symbol_glossary"] == ""
+    assert rows[1]["metadata"] == {"source_path": "PMC0", "title": "Boat paper 0",
+                                   "symbol_glossary_version": "rules/3@file/1",
+                                   "prev_chunk_id": "d0-c0", "next_chunk_id": "d0-c2"}
+    assert rows[0]["metadata"]["prev_chunk_id"] is None and rows[6]["metadata"]["next_chunk_id"] is None
+    assert "tenant_id" not in rows[0]["metadata"]
+    assert m["symbol_glossary_exported"] is True and m["fields"] == ec.GLOSSARY_SOURCE_INCLUDES
+    assert m["chunks_with_glossary"] == 4 and m["glossary_versions"] == {"rules/3@file/1": 7}
+    assert m["sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
+    assert stat.S_IMODE(os.stat(out).st_mode) == 0o600
+
+
+@pytest.mark.parametrize("name,with_glossary", [
+    ("chunks-docs-A.jsonl", True), ("docs-A.jsonl", True), ("dump-docs-A.jsonl", False)])
+def test_mode_and_output_name_must_agree(tmp_path: Path, name: str, with_glossary: bool) -> None:
+    fake = FilteringES(3)
+    c = gclient(fake) if with_glossary else client(fake)
+    with pytest.raises(SystemExit, match="dump-"):
+        ec.export(c, INDEX, PREFIXES, tmp_path / name, with_glossary=with_glossary)
+    assert fake.calls == [] and not (tmp_path / name).exists()
+
+
+def test_cli_with_glossary_refuses_a_chunks_name_before_any_call(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"es_url": "http://127.0.0.1:1", "index": INDEX, "allowed_index_prefixes": PREFIXES,
+                               "out": str(tmp_path / "chunks-docs-A.jsonl")}))
+    with pytest.raises(SystemExit, match="dump-"):
+        ec.main(["--private-config", str(cfg), "--with-glossary"])
+
+
+def test_dump_is_readable_by_the_reranker_harness(tmp_path: Path) -> None:
+    """The dump through ``reranker_test.py``'s own chunk-dump reader (``--chunks``)."""
+    import argparse
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "eval"))
+    import reranker_test as rt
+
+    out = tmp_path / "out" / "dump-docs-A.jsonl"
+    ec.export(gclient(FilteringES(7)), INDEX, PREFIXES, out, "docs-A", 4, with_glossary=True)
+    cp = rt.load_corpus(argparse.Namespace(chunks=str(out), part4_arm=None, private_config=None))
+    assert [c.id for c in cp.chunks] == [f"d{i // 3}-c{i}" for i in range(7)]
+    assert cp.by_id["d0-c0"].glossary == "Qb — breathing rate 0" and cp.by_id["d0-c1"].glossary == ""
+    assert cp.by_id["d0-c0"].doc_id == "d0" and cp.by_id["d0-c0"].content == "text 0 Qb = 0 m/s"
+    assert cp.neighbours["d0-c1"] == {"d0-c0", "d0-c2"} and cp.neighbours["d0-c0"] == {"d0-c1"}
+    assert "d2-c6" not in cp.neighbours  # a one-chunk document has no links
+    assert cp.meta["chunks_with_glossary"] == 4 and cp.meta["sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
+    # the live reranker passage is built from the dumped glossary
+    assert rt.render(cp.by_id["d0-c0"], "content+gloss").endswith("Qb — breathing rate 0")

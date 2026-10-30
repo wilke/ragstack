@@ -285,7 +285,7 @@ def pools_argv(data: dict[str, Any], url: str, *extra: str) -> list[str]:
     return ["pools", "--backend", "api", "--base-url", url, "--questions", str(data["questions"]),
             "--chunks", str(data["chunks"]), "--depths", "10,20,40", "--server-settings",
             server_settings(data["dir"]), "--out", str(data["dir"] / "pools.json"),
-            "--gold-out", str(data["dir"] / "gold.json"), *extra]
+            "--gold-out", str(data["dir"] / "gold.json"), "--api-key-env", "", *extra]
 
 
 def test_api_pools_record_requested_and_served(data: dict[str, Any]) -> None:
@@ -994,3 +994,77 @@ def test_holm_gated_member_enters_at_one_hand_values() -> None:
     assert "holm_drop_gated" not in hyps["H2"] and hyps["H2"]["holm_entered_as"] == 1.0
     # mid-p follows the same convention: .005 x 3 = .015, max(.015, 2 x .03) = .06
     assert [hyps[h]["holm_mid"] for h in ("H1", "H3")] == pytest.approx([0.015, 0.06])
+
+
+# ------------------------------------------------------------ credentials: --auth-header / --api-key-env
+
+TOKEN = "un=synthetic-user|tokenid=0000|sig=SYNTHETICSIGNATUREVALUE"
+
+
+class AuthAPI(BoostAPI):
+    """BoostAPI that records every request's headers and answers ``/v1/config`` with
+    403 (a user token: "insufficient role")."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[dict[str, str]] = []
+
+    def __call__(self, req: Any) -> Any:
+        import httpx
+
+        self.seen.append(dict(req.headers))
+        if req.url.path == "/v1/config":
+            return httpx.Response(403, json={"detail": "insufficient role"})
+        return super().__call__(req)
+
+
+def _auth_pools(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch, h: AuthAPI, *extra: str) -> int:
+    """pools through the REAL ``Api`` constructor (its own headers), httpx's transport mocked."""
+    import httpx
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(h), **kw))
+    settings = data["dir"] / "server-full.json"
+    settings.write_text(json.dumps(rt.PREREG_SETTINGS))  # /v1/config is unreadable: everything declared
+    return rt.main(pools_argv(data, "http://api.invalid", "--boost-declared", "1.0",
+                              "--server-settings", str(settings), *extra))
+
+
+@pytest.mark.parametrize("choice,header,other", [("authorization", "authorization", "x-api-key"),
+                                                 ("x-api-key", "x-api-key", "authorization")])
+def test_auth_header_is_sent_and_only_its_name_recorded(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+                                                        capsys: pytest.CaptureFixture[str], choice: str,
+                                                        header: str, other: str) -> None:
+    monkeypatch.setenv("RT_TEST_TOKEN", TOKEN)
+    h = AuthAPI()
+    assert _auth_pools(data, monkeypatch, h, "--api-key-env", "RT_TEST_TOKEN", "--auth-header", choice) == 0
+    assert h.seen and all(x.get(header) == TOKEN and other not in x for x in h.seen)  # verbatim: no "Bearer "
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["auth"] == {"header": rt.AUTH_HEADERS[choice], "api_key_env": "RT_TEST_TOKEN"}
+    # a 403 from /v1/config is not fatal: recorded, and the declared settings stand in
+    assert out["config_readable"] is False and out["config_status"] == 403
+    assert out["manipulation"]["ok"] is True
+    assert all(v["source"] == "declared (--server-settings)" for v in out["manipulation"]["values"].values())
+    logged = capsys.readouterr()
+    for f in data["dir"].rglob("*"):
+        if f.is_file():
+            assert TOKEN not in f.read_text(errors="replace"), f
+    assert TOKEN not in logged.out + logged.err and "sig=" not in json.dumps(out)
+
+
+def test_a_named_but_unset_credential_is_refused_before_any_call(data: dict[str, Any],
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RT_TEST_TOKEN", raising=False)
+    h = AuthAPI()
+    with pytest.raises(SystemExit, match="RT_TEST_TOKEN"):
+        _auth_pools(data, monkeypatch, h, "--api-key-env", "RT_TEST_TOKEN", "--auth-header", "authorization")
+    assert h.seen == []
+    with pytest.raises(SystemExit):
+        rt.build_parser().parse_args(["pools", "--auth-header", "bearer", "--questions", "q", "--out", "o"])
+
+
+def test_no_credential_sends_no_header(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    h = AuthAPI()
+    assert _auth_pools(data, monkeypatch, h) == 0  # pools_argv passes --api-key-env ''
+    assert all("authorization" not in x and "x-api-key" not in x for x in h.seen)
+    assert json.loads((data["dir"] / "pools.json").read_text())["auth"] == {"header": None, "api_key_env": None}

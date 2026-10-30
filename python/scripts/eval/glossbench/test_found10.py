@@ -616,3 +616,86 @@ def test_probe_candidates_shuffled_arm_reproduces_the_backfill_permutation(tmp_p
     assert want.populated == 2 and chunks is None and "permutation differs" in why
     sw2 = swap(apply={"dry_run": False, "shuffle": {"seed": SEED}})
     assert "no permutation_sha256" in f10.probe_candidates(conf, "O", "armx", sw2, str(ex), str(g), None)[1]
+
+
+# ------------------------------------------------------------- credentials: api.auth_header
+
+TOKEN = "un=synthetic-user|tokenid=0000|sig=SYNTHETICSIGNATUREVALUE"
+
+
+class AuthFakeAPI(FakeAPI):
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        self.seen: list[dict[str, str]] = []
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        self.seen.append(dict(req.headers))
+        return super().__call__(req)
+
+
+def run_default_client(tmp: Path, api: FakeAPI, conf: dict[str, Any]) -> int:
+    """Like :func:`run`, but through the Runner's OWN client (its auth headers), transport mocked."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    sp = tmp / "swap-armx.json"
+    sp.write_text(json.dumps(swap()))
+
+    async def nosleep(_: float) -> None:
+        return None
+
+    r = f10.Runner(conf, QUESTIONS, "O", "armx", tmp / "out", sp, sleep=nosleep, boost_declared=1.0)
+    r._client_factory = lambda: r._default_client(httpx.MockTransport(api))
+    return asyncio.run(r.run())
+
+
+@pytest.mark.parametrize("choice,header,other", [("authorization", "authorization", "x-api-key"),
+                                                 ("x-api-key", "x-api-key", "authorization")])
+def test_auth_header_is_sent_and_only_its_name_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                        capsys: pytest.CaptureFixture[str], choice: str,
+                                                        header: str, other: str) -> None:
+    monkeypatch.setenv("F10_TEST_TOKEN", TOKEN)
+    api = AuthFakeAPI(RANKS)
+    conf = cfg(api={"base_url": API, "retries": 1, "retry_backoff_s": 0, "api_key_env": "F10_TEST_TOKEN",
+                    "auth_header": choice})
+    assert run_default_client(tmp_path, api, conf) == f10.EXIT_OK
+    assert api.seen and all(h.get(header) == TOKEN and other not in h for h in api.seen)  # verbatim, no "Bearer "
+    s = json.loads((tmp_path / "out/O/armx.summary.json").read_text())
+    assert s["status"] == "complete"
+    assert s["auth"] == {"header": f10.AUTH_HEADERS[choice], "api_key_env": "F10_TEST_TOKEN"}
+    # FakeAPI answers /v1/config with 403 (insufficient role): recorded, not fatal
+    assert s["config_readable"] is False and s["server"]["/v1/config"] == {"status": 403}
+    assert s["server_assumed"]["rrf_k"] == 60
+    logged = capsys.readouterr()
+    for f in tmp_path.rglob("*"):
+        if f.is_file():
+            assert TOKEN not in f.read_text(errors="replace"), f
+    assert TOKEN not in logged.out + logged.err
+
+
+def test_auth_named_env_unset_is_refused_before_any_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("F10_TEST_TOKEN", raising=False)
+    api = AuthFakeAPI(RANKS)
+    conf = cfg(api={"base_url": API, "api_key_env": "F10_TEST_TOKEN", "auth_header": "authorization"})
+    with pytest.raises(f10.Refused, match="F10_TEST_TOKEN"):
+        run_default_client(tmp_path, api, conf)
+    assert api.seen == []
+
+
+def test_auth_header_choice_is_validated_and_defaults_to_x_api_key() -> None:
+    with pytest.raises(f10.Refused, match="auth_header"):
+        cfg(api={"base_url": API, "auth_header": "bearer"})
+    c = cfg()
+    assert c["api"]["auth_header"] == "x-api-key"
+    assert f10.auth_headers(c["api"], {}) == {}  # no api_key_env: no header
+    assert f10.auth_headers({**c["api"], "api_key_env": "E"}, {"E": "v"}) == {"X-API-Key": "v"}
+    assert f10.auth_record(c["api"]) == {"header": None, "api_key_env": None}
+
+
+def test_config_readable_when_v1_config_answers(tmp_path: Path) -> None:
+    class Readable(FakeAPI):
+        def __call__(self, req: httpx.Request) -> httpx.Response:
+            if req.method == "GET" and req.url.path == "/v1/config":
+                return httpx.Response(200, json={"rerank_candidates": 50})
+            return super().__call__(req)
+
+    assert run(tmp_path, Readable(RANKS)) == f10.EXIT_OK
+    assert json.loads((tmp_path / "out/O/armx.summary.json").read_text())["config_readable"] is True

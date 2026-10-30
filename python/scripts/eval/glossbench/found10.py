@@ -16,7 +16,12 @@ runner only proves which arm is attached and refuses to measure otherwise.
 Nothing private is in this file: base URL, collection ids, index names, expected
 chunk counts, stamps and glossary-file hashes come from ``--private-config``
 (see ``examples/found10-config.example.json``); the API key, if any, from the
-environment variable the config names.
+environment variable the config names (``api.api_key_env``; unset = refused), sent
+as ``X-API-Key`` or, with ``api.auth_header: "authorization"``, verbatim in the
+``Authorization`` header (a BV-BRC user token, no ``Bearer `` prefix). The summary
+records the header and variable NAMES (``auth``), never the value, and
+``config_readable``: ``/v1/config`` is best effort (a user token gets 403) and is
+never read for a setting (``server_assumed`` is).
 
 **Inputs from the sibling tools (one record schema, no adapters).** Questions
 are the drafter's accepted records (``glossbench_r2_draft.py summary`` →
@@ -170,7 +175,34 @@ DEFAULT_CONDITIONS: dict[str, dict[str, Any]] = {
 #: fixed on every request so a server default cannot change the condition
 FIXED_REQUEST = {"use_graph": False, "rewrite_strategies": ["passthrough"], "context_window": 0,
                  "exclude_boilerplate": False}
-DEFAULT_API = {"timeout_s": 120.0, "inflight": 4, "retries": 3, "retry_backoff_s": 2.0, "api_key_env": None}
+DEFAULT_API = {"timeout_s": 120.0, "inflight": 4, "retries": 3, "retry_backoff_s": 2.0, "api_key_env": None,
+               "auth_header": "x-api-key"}
+#: ``api.auth_header``: where the credential from ``api.api_key_env`` goes. ``x-api-key``: the
+#: ``X-API-Key`` header (a RAGStack API key); ``authorization``: the ``Authorization`` header,
+#: verbatim and with no ``Bearer `` prefix (a BV-BRC user token; ``ragstack.api.security``).
+AUTH_HEADERS = {"x-api-key": "X-API-Key", "authorization": "Authorization"}
+
+
+def auth_headers(api: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The credential header for ``api`` (the normalised ``api`` block). The value comes
+    only from the environment variable ``api_key_env`` names, never from the config or
+    argv; a named variable that is unset or empty is refused. No ``api_key_env``: no
+    header. The value is returned to the caller and never logged or recorded."""
+    env = api.get("api_key_env")
+    if not env:
+        return {}
+    key = (os.environ if environ is None else environ).get(env)
+    if not key:
+        raise Refused(f"api.api_key_env names {env!r}, which is not set")
+    return {AUTH_HEADERS[api.get("auth_header") or "x-api-key"]: key}
+
+
+def auth_record(api: Mapping[str, Any]) -> dict[str, Any]:
+    """What the summary records about the credential: the header NAME and the variable
+    NAME, never the value."""
+    env = api.get("api_key_env")
+    return {"header": AUTH_HEADERS[api.get("auth_header") or "x-api-key"] if env else None,
+            "api_key_env": env or None}
 MAX_FAILED_SHARE = 0.02
 
 
@@ -192,6 +224,8 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if not cfg["api"].get("base_url"):
         raise Refused("api.base_url is required (no default: defaults on this kind of host resolve to production)")
     cfg["api"] = {**DEFAULT_API, **cfg["api"]}
+    if cfg["api"]["auth_header"] not in AUTH_HEADERS:
+        raise Refused(f"api.auth_header {cfg['api']['auth_header']!r} is not one of {sorted(AUTH_HEADERS)}")
     conds = cfg.get("conditions") or {}
     cfg["conditions"] = {c: {**DEFAULT_CONDITIONS[c], **conds.get(c, {})} for c in DEFAULT_CONDITIONS}
     for c, spec in cfg["conditions"].items():
@@ -450,16 +484,10 @@ class Runner:
             raise Refused(f"--boost-declared {boost_declared:g}: a boost <= 0 never consults the glossary field")
         self.boost_check: dict[str, Any] | None = None
 
-    def _default_client(self) -> httpx.AsyncClient:
+    def _default_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
         api = self.cfg["api"]
-        headers = {"Content-Type": "application/json"}
-        env = api.get("api_key_env")
-        if env:
-            key = os.environ.get(env)
-            if not key:
-                raise Refused(f"api.api_key_env names {env!r}, which is not set")
-            headers["X-API-Key"] = key
-        return httpx.AsyncClient(timeout=float(api["timeout_s"]), headers=headers)
+        headers = {"Content-Type": "application/json", **auth_headers(api)}
+        return httpx.AsyncClient(timeout=float(api["timeout_s"]), headers=headers, transport=transport)
 
     # ---- one retrieval with retries
     async def _call(self, client: httpx.AsyncClient, rec: Mapping[str, Any], cond: str) -> dict[str, Any]:
@@ -617,7 +645,9 @@ class Runner:
 
     async def _server_info(self, client: httpx.AsyncClient) -> dict[str, Any]:
         """Read-only GETs recorded for provenance: ``/v1/version`` and (admin only, best
-        effort) ``/v1/config``."""
+        effort) ``/v1/config``. A non-200 (e.g. 403 "insufficient role" for a user
+        token) is recorded, never fatal: nothing here is read from ``/v1/config``
+        (``server_assumed`` stands in), and ``config_readable`` says which it was."""
         info: dict[str, Any] = {}
         base = self.cfg["api"]["base_url"].rstrip("/")
         for path in ("/v1/version", "/v1/config"):
@@ -626,6 +656,8 @@ class Runner:
                 info[path] = r.json() if r.status_code == 200 else {"status": r.status_code}
             except (httpx.HTTPError, ValueError) as e:
                 info[path] = {"error": type(e).__name__}
+        cfg = info.get("/v1/config")
+        info["config_readable"] = isinstance(cfg, dict) and "status" not in cfg and "error" not in cfg
         return info
 
     def _finish(self, done: dict[str, dict[str, Any]], swap: Mapping[str, Any], census: Mapping[str, Any],
@@ -699,7 +731,8 @@ class Runner:
                        "merge": self.acfg.get("merge"), "allowed_stamps": self.acfg.get("stamps"),
                        "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes")},
             "manipulation_check": {"glossary_boost": self.boost_check},
-            "server": server, "utc": now_iso(), "provenance": prov,
+            "server": server, "config_readable": bool(server.get("config_readable")),
+            "auth": auth_record(self.cfg["api"]), "utc": now_iso(), "provenance": prov,
             "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0),
         }
         write_json_atomic(self.summary_path, summary)
