@@ -10,8 +10,13 @@ ONE read-only ``_count`` on the bench index:
 * ``count == served`` -> ``exhausted_verified``: the served list IS the full list,
   so a gold chunk is found on it or matches nothing;
 * ``count > served`` with the exact scope -> ``clamp``: a hard error for the run;
-* anything else (no count, an unscoped count above the served length, a count
-  below it) -> ``under_served``: the existing depth gate stands.
+* ``count < served`` under EITHER scope -> ``query_mismatch``: the server's list is
+  the index's hits for this query cut to ``top_k`` (fusion of one list dedups,
+  shaping reorders, neither adds), so served <= hits <= exact count <= unscoped
+  bound; a count below the served length means the rebuilt query, filters or index
+  are not the server's. Never evidence: a hard error for the run, fix the verifier;
+* anything else (no count, an unscoped count above the served length) ->
+  ``under_served``: the existing depth gate stands.
 
 **The query is the server's own, not a copy.** The scoring clause and the filter
 clauses come from :func:`ragstack.stores.elasticsearch._build_query` (or, with no
@@ -149,4 +154,7 @@ def record(requested: int, served: int, count: int | None, scope: str | None, gl
     if v == CLAMP:
         out["reason"] = ("the index matches more chunks than were served: a clamp (or two tenants' chunks "
                          "sharing one chunk id, which fusion merges)")
+    elif v == MISMATCH:
+        out["reason"] = ("the index matches fewer chunks than were served: the rebuilt query, filters or "
+                         "index are not the server's; never evidence, fix the verifier")
     return out

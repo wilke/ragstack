@@ -144,7 +144,8 @@ def test_query_mismatch_is_a_hard_stop(tmp_path: Path) -> None:
     assert t.run(tmp_path, api, conf=conf()) == f10.EXIT_REFUSED
     s = summary(tmp_path)
     assert s["status"] == "hard_stop" and "does not match the server" in s["reason"]
-    assert any((r.get("exhaustion") or {}).get("verdict") == bx.MISMATCH for r in rows(tmp_path))
+    mism = [r["exhaustion"] for r in rows(tmp_path) if (r.get("exhaustion") or {}).get("verdict") == bx.MISMATCH]
+    assert mism and all("fix the verifier" in m["reason"] for m in mism)  # the record says why, like a clamp's
 
 
 def test_unscoped_bound_above_served_stays_under_served(tmp_path: Path) -> None:
