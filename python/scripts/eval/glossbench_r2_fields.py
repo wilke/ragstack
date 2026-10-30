@@ -501,12 +501,19 @@ def planned_names(fields: Sequence[FieldSpec], fc: Mapping[str, Any]) -> list[st
 STRATA = ("S1", "S2", "S3")
 
 
+def strata_order(keys: Iterable[str]) -> tuple[str, ...]:
+    """The strata a plan iterates: round 2's :data:`STRATA` first, in their order, then any
+    other (round 3's ``V``, ``M_num``) sorted. For round 2's keys this is :data:`STRATA`."""
+    ks = set(keys)
+    return tuple(s for s in STRATA if s in ks) + tuple(sorted(ks - set(STRATA)))
+
+
 def cell_targets(papers: Sequence[str], per_paper: Mapping[str, int], total: int | None = None) -> dict[
         tuple[str, str], int]:
     """(paper, stratum) -> target jobs: ``per_paper`` (``{"S1": n1, "S2": n2, "S3": n3}``)
     for every paper; with ``total`` (``target_jobs``, or a pilot's N) the same cell
     weights scaled to that total by largest remainder."""
-    cells = {(p, s): int(per_paper[s]) for p in sorted(papers) for s in STRATA}
+    cells = {(p, s): int(per_paper[s]) for p in sorted(papers) for s in strata_order(per_paper)}
     if total is None:
         return cells
     keyed = {f"{p}\x00{s}": float(v) for (p, s), v in cells.items() if v > 0}
@@ -539,6 +546,7 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
     the shortfall, the realised count and the per-field stated share and realised
     count; per stratum and per field the totals."""
     by = {f.field: f for f in fields}
+    strata_seq = strata_order(c[1] for c in targets)
     names = planned_names(fields, fc)
     weights = {n: float(fc["weight_new_ground"]) if new_ground(by[n]) else float(fc["weight_other"]) for n in names}
     ccap = int(fc["constant_cap"])
@@ -554,7 +562,7 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
     assigned: dict[tuple[str, str], int] = {}
     shortfall: dict[tuple[str, str], int] = {}
     strata: dict[str, dict[str, int]] = {}
-    for s in STRATA:
+    for s in strata_seq:
         cells = sorted(c for c in targets if c[1] == s)
         for c in cells:
             assigned[c] = min(int(targets[c]), capacity(c))
@@ -581,7 +589,7 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
     jobs: dict[str, list[str]] = {}
     cell_rec: dict[str, dict[str, Any]] = {}
     for p in papers:
-        for s in STRATA:
+        for s in strata_seq:
             c = (p, s)
             if c not in targets:
                 continue
@@ -604,7 +612,7 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
                 "target": int(targets[c]), "assigned": assigned[c], "shortfall": shortfall[c],
                 "realised": sum(got.values()), "fields": dict(sorted(got.items())),
                 "stated": {f: a["stated"] for f, a in sorted(alloc.items())}}
-    for s in STRATA:
+    for s in strata_seq:
         strata[s]["realised"] = sum(cell_rec[p][s]["realised"] for p in cell_rec if s in cell_rec[p])
     per_field = {n: {"weight": weights[n], "in_set": by[n].in_set, "constant": by[n].constant,
                      "new_ground": new_ground(by[n]),
@@ -613,7 +621,7 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
                  for n in names}
     plan = {"weights": {"new_ground": float(fc["weight_new_ground"]), "other": float(fc["weight_other"])},
             "constant_cap": ccap, "total_target": sum(int(v) for v in targets.values()),
-            "realised": sum(strata[s]["realised"] for s in STRATA), "strata": strata,
+            "realised": sum(strata[s]["realised"] for s in strata_seq), "strata": strata,
             "excluded_conditions": sorted(f.field for f in fields if f.kind == "condition"),
             "not_prioritised": sorted(f.field for f in fields if f.kind != "condition" and f.field not in names),
             "fields": per_field, "cells": {p: cell_rec[p] for p in sorted(cell_rec)}}

@@ -115,6 +115,14 @@ FIELDS = ("question", "quote", "quantity", "value", "binding_terms", "symbol")
 #: fields mode: no model-invented binding terms (the field's terms are used); a case statement
 FIELD_MODE_FIELDS = ("question", "quote", "quantity", "value", "symbol", "case")
 
+#: Round 3 (attachment rule as the arm): the chunk strata are ``V`` (a value statement)
+#: and ``M_num`` (a Sigma(paper) symbol mentioned and a number printed, no value
+#: statement). A record keeps its chunk's stratum (never relabelled ``S3``).
+R3_STRATA = ("V", "M_num")
+#: Round 3, M_num: the drafter also says whether the quantity it asks for is the one a
+#: mentioned symbol stands for — recorded (symbol-bound vs incidental), never a reject.
+SYMBOL_BOUND_KEY = "symbol_is_the_quantity"
+
 # ------------------------------------------------------------------ prompts
 
 DRAFT_SYSTEM = """You write one question for a benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
@@ -174,10 +182,39 @@ You are told ONE quantity: its name, its definition and its usual unit. Find whe
 The value may be printed in words (for example "two infected people") rather than in digits. If the passage states no value for this quantity, answer {"none": true}."""
 
 
+_SB_BULLET = ('- "symbol_is_the_quantity": true if the quantity you ask for is the quantity that one of the '
+              'symbols the passage mentions stands for; false if the value belongs to some other quantity.')
+
+
+def _with_symbol_bound(system: str, keys_line: str) -> str:
+    """A system prompt with the ``symbol_is_the_quantity`` key added (round 3, M_num)."""
+    if keys_line not in system:
+        raise AssertionError("the key line of the round-2 prompt changed")
+    new_keys = keys_line[:-1] + ', "symbol_is_the_quantity": true|false}'
+    out = system.replace(keys_line, new_keys, 1)
+    marker = '\n\n'
+    head, _, tail = out.rpartition(marker)
+    return f"{head}\n{_SB_BULLET}{marker}{tail}"
+
+
+DRAFT_SYSTEM_MNUM = _with_symbol_bound(
+    DRAFT_SYSTEM, '{"question": "...", "quote": "...", "quantity": "...", "value": "...", '
+                  '"binding_terms": ["..."], "symbol": "..."}')
+DRAFT_SYSTEM_FIELDS_MNUM = _with_symbol_bound(
+    DRAFT_SYSTEM_FIELDS, '{"question": "...", "quote": "...", "quantity": "...", "value": "...", '
+                         '"symbol": "...", "case": "..."}')
+_MNUM_TASK = ("The passage mentions symbols the paper uses ({tokens}) but states no value as \"X = 3.2\". "
+              "Pick a quantity whose value the passage prints as a number (in digits or in words). Set "
+              "\"symbol\" to the symbol the passage uses for that quantity, or \"\" if it uses none.")
+
+
 def field_draft_messages(content: str, spec: fl.FieldSpec,
-                         previous: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
+                         previous: Mapping[str, Any] | None = None, *,
+                         symbol_bound: bool = False) -> list[dict[str, str]]:
     """Fields mode: the chunk text and the named field (name, definition, unit) —
-    never a glossary, an arm, the chunk's value-stating tokens or the term list."""
+    never a glossary, an arm, the chunk's value-stating tokens or the term list.
+    ``symbol_bound`` (round 3, an M_num chunk): the answer also carries
+    ``symbol_is_the_quantity``."""
     user = (f"PASSAGE:\n<<<\n{content}\n>>>\n\n"
             f"QUANTITY: {spec.field}\nDEFINITION: {spec.definition}\n"
             f"UNIT: {spec.unit if spec.unit else '(none: a count or a pure number)'}")
@@ -185,14 +222,24 @@ def field_draft_messages(content: str, spec: fl.FieldSpec,
         why = sorted({_REASON_WORDS.get(r, r) for r in previous.get("reasons") or []})
         user += ("\n\nAn earlier answer for this passage was rejected"
                  + (f" ({'; '.join(why)})" if why else "") + ". Answer again with the JSON object only.")
-    return [{"role": "system", "content": DRAFT_SYSTEM_FIELDS}, {"role": "user", "content": user}]
+    system = DRAFT_SYSTEM_FIELDS_MNUM if symbol_bound else DRAFT_SYSTEM_FIELDS
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def draft_messages(content: str, stratum: str, vs_tokens: Sequence[str],
-                   previous: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
-    """The drafter's messages: the chunk text and the task, nothing else."""
-    task = _WORDS_TASK if stratum == "S3" else _SYMBOL_TASK.format(
-        tokens=", ".join(vs_tokens) if vs_tokens else "(none found)")
+                   previous: Mapping[str, Any] | None = None,
+                   sigma_tokens: Sequence[str] | None = None) -> list[dict[str, str]]:
+    """The drafter's messages: the chunk text and the task, nothing else. Round 3's
+    ``M_num`` stratum names the paper's symbols the chunk mentions (``sigma_tokens``,
+    arm-blind: from the paper's own value statements) and asks for
+    ``symbol_is_the_quantity``; ``V`` is round 2's symbol task."""
+    system = DRAFT_SYSTEM
+    if stratum == "M_num":
+        task = _MNUM_TASK.format(tokens=", ".join(sigma_tokens or ()) or "none found")
+        system = DRAFT_SYSTEM_MNUM
+    else:
+        task = _WORDS_TASK if stratum == "S3" else _SYMBOL_TASK.format(
+            tokens=", ".join(vs_tokens) if vs_tokens else "(none found)")
     user = f"PASSAGE:\n<<<\n{content}\n>>>\n\n{task}"
     if previous is not None:
         why = sorted({_REASON_WORDS.get(r, r) for r in previous.get("reasons") or []})
@@ -201,7 +248,7 @@ def draft_messages(content: str, stratum: str, vs_tokens: Sequence[str],
                  + (f" ({'; '.join(why)})" if why else "") + "."
                  + (f" Choose a different quantity than \"{q}\" if the passage has one." if q else "")
                  + " Answer again with the JSON object only.")
-    return [{"role": "system", "content": DRAFT_SYSTEM}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _strip_fence(text: str) -> str:
@@ -210,9 +257,34 @@ def _strip_fence(text: str) -> str:
     return m.group(1) if m else t
 
 
-def parse_draft(text: str, mode: str = "open") -> tuple[dict[str, Any] | None, str | None]:
+def _as_bool(v: Any) -> bool | None:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() in ("true", "false", "yes", "no"):
+        return v.strip().lower() in ("true", "yes")
+    return None
+
+
+def parse_draft(text: str, mode: str = "open", symbol_bound: bool = False) -> tuple[dict[str, Any] | None,
+                                                                                     str | None]:
     """(draft, error). ``{"none": true}`` parses to ``{"none": True}``. ``mode``
-    ``fields`` expects :data:`FIELD_MODE_FIELDS` (no binding terms)."""
+    ``fields`` expects :data:`FIELD_MODE_FIELDS` (no binding terms). ``symbol_bound``
+    (round 3, M_num) also expects :data:`SYMBOL_BOUND_KEY` as a boolean."""
+    out, err = _parse_draft(text, mode)
+    if not symbol_bound or out is None or out.get("none"):
+        return out, err
+    try:
+        obj = json.loads(_strip_fence(text))
+    except ValueError:  # pragma: no cover - parsed above
+        return None, "json"
+    b = _as_bool(obj.get(SYMBOL_BOUND_KEY))
+    if b is None:
+        return None, f"missing or not a boolean: {SYMBOL_BOUND_KEY}"
+    out[SYMBOL_BOUND_KEY] = b
+    return out, None
+
+
+def _parse_draft(text: str, mode: str = "open") -> tuple[dict[str, Any] | None, str | None]:
     try:
         obj = json.loads(_strip_fence(text))
     except ValueError as e:
@@ -437,7 +509,9 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
         reasons.append("number_in_question")
     # the symbol
     texts = idx.c.paper_texts(paper)
-    words_only = stratum == "S3" or (field is not None and not sym)
+    r3 = stratum in R3_STRATA
+    # round 3: a record keeps its chunk's stratum; M_num (and fields mode) may name no symbol
+    words_only = not r3 and (stratum == "S3" or (field is not None and not sym))
     if words_only:
         out["record_stratum"] = "S3"
     if words_only:
@@ -447,7 +521,8 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
             reasons.append("s3_value_statement")
     else:
         if not sym:
-            reasons.append("symbol_missing")
+            if not (r3 and (stratum == "M_num" or field is not None)):
+                reasons.append("symbol_missing")
         elif not symbol_occurs(sym, source_chunk.content):
             reasons.append("symbol_not_in_chunk")
     if sym and q and symbol_occurs(sym, q):

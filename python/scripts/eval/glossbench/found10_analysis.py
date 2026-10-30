@@ -425,3 +425,236 @@ def _count_by(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]
     for r in records:
         out[r["corpus"]][r["stratum"]] += 1
     return {c: dict(v) for c, v in out.items()}
+
+
+# =========================================================================== round 3
+# The attachment rule is the arm (prereg round 3 §2, §7). Added beside round 2's
+# analysis, which is unchanged: :func:`analyse` stays the frozen round-2 record's code.
+#
+# Each hypothesis carries its OWN population (strata) — H1 on M_num, H2 on V, H3 on
+# V ∪ M_num — so the family is not one record set read under several contrasts:
+# ``[arm A, arm B, kind, outcome, strata]``. ``kind`` ``two-sided`` is the sign-flip
+# test read two-sided (H2); a confirmed two-sided member is reported with its sign.
+ARMS_R3 = ["value", "mention", "mention-shuf", "none", "rules-value", "rules-mention"]
+STRATA_R3 = ["V", "M_num"]
+R3_HYPOTHESES: dict[str, list[Any]] = {
+    "H1": ["mention", "value", "superiority", "found", ["M_num"]],
+    "H2": ["mention", "value", "two-sided", "found", ["V"]],
+    "H3": ["mention", "mention-shuf", "superiority", "found", ["V", "M_num"]],
+}
+#: secondary, outside F, unadjusted (prereg round 3 §2)
+R3_SECONDARY: dict[str, list[Any]] = {
+    "pooled mention-value (two-sided)": ["mention", "value", "two-sided", "found", ["V", "M_num"]],
+    "mention-none": ["mention", "none", "superiority", "found", ["V", "M_num"]],
+    "value-none": ["value", "none", "superiority", "found", ["V", "M_num"]],
+    "rules-mention - rules-value (two-sided)": ["rules-mention", "rules-value", "two-sided", "found",
+                                                ["V", "M_num"]],
+    "mention - rules-mention (two-sided)": ["mention", "rules-mention", "two-sided", "found", ["V", "M_num"]],
+    "value - rules-value (two-sided)": ["value", "rules-value", "two-sided", "found", ["V", "M_num"]],
+}
+R3_DEFAULT_ANALYSIS: dict[str, Any] = {
+    "round": 3,
+    "alpha": 0.05,
+    "n_perm": 10_000,
+    "n_boot": 10_000,
+    "ci_level": 0.90,
+    "seed": 261103,
+    "family_corpora": ["O"],
+    "family_condition": "base",
+    "hypotheses": R3_HYPOTHESES,
+    "secondary": R3_SECONDARY,
+    "repeat_arm": "value",
+    #: the record field that splits M_num into symbol-bound / incidental (drafter, §3.2)
+    "split_field": "symbol_is_the_quantity",
+}
+
+
+def _r3_spec(spec: Sequence[Any]) -> tuple[str, str, str, str, list[str]]:
+    if len(spec) != 5:
+        raise ValueError(f"a round-3 hypothesis is [arm A, arm B, kind, outcome, strata], got {spec!r}")
+    a, b, kind, oc, strata = spec
+    if kind not in ("superiority", "two-sided"):
+        raise ValueError(f"round-3 kind {kind!r}: superiority (one-sided) or two-sided")
+    return str(a), str(b), str(kind), str(oc), [str(s) for s in strata]
+
+
+def run_hypotheses_r3(
+    records: Sequence[Mapping[str, Any]],
+    per_record: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    hypotheses: Mapping[str, Sequence[Any]],
+    condition: str,
+    an: Mapping[str, Any],
+    corpora: Sequence[str] | None,
+    gated_arms: Mapping[str, str] | None = None,
+    missing: str = "exclude",
+) -> dict[str, dict[str, Any]]:
+    """Each hypothesis on ITS strata of ``corpora`` (round 2's :func:`run_hypotheses`
+    per member, so gating, missing-arm and missing-call rules are round 2's)."""
+    out: dict[str, dict[str, Any]] = {}
+    for h, spec in hypotheses.items():
+        a, b, kind, oc, strata = _r3_spec(spec)
+        sel = select(records, corpora, strata)
+        t = run_hypotheses(sel, per_record, {h: [a, b, kind, oc]}, condition, an, gated_arms, missing)[h]
+        t["strata"] = strata
+        t["n_records_population"] = len(sel)
+        if kind == "two-sided":
+            t["type"] = "superiority (two-sided)"
+        out[h] = t
+    return out
+
+
+def _sign(t: Mapping[str, Any]) -> str | None:
+    ns = t.get("net_share")
+    if ns is None or (isinstance(ns, float) and math.isnan(ns)) or ns == 0:
+        return None
+    return "A > B" if ns > 0 else "A < B"
+
+
+def holm_family_r3(tests: dict[str, dict[str, Any]], order: Sequence[str], alpha: float) -> dict[str, dict[str, Any]]:
+    """Round 2's :func:`holm_family` (gated or missing p enters as 1.0, the family never
+    shrinks), plus the sign of every two-sided member and its floor beside a null."""
+    holm_family(tests, order, alpha)
+    m = len(order)
+    for h in order:
+        t = tests[h]
+        if str(t.get("type", "")).endswith("(two-sided)"):
+            t["sign"] = _sign(t) if t.get("significant") else None
+            if not t["significant"] and not t.get("gate"):
+                # the two-sided floor: each tail at alpha/2 (Holm worst case alpha/(2m))
+                t["mde_split_holm_worst"] = mde_split(int(t.get("discordant", 0)), alpha / (2 * m))
+                t["mde_split_alpha"] = mde_split(int(t.get("discordant", 0)), alpha / 2)
+    return tests
+
+
+def _truthy(v: Any) -> bool | None:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() in ("yes", "no", "true", "false"):
+        return v.strip().lower() in ("yes", "true")
+    return None
+
+
+def power_table_r3(layouts: Mapping[str, Sequence[int]], kinds: Mapping[str, str], an: Mapping[str, Any],
+                   n_sims: int = 2000, share_sd: float = 0.15) -> dict[str, Any]:
+    """Per member, :func:`chunktrial_stats.simulate_power` on its realised layout at
+    alpha / family size (Holm worst case), one- or two-sided as the member is."""
+    alpha, seed, m = float(an["alpha"]), int(an["seed"]), len(layouts)
+
+    def icc(s: float) -> float:
+        return min(0.99, share_sd ** 2 / (s * (1 - s))) if 0 < s < 1 else 0.0
+
+    out: dict[str, Any] = {}
+    for h, layout in layouts.items():
+        alt = "two-sided" if kinds[h] == "two-sided" else "greater"
+        rows = []
+        for disc in (0.10, 0.17, 0.25):
+            for s in (0.70, 0.85):
+                if not layout:
+                    continue
+                r = cs.simulate_power(len(layout), list(layout), disc, 2 * s - 1, share_icc=icc(s), alpha=alpha,
+                                      n_family=m, alternative=alt, n_sims=n_sims, n_flips=n_sims, seed=seed)
+                rows.append({"discordance": disc, "gain_share": s, "power": r["power"],
+                             "mc_se": round(r["mc_se"], 4), "alpha_test": r["alpha_test"]})
+        out[h] = {"alternative": alt, "n_papers": len(layout), "n_records": int(sum(layout)), "rows": rows}
+    return {"family_size": m, "share_sd": share_sd, "n_sims": n_sims, "seed": seed, "members": out}
+
+
+def analyse_r3(
+    records: Sequence[Mapping[str, Any]],
+    per_record: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    analysis: Mapping[str, Any] | None = None,
+    gated_arms: Mapping[str, str] | None = None,
+    arms: Sequence[str] | None = None,
+    power: bool = True,
+    power_sims: int = 2000,
+) -> dict[str, Any]:
+    """The round-3 found@10 analysis: family F = H1–H3 on ``family_corpora`` (set O;
+    ``["O", "P"]`` after the §3.5 promotion, with H1-P… named in ``hypotheses``),
+    each on its own strata, Holm over F; secondary readings unadjusted. Same inputs
+    as :func:`analyse`; the repeat run of the repeat arm is ``"<arm>#2"``."""
+    an = {**R3_DEFAULT_ANALYSIS, **(analysis or {})}
+    hyps = an["hypotheses"]
+    order = list(hyps)
+    corpora = list(an["family_corpora"])
+    fam_cond = an["family_condition"]
+    alpha = float(an["alpha"])
+    arms = list(arms or sorted({a for v in per_record.values() for a in v}))
+
+    def family_of(missing: str) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for h, spec in hyps.items():
+            # a promoted member names its set as a 6th element: [A, B, kind, outcome, strata, set]
+            cs_ = [spec[5]] if len(spec) == 6 else corpora
+            out.update(run_hypotheses_r3(records, per_record, {h: spec[:5]}, fam_cond, an, cs_, gated_arms,
+                                         missing))
+        return holm_family_r3(out, order, alpha)
+
+    family = family_of("exclude")
+    sens = family_of("as_not_found")
+
+    def unadjusted(cs_: Sequence[str] | None, cond: str, hs: Mapping[str, Sequence[Any]],
+                   rs: Sequence[Mapping[str, Any]] = records) -> dict[str, Any]:
+        out = run_hypotheses_r3(rs, per_record, {h: v[:5] for h, v in hs.items()}, cond, an, cs_, gated_arms)
+        for t in out.values():
+            if t.get("p") is not None and not t.get("gate"):
+                t["significant_unadjusted"] = float(t["p"]) <= alpha
+                if str(t.get("type", "")).endswith("(two-sided)"):
+                    t["sign"] = _sign(t) if t["significant_unadjusted"] else None
+        return out
+
+    secondary: dict[str, Any] = {}
+    base_hyps = {h: v for h, v in hyps.items() if len(v) == 5}
+    for cond in CONDITIONS:
+        if cond != fam_cond:
+            secondary[f"family|{cond}"] = unadjusted(corpora, cond, base_hyps)
+    other_sets = sorted({r["corpus"] for r in records} - set(corpora))
+    secondary["other_sets"] = {c: {cond: unadjusted([c], cond, base_hyps) for cond in CONDITIONS}
+                               for c in other_sets}
+    secondary["contrasts"] = {c: unadjusted([c], fam_cond, an["secondary"])
+                              for c in sorted({r["corpus"] for r in records})}
+    # the M_num split by the drafter's symbol_is_the_quantity (recorded, never a reject)
+    split: dict[str, Any] = {}
+    h1 = hyps.get("H1")
+    if h1 is not None:
+        fld = an["split_field"]
+        m_recs = select(records, corpora, _r3_spec(h1[:5])[4])
+        if not any(fld in r for r in m_recs):
+            split = {"note": f"no record carries {fld!r}"}
+        else:
+            for label, want in (("symbol-bound", True), ("incidental", False)):
+                sub = [r for r in m_recs if _truthy(r.get(fld)) is want]
+                split[label] = unadjusted(corpora, fam_cond, {"H1": h1[:5]}, sub)["H1"]
+            split["unrecorded"] = sum(_truthy(r.get(fld)) is None for r in m_recs)
+    secondary["m_num_split"] = split
+
+    sets = sorted({r["corpus"] for r in records})
+    descriptives = {
+        "found_at_10": {c: {s: {cond: found_rates(select(records, [c], [s]), per_record, arms, cond)
+                                for cond in CONDITIONS} for s in STRATA_R3} for c in sets},
+        "noise_floor": {c: {cond: noise_floor(select(records, [c], None), per_record, an["repeat_arm"],
+                                              f"{an['repeat_arm']}#2", cond) for cond in CONDITIONS}
+                        for c in sets},
+        "sizes": {"records": len(records), "by_corpus_stratum": _count_by(records),
+                  "family_members": {h: t.get("n_records_population") for h, t in family.items()}},
+        "gated_arms": dict(gated_arms or {}),
+    }
+    out: dict[str, Any] = {
+        "schema": "glossbench-r3-found10-analysis/1",
+        "analysis": dict(an),
+        "test": "paper sign-flip permutation (standard p; exact when <= 20 non-zero papers; H2 two-sided), "
+                "paper-cluster bootstrap percentile CI of the net share, Holm over the family (gated or "
+                "missing members at p = 1.0), McNemar descriptive; each member on its own strata",
+        "family": {"corpora": corpora, "condition": fam_cond, "order": order, "hypotheses": family},
+        "family_missing_as_not_found": {"hypotheses": sens},
+        "secondary": {"note": "outside the confirmatory family; unadjusted", **secondary},
+        "descriptives": descriptives,
+    }
+    if power:
+        layouts = {}
+        for h, spec in hyps.items():
+            cs_ = [spec[5]] if len(spec) == 6 else corpora
+            sel = select(records, cs_, _r3_spec(spec[:5])[4])
+            layouts[h] = sorted(_count_clusters(sel).values())
+        out["power"] = {"realised": power_table_r3(layouts, {h: _r3_spec(v[:5])[2] for h, v in hyps.items()},
+                                                   an, n_sims=power_sims)}
+    return out

@@ -31,6 +31,17 @@ the chunk is missing, which is the conservative direction.) Fewer than
 arms are GATE-NOT-EVALUABLE unless the operator passes ``--boost-declared X``
 (then ``declared``, recorded as such, not read back).
 
+**Mention attachment (round 3).** Under ``attach_only_with_value: false`` an
+entry renders on every chunk that mentions its symbol, so a token's glossary
+document frequency rises and fewer tokens stay within :data:`PROBE_TOP_K`
+glossaries. ``max_glossaries`` (``plan(..., max_glossaries=N)``; found10's
+``--probe-max-glossaries``) widens the rule to N glossaries AND the probe's
+``top_k`` to N with it, so every glossary match still fits in the served list;
+the default (:data:`PROBE_TOP_K`) is round 2's probe, unchanged. When even that
+leaves fewer than :data:`MIN_PROBES` candidates the reading is
+``not_testable`` and ``--boost-declared`` records the configured value as
+``declared``.
+
 Outputs carry each probe's token as a sha256 (never the text), its chunk id,
 its glossary document frequency, the rank the chunk came back at, requested vs
 served depth, and the verdict. The probe proves the boost is **> 0**; its
@@ -60,6 +71,20 @@ _ALNUM = re.compile(r"[0-9A-Za-z]+")
 # ``_`` is NOT stripped: it is ExtendNumLet, which joins one-sidedly (``_abc``
 # and ``abc_`` are indexed whole), so a piece carrying one is never a probe.
 _STRIP = string.punctuation.replace("_", "") + "—–‘’“”"
+
+
+#: the widest ``max_glossaries`` accepted: the probe's ``top_k`` follows it, and a served
+#: list of hundreds is no longer a cheap read-only probe
+MAX_GLOSSARIES_CAP = 100
+
+
+def probe_request(max_glossaries: int = PROBE_TOP_K) -> dict[str, Any]:
+    """The probe's request: :data:`PROBE_REQUEST` with ``top_k`` = ``max_glossaries``
+    (never below :data:`PROBE_TOP_K`), so every glossary that holds the token fits."""
+    n = int(max_glossaries)
+    if not PROBE_TOP_K <= n <= MAX_GLOSSARIES_CAP:
+        raise ProbeUnavailable(f"max_glossaries {n} outside [{PROBE_TOP_K}, {MAX_GLOSSARIES_CAP}]")
+    return {**PROBE_REQUEST, "top_k": n}
 
 
 class ProbeUnavailable(Exception):  # noqa: N818 - a reason, not a failure
@@ -158,7 +183,8 @@ def verdict(results: list[dict[str, Any]]) -> str:
 
 
 def record(status: str, *, probes: list[dict[str, Any]] | None = None, stats: Mapping[str, Any] | None = None,
-           declared: float | None = None, reason: str | None = None, source: str | None = None) -> dict[str, Any]:
+           declared: float | None = None, reason: str | None = None, source: str | None = None,
+           request: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The manipulation-check entry. ``gate`` is set when the boost-dependent
     arms are GATE-NOT-EVALUABLE (``not_testable`` without a declared boost)."""
     probes = probes or []
@@ -169,7 +195,7 @@ def record(status: str, *, probes: list[dict[str, Any]] | None = None, stats: Ma
     return {"check": CHECK, "status": status, "boost_check": status,
             "verdict": status if status in ("active", "inactive", "mixed", "error") else None,
             "n_probes": len(probes), "n_passed": sum(p.get("result") == "pass" for p in probes),
-            "min_probes": MIN_PROBES, "request": {**PROBE_REQUEST, "query": "<probe token>"},
+            "min_probes": MIN_PROBES, "request": {**(request or PROBE_REQUEST), "query": "<probe token>"},
             "probes": [{k: v for k, v in p.items() if k != "token"} for p in probes],
             "selection": dict(stats or {}), "candidates_source": source, "declared": declared,
             "declared_label": "declared (--boost-declared), not read back" if declared is not None else None,
@@ -178,23 +204,26 @@ def record(status: str, *, probes: list[dict[str, Any]] | None = None, stats: Ma
 
 
 def plan(chunks: Iterable[tuple[str, str, str]] | None, *, declared: float | None,
-         unavailable: str | None = None, source: str | None = None
-         ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+         unavailable: str | None = None, source: str | None = None,
+         max_glossaries: int = PROBE_TOP_K) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Probes to send, or the finished ``not_testable`` / ``declared`` record
     when there are fewer than :data:`MIN_PROBES`. ``declared <= 0`` is refused:
-    a declared zero boost voids the glossary arms."""
+    a declared zero boost voids the glossary arms. ``max_glossaries`` widens
+    the glossary-frequency rule and the probe's ``top_k`` together
+    (:func:`probe_request`); the request to send is ``ctx["request"]``."""
     if declared is not None and declared <= 0:
         raise ProbeUnavailable(f"--boost-declared {declared:g}: a boost <= 0 never consults the glossary field")
+    req = probe_request(max_glossaries)
     if chunks is None:
         st = "declared" if declared is not None else "not_testable"
         return [], record(st, declared=declared, reason=unavailable or "no probe candidates given",
-                          source=source)
-    probes, stats = pick_probes(chunks)
+                          source=source, request=req)
+    probes, stats = pick_probes(chunks, max_df=req["top_k"])
     if len(probes) < MIN_PROBES:
         st = "declared" if declared is not None else "not_testable"
-        return [], record(st, stats=stats, declared=declared, source=source,
+        return [], record(st, stats=stats, declared=declared, source=source, request=req,
                           reason=f"{len(probes)} chunk(s) qualify, fewer than {MIN_PROBES}")
-    return probes, {"stats": stats, "source": source, "declared": declared}
+    return probes, {"stats": stats, "source": source, "declared": declared, "request": req}
 
 
 def finish(probes: list[dict[str, Any]], results: list[dict[str, Any]], ctx: Mapping[str, Any]) -> dict[str, Any]:
@@ -204,7 +233,7 @@ def finish(probes: list[dict[str, Any]], results: list[dict[str, Any]], ctx: Map
               "mixed": "some probe chunks came back and some did not: stop and inspect",
               "error": "a probe call failed or failed its depth read-back"}.get(v)
     return record(v, probes=results, stats=ctx.get("stats"), declared=ctx.get("declared"), reason=reason,
-                  source=ctx.get("source"))
+                  source=ctx.get("source"), request=ctx.get("request"))
 
 
 def fields_with_shuffle(fields: Mapping[str, str], seed: str, key_prefix: str,

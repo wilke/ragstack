@@ -28,6 +28,12 @@ fallback — an empty or absent LLM half renders ""), ``rules-only``, ``merged``
 is called. Every row's version is marked ``+merge=<mode>`` and the producer
 names the mode and the source's sha256, so the files, and a census of an index
 loaded from one, tell the arms apart. Prints the counts and a per-row census.
+``--attach value|mention`` (glossary benchmark round 3; alone or with
+``--merge``) sets the header's ``attach_only_with_value`` instead — every
+reader renders under the file's config, so the same entries render where the
+symbol states a value (``value``, the served rule) or wherever it occurs
+(``mention``) — and marks every version ``+attach=<rule>`` after any
+``+merge=`` marker. Without ``--merge`` the entries are the source's, untouched.
 
 ``subset`` (glossary benchmark round 2) writes a new file with only the rows
 whose ``doc_id`` is in an id list (``--keep``) or all but those (``--drop``).
@@ -48,6 +54,7 @@ Usage::
     python scripts/glossary_file.py verify glossary.jsonl [--jsonl docs.jsonl]
     python scripts/glossary_file.py merge --out glossary.jsonl batch0.jsonl batch1.jsonl ...
     python scripts/glossary_file.py rederive --merge llm-only glossary.jsonl --out pure.jsonl
+    python scripts/glossary_file.py rederive --attach mention pure.jsonl --out pure-mention.jsonl
     python scripts/glossary_file.py subset (--keep|--drop) IDS.txt glossary.jsonl --out part.jsonl \\
         [--allow-missing]
     python scripts/glossary_file.py shard-subset (--keep|--drop) IDS.txt shard.jsonl --out part.jsonl \\
@@ -62,6 +69,7 @@ import sys
 from collections.abc import Iterator
 
 from ragstack.ingestion.glossary_file import (
+    ATTACH_RULES,
     MERGE_MODES,
     GlossaryFileError,
     GlossaryRow,
@@ -164,8 +172,11 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("rederive",
                        help="a new glossary.jsonl with merged re-decided from the halves")
     r.add_argument("file", help="the source glossary.jsonl (read strictly, never written)")
-    r.add_argument("--merge", required=True, choices=MERGE_MODES,
+    r.add_argument("--merge", default=None, choices=MERGE_MODES,
                    help="llm-only = pure LLM (no rules fallback); rules-only; merged; none")
+    r.add_argument("--attach", default=None, choices=tuple(ATTACH_RULES),
+                   help="set the header's attachment rule: value (attach_only_with_value true, "
+                        "the served rule) or mention (false); marks every version +attach=<rule>")
     r.add_argument("--out", required=True, help="the re-derived glossary.jsonl (atomically)")
     for name, what, help_ in (("subset", "glossary.jsonl", "keep or drop rows by doc_id"),
                               ("shard-subset", "JsonlLoader shard", "keep or drop shard lines by document id")):
@@ -178,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--allow-missing", action="store_true",
                        help="accept listed ids absent from the source (counted, else refused)")
     args = p.parse_args(argv)
+    if args.command == "rederive" and args.merge is None and args.attach is None:
+        p.error("rederive: name --merge, --attach, or both")
     try:
         if args.command in ("subset", "shard-subset"):
             fn = subset_file if args.command == "subset" else subset_shard
@@ -186,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
                              sort_keys=True))
             return 0
         if args.command == "rederive":
-            print(json.dumps(rederive_file(args.file, args.out, args.merge), sort_keys=True))
+            print(json.dumps(rederive_file(args.file, args.out, args.merge, attach=args.attach),
+                             sort_keys=True))
             return 0
         if args.command == "merge":
             counts = merge_files(args.files, args.out)
