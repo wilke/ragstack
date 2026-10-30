@@ -34,9 +34,9 @@ asked for.
 | 2 | **Code** (one worktree; Fable review with a mutation probe): `rederive --attach`; the `+attach=` stamp slot and contract test; the pool's V / M_num populations, eligibility, quotas, gold-differs gate; the drafter's `symbol_is_the_quantity`; `--probe-max-glossaries`; `analyse_r3` | S, F | **done**: **#874** merged **`898e34d`** (2026-10-30; `1390051`, `bc9be96`, `cc955ea`) |
 | 3 | Offline manipulation checks with the merged code: (a) `rederive --attach mention` of the three Qwen3.6 and three `rules/3` files, render parity on every chunk (0 mismatches, `value ⊂ mention` on every chunk); (b) pool build in **dry** form for O, A, P, manifests with densities, gate read | S (review of #874) | **done** 2026-10-30 at `bc9be96`: eligible 288 / 28 / 109, gold differs 151 / 56 / 116, every gate `EVALUABLE` |
 | 3b | (c) the **P dry build in fields mode** (3 built P in open mode); (d) the boost probe's candidate search offline per arm × corpus on the rendered fields (`not_testable` risk, prereg §5 note 2) | S | **done** 2026-10-30 at `898e34d` (was *pending* at v1): P gold differs **80** (42 / 38) on 108 / 112 sampled chunks, 300 jobs, gate 60 attainable; O / A re-confirmed 151 / 56; probe candidates O 0 / 2 / 2 / 0 / 0, A 0 / 18 / 18 / 0 / 0, P 0 / 1 / 1 / 0 / 0 (`value` / `mention` / `mention-shuf` / `rules-value` / `rules-mention`) → `declared` everywhere but A × mention. README precondition 3 |
-| 3c | Read-only **BM25 exhaustion verifier** (prereg §5 note 3): served length of a short `bm25` list = ES `_count` of the server's BM25 clause on the bench index; or the owner's decision to run without it | S, O | **code written, in review** 2026-10-30: **#877** (`exp/found10-exhaustion`, head `3dc7fdb`; `bm25_exhaustion.py`, `found10._verify_exhaustion`, `bm25_scope`); the owner chose the verifier over running without it; its merge is README precondition 4 (was *pending — the one open decision* at v1) |
-| 4 | Prereg v2 → owner's go → **freeze** (sha into a private `PREREG.sha256`; README procedure) | F, O | v1 drafted 2026-10-30; v2 (3b folded in, 3c specified) 2026-10-30 (this PR); freeze pending the #877 merge |
-| 5 | Live-ops plan for every bench-store touch (bench indices only, `swap.sh` dry run → apply → census, stop by recorded pid, restore to `rules/3@file/1`) | F | pending; precedes step 12 |
+| 3c | Read-only **BM25 exhaustion verifier** (prereg §5 note 3): served length of a short `bm25` list = ES `_count` of the server's BM25 clause on the bench index; or the owner's decision to run without it | S, O | **done**: **#877** merged **`2254e4b`** 2026-10-30 (`3dc7fdb`, `83b8d90`, `0ec8f1c`, `40c16c3`; `bm25_exhaustion.py`, `found10._verify_exhaustion`, `bm25_scope` checked against `es_id_prefix`, fourth verdict `query_mismatch` a hard stop); the owner chose the verifier over running without it. README precondition 4 (was *in review* at v2, *pending — the one open decision* at v1) |
+| 4 | Prereg v3 → owner's go → **freeze** (sha into a private `PREREG.sha256`; README procedure) | F, O | v1 drafted 2026-10-30; v2 (3b folded in, 3c specified) 2026-10-30; **v3 (3c merged, pin `2254e4b`, §12 forking paths) 2026-10-30 (this PR) — every freeze precondition met; awaits the go** |
+| 5 | Live-ops plan for every bench-store touch (bench indices only, `swap.sh` dry run → apply → census, stop by recorded pid, restore to `rules/3@file/1`) | F | pending; **a run-time precondition** — precedes step 12, not the freeze (round 2's precedent, README precondition 6) |
 
 ## Phase 1 — gateway-dependent (drafting only)
 
@@ -74,17 +74,18 @@ Precision (round 2 § 6) is **not repeated**: the glossary is unchanged (D9).
 | gateway closes before O is drafted | O is the family; pause, resume after a fresh notice; nothing else substitutes |
 | the papers-OC owner cannot judge the P volume | P stays a replication with the label *our three-layer check only*; promotion rule void (no pilot verdicts) |
 | boost probe `not_testable` on a cell (pre-declared from the offline counts: every cell but A × mention) | `--boost-declared 1` with the value copied into the private config; the reading is `declared` and printed beside every bm25 figure of that cell (prereg §5 note 2) |
-| short `bm25` lists without the exhaustion verifier (#877 not merged at the freeze) | that arm × condition is GATE-NOT-EVALUABLE on `bm25` and reported so; `base` and `norerank` are unaffected (prereg §5 note 3) |
-| an exhaustion `clamp` verdict, or two differing admin `/v1/config` reads on one leg | hard stop; the leg is not scored; cause found, deviation entry, re-run (prereg §5 notes 2–3, §8) |
+| short `bm25` lists without the exhaustion verifier (#877 not merged at the freeze) | **moot since 2026-10-30** (#877 merged `2254e4b`); kept for the record. The rule was: that arm × condition is GATE-NOT-EVALUABLE on `bm25` and reported so; `base` and `norerank` unaffected |
+| a short `bm25` list the verifier cannot count (`under_served`: no count, unknown boost sign, unscoped bound above the served length) | that arm × condition is GATE-NOT-EVALUABLE on `bm25` and reported so, with the verdict counts beside it (prereg §5 note 3) |
+| an exhaustion `clamp` or `query_mismatch` verdict, or two differing admin `/v1/config` reads on one leg | hard stop; the leg is not scored; cause found (`query_mismatch`: in the verifier, not the data), deviation entry, re-run (prereg §5 notes 2–3, §8) |
 | P's fields-mode gate reading below 60 at step 6 | P is GATE-NOT-EVALUABLE for retrieval and reported so; no paper is added after the gate is read; O carries the family regardless |
 | `mention` on a symbol-dense corpus floods top-10 (the #754 pattern) | that is a result, not a failure: H2 (V stratum) is two-sided for exactly this reason |
 
 ## Timeline sketch (UTC)
 
 - 10-30: decisions, code, offline dry run, prereg v1 (done); fields-mode P dry build, probe counts (done,
-  `898e34d`); exhaustion verifier written (#877, in review); reranker test record merged (#876, `734cfa6`);
-  prereg v2 (this PR).
-- 10-31: #877 review and merge → precondition 4; freeze; live-ops plan; pool build (step 6).
+  `898e34d`); reranker test record merged (#876, `734cfa6`); prereg v2; exhaustion verifier merged (#877,
+  `2254e4b`) → precondition 4 met; prereg v3 (this PR), every freeze precondition met.
+- 10-30/31: owner's go → freeze; live-ops plan (step 5); pool build (step 6).
 - 11-01: pilot (step 7) → promotion addendum; drafts O, P, A overnight.
 - 11-02: verifier; spot-check; retrieval swaps (steps 12–13).
 - 11-03: analysis, RESULTS, DEVIATIONS.
