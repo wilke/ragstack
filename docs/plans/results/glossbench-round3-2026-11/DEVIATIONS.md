@@ -173,7 +173,7 @@ would have rejected 3, including the record the partner rejected as "not a value
 any round-3 set. The rule is in force for every O, A and later P record. The pilot keeps its layer-1
 verdicts as logged, and is not re-scored.
 
-## D-5, 2026-10-30T21:58:27Z: set O's discriminating records judged in full; a sensitivity on the clean subset, declared before any retrieval
+## D-5, 2026-10-30T21:58:27Z: set O's discriminating records judged in full; per-hypothesis clean-subset sensitivities, declared before any retrieval
 
 **What happened.**
 - Set O drafting finished (17:57–19:10Z, 863 gateway calls) with **206 accepted records** (V 57, M_num 149).
@@ -200,10 +200,20 @@ private, with sha256s `f5183e80…` and `ea3cfa5c…`.
 
 **Decision (owner, before any retrieval on any round-3 set).**
 - H1–H3 run exactly as frozen: H1 on every M_num record (the 36 discriminating M_num records among
-  them), H2 on V (the 17), H3 on both. The census breakdown above is printed beside H1, alongside the
-  realised power floor.
-- An **exploratory sensitivity** is declared now: H1 recomputed on the **41 clean** discriminating
-  records. It is labelled exploratory and never replaces H1.
+  them), H2 on V (the 17), H3 on both. Each hypothesis has its stratum's census breakdown printed beside
+  it, alongside the realised power floor.
+- **Exploratory sensitivities** are declared now. Each hypothesis is recomputed with the census-flagged
+  records of its own stratum excluded. A flagged record is one the judge rejected or noted as not a
+  quantity:
+  - **H1** on M_num minus its 9 flagged records (3 rejected, 6 not a quantity): 140 records, 27 of them
+    discriminating;
+  - **H2** on V minus its 3 flagged records (1 rejected, 2 not a quantity): 54 records, 14 of them
+    discriminating;
+  - **H3** on both strata minus all 12 flagged records.
+
+  These are labelled exploratory and never replace H1–H3. Only the 53 discriminating records were judged,
+  so non-discriminating records are never excluded. The census flags are fixed in the private files
+  above.
 - Layer-1 rules for later rounds (not this one) will cover all three classes: the quote must print a
   digit; and cross-references, accessions, equation numbers and definitional constants are rejected.
 
