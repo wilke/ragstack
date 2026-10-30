@@ -658,8 +658,10 @@ and the counts-only artifact is
 - **Input against outcome.** Under `mention`, more records' gold chunks carry the asked quantity's words (7
   → 12 of 206), but `mention` puts a field on 18 % of OA-1000's chunks instead of 0.9 %. On the
   unadjusted secondaries, the losses are largest under `bm25` and nearly absent under `norerank`.
-- **Value-only stays the served rule on this evidence.** Under `base` it found exactly the records that no
-  glossary found, so the record shows it ahead of `mention`, not ahead of none.
+- **Value-only stays the served rule, as a no-change decision, not a demonstrated benefit.** On this set
+  `mention` did not beat `value`, and `value` did not beat no glossary: under `base` it found exactly the
+  records that no glossary found. Nothing here supports switching to `mention`; nothing shows value-only
+  better than none.
 - **Set A** (descriptive) was drafted after the drafter model's upstream change (D-6). **Set P** stopped at
   its pilot and was not promoted (D-1). The R1 replication and the layer-3 spot-check are **absent**.
 

@@ -60,7 +60,9 @@ than under `value` (the proxy: 12 against 7 of 206). Retrieval did not follow. O
 fewer records than `value`, and the hypothesised gain was not confirmed. The test is one-sided, so the
 adverse direction is descriptive. The design had power **.90** at the planned effect (d .17, gain share
 .85, α/3, on the realised layout), so for the hypothesised gain this is a **powered null**. On V and in H3
-the discordant records sit in too few papers for any split to reach α (5 and 3 papers).
+the discordant records sit in too few papers for any split to reach α (5 and 3 papers). Under `base`,
+`value` and `none` found exactly the same records, so the round shows neither `mention` nor `value` ahead
+of no glossary on this set ([What this shows](#what-this-shows), item 4).
 
 ## Confirmatory table (set O, `base`, Holm over 3)
 
@@ -194,7 +196,7 @@ private operations log, and the figure is not in the artifact.
 | noise floor (`value` repeated as `value#2`) | found@10 discordant **0** on `base`, `bm25` and `norerank`, on both sets (0 of 206, 0 of 63). Rankings differed below the found@10 line on 8 / 20 / 29 O records and on 3 / 0 / 1 A records (ops log) |
 | restore | O and A were restored to `rules/3` on every chunk (`restore.<set>.census_after`; 32,765 and 27,418 written, 0 reassembly gaps). The after-dumps differ from the pre-round dumps only in row order: diff count **0** on chunk id, glossary field, glossary version and neighbours (ops log) |
 | one refused leg attempt | the first O × `value#2` run was refused before any call: the swap record named arm `value#2` and the runner requires `value`. Nothing was measured. The repeat ran after an idempotent re-swap recorded under `value` (ops log) |
-| arm files | `mention` ⊇ `value` on every record: the proxy counted **0** records where `value` passes and `mention` fails, on O and on A, and 0 for `rules-mention` against `rules-value`. The shuffled arm has 0 fixed points |
+| arm files | a proxy pass under `value` implies one under `mention`: **0** records where `value` passes and `mention` fails, on O and on A, and 0 for `rules-mention` against `rules-value` (counted from the proxy's per-record booleans). No gold chunk has a field under `value` but not under `mention` (ops log). The shuffled arm has 0 fixed points |
 
 ## The proxy, and the distractor load
 
@@ -232,12 +234,15 @@ with each call. No gateway cost in USD was recorded (`cost_usd` null). Verifier 
 | batch | pin | gateway calls | prompt / completion tokens | jobs | layer-1 passes | layer 2 (Claude pass / reject; Codex pass) | accepted |
 |---|---|---|---|---|---|---|---|
 | P pilot | `6e620c2` (verify rerun `b501ec7`) | 105 | 94,614 / 2,185 | 100 | 7 | 4 / 2; 1 | 5 (format check only) |
-| O | `4c0bbb8` | 863 (859 answered, 4 HTTP failures) | 687,111 / 113,145 | 534 | 254 | 205 / 48; 1 | **206** (V 57, M_num 149), 48 papers |
+| O | `4c0bbb8` | 863 (859 answered, 4 HTTP failures: 502 × 1 and 503 × 2 in the artifact, a 500 in the ops log) | 687,111 / 113,145 | 534 | 254 | 205 / 48; 1 | **206** (V 57, M_num 149), 48 papers |
 | A, segment 1 (`max_tokens` 4,096) | `4c0bbb8` | 170 (169 answered, 1 HTTP 502; 2 truncated) | 147,996 / 368,458 | 104 | 29 | — | — |
 | A, segment 2 (`max_tokens` 16,384, D-6) | `4c0bbb8` | 156 | 135,499 / 356,582 | 96 | 48 | — | — |
 | A, both segments | | 326 | 283,495 / 725,040 | 200 | 77 | 58 / 14; 5 | **63** (V 6, M_num 57), 22 papers |
 | **ledger** | | **1,294** | **1,065,220 / 840,370** | | | | |
 
+- **Per segment of set A**, the jobs (104 / 96) and layer-1 passes (29 / 48) are from the ops log; the
+  artifact holds set A's totals (200 jobs, 77 passes) and segment 1's pause reason, which counts 28 of the
+  first 100 jobs.
 - **Ledger.** The ledger total is `cumulative_with_prior` of set A's second segment. The token diagnostic of
   D-6 adds 8 calls (6,790 / 13,645 tokens), which sit outside the ledger (ops log).
 - **Caps.** Our pause was 2,500 calls / 2.5 M input / 0.5 M output. The output cap was raised to 1.0 M for A's
@@ -250,7 +255,7 @@ with each call. No gateway cost in USD was recorded (`cost_usd` null). Verifier 
   10 of O's 28, drawn with seed `261103|vbcheck|O`, found 10 bounds as written. 4 of them are arguable (D-5).
 - **Layer 2 (Claude CLI):** O used 254 CLI calls (1 usage-policy refusal, passed to Codex), 637,879 context /
   39,983 output tokens, **$6.14**. A used 77 CLI calls (5 refusals, all passed by Codex), $1.89. The P pilot
-  used $0.15 in its rerun ($0.15 more in its first attempt, the 4 refused calls not tallied). No record was
+  used $0.14 in its rerun ($0.15 more in its first attempt, the 4 refused calls not tallied; ops log). No record was
   `verifier_unavailable`.
 - **Gold differs among accepted records:** O **53** (V 17, M_num 36) of 206, against a design that planned
   about 150. A had 14 (V 3, M_num 11) of 63 (D-5; ops log for A).
@@ -281,12 +286,15 @@ In the record's own voice, from the figures above.
 3. **H2 and H3 cannot be read.** On V, `mention` lost 5 records and gained none, but the 5 sit in 5 papers.
    No split could reach α, and the two-sided power was .25 on the realised 57 records. H3 (right entries
    against shuffled ones under `mention`) differs on 3 records in 3 papers. Neither is a null.
-4. **On this evidence the served value-only rule stays.** The pooled secondary (`mention` − `value`,
-   two-sided, unadjusted) is 1 gained to 14 lost, p 0.0017. The `rules` glossary moves the same way
-   (`rules-mention` − `rules-value` 0 / 5, gated). One fact belongs beside that: under `base`, on these 206
-   records, `value` found exactly the records that `none` found (0 discordant). Under `bm25` and
-   `norerank` the totals differ by at most 2 records (table above; descriptive). This round shows `value`
-   ahead of `mention`. It does not show `value` ahead of no glossary.
+4. **No change to the served rule: value-only stays, as a no-change decision, not a demonstrated
+   benefit.** The evidence supports two negative statements on this set: `mention` did not beat `value`
+   (H1), and `value` did not beat no glossary. Under `base`, on these 206 records, `value` found exactly
+   the records that `none` found (0 discordant; `value` − `none` GATE-NOT-EVALUABLE). Under `bm25` and
+   `norerank` the totals differ by at most 2 records (table above; descriptive). So this round gives no
+   evidence that value-only is better than no glossary. It is kept because nothing here supports
+   switching to `mention`. In the adverse direction, the pooled secondary (`mention` − `value`, two-sided,
+   unadjusted, outside F) is 1 gained to 14 lost, p 0.0017, and the `rules` glossary moves the same way
+   (`rules-mention` − `rules-value` 0 / 5, gated). Both are descriptive.
 5. **The census changes nothing.** Removing the 12 records the papers-OC owner flagged (EXPLORATORY, D-5)
    leaves every label and direction as it was.
 
