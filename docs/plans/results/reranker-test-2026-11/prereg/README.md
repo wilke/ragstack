@@ -9,9 +9,12 @@ bm25-vs-rerank contrast has not been computed.
 | [PLAN-reranker-test.md](PLAN-reranker-test.md) | **lab book** (dated, superseded-not-deleted) | ordered steps, owners, compute, risks — not a design constraint |
 | [power-table-reranker.json](power-table-reranker.json) | planning aid | `reranker_test.py power-table --pages 208 --questions-n 735 --delta 0.05 --alpha 0.05 --n-sims 2000 --n-flips 2000 --seed 261029`, run at `9d78672` from a clean tree (`citable: true`); the run re-computes it on the realised layout (`--gold`) beside the results |
 
-**Code still to merge before freezing** (prereg §9, second table): the inactive-reranker gate, the
-glossary-boost behavioural probe, and Holm at p = 1.0 for gated members — one in-flight PR; its number
-is written here on merge.
+**Code still to merge before freezing** (prereg §9, second table): **#867** (`exp/r2-manip-checks`) —
+the inactive-reranker gate, the glossary-boost behavioural probe (`glossary_boost_probe.py`, shared with
+round 2) and Holm at p = 1.0 for gated or absent members as the default with `holm_drop_gated` as the
+labelled sensitivity. Its merge commit is written here on merge. R2-P's admission to family B (prereg §4,
+D15) depends in addition on round 2's **#868** (`exp/r2-setp-fields`: set-P field mode against the
+partner's binding export v2, pilot, partner adapter), which round 2 requires before its own freeze.
 
 ## Freeze procedure
 
@@ -23,8 +26,9 @@ The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`)
 3. A one-line commit records the freeze here (this status line) and at the top of the prereg (`> Frozen
    <sha> at <UTC>`). The body is not touched; any later change is a `DEVIATIONS.md` entry.
 
-Preconditions, met at `e3002ba`: the harness (#862) is on `main` with unit tests and a review; the
-owner's decisions (prereg §12) are folded in.
+Preconditions: the harness (#862) is on `main` at `e3002ba` with unit tests and a review, and the
+owner's decisions (prereg §12, D1–D15) are folded in — both met; **#867 merged** (D13) — not yet met.
+For the R2 sets of family B, round 2's own freeze (which requires #867 and #868) precedes their use.
 
 ## What changed from the v0 draft (2026-10-29, same day)
 
@@ -65,3 +69,17 @@ Substance, not wording:
   deferred to freeze time.
 - **`--prefer live` pinned**: the API's own reranked capture is the arm wherever it exists.
 - **R2-P** carries round 2's status label and is exploratory unless round 2's addendum promotes P.
+
+## v1.2 — final pre-freeze edits (owner decisions of 2026-10-29)
+
+- **The in-flight PR is #867**: named in the header, §3, §6, §8, §9, D13 and D14, with the probe's five
+  verdicts (`inactive` / `mixed` / `error` stop; `not_testable` gates unless `--boost-declared`;
+  `declared`) and the gate's reach to fuse arms built on a gated list.
+- **D14: Holm at p = 1.0 is the code's default from #867**; `holm_drop_gated` is a labelled sensitivity
+  only, never the decision.
+- **D15 (new): R2-P follows round 2's bounded promotion addendum** (round 2 §3.5 / D17: fixed hypotheses
+  H1-P, H3-P, H4-P; Holm over 7; Wilson 95% upper bound ≤ 0.15 on the partner's pilot error rate; dated
+  before any non-pilot P record is drafted). This file adds no decision point of its own; if round 2
+  does not promote, R2-P is exploratory here with no further option.
+- **#868** named as the dependency behind R2-P (set-P field mode against the partner's binding export
+  v2, pilot, adapter); the partner is "the partner" or "the papers-OC owner" throughout.

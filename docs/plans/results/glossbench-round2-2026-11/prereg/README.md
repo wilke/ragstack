@@ -25,10 +25,26 @@ The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`)
    `DEVIATIONS.md` entry.
 
 Preconditions: every module of prereg §9's first table is on `main` at `e3002ba` (#861–#865) with unit
-tests and a review; the owner's decisions (prereg §11) are folded in. **Still to merge before freezing:**
-the glossary-boost behavioural probe in `found10.py` (prereg §5 M1, §9 second table; one in-flight PR,
-its number written here on merge). The set-P binding mode (prereg §3.4) is needed before P's pilot, not
-before the freeze; O and A do not wait for it.
+tests and a review; the owner's decisions (prereg §11, D1–D18) are folded in. **Still to merge before
+freezing, both (D13):**
+
+- **#867** (`exp/r2-manip-checks`): the glossary-boost behavioural probe (`glossary_boost_probe.py`,
+  wired into `found10.py` and `reranker_test.py`; prereg §5 M1), the reranker test's inactive-reranker
+  gate, and Holm with gated or absent members at p = 1.0 as the default with `holm_drop_gated` as the
+  labelled sensitivity (prereg §7, D18).
+- **#868** (`exp/r2-setp-fields`): set P's field-list drafting mode, the partner-format adapter
+  (`export-partner`, `import-partner-verdicts`), the pilot (`--pilot N --papers K`) and the per-set
+  stratum quotas (`pool.per_set`; prereg §3.4, D14–D16). The freeze also needs its field-list loader to
+  assert `n_terms == len(terms)` on import (prereg §3.4 a; not in the PR at its head `d52efef`, which
+  reads `terms` and ignores `n_terms`).
+
+The merge commits are written here on merge, and every run is at or after them. The field list is the
+partner's binding export **v2** (`binding_fields_261029_v2.json`, sha256 `1c377891…`, 9,445 bytes);
+v1 (`08309d0f…`) is superseded — truncated term lists for two fields — and kept only for provenance.
+
+After the freeze, exactly one addendum may be appended to this README: the set-P promotion decision of
+prereg §3.5 (D17), *promoted* or *not promoted*, quoting the imported pilot verdict summary. Its terms
+are fixed in the prereg; nothing else is ever appended here.
 
 ## What changed from the v0 draft (2026-10-29, same day)
 
@@ -82,3 +98,29 @@ Substance, not wording:
 - **Holm is always over four**; a gated member enters at p = 1.0 and the family is never shrunk after a
   result is seen (the v1 text allowed a logged shrink to Holm over 3).
 - The 2,234-field count is labelled a review measurement, not a committed artifact.
+
+## v1.2 — final pre-freeze edits (owner decisions of 2026-10-29)
+
+- **D16 closed: S3 on P is 6 per paper** (≈ 150 records over 25 papers before rejects), through #868's
+  per-set override `pool.per_set = {"P": {"s3_per_paper": 6}}`; O and A stay at 2; S3 stays exploratory.
+- **D17: promotion of set P into the confirmatory family is allowed by one bounded addendum** (prereg
+  §3.5). Fixed now so the addendum has no free choice: it adds exactly H1-P, H3-P and H4-P (H2 is not
+  mirrored); Holm goes from 4 to 7 with gated members at p = 1.0; the condition is a Wilson 95% upper
+  bound ≤ 0.15 on the partner's judged error rate over the pilot (≥ 30 judged records; at n = 50 at
+  most 2 rejects), the owner-accepted default taken from the layer-3 validity bar; the deadline is
+  before any non-pilot P record is drafted; if the condition fails P stays a replication with no further
+  option. Stated plainly as one post-pilot decision point, a disclosed forking path bounded by the rule.
+- **D18: Holm with gated or absent members at p = 1.0** is the code's default (#867); `holm_drop_gated` is
+  a sensitivity only.
+- **Binding export re-pointed at v2** (sha256 `1c377891…`, 9,445 bytes; same 26 fields, units and
+  definitions; `air_exchange_rate_s` 12 → 14 terms, `deactivation_rate_s` 12 → 13; `n_terms ==
+  len(terms)` for every field). v1 is superseded: its truncation would have let "ACH" questions pass the
+  term-leak guard for the most ACH-heavy field.
+- **Set-P identifiers aligned to #868's code**: `term_leak` (was `terms_leak`), `unit_incompatible` (was
+  `unit_dimension_mismatch`), the `bridge` flag (was `different_dimension`), `expect_in_set`,
+  `constant_cap`, `weight_new_ground`; a field outside the file is structurally unplannable and refused,
+  `field_not_in_list` in the partner export.
+- **Both #867 and #868 are freeze preconditions** (D13); v1.1 had #868's content as a pilot precondition
+  only.
+- The §5 M1 probe is described as #867 implements it (token-based candidates, five verdicts,
+  `--boost-declared`).

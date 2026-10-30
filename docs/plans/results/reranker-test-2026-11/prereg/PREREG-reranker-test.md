@@ -3,10 +3,11 @@
 > **Public copy, drafted for freezing.** Frozen on the owner's go, as written: its sha256 and a UTC
 > timestamp go into a private `PREREG.sha256` kept with the outputs, and the sha is then recorded at the
 > top of this file and in `README.md` (the part-4 procedure). Freezing happens **after** the harness of §9
-> is on `main` (#862 at `e3002ba`; the two manipulation checks of §9's second table are an in-flight PR
-> and must be merged first) and **before** any arm in §3 is run on any set in §4. Any later change is a
-> `DEVIATIONS.md` entry. The file names no tenant, collection, host, endpoint, product or gateway owner;
-> the partner that holds the papers-OC collection is "the partner".
+> is on `main` (#862 at `e3002ba`; the manipulation checks and the Holm default of §9's second table are
+> **#867** and must be merged first; the R2-P admission rule of §4 depends on round 2's **#868**) and
+> **before** any arm in §3 is run on any set in §4. Any later change is a `DEVIATIONS.md` entry. The file
+> names no tenant, collection, host, endpoint, product or gateway owner; the partner that holds the
+> papers-OC collection is "the partner" or "the papers-OC owner".
 
 **v1 (this text):** the v0 draft of 2026-10-29 revised against the merged harness
 (`python/scripts/eval/reranker_test.py`, #862) and the owner's decisions of the same day (§12).
@@ -14,6 +15,10 @@
 with their failure rules; the Holm rule of §6 pinned to the round-2 convention; the power table of §7
 computed from the committed code and committed beside this file; `--prefer live` pinned in §3; set P's
 round-2 status label carried into §4. No other number or rule changed.
+**v1.2 (final pre-freeze edits, owner decisions of 2026-10-29):** the in-flight PR named (#867) with the
+probe's verdicts and `holm_drop_gated` as the sensitivity (D13, D14); R2-P's admission to family B tied to
+round 2's bounded promotion addendum (round 2 §3.5; D15 here); the drafting population behind R2-P named
+as the partner's binding export v2. No hypothesis, arm, measure, test or threshold changed.
 
 **Status.** CONFIRMATORY for H1–H3 on set **docs-A/T512o0** (family A) and, when they exist, on the
 round-2 multi-paper sets (family B, §4). Everything on the partner's 155-record set is EXPLORATORY.
@@ -140,14 +145,19 @@ and is itself recorded.
 
 **The glossary boost is proven, not declared.** `TEXT_SYMBOL_GLOSSARY_BOOST` ships at **0.0**
 (`python/ragstack/config.py`) and `/v1/config` does not expose it, so on the API route a declared 1.0
-is unverified. Before the first captured list on any API-route set, `pools` runs a **behavioural probe**
-(in-flight PR, §9 second table): a `bm25` request whose only match is a term that occurs in a known
-chunk's rendered glossary field and nowhere in its content must return that chunk; query, chunk id and
-outcome are recorded. On the papers-OC bench copy at `rules/3@file/1` the probe term comes from a
-rules-glossaried chunk; on docs-A the API route is not used (the arms are in-process, where
-`--glossary-boost` is applied directly and the probe is `not applicable`, recorded). **A failed probe is
-a hard stop (exit 1, configuration error), not a gate**: no list captured from that server process is a
-§3 arm.
+is unverified. Before the first captured list on any API-route set, `pools --backend api` runs a
+**behavioural probe** (`glossary_boost_probe.py`, shared with round 2's runner; **#867**, §9 second
+table): up to 5 chunks whose stored glossary holds a whole-word ASCII token (≥ 5 characters) that occurs
+in no chunk's content and in at most 10 glossaries are queried `bm25`, `rerank false`, `top_k 10` with
+that token alone, at most 4 in flight; each must return its chunk. Token sha256s (never the text),
+ranks, requested vs served depth and the verdict are recorded under the manipulation check. On the
+papers-OC bench copy at `rules/3@file/1` the candidates come from the chunk dump's stored glossary; on
+docs-A the API route is not used (the arms are in-process, where `--glossary-boost` is applied directly
+and the probe is `not applicable`, recorded). **Verdicts `inactive`, `mixed` and `error` (a degraded
+response, or an echoed `top_k` below the request) are a hard stop (exit 1, configuration error), not a
+gate**: no list captured from that server process is a §3 arm. `not_testable` (fewer than 3 qualifying
+chunks) gates the boost-dependent arms unless `--boost-declared X` is given, recorded as `declared`; an
+API pools file without a probe record is gated in `stats`.
 
 **Which list is A4-D / A5-D when both exist.** `stats --prefer live` (the default) is pinned: the API's
 own reranked capture (`--live`) is the arm wherever it was captured; the offline rerank stands in only
@@ -159,7 +169,7 @@ where no live capture exists (docs-A, depth 200, the A7 renderings), and the out
 |---|---|---|---|
 | **docs-A / T512o0** — the part-4 question set (735 questions on 208 pages; `--part4-arm T512o0 --private-config`), retrieval-only, in-process arms as the part-4 harness builds them; the glossary reaches 1 chunk in 1,113 (lab book Part 2), so this set isolates fusion and reranker from the glossary | ours (private; alias only) | 735 / 208 pages | **family A, confirmatory**; L (live chunking) as replication (§12 D2) |
 | **P: the partner's 155** on the papers-OC bench copy (14,456 chunks @512) | the partner's set, now held **privately on our host** (its user lifted the "never copy" rule for our private experiments repository; lab book addendum 2026-10-29) — never in this public repository | 155 / 7 papers (138 in one; 73 distinct queries) | exploratory; corpus-level claim is GATE-NOT-EVALUABLE (§8) |
-| **R2:** round-2 multi-paper sets — O (OA-1000), A (ASM-1000), P (papers-OC) of `../../glossbench-round2-2026-11/prereg/PREREG-glossbench-round2.md` | ours | ≈ 250 records × 25 papers per set (planned); R2-P is drafted against the partner's binding and carries round 2's P label *scripted-clean, judged sample of 50, error rate X% (95% CI …)* beside every figure (round 2 §3.4) | **family B, confirmatory** for O and A; R2-P is admitted to family B only if round 2's own addendum promotes P before any P record is drafted, else exploratory; a set is admitted when its records are frozen (round 2's `accepted-<set>.jsonl`) before any §3 arm has run on it |
+| **R2:** round-2 multi-paper sets — O (OA-1000), A (ASM-1000), P (papers-OC) of `../../glossbench-round2-2026-11/prereg/PREREG-glossbench-round2.md` | ours | ≈ 250 records × 25 papers per set (planned); R2-P is drafted against the partner's binding export v2 (round 2 §3.4, #868) and carries round 2's P label *scripted-clean, judged sample of 50, error rate X% (95% CI …)* beside every figure | **family B, confirmatory** for O and A; **R2-P is admitted to family B only if round 2's bounded promotion addendum (its §3.5: fixed hypotheses, Holm over 7, Wilson upper bound ≤ 0.15 on the partner's pilot error rate, dated before any non-pilot P record is drafted) says *promoted***; otherwise R2-P is exploratory here with no further option (§12 D15). A set is admitted when its records are frozen (round 2's `accepted-<set>.jsonl`) before any §3 arm has run on it |
 
 **Set P runs on our host, every leg through our API against the bench copy.** The partner's retrieval
 gateway **clamps `top_k` to 10** (the depth read-back guard in `pools` exists because a gateway once
@@ -204,8 +214,9 @@ approximate for d ∈ {−1, 0, +1}, so the level is nominal). p = (1 + #{≥ ob
 mid-p in the decision (mid-p reported as sensitivity). **Holm over H1–H3 within a set, always over
 three** — the round-2 convention: a GATE-NOT-EVALUABLE or absent member enters at **p = 1.0**, so a
 gate never makes the other two easier. `stats` at `e3002ba` runs Holm over the evaluable members only
-(`family.note`); that reading is reported as a sensitivity, and the p = 1.0 rule is the decision — the
-in-flight PR (§9) makes it the code's default. Exact McNemar and the cluster bootstrap (percentile,
+(`family.note`); **#867** makes the p = 1.0 rule the code's default and keeps the evaluable-members Holm
+as the labelled sensitivity `holm_drop_gated`, which is reported and never decides (§12 D14). Exact
+McNemar and the cluster bootstrap (percentile,
 10,000, `--ci-level 0.90` two-sided = the one-sided 95% bound for H3) are reported, never decide. The
 machinery is the part-4 code (`deployed_docs_part4`, `chunktrial_stats`), **imported, not copied**.
 
@@ -260,14 +271,16 @@ planning table (its prereg §7) until the realised layout exists.
   part4-retrieval.jsonl --identity-arm T512o0`, part 4's own reranked lists per question — because the
   docs-A arms are in-process and have no live A4-50.
 - **A wired-but-inactive reranker** answers `rerank=true` with the fused order. **The inactive-reranker
-  gate** (in-flight PR, §9 second table; the round-2 runner already has it in code, `found10.py`: `base`
-  identical to `norerank`) compares every reranked list with the pool it was built on: **A4-50 is
-  GATE-NOT-EVALUABLE when its top 10 equals A3's (the fused 50-pool's own order) on every record, and
-  A5-50 when its top 10 equals A0's on every record.** When the gate fires, every hypothesis that names
-  the gated arm is GATE-NOT-EVALUABLE on that set — H1 and H3 for A4-50 or A5-50; H2 (ceilings only)
-  is untouched — and enters Holm at p = 1.0 (§6). The gate is checked from the per-record ranks before
-  any contrast is computed; `reranker_test.py` at `e3002ba` has no automated gate for it, which is why
-  the PR is required before freezing.
+  gate** (**#867**, §9 second table; the round-2 runner already has its own in code, `found10.py`:
+  `base` identical to `norerank` — mirrored here, not imported, since this harness compares top 10s
+  against a pool captured separately) compares every reranked list (API `live:` A4/A5/A6, offline `rr:`
+  A7) with the pool it was built on: **A4-50 is GATE-NOT-EVALUABLE when its top 10 equals A3's (the
+  fused 50-pool's own order) on every record, and A5-50 when its top 10 equals A0's on every record.**
+  The mark carries to fuse arms (A9) built on a gated list. When the gate fires, every hypothesis that
+  names the gated arm is GATE-NOT-EVALUABLE on that set — H1 and H3 for A4-50 or A5-50; H2 (ceilings
+  only) is untouched — and enters Holm at p = 1.0 (§6). The gate is checked from the per-record ranks
+  before any contrast is computed; `reranker_test.py` at `e3002ba` has no automated gate for it, which
+  is why #867 is required before freezing.
 - Absent is written as *absent*: a set not yet frozen (R2), a judge not run (E7), a second reranker not
   deployed (A8), a fuse variant with a missing input, a depth the route cannot reach (P at 200).
 
@@ -284,14 +297,17 @@ planning table (its prereg §7) until the realised layout exists.
 | `stats` | decomposition, rank-of-gold, H1–H3 (Holm), exploratory contrasts, per-record ranks | `--lists`, `--gold`, `--set-label`, `--depths`, `--prefer live\|offline`, `--gold-rule any\|all`, `--delta 0.05`, `--alpha 0.05`, `--n-perm 10000`, `--n-boot 10000`, `--ci-level 0.90`, `--seed 261029`, `--repeat`, `--per-record` |
 | `power-table` | the §7 floor | `--pages 208`, `--questions-n 735`, `--gold`, `--delta`, `--alpha`, `--n-sims`, `--n-flips`, `--seed` |
 
-**Not yet on `main`; required before freezing** (in flight; the PR number is recorded in `README.md`
-on merge, and every run is at or after its merge commit):
+**Not yet on `main` at `e3002ba`; required before freezing — #867 (`exp/r2-manip-checks`)**; its merge
+commit is recorded in `README.md` on merge, and every run is at or after it:
 
 | item | where | failure rule |
 |---|---|---|
-| inactive-reranker gate (§8): reranked top 10 equal to its pool's own order on every record | `reranker_test.py stats` | the arm and every H naming it GATE-NOT-EVALUABLE on that set, p = 1.0 in Holm |
-| glossary-boost behavioural probe (§3) | `reranker_test.py pools --backend api` (and `found10.py`, round 2) | hard stop, exit 1; nothing from that server process is an arm |
-| Holm with GNE / absent members at p = 1.0 as the default (§6) | `reranker_test.py stats` | — (until merged, the decision is computed by hand from the output's p values and recorded) |
+| inactive-reranker gate (§8): reranked top 10 equal to its pool's own order on every record | `reranker_test.py stats` | the arm, the fuse arms built on it and every H naming it GATE-NOT-EVALUABLE on that set, p = 1.0 in Holm |
+| glossary-boost behavioural probe (§3) | new shared `glossary_boost_probe.py`; `reranker_test.py pools --backend api` (and `found10.py`, round 2) | `inactive` / `mixed` / `error`: hard stop, exit 1, nothing from that server process is an arm; `not_testable`: boost-dependent arms gated unless `--boost-declared`; a pools file without a probe is gated in `stats` |
+| Holm with GNE / absent members at p = 1.0 as the default (§6) | `reranker_test.py stats` | — ; `holm_drop_gated` is the labelled sensitivity (D14) |
+
+R2-P's admission to family B (§4) depends in addition on round 2's **#868** (set-P field mode, pilot,
+partner adapter), which round 2 requires before its own freeze.
 
 Every output embeds `experiment_provenance()`; outputs carry ids, ranks and counts only (`--omit-text`
 checks the written JSON for any query or quote text, escaped forms included). Citable only from a clean
@@ -342,5 +358,6 @@ The owner accepted every recommended default. Fixed at freezing; a later change 
 | D10 | depth-200 arms on set P | **cap at 100 on P**; 200 on docs-A in-process only |
 | D11 | where the record lives | **this folder**, `docs/plans/results/reranker-test-2026-11/`; glossbench's lab book links to it |
 | D12 | noise-floor repeats | **A0 and A4-50 repeated once per set** |
-| D13 | manipulation checks | **both required in code before freezing** (§9 second table): the inactive-reranker gate (fires → the arm's hypotheses GNE at p = 1.0) and the glossary-boost probe (fails → hard stop) |
-| D14 | Holm with a gated member | **p = 1.0, Holm always over three** (round 2's rule); the code's evaluable-members Holm is a sensitivity until the PR lands |
+| D13 | manipulation checks | **both required in code before freezing** (§9 second table): the inactive-reranker gate (fires → the arm's hypotheses GNE at p = 1.0) and the glossary-boost probe (`inactive` / `mixed` / `error` → hard stop; `not_testable` → gate unless declared) — **#867** (named 2026-10-29, final pre-freeze pass) |
+| D14 | Holm with a gated member | **p = 1.0, Holm always over three** (round 2's rule), the code's default from **#867**; the evaluable-members Holm is kept as the labelled sensitivity `holm_drop_gated` and never decides (2026-10-29) |
+| D15 | R2-P in family B | **follows round 2's bounded promotion addendum** (round 2 §3.5, its D17; 2026-10-29): admitted only if that addendum, dated before any non-pilot P record is drafted, says *promoted* under its fixed condition (Wilson 95% upper bound ≤ 0.15 on the partner's pilot error rate); otherwise exploratory here with no further option. This file adds no decision point of its own |

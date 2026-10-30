@@ -4,10 +4,11 @@
 > its sha256 and a UTC timestamp go into a private `PREREG.sha256` kept with the outputs, and the sha is
 > then recorded at the top of this file and in the directory's `README.md` (the part-4 procedure,
 > `../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`). Freezing happens **after** every module of
-> §9 is on `main` (the harness is, at `e3002ba`; the two manipulation-check additions of §9's last row
-> are an in-flight PR and must be merged first) and **before** any eval paper is sampled, any question is
+> §9 is on `main` (the harness is, at `e3002ba`; the two code PRs of §9's second table, **#867** and
+> **#868**, must be merged first) and **before** any eval paper is sampled, any question is
 > generated or any gateway glossary call is made. Any later change is a `DEVIATIONS.md` entry, never an
-> edit. The file names no tenant, collection, host, endpoint, product or gateway owner; the partner that
+> edit — with one pre-stated exception, the set-P promotion addendum of §3.5, whose every term is fixed
+> here. The file names no tenant, collection, host, endpoint, product or gateway owner; the partner that
 > holds the papers-OC collection is "the partner" or "the papers-OC owner".
 
 **v1 (this text):** the v0 draft of 2026-10-29 revised against the merged harness (#861–#865) and the
@@ -15,6 +16,11 @@ owner's decisions of the same day (§11). Changes of substance against v0 are li
 **v1.1 (review of 2026-10-29, same day):** the set-P design of §3.4 (the partner's sampled acceptance
 and its binding export), the two manipulation checks of §5 and §8, and the Holm rule of §7 pinned;
 no other number or rule changed.
+**v1.2 (final pre-freeze edits, owner decisions of 2026-10-29):** D16 closed (S3 on P = 6 per paper);
+D17 added (promotion of set P into F by a bounded addendum, §3.5); D18 added (Holm with gated members at
+p = 1.0 as the code's default, #867); the binding export re-pointed at its v2 file (§3.4); set-P reason
+codes and config keys named as #868 implements them; §9's second table names #867 and #868. No
+hypothesis, measure, test or threshold of O and A changed.
 
 **Terms.** *Arm*: a glossary condition (per document; one glossary file serves every chunk size).
 *Record*: one question with its gold quote, gold chunk(s), the quantity asked and its binding term(s).
@@ -48,8 +54,9 @@ Confirmatory family **F** = H1–H4 on **set O ∪ A** (§3), stratum **S1**, co
 rerank, the served pipeline), outcome **found@10** (§5), Holm over 4 at α = 0.05. These are the defaults
 of `glossbench/found10_analysis.py` (`DEFAULT_HYPOTHESES`) and of the example config
 (`glossbench/examples/found10-config.example.json`: `family_corpora ["O","A"]`, `family_strata ["S1"]`,
-`family_condition "base"`). Everything else is secondary or exploratory and is labelled so in every
-sentence that quotes it.
+`family_condition "base"`). **F may grow once, to seven, by the set-P promotion addendum of §3.5** (H1-P,
+H3-P, H4-P; Holm over 7); nothing else can change it. Everything else is secondary or exploratory and is
+labelled so in every sentence that quotes it.
 
 | id | hypothesis | type | contrast |
 |---|---|---|---|
@@ -83,11 +90,12 @@ from it:
 |---|---|---|---|
 | **O** | OA-1000 (12,560 article + float units; 32,765 chunks @512 — lab book, corpus table) | ~250 from 25 papers | *our three-layer check* (§3.3), owner-spot-checked |
 | **A** | ASM-1000 (1,000 articles; 27,418 chunks @512) | ~250 from 25 papers | *our three-layer check*, owner-spot-checked |
-| **P** | papers-OC (275 papers; 14,456 chunks @512) | ~200 drafted-and-accepted from 15–25 papers, drafted **against the partner's binding** (§3.4) | **scripted-clean, judged sample of 50, error rate X% (95% CI …)** — the partner's sampled acceptance (§3.4, §11 D4). Every P number carries that label and rate; P is **never called equivalent** to the 155-record set |
+| **P** | papers-OC (275 papers; 14,456 chunks @512) | ~200 S1/S2 drafted-and-accepted from 25 papers plus **≈ 150 S3** (6 per paper, D16), drafted **against the partner's binding** (§3.4) | **scripted-clean, judged sample of 50, error rate X% (95% CI …)** — the partner's sampled acceptance (§3.4, §11 D4). Every P number carries that label and rate; P is **never called equivalent** to the 155-record set |
 | R1 | the partner's round-1 155-record set (7 papers, 138 of 155 from one; lab book Part 3) | as is | reviewed-by-holder; **replication only**, one-paper reach stated |
 
-Set P is **outside F** unless an addendum frozen **before any P record is drafted** (pilot included)
-promotes it. The partner advised starting with O and A, which need nothing from it.
+Set P is **outside F** unless the addendum of §3.5 — whose content, condition and deadline are all fixed
+here — promotes it **before any non-pilot P record is drafted**. The partner advised starting with O and
+A, which need nothing from it.
 
 **Where sets run.** All four run **on our host**, through the committed runner (§5) against bench copies
 of the three indices. The partner's user has lifted the "never copy" rule on the 155-record set for this
@@ -134,7 +142,9 @@ when it happens.
    Part 1) makes this gate real; the pure rule and the frontier change the counts, and the gate decides.
 5. **Chunk sample:** per paper and stratum a seeded order (`<seed_base>|<set>|chunks|<stratum>|<paper>`);
    the first 12 S1 (all if fewer), 2 S2, 2 S3 are sampled (`s1_per_paper`, `s2_per_paper`,
-   `s3_per_paper`).
+   `s3_per_paper`). **On P the S3 quota is 6 per paper** (D16, 2026-10-29), set by the per-set override
+   `pool.per_set = {"P": {"s3_per_paper": 6}}` (#868; the effective quotas are recorded in the pool
+   header and manifest as `quotas_per_paper`). O and A keep 2.
 
 **Manipulation checks before anything is written:** the export's chunk count equals the configured
 `expected_chunks` (32,765 / 27,418 / 14,456, round 1's counts); every arm file resolves every eval-paper
@@ -231,32 +241,48 @@ every result from that set carry *validity below threshold* in the sentence; the
 ### 3.4 Set P: the partner's binding, its sampled acceptance, and the pilot (§11 D4, D14–D16)
 
 Set P differs from O and A in three fixed ways. O and A keep the open value-statement design of §3.1–3.3
-unchanged.
+unchanged. The code is #868 (`glossbench_r2_fields.py`, `draft_mode: fields` in the pool, the field-mode
+prompt and layer-1 codes in `glossbench_r2_checks.py`, the `export-partner` / `import-partner-verdicts`
+subcommands of `glossbench_r2_draft.py`); the identifiers below are its.
 
 **(a) The drafter is restricted to the partner's binding quantities.** The field list is the partner's
-fresh binding export `binding_fields_261029.json` (sha256
-`08309d0f4221be499b1a54f8b5ed3b28940808d8b268ee85d0990085d70c6443`, **26** numeric fields; a named
-input held privately, its sha256 re-recorded by the drafter at drafting time and a mismatch refused). It
-is **not** the field list of the held 155-record set. Each row carries the field name, its canonical
-unit, the binding's one-line definition and its extraction terms. Rules, frozen now:
+binding export **v2**, `binding_fields_261029_v2.json` (sha256
+`1c3778918c76ae206de0fb1b66e256da33faebf8840d6c49ca232552b2911dfa`, 9,445 bytes, **26** numeric fields;
+a named input held privately, its sha256 re-recorded by the drafter on load and on resume and a mismatch
+refused). **v1 of the same export (sha256 `08309d0f…`) is superseded and kept only for provenance:** its
+term lists were truncated for two fields (`air_exchange_rate_s` 12 → 14 terms in v2, adding a
+subscripted-lambda form and `ach`; `deactivation_rate_s` 12 → 13), so under v1 a question written with
+"ACH" would have passed the term-leak guard for the most ACH-heavy field. v2 has the same 26 fields, units
+and definitions, and `n_terms == len(terms)` for every field; **the loader asserts that equality on
+import** (a mismatch refuses the file — required of #868 before the freeze; the loader at its head
+`d52efef` reads `terms` and ignores `n_terms`). It is **not** the field list of the held 155-record set.
+Each row carries the field name, its canonical unit, the binding's one-line definition and its extraction
+terms (`terms`, alias `extraction_terms`). Rules, frozen now:
 
-- A record's `field` must be one of the 26; a quantity outside the file is rejected (`field_not_in_binding`).
-  That refusal is what excludes model conditions (not numbers) and the binding's non-researchable
-  fields; the prereg names no field as a target beyond the quota list below.
+- A record's `field` must be one of the 26. Drafting jobs are **(chunk, field) pairs planned from the
+  file**, so no other field can be asked; a job or draft row naming a field outside the file stops the
+  run (exit 1), and `export-partner` refuses and counts such a record (`field_not_in_list`). Fields of
+  `kind: condition` are excluded from the plan. That is what excludes model conditions (not numbers) and
+  the binding's non-researchable fields; the prereg names no field as a target beyond the quota list
+  below.
 - The record's `binding_terms` are the field's **extraction terms** from the file, not the drafter's.
 - The question is written in the **definition's own words**. A layer-1 guard rejects a question whose
   overlap with the field's extraction terms exceeds the leak threshold (**0.5**, `leak_threshold`, the
   same stemming as the wording proxy, §5 M2) — copying the terms would flatter any glossary that uses
-  them (`terms_leak`).
-- `value` is recorded **as printed, with the printed unit**. Unit compatibility with the canonical unit
-  is checked **by dimension** (`unit_dimension_mismatch`, a reject); a `ventilation_flow_m3_s` quote
-  printed in air changes per hour is recorded as printed and **flagged** `different_dimension`, not
-  rejected.
-- The file carries no in-set or constant flag. `in_set` is computed from the held set's fields and
-  **asserted 13 covered / 13 uncovered** at drafting time (a different split stops the run). The
-  **4 constants** — gravity (covered), air density, air viscosity, particle density (uncovered) — come
-  from an explicit config list and are **capped at 2 records each**.
-- **Quotas favour the 10 new-ground fields 2 : 1** over the covered ones: `clearance_fraction`,
+  them (`term_leak`).
+- `value` is recorded **as printed, with the printed unit**, never converted. Unit compatibility with
+  the canonical unit is checked **by dimension** against a small fixed map (`unit_incompatible`, a
+  reject); a `ventilation_flow_m3_s` quote printed in air changes per hour is recorded as printed and
+  **flagged** (`bridge`), not rejected; a unit outside the map is flagged (`unknown` / `field_unknown`),
+  not rejected.
+- The file carries no in-set or constant flag. `in_set` is computed from the held set's records
+  (`--in-set-records`, the records' sha256 recorded) and **asserted 13 covered / 13 uncovered**
+  (`expect_in_set {"true": 13, "false": 13}`; a different split stops the run). The **4 constants** —
+  `gravity_m_s2` (covered), `air_density_kg_m3`, `air_dynamic_viscosity_pa_s`, `particle_density_kg_m3`
+  (uncovered) — come from the explicit config list `constants` and are **capped at 2 records each**
+  (`constant_cap`).
+- **Quotas favour the 10 new-ground fields 2 : 1** (`weight_new_ground` 2.0 vs `weight_other` 1.0;
+  the stated and the final quota plan are both recorded) over the covered ones: `clearance_fraction`,
   `exposure_time_s`, `filter_efficiency`, `initial_concentration_quanta_m3`, `neighbor_distance_m`,
   `occupant_count`, `recirculation_flow_m3_s`, `risk_tolerance`, `susceptible_count`,
   `ventilation_flow_m3_s`. Field names are generic model quantities and may appear in public files;
@@ -278,25 +304,66 @@ reaches the partner. Records go to the partner in its format through a committed
 `accepted-P.jsonl`: `id`, `question`, `source {doc_id, locator}` (locator a PMC id or DOI), `quote`,
 `field`, `case`, `model`, `prompt_sha256`.
 
-**(c) A pilot batch first.** About **50** records from **2–3** papers are drafted, checked and sent
-through the adapter before full set-P drafting, to prove the format end to end. The pilot runs **after
-freezing**, is part of the plan (`PLAN-round2.md`), and is **data for no hypothesis**: its records are
-not in `accepted-P.jsonl` and its papers are excluded from P's paper sample (`exclude_papers`).
+**(c) A pilot batch first.** About **50** records from **3** papers (`--pilot 50 --papers 3`, papers
+seeded `<seed>|pilot`) are drafted, checked and sent through the adapter before full set-P drafting, to
+prove the format end to end. The pilot runs **after freezing**, is part of the plan (`PLAN-round2.md`),
+and is **data for no hypothesis**: it writes its own `*-P-pilot*` files, its records carry
+`pilot: true`, `export-partner` refuses an export that mixes pilot and hypothesis records, and its papers
+are excluded from P's paper sample (`exclude_papers`). **The pilot runs no retrieval arm**: nothing about
+any glossary condition is measured on it. Its partner verdicts (§3.4 b, through
+`import-partner-verdicts`) are the one input to the promotion rule of §3.5.
 
-**S3 on P carries the key test, and it is small.** The partner's own analysis (external, not re-measured
-here) found that the symbol glossary names the asked quantity for 65–68% of its pairs and that every
-failure was a quantity printed **without a symbol** — the words-only case. On P the words-only stratum
-S3 is therefore the stratum of interest, and its planned size is **≈ 50 records** (`s3_per_paper` 2 ×
-25 papers, before rejects). That is a **descriptive, exploratory** stratum: a paired contrast on ≈ 50
-records from 25 papers can resolve only a near-total gain (at discordance .17 about 8 discordant
-records, all of one sign, is the floor at α .05); the planning table's rows do not apply to it, and the
-realised `mde_split` is quoted beside every S3-on-P figure. A larger S3 quota on P needs a per-set
-override of `pool.s3_per_paper` (code) and a number from the owner — open at v1.1 (§11 D16).
+**S3 on P carries the key test, and it is sized for it.** The partner's own analysis (external, not
+re-measured here) found that the symbol glossary names the asked quantity for 65–68% of its pairs and
+that every failure was a quantity printed **without a symbol** — the words-only case. On P the words-only
+stratum S3 is therefore the stratum of interest, and its planned size is **≈ 150 records** (D16,
+2026-10-29: `s3_per_paper` **6** on P × 25 papers, before rejects, via `pool.per_set`, §3.1 step 5; the
+v1.1 plan of 2 per paper ≈ 50 was closed by the owner). It remains a **descriptive, exploratory**
+stratum, outside F before and after any §3.5 promotion: at discordance .17 about 25 discordant records
+are expected, and the one-sided floor at α .05 is then 18 of 25 of one sign (exact p = .022; 17 of 25
+gives .054); the planning table's rows do not apply to it, and the realised `mde_split` is quoted beside
+every S3-on-P figure.
 
-**Code this section needs** (not on `main` at `e3002ba`; §9, last row): the field-restricted drafter
-mode, `field_not_in_binding`, `terms_leak`, the dimension check and flag, the `in_set` assertion and the
-constants cap, the quota, and the adapter. P's pilot is refused until they are merged and named in
-`README.md`; O and A do not wait for them.
+**Code this section needs** (not on `main` at `e3002ba`; §9, second table): **#868** — the field-mode
+drafter, `term_leak`, `unit_incompatible` and the `bridge` flag, `expect_in_set`, `constant_cap`, the
+2 : 1 quota plan, `pool.per_set`, the pilot and the two partner subcommands. It must be merged before
+the freeze (D13).
+
+### 3.5 Promotion of set P into F: one bounded addendum (§11 D17)
+
+This section adds **one decision point after the pilot's quality is seen**. It is therefore a **disclosed
+forking path**, bounded by the rule below, which leaves the addendum **no free choice**: not which
+hypotheses, not the family size, not the threshold, not the deadline. The pilot shows the format and the
+partner's acceptance quality only; it runs no retrieval arm (§3.4 c), so the fork is not conditioned on
+any outcome of any arm.
+
+- **When.** After the pilot batch has been drafted, checked and sent through the adapter, and the
+  partner's verdicts on it have been imported (`import-partner-verdicts`), and **before any non-pilot
+  set-P record is drafted**. An addendum dated after the first non-pilot P draft call is void.
+- **Condition (the owner-accepted default).** The partner's judged error rate over the pilot records it
+  judged has a **Wilson 95% upper bound ≤ 0.15** (the same 0.15 the design already uses for layer 3:
+  owner spot-check validity below 0.85 marks a set *validity below threshold*, §3.3; a P set whose
+  partner-judged quality cannot be shown better than that bar is not fit to carry a confirmatory
+  hypothesis). At n = 50 judged pilot records the rule admits at most **2** rejects (upper bound .135;
+  3 of 50 gives .162); a smaller judged n is harsher. A pilot the partner does not judge, or judges with
+  fewer than **30** records, fails the condition (no promotion).
+- **What is added, exactly.** Three hypotheses mirroring H1, H3 and H4 on **set P**, stratum S1,
+  condition `base`, outcome found@10 (H4-P: proxy pass), same contrasts, same one-sided superiority
+  form: **H1-P** `qwen36p` − `rules` > 0; **H3-P** `qwen36p` − `qwen36p-shuf` > 0; **H4-P** `qwen36p`
+  − `rules` on proxy pass > 0. **H2 is not mirrored**: a non-inferiority test at δ .05 on one 25-paper set
+  is under-powered by the planning table (§7, `H1_one_corpus_P25` is .47 at share .70 for a superiority
+  test, and NI is weaker still), so `qwen36p` − `frontierp` on P stays secondary.
+- **How Holm changes.** F becomes **{H1, H2, H3, H4, H1-P, H3-P, H4-P}**, Holm over **7** at α 0.05,
+  from the addendum's date and for the rest of the round; a gated or absent member (P's S1 reach gate
+  < 150, a failed probe, a short-served depth) enters at **p = 1.0** (§7). The P members use the same
+  `contrast_test` call with `family_corpora ["P"]`, papers as the exchangeable units, and the seven p
+  values go through `chunktrial_stats.holm` in a committed script, never by hand. The O ∪ A members and
+  their α are unchanged except through the larger family.
+- **If the condition fails,** set P stays a replication with its status label (§3), **with no further
+  option**: no second pilot for promotion purposes, no later addendum, no partial promotion.
+- **Form.** The addendum is one dated section appended to this file's `README.md` (the body of this
+  prereg is not edited), quoting the imported verdict summary (n, rejects, seed, Wilson bound) and the
+  one word *promoted* or *not promoted*; its sha256 joins the private `PREREG.sha256`.
 
 ## 4. Arms
 
@@ -393,13 +460,20 @@ the glossary field differs. **The glossary field boost** is the bench server's `
 (`python/ragstack/config.py`) and `/v1/config` does not expose it, so a bench server launched without
 the setting would silently run the `bm25` condition with the field unweighted. The runner therefore
 **proves the boost is active behaviourally** before the first call of every arm × corpus run (the probe
-in `found10.py`, an in-flight PR, §9 last row): a `bm25` request whose only match is a term that occurs
-in the attached arm's rendered glossary field of a known chunk and nowhere in that chunk's content must
-return that chunk. The probe's query, chunk id and outcome are recorded in the run summary. **A failed
-probe is a hard stop (exit 1, configuration error), not a gate**; nothing from that server process is a
-result. For `none` (every field empty) the probe is `not applicable` and recorded so; the boost reading
-for that run is the probes of the arms run immediately before and after it on the same server process
-(pid recorded). The configured value is also copied into the private config and recorded.
+of `glossary_boost_probe.py`, shared with the reranker test, **#867**, §9 second table): up to 5 chunks
+whose rendered glossary field holds a whole-word ASCII token (≥ 5 characters) that occurs in no chunk's
+content and in at most 10 glossaries are queried `bm25`, `rerank false`, `top_k 10` with that token
+alone; each must return its chunk. Candidates come from the chunk export (`--chunk-export`) plus the
+arm's glossary file rendered offline as the backfill renders it (sha checked against the arm; for the
+shuffled arm the permutation is reproduced and hash-checked against the swap record), or from
+`--rendered-fields`. Token sha256s (never the text), ranks, requested vs served depth and the verdict
+are recorded in the run summary. **Verdicts `inactive`, `mixed` and `error` are a hard stop (exit 1,
+configuration error), not a gate**; nothing from that server process is a result. `not_testable` (fewer
+than 3 qualifying chunks) gates the boost-dependent conditions unless `--boost-declared X` is given, in
+which case the reading is recorded as `declared`. For `none` (every field empty) the probe is
+`not applicable` and recorded so; the boost reading for that run is the probes of the arms run
+immediately before and after it on the same server process (pid recorded). The configured value is
+also copied into the private config and recorded.
 
 Controls built into the runner, all refusals before the first call or hard stops during it:
 - **Which arm is attached:** the swap record written by `glossbench/swap.sh` (dry run → apply →
@@ -477,8 +551,10 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
   obs}) / (1 + 10,000); no mid-p in the decision (mid-p reported as sensitivity). H2 shifts every d by +δ
   and tests one-sided > 0 (`chunktrial_stats.noninferiority_test`; the shift-to-null construction is
   approximate for d ∈ {−1, 0, +1}, as that function's docstring states, so the level is nominal).
-  **Holm over H1–H4**, α 0.05, **always over four**: a missing or gated p enters Holm as **1.0**. The
-  family is not shrunk after any result is seen; a Holm over the evaluable members is reported as a
+  **Holm over H1–H4**, α 0.05, **always over four** (over **seven** after a §3.5 promotion): a missing
+  or gated p enters Holm as **1.0** (`found10_analysis.holm_family`; the same rule is the default of the
+  reranker test's `stats` from #867, D18). The family is not shrunk after any result is seen; a Holm
+  over the evaluable members only (`holm_drop_gated` in the reranker test's output) is reported as a
   sensitivity reading only, never as the decision.
 - **Intervals:** net share (gained − lost)/n, paper-cluster percentile bootstrap, 10,000 (`n_boot`), seed
   261101, 90% two-sided (`ci_level`; the matching one-sided 95% bound for H2). Exact McNemar beside,
@@ -550,7 +626,7 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
 - **GATE-NOT-EVALUABLE:** a corpus whose S1 < 150 (retrieval leg); a contrast whose minimum attainable p
   > α; an arm/condition whose served depth fell short; `base` identical to `norerank` on every record;
   `frontierp` if the gateway closes before its batch completes — then H2 is GATE-NOT-EVALUABLE and
-  enters Holm at p = 1.0 (§7); F stays H1–H4.
+  enters Holm at p = 1.0 (§7); F stays as fixed (H1–H4, or the seven of §3.5).
 - **Set P absent** if neither drafting nor acceptance happens: the report says the papers-OC leg rests
   on R1 (one paper) only.
 
@@ -570,12 +646,12 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
 | read-only chunk export | `python/scripts/eval/glossbench/export_chunks.py` | #865 |
 | statistics | `python/scripts/eval/chunktrial_stats.py` via `deployed_docs_part4.contrast_test` (part 4's, unchanged) | — |
 
-**Not yet on `main`; required before freezing (manipulation checks) or before P's pilot (set P):**
+**Not yet on `main` at `e3002ba`; both required before freezing (D13):**
 
 | item | module | PR |
 |---|---|---|
-| glossary-boost behavioural probe (§5 M1, hard stop on failure) | `python/scripts/eval/glossbench/found10.py` (and `reranker_test.py`, the sibling prereg) | in flight; number recorded in `README.md` on merge |
-| set-P binding mode: `field_not_in_binding`, `terms_leak`, dimension check + `different_dimension` flag, `in_set` assertion, constants cap, 2 : 1 quota, partner-format adapter (§3.4) | `python/scripts/eval/glossbench_r2_draft.py`, `glossbench_r2_checks.py` | not started; P's pilot waits for it |
+| glossary-boost behavioural probe (§5 M1; `inactive` / `mixed` / `error` = hard stop, `not_testable` = gate unless declared); Holm with gated or absent members at p = 1.0 as the reranker test's default, `holm_drop_gated` as its labelled sensitivity (§7); the reranker test's inactive-reranker gate | new shared `python/scripts/eval/glossary_boost_probe.py`; `glossbench/found10.py` (`--chunk-export`, `--rendered-fields`, `--boost-declared`); `reranker_test.py` | **#867** (`exp/r2-manip-checks`) |
+| set-P field mode: `glossbench_r2_fields.py` (field list v2 with the `n_terms == len(terms)` assertion, `in_set` from the held set with `expect_in_set`, `constants` + `constant_cap`, 2 : 1 quota plan, arm-blind lexical prefilter, dimension map, term-leak guard); pool `draft_mode: fields` and the per-set quota override `pool.per_set`; layer-1 `unit_incompatible`, `term_leak`; `--pilot N --papers K`; `export-partner`, `import-partner-verdicts` (§3.4) | `python/scripts/eval/glossbench_r2_fields.py`, `glossbench_r2_pool.py`, `glossbench_r2_checks.py`, `glossbench_r2_draft.py` | **#868** (`exp/r2-setp-fields`) |
 
 **Pin.** Every run from one `main` commit **at or after `e3002ba`** in a clean worktree (`dirty false,
 untracked 0`) or from a tools image built from a tools tag at or after it (ADR-0010 order); a run that
@@ -626,7 +702,9 @@ freezing; a later change is a deviation.
 | D10 | owner labelling | **40 blind items (κ) + 40 spot-check records per set; a second rater if available** |
 | D11 | judges | **three (Claude CLI, Codex CLI, Gemini gateway), majority; vendor-overlap flag and a table without the overlapping judge** |
 | D12 | Qwen arm in the family | **Qwen3.6** (`qwen38p` secondary) |
-| D13 | freeze gate | **after all §9 code is merged** — the harness at `e3002ba`; the glossary-boost probe (§9, second table) still to merge |
-| D14 | set-P drafting population | **the partner's binding export** `binding_fields_261029.json` (26 fields, sha in §3.4), not the held set's fields; constants capped at 2; the 10 new-ground fields at 2 : 1; definition-words questions with the terms-leak guard; value as printed, dimension-checked |
-| D15 | set-P pilot | **≈ 50 records from 2–3 papers after freezing**, format check only, data for no hypothesis; its papers excluded from P |
-| D16 | S3 quota on P | **open**: the plan is `s3_per_paper` 2 (≈ 50 records, exploratory); a larger P-specific quota needs a per-set override (code) and the owner's number before P's pilot |
+| D13 | freeze gate | **after all §9 code is merged** — the harness at `e3002ba`, plus **#867** and **#868** (§9, second table); both before the freeze, not only before P's pilot (re-stated 2026-10-29, final pre-freeze pass) |
+| D14 | set-P drafting population | **the partner's binding export v2** `binding_fields_261029_v2.json` (26 fields, sha in §3.4; v1 `08309d0f…` superseded, 2026-10-29), not the held set's fields; constants capped at 2; the 10 new-ground fields at 2 : 1; definition-words questions with the term-leak guard; value as printed, dimension-checked |
+| D15 | set-P pilot | **≈ 50 records from 3 papers after freezing**, format check only, data for no hypothesis; its papers excluded from P; its partner verdicts are the input to D17 |
+| D16 | S3 quota on P | **closed 2026-10-29: 6 per paper** (≈ 150 records over 25 papers, before rejects), via the per-set override `pool.per_set = {"P": {"s3_per_paper": 6}}` (#868). O and A stay at 2. S3 remains exploratory |
+| D17 | promotion of set P into F | **allowed by one bounded addendum** (2026-10-29), §3.5: after the pilot and the partner's judged error rate on it, before any non-pilot P record is drafted; adds exactly H1-P, H3-P, H4-P (not H2); Holm over 7, gated members at p = 1.0; condition = Wilson 95% upper bound of the partner's pilot error rate ≤ **0.15** (owner-accepted default, the layer-3 bar) on ≥ 30 judged records; if it fails, P stays a replication with no further option. Disclosed as one post-pilot decision point bounded by that rule |
+| D18 | Holm with a gated or absent member | **p = 1.0, the family never shrinks** — implemented as the default in #867 (`found10_analysis.holm_family` already had it; the reranker test's `stats` adopts it); `holm_drop_gated` is a labelled sensitivity only, never the decision (2026-10-29; the reranker test's D14) |
