@@ -30,7 +30,7 @@ says which.
 - [What is not reported](#what-is-not-reported)
 - [What this says](#what-this-says)
 - [Threats to the descriptive reading](#threats-to-the-descriptive-reading)
-- [Round 3](#round-3)
+- [Closure](#closure)
 - [Reproducing](#reproducing)
 
 ## The answer
@@ -67,11 +67,15 @@ arm-blind lexical prefilter of the field mode (prereg §3.4) further reduces it.
 | **P** | papers-OC | 275 / 275 / 14,456 | 226 | 253 † (7 excluded, D-3) | 25 | 3,142 | **72** | **12** | 60 | 786 | 10 / 31 / 126 | GATE-NOT-EVALUABLE |
 
 † On P the manifest's `eligible_papers` (253) exceeds `papers_with_vs` (226), so it is the field mode's
-eligibility (the arm-blind lexical prefilter of prereg §3.4), not the "≥ 3 value-statement chunks" rule
-that O and A report. It is copied, not re-derived.
+eligibility (the arm-blind lexical prefilter of prereg §3.4: papers with ≥ 3 chunks the prefilter admits
+for a planned field, `min_field_chunks`), not the "≥ 3 value-statement chunks" rule that O and A report.
+It is copied, not re-derived. For the same reason P's pool holds only the eval-paper chunks the prefilter
+admits, so P's **72** is the value-statement chunks of the eval papers *that the prefilter admits*; the
+prefilter is arm-blind and S1 is drawn from that pool, so the bound below holds on P as on O and A.
 
 **The upper bound** (`sets.<S>.s1_upper_bound`). S1 ∪ S2 is exactly the value-statement chunks of the
-eval papers (12 + 132 = 144; 3 + 116 = 119; 12 + 60 = 72). An arm can only move a chunk from S2 to S1.
+eval papers' pool (12 + 132 = 144; 3 + 116 = 119; 12 + 60 = 72; on P, see †): the build assigns S1 or S2
+only to a chunk with a value statement, S3 otherwise. An arm can only move a chunk from S2 to S1.
 The `final` reading with `frontierp` is therefore bounded by 144, 119 and 72, all below 150:
 `attainable_under_any_arm: false` on every set. No frontier file was needed to settle the gate.
 
@@ -119,7 +123,7 @@ and not re-measured here**). Not in `reach-r2.json`: no frontier count entered a
 | tokens (gateway's count) | **330,236 in / 181,266 out** (audit) |
 | output cap | **30 of 58 calls returned exactly 4,096 output tokens**; median 4,096, minimum 421 (audit). The cap reached the provider on every call |
 | our step | 9 of 26 documents **degraded** (`cut_off`, unresolved after the split retry), 16 cut-off windows, `with_llm` 17, 26 kept entries, no visible reasoning content; round 1's Qwen3.6 proposed 634 entries on the same 26 documents with no cut-off |
-| stop | the batch's pre-set rule (> 2 degraded documents) fired at 9; no rerun, no merge, no `final` reading |
+| stop | the stop rule the coordinator set in the batch brief before the batch started (> 2 degraded documents on a set) fired at 9; no rerun, no merge, no `final` reading |
 | budget | 0.33 M in / 0.18 M out / 58 calls against the pause at 5.0 M / 0.75 M / 4,000 (prereg §8) |
 
 **Reading.** The GPT-5.5 glossaries are **truncated outputs**. They say nothing about GPT-5.5 glossary
@@ -206,12 +210,12 @@ Descriptive, from the counts above; no contrast was tested and none is implied.
 - **The gateway audit is external.** Call, token and cap counts of the frontier batch are the gateway
   owner's; our step recorded the served id per call and 58 calls, and recorded no token counts.
 
-## Round 3
+## Closure
 
 Round 2 is closed as GATE-NOT-EVALUABLE; it is not re-opened, re-sampled or re-gated (a changed gate
-after seeing the counts would be a forking path). The next round is pre-registered separately, in its
-own directory, with the value-statement count per paper measured before its sample size, gate and
-population are frozen. Its design is not written here.
+after seeing the counts would be a forking path). Any later round is its own pre-registration in its own
+directory; nothing of it is written here. What follows this round is lab-book matter
+([`../glossbench-2026-10/LABBOOK.md`](../glossbench-2026-10/LABBOOK.md), addendum 2026-10-30).
 
 ## Reproducing
 

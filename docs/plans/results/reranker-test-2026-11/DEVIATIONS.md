@@ -5,8 +5,11 @@ The pre-registration is frozen at commit 9e109c3 (PREREG-reranker-test.md, sha25
 dedc990). The file is never edited. Every change after the freeze is recorded here, dated, with what was
 known when it was made. The partner that holds the papers-OC collection is "the papers-OC owner".
 
-**Status at the last entry: no arm of §3 has run on any set of §4.** No `pools`, `rerank` or `stats` run
-has happened; no API, sidecar, embedding, store-write or gateway call was made for this test. The sha of
+**Status at the last entry (D-4, 2026-10-30T03:42:38Z): no test arm of §3 has been reranked on any set
+of §4.** Up to D-3 (2026-10-30T03:33:07Z) no `pools`, `rerank` or `stats` run had happened and no API,
+sidecar, embedding, store-write or gateway call had been made for this test. D-4 records the one run
+since: docs-A `pools` in-process and a `rerank` that stopped at the identity gate after 3 reranker-sidecar
+calls. Anything later is a later entry. The sha of
 the frozen text was verified by hand against the README and the private `PREREG.sha256` before the
 first step (prereg README, freeze procedure step 3; 2026-10-30T03:10:13Z).
 
@@ -38,8 +41,8 @@ clean tree. The test's preparation (identity-reference check, the papers-OC glos
 config) ran at **`d87a02e`**, the merge of **#870** (post-freeze tooling, 2026-10-30T03:08:47Z; see round
 2's `DEVIATIONS.md` D-2): `export_chunks.py --with-glossary` (the dump the set-P gold and the boost probe
 read) and the part-4 re-score reader of D-1. Any arm that runs will run at or after the merge of **#871**,
-which is **open, not merged**, at the time of this entry; its merge commit will be recorded here when it
-exists. Nothing in #870 or #871 changes `stats`: no arm, measure, threshold, test or gate.
+which was **open, not merged**, when this entry was written; it merged as **`b300d0e`**
+(2026-10-30T03:32:47Z), recorded here before the entry was committed. Nothing in #870 or #871 changes `stats`: no arm, measure, threshold, test or gate.
 
 **What was found before `pools`, and what #871 changes.** Three input problems stopped the plan at step
 8a (docs-A) and 8b (set P) before any list was captured:
@@ -129,7 +132,7 @@ over 208 clusters; gold for 732, with 3 excluded under §8 (`no_gold_chunk_in_in
 stopped at the identity gate, as the prereg requires: all 3 probes differed at rank 1. It made three
 sidecar calls. No test arm was reranked, and no list, contrast or hypothesis was computed.
 
-**Why it failed.** The reference named in the prereg (§3/§8, D13: part 4's own reranked lists) was built
+**Why it failed.** The reference named in the prereg (§8, with §12 D3: part 4's own reranked lists) was built
 on the deployed docs-A index. The bench copy this test runs on (1,113 chunks) assigns different document
 and chunk ids. The two share **0 of 50** candidate ids on every probe, and their document ids are
 disjoint (336 vs 335). So the gate compared two id spaces and could never pass. That says nothing about
