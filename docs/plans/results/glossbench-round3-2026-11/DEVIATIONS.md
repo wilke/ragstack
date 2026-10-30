@@ -178,28 +178,30 @@ verdicts as logged, and is not re-scored.
 **What happened.**
 - Set O drafting finished (17:57–19:10Z, 863 gateway calls) with **206 accepted records** (V 57, M_num 149).
   Of these, only **53** sit on chunks whose rendered field differs between the `value` and `mention`
-  attachment rules (V 17, M_num 36). The design planned about 150, and only these 53 can show a difference
-  between the arms. The frozen pre-drafting gate counted sampled chunks (151 against 100) and passed; the
+  attachment rules (V 17, M_num 36). The design planned about 150. Only on these 53 does the gold chunk
+  itself render differently between the arms; distractor fields can differ on any record. The frozen pre-drafting gate counted sampled chunks (151 against 100) and passed; the
   shortfall arises between sampling and acceptance.
 - On the owner's decision, the papers-OC owner judged **all 53** of these records, a census rather than a
   sample, on one question: does the quoted value denote the quantity the question asks about? The judge
   was told only that these are the discriminating records, not which arm renders what.
 
 **Result** (exact counts, with no sampling uncertainty):
-- **2 wrong quantity.**
-- **2 worded values.** These are correct on the quantity question, but their quotes print no digit.
-  Under the frozen definition the M_num property (a symbol plus a number) applies to the chunk, not the
-  quote, so these records do not violate the frozen rules.
-- **8 not a quantity.** These are internally consistent, so the judge accepted them, but their "quantity"
+- **2 wrong quantity** (V 1, M_num 1), rejected by the partner with a reason.
+- **2 worded values** (M_num 2), rejected by the partner with no reason recorded in its files; their
+  quotes print no digit. Under the frozen definition the M_num property (a symbol plus a number)
+  applies to the chunk, not the quote, so these records do not violate the frozen rules.
+- **8 not a quantity** (V 2, M_num 6). These are internally consistent, so the judge accepted them, but their "quantity"
   is an equation number, a supplementary-note reference, a database accession, a definitional constant,
   or a number read out of a name.
-- **41 clean.**
+- **41 clean** (V 14, M_num 27).
 
-The partner's verdict object and notes are private, with sha256s `f5183e80…` and `ea3cfa5c…`.
+The partner's verdict object (n 53, 4 rejects: the wrong-quantity and worded records) and notes are
+private, with sha256s `f5183e80…` and `ea3cfa5c…`.
 
 **Decision (owner, before any retrieval on any round-3 set).**
-- H1–H3 run exactly as frozen. H1's population still includes all 53 discriminating records, and the
-  census breakdown above is printed beside H1, alongside the realised power floor.
+- H1–H3 run exactly as frozen: H1 on every M_num record (the 36 discriminating M_num records among
+  them), H2 on V (the 17), H3 on both. The census breakdown above is printed beside H1, alongside the
+  realised power floor.
 - An **exploratory sensitivity** is declared now: H1 recomputed on the **41 clean** discriminating
   records. It is labelled exploratory and never replaces H1.
 - Layer-1 rules for later rounds (not this one) will cover all three classes: the quote must print a
