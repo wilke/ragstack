@@ -598,3 +598,40 @@ Run at `f408b7a`, clean, 2026-10-30T13:49–14:31Z. In one line each:
   and the glossary in the reranker's input is where part of the gain comes back. Both descriptive.
 
 What's next items (a)–(c) and (e) are unchanged; (d) is closed by the record above.
+
+## Addendum, 2026-10-30 (evening): the papers-OC owner's corrected reading of Part 3 — Scout over rules is unresolved
+
+**Mapping.** The papers-OC owner calls the measurement behind Part 3 (Results)
+its **"round 2"**. In this lab book it is **round 1, step 8** (2026-10-29): the four-condition table on the
+owner's 155 records. This entry follows that table. It is not about this project's glossbench round 2, which
+stopped at its reach gate and produced no retrieval result.
+
+The owner re-scored the step-8 runs with a corrected matching rule and then with source-paper scoping. Its
+addenda are at 4a9030d and 7a10f05, with the matching rule at aad81fe. All three are external: they are in
+the owner's repository, and we have not re-measured them. The corrected rule disproportionately removed
+false credit from the rules baseline. The figures below are the owner's, exploratory, and from one run
+each. The bootstrap is within the dominant paper (138 records), not at the corpus level.
+
+**Scout vs rules, no-reranker arm.** Records gained, with 95 % interval, under three defensible scorings:
+
+| scoring | rules → scout, norerank |
+|---|---|
+| as recorded in Part 3 (the owner's original quote matching) | +8 [−2, +18] |
+| corrected matching rule, 138-record single-paper analysis | **+11 [+1, +22]** |
+| corrected rule + source-paper scoping | +6 [−4, +16] |
+
+Under the corrected rule, Scout's other two arms (base, bm25) still include zero.
+
+**Reading.**
+
+- **Scout over rules is unresolved.** The one contrast that excluded zero did so under one of three
+  scorings, and it includes zero again under the third. Part 3's "Scout does not [beat rules]" was too
+  strong as a null, and "noise" is too strong as a dismissal. Neither "Scout beats rules" nor "Scout does
+  not" is supported.
+- **Both Qwen models beat rules on every arm under every scoring.** Under the corrected rule the effects
+  grew slightly. That finding of Part 3 stands.
+- **Qwen3.6 and Qwen3.8 remain indistinguishable.**
+
+The reranker test's [gold-scope addendum](../reranker-test-2026-11/ADDENDUM-2026-10-30-gold-scope.md) finds
+the same pattern on the reranker arms. A loose quote rule and cross-paper gold bias in opposite directions,
+so a scoring choice can move a small contrast across zero. What's next is unchanged.

@@ -253,3 +253,7 @@ promised here.
 
 **What was known.** Everything in `RESULTS.md`: the T512o0 verdicts and the set-P descriptives had been
 computed when the omission was noticed and when the `build_arms` check was made.
+
+## Pointer, 2026-10-30: set-P gold-scope sensitivity
+
+Not a deviation: an exploratory re-scoring of set P under four gold variants, after the record. See [`ADDENDUM-2026-10-30-gold-scope.md`](ADDENDUM-2026-10-30-gold-scope.md).
