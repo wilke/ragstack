@@ -1,10 +1,10 @@
 # Pre-registration, glossary attachment benchmark round 3
 
-**Status: DRAFT v3 (2026-10-30), aligned with `main` at `2254e4b` (#877). Not frozen. Every freeze
-precondition is met (below); the text awaits the owner's go.** No eval paper has been sampled, no question
-generated, no gateway call made. When the owner gives the go, this line becomes `FROZEN <sha256> at <UTC>
-on the owner's go (commit <sha of the frozen text>)`; the prereg file itself is never edited after that,
-not even for a "frozen" note.
+**Status: FROZEN `43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765` at 2026-10-30T15:34:08Z
+on the owner's go (commit a27b581).** The prereg file is unchanged since that commit and is never edited;
+later changes go to `DEVIATIONS.md`, except the set-P promotion addendum under its pre-stated rule. At the
+freeze, no eval paper had been sampled for drafting, no question generated and no gateway call made; the
+offline dry-run counts in the prereg were the only round-3 data seen.
 
 | file | tier | what |
 |---|---|---|
