@@ -58,6 +58,7 @@ CHECK = "bm25_exhaustion_es_count"
 EXHAUSTED = "exhausted_verified"
 CLAMP = "clamp"
 UNDER = "under_served"
+MISMATCH = "query_mismatch"
 SCOPE_EXACT = "exact"
 SCOPE_BOUND = "unscoped_upper_bound"
 
@@ -109,7 +110,12 @@ def verdict(served: int, count: int | None, scope: str) -> str:
         return UNDER
     if count == served:
         return EXHAUSTED
-    if count > served and scope == SCOPE_EXACT:
+    if count < served:
+        # The index cannot match fewer chunks than the server returned for the same
+        # query, under the exact scope or the (wider) unscoped bound: the rebuilt
+        # query does not match the server's. Never evidence either way; stop.
+        return MISMATCH
+    if scope == SCOPE_EXACT:
         return CLAMP
     return UNDER
 

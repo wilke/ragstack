@@ -760,6 +760,10 @@ class Runner:
             self.hard_stop = self.hard_stop or (
                 f"{cond} record {rec['record_id']}: served {served} of {requested} but the index matches "
                 f"{count} ({scope}): a clamp, not exhaustion")
+        elif res["exhaustion"]["verdict"] == bx.MISMATCH:
+            self.hard_stop = self.hard_stop or (
+                f"{cond} record {rec['record_id']}: served {served} of {requested} but the index matches only "
+                f"{count} ({scope}): the rebuilt bm25 query does not match the server's; fix the verifier")
 
     async def _probe_call(self, client: httpx.AsyncClient, token: str
                           ) -> tuple[dict[str, Any] | None, str | None]:

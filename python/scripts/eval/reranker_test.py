@@ -1039,6 +1039,8 @@ def cmd_pools(args: argparse.Namespace) -> int:
     gold_out = {"schema": GOLD_SCHEMA, "provenance": provenance(), "questions": qmeta, "corpus": corpus.meta, **gold}
     under = sorted(k for k, v in depth.items() if v["status"] == "under-served")
     clamps = sorted(k for k, v in depth.items() if (v.get("exhaustion") or {}).get("verdicts", {}).get(bx.CLAMP))
+    mismatches = sorted(k for k, v in depth.items()
+                        if (v.get("exhaustion") or {}).get("verdicts", {}).get(bx.MISMATCH))
     out["provenance"] = provenance()
     for k in under:
         depth[k]["status"] = GNE if args.allow_short else "under-served"
@@ -1046,12 +1048,19 @@ def cmd_pools(args: argparse.Namespace) -> int:
     if clamps:
         out["status"] = "clamp"
         out["clamped_lists"] = clamps
+    if mismatches:
+        out["status"] = "query_mismatch"
+        out["mismatched_lists"] = mismatches
     write_out(Path(args.out), out, questions, args.omit_text)
     write_out(Path(args.gold_out), gold_out, questions, args.omit_text)
     for k in under:
         d = depth[k]
         log(f"DEPTH READ-BACK: {k} requested {d['requested']}, served min {d['served_min']} "
             f"({d['n_under_served']} records short)")
+    if mismatches:
+        log(f"QUERY MISMATCH: {mismatches}: the index matches fewer chunks than were served, so the "
+            "rebuilt bm25 query is not the server's; failing the run")
+        return EXIT_FAIL
     if clamps:
         log(f"CLAMP: {clamps}: the index matches more chunks than were served; failing the run")
         return EXIT_FAIL

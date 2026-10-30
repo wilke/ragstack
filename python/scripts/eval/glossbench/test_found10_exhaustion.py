@@ -84,7 +84,8 @@ def test_verdicts_and_eligibility() -> None:
     assert bx.verdict(10, 10, bx.SCOPE_BOUND) == bx.EXHAUSTED
     assert bx.verdict(10, 15, bx.SCOPE_EXACT) == bx.CLAMP
     assert bx.verdict(10, 15, bx.SCOPE_BOUND) == bx.UNDER
-    assert bx.verdict(10, 9, bx.SCOPE_EXACT) == bx.UNDER
+    assert bx.verdict(10, 9, bx.SCOPE_EXACT) == bx.MISMATCH
+    assert bx.verdict(10, 9, bx.SCOPE_BOUND) == bx.MISMATCH
     assert bx.verdict(10, None, bx.SCOPE_EXACT) == bx.UNDER
     base = f10.request_body(f10.DEFAULT_CONDITIONS["bm25"], "q", "c")
     assert bx.ineligible(base) is None
@@ -134,6 +135,16 @@ def test_clamp_is_a_hard_stop(tmp_path: Path) -> None:
     s = summary(tmp_path)
     assert s["status"] == "hard_stop" and "clamp" in s["reason"]
     assert any((r.get("exhaustion") or {}).get("verdict") == bx.CLAMP for r in rows(tmp_path))
+
+
+def test_query_mismatch_is_a_hard_stop(tmp_path: Path) -> None:
+    """The index matching FEWER chunks than the server served for the same query
+    means the rebuilt query is not the server's: never evidence, a hard stop."""
+    api = CountingAPI(t.RANKS, depth=10, count=7)  # 10 served, the index matches 7
+    assert t.run(tmp_path, api, conf=conf()) == f10.EXIT_REFUSED
+    s = summary(tmp_path)
+    assert s["status"] == "hard_stop" and "does not match the server" in s["reason"]
+    assert any((r.get("exhaustion") or {}).get("verdict") == bx.MISMATCH for r in rows(tmp_path))
 
 
 def test_unscoped_bound_above_served_stays_under_served(tmp_path: Path) -> None:

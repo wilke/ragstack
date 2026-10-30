@@ -1301,6 +1301,19 @@ def test_api_bm25_clamp_fails_even_with_allow_short(data: dict[str, Any]) -> Non
     assert out["status"] == "clamp" and out["clamped_lists"] == ["bm25@40"]
 
 
+@pytest.mark.parametrize("tenant", [True, False])
+def test_api_bm25_query_mismatch_fails_even_with_allow_short(data: dict[str, Any], tenant: bool) -> None:
+    api, es = api_server(clamp=20), es_server(12)  # 20 served, the index matches only 12
+    try:
+        args = ["--allow-short"] + (["--bm25-tenant", "tenant-synthetic"] if tenant else [])
+        assert _exh_pools(data, api, es, *args) == 1
+    finally:
+        api.close()
+        es.close()
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["status"] == "query_mismatch" and out["mismatched_lists"] == ["bm25@40"]
+
+
 @pytest.mark.parametrize("case", ["unscoped_bound_above", "es_error", "no_es"])
 def test_api_unverifiable_bm25_stays_under_served(data: dict[str, Any], case: str) -> None:
     api = api_server(clamp=20)
