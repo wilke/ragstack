@@ -29,7 +29,9 @@ partner** (optional cross-check on set P; the round-2 papers-OC set).
    scan, family identity gate, part-4 reference loader, A7 labels).
 3. **Power table + freeze** (owner + Fable). `reranker_test.py power-table --pages 208 --questions-n 735
    --seed 261029 --out power-table-reranker.json`, saved beside the results; the owner's go; sha +
-   timestamp into the private `PREREG.sha256` (README).
+   timestamp into the private `PREREG.sha256` (README). *Addendum 2026-10-29 (evening):* the table is
+   committed (`9d78672`) and reproduced from `5e93dab` (every non-provenance key equal); #867 is merged
+   (`48d5c73`), #868 (`b5251db`); only the owner's go is outstanding.
 4. **docs-A family A** (ours, ~1 h of compute). `pools --backend inprocess --part4-arm T512o0
    --private-config CFG --depths 10,20,50,100,200`; `rerank --identity-reference part4-retrieval.jsonl
    --identity-arm T512o0`; `fuse`; `census`; `stats --set-label docs-A/T512o0`. Retrieval-only: 735

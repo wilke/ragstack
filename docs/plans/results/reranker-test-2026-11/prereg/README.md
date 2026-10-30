@@ -1,7 +1,8 @@
 # Pre-registration: the dedicated reranker test
 
-**Status: DRAFT v1 (2026-10-29). NOT FROZEN.** No arm of §3 has been run on any set of §4; the docs-A
-bm25-vs-rerank contrast has not been computed.
+**Status: DRAFT v1.3 (2026-10-29). NOT FROZEN.** No arm of §3 has been run on any set of §4; the docs-A
+bm25-vs-rerank contrast has not been computed. Every freeze precondition is met (below); the text awaits
+the owner's go.
 
 | file | tier | what |
 |---|---|---|
@@ -9,26 +10,41 @@ bm25-vs-rerank contrast has not been computed.
 | [PLAN-reranker-test.md](PLAN-reranker-test.md) | **lab book** (dated, superseded-not-deleted) | ordered steps, owners, compute, risks — not a design constraint |
 | [power-table-reranker.json](power-table-reranker.json) | planning aid | `reranker_test.py power-table --pages 208 --questions-n 735 --delta 0.05 --alpha 0.05 --n-sims 2000 --n-flips 2000 --seed 261029`, run at `9d78672` from a clean tree (`citable: true`); the run re-computes it on the realised layout (`--gold`) beside the results |
 
-**Code still to merge before freezing** (prereg §9, second table): **#867** (`exp/r2-manip-checks`) —
-the inactive-reranker gate, the glossary-boost behavioural probe (`glossary_boost_probe.py`, shared with
-round 2) and Holm at p = 1.0 for gated or absent members as the default with `holm_drop_gated` as the
-labelled sensitivity. Its merge commit is written here on merge. R2-P's admission to family B (prereg §4,
-D15) depends in addition on round 2's **#868** (`exp/r2-setp-fields`: set-P field mode against the
-partner's binding export v2, pilot, partner adapter), which round 2 requires before its own freeze.
+**Code of prereg §9's second table, merged** (2026-10-29): **#867** (`exp/r2-manip-checks`, merge
+**`48d5c73`**) — the inactive-reranker gate, the glossary-boost behavioural probe
+(`glossary_boost_probe.py`, shared with round 2) and Holm at p = 1.0 for gated or absent members as the
+default with `holm_drop_gated` as the labelled sensitivity. R2-P's admission to family B (prereg §4, D15)
+depends in addition on round 2's **#868** (`exp/r2-setp-fields`: set-P field mode against the partner's
+binding export v2, pilot, partner adapter), merge **`b5251db`**, which round 2 requires before its own
+freeze. Every run is at or after `48d5c73` (`b5251db` when it touches R2-P).
 
 ## Freeze procedure
 
-The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`), unchanged:
+The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`), with one difference
+stated in step 3:
 
-1. The owner says go. The prereg is frozen **as written** — its draft header included.
-2. `sha256sum PREREG-reranker-test.md` and a UTC timestamp are appended to a **private** `PREREG.sha256`
-   kept with the outputs, off GitHub, **before** `pools` runs on any set.
-3. A one-line commit records the freeze here (this status line) and at the top of the prereg (`> Frozen
-   <sha> at <UTC>`). The body is not touched; any later change is a `DEVIATIONS.md` entry.
+1. The owner says go, in writing, naming the commit of this directory the go applies to. The prereg is
+   frozen **as written** — its draft header included.
+2. In a clean checkout of that commit, `sha256sum PREREG-reranker-test.md` and a UTC timestamp
+   (`date -u +%FT%TZ`) are appended to a **private** `PREREG.sha256` kept with the outputs, off GitHub,
+   **before** `pools` runs on any set and before the docs-A bm25-vs-rerank contrast is computed from the
+   step-7 file (prereg §11, D3).
+3. One commit records the freeze **in this README only**: the status line becomes `FROZEN <sha> at <UTC>
+   on the owner's go (commit <sha of the frozen text>)`. **The prereg file is not touched, not even for a
+   "frozen" note**: the public file is the frozen text, so its sha256 on `main` must stay equal to the
+   recorded sha (part 4 annotated its public copy because the hashed original was a private file). Any
+   later change is a `DEVIATIONS.md` entry. (`reranker_test.py` has no prereg-sha check of its own; the
+   sha is verified by hand against this README before the first `pools` run and recorded in the run's
+   notes.)
+4. The PR carrying the freeze commit is merged; its merge commit is the freeze record's commit. The first
+   `pools` run happens after that merge.
 
-Preconditions: the harness (#862) is on `main` at `e3002ba` with unit tests and a review, and the
-owner's decisions (prereg §12, D1–D15) are folded in — both met; **#867 merged** (D13) — not yet met.
-For the R2 sets of family B, round 2's own freeze (which requires #867 and #868) precedes their use.
+Preconditions, **all met** on `main` at `b5251db` (2026-10-29; checked by re-reading every subcommand,
+flag, constant and reason code the prereg names against that tree, re-running `power-table` with the §7
+command, which reproduced every non-provenance key of `power-table-reranker.json`, and running the #867
+unit tests): the harness (#862) at `e3002ba`; **#867** at `48d5c73` (D13, D14); **#868** at `b5251db`
+(behind D15); the owner's decisions D1–D15 folded in. For the R2 sets of family B, round 2's own freeze
+precedes their use.
 
 ## What changed from the v0 draft (2026-10-29, same day)
 
@@ -83,3 +99,13 @@ Substance, not wording:
   does not promote, R2-P is exploratory here with no further option.
 - **#868** named as the dependency behind R2-P (set-P field mode against the partner's binding export
   v2, pilot, adapter); the partner is "the partner" or "the papers-OC owner" throughout.
+
+## v1.3 — freeze-readiness check against `main` at `b5251db` (2026-10-29)
+
+Text only; no hypothesis, arm, measure, test, threshold or decision changed:
+
+- **#867 merged at `48d5c73`, #868 at `b5251db`**: every "required before freezing" clause (prereg
+  header, §6, §8, §9 second table, D13, D14) now states the merge commit; the citable pin moves from
+  `e3002ba` to `48d5c73` (`b5251db` for R2-P). The gate and Holm functions are named as the code has them
+  (`inactive_reranker`, `holm_family`, `api_boost_probe`).
+- **Freeze record**: the sha is recorded in this README only, never in the prereg file (procedure step 3).

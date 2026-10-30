@@ -2,11 +2,14 @@
 
 > **Public copy, drafted for freezing.** When the owner gives the go, the text as it stands is frozen:
 > its sha256 and a UTC timestamp go into a private `PREREG.sha256` kept with the outputs, and the sha is
-> then recorded at the top of this file and in the directory's `README.md` (the part-4 procedure,
-> `../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`). Freezing happens **after** every module of
-> §9 is on `main` (the harness is, at `e3002ba`; the two code PRs of §9's second table, **#867** and
-> **#868**, must be merged first) and **before** any eval paper is sampled, any question is
-> generated or any gateway glossary call is made. Any later change is a `DEVIATIONS.md` entry, never an
+> then recorded in the directory's `README.md` — **not in this file**: this file *is* the frozen text (the
+> runner hashes `prereg.file` whole and refuses on a mismatch, §8), so after the freeze it is never
+> edited, and `sha256sum` of the committed file equals the recorded sha. That is the part-4 procedure
+> (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`) with one difference: part 4 froze a private
+> original and published a redacted copy with the sha in its header; here the public copy is the original.
+> Freezing happens **after** every module of §9 is on `main` — it is: the harness at `e3002ba`
+> (#861–#865), **#867** at merge `48d5c73` and **#868** at merge `b5251db` (both 2026-10-29) — and
+> **before** any eval paper is sampled, any question is generated or any gateway glossary call is made. Any later change is a `DEVIATIONS.md` entry, never an
 > edit — with one pre-stated exception, the set-P promotion addendum of §3.5, whose every term is fixed
 > here. The file names no tenant, collection, host, endpoint, product or gateway owner; the partner that
 > holds the papers-OC collection is "the partner" or "the papers-OC owner".
@@ -21,6 +24,15 @@ D17 added (promotion of set P into F by a bounded addendum, §3.5); D18 added (H
 p = 1.0 as the code's default, #867); the binding export re-pointed at its v2 file (§3.4); set-P reason
 codes and config keys named as #868 implements them; §9's second table names #867 and #868. No
 hypothesis, measure, test or threshold of O and A changed.
+**v1.3 (freeze-readiness check against `main` at `b5251db`, 2026-10-29):** #867 and #868 are merged
+(`48d5c73`, `b5251db`), so every "required before freezing" clause is now a statement of fact with its
+merge commit; the `n_terms == len(terms)` assertion is in code (`6ae6804`); set-P identifiers corrected
+to the merged code (`term_leak` is *at least* 0.5 under `term_leak_threshold`; the `term_abbreviation`
+reject added by `300f0eb`/`159db38`; unit flags `unit_dimension_differs` / `unit_unknown` /
+`field_unit_unknown`, not "bridge"); the 13/13 split is the loader's own default for the v2 file
+(`KNOWN_FIELD_LISTS`); the shuffled arm's probe needs `corpora.<c>.es_id_prefix` (`8076265`); the freeze
+sha is recorded in `README.md` only, never in this file (header). No hypothesis, measure, test, threshold,
+set, arm or decision changed.
 
 **Terms.** *Arm*: a glossary condition (per document; one glossary file serves every chunk size).
 *Record*: one question with its gold quote, gold chunk(s), the quantity asked and its binding term(s).
@@ -254,8 +266,8 @@ term lists were truncated for two fields (`air_exchange_rate_s` 12 → 14 terms 
 subscripted-lambda form and `ach`; `deactivation_rate_s` 12 → 13), so under v1 a question written with
 "ACH" would have passed the term-leak guard for the most ACH-heavy field. v2 has the same 26 fields, units
 and definitions, and `n_terms == len(terms)` for every field; **the loader asserts that equality on
-import** (a mismatch refuses the file — required of #868 before the freeze; the loader at its head
-`d52efef` reads `terms` and ignores `n_terms`). It is **not** the field list of the held 155-record set.
+import** (a mismatch refuses the file; `glossbench_r2_fields.read_field_list`, #868 commit `6ae6804`,
+merged `b5251db`). It is **not** the field list of the held 155-record set.
 Each row carries the field name, its canonical unit, the binding's one-line definition and its extraction
 terms (`terms`, alias `extraction_terms`). Rules, frozen now:
 
@@ -266,18 +278,28 @@ terms (`terms`, alias `extraction_terms`). Rules, frozen now:
   the binding's non-researchable fields; the prereg names no field as a target beyond the quota list
   below.
 - The record's `binding_terms` are the field's **extraction terms** from the file, not the drafter's.
-- The question is written in the **definition's own words**. A layer-1 guard rejects a question whose
-  overlap with the field's extraction terms exceeds the leak threshold (**0.5**, `leak_threshold`, the
-  same stemming as the wording proxy, §5 M2) — copying the terms would flatter any glossary that uses
-  them (`term_leak`).
+- The question is written in the **definition's own words**. Two layer-1 guards, both rejects, keep the
+  field's extraction terms out of it — copying the terms would flatter any glossary that uses them:
+  **`term_leak`** — of the question's content words (stemmed as the wording proxy stems, §5 M2; stop and
+  question words, the definition's words, the stated case's words removed), the share that comes from the
+  term list is **at least 0.5** (`term_leak_threshold`; `glossbench_r2_fields.term_leak`); and
+  **`term_abbreviation`** — the question contains, as a whole token (NFKC, casefold, edge punctuation and
+  brackets stripped, so "(ACH)" is the token `ach`), any *abbreviation-like* term of the list: at most 6
+  characters and mostly upper case, a single ASCII token of at most 4 letters (`ach`, `hepa`, `qb`), or a
+  term with a digit, `_ { } ^ = ≈`, a Greek letter or another non-ASCII symbol
+  (`abbreviation_like`, `abbreviation_in_question`; #868 `300f0eb`, `159db38`). The abbreviation guard
+  is independent of the share: one such token rejects.
 - `value` is recorded **as printed, with the printed unit**, never converted. Unit compatibility with
-  the canonical unit is checked **by dimension** against a small fixed map (`unit_incompatible`, a
-  reject); a `ventilation_flow_m3_s` quote printed in air changes per hour is recorded as printed and
-  **flagged** (`bridge`), not rejected; a unit outside the map is flagged (`unknown` / `field_unknown`),
-  not rejected.
+  the canonical unit is checked **by dimension** against a small fixed map (`unit_check`; verdict
+  `incompatible` → reject `unit_incompatible`); a `ventilation_flow_m3_s` quote printed in air changes
+  per hour is recorded as printed and **flagged**, not rejected (verdict `related` → flag
+  `unit_dimension_differs`); a unit outside the map is flagged (`unit_unknown`; the field's own unit
+  outside the map, `field_unit_unknown`), not rejected.
 - The file carries no in-set or constant flag. `in_set` is computed from the held set's records
-  (`--in-set-records`, the records' sha256 recorded) and **asserted 13 covered / 13 uncovered**
-  (`expect_in_set {"true": 13, "false": 13}`; a different split stops the run). The **4 constants** —
+  (`glossbench_r2_pool.py build --in-set-records`, the records' sha256 recorded in the pool header) and
+  **asserted 13 covered / 13 uncovered**: for the v2 file that split is the loader's own default
+  (`KNOWN_FIELD_LISTS`, keyed by the file's sha256, so leaving `expect_in_set` out of the config cannot
+  skip it); a different split stops the run. The **4 constants** —
   `gravity_m_s2` (covered), `air_density_kg_m3`, `air_dynamic_viscosity_pa_s`, `particle_density_kg_m3`
   (uncovered) — come from the explicit config list `constants` and are **capped at 2 records each**
   (`constant_cap`).
@@ -324,10 +346,10 @@ are expected, and the one-sided floor at α .05 is then 18 of 25 of one sign (ex
 gives .054); the planning table's rows do not apply to it, and the realised `mde_split` is quoted beside
 every S3-on-P figure.
 
-**Code this section needs** (not on `main` at `e3002ba`; §9, second table): **#868** — the field-mode
-drafter, `term_leak`, `unit_incompatible` and the `bridge` flag, `expect_in_set`, `constant_cap`, the
-2 : 1 quota plan, `pool.per_set`, the pilot and the two partner subcommands. It must be merged before
-the freeze (D13).
+**Code this section needs** (§9, second table): **#868**, merged to `main` at **`b5251db`**
+(2026-10-29; D13 met) — the field-mode drafter, `term_leak` and `term_abbreviation`, `unit_incompatible`
+and the unit flags, `expect_in_set` / `KNOWN_FIELD_LISTS`, `constant_cap`, the 2 : 1 quota plan,
+`pool.per_set`, the pilot and the two partner subcommands. Every P run is at or after that commit.
 
 ### 3.5 Promotion of set P into F: one bounded addendum (§11 D17)
 
@@ -460,12 +482,14 @@ the glossary field differs. **The glossary field boost** is the bench server's `
 (`python/ragstack/config.py`) and `/v1/config` does not expose it, so a bench server launched without
 the setting would silently run the `bm25` condition with the field unweighted. The runner therefore
 **proves the boost is active behaviourally** before the first call of every arm × corpus run (the probe
-of `glossary_boost_probe.py`, shared with the reranker test, **#867**, §9 second table): up to 5 chunks
-whose rendered glossary field holds a whole-word ASCII token (≥ 5 characters) that occurs in no chunk's
-content and in at most 10 glossaries are queried `bm25`, `rerank false`, `top_k 10` with that token
-alone; each must return its chunk. Candidates come from the chunk export (`--chunk-export`) plus the
-arm's glossary file rendered offline as the backfill renders it (sha checked against the arm; for the
-shuffled arm the permutation is reproduced and hash-checked against the swap record), or from
+of `glossary_boost_probe.py`, shared with the reranker test, **#867**, merged `48d5c73`, §9 second
+table): up to 5 chunks whose rendered glossary field holds a whole-word ASCII alphanumeric token (≥ 5
+characters, at least one letter; edge punctuation stripped, an underscore kept whole as UAX#29 indexes it)
+that occurs in no chunk's content and in at most 10 glossaries are queried `bm25`, `rerank false`,
+`top_k 10` with that token alone; each must return its chunk. Candidates come from the chunk export
+(`--chunk-export`) plus the arm's glossary file rendered offline as the backfill renders it (sha checked
+against the arm; for the shuffled arm the permutation is reproduced over ES `_id`s — the private config's
+`corpora.<c>.es_id_prefix` is required, `8076265` — and hash-checked against the swap record), or from
 `--rendered-fields`. Token sha256s (never the text), ranks, requested vs served depth and the verdict
 are recorded in the run summary. **Verdicts `inactive`, `mixed` and `error` are a hard stop (exit 1,
 configuration error), not a gate**; nothing from that server process is a result. `not_testable` (fewer
@@ -618,7 +642,9 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
   after a fresh notice.
 - **Hard stops** (exit 1, no resume without a logged decision): a manipulation-check mismatch; a failed
   glossary-boost probe (§5 M1); > 2% of retrieval calls failing after retries; a frozen-prereg sha
-  mismatch (`prereg.sha256` in the private config); a resume against a different commit, config or
+  mismatch (`prereg.file` is hashed whole and compared with `prereg.sha256` in the private config,
+  `glossbench_r2_draft.py`, every stage; which is why this file is never edited after the freeze); a
+  resume against a different commit, config or
   pool; a failed isolation check; on P, a binding-file sha mismatch or an `in_set` split other than
   13 / 13 (§3.4).
 - **Exclusions, fixed now:** records rejected by §3.3; records whose gold chunk is absent from an index
@@ -646,16 +672,16 @@ repeat per corpus, `--repeat 2`; round 1's was 0–2 records on papers-OC), real
 | read-only chunk export | `python/scripts/eval/glossbench/export_chunks.py` | #865 |
 | statistics | `python/scripts/eval/chunktrial_stats.py` via `deployed_docs_part4.contrast_test` (part 4's, unchanged) | — |
 
-**Not yet on `main` at `e3002ba`; both required before freezing (D13):**
+**Merged to `main` after `e3002ba`, both before the freeze (D13 met, 2026-10-29):**
 
-| item | module | PR |
+| item | module | PR, merge commit |
 |---|---|---|
-| glossary-boost behavioural probe (§5 M1; `inactive` / `mixed` / `error` = hard stop, `not_testable` = gate unless declared); Holm with gated or absent members at p = 1.0 as the reranker test's default, `holm_drop_gated` as its labelled sensitivity (§7); the reranker test's inactive-reranker gate | new shared `python/scripts/eval/glossary_boost_probe.py`; `glossbench/found10.py` (`--chunk-export`, `--rendered-fields`, `--boost-declared`); `reranker_test.py` | **#867** (`exp/r2-manip-checks`) |
-| set-P field mode: `glossbench_r2_fields.py` (field list v2 with the `n_terms == len(terms)` assertion, `in_set` from the held set with `expect_in_set`, `constants` + `constant_cap`, 2 : 1 quota plan, arm-blind lexical prefilter, dimension map, term-leak guard); pool `draft_mode: fields` and the per-set quota override `pool.per_set`; layer-1 `unit_incompatible`, `term_leak`; `--pilot N --papers K`; `export-partner`, `import-partner-verdicts` (§3.4) | `python/scripts/eval/glossbench_r2_fields.py`, `glossbench_r2_pool.py`, `glossbench_r2_checks.py`, `glossbench_r2_draft.py` | **#868** (`exp/r2-setp-fields`) |
+| glossary-boost behavioural probe (§5 M1; `inactive` / `mixed` / `error` = hard stop, `not_testable` = gate unless declared); Holm with gated or absent members at p = 1.0 as the reranker test's default, `holm_drop_gated` as its labelled sensitivity (§7); the reranker test's inactive-reranker gate | new shared `python/scripts/eval/glossary_boost_probe.py`; `glossbench/found10.py` (`--chunk-export`, `--rendered-fields`, `--boost-declared`; `corpora.<c>.es_id_prefix` for a shuffled arm); `reranker_test.py` | **#867** (`exp/r2-manip-checks`), merge **`48d5c73`** (commits `e96c722`, `8076265`) |
+| set-P field mode: `glossbench_r2_fields.py` (field list v2 with the `n_terms == len(terms)` assertion, `in_set` from the held set with `expect_in_set` / `KNOWN_FIELD_LISTS`, `constants` + `constant_cap`, 2 : 1 quota plan, arm-blind lexical prefilter, dimension map, term-leak and abbreviation guards); pool `draft_mode: fields` and the per-set quota override `pool.per_set`; layer-1 `unit_incompatible`, `term_leak`, `term_abbreviation`; `--pilot N --papers K`; `export-partner`, `import-partner-verdicts` (§3.4) | `python/scripts/eval/glossbench_r2_fields.py`, `glossbench_r2_pool.py`, `glossbench_r2_checks.py`, `glossbench_r2_draft.py` | **#868** (`exp/r2-setp-fields`), merge **`b5251db`** (commits `d52efef`, `6ae6804`, `300f0eb`, `159db38`) |
 
-**Pin.** Every run from one `main` commit **at or after `e3002ba`** in a clean worktree (`dirty false,
-untracked 0`) or from a tools image built from a tools tag at or after it (ADR-0010 order); a run that
-uses a row of the second table runs at or after that row's merge commit. Every output
+**Pin.** Every run from one `main` commit **at or after `b5251db`** (the later of the two merges; both
+tables are then present) in a clean worktree (`dirty false, untracked 0`) or from a tools image built
+from a tools tag at or after it (ADR-0010 order). Every output
 embeds `experiment_provenance()`; glossary files carry `producer` and `tool`; `citable` is read from the
 record (`_glossbench_r2.citable`). Scratch-script analyses are **not citable** (round 1's lesson); every
 analysis here is a committed script.
@@ -702,7 +728,7 @@ freezing; a later change is a deviation.
 | D10 | owner labelling | **40 blind items (κ) + 40 spot-check records per set; a second rater if available** |
 | D11 | judges | **three (Claude CLI, Codex CLI, Gemini gateway), majority; vendor-overlap flag and a table without the overlapping judge** |
 | D12 | Qwen arm in the family | **Qwen3.6** (`qwen38p` secondary) |
-| D13 | freeze gate | **after all §9 code is merged** — the harness at `e3002ba`, plus **#867** and **#868** (§9, second table); both before the freeze, not only before P's pilot (re-stated 2026-10-29, final pre-freeze pass) |
+| D13 | freeze gate | **after all §9 code is merged** — the harness at `e3002ba`, plus **#867** and **#868** (§9, second table); both before the freeze, not only before P's pilot (re-stated 2026-10-29, final pre-freeze pass). **Met:** #867 merged `48d5c73`, #868 merged `b5251db`, 2026-10-29 |
 | D14 | set-P drafting population | **the partner's binding export v2** `binding_fields_261029_v2.json` (26 fields, sha in §3.4; v1 `08309d0f…` superseded, 2026-10-29), not the held set's fields; constants capped at 2; the 10 new-ground fields at 2 : 1; definition-words questions with the term-leak guard; value as printed, dimension-checked |
 | D15 | set-P pilot | **≈ 50 records from 3 papers after freezing**, format check only, data for no hypothesis; its papers excluded from P; its partner verdicts are the input to D17 |
 | D16 | S3 quota on P | **closed 2026-10-29: 6 per paper** (≈ 150 records over 25 papers, before rejects), via the per-set override `pool.per_set = {"P": {"s3_per_paper": 6}}` (#868). O and A stay at 2. S3 remains exploratory |

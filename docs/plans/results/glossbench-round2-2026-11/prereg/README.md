@@ -1,7 +1,7 @@
 # Pre-registration, glossary-model benchmark round 2
 
-**Status: DRAFT v1 (2026-10-29). NOT FROZEN.** No eval paper has been sampled, no question generated,
-no gateway glossary call made.
+**Status: DRAFT v1.3 (2026-10-29). NOT FROZEN.** No eval paper has been sampled, no question generated,
+no gateway glossary call made. Every freeze precondition is met (below); the text awaits the owner's go.
 
 | file | tier | what |
 |---|---|---|
@@ -11,36 +11,41 @@ no gateway glossary call made.
 
 ## Freeze procedure
 
-The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`), unchanged:
+The part-4 procedure (`../../chunk-size-deployed-docs-part4-2026-10-25/prereg/`), with one difference
+stated in step 4:
 
-1. The owner says go. The prereg is frozen **as written** — its draft header included; no edit is made to
-   mark it frozen.
-2. `sha256sum PREREG-glossbench-round2.md` and a UTC timestamp (`date -u +%FT%TZ`) are appended to a
-   **private** `PREREG.sha256` kept with the outputs, off GitHub, **before** any eval paper is sampled,
-   any question is generated or any gateway glossary call is made.
-3. The same sha and timestamp are put into the private config (`prereg.file`, `prereg.sha256`): the
-   drafter and the runner refuse to start on a mismatch (`glossbench_r2_draft.py`, exit 1).
-4. A one-line commit records the freeze here: this README's status line and a `> Frozen <sha> at
-   <UTC>` note at the top of the prereg. The prereg body itself is not touched; any later change is a
-   `DEVIATIONS.md` entry.
+1. The owner says go, in writing, naming the commit of this directory the go applies to. The prereg is
+   frozen **as written** — its draft header included; no edit is made to mark it frozen.
+2. In a clean checkout of that commit, `sha256sum PREREG-glossbench-round2.md` and a UTC timestamp
+   (`date -u +%FT%TZ`) are appended to a **private** `PREREG.sha256` kept with the outputs, off GitHub,
+   **before** any eval paper is sampled, any question is generated or any gateway glossary call is made.
+3. The same sha goes into the private config (`prereg.file` = the committed prereg, `prereg.sha256`): the
+   drafter refuses to start on a mismatch (`glossbench_r2_draft.py`, hard stop `prereg_sha_mismatch`, exit
+   1, checked at every stage and resume).
+4. One commit records the freeze **in this README only**: the status line becomes `FROZEN <sha> at <UTC>
+   on the owner's go (commit <sha of the frozen text>)`. **The prereg file is not touched, not even for a
+   "frozen" note** — the runner hashes `prereg.file` whole, so a note at its top would make the committed
+   file fail its own check; part 4 could annotate its public copy because the hashed original was a
+   private file, here the public file is the original. The prereg's sha256 on `main` therefore equals the
+   recorded sha for as long as the record stands. Any later change is a `DEVIATIONS.md` entry; the one
+   pre-stated exception is the set-P promotion addendum (below).
+5. The PR carrying the freeze commit is merged; its merge commit is the freeze record's commit. The first
+   eval-paper sample, question or gateway call happens after that merge.
 
-Preconditions: every module of prereg §9's first table is on `main` at `e3002ba` (#861–#865) with unit
-tests and a review; the owner's decisions (prereg §11, D1–D18) are folded in. **Still to merge before
-freezing, both (D13):**
+Preconditions, **all met** on `main` at `b5251db` (2026-10-29; checked by re-reading every module, flag,
+config key and reason code the prereg names against that tree, re-running `power_sim.py`, which
+reproduced `power_sim.json` byte for byte, and running the #867/#868 unit tests, 178 passed):
 
-- **#867** (`exp/r2-manip-checks`): the glossary-boost behavioural probe (`glossary_boost_probe.py`,
-  wired into `found10.py` and `reranker_test.py`; prereg §5 M1), the reranker test's inactive-reranker
-  gate, and Holm with gated or absent members at p = 1.0 as the default with `holm_drop_gated` as the
-  labelled sensitivity (prereg §7, D18).
-- **#868** (`exp/r2-setp-fields`): set P's field-list drafting mode, the partner-format adapter
-  (`export-partner`, `import-partner-verdicts`), the pilot (`--pilot N --papers K`) and the per-set
-  stratum quotas (`pool.per_set`; prereg §3.4, D14–D16). The freeze also needs its field-list loader to
-  assert `n_terms == len(terms)` on import (prereg §3.4 a; not in the PR at its head `d52efef`, which
-  reads `terms` and ignores `n_terms`).
+| precondition | merge commit |
+|---|---|
+| harness: pure/empty arms, shuffle, wording proxy (#861); pool and drafter (#863); runner, analysis, swap, gold tools (#864); chunk export (#865); reranker harness (#862) | `e3002ba` (the v1 pin) |
+| **#867** (`exp/r2-manip-checks`): glossary-boost behavioural probe (`glossary_boost_probe.py`, in `found10.py` and `reranker_test.py`; prereg §5 M1), the reranker test's inactive-reranker gate, Holm with gated or absent members at p = 1.0 as the default with `holm_drop_gated` as the labelled sensitivity (prereg §7, D18) | **`48d5c73`** (commits `e96c722`, `8076265`) |
+| **#868** (`exp/r2-setp-fields`): set P's field-list drafting mode, the partner adapter (`export-partner`, `import-partner-verdicts`), the pilot (`--pilot N --papers K`), the per-set stratum quotas (`pool.per_set`; S3 on P = 6, D16), the `n_terms == len(terms)` assertion on import (`6ae6804`), the abbreviation-like term reject `term_abbreviation` with bracket stripping (`300f0eb`, `159db38`), `KNOWN_FIELD_LISTS` making 13/13 the default split for the v2 file (prereg §3.4, D14–D16) | **`b5251db`** (commits `d52efef`, `6ae6804`, `300f0eb`, `159db38`) |
+| the owner's decisions D1–D18 folded in (prereg §11) | this directory |
 
-The merge commits are written here on merge, and every run is at or after them. The field list is the
-partner's binding export **v2** (`binding_fields_261029_v2.json`, sha256 `1c377891…`, 9,445 bytes);
-v1 (`08309d0f…`) is superseded — truncated term lists for two fields — and kept only for provenance.
+Every run is at or after `b5251db`. The field list is the partner's binding export **v2**
+(`binding_fields_261029_v2.json`, sha256 `1c377891…`, 9,445 bytes); v1 (`08309d0f…`) is superseded —
+truncated term lists for two fields — and kept only for provenance.
 
 After the freeze, exactly one addendum may be appended to this README: the set-P promotion decision of
 prereg §3.5 (D17), *promoted* or *not promoted*, quoting the imported pilot verdict summary. Its terms
@@ -117,10 +122,32 @@ Substance, not wording:
   len(terms)` for every field). v1 is superseded: its truncation would have let "ACH" questions pass the
   term-leak guard for the most ACH-heavy field.
 - **Set-P identifiers aligned to #868's code**: `term_leak` (was `terms_leak`), `unit_incompatible` (was
-  `unit_dimension_mismatch`), the `bridge` flag (was `different_dimension`), `expect_in_set`,
-  `constant_cap`, `weight_new_ground`; a field outside the file is structurally unplannable and refused,
-  `field_not_in_list` in the partner export.
+  `unit_dimension_mismatch`), the dimension-bridge flag (was `different_dimension`; named
+  `unit_dimension_differs` in v1.3), `expect_in_set`, `constant_cap`, `weight_new_ground`; a field
+  outside the file is structurally unplannable and refused, `field_not_in_list` in the partner export.
 - **Both #867 and #868 are freeze preconditions** (D13); v1.1 had #868's content as a pilot precondition
   only.
 - The §5 M1 probe is described as #867 implements it (token-based candidates, five verdicts,
   `--boost-declared`).
+
+## v1.3 — freeze-readiness check against `main` at `b5251db` (2026-10-29)
+
+Text only; no hypothesis, measure, test, threshold, set, arm or decision changed:
+
+- **Both code PRs are merged** — #867 at `48d5c73`, #868 at `b5251db` — so every "required before
+  freezing" clause in the prereg (header, §3.4, §5 M1, §9 second table, D13) and here now states the
+  merge commit instead; the pin is `b5251db`. The `n_terms == len(terms)` assertion is in code
+  (`6ae6804`), so its "required before the freeze" sentence is gone.
+- **Set-P identifiers corrected to the merged code**: `term_leak` rejects at a share **of at least 0.5**
+  (`term_leak_threshold`, not `leak_threshold`, which is the open-mode `lexical_leak` key), measured over
+  the question's content words after removing stop words, question words, the definition's words and the
+  stated case's words; a second reject, **`term_abbreviation`**, fires when the question contains an
+  abbreviation-like term as a whole token (brackets stripped; `300f0eb`, `159db38`); the unit flags are
+  `unit_dimension_differs` / `unit_unknown` / `field_unit_unknown` (the prereg's "bridge" named the
+  concept, not a code identifier); `--in-set-records` is the pool `build` flag; the 13/13 split is the
+  loader's default for the v2 file's sha (`KNOWN_FIELD_LISTS`) and cannot be skipped.
+- **Shuffled-arm probe**: the private config's `corpora.<c>.es_id_prefix` is required for the permutation
+  re-derivation (`8076265`).
+- **Freeze record**: the sha is recorded in this README only, never in the prereg file, because the
+  runner hashes `prereg.file` whole (procedure step 4; part 4's public copy could carry the sha because
+  its hashed original was private).

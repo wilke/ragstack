@@ -65,6 +65,9 @@ Prereg §3.4 (v1.1). Steps 8 and 16 above are superseded as follows; the rest st
 
 Also before freezing (both preregs): the in-flight PR with the glossary-boost probe (`found10.py`,
 `reranker_test.py`) and the inactive-reranker gate (`reranker_test.py`).
+*Addendum 2026-10-29 (evening):* done — #867 merged at `48d5c73`, #868 (set-P field mode, pilot, adapter,
+per-set quotas) at `b5251db`; the freeze preconditions of the README are all met; the pin below is
+`b5251db`.
 
 ## What must be committed before any citable run
 
