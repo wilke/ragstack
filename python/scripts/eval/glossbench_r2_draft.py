@@ -66,6 +66,33 @@ context-size isolation check (round 1's judge rule). Empty or unparseable:
 retried once, then the record is rejected (``l2_empty`` / ``l2_unparseable``).
 A usage-limit signal pauses.
 
+**Codex fallback verifier.** A usage-policy refusal by the Claude CLI (its safeguards
+flag the verifier prompt: :func:`is_refusal` on the error text, never a transport error
+or a usage limit) is not retried on Claude: that record alone is verified by the Codex
+CLI (``codex exec --ephemeral --ignore-user-config --ignore-rules -s read-only -m
+<verifier.codex_model>`` with every optional instruction source and tool switched off,
+:meth:`Run.codex_cmd`), the same system prompt and verifier prompt (stdin), the same
+JSON contract, the same empty 0700 cwd (its system-prompt, schema and last-message
+files live in a private temporary directory under the output directory, never in the
+cwd). One codex call at a time (it answers 429 at 3). The first codex call of a run
+passes its own isolation check (Codex's fixed harness overhead,
+``verifier.codex_overhead_tokens``, and no tool event). Every verify row and ``l2`` log
+row records ``verifier: claude | codex`` and, for a codex row, Claude's refusal text.
+A codex limit, timeout or transport error pauses the run (exit 75) with the record still
+pending, retried on resume. Only a definitive codex failure — codex refuses the record
+too, or answers empty / malformed twice — makes it ``verifier_unavailable``: logged as
+verdict ``unavailable`` with the reason, excluded (not rejected), never accepted.
+In the set-P pilot one record was refused deterministically and the run paused on it
+for ever as a ``cli_error``.
+
+**Yield guards (round-3 pools).** ``draft`` refuses to start when the pool's
+pre-drafting estimate (``glossbench_r3_pool``, ``yield.status``) is not ``ADEQUATE``
+unless ``--allow-low-yield`` (recorded in the state). During drafting, once the first
+``yield_watch.after_jobs`` jobs (default 100) are done, a layer-1 pass rate below
+``yield_watch.min_pass`` (default 0.30) pauses the run (exit 75, the counts in the
+reason) while jobs remain; a resume needs ``--accept-low-yield`` (recorded). The watch
+runs once per run; its result is in the state.
+
 **Accepted records** ``accepted-<set>.jsonl`` (PRIVATE): one line per record
 that passed layers 1 and 2, with the field names the wording proxy
 (``wording_proxy.py --records``) reads — ``record_id``, ``gold_chunks`` (the
@@ -135,6 +162,47 @@ CHARS_PER_TOKEN_GATEWAY = 3.4
 CHARS_PER_TOKEN_CLI = 3.5
 ISOLATION_FACTOR = 2.0
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
+#: Codex's fixed context under the isolation flags (its own instructions, which no flag
+#: removes), measured by a synthetic probe on gpt-6-astra: 2,025 tokens
+CODEX_FIXED_OVERHEAD = 2025
+#: a usage-policy refusal (Claude's safeguards), told apart from a limit or a transport error
+REFUSAL_RE = re.compile(
+    r"safeguards?\b.{0,40}\bflagged|flagged\b.{0,40}\b(?:usage|acceptable use) polic|"
+    r"usage polic(?:y|ies)|acceptable use polic(?:y|ies)|/legal/aup\b|\(AUP\)|\bAUP\b", re.I)
+
+#: codex refusing the record too (a policy block in its error events or stderr): definitive.
+#: No bare "refused"/"refusal": a transport error ("Connection refused", os error 111) must
+#: pause, not exclude the record.
+CODEX_REFUSAL_RE = re.compile(
+    REFUSAL_RE.pattern + r"|content.?polic|policy.?violation|cyber.?(?:safety|polic)|"
+    r"invalid_prompt|flagged as potentially", re.I)
+#: what the codex fallback switches off (the gold-labelling judge's proven list)
+CODEX_DISABLED_FEATURES = (
+    "shell_tool", "unified_exec", "apps", "plugins", "remote_plugin", "multi_agent", "goals", "hooks",
+    "view_image", "skill_search", "tool_suggest", "browser_use", "browser_use_external", "computer_use",
+    "image_generation", "in_app_browser", "sleep_tool", "code_mode_host", "shell_snapshot", "memories",
+    "personality", "skill_mcp_dependency_install", "workspace_dependencies")
+#: the verifier's JSON contract (ck.VERIFY_SYSTEM) as codex's output schema
+VERIFY_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "properties": {**{k: {"type": "boolean"} for k in ck.VERIFY_KEYS}, "reason": {"type": "string"}},
+    "required": [*ck.VERIFY_KEYS, "reason"]}
+
+
+def is_refusal(stdout: str, stderr: str, obj: dict[str, Any] | None) -> bool:
+    """A usage-policy refusal by the Claude CLI: its JSON says ``stop_reason: refusal``, or
+    the error text (the result, ``api_error_status``, stderr; stdout when it is not JSON)
+    carries the safeguards / usage-policy wording (:data:`REFUSAL_RE`). Only asked of a
+    failed call (non-zero exit or ``is_error``); :meth:`Run.call_cli` also takes
+    ``stop_reason: refusal`` on a successful exit."""
+    if obj is not None:
+        if str(obj.get("stop_reason") or "").casefold() == "refusal":
+            return True
+        blob = " ".join(str(obj.get(k) or "") for k in ("result", "api_error_status", "error"))
+    else:
+        blob = stdout
+    return bool(REFUSAL_RE.search(blob + " " + (stderr or "")))
+
 
 DEFAULTS: dict[str, Any] = {
     # max_tokens 4096: Gemini 2.5 Pro's hidden thinking can spend ~1024 before any visible
@@ -144,13 +212,19 @@ DEFAULTS: dict[str, Any] = {
                 "attempts_factor": 1.3, "est_output_tokens": 250, "passes": 2},
     "verifier": {"model": "claude-opus-5-5", "cli": "claude", "inflight": 3, "timeout_s": 300,
                  "head_chars": 2000, "cwd": None, "isolation_check": True, "max_calls": 4000,
-                 "max_cost_usd": 100.0, "est_output_tokens": 120},
+                 "max_cost_usd": 100.0, "est_output_tokens": 120,
+                 # the fallback for a usage-policy refusal (one record at a time)
+                 "codex_fallback": True, "codex_cli": "codex", "codex_model": "gpt-6-astra",
+                 "codex_effort": "medium", "codex_overhead_tokens": CODEX_FIXED_OVERHEAD},
     "limits": {"input_token_cap": 5_000_000, "output_token_cap": 750_000, "call_cap": 4000,
                "prior_gateway_usage": {}, "max_fail_consecutive": 5, "max_fail_total": 20,
                "rate_backoffs_s": [30.0, 120.0, 600.0], "batch_calls": None,
                "batch_input_tokens": None, "batch_output_tokens": None},
     "checks": dict(ck.CHECK_DEFAULTS),
     "spot": {"n": 40, "seed_base": "261101|spot", "threshold": 0.85},
+    #: round-3 pools only: after the first ``after_jobs`` done jobs, a layer-1 pass rate below
+    #: ``min_pass`` pauses the draft (resume with --accept-low-yield)
+    "yield_watch": {"after_jobs": 100, "min_pass": 0.30},
     "prereg": {"file": None, "sha256": None},
 }
 
@@ -379,6 +453,10 @@ class Run:
         self.cli_runner = cli_runner or subprocess.run
         self._corpus: g.Corpus | None = None
         self._lock = threading.Lock()
+        self._codex_lock = threading.Lock()
+        #: the draft's yield guards (round-3 pools; written into the state)
+        self.yield_watch: dict[str, Any] | None = None
+        self.low_yield_allowed: dict[str, Any] | None = None
 
     # -------------------------------------------------------- inputs
     def load(self) -> None:
@@ -390,6 +468,8 @@ class Run:
         #: round 3's pool (glossbench_r3_pool.py): strata V / M_num; M_num chunks carry the
         #: paper's symbols they mention (``sigma_tokens``) and ask for ``symbol_is_the_quantity``
         self.round3 = self.header.get("schema") == R3_POOL_SCHEMA
+        #: the round-3 pool's pre-drafting yield estimate (glossbench_r3_pool, ``yield``)
+        self.pool_yield: dict[str, Any] | None = self.header.get("yield") if self.round3 else None
         cc = g.corpus_config(self.raw_cfg, self.set)
         self.fc = fl.field_config(cc, self.set)
         if (self.fc is not None) != (self.mode == "fields"):
@@ -417,7 +497,9 @@ class Run:
         """Drafting jobs: one per sampled chunk (open mode), one per (chunk, field) (fields mode)."""
         if self.mode != "fields":
             return [{**r, "field": None} for r in rows]
-        return [{**r, "field": f} for r in rows
+        # round 3: does the chunk name one of the job's field terms (the pool's ranking)?
+        return [{**r, "field": f, "term_in_chunk": (f in r["field_terms"]) if "field_terms" in r else None}
+                for r in rows
                 for f in (assigned.get(r["chunk_id"], []) if assigned is not None else r["field_jobs"])]
 
     def pilot_jobs(self) -> list[dict[str, Any]]:
@@ -438,7 +520,12 @@ class Run:
         assert self.fc is not None
         per_paper = self.header["field_plan"]["per_paper"]
         targets = fl.cell_targets(sorted(pick), per_paper, n)
-        self.pilot_plan, assigned = fl.plan_strata(list(self.specs.values()), self.fc, rows, targets, seed)
+        # round 3's pool ranks a field's chunks by term presence (field_terms); round 2's has none
+        rank = ({(r["chunk_id"], f): (0 if f in r["field_terms"] else 1)
+                 for r in rows for f in r.get("field_candidates") or ()}
+                if rows and all("field_terms" in r for r in rows) else None)
+        self.pilot_plan, assigned = fl.plan_strata(list(self.specs.values()), self.fc, rows, targets, seed,
+                                                   rank=rank)
         return self.jobs_of(rows, assigned)
 
     @property
@@ -516,6 +603,9 @@ class Run:
                     "models": [d["model"]], "concurrency": int(d["inflight"]),
                     "caps": {k: self.cfg["limits"][k] for k in ("input_token_cap", "output_token_cap", "call_cap")},
                     "draft_mode": self.mode, "fields_sha256": self.fields_sha,
+                    "pool_yield": None if not self.round3 else {
+                        k: (self.pool_yield or {}).get(k) for k in ("expected_yield", "gate", "status")},
+                    "yield_watch": dict(self.cfg["yield_watch"]) if self.round3 else None,
                     "pilot": None if self.pilot is None else {"records": self.pilot[0], "papers": self.pilot[1],
                                                               "plan": self.pilot_plan}}
             kind = "GATEWAY"
@@ -526,6 +616,8 @@ class Run:
             plan = {"calls": len(todo), "est_input_tokens": math.ceil(chars / CHARS_PER_TOKEN_CLI),
                     "est_output_tokens": len(todo) * int(v["est_output_tokens"]), "models": [v["model"]],
                     "concurrency": int(v["inflight"]), "route": "CLI (off-gateway)",
+                    "refusal_fallback": (f"codex {v['codex_model']}, 1 in flight, only on a usage-policy refusal"
+                                         if v["codex_fallback"] else None),
                     "caps": {"max_calls": v["max_calls"], "max_cost_usd": v["max_cost_usd"]}}
             kind = "CLI"
         rec = {"stage": stage, "set": self.set, "created": g.now_iso(), "created_epoch": time.time(),
@@ -564,6 +656,8 @@ class Run:
               "pool_sha256": self.pool_sha, "prereg_sha256": self.prereg, "segments": segs,
               "fields_sha256": self.fields_sha, "pilot": list(self.pilot) if self.pilot else None,
               "updated": g.now_iso(),
+              **({"yield_watch": self.yield_watch, "low_yield_allowed": self.low_yield_allowed}
+                 if stage == "draft" and self.round3 else {}),
               "paused_epoch": time.time() if status in ("paused", "crashed") else
               (self.prev_state or {}).get("paused_epoch")}
         g.write_json_atomic(self.p.state(stage), st)
@@ -662,11 +756,78 @@ class Run:
             "provenance": self.prov, "citable": g.citable(self.prov), "updated": g.now_iso()})
 
     # -------------------------------------------------------- draft
-    def draft(self, resume: bool = False, acknowledged: bool = False) -> int:
+    def draft(self, resume: bool = False, acknowledged: bool = False, allow_low_yield: bool = False,
+              accept_low_yield: bool = False) -> int:
         rc = self.begin("draft", resume, acknowledged)
         if rc is not None:
             return rc
+        if self.round3:
+            rc = self.yield_guards(allow_low_yield, accept_low_yield)
+            if rc is not None:
+                return rc
         return self.finish("draft", self._draft_body)
+
+    def yield_guards(self, allow_low_yield: bool, accept_low_yield: bool) -> int | None:
+        """Round-3 pools: the pool's pre-drafting estimate must be ``ADEQUATE`` unless
+        ``--allow-low-yield``; a run the yield watch paused resumes only with
+        ``--accept-low-yield``. Both acknowledgements are recorded in the state."""
+        prev = self.prev_state or {}
+        status = (self.pool_yield or {}).get("status") or "YIELD-NOT-ASSESSED"
+        self.low_yield_allowed = prev.get("low_yield_allowed")
+        if status != "ADEQUATE" and self.low_yield_allowed is None:
+            if not allow_low_yield:
+                g.log(f"draft refused: the pool's pre-drafting yield estimate is {status} "
+                      f"(expected_yield {(self.pool_yield or {}).get('expected_yield')}, gate "
+                      f"{(self.pool_yield or {}).get('gate')}); rebuild the pool, or pass --allow-low-yield")
+                return EXIT_HARD_STOP
+            self.low_yield_allowed = {"status": status, "expected_yield": (self.pool_yield or {}).get("expected_yield"),
+                                      "gate": (self.pool_yield or {}).get("gate"), "t": g.now_iso()}
+        yw = self.cfg["yield_watch"]
+        w = dict(prev.get("yield_watch") or {"after_jobs": int(yw["after_jobs"]), "min_pass": float(yw["min_pass"]),
+                                             "status": "pending"})
+        if w.get("status") == "below":
+            if not accept_low_yield:
+                g.log(f"draft --resume refused: the yield watch paused the run ({w.get('jobs')} jobs done, "
+                      f"{w.get('passes')} passed layer 1, rate {w.get('rate'):.3f} < {w.get('min_pass')}); "
+                      "resume with --accept-low-yield to continue")
+                return EXIT_PAUSED
+            w.update({"status": "below_accepted", "accepted": g.now_iso()})
+        self.yield_watch = w
+        return None
+
+    def l1_tally(self, st: p4.Store) -> tuple[int, int, int]:
+        """(jobs done, jobs with a layer-1 pass on some attempt, jobs not done)."""
+        done = passes = 0
+        n = int(self.cfg["drafter"]["max_attempts_per_chunk"])
+        for r in self.sampled:
+            if not self.chunk_done(st, r):
+                continue
+            done += 1
+            passes += any((st.get(self.draft_key(r, a)) or {}).get("l1_inline", {}).get("verdict") == "pass"
+                          for a in range(1, n + 1))
+        return done, passes, len(self.sampled) - done
+
+    def watch_yield(self, st: p4.Store) -> None:
+        """The yield watch, once per run: at the first ``after_jobs`` done jobs, a layer-1
+        pass rate below ``min_pass`` stops the run (a pause) while jobs remain."""
+        w = self.yield_watch
+        if w is None or w.get("status") != "pending":
+            return
+        done, passes, left = self.l1_tally(st)
+        if done < int(w["after_jobs"]):
+            return
+        rate = passes / done
+        w.update({"jobs": done, "passes": passes, "rate": rate, "t": g.now_iso()})
+        if rate >= float(w["min_pass"]):
+            w["status"] = "passed"
+        elif not left:
+            w["status"] = "below_run_complete"
+            notice("GATEWAY", f"draft set={self.label}: yield watch: {passes} of {done} jobs passed layer 1 "
+                   f"({rate:.1%} < {float(w['min_pass']):.0%}); no job left, the run completes")
+        else:
+            w["status"] = "below"
+            self.control.stop(f"low_yield: {passes} of {done} jobs passed layer 1 ({rate:.1%} < "
+                              f"{float(w['min_pass']):.0%}), {left} jobs left; resume with --accept-low-yield")
 
     def _draft_body(self) -> None:
         _ = self.corpus  # the integrity checks, before any call
@@ -701,7 +862,11 @@ class Run:
                             or set(row["l1_inline"]["reasons"]) & ck.REDRAW_EXEMPT:
                         return
                     prev = row
-            return fn
+
+            async def watched(http: Any) -> None:
+                await fn(http)
+                self.watch_yield(st)
+            return watched
 
         async def go(todo: list[dict[str, Any]]) -> None:
             http = self.http_factory()
@@ -712,6 +877,9 @@ class Run:
                 if close is not None:
                     await close()
 
+        self.watch_yield(st)                     # a resume past the watch point is judged first
+        if self.control.stopped():
+            raise p4.Pause(self.control.reason or "stopped")
         todo = [r for r in self.sampled if not self.chunk_done(st, r)]
         if todo:
             notice("GATEWAY", f"draft set={self.set}: starting {len(todo)} chunks "
@@ -725,6 +893,11 @@ class Run:
             todo = [r for r in self.sampled if not self.chunk_done(st, r)]
         if todo:
             raise p4.Pause(f"calls_failed:{len(todo)}")
+        w = self.yield_watch
+        if w is not None and w.get("status") == "pending":     # fewer jobs than the watch point
+            done, passes, _ = self.l1_tally(st)
+            w.update({"status": "not_reached", "jobs": done, "passes": passes,
+                      "rate": (passes / done) if done else None, "t": g.now_iso()})
 
     def draft_row(self, r: dict[str, Any], attempt: int, k: str, msgs: list[dict[str, str]],
                   res: dict[str, Any]) -> dict[str, Any]:
@@ -752,6 +925,7 @@ class Run:
               if status == "ok" else {"verdict": "dropped", "reasons": [status], "flags": []})
         return {"k": k, "record_id": record_id(self.label, r["chunk_id"], attempt, r.get("field")), "set": self.set,
                 "field": r.get("field"), "pilot": self.pilot is not None,
+                **({"term_in_chunk": r.get("term_in_chunk")} if self.round3 and r.get("field") is not None else {}),
                 "chunk_id": r["chunk_id"], "paper": r["paper"], "doc_id": r["doc_id"], "stratum": r["stratum"],
                 "attempt": attempt, "status": status, "text": text, "draft": draft, "parse_error": err,
                 "model": res.get("model"), "pt": res.get("pt"), "ct": res.get("ct"), "finish": res.get("finish"),
@@ -862,12 +1036,24 @@ class Run:
         t0 = time.time()
         p = self.cli_runner(self.claude_cmd(), input=prompt, capture_output=True, text=True, cwd=str(cwd),
                             timeout=int(v["timeout_s"]))
+        try:
+            obj = json.loads(p.stdout) if (p.stdout or "").strip() else None
+        except ValueError:
+            obj = None
+        obj = obj if isinstance(obj, dict) else None
+        failed = p.returncode != 0 or (obj is not None and bool(obj.get("is_error")))
+        # a usage-policy refusal first: it is neither a usage limit nor a transport error. The
+        # structured ``stop_reason: refusal`` counts on any exit (a refusal can come back as a
+        # normal, empty result, which would otherwise be rejected as l2_empty); the wording
+        # (REFUSAL_RE) is asked of a failed call only, never of a verifier's answer.
+        if (obj is not None and str(obj.get("stop_reason") or "").casefold() == "refusal") or failed:
+            if not failed or is_refusal(p.stdout or "", p.stderr or "", obj):
+                text = str((obj or {}).get("result") or p.stderr or p.stdout or "")
+                return {"status": "refused", "error": text.strip()[:300]}
         if p.returncode != 0:
             err = (p.stderr or p.stdout or "")[-2000:]
             return {"status": "limit" if LIMIT_RE.search(err) else "error", "error": err.strip()[:300]}
-        try:
-            obj = json.loads(p.stdout)
-        except ValueError:
+        if obj is None:
             return {"status": "error", "error": "stdout is not JSON"}
         text = obj.get("result") or ""
         if obj.get("is_error"):
@@ -883,12 +1069,82 @@ class Run:
                 "context_tokens": ctx, "output_tokens": own.get("outputTokens"),
                 "cost_usd": obj.get("total_cost_usd"), "duration_s": round(time.time() - t0, 2)}
 
-    def isolation(self, prompt: str, res: dict[str, Any]) -> dict[str, Any]:
+    def isolation(self, prompt: str, res: dict[str, Any], overhead: float = CLAUDE_FIXED_OVERHEAD
+                  ) -> dict[str, Any]:
         chars = len(prompt) + len(ck.VERIFY_SYSTEM)
-        budget = ISOLATION_FACTOR * chars / CHARS_PER_TOKEN_CLI + CLAUDE_FIXED_OVERHEAD
+        budget = ISOLATION_FACTOR * chars / CHARS_PER_TOKEN_CLI + overhead
         seen = res.get("context_tokens")
-        return {"chars": chars, "budget": round(budget, 1), "context_tokens": seen,
-                "PASS": seen is not None and seen <= budget}
+        tools = int(res.get("tool_events") or 0)
+        return {"chars": chars, "budget": round(budget, 1), "context_tokens": seen, "tool_events": tools,
+                "PASS": seen is not None and seen <= budget and not tools}
+
+    # -------------------------------------------------------- the codex fallback
+    def codex_cmd(self, cwd: Path, sysfile: Path, schema: Path, lastmsg: Path) -> list[str]:
+        """The Codex CLI with every optional instruction source, tool and feature off
+        (the invocation the gold-labelling judge proved), read-only, ephemeral."""
+        v = self.cfg["verifier"]
+        cmd = [str(v["codex_cli"]), "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+               "--skip-git-repo-check", "-C", str(cwd), "-s", "read-only",
+               "-c", 'approval_policy="never"', "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}",
+               "-c", 'web_search="disabled"', "-c", "skills.bundled.enabled=false",
+               "-c", "skills.include_instructions=false", "-c", "agents.enabled=false",
+               "-c", "include_permissions_instructions=false", "-c", "include_environment_context=false",
+               "-c", "include_apps_instructions=false", "-c", "include_apply_patch_tool=false",
+               "-c", f'model_instructions_file="{sysfile}"']
+        for f in CODEX_DISABLED_FEATURES:
+            cmd += ["--disable", f]
+        cmd += ["-m", str(v["codex_model"]), "-c", f'model_reasoning_effort="{v["codex_effort"]}"',
+                "--json", "--color", "never", "--output-schema", str(schema), "-o", str(lastmsg), "-"]
+        return cmd
+
+    def call_codex(self, prompt: str, cwd: Path) -> dict[str, Any]:
+        """One codex verification: ``status`` ok | empty | limit | error, the last message
+        as ``text``, usage from the ``turn.completed`` event, the tool events seen."""
+        import tempfile
+
+        v = self.cfg["verifier"]
+        base = self.out / "codex_tmp"
+        base.mkdir(mode=0o700, exist_ok=True)
+        base.chmod(0o700)
+        with tempfile.TemporaryDirectory(dir=base) as td_:
+            td = Path(td_)
+            td.chmod(0o700)
+            sysfile, schema, last = td / "system.md", td / "schema.json", td / "last.txt"
+            sysfile.write_text(ck.VERIFY_SYSTEM, encoding="utf-8")
+            schema.write_text(json.dumps(VERIFY_SCHEMA), encoding="utf-8")
+            t0 = time.time()
+            try:
+                p = self.cli_runner(self.codex_cmd(cwd, sysfile, schema, last), input=prompt, capture_output=True,
+                                    text=True, cwd=str(cwd), timeout=int(v["timeout_s"]))
+            except subprocess.TimeoutExpired:
+                return {"status": "timeout", "error": "timeout"}
+            events = []
+            for line in (p.stdout or "").splitlines():
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict):
+                    events.append(e)
+            errs = [e for e in events if e.get("type") in ("error", "turn.failed")]
+            errtext = json.dumps(errs)[:1500] + (p.stderr or "")[-1500:]
+            if p.returncode != 0 or errs:
+                st = ("refused" if CODEX_REFUSAL_RE.search(errtext) else
+                      "limit" if LIMIT_RE.search(errtext) else "error")
+                return {"status": st, "error": errtext.strip()[:300]}
+            text = last.read_text(encoding="utf-8") if last.exists() else ""
+        usage: dict[str, Any] = {}
+        for e in events:
+            if e.get("type") == "turn.completed":
+                usage = e.get("usage") or {}
+        items = [e.get("item") or {} for e in events if str(e.get("type", "")).startswith("item.")]
+        tools = sum(1 for i in items if (i.get("type") or i.get("item_type")) not in
+                    ("agent_message", "reasoning", "error", None))
+        served = next((e[k] for e in events for k in ("model", "model_slug") if isinstance(e.get(k), str)), None)
+        return {"status": "ok" if text.strip() else "empty", "text": text, "model": served or v["codex_model"],
+                "context_tokens": int(usage.get("input_tokens") or 0) if usage else None,
+                "output_tokens": usage.get("output_tokens"), "cost_usd": None, "tool_events": tools,
+                "duration_s": round(time.time() - t0, 2)}
 
     def verify(self, resume: bool = False, acknowledged: bool = False) -> int:
         rc = self.begin("verify", resume, acknowledged)
@@ -903,36 +1159,49 @@ class Run:
         log = self.acceptance()
         todo = self.verify_todo()
         checked = {"done": not bool(v["isolation_check"])}
+        codex_checked = {"done": not bool(v["isolation_check"])}
         hard: list[str] = []
 
-        def one(rec: dict[str, Any]) -> None:
+        def one(rec: dict[str, Any]) -> str:
+            """Verify one record; returns ``refused`` when Claude refused it (whatever codex did)."""
             rid = rec["record_id"]
             prompt = self.verify_prompt(rec)
             last: dict[str, Any] = {}
+            refusal: str | None = None
             for attempt in (1, 2):
                 with self._lock:
                     if self.control.stopped() or hard:
-                        return
+                        return "stopped"
                     if self.control.seg["cli_calls"] + self.control.prev["cli_calls"] >= int(v["max_calls"]):
                         self.control.stop("cli_call_cap")
-                        return
+                        return "stopped"
                     spent = sum(float(x.get("cost_usd") or 0) for x in rows.rows.values())
                     if spent >= float(v["max_cost_usd"]):
                         self.control.stop("cli_cost_cap")
-                        return
+                        return "stopped"
                     self.control.account("cli")
                 try:
                     res = self.call_cli(prompt, cwd)
                 except subprocess.TimeoutExpired:
                     res = {"status": "error", "error": "timeout"}
+                if res["status"] == "refused":
+                    refusal = str(res.get("error") or "")
+                    with self._lock:
+                        self.control.seg["cli_refusals"] += 1
+                    if not v["codex_fallback"]:
+                        return "refused"   # not recorded: the operator decides (no fallback configured)
+                    last = self.codex_verify(prompt, cwd, codex_checked, hard)
+                    if not last:
+                        return "refused"   # stopping before the codex call: re-issued on resume
+                    break
                 with self._lock:
                     if res["status"] == "limit":
                         self.control.stop("usage_limit")
-                        return
+                        return "stopped"
                     if res["status"] == "error":
                         self.control.fail("cli_error")
                         if attempt == 2:
-                            return  # not recorded: re-issued on resume
+                            return "error"  # not recorded: re-issued on resume
                         continue
                     self.control.account("cli", int(res.get("context_tokens") or 0),
                                          int(res.get("output_tokens") or 0), call=False)
@@ -942,36 +1211,51 @@ class Run:
                         if not iso["PASS"]:
                             hard.append("isolation_failed")
                             self.control.stop("isolation_failed")
-                            return
+                            return "stopped"
                     verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
-                    last = {**res, "parse_error": err, "verdict": verdict, "attempt": attempt}
+                    last = {**res, "parse_error": err, "verdict": verdict, "attempt": attempt, "verifier": "claude"}
                     if verdict is not None:
                         self.control.ok()
                         break
             with self._lock:
                 if not last:
-                    return
+                    return "error"
                 verdict = last.get("verdict")
-                if verdict is None:
+                if last.get("unavailable"):
+                    reasons, l2_verdict = ["verifier_unavailable"], "unavailable"
+                elif verdict is None:
                     reasons = ["l2_empty" if last["status"] == "empty" else "l2_unparseable"]
+                    l2_verdict = "reject"
                 else:
                     reasons = [f"l2_{k}" for k in ck.VERIFY_KEYS if verdict[k] is False]
+                    l2_verdict = "reject" if reasons else "pass"
                 rows.put({"k": f"verify|{rid}", "record_id": rid, "status": last["status"],
                           "text": last.get("text"), "model": last.get("model"),
                           "context_tokens": last.get("context_tokens"), "output_tokens": last.get("output_tokens"),
                           "cost_usd": last.get("cost_usd"), "attempts": last["attempt"],
+                          "verifier": last["verifier"], "verifier_refused": "claude" if refusal is not None else None,
+                          "refusal_text": refusal, "error": last.get("error"),
+                          "unavailable_reason": last.get("unavailable_reason"),
                           "prompt_sha256": g.sha_text(prompt), "t": g.now_iso()})
-                self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": "reject" if reasons else "pass",
+                self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": l2_verdict,
                                    "reasons": reasons, "flags": [], "fields": verdict, "served_model": last.get("model"),
+                                   "verifier": last["verifier"],
+                                   "verifier_refused": "claude" if refusal is not None else None,
+                                   "unavailable_reason": last.get("unavailable_reason"),
                                    "record_id": rid, "set": self.set, "paper": rec["paper"],
                                    "stratum": rec["l1"]["stratum"], "attempt": rec["attempt"], "t": g.now_iso()})
+            return "refused" if refusal is not None else "done"
 
         if todo:
             notice("CLI", f"verify set={self.set}: starting {len(todo)} records (<= {v['inflight']} in flight)")
-        if todo and not checked["done"]:
-            one(todo[0])  # the isolation check runs alone, before anything else is in flight
+        # the isolation check runs alone, before anything else is in flight; a record Claude
+        # refuses (verified by codex instead) does not check Claude, so the next one probes
+        while todo and not checked["done"]:
+            outcome = one(todo[0])
             todo = todo[1:]
-            if not checked["done"] and not hard:
+            if hard or self.control.stopped():
+                break
+            if not checked["done"] and outcome != "refused":
                 raise p4.Pause(self.control.reason or "isolation_probe_failed")
         with ThreadPoolExecutor(max_workers=int(v["inflight"])) as ex:
             list(ex.map(one, todo))
@@ -983,6 +1267,57 @@ class Run:
         if left:
             raise p4.Pause(f"calls_failed:{len(left)}")
 
+    def codex_verify(self, prompt: str, cwd: Path, checked: dict[str, bool], hard: list[str]) -> dict[str, Any]:
+        """The codex fallback for one refused record, one codex call at a time. Returns the
+        ``last`` row for the record, or ``{}`` when the record stays PENDING (re-issued on
+        resume): the run is stopping, or codex hit a limit, a timeout or a transport error —
+        those stop the run (a pause, exit 75), never exclude the record. Only a definitive
+        codex failure makes the record ``unavailable``: codex refuses it too, or its answer
+        is empty or malformed twice."""
+        with self._codex_lock:
+            for attempt in (1, 2):
+                with self._lock:
+                    if self.control.stopped() or hard:
+                        return {}
+                    self.control.account("codex")
+                try:
+                    res = self.call_codex(prompt, cwd)
+                except Exception as e:  # noqa: BLE001 - a transport failure: pause, the record stays pending
+                    res = {"status": "error", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+                if any(cwd.iterdir()):
+                    with self._lock:
+                        hard.append("verifier_cwd_written_by_codex")
+                        self.control.stop("verifier_cwd_written_by_codex")
+                    return {}
+                with self._lock:
+                    base = {**res, "attempt": attempt, "verifier": "codex"}
+                    if res["status"] in ("limit", "timeout", "error"):
+                        self.control.seg[f"codex_{res['status']}"] += 1
+                        self.control.stop(f"codex_{res['status']}")
+                        return {}
+                    if res["status"] == "refused":
+                        self.control.seg["codex_refusals"] += 1
+                        return {**base, "verdict": None, "parse_error": None, "unavailable": True,
+                                "unavailable_reason": "codex_refused"}
+                    self.control.account("codex", int(res.get("context_tokens") or 0),
+                                         int(res.get("output_tokens") or 0), call=False)
+                    if not checked["done"]:
+                        iso = self.isolation(prompt, res, float(self.cfg["verifier"]["codex_overhead_tokens"]))
+                        checked["done"] = True
+                        if not iso["PASS"]:
+                            hard.append("codex_isolation_failed")
+                            self.control.stop("codex_isolation_failed")
+                            return {}
+                    verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" \
+                        else (None, "empty")
+                    if verdict is not None:
+                        return {**base, "verdict": verdict, "parse_error": None}
+                    self.control.seg["codex_malformed"] += 1
+                    if attempt == 2:
+                        return {**base, "verdict": None, "parse_error": err, "unavailable": True,
+                                "unavailable_reason": "codex_malformed_twice"}
+        return {}
+
     # -------------------------------------------------------- summary
     def accepted(self) -> list[dict[str, Any]]:
         log = self.acceptance()
@@ -990,7 +1325,7 @@ class Run:
         for r in self.l1_passes():
             l2 = log.get(f"l2|{r['record_id']}")
             if l2 is not None and l2["verdict"] == "pass":
-                out.append(r)
+                out.append({**r, "l2": l2})
         return out
 
     def accepted_row(self, r: dict[str, Any]) -> dict[str, Any]:
@@ -1001,6 +1336,9 @@ class Run:
                 "chunk_stratum": r["stratum"], "words_only": r["l1"]["stratum"] == "S3",
                 "field": r.get("field"), "pilot": bool(r.get("pilot")), "model": r.get("model"),
                 "prompt_sha256": r.get("prompt_sha256"),
+                # layer 2's verifier (rows logged before the field existed: claude); None for a candidate
+                "verifier": (r["l2"].get("verifier") or "claude") if r.get("l2") else None,
+                "verifier_refused": (r.get("l2") or {}).get("verifier_refused"),
                 "gold_chunks": r["l1"]["gold_chunk_ids"], "flags": r["l1"]["flags"]}
 
     def summary(self) -> int:
@@ -1051,6 +1389,12 @@ class Run:
                        "attempts_by_number": dict(sorted(attempt_no.items())),
                        "gateway_calls_per_accepted": (http_calls / len(acc)) if acc else None},
             "rejects_by_code": {k: dict(v) for k, v in sorted(by_code.items())},
+            "layer2_by_verifier": {k: dict(v) for k, v in sorted(_l2_by_verifier(rows).items())},
+            # excluded, not rejected: no verifier could judge the record (never a record defect)
+            "excluded": {"verifier_unavailable": sum(1 for r in rows if r["layer"] == "l2"
+                                                     and r["verdict"] == "unavailable")},
+            "verifier_refused": dict(Counter(str(r["verifier_refused"]) for r in rows
+                                             if r["layer"] == "l2" and r.get("verifier_refused"))),
             "flags_on_l1_passes": {k: dict(v) for k, v in sorted(flags.items())},
             "lexical_overlap": {"threshold": self.cfg["checks"]["leak_threshold"], "n": len(overlaps),
                                 "quantiles": {f"p{int(p * 100)}": q(p) for p in (0.1, 0.25, 0.5, 0.75, 0.9)},
@@ -1062,6 +1406,7 @@ class Run:
             "fields": None if self.mode != "fields" else {
                 "fields_sha256": self.fields_sha,
                 "jobs_by_field": dict(sorted(Counter(j["field"] for j in self.sampled).items())),
+                "term_in_chunk": dict(Counter(str(j.get("term_in_chunk")) for j in self.sampled)),
                 "accepted_by_field": dict(sorted(Counter(r["field"] for r in acc).items())),
                 "words_only_accepted": sum(1 for r in acc if r["l1"]["stratum"] == "S3"),
                 "pilot_plan": self.pilot_plan},
@@ -1253,6 +1598,15 @@ class Run:
         return EXIT_OK
 
 
+def _l2_by_verifier(rows: list[dict[str, Any]]) -> dict[str, Counter[str]]:
+    """Layer-2 verdicts per verifier (``claude`` for rows logged before the field existed)."""
+    out: dict[str, Counter[str]] = {}
+    for r in rows:
+        if r["layer"] == "l2":
+            out.setdefault(str(r.get("verifier") or "claude"), Counter())[r["verdict"]] += 1
+    return out
+
+
 def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float | None, float | None]:
     if n == 0:
         return None, None
@@ -1302,6 +1656,11 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         sp.add_argument("--notice-acknowledged", action="store_true",
                         help="the human has sent the preflight notice; required")
         sp.add_argument("--resume", action="store_true")
+        if name == "draft":
+            sp.add_argument("--allow-low-yield", action="store_true",
+                            help="round-3 pools: start although the pool's yield estimate is not ADEQUATE (recorded)")
+            sp.add_argument("--accept-low-yield", action="store_true",
+                            help="round-3 pools: resume a run the yield watch paused (recorded)")
     with_set(sub.add_parser("check", help="layer 1 over every draft (no model)"))
     with_set(sub.add_parser("summary", help="accepted records + counts-only summary"))
     se = with_set(sub.add_parser("spot-export", help="the owner's blind spot-check sheet (PRIVATE)"))
@@ -1323,7 +1682,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         run.preflight(args.stage)
         return EXIT_OK
     if args.cmd == "draft":
-        return run.draft(args.resume, args.notice_acknowledged)
+        return run.draft(args.resume, args.notice_acknowledged, args.allow_low_yield, args.accept_low_yield)
     if args.cmd == "verify":
         return run.verify(args.resume, args.notice_acknowledged)
     if args.cmd == "check":

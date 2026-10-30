@@ -308,7 +308,10 @@ def test_fields_chain_pilot_and_partner_round_trip(tmp_path: Path) -> None:
     out = Path(cfg["out_dir"])
     gw = chain(path, "P", fake_fields)
     acc = jsonl(out / "accepted-P.jsonl")
-    assert {a["stratum"] for a in acc} == {"V", "M_num"} and not any(a["words_only"] for a in acc)
+    # both strata are drafted; which records pass depends on the field each chunk is paired with
+    # (since the pilot: any field whose dimension a printed number has, terms ranking)
+    assert {d["stratum"] for d in jsonl(out / "draft-P.jsonl")} == {"V", "M_num"}
+    assert acc and {a["stratum"] for a in acc} <= {"V", "M_num"} and not any(a["words_only"] for a in acc)
     assert all(ck.SYMBOL_BOUND_KEY in a for a in acc if a["stratum"] == "M_num")
     for b in gw.bodies:                                               # fields mode: no symbol hint, blind
         t = json.dumps(b["messages"]).casefold()
