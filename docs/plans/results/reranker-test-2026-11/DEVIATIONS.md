@@ -224,7 +224,7 @@ on docs-A the arms are in-process and the probe is `not applicable`, as frozen.
 
 **What was known.** No set-P list had been captured; the docs-A family had completed.
 
-## D-7, 2026-10-30: the L replication of family A (D2) was not run
+## D-7, 2026-10-30: the L replication of family A (D2) was not run — and on the docs-A bench copy it could not be one
 
 **What the frozen text says.** §4, docs-A row: "**family A, confirmatory**; L (live chunking) as replication
 (§12 D2)". §12 D2: "primary docs-A arm — T512o0; L as replication". The plan's step 4 names "Arms T512o0
@@ -235,10 +235,21 @@ on any day of the test, and the run log records no decision about it: the omissi
 the record, after the test's last step (2026-10-30T14:31:12Z). The identity reference rebuilt in D-4 was also
 written for T512o0 alone.
 
+**Why L stays absent (read-only check, 2026-10-30T14:49:08Z, at `f408b7a`, clean).** When the omission was
+noticed the coordinator opened a worktree to run L and first checked what L *is* on the bench copy. Arm L is
+built from the index's own stored chunks (`deployed_docs_trial.build_arms`). The docs-A bench copy was
+itself chunked at fixed-token 512 / overlap 0, so on it L and T512o0 hold the **same (doc_id, content)
+multiset: 1,113 of 1,113 chunks shared**. Part 4's L was the deployed docs-A collection's *live* chunking;
+no bench copy of docs-A at that chunking exists. Running L on the bench copy would therefore re-run T512o0
+under `L|` ids, not replicate it on live chunking. Making a bench copy at the live chunking is a store write
+outside this phase, so it was not created. Nothing was run; the worktree stayed clean. The check is in the
+run log.
+
 **Effect on the design.** Family A's confirmatory verdicts are those of the T512o0 run and are reported as
-such; the L replication is written as **absent** in `RESULTS.md`, never as agreeing. Running L later would be
+such; the L replication is written as **absent, with this reason** in `RESULTS.md`, never as agreeing. A
+real L replication needs a docs-A bench copy at its live chunking first; if one is made, running L would be
 a new, post-hoc run under this prereg and would be recorded as a later entry with its own pin; it is not
 promised here.
 
 **What was known.** Everything in `RESULTS.md`: the T512o0 verdicts and the set-P descriptives had been
-computed when this was noticed.
+computed when the omission was noticed and when the `build_arms` check was made.

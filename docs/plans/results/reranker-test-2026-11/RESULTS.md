@@ -18,7 +18,7 @@ which. The labels *confirmed*, *not confirmed* and *GATE-NOT-EVALUABLE* are the 
 | | |
 |---|---|
 | pre-registration | [prereg/PREREG-reranker-test.md](prereg/PREREG-reranker-test.md), sha256 `5dfe9e65c96add94a550a7a040d8a425c99d949194b4e5b851f26483f15ad230`, frozen 2026-10-30T02:19:33Z on the owner's go (commit 9e109c3, merge dedc990); never edited; the sha verified by hand against the README and the private `PREREG.sha256` before the first `pools` run |
-| deviations | [DEVIATIONS.md](DEVIATIONS.md): **D-1** the pre-committed re-score yields A4-50 only (A0, A2 absent); **D-2** input-reader fixes (#871) and the pin move; **D-3** set P's gold uses the papers-OC owner's actual quote rule; **D-4** the docs-A identity reference is rebuilt on the bench copy (#873); **D-5** set P's `bm25@100` lists short on 19 records, verified as exhaustion, run with `--allow-short`; **D-6** the glossary-boost probe structurally `not_testable` on P, continued with `--boost-declared 1.0`; **D-7** the L replication (D2) was not run |
+| deviations | [DEVIATIONS.md](DEVIATIONS.md): **D-1** the pre-committed re-score yields A4-50 only (A0, A2 absent); **D-2** input-reader fixes (#871) and the pin move; **D-3** set P's gold uses the papers-OC owner's actual quote rule; **D-4** the docs-A identity reference is rebuilt on the bench copy (#873); **D-5** set P's `bm25@100` lists short on 19 records, verified as exhaustion, run with `--allow-short`; **D-6** the glossary-boost probe structurally `not_testable` on P, continued with `--boost-declared 1.0`; **D-7** the L replication (D2) was not run, and on the bench copy (chunked 512 / 0, L = T512o0 on 1,113 / 1,113 chunks) it could not be one |
 | code pin | every output: **`f408b7a`** (`v1.6.21+f408b7a`, merge of #873), clean detached worktree, `dirty false, untracked 0`, `citable true`, not in a tools image (`in_image false`, the *not in an image* warning kept). The D-3 re-score reads a step-7 result built at `db97c28` (clean) |
 | harness | `python/scripts/eval/reranker_test.py` (`pools`, `rerank`, `fuse`, `census`, `stats`, `power-table`, `part4-rescore`); analysis machinery imported from `deployed_docs_part4` / `chunktrial_stats` (prereg §6) |
 | reranker | `BAAI/bge-reranker-v2-m3`, HF snapshot `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` (read from the sidecar's cache; equals the expected snapshot), fp16 on one GPU; `MAX_LENGTH` 4096 and `RERANK_BATCH_SIZE` 32 **declared** from the sidecar's launch environment (`/ready` does not expose them); installed `sentence-transformers` **5.6.0** (outside the `requirements.txt` pin `>=3.0,<4`, `pin_drift` recorded), `transformers` 5.12.1, `torch` 2.12.1 |
@@ -110,7 +110,7 @@ reranker, given BM25's own candidates, is not merely non-inferior to BM25's orde
 ### Power floor beside the verdicts
 
 Prereg §7, re-computed on the realised layout (208 clusters, 732 questions; `power_realised_layout`,
-2,000 simulations × 2,000 flips, Holm worst case α/3; ICC-0 rows, the ICC-0.1 rows are within 0.05):
+2,000 simulations × 2,000 flips, Holm worst case α/3; ICC-0 rows, the ICC-0.1 rows are within 0.051):
 
 | discordance | H1/H2 power at gain share .65 / .70 / .75 | H3 power at true net 0 / −.01 / −.02 |
 |---|---|---|
@@ -265,8 +265,8 @@ The offline `content+gloss` rerank of `hybrid@50` reproduces the live A4-50 list
 | A7-`gloss+content` | `hybrid@50` | 83 | 70 | 43 | 40 |
 | A7-`gloss-only` | `hybrid@50` | 83 | 70 | 28 | 55 |
 
-**Pairwise, descriptive** (gained / lost against the second arm; the paper-clustered sign-flip p is 1.0 or
-0.5 on every exploratory contrast here because at most 3 clusters are non-zero, so only exact McNemar —
+**Pairwise, descriptive** (gained / lost against the second arm; the paper-clustered sign-flip p is 1.0, 0.75
+or 0.5 on every exploratory contrast here because at most 3 clusters are non-zero, so only exact McNemar —
 which ignores clustering, with 138 of 155 records in one paper — is quoted, two-sided, Bonferroni count 38
 beside it): A0 − A4-50 **20 / 11** (McNemar 0.15); A5-50 − A0 11 / 18 (0.26); A5-50 − A4-50 4 / 2 (0.69);
 A7-`content` − A4-50 **2 / 11** (0.022); A7-`content+shuffled` − A4-50 **3 / 14** (0.013); A7-`gloss+content` −
@@ -336,7 +336,7 @@ In the record's own voice; descriptive where the set is exploratory.
 | item | status | why |
 |---|---|---|
 | **Family B** (H1–H3 on the round-2 sets O, A, R2-P) | **absent** | round 2 produced no frozen set (its `RESULTS.md`); nothing to admit |
-| **L replication** of family A (prereg §4, D2) | **absent** | not run (D-7); family A rests on T512o0 alone |
+| **L replication** of family A (prereg §4, D2) | **absent** | not run (D-7); family A rests on T512o0 alone. On the docs-A bench copy L cannot be a replication: the copy is chunked at fixed-token 512 / 0, so L's stored chunks equal T512o0's on 1,113 / 1,113 (`build_arms`, read-only check); no docs-A bench copy at the live chunking exists, and making one is a store write outside this phase |
 | E8: the four glossary conditions × reranker arms on papers-OC | absent | needs round 2's store swaps; round 2 is closed |
 | A8: alternative cross-encoder (D7) | absent | none deployed |
 | E7: judged answer-presence on discordant records (D8) | absent | no judge run |

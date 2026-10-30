@@ -590,7 +590,9 @@ Run at `f408b7a`, clean, 2026-10-30T13:49–14:31Z. In one line each:
   BM25's pool 54, BM25 alone 61. Over the same 50 candidates the reranker reading `content` alone finds 43,
   `content+gloss` 52, `content+shuffled` 41 (our seeded permutation over all 241 glossaried chunks, not the
   owner's derangement over pool chunks). One run, 153 records, 138 in one paper; no inference.
-- **Absent:** family B (round 2 produced no set), the L replication (D-7), A8, E7, E8, depth 200 on P.
+- **Absent:** family B (round 2 produced no set), the L replication (D-7: the docs-A bench copy is chunked
+  512 / 0, so L there equals T512o0 chunk for chunk; no copy at the live chunking exists), A8, E7, E8,
+  depth 200 on P.
 - **Part 3's reading stands as recorded** (one run each, exploratory). What this test adds is the
   decomposition: on papers-OC the reranker's ordering, not the fused pool, is where the records are lost;
   and the glossary in the reranker's input is where part of the gain comes back. Both descriptive.
