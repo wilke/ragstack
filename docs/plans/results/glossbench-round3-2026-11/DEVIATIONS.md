@@ -249,7 +249,7 @@ census judged record validity only and saw no arm outcome.
 with bodies rebuilt by the drafter's own builder.
 - The two O prompts, which had cost 148 and 177 completion tokens at about 18:00Z, now cost 1,511 to
   2,305. At least 86% of that is `reasoning_tokens`, a usage field that is now reported.
-- The A prompts reproduced their original counts.
+- Each A prompt reproduced its original count exactly on one of its two replays (843 and 1,525).
 - Run-to-run spread was about ±25%.
 
 **Conclusion.** Between 19:10Z and 20:04Z, the upstream model began reasoning on these requests, or began
@@ -263,9 +263,9 @@ reporting the reasoning in its token counts. Neither we nor the partner changed 
 
 **Decision (owner).** Set A resumes its remaining 100 jobs with the yield-watch override
 (`--accept-low-yield`), under two changes:
-1. the drafter's `max_tokens` rises from **4,096 to 16,384** for the resumed jobs only, so reasoning
+1. the drafter's `max_tokens` rises from the frozen **4,096** (PREREG D10) **to 16,384** for the resumed jobs only, so reasoning
    cannot truncate the answers;
-2. our round-3 output-token pause rises from **0.5 M to 1.0 M**. The partner's user set no cap.
+2. our round-3 output-token pause rises from the frozen **0.5 M** (PREREG D10) **to 1.0 M**. The partner's user set no cap.
 
 The resume uses the code's own route: a new output directory holding byte-identical copies of set A's
 pool and draft files, so the first 100 jobs are carried over, not redrafted. No state file is edited.
