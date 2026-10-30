@@ -16,7 +16,8 @@ repository. They are **external**: this repository holds none of them.
 Set P's gold was rebuilt offline four times from the held records, the pairs file and the bench-copy chunk
 dump. The run's own lists were then re-scored with the committed harness's `stats` at `6e620c2` (clean
 tree, `citable: true`), using the run's parameters (seed 261029, 10,000 flips, `--prefer live`,
-`--gold-rule any`). No retrieval, reranker or store call was made. Re-scoring the committed gold the same
+`--gold-rule any`). Each `stats` record carries an `entry point outside checkout` warning, which the
+artifact's `citable_reason` repeats. No retrieval, reranker or store call was made. Re-scoring the committed gold the same
 way reproduces every committed found@10 (`committed_column_reproduced_by_harness_rerun: true`).
 
 The four gold builders are **uncommitted offline scripts**. Their sha256 values are recorded in the
@@ -37,7 +38,9 @@ artefact. Scoping excludes 2 records, which have no gold in their source paper, 
 A document-identity check covered all the removed gold: 78 chunks in **2 documents**. Both are sha-named
 documents, and neither is a copy of any source paper. The largest share of any source paper's long
 sentences that either document holds is 3.6 %, and no source paper has a ≥ 50 % copy in the index. The
-paper mapping used for scoping is the same as round 2's set-P exclusion list.
+paper mapping used for scoping is the same as round 2's set-P exclusion list. The bench copy's document
+kinds (238 PMCID-named, 21 sha-named, 15 DOI-named, 1 other) agree with the papers-OC owner's corrected
+count at f5dec0b (external).
 
 **Gold size** (chunks per included record): committed 87 × 1, 56 × 2, 3 × 4, 3 × 11, 2 × 32, 2 × 50;
 v3 91 × 1, 57 × 2, 2 × 5, 3 × 8; v4 146 × 1, 5 × 3.

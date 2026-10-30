@@ -607,8 +607,10 @@ owner's 155 records. This entry follows that table. It is not about this project
 stopped at its reach gate and produced no retrieval result.
 
 The owner re-scored the step-8 runs with a corrected matching rule and then with source-paper scoping. Its
-addenda are at 4a9030d and 7a10f05, with the matching rule at aad81fe. All three are external: they are in
-the owner's repository, and we have not re-measured them. The corrected rule disproportionately removed
+addenda are at 4a9030d (the Scout figures; it supersedes 7a10f05's) and 7a10f05 (the quote-rule
+correction), with the matching rule at aad81fe. The owner later replaced that rule with an assignment rule
+(6c71ef1) and reports that the two agree on every scoring decision of this measurement. All four are
+external: they are in the owner's repository, and we have not re-measured them. The corrected rule disproportionately removed
 false credit from the rules baseline. The figures below are the owner's, exploratory, and from one run
 each. The bootstrap is within the dominant paper (138 records), not at the corpus level.
 
@@ -620,13 +622,14 @@ each. The bootstrap is within the dominant paper (138 records), not at the corpu
 | corrected matching rule, 138-record single-paper analysis | **+11 [+1, +22]** |
 | corrected rule + source-paper scoping | +6 [−4, +16] |
 
-Under the corrected rule, Scout's other two arms (base, bm25) still include zero.
+Under the corrected rule and under scoping, Scout's other two arms (base, bm25) still include zero.
 
 **Reading.**
 
 - **Scout over rules is unresolved.** The one contrast that excluded zero did so under one of three
   scorings, and it includes zero again under the third. Part 3's "Scout does not [beat rules]" was too
-  strong as a null, and "noise" is too strong as a dismissal. Neither "Scout beats rules" nor "Scout does
+  strong as a null, and the owner's own earlier reading, that Scout's gain was "noise", is too strong as a
+  dismissal; the owner says so too. Neither "Scout beats rules" nor "Scout does
   not" is supported.
 - **Both Qwen models beat rules on every arm under every scoring.** Under the corrected rule the effects
   grew slightly. That finding of Part 3 stands.
