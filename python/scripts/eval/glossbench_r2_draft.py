@@ -118,6 +118,13 @@ PARTNER_VERDICTS_SCHEMA = "glossbench-r2-partner-verdicts/1"
 PARTNER_VERDICTS = ("accept", "reject")
 PARTNER_BASES = ("scripted", "sampled")
 PILOT_DEFAULT_RECORDS, PILOT_DEFAULT_PAPERS = 50, 3
+#: prereg §3.5 (frozen 39c579e1) and DEVIATIONS D-1: the set-P promotion condition is the
+#: Wilson 95% upper bound of the partner's judged pilot error rate <= 0.15 with at least 30
+#: judged; computed from the raw counts at z = 1.959963984540054, compared at full float
+#: precision (8 of 100 -> 0.149981 passes, 9 of 100 -> 0.162262 fails), never from a bound
+#: the partner reports rounded.
+WILSON_Z = 1.959963984540054
+PROMOTION_THRESHOLD, PROMOTION_MIN_JUDGED = 0.15, 30
 DROPPED = ("empty_twice", "truncated", "cut")
 LIMIT_RE = re.compile(
     r"rate.?limit|usage.?limit|quota|overloaded|429|too many requests|"
@@ -1208,9 +1215,11 @@ class Run:
         label = fl.status_label(n, errors, wilson)
         scripted = [r for r in recs if r["basis"] == "scripted" and r["verdict"] == "reject"]
         prov = self.provenance()
+        promotion = promotion_condition(n, errors) if self.pilot is not None else None
         g.write_json_atomic(self.p.partner_verdicts, {
             "schema": PARTNER_VERDICTS_SCHEMA, "set": self.set, "pilot": self.pilot is not None,
             "status_label": label, "error_rate": errors / n, "wilson95": [lo, hi],
+            "promotion": promotion,
             "sample": {"n": n, "errors": errors, "seed": sample["seed"]},
             "counts": {"exported": len(known), "verdicts": len(recs), "scripted_rejects": len(scripted),
                        "sampled": len(sampled), "sampled_rejects": sum(r["verdict"] == "reject" for r in sampled)},
@@ -1219,10 +1228,14 @@ class Run:
             "verdicts_sha256": g.file_sha(path), "export_sha256": exp.get("export_sha256"),
             "provenance": prov, "created": g.now_iso()})
         print(label, flush=True)
+        if promotion is not None:
+            print(f"promotion condition (prereg §3.5): n={n} errors={errors} "
+                  f"wilson95_upper={promotion['upper_bound_6dp']} -> {'met' if promotion['met'] else 'not met'}",
+                  flush=True)
         return EXIT_OK
 
 
-def wilson(k: int, n: int, z: float = 1.959963984540054) -> tuple[float | None, float | None]:
+def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float | None, float | None]:
     if n == 0:
         return None, None
     p = k / n
@@ -1230,6 +1243,20 @@ def wilson(k: int, n: int, z: float = 1.959963984540054) -> tuple[float | None, 
     centre = (p + z * z / (2 * n)) / den
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def promotion_condition(n: int, errors: int) -> dict[str, Any]:
+    """Prereg §3.5 on the pilot's imported verdicts, mechanically: the Wilson 95% upper
+    bound of ``errors / n`` (``WILSON_Z``, no continuity correction, no rounding) is
+    ``<= PROMOTION_THRESHOLD`` and ``n >= PROMOTION_MIN_JUDGED``. The bound is written at
+    full precision and to 6 decimals; the comparison is at full precision."""
+    _, hi = wilson(errors, n)
+    assert hi is not None
+    return {"rule": "Wilson 95% upper bound of the judged error rate <= threshold, at least min_judged judged; "
+                    "from the raw counts, compared at full float precision",
+            "z": WILSON_Z, "threshold": PROMOTION_THRESHOLD, "min_judged": PROMOTION_MIN_JUDGED,
+            "n": n, "errors": errors, "upper_bound": hi, "upper_bound_6dp": f"{hi:.6f}",
+            "met": n >= PROMOTION_MIN_JUDGED and hi <= PROMOTION_THRESHOLD}
 
 
 # ------------------------------------------------------------------ CLI
