@@ -684,8 +684,12 @@ def test_stats_decomposition_and_hypotheses_hand_checked() -> None:
     h3 = res["hypotheses"]["H3"]
     assert (h3["gained"], h3["lost"]) == (0, 1) and h3["type"] == "noninferiority"
     assert res["family"]["tested"] == ["H1", "H3"]
-    holm = cstats.holm([h1["p"], h3["p"]], 0.05)
-    assert [h1["p_holm"], h3["p_holm"]] == pytest.approx(holm["p_adj"])
+    # the gated H2 enters Holm at p = 1.0; the drop-gated sensitivity is beside it
+    holm = cstats.holm([h1["p"], 1.0, h3["p"]], 0.05)
+    assert [h1["p_holm"], h2["p_holm"], h3["p_holm"]] == pytest.approx(holm["p_adj"])
+    assert h2["holm_entered_as"] == 1.0 and "holm_drop_gated" not in h2
+    drop = cstats.holm([h1["p"], h3["p"]], 0.05)
+    assert [h1["holm_drop_gated"]["p_holm"], h3["holm_drop_gated"]["p_holm"]] == pytest.approx(drop["p_adj"])
     assert h1["status"] == "confirmed"
     assert h3["status"] in ("confirmed", "not shown non-inferior")
     assert res["per_record"]["r0"]["A0"] == 1 and res["per_record"]["r1"]["A4-50"] is None
@@ -790,3 +794,203 @@ def test_power_table_shape() -> None:
     assert t["schema"] == rt.POWER_SCHEMA and t["n_family"] == 3 and len(t["rows"]) == 2 * 6
     assert all(r["alpha_test"] == pytest.approx(0.05 / 3) for r in t["rows"])
     assert {r["hypothesis"] for r in t["rows"]} == {"H1/H2", "H3"}
+
+
+# ------------------------------------------------------------------ inactive-reranker gate
+
+
+def test_inactive_reranker_gates_the_arm_and_its_hypotheses() -> None:
+    """A wired-but-inactive reranker answers rerank=true with the fused order: a
+    reranked list whose top 10 equals its pool's top 10 on EVERY record is
+    GATE-NOT-EVALUABLE, and so are H1 (A4-50) and any fuse built on it. Remove the
+    gate and this test fails."""
+    L, gold = hand_case()
+    L["live:hybrid@50"] = {r: list(v[:10]) for r, v in L["hybrid@50"].items()}  # the fused order, unchanged
+    L["rr:hybrid@50:content"] = {r: list(v[:10]) for r, v in L["hybrid@50"].items()}  # A7, offline, inactive
+    L["fuse:A9-bm25"] = {r: rt.rrf_ids(L["live:hybrid@50"][r], L["bm25@100"][r][:50]) for r in L["hybrid@50"]}
+    depth = {k: {"status": "ok"} for k in L}
+    depth["fuse:A9-bm25"] = {"inputs": ["live:hybrid@50", "bm25@50"], "status": "ok"}
+    res = rt.analyse(L, depth, gold, depths=[10, 50, 100], an=AN, seed=1, identity={"status": "pass"})
+    a4 = res["arms"]["A4-50"]
+    assert a4["identical_to_pool"] == {"pool": "hybrid@50", "records": 10, "identical_top10": 10, "gated": True}
+    assert a4["gate"] and "inactive reranker" in a4["gate"][0]
+    assert res["arms"]["A7-content"]["gate"] and "inactive reranker" in res["arms"]["A7-content"]["gate"][0]
+    assert res["arms"]["A9-bm25"]["gate"] and "inactive reranker" in res["arms"]["A9-bm25"]["gate"][0]
+    h1 = res["hypotheses"]["H1"]
+    assert h1["status"] == rt.GNE and any("inactive reranker" in g for g in h1["gate"])
+    # A5-50 differs from its pool on one record (c = 0): not gated, and H3 is still tested
+    assert res["inactive_reranker"]["live:bm25@50"]["identical_top10"] == 9
+    assert res["arms"]["A5-50"]["gate"] is None and res["family"]["tested"] == ["H3"]
+
+
+def test_active_reranker_is_not_gated() -> None:
+    L, gold = hand_case()
+    res = rt.analyse(L, {k: {"status": "ok"} for k in L}, gold, depths=[10, 50, 100], an=AN, seed=1,
+                     identity={"status": "pass"})
+    assert all(not v["gated"] for v in res["inactive_reranker"].values())
+    assert res["arms"]["A4-50"]["gate"] is None and res["hypotheses"]["H1"]["status"] == "confirmed"
+
+
+# ------------------------------------------------------------------ glossary boost read-back
+
+PROBE_ROWS = [
+    {"chunk_id": "p0", "doc_id": "d0", "content": "the valve opens at dawn", "symbol_glossary": "Kv — kelvinate"},
+    {"chunk_id": "p1", "doc_id": "d0", "content": "pressure falls slowly", "symbol_glossary": "Pd — pascalite"},
+    {"chunk_id": "p2", "doc_id": "d1", "content": "a third plain chunk", "symbol_glossary": "Ej — joulemeter"},
+    {"chunk_id": "p3", "doc_id": "d1", "content": "a fourth plain chunk", "symbol_glossary": "Rx — ohmicity"},
+    {"chunk_id": "p4", "doc_id": "d2", "content": "this mentions faradism", "symbol_glossary": "Fz — faradism"},
+]
+
+
+class BoostAPI:
+    """``httpx.MockTransport`` handler: BM25 over PROBE_ROWS with the glossary field at ``boost``."""
+
+    def __init__(self, boost: float = 1.0, drop: set[str] | None = None, echo_top_k: int | None = None) -> None:
+        self.boost, self.drop, self.echo = boost, drop or set(), echo_top_k
+        self.bodies: list[dict[str, Any]] = []
+        self.inflight = self.max_inflight = 0
+        self.lock = threading.Lock()
+
+    def __call__(self, req: Any) -> Any:
+        import httpx
+
+        if req.url.path == "/v1/config":
+            return httpx.Response(200, json={"rerank_candidates": 50, "reranker_model": rt.RERANKER_MODEL})
+        body = json.loads(req.content)
+        if body["query"].startswith("what does"):  # a measurement call: a fixed list over make_rows
+            ids = sorted(r["chunk_id"] for r in make_rows())
+            return httpx.Response(200, json={"sources": [{"chunk_id": x, "doc_id": "d", "content": "", "score": 0,
+                                                          "metadata": {}} for x in ids[: body["top_k"]]]})
+        with self.lock:
+            self.bodies.append(body)
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+        try:
+            time.sleep(0.01)
+            tok = body["query"].lower()
+            hits = [r["chunk_id"] for r in PROBE_ROWS
+                    if tok in rt.gbp.content_terms(r["content"])
+                    or (self.boost > 0 and tok in rt.gbp.glossary_tokens(r["symbol_glossary"]))]
+            hits = [h for h in hits if h not in self.drop][: body["top_k"]]
+            out: dict[str, Any] = {"sources": [{"chunk_id": h, "doc_id": "d", "content": "", "score": 1.0,
+                                                "metadata": {}} for h in hits]}
+            if self.echo is not None:
+                out["top_k"] = self.echo
+            return httpx.Response(200, json=out)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+
+
+def boost_api(handler: BoostAPI) -> rt.Api:
+    import httpx
+
+    return rt.Api("http://api.invalid", None, "coll", rt.MAX_INFLIGHT,
+                  http=httpx.Client(transport=httpx.MockTransport(handler)), retries=1, backoff_s=0)
+
+
+def test_boost_probe_active() -> None:
+    h = BoostAPI(boost=1.0)
+    bc = rt.api_boost_probe(boost_api(h), corpus(PROBE_ROWS), None)
+    assert bc["status"] == "active" and bc["n_probes"] == 4 and bc["n_passed"] == 4 and bc["gate"] is None
+    assert {p["chunk_id"] for p in bc["probes"]} == {"p0", "p1", "p2", "p3"}  # p4's token is in its content
+    assert all(b["retrieval_mode"] == "bm25" and b["rerank"] is False and b["top_k"] == 10
+               and b["use_graph"] is False and b["collection"] == "coll" for b in h.bodies)
+    assert h.max_inflight <= rt.MAX_INFLIGHT
+    assert "kelvinate" not in json.dumps(bc) and rt.gbp.token_sha("kelvinate") in json.dumps(bc)
+
+
+def test_boost_probe_inactive_mixed_error() -> None:
+    assert rt.api_boost_probe(boost_api(BoostAPI(boost=0.0)), corpus(PROBE_ROWS), None)["status"] == "inactive"
+    mixed = rt.api_boost_probe(boost_api(BoostAPI(drop={"p1"})), corpus(PROBE_ROWS), None)
+    assert mixed["status"] == "mixed" and mixed["n_passed"] == 3
+    clamp = rt.api_boost_probe(boost_api(BoostAPI(echo_top_k=5)), corpus(PROBE_ROWS), None)
+    assert clamp["status"] == "error" and "depth read-back" in clamp["probes"][0]["error"]
+
+
+def test_boost_probe_not_testable_and_declared() -> None:
+    few = PROBE_ROWS[:2]
+    h = BoostAPI()
+    bc = rt.api_boost_probe(boost_api(h), corpus(few), None)
+    assert bc["status"] == "not_testable" and bc["gate"] and not h.bodies
+    dec = rt.api_boost_probe(boost_api(h), corpus(few), 1.0)
+    assert dec["status"] == "declared" and dec["declared"] == 1.0 and dec["gate"] is None
+    with pytest.raises(SystemExit, match="boost <= 0"):
+        rt.api_boost_probe(boost_api(h), corpus(few), 0.0)
+
+
+def _boost_pools(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch, h: BoostAPI, rows: list[dict[str, Any]],
+                 *extra: str) -> int:
+    import httpx
+
+    data["chunks"].write_text("".join(json.dumps(r) + "\n" for r in rows))
+    real = rt.Api
+
+    class MockApi(real):  # type: ignore[misc,valid-type]
+        def __init__(self, *a: Any, **k: Any) -> None:
+            super().__init__(*a, **{**k, "http": httpx.Client(transport=httpx.MockTransport(h))})
+
+    monkeypatch.setattr(rt, "Api", MockApi)
+    return rt.main(pools_argv(data, "http://api.invalid", *extra))
+
+
+def test_pools_stop_on_an_inactive_boost_before_any_pool(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    h = BoostAPI(boost=0.0)
+    assert _boost_pools(data, monkeypatch, h, data["rows"] + PROBE_ROWS) == 1
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["status"] == "boost_check_failed" and out["manipulation"]["ok"] is False
+    assert out["manipulation"]["boost_check"]["status"] == "inactive" and out["lists"] == {}
+    assert all(b["top_k"] == 10 and b["retrieval_mode"] == "bm25" for b in h.bodies)  # probes only
+
+
+def test_pools_not_testable_gates_stats_unless_declared(data: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """make_rows' glossary words are in 20 chunks each: nothing qualifies."""
+    stats = ["stats", "--lists", str(data["dir"] / "pools.json"), "--gold", str(data["dir"] / "gold.json"),
+             "--set-label", "synthetic", "--depths", "10,20,40", "--n-perm", "100", "--n-boot", "100",
+             "--out", str(data["dir"] / "res.json")]
+    assert _boost_pools(data, monkeypatch, BoostAPI(), data["rows"]) == 0
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["manipulation"]["boost_check"]["status"] == "not_testable"
+    assert rt.main(stats) == 0
+    res = json.loads((data["dir"] / "res.json").read_text())
+    assert any("glossary boost" in g for g in res["arms"]["A0"]["gate"])
+    assert res["arms"]["A1"]["gate"] is None  # the vector leg does not read the boost
+    assert any("glossary boost" in g for g in res["ceilings"]["hybrid@40"]["gate"])
+    assert _boost_pools(data, monkeypatch, BoostAPI(), data["rows"], "--boost-declared", "1.0") == 0
+    assert rt.main(stats) == 0
+    res = json.loads((data["dir"] / "res.json").read_text())
+    assert res["boost_check"]["status"] == "declared" and res["arms"]["A0"]["gate"] is None
+
+
+def test_stats_gates_an_api_pools_file_without_the_boost_check(data: dict[str, Any],
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _boost_pools(data, monkeypatch, BoostAPI(), data["rows"], "--boost-declared", "1.0") == 0
+    p = data["dir"] / "pools.json"
+    out = json.loads(p.read_text())
+    del out["manipulation"]["boost_check"]
+    p.write_text(json.dumps(out))
+    assert rt.main(["stats", "--lists", str(p), "--gold", str(data["dir"] / "gold.json"), "--set-label", "s",
+                    "--depths", "10,20,40", "--n-perm", "100", "--n-boot", "100",
+                    "--out", str(data["dir"] / "res.json")]) == 0
+    res = json.loads((data["dir"] / "res.json").read_text())
+    assert res["boost_check"]["status"] == "absent" and res["arms"]["A0"]["gate"]
+
+
+def test_holm_gated_member_enters_at_one_hand_values() -> None:
+    """3 hypotheses, H2 gated. Default (prereg, found10): H2 enters at p = 1.0, m = 3:
+    sorted .01, .04, 1.0 -> adjusted 3 x .01 = .03, max(.03, 2 x .04) = .08, max(.08, 1) = 1.
+    Sensitivity (holm_drop_gated): m = 2 -> .02, max(.02, .04) = .04. Drop the p = 1.0
+    entry and the default values become the sensitivity's: this test fails."""
+    hyps = {"H1": {"p": 0.01, "p_mid": 0.005, "gate": None},
+            "H2": {"p": 0.002, "p_mid": 0.001, "gate": ["identity gate failed"]},
+            "H3": {"p": 0.04, "p_mid": 0.03, "gate": None}}
+    tested = rt.holm_family(hyps, ["H1", "H2", "H3"], 0.05)
+    assert tested == ["H1", "H3"]
+    assert [hyps[h]["p_holm"] for h in ("H1", "H2", "H3")] == pytest.approx([0.03, 1.0, 0.08])
+    assert hyps["H1"]["significant"] is True and hyps["H3"]["significant"] is False
+    assert hyps["H1"]["holm_drop_gated"]["p_holm"] == pytest.approx(0.02)
+    assert hyps["H3"]["holm_drop_gated"]["p_holm"] == pytest.approx(0.04)
+    assert hyps["H3"]["holm_drop_gated"]["significant"] is True and hyps["H3"]["holm_drop_gated"]["m"] == 2
+    assert "holm_drop_gated" not in hyps["H2"] and hyps["H2"]["holm_entered_as"] == 1.0
+    # mid-p follows the same convention: .005 x 3 = .015, max(.015, 2 x .03) = .06
+    assert [hyps[h]["holm_mid"] for h in ("H1", "H3")] == pytest.approx([0.015, 0.06])
