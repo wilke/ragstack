@@ -1,7 +1,6 @@
 # Pre-registration, glossary-model benchmark round 2
 
-**Status: DRAFT v1.3 (2026-10-29). NOT FROZEN.** No eval paper has been sampled, no question generated,
-no gateway glossary call made. Every freeze precondition is met (below); the text awaits the owner's go.
+**Status: FROZEN `39c579e1bc3aa7d80bffc6a93ef36157ce4c41c28ac3f37c939b6a5953cd4778` at 2026-10-30T02:19:33Z on the owner's go (commit 9e109c3).** The pre-registration file is unchanged since that commit and is never edited; later changes go to `DEVIATIONS.md`, except the §3.5 set-P promotion addendum under its pre-stated rule. At the freeze, no eval paper had been sampled, no question generated and no gateway glossary call made.
 
 | file | tier | what |
 |---|---|---|

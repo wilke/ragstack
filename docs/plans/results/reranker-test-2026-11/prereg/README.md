@@ -1,8 +1,6 @@
 # Pre-registration: the dedicated reranker test
 
-**Status: DRAFT v1.3 (2026-10-29). NOT FROZEN.** No arm of §3 has been run on any set of §4; the docs-A
-bm25-vs-rerank contrast has not been computed. Every freeze precondition is met (below); the text awaits
-the owner's go.
+**Status: FROZEN `5dfe9e65c96add94a550a7a040d8a425c99d949194b4e5b851f26483f15ad230` at 2026-10-30T02:19:33Z on the owner's go (commit 9e109c3).** The pre-registration file is unchanged since that commit and is never edited; later changes go to `DEVIATIONS.md`. At the freeze, no arm of §3 had been run on any set of §4 and the docs-A bm25-vs-rerank contrast had not been computed.
 
 | file | tier | what |
 |---|---|---|
