@@ -214,7 +214,10 @@ def test_field_list_schema(tmp_path: Path) -> None:
     assert fs2[0].constant is True and fs2[1].constant is False and fs2[0].in_set is True
     for bad, msg in (([FIELDS[0], FIELDS[0]], "named twice"), ([{**FIELDS[0], "terms": []}], "terms"),
                      ([{**FIELDS[0], "definition": ""}], "empty definition"),
-                     ([{**FIELDS[0], "in_set": "yes"}], "boolean"), ([{**FIELDS[0], "kind": "rate"}], "kind")):
+                     ([{**FIELDS[0], "in_set": "yes"}], "boolean"), ([{**FIELDS[0], "kind": "rate"}], "kind"),
+                     # the file's own count must match its list: a truncated term list is refused
+                     ([{**FIELDS[0], "n_terms": 4}], "n_terms 4 differs from len\\(terms\\) 3"),
+                     ([{**FIELDS[0], "n_terms": "3"}], "n_terms")):
         with pytest.raises(SystemExit, match=msg):
             fl.read_field_list(write_fields(tmp_path / "bad.json", bad))
 
@@ -357,6 +360,25 @@ def test_term_leak_uses_the_wording_proxys_stemming() -> None:
     # the definition's own words and the stated case are excused
     assert fl.term_leak("What outdoor air was supplied to the whole room in winter?", terms, definition,
                         case="winter") == (0.0, 0)
+
+
+def test_term_leak_catches_ach_and_air_changes_per_hour() -> None:
+    """An air-exchange-rate field whose term list names the rate as 'air changes per
+    hour' and 'ACH': a question that says either is caught (the share of its own
+    content words that come from the term list is above 0.5). The definition here
+    does not use those words; a definition that does excuses them (by design: the
+    drafter is told to use the definition's words), and the guard cannot fire on them."""
+    terms = ["air changes per hour", "ACH", "air exchange rate", "ventilation rate"]
+    definition = "the fraction of the room volume replaced by outdoor supply in unit time"
+    for q in ("What was the air changes per hour of the room?", "How many air changes per hour were given?",
+              "What ACH did the room have?", "Which ach did the paper report?"):
+        share, n = fl.term_leak(q, terms, definition)
+        assert share > 0.5 and n >= 1, (q, share, n)
+    # exactly 0.5 is not over the strict threshold: one term word against one other content word
+    assert fl.term_leak("What was the ACH in the classroom?", terms, definition) == (0.5, 2)
+    # the same words in the definition are excused, and the guard is silent
+    excusing = "air changes per hour of the room"
+    assert fl.term_leak("What was the air changes per hour of the room?", terms, excusing)[0] == 0.0
 
 
 # ------------------------------------------------------------------ layer 1 in fields mode

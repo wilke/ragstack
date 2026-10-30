@@ -14,8 +14,9 @@ are ignored) or JSONL, one field per entry::
      "in_set": true | false,                 # optional
      "constant": true | false}               # optional
 
-Other keys (``n_terms`` and the like) are ignored. A field named twice, an
-empty definition or an empty term list is refused.
+``n_terms``, when present, must equal ``len(terms)`` (a truncated term list is
+refused: the file's own count is the check). Other keys are ignored. A field
+named twice, an empty definition or an empty term list is refused.
 
 **in_set** (does the field occur in the papers-OC owner's held set?) is
 COMPUTED when the held set's records are given (``--in-set-records``: JSONL,
@@ -151,6 +152,10 @@ def read_field_list(path: str | Path) -> tuple[list[FieldSpec], str]:
         terms = e.get("terms", e.get("extraction_terms"))
         if not isinstance(terms, list) or not terms or not all(isinstance(t, str) and t.strip() for t in terms):
             raise SystemExit(f"{where}: terms must be a non-empty list of strings")
+        n_terms = e.get("n_terms")
+        if n_terms is not None and (isinstance(n_terms, bool) or not isinstance(n_terms, int) or n_terms != len(terms)):
+            raise SystemExit(f"{where}: n_terms {n_terms!r} differs from len(terms) {len(terms)}: "
+                             "the term list is truncated or the count is stale; refused")
         definition = str(e.get("definition") or "").strip()
         if not definition:
             raise SystemExit(f"{where}: empty definition")
