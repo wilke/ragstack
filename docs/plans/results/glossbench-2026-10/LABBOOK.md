@@ -561,11 +561,11 @@ records; this entry only points at them.
     attachment rate was not measured (absent).
 - **The reranker test has not run an arm.** Its preparation found three input problems before `pools`
   (the part-4 identity reference's key layout, the held set's live-collection ids and missing quotes,
-  the docs-A cluster field); the fixes are PR #871 (merged `b300d0e`, 2026-10-30T03:32:47Z). Its deviations D-1 to
+  the docs-A cluster field); the fixes are PR #871 (open at the time of writing). Its deviations D-1 to
   D-3 — the pre-committed re-score yields A4-50 only; the reader fixes and pin; **set P's gold uses the
   papers-OC owner's actual quote rule (whitespace collapsed, 60 % boundary clause), which differs from the
   rule the frozen Terms name on 16 of 155 records** — are in
   [`../reranker-test-2026-11/DEVIATIONS.md`](../reranker-test-2026-11/DEVIATIONS.md).
 - **What's next, item (a)** (a multi-paper evaluation set) is not done: round 2 did not produce one.
   Round 3 is to be pre-registered with the value-statement count per paper measured before its sample
-  size, gate and population are frozen. Items (b)–(e) are unchanged; (d) is the reranker test above.
+  size, gate and population are frozen. Items (b)–(e) are unchanged; (d) waits on #871.

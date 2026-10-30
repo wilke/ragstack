@@ -150,8 +150,8 @@ hypothesis that it does (the drafter note of §3.2 assumes ~1,024 hidden tokens 
 consistent with 30 of 58 calls hitting the cap and with no visible reasoning content, and is not tested.
 Round 1's three local models ran the same prompt at the same cap with ≤ 2 degraded documents per corpus.
 
-**Stop.** The stop rule the coordinator set in the batch brief before the batch started — more than 2
-degraded documents on a set stops the batch before the next set — fired at 9. **Sets A and P were not run; no `--reuse` rerun, no
+**Stop.** The batch's own stop rule, set before it started — more than 2 degraded documents on a set
+stops the batch before the next set — fired at 9. **Sets A and P were not run; no `--reuse` rerun, no
 `rederive`, no merge and no `final` pool reading were made.** The raw set-O output is kept privately
 (sha256 `839ff301…`); it enters no arm file and no index.
 
@@ -197,7 +197,7 @@ chunk, and the field mode's own eligibility is 253) say the same thing from the 
 
 **Owner decision, 2026-10-30: stop round 2 at the gate.** No drafting (steps 7–8), no verifier pass, no
 set-P pilot, no owner spot-check, no store swap, no retrieval run, no proxy, no gold sample, no judge
-pass, no promotion addendum. Any later round is its own pre-registration; nothing of it is written here.
+pass, no promotion addendum. Round 3 is pre-registered separately; its design is not written here.
 
 **Why stop rather than report the proxy and precision legs.** The frozen text allows "only the proxy and
 precision are reported" on a gated corpus (§3.1 step 4). Both need drafted records (M2) or a gold sample
