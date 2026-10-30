@@ -24,6 +24,7 @@ os.environ.setdefault("ELASTICSEARCH_URL", "http://127.0.0.1:1")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import chunktrial_stats as cstats  # noqa: E402
+import deployed_docs_part4 as dp4  # noqa: E402
 import reranker_test as rt  # noqa: E402
 from section_aware_trial import C  # noqa: E402
 
@@ -507,16 +508,18 @@ def test_rerank_identity_gate_failure_stops_everything(data: dict[str, Any]) -> 
 
 def test_identity_reference_from_part4_retrieval_store(data: dict[str, Any], tmp_path: Path) -> None:
     """docs-A has no live API: the reference is the part-4 retrieval store
-    (``{"k": "retrieval|<qid>|<arm>", "rr": [...]}`` rows) selected by arm."""
+    (``{"k": ckey("retrieval", qid, arm), "rr": [...]}`` rows, keys made by the
+    part-4 writer's own function: five fields) selected by arm."""
     write_pools(data)
     pools = json.loads((data["dir"] / "pools.json").read_text())
     live = pools["lists"].pop("live:hybrid@50")
     pools["depth"].pop("live:hybrid@50")
     (data["dir"] / "pools.json").write_text(json.dumps(pools))
     ref = tmp_path / "part4-retrieval.jsonl"
-    rows = [{"k": f"retrieval|{rid}|T512o0", "rr": lst} for rid, lst in live.items()]
-    rows += [{"k": f"retrieval|{rid}|T128o0", "rr": list(reversed(lst))} for rid, lst in live.items()]
-    rows += [{"k": "generation|q0|-|-|-", "x": 1}]
+    rows = [{"k": dp4.ckey("retrieval", rid, "T512o0"), "rr": lst} for rid, lst in live.items()]
+    rows += [{"k": dp4.ckey("retrieval", rid, "T128o0"), "rr": list(reversed(lst))} for rid, lst in live.items()]
+    rows += [{"k": dp4.ckey("generation", "q0"), "x": 1}]
+    assert all(len(r["k"].split("|")) == 5 for r in rows)
     ref.write_text("".join(json.dumps(r) + "\n" for r in rows))
     assert rt.load_identity_reference(ref, "T512o0") == live
     with pytest.raises(SystemExit, match="identity-arm"):
@@ -1094,3 +1097,144 @@ def test_no_credential_sends_no_header(data: dict[str, Any], monkeypatch: pytest
     assert _auth_pools(data, monkeypatch, h) == 0  # pools_argv passes --api-key-env ''
     assert all("authorization" not in x and "x-api-key" not in x for x in h.seen)
     assert json.loads((data["dir"] / "pools.json").read_text())["auth"] == {"header": None, "api_key_env": None}
+
+
+@pytest.mark.parametrize("bad", ["retrieval|q0|T512o0", "retrieval|q0|T512o0|x|-", "retrieval|q0|T512o0|-|-|-"])
+def test_identity_reference_refuses_keys_the_part4_writer_does_not_make(tmp_path: Path, bad: str) -> None:
+    ref = tmp_path / "part4-retrieval.jsonl"
+    rows = [{"k": dp4.ckey("retrieval", "q1", "T512o0"), "rr": ["a"]}, {"k": bad, "rr": ["b"]}]
+    ref.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(SystemExit, match="ckey form"):
+        rt.load_identity_reference(ref, "T512o0")
+
+
+# ------------------------------------------------------------------ question-file formats
+
+def test_docs_a_shape_status_filter_and_doc_id_cluster(tmp_path: Path) -> None:
+    """The docs-A question file: ``record_id``, ``question``, ``gold`` (1-2 quotes),
+    ``doc_id`` (the page; there is no ``page`` key) and ``status``; rows of another
+    status may lack ``question``. ``--set-field status --set-value valid`` and the
+    default field detection (cluster <- ``doc_id``) read it; ``--cluster-field page``
+    would not."""
+    rows = [{"record_id": "r1", "question": "token0x1 what?", "gold": ["token0x1 end."], "doc_id": "doc0",
+             "status": "valid", "set": "s", "stratum": "x"},
+            {"record_id": "r2", "question": "token1x1 and token1x3?", "gold": ["token1x1 end.", "token1x3 end."],
+             "doc_id": "doc1", "status": "valid", "set": "s", "stratum": "x"},
+            {"record_id": "r3", "doc_id": "doc2", "status": "unparseable", "set": "s", "stratum": "x"},
+            {"record_id": "r4", "question": "q", "gold": ["zz"], "doc_id": "doc2", "status": "quote_too_long",
+             "set": "s", "stratum": "x"}]
+    qf = tmp_path / "part4-questions.jsonl"
+    qf.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ap = rt.build_parser()
+    args = ap.parse_args(["pools", "--backend", "inprocess", "--out", "o", "--gold-out", "g", "--questions", str(qf),
+                          "--set-field", "status", "--set-value", "valid"])
+    qs, meta = rt.questions_from_args(args)
+    assert [q["id"] for q in qs] == ["r1", "r2"] and meta["skipped_other_set"] == 2
+    assert [q["cluster"] for q in qs] == ["doc0", "doc1"] and qs[1]["quotes"] == ["token1x1 end.", "token1x3 end."]
+    g = rt.build_gold(qs, corpus())
+    assert g["records"]["r2"]["quotes"] == [["d1c1"], ["d1c3"]] and "rule" not in g["records"]["r2"]
+    args = ap.parse_args(["pools", "--backend", "inprocess", "--out", "o", "--gold-out", "g", "--questions", str(qf),
+                          "--set-field", "status", "--set-value", "valid", "--cluster-field", "page"])
+    with pytest.raises(SystemExit, match="lacks id/query/cluster"):
+        rt.questions_from_args(args)
+
+
+def partner_files(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Synthetic set-P files with the partner's field names. Bench chunk ids are
+    ``b*``; the records' ``gold_chunk_ids`` are live-collection ids (``live-*``)
+    except one that names a bench chunk the quote does NOT resolve to."""
+    dump = [{"chunk_id": "b1", "doc_id": "P1", "content": "Intro. The ＭＥＬＴＩＮＧ point   was 412 K under argon."},
+            {"chunk_id": "b2", "doc_id": "P1", "content": "Methods text. The sample was annealed for six"},
+            {"chunk_id": "b3", "doc_id": "P1", "content": "hours at 900 C before cooling slowly overnight."},
+            {"chunk_id": "b4", "doc_id": "P2", "content": "The yield reached ninety two percent overall."},
+            {"chunk_id": "b5", "doc_id": "P2", "content": "unrelated words only"}]
+    pairs = [{"id": "p1", "field": "materials", "question": "pair question text",
+              "paper": {"pmcid": "PMC000001", "locator": "PMC000001", "title": "t"},
+              "expected": {"quote": "the melting point was 412 k", "quote_variants": ["melting at 412 K"]}},
+             {"id": "p2", "field": "materials", "paper": {"pmcid": "PMC000001", "locator": "PMC000001"},
+              # cut by the b2|b3 boundary: its first 60% is in b2
+              "expected": {"quote": "The sample was annealed for six hours", "quote_variants": []}},
+             {"id": "p3", "field": "chemistry", "paper": {"pmcid": "PMC000002", "locator": "LOC-2"},
+              # whitespace-removed parts 2-4 rule would match "ninetytwo"; the partner's rule does not
+              "expected": {"quote": "yieldreached ninetytwopercent overall", "quote_variants": []}},
+             {"id": "p4", "field": "chemistry", "paper": {"pmcid": "PMC000002"},
+              "expected": {"quote": "The yield reached ninety two", "quote_variants": []}}]
+    recs = [{"record_id": "R1", "pair": "p1", "kind": "k", "origin": "o", "query": "melting point under argon?",
+             "gold_chunk_ids": ["live-9"], "gold_rule": "quote text over some other dump"},
+            {"record_id": "R2", "pair": "p1", "kind": "k", "origin": "o2", "query": "what melting point was found?",
+             "gold_chunk_ids": ["b5"]},
+            {"record_id": "R3", "pair": "p2", "kind": "k", "origin": "o", "query": "how long was the anneal?",
+             "gold_chunk_ids": ["live-1", "live-2"], "gold_rule": "all"},
+            {"record_id": "R4", "pair": "p3", "kind": "k", "origin": "o", "query": "what yield was reached?",
+             "gold_chunk_ids": ["b4"], "gold_rule": "any"},
+            {"record_id": "R5", "pair": "p4", "kind": "k", "origin": "o", "query": "the yield reached, overall?",
+             "gold_chunk_ids": []}]
+    d, pf, rf = tmp_path / "dump-x.jsonl", tmp_path / "pairs.jsonl", tmp_path / "held.jsonl"
+    for path, rows in ((d, dump), (pf, pairs), (rf, recs)):
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return d, pf, rf
+
+
+def test_partner_held_join_gold_rule_and_exclusions(tmp_path: Path) -> None:
+    d, pf, rf = partner_files(tmp_path)
+    args = rt.build_parser().parse_args(["pools", "--backend", "inprocess", "--out", "o", "--gold-out", "g",
+                                         "--questions", str(rf), "--questions-format", "partner-held",
+                                         "--pairs", str(pf), "--chunks", str(d)])
+    qs, meta = rt.questions_from_args(args)
+    by = {q["id"]: q for q in qs}
+    assert by["R1"]["query"] == "melting point under argon?"  # the record's query, not the pair's question
+    assert [by[r]["cluster"] for r in ("R1", "R3", "R4", "R5")] == ["PMC000001", "PMC000001", "LOC-2", "PMC000002"]
+    assert all(q["gold_chunk_ids"] == [] for q in qs)
+    assert meta["format"] == "partner-held" and meta["clusters"] == 3 and meta["pairs_used"] == 4
+    assert meta["counts"]["live_gold_chunk_ids_ignored"] == 4
+    assert meta["counts"]["pairs_with_quote_variants_unused"] == 2
+    assert meta["counts"]["gold_rule_descriptive_not_applied"] == 1
+    assert meta["counts"]["cluster_from_pmcid"] == 1
+    g = rt.build_gold(qs, rt.load_corpus(args))
+    rec = g["records"]
+    # NFKC + case + whitespace-run folding: full containment in b1; the live id and the bench id b5 are ignored
+    assert rec["R1"]["quotes"] == [["b1"]] and rec["R2"]["quotes"] == [["b1"]]
+    assert rec["R1"]["gold_source"] == "quote:partner-held" and "rule" not in rec["R1"]
+    # a quote cut by a chunk boundary: its first 60% is in b2 (the last 60% is in no chunk)
+    assert rec["R3"]["quotes"] == [["b2"]] and rec["R3"]["rule"] == "all"
+    # the partner's rule keeps single spaces (the parts 2-4 rule would match b4); b4, named live, is not gold
+    assert rec["R4"]["quotes"] == [[]] and rec["R4"]["excluded"] == "no_gold_chunk_in_index"
+    assert rec["R5"]["quotes"] == [["b4"]]
+    assert g["excluded"] == {"no_gold_chunk_in_index": 1} and g["n"] == 5 and g["n_included"] == 4
+    # the record's own rule wins in the rank: all quotes of R3 (one) -> same as any here
+    assert rt.rank_of_gold(["x", "b2"], rec["R3"], "any") == 2
+    assert rt.rank_of_gold(["x", "b2"], {"quotes": [["b2"], ["b9"]], "rule": "all"}, "any") is None
+    # text never reaches an output with --omit-text (default)
+    out = tmp_path / "gold.json"
+    rt.write_out(out, {**g, "questions": meta}, qs, True)
+    blob = out.read_text()
+    for t in ("melting", "annealed", "argon", "ninety"):
+        assert t not in blob
+    with pytest.raises(SystemExit, match="would be written"):
+        rt.write_out(tmp_path / "leak.json", {"q": qs[0]["quotes"][0]}, qs, True)
+
+
+def test_partner_held_refusals(tmp_path: Path) -> None:
+    d, pf, rf = partner_files(tmp_path)
+    ap = rt.build_parser()
+    base = ["pools", "--backend", "inprocess", "--out", "o", "--gold-out", "g", "--questions", str(rf)]
+    with pytest.raises(SystemExit, match="needs --pairs"):
+        rt.questions_from_args(ap.parse_args([*base, "--questions-format", "partner-held"]))
+    with pytest.raises(SystemExit, match="only read with"):
+        rt.questions_from_args(ap.parse_args([*base, "--pairs", str(pf)]))
+    with pytest.raises(SystemExit, match="fixes its fields"):
+        rt.questions_from_args(ap.parse_args([*base, "--questions-format", "partner-held", "--pairs", str(pf),
+                                              "--cluster-field", "doc_id"]))
+    rows = [json.loads(x) for x in rf.read_text().splitlines()]
+    rows.append({"record_id": "R9", "pair": "nope", "kind": "k", "origin": "o", "query": "q", "gold_chunk_ids": []})
+    rf.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(SystemExit, match="names a pair absent"):
+        rt.load_partner_held(rf, pf)
+
+
+def test_partner_norm_matches_the_described_rule() -> None:
+    assert rt.partner_norm("  A\u00a0 B\n\tＣ ") == "a b c"
+    q = rt.partner_norm("one two three four five six seven eight nine ten")
+    m = -(-6 * len(q) // 10)
+    assert rt.sat.hit(q, "xx " + q[:m] + " yy") == "partial"
+    assert rt.sat.hit(q, "xx " + q[:m - 1] + " yy") is None
