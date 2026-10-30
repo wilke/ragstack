@@ -185,7 +185,8 @@ def is_refusal(stdout: str, stderr: str, obj: dict[str, Any] | None) -> bool:
     """A usage-policy refusal by the Claude CLI: its JSON says ``stop_reason: refusal``, or
     the error text (the result, ``api_error_status``, stderr; stdout when it is not JSON)
     carries the safeguards / usage-policy wording (:data:`REFUSAL_RE`). Only asked of a
-    failed call (non-zero exit or ``is_error``)."""
+    failed call (non-zero exit or ``is_error``); :meth:`Run.call_cli` also takes
+    ``stop_reason: refusal`` on a successful exit."""
     if obj is not None:
         if str(obj.get("stop_reason") or "").casefold() == "refusal":
             return True
@@ -1032,9 +1033,13 @@ class Run:
         except ValueError:
             obj = None
         obj = obj if isinstance(obj, dict) else None
-        if p.returncode != 0 or (obj is not None and obj.get("is_error")):
-            # a usage-policy refusal first: it is neither a usage limit nor a transport error
-            if is_refusal(p.stdout or "", p.stderr or "", obj):
+        failed = p.returncode != 0 or (obj is not None and bool(obj.get("is_error")))
+        # a usage-policy refusal first: it is neither a usage limit nor a transport error. The
+        # structured ``stop_reason: refusal`` counts on any exit (a refusal can come back as a
+        # normal, empty result, which would otherwise be rejected as l2_empty); the wording
+        # (REFUSAL_RE) is asked of a failed call only, never of a verifier's answer.
+        if (obj is not None and str(obj.get("stop_reason") or "").casefold() == "refusal") or failed:
+            if not failed or is_refusal(p.stdout or "", p.stderr or "", obj):
                 text = str((obj or {}).get("result") or p.stderr or p.stdout or "")
                 return {"status": "refused", "error": text.strip()[:300]}
         if p.returncode != 0:
@@ -1196,7 +1201,7 @@ class Run:
                         if not iso["PASS"]:
                             hard.append("isolation_failed")
                             self.control.stop("isolation_failed")
-                            return
+                            return "stopped"
                     verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
                     last = {**res, "parse_error": err, "verdict": verdict, "attempt": attempt, "verifier": "claude"}
                     if verdict is not None:

@@ -1,9 +1,10 @@
 """Round 3 after the set-P pilot: field assignment by content, the pre-drafting yield
 estimate, the drafter's yield watch and the codex fallback verifier.
 
-* fields mode pairs a chunk with a field only when the chunk names one of the field's
-  terms (the wording proxy's normalisation and stemming) AND prints a number of a
-  compatible dimension; round 2's prefilter (a term OR a unit) is recorded beside it;
+* fields mode pairs a chunk with a field when the chunk prints a number of a compatible
+  dimension; the field's terms (the wording proxy's normalisation and stemming) rank the
+  eligible chunks and never exclude one; round 2's prefilter (a term OR a unit) is
+  recorded beside it;
 * every round-3 pool records ``yield`` (expected_yield, gate, status) and ``draft``
   refuses a YIELD-NOT-ADEQUATE pool without ``--allow-low-yield``;
 * ``draft`` pauses (75) after the first ``yield_watch.after_jobs`` jobs when the
@@ -541,3 +542,119 @@ def test_verify_preflight_names_the_fallback(tmp_path: Path) -> None:
     _, cfg = _drafted(tmp_path)
     pf = json.loads((Path(cfg["out_dir"]) / "preflight-verify-O.json").read_text())
     assert "codex gpt-6-astra, 1 in flight" in pf["plan"]["refusal_fallback"]
+
+
+# ------------------------------------------------------------------ review probes (#878)
+
+def test_backtest_leave_one_paper_out_never_sees_its_own_paper(tmp_path: Path) -> None:
+    # papers that differ, of unequal size: every job of d1 passes, no other job does, and d4
+    # keeps two jobs. Left out, a paper is predicted from the other papers' class rates only;
+    # the expected value is recomputed here from the chunk text, independently of the code.
+    path, cfg = r3d.world_p(tmp_path)
+    out = Path(cfg["out_dir"])
+    assert run(path, "preflight", "--stage", "draft", "--set", "P") == 0
+    assert run(path, "draft", "--set", "P", "--notice-acknowledged", gw=r3d.Gateway(r3d.fake_fields)) == 0
+    header, _ = r2f.pool_rows(cfg)
+    specs = {d["field"]: fl.FieldSpec.from_dict(d) for d in header["field_specs"]}
+    text = {c.chunk_id: c.content for c in g.read_chunks(cfg["corpora"]["P"]["chunks"])}
+    all_drafts = jsonl(out / "draft-P.jsonl")
+    d4 = sorted({(d["chunk_id"], d["field"]) for d in all_drafts if d["paper"] == "d4"})[:2]
+    drafts = [d for d in all_drafts if d["paper"] != "d4" or (d["chunk_id"], d["field"]) in d4]
+    for d in drafts:
+        d["l1_inline"] = {**d["l1_inline"], "verdict": "pass" if d["paper"] == "d1" else "reject"}
+    dp = tmp_path / "drafts.jsonl"
+    dp.write_text("".join(json.dumps(d) + "\n" for d in drafts))
+    res = pool.backtest(cfg, "P", str(dp), tmp_path / "bt.json", provenance=lambda: PROV)
+    jobs = {(d["chunk_id"], d["field"]): (d["paper"], d["paper"] == "d1") for d in drafts}
+    recs = [(p, fl.job_class(text[c], specs[f]), y) for (c, f), (p, y) in jobs.items()]
+
+    def rates(sel: list[tuple[str, str, bool]]) -> dict[str, float]:
+        base = sum(ok for _, _, ok in sel) / len(sel)
+        return {k: (sum(ok for _, c, ok in sel if c == k) / n) if (n := sum(c == k for _, c, _ in sel)) else base
+                for k in fl.JOB_CLASSES}
+
+    lopo = sum(rates([r for r in recs if r[0] != p])[k] for p, k, _ in recs) / len(recs)
+    assert res["predicted"]["calibrated_leave_one_paper_out"] == pytest.approx(lopo)
+    assert res["predicted"]["calibrated_in_sample"] == pytest.approx(sum(ok for *_, ok in recs) / len(recs))
+    assert lopo != pytest.approx(res["predicted"]["calibrated_in_sample"])   # the probe discriminates
+
+
+def test_open_mode_ignores_and_does_not_record_a_fields_calibration(tmp_path: Path) -> None:
+    cal = _calibration(tmp_path / "cal.json", {"bound": 0.07, "eligible": 0.07, "ineligible": 0.07})
+    m, _, _ = r3d.r3p.build(tmp_path / "a", pool_r3={"yield_calibration": str(cal)})
+    y = m["yield"]
+    assert y["mode"] == "open" and y["calibrated"] is None and y["calibration"] is None
+    assert y["expected_yield"] == 1.0                                     # the open estimate, unscaled
+
+
+def test_yield_watch_counts_a_pass_on_the_redraw(tmp_path: Path) -> None:
+    path, cfg = _watch_world(tmp_path, 5, 0.3)
+    seen: dict[str, int] = {}
+
+    def second_time_lucky(messages: list[dict[str, str]]) -> dict[str, Any]:
+        user = messages[-1]["content"]
+        body = user.split("<<<\n", 1)[1].split("\n>>>", 1)[0]
+        seen[body] = seen.get(body, 0) + 1
+        good = r3d.fake_open(messages)
+        if seen[body] == 1 and not good.get("none"):
+            return {**good, "quote": "a quote printed nowhere in the paper 42"}    # quote_not_in_paper
+        return good
+
+    assert run(path, "preflight", "--stage", "draft", "--set", "O") == 0
+    assert run(path, "draft", "--set", "O", "--notice-acknowledged", gw=r3d.Gateway(second_time_lucky)) == 0
+    w = json.loads((Path(cfg["out_dir"]) / "draft-state-O.json").read_text())["yield_watch"]
+    assert w["status"] == "passed" and w["passes"] > 0
+
+
+def _codex_writes_cwd(clis: Clis) -> Any:
+    inner = clis._codex
+
+    def codex(cmd: list[str], prompt: str, cwd: str) -> SimpleNamespace:
+        res = inner(cmd, prompt, cwd)
+        (Path(cwd) / "stray.txt").write_text("x")
+        return res
+    return codex
+
+
+def test_codex_writing_the_verifier_cwd_is_a_hard_stop(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(dusk)
+    clis._codex = _codex_writes_cwd(clis)  # type: ignore[method-assign]
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 1
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    assert st["reason"] == "verifier_cwd_written_by_codex" and len(clis.codex) == 1
+    assert not any(r["verifier"] == "codex" for r in l2_rows(cfg))
+
+
+def test_a_codex_tool_event_fails_its_isolation_check(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(dusk)
+    inner = clis._codex
+
+    def codex(cmd: list[str], prompt: str, cwd: str) -> SimpleNamespace:
+        res = inner(cmd, prompt, cwd)
+        tool = json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}})
+        return SimpleNamespace(returncode=0, stdout=res.stdout + "\n" + tool, stderr="")
+    clis._codex = codex  # type: ignore[method-assign]
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 1
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    assert st["reason"] == "codex_isolation_failed"
+
+
+def test_a_refusal_stop_reason_on_a_successful_exit_goes_to_codex(tmp_path: Path) -> None:
+    # the refusal arrives as a normal result (exit 0, is_error false, empty text): it must not
+    # become an l2_empty reject of the record
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(dusk)
+    outer = clis.__call__
+
+    def cli(cmd: list[str], **kw: Any) -> SimpleNamespace:
+        if cmd[0] != "codex" and dusk(kw["input"]):
+            clis.claude.append({"input": kw["input"], "cwd": kw["cwd"]})
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+                {"type": "result", "is_error": False, "result": "", "stop_reason": "refusal"}))
+        return outer(cmd, **kw)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 0
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == 3 and all(r["verdict"] == "pass" and r["verifier_refused"] == "claude" for r in cx)
+    assert not any("l2_empty" in r["reasons"] for r in l2_rows(cfg))

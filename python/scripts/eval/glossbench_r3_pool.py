@@ -589,7 +589,8 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, dry: bool = False, corpu
         for r in pool:
             text = corpus.chunks[r["chunk_id"]].content
             # round 2's prefilter (a term OR a unit), recorded and counted; the plan runs
-            # over the content-eligible pairs (a term AND a compatible unit) only
+            # over the eligible pairs (a printed number of a compatible dimension) only,
+            # the field's terms ranking them (field_terms), never excluding one
             r["field_prefilter"] = fl.candidate_fields(text, planned)
             r["field_candidates"] = fl.eligible_fields(text, planned)
             r["field_terms"] = [f.field for f in planned
