@@ -172,3 +172,51 @@ would have rejected 3, including the record the partner rejected as "not a value
 **What was known.** The pilot's 5 verdicts. No O or A record had been drafted, and no retrieval had run on
 any round-3 set. The rule is in force for every O, A and later P record. The pilot keeps its layer-1
 verdicts as logged, and is not re-scored.
+
+## D-5, 2026-10-30T21:58:27Z: set O's discriminating records judged in full; a sensitivity on the clean subset, declared before any retrieval
+
+**What happened.**
+- Set O drafting finished (17:57–19:10Z, 863 gateway calls) with **206 accepted records** (V 57, M_num 149).
+  Of these, only **53** sit on chunks whose rendered field differs between the `value` and `mention`
+  attachment rules (V 17, M_num 36). The design planned about 150, and only these 53 can show a difference
+  between the arms. The frozen pre-drafting gate counted sampled chunks (151 against 100) and passed; the
+  shortfall arises between sampling and acceptance.
+- On the owner's decision, the papers-OC owner judged **all 53** of these records, a census rather than a
+  sample, on one question: does the quoted value denote the quantity the question asks about? The judge
+  was told only that these are the discriminating records, not which arm renders what.
+
+**Result** (exact counts, with no sampling uncertainty):
+- **2 wrong quantity.**
+- **2 worded values.** These are correct on the quantity question, but their quotes print no digit.
+  Under the frozen definition the M_num property (a symbol plus a number) applies to the chunk, not the
+  quote, so these records do not violate the frozen rules.
+- **8 not a quantity.** These are internally consistent, so the judge accepted them, but their "quantity"
+  is an equation number, a supplementary-note reference, a database accession, a definitional constant,
+  or a number read out of a name.
+- **41 clean.**
+
+The partner's verdict object and notes are private, with sha256s `f5183e80…` and `ea3cfa5c…`.
+
+**Decision (owner, before any retrieval on any round-3 set).**
+- H1–H3 run exactly as frozen. H1's population still includes all 53 discriminating records, and the
+  census breakdown above is printed beside H1, alongside the realised power floor.
+- An **exploratory sensitivity** is declared now: H1 recomputed on the **41 clean** discriminating
+  records. It is labelled exploratory and never replaces H1.
+- Layer-1 rules for later rounds (not this one) will cover all three classes: the quote must print a
+  digit; and cross-references, accessions, equation numbers and definitional constants are rejected.
+
+**Also recorded.**
+- **The `value_is_bound` hand check on set O:** 10 of its 28 rejects, drawn with seed
+  `261103|vbcheck|O`. All 10 are bounds as written. 4 are arguable: 3 significance thresholds where
+  the threshold is itself the quantity asked for, and 1 "up to" an observed maximum.
+- **Set A paused:** the yield watch stopped set A at 100 jobs, with 28% passing layer 1 against the 0.30
+  minimum. From A's first call, output tokens per call jumped (median 2,070 against O's 136, maximum
+  4,092; 2 calls truncated at 4,096). No request field changed: the drafter configuration was identical
+  for O and A. The partner's gateway audit shows no change on its side. A diagnostic probe is under way,
+  and the owner will decide whether to resume once it explains the jump.
+- **Over the size notice:** set O used 863 gateway calls against the notice's 695, because of 1.61
+  attempts per job instead of the assumed 1.3. A running counter that stops a batch at +10% of observed
+  calls is required before any further batch; set A ran under a manual watcher at +10%.
+
+**What was known.** No retrieval, swap or found@10 measurement had been run on any round-3 set. The
+census judged record validity only and saw no arm outcome.
