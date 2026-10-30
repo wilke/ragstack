@@ -232,3 +232,46 @@ private, with sha256s `f5183e80…` and `ea3cfa5c…`.
 
 **What was known.** No retrieval, swap or found@10 measurement had been run on any round-3 set. The
 census judged record validity only and saw no arm outcome.
+
+## D-6, 2026-10-30T22:05:06Z: the drafter model's upstream behaviour changed between sets O and A; set A resumes under a higher cap
+
+**What happened.**
+- Set A's drafting began at 20:04:43Z. From its first call, the output tokens per call jumped: median
+  2,070 against set O's 136, with a maximum of 4,092. 2 answers were truncated at the frozen
+  `max_tokens` of 4,096. The yield watch then paused set A at 100 jobs, with 28% passing layer 1
+  against the 0.30 minimum.
+- The partner's gateway audit shows no change on its side between the two sets. The same process, model,
+  served model and cap key appear on every call, and the only event in the window is one HTTP 502.
+- Our request bodies carry no reasoning or effort field. The drafter configuration and code were
+  identical for O and A.
+
+**The probe (22:00–22:02Z, 8 calls).** Two set-O prompts and two set-A prompts were each replayed twice,
+with bodies rebuilt by the drafter's own builder.
+- The two O prompts, which had cost 148 and 177 completion tokens at about 18:00Z, now cost 1,511 to
+  2,305. At least 86% of that is `reasoning_tokens`, a usage field that is now reported.
+- Each A prompt reproduced its original count exactly on one of its two replays (843 and 1,525).
+- Run-to-run spread was about ±25%.
+
+**Conclusion.** Between 19:10Z and 20:04Z, the upstream model began reasoning on these requests, or began
+reporting the reasoning in its token counts. Neither we nor the partner changed anything.
+
+**Consequence: a comparability caveat.**
+- Set O was drafted entirely before the change.
+- Set A's first 100 jobs, and any resumed jobs, were drafted after it.
+- Differences in yield or record character between O and A cannot be attributed to the corpora alone.
+- Set A is descriptive only, so no hypothesis depends on the comparison.
+
+**Decision (owner).** Set A resumes its remaining 100 jobs with the yield-watch override
+(`--accept-low-yield`), under two changes:
+1. the drafter's `max_tokens` rises from the frozen **4,096** (PREREG D10) **to 16,384** for the resumed jobs only, so reasoning
+   cannot truncate the answers;
+2. our round-3 output-token pause rises from the frozen **0.5 M** (PREREG D10) **to 1.0 M**. The partner's user set no cap.
+
+The resume uses the code's own route: a new output directory holding byte-identical copies of set A's
+pool and draft files, so the first 100 jobs are carried over, not redrafted. No state file is edited.
+
+The two segments' configurations differ only in `max_tokens` and the caps. They are traceable through
+their state files' configuration sha256s, and the summary reports set A's yield per segment.
+
+**What was known.** Set A's first-segment layer-1 outcomes and its token usage. No retrieval had run on
+any round-3 set.
