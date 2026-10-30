@@ -166,8 +166,8 @@ provenance note: drafted before #878, not from the population of any later set, 
 4. `export-partner` and `import-partner-verdicts` now refuse to write any path the run itself writes.
    The partner's verdict file sat under exactly the import's output name.
 
-**Effect on the pilot.** Applied to the pilot's 16 drafted records, `value_is_bound` would have rejected
-3, including the record the partner rejected as "not a value".
+**Effect on the pilot.** Applied to the 16 of the pilot's 105 drafts that carry a `value`, `value_is_bound`
+would have rejected 3, including the record the partner rejected as "not a value".
 
 **What was known.** The pilot's 5 verdicts. No O or A record had been drafted, and no retrieval had run on
 any round-3 set. The rule is in force for every O, A and later P record. The pilot keeps its layer-1
