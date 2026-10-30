@@ -7,7 +7,25 @@ one chunk per JSONL line in the shape ``_glossbench_r2.read_chunks`` reads::
      "metadata": {"source_path", "title"}}
 
 ``_source`` is limited to exactly those fields. ``symbol_glossary`` is NEVER
-requested: the drafter must stay blind to glossaries.
+requested in this, the default, mode: the drafter must stay blind to glossaries.
+
+**``--with-glossary``** (a separate mode, for the reranker test's chunk dump:
+gold, neighbour hits and the glossary-boost probe; a post-freeze tooling
+addition, no analysis change) requests :data:`GLOSSARY_SOURCE_INCLUDES` — the
+fields above plus ``symbol_glossary``, ``metadata.symbol_glossary_version`` and
+``metadata.prev_chunk_id`` / ``metadata.next_chunk_id`` (the text index's own
+names, :mod:`ragstack.stores.elasticsearch` and :mod:`ragstack.metadata_schema`)
+— and writes rows ``reranker_test.py --chunks`` reads::
+
+    {"chunk_id", "doc_id", "content", "start_char", "end_char", "symbol_glossary",
+     "metadata": {"source_path", "title", "symbol_glossary_version",
+                  "prev_chunk_id", "next_chunk_id"}}
+
+The two modes cannot be confused: the output's file name must start with
+``dump-`` in this mode and must NOT in the default one (a ``chunks-`` name is
+refused here), each mode's client is built for its own field list (the
+transport guard refuses a ``_search`` with any other ``_source``), and the
+manifest says ``symbol_glossary_exported``.
 
 Safety, all enforced in code:
 
@@ -34,6 +52,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -48,6 +67,13 @@ REPO = _REPO_PY.parent.resolve()
 #: Exactly the fields the reader needs. Deliberately no ``symbol_glossary``.
 SOURCE_INCLUDES = ["chunk_id", "doc_id", "content", "start_char", "end_char",
                    "metadata.source_path", "metadata.title"]
+#: ``--with-glossary`` only: the default fields plus the glossary, its stamp and the
+#: neighbour links (the reranker test's chunk dump).
+GLOSSARY_SOURCE_INCLUDES = [*SOURCE_INCLUDES, "symbol_glossary", "metadata.symbol_glossary_version",
+                            "metadata.prev_chunk_id", "metadata.next_chunk_id"]
+#: Output names: a glossary-bearing dump is ``dump-*``; a drafter export never is,
+#: and a dump is never ``chunks-*``.
+DUMP_PREFIX, CHUNKS_PREFIX = "dump-", "chunks-"
 PAGE_SIZE = 500
 KEEP_ALIVE = "5m"
 
@@ -81,10 +107,13 @@ def _allowed(method: str, path: str, index: str) -> bool:
 
 
 class GuardedTransport(httpx.BaseTransport):
-    """Wraps a transport; raises on any method/path outside the read-only allow-list."""
+    """Wraps a transport; raises on any method/path outside the read-only allow-list,
+    and on a ``_search`` whose ``_source`` is not exactly this client's field list."""
 
-    def __init__(self, inner: httpx.BaseTransport, index: str) -> None:
+    def __init__(self, inner: httpx.BaseTransport, index: str,
+                 includes: list[str] | None = None) -> None:
         self.inner, self.index = inner, index
+        self.includes = list(SOURCE_INCLUDES if includes is None else includes)
         self.log: list[tuple[str, str]] = []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
@@ -93,7 +122,7 @@ class GuardedTransport(httpx.BaseTransport):
             raise ExportError(f"guard: {m} {p} is not on the read-only allow-list")
         if m == "POST" and p == "/_search":
             body = json.loads(request.content or b"{}")
-            if not isinstance(body.get("pit"), dict) or body.get("_source", {}).get("includes") != SOURCE_INCLUDES:
+            if not isinstance(body.get("pit"), dict) or body.get("_source", {}).get("includes") != self.includes:
                 raise ExportError("guard: _search must carry a pit and the fixed _source includes")
         self.log.append((m, p))
         return self.inner.handle_request(request)
@@ -103,10 +132,14 @@ class GuardedTransport(httpx.BaseTransport):
 
 
 def make_client(url: str, index: str, api_key: str | None = None,
-                inner: httpx.BaseTransport | None = None) -> httpx.Client:
+                inner: httpx.BaseTransport | None = None, *, with_glossary: bool = False) -> httpx.Client:
+    """A guarded client for ONE mode: the default client can only ever send
+    :data:`SOURCE_INCLUDES` (no glossary); ``with_glossary`` only
+    :data:`GLOSSARY_SOURCE_INCLUDES`."""
     headers = {"Authorization": f"ApiKey {api_key}"} if api_key else {}
+    includes = GLOSSARY_SOURCE_INCLUDES if with_glossary else SOURCE_INCLUDES
     return httpx.Client(base_url=url.rstrip("/"), headers=headers, timeout=60.0,
-                        transport=GuardedTransport(inner or httpx.HTTPTransport(), index))
+                        transport=GuardedTransport(inner or httpx.HTTPTransport(), index, includes))
 
 
 # ------------------------------------------------------------------ export
@@ -121,15 +154,17 @@ def es_count(client: httpx.Client, index: str) -> int:
     return int(_ok(client.get(f"/{index}/_count"), "_count")["count"])
 
 
-def scroll_hits(client: httpx.Client, index: str, page_size: int = PAGE_SIZE) -> Iterator[dict[str, Any]]:
+def scroll_hits(client: httpx.Client, index: str, page_size: int = PAGE_SIZE,
+                includes: list[str] | None = None) -> Iterator[dict[str, Any]]:
     """Yield every hit's ``_source`` via PIT + search_after; always closes the PIT."""
+    fields = SOURCE_INCLUDES if includes is None else includes
     pit = _ok(client.post(f"/{index}/_pit", params={"keep_alive": KEEP_ALIVE}), "open pit")["id"]
     try:
         after: list[Any] | None = None
         while True:
             body: dict[str, Any] = {"size": page_size, "pit": {"id": pit, "keep_alive": KEEP_ALIVE},
                                     "sort": [{"_shard_doc": "asc"}], "track_total_hits": False,
-                                    "_source": {"includes": SOURCE_INCLUDES}}
+                                    "_source": {"includes": fields}}
             if after is not None:
                 body["search_after"] = after
             resp = _ok(client.post("/_search", json=body), "_search")
@@ -156,6 +191,35 @@ def to_row(hit: dict[str, Any]) -> dict[str, Any]:
             "metadata": {"source_path": str(md.get("source_path") or ""), "title": str(md.get("title") or "")}}
 
 
+def _opt_str(v: Any) -> str | None:
+    return None if v in (None, "") else str(v)
+
+
+def to_dump_row(hit: dict[str, Any]) -> dict[str, Any]:
+    """:func:`to_row` plus the glossary, its stamp and the neighbour links
+    (``--with-glossary``). An absent glossary is ``""`` and an absent stamp or
+    link ``null`` -- recorded as absent, never invented."""
+    row = to_row(hit)
+    src = hit.get("_source") or {}
+    md = src.get("metadata") or {}
+    row["symbol_glossary"] = str(src.get("symbol_glossary") or "")
+    row["metadata"].update({"symbol_glossary_version": _opt_str(md.get("symbol_glossary_version")),
+                            "prev_chunk_id": _opt_str(md.get("prev_chunk_id")),
+                            "next_chunk_id": _opt_str(md.get("next_chunk_id"))})
+    return row
+
+
+def check_out_name(out: Path, with_glossary: bool) -> None:
+    """``dump-*`` for a glossary-bearing dump, never ``chunks-*``; never ``dump-*`` without one."""
+    name = out.name
+    if with_glossary:
+        if name.startswith(CHUNKS_PREFIX) or not name.startswith(DUMP_PREFIX):
+            raise ExportError(f"--with-glossary writes a {DUMP_PREFIX}<corpus>.jsonl file "
+                              f"(never {CHUNKS_PREFIX}*); got {name!r}")
+    elif name.startswith(DUMP_PREFIX):
+        raise ExportError(f"{name!r}: a {DUMP_PREFIX}* name is reserved for --with-glossary dumps")
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_name(path.name + f".tmp{os.getpid()}")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -171,15 +235,19 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def export(client: httpx.Client, index: str, prefixes: list[str], out: Path,
-           alias: str | None = None, page_size: int = PAGE_SIZE) -> dict[str, Any]:
+           alias: str | None = None, page_size: int = PAGE_SIZE, *,
+           with_glossary: bool = False) -> dict[str, Any]:
     check_index(index, prefixes)
+    check_out_name(out, with_glossary)
+    includes = GLOSSARY_SOURCE_INCLUDES if with_glossary else SOURCE_INCLUDES
+    make = to_dump_row if with_glossary else to_row
     refuse_in_repo(out, "the chunk export")
     refuse_in_repo(out.with_name(out.name + ".manifest.json"), "the manifest")
     out.parent.mkdir(parents=True, exist_ok=True)
     expected = es_count(client, index)
     rows, seen, docs = [], set(), set()
-    for hit in scroll_hits(client, index, page_size):
-        row = to_row(hit)
+    for hit in scroll_hits(client, index, page_size, includes):
+        row = make(hit)
         if row["chunk_id"] in seen:
             raise ExportError("duplicate chunk id in the scroll; refusing")
         seen.add(row["chunk_id"])
@@ -193,8 +261,14 @@ def export(client: httpx.Client, index: str, prefixes: list[str], out: Path,
 
     manifest = {"chunks": len(rows), "documents": len(docs), "es_count": expected, "count_matches": True,
                 "sha256": sha, "index": alias or "idx-" + hashlib.sha256(index.encode()).hexdigest()[:12],
-                "fields": SOURCE_INCLUDES, "symbol_glossary_exported": False,
+                "fields": includes, "symbol_glossary_exported": with_glossary,
                 "provenance": experiment_provenance(repo=str(REPO))}
+    if with_glossary:
+        manifest["chunks_with_glossary"] = sum(1 for r in rows if r["symbol_glossary"])
+        manifest["chunks_with_neighbour_links"] = sum(
+            1 for r in rows if r["metadata"]["prev_chunk_id"] or r["metadata"]["next_chunk_id"])
+        manifest["glossary_versions"] = dict(sorted(Counter(
+            str(r["metadata"]["symbol_glossary_version"]) for r in rows).items()))
     _atomic_write(out, data)
     _atomic_write(out.with_name(out.name + ".manifest.json"),
                   (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
@@ -210,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--api-key-file")
     ap.add_argument("--index-alias")
     ap.add_argument("--out")
+    ap.add_argument("--with-glossary", action="store_true",
+                    help="the reranker test's chunk dump: add symbol_glossary, its version stamp and "
+                         "prev/next chunk ids; the output must be named dump-<corpus>.jsonl")
     a = ap.parse_args(argv)
     cfg = json.loads(Path(a.private_config).read_text()) if a.private_config else {}
     url, index = a.es_url or cfg.get("es_url"), a.index or cfg.get("index")
@@ -218,10 +295,12 @@ def main(argv: list[str] | None = None) -> int:
     if not (url and index and out):
         raise SystemExit("es_url, index and out are required (arguments or --private-config); there are no defaults")
     check_index(index, prefixes)
+    check_out_name(Path(out), a.with_glossary)
     key_file = a.api_key_file or cfg.get("api_key_file")
     key = Path(key_file).read_text().strip() if key_file else None
-    with make_client(url, index, key) as client:
-        m = export(client, index, prefixes, Path(out), a.index_alias or cfg.get("index_alias"))
+    with make_client(url, index, key, with_glossary=a.with_glossary) as client:
+        m = export(client, index, prefixes, Path(out), a.index_alias or cfg.get("index_alias"),
+                   with_glossary=a.with_glossary)
     print(json.dumps({k: m[k] for k in ("chunks", "documents", "sha256", "index")}))
     return 0
 

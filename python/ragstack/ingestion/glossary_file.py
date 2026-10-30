@@ -731,6 +731,170 @@ def merge_files(paths: Iterable[str | Path], out: str | Path) -> dict[str, int]:
                                config=config, created=created)
 
 
+# --- subsets by document id (glossary benchmark round 2) ---------------------------
+
+#: ``keep``: only the rows / documents whose id is in the list; ``drop``: all but those.
+SUBSET_MODES = ("keep", "drop")
+
+
+def read_id_list(path: str | Path) -> list[str]:
+    """One document id per line (surrounding whitespace stripped, blank lines
+    skipped). Refused (:class:`GlossaryFileError`): an empty list, a duplicate id."""
+    p = Path(path)
+    ids: list[str] = []
+    seen: set[str] = set()
+    with p.open(encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            s = line.strip()
+            if not s:
+                continue
+            if s in seen:
+                raise GlossaryFileError(f"{p}:{lineno}: duplicate id {s!r} in the id list")
+            seen.add(s)
+            ids.append(s)
+    if not ids:
+        raise GlossaryFileError(f"{p}: the id list is empty")
+    return ids
+
+
+def _subset_ids(mode: str, ids: list[str], present: Iterable[str], allow_missing: bool,
+                what: str) -> tuple[set[str], list[str]]:
+    if mode not in SUBSET_MODES:
+        raise GlossaryFileError(f"unknown subset mode {mode!r} (one of {', '.join(SUBSET_MODES)})")
+    have = set(present)
+    missing = [i for i in ids if i not in have]
+    if missing and not allow_missing:
+        raise GlossaryFileError(
+            f"subset: {len(missing)} id(s) of the list are not in {what} (e.g. {missing[:3]}); "
+            "pass allow_missing / --allow-missing to accept that")
+    return set(ids), missing
+
+
+def _refuse_overwrite(targets: Iterable[Path], inputs: Iterable[tuple[Path, str]]) -> None:
+    for target in targets:
+        for other, name in inputs:
+            if target.exists() and target.resolve() == other.resolve():
+                raise GlossaryFileError(f"subset: {target} is {name}")
+
+
+def subset_file(src: str | Path, out: str | Path, ids_path: str | Path, mode: str, *,
+                allow_missing: bool = False) -> dict[str, Any]:
+    """Write ``out`` with the rows of ``src`` whose ``doc_id`` is (``keep``) or is
+    not (``drop``) in the id list at ``ids_path`` (:func:`read_id_list`).
+
+    The kept rows are written UNCHANGED -- same glossaries, versions, provenance
+    and order as in ``src`` -- so a chunk rendered from the subset carries the
+    stamp it would carry from ``src``, and ``keep`` + ``drop`` of one list,
+    merged (:func:`merge_files`), hold exactly the source's rows. What the
+    subset is lives in the header only (stamp-neutral): the ``producer`` names
+    the mode, the source's sha256, the id list's sha256 and size, the number of
+    listed ids absent from the source, and the source's producer; ``created``
+    and ``config`` are the source's, so the same inputs give the same bytes.
+
+    Refused (:class:`GlossaryFileError`): an unknown mode; listed ids absent
+    from ``src`` unless ``allow_missing``; ``out`` resolving to ``src`` or to
+    the id list."""
+    sp, op, ip = Path(src), Path(out), Path(ids_path)
+    _refuse_overwrite([op], [(sp, "the input file"), (ip, "the id list")])
+    ids = read_id_list(ip)
+    gfile = read_glossary_file(sp)
+    listed, missing = _subset_ids(mode, ids, gfile.rows, allow_missing, str(sp))
+    rows = [r for d, r in gfile.rows.items() if (d in listed) == (mode == "keep")]
+    src_sha, ids_sha = file_sha256(sp), file_sha256(ip)
+    producer = (f"scripts/glossary_file.py subset --{mode} (source sha256 {src_sha}; "
+                f"ids sha256 {ids_sha}, {len(ids)} ids, {len(missing)} not in source; "
+                f"source producer: {gfile.header['producer']})")
+    counts = write_glossary_file(op, rows, producer=producer, config=gfile.config,
+                                 created=gfile.header["created"])
+    return {"out": str(op), "mode": mode, "source": str(sp), "source_sha256": src_sha,
+            "ids_sha256": ids_sha, "ids": len(ids), "ids_missing": len(missing),
+            "source_rows": len(gfile.rows), "rows": len(rows), "counts": counts,
+            "out_sha256": file_sha256(op)}
+
+
+#: The record :func:`subset_shard` writes beside its output (``<out>.subset.json``).
+SHARD_SUBSET_SCHEMA = "ragstack.shard_subset/v1"
+
+
+def subset_shard(src: str | Path, out: str | Path, ids_path: str | Path, mode: str, *,
+                 allow_missing: bool = False) -> dict[str, Any]:
+    """The same keep/drop filter over a ``JsonlLoader`` shard (one
+    ``{"text", "path", "metadata"}`` object per line -- the input of
+    ``glossary_step.py``, ``glossary_file.py build`` and the ingest tools), by
+    the document id the loader derives for each line
+    (:class:`~ragstack.ingestion.loaders.JsonlLoader` itself decides, so the ids
+    cannot drift from the loader's).
+
+    A kept line is written byte for byte as it stands in ``src`` (its line end
+    normalised to ``\\n``), in source order, so a document's text -- and so its
+    glossary row's ``text_sha256`` -- is unchanged. A line the loader yields no
+    document for (malformed JSON, an empty-text record) is in NEITHER output and
+    is counted (``lines_without_document``): ``keep`` + ``drop`` load exactly
+    the source's documents. Written atomically; the record of what was done --
+    mode, source / id-list / output sha256, counts -- goes to
+    ``<out>.subset.json`` (the shard format has no header to carry it) and is
+    returned.
+
+    Refused (:class:`GlossaryFileError`): an unknown mode; a document id on two
+    lines of ``src``; listed ids absent from ``src`` unless ``allow_missing``;
+    ``out`` or its record resolving to ``src`` or to the id list."""
+    from ragstack.ingestion.loaders import JsonlLoader
+
+    sp, op, ip = Path(src), Path(out), Path(ids_path)
+    rec_path = op.with_name(op.name + ".subset.json")
+    _refuse_overwrite([op, rec_path], [(sp, "the input shard"), (ip, "the id list")])
+    ids = read_id_list(ip)
+    loader = JsonlLoader()
+    lines: list[tuple[str, bytes]] = []
+    without = 0
+    seen: set[str] = set()
+    with sp.open("rb") as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            body = raw.rstrip(b"\r\n")
+            if not body.strip():
+                continue
+            try:
+                record = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                record = None
+            doc = loader._document(record) if isinstance(record, dict) else None
+            if doc is None:
+                without += 1
+                continue
+            if doc.id in seen:
+                raise GlossaryFileError(f"{sp}:{lineno}: duplicate document id {doc.id!r}")
+            seen.add(doc.id)
+            lines.append((doc.id, body))
+    listed, missing = _subset_ids(mode, ids, seen, allow_missing, str(sp))
+    chosen = [b for d, b in lines if (d in listed) == (mode == "keep")]
+    data = b"".join(b + b"\n" for b in chosen)
+    _atomic_bytes(op, data)
+    record_out = {"schema": SHARD_SUBSET_SCHEMA, "mode": mode,
+                  "source_sha256": file_sha256(sp), "ids_sha256": file_sha256(ip),
+                  "ids": len(ids), "ids_missing": len(missing), "source_documents": len(lines),
+                  "lines_without_document": without, "documents": len(chosen),
+                  "out_sha256": hashlib.sha256(data).hexdigest(),
+                  "id_rule": "JsonlLoader document id (deterministic_doc_id of the record's path)"}
+    _atomic_bytes(rec_path, (json.dumps(record_out, indent=2, sort_keys=True) + "\n").encode())
+    return {"out": str(op), "record": str(rec_path), **record_out}
+
+
+def _atomic_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(name, path)
+        name = ""
+    finally:
+        if name:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+
+
 # --- the load-side check and render -------------------------------------------
 
 #: Why a document's row cannot be used. ``missing``: the file has no row for the

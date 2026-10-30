@@ -16,7 +16,12 @@ runner only proves which arm is attached and refuses to measure otherwise.
 Nothing private is in this file: base URL, collection ids, index names, expected
 chunk counts, stamps and glossary-file hashes come from ``--private-config``
 (see ``examples/found10-config.example.json``); the API key, if any, from the
-environment variable the config names.
+environment variable the config names (``api.api_key_env``; unset = refused), sent
+as ``X-API-Key`` or, with ``api.auth_header: "authorization"``, verbatim in the
+``Authorization`` header (a BV-BRC user token, no ``Bearer `` prefix). The summary
+records the header and variable NAMES (``auth``), never the value, and
+``config_readable``: ``/v1/config`` is best effort (a user token gets 403) and is
+never read for a setting (``server_assumed`` is).
 
 **Inputs from the sibling tools (one record schema, no adapters).** Questions
 are the drafter's accepted records (``glossbench_r2_draft.py summary`` →
@@ -170,7 +175,34 @@ DEFAULT_CONDITIONS: dict[str, dict[str, Any]] = {
 #: fixed on every request so a server default cannot change the condition
 FIXED_REQUEST = {"use_graph": False, "rewrite_strategies": ["passthrough"], "context_window": 0,
                  "exclude_boilerplate": False}
-DEFAULT_API = {"timeout_s": 120.0, "inflight": 4, "retries": 3, "retry_backoff_s": 2.0, "api_key_env": None}
+DEFAULT_API = {"timeout_s": 120.0, "inflight": 4, "retries": 3, "retry_backoff_s": 2.0, "api_key_env": None,
+               "auth_header": "x-api-key"}
+#: ``api.auth_header``: where the credential from ``api.api_key_env`` goes. ``x-api-key``: the
+#: ``X-API-Key`` header (a RAGStack API key); ``authorization``: the ``Authorization`` header,
+#: verbatim and with no ``Bearer `` prefix (a BV-BRC user token; ``ragstack.api.security``).
+AUTH_HEADERS = {"x-api-key": "X-API-Key", "authorization": "Authorization"}
+
+
+def auth_headers(api: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The credential header for ``api`` (the normalised ``api`` block). The value comes
+    only from the environment variable ``api_key_env`` names, never from the config or
+    argv; a named variable that is unset or empty is refused. No ``api_key_env``: no
+    header. The value is returned to the caller and never logged or recorded."""
+    env = api.get("api_key_env")
+    if not env:
+        return {}
+    key = (os.environ if environ is None else environ).get(env)
+    if not key:
+        raise Refused(f"api.api_key_env names {env!r}, which is not set")
+    return {AUTH_HEADERS[api.get("auth_header") or "x-api-key"]: key}
+
+
+def auth_record(api: Mapping[str, Any]) -> dict[str, Any]:
+    """What the summary records about the credential: the header NAME and the variable
+    NAME, never the value."""
+    env = api.get("api_key_env")
+    return {"header": AUTH_HEADERS[api.get("auth_header") or "x-api-key"] if env else None,
+            "api_key_env": env or None}
 MAX_FAILED_SHARE = 0.02
 
 
@@ -192,6 +224,8 @@ def normalise_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if not cfg["api"].get("base_url"):
         raise Refused("api.base_url is required (no default: defaults on this kind of host resolve to production)")
     cfg["api"] = {**DEFAULT_API, **cfg["api"]}
+    if cfg["api"]["auth_header"] not in AUTH_HEADERS:
+        raise Refused(f"api.auth_header {cfg['api']['auth_header']!r} is not one of {sorted(AUTH_HEADERS)}")
     conds = cfg.get("conditions") or {}
     cfg["conditions"] = {c: {**DEFAULT_CONDITIONS[c], **conds.get(c, {})} for c in DEFAULT_CONDITIONS}
     for c, spec in cfg["conditions"].items():
@@ -372,7 +406,14 @@ def verify_swap_record(record: Mapping[str, Any], cfg: Mapping[str, Any], corpus
 
 
 async def live_census(client: httpx.AsyncClient, es_url: str, index: str) -> dict[str, Any]:
-    """Read-only: one ``terms`` aggregation on the stamp, ``size 0``."""
+    """Read-only: one ``terms`` aggregation on the stamp, ``size 0``. ``client`` is the
+    INDEX client (:meth:`Runner._default_census_client`), never the API client: the
+    API credential must not reach the index host, so a client carrying one of
+    :data:`AUTH_HEADERS` is refused here whatever built it."""
+    carried = sorted(h for h in AUTH_HEADERS.values() if h in client.headers)
+    if carried:
+        raise Refused(f"live census: the index client carries {carried}; the API credential "
+                      "must never be sent to the index host")
     body = {"size": 0, "track_total_hits": True,
             "aggs": {"v": {"terms": {"field": f"metadata.{VERSION_KEY}", "size": 100, "missing": "<none>"}}}}
     r = await client.post(f"{es_url.rstrip('/')}/{index}/_search", json=body)
@@ -405,12 +446,16 @@ def score_response(sources: Sequence[Mapping[str, Any]], gold: Sequence[str], re
 
 
 class Runner:
-    """One (corpus, arm[, repeat]) run. ``client`` is injectable (tests use
-    ``httpx.MockTransport``)."""
+    """One (corpus, arm[, repeat]) run. Two HTTP clients, both injectable (tests use
+    ``httpx.MockTransport``): ``client_factory`` builds the API client, which alone
+    carries the credential (:func:`auth_headers`); ``census_client_factory`` builds
+    the index client for :func:`live_census`, which carries none (the index needs
+    no key, and the API credential must never reach another host)."""
 
     def __init__(self, cfg: dict[str, Any], records: list[dict[str, Any]], corpus: str, arm: str,
                  out: Path, swap_record_path: Path, repeat: int | None = None,
                  client_factory: Callable[[], httpx.AsyncClient] | None = None,
+                 census_client_factory: Callable[[], httpx.AsyncClient] | None = None,
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  probe_chunks: Sequence[tuple[str, str, str]] | None = None,
                  probe_unavailable: str | None = None, probe_source: str | None = None,
@@ -435,6 +480,7 @@ class Runner:
         self.retries = int(api["retries"])
         self.backoff = float(api["retry_backoff_s"])
         self._client_factory = client_factory or self._default_client
+        self._census_client_factory = census_client_factory or self._default_census_client
         self._sleep = sleep
         self.stop_reason: str | None = None
         self.hard_stop: str | None = None
@@ -450,16 +496,17 @@ class Runner:
             raise Refused(f"--boost-declared {boost_declared:g}: a boost <= 0 never consults the glossary field")
         self.boost_check: dict[str, Any] | None = None
 
-    def _default_client(self) -> httpx.AsyncClient:
+    def _default_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+        """The API client: the only one that carries the credential."""
         api = self.cfg["api"]
-        headers = {"Content-Type": "application/json"}
-        env = api.get("api_key_env")
-        if env:
-            key = os.environ.get(env)
-            if not key:
-                raise Refused(f"api.api_key_env names {env!r}, which is not set")
-            headers["X-API-Key"] = key
-        return httpx.AsyncClient(timeout=float(api["timeout_s"]), headers=headers)
+        headers = {"Content-Type": "application/json", **auth_headers(api)}
+        return httpx.AsyncClient(timeout=float(api["timeout_s"]), headers=headers, transport=transport)
+
+    def _default_census_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+        """The index client for :func:`live_census`: NO credential header. The census
+        index needs none, and the API credential is for the API host only."""
+        return httpx.AsyncClient(timeout=float(self.cfg["api"]["timeout_s"]),
+                                 headers={"Content-Type": "application/json"}, transport=transport)
 
     # ---- one retrieval with retries
     async def _call(self, client: httpx.AsyncClient, rec: Mapping[str, Any], cond: str) -> dict[str, Any]:
@@ -524,9 +571,9 @@ class Runner:
             loop.add_signal_handler(signal.SIGTERM, self._sigterm)
         except (NotImplementedError, RuntimeError):  # pragma: no cover - non-main thread / platform
             pass
-        async with self._client_factory() as client:
+        async with self._client_factory() as client, self._census_client_factory() as es_client:
             if census_cfg.get("es_url"):
-                live_before = await live_census(client, census_cfg["es_url"], self.ccfg["index"])
+                live_before = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
                 if live_before != census:
                     raise Refused(f"live census {live_before} != the swap record's {census}")
             server = await self._server_info(client)
@@ -565,7 +612,7 @@ class Runner:
             if self.config_error:
                 raise Refused(self.config_error)
             if census_cfg.get("es_url") and not self.stop_reason:
-                live_after = await live_census(client, census_cfg["es_url"], self.ccfg["index"])
+                live_after = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
                 if live_after != census:
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")
@@ -617,7 +664,9 @@ class Runner:
 
     async def _server_info(self, client: httpx.AsyncClient) -> dict[str, Any]:
         """Read-only GETs recorded for provenance: ``/v1/version`` and (admin only, best
-        effort) ``/v1/config``."""
+        effort) ``/v1/config``. A non-200 (e.g. 403 "insufficient role" for a user
+        token) is recorded, never fatal: nothing here is read from ``/v1/config``
+        (``server_assumed`` stands in), and ``config_readable`` says which it was."""
         info: dict[str, Any] = {}
         base = self.cfg["api"]["base_url"].rstrip("/")
         for path in ("/v1/version", "/v1/config"):
@@ -626,6 +675,8 @@ class Runner:
                 info[path] = r.json() if r.status_code == 200 else {"status": r.status_code}
             except (httpx.HTTPError, ValueError) as e:
                 info[path] = {"error": type(e).__name__}
+        cfg = info.get("/v1/config")
+        info["config_readable"] = isinstance(cfg, dict) and "status" not in cfg and "error" not in cfg
         return info
 
     def _finish(self, done: dict[str, dict[str, Any]], swap: Mapping[str, Any], census: Mapping[str, Any],
@@ -699,7 +750,8 @@ class Runner:
                        "merge": self.acfg.get("merge"), "allowed_stamps": self.acfg.get("stamps"),
                        "allowed_stamp_prefixes": self.acfg.get("stamp_prefixes")},
             "manipulation_check": {"glossary_boost": self.boost_check},
-            "server": server, "utc": now_iso(), "provenance": prov,
+            "server": server, "config_readable": bool(server.get("config_readable")),
+            "auth": auth_record(self.cfg["api"]), "utc": now_iso(), "provenance": prov,
             "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0),
         }
         write_json_atomic(self.summary_path, summary)

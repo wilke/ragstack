@@ -87,6 +87,21 @@ Subcommands (each writes one JSON file; every file embeds
     count beside), per-record gold ranks by id, and every GATE-NOT-EVALUABLE
     reason.
 
+``part4-rescore``
+    D3's pre-committed check (prereg section 12): reads a ``part4-glossary/1``
+    result (the step-7 docs-A file; writer :mod:`part4_glossary`) and reports
+    found@10 for the D3 arms A0, A2, A4-50 and, with ``--questions`` for the
+    clusters, H1 by the ``stats`` test. Which per-item cell is which arm is
+    stated with ``--map ARM=CELL`` (never guessed); a cell the file does not
+    hold exits naming the cells it does. **The writer stores, per record, only
+    ``found`` for its budget conditions (e.g. ``k10``, ``B4096``) of the
+    reranked list** -- no ranks and no bm25 / hybrid-shallow cell -- so on such
+    a file only A4-50 (``--map A4-50=k10``) is readable; an unmapped D3 arm is
+    recorded ``absent`` and the run exits 1 unless ``--allow-partial``. The
+    found rule is part 4's (every gold quote in the top-10 text), not the gold
+    chunk-id rule of ``stats``; the output says so. Post-freeze tooling
+    addition; no analysis, threshold or arm changed.
+
 ``power-table``
     The power floor (208 pages x 735 questions by default, Holm worst case
     alpha/3), saved as ``power-table-reranker.json``.
@@ -581,30 +596,60 @@ def capture_inprocess(ip: InProcess, questions: list[dict[str, Any]], depths: li
 
 # ------------------------------------------------------------------ API first stage
 
+#: ``--auth-header``: where the credential from ``--api-key-env`` goes. ``x-api-key``: the
+#: ``X-API-Key`` header (a RAGStack API key); ``authorization``: the ``Authorization`` header,
+#: verbatim, no ``Bearer `` prefix (a BV-BRC user token; ``ragstack.api.security``).
+AUTH_HEADERS = {"x-api-key": "X-API-Key", "authorization": "Authorization"}
+
+
+def api_credential(env_name: str | None, environ: dict[str, str] | None = None) -> str | None:
+    """The credential, read only from the environment variable ``env_name`` (never argv).
+    ``None``/empty name: no credential. A named variable that is unset or empty is
+    refused -- a run must not fall back to anonymous access silently."""
+    if not env_name:
+        return None
+    key = (os.environ if environ is None else environ).get(env_name)
+    if not key:
+        raise SystemExit(f"--api-key-env names {env_name!r}, which is not set "
+                         "(pass --api-key-env '' for an API without authentication)")
+    return key
+
+
 class Api:
     """``POST /v1/retrieve`` (read-only), at most :data:`MAX_INFLIGHT` in flight."""
 
     def __init__(self, base_url: str, api_key: str | None, collection: str | None, inflight: int,
-                 http: Any = None, retries: int = 3, backoff_s: float = 2.0) -> None:
+                 http: Any = None, retries: int = 3, backoff_s: float = 2.0,
+                 auth_header: str = "x-api-key") -> None:
         import httpx
 
+        if auth_header not in AUTH_HEADERS:
+            raise SystemExit(f"--auth-header {auth_header!r} is not one of {sorted(AUTH_HEADERS)}")
         self.base = base_url.rstrip("/")
         self.collection = collection
         self.inflight = max(1, min(int(inflight), MAX_INFLIGHT))
-        headers = {"X-API-Key": api_key} if api_key else {}
+        #: the header NAME (recorded); the value is never recorded or logged
+        self.auth_header = AUTH_HEADERS[auth_header] if api_key else None
+        headers = {AUTH_HEADERS[auth_header]: api_key} if api_key else {}
         self.http = http or httpx.Client(timeout=300, headers=headers)
         self.retries, self.backoff = retries, backoff_s
         self.calls = 0
+        self.config_status: int | str | None = None
         self._lock = threading.Lock()
 
     def config(self) -> dict[str, Any] | None:
+        """``GET /v1/config``, best effort: a non-200 (a 403 "insufficient role" for a
+        user token) or a failure is recorded in :attr:`config_status`, never fatal; the
+        settings then come from ``--server-settings`` alone."""
         try:
             r = self.http.get(f"{self.base}/v1/config")
+            self.config_status = r.status_code
             if r.status_code != 200:
                 log(f"GET /v1/config -> {r.status_code}; settings come from --server-settings only")
                 return None
             return r.json()
         except Exception as e:  # noqa: BLE001
+            self.config_status = type(e).__name__
             log(f"GET /v1/config failed ({type(e).__name__}); settings come from --server-settings only")
             return None
 
@@ -739,9 +784,12 @@ def cmd_pools(args: argparse.Namespace) -> int:
     if args.backend == "api":
         if not args.base_url:
             raise SystemExit("--base-url is required for the API backend (there is no default)")
-        key = os.environ.get(args.api_key_env) if args.api_key_env else None
-        api = Api(args.base_url, key, args.collection, args.inflight)
+        key = api_credential(args.api_key_env)
+        api = Api(args.base_url, key, args.collection, args.inflight, auth_header=args.auth_header)
         cfg = api.config() or {}
+        out["auth"] = {"header": api.auth_header, "api_key_env": args.api_key_env or None}
+        out["config_readable"] = api.config_status == 200
+        out["config_status"] = api.config_status
         observed, src = {}, {}
         for k in expected:
             if k in cfg:
@@ -1665,6 +1713,145 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ------------------------------------------------------------------ part4-rescore (D3)
+
+#: The writer's schema (``part4_glossary.RESULTS_SCHEMA``): what the step-7 docs-A result is.
+PART4_SCHEMA = "part4-glossary/1"
+PART4_RESCORE_SCHEMA = "reranker-part4-rescore/1"
+#: The arms D3 pre-commits the re-score to (prereg section 12, D3). No other arm is read.
+D3_ARMS = ("A0", "A2", "A4-50")
+PART4_FOUND_RULE = ("part-4 found: every gold quote of the record occurs (parts 2-4 normalisation, text hit) "
+                    "in the chunks of the cell's delivered context; for a top-10 cell that is the top 10 of "
+                    "the cell's ranked list. Not the gold-chunk-id rule of `stats` (gold rule 'any'): it is "
+                    "an ALL-quotes rule (nearest `stats` analogue: --gold-rule all), and a text hit counts "
+                    "any chunk whose text holds the quote, so a quote whose text recurs in another chunk "
+                    "(overlap, repeated passages) can be found without the gold chunk id being in the top "
+                    "10. The file holds no ranks or chunk ids, so this cannot be re-scored by id here.")
+
+
+def parse_part4_map(items: list[str] | None) -> dict[str, str]:
+    """``ARM=CELL`` per ``--map``: which per-item cell of the part-4 result holds
+    the arm's top-10 ``found``. ARM must be one of :data:`D3_ARMS`; nothing is
+    mapped by default (the cell names are the writer's budget conditions, e.g.
+    ``k10``, and which arm a cell is must be stated, not guessed)."""
+    out: dict[str, str] = {}
+    for v in items or []:
+        arm, sep, cell = v.partition("=")
+        if not sep or not cell or arm not in D3_ARMS:
+            raise SystemExit(f"--map wants ARM=CELL with ARM one of {list(D3_ARMS)}, got {v!r}")
+        if arm in out:
+            raise SystemExit(f"--map: arm {arm!r} given twice")
+        out[arm] = cell
+    if not out:
+        raise SystemExit(f"part4-rescore needs at least one --map ARM=CELL (ARM in {list(D3_ARMS)})")
+    return out
+
+
+def read_part4_result(obj: dict[str, Any], condition: str | None, part4_arm: str,
+                      mapping: dict[str, str]) -> dict[str, Any]:
+    """Per-record 0/1 top-10 outcomes of the mapped arms from a ``part4-glossary/1``
+    results object (``per_item[record_id][glossary condition][part-4 arm][cell]
+    ["found"]``, as :func:`part4_glossary.rescore` writes it). Strict: every record
+    must hold every mapped cell with a boolean ``found``; anything else exits
+    naming what the file does hold."""
+    if obj.get("schema") != PART4_SCHEMA:
+        raise SystemExit(f"part4-rescore: not a {PART4_SCHEMA} result (schema {obj.get('schema')!r})")
+    per_item = obj.get("per_item")
+    if not isinstance(per_item, dict) or not per_item:
+        raise SystemExit("part4-rescore: the result has no per_item records (a counts-only copy?)")
+    cond = condition or obj.get("reference_condition")
+    names = [c.get("name") for c in obj.get("glossary_conditions") or [] if isinstance(c, dict)]
+    if not cond or (names and cond not in names):
+        raise SystemExit(f"part4-rescore: glossary condition {cond!r} is not in the result ({names})")
+    cells: set[str] = set()
+    out: dict[str, dict[str, int]] = {a: {} for a in mapping}
+    for rid in sorted(per_item):
+        arms = (per_item[rid] or {}).get(cond)
+        if not isinstance(arms, dict) or not isinstance(arms.get(part4_arm), dict):
+            raise SystemExit(f"part4-rescore: record {rid!r} has no {cond}/{part4_arm} cell "
+                             f"(arms: {sorted(arms) if isinstance(arms, dict) else None})")
+        row = arms[part4_arm]
+        cells.update(row)
+        for a, cell in mapping.items():
+            found = (row.get(cell) or {}).get("found") if isinstance(row.get(cell), dict) else None
+            if not isinstance(found, bool):
+                raise SystemExit(f"part4-rescore: --map {a}={cell}: record {rid!r} has no boolean "
+                                 f"found in cell {cell!r}; the cells this result holds: {sorted(cells | set(row))}")
+            out[a][rid] = int(found)
+    return {"condition": cond, "outcomes": out, "cells": sorted(cells), "records": sorted(per_item)}
+
+
+def part4_rescore(obj: dict[str, Any], *, condition: str | None, part4_arm: str, mapping: dict[str, str],
+                  clusters: dict[str, str] | None, an: dict[str, Any], seed: int,
+                  per_record: bool = True) -> dict[str, Any]:
+    """D3's pre-committed check on the step-7 file: found@10 per mapped arm and,
+    when A0 and A4-50 are both mapped and clusters are given, H1 by the same
+    test as ``stats`` (:func:`run_contrast`, superiority, one-sided). A2 enters
+    as a found@10 count; no other contrast is computed here. The coverage of
+    :data:`D3_ARMS` is reported per arm (``absent``: no ``--map`` for it)."""
+    got = read_part4_result(obj, condition, part4_arm, mapping)
+    rids = got["records"]
+    oc = got["outcomes"]
+    arms = {a: {"cell": mapping[a], "n": len(rids), "found@10": sum(oc[a].values())} for a in mapping}
+    coverage = {a: (f"mapped: cell {mapping[a]!r}" if a in mapping else "absent") for a in D3_ARMS}
+    h1: dict[str, Any]
+    spec = HYPOTHESES["H1"]
+    if not {"A0", "A4-50"} <= set(mapping):
+        h1 = {"status": "not computed", "reason": "A0 and A4-50 must both be mapped"}
+    elif clusters is None:
+        h1 = {"status": "not computed", "reason": "no --questions (clusters) given"}
+    else:
+        missing = [r for r in rids if r not in clusters]
+        if missing:
+            raise SystemExit(f"part4-rescore: {len(missing)} result records are not in the questions file "
+                             f"(e.g. {missing[:3]})")
+        a, b = [oc["A0"][r] for r in rids], [oc["A4-50"][r] for r in rids]
+        h1 = {"statement": spec["statement"], "type": spec["type"],
+              **run_contrast([clusters[r] for r in rids], a, b, spec["type"], an, seed)}
+    prov = obj.get("provenance") or {}
+    out: dict[str, Any] = {
+        "schema": PART4_RESCORE_SCHEMA,
+        "role": ("D3 pre-committed check on the step-7 result; the citable family A is the fresh run "
+                 "under this harness (prereg section 12, D3)"),
+        "source": {"schema": obj.get("schema"), "citable": obj.get("citable"),
+                   "commit": prov.get("commit"), "dirty": prov.get("dirty"), "untracked": prov.get("untracked"),
+                   "glossary_condition": got["condition"], "part4_arm": part4_arm,
+                   "cells_available": got["cells"]},
+        "found_rule": PART4_FOUND_RULE,
+        "d3_coverage": coverage, "d3_complete": all(a in mapping for a in D3_ARMS),
+        "arms": arms, "hypotheses": {"H1": h1},
+    }
+    if per_record:
+        out["per_record"] = {r: {a: oc[a][r] for a in mapping} for r in rids}
+    return out
+
+
+def cmd_part4_rescore(args: argparse.Namespace) -> int:
+    mapping = parse_part4_map(args.map)
+    path = Path(args.part4_result)
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    questions, qmeta = (load_questions(Path(args.questions), question_fields(args), args.set_field, args.set_value)
+                        if args.questions else (None, None))
+    clusters = {q["id"]: q["cluster"] for q in questions} if questions else None
+    an = {"n_perm": args.n_perm, "n_boot": args.n_boot, "ci_level": args.ci_level, "delta": args.delta,
+          "alpha": args.alpha}
+    res = part4_rescore(obj, condition=args.condition, part4_arm=args.part4_arm, mapping=mapping,
+                        clusters=clusters, an=an, seed=args.seed, per_record=args.per_record)
+    out = {"provenance": provenance(), "set": args.set_label,
+           "input": {"file": path.name, "sha256": sha256_file(path)}, "questions": qmeta,
+           "analysis": {"seed": args.seed, "n_perm": args.n_perm, "n_boot": args.n_boot,
+                        "ci_level": args.ci_level, "alpha": args.alpha}, **res}
+    write_out(Path(args.out), out, questions, args.omit_text)
+    for a, r in res["arms"].items():
+        log(f"{a}: found@10 {r['found@10']}/{r['n']} (cell {r['cell']})")
+    if not res["d3_complete"]:
+        absent = [a for a, v in res["d3_coverage"].items() if v == "absent"]
+        log(f"part4-rescore: D3 arms absent: {absent}")
+        if not args.allow_partial:
+            return EXIT_FAIL
+    return EXIT_OK
+
+
 # ------------------------------------------------------------------ power table
 
 def power_table(seed: int = SEED, n_pages: int = 208, n_questions: int = 735, delta: float = 0.05,
@@ -1752,7 +1939,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--legs", default=",".join(LEGS))
     p.add_argument("--live", help="API only: reranked arms to capture, e.g. hybrid@50,bm25@50,vector@50")
     p.add_argument("--base-url", help="API base URL (required for --backend api; no default)")
-    p.add_argument("--api-key-env", default="RAGSTACK_API_KEY", help="env var holding the X-API-Key")
+    p.add_argument("--api-key-env", default="RAGSTACK_API_KEY",
+                   help="env var holding the credential (refused when unset; '' = no authentication)")
+    p.add_argument("--auth-header", choices=sorted(AUTH_HEADERS), default="x-api-key",
+                   help="x-api-key: X-API-Key (a RAGStack key); authorization: Authorization, no Bearer "
+                        "prefix (a BV-BRC user token)")
     p.add_argument("--collection")
     p.add_argument("--server-settings", help="JSON of the server's launch settings /v1/config does not expose")
     p.add_argument("--expect", action="append", help="override an expected setting, KEY=VALUE")
@@ -1834,6 +2025,34 @@ def build_parser() -> argparse.ArgumentParser:
                    help="per-record gold ranks by id (default on)")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_stats)
+
+    p = sub.add_parser("part4-rescore",
+                       help="D3: the pre-committed re-score of a part4-glossary/1 result (A0, A2, A4-50)")
+    p.add_argument("--part4-result", required=True, help="a part4-glossary/1 results JSON (private)")
+    p.add_argument("--part4-arm", required=True, help="the part-4 chunker arm (e.g. T512o0)")
+    p.add_argument("--condition", help="glossary condition (default: the result's reference_condition)")
+    p.add_argument("--map", action="append", metavar="ARM=CELL", required=True,
+                   help=f"which per-item cell holds ARM's top-10 found; ARM in {list(D3_ARMS)} (repeatable)")
+    p.add_argument("--questions", help="question JSONL for the clusters (H1); optional")
+    p.add_argument("--id-field")
+    p.add_argument("--query-field")
+    p.add_argument("--quote-field")
+    p.add_argument("--cluster-field", help="cluster (page / paper); default: cluster|paper|doc_id")
+    p.add_argument("--set-field")
+    p.add_argument("--set-value")
+    p.add_argument("--omit-text", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--set-label", required=True, help="alias of the set (e.g. docs-A/T512o0)")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="exit 0 although a D3 arm is unmapped (it is recorded as absent either way)")
+    p.add_argument("--delta", type=float, default=0.05)
+    p.add_argument("--alpha", type=float, default=0.05)
+    p.add_argument("--n-perm", type=int, default=10_000)
+    p.add_argument("--n-boot", type=int, default=10_000)
+    p.add_argument("--ci-level", type=float, default=0.90)
+    p.add_argument("--seed", type=int, default=SEED)
+    p.add_argument("--per-record", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_part4_rescore)
 
     p = sub.add_parser("power-table", help="the power floor (Holm worst case alpha/3)")
     p.add_argument("--pages", type=int, default=208)

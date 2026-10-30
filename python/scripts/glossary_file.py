@@ -29,6 +29,18 @@ is called. Every row's version is marked ``+merge=<mode>`` and the producer
 names the mode and the source's sha256, so the files, and a census of an index
 loaded from one, tell the arms apart. Prints the counts and a per-row census.
 
+``subset`` (glossary benchmark round 2) writes a new file with only the rows
+whose ``doc_id`` is in an id list (``--keep``) or all but those (``--drop``).
+Kept rows are written unchanged (their versions, so their chunk stamps, too);
+the header's producer records the mode, the source's sha256 and the id list's
+sha256. Listed ids absent from the source are refused unless
+``--allow-missing``. ``subset --keep`` and ``subset --drop`` of one list,
+``merge``d, hold exactly the source's rows. ``shard-subset`` is the same filter
+over a ``JsonlLoader`` shard (the input of ``build`` and ``glossary_step.py``),
+by the loader's own document id; kept lines are copied byte for byte and the
+record (mode and sha256s) goes to ``<out>.subset.json``. Both are
+deterministic: the same inputs give the same bytes.
+
 Usage::
 
     python scripts/glossary_file.py build --jsonl docs.jsonl [--llm-cache cache.jsonl] \\
@@ -36,6 +48,10 @@ Usage::
     python scripts/glossary_file.py verify glossary.jsonl [--jsonl docs.jsonl]
     python scripts/glossary_file.py merge --out glossary.jsonl batch0.jsonl batch1.jsonl ...
     python scripts/glossary_file.py rederive --merge llm-only glossary.jsonl --out pure.jsonl
+    python scripts/glossary_file.py subset (--keep|--drop) IDS.txt glossary.jsonl --out part.jsonl \\
+        [--allow-missing]
+    python scripts/glossary_file.py shard-subset (--keep|--drop) IDS.txt shard.jsonl --out part.jsonl \\
+        [--allow-missing]
 """
 from __future__ import annotations
 
@@ -53,6 +69,8 @@ from ragstack.ingestion.glossary_file import (
     merge_files,
     read_glossary_file,
     rederive_file,
+    subset_file,
+    subset_shard,
     write_glossary_file,
 )
 from ragstack.ingestion.loaders import JsonlLoader
@@ -149,8 +167,24 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--merge", required=True, choices=MERGE_MODES,
                    help="llm-only = pure LLM (no rules fallback); rules-only; merged; none")
     r.add_argument("--out", required=True, help="the re-derived glossary.jsonl (atomically)")
+    for name, what, help_ in (("subset", "glossary.jsonl", "keep or drop rows by doc_id"),
+                              ("shard-subset", "JsonlLoader shard", "keep or drop shard lines by document id")):
+        s = sub.add_parser(name, help=help_)
+        g = s.add_mutually_exclusive_group(required=True)
+        g.add_argument("--keep", metavar="IDS", help="id list (one per line): write only these")
+        g.add_argument("--drop", metavar="IDS", help="id list (one per line): write all but these")
+        s.add_argument("file", help=f"the source {what} (read, never written)")
+        s.add_argument("--out", required=True, help="the subset (atomically)")
+        s.add_argument("--allow-missing", action="store_true",
+                       help="accept listed ids absent from the source (counted, else refused)")
     args = p.parse_args(argv)
     try:
+        if args.command in ("subset", "shard-subset"):
+            fn = subset_file if args.command == "subset" else subset_shard
+            mode, ids = ("keep", args.keep) if args.keep else ("drop", args.drop)
+            print(json.dumps(fn(args.file, args.out, ids, mode, allow_missing=args.allow_missing),
+                             sort_keys=True))
+            return 0
         if args.command == "rederive":
             print(json.dumps(rederive_file(args.file, args.out, args.merge), sort_keys=True))
             return 0
