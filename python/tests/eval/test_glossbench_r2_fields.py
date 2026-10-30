@@ -83,10 +83,10 @@ def make_cfg(tmp: Path, *, n_papers: int = 5, fields_block: dict[str, Any] | Non
     cfg = {"out_dir": str(tmp / "out"),
            "corpora": {"P": {"chunks": [str(chunks)], "expected_chunks": len(rows), "paper_key": "doc_id",
                              "arms": arms, "draft_mode": "fields",
-                             "fields": {"path": str(fpath), "target_jobs": 40, "min_field_chunks": 2,
+                             "fields": {"path": str(fpath), "min_field_chunks": 2,
                                         "constants": ["gravity_m_s2", "air_density_kg_m3"],
                                         **(fields_block or {})}}},
-           "pool": {"n_papers": n_papers},
+           "pool": {"n_papers": n_papers, "per_set": {"P": {"s3_per_paper": 6}}},
            "drafter": {"base_url": "http://127.0.0.1:18999/v1", "empty_retry_s": 0.0},
            "verifier": {"cwd": str(tmp / "vcwd")},
            "limits": {"rate_backoffs_s": [0.0, 0.0, 0.0]}}
@@ -291,31 +291,67 @@ def test_allocation_weights_caps_and_redistribution() -> None:
     assert b["x"]["quota"] == 1 and b["y"]["quota"] == 3              # nobody has room: 4 placed of 10
 
 
-def test_plan_excludes_conditions_caps_constants_and_weights_new_ground(tmp_path: Path) -> None:
+def _specs(tmp_path: Path) -> tuple[list[fl.FieldSpec], dict[str, Any]]:
     fs, _ = fl.read_field_list(write_fields(tmp_path / "f.json"))
-    fs = [fl.FieldSpec(f.field, f.unit, f.definition, f.terms, f.kind,
-                       f.field not in ("occupant_count", "susceptible_count"), f.constant) for f in fs]
-    fc = {**fl.FIELD_DEFAULTS, "constants": ["air_density_kg_m3"]}
-    fs = [fl.FieldSpec(f.field, f.unit, f.definition, f.terms, "constant" if f.field == "air_density_kg_m3"
-                       else f.kind, f.in_set, f.field == "air_density_kg_m3") for f in fs]
-    cands = {f.field: [f"c{i}" for i in range(50)] for f in fs}
-    plan = fl.plan_fields(fs, fc, cands, 40)
+    fs = [fl.FieldSpec(f.field, f.unit, f.definition, f.terms, "constant" if f.field == "air_density_kg_m3" else f.kind,
+                       f.field not in ("occupant_count", "susceptible_count"), f.field == "air_density_kg_m3")
+          for f in fs]
+    return fs, {**fl.FIELD_DEFAULTS, "constants": ["air_density_kg_m3"]}
+
+
+def _rows(spec: dict[tuple[str, str], dict[str, int]]) -> list[dict[str, Any]]:
+    """Pool rows: (paper, stratum) -> {field: number of candidate chunks}; one chunk per candidate."""
+    rows = []
+    for (p, s), per in spec.items():
+        for f, n in per.items():
+            rows += [{"chunk_id": f"{p}-{s}-{f}-{i}", "paper": p, "stratum": s, "field_candidates": [f]}
+                     for i in range(n)]
+    return rows
+
+
+def test_plan_excludes_conditions_caps_constants_and_weights_new_ground(tmp_path: Path) -> None:
+    fs, fc = _specs(tmp_path)
+    names = [f.field for f in fs]
+    rows = _rows({(p, "S3"): dict.fromkeys(names, 20) for p in ("a", "b", "c")})
+    targets = fl.cell_targets(["a", "b", "c"], {"S1": 0, "S2": 0, "S3": 12})
+    plan, jobs = fl.plan_strata(fs, fc, rows, targets, "seed")
     assert "room_type" not in plan["fields"] and plan["excluded_conditions"] == ["room_type"]
-    assert plan["fields"]["air_density_kg_m3"]["quota"] == 2 and plan["fields"]["air_density_kg_m3"]["cap"] == 2
+    assert not any("room_type" in v for v in jobs.values())
+    assert plan["fields"]["air_density_kg_m3"]["realised"] == 2                     # capped over the whole set
     assert plan["fields"]["occupant_count"]["weight"] == 2.0 and plan["fields"]["mouth_area_m2"]["weight"] == 1.0
     assert plan["fields"]["occupant_count"]["new_ground"] and not plan["fields"]["mouth_area_m2"]["new_ground"]
-    assert plan["fields"]["occupant_count"]["quota"] > plan["fields"]["mouth_area_m2"]["quota"]
-    assert plan["placed"] == 40 and plan["weights"] == {"new_ground": 2.0, "other": 1.0}
-    assert fl.plan_fields(fs, {**fc, "weight_new_ground": 1.0}, cands, 40)["fields"]["occupant_count"]["weight"] == 1.0
+    assert plan["fields"]["occupant_count"]["realised"] > plan["fields"]["mouth_area_m2"]["realised"]
+    assert plan["realised"] == 36 and plan["weights"] == {"new_ground": 2.0, "other": 1.0}
+    cell = plan["cells"]["a"]["S3"]
+    assert cell["target"] == 12 and cell["realised"] == 12 and sum(cell["fields"].values()) == 12
+    assert cell["stated"]["occupant_count"] > cell["stated"]["mouth_area_m2"]               # stated by weight
+    plan1, _ = fl.plan_strata(fs, {**fc, "weight_new_ground": 1.0}, rows, targets, "seed")
+    assert plan1["fields"]["occupant_count"]["weight"] == 1.0
+    assert (plan, jobs) == fl.plan_strata(fs, fc, rows, targets, "seed")             # seeded
 
 
-def test_assignment_is_round_robin_across_papers() -> None:
-    plan = {"fields": {"f": {"quota": 3}}}
-    cands = {"f": [f"{p}{i}" for p in "abc" for i in range(4)]}
-    paper = {c: c[0] for c in cands["f"]}
-    got = fl.assign(plan, cands, paper, "s")
-    assert sorted(c[0] for c in got) == ["a", "b", "c"]               # one per paper before any second
-    assert got == fl.assign(plan, cands, paper, "s")                  # seeded
+def test_stratum_quotas_per_paper_and_shortfall_stays_in_its_stratum(tmp_path: Path) -> None:
+    """Each paper targets s1/s2/s3_per_paper jobs by chunk stratum. A paper short of S3
+    candidates records the shortfall; it moves to other papers' S3 cells only, never
+    to S1/S2, and what nobody can take is 'unplaced'."""
+    fs, fc = _specs(tmp_path)
+    rows = _rows({("a", "S3"): {"index_case_count": 1}, ("b", "S3"): {"occupant_count": 4, "mouth_area_m2": 4},
+                  ("a", "S2"): {"ventilation_flow_m3_s": 9}, ("b", "S2"): {"ventilation_flow_m3_s": 9}})
+    targets = fl.cell_targets(["a", "b"], {"S1": 0, "S2": 2, "S3": 6})
+    plan, jobs = fl.plan_strata(fs, fc, rows, targets, "seed")
+    a3, b3 = plan["cells"]["a"]["S3"], plan["cells"]["b"]["S3"]
+    assert a3["target"] == 6 and a3["shortfall"] == 5 and a3["realised"] == 1
+    assert b3["realised"] == 8 and b3["assigned"] == 8                   # 6 + 2 of a's 5 (b has 8 candidates)
+    assert plan["strata"]["S3"] == {"target": 12, "shortfall": 5, "unplaced": 3, "realised": 9}
+    assert plan["cells"]["a"]["S2"]["realised"] == 2 and plan["cells"]["b"]["S2"]["realised"] == 2   # S2 unchanged
+    s3_jobs = sum(len(v) for k, v in jobs.items() if "-S3-" in k)
+    assert s3_jobs == 9 and sum(len(v) for k, v in jobs.items() if "-S2-" in k) == 4
+    # the global quota of 2: a's shortfall of 1 goes to b -> 4 S3 jobs; the quota of 6 placed 9
+    less, _ = fl.plan_strata(fs, fc, rows, fl.cell_targets(["a", "b"], {"S1": 0, "S2": 2, "S3": 2}), "seed")
+    assert less["strata"]["S3"]["realised"] == 4 and less["cells"]["b"]["S3"]["assigned"] == 3
+    # scaled to a total (target_jobs / a pilot's N): the cell weights, by largest remainder
+    t = fl.cell_targets(["a", "b"], {"S1": 0, "S2": 2, "S3": 6}, 8)
+    assert sum(t.values()) == 8 and t[("a", "S3")] == 3 and t[("a", "S2")] == 1
 
 
 # ------------------------------------------------------------------ units and the prefilter
@@ -374,7 +410,7 @@ def test_term_leak_catches_ach_and_air_changes_per_hour() -> None:
               "What ACH did the room have?", "Which ach did the paper report?"):
         share, n = fl.term_leak(q, terms, definition)
         assert share > 0.5 and n >= 1, (q, share, n)
-    # exactly 0.5 is not over the strict threshold: one term word against one other content word
+    # exactly 0.5: one term word against one other content word (layer 1 rejects at >= 0.5)
     assert fl.term_leak("What was the ACH in the classroom?", terms, definition) == (0.5, 2)
     # the same words in the definition are excused, and the guard is silent
     excusing = "air changes per hour of the room"
@@ -416,7 +452,7 @@ def test_layer1_fields_mode(tmp_path: Path) -> None:
     leaky = {**good, "question": "What was the ventilation rate, airflow or air flow rate in winter?"}
     r = _l1(c, idx, leaky, ch, vent)
     assert "term_leak" in r["reasons"] and r["term_leak"] > 0.5
-    assert "term_leak" not in _l1(c, idx, leaky, ch, vent, term_leak_threshold=1.0)["reasons"]
+    assert "term_leak" not in _l1(c, idx, leaky, ch, vent, term_leak_threshold=1.01)["reasons"]
     # ACH against a volume flow: flagged, not rejected; no symbol -> a words-only (S3) record
     ach = _chunk(c, "1.5 air changes per hour")
     d = {"question": "What was the outdoor-air supply flow into the whole room in summer?",
@@ -467,12 +503,26 @@ def test_pool_fields_mode(tmp_path: Path) -> None:
     assert "room_type" not in plan["fields"] and plan["excluded_conditions"] == ["room_type"]
     jobs = [(r["chunk_id"], f) for r in rows for f in r["field_jobs"]]
     per = {f: sum(1 for _, x in jobs if x == f) for f in plan["fields"]}
-    assert per == {f: v["quota"] for f, v in plan["fields"].items()}         # the plan is what is drafted
+    assert per == {f: v["realised"] for f, v in plan["fields"].items()}      # the plan is what is drafted
     assert per["air_density_kg_m3"] <= 2 and plan["fields"]["air_density_kg_m3"]["constant"]
+    # the per-set S3 quota is applied in fields mode: 6 S3 jobs per paper where candidates allow
+    assert plan["per_paper"] == {"S1": 12, "S2": 2, "S3": 6}
+    stratum = {r["chunk_id"]: r["stratum"] for r in rows}
+    for p, cells in plan["cells"].items():
+        assert cells["S3"]["target"] == 6
+        n3 = sum(1 for cid, _ in jobs if stratum[cid] == "S3" and cid.startswith(p + "-"))
+        assert n3 == cells["S3"]["realised"] == sum(cells["S3"]["fields"].values())
+    assert plan["strata"]["S3"]["realised"] == 6 * len(plan["cells"])
+    assert plan["strata"]["S1"]["shortfall"] == 12 * len(plan["cells"])          # no S1 here: recorded
     assert not any("room_type" in r["field_jobs"] for r in rows)
     assert all(r["sampled"] == bool(r["field_jobs"]) for r in rows)
     assert any(r["stratum"] == "S3" for r in rows if r["field_jobs"])         # prose / words-only chunks kept
-    assert m["fields"]["plan"] == plan and m["fields"]["jobs"] == len(jobs)
+    mp = m["fields"]["plan"]
+    assert mp["strata"] == plan["strata"] and m["fields"]["jobs"] == len(jobs)
+    assert sorted(mp["cells"]) == [f"p{i:02d}" for i in range(1, len(plan["cells"]) + 1)]     # counts, no paper ids
+    assert list(mp["cells"].values()) == [plan["cells"][p] for p in sorted(plan["cells"])]
+    for st in g.string_values(mp):
+        assert not st.startswith("d") or st not in plan["cells"]
     assert {d["field"] for d in header["field_specs"]} == set(plan["fields"])
 
 
@@ -601,7 +651,7 @@ def test_pilot_is_separate_and_marked(tmp_path: Path) -> None:
     acc = jsonl(out / "accepted-P-pilot.jsonl")
     assert acc and all(a["pilot"] is True for a in acc)
     pf = json.loads((out / "preflight-draft-P-pilot.json").read_text())["plan"]
-    assert pf["pilot"]["records"] == 6 and pf["pilot"]["plan"]["placed"] == len(jobs)
+    assert pf["pilot"]["records"] == 6 and pf["pilot"]["plan"]["realised"] == len(jobs)
     assert gw.bodies
     exp = tmp_path / "pilot.jsonl"
     run(path, "export-partner", "--set", "P", str(exp), "--pilot", "6", "--papers", "2")
@@ -622,3 +672,79 @@ def test_a_job_outside_the_field_list_is_refused(tmp_path: Path) -> None:
     p.write_text("".join(json.dumps(r) + "\n" for r in rows))
     with pytest.raises(SystemExit, match="not in the field list"):
         run(path, "preflight", "--stage", "draft", "--set", "P")
+
+
+#: an air-exchange-rate field's term list as the v2 field binding prints it (generic vocabulary)
+V2_AIR_EXCHANGE_TERMS = ["air exchange rate", "air exchange", "air change", "air changes", "outdoor air exchange",
+                         "natural ventilation", "mechanical ventilation", "ventilation rate", "λa", "λ_a", "λ a",
+                         "lambda_a", "lambda_{a}", "ach"]
+
+
+def test_abbreviation_terms_are_a_hard_reject(tmp_path: Path) -> None:
+    """An abbreviation- or symbol-like term in the question is rejected whatever the
+    share; definition words alone are accepted; the share threshold is >= 0.5."""
+    spec = fl.FieldSpec("air_exchange_rate_s", "1/s",
+                        "outdoor-air exchange rate of the room (air changes per unit time from ventilation only)",
+                        tuple(V2_AIR_EXCHANGE_TERMS))
+    assert [t for t in V2_AIR_EXCHANGE_TERMS if fl.abbreviation_like(t)] == \
+        ["λa", "λ_a", "λ a", "lambda_a", "lambda_{a}", "ach"]
+    for t in ("ACH", "qb", "HEPA", "c0", "g =", "ρa", "r̄", "15-minute"):
+        assert fl.abbreviation_like(t), t
+    for t in ("people", "occupants", "air change", "ventilation rate"):
+        assert not fl.abbreviation_like(t), t
+    rows = [g.parse_chunk(r, "t") for r in sup.chunk_rows(
+        "d1", "Room study. " + sup.FILLER + "The ventilation gave 1.5 air changes per hour in summer. " + sup.FILLER,
+        "PMC101")]
+    c = g.build_corpus(rows, "doc_id")
+    idx = ck.PaperIndex(c, 200)
+    ch = next(x for x in rows if "1.5 air changes" in x.content)
+    base = {"quote": "gave 1.5 air changes per hour", "quantity": "air changes", "value": "1.5 air changes per hour",
+            "symbol": "", "case": "", "binding_terms": list(spec.terms)}
+
+    def l1(q: str) -> dict[str, Any]:
+        return ck.layer1({**base, "question": q}, None, stratum="S3", paper="d1", source_chunk=ch, idx=idx,
+                         cfg={}, field=spec)
+
+    for q in ("What was the ACH in the classroom?", "What was lambda_{a} in the classroom?",
+              "What was λ a for the room?"):
+        r = l1(q)
+        assert "term_abbreviation" in r["reasons"], (q, r)
+    ok = l1("What was the air changes per hour of the room?")
+    assert ok["verdict"] == "pass" and ok["term_leak"] == 0.0, ok
+    # a token, not a substring: "teach" does not contain the term "ach"
+    assert fl.abbreviation_in_question("Did the teacher teach?", ["ach"]) == []
+    # >= 0.5 rejects: one term word against one other content word
+    r = ck.layer1({**base, "question": "What was the natural rate?"}, None, stratum="S3",
+                  paper="d1", source_chunk=ch, idx=idx, cfg={}, field=fl.FieldSpec(
+                      "x", "1/s", "air changes per unit time", ("natural ventilation",)))
+    assert r["term_leak"] == 0.5 and "term_leak" in r["reasons"]
+
+
+def test_known_field_list_sha_sets_expect_in_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A field list whose sha is known (v2) carries its expected in_set split by default:
+    leaving expect_in_set out, or giving no held-set records, cannot skip the check."""
+    path = write_fields(tmp_path / "f.json")
+    sha = g.file_sha(path)
+    monkeypatch.setitem(fl.KNOWN_FIELD_LISTS, sha, {"true": 3, "false": 5})
+    fc = {**fl.FIELD_DEFAULTS, "path": str(path), "constants": []}
+    with pytest.raises(SystemExit, match="expect_in_set"):
+        fl.resolve_fields(fc)                                         # no records: in_set unknown -> refused
+    held = tmp_path / "held.jsonl"
+    held.write_text("".join(json.dumps({"field": f["field"]}) + "\n" for f in FIELDS[:3]))
+    res = fl.resolve_fields(fc, str(held))
+    assert res["in_set"]["counts"]["true"] == 3 and res["in_set"]["expected"] == {"true": 3, "false": 5}
+    assert "1c3778918c76ae206de0fb1b66e256da33faebf8840d6c49ca232552b2911dfa" in fl.KNOWN_FIELD_LISTS
+
+
+def test_constant_cap_holds_across_cells_and_realised_is_counted(tmp_path: Path) -> None:
+    """A constant counts at most constant_cap in a cell's capacity, and at most
+    constant_cap over the whole set: a later cell assigned jobs it cannot fill
+    records realised < assigned."""
+    fs, fc = _specs(tmp_path)
+    rows = _rows({("a", "S3"): {"air_density_kg_m3": 5}, ("b", "S3"): {"air_density_kg_m3": 5}})
+    plan, jobs = fl.plan_strata(fs, fc, rows, fl.cell_targets(["a", "b"], {"S1": 0, "S2": 0, "S3": 6}), "seed")
+    cells = [plan["cells"][p]["S3"] for p in ("a", "b")]
+    assert [c["assigned"] for c in cells] == [2, 2]
+    assert sorted(c["realised"] for c in cells) == [0, 2] and plan["fields"]["air_density_kg_m3"]["realised"] == 2
+    assert sum(len(v) for v in jobs.values()) == 2 == plan["strata"]["S3"]["realised"]
+    assert fl.abbreviation_like("ASHRAE") and not fl.abbreviation_like("Health")   # mostly upper case, <= 6

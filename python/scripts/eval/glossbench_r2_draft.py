@@ -423,14 +423,10 @@ class Run:
         if self.mode != "fields":
             rows.sort(key=lambda r: (r["sample_rank"], r["paper"], r["chunk_id"]))
             return self.jobs_of(rows[:n])
-        per_field: dict[str, list[str]] = {}
-        for r in rows:
-            for f in r["field_candidates"]:
-                if f in self.specs:
-                    per_field.setdefault(f, []).append(r["chunk_id"])
         assert self.fc is not None
-        self.pilot_plan = fl.plan_fields(list(self.specs.values()), self.fc, per_field, n)
-        assigned = fl.assign(self.pilot_plan, per_field, {r["chunk_id"]: r["paper"] for r in rows}, seed)
+        per_paper = self.header["field_plan"]["per_paper"]
+        targets = fl.cell_targets(sorted(pick), per_paper, n)
+        self.pilot_plan, assigned = fl.plan_strata(list(self.specs.values()), self.fc, rows, targets, seed)
         return self.jobs_of(rows, assigned)
 
     @property

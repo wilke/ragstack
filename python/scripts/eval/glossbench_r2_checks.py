@@ -38,9 +38,12 @@ that applies is recorded):
 ``duplicate_question``      (cross-record) same question, same paper, earlier record kept
 ``unit_incompatible``       fields mode: the value prints no number with a unit of the
                             field's dimension (:func:`glossbench_r2_fields.unit_check`)
-``term_leak``               fields mode: more than ``term_leak_threshold`` of the
+``term_leak``               fields mode: at least ``term_leak_threshold`` (0.5) of the
                             question's own content words come from the field's term list
-                            (:func:`glossbench_r2_fields.term_leak`)
+                            (:func:`glossbench_r2_fields.term_leak`; definition words excused)
+``term_abbreviation``       fields mode: the question contains an abbreviation- or
+                            symbol-like term of the field (``ACH``, ``lambda_{a}``) as a
+                            whole token (:func:`glossbench_r2_fields.abbreviation_in_question`)
 ==========================  =====================================================
 
 **Fields mode** (set P, :mod:`glossbench_r2_fields`): the drafter is asked for a
@@ -101,7 +104,7 @@ CHECK_DEFAULTS: dict[str, Any] = {
     "collision": "flag",
     #: definitions of one symbol whose content-word Jaccard is below this are "unrelated"
     "collision_jaccard": 0.5,
-    #: fields mode: the term-leak guard's threshold (a strict "greater than", like leak_threshold)
+    #: fields mode: the term-leak guard's threshold (">=": half the question's own words is a leak)
     "term_leak_threshold": 0.5,
 }
 #: ``layer1`` also reads ``vs_stoplist`` (the pool header's statistical stoplist) from
@@ -153,6 +156,7 @@ _REASON_WORDS = {
     "lexical_leak": "the question copied too many of the quote's words",
     "unit_incompatible": "the value was not copied with a printed unit of the quantity's kind",
     "term_leak": "the question used other names for the quantity instead of the definition's words",
+    "term_abbreviation": "the question used an abbreviation or symbol for the quantity",
 }
 
 DRAFT_SYSTEM_FIELDS = """You write one question for a benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
@@ -467,8 +471,12 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
         if q:
             share, n = fl.term_leak(q, field.terms, field.definition, draft.get("case") or "")
             out["term_leak"], out["term_leak_words"] = round(share, 4), n
-            if share > float(c["term_leak_threshold"]):
+            if share >= float(c["term_leak_threshold"]):
                 reasons.append("term_leak")
+            hits = fl.abbreviation_in_question(q, field.terms)
+            if hits:
+                out["term_abbreviations"] = hits
+                reasons.append("term_abbreviation")
     else:
         # binding terms
         terms = [t for t in draft["binding_terms"] if t]

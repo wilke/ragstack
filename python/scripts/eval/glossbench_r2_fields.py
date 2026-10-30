@@ -28,16 +28,18 @@ and the records' sha256 is recorded. Without them the file's own flag is used
 ``constants`` list (default :data:`DEFAULT_CONSTANTS`). Every configured
 constant must be in the file.
 
-**Planning** (:func:`plan_fields`): conditions are excluded; only
+**Planning** (:func:`plan_strata`): conditions are excluded; only
 ``priority_fields`` are drafted when that list is set (a name outside the file
 is refused); each planned field gets a weight — ``weight_new_ground`` (default
 2) when ``in_set`` is false AND it is not a constant, ``weight_other`` (1)
-otherwise — and a cap: the number of its candidate chunks, and for a constant
-also ``constant_cap`` (default 2). :func:`allocate` turns ``target_jobs`` into
-a stated per-field quota (largest remainder over the weights) and redistributes
-whatever a capped field cannot take to the fields that still can, in proportion
-to their weights, until the total is placed or no field has room. Both the
-stated and the final quota are recorded.
+otherwise; a constant is capped at ``constant_cap`` (default 2) jobs over the
+set. Every eval paper targets the pool's per-paper stratum quotas
+(``s1/s2/s3_per_paper`` of the chunk's stratum, per-set overrides applied: set
+P takes more S3); a paper short of candidates in a stratum records the
+shortfall, which moves only to other papers in the same stratum. Each
+(paper, stratum) cell's jobs are spread over its fields by weight
+(:func:`allocate`, a capped field's leftover to the others). The plan records
+the per-paper x stratum x field counts, stated and realised.
 
 **Candidate chunks per field** (:func:`prefilter`) are selected arm-blind by a
 cheap lexical test on the chunk text alone: the chunk prints a number (digits
@@ -83,6 +85,11 @@ KINDS = ("quantity", "condition", "constant")
 #: whose mode is ``any`` (a value that holds in every paper, not a paper's setting).
 DEFAULT_CONSTANTS = ("gravity_m_s2", "air_density_kg_m3", "air_dynamic_viscosity_pa_s",
                      "particle_density_kg_m3")
+#: field lists whose in_set split is known: the check applies without being configured, so
+#: it cannot be skipped by leaving ``expect_in_set`` out (sha256 of the file -> split)
+KNOWN_FIELD_LISTS: dict[str, dict[str, int]] = {
+    "1c3778918c76ae206de0fb1b66e256da33faebf8840d6c49ca232552b2911dfa": {"true": 13, "false": 13},  # v2
+}
 FIELD_DEFAULTS: dict[str, Any] = {
     "path": None,               # the field list (private)
     "in_set_records": None,     # the held set's records (private); --in-set-records overrides
@@ -93,7 +100,9 @@ FIELD_DEFAULTS: dict[str, Any] = {
     "priority_fields": None,    # null = every non-condition field
     "weight_new_ground": 2.0,   # in_set false AND not a constant
     "weight_other": 1.0,
-    "target_jobs": 500,         # (chunk, field) drafting jobs in all
+    #: null = the per-paper stratum quotas (pool s1/s2/s3_per_paper, per-set overrides applied)
+    #: give every paper's cells their targets; a number scales those cells to that total
+    "target_jobs": None,
     "min_field_chunks": 3,      # eval-paper eligibility: candidate chunks per paper
 }
 
@@ -243,6 +252,9 @@ def resolve_fields(fc: Mapping[str, Any], in_set_records: str | None = None) -> 
              "unknown": sum(f.in_set is None for f in fields)}
     in_set_info["counts"] = split
     exp = fc.get("expect_in_set")
+    if exp is None:
+        exp = KNOWN_FIELD_LISTS.get(sha)
+    in_set_info["expected"] = exp
     if exp is not None and (int(exp.get("true", -1)) != split["true"] or int(exp.get("false", -1)) != split["false"]):
         raise SystemExit(f"fields: in_set split {split} differs from expect_in_set {exp}")
     return {"fields": fields, "sha256": sha, "in_set": in_set_info,
@@ -486,49 +498,131 @@ def planned_names(fields: Sequence[FieldSpec], fc: Mapping[str, Any]) -> list[st
     return [f.field for f in fields if f.kind != "condition" and (pri is None or f.field in pri)]
 
 
-def plan_fields(fields: Sequence[FieldSpec], fc: Mapping[str, Any], candidates: Mapping[str, Sequence[str]],
-                total: int) -> dict[str, Any]:
-    """The quota plan: which fields are drafted, their weights, caps and quotas.
-    ``candidates`` = field -> candidate chunk ids (in the papers in play)."""
+STRATA = ("S1", "S2", "S3")
+
+
+def cell_targets(papers: Sequence[str], per_paper: Mapping[str, int], total: int | None = None) -> dict[
+        tuple[str, str], int]:
+    """(paper, stratum) -> target jobs: ``per_paper`` (``{"S1": n1, "S2": n2, "S3": n3}``)
+    for every paper; with ``total`` (``target_jobs``, or a pilot's N) the same cell
+    weights scaled to that total by largest remainder."""
+    cells = {(p, s): int(per_paper[s]) for p in sorted(papers) for s in STRATA}
+    if total is None:
+        return cells
+    keyed = {f"{p}\x00{s}": float(v) for (p, s), v in cells.items() if v > 0}
+    shares = largest_remainder(int(total), keyed) if keyed else {}
+    return {c: shares.get(f"{c[0]}\x00{c[1]}", 0) for c in cells}
+
+
+def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
+                targets: Mapping[tuple[str, str], int], seed: str) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """The per-paper x stratum x field plan and the jobs (chunk id -> fields).
+
+    ``rows`` are pool rows (``chunk_id``, ``paper``, ``stratum`` — the chunk's —,
+    ``field_candidates``). One job = one (chunk, field) pair; a chunk may serve
+    several fields. Steps:
+
+    1. **Per stratum, per paper:** each (paper, stratum) cell is assigned
+       ``min(target, capacity)``, capacity = its candidate pairs (a constant field
+       counted at most ``constant_cap``). A cell's shortfall is recorded and moved
+       only to cells of the SAME stratum with room (papers in a seeded order
+       ``<seed>|strata|<stratum>``, one job at a time); what no cell can take is
+       recorded as ``unplaced``.
+    2. **Per cell, across fields:** the cell's jobs are spread over the fields with
+       candidates there by the field weights (:func:`allocate`: largest remainder,
+       a capped field's leftover to the others), each field capped by its candidate
+       chunks in the cell and a constant by what is left of its ``constant_cap``
+       over the whole set (cells in seeded paper order). Chunks per (cell, field) in
+       a seeded order ``<seed>|fields|<field>|<paper>|<stratum>``.
+
+    The plan records, per cell, the target, the assignment after redistribution,
+    the shortfall, the realised count and the per-field stated share and realised
+    count; per stratum and per field the totals."""
     by = {f.field: f for f in fields}
     names = planned_names(fields, fc)
     weights = {n: float(fc["weight_new_ground"]) if new_ground(by[n]) else float(fc["weight_other"]) for n in names}
-    caps = {n: min(len(candidates.get(n, ())), int(fc["constant_cap"])) if by[n].constant
-            else len(candidates.get(n, ())) for n in names}
-    alloc = allocate(total, weights, caps)
-    return {"total": total, "placed": sum(a["quota"] for a in alloc.values()),
-            "weights": {"new_ground": float(fc["weight_new_ground"]), "other": float(fc["weight_other"])},
-            "constant_cap": int(fc["constant_cap"]),
+    ccap = int(fc["constant_cap"])
+    cand: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for r in rows:
+        for f in r.get("field_candidates") or []:
+            if f in weights and (r["paper"], r["stratum"]) in targets:
+                cand.setdefault((r["paper"], r["stratum"]), {}).setdefault(f, []).append(r["chunk_id"])
+
+    def capacity(c: tuple[str, str]) -> int:
+        return sum(min(len(v), ccap) if by[f].constant else len(v) for f, v in cand.get(c, {}).items())
+
+    assigned: dict[tuple[str, str], int] = {}
+    shortfall: dict[tuple[str, str], int] = {}
+    strata: dict[str, dict[str, int]] = {}
+    for s in STRATA:
+        cells = sorted(c for c in targets if c[1] == s)
+        for c in cells:
+            assigned[c] = min(int(targets[c]), capacity(c))
+            shortfall[c] = int(targets[c]) - assigned[c]
+        left = sum(shortfall[c] for c in cells)
+        order = sorted(c[0] for c in cells)
+        random.Random(f"{seed}|strata|{s}").shuffle(order)
+        while left > 0:
+            moved = False
+            for p in order:
+                c = (p, s)
+                if left > 0 and assigned[c] < capacity(c):
+                    assigned[c] += 1
+                    left -= 1
+                    moved = True
+            if not moved:
+                break
+        strata[s] = {"target": sum(int(targets[c]) for c in cells), "shortfall": sum(shortfall[c] for c in cells),
+                     "unplaced": left}
+
+    papers = sorted({c[0] for c in targets})
+    random.Random(f"{seed}|cells").shuffle(papers)
+    used: Counter[str] = Counter()
+    jobs: dict[str, list[str]] = {}
+    cell_rec: dict[str, dict[str, Any]] = {}
+    for p in papers:
+        for s in STRATA:
+            c = (p, s)
+            if c not in targets:
+                continue
+            here = cand.get(c, {})
+            caps = {f: (min(len(v), ccap - used[f]) if by[f].constant else len(v)) for f, v in here.items()}
+            alloc = allocate(assigned[c], {f: weights[f] for f in here}, caps) if here else {}
+            got: dict[str, int] = {}
+            for f in sorted(alloc):
+                q = alloc[f]["quota"]
+                if q <= 0:
+                    continue
+                ids = sorted(here[f])
+                random.Random(f"{seed}|fields|{f}|{p}|{s}").shuffle(ids)
+                for cid in ids[:q]:
+                    jobs.setdefault(cid, []).append(f)
+                got[f] = q
+                if by[f].constant:
+                    used[f] += q
+            cell_rec.setdefault(p, {})[s] = {
+                "target": int(targets[c]), "assigned": assigned[c], "shortfall": shortfall[c],
+                "realised": sum(got.values()), "fields": dict(sorted(got.items())),
+                "stated": {f: a["stated"] for f, a in sorted(alloc.items())}}
+    for s in STRATA:
+        strata[s]["realised"] = sum(cell_rec[p][s]["realised"] for p in cell_rec if s in cell_rec[p])
+    per_field = {n: {"weight": weights[n], "in_set": by[n].in_set, "constant": by[n].constant,
+                     "new_ground": new_ground(by[n]),
+                     "candidates": sum(len(v.get(n, ())) for v in cand.values()),
+                     "realised": sum(cell_rec[p][s]["fields"].get(n, 0) for p in cell_rec for s in cell_rec[p])}
+                 for n in names}
+    plan = {"weights": {"new_ground": float(fc["weight_new_ground"]), "other": float(fc["weight_other"])},
+            "constant_cap": ccap, "total_target": sum(int(v) for v in targets.values()),
+            "realised": sum(strata[s]["realised"] for s in STRATA), "strata": strata,
             "excluded_conditions": sorted(f.field for f in fields if f.kind == "condition"),
             "not_prioritised": sorted(f.field for f in fields if f.kind != "condition" and f.field not in names),
-            "fields": {n: {**alloc[n], "weight": weights[n], "candidates": len(candidates.get(n, ())),
-                           "in_set": by[n].in_set, "constant": by[n].constant, "new_ground": new_ground(by[n])}
-                       for n in names}}
+            "fields": per_field, "cells": {p: cell_rec[p] for p in sorted(cell_rec)}}
+    return plan, {k: sorted(v) for k, v in jobs.items()}
 
 
-def assign(plan: Mapping[str, Any], candidates: Mapping[str, Sequence[str]], chunk_paper: Mapping[str, str],
-           seed: str) -> dict[str, list[str]]:
-    """chunk id -> fields drafted on it. Per field: papers in a seeded order, each
-    paper's candidates in a seeded order, taken round-robin across papers (no
-    paper dominates a field) up to the field's quota. A chunk may serve several fields."""
-    out: dict[str, list[str]] = {}
-    for name in sorted(plan["fields"]):
-        q = int(plan["fields"][name]["quota"])
-        per: dict[str, list[str]] = {}
-        for cid in sorted(candidates.get(name, ())):
-            per.setdefault(chunk_paper[cid], []).append(cid)
-        papers = sorted(per)
-        random.Random(f"{seed}|fields|{name}|papers").shuffle(papers)
-        for p in papers:
-            random.Random(f"{seed}|fields|{name}|{p}").shuffle(per[p])
-        picked: list[str] = []
-        i = 0
-        while len(picked) < q and any(per[p][i:i + 1] for p in papers):
-            picked += [per[p][i] for p in papers if i < len(per[p])][: q - len(picked)]
-            i += 1
-        for cid in picked:
-            out.setdefault(cid, []).append(name)
-    return {k: sorted(v) for k, v in out.items()}
+def anonymised_cells(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """The plan's per-paper cells keyed by rank (``p01``...), for a counts-only manifest."""
+    return {f"p{i:02d}": v for i, (_, v) in enumerate(sorted(plan["cells"].items()), 1)}
 
 
 # ------------------------------------------------------------------ the term-leak guard
@@ -559,6 +653,43 @@ def term_leak(question: str, terms: Iterable[str], definition: str, case: str = 
     for t in terms:
         tv |= ws(t)
     return len(q & tv) / len(q), len(q)
+
+
+_SYMBOLISH = set("_{}^=≈")
+
+
+def abbreviation_like(term: str) -> bool:
+    """A term that is a symbol or an abbreviation, not words: at most 6 characters and
+    mostly upper case (``ACH``), or a single token of at most 4 letters (the term
+    lists also print abbreviations in lower case: ``ach``, ``hepa``, ``qb``), or it
+    contains a digit, ``_ { } ^ = ≈``, a Greek letter or another non-ASCII symbol."""
+    t = unicodedata.normalize("NFKC", term).strip()
+    if not t:
+        return False
+    letters = [c for c in t if c.isalpha()]
+    if len(t) <= 6 and letters and sum(c.isupper() for c in letters) * 2 > len(letters):
+        return True
+    if " " not in t and t.isalpha() and t.isascii() and len(t) <= 4:
+        return True
+    return any(c.isdigit() or c in _SYMBOLISH or not c.isascii() for c in t)
+
+
+def _q_tokens(text: str) -> list[str]:
+    return [w.strip(".,;:!?\"'") for w in unicodedata.normalize("NFKC", text).casefold().split()]
+
+
+def abbreviation_in_question(question: str, terms: Iterable[str]) -> list[str]:
+    """The abbreviation-like terms (:func:`abbreviation_like`) the question contains as
+    whole tokens (NFKC, casefold; a multi-token term as a token run)."""
+    q = [t for t in _q_tokens(question) if t]
+    hits = []
+    for term in terms:
+        if not abbreviation_like(term):
+            continue
+        tt = [t for t in _q_tokens(term) if t]
+        if tt and any(q[i:i + len(tt)] == tt for i in range(len(q) - len(tt) + 1)):
+            hits.append(term)
+    return hits
 
 
 # ------------------------------------------------------------------ partner export

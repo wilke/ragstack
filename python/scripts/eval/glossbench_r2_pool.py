@@ -50,8 +50,12 @@ admits for a planned field (a printed number, digits or words, and a field term
 or a number followed by a unit of the field's dimension); the pool holds those
 chunks of the eval papers (``field_candidates``), and the per-field quota plan
 (conditions excluded, constants capped, new-ground fields weighted, leftover
-redistributed; :func:`glossbench_r2_fields.plan_fields`) assigns the drafting
-jobs (``field_jobs``). The header records the field list's sha256, the plan,
+redistributed within a stratum; :func:`glossbench_r2_fields.plan_strata`)
+assigns the drafting jobs (``field_jobs``): every eval paper targets
+``s1/s2/s3_per_paper`` jobs by chunk stratum (the per-set overrides apply, so
+P can take more S3), spread over the fields by weight. The realised
+per-paper x stratum x field counts are in the header (by paper id) and the
+manifest (by paper rank). The header records the field list's sha256, the plan,
 the computed ``in_set`` (with the held set's sha256), the constants and the
 field specs the drafter is given. A chunk with no value statement stays S3.
 
@@ -268,12 +272,11 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
     by_key = {r["chunk_id"]: r for r in pool}
     field_plan: dict[str, Any] | None = None
     if fres is not None:
-        per_field: dict[str, list[str]] = {}
-        for r in pool:
-            for f in r["field_candidates"]:
-                per_field.setdefault(f, []).append(r["chunk_id"])
-        field_plan = fl.plan_fields(fres["fields"], fc, per_field, int(fc["target_jobs"]))
-        jobs = fl.assign(field_plan, per_field, {r["chunk_id"]: r["paper"] for r in pool}, seed)
+        per_paper = {"S1": int(pc["s1_per_paper"]), "S2": int(pc["s2_per_paper"]), "S3": int(pc["s3_per_paper"])}
+        tj = fc.get("target_jobs")
+        targets = fl.cell_targets(papers, per_paper, None if tj is None else int(tj))
+        field_plan, jobs = fl.plan_strata(fres["fields"], fc, pool, targets, seed)
+        field_plan["per_paper"] = per_paper
         for cid, fs in jobs.items():
             by_key[cid]["field_jobs"] = fs
             by_key[cid]["sampled"] = True
@@ -359,7 +362,9 @@ def build(cfg: dict[str, Any], set_: str, out: Path, corpus_reach: bool = False,
                      "file_counts": dict(arms[a][0].header.get("counts") or {})} for a in reach_arms},
         "fields": None if fres is None else {
             "draft_mode": "fields", "fields_sha256": fres["sha256"], "in_set": fres["in_set"],
-            "constants": fres["constants"], "new_ground": fres["new_ground"], "plan": field_plan,
+            "constants": fres["constants"], "new_ground": fres["new_ground"],
+            "plan": {**{k: v for k, v in field_plan.items() if k != "cells"},
+                     "cells": fl.anonymised_cells(field_plan)},
             "jobs": sum(len(r.get("field_jobs") or []) for r in pool), "prefilter": PREFILTER_NOTE},
         "eval_papers_sha256": g.sha_text("\n".join(papers)),
         "pool_sha256": g.file_sha(pool_path),
