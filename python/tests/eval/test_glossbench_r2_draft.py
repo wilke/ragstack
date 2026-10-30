@@ -800,3 +800,24 @@ def test_wilson() -> None:
     lo, hi = dr.wilson(34, 40)
     assert lo == pytest.approx(0.7091, abs=1e-3) and hi == pytest.approx(0.9300, abs=1e-3)
     assert dr.wilson(0, 0) == (None, None)
+
+
+def test_promotion_condition_at_the_boundary() -> None:
+    """Prereg §3.5 / DEVIATIONS D-1: the bound is from the raw counts at z = 1.959963984540054,
+    compared with <= at full float precision. 8 of 100 (0.149981) passes; 9 of 100 fails;
+    the z = 1.96 variant gives the same verdicts (0.149983)."""
+    assert dr.WILSON_Z == 1.959963984540054 and dr.PROMOTION_THRESHOLD == 0.15 and dr.PROMOTION_MIN_JUDGED == 30
+    ok = dr.promotion_condition(100, 8)
+    assert ok["met"] is True and ok["upper_bound_6dp"] == "0.149981" and ok["upper_bound"] <= 0.15
+    assert ok["upper_bound"] == pytest.approx(0.14998107700948735, abs=1e-12)
+    bad = dr.promotion_condition(100, 9)
+    assert bad["met"] is False and bad["upper_bound_6dp"] == "0.162262"
+    assert dr.wilson(8, 100, z=1.96)[1] <= 0.15 < dr.wilson(9, 100, z=1.96)[1]
+    # the table in DEVIATIONS D-1
+    for n, k, six, met in ((30, 0, "0.113513", True), (30, 1, "0.166704", False),
+                           (50, 2, "0.134601", True), (50, 3, "0.162171", False)):
+        c = dr.promotion_condition(n, k)
+        assert (c["upper_bound_6dp"], c["met"]) == (six, met), (n, k)
+    # the 30-judged floor: a smaller judged n fails whatever the bound
+    assert dr.promotion_condition(29, 0)["met"] is False and dr.promotion_condition(29, 0)["upper_bound"] < 0.15
+    assert dr.promotion_condition(30, 0)["met"] is True

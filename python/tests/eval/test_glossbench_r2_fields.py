@@ -595,6 +595,7 @@ def test_fields_chain_and_partner_export(tmp_path: Path) -> None:
     assert res["status_label"] == (f"scripted-clean, judged sample of 4, error rate 25.0% "
                                    f"(95% CI {100 * lo:.1f}–{100 * hi:.1f})")
     assert res["counts"]["scripted_rejects"] == 1 and res["sample"]["seed"] == "partner-seed"
+    assert res["pilot"] is False and res["promotion"] is None     # §3.5 applies to the pilot's verdicts only
     for change, msg in ((lambda v: v["records"].append({"id": "P-unknown", "verdict": "accept", "basis": "sampled"}),
                          "not in our export"),
                         (lambda v: v["sample"].update(errors=2), "disagree"),
@@ -655,7 +656,19 @@ def test_pilot_is_separate_and_marked(tmp_path: Path) -> None:
     assert gw.bodies
     exp = tmp_path / "pilot.jsonl"
     run(path, "export-partner", "--set", "P", str(exp), "--pilot", "6", "--papers", "2")
-    assert all(r["pilot"] is True for r in jsonl(exp))
+    rows = jsonl(exp)
+    assert rows and all(r["pilot"] is True for r in rows)
+    # the pilot's verdicts carry the §3.5 promotion condition, mechanically; a non-pilot import does not
+    vp = tmp_path / "pilot-verdicts.json"
+    vp.write_text(json.dumps({"records": [{"id": r["id"], "verdict": "accept", "basis": "sampled"} for r in rows],
+                              "sample": {"n": len(rows), "errors": 0, "seed": "s"}}))
+    assert run(path, "import-partner-verdicts", "--set", "P", str(vp), "--pilot", "6", "--papers", "2") == 0
+    res = json.loads((out / "partner-verdicts-P-pilot.json").read_text())
+    pc = res["promotion"]
+    assert res["pilot"] is True and pc["n"] == len(rows) and pc["errors"] == 0
+    assert pc["z"] == dr.WILSON_Z and pc["threshold"] == 0.15 and pc["min_judged"] == 30
+    assert pc["upper_bound"] == dr.wilson(0, len(rows))[1] and pc["upper_bound_6dp"] == f"{pc['upper_bound']:.6f}"
+    assert pc["met"] is False                                   # fewer than 30 judged fails whatever the bound
     # the default pilot size
     r = dr.Run(cfg, g.file_sha(path), out, "P", provenance=lambda: PROV, pilot=(dr.PILOT_DEFAULT_RECORDS, 2))
     r.load()
