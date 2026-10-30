@@ -445,6 +445,116 @@ def prefilter(text: str, f: FieldSpec) -> bool:
     return bool(candidate_fields(text, [f]))
 
 
+# ------------------------------------------------------------------ content eligibility (round 3)
+#
+# Round 3, set P, after the pilot (88 of 100 first attempts answered {"none": true}):
+# a (chunk, field) job is ELIGIBLE on the printed number alone (:func:`eligible_fields`);
+# the field's terms RANK eligible chunks and never exclude one (:func:`terms_present`),
+# because a term gate drops exactly the symbol-only passages (``Qb = 0.5 m3/h``) the
+# glossary is meant to rescue; :func:`job_class` is the yield estimator's feature.
+
+def _proxy_words(text: str) -> frozenset[str]:
+    import wording_proxy as wp
+
+    return wp.words(text)
+
+
+def terms_present(text: str, f: FieldSpec, words: frozenset[str] | None = None) -> list[str]:
+    """The field's terms the chunk mentions, matched as the wording proxy matches a
+    binding term (:func:`wording_proxy.words`: NFKC, casefold, ``[a-z0-9]+`` tokens of
+    length > 1, the proxy's suffix stemming): the term's word SET is contained in the
+    chunk's. A term with no word (a bare one-letter symbol) never matches."""
+    w = _proxy_words(text) if words is None else words
+    out = []
+    for t in f.terms:
+        tw = _proxy_words(t)
+        if tw and tw <= w:
+            out.append(t)
+    return out
+
+
+def field_dim(f: FieldSpec) -> tuple[tuple[str, int], ...] | None:
+    """The field's dimension key (``()`` dimensionless, ``None`` outside the map)."""
+    return dim_key(parse_unit(f.unit) if f.unit else {})
+
+
+def compatible(d: Dim | None, fd: tuple[tuple[str, int], ...] | None) -> bool:
+    """Is a printed number with unit dimension ``d`` (``None``: a unit-like token outside
+    the map) a candidate value of a field of dimension ``fd``?
+
+    * a field with a dimension: the number's unit has that dimension or a
+      :data:`RELATED` one (air changes per hour for a volume flow);
+    * a dimensionless or count field (``fd == ()``): **a printed number plus no
+      incompatible unit** — no unit at all (``I = 1``; an ordinary word follows), a
+      dimensionless unit (``%``, ``people``), or a unit-like token outside the map
+      (not known to be incompatible); a number with a mapped dimension (``2 m``) is not;
+    * a field whose own unit is outside the map: never (nothing can be checked)."""
+    if fd is None:
+        return False
+    if fd == ():
+        return d is None or dim_key(d) == ()
+    k = dim_key(d) if d is not None else None
+    return k is not None and (k == fd or (k, fd) in RELATED)
+
+
+def numbers_at(text: str) -> list[tuple[int, int, str, Dim | None]]:
+    """``(start, end, unit text, dimension)`` of every number :func:`units_in` reads, with
+    its offsets in the NFKC-normalised text (same order, same parse)."""
+    t = unicodedata.normalize("NFKC", text)
+    spans = sorted([(m.start(), m.end()) for m in _NUM.finditer(t)] + [(m.start(), m.end()) for m in _NUM_WORD.finditer(t)])
+    return [(s, e, u, d) for (s, e), (_, u, d, _) in zip(spans, units_in(text), strict=True)]
+
+
+def eligible_fields(text: str, fields: Sequence[FieldSpec]) -> list[str]:
+    """Round 3's field assignment (set P, fields mode): a (chunk, field) job is eligible
+    iff the chunk prints a number :func:`compatible` with the field. Terms do not
+    gate (they rank: :func:`term_rank`). Arm-blind: the chunk text only."""
+    dims = [d for _, _, _, d in numbers_at(text)]
+    return [f.field for f in fields if any(compatible(d, field_dim(f)) for d in dims)]
+
+
+def field_eligible(text: str, f: FieldSpec) -> bool:
+    return bool(eligible_fields(text, [f]))
+
+
+def term_rank(text: str, f: FieldSpec) -> int:
+    """0 when the chunk mentions one of the field's terms (drafted first), else 1."""
+    return 0 if terms_present(text, f) else 1
+
+
+#: how far before a number a field term may end and still name it (characters, same sentence)
+BOUND_WINDOW = 40
+_SENT_END = re.compile(r"[.;:!?](?:\s|$)")
+_VS_BEFORE = re.compile(r"[=≈≃~∼]\s*[-−+]?\s*$")
+JOB_CLASSES = ("bound", "eligible", "ineligible")
+
+
+def job_class(text: str, f: FieldSpec) -> str:
+    """The yield estimator's feature for one (chunk, field) job:
+
+    * ``bound`` — some compatible number is bound to the field in the text: one of the
+      field's terms (proxy words) lies in the ``BOUND_WINDOW`` characters before it
+      within the same sentence, or it is the right-hand side of a value statement
+      (``Qb = 0.5 m3/h``; a field with a dimension needs the unit printed);
+    * ``eligible`` — a compatible number, bound to nothing (:func:`eligible_fields`);
+    * ``ineligible`` — no compatible number."""
+    fd = field_dim(f)
+    t = unicodedata.normalize("NFKC", text)
+    hits = [(s, u) for s, _, u, d in numbers_at(text) if compatible(d, fd)]
+    if not hits:
+        return "ineligible"
+    term_words = [w for w in (_proxy_words(x) for x in f.terms) if w]
+    for s, u in hits:
+        before = t[max(0, s - BOUND_WINDOW):s]
+        cut = list(_SENT_END.finditer(before))
+        clause = before[cut[-1].end():] if cut else before
+        if any(w <= _proxy_words(clause) for w in term_words):
+            return "bound"
+        if _VS_BEFORE.search(t[max(0, s - 8):s]) and (u or fd == ()):
+            return "bound"
+    return "eligible"
+
+
 # ------------------------------------------------------------------ quotas
 
 def largest_remainder(total: int, weights: Mapping[str, float]) -> dict[str, int]:
@@ -522,7 +632,8 @@ def cell_targets(papers: Sequence[str], per_paper: Mapping[str, int], total: int
 
 
 def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
-                targets: Mapping[tuple[str, str], int], seed: str) -> tuple[dict[str, Any], dict[str, list[str]]]:
+                targets: Mapping[tuple[str, str], int], seed: str,
+                rank: Mapping[tuple[str, str], int] | None = None) -> tuple[dict[str, Any], dict[str, list[str]]]:
     """The per-paper x stratum x field plan and the jobs (chunk id -> fields).
 
     ``rows`` are pool rows (``chunk_id``, ``paper``, ``stratum`` — the chunk's —,
@@ -540,7 +651,10 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
        a capped field's leftover to the others), each field capped by its candidate
        chunks in the cell and a constant by what is left of its ``constant_cap``
        over the whole set (cells in seeded paper order). Chunks per (cell, field) in
-       a seeded order ``<seed>|fields|<field>|<paper>|<stratum>``.
+       a seeded order ``<seed>|fields|<field>|<paper>|<stratum>``; with ``rank``
+       ((chunk id, field) -> rank, round 3: 0 when the chunk names one of the field's
+       terms) the chunks are taken by rank first, the seeded order within a rank
+       (a stable sort). Without ``rank`` the order is round 2's.
 
     The plan records, per cell, the target, the assignment after redistribution,
     the shortfall, the realised count and the per-field stated share and realised
@@ -603,6 +717,8 @@ def plan_strata(fields: Sequence[FieldSpec], fc: Mapping[str, Any], rows: Sequen
                     continue
                 ids = sorted(here[f])
                 random.Random(f"{seed}|fields|{f}|{p}|{s}").shuffle(ids)
+                if rank is not None:
+                    ids.sort(key=lambda cid: rank.get((cid, f), 1))
                 for cid in ids[:q]:
                     jobs.setdefault(cid, []).append(f)
                 got[f] = q
