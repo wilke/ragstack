@@ -109,3 +109,5 @@ Text only; no hypothesis, arm, measure, test, threshold or decision changed:
   `e3002ba` to `48d5c73` (`b5251db` for R2-P). The gate and Holm functions are named as the code has them
   (`inactive_reranker`, `holm_family`, `api_boost_probe`).
 - **Freeze record**: the sha is recorded in this README only, never in the prereg file (procedure step 3).
+
+**Addendum, 2026-10-30:** set P re-scored under four gold variants (exploratory sensitivity; `RESULTS.md` unchanged): [`../ADDENDUM-2026-10-30-gold-scope.md`](../ADDENDUM-2026-10-30-gold-scope.md).
