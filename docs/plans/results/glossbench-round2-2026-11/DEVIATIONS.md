@@ -11,8 +11,8 @@ known when it was made.
 from **3** papers (`--pilot 50 --papers 3`, papers seeded `<seed>|pilot`) are drafted, checked and sent
 through the adapter before full set-P drafting"* (§3.4 c) and *"At n = 50 judged pilot records the rule
 admits at most **2** rejects (upper bound .135; 3 of 50 gives .162)"* (§3.5). Under this entry the pilot
-batch is drafted at **100 records** over 4–5 papers (`--pilot 100 --papers K`, K fixed in the drafting
-command and recorded in `preflight-draft-P-pilot.json` under `plan.pilot`), and the papers-OC owner
+batch is drafted at **100 records** over **5** papers (`--pilot 100 --papers 5`, owner decision 2026-10-30,
+recorded in `preflight-draft-P-pilot.json` under `plan.pilot`), and the papers-OC owner
 judges **all 100** (every verdict `basis: sampled`, `sample.n` 100). The promotion condition is
 unchanged: the Wilson 95% upper bound of the judged error rate must be ≤ 0.15, with at least 30 judged
 records. The pilot's records remain data for no hypothesis. §3.4 (b), the judged sample of 50 for the
