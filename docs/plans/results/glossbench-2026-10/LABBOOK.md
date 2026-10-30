@@ -569,3 +569,30 @@ records; this entry only points at them.
 - **What's next, item (a)** (a multi-paper evaluation set) is not done: round 2 did not produce one.
   Round 3 is to be pre-registered with the value-statement count per paper measured before its sample
   size, gate and population are frozen. Items (b)–(e) are unchanged; (d) is the reranker test above.
+
+## Addendum, 2026-10-30 (afternoon): the reranker test is complete — What's next item (d)
+
+Item (d) — *a dedicated test of the reranker that reports the candidate pool's ceiling beside every reranked
+figure* — is done. The record is [`../reranker-test-2026-11/RESULTS.md`](../reranker-test-2026-11/RESULTS.md),
+its deviations D-1 to D-7 in [`../reranker-test-2026-11/DEVIATIONS.md`](../reranker-test-2026-11/DEVIATIONS.md),
+the counts-only artifacts in [`../reranker-test-2026-11/artifacts/`](../reranker-test-2026-11/artifacts/).
+Run at `f408b7a`, clean, 2026-10-30T13:49–14:31Z. In one line each:
+
+- **docs-A / T512o0 (confirmatory, 732 of 735 questions, 208 pages):** H3 **confirmed** — the reranker fed
+  BM25's own 50 candidates is non-inferior to BM25's own order (688 vs 629 at top 10, 65 gained / 6 lost,
+  Holm 3.0 × 10⁻⁴, CI lower bound +0.060 above −δ = 0.05). H1 and H2 **not confirmed**, and both reversed:
+  the default finds 707 to BM25's 629 (84 / 6); the fused 50-pool's recall is 727 to BM25's 703. Reranker
+  inputs never exceeded the declared 4,096 XLM-R tokens (max 692).
+- **papers-OC, the owner's 155 (exploratory):** every hypothesis **GATE-NOT-EVALUABLE** — 7 papers (< 8),
+  and `bm25@100` served short on 19 records (verified as index exhaustion, D-5; the API route cannot tell,
+  so the mark stands). Descriptively: pool ceilings at depth 50 are **82 (BM25) vs 83 (fused)**, so the
+  loss against BM25 alone is ordering, not the pool — the default finds 52 (31 ordering losses), rerank over
+  BM25's pool 54, BM25 alone 61. Over the same 50 candidates the reranker reading `content` alone finds 43,
+  `content+gloss` 52, `content+shuffled` 41 (our seeded permutation over all 241 glossaried chunks, not the
+  owner's derangement over pool chunks). One run, 153 records, 138 in one paper; no inference.
+- **Absent:** family B (round 2 produced no set), the L replication (D-7), A8, E7, E8, depth 200 on P.
+- **Part 3's reading stands as recorded** (one run each, exploratory). What this test adds is the
+  decomposition: on papers-OC the reranker's ordering, not the fused pool, is where the records are lost;
+  and the glossary in the reranker's input is where part of the gain comes back. Both descriptive.
+
+What's next items (a)–(c) and (e) are unchanged; (d) is closed by the record above.

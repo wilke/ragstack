@@ -5,13 +5,14 @@ The pre-registration is frozen at commit 9e109c3 (PREREG-reranker-test.md, sha25
 dedc990). The file is never edited. Every change after the freeze is recorded here, dated, with what was
 known when it was made. The partner that holds the papers-OC collection is "the papers-OC owner".
 
-**Status at the last entry (D-4, 2026-10-30T03:42:38Z): no test arm of §3 has been reranked on any set
-of §4.** Up to D-3 (2026-10-30T03:33:07Z) no `pools`, `rerank` or `stats` run had happened and no API,
+**Status at the last entry (D-7, 2026-10-30): the test is COMPLETE; the record is [`RESULTS.md`](RESULTS.md).**
+Up to D-3 (2026-10-30T03:33:07Z) no `pools`, `rerank` or `stats` run had happened and no API,
 sidecar, embedding, store-write or gateway call had been made for this test. D-4 records the one run
-since: docs-A `pools` in-process and a `rerank` that stopped at the identity gate after 3 reranker-sidecar
-calls. Anything later is a later entry. The sha of
+between D-3 and itself: docs-A `pools` in-process and a `rerank` that stopped at the identity gate after 3
+reranker-sidecar calls. D-5 to D-7 record what the full run (2026-10-30T13:49–14:31Z, at `f408b7a`) met and
+did not do. The sha of
 the frozen text was verified by hand against the README and the private `PREREG.sha256` before the
-first step (prereg README, freeze procedure step 3; 2026-10-30T03:10:13Z).
+first step (prereg README, freeze procedure step 3; 2026-10-30T03:10:13Z) and again before the full run.
 
 ## D-1, 2026-10-30: the pre-committed re-score of the part-4 step-7 result is partial — A0 and A2 are *absent*
 
@@ -152,3 +153,92 @@ questions.
 
 **What was known.** No reranker arm had been compared on any set. The only outcomes seen were the gate's
 own: rank-1 differences and the id overlap. Set P is untouched by this change.
+
+## D-5, 2026-10-30T14:25:19Z: set P's `bm25@100` lists were short on 19 records; verified as index exhaustion; run with `--allow-short`
+
+**What the frozen text says.** §5, *Depth read-back*: every request's served depth is recorded against the
+requested one; a list shorter than requested is *under-served*; the run fails (exit 1) unless
+`--allow-short`, which marks the list GATE-NOT-EVALUABLE and every arm built on it inherits the mark. "The
+in-process route can tell a corpus that has fewer matching chunks (`exhausted`, allowed) from a clamp; the API
+route cannot."
+
+**What happened.** The first complete set-P `pools` pass (API route, 2026-10-30T14:22:36Z, 1,395 calls)
+served `bm25@100` short on **19 of 155 records**: 23 documents on 8 records, 36 on 10, 79 on 1, over
+**5 distinct queries** (three at 23, one at 36, one at 79; records sharing a query share a list). Every other list — `hybrid@10/20/50/100`, `vector@100`, and the three live reranked captures —
+was served in full; 0 degraded responses; the API does not echo `top_k`. As pre-registered, the run exited 1
+and no list from it became an arm. No `rerank` or `stats` ran on P at that point.
+
+**Verification (read-only, before the rerun).** For each of the 5 queries the coordinator counted, directly
+on the bench index, the documents matching the server's own `most_fields` clause (content + glossary field,
+boost 1 — an upper bound on the filtered count, since filters only narrow). Served length = that count for all
+five (23, 23, 23, 36, 79; `d5_exhaustion_check` in `artifacts/reranker-P-r2.json`). The lists were short
+because the index holds no more matching documents: **exhaustion, not a clamp**. The verification reads
+the store; it makes no retrieval call through the API and touches no arm.
+
+**Decision (owner, 2026-10-30).** Rerun `pools` with `--allow-short`. The harness marks `bm25@100`
+GATE-NOT-EVALUABLE and A0, A5-D and A9-bm25 inherit it, exactly as §5 and §8 prescribe for the API route,
+which cannot distinguish the two cases; the verification is reported **descriptively** beside the mark as
+"verified exhausted" and does not lift it. The rerun and its repeat served the **same 19 records at the same
+lengths** as the verified pass (`same short set+lengths: True` for both). The A0 top 10 is full on every record
+(every short list has ≥ 23 entries); the live A5-50 had 23–36 candidates to rerank on those 19 records.
+
+**Effect on the design.** None on any hypothesis, arm, measure or threshold; the harness's gate rule is
+applied as written. H1–H3 on P carry the reason `depth read-back: bm25@100 under-served` in their `gate` list
+beside the cluster-count reasons that gate P regardless (§8: 7 clusters < 8). Family A (docs-A, in-process,
+every depth served in full) is untouched.
+
+**What was known.** The set-P pools had been captured but not reranked or scored; no set-P contrast had been
+computed. The docs-A family had completed (14:20Z) before any set-P list was captured.
+
+## D-6, 2026-10-30T14:22:36Z: the glossary-boost probe is structurally `not_testable` on P's `rules` condition; continued with `--boost-declared 1.0`
+
+**What the frozen text says.** §3, *The glossary boost is proven, not declared*: before the first captured
+list on any API-route set, `pools --backend api` runs the behavioural probe — up to 5 chunks whose stored
+glossary holds a whole-word ASCII token (≥ 5 characters) that occurs in no chunk's content and in at most 10
+glossaries; `not_testable` (fewer than 3 qualifying chunks) gates the boost-dependent arms unless
+`--boost-declared X` is given, recorded as `declared`.
+
+**What happened.** The first set-P start (2026-10-30T14:20:45Z) returned `not_testable`: **0 chunks qualify**
+of 14,456 (241 with a glossary). The process was stopped by its recorded pid before any list was captured;
+`not_testable` is not a pass. The diagnosis on the chunk dump (no retrieval): every ≥ 5-character whole-word
+ASCII token in any `rules/3@file/1` glossary also occurs in some chunk's content, so the probe has nothing to
+query. That is a property of the rules extractor on this corpus (it defines symbols with words the papers
+use), not of the server, and it would recur on every rerun under this condition.
+
+**Decision (owner, 2026-10-30T14:22:36Z).** Continue with **`--boost-declared 1.0`**: the server release
+serving the bench copy (v1.6.21) sets `TEXT_SYMBOL_GLOSSARY_BOOST` to 1.0 by management declaration; the admin
+`/v1/config` (which does not expose the boost) was read before and after every set-P pass and was identical
+each time (full-config hash prefix `f85cf2e2f73c36ab`; eight reads including docs-A's). Every boost-dependent
+figure on P is labelled **`declared`** (`boost_check.status declared`, `declared_label: declared
+(--boost-declared), not read back`), never `pass`.
+
+**Behavioural support, descriptive.** D-5's read-only counts give an unplanned check: on **2 of the 5**
+exhaustion queries the server served more documents than match on content alone (23 served; 22 and 17 on
+content only; 23 on content + glossary). Glossary-only matches were returned, so the glossary field *is*
+queried on this server (boost > 0). The magnitude is not verified by this; the declared value stands as
+declared.
+
+**Effect on the design.** None on any hypothesis, arm, measure or threshold. The label `declared` is the
+prereg's own third verdict for this case. Set P is exploratory, so no confirmatory figure depends on it;
+on docs-A the arms are in-process and the probe is `not applicable`, as frozen.
+
+**What was known.** No set-P list had been captured; the docs-A family had completed.
+
+## D-7, 2026-10-30: the L replication of family A (D2) was not run
+
+**What the frozen text says.** §4, docs-A row: "**family A, confirmatory**; L (live chunking) as replication
+(§12 D2)". §12 D2: "primary docs-A arm — T512o0; L as replication". The plan's step 4 names "Arms T512o0
+(primary) and L (replication)".
+
+**What happened.** Family A ran on **T512o0 only**. No `pools`, `rerank` or `stats` ran with `--part4-arm L`
+on any day of the test, and the run log records no decision about it: the omission was found while writing
+the record, after the test's last step (2026-10-30T14:31:12Z). The identity reference rebuilt in D-4 was also
+written for T512o0 alone.
+
+**Effect on the design.** Family A's confirmatory verdicts are those of the T512o0 run and are reported as
+such; the L replication is written as **absent** in `RESULTS.md`, never as agreeing. Running L later would be
+a new, post-hoc run under this prereg and would be recorded as a later entry with its own pin; it is not
+promised here.
+
+**What was known.** Everything in `RESULTS.md`: the T512o0 verdicts and the set-P descriptives had been
+computed when this was noticed.
