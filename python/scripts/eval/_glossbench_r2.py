@@ -163,6 +163,8 @@ class ChunkRow:
     end_char: int
     source_path: str
     title: str
+    #: the export's chunk metadata (the partner export reads a PMC id / DOI from it)
+    metadata: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 def _open_text(path: str | Path) -> Any:
@@ -180,7 +182,8 @@ def parse_chunk(obj: Mapping[str, Any], where: str) -> ChunkRow:
         raise SystemExit(f"{where}: a chunk row needs an id, doc_id, content, start_char and end_char")
     md = src.get("metadata") or {}
     return ChunkRow(str(cid), str(doc), str(content), int(start), int(end),
-                    str(md.get("source_path") or ""), str(md.get("title") or ""))
+                    str(md.get("source_path") or ""), str(md.get("title") or ""),
+                    dict(md) if isinstance(md, Mapping) else {})
 
 
 def read_chunks(paths: Iterable[str | Path]) -> list[ChunkRow]:

@@ -12,6 +12,20 @@ private ``out_dir``)::
     summary --set S                          accepted records + counts-only summary
     spot-export --set S OUT                  the owner's blind 40-record sheet (+ OUT key)
     spot-import --set S LABELS --key KEY     validity with a Wilson CI
+    export-partner --set P OUT [--candidates]   the papers-OC owner's JSONL (fields mode)
+    import-partner-verdicts --set P FILE     the owner's verdicts -> error rate + status label
+
+Every set subcommand takes ``--pilot [N] [--papers K]`` (default 50 jobs over 3
+papers): the pilot batch, drafted under the same rules from K seeded eval papers
+(``<seed>|pilot``), written to its own ``*-<set>-pilot*`` files with records
+marked ``pilot: true``, so the set's own accepted file and export never hold one.
+
+**Fields mode** (set P, ``corpora.P.draft_mode: fields``; see
+:mod:`glossbench_r2_fields`): one job per (chunk, field) from the pool's quota
+plan; the drafter is asked for a value of the named field (name, definition,
+unit; no glossary, no arm, no symbol hint, no term list); ``binding_terms`` are
+the field's terms. The field list's sha256 is in the pool header and the state,
+and a changed list is refused on load and on resume.
 
 **Drafter** (one gateway model, default Gemini 2.5 Pro): the part-4 client
 (:class:`deployed_docs_part4.Gateway`): ``fallback_model: ""`` and
@@ -90,6 +104,7 @@ if str(_HERE) not in sys.path:
 import _glossbench_r2 as g  # noqa: E402
 import deployed_docs_part4 as p4  # noqa: E402
 import glossbench_r2_checks as ck  # noqa: E402
+import glossbench_r2_fields as fl  # noqa: E402
 
 EXIT_OK, EXIT_HARD_STOP, EXIT_PAUSED = 0, 1, 75
 STAGES = ("draft", "verify")
@@ -98,6 +113,11 @@ TOTALS_SCHEMA = "glossbench-r2-totals/1"
 SUMMARY_SCHEMA = "glossbench-r2-acceptance-summary/1"
 SPOT_SCHEMA = "glossbench-r2-spot/1"
 SPOT_LABELS = ("valid", "invalid")
+PARTNER_SCHEMA = "glossbench-r2-partner-export/1"
+PARTNER_VERDICTS_SCHEMA = "glossbench-r2-partner-verdicts/1"
+PARTNER_VERDICTS = ("accept", "reject")
+PARTNER_BASES = ("scripted", "sampled")
+PILOT_DEFAULT_RECORDS, PILOT_DEFAULT_PAPERS = 50, 3
 DROPPED = ("empty_twice", "truncated", "cut")
 LIMIT_RE = re.compile(
     r"rate.?limit|usage.?limit|quota|overloaded|429|too many requests|"
@@ -154,7 +174,8 @@ class Paths:
         names = {"pool": "pool-{s}.jsonl", "drafts": "draft-{s}.jsonl", "calls": "draft-calls-{s}.jsonl",
                  "verify_rows": "verify-{s}.jsonl", "acceptance": "acceptance-{s}.jsonl",
                  "accepted": "accepted-{s}.jsonl", "summary": "acceptance-summary-{s}.json",
-                 "spot_results": "spot-results-{s}.json", "pause": "PAUSE"}
+                 "spot_results": "spot-results-{s}.json", "pause": "PAUSE",
+                 "partner_export": "partner-export-{s}.json", "partner_verdicts": "partner-verdicts-{s}.json"}
         if name not in names:
             raise AttributeError(name)
         return self.out / names[name].format(s=self.set)
@@ -319,8 +340,10 @@ def read_pool(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return rows[0], rows[1:]
 
 
-def record_id(set_: str, chunk_id: str, attempt: int) -> str:
-    return f"{set_}-{g.sha_text(chunk_id)[:12]}-a{attempt}"
+def record_id(set_: str, chunk_id: str, attempt: int, field: str | None = None) -> str:
+    """Open mode: ``<set>-<sha(chunk)>-a<n>``; fields mode: the chunk and the field."""
+    key = chunk_id if field is None else f"{chunk_id}|{field}"
+    return f"{set_}-{g.sha_text(key)[:12]}-a{attempt}"
 
 
 class Run:
@@ -329,12 +352,19 @@ class Run:
     def __init__(self, cfg: dict[str, Any], cfg_sha: str, out: Path, set_: str,
                  provenance: Callable[[], dict[str, Any]] | None = None,
                  http_factory: Callable[[], Any] | None = None,
-                 cli_runner: Callable[..., Any] | None = None) -> None:
+                 cli_runner: Callable[..., Any] | None = None,
+                 pilot: tuple[int, int] | None = None) -> None:
         self.raw_cfg = cfg
         self.cfg = merged_config(cfg)
         self.cfg_sha = cfg_sha
         self.out, self.set = out, set_
-        self.p = Paths(out, set_)
+        if pilot is not None and (int(pilot[0]) < 1 or int(pilot[1]) < 1):
+            raise SystemExit("--pilot N --papers K: both at least 1")
+        self.pilot = None if pilot is None else (int(pilot[0]), int(pilot[1]))
+        #: a pilot writes its own files (``<set>-pilot``) and its records carry ``pilot: true``,
+        #: so the hypothesis sets (the set's own accepted file and export) never contain them
+        self.label = set_ if self.pilot is None else f"{set_}-pilot"
+        self.p = Paths(out, self.label)
         self.provenance = provenance or g.experiment_provenance
         self.http_factory = http_factory or default_http
         self.cli_runner = cli_runner or subprocess.run
@@ -343,12 +373,65 @@ class Run:
 
     # -------------------------------------------------------- inputs
     def load(self) -> None:
-        self.header, self.pool = read_pool(self.p.pool)
-        self.pool_sha = g.file_sha(self.p.pool)
+        self.header, self.pool = read_pool(Paths(self.out, self.set).pool)
+        self.pool_sha = g.file_sha(Paths(self.out, self.set).pool)
         # the pool's statistical stoplist is the one the checks use (one list per round)
         self.checks_cfg = {**self.cfg["checks"], "vs_stoplist": self.header.get("vs_stoplist")}
-        self.sampled = [r for r in self.pool if r["sampled"]]
-        self.sampled.sort(key=lambda r: (r["paper"], r["stratum"], r["sample_rank"], r["chunk_id"]))
+        self.mode = self.header.get("draft_mode", "open")
+        cc = g.corpus_config(self.raw_cfg, self.set)
+        self.fc = fl.field_config(cc, self.set)
+        if (self.fc is not None) != (self.mode == "fields"):
+            raise SystemExit(f"set {self.set}: the config's draft_mode differs from the pool's ({self.mode})")
+        self.fields_sha: str | None = None
+        self.specs: dict[str, fl.FieldSpec] = {}
+        if self.fc is not None:
+            # the field list's sha is the pool header's; a changed file is refused (and the
+            # state records it, so a resume against another list is refused too)
+            self.fields_sha = g.file_sha(self.fc["path"])
+            if self.fields_sha != self.header.get("fields_sha256"):
+                raise SystemExit("the field list differs from the one the pool was built with "
+                                 "(fields_sha256): rebuild the pool")
+            self.specs = {d["field"]: fl.FieldSpec.from_dict(d) for d in self.header["field_specs"]}
+        self.pilot_plan: dict[str, Any] | None = None
+        self.sampled = self.pilot_jobs() if self.pilot is not None else self.jobs_of(
+            [r for r in self.pool if r["sampled"]])
+        for j in self.sampled:
+            if j["field"] is not None and j["field"] not in self.specs:
+                raise SystemExit(f"job field {j['field']!r} is not in the field list: refused")
+        self.sampled.sort(key=lambda r: (r["paper"], r["stratum"], r["sample_rank"] or 0, r["chunk_id"],
+                                         r["field"] or ""))
+
+    def jobs_of(self, rows: list[dict[str, Any]], assigned: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
+        """Drafting jobs: one per sampled chunk (open mode), one per (chunk, field) (fields mode)."""
+        if self.mode != "fields":
+            return [{**r, "field": None} for r in rows]
+        return [{**r, "field": f} for r in rows
+                for f in (assigned.get(r["chunk_id"], []) if assigned is not None else r["field_jobs"])]
+
+    def pilot_jobs(self) -> list[dict[str, Any]]:
+        """``--pilot N --papers K``: K eval papers (seeded ``<seed>|pilot``) and N jobs
+        among them under the same rules (fields mode: the same quota plan, scaled to N)."""
+        n, k = self.pilot  # type: ignore[misc]
+        seed = f"{self.header['seed']}|pilot"
+        if self.mode == "fields":
+            rows = [r for r in self.pool if r.get("field_candidates")]
+        else:
+            rows = [r for r in self.pool if r["sampled"]]
+        papers = sorted({r["paper"] for r in rows})
+        pick = set(random.Random(seed).sample(papers, min(k, len(papers))))
+        rows = [r for r in rows if r["paper"] in pick]
+        if self.mode != "fields":
+            rows.sort(key=lambda r: (r["sample_rank"], r["paper"], r["chunk_id"]))
+            return self.jobs_of(rows[:n])
+        per_field: dict[str, list[str]] = {}
+        for r in rows:
+            for f in r["field_candidates"]:
+                if f in self.specs:
+                    per_field.setdefault(f, []).append(r["chunk_id"])
+        assert self.fc is not None
+        self.pilot_plan = fl.plan_fields(list(self.specs.values()), self.fc, per_field, n)
+        assigned = fl.assign(self.pilot_plan, per_field, {r["chunk_id"]: r["paper"] for r in rows}, seed)
+        return self.jobs_of(rows, assigned)
 
     @property
     def corpus(self) -> g.Corpus:
@@ -373,19 +456,22 @@ class Run:
 
     def plan_sha(self, stage: str) -> str:
         return g.sha_text(json.dumps({"stage": stage, "set": self.set, "config": self.cfg_sha,
-                                      "pool": self.pool_sha}, sort_keys=True))
+                                      "pool": self.pool_sha, "fields": self.fields_sha,
+                                      "pilot": list(self.pilot) if self.pilot else None}, sort_keys=True))
 
     # -------------------------------------------------------- drafting plan
     def drafts(self) -> p4.Store:
         return p4.Store(self.p.drafts)
 
-    def draft_key(self, chunk_id: str, attempt: int) -> str:
-        return f"draft|{chunk_id}|a{attempt}"
+    def draft_key(self, job: dict[str, Any], attempt: int) -> str:
+        if job.get("field") is None:
+            return f"draft|{job['chunk_id']}|a{attempt}"
+        return f"draft|{job['chunk_id']}|{job['field']}|a{attempt}"
 
     def chunk_done(self, st: p4.Store, r: dict[str, Any]) -> bool:
         n = int(self.cfg["drafter"]["max_attempts_per_chunk"])
         for a in range(1, n + 1):
-            row = st.get(self.draft_key(r["chunk_id"], a))
+            row = st.get(self.draft_key(r, a))
             if row is None:
                 return False
             if row["status"] in DROPPED or row["l1_inline"]["verdict"] == "pass" \
@@ -395,9 +481,11 @@ class Run:
 
     def messages_for(self, r: dict[str, Any], previous: dict[str, Any] | None) -> list[dict[str, str]]:
         c = self.corpus.chunks[r["chunk_id"]]
-        return ck.draft_messages(c.content, r["stratum"], r["vs_tokens"],
-                                 None if previous is None else {"reasons": previous["l1_inline"]["reasons"],
-                                                                "draft": previous.get("draft")})
+        prev = None if previous is None else {"reasons": previous["l1_inline"]["reasons"],
+                                              "draft": previous.get("draft")}
+        if r.get("field") is not None:
+            return ck.field_draft_messages(c.content, self.specs[r["field"]], prev)
+        return ck.draft_messages(c.content, r["stratum"], r["vs_tokens"], prev)
 
     # -------------------------------------------------------- preflight
     def preflight(self, stage: str) -> dict[str, Any]:
@@ -413,7 +501,10 @@ class Run:
                     "est_output_tokens": math.ceil(len(todo) * factor * int(d["est_output_tokens"])),
                     "max_output_tokens": math.ceil(len(todo) * factor * int(d["max_tokens"])),
                     "models": [d["model"]], "concurrency": int(d["inflight"]),
-                    "caps": {k: self.cfg["limits"][k] for k in ("input_token_cap", "output_token_cap", "call_cap")}}
+                    "caps": {k: self.cfg["limits"][k] for k in ("input_token_cap", "output_token_cap", "call_cap")},
+                    "draft_mode": self.mode, "fields_sha256": self.fields_sha,
+                    "pilot": None if self.pilot is None else {"records": self.pilot[0], "papers": self.pilot[1],
+                                                              "plan": self.pilot_plan}}
             kind = "GATEWAY"
         else:
             todo = self.verify_todo()
@@ -427,7 +518,7 @@ class Run:
         rec = {"stage": stage, "set": self.set, "created": g.now_iso(), "created_epoch": time.time(),
                "plan_sha256": self.plan_sha(stage), "plan": plan}
         g.write_json_atomic(self.p.preflight(stage), rec)
-        notice(kind, f"{stage} set={self.set}: {plan['calls']} calls, est. {plan['est_input_tokens']} tokens in / "
+        notice(kind, f"{stage} set={self.label}: {plan['calls']} calls, est. {plan['est_input_tokens']} tokens in / "
                f"{plan['est_output_tokens']} out, models {', '.join(plan['models'])}, "
                f"<= {plan['concurrency']} in flight")
         return rec
@@ -458,6 +549,7 @@ class Run:
         st = {"schema": STATE_SCHEMA, "stage": stage, "set": self.set, "status": status, "reason": reason,
               "totals": self.control.totals(), "commit": self.commit, "config_sha256": self.cfg_sha,
               "pool_sha256": self.pool_sha, "prereg_sha256": self.prereg, "segments": segs,
+              "fields_sha256": self.fields_sha, "pilot": list(self.pilot) if self.pilot else None,
               "updated": g.now_iso(),
               "paused_epoch": time.time() if status in ("paused", "crashed") else
               (self.prev_state or {}).get("paused_epoch")}
@@ -482,7 +574,9 @@ class Run:
                 g.log(f"{stage} --resume refused: the run hard-stopped ({st.get('reason')})")
                 return EXIT_HARD_STOP
             bad = [k for k, v in (("commit", self.commit), ("config_sha256", self.cfg_sha),
-                                  ("pool_sha256", self.pool_sha), ("prereg_sha256", self.prereg))
+                                  ("pool_sha256", self.pool_sha), ("prereg_sha256", self.prereg),
+                                  ("fields_sha256", self.fields_sha),
+                                  ("pilot", list(self.pilot) if self.pilot else None))
                    if st.get(k) != v]
             if bad:
                 g.log(f"{stage} --resume refused (hard stop): {', '.join(bad)} differ from the state file")
@@ -579,7 +673,7 @@ class Run:
             async def fn(http: Any) -> None:
                 prev = None
                 for a in range(1, int(d["max_attempts_per_chunk"]) + 1):
-                    k = self.draft_key(r["chunk_id"], a)
+                    k = self.draft_key(r, a)
                     row = st.get(k)
                     if row is None:
                         msgs = self.messages_for(r, prev)
@@ -630,11 +724,16 @@ class Run:
             status = "cut"
         else:
             status = "ok"
-        draft, err = ck.parse_draft(text) if status == "ok" else (None, None)
+        spec = self.specs.get(r["field"]) if r.get("field") is not None else None
+        draft, err = ck.parse_draft(text, "fields" if spec else "open") if status == "ok" else (None, None)
+        if spec is not None and draft is not None and not draft.get("none"):
+            draft["binding_terms"] = list(spec.terms)      # the field's terms, never model-invented
         l1 = (ck.layer1(draft, err, stratum=r["stratum"], paper=r["paper"],
-                        source_chunk=self.corpus.chunks[r["chunk_id"]], idx=self.idx, cfg=self.checks_cfg)
+                        source_chunk=self.corpus.chunks[r["chunk_id"]], idx=self.idx, cfg=self.checks_cfg,
+                        field=spec)
               if status == "ok" else {"verdict": "dropped", "reasons": [status], "flags": []})
-        return {"k": k, "record_id": record_id(self.set, r["chunk_id"], attempt), "set": self.set,
+        return {"k": k, "record_id": record_id(self.label, r["chunk_id"], attempt, r.get("field")), "set": self.set,
+                "field": r.get("field"), "pilot": self.pilot is not None,
                 "chunk_id": r["chunk_id"], "paper": r["paper"], "doc_id": r["doc_id"], "stratum": r["stratum"],
                 "attempt": attempt, "status": status, "text": text, "draft": draft, "parse_error": err,
                 "model": res.get("model"), "pt": res.get("pt"), "ct": res.get("ct"), "finish": res.get("finish"),
@@ -676,7 +775,8 @@ class Run:
                                             "verdict": "dropped", "reasons": [row["status"]], "flags": [], **base})
                 continue
             l1 = ck.layer1(row["draft"], row["parse_error"], stratum=row["stratum"], paper=row["paper"],
-                           source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.checks_cfg)
+                           source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.checks_cfg,
+                           field=self.spec_of(row))
             records.append({**row, "l1": l1})
         ck.cross_record(records)
         for r in records:
@@ -686,9 +786,19 @@ class Run:
                                         "gold_chunk_ids": l1["gold_chunk_ids"], "leak_overlap": l1["leak_overlap"],
                                         "leak_distinctive": l1["leak_distinctive"], "leak_ok": l1["leak_ok"],
                                         "record_id": r["record_id"], "set": self.set, "paper": r["paper"],
-                                        "stratum": r["stratum"], "attempt": r["attempt"], "t": g.now_iso()})
+                                        "stratum": l1.get("record_stratum", r["stratum"]),
+                                        "chunk_stratum": r["stratum"], "field": r.get("field"),
+                                        "attempt": r["attempt"], "t": g.now_iso()})
         g.log(f"check set={self.set}: {len(records)} drafts checked, {added} new log rows")
         return EXIT_OK
+
+    def spec_of(self, row: dict[str, Any]) -> fl.FieldSpec | None:
+        f = row.get("field")
+        if f is None:
+            return None
+        if f not in self.specs:
+            raise SystemExit(f"draft row field {f!r} is not in the field list: refused")
+        return self.specs[f]
 
     # -------------------------------------------------------- layer 2 (verify)
     def l1_passes(self) -> list[dict[str, Any]]:
@@ -836,7 +946,7 @@ class Run:
                 self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": "reject" if reasons else "pass",
                                    "reasons": reasons, "flags": [], "fields": verdict, "served_model": last.get("model"),
                                    "record_id": rid, "set": self.set, "paper": rec["paper"],
-                                   "stratum": rec["stratum"], "attempt": rec["attempt"], "t": g.now_iso()})
+                                   "stratum": rec["l1"]["stratum"], "attempt": rec["attempt"], "t": g.now_iso()})
 
         if todo:
             notice("CLI", f"verify set={self.set}: starting {len(todo)} records (<= {v['inflight']} in flight)")
@@ -865,6 +975,16 @@ class Run:
                 out.append(r)
         return out
 
+    def accepted_row(self, r: dict[str, Any]) -> dict[str, Any]:
+        """One record as the wording proxy and the partner export read it. ``stratum`` is
+        the record's (``S3`` = words-only, identifiable per record); ``chunk_stratum`` the pool's."""
+        return {"record_id": r["record_id"], "set": self.set, "paper": r["paper"], "doc_id": r["doc_id"],
+                "source_chunk_id": r["chunk_id"], **r["draft"], "stratum": r["l1"]["stratum"],
+                "chunk_stratum": r["stratum"], "words_only": r["l1"]["stratum"] == "S3",
+                "field": r.get("field"), "pilot": bool(r.get("pilot")), "model": r.get("model"),
+                "prompt_sha256": r.get("prompt_sha256"),
+                "gold_chunks": r["l1"]["gold_chunk_ids"], "flags": r["l1"]["flags"]}
+
     def summary(self) -> int:
         self.load()
         log = self.acceptance()
@@ -874,11 +994,7 @@ class Run:
         acc = self.accepted()
         with (self.p.accepted.with_suffix(".jsonl.tmp")).open("w", encoding="utf-8") as fh:
             for r in acc:
-                fh.write(json.dumps({"record_id": r["record_id"], "set": self.set, "paper": r["paper"],
-                                     "doc_id": r["doc_id"], "source_chunk_id": r["chunk_id"],
-                                     "stratum": r["stratum"], **r["draft"],
-                                     "gold_chunks": r["l1"]["gold_chunk_ids"], "flags": r["l1"]["flags"]},
-                                    sort_keys=True, ensure_ascii=False) + "\n")
+                fh.write(json.dumps(self.accepted_row(r), sort_keys=True, ensure_ascii=False) + "\n")
         self.p.accepted.with_suffix(".jsonl.tmp").replace(self.p.accepted)
         rows = list(log.rows.values())
         by_code: dict[str, Counter[str]] = {}
@@ -898,7 +1014,7 @@ class Run:
         attempts = Counter(r["stratum"] for r in draft_rows)            # every attempt, dropped ones included
         attempt_no = Counter(f"a{r['attempt']}" for r in draft_rows)
         http_calls = sum(int(r.get("http_attempts") or 1) for r in draft_rows)
-        accepted = Counter(r["stratum"] for r in acc)
+        accepted = Counter(r["l1"]["stratum"] for r in acc)
         prov = self.provenance()
 
         def q(p: float) -> float | None:
@@ -921,6 +1037,13 @@ class Run:
             "lexical_overlap": {"threshold": self.cfg["checks"]["leak_threshold"], "n": len(overlaps),
                                 "quantiles": {f"p{int(p * 100)}": q(p) for p in (0.1, 0.25, 0.5, 0.75, 0.9)},
                                 "over_threshold": sum(1 for x in overlaps if x > self.cfg["checks"]["leak_threshold"])},
+            "draft_mode": self.mode, "pilot": self.pilot is not None,
+            "fields": None if self.mode != "fields" else {
+                "fields_sha256": self.fields_sha,
+                "jobs_by_field": dict(sorted(Counter(j["field"] for j in self.sampled).items())),
+                "accepted_by_field": dict(sorted(Counter(r["field"] for r in acc).items())),
+                "words_only_accepted": sum(1 for r in acc if r["l1"]["stratum"] == "S3"),
+                "pilot_plan": self.pilot_plan},
             "pool_sha256": self.pool_sha, "accepted_sha256": g.file_sha(self.p.accepted),
             "config_sha256": self.cfg_sha, "provenance": prov, "citable": g.citable(prov),
         }
@@ -991,6 +1114,118 @@ class Run:
         return EXIT_OK
 
 
+    # -------------------------------------------------------- the papers-OC owner's format
+    def export_partner(self, path: Path, candidates: bool = False) -> int:
+        """Accepted records (default) or the layer-1 passes (``candidates``) as the
+        papers-OC owner's JSONL: ``id, question, source{doc_id, locator}, quote, field,
+        case, model, prompt_sha256`` (+ ``value`` as printed, + ``pilot: true`` on a
+        pilot's records). A record whose PMC id / DOI cannot be resolved from its
+        document's chunk metadata or doc_id is refused and counted."""
+        g.refuse_in_repo(path, "the partner export")
+        self.load()
+        if self.mode != "fields":
+            raise SystemExit("export-partner: the partner format names a field; the set is not in draft_mode fields")
+        if candidates:
+            recs = [self.accepted_row({**r, "l1": r["l1"]}) for r in self.l1_passes()]
+        else:
+            if not self.p.accepted.is_file():
+                g.log("export-partner: no accepted file; run summary first (or pass --candidates)")
+                return EXIT_HARD_STOP
+            recs = [json.loads(x) for x in self.p.accepted.read_text(encoding="utf-8").splitlines() if x.strip()]
+        corpus = self.corpus
+        refused: Counter[str] = Counter()
+        rows = []
+        for r in recs:
+            if bool(r.get("pilot")) != (self.pilot is not None):
+                raise SystemExit("export-partner: a pilot record in a hypothesis export (or the reverse)")
+            if r.get("field") not in self.specs:
+                refused["field_not_in_list"] += 1
+                continue
+            loc = fl.locator(r["doc_id"], [c.metadata for c in corpus.by_doc.get(r["doc_id"], [])])
+            if loc is None:
+                refused["unresolved_locator"] += 1
+                continue
+            row = {"id": r["record_id"], "question": r["question"],
+                   "source": {"doc_id": r["doc_id"], "locator": loc}, "quote": r["quote"], "field": r["field"],
+                   "case": r.get("case") or "", "model": r.get("model"), "prompt_sha256": r.get("prompt_sha256"),
+                   "value": r["value"]}
+            if self.pilot is not None:
+                row["pilot"] = True
+            rows.append(row)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
+        tmp.replace(path)
+        prov = self.provenance()
+        g.write_json_atomic(self.p.partner_export, {
+            "schema": PARTNER_SCHEMA, "set": self.set, "pilot": self.pilot is not None,
+            "source": "candidates (layer-1 passes)" if candidates else "accepted (layers 1-2)",
+            "records": len(recs), "exported": len(rows), "refused": dict(refused),
+            "ids": [r["id"] for r in rows], "export_sha256": g.file_sha(path), "fields_sha256": self.fields_sha,
+            "provenance": prov, "created": g.now_iso()})
+        g.log(f"export-partner set={self.label}: {len(rows)} exported, refused {dict(refused)}")
+        return EXIT_OK
+
+    def import_partner_verdicts(self, path: Path) -> int:
+        """The papers-OC owner's verdicts: ``{"records": [{"id", "verdict": accept|reject,
+        "reason", "basis": scripted|sampled}], "sample": {"n", "errors", "seed"}}``.
+        Every id must be in our last export; a reject needs a reason; when sampled rows
+        are given they must agree with the summary (n rows, ``errors`` rejects). The
+        error rate is errors/n with a Wilson 95% interval, and the set's status label
+        is ``scripted-clean, judged sample of N, error rate X% (95% CI a–b)`` (a, b in
+        percent)."""
+        if not self.p.partner_export.is_file():
+            raise SystemExit("import-partner-verdicts: no partner export on record; run export-partner first")
+        exp = json.loads(self.p.partner_export.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        recs = data.get("records") or []
+        sample = data.get("sample") or {}
+        try:
+            n, errors = int(sample["n"]), int(sample["errors"])
+        except (KeyError, TypeError, ValueError):
+            raise SystemExit("import-partner-verdicts: sample {n, errors, seed} is required") from None
+        if "seed" not in sample:
+            raise SystemExit("import-partner-verdicts: the sample summary needs its seed")
+        if n < 1 or not 0 <= errors <= n:
+            raise SystemExit("import-partner-verdicts: need n >= 1 and 0 <= errors <= n")
+        known = set(exp["ids"])
+        seen: set[str] = set()
+        for r in recs:
+            rid = r.get("id")
+            if rid not in known:
+                raise SystemExit(f"import-partner-verdicts: id {rid!r} is not in our export")
+            if rid in seen:
+                raise SystemExit(f"import-partner-verdicts: id {rid!r} twice")
+            seen.add(rid)
+            if r.get("verdict") not in PARTNER_VERDICTS or r.get("basis") not in PARTNER_BASES:
+                raise SystemExit(f"import-partner-verdicts: {rid}: verdict in {PARTNER_VERDICTS}, "
+                                 f"basis in {PARTNER_BASES}")
+            if r["verdict"] == "reject" and not str(r.get("reason") or "").strip():
+                raise SystemExit(f"import-partner-verdicts: {rid}: a reject needs a reason")
+        sampled = [r for r in recs if r["basis"] == "sampled"]
+        if sampled and (len(sampled) != n or sum(r["verdict"] == "reject" for r in sampled) != errors):
+            raise SystemExit("import-partner-verdicts: the sampled rows disagree with the sample summary "
+                             f"({len(sampled)} rows, {sum(r['verdict'] == 'reject' for r in sampled)} rejects; "
+                             f"summary n={n}, errors={errors})")
+        lo, hi = wilson(errors, n)
+        label = fl.status_label(n, errors, wilson)
+        scripted = [r for r in recs if r["basis"] == "scripted" and r["verdict"] == "reject"]
+        prov = self.provenance()
+        g.write_json_atomic(self.p.partner_verdicts, {
+            "schema": PARTNER_VERDICTS_SCHEMA, "set": self.set, "pilot": self.pilot is not None,
+            "status_label": label, "error_rate": errors / n, "wilson95": [lo, hi],
+            "sample": {"n": n, "errors": errors, "seed": sample["seed"]},
+            "counts": {"exported": len(known), "verdicts": len(recs), "scripted_rejects": len(scripted),
+                       "sampled": len(sampled), "sampled_rejects": sum(r["verdict"] == "reject" for r in sampled)},
+            "rejects": {r["id"]: {"basis": r["basis"], "reason": r.get("reason")} for r in recs
+                        if r["verdict"] == "reject"},
+            "verdicts_sha256": g.file_sha(path), "export_sha256": exp.get("export_sha256"),
+            "provenance": prov, "created": g.now_iso()})
+        print(label, flush=True)
+        return EXIT_OK
+
+
 def wilson(k: int, n: int, z: float = 1.959963984540054) -> tuple[float | None, float | None]:
     if n == 0:
         return None, None
@@ -1012,6 +1247,11 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
 
     def with_set(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         p.add_argument("--set", required=True, choices=g.SETS)
+        p.add_argument("--pilot", type=int, nargs="?", const=PILOT_DEFAULT_RECORDS, default=None, metavar="N",
+                       help=f"the pilot batch (default {PILOT_DEFAULT_RECORDS} jobs): its own files, "
+                            "records marked pilot: true, never in the hypothesis sets")
+        p.add_argument("--papers", type=int, default=PILOT_DEFAULT_PAPERS, metavar="K",
+                       help=f"with --pilot: how many eval papers (default {PILOT_DEFAULT_PAPERS})")
         return p
 
     pf = with_set(sub.add_parser("preflight", help="print and record the size notice"))
@@ -1028,10 +1268,16 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     si = with_set(sub.add_parser("spot-import", help="the owner's labels -> validity with a Wilson CI"))
     si.add_argument("labels")
     si.add_argument("--key", required=True)
+    ep = with_set(sub.add_parser("export-partner", help="records in the papers-OC owner's JSONL (PRIVATE)"))
+    ep.add_argument("out")
+    ep.add_argument("--candidates", action="store_true", help="the layer-1 passes instead of the accepted records")
+    iv = with_set(sub.add_parser("import-partner-verdicts", help="the owner's verdicts -> error rate + status label"))
+    iv.add_argument("verdicts")
     args = ap.parse_args(argv)
     cfg, cfg_sha = g.load_config(args.private_config)
     out = g.out_dir(cfg, args.out_dir)
-    run = Run(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner)
+    run = Run(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner,
+              pilot=None if args.pilot is None else (args.pilot, args.papers))
     if args.cmd == "preflight":
         run.preflight(args.stage)
         return EXIT_OK
@@ -1045,6 +1291,10 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         return run.summary()
     if args.cmd == "spot-export":
         return run.spot_export(Path(args.out))
+    if args.cmd == "export-partner":
+        return run.export_partner(Path(args.out), args.candidates)
+    if args.cmd == "import-partner-verdicts":
+        return run.import_partner_verdicts(Path(args.verdicts))
     return run.spot_import(Path(args.labels), Path(args.key))
 
 

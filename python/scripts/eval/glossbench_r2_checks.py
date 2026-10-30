@@ -36,7 +36,23 @@ that applies is recorded):
 ``lexical_leak``            question shares > ``leak_threshold`` of the quote's
                             distinctive tokens
 ``duplicate_question``      (cross-record) same question, same paper, earlier record kept
+``unit_incompatible``       fields mode: the value prints no number with a unit of the
+                            field's dimension (:func:`glossbench_r2_fields.unit_check`)
+``term_leak``               fields mode: more than ``term_leak_threshold`` of the
+                            question's own content words come from the field's term list
+                            (:func:`glossbench_r2_fields.term_leak`)
 ==========================  =====================================================
+
+**Fields mode** (set P, :mod:`glossbench_r2_fields`): the drafter is asked for a
+value of a NAMED field, given its name, definition and unit — no glossary, no
+arm, no symbol hint, and not the term list (the terms are retrieval terms, not
+the question's wording). ``binding_terms`` are the field's terms, set by the
+runner, so the two binding-term checks do not apply. The symbol is optional on
+an S1/S2 chunk; a record with no symbol is words-only: its ``record_stratum``
+is ``S3`` and its quote may not hold a symbol value statement
+(``s3_value_statement``), so S3 stays identifiable per record. Flags added:
+``unit_dimension_differs`` (e.g. air changes per hour asked as a volume flow),
+``unit_unknown``, ``field_unit_unknown``.
 
 Flags (counted, never a reject): ``symbol_collision`` (default mode ``flag``: the
 verifier is asked the ``symbol_unique`` question with a note), ``multi_value``
@@ -61,6 +77,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import _glossbench_r2 as g  # noqa: E402
+import glossbench_r2_fields as fl  # noqa: E402
 
 from ragstack.ingestion.symbol_glossary import (  # noqa: E402
     _NOT_TOKEN_AFTER,
@@ -84,12 +101,16 @@ CHECK_DEFAULTS: dict[str, Any] = {
     "collision": "flag",
     #: definitions of one symbol whose content-word Jaccard is below this are "unrelated"
     "collision_jaccard": 0.5,
+    #: fields mode: the term-leak guard's threshold (a strict "greater than", like leak_threshold)
+    "term_leak_threshold": 0.5,
 }
 #: ``layer1`` also reads ``vs_stoplist`` (the pool header's statistical stoplist) from
 #: its cfg; absent, :data:`_glossbench_r2.STAT_TOKENS` applies.
 
 REDRAW_EXEMPT = frozenset({"no_quantity"})
 FIELDS = ("question", "quote", "quantity", "value", "binding_terms", "symbol")
+#: fields mode: no model-invented binding terms (the field's terms are used); a case statement
+FIELD_MODE_FIELDS = ("question", "quote", "quantity", "value", "symbol", "case")
 
 # ------------------------------------------------------------------ prompts
 
@@ -130,7 +151,37 @@ _REASON_WORDS = {
     "binding_terms_invalid": "the binding terms were not 1 to 3 phrases of at most 4 words",
     "binding_word_not_in_paper": "a binding term used a word the paper does not use",
     "lexical_leak": "the question copied too many of the quote's words",
+    "unit_incompatible": "the value was not copied with a printed unit of the quantity's kind",
+    "term_leak": "the question used other names for the quantity instead of the definition's words",
 }
+
+DRAFT_SYSTEM_FIELDS = """You write one question for a benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
+
+You are told ONE quantity: its name, its definition and its usual unit. Find where the passage states a value for that quantity, then answer with a JSON object only, exactly these keys:
+{"question": "...", "quote": "...", "quantity": "...", "value": "...", "symbol": "...", "case": "..."}
+
+- "question": asks for the value of that quantity in this paper's setting. Word it in the definition's own words; do not list other names for the quantity. Never write a symbol, and never write the value or any number from the quote. If the value belongs to one case, scenario, room, condition or group of the study, name it in words in the question.
+- "quote": copied exactly, character for character, from the passage; at most 300 characters; it must contain the value.
+- "quantity": the quantity, named in words as the paper words it.
+- "value": the value exactly as printed in the quote, with the unit printed next to it. Never convert a unit or rewrite a number: if the passage prints "about 2 cm2", write "about 2 cm2".
+- "symbol": the symbol the passage uses for the quantity, exactly as printed, or "" if it uses none.
+- "case": the case, scenario, room, condition or group of the study the value belongs to, in the paper's words, or "" if the paper gives only one value for it.
+
+The value may be printed in words (for example "two infected people") rather than in digits. If the passage states no value for this quantity, answer {"none": true}."""
+
+
+def field_draft_messages(content: str, spec: fl.FieldSpec,
+                         previous: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
+    """Fields mode: the chunk text and the named field (name, definition, unit) —
+    never a glossary, an arm, the chunk's value-stating tokens or the term list."""
+    user = (f"PASSAGE:\n<<<\n{content}\n>>>\n\n"
+            f"QUANTITY: {spec.field}\nDEFINITION: {spec.definition}\n"
+            f"UNIT: {spec.unit if spec.unit else '(none: a count or a pure number)'}")
+    if previous is not None:
+        why = sorted({_REASON_WORDS.get(r, r) for r in previous.get("reasons") or []})
+        user += ("\n\nAn earlier answer for this passage was rejected"
+                 + (f" ({'; '.join(why)})" if why else "") + ". Answer again with the JSON object only.")
+    return [{"role": "system", "content": DRAFT_SYSTEM_FIELDS}, {"role": "user", "content": user}]
 
 
 def draft_messages(content: str, stratum: str, vs_tokens: Sequence[str],
@@ -155,8 +206,9 @@ def _strip_fence(text: str) -> str:
     return m.group(1) if m else t
 
 
-def parse_draft(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    """(draft, error). ``{"none": true}`` parses to ``{"none": True}``."""
+def parse_draft(text: str, mode: str = "open") -> tuple[dict[str, Any] | None, str | None]:
+    """(draft, error). ``{"none": true}`` parses to ``{"none": True}``. ``mode``
+    ``fields`` expects :data:`FIELD_MODE_FIELDS` (no binding terms)."""
     try:
         obj = json.loads(_strip_fence(text))
     except ValueError as e:
@@ -165,6 +217,11 @@ def parse_draft(text: str) -> tuple[dict[str, Any] | None, str | None]:
         return None, "not an object"
     if obj.get("none") is True:
         return {"none": True}, None
+    if mode == "fields":
+        missing = [f for f in FIELD_MODE_FIELDS if f not in obj]
+        if missing:
+            return None, f"missing {missing}"
+        return {f: ("" if obj[f] is None else str(obj[f])) for f in FIELD_MODE_FIELDS}, None
     missing = [f for f in FIELDS if f not in obj]
     if missing:
         return None, f"missing {missing}"
@@ -330,13 +387,15 @@ class PaperIndex:
 
 
 def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum: str, paper: str,
-           source_chunk: g.ChunkRow, idx: PaperIndex, cfg: Mapping[str, Any]) -> dict[str, Any]:
+           source_chunk: g.ChunkRow, idx: PaperIndex, cfg: Mapping[str, Any],
+           field: fl.FieldSpec | None = None) -> dict[str, Any]:
     """The per-record mechanical checks. Returns ``{"verdict": "pass"|"reject",
     "reasons": [...], "flags": [...], "gold_chunk_ids": [...], "leak_overlap": x,
-    "leak_distinctive": n, "leak_ok": bool}``."""
+    "leak_distinctive": n, "leak_ok": bool, "record_stratum": s}``. ``field`` set =
+    fields mode (see the module docstring)."""
     c = {**CHECK_DEFAULTS, **cfg}
     out: dict[str, Any] = {"reasons": [], "flags": [], "gold_chunk_ids": [], "leak_overlap": None,
-                           "leak_distinctive": None, "leak_ok": None}
+                           "leak_distinctive": None, "leak_ok": None, "record_stratum": stratum}
     reasons: list[str] = out["reasons"]
     if draft is None:
         reasons.append("unparseable")
@@ -374,7 +433,10 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
         reasons.append("number_in_question")
     # the symbol
     texts = idx.c.paper_texts(paper)
-    if stratum == "S3":
+    words_only = stratum == "S3" or (field is not None and not sym)
+    if words_only:
+        out["record_stratum"] = "S3"
+    if words_only:
         if sym:
             reasons.append("s3_has_symbol")
         if g.value_statements(quote, c.get("vs_stoplist")):
@@ -393,14 +455,29 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, stratum:
     named = {m.group(1) for m in _SCENARIO.finditer(quote.casefold())}
     if named and not named & {m.group(1) for m in _SCENARIO.finditer(q.casefold())}:
         out["flags"].append("scenario_terms")
-    # binding terms
-    terms = [t for t in draft["binding_terms"] if t]
-    if (not terms or len(terms) > int(c["max_binding_terms"]) or len(terms) != len(draft["binding_terms"])
-            or any(len(t.split()) > int(c["max_binding_words"]) for t in terms)):
-        reasons.append("binding_terms_invalid")
-    paper_words = idx.words(paper)
-    if any(w not in paper_words for t in terms for w in _words(t)):
-        reasons.append("binding_word_not_in_paper")
+    if field is not None:
+        # fields mode: the printed unit, the term-leak guard; binding terms are the field's
+        u = fl.unit_check(value, field.unit)
+        out["unit_check"] = u
+        if u == "incompatible":
+            reasons.append("unit_incompatible")
+        elif u != "ok":
+            out["flags"].append({"related": "unit_dimension_differs", "unknown": "unit_unknown",
+                                 "field_unknown": "field_unit_unknown"}[u])
+        if q:
+            share, n = fl.term_leak(q, field.terms, field.definition, draft.get("case") or "")
+            out["term_leak"], out["term_leak_words"] = round(share, 4), n
+            if share > float(c["term_leak_threshold"]):
+                reasons.append("term_leak")
+    else:
+        # binding terms
+        terms = [t for t in draft["binding_terms"] if t]
+        if (not terms or len(terms) > int(c["max_binding_terms"]) or len(terms) != len(draft["binding_terms"])
+                or any(len(t.split()) > int(c["max_binding_words"]) for t in terms)):
+            reasons.append("binding_terms_invalid")
+        paper_words = idx.words(paper)
+        if any(w not in paper_words for t in terms for w in _words(t)):
+            reasons.append("binding_word_not_in_paper")
     # lexical leak
     if q and quote:
         ov, n = leak_overlap(q, quote, idx.frequent(paper))
