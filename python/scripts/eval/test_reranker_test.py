@@ -253,7 +253,10 @@ def test_pool_prefix_for_single_legs_only() -> None:
 # ------------------------------------------------------------------ API pools: depth read-back
 
 
-def api_server(clamp: int | None = None, degraded: bool = False, config: dict[str, Any] | None = None) -> Mock:
+def api_server(clamp: int | None = None, degraded: bool = False, config: dict[str, Any] | None = None,
+               echo_top_k: bool = False) -> Mock:
+    """``echo_top_k``: the response echoes the (clamped) ``top_k`` it served, as a
+    gateway that clamps openly does."""
     ids = [r["chunk_id"] for r in make_rows()]
 
     def h(method: str, path: str, body: Any) -> tuple[int, Any]:
@@ -266,6 +269,8 @@ def api_server(clamp: int | None = None, degraded: bool = False, config: dict[st
             order = sorted(ids, key=lambda x: (hash((seed, x)) % 997, x))
             resp: dict[str, Any] = {"sources": [{"chunk_id": x, "doc_id": "d", "content": "", "score": 0,
                                                  "metadata": {}} for x in order[:k]]}
+            if echo_top_k:
+                resp["top_k"] = k
             if degraded and body.get("rerank"):
                 resp["degraded"] = [{"component": "rerank", "reason": "down"}]
             return 200, resp
@@ -1238,3 +1243,160 @@ def test_partner_norm_matches_the_described_rule() -> None:
     m = -(-6 * len(q) // 10)
     assert rt.sat.hit(q, "xx " + q[:m] + " yy") == "partial"
     assert rt.sat.hit(q, "xx " + q[:m - 1] + " yy") is None
+
+
+# ------------------------------------------------------------ BM25 exhaustion verifier (bm25_exhaustion)
+
+ES_INDEX = "ragstack_lib_bench_synthetic"
+
+
+def es_server(count: int | None, status: int = 200) -> Mock:
+    """The text index: answers ``POST /<index>/_count`` with ``count``; anything else 404."""
+    def h(method: str, path: str, body: Any) -> tuple[int, Any]:
+        if method == "POST" and path == f"/{ES_INDEX}/_count":
+            return (status, {"count": count}) if status == 200 else (status, {"error": "x"})
+        return 404, {}
+
+    return Mock(h)
+
+
+def _exh_pools(data: dict[str, Any], api: Mock, es: Mock | None, *extra: str) -> int:
+    es_args = ("--es-url", es.url, "--es-index", ES_INDEX) if es else ()
+    return rt.main(pools_argv(data, api.url, "--boost-declared", "1.0", *es_args, *extra))
+
+
+def test_api_short_bm25_verified_exhausted(data: dict[str, Any]) -> None:
+    """Served 20 of 40 and the index matches exactly 20: the bm25 list is complete;
+    hybrid@40, short the same way, cannot be verified and keeps the gate."""
+    from ragstack.stores.elasticsearch import _build_query
+
+    api, es = api_server(clamp=20), es_server(20)
+    try:
+        assert _exh_pools(data, api, es, "--allow-short", "--bm25-tenant", "tenant-synthetic") == 0
+    finally:
+        api.close()
+        es.close()
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    d = out["depth"]["bm25@40"]
+    assert d["status"] == "exhausted" and d["n_exhausted"] == 10 and d["n_under_served"] == 0
+    assert d["exhaustion"]["verdicts"] == {"exhausted_verified": 10}
+    rec = next(iter(d["exhaustion"]["per_record"].values()))
+    assert rec == {"check": "bm25_exhaustion_es_count", "requested": 40, "served": 20, "es_count": 20,
+                   "verdict": "exhausted_verified", "scope": "exact", "clause": "content+symbol_glossary"}
+    assert out["depth"]["hybrid@40"]["status"] == rt.GNE and "exhaustion" not in out["depth"]["hybrid@40"]
+    assert out["exhaustion_counts"] == 10 and len(es.calls) == 10
+    queries = sorted(json.dumps(b["query"], sort_keys=True) for _, _, b in es.calls)
+    assert queries == sorted(json.dumps(_build_query(q["question"], {"tenant_id": ["tenant-synthetic", "public"]},
+                                                     1.0), sort_keys=True) for q in data["qs"])
+
+
+def test_api_bm25_clamp_fails_even_with_allow_short(data: dict[str, Any]) -> None:
+    api, es = api_server(clamp=20), es_server(30)
+    try:
+        assert _exh_pools(data, api, es, "--allow-short", "--bm25-tenant", "tenant-synthetic") == 1
+    finally:
+        api.close()
+        es.close()
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["status"] == "clamp" and out["clamped_lists"] == ["bm25@40"]
+
+
+@pytest.mark.parametrize("tenant", [True, False])
+def test_api_bm25_query_mismatch_fails_even_with_allow_short(data: dict[str, Any], tenant: bool) -> None:
+    api, es = api_server(clamp=20), es_server(12)  # 20 served, the index matches only 12
+    try:
+        args = ["--allow-short"] + (["--bm25-tenant", "tenant-synthetic"] if tenant else [])
+        assert _exh_pools(data, api, es, *args) == 1
+    finally:
+        api.close()
+        es.close()
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["status"] == "query_mismatch" and out["mismatched_lists"] == ["bm25@40"]
+
+
+@pytest.mark.parametrize("case", ["unscoped_bound_above", "es_error", "no_es"])
+def test_api_unverifiable_bm25_stays_under_served(data: dict[str, Any], case: str) -> None:
+    api = api_server(clamp=20)
+    es = None if case == "no_es" else es_server(30, status=500 if case == "es_error" else 200)
+    try:
+        assert _exh_pools(data, api, es, "--allow-short") == 0  # no --bm25-tenant: an unscoped bound
+    finally:
+        api.close()
+        if es:
+            es.close()
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    d = out["depth"]["bm25@40"]
+    assert d["status"] == rt.GNE and d["n_under_served"] == 10
+    if case == "no_es":
+        assert "exhaustion" not in d
+    else:
+        assert d["exhaustion"]["verdicts"] == {"under_served": 10}
+        rec = next(iter(d["exhaustion"]["per_record"].values()))
+        assert rec["scope"] == "unscoped_upper_bound"
+        assert rec.get("error") == ("HTTP 500" if case == "es_error" else None)
+
+
+def test_api_short_top_k_echo_is_a_clamp_not_a_count(data: dict[str, Any]) -> None:
+    """A server that echoes a top_k below the one asked for has said it clamped: no
+    count is made and the list stays under-served, whatever the index would say."""
+    api, es = api_server(clamp=20, echo_top_k=True), es_server(20)
+    try:
+        assert _exh_pools(data, api, es, "--allow-short", "--bm25-tenant", "tenant-synthetic") == 0
+    finally:
+        api.close()
+        es.close()
+    assert es.calls == []
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    d = out["depth"]["bm25@40"]
+    assert d["status"] == rt.GNE and d["n_under_served"] == 10 and d["response_top_k"] == [20]
+    assert "exhaustion" not in d and out["exhaustion_counts"] == 0
+
+
+def test_es_url_and_es_index_go_together(data: dict[str, Any]) -> None:
+    api = api_server()
+    try:
+        for half in (("--es-url", "http://es.invalid"), ("--es-index", ES_INDEX)):
+            with pytest.raises(SystemExit, match="go together"):
+                rt.main(pools_argv(data, api.url, "--boost-declared", "1.0", *half))
+    finally:
+        api.close()
+    assert not any(p == "/v1/retrieve" for _, p, _ in api.calls)
+
+
+def test_api_nothing_short_means_no_count(data: dict[str, Any]) -> None:
+    api, es = api_server(), es_server(20)
+    try:
+        assert _exh_pools(data, api, es, "--bm25-tenant", "tenant-synthetic") == 0
+    finally:
+        api.close()
+        es.close()
+    assert es.calls == []
+    out = json.loads((data["dir"] / "pools.json").read_text())
+    assert out["exhaustion_counts"] == 0 and all("exhaustion" not in d for d in out["depth"].values())
+
+
+def test_exhaustion_count_never_carries_the_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    import bm25_exhaustion as bx
+    import httpx
+
+    trace: list[tuple[str, dict[str, str]]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        trace.append((str(req.url.host), dict(req.headers)))
+        return httpx.Response(200, json={"count": 3})
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    api = rt.Api("http://api.invalid", TOKEN, None, 2, auth_header="authorization")
+    v = rt.ExhaustionVerifier("http://es.invalid", ES_INDEX, 1.0, "tenant-synthetic")
+    body = {"top_k": 40, "rerank": False, "retrieval_mode": "bm25", "use_graph": False, "query": "a question"}
+    assert v(body, 40, 3)["verdict"] == "exhausted_verified"
+    assert api.http.headers["authorization"] == TOKEN
+    names = {h.lower() for h in rt.AUTH_HEADERS.values()}
+    assert trace and all(host == "es.invalid" and not (names & {k.lower() for k in hd}) for host, hd in trace)
+    for header in rt.AUTH_HEADERS.values():  # a credentialed index client is refused before any request
+        bad = rt.ExhaustionVerifier("http://es.invalid", ES_INDEX, 1.0, http=real(
+            headers={header: TOKEN}, transport=httpx.MockTransport(handler)))
+        with pytest.raises(bx.CredentialRefused):
+            bad(body, 40, 3)
+    assert len(trace) == 1
