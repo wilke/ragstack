@@ -638,3 +638,32 @@ Under the corrected rule and under scoping, Scout's other two arms (base, bm25) 
 The reranker test's [gold-scope addendum](../reranker-test-2026-11/ADDENDUM-2026-10-30-gold-scope.md) finds
 the same pattern on the reranker arms. A loose quote rule and cross-paper gold bias in opposite directions,
 so a scoring choice can move a small contrast across zero. What's next is unchanged.
+
+## Addendum, 2026-10-30 (night): round 3 is complete — mention attachment did not find more
+
+Round 3 held the glossary fixed (pure Qwen3.6, round 2's files) and changed only the attachment rule:
+`value` (served; an entry attaches where its symbol states a value) against `mention` (on every chunk that
+mentions the symbol). The record is [`../glossbench-round3-2026-11/RESULTS.md`](../glossbench-round3-2026-11/RESULTS.md).
+Deviations D-1 to D-6 are in [`../glossbench-round3-2026-11/DEVIATIONS.md`](../glossbench-round3-2026-11/DEVIATIONS.md),
+and the counts-only artifact is
+[`results-r3.json`](../glossbench-round3-2026-11/artifacts/results-r3.json). Retrieval and analysis ran at
+`6b434e8` (clean), 2026-10-30T22:33–22:56Z. In one line each:
+
+- **H1 (set O, M_num, the served rule's blind spot): not confirmed.** `mention` found 134 against
+  `value`'s 142 of 149 at top 10, with 1 gained and 9 lost. The power was .90 at the planned effect, so
+  this is a powered null for the hypothesised gain. The test was one-sided, so the adverse direction is
+  descriptive.
+- **H2 (V) and H3 (right against shuffled entries): GATE-NOT-EVALUABLE.** Their discordant records sit in 5
+  and 3 papers. Neither is a null.
+- **Input against outcome.** Under `mention`, more records' gold chunks carry the asked quantity's words (7
+  → 12 of 206), but `mention` puts a field on 18 % of OA-1000's chunks instead of 0.9 %. On the
+  unadjusted secondaries, the losses are largest under `bm25` and nearly absent under `norerank`.
+- **Value-only stays the served rule, as a no-change decision, not a demonstrated benefit.** On this set
+  `mention` did not beat `value`, and `value` did not beat no glossary: under `base` it found exactly the
+  records that no glossary found. Nothing here supports switching to `mention`; nothing shows value-only
+  better than none.
+- **Set A** (descriptive) was drafted after the drafter model's upstream change (D-6). **Set P** stopped at
+  its pilot and was not promoted (D-1). The R1 replication and the layer-3 spot-check are **absent**.
+
+What's next is unchanged, apart from this: the attachment question that round 3 was built to inform now
+has its record, and the record does not support switching the served rule to `mention`.
