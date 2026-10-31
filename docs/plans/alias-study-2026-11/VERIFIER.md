@@ -1,7 +1,7 @@
-# Alias study: the layer-2 verifier (alias-verify/2)
+# Alias study: the layer-2 verifier (alias-verify/3)
 
 Status: the prompt in `python/scripts/eval/glossbench_alias_checks.py` (`VERIFY_SYSTEM`,
-`verify_prompt`, `VERIFY_VERSION = "alias-verify/2"`). Every verify row and l2 log row records
+`verify_prompt`, `VERIFY_VERSION = "alias-verify/3"`). Every verify row and l2 log row records
 `verify_version`, and every accepted record records `verifier_prompt_version`. Rows that lack
 the field were written by alias-verify/1, the prompt both pilots ran with. This note gives
 counts only. Record text stays in the private output directory.
@@ -82,3 +82,56 @@ passes:
 
 Without those 4, pilot 2's G share is 13/29 = 0.45, and the gate still passes. If loose
 `supports` judgements keep recurring in the main run, the next tightening should go there.
+
+## alias-verify/3 (tightened after the v2 spot-read)
+
+The v2 spot-read showed two leaks, and v3 closes both.
+
+- **`standalone` must also NAME the distinguishing context.** A generic referent to the
+  paper's own experiment, cohort, sample or model fails, with no identifying detail:
+  "a simulation", "an experiment", "the model", "the samples", "the isolates", "the patients",
+  "different groups of children". A named context such as "Klebsiella pneumoniae oral
+  isolates" passes.
+- **`supports` is strict about exactly what is asked.** It fails in three cases:
+  - the question asks for a purpose, reason, cause or function, and the quote does not
+    state one;
+  - the question or the answer carries a qualifier that the quote does not state;
+  - the answer is near-empty (it restates the question, or is a generic word such as
+    "analysis").
+
+Five synthetic cases were added (11 in all): a generic "different groups of children", a
+generic "in a simulation", an unstated purpose, an unstated qualifier, and a near-empty
+answer. The live self-check got 11/11.
+
+The re-verification ran into `out/verify-v3/{pilot1,pilot2}/` from the clean v3 commit. The
+v1 and v2 files were left as they were. It took 74 CLI calls at $1.28, with 0 refusals and 0
+Codex fallbacks.
+
+| set | verifier | G accepted / jobs (share) | C accepted / jobs (share) | S+SR rejects / verified |
+|---|---|---|---|---|
+| pilot 1 | v2 | 18/28 (0.64) | 7/16 (0.44) | 8/36 (22%) |
+| pilot 1 | v3 | 16/28 (0.57) | 7/16 (0.44) | 9/36 (25%) |
+| pilot 2, waves 1-2 | v2 | 9/16 (0.56) | 14/27 (0.52) | 3/29 (10%) |
+| pilot 2, waves 1-2 | v3 | 6/16 (0.38) | 12/27 (0.44) | 4/29 (14%) |
+| pilot 2, all waves | v2 | 17/29 (0.59) | 14/27 (0.52) | 4/38 (11%) |
+| pilot 2, all waves | v3 | 12/29 (0.41) | 12/27 (0.44) | 5/38 (13%) |
+
+Reject reasons under v3:
+
+- pilot 1: G had standalone 6, supports 4; C had standalone 2, supports 1, single_reading 1.
+- pilot 2, all waves: G had supports 6, standalone 2; C had supports 4, standalone 2, single_reading 1.
+
+The pilot-2 gate **passes under v3**: G 0.41 ≥ 0.25, C 0.44 ≥ 0.25, and S+SR 13% ≤ 25%.
+
+**Spot-read of every G record that v3 passes** (28: 16 in pilot 1, 12 in pilot 2;
+judgement only):
+
+- **3 doubtful (11%):**
+  - pilot 1: an unnamed "in a simulation", even though the device is named;
+  - pilot 1: a one-word "correlation" answer drawn from a figure caption;
+  - pilot 2: a question qualifier ("enteric rod isolates") that the quote does not state.
+- **1 borderline:** the "oral" qualifier on the Klebsiella pneumoniae isolates is not in the
+  quote. It is counted as right because it is the owner's own pass example.
+- **Under the current layer 1:** both doubtful pilot-1 records came from alias-draft/1, and
+  the current layer 1 rejects their phrasing before the verifier sees them. On drafts made
+  with the current pipeline, the doubtful rate is 1/12 in pilot 2.
