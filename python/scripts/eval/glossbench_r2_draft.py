@@ -92,6 +92,20 @@ A budget / quota / usage-limit / cap stop (exit 76, ``provider_notice``, :data:`
 is never cleared this way. An unreadable ``modelUsage`` (missing, renamed fields, context 0)
 counts as an isolation anomaly, never as a clean call.
 
+**Re-sealing the config.** ``--resume --reseal-config --reseal-from <old config>
+--reseal-note "<text>"`` resumes a run whose private config changed since it was sealed
+(the state keeps only ``config_sha256``, so the old file is required and its sha must equal
+the sealed one). The two configs are diffed key by key (dotted paths); only
+:data:`RESEAL_RULES` may change — ``waves.target_papers`` (increase only),
+``limits.max_calls``, ``limits.output_token_cap``, ``limits.notice_overrun`` (changed, never
+removed or nulled: a positive int, a number >= 0), ``limits.prior_gateway_usage`` (append only: earlier files kept in order, numbers never
+lowered) — and any other changed key (models, prompts, verifier, seeds, corpus / glossary
+paths, caps per paper, ``max_tokens``, in-flight, ...) refuses the resume, naming every
+such key. The re-seal (who, when, note, the diff, the config and code sha before and
+after) is logged and kept in the state file's ``reseals``; the resume may run at another
+commit. It never clears a hard stop, a budget stop or a pause: those keep their own path
+(``--clear-hard-stop``; preflight + a fresh notice).
+
 **Codex fallback verifier.** A usage-policy refusal by the Claude CLI (its safeguards
 flag the verifier prompt: :func:`is_refusal` on the error text, never a transport error
 or a usage limit) is not retried on Claude: that record alone is verified by the Codex
@@ -199,6 +213,20 @@ ISOLATION_WAVE_RATE = 0.05
 #: exit 76 / ``provider_notice``; it continues only through preflight + a fresh notice)
 NEVER_CLEARABLE_RE = re.compile(r"budget|provider_notice|quota|usage_limit|limit|_cap\b|max_calls", re.I)
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
+#: ``--reseal-config``: the only config keys (dotted paths) a re-seal may change, and how:
+#: ``count`` (a positive int, never removed or null: a cap is changed, never dropped),
+#: ``share`` (a finite number >= 0, never removed or null), ``increase`` only (an int),
+#: ``append`` only (``prior_gateway_usage``)
+RESEAL_RULES: dict[str, str] = {
+    "waves.target_papers": "increase",
+    "limits.max_calls": "count",
+    "limits.output_token_cap": "count",
+    "limits.notice_overrun": "share",
+    "limits.prior_gateway_usage": "append",
+}
+#: values a key takes when the config leaves it out (for the ``increase`` rule)
+RESEAL_DEFAULTS: dict[str, Any] = {"waves.target_papers": 100}
+_ABSENT = "<absent>"
 #: Codex's fixed context under the isolation flags (its own instructions, which no flag
 #: removes), measured by a synthetic probe on gpt-6-astra: 2,025 tokens
 CODEX_FIXED_OVERHEAD = 2025
@@ -224,6 +252,82 @@ VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "properties": {**{k: {"type": "boolean"} for k in ck.VERIFY_KEYS}, "reason": {"type": "string"}},
     "required": [*ck.VERIFY_KEYS, "reason"]}
+
+
+def _flatten(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Dotted-path leaves of a config; the re-seal rules' keys are leaves whatever their shape."""
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict) and key not in RESEAL_RULES:      # an empty block is the same as none
+            out.update(_flatten(v, key + "."))
+        else:
+            out[key] = v
+    return out
+
+
+def _prior_parts(spec: Any) -> tuple[dict[str, int], list[str]]:
+    """``prior_gateway_usage`` as (hand-entered numbers, files in order)."""
+    if spec is None or spec == {} or spec == [] or spec == _ABSENT:
+        return {}, []
+    if isinstance(spec, str):
+        return {}, [spec]
+    if isinstance(spec, list):
+        return {}, [str(x) for x in spec]
+    if isinstance(spec, dict):
+        extra = sorted(set(spec) - {*PRIOR_KEYS, "files"})
+        if extra:
+            raise ValueError(f"unknown keys {extra}")
+        nums = {k: spec.get(k) or 0 for k in PRIOR_KEYS if k in spec}
+        files = spec.get("files") or []
+        if (not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in nums.values())
+                or not isinstance(files, list)):
+            raise ValueError("numbers must be ints >= 0 and files a list")
+        return nums, [str(x) for x in files]
+    raise ValueError("a dict, a path or a list of paths")
+
+
+def config_reseal_diff(old: dict[str, Any], new: dict[str, Any],
+                       defaults: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[str]]:
+    """(the allowed changes ``{key: {old, new}}``, the refused keys with why) between the
+    sealed config and the new one (:data:`RESEAL_RULES`). Refused keys are named, never their
+    values (a config may carry endpoints)."""
+    dflt = {**RESEAL_DEFAULTS, **(defaults or {})}
+    fo, fn = _flatten(old), _flatten(new)
+    allowed: dict[str, Any] = {}
+    refused: list[str] = []
+    for key in sorted(set(fo) | set(fn)):
+        a, b = fo.get(key, _ABSENT), fn.get(key, _ABSENT)
+        if a == b:
+            continue
+        rule = RESEAL_RULES.get(key)
+        if rule is None:
+            refused.append(f"{key} (not re-sealable)")
+            continue
+        if rule == "increase":
+            va, vb = (dflt.get(key) if a == _ABSENT else a), (dflt.get(key) if b == _ABSENT else b)
+            if not all(isinstance(v, int) and not isinstance(v, bool) for v in (va, vb)) or vb <= va:  # type: ignore[operator]
+                refused.append(f"{key} (increase only: {va!r} -> {vb!r})")
+                continue
+            allowed[key] = {"old": va, "new": vb}
+            continue
+        if rule in ("count", "share"):
+            num = isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b)
+            if not (num and (b >= 0 if rule == "share" else (isinstance(b, int) and b > 0))):
+                refused.append(f"{key} ({'a positive int' if rule == 'count' else 'a number >= 0'}, "
+                               "never removed or null)")
+                continue
+        if rule == "append":
+            try:
+                (na, la), (nb, lb) = _prior_parts(a), _prior_parts(b)
+            except ValueError as e:
+                refused.append(f"{key} (malformed: {e})")
+                continue
+            if lb[:len(la)] != la or any(int(nb.get(k, 0)) < v for k, v in na.items()):
+                refused.append(f"{key} (append only: earlier files kept in order, numbers never lowered)")
+                continue
+        allowed[key] = {"old": None if a == _ABSENT else a, "new": None if b == _ABSENT else b}
+    return allowed, refused
 
 
 def _ctx(entry: dict[str, Any]) -> int:
@@ -779,13 +883,16 @@ class Run:
         segs = list((self.prev_state or {}).get("segments", []))
         segs.append({"started": self.started, "ended": g.now_iso(), "end": status, "reason": reason,
                      "totals_since_resume": dict(self.control.seg), "resumed": self.resume,
-                     **({"cleared": self.clearance} if getattr(self, "clearance", None) else {})})
+                     **({"cleared": self.clearance} if getattr(self, "clearance", None) else {}),
+                     **({"resealed": self.resealed} if getattr(self, "resealed", None) else {})})
         st = {"schema": STATE_SCHEMA, "stage": stage, "set": self.set, "status": status, "reason": reason,
               "totals": self.control.totals(), "commit": self.commit, "config_sha256": self.cfg_sha,
               "pool_sha256": self.pool_sha, "prereg_sha256": self.prereg, "segments": segs,
               "fields_sha256": self.fields_sha, "pilot": list(self.pilot) if self.pilot else None,
               "clearances": [*(self.prev_state or {}).get("clearances", []),
                              *([self.clearance] if getattr(self, "clearance", None) else [])],
+              "reseals": [*(self.prev_state or {}).get("reseals", []),
+                          *([self.resealed] if getattr(self, "resealed", None) else [])],
               "updated": g.now_iso(),
               **({"yield_watch": self.yield_watch, "low_yield_allowed": self.low_yield_allowed}
                  if stage == "draft" and self.round3 else {}),
@@ -799,13 +906,61 @@ class Run:
             raise SystemExit("--clear-hard-stop and a non-empty --clear-note go together")
         self.clear = None if reason is None else {"reason": reason, "note": (note or "").strip()}
 
+    def reseal_config(self, on: bool, note: str | None, from_path: str | None) -> None:
+        """Arm an owner-sanctioned re-seal of a changed config (checked in :meth:`begin`)."""
+        if not on:
+            if note is not None or from_path is not None:
+                raise SystemExit("--reseal-note / --reseal-from go with --reseal-config")
+            self.reseal = None
+            return
+        if note is None or not note.strip() or not from_path:
+            raise SystemExit("--reseal-config needs --reseal-from <the sealed config> and a non-empty --reseal-note")
+        self.reseal = {"note": note.strip(), "from": str(from_path)}
+
+    def check_reseal(self, stage: str, st: dict[str, Any]) -> dict[str, Any] | None:
+        """The re-seal record, or None after logging why it is refused."""
+        rs = self.reseal or {}
+        sealed = st.get("config_sha256")
+        if sealed == self.cfg_sha:
+            g.log(f"{stage} --reseal-config refused: the config is unchanged (sha {self.cfg_sha}); resume without it")
+            return None
+        src = Path(rs["from"])
+        if not src.is_file():
+            g.log(f"{stage} --reseal-config refused: --reseal-from {src} not found")
+            return None
+        old_sha = g.file_sha(src)
+        if old_sha != sealed:
+            g.log(f"{stage} --reseal-config refused: --reseal-from {src.name} has sha {old_sha}, the state "
+                  f"sealed {sealed}: not the config the run was sealed with")
+            return None
+        old = json.loads(src.read_text(encoding="utf-8"))
+        if not isinstance(old, dict):
+            g.log(f"{stage} --reseal-config refused: --reseal-from {src.name} is not a JSON object")
+            return None
+        allowed, refused = config_reseal_diff(old, self.raw_cfg, self.reseal_defaults())
+        if refused:
+            g.log(f"{stage} --reseal-config refused: changed keys outside the re-seal whitelist "
+                  f"({', '.join(sorted(RESEAL_RULES))}): {'; '.join(refused)}")
+            return None
+        return {"t": g.now_iso(), "note": rs["note"], "by": os.environ.get("USER") or os.environ.get("LOGNAME"),
+                "from": str(src), "config_sha_before": sealed, "config_sha_after": self.cfg_sha,
+                "commit_before": st.get("commit"), "commit_after": self.commit, "diff": allowed,
+                "status_before": st.get("status"), "reason_before": st.get("reason")}
+
+    def reseal_defaults(self) -> dict[str, Any]:
+        """Defaults for keys a config may leave out (the ``increase`` rule); a subclass adds its own."""
+        return {}
+
     def begin(self, stage: str, resume: bool, acknowledged: bool) -> int | None:
         """Common start: inputs, state/resume checks, the notice gate, the prereg sha."""
         self.resume = resume
         clear = getattr(self, "clear", None)
         self.clearance: dict[str, Any] | None = None
+        self.resealed: dict[str, Any] | None = None
         if clear is not None and not resume:
             raise SystemExit("--clear-hard-stop needs --resume")
+        if getattr(self, "reseal", None) is not None and not resume:
+            raise SystemExit("--reseal-config needs --resume")
         self.started = g.now_iso()
         self.load()
         self.prev_state = self.read_state(stage)
@@ -837,14 +992,28 @@ class Run:
                 self.clearance = {"t": g.now_iso(), "reason": clear["reason"], "note": clear["note"],
                                   "by": os.environ.get("USER") or os.environ.get("LOGNAME"),
                                   "commit_before": st.get("commit"), "commit_after": self.commit}
+            if getattr(self, "reseal", None) is not None:
+                # a re-seal never clears a stop: the status checks above and the notice gate below still apply
+                self.resealed = self.check_reseal(stage, st)
+                if self.resealed is None:
+                    return EXIT_HARD_STOP
             bad = [k for k, v in (("commit", self.commit), ("config_sha256", self.cfg_sha),
                                   ("pool_sha256", self.pool_sha), ("prereg_sha256", self.prereg),
                                   ("fields_sha256", self.fields_sha),
                                   ("pilot", list(self.pilot) if self.pilot else None))
-                   if st.get(k) != v and not (k == "commit" and self.clearance is not None)]
+                   if st.get(k) != v
+                   and not (k == "commit" and (self.clearance is not None or self.resealed is not None))
+                   and not (k == "config_sha256" and self.resealed is not None)]
             if bad:
-                g.log(f"{stage} --resume refused (hard stop): {', '.join(bad)} differ from the state file")
+                hint = (" (a changed config resumes only with --reseal-config --reseal-from <sealed config> "
+                        "--reseal-note \"<text>\")") if "config_sha256" in bad else ""
+                g.log(f"{stage} --resume refused (hard stop): {', '.join(bad)} differ from the state file{hint}")
                 return EXIT_HARD_STOP
+            if self.resealed is not None:
+                rs = self.resealed
+                g.log(f"{stage} CONFIG RESEALED by {rs['by']}: {rs['note']} [config {rs['config_sha_before']} -> "
+                      f"{rs['config_sha_after']}; commit {rs['commit_before']} -> {rs['commit_after']}; diff "
+                      f"{json.dumps(rs['diff'], sort_keys=True)}]")
             prev_tot = st.get("totals", {}).get("since_start")
             if self.clearance is not None:
                 g.log(f"{stage} HARD STOP CLEARED ({self.clearance['reason']}) by {self.clearance['by']}: "
@@ -1889,6 +2058,19 @@ def add_clear_args(p: argparse.ArgumentParser) -> None:
                    help="with --resume: resume a hard-stopped run the owner sanctioned; REASON must equal the "
                         "state file's (logged, kept in the state's clearances; the commit may differ)")
     p.add_argument("--clear-note", default=None, metavar="TEXT", help="required with --clear-hard-stop: why")
+    p.add_argument("--reseal-config", action="store_true",
+                   help="with --resume: accept a changed private config when only the re-sealable keys changed "
+                        f"({', '.join(sorted(RESEAL_RULES))}); logged, kept in the state's reseals")
+    p.add_argument("--reseal-from", default=None, metavar="PATH",
+                   help="required with --reseal-config: the config the run was sealed with (its sha must match)")
+    p.add_argument("--reseal-note", default=None, metavar="TEXT", help="required with --reseal-config: why")
+
+
+def arm_resume_flags(run: Run, args: argparse.Namespace) -> None:
+    """``--clear-hard-stop`` and ``--reseal-config`` (absent on subcommands without them)."""
+    run.clear_hard_stop(getattr(args, "clear_hard_stop", None), getattr(args, "clear_note", None))
+    run.reseal_config(bool(getattr(args, "reseal_config", False)), getattr(args, "reseal_note", None),
+                      getattr(args, "reseal_from", None))
 
 
 def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]] | None = None,
@@ -1937,7 +2119,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     out = g.out_dir(cfg, args.out_dir)
     run = Run(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner,
               pilot=None if args.pilot is None else (args.pilot, args.papers))
-    run.clear_hard_stop(getattr(args, "clear_hard_stop", None), getattr(args, "clear_note", None))
+    arm_resume_flags(run, args)
     if args.cmd == "preflight":
         run.preflight(args.stage)
         return EXIT_OK

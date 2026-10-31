@@ -444,3 +444,207 @@ def test_seeded_activation_order_is_stable(tmp_path: Path) -> None:
     assert sorted({d["paper"] for d in jsonl(out2 / "draft-alias-T.jsonl")}) == first
     papers = sorted(f"d{i}" for i in range(1, 7))
     assert first == sorted(random.Random("test|T|waves").sample(papers, 6)[:2])
+
+
+# ------------------------------------------------------------------ --reseal-config
+
+import glossbench_r2_draft as dr  # noqa: E402
+
+
+def _finished(tmp: Path) -> tuple[Path, Path, Path]:
+    """A run-waves run stopped at ``target_met`` (2 of 6 papers), and a copy of its sealed config."""
+    path, out = setup(tmp, n_papers=6, target_papers=2, accept_rate={"G": 1.0, "C": 1.0})
+    base._with(path, limits={"max_calls": 50})
+    assert waves(path, Gateway()) == 0
+    st = state(out)
+    assert st["status"] == "complete" and st["waves"]["stop"] == "target_met" and st["waves"]["n_active"] == 2
+    sealed = tmp / "sealed.json"
+    sealed.write_text(path.read_text())
+    return path, out, sealed
+
+
+def _reseal(path: Path, sealed: Path, gw: Any, *extra: str, note: str = "owner: extend to 4 papers",
+            provenance: Any = None) -> int:
+    assert run(path, "preflight", "--stage", "waves", "--set", "T") == 0
+    return ad.main(["--private-config", str(path), "run-waves", "--set", "T", "--notice-acknowledged", "--resume",
+                    "--reseal-config", "--reseal-from", str(sealed), "--reseal-note", note, *extra],
+                   provenance=provenance or (lambda: base.PROV), http_factory=lambda: gw, cli_runner=AliasCLI())
+
+
+def test_reseal_raised_target_continues_a_finished_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Whitelisted keys only (target up, max_calls, output cap, notice_overrun): the finished
+    run continues from its state — the same seeded order, the first two papers kept, nothing
+    re-drafted or counted twice — and the re-seal is in the state and the log."""
+    path, out, sealed = _finished(tmp_path)
+    before = state(out)
+    drafted_before = {d["job_id"] for d in jsonl(out / "draft-alias-T.jsonl")}
+    base._with(path, waves={"target_papers": 4}, limits={"max_calls": 60, "output_token_cap": 900_000,
+                                                          "notice_overrun": 0.5})
+    # without --reseal-config a changed config is refused, naming the way out
+    assert run(path, "preflight", "--stage", "waves", "--set", "T") == 0
+    gw0 = Gateway()
+    assert run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", gw=gw0,
+               cli=AliasCLI()) == ad.EXIT_HARD_STOP
+    assert not gw0.bodies and "--reseal-config" in capsys.readouterr().err
+    gw = Gateway()
+    new_prov = {**base.PROV, "commit": "b" * 40}
+    assert _reseal(path, sealed, gw, provenance=lambda: new_prov) == 0
+    st = state(out)
+    w = st["waves"]
+    assert st["status"] == "complete" and w["stop"] == "target_met" and w["wave"] == 2 and w["n_active"] == 4
+    assert len(gw.bodies) == 2 * 3                                           # only the two new papers
+    drafts = jsonl(out / "draft-alias-T.jsonl")
+    assert len(drafts) == len({d["record_id"] for d in drafts}) == 12
+    assert drafted_before < {d["job_id"] for d in drafts}
+    assert st["totals"]["since_start"]["gateway_calls"] == 6 + 6               # no double counting
+    assert [h["wave"] for h in w["history"]] == [1, 2] and w["history"][1]["papers_satisfied"] == 4
+    first = {d["paper"] for d in drafts if d["job_id"] in drafted_before}
+    assert len(first) == 2 and len({d["paper"] for d in drafts}) == 4
+    rs = st["reseals"]
+    assert len(rs) == 1 and rs[0]["note"] == "owner: extend to 4 papers" and rs[0]["by"]
+    assert rs[0]["config_sha_before"] == before["config_sha256"] == dr.g.file_sha(sealed)
+    assert rs[0]["config_sha_after"] == st["config_sha256"] == dr.g.file_sha(path)
+    assert rs[0]["commit_before"] == "a" * 40 and rs[0]["commit_after"] == st["commit"] == "b" * 40
+    assert rs[0]["status_before"] == "complete" and rs[0]["t"]
+    assert rs[0]["diff"] == {"waves.target_papers": {"old": 2, "new": 4},
+                             "limits.max_calls": {"old": 50, "new": 60},
+                             "limits.output_token_cap": {"old": None, "new": 900_000},
+                             "limits.notice_overrun": {"old": None, "new": 0.5}}
+    assert st["segments"][-1]["resealed"] == rs[0] and "resealed" not in st["segments"][0]
+    err = capsys.readouterr().err
+    assert "CONFIG RESEALED" in err and "owner: extend to 4 papers" in err and "waves.target_papers" in err
+    # the next resume runs against the new seal, with no flag
+    assert run(path, "preflight", "--stage", "waves", "--set", "T") == 0
+    assert ad.main(["--private-config", str(path), "run-waves", "--set", "T", "--notice-acknowledged", "--resume"],
+                   provenance=lambda: new_prov, http_factory=Gateway, cli_runner=AliasCLI()) == 0
+    assert len(state(out)["reseals"]) == 1
+
+
+def test_reseal_refuses_keys_outside_the_whitelist(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path, out, sealed = _finished(tmp_path)
+    before = (out / "waves-state-alias-T.json").read_text()
+    base._with(path, waves={"target_papers": 4, "max_new_papers_per_wave": 3}, limits={"max_calls": 60},
+               drafter={"max_tokens": 1234, "inflight": 2})
+    gw = Gateway()
+    assert _reseal(path, sealed, gw) == ad.EXIT_HARD_STOP
+    err = capsys.readouterr().err
+    assert "refused" in err
+    for k in ("waves.max_new_papers_per_wave", "drafter.max_tokens", "drafter.inflight"):
+        assert k in err
+    assert "limits.max_calls (" not in err and "waves.target_papers (" not in err      # allowed keys not named
+    assert not gw.bodies and (out / "waves-state-alias-T.json").read_text() == before
+
+
+def test_reseal_refuses_a_lowered_target(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path, out, sealed = _finished(tmp_path)
+    base._with(path, waves={"target_papers": 1})
+    gw = Gateway()
+    assert _reseal(path, sealed, gw) == ad.EXIT_HARD_STOP
+    assert "waves.target_papers (increase only: 2 -> 1)" in capsys.readouterr().err and not gw.bodies
+
+
+def test_reseal_from_must_be_the_sealed_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path, out, sealed = _finished(tmp_path)
+    base._with(path, waves={"target_papers": 4})
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text(path.read_text())                                       # the NEW config, not the sealed one
+    gw = Gateway()
+    assert _reseal(path, wrong, gw) == ad.EXIT_HARD_STOP
+    assert "not the config the run was sealed with" in capsys.readouterr().err and not gw.bodies
+    assert _reseal(path, tmp_path / "missing.json", gw) == ad.EXIT_HARD_STOP
+    # nothing to re-seal: the config is the sealed one
+    path.write_text(sealed.read_text())
+    assert _reseal(path, sealed, gw) == ad.EXIT_HARD_STOP
+    assert "unchanged" in capsys.readouterr().err and not gw.bodies
+
+
+def test_reseal_flags_and_stops(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The note and --reseal-from are required, --resume is required, and a re-seal never
+    clears a hard stop or a budget/limit pause by itself."""
+    path, out, sealed = _finished(tmp_path)
+    base._with(path, waves={"target_papers": 4})
+    assert run(path, "preflight", "--stage", "waves", "--set", "T") == 0
+    with pytest.raises(SystemExit, match="reseal-note"):
+        run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", "--reseal-config",
+            "--reseal-from", str(sealed), gw=Gateway())
+    with pytest.raises(SystemExit, match="reseal-from"):
+        run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", "--reseal-config",
+            "--reseal-note", "x", gw=Gateway())
+    with pytest.raises(SystemExit, match="go with --reseal-config"):
+        run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", "--reseal-note", "x", gw=Gateway())
+    with pytest.raises(SystemExit, match="needs --resume"):
+        run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--reseal-config", "--reseal-from",
+            str(sealed), "--reseal-note", "x", gw=Gateway())
+    sp = out / "waves-state-alias-T.json"
+    st = json.loads(sp.read_text())
+    sp.write_text(json.dumps({**st, "status": "hard_stop", "reason": "isolation_failed"}))
+    gw = Gateway()
+    assert _reseal(path, sealed, gw) == ad.EXIT_HARD_STOP
+    assert "hard-stopped" in capsys.readouterr().err and not gw.bodies
+    after = json.loads(sp.read_text())
+    assert after["status"] == "hard_stop" and not after.get("reseals")
+    # a budget-stopped (paused) run: the reseal does not lift PAUSE or skip the fresh notice
+    sp.write_text(json.dumps({**st, "status": "paused", "reason": "budget_stop: HTTP 503",
+                              "paused_epoch": 4e9}))
+    assert run(path, "preflight", "--stage", "waves", "--set", "T") == 0
+    with pytest.raises(SystemExit, match="fresh notice"):
+        ad.main(["--private-config", str(path), "run-waves", "--set", "T", "--notice-acknowledged", "--resume",
+                 "--reseal-config", "--reseal-from", str(sealed), "--reseal-note", "x"],
+                provenance=lambda: base.PROV, http_factory=Gateway, cli_runner=AliasCLI())
+
+
+def test_reseal_diff_rules() -> None:
+    old = {"waves": {"target_papers": 100, "seed": 1}, "limits": {"prior_gateway_usage": {"calls": 5, "files": ["a"]}},
+           "verifier": {"model": "m"}}
+    ok, bad = dr.config_reseal_diff(old, {**old, "limits": {"prior_gateway_usage": {"calls": 7, "files": ["a", "b"]}}})
+    assert not bad and ok == {"limits.prior_gateway_usage": {"old": {"calls": 5, "files": ["a"]},
+                                                             "new": {"calls": 7, "files": ["a", "b"]}}}
+    for prior in ({"calls": 4, "files": ["a"]}, {"calls": 5, "files": ["b", "a"]}, {"calls": 5}, "b"):
+        _, bad = dr.config_reseal_diff(old, {**old, "limits": {"prior_gateway_usage": prior}})
+        assert bad and bad[0].startswith("limits.prior_gateway_usage (append only")
+    _, bad = dr.config_reseal_diff(old, {**old, "verifier": {"model": "n"}, "waves": {"target_papers": 100}})
+    assert bad == ["verifier.model (not re-sealable)", "waves.seed (not re-sealable)"]
+    ok, bad = dr.config_reseal_diff({"waves": {}}, {"waves": {"target_papers": 200}})       # absent = the default
+    assert not bad and ok == {"waves.target_papers": {"old": 100, "new": 200}}
+    _, bad = dr.config_reseal_diff(old, {**old, "waves": {"target_papers": True, "seed": 1}})
+    assert bad and "increase only" in bad[0]
+
+
+def test_reseal_diff_caps_are_changed_never_dropped() -> None:
+    """A whitelisted cap may change but never vanish, go null or change type; a key under a
+    whitelisted parent that is not itself whitelisted is refused; prior_gateway_usage stays
+    append-only even in its dict form (no unknown keys, no malformed numbers)."""
+    old = {"waves": {"target_papers": 100, "c_first": True},
+           "limits": {"max_calls": 1892, "notice_overrun": 0.1, "output_token_cap": 3, "call_cap": 2500,
+                      "prior_gateway_usage": ["a", "b"]}}
+
+    def diff(**limits: Any) -> tuple[dict[str, Any], list[str]]:
+        new = json.loads(json.dumps(old))
+        for k, v in limits.items():
+            if v is ...:
+                new["limits"].pop(k)
+            else:
+                new["limits"][k] = v
+        return dr.config_reseal_diff(old, new)
+
+    for k in ("max_calls", "output_token_cap"):
+        for v in (..., None, "9e9", True, 0, -1, 1.5, {"x": 1}):
+            ok, bad = diff(**{k: v})
+            assert not ok and bad and bad[0].startswith(f"limits.{k} (a positive int"), (k, v)
+        ok, bad = diff(**{k: 5000})
+        assert not bad and list(ok) == [f"limits.{k}"]
+    for v in (..., None, -0.1, float("inf"), "0.2", False):
+        _, bad = diff(notice_overrun=v)
+        assert bad and bad[0].startswith("limits.notice_overrun (a number >= 0"), v
+    assert not diff(notice_overrun=0)[1] and not diff(notice_overrun=0.25)[1]
+    assert diff(call_cap=9999)[1] == ["limits.call_cap (not re-sealable)"]
+    assert diff(foo=1)[1] == ["limits.foo (not re-sealable)"]
+    for prior in ({"files": ["a", "b"], "zzz": 5}, {"files": ["a", "b"], "calls": "x"},
+                  {"files": ["a", "b"], "calls": -1}, {"files": "a"}, 5):
+        _, bad = diff(prior_gateway_usage=prior)
+        assert bad and bad[0].startswith("limits.prior_gateway_usage (malformed"), prior
+    assert not diff(prior_gateway_usage={"files": ["a", "b", "c"], "calls": 5})[1]
+    for k, v in (("c_first", False), ("max_waves", 9)):
+        new = json.loads(json.dumps(old))
+        new["waves"][k] = v
+        assert dr.config_reseal_diff(old, new)[1] == [f"waves.{k} (not re-sealable)"]

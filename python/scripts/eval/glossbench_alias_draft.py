@@ -12,6 +12,7 @@ Subcommands (``--private-config CFG`` first; every output goes to the config's p
     summary --set S                          accepted records + counts-only summary
     preflight --stage waves --set S          the run-waves size notice (a seeded forecast)
     run-waves --set S --notice-acknowledged [--resume [--clear-hard-stop R --clear-note T]]
+              [--resume --reseal-config --reseal-from OLD_CFG --reseal-note T]
               [--allow-low-yield] [--accept-low-yield]
                                              draft -> check -> verify in waves keyed on ACCEPTED records
 
@@ -103,7 +104,10 @@ yield guards, the verifier's ``max_calls``/``max_cost_usd``. The state file
 (``waves-state-alias-<set>.json``) records the wave number, its phase
 (draft/check/verify/done), its job ids, the active papers and a per-wave history; every
 phase is idempotent, so ``--resume`` finishes the interrupted wave without drafting,
-verifying or counting anything twice. A set drafts with ``draft`` OR ``run-waves``,
+verifying or counting anything twice. A finished run (``target_met``) re-sealed with a raised
+``waves.target_papers`` (``--resume --reseal-config``, :mod:`glossbench_r2_draft`) plans its
+next wave from the recorded state: the same seeded order, the active papers kept, no job
+re-drafted. A set drafts with ``draft`` OR ``run-waves``,
 never both (each refuses the other's state file). Not with ``--pilot``. At the end the
 summary is written (``alias.waves``).
 
@@ -986,9 +990,15 @@ class AliasRun(dr.Run):
             rc = self.summary()
         return rc
 
+    def reseal_defaults(self) -> dict[str, Any]:
+        return {"waves.target_papers": wv.WAVE_DEFAULTS["target_papers"]}
+
     def _waves_body(self) -> None:
         c = self.waves_cfg
         ws = self.wave_state
+        # a finished run resumed (e.g. re-sealed with a raised target): the old stop is re-judged
+        # by the planner below; nothing drafted, verified or counted is redone
+        ws["stop"] = None
         self._draft_setup()
         self.watch_yield(self._st)
         if self.control.stopped():
@@ -1107,7 +1117,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     apool.corpus_config(cfg, args.set)
     run = AliasRun(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner,
                    pilot=None if args.pilot is None else (args.pilot, args.papers))
-    run.clear_hard_stop(getattr(args, "clear_hard_stop", None), getattr(args, "clear_note", None))
+    dr.arm_resume_flags(run, args)
     if args.cmd == "preflight":
         run.preflight(args.stage)
         return EXIT_OK
