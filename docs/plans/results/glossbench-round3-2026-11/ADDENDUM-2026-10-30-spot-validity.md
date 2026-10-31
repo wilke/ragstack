@@ -7,7 +7,7 @@ exist. It is a new file because the record is not edited. No test, retrieval or 
 no hypothesis label in `RESULTS.md` changes.
 
 Source: [`artifacts/spot-validity-r3.json`](artifacts/spot-validity-r3.json) (counts only), built by
-[`artifacts/make_spot_validity_r3.py`](artifacts/make_spot_validity_r3.py) at `c0aef0c` from a clean tree
+[`artifacts/make_spot_validity_r3.py`](artifacts/make_spot_validity_r3.py) at `b1d0371` from a clean tree
 (`dirty false`, `untracked 0`, `citable true`, `in_image false`, warning kept). The builder reads the
 private sheets, keys, labels and harness imports, recomputes every figure below, checks the as-typed
 figures against the harness's own `spot-import`, and records the sha256 of every input. The partner that
@@ -94,9 +94,29 @@ reading, set O's validity is above 0.85.
 | reported = as typed | 40 / 40 | 1.000 | [0.912, 1.000] | no |
 
 Harness import `spot-results-A.json` (sha256 `eefe23de…`, labels sha256 `a2e7b528…`): 40 / 40 valid,
-at `ad2adf1`, clean, 2026-10-31T00:26:00Z. `denotes_quantity` is `yes` on all 40. Two items carry an owner
-note; both remark that the number comes from a bibliographic citation. The owner labelled both `valid`
-with `denotes_quantity` `yes` and made no decision about them, so they count as typed.
+at `ad2adf1`, clean, 2026-10-31T00:26:00Z. `denotes_quantity` is `yes` on all 40.
+
+## Set A: two items kept as typed, by owner decision
+
+Two set-A items (sheet items `s005` and `s013`) were typed `valid`, with `denotes_quantity` `yes`, but the
+owner's note on each says the number comes from a bibliographic (journal) citation. Neither record is in
+set O's census, which covers set O only. On 2026-10-30, after the as-typed import and after this
+addendum's first draft, the owner decided to **count both as typed, valid**. The artifact lists the
+decisions explicitly (`sets.A.decisions`, reason code `OWNER_KEEP_AS_TYPED`). It names the records by
+`sha256(record_id)[:12]` = `69ff2277b1d4` and `90baf7d0d273`, never by id. The builder asserts the typed
+label, the `yes` and the note before recording each decision.
+
+Both readings, side by side:
+
+| set A | valid / n | validity | Wilson 95% | below 0.85? |
+|---|---|---|---|---|
+| **reported (owner's decision applied) = as typed** | **40 / 40** | **1.000** | **[0.912, 1.000]** | **no** |
+| what-if: the two kept items counted not valid | 38 / 40 | 0.950 | [0.835, 0.986] | no |
+
+The what-if is not an owner decision and not the reported figure
+(`sets.A.what_if_kept_counted_invalid`). Under either reading, set A's validity is above 0.85 at the point
+estimate, which is what the rule compares; the what-if's Wilson lower bound (0.835) falls below 0.85, and
+under the rule that decides nothing.
 
 D-6's caveat applies to how set A was **drafted**, after the drafter model's upstream change. It does not
 apply to this check, which the owner made on the accepted records as they stand. Set A remains descriptive
@@ -135,7 +155,8 @@ include.
 - **Validity is the owner's judgement on one question per record.** It is not the census's question, and
   it does not re-check the classes the census found (equation numbers, cross-references, accessions,
   definitional constants, names). The single *not a quantity* record in the sample was labelled `valid`
-  until the owner's decision. Set A's two citation-number notes were labelled `valid` and stand. So the
+  until the owner's decision. Set A's two citation-number items were labelled `valid` and the owner kept
+  them so. So the
   spot-check alone does not catch that class reliably. D-5 already assigns it to later rounds' layer-1
   rules.
 - **`RESULTS.md` stands.** Its hypothesis labels, figures and D-5 sensitivities are untouched. The only

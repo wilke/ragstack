@@ -681,8 +681,10 @@ below threshold*.
   labelled valid, but the owner's own note called its question ambiguous or wrong, and the record is one
   of the census's 12 flags. The owner counted it as not valid. Either way, O is above the threshold, and
   its status label is now *our three-layer check*, owner-spot-checked.
-- **Set A: 40 / 40 valid, 1.000, Wilson 95% [0.912, 1.000].** It is descriptive only, and D-6 concerns
-  its drafting, not this check.
+- **Set A: 40 / 40 valid, 1.000, Wilson 95% [0.912, 1.000].** Two items were labelled valid, but the
+  owner's notes say their numbers come from a journal citation. The owner counted both as typed, valid. Had
+  they counted as not valid it would be 38 / 40, 0.950 [0.835, 0.986], still above the threshold at the
+  point estimate. It is descriptive only, and D-6 concerns its drafting, not this check.
 - **8 of O's 40 sampled records** are among the census's 53 discriminating records, and 1 is among its 12
   flags. The two checks cover different populations.
 - A sample of 40 bounds the invalid rate (upper bound 0.129 on O); it does not show zero. The labels were

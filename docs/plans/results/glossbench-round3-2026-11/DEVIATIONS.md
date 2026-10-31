@@ -278,4 +278,4 @@ any round-3 set.
 
 ## Pointer, 2026-10-30: layer-3 owner spot-check validity
 
-Not a deviation: the owner's spot-check labels for sets O and A, imported after `RESULTS.md`, and one owner decision on how a set-O item counts. See [`ADDENDUM-2026-10-30-spot-validity.md`](ADDENDUM-2026-10-30-spot-validity.md).
+Not a deviation: the owner's spot-check labels for sets O and A, imported after `RESULTS.md`, and the owner's decisions on how one set-O item and two set-A items count. See [`ADDENDUM-2026-10-30-spot-validity.md`](ADDENDUM-2026-10-30-spot-validity.md).

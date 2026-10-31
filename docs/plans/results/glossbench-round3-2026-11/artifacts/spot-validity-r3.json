@@ -99,6 +99,7 @@
         ],
         "below_threshold": false
       },
+      "what_if_kept_counted_invalid": null,
       "harness_import": {
         "n_graded": 40,
         "n_valid": 40,
@@ -215,7 +216,38 @@
         ],
         "below_threshold": false
       },
-      "decisions": [],
+      "decisions": [
+        {
+          "item": "s005",
+          "record_alias_sha256_12": "69ff2277b1d4",
+          "typed": {
+            "label": "valid",
+            "denotes_quantity": "yes",
+            "note_present": true
+          },
+          "counted_as": "valid",
+          "reason_code": "OWNER_KEEP_AS_TYPED",
+          "reason": "typed 'valid' with denotes_quantity 'yes', but the owner's own note on the item says the number comes from a bibliographic (journal) citation. The owner decided to count it as typed, valid.",
+          "decided_by": "owner",
+          "decided_on": "2026-10-30",
+          "decided_after": "the harness's as-typed import (40/40), RESULTS.md and the first draft of this addendum"
+        },
+        {
+          "item": "s013",
+          "record_alias_sha256_12": "90baf7d0d273",
+          "typed": {
+            "label": "valid",
+            "denotes_quantity": "yes",
+            "note_present": true
+          },
+          "counted_as": "valid",
+          "reason_code": "OWNER_KEEP_AS_TYPED",
+          "reason": "typed 'valid' with denotes_quantity 'yes', but the owner's own note on the item says the number comes from a bibliographic (journal) citation. The owner decided to count it as typed, valid.",
+          "decided_by": "owner",
+          "decided_on": "2026-10-30",
+          "decided_after": "the harness's as-typed import (40/40), RESULTS.md and the first draft of this addendum"
+        }
+      ],
       "reported": {
         "n_valid": 40,
         "n": 40,
@@ -229,6 +261,21 @@
           1.0
         ],
         "below_threshold": false
+      },
+      "what_if_kept_counted_invalid": {
+        "n_valid": 38,
+        "n": 40,
+        "validity": 0.95,
+        "wilson95": [
+          0.8349612263085903,
+          0.9861793326138516
+        ],
+        "wilson95_3dp": [
+          0.835,
+          0.986
+        ],
+        "below_threshold": false,
+        "note": "not an owner decision and not the reported figure: the items the owner kept as typed (OWNER_KEEP_AS_TYPED), counted invalid instead"
       },
       "harness_import": {
         "n_graded": 40,
@@ -297,9 +344,9 @@
   },
   "provenance": {
     "schema": 1,
-    "version": "v1.6.21+c0aef0c",
-    "describe": "v1.6.21-103-gc0aef0c",
-    "commit": "c0aef0c7333bba70c93dcfdf35d162c4540f33e1",
+    "version": "v1.6.21+b1d0371",
+    "describe": "v1.6.21-105-gb1d0371",
+    "commit": "b1d0371ad956a8a850c5ca930ab78be1e14c0529",
     "dirty": false,
     "untracked": 0,
     "source": "git",
@@ -319,7 +366,7 @@
       }
     ],
     "python": "3.12.13",
-    "recorded_at": "2026-10-31T01:14:35Z",
+    "recorded_at": "2026-10-31T01:19:03Z",
     "citable": true,
     "warnings": [
       "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
