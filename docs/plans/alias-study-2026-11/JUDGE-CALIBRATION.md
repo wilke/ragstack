@@ -248,3 +248,74 @@ about 1.00. With thinking on, the rule adds a little (C has no collision error a
 n = 21), but at n = 1, B and C are within noise. Majority voting still buys little: C gains
 0.5 points from n = 1 to 21, and B gains none. The remaining gap to Opus, about 2 points (1.2
 without the overlap records), is false yeses on same-paper neighbouring chunks.
+
+## Round 3: a second local model (Qwen3.8-27B)
+
+Run of 2026-10-31, harness commit `9dabeb4` (clean). The set, the Opus reference and the overlap
+list (7 records, 50 pairs, copied from round 2 so the subsets match) are unchanged. Outputs are in
+`calib/round3/` (`analysis-variants.json`, `provenance.json`, `SHA256SUMS`). Local endpoint only:
+mango `:8008`, served model id `Qwen3.8-27B` (`Qwen/Qwen3.8-27B-FP8`, vLLM 0.31.0). There were no
+gateway or CLI calls.
+
+* **Harness change.** `qwen.require_served_model` puts `base_url` in the plan, so a preflight for one
+  endpoint does not admit a run on another. It also stops the run, storing nothing, if a reply's
+  served model id is not `qwen.model`. Each row records its endpoint. Round-2 plans are unchanged.
+* **Thinking switch.** It is the same as on `:8004`, `chat_template_kwargs.enable_thinking`. The
+  model's default is thinking **on**, so D must send `false` explicitly. The thinking comes back in
+  `message.reasoning`.
+* **Concurrency** (alias-judge/2 prompts, n = 21 per request; first 1, 2, 4 and 8 requests in
+  flight). With thinking off, samples/s were 14.2, 15.8, 17.6 and 18.1. With thinking on they were
+  7.8, 8.3, 7.5 and 12.4. The server held at most 128 sequences running, and the rest queued. The
+  runs used 4 in flight (the harness cap), because 8 gains little and the endpoint is shared.
+* **D** is `alias-judge/2` with thinking off (`max_tokens` 200). **E** is `alias-judge/2` with thinking
+  on (`max_tokens` 8192). Both took n = 21 at T 0.7 on all 410 pairs. **C** is round 2's
+  Qwen3.6-35B-A3B with /2 and thinking on.
+
+**Accuracy on the 372 Opus-unanimous pairs** (majority vote, 1,000 hypergeometric draws; FP and FN
+are mean counts):
+
+| config | n=1 acc | κ | FP | FN | n=21 acc | κ | FP | FN |
+|---|---|---|---|---|---|---|---|---|
+| C (3.6, /2, on) | 0.976 | 0.941 | 7.5 | 1.5 | 0.981 | 0.954 | 6 | 1 |
+| D (3.8, /2, off) | 0.959 | 0.896 | 2.0 | 13.1 | 0.960 | 0.897 | 2 | 13 |
+| E (3.8, /2, on) | 0.980 | 0.950 | 4.3 | 3.3 | 0.981 | 0.953 | 4 | 3 |
+
+n = 3 / 11: C 0.978 / 0.980, D 0.959 / 0.959, E 0.981 / 0.982.
+
+| n = 1 → 21 | all 372 | without overlap (327) | without coll_diff (304) | without both (262) |
+|---|---|---|---|---|
+| C | 0.976 → 0.981 | 0.985 → 0.988 | 0.971 → 0.977 | 0.981 → 0.985 |
+| D | 0.959 → 0.960 | 0.964 → 0.963 | 0.950 → 0.951 | 0.955 → 0.954 |
+| E | 0.980 → 0.981 | 0.986 → 0.988 | 0.975 → 0.977 | 0.982 → 0.985 |
+
+**Per-stratum accuracy at n = 21** (all 372):
+
+| config | gold | lex_same | lex_other | coll_same | coll_diff | G | C |
+|---|---|---|---|---|---|---|---|
+| C | 1.00 | 0.89 | 0.99 | 1.00 | 1.00 | 0.985 | 0.976 |
+| D | 0.98 | 0.93 | 0.95 | 0.93 | 1.00 | 0.946 | 0.976 |
+| E | 1.00 | 0.96 | 0.97 | 0.97 | 1.00 | 0.976 | 0.988 |
+
+**Majority errors over all stored samples.** D makes 15: 13 FN and 2 FP. Five of the FN are coll_same
+G pairs, which is the round-1 pattern of rejecting a short form the passage's paper defines as the
+term. E makes 7: 3 FN and 4 FP. They are 2 in lex_same (FP), 3 in lex_other (1 FP, 2 FN) and 2 in
+coll_same (1 FP, 1 FN). C also makes 7, but only 3 of E's 7 are C's: E fixes 4 of C's errors and adds 4. Three of E's
+errors (and three of C's) are on overlap records.
+
+**Cascade at n = 21** (τ 0.8 / 0.9): C escalates 1.6 % / 2.4 % with accuracy 0.984 / 0.984. D
+escalates 2.4 % / 4.3 % with 0.976 / 0.981. E escalates 0.8 % / 1.3 % with 0.984 / 0.984. E's
+remaining errors are confident, so a cascade adds about 0.3 points.
+
+**Throughput** (410 requests × 21 samples, 4 in flight): D took 491 s at 17.5 samples/s, with 34
+completion tokens per sample and 0 invalid. E took 1,000 s at 8.6 samples/s, with 195 completion
+tokens per sample (158 of them reasoning) and 0 invalid. C took 1,556 s at 5.5 samples/s with 675
+tokens per sample. E reasons about a quarter as long as C and finishes 1.6× faster. With thinking
+off, Qwen3.8-27B (dense) is about 2.8× slower than Qwen3.6-35B-A3B (MoE).
+
+**Reading.** With thinking off, the new model fails the same way as the old one: false noes on G
+records, near round 1's baseline. With thinking on, E matches C at n = 21 (0.981 both, 0.988
+without overlap) and is 0.4 points better at n = 1. Its errors are balanced (FP 4 / FN 3, against
+C's 6 / 1), and it gives up C's perfect coll_same for fewer lex_same false yeses. Majority voting
+buys E almost nothing (0.980 → 0.981), so n = 1 to 3 is deployable. The two thinking judges are
+interchangeable on accuracy. E is cheaper per sample and needs no voting. The two judges share
+only 3 errors, which leaves an untested option: a C + E agreement gate.

@@ -606,3 +606,45 @@ def test_thinking_verdict_is_parsed_from_the_final_answer_only(world: Path) -> N
     rows = [json.loads(x) for x in (out_of(cfg) / "labels-qwen-C.jsonl").read_text().splitlines()]
     assert rows and all(r["verdicts"] and set(r["verdicts"]) == {0} for r in rows)
     assert all('"answers": "yes"' in r["reasoning_sample"][0] for r in rows)
+
+
+# ------------------------------------------------------------------ round 3: another endpoint
+
+def test_round3_endpoint_in_plan_and_rows(world: Path) -> None:
+    """``require_served_model``: the endpoint is part of the plan, so a preflight for one server
+    does not admit a run on another, and every row names the endpoint it came from."""
+    cfg = round2_cfg(world, "E", "alias-judge/2", True)
+    raw = json.loads(cfg.read_text())
+    raw["qwen"] = {**raw["qwen"], "model": "q", "require_served_model": True}
+    cfg.write_text(json.dumps(raw))
+    assert label(cfg, "qwen", FakeHTTP(qwen_reply(lambda s, u: True))) == 0
+    out = out_of(cfg)
+    plan = json.loads((out / "preflight-qwen-E.json").read_text())["plan"]
+    assert plan["base_url"] == raw["qwen"]["base_url"] and plan["require_served_model"] is True
+    rows = [json.loads(x) for x in (out / "labels-qwen-E.jsonl").read_text().splitlines()]
+    assert rows and all(r["endpoint"] == raw["qwen"]["base_url"] and r["model"] == "q" for r in rows)
+    raw["qwen"]["base_url"] = "http://127.0.0.1:18997/v1"
+    cfg.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="plan changed"):
+        jd.main(["--config", str(cfg), "label", "--backend", "qwen", "--notice-acknowledged", "--resume"],
+                http_factory=lambda: FakeHTTP(qwen_reply(lambda s, u: True)), prov=PROV)
+
+
+def test_round3_served_model_mismatch_stops_and_stores_nothing(world: Path) -> None:
+    cfg = round2_cfg(world, "D", "alias-judge/2", False)
+    raw = json.loads(cfg.read_text())
+    raw["qwen"] = {**raw["qwen"], "model": "Qwen3.8-27B", "require_served_model": True, "inflight": 1}
+    cfg.write_text(json.dumps(raw))
+    assert label(cfg, "qwen", FakeHTTP(qwen_reply(lambda s, u: True))) == jd.EXIT_PAUSED   # serves "q"
+    out = out_of(cfg)
+    assert not (out / "labels-qwen-D.jsonl").exists() or not (out / "labels-qwen-D.jsonl").read_text().strip()
+    seg = json.loads((out / "totals-qwen-D.json").read_text())["segments"][-1]
+    assert seg["status"] == "paused:served_model_mismatch:q" and seg["totals"]["qwen_model_mismatch"] == 1
+
+
+def test_round3_default_plan_unchanged(world: Path) -> None:
+    """Without ``require_served_model`` a round-2 plan (and so its preflight sha) is unchanged."""
+    cfg = round2_cfg(world, "C", "alias-judge/2", True)
+    _, c = jd.load_config(cfg)
+    plan = jd.Labeler(c, jd.World(c)).plan("qwen", 1)
+    assert "base_url" not in plan and "require_served_model" not in plan
