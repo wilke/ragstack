@@ -890,6 +890,8 @@ class _CliShim:
         discarding it as an anomaly. A real leak (CLAUDE.md, tool definitions: tens of
         thousands of tokens) still fails."""
         iso = dr.Run.isolation(self, prompt, res)
+        if "requests" in iso:      # the verifier's check already scaled it (same-model re-ask)
+            return iso
         k = 1 + int(res.get("safety_stops") or 0)
         if k > 1:
             iso["budget"] = round(iso["budget"] * k, 1)
