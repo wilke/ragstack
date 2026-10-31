@@ -415,3 +415,18 @@ def test_analyse_end_to_end(world: Path) -> None:
     assert q["curve"]["7"]["acc"] == 1.0 and q["plateau_n"] <= 7
     assert len(coll) == 1
     assert q["cascade"]["n_all"][0]["tau"] == 0.6
+
+
+def test_build_calib_independent_of_hash_seed(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    shas = []
+    for seed in ("1", "2"):
+        cfg = make_world(tmp_path / seed)
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        code = (f"import sys; sys.path.insert(0, {str(_EVAL)!r}); import glossbench_alias_judge as j; "
+                f"sys.exit(j.main(['--config', {str(cfg)!r}, 'build-calib'], prov={{'commit': 'x', 'dirty': False}}))")
+        subprocess.run([sys.executable, "-c", code], check=True, env=env, capture_output=True)
+        shas.append((out_of(cfg) / "pairs.jsonl").read_text())
+    assert shas[0] == shas[1]

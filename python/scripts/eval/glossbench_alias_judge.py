@@ -324,7 +324,11 @@ def build_calib(records: Sequence[Mapping[str, Any]], chunks: Mapping[str, Any],
     pairs: list[dict[str, Any]] = []
     short: Counter[str] = Counter()
     for rec in records:
-        rng = random.Random(f"{c['seed']}|{rec['record_id']}")
+        salt = f"{c['seed']}|{rec['record_id']}"
+
+        def tie(cid: str, salt: str = salt) -> str:      # a seeded tie-break independent of hash order
+            return g.sha_text(f"{salt}|{cid}")
+
         gold = set(rec["gold_chunk_ids"]) | {rec["source_chunk_id"]}
         used: set[str] = set()
 
@@ -341,7 +345,7 @@ def build_calib(records: Sequence[Mapping[str, Any]], chunks: Mapping[str, Any],
         if per["gold"]:
             add(rec["source_chunk_id"], "gold")
         scores = bm.scores(rec["question"])
-        ranked = sorted(scores.items(), key=lambda x: (-x[1], rng.random()))[: int(c["bm25_top"])]
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], tie(x[0])))[: int(c["bm25_top"])]
         same = [cid for cid, _ in ranked if paper_of[cid] == rec["paper"] and cid not in gold]
         for cid in same[: int(per["lex_same"])]:
             add(cid, "lex_same", {"bm25": round(scores[cid], 3)})
@@ -369,7 +373,7 @@ def build_calib(records: Sequence[Mapping[str, Any]], chunks: Mapping[str, Any],
             if not prim:
                 continue
             cls = "same" if any(meaning(rec["primary"], p) == "same" for p in prim) else "diff"
-            by_class[cls].append((-scores.get(cid, 0.0), rng.random(), cid, prim[0]))
+            by_class[cls].append((-scores.get(cid, 0.0), tie(cid), cid, prim[0]))
         picked: dict[str, list[tuple[str, str]]] = {}
         for cls in ("diff", "same"):
             seenp: set[str] = set()
