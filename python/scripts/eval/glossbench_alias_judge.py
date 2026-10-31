@@ -879,8 +879,24 @@ class _CliShim:
 
     call_cli = dr.Run.call_cli
     claude_cmd = dr.Run.claude_cmd
-    isolation = dr.Run.isolation
     verify_system = JUDGE_SYSTEM
+
+    def isolation(self, prompt: str, res: dict[str, Any]) -> dict[str, Any]:
+        """The verifier's check, with the budget scaled by the requests the CLI made: on a
+        safeguard stop it re-asks the SAME prompt (``safety_stops`` more requests) and the
+        configured model's ``modelUsage`` then carries the input of every request, even when
+        the same model answers (seen 2026-10-31: one model, ``num_turns`` 2, context ~2x).
+        Such an answer is ``refused`` anyway (#891); this only keeps the check from
+        discarding it as an anomaly. A real leak (CLAUDE.md, tool definitions: tens of
+        thousands of tokens) still fails."""
+        iso = dr.Run.isolation(self, prompt, res)
+        k = 1 + int(res.get("safety_stops") or 0)
+        if k > 1:
+            iso["budget"] = round(iso["budget"] * k, 1)
+            iso["requests"] = k
+            seen = iso["context_tokens"]
+            iso["PASS"] = seen is not None and seen <= iso["budget"] and not iso["tool_events"]
+        return iso
 
     def __init__(self, c: Mapping[str, Any], runner: Callable[..., Any]) -> None:
         self.cfg = {"verifier": dict(c)}

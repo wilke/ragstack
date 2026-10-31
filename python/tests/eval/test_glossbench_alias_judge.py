@@ -456,3 +456,23 @@ def test_opus_empty_answer_is_reissued_not_stored(world: Path) -> None:
     assert jd.main(["--config", str(world), "label", "--backend", "opus", "--reps", "1", "--notice-acknowledged",
                     "--resume"], http_factory=lambda: http, prov=PROV) == 0
     assert len(http.bodies) == 1
+
+
+def test_cli_safety_retry_on_same_model_is_refused_not_an_anomaly(world: Path) -> None:
+    # a safeguard stop re-asked on the SAME model: one modelUsage entry carrying both requests
+    def runner(cmd: list[str], **kw: Any) -> Any:
+        stop = "acetylcholine" in kw["input"]
+        one = 2 * (len(kw["input"]) + len(jd.JUDGE_SYSTEM)) / 3.5 + 1.25 * 574   # the one-request budget
+        ctx = int(1.6 * one) if stop else 600          # two requests: over one budget, under two
+        mu = {"claude-opus-5-5": {"inputTokens": ctx, "outputTokens": 30}}
+        return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+            {"result": NO, "is_error": False, "total_cost_usd": 0.01, "modelUsage": mu,
+             "safety_stops": 1 if stop else 0, "num_turns": 2 if stop else 1}))
+
+    assert label(world, "cli", runner=runner) == 0
+    rows = [json.loads(x) for x in (out_of(world) / "labels-cli.jsonl").read_text().splitlines()]
+    stopped = [r for r in rows if r["safety_stops"]]
+    assert len(stopped) == 1 and stopped[0]["status"] == "refused" and stopped[0]["verdict"] is None
+    # a real leak still fails the check
+    sh = jd._CliShim({"model": "claude-opus-5-5"}, runner)
+    assert not sh.isolation("x" * 100, {"context_tokens": 40_000, "safety_stops": 1})["PASS"]
