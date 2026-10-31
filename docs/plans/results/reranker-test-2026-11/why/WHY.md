@@ -192,7 +192,7 @@ supplied by their owner:
 
 ```
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -I docs/plans/results/reranker-test-2026-11/why/analyse_why.py \
-  --root RUN_DIR --records-dir RECORDS_DIR --v4-gold P-gold-v4.json --v4-builder variant4.py \
+  --root RUN_DIR --dump DUMP.jsonl --records-dir RECORDS_DIR --v4-gold P-gold-v4.json --v4-builder variant4.py \
   --out docs/plans/results/reranker-test-2026-11/why/why-results.json
 ```
 

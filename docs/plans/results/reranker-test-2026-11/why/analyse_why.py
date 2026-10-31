@@ -7,7 +7,7 @@ no retrieval, reranker, store or network call and recomputes no score. Writes co
 
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -I \\
         docs/plans/results/reranker-test-2026-11/why/analyse_why.py \\
-        --root RUN_DIR --records-dir EVALSET_DIR --v4-gold P-gold-v4.json --v4-builder variant4.py \\
+        --root RUN_DIR --dump DUMP.jsonl --records-dir EVALSET_DIR --v4-gold P-gold-v4.json --v4-builder variant4.py \\
         --out docs/plans/results/reranker-test-2026-11/why/why-results.json
 """
 from __future__ import annotations
@@ -216,6 +216,7 @@ def top10_same(rids: list[str], lists: dict[str, dict[str, list[str]]], same: An
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", required=True, help="the reranker test's private run directory (holds out/)")
+    ap.add_argument("--dump", required=True, help="the bench copy's chunk dump (JSONL)")
     ap.add_argument("--records-dir", required=True, help="directory with the papers-OC held records and pairs file")
     ap.add_argument("--v4-gold", required=True, help="the addendum's v4 gold, rebuilt (sensitivity)")
     ap.add_argument("--v4-builder", required=True, help="variant4.py, for its sha256 only")
@@ -226,7 +227,7 @@ def main() -> int:
     out_dir = Path(a.root) / "out"
     f = {"P_pools": out_dir / "P-pools-r2.json", "P_rerank": out_dir / "P-rerank-r2.json",
          "P_cache": out_dir / "P-rerank-cache.jsonl", "P_gold": out_dir / "P-gold-r2.json",
-         "P_dump": out_dir / "dump-openchia.jsonl", "P_held": Path(a.records_dir) / HELD,
+         "P_dump": Path(a.dump), "P_held": Path(a.records_dir) / HELD,
          "P_pairs": Path(a.records_dir) / PAIRS, "P_gold_v4": Path(a.v4_gold), "v4_builder": Path(a.v4_builder),
          "docsA_pools": out_dir / "docsA-pools-r2.json", "docsA_rerank": out_dir / "docsA-rerank-r2.json",
          "docsA_gold": out_dir / "docsA-gold-r2.json", "docsA_questions": out_dir / "part4-questions.jsonl"}
