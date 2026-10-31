@@ -1,0 +1,482 @@
+{
+ "schema": "rr-why-review/1",
+ "label": "REVIEW, post-hoc: added after every analyse_why.py output was seen; descriptive",
+ "inputs_sha256": {
+  "P_pools": "6b5032d05623e8e2319c01e48ef31b94c7beac87800af081d32642f96f4932d3",
+  "P_rerank": "db97ddb0a20cfd9fa5f12432a4bf62efdb3b964ea9bf077f1a8e81f5e838f591",
+  "P_gold": "e3848cccd636de2d8ab15285e82db1775869bcda029f377eae10bb65e3188eb7",
+  "P_dump": "cf40b91624ed6ca08533edd2211e2359c785b24c666326f0d5b222b4491bb60f",
+  "P_held": "c720261e39b87b2d35fd838d9960db2af485eb86a73ee7900ba7caa006dd9664",
+  "P_pairs": "f8d3b7f15144ed4ba23b2519751c2d9860c11acf131aadfddf75c6988eeebef5"
+ },
+ "checks": {
+  "queries_with_identical_lists_across_records": 73,
+  "queries_with_one_source_paper": 71,
+  "distinct_queries": 73
+ },
+ "a_equal_windows_records": {
+  "lost": {
+   "top5": {
+    "A4-50": {
+     "same": 14,
+     "chunks": 100,
+     "share": 0.14
+    },
+    "A0 (bm25@100)": {
+     "same": 65,
+     "chunks": 100,
+     "share": 0.65
+    }
+   },
+   "top5_excl_gold": {
+    "A4-50": {
+     "same": 14,
+     "chunks": 100,
+     "share": 0.14
+    },
+    "A0 (bm25@100)": {
+     "same": 53,
+     "chunks": 88,
+     "share": 0.6023
+    }
+   },
+   "top10": {
+    "A4-50": {
+     "same": 24,
+     "chunks": 200,
+     "share": 0.12
+    },
+    "A0 (bm25@100)": {
+     "same": 97,
+     "chunks": 200,
+     "share": 0.485
+    }
+   },
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 24,
+     "chunks": 200,
+     "share": 0.12
+    },
+    "A0 (bm25@100)": {
+     "same": 77,
+     "chunks": 180,
+     "share": 0.4278
+    }
+   },
+   "top20": {
+    "A4-50": {
+     "same": 37,
+     "chunks": 400,
+     "share": 0.0925
+    },
+    "A0 (bm25@100)": {
+     "same": 128,
+     "chunks": 400,
+     "share": 0.32
+    }
+   },
+   "top20_excl_gold": {
+    "A4-50": {
+     "same": 32,
+     "chunks": 394,
+     "share": 0.0812
+    },
+    "A0 (bm25@100)": {
+     "same": 108,
+     "chunks": 380,
+     "share": 0.2842
+    }
+   }
+  },
+  "kept": {
+   "top5": {
+    "A4-50": {
+     "same": 82,
+     "chunks": 205,
+     "share": 0.4
+    },
+    "A0 (bm25@100)": {
+     "same": 123,
+     "chunks": 205,
+     "share": 0.6
+    }
+   },
+   "top5_excl_gold": {
+    "A4-50": {
+     "same": 54,
+     "chunks": 171,
+     "share": 0.3158
+    },
+    "A0 (bm25@100)": {
+     "same": 84,
+     "chunks": 160,
+     "share": 0.525
+    }
+   },
+   "top10": {
+    "A4-50": {
+     "same": 157,
+     "chunks": 410,
+     "share": 0.3829
+    },
+    "A0 (bm25@100)": {
+     "same": 165,
+     "chunks": 410,
+     "share": 0.4024
+    }
+   },
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 114,
+     "chunks": 353,
+     "share": 0.3229
+    },
+    "A0 (bm25@100)": {
+     "same": 118,
+     "chunks": 350,
+     "share": 0.3371
+    }
+   },
+   "top20": {
+    "A4-50": {
+     "same": 226,
+     "chunks": 820,
+     "share": 0.2756
+    },
+    "A0 (bm25@100)": {
+     "same": 232,
+     "chunks": 820,
+     "share": 0.2829
+    }
+   },
+   "top20_excl_gold": {
+    "A4-50": {
+     "same": 179,
+     "chunks": 753,
+     "share": 0.2377
+    },
+    "A0 (bm25@100)": {
+     "same": 185,
+     "chunks": 752,
+     "share": 0.246
+    }
+   }
+  },
+  "won": {
+   "top5": {
+    "A4-50": {
+     "same": 12,
+     "chunks": 55,
+     "share": 0.2182
+    },
+    "A0 (bm25@100)": {
+     "same": 3,
+     "chunks": 55,
+     "share": 0.0545
+    }
+   },
+   "top5_excl_gold": {
+    "A4-50": {
+     "same": 4,
+     "chunks": 45,
+     "share": 0.0889
+    },
+    "A0 (bm25@100)": {
+     "same": 3,
+     "chunks": 55,
+     "share": 0.0545
+    }
+   },
+   "top10": {
+    "A4-50": {
+     "same": 19,
+     "chunks": 110,
+     "share": 0.1727
+    },
+    "A0 (bm25@100)": {
+     "same": 7,
+     "chunks": 110,
+     "share": 0.0636
+    }
+   },
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 10,
+     "chunks": 99,
+     "share": 0.101
+    },
+    "A0 (bm25@100)": {
+     "same": 7,
+     "chunks": 110,
+     "share": 0.0636
+    }
+   },
+   "top20": {
+    "A4-50": {
+     "same": 27,
+     "chunks": 220,
+     "share": 0.1227
+    },
+    "A0 (bm25@100)": {
+     "same": 19,
+     "chunks": 220,
+     "share": 0.0864
+    }
+   },
+   "top20_excl_gold": {
+    "A4-50": {
+     "same": 18,
+     "chunks": 209,
+     "share": 0.0861
+    },
+    "A0 (bm25@100)": {
+     "same": 14,
+     "chunks": 215,
+     "share": 0.0651
+    }
+   }
+  },
+  "all": {
+   "top5": {
+    "A4-50": {
+     "same": 150,
+     "chunks": 765,
+     "share": 0.1961
+    },
+    "A0 (bm25@100)": {
+     "same": 240,
+     "chunks": 765,
+     "share": 0.3137
+    }
+   },
+   "top5_excl_gold": {
+    "A4-50": {
+     "same": 114,
+     "chunks": 721,
+     "share": 0.1581
+    },
+    "A0 (bm25@100)": {
+     "same": 189,
+     "chunks": 708,
+     "share": 0.2669
+    }
+   },
+   "top10": {
+    "A4-50": {
+     "same": 279,
+     "chunks": 1530,
+     "share": 0.1824
+    },
+    "A0 (bm25@100)": {
+     "same": 342,
+     "chunks": 1530,
+     "share": 0.2235
+    }
+   },
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 227,
+     "chunks": 1462,
+     "share": 0.1553
+    },
+    "A0 (bm25@100)": {
+     "same": 275,
+     "chunks": 1450,
+     "share": 0.1897
+    }
+   },
+   "top20": {
+    "A4-50": {
+     "same": 405,
+     "chunks": 3060,
+     "share": 0.1324
+    },
+    "A0 (bm25@100)": {
+     "same": 501,
+     "chunks": 3060,
+     "share": 0.1637
+    }
+   },
+   "top20_excl_gold": {
+    "A4-50": {
+     "same": 341,
+     "chunks": 2970,
+     "share": 0.1148
+    },
+    "A0 (bm25@100)": {
+     "same": 422,
+     "chunks": 2958,
+     "share": 0.1427
+    }
+   }
+  }
+ },
+ "b_per_distinct_query_lost": {
+  "distinct_queries": 8,
+  "records_per_query_sorted": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   2,
+   2,
+   11
+  ],
+  "top10_incl_gold_pooled": {
+   "A4-50": {
+    "same": 17,
+    "chunks": 80,
+    "share": 0.2125
+   },
+   "A0 (bm25@100)": {
+    "same": 29,
+    "chunks": 80,
+    "share": 0.3625
+   }
+  },
+  "top10_queries_A4_more_same_fewer_same_equal": [
+   1,
+   5,
+   2
+  ],
+  "records_excluding_the_largest_query": {
+   "records": 9,
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 24,
+     "chunks": 90,
+     "share": 0.2667
+    },
+    "A0 (bm25@100)": {
+     "same": 22,
+     "chunks": 81,
+     "share": 0.2716
+    }
+   },
+   "above_gold": {
+    "A4-50": {
+     "same": 34,
+     "chunks": 178,
+     "share": 0.191
+    },
+    "A0 (bm25@100)": {
+     "same": 10,
+     "chunks": 22,
+     "share": 0.4545
+    }
+   }
+  },
+  "largest_query": {
+   "records": 11,
+   "top10_excl_gold": {
+    "A4-50": {
+     "same": 0,
+     "chunks": 110,
+     "share": 0.0
+    },
+    "A0 (bm25@100)": {
+     "same": 55,
+     "chunks": 99,
+     "share": 0.5556
+    }
+   }
+  }
+ },
+ "c_base_rate_lost_queries": {
+  "hybrid@50_pool": {
+   "same": 47,
+   "chunks": 400,
+   "share": 0.1175
+  },
+  "bm25@100": {
+   "same": 73,
+   "chunks": 736,
+   "share": 0.0992
+  },
+  "source_paper_chunks": [
+   35
+  ],
+  "bench_chunks": 14456
+ },
+ "d_Q1_per_distinct_query": {
+  "symbol": {
+   "queries": 18,
+   "queries_A0_found_any_record": 9,
+   "queries_with_a_lost_record": 0,
+   "queries_with_a_won_record": 2
+  },
+  "digit": {
+   "queries": 20,
+   "queries_A0_found_any_record": 10,
+   "queries_with_a_lost_record": 4,
+   "queries_with_a_won_record": 2
+  },
+  "unit": {
+   "queries": 2,
+   "queries_A0_found_any_record": 0,
+   "queries_with_a_lost_record": 0,
+   "queries_with_a_won_record": 0
+  },
+  "none": {
+   "queries": 44,
+   "queries_A0_found_any_record": 16,
+   "queries_with_a_lost_record": 4,
+   "queries_with_a_won_record": 8
+  }
+ },
+ "e_Q2_per_distinct_query": {
+  "lost": {
+   "distinct_in_pool_queries": 8,
+   "no_rare_query_token": 2
+  },
+  "kept": {
+   "distinct_in_pool_queries": 26,
+   "no_rare_query_token": 1
+  },
+  "won": {
+   "distinct_in_pool_queries": 10,
+   "no_rare_query_token": 2
+  },
+  "neither": {
+   "distinct_in_pool_queries": 9,
+   "no_rare_query_token": 2
+  }
+ },
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.21+d408b18",
+  "describe": "v1.6.21-118-gd408b18",
+  "commit": "d408b18eaaeabaea021790ef54bf64da3e66ecb5",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "n_docs": 5,
+    "n_spans": 40,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4",
+    "segmenter_version": "punkt-abbrev-v1"
+   }
+  ],
+  "recorded_at": "2026-10-31T02:25:26Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ],
+  "redacted": [
+   "host",
+   "image",
+   "installed_distribution",
+   "python"
+  ]
+ }
+}
