@@ -713,7 +713,8 @@ byte-identically from `variant4.py` (sha256 `1bfb7ae4…`).
 - **Gold agrees at the document level on 153 of 155 records.** All 155 join by source file, and 132 also have
   the same gold count. Totals are 161 chunks ours against 188 theirs; those are not comparable across
   chunkings.
-- **PMCID-only keying in v4 made no difference.** The bench copy holds no DOI-named source paper.
+- **PMCID-only keying in v4 made no difference.** Every record's source paper carries a PMCID that names a
+  bench-copy paper; the bench copy's DOI-named papers are none of them.
 - **The residual 2 records** share one 11-character value quote. It sits whole in one chunk of the owner's
   chunking and straddles a boundary in the bench chunking. The same rule keeps it there and rejects the
   tail-only match here, which is the rule behaving as designed.
