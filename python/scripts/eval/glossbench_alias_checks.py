@@ -29,8 +29,7 @@ cannot fail layer 1 on a matcher disagreement:
   spaces, ``_ - . ^ { }`` between its characters, a plural ``s``/``es``/``'s`` for an
   abbreviation, case-INsensitive when the key has two or more characters and its
   casefold is not an English stop word: ``AS`` vs ``as`` stays case-sensitive, as does a
-  one-letter symbol), or for an abbreviation any case variant of a token the matcher
-  accepts (``ach``, ``Achs``).
+  one-letter symbol; so ``ach``, ``Achs``, ``ACH's``, ``ACH-based`` are caught).
 * :func:`chunk_has_primary` = :func:`alias_abbrev.has_primary_strict` (the STRICT rule):
   the primary's word sequence or any of its content words (>= 5 characters, lemmatised)
   occurs in the text.
@@ -171,12 +170,7 @@ def alias_variant_in(alias: str, text: str, alias_kind: str = "symbol") -> bool:
 
 def alias_in_question(alias: str, question: str, alias_kind: str = "symbol") -> bool:
     """The G question guard (module docstring): never weaker than :func:`alias_in_text`."""
-    if aa.alias_occurs(alias, alias_kind or "symbol", question) or alias_variant_in(alias, question, alias_kind):
-        return True
-    if is_symbol(alias_kind) or alias.casefold() in g.STOP_WORDS:
-        return False
-    want = {t.casefold() for t in aa.alias_tokens(alias, alias_kind)}
-    return any(t.casefold() in want for t in aa.TOK.findall(canonical_text(question)))
+    return aa.alias_occurs(alias, alias_kind or "symbol", question) or alias_variant_in(alias, question, alias_kind)
 
 
 def primary_literal_in(primary: str, text: str) -> bool:

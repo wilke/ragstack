@@ -525,6 +525,14 @@ def test_transient_errors_take_the_failed_call_path(tmp_path: Path, first: Resp)
     assert sum(c["status"].startswith("error:http_") for c in calls) == 2
 
 
+@pytest.mark.parametrize("status", [503, 502, 500])
+def test_typed_provider_error_mentioning_quota_is_not_a_budget_stop(tmp_path: Path, status: int) -> None:
+    body = json.dumps({"error": {"type": "provider_error", "message": "upstream quota / rate limit hiccup"}})
+    _, cfg, gw, rc = _budget_run(tmp_path, lambda b, n: Resp(status, None, body))
+    out = Path(cfg["out_dir"])
+    assert rc == ad.EXIT_PAUSED and not (out / "budget-stop-alias-T.json").exists() and len(gw.bodies) == 5
+
+
 def test_provider_error_503_never_stops_for_budget(tmp_path: Path) -> None:
     _, cfg, gw, rc = _budget_run(tmp_path, lambda body, n: Resp(503, None, TRANSIENT))
     out = Path(cfg["out_dir"])
