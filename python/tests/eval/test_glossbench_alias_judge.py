@@ -430,3 +430,29 @@ def test_build_calib_independent_of_hash_seed(tmp_path: Path) -> None:
         subprocess.run([sys.executable, "-c", code], check=True, env=env, capture_output=True)
         shas.append((out_of(cfg) / "pairs.jsonl").read_text())
     assert shas[0] == shas[1]
+
+
+def test_opus_empty_answer_is_reissued_not_stored(world: Path) -> None:
+    calls = {"n": 0}
+
+    def reply(b: dict[str, Any]) -> Resp:
+        calls["n"] += 1
+        if calls["n"] <= 2:                       # one job: empty, then empty again on its retry
+            return Resp(200, {"model": "m", "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+                              "usage": {"prompt_tokens": 10, "completion_tokens": 0}})
+        return chat(YES)
+
+    out = out_of(world)
+    (out / "INFLIGHT").write_text("1")
+    n = len(pairs_of(world))
+    assert label(world, "opus", FakeHTTP(reply), extra=["--reps", "1"]) == 0
+    rows = [json.loads(x) for x in (out / "labels-opus.jsonl").read_text().splitlines()]
+    assert len(rows) == n and all(r["verdict"] is True for r in rows)
+    assert calls["n"] == n + 2
+    # a stored empty row (an older run) is re-issued on resume
+    with (out / "labels-opus.jsonl").open("a") as fh:
+        fh.write(json.dumps({**rows[0], "status": "empty0", "verdict": None}) + "\n")
+    http = FakeHTTP(lambda b: chat(NO))
+    assert jd.main(["--config", str(world), "label", "--backend", "opus", "--reps", "1", "--notice-acknowledged",
+                    "--resume"], http_factory=lambda: http, prov=PROV) == 0
+    assert len(http.bodies) == 1

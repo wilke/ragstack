@@ -102,6 +102,7 @@ import glossbench_r2_draft as dr  # noqa: E402
 
 EXIT_OK, EXIT_HARD_STOP, EXIT_PAUSED, EXIT_BUDGET = 0, 1, 75, ad.EXIT_BUDGET
 BACKENDS = ("opus", "cli", "qwen")
+EMPTY = ("empty", "empty0")
 STRATA = ("gold", "lex_same", "lex_other", "coll_same", "coll_diff")
 CALIB_SCHEMA = "alias-judge-calib/1"
 JUDGE_VERSION = "alias-judge/1"
@@ -590,8 +591,15 @@ class Labeler:
         spec = {"model": gw_cfg["model"], "tag": gw_cfg["tag"], "max_tokens": int(gw_cfg["max_tokens"]),
                 "temperature": gw_cfg.get("temperature")}
         ctl = Ctl(self.out, int(gw_cfg["inflight"]))
+        empties = {"n": 0}
         pairs = self.w.pairs()
-        todo = [(p, r) for r in range(1, reps + 1) for p in pairs if f"opus|{p['pair_id']}|r{r}" not in st]
+
+        def need(k: str) -> bool:
+            """Not labelled yet: no row, or a row written empty (an empty answer is re-issued)."""
+            row = st.get(k)
+            return row is None or row.get("status") in EMPTY
+
+        todo = [(p, r) for r in range(1, reps + 1) for p in pairs if need(f"opus|{p['pair_id']}|r{r}")]
 
         def job(p: dict[str, Any], r: int) -> Callable[[], Any]:
             async def fn() -> None:
@@ -617,6 +625,9 @@ class Labeler:
                     if control.reason:
                         ctl.stop(control.reason)
                     return
+                if res["status"] in EMPTY:          # not stored: the next pass or --resume re-issues it
+                    empties["n"] += 1
+                    return
                 verdict, reason = parse_judgement(res.get("text") or "") if res["status"] == "ok" else (None, "")
                 control.ok()
                 st.put({"k": k, "pair_id": p["pair_id"], "rep": r, "backend": "opus", "status": res["status"],
@@ -640,7 +651,7 @@ class Labeler:
             if not todo or ctl.stopped() or control.stopped():
                 break
             asyncio.run(go())
-            todo = [(p, r) for r in range(1, reps + 1) for p in pairs if f"opus|{p['pair_id']}|r{r}" not in st]
+            todo = [(p, r) for r in range(1, reps + 1) for p in pairs if need(f"opus|{p['pair_id']}|r{r}")]
         tot = {k: int(v) for k, v in control.totals()["since_start"].items()}
         stopped = ctl.reason or control.reason
         if budget.get("ev"):
@@ -653,7 +664,8 @@ class Labeler:
                         f"totals {json.dumps(tot, sort_keys=True)}", self.log_path)
             return EXIT_BUDGET
         status = f"paused:{stopped}" if stopped else "done"
-        left = [1 for r in range(1, reps + 1) for p in pairs if f"opus|{p['pair_id']}|r{r}" not in st]
+        left = [1 for r in range(1, reps + 1) for p in pairs if need(f"opus|{p['pair_id']}|r{r}")]
+        tot["empty_answers_not_stored"] = empties["n"]
         if not stopped and left:
             status = f"paused:calls_failed:{len(left)}"
         self.write_totals("opus", tot, status)
