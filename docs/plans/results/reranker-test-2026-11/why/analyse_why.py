@@ -462,7 +462,8 @@ def main() -> int:
                                                                  same_page),
                     "not_run": "Q2, Q4, Q5: docs-A chunk text is only in the live index (out of scope)"}
 
-    res["provenance"] = prov
+    drop = {"host", "image", "installed_distribution", "python"}  # as make_rr_artifacts.py redacts
+    res["provenance"] = {**{k: v for k, v in prov.items() if k not in drop}, "redacted": sorted(drop)}
     blob = json.dumps(res, indent=1, sort_keys=False, ensure_ascii=False)
     texts = [q["query"] for q in questions] + list(dtext.values())
     leaks = [t for t in texts if len(t) >= 12 and t in blob]
