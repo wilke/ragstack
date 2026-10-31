@@ -10,6 +10,9 @@ Subcommands (``--private-config CFG`` first; every output goes to the config's p
     check  --set S                           layer 1 over every draft (no model)
     verify --set S --notice-acknowledged [--resume]    layer 2 (Claude CLI + Codex fallback)
     summary --set S                          accepted records + counts-only summary
+    preflight --stage waves --set S          the run-waves size notice (a seeded forecast)
+    run-waves --set S --notice-acknowledged [--resume] [--allow-low-yield] [--accept-low-yield]
+                                             draft -> check -> verify in waves keyed on ACCEPTED records
 
 Every subcommand takes ``--pilot [N] [--papers K]`` (default 24 jobs over 3 papers): K
 papers drawn by ``random.Random("<pool seed>|pilot")`` from the pool's eval papers and N
@@ -81,10 +84,43 @@ the set of drafted jobs is deterministic for a run that is not interrupted. Laye
 basis (layer 2 runs after drafting); a paper whose layer-2 rejects leave it short is
 reported in the summary (``alias.papers_short_after_l2``), not redrafted.
 
+**run-waves** (after the 2026-10-30 pilot, whose layer-1 stop rule halted drafting on
+papers whose records the verifier then rejected). One command loops: plan the next wave
+(:mod:`glossbench_alias_waves`: papers activated in a seeded order only as needed, the
+next G/C jobs each unsatisfied paper still needs, no job on an alias already accepted)
+-> draft it (the gateway, every rule above) -> layer 1 over the new drafts
+(:meth:`AliasRun.check_new`: incremental; logged rows are never re-judged) -> layer 2
+(the CLI verifier, counted separately as ``cli_calls``) -> recompute each paper's
+satisfaction from ACCEPTED records (``goal.G`` accepted G on DISTINCT aliases,
+:func:`glossbench_alias_checks.alias_key`, and ``goal.C`` accepted C) -> the next wave.
+It stops on ``target_met`` (``waves.target_papers`` satisfied papers), ``pool_exhausted``,
+``max_waves``, or any pause: the budget stop (exit 76), ``PAUSE``/SIGTERM, ``max_calls`` /
+``notice_overrun`` (ONE observed-calls counter for every wave of the segment, never reset
+between waves), the cumulative caps with ``prior_gateway_usage``, the failure pauses, the
+yield guards, the verifier's ``max_calls``/``max_cost_usd``. The state file
+(``waves-state-alias-<set>.json``) records the wave number, its phase
+(draft/check/verify/done), its job ids, the active papers and a per-wave history; every
+phase is idempotent, so ``--resume`` finishes the interrupted wave without drafting,
+verifying or counting anything twice. A set drafts with ``draft`` OR ``run-waves``,
+never both (each refuses the other's state file). Not with ``--pilot``. At the end the
+summary is written (``alias.waves``).
+
+The notice (``preflight --stage waves``, config block ``waves``,
+:data:`glossbench_alias_waves.WAVE_DEFAULTS`): a seeded simulation of the remaining run
+at the blended per-kind accept rates (the prior ``waves.accept_rate``, default the pilot's
+G 0.36 / C 0.38, shrunk toward the run's measured rates as they come in): ``calls`` =
+expected jobs x ``calls_per_job`` (1.32), tokens at ``prompt_tokens_per_call`` /
+``completion_tokens_per_call`` (700 / 1,780); beside it the p95, a pessimistic scenario
+(rates x ``pessimistic_factor``), ``calls_upper_bound`` (pessimistic p95 jobs, every redraw
+and empty retry, plus ``max_fail_total``), the observed-calls stop, the expected verifier
+calls, and the cumulative caps' headroom (``caps_stop_before_target`` names a cap that
+would stop the run early).
+
 **Records.** ``accepted-alias-<set>.jsonl`` (PRIVATE): ``record_id, kind (G|C), question,
 answer, quote, alias, primary, alias_kind, paper, doc_id, source_chunk_id, gold_chunks
 (the quote-bearing chunk ids), binding_terms ([primary]), flags, pilot, model,
-prompt_sha256, verifier, verifier_refused, verifier_model``.
+prompt_sha256, prompt_version (:data:`glossbench_alias_checks.PROMPT_VERSION`; the draft rows carry it
+too), verifier, verifier_refused, verifier_model``.
 
 **Private config** (template: ``python/scripts/eval/examples/glossbench-alias-config.example.json``)::
 
@@ -94,6 +130,10 @@ prompt_sha256, verifier, verifier_refused, verifier_model``.
     alias                      {goal: {G, C}, l1_pass_rate: {G, C}}  (default: the pool header's goal;
                                the pool's yield rates)
     alias_checks               layer-1 thresholds (glossbench_alias_checks.CHECK_DEFAULTS)
+    waves                      run-waves (glossbench_alias_waves.WAVE_DEFAULTS): target_papers,
+                               accept_rate {G, C}, prior_weight, max_new_papers_per_wave, max_waves,
+                               max_jobs_per_paper {G, C}, calls_per_job, prompt/completion_tokens_per_call,
+                               l1_pass_per_job {G, C}, pessimistic_factor, preflight_sims
     drafter, verifier, limits, yield_watch, prereg   as round 3 (glossbench_r2_draft.DEFAULTS)
 """
 from __future__ import annotations
@@ -105,7 +145,8 @@ import math
 import random
 import re
 import sys
-from collections import Counter
+import time
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -118,6 +159,7 @@ import _glossbench_r2 as g  # noqa: E402
 import deployed_docs_part4 as p4  # noqa: E402
 import glossbench_alias_checks as ak  # noqa: E402
 import glossbench_alias_pool as apool  # noqa: E402
+import glossbench_alias_waves as wv  # noqa: E402
 import glossbench_r2_checks as ck  # noqa: E402
 import glossbench_r2_draft as dr  # noqa: E402
 
@@ -437,7 +479,7 @@ class AliasRun(dr.Run):
 
     def finish(self, stage: str, body: Callable[[], None]) -> int:
         rc = super().finish(stage, body)
-        if stage == "draft":
+        if stage in ("draft", "waves"):
             t = self.control.totals()
             pf = json.loads(self.p.preflight(stage).read_text()).get("plan") or {}
             dr.notice("GATEWAY", f"draft set={self.label}: realised {t['since_start'].get('gateway_calls', 0)} gateway "
@@ -451,13 +493,15 @@ class AliasRun(dr.Run):
             g.write_json_atomic(self.out / f"budget-stop-{self.label}.json", ev)
             self.p.pause.write_text(f"budget stop {ev['t']}: HTTP {ev['http_status']} ({ev['why']}); "
                                     f"see budget-stop-{self.label}.json; remove this file, run preflight, "
-                                    "then draft --resume\n", encoding="utf-8")
+                                    f"then {'run-waves' if stage == 'waves' else 'draft'} --resume\n",
+                                    encoding="utf-8")
             dr.notice("GATEWAY", f"{stage} set={self.label} BUDGET STOP (HTTP {ev['http_status']}, {ev['why']}); "
                       "PAUSE written; exit 76")
             return EXIT_BUDGET
         return rc
 
-    def _draft_body(self) -> None:
+    def _draft_setup(self) -> None:
+        """The gateway client and the draft store for this segment (every wave shares them)."""
         _ = self.corpus
         d = self.cfg["drafter"]
         if not d.get("base_url"):
@@ -465,64 +509,76 @@ class AliasRun(dr.Run):
         url = str(d["base_url"]).rstrip("/")
         if url.endswith("/v1"):
             url = url[: -len("/v1")]
-        gw = AliasGateway(url, self.control, {**self.cfg["limits"], "empty_retries": 1,
-                                              "empty_backoff_s": float(d["empty_retry_s"])}, self.p.calls,
-                          on_budget=self._on_budget)
-        spec = {"model": d["model"], "tag": d["tag"], "max_tokens": int(d["max_tokens"]),
-                "temperature": d.get("temperature")}
-        st = self.drafts()
+        self._gw = AliasGateway(url, self.control, {**self.cfg["limits"], "empty_retries": 1,
+                                                    "empty_backoff_s": float(d["empty_retry_s"])}, self.p.calls,
+                                on_budget=self._on_budget)
+        self._spec = {"model": d["model"], "tag": d["tag"], "max_tokens": int(d["max_tokens"]),
+                      "temperature": d.get("temperature")}
+        self._st = self.drafts()
 
-        def job(r: dict[str, Any]) -> Callable[[Any], Any]:
-            async def fn(http: Any) -> None:
-                prev = None
-                for a in range(1, int(d["max_attempts_per_chunk"]) + 1):
-                    k = self.draft_key(r, a)
-                    row = st.get(k)
-                    if row is None:
-                        msgs = self.messages_for(r, prev)
-                        res = await gw.generate(http, spec, msgs, "draft", k, float(d["empty_retry_s"]))
-                        if res is None:
-                            return
-                        row = self.draft_row(r, a, k, msgs, res)
-                        if row["status"] == "empty_twice":
-                            self.control.fail("empty")
-                        st.put(row)
-                    if row["status"] in dr.DROPPED or row["l1_inline"]["verdict"] == "pass" \
-                            or set(row["l1_inline"]["reasons"]) & self.redraw_exempt:
+    def _job(self, r: dict[str, Any]) -> Callable[[Any], Any]:
+        d, st, gw, spec = self.cfg["drafter"], self._st, self._gw, self._spec
+
+        async def fn(http: Any) -> None:
+            prev = None
+            for a in range(1, int(d["max_attempts_per_chunk"]) + 1):
+                k = self.draft_key(r, a)
+                row = st.get(k)
+                if row is None:
+                    msgs = self.messages_for(r, prev)
+                    res = await gw.generate(http, spec, msgs, "draft", k, float(d["empty_retry_s"]))
+                    if res is None:
                         return
-                    prev = row
+                    row = self.draft_row(r, a, k, msgs, res)
+                    if row["status"] == "empty_twice":
+                        self.control.fail("empty")
+                    st.put(row)
+                if row["status"] in dr.DROPPED or row["l1_inline"]["verdict"] == "pass" \
+                        or set(row["l1_inline"]["reasons"]) & self.redraw_exempt:
+                    return
+                prev = row
 
-            async def watched(http: Any) -> None:
-                await fn(http)
-                self.watch_yield(st)
-            return watched
+        async def watched(http: Any) -> None:
+            await fn(http)
+            self.watch_yield(st)
+        return watched
+
+    def _draft_list(self, todo_of: Callable[[], list[dict[str, Any]]], what: str) -> None:
+        """Draft ``todo_of()`` (re-evaluated after each pass) for ``drafter.passes`` passes;
+        a stop is a pause, jobs still failing after the passes pause the run."""
+        d = self.cfg["drafter"]
 
         async def go(todo: list[dict[str, Any]]) -> None:
             http = self.http_factory()
             try:
-                await dr.run_jobs([job(r) for r in todo], int(d["inflight"]), self.control, http)
+                await dr.run_jobs([self._job(r) for r in todo], int(d["inflight"]), self.control, http)
             finally:
                 close = getattr(http, "aclose", None)
                 if close is not None:
                     await close()
 
+        todo = todo_of()
+        if todo:
+            dr.notice("GATEWAY", f"draft set={self.label}: {what}, {len(todo)} jobs "
+                      f"(<= {d['inflight']} in flight, model {d['model']})")
+        for _ in range(int(d["passes"])):
+            if not todo:
+                break
+            asyncio.run(go(todo))
+            if self.control.stopped():
+                raise p4.Pause(self.control.reason or "stopped")
+            todo = todo_of()
+        if todo:
+            raise p4.Pause(f"calls_failed:{len(todo)}")
+
+    def _draft_body(self) -> None:
+        self._draft_setup()
+        st = self._st
         self.watch_yield(st)
         if self.control.stopped():
             raise p4.Pause(self.control.reason or "stopped")
         for wave in sorted({r["wave"] for r in self.sampled}):
-            todo = self.wave_todo(st, wave)
-            if todo:
-                dr.notice("GATEWAY", f"draft set={self.label}: wave {wave}, {len(todo)} jobs "
-                          f"(<= {d['inflight']} in flight, model {d['model']})")
-            for _ in range(int(d["passes"])):
-                if not todo:
-                    break
-                asyncio.run(go(todo))
-                if self.control.stopped():
-                    raise p4.Pause(self.control.reason or "stopped")
-                todo = self.wave_todo(st, wave)
-            if todo:
-                raise p4.Pause(f"calls_failed:{len(todo)}")
+            self._draft_list(lambda w=wave: self.wave_todo(st, w), f"wave {wave}")  # type: ignore[misc]
         w = self.yield_watch
         if w is not None and w.get("status") == "pending":
             done, passed, _ = self.l1_tally(st)
@@ -548,7 +604,8 @@ class AliasRun(dr.Run):
                "chunk_id": r["chunk_id"], "paper": r["paper"], "doc_id": r["doc_id"], "stratum": r["stratum"],
                "attempt": attempt, "status": status, "text": text, "draft": draft, "parse_error": err,
                "model": res.get("model"), "pt": res.get("pt"), "ct": res.get("ct"), "finish": res.get("finish"),
-               "http_attempts": res.get("attempts"), "prompt_sha256": g.sha_text(json.dumps(msgs)), "t": g.now_iso()}
+               "http_attempts": res.get("attempts"), "prompt_sha256": g.sha_text(json.dumps(msgs)),
+               "prompt_version": ak.PROMPT_VERSION, "t": g.now_iso()}
         row["l1_inline"] = (self.run_layer1(row) if status == "ok"
                             else {"verdict": "dropped", "reasons": [status], "flags": []})
         return row
@@ -577,6 +634,8 @@ class AliasRun(dr.Run):
                 "paper": r["paper"], "doc_id": r["doc_id"], "source_chunk_id": r["chunk_id"],
                 "job_id": r["job_id"], "pilot": bool(r.get("pilot")), "model": r.get("model"),
                 "prompt_sha256": r.get("prompt_sha256"),
+                # rows drafted before the field existed used the pilot's prompts (alias-draft/1)
+                "prompt_version": r.get("prompt_version") or "alias-draft/1",
                 "verifier": (r["l2"].get("verifier") or "claude") if r.get("l2") else None,
                 "verifier_refused": (r.get("l2") or {}).get("verifier_refused"),
                 "verifier_model": (r.get("l2") or {}).get("served_model"),
@@ -604,9 +663,395 @@ class AliasRun(dr.Run):
                                          for x in papers),
             "accepted_by_kind": {k: sum(v for (_, kk), v in acc.items() if kk == k) for k in ak.KINDS},
             "realised": self.realised(),
+            "prompt_versions_accepted": dict(Counter(str(r.get("prompt_version") or "alias-draft/1")
+                                                     for r in self.accepted())),
         }
+        wst = self.read_state("waves")
+        if wst is not None:
+            states = self.paper_states()
+            ws = wst.get("waves") or {}
+            s["alias"]["waves"] = {
+                "target_papers": int(self.waves_cfg["target_papers"]), "stop": ws.get("stop"),
+                "waves": ws.get("wave"), "papers_active": ws.get("n_active"),
+                "papers_satisfied": sum(wv.satisfied(ps, self.goal) for ps in states.values()),
+                "papers_with_distinct_alias_G": sum(len(ps.acc_keys) >= self.goal["G"] for ps in states.values()),
+                "papers_with_C": sum(ps.acc_c >= self.goal["C"] for ps in states.values()),
+                "history": ws.get("history"),
+                "totals": (wst.get("totals") or {}).get("since_start"),
+                "rule": "satisfied = goal.G accepted G on distinct aliases (alias_key) and goal.C accepted C"}
         g.write_json_atomic(self.p.summary, s)
         return EXIT_OK
+
+
+    # -------------------------------------------------------- waves (keyed on ACCEPTED records)
+    @property
+    def waves_cfg(self) -> dict[str, Any]:
+        return wv.waves_config(self.raw_cfg.get("waves"))
+
+    def caps(self) -> dict[str, int | None]:
+        c = self.waves_cfg["max_jobs_per_paper"]
+        return {k: None if c[k] is None else int(c[k]) for k in ak.KINDS}
+
+    def job_outcomes(self) -> dict[str, str]:
+        """job_id -> ``accepted`` | ``rejected`` | ``pending`` for every drafted job (absent:
+        not drafted). Accepted = a record of the job passed layers 1 and 2 (the logs)."""
+        st, log = self.drafts(), self.acceptance()
+        by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in st.rows.values():
+            by_job[row["job_id"]].append(row)
+        out: dict[str, str] = {}
+        for r in self.sampled:
+            rows = by_job.get(r["job_id"])
+            if not rows:
+                continue
+            if not self.drafted_done(st, r):
+                out[r["job_id"]] = "pending"
+                continue
+            state = "rejected"
+            for row in sorted(rows, key=lambda x: x["attempt"]):
+                if row["status"] in dr.DROPPED:
+                    continue
+                l1 = log.get(f"l1|{row['record_id']}")
+                if l1 is None:
+                    state = "pending"
+                    break
+                if l1["verdict"] != "pass":
+                    continue
+                l2 = log.get(f"l2|{row['record_id']}")
+                if l2 is None:
+                    state = "pending"
+                    break
+                if l2["verdict"] == "pass":
+                    state = "accepted"
+                    break
+            out[r["job_id"]] = state
+        return out
+
+    def paper_states(self, outcomes: dict[str, str] | None = None) -> dict[str, wv.PaperState]:
+        o = self.job_outcomes() if outcomes is None else outcomes
+        states: dict[str, wv.PaperState] = {}
+        for r in sorted(self.sampled, key=lambda x: (x["paper"], x["stratum"], x["rank"])):
+            ps = states.setdefault(r["paper"], wv.PaperState(r["paper"]))
+            jid, key = r["job_id"], ak.alias_key(r["alias"], r.get("alias_kind"))
+            if r["stratum"] == "G":
+                ps.g.append((jid, key))
+            else:
+                ps.c.append(jid)
+            if jid in o:
+                ps.drafted.add(jid)
+            if o.get(jid) == "accepted":
+                if r["stratum"] == "G":
+                    ps.acc_keys.add(key)
+                else:
+                    ps.acc_c += 1
+        return states
+
+    def wave_order(self, states: dict[str, wv.PaperState]) -> list[str]:
+        """The reachable papers in the seeded activation order (``<pool seed>|waves``)."""
+        ok = sorted(p for p, ps in states.items() if wv.reachable(ps, self.goal))
+        return random.Random(f"{self.header['seed']}|waves").sample(ok, len(ok))
+
+    def wave_rates(self, outcomes: dict[str, str]) -> dict[str, Any]:
+        """Per kind: the measured acceptance per resolved drafted job, blended with the prior."""
+        c = self.waves_cfg
+        kind = {r["job_id"]: r["stratum"] for r in self.sampled}
+        out: dict[str, Any] = {"rates": {}, "measured": {}}
+        for k in ak.KINDS:
+            n = sum(1 for j, v in outcomes.items() if kind[j] == k and v != "pending")
+            a = sum(1 for j, v in outcomes.items() if kind[j] == k and v == "accepted")
+            out["measured"][k] = {"drafted": n, "accepted": a}
+            out["rates"][k] = wv.blend(a, n, float(c["accept_rate"][k]), float(c["prior_weight"]))
+        return out
+
+    def job_info(self) -> dict[str, tuple[str, str, str]]:
+        return {r["job_id"]: (r["paper"], r["stratum"], ak.alias_key(r["alias"], r.get("alias_kind")))
+                for r in self.sampled}
+
+    def waves_plan(self) -> dict[str, Any]:
+        """The run-waves size notice: a seeded forecast of the remaining run (module docstring)."""
+        c, d, lim = self.waves_cfg, self.cfg["drafter"], self.cfg["limits"]
+        prev = (self.read_state("waves") or {}).get("waves") or {}
+        outcomes = self.job_outcomes()
+        states = self.paper_states(outcomes)
+        order = self.wave_order(states)
+        n_active, wave0 = int(prev.get("n_active") or 0), int(prev.get("wave") or 0)
+        rr = self.wave_rates(outcomes)
+        info = self.job_info()
+        target = int(c["target_papers"])
+        args = (states, order, n_active, info)
+        kw: dict[str, Any] = {"goal": self.goal, "caps": self.caps(), "target": target, "max_new": int(c["max_new_papers_per_wave"]),
+              "max_waves": int(c["max_waves"]), "wave0": wave0, "sims": int(c["preflight_sims"])}
+        exp = wv.forecast(*args, rates=rr["rates"], seed=f"{self.header['seed']}|waves-preflight", **kw)
+        pess_rates = {k: float(v) * float(c["pessimistic_factor"]) for k, v in rr["rates"].items()}
+        pess = wv.forecast(*args, rates=pess_rates, seed=f"{self.header['seed']}|waves-preflight", **kw)
+        cpj, tin, tout = float(c["calls_per_job"]), int(c["prompt_tokens_per_call"]), int(c["completion_tokens_per_call"])
+        calls = math.ceil(exp["jobs_mean"] * cpj)
+        attempts = int(d["max_attempts_per_chunk"]) * 2                  # every redraw and empty retry
+        upper = math.ceil(pess["jobs_p95"] * attempts + int(lim["max_fail_total"]))
+        left_jobs = sum(len(wv.remaining(states[p], self.caps())[0]) + len(wv.remaining(states[p], self.caps())[1])
+                        for p in order)
+        cli = {k: exp["jobs_mean_by_kind"][k] * float(c["l1_pass_per_job"][k]) for k in ak.KINDS}
+        over = lim.get("notice_overrun")
+        stop_at = [x for x in (lim.get("max_calls"), math.ceil(calls * (1 + float(over))) if over is not None else None)
+                   if x is not None]
+        satisfied = sum(wv.satisfied(states[p], self.goal) for p in order)
+        prior = dr.resolve_prior_usage(lim.get("prior_gateway_usage"),
+                                       (self.p.state("waves"), self.p.totals("waves")))
+        spent = (self.read_state("waves") or {}).get("totals", {}).get("since_start", {})
+        cum_out = int(prior["completion_tokens"]) + int(spent.get("gateway_completion_tokens") or 0)
+        cum_in = int(prior["prompt_tokens"]) + int(spent.get("gateway_prompt_tokens") or 0)
+        cum_calls = int(prior["calls"]) + int(spent.get("gateway_calls") or 0)
+        headroom = {"output_token_cap": lim.get("output_token_cap"), "input_token_cap": lim.get("input_token_cap"),
+                    "call_cap": lim.get("call_cap"), "spent_before": {"calls": cum_calls, "prompt_tokens": cum_in,
+                                                                      "completion_tokens": cum_out},
+                    "expected_after": {"calls": cum_calls + calls, "prompt_tokens": cum_in + calls * tin,
+                                       "completion_tokens": cum_out + calls * tout}}
+        headroom["caps_stop_before_target"] = [
+            k for k, cap, v in (("output_token_cap", lim.get("output_token_cap"), cum_out + calls * tout),
+                                ("input_token_cap", lim.get("input_token_cap"), cum_in + calls * tin),
+                                ("call_cap", lim.get("call_cap"), cum_calls + calls))
+            if cap is not None and v >= int(cap)]
+        return {
+            "calls": calls, "est_input_tokens": calls * tin, "est_output_tokens": calls * tout,
+            "calls_p95": math.ceil(exp["jobs_p95"] * cpj),
+            "calls_pessimistic": math.ceil(pess["jobs_mean"] * cpj),
+            "calls_pessimistic_p95": math.ceil(pess["jobs_p95"] * cpj),
+            "calls_upper_bound": upper, "max_output_tokens": upper * int(d["max_tokens"]),
+            "calls_if_every_remaining_job": math.ceil(left_jobs * attempts + int(lim["max_fail_total"])),
+            "run_stops_at_calls": min(stop_at) if stop_at else None,
+            "cli_calls_expected": math.ceil(sum(cli.values())),
+            "models": [d["model"]], "concurrency": int(d["inflight"]),
+            "verifier": {"model": self.cfg["verifier"]["model"], "route": "CLI (off-gateway)",
+                         "inflight": int(self.cfg["verifier"]["inflight"])},
+            "target_papers": target, "satisfied_now": satisfied, "papers_reachable": len(order),
+            "papers_active_now": n_active, "wave_now": wave0, "goal": self.goal,
+            "rates": rr, "pessimistic_rates": pess_rates, "forecast": exp, "forecast_pessimistic": pess,
+            "cost_model": {"calls_per_job": cpj, "prompt_tokens_per_call": tin, "completion_tokens_per_call": tout,
+                           "l1_pass_per_job": c["l1_pass_per_job"]},
+            "caps_headroom": headroom, "prompt_version": ak.PROMPT_VERSION,
+            "pool_yield": {k: (self.pool_yield or {}).get(k) for k in ("expected_yield", "gate", "status")},
+            "estimate": "calls: forecast jobs_mean x calls_per_job (seeded simulation of the wave policy at the "
+                        "blended accept rates); calls_p95 its 95th percentile; *_pessimistic at the rates x "
+                        "pessimistic_factor; calls_upper_bound: the pessimistic p95 jobs x max_attempts x 2 (every "
+                        "redraw and empty retry) + max_fail_total; run_stops_at_calls: the observed-calls cap "
+                        "(min of max_calls and calls x (1 + notice_overrun))"}
+
+    def check_new(self) -> int:
+        """Layer 1 over the drafts not yet logged (run-waves): the logged rows are never
+        re-judged, a new record's duplicate question is judged against the logged passes
+        first, and ``shared_chunk`` flags only the new record (the log is append-only)."""
+        _ = self.corpus
+        drafts, log = self.drafts(), self.acceptance()
+        by_rid = {r["record_id"]: r for r in drafts.rows.values()}
+        seen: set[tuple[str, str]] = set()
+        use: Counter[str] = Counter()
+        for row in log.rows.values():
+            if row["layer"] == "l1" and row["verdict"] == "pass" and row["record_id"] in by_rid:
+                d = by_rid[row["record_id"]]
+                seen.add((d["paper"], g.gold_norm(d["draft"]["question"])))
+                use.update(set(row.get("gold_chunk_ids") or []))
+        added, new = 0, []
+        for row in sorted(drafts.rows.values(), key=lambda x: (x["paper"], x["record_id"])):
+            base = {"record_id": row["record_id"], "set": self.set, "paper": row["paper"],
+                    "stratum": row["stratum"], "attempt": row["attempt"], "t": g.now_iso()}
+            if row["status"] in dr.DROPPED:
+                added += self.log_row(log, {"k": f"draft|{row['record_id']}", "layer": "draft", "verdict": "dropped",
+                                            "reasons": [row["status"]], "flags": [], **base})
+            elif f"l1|{row['record_id']}" not in log:
+                new.append({**row, "l1": self.run_layer1(row)})
+        kept = []
+        for r in new:
+            if r["l1"]["verdict"] != "pass":
+                continue
+            key = (r["paper"], g.gold_norm(r["draft"]["question"]))
+            if key in seen:
+                r["l1"]["reasons"] = sorted({*r["l1"]["reasons"], "duplicate_question"})
+                r["l1"]["verdict"] = "reject"
+                continue
+            seen.add(key)
+            kept.append(r)
+        use.update(cid for r in kept for cid in set(r["l1"]["gold_chunk_ids"]))
+        for r in kept:
+            if any(use[cid] > 1 for cid in r["l1"]["gold_chunk_ids"]):
+                r["l1"]["flags"] = sorted({*r["l1"]["flags"], "shared_chunk"})
+        for r in new:
+            l1 = r["l1"]
+            added += self.log_row(log, {"k": f"l1|{r['record_id']}", "layer": "l1", "verdict": l1["verdict"],
+                                        "reasons": l1["reasons"], "flags": l1["flags"],
+                                        "gold_chunk_ids": l1["gold_chunk_ids"], "leak_overlap": l1["leak_overlap"],
+                                        "leak_distinctive": l1["leak_distinctive"], "leak_ok": l1["leak_ok"],
+                                        "record_id": r["record_id"], "set": self.set, "paper": r["paper"],
+                                        "stratum": l1.get("record_stratum", r["stratum"]),
+                                        "chunk_stratum": r["stratum"], "field": None,
+                                        "attempt": r["attempt"], "t": g.now_iso()})
+        return added
+
+    def check(self) -> int:
+        if self.p.state("waves").exists():          # a run-waves directory: the incremental check
+            self.load()
+            added = self.check_new()
+            g.log(f"check set={self.label} (run-waves, incremental): {added} new log rows")
+            return EXIT_OK
+        return super().check()
+
+    def draft(self, resume: bool = False, acknowledged: bool = False, allow_low_yield: bool = False,
+              accept_low_yield: bool = False) -> int:
+        if self.p.state("waves").exists():
+            g.log(f"draft refused: {self.p.state('waves').name} exists (this set drafts with run-waves)")
+            return EXIT_HARD_STOP
+        return super().draft(resume, acknowledged, allow_low_yield, accept_low_yield)
+
+    def preflight(self, stage: str) -> dict[str, Any]:
+        if stage != "waves":
+            return super().preflight(stage)
+        if self.pilot is not None:
+            raise SystemExit("run-waves: not with --pilot (the pilot has its own files and stop rule)")
+        self.load()
+        plan = self.waves_plan()
+        rec = {"stage": stage, "set": self.set, "created": g.now_iso(), "created_epoch": time.time(),
+               "plan_sha256": self.plan_sha(stage), "plan": plan}
+        g.write_json_atomic(self.p.preflight(stage), rec)
+        f = plan["forecast"]
+        dr.notice("GATEWAY", f"run-waves set={self.label}: target {plan['target_papers']} papers "
+                  f"({plan['satisfied_now']} satisfied now); expected {plan['calls']} calls (p95 {plan['calls_p95']}; "
+                  f"pessimistic {plan['calls_pessimistic']}, p95 {plan['calls_pessimistic_p95']}), est. "
+                  f"{plan['est_input_tokens']} tokens in / {plan['est_output_tokens']} out (upper bound "
+                  f"{plan['calls_upper_bound']} calls / {plan['max_output_tokens']} tokens out), ~{f['waves_mean']} "
+                  f"waves, ~{f['papers_activated_mean']} papers activated, P(target) {f['p_target_met']}; automatic "
+                  f"stop at {plan['run_stops_at_calls']} observed calls; models {', '.join(plan['models'])}, "
+                  f"<= {plan['concurrency']} in flight")
+        dr.notice("CLI", f"run-waves set={self.label}: ~{plan['cli_calls_expected']} verifier calls "
+                  f"({plan['verifier']['model']}, CLI off-gateway, <= {plan['verifier']['inflight']} in flight)")
+        if plan["caps_headroom"]["caps_stop_before_target"]:
+            g.log(f"run-waves preflight: WARNING the cumulative caps "
+                  f"{plan['caps_headroom']['caps_stop_before_target']} stop the run before the expected end")
+        return rec
+
+    def write_state(self, stage: str, status: str, reason: str | None) -> None:
+        super().write_state(stage, status, reason)
+        if stage != "waves":
+            return
+        path = self.p.state(stage)
+        st = json.loads(path.read_text())
+        st.update({"waves": getattr(self, "wave_state", None), "yield_watch": self.yield_watch,
+                   "low_yield_allowed": self.low_yield_allowed, "prompt_version": ak.PROMPT_VERSION})
+        g.write_json_atomic(path, st)
+
+    def write_totals(self, stage: str, status: str, reason: str | None) -> None:
+        super().write_totals(stage, status, reason)
+        if stage != "waves":
+            return
+        path = self.p.totals(stage)
+        t = json.loads(path.read_text())
+        rows = list(self.drafts().rows.values())
+        t.update({"rows": len(rows), "row_status": dict(sorted(Counter(str(r.get("status")) for r in rows).items())),
+                  "served_models": dict(sorted(Counter(str(r.get("model")) for r in rows if r.get("model")).items())),
+                  "model": self.cfg["drafter"]["model"], "verifier_model": self.cfg["verifier"]["model"],
+                  "cli_cost_usd": round(sum(float(r.get("cost_usd") or 0)
+                                            for r in p4.Store(self.p.verify_rows).rows.values()), 4)})
+        g.write_json_atomic(path, t)
+
+    def run_waves(self, resume: bool = False, acknowledged: bool = False, allow_low_yield: bool = False,
+                  accept_low_yield: bool = False) -> int:
+        if self.pilot is not None:
+            raise SystemExit("run-waves: not with --pilot (the pilot has its own files and stop rule)")
+        _ = self.waves_cfg                                   # a config error before anything starts
+        if self.p.state("draft").exists():
+            g.log(f"run-waves refused: {self.p.state('draft').name} exists (this set drafted with the draft stage)")
+            return EXIT_HARD_STOP
+        self.wave_state: dict[str, Any] = {"wave": 0, "phase": "plan", "jobs": [], "n_active": 0, "history": [],
+                                           "stop": None}
+        rc = self.begin("waves", resume, acknowledged)
+        if rc is not None:
+            return rc
+        self.wave_state = dict((self.prev_state or {}).get("waves") or self.wave_state)
+        rc = self.yield_guards(allow_low_yield, accept_low_yield)
+        if rc is not None:
+            return rc
+        pf = json.loads(self.p.preflight("waves").read_text())
+        self.control.set_call_cap((pf.get("plan") or {}).get("calls"))
+        rc = self.finish("waves", self._waves_body)
+        if rc == EXIT_OK:
+            rc = self.summary()
+        return rc
+
+    def _waves_body(self) -> None:
+        c = self.waves_cfg
+        ws = self.wave_state
+        self._draft_setup()
+        self.watch_yield(self._st)
+        if self.control.stopped():
+            raise p4.Pause(self.control.reason or "stopped")
+        target = int(c["target_papers"])
+        while True:
+            if ws["phase"] in ("draft", "check", "verify"):      # a wave in progress (a resume)
+                self._run_wave(ws)
+                continue
+            outcomes = self.job_outcomes()
+            states = self.paper_states(outcomes)
+            order = self.wave_order(states)
+            rr = self.wave_rates(outcomes)
+            n, jobs, stop = wv.plan_wave(states, order, int(ws["n_active"]), target, rr["rates"], self.goal,
+                                         self.caps(), int(c["max_new_papers_per_wave"]))
+            if stop is None and int(ws["wave"]) >= int(c["max_waves"]):
+                stop, n = "max_waves", int(ws["n_active"])
+            if stop:
+                ws.update({"stop": stop, "n_active": n})
+                break
+            by_id = self.job_by_id
+            ws.update({"wave": int(ws["wave"]) + 1, "phase": "draft", "jobs": jobs, "n_active": n,
+                       "planned": {"rates": rr["rates"], "measured": rr["measured"],
+                                   "jobs": dict(Counter(by_id[j]["stratum"] for j in jobs)),
+                                   "activated_new": n - int(ws["n_active"])}})
+            self.write_state("waves", "running", None)
+            self._run_wave(ws)
+        sat = sum(wv.satisfied(ps, self.goal) for ps in self.paper_states().values())
+        dr.notice("GATEWAY", f"run-waves set={self.label}: stopped ({ws['stop']}) after wave {ws['wave']}; "
+                  f"{sat} papers satisfied (target {target})")
+        w = self.yield_watch
+        if w is not None and w.get("status") == "pending":
+            done, passed, _ = self.l1_tally(self._st)
+            w.update({"status": "not_reached", "jobs": done, "passes": passed,
+                      "rate": (passed / done) if done else None, "t": g.now_iso()})
+
+    @property
+    def job_by_id(self) -> dict[str, dict[str, Any]]:
+        return {r["job_id"]: r for r in self.sampled}
+
+    def _run_wave(self, ws: dict[str, Any]) -> None:
+        """Draft, check and verify one wave; every phase is idempotent, so a resume redoes
+        the interrupted wave's remaining work only (nothing is drafted or counted twice)."""
+        by_id = self.job_by_id
+        jobs = [by_id[j] for j in ws["jobs"]]
+        ws["phase"] = "draft"
+        self.write_state("waves", "running", None)
+        self._draft_list(lambda: [r for r in jobs if not self.drafted_done(self._st, r)], f"wave {ws['wave']}")
+        ws["phase"] = "check"
+        self.write_state("waves", "running", None)
+        self.check_new()
+        ws["phase"] = "verify"
+        self.write_state("waves", "running", None)
+        self._verify_body()
+        outcomes = self.job_outcomes()
+        states = self.paper_states(outcomes)
+        mine = [outcomes.get(j) for j in ws["jobs"]]
+        t = self.control.totals()["since_start"]
+        hist = [h for h in ws.get("history", []) if h.get("wave") != ws["wave"]]
+        hist.append({"wave": ws["wave"], "jobs": len(ws["jobs"]),
+                     "jobs_by_kind": dict(Counter(by_id[j]["stratum"] for j in ws["jobs"])),
+                     "accepted": sum(x == "accepted" for x in mine),
+                     "papers_active": ws["n_active"],
+                     "papers_satisfied": sum(wv.satisfied(ps, self.goal) for ps in states.values()),
+                     "gateway_calls_since_start": int(t.get("gateway_calls") or 0),
+                     "cli_calls_since_start": int(t.get("cli_calls") or 0) + int(t.get("codex_calls") or 0),
+                     "t": g.now_iso()})
+        ws["history"] = hist
+        ws["phase"] = "done"
+        self.write_state("waves", "running", None)
+        h = hist[-1]
+        dr.notice("GATEWAY", f"run-waves set={self.label}: wave {ws['wave']} done: {h['jobs']} jobs, "
+                  f"{h['accepted']} accepted; {h['papers_satisfied']} papers satisfied; "
+                  f"{h['gateway_calls_since_start']} gateway / {h['cli_calls_since_start']} verifier calls so far")
 
 
 # ------------------------------------------------------------------ CLI
@@ -627,7 +1072,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         return p
 
     pf = with_set(sub.add_parser("preflight", help="print and record the size notice"))
-    pf.add_argument("--stage", required=True, choices=dr.STAGES)
+    pf.add_argument("--stage", required=True, choices=(*dr.STAGES, "waves"))
     for name in dr.STAGES:
         sp = with_set(sub.add_parser(name, help=f"the {name} stage (exit 75 paused, 76 budget stop)"))
         sp.add_argument("--notice-acknowledged", action="store_true")
@@ -635,6 +1080,12 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         if name == "draft":
             sp.add_argument("--allow-low-yield", action="store_true")
             sp.add_argument("--accept-low-yield", action="store_true")
+    rw = with_set(sub.add_parser("run-waves", help="draft -> check -> verify in waves keyed on ACCEPTED records "
+                                                   "(exit 75 paused, 76 budget stop)"))
+    rw.add_argument("--notice-acknowledged", action="store_true")
+    rw.add_argument("--resume", action="store_true")
+    rw.add_argument("--allow-low-yield", action="store_true")
+    rw.add_argument("--accept-low-yield", action="store_true")
     with_set(sub.add_parser("check", help="layer 1 over every draft (no model)"))
     with_set(sub.add_parser("summary", help="accepted records + counts-only summary"))
     args = ap.parse_args(argv)
@@ -650,6 +1101,8 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         return run.draft(args.resume, args.notice_acknowledged, args.allow_low_yield, args.accept_low_yield)
     if args.cmd == "verify":
         return run.verify(args.resume, args.notice_acknowledged)
+    if args.cmd == "run-waves":
+        return run.run_waves(args.resume, args.notice_acknowledged, args.allow_low_yield, args.accept_low_yield)
     if args.cmd == "check":
         return run.check()
     return run.summary()

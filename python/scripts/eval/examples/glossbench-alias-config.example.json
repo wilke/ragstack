@@ -1,5 +1,5 @@
 {
-  "_comment": "PRIVATE config template for the alias study (glossbench_alias_pool.py / glossbench_alias_draft.py). Copy OUTSIDE the repo and fill the <...> values; out_dir must be outside the repo. Drafter: Gemini 2.5 Pro via the gateway with max_tokens 16384 (round 3 D-6: upstream reasoning tokens); verify: Claude CLI <= 3 in flight with the Codex fallback on a usage-policy refusal. limits.notice_overrun 0.10 pauses a batch at +10% over the preflight notice's calls (D-5); max_calls is an absolute cap per segment. prior_gateway_usage: list the totals JSON of every earlier batch on the same budget. Exit codes: 0 ok, 1 hard stop, 75 paused, 76 budget stop (remove PAUSE, preflight, --resume).",
+  "_comment": "PRIVATE config template for the alias study (glossbench_alias_pool.py / glossbench_alias_draft.py). Copy OUTSIDE the repo and fill the <...> values; out_dir must be outside the repo. Drafter: Gemini 2.5 Pro via the gateway with max_tokens 16384 (round 3 D-6: upstream reasoning tokens); verify: Claude CLI <= 3 in flight with the Codex fallback on a usage-policy refusal. limits.notice_overrun 0.10 pauses a batch at +10% over the preflight notice's calls (D-5); max_calls is an absolute cap per segment. prior_gateway_usage: list the totals JSON of every earlier batch on the same budget. Exit codes: 0 ok, 1 hard stop, 75 paused, 76 budget stop (remove PAUSE, preflight, --resume). waves: run-waves (preflight --stage waves, then run-waves --notice-acknowledged); set limits.max_calls and the cumulative caps for the whole run (see the preflight caps_headroom).",
   "out_dir": "</private/path/alias-out>",
   "corpora": {
     "O": {
@@ -59,6 +59,20 @@
     "prior_gateway_usage": [],
     "max_calls": null,
     "notice_overrun": 0.10
+  },
+  "waves": {
+    "target_papers": 100,
+    "accept_rate": {"G": 0.36, "C": 0.38},
+    "prior_weight": 20,
+    "max_new_papers_per_wave": 150,
+    "max_waves": 40,
+    "max_jobs_per_paper": {"G": null, "C": null},
+    "calls_per_job": 1.32,
+    "prompt_tokens_per_call": 700,
+    "completion_tokens_per_call": 1780,
+    "l1_pass_per_job": {"G": 0.89, "C": 0.69},
+    "pessimistic_factor": 0.67,
+    "preflight_sims": 400
   },
   "yield_watch": {"after_jobs": 100, "min_pass": 0.30},
   "prereg": {"file": null, "sha256": null}

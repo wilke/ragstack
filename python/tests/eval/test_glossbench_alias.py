@@ -592,6 +592,8 @@ def test_config_template_is_accepted() -> None:
     assert m["limits"]["notice_overrun"] == 0.10
     apool.pool_config(tpl)
     assert set(tpl["alias_checks"]) <= set(ak.CHECK_DEFAULTS)
+    import glossbench_alias_waves as wv
+    assert wv.waves_config(tpl["waves"]) == wv.WAVE_DEFAULTS
 
 
 # ------------------------------------------------------------------ one matcher (review of #888)
