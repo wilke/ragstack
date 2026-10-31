@@ -918,3 +918,15 @@ def test_verify_cases_live(case: dict[str, Any], tmp_path: Path) -> None:
         assert all(got[k] == v for k, v in case["expect"].items()), (got, verdict["reason"])
     else:
         assert got == want, (got, verdict["reason"])
+
+
+def test_run_waves_takes_the_clear_hard_stop_flags(tmp_path: Path) -> None:
+    """The flags reach :meth:`dr.Run.begin` from run-waves (the alias main run's resume path)."""
+    path, _ = world(tmp_path)
+    cli = AliasCLI()
+    # no state file: refused before any call; a note without a reason is a usage error
+    assert run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", "--clear-hard-stop",
+               "isolation_failed", "--clear-note", "owner ok", cli=cli) == 1
+    with pytest.raises(SystemExit, match="clear-note"):
+        run(path, "run-waves", "--set", "T", "--notice-acknowledged", "--resume", "--clear-note", "x", cli=cli)
+    assert not cli.calls

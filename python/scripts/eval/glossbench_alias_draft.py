@@ -11,7 +11,8 @@ Subcommands (``--private-config CFG`` first; every output goes to the config's p
     verify --set S --notice-acknowledged [--resume]    layer 2 (Claude CLI + Codex fallback)
     summary --set S                          accepted records + counts-only summary
     preflight --stage waves --set S          the run-waves size notice (a seeded forecast)
-    run-waves --set S --notice-acknowledged [--resume] [--allow-low-yield] [--accept-low-yield]
+    run-waves --set S --notice-acknowledged [--resume [--clear-hard-stop R --clear-note T]]
+              [--allow-low-yield] [--accept-low-yield]
                                              draft -> check -> verify in waves keyed on ACCEPTED records
 
 Every subcommand takes ``--pilot [N] [--papers K]`` (default 24 jobs over 3 papers): K
@@ -1087,6 +1088,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         sp = with_set(sub.add_parser(name, help=f"the {name} stage (exit 75 paused, 76 budget stop)"))
         sp.add_argument("--notice-acknowledged", action="store_true")
         sp.add_argument("--resume", action="store_true")
+        dr.add_clear_args(sp)
         if name == "draft":
             sp.add_argument("--allow-low-yield", action="store_true")
             sp.add_argument("--accept-low-yield", action="store_true")
@@ -1094,6 +1096,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
                                                    "(exit 75 paused, 76 budget stop)"))
     rw.add_argument("--notice-acknowledged", action="store_true")
     rw.add_argument("--resume", action="store_true")
+    dr.add_clear_args(rw)
     rw.add_argument("--allow-low-yield", action="store_true")
     rw.add_argument("--accept-low-yield", action="store_true")
     with_set(sub.add_parser("check", help="layer 1 over every draft (no model)"))
@@ -1104,6 +1107,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     apool.corpus_config(cfg, args.set)
     run = AliasRun(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner,
                    pilot=None if args.pilot is None else (args.pilot, args.papers))
+    run.clear_hard_stop(getattr(args, "clear_hard_stop", None), getattr(args, "clear_note", None))
     if args.cmd == "preflight":
         run.preflight(args.stage)
         return EXIT_OK

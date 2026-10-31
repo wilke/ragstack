@@ -599,8 +599,122 @@ def test_verifier_isolation_failure_is_a_hard_stop(tmp_path: Path) -> None:
     run(path, "preflight", "--stage", "verify", "--set", "O")
     cli = FakeCLI(ctx=10_000_000)
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 1
-    assert len(cli.calls) == 1                                      # the probe runs alone
-    assert json.loads((out(cfg) / "verify-state-O.json").read_text())["reason"] == "isolation_failed"
+    # the probe runs alone; a persistent anomaly is re-issued twice, the third is the stop
+    assert len(cli.calls) == 3 and len({c["input"] for c in cli.calls}) == 1
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["reason"] == "isolation_failed" and st["totals"]["since_start"]["cli_isolation_anomalies"] == 3
+    assert not (out(cfg) / "verify-O.jsonl").exists() or not [
+        x for x in (out(cfg) / "verify-O.jsonl").read_text().splitlines() if '"verify|' in x]
+
+
+class FlakyCtxCLI(FakeCLI):
+    """Context ``bad`` for the calls whose 1-based number is in ``bad_calls`` (or whose prompt
+    ``bad_prompt`` matches, every time); 400 otherwise."""
+
+    def __init__(self, bad_calls: set[int] = frozenset(), bad_prompt: str | None = None) -> None:
+        super().__init__()
+        self.bad_calls, self.bad_prompt = set(bad_calls), bad_prompt
+
+    def __call__(self, cmd: list[str], **kw: Any) -> SimpleNamespace:  # type: ignore[override]
+        with self.lock:
+            self.n_seen = getattr(self, "n_seen", 0) + 1
+            n = self.n_seen
+        res = super().__call__(cmd, **kw)
+        if n in self.bad_calls or (self.bad_prompt and self.bad_prompt in kw["input"]):
+            o = json.loads(res.stdout)
+            o["modelUsage"]["claude-opus-5-5"]["inputTokens"] = 10_000_000
+            res.stdout = json.dumps(o)
+        return res
+
+
+def _verify_rows(cfg: dict) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in (out(cfg) / "verify-O.jsonl").read_text().splitlines()
+            if x.strip() and '"verify|' in x]
+
+
+def test_every_verifier_call_is_isolation_checked_and_a_transient_anomaly_is_reissued(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    n_todo = len([r for r in acceptance(cfg) if r["layer"] == "l1" and r["verdict"] == "pass"])
+    assert n_todo >= 3
+    cli = FlakyCtxCLI(bad_calls={2})          # not the probe: the old check never saw call 2
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 0
+    rows = _verify_rows(cfg)
+    assert len(rows) == n_todo and len(cli.calls) == n_todo + 1        # one call discarded, re-issued
+    assert sum(r["isolation_anomalies"] for r in rows) == 1
+    assert all(r["context_tokens"] == 400 for r in rows)                # the kept verdicts are clean
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["status"] == "complete" and st["totals"]["since_start"]["cli_isolation_anomalies"] == 1
+
+
+def test_a_persistent_anomaly_on_one_record_is_a_hard_stop(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    probe = FakeCLI()
+    first: list[str] = []
+
+    def verdict(p: str) -> Any:
+        first.append(p)
+        return {"supports": True, "single_reading": True, "same_case": True, "symbol_unique": True, "reason": "r"}
+
+    probe.verdict = verdict
+    # find the second record's prompt with a dry run in another world
+    path2, _ = _drafted(tmp_path / "dry")
+    run(path2, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path2, "verify", "--set", "O", "--notice-acknowledged", cli=probe) == 0
+    marker = first[1][-200:]
+    cli = FlakyCtxCLI(bad_prompt=marker)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 1
+    assert sum(marker in c["input"] for c in cli.calls) == 3
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["status"] == "hard_stop" and st["reason"] == "isolation_failed"
+    assert all(marker not in (r.get("text") or "") for r in _verify_rows(cfg))
+
+
+def test_clear_hard_stop_resumes_only_with_the_matching_reason_and_a_note(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FakeCLI(ctx=10_000_000)) == 1
+    state = out(cfg) / "verify-state-O.json"
+    before = state.read_text()
+    cli = FakeCLI()
+    # a plain resume, a wrong reason, a missing note: all refused, no call, state untouched
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", cli=cli) == 1
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
+               "usage_limit", "--clear-note", "x", cli=cli) == 1
+    with pytest.raises(SystemExit, match="clear-note"):
+        run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
+            "isolation_failed", cli=cli)
+    with pytest.raises(SystemExit, match="needs --resume"):
+        run(path, "verify", "--set", "O", "--notice-acknowledged", "--clear-hard-stop", "isolation_failed",
+            "--clear-note", "x", cli=cli)
+    assert not cli.calls and state.read_text() == before
+    # the sanctioned resume, at a new commit (the fix): logged and kept in the state
+    new = {**PROV, "commit": "d" * 40}
+    rc = dr.main(["--private-config", str(path), "verify", "--set", "O", "--notice-acknowledged", "--resume",
+                  "--clear-hard-stop", "isolation_failed", "--clear-note", "owner: CLI fallback, see PR"],
+                 provenance=lambda: new, cli_runner=cli)
+    assert rc == 0 and cli.calls
+    st = json.loads(state.read_text())
+    assert st["status"] == "complete" and st["commit"] == "d" * 40
+    (c,) = st["clearances"]
+    assert c["reason"] == "isolation_failed" and c["note"] == "owner: CLI fallback, see PR"
+    assert c["commit_before"] == "c" * 40 and c["commit_after"] == "d" * 40
+    assert st["segments"][-1]["cleared"] == c
+    # a commit change without a clearance is still refused
+    assert dr.main(["--private-config", str(path), "verify", "--set", "O", "--notice-acknowledged", "--resume"],
+                   provenance=lambda: PROV, cli_runner=FakeCLI()) == 1
+
+
+def test_clear_hard_stop_refuses_a_run_that_did_not_hard_stop(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FakeCLI(limit_after=2)) == 75
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    cli = FakeCLI()
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
+               "usage_limit", "--clear-note", "x", cli=cli) == 1
+    assert not cli.calls
 
 
 def test_verifier_cwd_must_be_empty(tmp_path: Path) -> None:
