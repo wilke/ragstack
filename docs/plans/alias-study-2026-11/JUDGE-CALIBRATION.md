@@ -336,7 +336,10 @@ The pool builder's new `alias_pool.exclude_papers` dropped them before its seede
 eligible papers. The questions were drafted with the study's pipeline (alias-draft/2, verifier alias-verify/3,
 `run-waves`, pool seed `261031|alias|validation|V`) in a separate output directory, and nothing in `out/main` was
 written. The run stopped at its target after 5 waves: 37 papers activated (none excluded) and 24 satisfied.
-It accepted **83 records (52 G, 31 C) from 31 papers**. The gateway took 203 calls, 172 k tokens in and
+It accepted **83 records (52 G, 31 C) from 31 papers**. One setting differs from the main config besides the
+paths, seeds, caps and the exclusion: `waves.accept_rate` was set to the main run's realised rates (G 0.465,
+C 0.553) instead of the default prior. It sizes the waves only. The plan said the settings were copied (review
+note, #898). The gateway took 203 calls, 172 k tokens in and
 425 k out. The verifier took 122 CLI calls (13 safeguard fallbacks went to Codex).
 
 **Pairs.** Pairs were built with round 1's construction and quotas on the accepted records only
@@ -378,5 +381,7 @@ escalated 12 (2.0 %).
 **Exploratory (not in the plan).** The Claude CLI (`claude-opus-5-5`, once per pair) agrees with the Opus
 reference on 483 of the 483 unanimous pairs where it gave a verdict (κ 1.00). It refused 67 pairs, 61 of them as
 #891 safeguard fallbacks. On all 4 gate errors the CLI sides with Opus. On the 21 no-reference pairs where the
-CLI gave a verdict, the gate's label matches it on 21. Throughput (587 pairs, 4 in flight): C took 1,086 s
+CLI gave a verdict, the gate's label matches it on 21 (all 21 are "no"). The CLI refused the other 62, so 62 of its
+67 refusals fall on the 83 no-reference pairs: it fails on the same pairs as the gateway and cannot serve as their
+tiebreaker. None of the 8 pairs the gate labels "yes" there has any Claude label. Throughput (587 pairs, 4 in flight): C took 1,086 s
 (2.7 samples/s) and E took 433 s (4.1 samples/s).

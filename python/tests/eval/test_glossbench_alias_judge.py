@@ -690,9 +690,9 @@ def test_analyse_gate_end_to_end(world: Path) -> None:
     pairs = pairs_of(world)
     out = out_of(world)
     ids = [p["pair_id"] for p in pairs]
-    assert len(ids) >= 4
+    assert len(ids) >= 5
     truth = {pid: int(p["stratum"] == "gold") for pid, p in zip(ids, pairs, strict=True)}
-    a, b, c, d = ids[:4]
+    a, b, c, d, e = ids[:5]
 
     def put(name: str, rows: list[dict[str, Any]]) -> Path:
         path = out / name
@@ -704,6 +704,8 @@ def test_analyse_gate_end_to_end(world: Path) -> None:
         if pid == d:
             continue                                                # no reference (Opus-filtered)
         for r in (1, 2, 3):
+            if pid == e and r == 3:
+                continue                                            # e: 2 agreeing labels, no third -> split
             v = truth[pid] if not (pid == c and r == 3) else 1 - truth[pid]   # c: a 2-1 split
             opus.append({"k": f"opus|{pid}|r{r}", "pair_id": pid, "rep": r, "verdict": bool(v)})
     put("labels-opus.jsonl", opus)
@@ -720,8 +722,8 @@ def test_analyse_gate_end_to_end(world: Path) -> None:
     world.write_text(json.dumps(raw))
     assert jd.main(["--config", str(world), "analyse-gate"], prov=PROV) == 0
     res = json.loads((out / "analysis-gate.json").read_text())
-    n_una = len(ids) - 2
-    assert res["classes"] == {**res["classes"], "pairs": len(ids), "unanimous": n_una, "split": 1, "no_reference": 1}
+    n_una = len(ids) - 3
+    assert res["classes"] == {**res["classes"], "pairs": len(ids), "unanimous": n_una, "split": 2, "no_reference": 1}
     pa = res["primary"]["all"]
     assert pa["pairs"] == n_una and pa["escalated"] == 1 and pa["accepted"]["errors"] == 1
     assert pa["accuracy"] == round((n_una - 1) / n_una, 4) and pa["escalation_share"] == round(1 / n_una, 4)
@@ -729,7 +731,7 @@ def test_analyse_gate_end_to_end(world: Path) -> None:
     al = res["alone"]["all"]
     assert al["C_maj5"]["correct"] == n_una - 2 and al["E_n1"]["correct"] == n_una - 1
     assert al["E_maj3"]["correct"] == n_una
-    assert res["split"]["pairs"] == 1 and res["no_reference"]["pairs"] == 1
+    assert res["split"]["pairs"] == 2 and res["split"]["with_majority"] == 2 and res["no_reference"]["pairs"] == 1
     assert res["escalation_all_pairs"]["escalated"] == 1
     # an incomplete label file refuses
     put("labels-qwen-E.jsonl", [{"k": f"qwen|{p}", "pair_id": p, "n": 3, "verdicts": ev[p], **meta} for p in ids[1:]])
