@@ -131,14 +131,17 @@ Majority-vote agreement with the Opus reference, on the pairs where Opus was una
 
 **Majority voting buys nothing; the plateau is at n = 1.** Qwen's disagreements with Opus are
 systematic, not sampling noise. The vote share is bimodal, and the wrong labels sit in the
-confident bins. 14 of the 18 disagreements are on G records, and 13 of the 18 are false "no"s:
+confident bins. 15 of the 18 disagreements are on G records, and 13 of the 18 are false "no"s:
 Qwen rejects a short form that the passage's paper defines as the term.
 
 Per-stratum accuracy at n = 99: coll_diff 1.00, lex_other 0.97, gold 0.97, coll_same 0.93,
 lex_same 0.86.
 
 The coll_diff stratum is trivial once the passage paper's definition is shown: every judge
-says "no". This set therefore does not test a collision the judge must infer without a
+says "no". It is decidable from the definitions block alone: in all 69 coll_diff pairs the
+alias is listed with the passage paper's OWN different primary and never with the TERM, and
+the TERM string occurs in only 1 of the 69 passages. Opus said "no" on 68/68 labelled and
+Qwen scores 1.00 there, so the stratum measures the prompt's definition block, not judgement. This set therefore does not test a collision the judge must infer without a
 definition.
 
 **Cascade** (vote share as confidence; pairs with an uncertain share go to Opus):
