@@ -6,7 +6,7 @@
 [gold-scope addendum](../ADDENDUM-2026-10-30-gold-scope.md) and the 2026-10-30 lab-book entries were known,
 and **before** any analysis here was computed. The script, [`analyse_why.py`](analyse_why.py), was committed
 (`134654b`) before it was run. One block of descriptive counts, labelled **POST-PLAN**, was added after
-the planned outputs had been seen (`9094c5a`); this file says where it uses that block. Nothing in
+the planned outputs had been seen (`9094c5a`); this file says where it uses that block. A second block, labelled **REVIEW**, was added by the independent review (`d408b18`, § *Review checks*). Nothing in
 `RESULTS.md`, the addendum or the prereg is changed. Nothing here is a test. Set P has 7 papers, 138 of its
 155 records sit in one paper, and its 155 records carry 73 distinct queries. Exact McNemar values are
 printed because the plan asked for them. They describe; they decide nothing.
@@ -26,25 +26,31 @@ records split into 20 lost, 11 won, 41 kept and 81 neither. All 20 lost records 
 
 ## The headline, for a reader in a hurry
 
-The four explanations the lab-book reading offered do not describe this data well. The data point
-somewhere else:
+Exploratory reading: the four explanations the lab-book reading offered do not describe this data well.
+Neither does a clean replacement. The record-level counts below look like a reversal. The review checks
+(§ *Review checks*, `review-checks.json`) show that most of each contrast comes from **one query** behind
+11 of the 20 lost records.
 
-- **The reranker loses on plain-word queries, not on exact-token ones.** 16 of the 20 lost records have
-  no symbol, digit or unit in the query. On symbol queries the reranker gains 2 records and loses 0. For 13
-  of the 20 lost records, the query has no rare token at all.
-- **The chunks the reranker puts above gold come from other papers, not from the gold's own paper.** In the
-  lost records, 46 of the 469 chunks the reranker ranks above gold (9.8 %) come from the source paper.
-  BM25 ranks 66 chunks above gold in those same records, and 41 of them (62 %) come from the source paper.
-
-So on these records BM25 stays inside the source paper and finds the gold among its neighbours. The
-cross-encoder spreads the top of the list over about 50 other documents.
+- **Exact tokens do not explain the losses (exploratory).** 16 of the 20 lost records have no symbol, digit
+  or unit in the query, and on symbol queries the reranker gains 2 records and loses 0. Counted per
+  distinct query, the 8 lost queries split **4 plain and 4 digit**. In a reviewer's reading, 2 of the 4
+  plain ones name a variable spelled in plain ASCII letters, which the planned symbol rule cannot see. 13
+  of the 20 lost records have no rare query token, but only **2 of the 8** lost queries lack one.
+- **Same-paper distractors are not supported, and the reversal is one query's (exploratory).** In the lost
+  records, 46 of the 469 chunks the reranker ranks above gold (9.8 %) come from the source paper. BM25 has
+  41 of 66 (62 %). Those two sets differ in depth: BM25's lies inside its top 10, and the reranker's runs to
+  rank 31. With equal top-10 windows and gold left out, the shares are 12 % against 43 % over the 20
+  records. The 11-record query accounts for that gap (0 of 110 against 55 of 99). Over the other 9 records
+  the shares are **27 % against 27 %**. The reranker's 12 % is the source paper's base rate in the fused
+  pool it reorders (47 of 400, 12 %; the source paper has 35 chunks). It ignores paper membership. It does
+  not actively prefer other papers.
 
 **Caveat (POST-PLAN):** the 20 lost records carry only **8 distinct queries**, and all 20 are in the
-dominant paper. This may be one paper's property, not a corpus property.
+dominant paper. This may be one paper's property, or one query's, not a corpus property.
 
 ## Per explanation
 
-### 1. Exact-token task: **not supported** (the data run the other way)
+### 1. Exact-token task: **not supported** (exploratory; not reversed: see § *Review checks*)
 
 The prediction was that losses concentrate in symbol, digit or unit queries, and that gold carries more of
 the query's rare tokens than the chunks placed above it.
@@ -74,11 +80,14 @@ digit class goes 6 / 0, and the plain class 77 / 6.
 | won | 11 | 3 | 0 / 5 / 3 | 0 (3 at rank 1) |
 | neither | 11 | 2 | 2 / 5 / 2 | 1 |
 
-Gold rarely out-matches the chunks the reranker prefers on rare tokens: 5 of 64 measurable records. Where
-the reranker loses, the query usually has no distinctive term for an exact-match ranker to exploit. Among
-the kept records, 40 of 41 have a query with a rare token.
+Gold rarely out-matches the chunks the reranker prefers on rare tokens: 5 of 64 measurable records. Among
+the kept records, 40 of 41 have a query with a rare token. The 13 lost records without a rare token are
+**2 distinct queries** (11 + 2 records); per distinct query, 2 of 8 lost queries lack a rare token,
+against 1 of 26 kept (`review-checks.json`, `e_Q2_per_distinct_query`). On the 7 measurable lost records
+(6 queries), the top non-gold chunk carries fewer / equal / more rare tokens than gold in 1 / 4 / 2.
+That is too few to show the opposite of the prediction, so the grade is *not supported*, not *reversed*.
 
-### 2. Same-paper distractors: **not supported** (reversed)
+### 2. Same-paper distractors: **not supported** (exploratory; the apparent reversal is one query's: see § *Review checks*)
 
 The prediction was that, in lost records, the chunks above gold come mostly from the gold's own paper, more
 than in won or kept records and more than in BM25's lists.
@@ -92,8 +101,11 @@ brackets). The source paper is mapped as v4 maps it, and 155 of 155 records map 
 | kept (41) | 40 / 115 = 35 % [21 %] | 45 / 84 = 54 % [73 %] |
 | won (11) | 3 / 25 = 12 % [0] | 17 / 362 = 4.7 % [1.5 %] |
 
-The pattern is symmetric. When the reranker loses, BM25's ranking stayed inside the source paper and the
-reranker's did not. When the reranker wins, it is BM25 that wandered out of the paper. Over all records,
+Read at record level, the pattern looks symmetric: in lost records BM25's chunks above gold are mostly
+same-paper and the reranker's are not, and in won records the roles swap. The comparison is not
+like-for-like, though. A lost record's BM25 above-gold set lies inside its top 10 (66 chunks), while the
+reranker's runs to rank 31 (469 chunks), and the source paper thins out with depth. § *Review checks*
+holds the window fixed and counts per query, and most of the asymmetry goes. Over all records,
 the source paper's share of the top 10 is 22 % for A0 (342 / 1,530) and 18 % for A4-50 (279 / 1,530).
 
 **POST-PLAN** (`P.post_plan.lost`): the 423 cross-paper chunks the reranker puts above gold in the lost
@@ -151,21 +163,71 @@ From the run's own cached scores, with the margin = top non-gold score − first
 | neither | 11 | 0.31 | 0.17–0.51 | 0.08 |
 
 The losses are not near-ties: in every lost record the reranker scores some non-gold chunk at least 0.07
-above the gold. It prefers the cross-paper chunks with confidence. (The run's noise-floor repeat found 0
+above the gold. It prefers its top non-gold chunk with confidence. (The run's noise-floor repeat found 0
 records differing for the live reranked lists, `RESULTS.md`.)
 
 ## What contradicts the lab-book reading
 
-1. **Not exact tokens.** The reranker's papers-OC losses are on queries without symbols, digits, units or
-   rare tokens (16 / 20 in the plain class; 13 / 20 with no rare token). On symbol queries it does not lose
-   at all.
-2. **Not same-paper distractors: the reverse.** BM25 wins by staying inside the source paper (62 % of its
-   chunks above gold are same-paper in the lost records). The reranker loses by promoting chunks from about
-   50 other documents (9.8 % same-paper). The addendum suggested that the fused pool favours topical
-   neighbours from other papers, and left it untested. This data places that tendency in the **reranker's
-   ordering**, with the pool held fixed.
+1. **Not exact tokens, as far as this data can say (exploratory).** In records, the losses sit in the
+   plain class (16 / 20) and on queries with no rare token (13 / 20). Per distinct query, they split 4 plain
+   and 4 digit, and only 2 of 8 lack a rare token. On symbol queries the reranker loses no record, but only
+   9 symbol queries had gold in BM25's top 10 to lose. The symbol rule also misses variable names spelled in
+   ASCII letters.
+2. **Not same-paper distractors (exploratory), and no reversal shown.** The record-level contrast (9.8 %
+   against 62 % above gold) compares sets of different depth. At equal top-10 windows it is one query's:
+   without the 11-record query, 27 % against 27 %. The reranker's top 10 in lost records carries the source
+   paper at the pool's base rate (12 % against 12 %). The addendum suggested that the fused pool favours
+   topical neighbours from other papers, and left it untested. This data does not settle that.
 3. **The glossary's reranker gain is mostly on non-symbol queries** (36 / 50 records up), and glossaries on
    distractors only push gold down.
+
+## Review checks (REVIEW, post-hoc)
+
+These checks were added by the independent review of this file, after every planned and POST-PLAN output
+had been seen. They come from [`review_checks.py`](review_checks.py), committed before it was run (`d408b18`),
+and [`review-checks.json`](review-checks.json), run at `d408b18` from a clean tree (`citable true`), on the
+same inputs (same sha256). They describe; they decide nothing. All 73 queries share identical lists across
+their records.
+
+**Equal windows** (`a_equal_windows_records`, lost records). Same-paper share of each list's top k, gold
+left out:
+
+| k | A4-50 | A0 (BM25) |
+|---|---|---|
+| 5 | 14 / 100 = 14 % | 53 / 88 = 60 % |
+| 10 | 24 / 200 = 12 % | 77 / 180 = 43 % |
+| 20 | 32 / 394 = 8.1 % | 108 / 380 = 28 % |
+
+**Per distinct query** (`b_per_distinct_query_lost`). The 20 lost records are 8 queries, with 1, 1, 1, 1, 1,
+2, 2 and 11 records. The 11-record query alone gives 0 / 110 against 55 / 99 in the top-10 window. Without
+it, the other 9 records give **24 / 90 = 27 % against 22 / 81 = 27 %**. Their above-gold shares are still
+19 % (34 / 178) against 45 % (10 / 22), on a BM25 set of 22 chunks. Counting each query once, with gold
+included, the top 10 holds more same-paper chunks under BM25 in 5 queries, under the reranker in 1, and
+equal in 2.
+
+**Base rate** (`c_base_rate_lost_queries`). For the 8 lost queries the source paper is 47 of the 400 fused-pool
+chunks (12 %) and 73 of 736 BM25@100 chunks (9.9 %); it has 35 chunks in the bench copy. The reranker's
+top-10 same-paper share in lost records (12 %) equals the pool's base rate.
+
+**Q1 and Q2 per distinct query** (`d_Q1_per_distinct_query`, `e_Q2_per_distinct_query`):
+
+| class | queries | gold in A0's top 10 (any record) | with a lost record | with a won record |
+|---|---|---|---|---|
+| symbol | 18 | 9 | 0 | 2 |
+| digit | 20 | 10 | 4 | 2 |
+| none | 44 | 16 | 4 | 8 |
+
+In a reviewer's reading of the 8 lost queries (not a rule, and not in `PLAN.md`), 2 of the 4 in class
+"none" name a model variable spelled in plain ASCII letters. The v2 symbol rule only sees non-ASCII
+letters, sub- and superscripts and the `x_y` form. Lost queries with no rare token: 2 of 8, against 1 of 26
+kept, 2 of 10 won and 2 of 9 neither.
+
+**What survives (exploratory).** The planned explanations stay *not supported*: no evidence that losses
+concentrate on symbol or rare-token queries, and no evidence that the reranker promotes same-paper chunks.
+The two **reversals** that the record-level counts suggest do not survive. "BM25 wins by staying in the source paper"
+holds at record level only because of one 11-record query. The reranker's top 10 carries the source paper
+at the pool's base rate; it does not avoid it. The Q4 margins (every lost record ≥ 0.07) and the v4
+stability are unaffected.
 
 ## Not measurable here
 
@@ -183,7 +245,7 @@ records differing for the live reranked lists, `RESULTS.md`.)
 Every class and outcome count is in records, not independent observations. The query classes, the rare-token
 threshold and the density definition were fixed in `PLAN.md` before computing, but they were written
 after `RESULTS.md` was known. Q4's ρ rests on 21 distinct gold chunks. The POST-PLAN block was added after
-the planned outputs had been seen.
+the planned outputs had been seen. The REVIEW checks were added after everything else had been seen.
 
 ## Reproducing
 
@@ -197,3 +259,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -I docs/plans/results/rerank
 ```
 
 The input sha256 values are in `why-results.json` (`inputs_sha256`).
+
+The review checks, at `d408b18` in a clean tree, on the same inputs:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -I docs/plans/results/reranker-test-2026-11/why/review_checks.py \
+  --root RUN_DIR --dump DUMP.jsonl --records-dir RECORDS_DIR \
+  --out docs/plans/results/reranker-test-2026-11/why/review-checks.json
+```

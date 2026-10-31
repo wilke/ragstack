@@ -729,21 +729,25 @@ across chunkings. It is not evidence that the id sets match, and they do not. Wh
 **Tier: lab book (pointer).** The record is [`../reranker-test-2026-11/why/WHY.md`](../reranker-test-2026-11/why/WHY.md).
 Its plan was committed before computing and after the reranker test's results were known, so it is
 **post-hoc and exploratory**. The counts-only artifact is
-[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `6c09a0d` (clean). It uses the
+[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `6c09a0d` (clean); the independent review's checks are
+[`review-checks.json`](../reranker-test-2026-11/why/review-checks.json), run at `d408b18` (clean). Both use the
 run's existing lists and cached scores only. No retrieval, reranker or model call was made. `RESULTS.md`
 and the gold-scope addendum are unchanged.
 
-- **Exact-token task: not supported.** 16 of the 20 records the reranker loses against BM25 have no
-  symbol, digit or unit in the query, and 13 of the 20 have no rare query token. On symbol queries the
-  reranker gains 2 and loses 0.
-- **Same-paper distractors: not supported, reversed.** In the lost records, 9.8 % (46 / 469) of the chunks
-  the reranker ranks above gold come from the source paper, against 62 % (41 / 66) of BM25's. The
-  reranker's distractors spread over 50 other documents.
+- **Exact-token task: not supported** (exploratory). 16 of the 20 records the reranker loses against
+  BM25 have no symbol, digit or unit in the query. Per distinct query, though, the 8 lost queries split 4
+  plain and 4 digit, and only 2 of the 8 lack a rare token. On symbol queries the reranker gains 2 and
+  loses 0. Nothing here shows the reverse of the prediction.
+- **Same-paper distractors: not supported** (exploratory). The first reading called it reversed: in the
+  lost records, 9.8 % (46 / 469) of the reranker's above-gold chunks are same-paper, against 62 % (41 / 66)
+  of BM25's. The review checks undo that reading. With equal top-10 windows, the gap is one 11-record
+  query's; the other 9 records give 27 % against 27 %. The reranker's share equals the source paper's
+  base rate in the fused pool (12 %).
 - **Symbol tokenisation: mixed.** Symbol-dense gold ranks somewhat worse after reranking (ρ +0.27, against
   −0.05 under BM25), but only 21 distinct gold chunks lie behind it. The glossary lifts gold mostly on
   non-symbol queries (up on 36 of 50).
-- **Gold definition: not the explanation.** Under v4 the shape holds: losses on plain queries (7 / 15) and
-  cross-paper distractors (10 % against 60 %).
+- **Gold definition: not the explanation.** Under v4 the shape holds: the plain class still gains 7 and loses 15,
+  and the above-gold shares are 10 % against 60 %.
 - **Caveat:** the 20 lost records carry 8 distinct queries, all in the dominant paper.
 
 What's next is unchanged.
