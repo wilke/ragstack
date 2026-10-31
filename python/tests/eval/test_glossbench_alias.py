@@ -801,6 +801,11 @@ def test_verify_system_states_the_owners_definitions() -> None:
     # alias-verify/3: a generic referent fails standalone; unstated purpose / qualifier, near-empty fail supports
     assert "NAMES the distinguishing context" in v and '"different groups of children"' in v
     assert "does not state why" in v and "qualifier" in v and "near-empty" in v
+    # alias-verify/1's criteria are gone: they rejected a correct study-specific fact and
+    # counted valid answers instead of judging the meaning (review #890)
+    low = v.lower()
+    assert "any source" not in low and "outside this study" not in low and "true outside" not in low
+    assert "exactly one way" not in low
 
 
 # Synthetic calibration records (no real paper text) with the verdict the owner's
