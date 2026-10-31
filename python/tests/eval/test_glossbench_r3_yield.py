@@ -380,6 +380,77 @@ AUP = ("API Error: Claude's safeguards flagged this message (https://www.anthrop
 OK_VERDICT = {"supports": True, "single_reading": True, "same_case": True, "symbol_unique": True, "reason": "ok"}
 
 
+def safety_fallback_json(own_out: int = 0, small: bool = False) -> dict[str, Any]:
+    """The Claude CLI's JSON (2.1.312) when a safeguard stops ``claude-opus-5-5`` and the CLI
+    answers with ``claude-opus-5``: a normal success, ``safety_stops`` 2, the configured
+    model with 0 output and the CUMULATIVE input of both requests (numbers from one of the
+    alias main run's 27 rows, re-run 2026-10-31; ``small``: two 200-token requests, for the
+    fake world's short prompts)."""
+    if small:
+        return {"type": "result", "is_error": False, "stop_reason": "end_turn", "result": json.dumps(OK_VERDICT),
+                "num_turns": 2, "safety_stops": 2, "total_cost_usd": 0.0462,
+                "modelUsage": {"claude-opus-5-5": {"inputTokens": 400, "outputTokens": 0},
+                               "claude-opus-5": {"inputTokens": 200, "outputTokens": 30}}}
+    return {"type": "result", "subtype": "success", "is_error": False, "stop_reason": "end_turn",
+            "result": json.dumps(OK_VERDICT), "num_turns": 2, "safety_stops": 2, "total_cost_usd": 0.0462,
+            "usage": {"input_tokens": 4, "cache_creation_input_tokens": 3251, "cache_read_input_tokens": 2344,
+                      "output_tokens": 101},
+            "modelUsage": {
+                "claude-opus-5-5": {"inputTokens": 4, "outputTokens": own_out, "cacheReadInputTokens": 2344,
+                                    "cacheCreationInputTokens": 3251, "canonicalModel": "claude-opus-5-5"},
+                "claude-opus-5": {"inputTokens": 2, "outputTokens": 101, "cacheReadInputTokens": 1172,
+                                  "cacheCreationInputTokens": 1659, "canonicalModel": "claude-opus-5"}}}
+
+
+def test_cli_usage_reads_a_safety_fallback_per_request() -> None:
+    u = dr.cli_usage(safety_fallback_json(), "claude-opus-5-5")
+    assert u["fallback"] and u["answered_by"] == "claude-opus-5" and u["safety_stops"] == 2
+    # one request's context (2833), not the cumulative 5599 the old check compared to its budget
+    assert u["context_tokens"] == 2833 == max(5599 - 2833, 2833)
+    assert u["served_models"] == {"claude-opus-5-5": [5599, 0], "claude-opus-5": [2833, 101]}
+    clean = {"result": "{}", "modelUsage": {"claude-opus-5-5": {"inputTokens": 3, "cacheReadInputTokens": 1172,
+                                                                "cacheCreationInputTokens": 1365,
+                                                                "outputTokens": 95}}}
+    u = dr.cli_usage(clean, "claude-opus-5-5")
+    assert not u["fallback"] and u["context_tokens"] == 2540 and u["output_tokens"] == 95
+    # an internal haiku call is not a fallback; a configured model with 0 output and an answer is
+    haiku = {**clean, "modelUsage": {**clean["modelUsage"], "claude-haiku-4-5": {"inputTokens": 50,
+                                                                                 "outputTokens": 5}}}
+    assert not dr.cli_usage(haiku, "claude-opus-5-5")["fallback"]
+    zero = {"result": "{}", "modelUsage": {"claude-opus-5-5": {"inputTokens": 900, "outputTokens": 0}}}
+    assert dr.cli_usage(zero, "claude-opus-5-5")["fallback"]
+
+
+def test_a_safety_fallback_answer_is_a_refusal_verified_by_codex(tmp_path: Path) -> None:
+    """The alias main run's isolation_failed (2026-10-31): the CLI's silent safeguard
+    fallback looked like a 2x context. Its answer is another model's — never kept as the
+    configured verifier's verdict; the record goes to codex like any refusal."""
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(dusk, refusal_shape="safety_fallback")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
+    l2 = l2_rows(cfg)
+    cx = [r for r in l2 if r["verifier"] == "codex"]
+    assert len(cx) == len(clis.codex) == 3 and all(r["verifier_refused"] == "claude" for r in cx)
+    assert sum(dusk(c["input"]) for c in clis.claude) == 3                # no retry on Claude
+    vrows = jsonl(Path(cfg["out_dir"]) / "verify-O.jsonl")
+    assert all("safety_stop_fallback: answered by claude-opus-5" in r["refusal_text"]
+               for r in vrows if r["verifier"] == "codex")
+    assert all(r["refused_cost_usd"] == 0.0462 for r in vrows if r["verifier"] == "codex")
+    assert all(r["model"] == "claude-opus-5-5" and r["served_models"] == {"claude-opus-5-5": [400, 30]}
+               for r in vrows if r["verifier"] == "claude")
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    tot = st["totals"]["since_start"]
+    assert st["status"] == "complete" and tot["cli_safety_fallbacks"] == 3 and tot["cli_refusals"] == 3
+    assert not tot.get("cli_isolation_anomalies")
+
+
+def test_a_safety_fallback_on_the_probe_record_is_no_isolation_failure(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = Clis(lambda p: True, refusal_shape="safety_fallback")          # every record falls back
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
+    assert all(r["verifier"] == "codex" for r in l2_rows(cfg))
+
+
 class Clis:
     """A fake ``subprocess.run`` for both CLIs: Claude refuses the prompts ``refuse`` matches;
     codex answers ``codex_verdict`` (or fails with ``codex_rc``)."""
@@ -402,6 +473,8 @@ class Clis:
             return self._codex(cmd, input, cwd)
         self.claude.append({"input": input, "cwd": cwd})
         if self.refuse(input):
+            if self.refusal_shape == "safety_fallback":
+                return SimpleNamespace(returncode=0, stdout=json.dumps(safety_fallback_json(small=True)), stderr="")
             if self.refusal_shape == "stderr":
                 return SimpleNamespace(returncode=1, stdout="", stderr=AUP)
             return SimpleNamespace(returncode=1, stdout=json.dumps({"type": "result", "is_error": True,
@@ -740,3 +813,35 @@ def test_a_refusal_stop_reason_on_a_successful_exit_goes_to_codex(tmp_path: Path
     cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
     assert len(cx) == 3 and all(r["verdict"] == "pass" and r["verifier_refused"] == "claude" for r in cx)
     assert not any("l2_empty" in r["reasons"] for r in l2_rows(cfg))
+
+
+def test_cli_usage_safety_stops_alone_is_a_fallback() -> None:
+    """One model in ``modelUsage``, with output, but ``safety_stops`` > 0: still not a clean
+    answer from the configured verifier."""
+    o = {"result": "{}", "safety_stops": 1,
+         "modelUsage": {"claude-opus-5-5": {"inputTokens": 2500, "outputTokens": 90}}}
+    assert dr.cli_usage(o, "claude-opus-5-5")["fallback"]
+    # only another model listed (the configured one missing): a fallback
+    o = {"result": "{}", "modelUsage": {"claude-opus-5": {"inputTokens": 2500, "outputTokens": 90}}}
+    assert dr.cli_usage(o, "claude-opus-5-5")["fallback"]
+
+
+class LateCodexCtx(Clis):
+    """Codex's first call is clean; every later one reports a leaked context."""
+
+    @property
+    def codex_ctx(self) -> int:  # type: ignore[override]
+        return 2600 if len(self.codex) <= 1 else 10_000_000
+
+    @codex_ctx.setter
+    def codex_ctx(self, _v: int) -> None:
+        pass
+
+
+def test_every_codex_call_is_isolation_checked(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = LateCodexCtx(lambda p: True)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 1
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    assert st["status"] == "hard_stop" and st["reason"] == "codex_isolation_failed"
+    assert len(clis.codex) == 2

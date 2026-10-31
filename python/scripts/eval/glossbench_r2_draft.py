@@ -65,10 +65,32 @@ the same plan, or after a pause without a fresh preflight.
 **Verifier** (layer 2): ``claude -p --model <id> --output-format json
 --restricted --no-session-persistence --strict-mcp-config --tools ""
 --system-prompt ...``, the prompt on stdin, cwd an empty 0700 directory with no
-``CLAUDE.md``/``AGENTS.md`` above it; the first call of a run must pass the
-context-size isolation check (round 1's judge rule). Empty or unparseable:
-retried once, then the record is rejected (``l2_empty`` / ``l2_unparseable``).
-A usage-limit signal pauses.
+``CLAUDE.md``/``AGENTS.md`` above it. EVERY call is held to the context-size isolation
+check (round 1's judge rule: context <= 2 x chars/3.5 + overhead, no tool event), the
+context read per request from ``modelUsage`` (:func:`cli_usage`). An anomalous call's
+verdict is discarded and the call re-issued, at most ``ISOLATION_RETRIES`` (2) times in a
+row on one record; a third anomaly in a row, or more anomalies than
+``ISOLATION_WAVE_RATE`` (5%) of a segment's records (and more than 2), is the
+``isolation_failed`` hard stop.
+Empty or unparseable: retried once, then the record is rejected (``l2_empty`` /
+``l2_unparseable``). A usage-limit signal pauses.
+
+**Safeguard fallback.** When a Claude safeguard stops the configured model the CLI
+re-asks the prompt on another model and returns that answer as a normal success
+(``safety_stops`` > 0; the configured model reports 0 output tokens and the cumulative
+input of both requests, ~2x — the alias main run's ``isolation_failed``, 2026-10-31:
+27 of 318 rows, verdicts actually from ``claude-opus-5``). Such an answer is not the
+configured verifier's: it is treated as a refusal (the codex fallback below), counted
+as ``cli_safety_fallbacks``, and the row keeps ``served_models`` and ``safety_stops``.
+
+**Clearing a hard stop.** ``--resume --clear-hard-stop <reason> --clear-note "<text>"``
+resumes a hard-stopped run when the owner sanctions it: the reason must equal the state
+file's, the note is required, and the clearance (who, when, reason, note, the commit
+before and after) is logged and kept in the state file's ``clearances``. A cleared
+resume may run at a different commit (the fix); every other sha must still match.
+A budget / quota / usage-limit / cap stop (exit 76, ``provider_notice``, :data:`NEVER_CLEARABLE_RE`)
+is never cleared this way. An unreadable ``modelUsage`` (missing, renamed fields, context 0)
+counts as an isolation anomaly, never as a clean call.
 
 **Codex fallback verifier.** A usage-policy refusal by the Claude CLI (its safeguards
 flag the verifier prompt: :func:`is_refusal` on the error text, never a transport error
@@ -78,7 +100,7 @@ CLI (``codex exec --ephemeral --ignore-user-config --ignore-rules -s read-only -
 :meth:`Run.codex_cmd`), the same system prompt and verifier prompt (stdin), the same
 JSON contract, the same empty 0700 cwd (its system-prompt, schema and last-message
 files live in a private temporary directory under the output directory, never in the
-cwd). One codex call at a time (it answers 429 at 3). The first codex call of a run
+cwd). One codex call at a time (it answers 429 at 3). Every codex call
 passes its own isolation check (Codex's fixed harness overhead,
 ``verifier.codex_overhead_tokens``, and no tool event). Every verify row and ``l2`` log
 row records ``verifier: claude | codex`` and, for a codex row, Claude's refusal text.
@@ -115,6 +137,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import random
 import re
 import signal
@@ -165,6 +188,16 @@ LIMIT_RE = re.compile(
 CHARS_PER_TOKEN_GATEWAY = 3.4
 CHARS_PER_TOKEN_CLI = 3.5
 ISOLATION_FACTOR = 2.0
+#: an isolation-anomalous verifier call is discarded and re-issued at most this many times
+#: in a row on one record; one more is a hard stop
+ISOLATION_RETRIES = 2
+#: more isolation anomalies than this share of a verify segment's records (and than
+#: ISOLATION_RETRIES) is a hard stop
+ISOLATION_WAVE_RATE = 0.05
+#: hard-stop / state reasons ``--clear-hard-stop`` never clears: a budget, quota, usage-limit
+#: or cap stop is the provider's or the owner's limit, not a harness anomaly (the budget stop is
+#: exit 76 / ``provider_notice``; it continues only through preflight + a fresh notice)
+NEVER_CLEARABLE_RE = re.compile(r"budget|provider_notice|quota|usage_limit|limit|_cap\b|max_calls", re.I)
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
 #: Codex's fixed context under the isolation flags (its own instructions, which no flag
 #: removes), measured by a synthetic probe on gpt-6-astra: 2,025 tokens
@@ -191,6 +224,49 @@ VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "properties": {**{k: {"type": "boolean"} for k in ck.VERIFY_KEYS}, "reason": {"type": "string"}},
     "required": [*ck.VERIFY_KEYS, "reason"]}
+
+
+def _ctx(entry: dict[str, Any]) -> int:
+    return (int(entry.get("inputTokens") or 0) + int(entry.get("cacheCreationInputTokens") or 0)
+            + int(entry.get("cacheReadInputTokens") or 0))
+
+
+def cli_usage(obj: dict[str, Any], model: str) -> dict[str, Any]:
+    """The Claude CLI's usage for one call, per model, from its JSON ``modelUsage``.
+
+    A safeguard stop on the configured model makes the CLI re-ask the same prompt on
+    another model (seen with CLI 2.1.312: ``safety_stops`` > 0, ``num_turns`` 2, the
+    configured model with ``outputTokens`` 0, a second model — ``claude-opus-5`` for
+    ``claude-opus-5-5`` — with the answer). The configured model's entry then carries the
+    CUMULATIVE input of both requests (it equals the top-level ``usage``), so its context
+    is ~2x a single request. ``context_tokens`` here is the largest single request's
+    context: the configured entry minus the other models' input, or the largest other
+    entry. ``fallback`` is True when the answer did not come from the configured model."""
+    mu = obj.get("modelUsage")
+    # fail closed: a usage block this code cannot read (missing, renamed, not a mapping of
+    # mappings) yields context None or 0 -> None, which the isolation check counts as an anomaly
+    mu = {k: val for k, val in mu.items() if isinstance(val, dict)} if isinstance(mu, dict) else {}
+    own_key = next((k for k, val in mu.items()
+                    if k == model or val.get("canonicalModel") == model), None)
+    if own_key is None:
+        own_key = next((k for k in mu if k.startswith(model)), None)
+    own = mu.get(own_key) or {}
+    others = {k: val for k, val in mu.items() if k != own_key and not k.startswith("claude-haiku")}
+    other_ctx = [_ctx(val) for val in others.values()]
+    answered = [k for k, val in others.items() if int(val.get("outputTokens") or 0) > 0]
+    safety = int(obj.get("safety_stops") or 0)
+    if own_key is None:
+        ctx = max(other_ctx) if other_ctx else None
+    else:
+        ctx = max([_ctx(own) - sum(other_ctx), *other_ctx]) if other_ctx else _ctx(own)
+    if ctx is not None and ctx <= 0:
+        ctx = None
+    text = str(obj.get("result") or "")
+    fallback = bool(safety > 0 or answered or (own_key is None and mu)
+                    or (own_key is not None and int(own.get("outputTokens") or 0) == 0 and text.strip()))
+    return {"model": own_key, "context_tokens": ctx, "output_tokens": own.get("outputTokens") if own else None,
+            "served_models": {k: [_ctx(val), int(val.get("outputTokens") or 0)] for k, val in mu.items()},
+            "safety_stops": safety, "fallback": fallback, "answered_by": answered[0] if answered else None}
 
 
 def is_refusal(stdout: str, stderr: str, obj: dict[str, Any] | None) -> bool:
@@ -702,11 +778,14 @@ class Run:
     def write_state(self, stage: str, status: str, reason: str | None) -> None:
         segs = list((self.prev_state or {}).get("segments", []))
         segs.append({"started": self.started, "ended": g.now_iso(), "end": status, "reason": reason,
-                     "totals_since_resume": dict(self.control.seg), "resumed": self.resume})
+                     "totals_since_resume": dict(self.control.seg), "resumed": self.resume,
+                     **({"cleared": self.clearance} if getattr(self, "clearance", None) else {})})
         st = {"schema": STATE_SCHEMA, "stage": stage, "set": self.set, "status": status, "reason": reason,
               "totals": self.control.totals(), "commit": self.commit, "config_sha256": self.cfg_sha,
               "pool_sha256": self.pool_sha, "prereg_sha256": self.prereg, "segments": segs,
               "fields_sha256": self.fields_sha, "pilot": list(self.pilot) if self.pilot else None,
+              "clearances": [*(self.prev_state or {}).get("clearances", []),
+                             *([self.clearance] if getattr(self, "clearance", None) else [])],
               "updated": g.now_iso(),
               **({"yield_watch": self.yield_watch, "low_yield_allowed": self.low_yield_allowed}
                  if stage == "draft" and self.round3 else {}),
@@ -714,9 +793,19 @@ class Run:
               (self.prev_state or {}).get("paused_epoch")}
         g.write_json_atomic(self.p.state(stage), st)
 
+    def clear_hard_stop(self, reason: str | None, note: str | None) -> None:
+        """Arm an owner-sanctioned resume of a hard-stopped run (checked in :meth:`begin`)."""
+        if (reason is None) != (note is None) or (note is not None and not note.strip()):
+            raise SystemExit("--clear-hard-stop and a non-empty --clear-note go together")
+        self.clear = None if reason is None else {"reason": reason, "note": (note or "").strip()}
+
     def begin(self, stage: str, resume: bool, acknowledged: bool) -> int | None:
         """Common start: inputs, state/resume checks, the notice gate, the prereg sha."""
         self.resume = resume
+        clear = getattr(self, "clear", None)
+        self.clearance: dict[str, Any] | None = None
+        if clear is not None and not resume:
+            raise SystemExit("--clear-hard-stop needs --resume")
         self.started = g.now_iso()
         self.load()
         self.prev_state = self.read_state(stage)
@@ -729,18 +818,38 @@ class Run:
             if not resume:
                 g.log(f"{stage}: {self.p.state(stage).name} exists; continue with --resume")
                 return EXIT_HARD_STOP
-            if st.get("status") == "hard_stop":
-                g.log(f"{stage} --resume refused: the run hard-stopped ({st.get('reason')})")
+            if st.get("status") == "hard_stop" and clear is None:
+                g.log(f"{stage} --resume refused: the run hard-stopped ({st.get('reason')}); an owner-sanctioned "
+                      "resume passes --clear-hard-stop <reason> --clear-note \"<text>\"")
                 return EXIT_HARD_STOP
+            if clear is not None:
+                if NEVER_CLEARABLE_RE.search(f"{clear['reason']} {st.get('reason') or ''}"):
+                    g.log(f"{stage} --clear-hard-stop refused: {st.get('reason')!r} is a budget / limit stop, "
+                          "never clearable (preflight, a fresh notice, then --resume)")
+                    return EXIT_HARD_STOP
+                if st.get("status") != "hard_stop":
+                    g.log(f"{stage} --clear-hard-stop refused: the run is {st.get('status')}, not hard-stopped")
+                    return EXIT_HARD_STOP
+                if clear["reason"] != st.get("reason"):
+                    g.log(f"{stage} --clear-hard-stop refused: the state's reason is {st.get('reason')!r}, "
+                          f"not {clear['reason']!r}")
+                    return EXIT_HARD_STOP
+                self.clearance = {"t": g.now_iso(), "reason": clear["reason"], "note": clear["note"],
+                                  "by": os.environ.get("USER") or os.environ.get("LOGNAME"),
+                                  "commit_before": st.get("commit"), "commit_after": self.commit}
             bad = [k for k, v in (("commit", self.commit), ("config_sha256", self.cfg_sha),
                                   ("pool_sha256", self.pool_sha), ("prereg_sha256", self.prereg),
                                   ("fields_sha256", self.fields_sha),
                                   ("pilot", list(self.pilot) if self.pilot else None))
-                   if st.get(k) != v]
+                   if st.get(k) != v and not (k == "commit" and self.clearance is not None)]
             if bad:
                 g.log(f"{stage} --resume refused (hard stop): {', '.join(bad)} differ from the state file")
                 return EXIT_HARD_STOP
             prev_tot = st.get("totals", {}).get("since_start")
+            if self.clearance is not None:
+                g.log(f"{stage} HARD STOP CLEARED ({self.clearance['reason']}) by {self.clearance['by']}: "
+                      f"{self.clearance['note']} [commit {self.clearance['commit_before']} -> "
+                      f"{self.clearance['commit_after']}]")
         elif resume:
             g.log(f"{stage} --resume: no state file")
             return EXIT_HARD_STOP
@@ -1120,15 +1229,18 @@ class Run:
         if obj.get("is_error"):
             lim = LIMIT_RE.search(str(text) + str(obj.get("api_error_status")))
             return {"status": "limit" if lim else "error", "error": str(text)[:300]}
-        mu = obj.get("modelUsage") or {}
-        model = v["model"]
-        own = next(({"key": k, **val} for k, val in mu.items()
-                    if k == model or k.startswith(model) or val.get("canonicalModel") == model), {})
-        ctx = (int(own.get("inputTokens") or 0) + int(own.get("cacheCreationInputTokens") or 0)
-               + int(own.get("cacheReadInputTokens") or 0)) if own else None
-        return {"status": "ok" if text.strip() else "empty", "text": text, "model": own.get("key"),
-                "context_tokens": ctx, "output_tokens": own.get("outputTokens"),
-                "cost_usd": obj.get("total_cost_usd"), "duration_s": round(time.time() - t0, 2)}
+        u = cli_usage(obj, v["model"])
+        out = {"text": text, "model": u["model"], "context_tokens": u["context_tokens"],
+               "output_tokens": u["output_tokens"], "cost_usd": obj.get("total_cost_usd"),
+               "served_models": u["served_models"], "safety_stops": u["safety_stops"],
+               "duration_s": round(time.time() - t0, 2)}
+        if u["fallback"]:
+            # the configured model stopped on a safeguard and the CLI answered with another
+            # model: that answer is not the configured verifier's — a refusal (codex fallback)
+            return {**out, "status": "refused", "fallback": True,
+                    "error": f"safety_stop_fallback: answered by {u['answered_by'] or '?'} "
+                             f"(safety_stops {u['safety_stops']})"}
+        return {**out, "status": "ok" if text.strip() else "empty"}
 
     def isolation(self, prompt: str, res: dict[str, Any], overhead: float = CLAUDE_FIXED_OVERHEAD
                   ) -> dict[str, Any]:
@@ -1224,20 +1336,46 @@ class Run:
         hard: list[str] = []
         ver = {"verify_version": self.verify_version} if self.verify_version else {}
 
+        wave_n = len(todo)
+        anomalies = {"n": 0}
+
+        def iso_anomaly(rid: str, iso: dict[str, Any], in_a_row: int) -> bool:
+            """Log one isolation anomaly (the call's verdict is discarded); True = a hard stop:
+            ISOLATION_RETRIES + 1 in a row on one record, or more than ISOLATION_WAVE_RATE of
+            this segment's records (and more than ISOLATION_RETRIES, so one transient anomaly in a
+            small last wave is not a stop). Caller holds the lock."""
+            anomalies["n"] += 1
+            self.control.seg["cli_isolation_anomalies"] += 1
+            g.log(f"verify: isolation anomaly on {rid} ({in_a_row} in a row; {anomalies['n']} of {wave_n} "
+                  f"records this segment): context {iso['context_tokens']} > budget {iso['budget']} "
+                  f"or tool events {iso['tool_events']}; verdict discarded")
+            if in_a_row > ISOLATION_RETRIES or anomalies["n"] > max(ISOLATION_RETRIES, ISOLATION_WAVE_RATE * wave_n):
+                hard.append("isolation_failed")
+                self.control.stop("isolation_failed")
+                return True
+            return False
+
         def one(rec: dict[str, Any]) -> str:
-            """Verify one record; returns ``refused`` when Claude refused it (whatever codex did)."""
+            """Verify one record; returns ``refused`` when Claude refused it (whatever codex did).
+            Every Claude call is isolation-checked (when ``isolation_check``); an anomalous call
+            is discarded and re-issued (at most ISOLATION_RETRIES times in a row)."""
             rid = rec["record_id"]
             prompt = self.verify_prompt(rec)
             last: dict[str, Any] = {}
             refusal: str | None = None
-            for attempt in (1, 2):
+            refused_cost = 0.0
+            attempt = 0          # answered (isolation-clean) or failed calls, at most 2
+            in_a_row = 0         # consecutive isolation anomalies on this record
+            iso_total = 0
+            while attempt < 2:
                 with self._lock:
                     if self.control.stopped() or hard:
                         return "stopped"
                     if self.control.seg["cli_calls"] + self.control.prev["cli_calls"] >= int(v["max_calls"]):
                         self.control.stop("cli_call_cap")
                         return "stopped"
-                    spent = sum(float(x.get("cost_usd") or 0) for x in rows.rows.values())
+                    spent = sum(float(x.get("cost_usd") or 0) + float(x.get("refused_cost_usd") or 0)
+                                for x in rows.rows.values())
                     if spent >= float(v["max_cost_usd"]):
                         self.control.stop("cli_cost_cap")
                         return "stopped"
@@ -1246,16 +1384,34 @@ class Run:
                     res = self.call_cli(prompt, cwd)
                 except subprocess.TimeoutExpired:
                     res = {"status": "error", "error": "timeout"}
+                if res["status"] in ("ok", "empty") or res.get("fallback"):
+                    with self._lock:
+                        self.control.account("cli", int(res.get("context_tokens") or 0),
+                                             int(res.get("output_tokens") or 0), call=False)
+                        if v["isolation_check"]:
+                            iso = self.isolation(prompt, res)
+                            if not iso["PASS"]:
+                                in_a_row += 1
+                                iso_total += 1
+                                if iso_anomaly(rid, iso, in_a_row):
+                                    return "stopped"
+                                continue
+                            checked["done"] = True
+                        in_a_row = 0
                 if res["status"] == "refused":
                     refusal = str(res.get("error") or "")
+                    refused_cost += float(res.get("cost_usd") or 0)
                     with self._lock:
                         self.control.seg["cli_refusals"] += 1
+                        if res.get("fallback"):
+                            self.control.seg["cli_safety_fallbacks"] += 1
                     if not v["codex_fallback"]:
                         return "refused"   # not recorded: the operator decides (no fallback configured)
                     last = self.codex_verify(prompt, cwd, codex_checked, hard)
                     if not last:
                         return "refused"   # stopping before the codex call: re-issued on resume
                     break
+                attempt += 1
                 with self._lock:
                     if res["status"] == "limit":
                         self.control.stop("usage_limit")
@@ -1265,15 +1421,6 @@ class Run:
                         if attempt == 2:
                             return "error"  # not recorded: re-issued on resume
                         continue
-                    self.control.account("cli", int(res.get("context_tokens") or 0),
-                                         int(res.get("output_tokens") or 0), call=False)
-                    if not checked["done"]:
-                        iso = self.isolation(prompt, res)
-                        checked["done"] = True
-                        if not iso["PASS"]:
-                            hard.append("isolation_failed")
-                            self.control.stop("isolation_failed")
-                            return "stopped"
                     verdict, err = self.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
                     last = {**res, "parse_error": err, "verdict": verdict, "attempt": attempt, "verifier": "claude"}
                     if verdict is not None:
@@ -1298,6 +1445,9 @@ class Run:
                           "verifier": last["verifier"], "verifier_refused": "claude" if refusal is not None else None,
                           "refusal_text": refusal, "error": last.get("error"),
                           "unavailable_reason": last.get("unavailable_reason"),
+                          "served_models": last.get("served_models"), "safety_stops": last.get("safety_stops"),
+                          "refused_cost_usd": round(refused_cost, 6) if refused_cost else None,
+                          "isolation_anomalies": iso_total,
                           "prompt_sha256": g.sha_text(prompt), **ver, "t": g.now_iso()})
                 self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": l2_verdict,
                                    "reasons": reasons, "flags": [], "fields": verdict, "served_model": last.get("model"),
@@ -1311,8 +1461,9 @@ class Run:
 
         if todo:
             notice("CLI", f"verify set={self.set}: starting {len(todo)} records (<= {v['inflight']} in flight)")
-        # the isolation check runs alone, before anything else is in flight; a record Claude
-        # refuses (verified by codex instead) does not check Claude, so the next one probes
+        # the first isolation-checked call runs alone, before anything else is in flight; a record
+        # Claude refuses outright (verified by codex instead) does not check Claude, so the next
+        # one probes. After that every call is still checked (see ``one``).
         while todo and not checked["done"]:
             outcome = one(todo[0])
             todo = todo[1:]
@@ -1364,7 +1515,7 @@ class Run:
                                 "unavailable_reason": "codex_refused"}
                     self.control.account("codex", int(res.get("context_tokens") or 0),
                                          int(res.get("output_tokens") or 0), call=False)
-                    if not checked["done"]:
+                    if self.cfg["verifier"]["isolation_check"]:      # every codex call
                         iso = self.isolation(prompt, res, float(self.cfg["verifier"]["codex_overhead_tokens"]))
                         checked["done"] = True
                         if not iso["PASS"]:
@@ -1733,6 +1884,13 @@ def promotion_condition(n: int, errors: int) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ CLI
 
+def add_clear_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--clear-hard-stop", default=None, metavar="REASON",
+                   help="with --resume: resume a hard-stopped run the owner sanctioned; REASON must equal the "
+                        "state file's (logged, kept in the state's clearances; the commit may differ)")
+    p.add_argument("--clear-note", default=None, metavar="TEXT", help="required with --clear-hard-stop: why")
+
+
 def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]] | None = None,
          http_factory: Callable[[], Any] | None = None, cli_runner: Callable[..., Any] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
@@ -1756,6 +1914,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
         sp.add_argument("--notice-acknowledged", action="store_true",
                         help="the human has sent the preflight notice; required")
         sp.add_argument("--resume", action="store_true")
+        add_clear_args(sp)
         if name == "draft":
             sp.add_argument("--allow-low-yield", action="store_true",
                             help="round-3 pools: start although the pool's yield estimate is not ADEQUATE (recorded)")
@@ -1778,6 +1937,7 @@ def main(argv: list[str] | None = None, provenance: Callable[[], dict[str, Any]]
     out = g.out_dir(cfg, args.out_dir)
     run = Run(cfg, cfg_sha, out, args.set, provenance, http_factory, cli_runner,
               pilot=None if args.pilot is None else (args.pilot, args.papers))
+    run.clear_hard_stop(getattr(args, "clear_hard_stop", None), getattr(args, "clear_note", None))
     if args.cmd == "preflight":
         run.preflight(args.stage)
         return EXIT_OK
