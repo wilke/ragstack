@@ -12,9 +12,26 @@ Subcommands (``--private-config CFG`` first; every output goes to the config's p
     summary --set S                          accepted records + counts-only summary
 
 Every subcommand takes ``--pilot [N] [--papers K]`` (default 24 jobs over 3 papers): K
-papers drawn by ``random.Random("<pool seed>|pilot")`` from the pool's eval papers, their
-first N jobs in drafting order; own files (``*-alias-<set>-pilot*``), records marked
-``pilot: true``.
+papers drawn by ``random.Random("<pool seed>|pilot")`` from the pool's eval papers and N
+PLANNED jobs spread over them with a per-paper cap (``N // K`` each, the first ``N % K``
+papers in sorted order one more), each paper's jobs taken in its drafting order (wave,
+kind, rank), so e.g. ``--pilot 50 --papers 12`` plans 4-5 jobs on each of 12 papers. The
+stop rule still applies inside the pilot, so fewer than N are normally drafted. Own files
+(``*-alias-<set>-pilot*``), records marked ``pilot: true``.
+
+**Size notice** (``preflight --stage draft``). ``calls`` is the EXPECTED number of gateway
+calls under the stop rule: per paper and kind, :func:`glossbench_alias_pool.expected_drafted`
+over the remaining waves with the per-job layer-1 pass rate ``alias.l1_pass_rate`` {G, C}
+(default: the pool's yield rate, the calibration or the prior; that is a layers-1-2 rate,
+so the default over-estimates the jobs drafted), times ``drafter.attempts_factor``; the
+token estimates scale with it. Beside it, labelled: ``calls_if_no_stop_rule`` (every planned
+job, times the factor) and ``calls_upper_bound`` (every planned job, every redraw and empty
+retry used, plus ``max_fail_total`` re-issued failed calls). ``limits.notice_overrun``
+applies to ``calls``, i.e. pauses at the expected calls plus that share. At the end of every
+draft segment the realised calls and tokens are printed beside the notice's estimate, and
+``summary`` records them (``alias.realised``: calls, tokens, calls per drafted job, the
+layer-1 pass rate per kind, the inputs for ``alias_pool.yield_calibration`` and
+``alias.l1_pass_rate``).
 
 **Everything the round-3 drafter guarantees applies unchanged** (it is the same code:
 :class:`AliasRun` subclasses :class:`glossbench_r2_draft.Run`): ``fallback_model: ""``
@@ -74,7 +91,8 @@ prompt_sha256, verifier, verifier_refused, verifier_model``.
     out_dir                    private output directory (never inside the repo)
     corpora.<set>              {chunks: [paths], paper_key, alias_glossary, expected_chunks}
     alias_pool                 the pool builder's block (glossbench_alias_pool.DEFAULTS)
-    alias                      {goal: {G, C}}  (default: the pool header's goal)
+    alias                      {goal: {G, C}, l1_pass_rate: {G, C}}  (default: the pool header's goal;
+                               the pool's yield rates)
     alias_checks               layer-1 thresholds (glossbench_alias_checks.CHECK_DEFAULTS)
     drafter, verifier, limits, yield_watch, prereg   as round 3 (glossbench_r2_draft.DEFAULTS)
 """
@@ -83,6 +101,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import random
 import re
 import sys
@@ -241,7 +260,7 @@ class AliasRun(dr.Run):
         unknown = set(self.raw_cfg.get("alias_checks") or {}) - CHECK_KEYS
         if unknown:
             raise SystemExit(f"config block 'alias_checks': unknown keys {sorted(unknown)}")
-        unknown = set(self.raw_cfg.get("alias") or {}) - {"goal"}
+        unknown = set(self.raw_cfg.get("alias") or {}) - {"goal", "l1_pass_rate"}
         if unknown:
             raise SystemExit(f"config block 'alias': unknown keys {sorted(unknown)}")
 
@@ -267,9 +286,22 @@ class AliasRun(dr.Run):
         jobs.sort(key=lambda r: (r["wave"], r["paper"], r["stratum"], r["rank"]))
         if self.pilot is not None:
             n, k = self.pilot
+            if n < 1 or k < 1:
+                raise SystemExit(f"--pilot {n} --papers {k}: both at least 1")
             papers = sorted({r["paper"] for r in jobs})
-            pick = set(random.Random(f"{self.header['seed']}|pilot").sample(papers, min(k, len(papers))))
-            jobs = [r for r in jobs if r["paper"] in pick][:n]
+            pick = sorted(random.Random(f"{self.header['seed']}|pilot").sample(papers, min(k, len(papers))))
+            base, extra = divmod(n, len(pick)) if pick else (0, 0)
+            quota = {p: base + (1 if i < extra else 0) for i, p in enumerate(pick)}
+            keep: set[str] = set()
+            for p in pick:
+                own = sorted((r for r in jobs if r["paper"] == p), key=lambda r: (r["wave"], r["stratum"], r["rank"]))
+                keep.update(r["job_id"] for r in own[:quota[p]])
+            jobs = [r for r in jobs if r["job_id"] in keep]
+            per = Counter(r["paper"] for r in jobs)
+            self.pilot_plan = {"papers": len(pick), "papers_with_jobs": len(per),
+                               "papers_sha256": g.sha_text("\n".join(pick)),
+                               "jobs_planned": dict(Counter(r["stratum"] for r in jobs)),
+                               "jobs_per_paper": [min(per.values(), default=0), max(per.values(), default=0)]}
         self.sampled = jobs
 
     @property
@@ -326,6 +358,78 @@ class AliasRun(dr.Run):
         return [r for r in self.sampled if r["wave"] == wave and not self.drafted_done(st, r)
                 and not self.skipped(st, r, p)]
 
+    # -------------------------------------------------------- the size notice
+    def stop_rule_rates(self) -> tuple[dict[str, float], str]:
+        given = (self.raw_cfg.get("alias") or {}).get("l1_pass_rate")
+        if given:
+            rates = {k: float(given[k]) for k in ak.KINDS}
+            src = "alias.l1_pass_rate"
+        else:
+            bk = (self.pool_yield or {}).get("by_kind") or {}
+            rates = {k: float((bk.get(k) or {}).get("rate", apool.DEFAULTS["prior_pass_rate"][k])) for k in ak.KINDS}
+            src = ("pool yield_calibration" if (self.pool_yield or {}).get("calibrated")
+                   else "pool prior_pass_rate") + " (a layers-1-2 rate: over-estimates the jobs drafted)"
+        for k, v in rates.items():
+            if not 0 <= v <= 1:
+                raise SystemExit(f"alias.l1_pass_rate.{k} {v}: a number in [0, 1]")
+        return rates, src
+
+    def expected_jobs(self, st: p4.Store) -> float:
+        """The jobs still to draft, expected under the stop rule (module docstring)."""
+        rates, _ = self.stop_rule_rates()
+        have = self.passes(st)
+        waves: dict[tuple[str, str], Counter[int]] = {}
+        for r in self.sampled:
+            if not self.chunk_done(st, r):
+                waves.setdefault((r["paper"], r["stratum"]), Counter())[r["wave"]] += 1
+        return sum(apool.expected_drafted([c[w] for w in sorted(c)], self.goal[k], rates[k], have[(p, k)])
+                   for (p, k), c in waves.items())
+
+    def draft_plan(self) -> dict[str, Any]:
+        plan = super().draft_plan()
+        st = self.drafts()
+        d = self.cfg["drafter"]
+        planned = int(plan["chunks"])
+        exp = self.expected_jobs(st)
+        share = exp / planned if planned else 0.0
+        factor = float(d["attempts_factor"])
+        rates, src = self.stop_rule_rates()
+        upper = planned * int(d["max_attempts_per_chunk"]) * 2 + int(self.cfg["limits"]["max_fail_total"])
+        plan.update({
+            "calls": math.ceil(exp * factor),
+            "est_input_tokens": math.ceil(plan["est_input_tokens"] * share),
+            "est_output_tokens": math.ceil(exp * factor * int(d["est_output_tokens"])),
+            "calls_if_no_stop_rule": plan["calls"],
+            "calls_upper_bound": upper,
+            "max_output_tokens": upper * int(d["max_tokens"]),
+            "jobs_planned": planned, "jobs_expected": round(exp, 2),
+            "stop_rule": {"goal": self.goal, "l1_pass_rate": rates, "rate_source": src, "attempts_factor": factor},
+            "estimate": "calls/tokens: EXPECTED under the stop rule (jobs_expected x attempts_factor); "
+                        "calls_upper_bound: every planned job, every redraw and empty retry, plus max_fail_total "
+                        "re-issued failures; max_output_tokens: calls_upper_bound x max_tokens"})
+        return plan
+
+    def realised(self) -> dict[str, Any]:
+        """Realised gateway use (the draft state's totals) beside the latest notice."""
+        stp = self.p.state("draft")
+        tot = ((json.loads(stp.read_text()) if stp.is_file() else {}).get("totals") or {}).get("since_start") or {}
+        pfp = self.p.preflight("draft")
+        plan = (json.loads(pfp.read_text()) if pfp.is_file() else {}).get("plan") or {}
+        st = self.drafts()
+        drafted = [r for r in self.sampled if self.drafted_done(st, r)]
+        calls = int(tot.get("gateway_calls") or 0)
+        by_kind = {}
+        for k in ak.KINDS:
+            dk = [r for r in drafted if r["stratum"] == k]
+            npass = sum(self.job_passed(st, r) for r in dk)
+            by_kind[k] = {"drafted": len(dk), "l1_passed": npass, "l1_pass_rate": (npass / len(dk)) if dk else None}
+        return {"gateway_calls": calls, "gateway_prompt_tokens": int(tot.get("gateway_prompt_tokens") or 0),
+                "gateway_completion_tokens": int(tot.get("gateway_completion_tokens") or 0),
+                "jobs_drafted": len(drafted), "calls_per_drafted_job": (calls / len(drafted)) if drafted else None,
+                "by_kind": by_kind,
+                "latest_notice": {k: plan.get(k) for k in ("calls", "jobs_expected", "jobs_planned", "calls_upper_bound",
+                                                           "est_input_tokens", "est_output_tokens")}}
+
     # -------------------------------------------------------- draft
     def _on_budget(self, ev: dict[str, Any]) -> None:
         if self.budget_event is None:
@@ -333,6 +437,14 @@ class AliasRun(dr.Run):
 
     def finish(self, stage: str, body: Callable[[], None]) -> int:
         rc = super().finish(stage, body)
+        if stage == "draft":
+            t = self.control.totals()
+            pf = json.loads(self.p.preflight(stage).read_text()).get("plan") or {}
+            dr.notice("GATEWAY", f"draft set={self.label}: realised {t['since_start'].get('gateway_calls', 0)} gateway "
+                      f"calls ({t['since_resume'].get('gateway_calls', 0)} this segment), "
+                      f"{t['since_start'].get('gateway_prompt_tokens', 0)} tokens in / "
+                      f"{t['since_start'].get('gateway_completion_tokens', 0)} out; this segment's notice: "
+                      f"{pf.get('calls')} calls expected, upper bound {pf.get('calls_upper_bound')}")
         if rc == EXIT_PAUSED and self.budget_event is not None:
             ev = {**self.budget_event, "set": self.set, "label": self.label,
                   "totals": self.control.totals()["since_start"]}
@@ -491,6 +603,7 @@ class AliasRun(dr.Run):
             "papers_short_after_l2": sum(any(p[(x, k)] >= self.goal[k] > acc[(x, k)] for k in ak.KINDS)
                                          for x in papers),
             "accepted_by_kind": {k: sum(v for (_, kk), v in acc.items() if kk == k) for k in ak.KINDS},
+            "realised": self.realised(),
         }
         g.write_json_atomic(self.p.summary, s)
         return EXIT_OK

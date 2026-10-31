@@ -294,7 +294,7 @@ def _usage_of_file(path: Path) -> dict[str, int]:
     by the glossary step (the frontier batch: every row's ``provenance.llm.calls``
     summed, each call record counting ``1 + retries`` calls)."""
     if path.suffix == ".jsonl":
-        u = Counter()
+        u: Counter[str] = Counter()
         with path.open(encoding="utf-8") as fh:
             for line in fh:
                 if not line.strip():
@@ -328,7 +328,7 @@ def resolve_prior_usage(spec: Any, own_files: Sequence[Path] = ()) -> dict[str, 
     added to its numbers. ``own_files`` (this stage's own state/totals) are refused:
     a resume already carries them. Returns ``{"calls", "prompt_tokens",
     "completion_tokens", "sources": [{name, sha256, usage}]}``."""
-    total = Counter()
+    total: Counter[str] = Counter()
     sources: list[dict[str, Any]] = []
     paths: list[str] = []
     if spec is None or spec == {} or spec == []:
@@ -630,26 +630,31 @@ class Run:
         return ck.draft_messages(c.content, r["stratum"], r["vs_tokens"], prev)
 
     # -------------------------------------------------------- preflight
+    def draft_plan(self) -> dict[str, Any]:
+        """The draft stage's size notice (a subclass may refine the estimate)."""
+        st = self.drafts()
+        todo = [r for r in self.sampled if not self.chunk_done(st, r)]
+        d = self.cfg["drafter"]
+        chars = sum(sum(len(m["content"]) for m in self.messages_for(r, None)) for r in todo)
+        factor = float(d["attempts_factor"])
+        plan = {"calls": math.ceil(len(todo) * factor), "chunks": len(todo),
+                "est_input_tokens": math.ceil(chars / CHARS_PER_TOKEN_GATEWAY * factor),
+                "est_output_tokens": math.ceil(len(todo) * factor * int(d["est_output_tokens"])),
+                "max_output_tokens": math.ceil(len(todo) * factor * int(d["max_tokens"])),
+                "models": [d["model"]], "concurrency": int(d["inflight"]),
+                "caps": {k: self.cfg["limits"][k] for k in ("input_token_cap", "output_token_cap", "call_cap")},
+                "draft_mode": self.mode, "fields_sha256": self.fields_sha,
+                "pool_yield": None if not self.round3 else {
+                    k: (self.pool_yield or {}).get(k) for k in ("expected_yield", "gate", "status")},
+                "yield_watch": dict(self.cfg["yield_watch"]) if self.round3 else None,
+                "pilot": None if self.pilot is None else {"records": self.pilot[0], "papers": self.pilot[1],
+                                                          "plan": self.pilot_plan}}
+        return plan
+
     def preflight(self, stage: str) -> dict[str, Any]:
         self.load()
         if stage == "draft":
-            st = self.drafts()
-            todo = [r for r in self.sampled if not self.chunk_done(st, r)]
-            d = self.cfg["drafter"]
-            chars = sum(sum(len(m["content"]) for m in self.messages_for(r, None)) for r in todo)
-            factor = float(d["attempts_factor"])
-            plan = {"calls": math.ceil(len(todo) * factor), "chunks": len(todo),
-                    "est_input_tokens": math.ceil(chars / CHARS_PER_TOKEN_GATEWAY * factor),
-                    "est_output_tokens": math.ceil(len(todo) * factor * int(d["est_output_tokens"])),
-                    "max_output_tokens": math.ceil(len(todo) * factor * int(d["max_tokens"])),
-                    "models": [d["model"]], "concurrency": int(d["inflight"]),
-                    "caps": {k: self.cfg["limits"][k] for k in ("input_token_cap", "output_token_cap", "call_cap")},
-                    "draft_mode": self.mode, "fields_sha256": self.fields_sha,
-                    "pool_yield": None if not self.round3 else {
-                        k: (self.pool_yield or {}).get(k) for k in ("expected_yield", "gate", "status")},
-                    "yield_watch": dict(self.cfg["yield_watch"]) if self.round3 else None,
-                    "pilot": None if self.pilot is None else {"records": self.pilot[0], "papers": self.pilot[1],
-                                                              "plan": self.pilot_plan}}
+            plan = self.draft_plan()
             kind = "GATEWAY"
         else:
             todo = self.verify_todo()
@@ -665,8 +670,10 @@ class Run:
         rec = {"stage": stage, "set": self.set, "created": g.now_iso(), "created_epoch": time.time(),
                "plan_sha256": self.plan_sha(stage), "plan": plan}
         g.write_json_atomic(self.p.preflight(stage), rec)
+        bound = (f" (upper bound {plan['calls_upper_bound']} calls / {plan['max_output_tokens']} tokens out)"
+                 if plan.get("calls_upper_bound") is not None else "")
         notice(kind, f"{stage} set={self.label}: {plan['calls']} calls, est. {plan['est_input_tokens']} tokens in / "
-               f"{plan['est_output_tokens']} out, models {', '.join(plan['models'])}, "
+               f"{plan['est_output_tokens']} out{bound}, models {', '.join(plan['models'])}, "
                f"<= {plan['concurrency']} in flight")
         return rec
 

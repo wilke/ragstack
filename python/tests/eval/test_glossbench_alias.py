@@ -20,6 +20,7 @@ if str(_EVAL) not in sys.path:
     sys.path.insert(0, str(_EVAL))
 
 import _glossbench_r2 as g  # noqa: E402
+import alias_abbrev  # noqa: E402
 import glossbench_alias_checks as ak  # noqa: E402
 import glossbench_alias_draft as ad  # noqa: E402
 import glossbench_alias_pool as apool  # noqa: E402
@@ -92,7 +93,12 @@ def corpus_idx(tmp: Path) -> tuple[g.Corpus, ck.PaperIndex]:
 def test_alias_matchers() -> None:
     assert ak.alias_in_text("ACH", "The ACH fell.") and not ak.alias_in_text("ACH", "The ACHE fell.")
     assert not ak.alias_in_text("ACH", "the ach fell")                     # the chunk matcher is case-sensitive
-    assert ak.alias_in_text("Q_v", "raising Qv") and ak.alias_in_text("Qv", "raising Q_v")
+    assert ak.alias_in_text("Qv", "raising Qv") and ak.alias_in_text("Qv", "raising Q_v")
+    # the glossary builder's matcher: hyphen / apostrophe split, an abbreviation's plural
+    for t in ("MSC-derived cells", "the MSC's niche", "MSCs grew", "MSC/MSCs"):
+        assert ak.alias_in_text("MSC", t, "abbreviation") and ak.alias_in_text("MSC", t, "both"), t
+    assert not ak.alias_in_text("MSC", "MSCs grew", "symbol")
+    assert ak.alias_in_text("ACH", "The ACH fell.") == alias_abbrev.alias_occurs("ACH", "symbol", "The ACH fell.")
     for q in ("What is ACH?", "what is ach?", "What is A.C.H.?", "What is A C H?", "Are ACHs high?",
               "What is the A-C-H?"):
         assert ak.alias_variant_in("ACH", q, "abbreviation"), q
@@ -103,16 +109,24 @@ def test_alias_matchers() -> None:
     assert ak.alias_variant_in("AS", "the AS level", "abbreviation")
     assert not ak.alias_variant_in("AS", "as high as the level", "abbreviation")   # stop word: case-sensitive
     assert ak.alias_variant_in("a", "Is a fan used?", "symbol")            # strict: the pool drops such aliases
-
+    # the question guard is never weaker than the chunk matcher, and catches case variants and plurals
+    for q in ("Is MSC-based therapy safe?", "What is the MSC's role?", "Do Mscs grow?", "do mscs grow?",
+              "What do MSC's do?", "What is msc?"):
+        for kind in ("abbreviation", "both"):
+            assert ak.alias_in_question("MSC", q, kind), (q, kind)
+    assert ak.alias_in_question("Qv", "raising Q_v", "symbol") and not ak.alias_in_question("Qv", "Qvs", "symbol")
+    assert not ak.alias_in_question("AS", "as high as the level", "abbreviation")
 
 def test_primary_rules() -> None:
-    assert ak.primary_content_words("air change rate") == ["change"]
     assert ak.chunk_has_primary("air change rate", "Staff change shifts.")            # strict: one content word
     assert not ak.chunk_has_primary("air change rate", "The ACH changed little.")     # exact token
     assert ak.chunk_has_primary("air flow", "the air flow was low")                   # no >=5 word: literal
     assert not ak.chunk_has_primary("air flow", "the air was low, the flow high")
     assert ak.primary_literal_in("air change rate", "The air-change rate was high")
-    assert not ak.primary_literal_in("air change rate", "air change rates")
+    assert ak.primary_literal_in("air change rate", "air change rates")            # lemmatised (alias_abbrev)
+    assert not ak.primary_literal_in("air change rate", "air and change rate")
+    with pytest.raises(ValueError):
+        ak.chunk_has_primary("air change rate", "x", 4)                                # one strict rule
     assert ak.primary_in_question("air change rate", "How did air change rates differ between wards?")
     assert ak.primary_in_question("outdoor airflow", "What lowered carbon dioxide when outdoor airflows rose?")
     assert not ak.primary_in_question("air change rate", "How did the ventilation rate differ?")
@@ -230,12 +244,13 @@ def test_pool_caps_waves_and_yield(tmp_path: Path) -> None:
         assert [j["wave"] for j in cj] == [0, 1]
         cids = {j["chunk_id"] for j in gj}
         assert len(cids) == 5 and not cids & {f"{p}-c0", f"{p}-c5", f"{p}-c4", f"{p}-c9"}  # def / recheck
-        assert {j["chunk_id"] for j in cj} == {f"{p}-c4", f"{p}-c8"}
+        # C: the term literally (alias_abbrev's C rule; the definition chunk is not excluded)
+        assert {j["chunk_id"] for j in cj} <= {f"{p}-c0", f"{p}-c4", f"{p}-c5", f"{p}-c8"}
         # the first two G jobs spread over both aliases (round-robin over entries)
         assert {j["alias"] for j in gj[:2]} == {"ACH", "Qv"}
     m = json.loads((out / "pool-manifest-alias-T.json").read_text())
-    assert m["counts"]["G_recheck_failed"] == 3 * 2                  # c4 has the term, c9 no alias (c0: the def)
-    assert m["counts"]["G_candidates"] == 3 * 6
+    assert m["counts"]["G_candidates"] == 3 * 6 and m["counts"]["G_def_chunk_excluded"] == 0
+    assert m["counts"]["C_candidates"] == 3 * 4
     y = m["yield"]
     exp = 3 * (apool.binom_expected_min(5, 0.35, 2) + apool.binom_expected_min(2, 0.35, 1))
     assert y["expected_yield"] == round(exp / 9, 4) and y["status"] == "ADEQUATE" and y["calibrated"] is False
@@ -246,7 +261,7 @@ def test_pool_caps_waves_and_yield(tmp_path: Path) -> None:
 
 
 def test_pool_yield_gate_and_eligibility(tmp_path: Path) -> None:
-    _, cfg = world(tmp_path, n_papers=2, yield_calibration={"G": 0.05, "C": 0.05}, min_c_candidates=3)
+    _, cfg = world(tmp_path, n_papers=2, yield_calibration={"G": 0.05, "C": 0.05}, min_c_candidates=5)
     m = json.loads((Path(cfg["out_dir"]) / "pool-manifest-alias-T.json").read_text())
     assert m["counts"]["papers_eligible"] == 0 and m["yield"]["status"] == "YIELD-NOT-ADEQUATE"
     _, cfg = world(tmp_path / "b", n_papers=2, yield_calibration={"G": 0.05, "C": 0.05})
@@ -569,3 +584,140 @@ def test_config_template_is_accepted() -> None:
     assert m["limits"]["notice_overrun"] == 0.10
     apool.pool_config(tpl)
     assert set(tpl["alias_checks"]) <= set(ak.CHECK_DEFAULTS)
+
+
+# ------------------------------------------------------------------ one matcher (review of #888)
+
+TRICKY = [
+    "Mesenchymal stromal cells (MSCs) were isolated from marrow of donor {i}. ",        # def MSC
+    "MSC-derived vesicles reduced the lesion size in mouse {i}. ",                      # G (hyphen)
+    "The MSC's secretome was profiled by mass spectrometry in batch {i}. ",            # G (possessive)
+    "Passaged MSCs lost their potency after {i}0 days. ",                               # G (plural)
+    "Stromal markers were absent in culture {i}. ",                                     # no G: 'stromal' (>= 5)
+    "The msc gene is unrelated to anything in sample {i}. ",                            # no G: case
+    "Mesenchymal stromal cell expansion took {i} weeks in the bioreactor. ",           # C
+    "Raising Qv lowered the carbon dioxide level in hall {i}. ",                        # G (symbol, no def)
+    "The outdoor airflows were measured in hall {i}. ",                                 # C (lemmatised plural)
+]
+
+
+def tricky_world(tmp: Path, n_papers: int = 3) -> tuple[dict[str, Any], g.Corpus]:
+    data = tmp / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    rows, entries = [], []
+    for i in range(1, n_papers + 1):
+        doc, s = f"m{i}", 0
+        for n, t in enumerate(TRICKY):
+            p = t.format(i=i)
+            rows.append({"id": f"{doc}-c{n}", "doc_id": doc, "content": p, "start_char": s, "end_char": s + len(p),
+                         "metadata": {"title": f"Stromal study {i}"}})
+            s += len(p)
+        entries.append({"doc_id": doc, "alias": "MSC", "primary": "Mesenchymal stromal cells", "kind": "abbreviation",
+                        "def_chunk_id": f"{doc}-c0", "def_chunk_ids": [f"{doc}-c0"], "use_chunk_ids": []})
+        entries.append({"doc_id": doc, "alias": "Qv", "primary": "outdoor airflow", "kind": "both"})
+    chunks = data / "chunks.jsonl"
+    chunks.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    gl = data / "merged_glossary.jsonl"
+    gl.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    cfg = {"out_dir": str(tmp / "out"),
+           "corpora": {"T": {"chunks": [str(chunks)], "paper_key": "doc_id", "alias_glossary": str(gl)}},
+           "alias_pool": {"seed_base": "test", "min_c_candidates": 1}}
+    apool.build(cfg, "T", g.out_dir(cfg), provenance=lambda: PROV)
+    return cfg, g.build_corpus(g.read_chunks([str(chunks)]), "doc_id")
+
+
+@pytest.mark.parametrize("which", ["simple", "tricky"])
+def test_every_pool_job_passes_the_alias_and_primary_checks_on_its_own_chunk(tmp_path: Path, which: str) -> None:
+    if which == "simple":
+        _, cfg = world(tmp_path)
+        c = g.build_corpus(g.read_chunks(cfg["corpora"]["T"]["chunks"]), "doc_id")
+    else:
+        cfg, c = tricky_world(tmp_path)
+    idx = ck.PaperIndex(c, 0)
+    jobs = jsonl(Path(cfg["out_dir"]) / "pool-alias-T.jsonl")[1:]
+    kinds = {j["stratum"] for j in jobs}
+    assert kinds == {"G", "C"}
+    if which == "tricky":   # the hyphen, possessive, plural and the symbol without a definition all made it
+        assert {j["chunk_id"].split("-")[1] for j in jobs if j["stratum"] == "G"} == {"c1", "c2", "c3", "c7"}
+    for j in jobs:
+        ch = c.chunks[j["chunk_id"]]
+        # a draft whose quote is the whole chunk and whose question names the term (never the alias)
+        draft = {"question": f"What is reported about {j['primary']} in hospital settings?",
+                 "answer": ch.content.split()[-2], "quote": ch.content.strip()}
+        out = ak.layer1(draft, None, kind=j["stratum"], entry=j, paper=j["paper"], source_chunk=ch, idx=idx, cfg={})
+        bad = {"quote_lacks_alias", "alias_in_question", "gold_has_primary", "primary_not_in_question",
+               "term_not_in_question", "term_not_in_quote", "term_not_in_chunk"} & set(out["reasons"])
+        assert not bad, (j["chunk_id"], j["alias"], out["reasons"])
+
+
+def test_pool_g_candidates_are_the_matchers_definition(tmp_path: Path) -> None:
+    """The pool's G candidates = exactly the chunks the layer-1 matchers accept (no second definition)."""
+    cfg, c = tricky_world(tmp_path)
+    jobs = jsonl(Path(cfg["out_dir"]) / "pool-alias-T.jsonl")[1:]
+    gl = [json.loads(x) for x in Path(cfg["corpora"]["T"]["alias_glossary"]).read_text().splitlines()]
+    for e in gl:
+        want = {cid for cid, ch in c.chunks.items() if ch.doc_id == e["doc_id"]
+                and ak.alias_in_text(e["alias"], ch.content, e["kind"])
+                and not ak.chunk_has_primary(e["primary"], ch.content)}
+        got = {j["chunk_id"] for j in jobs if j["stratum"] == "G" and j["alias"] == e["alias"]
+               and j["doc_id"] == e["doc_id"]}
+        assert got <= want and want, (e, got, want)
+    m = json.loads((Path(cfg["out_dir"]) / "pool-manifest-alias-T.json").read_text())
+    assert m["counts"]["G_candidates"] == 3 * 4
+
+
+def test_expected_drafted_and_preflight_reflect_the_stop_rule(tmp_path: Path) -> None:
+    assert apool.expected_drafted([2, 2, 2], 2, 1.0) == pytest.approx(2.0)
+    assert apool.expected_drafted([2, 2, 2], 2, 0.0) == pytest.approx(6.0)
+    assert apool.expected_drafted([1, 1], 1, 0.5) == pytest.approx(1.5)
+    assert apool.expected_drafted([2, 2], 2, 0.3, have=2) == 0.0
+    path, cfg = world(tmp_path)
+    _with(path, alias={"l1_pass_rate": {"G": 0.5, "C": 0.5}})
+    assert run(path, "preflight", "--stage", "draft", "--set", "T") == 0
+    plan = json.loads((Path(cfg["out_dir"]) / "preflight-draft-alias-T.json").read_text())["plan"]
+    exp = 3 * (apool.expected_drafted([2, 2, 2], 2, 0.5) + apool.expected_drafted([1, 1], 1, 0.5))
+    import math
+    assert plan["jobs_planned"] == 24 and plan["jobs_expected"] == round(exp, 2)
+    assert plan["calls"] == math.ceil(exp * 1.3) < plan["calls_if_no_stop_rule"] == math.ceil(24 * 1.3)
+    assert plan["calls_upper_bound"] == 24 * 2 * 2 + 20 and plan["stop_rule"]["rate_source"] == "alias.l1_pass_rate"
+    assert plan["max_output_tokens"] == plan["calls_upper_bound"] * plan_max_tokens(cfg)
+
+
+def plan_max_tokens(cfg: dict[str, Any]) -> int:
+    import glossbench_r2_draft as dr
+    return int(dr.merged_config(cfg)["drafter"]["max_tokens"])
+
+
+def test_pilot_spreads_over_papers_with_caps_and_reports_realised_calls(tmp_path: Path) -> None:
+    path, cfg = world(tmp_path, n_papers=14)
+    out = Path(cfg["out_dir"])
+    assert run(path, "preflight", "--stage", "draft", "--set", "T", "--pilot", "50", "--papers", "12") == 0
+    pf = json.loads((out / "preflight-draft-alias-T-pilot.json").read_text())["plan"]
+    pp = pf["pilot"]["plan"]
+    assert pp["papers"] == 12 and pp["papers_with_jobs"] == 12 and pp["jobs_per_paper"] == [4, 5]
+    assert sum(pp["jobs_planned"].values()) == 50 == pf["jobs_planned"] and set(pp["jobs_planned"]) == {"G", "C"}
+    gw = Gateway()
+    chain(path, gw, None, "--pilot", "50", "--papers", "12")
+    s = json.loads((out / "acceptance-summary-alias-T-pilot.json").read_text())
+    r = s["alias"]["realised"]
+    assert r["gateway_calls"] == len(gw.bodies) == 36 and s["alias"]["papers"] == 12    # wave 0 only: all pass
+    assert r["by_kind"]["G"]["l1_pass_rate"] == 1.0 and r["latest_notice"]["calls"] == pf["calls"]
+
+
+def test_resume_does_not_double_count_calls(tmp_path: Path) -> None:
+    def respond(body: dict[str, Any], n: int) -> Resp:
+        return Resp(503, None, NOTICE) if n == 3 else ok_resp(json.dumps(fake_draft(body["messages"])))
+    path, cfg, gw, rc = _budget_run(tmp_path, respond)
+    out = Path(cfg["out_dir"])
+    assert rc == ad.EXIT_BUDGET and (out / "PAUSE").exists()
+    st = json.loads((out / "draft-state-alias-T.json").read_text())
+    assert st["totals"]["since_start"]["gateway_calls"] == 3
+    (out / "PAUSE").unlink()
+    with pytest.raises(SystemExit, match="fresh notice"):                   # the notice predates the pause
+        run(path, "draft", "--set", "T", "--notice-acknowledged", "--resume", gw=Gateway())
+    assert run(path, "preflight", "--stage", "draft", "--set", "T") == 0
+    gw2 = Gateway()
+    assert run(path, "draft", "--set", "T", "--notice-acknowledged", "--resume", gw=gw2) == 0
+    st = json.loads((out / "draft-state-alias-T.json").read_text())
+    assert st["totals"]["since_start"]["gateway_calls"] == 3 + len(gw2.bodies) == 3 + 7
+    assert st["totals"]["since_resume"]["gateway_calls"] == 7

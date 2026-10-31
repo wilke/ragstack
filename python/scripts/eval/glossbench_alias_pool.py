@@ -4,9 +4,10 @@ and the chunk export, with the pre-drafting yield estimate.
 
 Offline and read-only. Inputs (private config, ``corpora.<set>``): ``chunks`` (the
 export, :func:`_glossbench_r2.read_chunks`), ``paper_key``, ``alias_glossary`` (the
-sibling glossary builder's JSONL, one entry per line: ``{doc_id, alias, primary, kind:
-symbol|abbreviation, def_chunk_id, use_chunk_ids}``; a line without ``alias`` that
-carries ``schema`` is a header and skipped), optional ``expected_chunks``.
+glossary builder's ``merged_glossary.jsonl``, :mod:`alias_abbrev`: one entry per line,
+``{doc_id, alias, primary, kind: symbol|abbreviation|both}`` plus, for an abbreviation,
+``def_chunk_id`` / ``def_chunk_ids``; ``use_chunk_ids`` is ignored; a line without
+``alias`` that carries ``schema`` is a header and skipped), optional ``expected_chunks``.
 
 Into the private output directory:
 
@@ -15,17 +16,18 @@ Into the private output directory:
   alias_kind, def_chunk_id, rank, wave``.
 * ``pool-manifest-alias-<set>.json`` — counts only, with the provenance.
 
-**Candidates** (re-checked with :mod:`glossbench_alias_checks`' matchers; the sibling's
-lists are not trusted, a disagreement is counted as ``recheck_failed``):
+**Candidates** are the glossary builder's own definition, computed by its code
+(:func:`alias_abbrev.g_candidates`, :func:`alias_abbrev.c_candidate_chunks`) on the same
+export, so the pool, the recount and layer 1 (which uses the same matchers through
+:mod:`glossbench_alias_checks`) cannot disagree:
 
-* **G**: for each entry, each of its ``use_chunk_ids`` (the ``def_chunk_id`` excluded:
-  a definition passage spells the term out) that contains the alias
-  (:func:`~glossbench_alias_checks.alias_in_text`) and NOT the primary term under the
-  strict rule (:func:`~glossbench_alias_checks.chunk_has_primary`: no content word of
-  >= 5 characters of the primary, and not the primary literally).
-* **C**: for each entry, each chunk of the entry's paper that contains the primary term
-  literally (:func:`~glossbench_alias_checks.primary_literal_in`), the definition
-  chunk excluded.
+* **G**: a chunk of the entry's paper holding the alias (:func:`alias_abbrev.alias_occurs`)
+  and not the primary under the strict rule (:func:`alias_abbrev.has_primary_strict`),
+  the primary termlike (symbol <= 5 words, abbreviation <= 8, no digit); the entry's
+  definition chunks are excluded as well (counted, normally none: they spell it out).
+* **C**: a chunk of the paper holding the entry's termlike primary literally
+  (:func:`alias_abbrev.primary_seq_in`; a one-word primary >= 8 characters) and not
+  holding any of the paper's aliases without that alias's own primary.
 
 An entry whose primary has no word at all, whose alias is empty, or whose alias is one
 character that is an English word (``a``, ``I``: the question guard would reject almost
@@ -82,6 +84,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import _glossbench_r2 as g  # noqa: E402
+import alias_abbrev as aa  # noqa: E402
 import glossbench_alias_checks as ak  # noqa: E402
 import glossbench_r2_pool as r2  # noqa: E402
 
@@ -143,8 +146,8 @@ def pool_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def read_glossary(path: str | Path) -> list[dict[str, Any]]:
-    """The sibling's alias glossary (JSONL). Every entry needs doc_id, alias, primary,
-    kind (symbol | abbreviation) and use_chunk_ids (a list); def_chunk_id may be null."""
+    """The alias glossary (JSONL). Every entry needs doc_id, alias, primary and kind
+    (symbol | abbreviation | both); def_chunk_id(s) may be absent."""
     out: list[dict[str, Any]] = []
     with open(path, encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
@@ -153,13 +156,11 @@ def read_glossary(path: str | Path) -> list[dict[str, Any]]:
             row = json.loads(line)
             if "alias" not in row and "schema" in row:
                 continue                                         # a header line
-            miss = [k for k in ("doc_id", "alias", "primary", "kind", "use_chunk_ids") if k not in row]
+            miss = [k for k in ("doc_id", "alias", "primary", "kind") if k not in row]
             if miss:
                 raise SystemExit(f"{Path(path).name}:{i}: a glossary entry needs {miss}")
             if row["kind"] not in ak.ALIAS_KINDS:
                 raise SystemExit(f"{Path(path).name}:{i}: kind {row['kind']!r} not in {ak.ALIAS_KINDS}")
-            if not isinstance(row["use_chunk_ids"], list):
-                raise SystemExit(f"{Path(path).name}:{i}: use_chunk_ids is not a list")
             out.append(row)
     return out
 
@@ -167,6 +168,27 @@ def read_glossary(path: str | Path) -> list[dict[str, Any]]:
 def binom_expected_min(n: int, p: float, goal: int) -> float:
     """``E[min(goal, X)]`` for ``X ~ Binomial(n, p)``."""
     return sum(min(goal, k) * math.comb(n, k) * p ** k * (1 - p) ** (n - k) for k in range(n + 1))
+
+
+def expected_drafted(wave_sizes: list[int], goal: int, p: float, have: int = 0) -> float:
+    """Expected number of jobs drafted for one paper and kind under the drafter's stop rule:
+    the waves (``wave_sizes``, in order) are drafted one after another, and a wave is drafted
+    only while fewer than ``goal`` jobs have passed (``have`` already did); each job passes
+    independently with probability ``p``."""
+    dist = {min(int(have), goal): 1.0}
+    exp = 0.0
+    for m in wave_sizes:
+        new: dict[int, float] = {}
+        for a, pr in dist.items():
+            if a >= goal:
+                new[a] = new.get(a, 0.0) + pr
+                continue
+            exp += pr * m
+            for k in range(m + 1):
+                b = min(goal, a + k)
+                new[b] = new.get(b, 0.0) + pr * math.comb(m, k) * p ** k * (1 - p) ** (m - k)
+        dist = new
+    return exp
 
 
 def expected_yield(jobs_per_paper: Mapping[str, Mapping[str, int]], goal: Mapping[str, int],
@@ -213,19 +235,19 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, provenance: Any = None) 
     expected = cc.get("expected_chunks")
     if expected is not None and len(rows) != int(expected):
         raise SystemExit(f"set {set_}: the export holds {len(rows)} chunks, expected {expected}")
-    corpus = g.build_corpus(rows, cc.get("paper_key", "doc_id"))
+    paper_key = cc.get("paper_key", "doc_id")
+    corpus = g.build_corpus(rows, paper_key)
     entries = read_glossary(cc["alias_glossary"])
     cnt: Counter[str] = Counter()
-    min_chars = int(ak.CHECK_DEFAULTS["primary_min_chars"])
-    # candidates per paper and kind: entry key -> chunk ids
-    cand: dict[str, dict[str, dict[str, list[str]]]] = {}
-    ent_by_key: dict[str, dict[str, Any]] = {}
+    usable: list[dict[str, Any]] = []
+    keys: list[str] = []
+    seen: set[str] = set()
     for e in entries:
         cnt["entries"] += 1
         if e["doc_id"] not in corpus.doc_paper:
             cnt["entry_doc_not_in_export"] += 1
             continue
-        if not str(e["alias"]).strip() or not ak.words(str(e["primary"])):
+        if not str(e["alias"]).strip() or not aa.words(str(e["primary"])):
             cnt["entry_unusable"] += 1
             continue
         akey = canonical_symbol(str(e["alias"]))
@@ -233,30 +255,37 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, provenance: Any = None) 
             cnt["entry_alias_is_a_word"] += 1        # "a", "I": the question guard would reject every question
             continue
         paper = corpus.doc_paper[e["doc_id"]]
-        key = g.sha_text(json.dumps([e["doc_id"], e["alias"], e["primary"]]))[:12]
-        if key in ent_by_key:
+        if e.get("paper") is not None and e["paper"] != paper:
+            cnt["entry_paper_differs_from_paper_key"] += 1      # the export's paper_key wins
+        key = g.sha_text(json.dumps([paper, e["alias"], e["primary"]]))[:12]
+        if key in seen:
             cnt["entry_duplicate"] += 1
             continue
-        ent_by_key[key] = {**e, "paper": paper}
-        defc = e.get("def_chunk_id")
-        pc_ = cand.setdefault(paper, {"G": {}, "C": {}})
-        for cid in dict.fromkeys(e["use_chunk_ids"]):
-            if cid == defc:
-                continue
-            ch = corpus.chunks.get(cid)
-            if ch is None or corpus.doc_paper[ch.doc_id] != paper:
-                cnt["use_chunk_not_in_paper"] += 1
-                continue
-            if ak.alias_in_text(e["alias"], ch.content) and not ak.chunk_has_primary(e["primary"], ch.content,
-                                                                                     min_chars):
-                pc_["G"].setdefault(key, []).append(cid)
-                cnt["G_candidates"] += 1
-            else:
-                cnt["G_recheck_failed"] += 1
-        for ch in corpus.paper_chunks(paper):
-            if ch.chunk_id != defc and ak.primary_literal_in(e["primary"], ch.content):
-                pc_["C"].setdefault(key, []).append(ch.chunk_id)
-                cnt["C_candidates"] += 1
+        seen.add(key)
+        usable.append({**e, "paper": paper})
+        keys.append(key)
+    ent_by_key = dict(zip(keys, usable, strict=True))
+    # the glossary builder's own candidate definition, on its own corpus view of the same rows
+    acorp = aa.build_corpus(rows, lambda r: corpus.doc_paper[r.doc_id])
+    g_cand, loose = aa.g_candidates(acorp, usable)
+    c_cand = aa.c_candidate_chunks(acorp, usable, loose)
+    # candidates per paper and kind: entry key -> chunk ids
+    cand: dict[str, dict[str, dict[str, list[str]]]] = {}
+    for p, lst in g_cand.items():
+        for x in lst:
+            e = usable[x["entry"]]
+            defs = set(e.get("def_chunk_ids") or []) | ({e["def_chunk_id"]} if e.get("def_chunk_id") else set())
+            chunks = [c for c in x["chunks"] if c not in defs]
+            cnt["G_def_chunk_excluded"] += len(x["chunks"]) - len(chunks)
+            if chunks:
+                cand.setdefault(p, {"G": {}, "C": {}})["G"][keys[x["entry"]]] = chunks
+                cnt["G_candidates"] += len(chunks)
+                cnt["G_entries"] += 1
+    for p, d in c_cand.items():
+        for i, chunks in d.items():
+            cand.setdefault(p, {"G": {}, "C": {}})["C"][keys[i]] = chunks
+            cnt["C_candidates"] += len(chunks)
+            cnt["C_entries"] += 1
     eligible = sorted(p for p, kinds in cand.items()
                       if sum(len(v) for v in kinds["G"].values()) >= int(pc["min_g_candidates"])
                       and sum(len(v) for v in kinds["C"].values()) >= int(pc["min_c_candidates"]))

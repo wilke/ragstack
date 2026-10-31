@@ -277,6 +277,28 @@ def alias_tokens(alias: str, kind: str) -> set[str]:
     return {alias} if kind == "symbol" else {alias, alias + "s"}
 
 
+def alias_occurs(alias: str, kind: str, text: str) -> bool:
+    """THE study's alias matcher on raw text (what :func:`g_candidates` applies to a
+    chunk): a whole token of the canonical text (``[\\w<bars>]+``, so a hyphen, a slash
+    or an apostrophe splits: ``MSC-derived``, ``MSC's``), case-sensitive, equal to the
+    alias or, for an abbreviation (``kind`` other than ``symbol``), its plural ``s``."""
+    return bool(set(TOK.findall(canonical_text(text))) & alias_tokens(alias, kind))
+
+
+def primary_seq_in(primary: str, text: str) -> bool:
+    """The primary's word sequence (:func:`words`: lemmatised, hyphen/dash/slash split)
+    occurs in ``text``."""
+    return contains_seq(words(text), words(primary))
+
+
+def has_primary_strict(primary: str, text: str) -> bool:
+    """THE strict primary-term rule of a G candidate (:func:`g_candidates`): ``text``
+    holds the primary's word sequence or any of its content words (>= 5 chars,
+    :func:`content5`). A G chunk is one where this is False."""
+    pw, ws = words(primary), words(text)
+    return contains_seq(ws, pw) or bool(content5(pw) & set(ws))
+
+
 def _disjoint(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
     sa, sb = content5(a) or set(a), content5(b) or set(b)
     return not (sa & sb)
@@ -385,12 +407,13 @@ def quant(xs: Sequence[float]) -> dict[str, Any]:
 
 def g_candidates(corpus: Corpus, entries: Sequence[Mapping[str, Any]]
                  ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, set[str]]]:
-    """paper -> G entries (strict rule, termlike primary), each with its G chunks;
+    """paper -> G entries (strict rule, termlike primary), each with its G chunks and
+    ``entry`` (its index in ``entries``);
     and paper -> every chunk holding an alias of the paper without that entry's
     primary sequence (feas.py's default G chunks, which C candidates avoid)."""
     G: dict[str, list[dict[str, Any]]] = defaultdict(list)
     loose: dict[str, set[str]] = defaultdict(set)
-    for e in entries:
+    for i, e in enumerate(entries):
         pw = tuple(words(e["primary"]))
         if not pw:
             continue
@@ -406,30 +429,34 @@ def g_candidates(corpus: Corpus, entries: Sequence[Mapping[str, Any]]
         c5 = content5(pw)
         gch = [c for c in no_seq if not (c5 & corpus.cwset[c])]
         if gch:
-            G[p].append({"alias": e["alias"], "pw": pw, "kind": e["kind"], "chunks": sorted(gch),
+            G[p].append({"entry": i, "alias": e["alias"], "pw": pw, "kind": e["kind"], "chunks": sorted(gch),
                          "other_corpus": len(hits) - 1, "other_paper": len(own) - 1})
     return dict(G), dict(loose)
 
 
+def c_candidate_chunks(corpus: Corpus, entries: Sequence[Mapping[str, Any]],
+                       avoid: Mapping[str, set[str]]) -> dict[str, dict[int, list[str]]]:
+    """paper -> {index of the entry in ``entries`` -> its C chunks (file order)}: a chunk of
+    the paper, not in ``avoid[paper]``, holding the entry's termlike primary literally
+    (a one-word primary needs >= 8 characters)."""
+    out: dict[str, dict[int, list[str]]] = defaultdict(dict)
+    for i, e in enumerate(entries):
+        p = e["paper"]
+        pw = tuple(words(e["primary"]))
+        if not termlike(pw, e["kind"]) or not (len(pw) >= 2 or len("".join(pw)) >= 8):
+            continue
+        gch = avoid.get(p, set())
+        hit = [c for c in corpus.paper_chunks.get(p, ())
+               if c not in gch and pw[0] in corpus.cwset[c] and contains_seq(corpus.cwords[c], pw)]
+        if hit:
+            out[p][i] = hit
+    return dict(out)
+
+
 def c_candidates(corpus: Corpus, entries: Sequence[Mapping[str, Any]],
                  avoid: Mapping[str, set[str]]) -> dict[str, int]:
-    by_paper: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for e in entries:
-        by_paper[e["paper"]].append(e)
-    out: dict[str, int] = {}
-    for p, lst in by_paper.items():
-        gch = avoid.get(p, set())
-        cands: set[str] = set()
-        for e in lst:
-            pw = tuple(words(e["primary"]))
-            if not termlike(pw, e["kind"]) or not (len(pw) >= 2 or len("".join(pw)) >= 8):
-                continue
-            for c in corpus.paper_chunks[p]:
-                if c not in gch and pw[0] in corpus.cwset[c] and contains_seq(corpus.cwords[c], pw):
-                    cands.add(c)
-        if cands:
-            out[p] = len(cands)
-    return out
+    return {p: len({c for v in d.values() for c in v})
+            for p, d in c_candidate_chunks(corpus, entries, avoid).items()}
 
 
 def _kinds(gl: Iterable[Mapping[str, Any]]) -> str:

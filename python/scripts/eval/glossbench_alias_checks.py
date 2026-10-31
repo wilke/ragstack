@@ -16,24 +16,27 @@ maps an ALIAS (a symbol or an abbreviation) to its PRIMARY term. Two job kinds:
 
 Answers need not be numeric.
 
-**Matchers** (one place each, so a change is one line):
+**Matchers.** ONE alias matcher and ONE primary-term rule for the whole study: the
+glossary builder's (:mod:`alias_abbrev`, which defines the G and C candidates). The pool
+builder and every layer-1 check below use them, so a job the pool deems a G candidate
+cannot fail layer 1 on a matcher disagreement:
 
-* :func:`alias_in_text` — the alias as a whole token, case-sensitive, after the
-  library's canonicalisation (:func:`ragstack.ingestion.symbol_glossary.symbol_occurs`:
-  NFKC, sub/superscripts, ``Q_b``/``Q b``/``Qb`` one key). Used for "the chunk / quote
-  contains the alias". Meant to be the sibling glossary builder's matcher; if the
-  sibling's differs, replace this one function.
-* :func:`alias_variant_in` — the stricter question guard: the alias's canonical key with
-  any run of spaces, ``_ - . ^ { }`` allowed between its characters, a plural ``s``/``es``
-  allowed for an abbreviation, case-INsensitive when the key has two or more characters
-  and its casefold is not an English stop word (``AS`` vs ``as`` stays case-sensitive, as
-  does a one-letter symbol: ``a`` vs the article).
-* :func:`primary_content_words` — the primary term's words of at least 5 characters that
-  are not stop words; :func:`chunk_has_primary` (the STRICT rule) is true when any of
-  them occurs as a word of the text (casefold, exact token) or the primary's word
-  sequence occurs literally.
-* :func:`primary_literal_in` — the primary's word sequence occurs contiguously (casefold,
-  word tokens of the canonical text; "air-change rate" = "air change rate").
+* :func:`alias_in_text` = :func:`alias_abbrev.alias_occurs` — a whole token of the
+  canonical text (hyphen, slash, apostrophe split), case-sensitive, the alias or (for an
+  abbreviation or ``both``) its plural ``s``. "The chunk / quote contains the alias".
+* :func:`alias_in_question` — the question guard, a SUPERSET of :func:`alias_in_text`:
+  that matcher, or :func:`alias_variant_in` (the alias's canonical key with any run of
+  spaces, ``_ - . ^ { }`` between its characters, a plural ``s``/``es``/``'s`` for an
+  abbreviation, case-INsensitive when the key has two or more characters and its
+  casefold is not an English stop word: ``AS`` vs ``as`` stays case-sensitive, as does a
+  one-letter symbol), or for an abbreviation any case variant of a token the matcher
+  accepts (``ach``, ``Achs``).
+* :func:`chunk_has_primary` = :func:`alias_abbrev.has_primary_strict` (the STRICT rule):
+  the primary's word sequence or any of its content words (>= 5 characters, lemmatised)
+  occurs in the text.
+* :func:`primary_literal_in` = :func:`alias_abbrev.primary_seq_in` — the primary's word
+  sequence occurs contiguously (lemmatised words, hyphen/dash/slash split: "air-change
+  rates" = "air change rate").
 * :func:`primary_in_question` — "the question contains the primary term or a close
   variant": the literal word sequence, or every content word of the primary (>= 3 chars,
   not a stop word) present after a light suffix stem (``-ies -es -s -ing -ed -al``) on
@@ -72,7 +75,7 @@ Answers need not be numeric.
                             alias's tokens excluded (the question must carry the term)
 G: ``quote_lacks_alias``    the quote does not contain the alias (:func:`alias_in_text`)
 G: ``alias_in_question``    the question contains the alias or a trivial variant
-                            (:func:`alias_variant_in`)
+                            (:func:`alias_in_question`)
 G: ``primary_not_in_question``  the question lacks the primary term or a close variant
 G: ``gold_has_primary``     the source chunk, or any quote-bearing chunk, contains the
                             primary term under the strict rule (re-checked; the pool
@@ -101,6 +104,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import _glossbench_r2 as g  # noqa: E402
+import alias_abbrev as aa  # noqa: E402
 import glossbench_r2_checks as ck  # noqa: E402
 
 from ragstack.ingestion.symbol_glossary import (  # noqa: E402
@@ -108,11 +112,10 @@ from ragstack.ingestion.symbol_glossary import (  # noqa: E402
     _NOT_TOKEN_BEFORE,
     canonical_symbol,
     canonical_text,
-    symbol_occurs,
 )
 
 KINDS = ("G", "C")
-ALIAS_KINDS = ("symbol", "abbreviation")
+ALIAS_KINDS = ("symbol", "abbreviation", "both")
 CHECK_DEFAULTS: dict[str, Any] = {
     "quote_max_chars": 300,
     "leak_threshold": 0.5,
@@ -121,7 +124,8 @@ CHECK_DEFAULTS: dict[str, Any] = {
     "question_max_words": 40,
     "question_max_chars": 300,
     "answer_support_min": 0.5,
-    #: the strict "contains the primary" rule: content words of at least this many characters
+    #: the strict "contains the primary" rule is alias_abbrev's (content words >= 5 chars);
+    #: kept as a key so a config states it, and any other value is refused
     "primary_min_chars": 5,
 }
 REDRAW_EXEMPT = frozenset({"no_answer"})
@@ -138,9 +142,13 @@ def words(text: str) -> list[str]:
     return [w.casefold() for w in _WORD.findall(canonical_text(text))]
 
 
-def alias_in_text(alias: str, text: str) -> bool:
-    """The alias as a whole token (case-sensitive, canonical forms): the chunk/quote matcher."""
-    return symbol_occurs(alias, text)
+def is_symbol(alias_kind: str | None) -> bool:
+    return (alias_kind or "symbol") == "symbol"
+
+
+def alias_in_text(alias: str, text: str, alias_kind: str = "symbol") -> bool:
+    """The chunk/quote matcher: :func:`alias_abbrev.alias_occurs` (the study's one matcher)."""
+    return aa.alias_occurs(alias, alias_kind or "symbol", text)
 
 
 @lru_cache(maxsize=4096)
@@ -157,29 +165,31 @@ def alias_variant_in(alias: str, text: str, alias_kind: str = "symbol") -> bool:
     key = "".join(c for c in canonical_symbol(alias) if c not in "_-.^{}")
     if not key:
         return False
-    return _variant_pattern(key, alias_kind == "abbreviation" and len(key) >= 2).search(
+    return _variant_pattern(key, not is_symbol(alias_kind) and len(key) >= 2).search(
         canonical_text(text)) is not None
 
 
-def primary_content_words(primary: str, min_chars: int = 5) -> list[str]:
-    return [w for w in dict.fromkeys(words(primary)) if len(w) >= min_chars and w not in g.STOP_WORDS]
-
-
-def _contains_seq(hay: list[str], needle: list[str]) -> bool:
-    n = len(needle)
-    return n > 0 and any(hay[i:i + n] == needle for i in range(len(hay) - n + 1))
+def alias_in_question(alias: str, question: str, alias_kind: str = "symbol") -> bool:
+    """The G question guard (module docstring): never weaker than :func:`alias_in_text`."""
+    if aa.alias_occurs(alias, alias_kind or "symbol", question) or alias_variant_in(alias, question, alias_kind):
+        return True
+    if is_symbol(alias_kind) or alias.casefold() in g.STOP_WORDS:
+        return False
+    want = {t.casefold() for t in aa.alias_tokens(alias, alias_kind)}
+    return any(t.casefold() in want for t in aa.TOK.findall(canonical_text(question)))
 
 
 def primary_literal_in(primary: str, text: str) -> bool:
-    """The primary's word sequence occurs contiguously in ``text`` (casefold, canonical words)."""
-    return _contains_seq(words(text), words(primary))
+    """The primary's word sequence occurs in ``text``: :func:`alias_abbrev.primary_seq_in`."""
+    return aa.primary_seq_in(primary, text)
 
 
 def chunk_has_primary(primary: str, text: str, min_chars: int = 5) -> bool:
-    """The STRICT rule: any content word (>= ``min_chars``) of the primary occurs as a word
-    of ``text``, or the primary occurs literally."""
-    tw = set(words(text))
-    return bool(set(primary_content_words(primary, min_chars)) & tw) or primary_literal_in(primary, text)
+    """The STRICT rule: :func:`alias_abbrev.has_primary_strict` (its content words are >= 5
+    characters; another ``min_chars`` is refused rather than silently diverging)."""
+    if int(min_chars) != 5:
+        raise ValueError(f"primary_min_chars {min_chars}: the study's strict rule (alias_abbrev) uses 5")
+    return aa.has_primary_strict(primary, text)
 
 
 _SUFFIXES = ("ies", "es", "s", "ing", "ed", "al")
@@ -414,10 +424,11 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, kind: st
             reasons.append("answer_not_in_quote")
     # the kind's own rules
     min_chars = int(c["primary_min_chars"])
+    akind = str(entry.get("alias_kind") or "symbol")
     if kind == "G":
-        if not alias_in_text(alias, quote):
+        if not alias_in_text(alias, quote, akind):
             reasons.append("quote_lacks_alias")
-        if q and alias_variant_in(alias, q, str(entry.get("alias_kind") or "symbol")):
+        if q and alias_in_question(alias, q, akind):
             reasons.append("alias_in_question")
         if q and not primary_in_question(primary, q):
             reasons.append("primary_not_in_question")
