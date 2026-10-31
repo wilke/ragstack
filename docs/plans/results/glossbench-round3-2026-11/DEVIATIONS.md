@@ -275,3 +275,7 @@ their state files' configuration sha256s, and the summary reports set A's yield 
 
 **What was known.** Set A's first-segment layer-1 outcomes and its token usage. No retrieval had run on
 any round-3 set.
+
+## Pointer, 2026-10-30: layer-3 owner spot-check validity
+
+Not a deviation: the owner's spot-check labels for sets O and A, imported after `RESULTS.md`, and one owner decision on how a set-O item counts. See [`ADDENDUM-2026-10-30-spot-validity.md`](ADDENDUM-2026-10-30-spot-validity.md).
