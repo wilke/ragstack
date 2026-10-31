@@ -52,7 +52,27 @@ by :func:`resolve_prior_usage`; a hand-entered dict is also accepted). The runni
 observed-calls counter (``limits.max_calls`` and/or ``limits.notice_overrun``) pauses
 mid-batch once the gateway HTTP requests admitted in this segment (retries included)
 reach ``max_calls`` or ``ceil(preflight calls * (1 + notice_overrun))``, whichever is
-smaller (D-5's "+10% of the notice" stop, previously manual). Exit 1 = hard
+smaller (D-5's "+10% of the notice" stop, previously manual).
+
+Which caps count what (:class:`R2Control`):
+
+=====================  ===========================================================
+``max_calls``          per segment: gateway HTTP requests admitted since this
+                       start / resume (retries included); resets on every resume
+``notice_overrun``     per segment: ``ceil(preflight calls * (1 + share))``, the
+                       preflight being this segment's (:meth:`R2Control.set_call_cap`:
+                       round 3's draft, the alias run-waves); the smaller applies
+``call_cap``           cumulative: ``prior_gateway_usage`` + every earlier segment
+                       of this stage + this segment, gateway calls
+``input_token_cap``    cumulative, the same sum, gateway prompt tokens
+``output_token_cap``   cumulative, the same sum, gateway completion tokens
+=====================  ===========================================================
+
+``R2Control`` hands part 4's ``Control`` the limits with ``output_token_cap`` nulled:
+the parent's check counts only earlier segments + this one (no ``prior_gateway_usage``),
+so it is switched off there and the cap is checked once, cumulatively, in
+:meth:`R2Control.gateway_admit` from the unmodified limits (``self.caps``) — it is
+enforced, for the alias run too (``AliasRun`` inherits :class:`Run`'s ``R2Control``). Exit 1 = hard
 stop (frozen-prereg sha mismatch, a resume against a different commit, config
 or pool, a failed isolation check). ``--resume`` continues a paused run.
 
@@ -98,7 +118,10 @@ counts as an isolation anomaly, never as a clean call.
 the sealed one). The two configs are diffed key by key (dotted paths); only
 :data:`RESEAL_RULES` may change — ``waves.target_papers`` (increase only),
 ``limits.max_calls``, ``limits.output_token_cap``, ``limits.notice_overrun`` (changed, never
-removed or nulled: a positive int, a number >= 0), ``limits.prior_gateway_usage`` (append only: earlier files kept in order, numbers never
+removed or nulled: a positive int, a number >= 0), ``limits.call_cap`` and
+``limits.input_token_cap`` (raise only: a positive int strictly above the sealed value, or
+above the :data:`DEFAULTS` value when the sealed config left it out; never lowered, removed,
+nulled or retyped, and a sealed null cannot be re-sealed), ``limits.prior_gateway_usage`` (append only: earlier files kept in order, numbers never
 lowered) — and any other changed key (models, prompts, verifier, seeds, corpus / glossary
 paths, caps per paper, ``max_tokens``, in-flight, ...) refuses the resume, naming every
 such key. The re-seal (who, when, note, the diff, the config and code sha before and
@@ -216,11 +239,16 @@ CLAUDE_FIXED_OVERHEAD = 1.25 * 574
 #: ``--reseal-config``: the only config keys (dotted paths) a re-seal may change, and how:
 #: ``count`` (a positive int, never removed or null: a cap is changed, never dropped),
 #: ``share`` (a finite number >= 0, never removed or null), ``increase`` only (an int),
-#: ``append`` only (``prior_gateway_usage``)
+#: ``raise`` only (a positive int strictly above the sealed one, never removed, null or retyped;
+#: a sealed null = no cap, so no value is a raise from it; absent = :data:`DEFAULTS`),
+#: ``append`` only (``prior_gateway_usage``). ``count`` lets a cap go down as well as up;
+#: ``raise`` is for the cumulative budget caps, whose decrease is not a re-seal's business
 RESEAL_RULES: dict[str, str] = {
     "waves.target_papers": "increase",
     "limits.max_calls": "count",
     "limits.output_token_cap": "count",
+    "limits.call_cap": "raise",
+    "limits.input_token_cap": "raise",
     "limits.notice_overrun": "share",
     "limits.prior_gateway_usage": "append",
 }
@@ -292,7 +320,8 @@ def config_reseal_diff(old: dict[str, Any], new: dict[str, Any],
     """(the allowed changes ``{key: {old, new}}``, the refused keys with why) between the
     sealed config and the new one (:data:`RESEAL_RULES`). Refused keys are named, never their
     values (a config may carry endpoints)."""
-    dflt = {**RESEAL_DEFAULTS, **(defaults or {})}
+    dflt = {**RESEAL_DEFAULTS, **{k: DEFAULTS["limits"][k.split(".", 1)[1]]
+                                   for k, r in RESEAL_RULES.items() if r == "raise"}, **(defaults or {})}
     fo, fn = _flatten(old), _flatten(new)
     allowed: dict[str, Any] = {}
     refused: list[str] = []
@@ -310,6 +339,17 @@ def config_reseal_diff(old: dict[str, Any], new: dict[str, Any],
                 refused.append(f"{key} (increase only: {va!r} -> {vb!r})")
                 continue
             allowed[key] = {"old": va, "new": vb}
+            continue
+        if rule == "raise":
+            va = dflt.get(key) if a == _ABSENT else a
+
+            def _pint(v: Any) -> bool:
+                return isinstance(v, int) and not isinstance(v, bool) and v > 0
+            if not (_pint(va) and _pint(b) and b > va):                       # type: ignore[operator]
+                refused.append(f"{key} (raise only: a positive int above the sealed "
+                               f"{'<absent>' if a == _ABSENT else a!r}, never lowered, removed or null)")
+                continue
+            allowed[key] = {"old": va, "new": b}
             continue
         if rule in ("count", "share"):
             num = isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b)
