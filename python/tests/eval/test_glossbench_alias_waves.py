@@ -637,7 +637,7 @@ def test_reseal_diff_caps_are_changed_never_dropped() -> None:
         _, bad = diff(notice_overrun=v)
         assert bad and bad[0].startswith("limits.notice_overrun (a number >= 0"), v
     assert not diff(notice_overrun=0)[1] and not diff(notice_overrun=0.25)[1]
-    assert diff(call_cap=9999)[1] == ["limits.call_cap (not re-sealable)"]
+    assert not diff(call_cap=9999)[1]
     assert diff(foo=1)[1] == ["limits.foo (not re-sealable)"]
     for prior in ({"files": ["a", "b"], "zzz": 5}, {"files": ["a", "b"], "calls": "x"},
                   {"files": ["a", "b"], "calls": -1}, {"files": "a"}, 5):
@@ -648,3 +648,38 @@ def test_reseal_diff_caps_are_changed_never_dropped() -> None:
         new = json.loads(json.dumps(old))
         new["waves"][k] = v
         assert dr.config_reseal_diff(old, new)[1] == [f"waves.{k} (not re-sealable)"]
+
+
+def test_reseal_diff_budget_caps_raise_only() -> None:
+    """call_cap and input_token_cap (cumulative budget caps) may only go up: a decrease, an
+    equal-or-lower value, removal, null, a retype or a non-positive value is refused; a sealed
+    config that left the cap out is compared with DEFAULTS; a sealed null (no cap) cannot be
+    re-sealed. Both raise passes and both refusals name the key."""
+    old = {"limits": {"call_cap": 2500, "input_token_cap": 4_000_000, "max_calls": 10}}
+
+    def diff(**limits: Any) -> tuple[dict[str, Any], list[str]]:
+        new = json.loads(json.dumps(old))
+        for k, v in limits.items():
+            if v is ...:
+                new["limits"].pop(k)
+            else:
+                new["limits"][k] = v
+        return dr.config_reseal_diff(old, new)
+
+    for k, sealed in (("call_cap", 2500), ("input_token_cap", 4_000_000)):
+        ok, bad = diff(**{k: sealed + 1})
+        assert not bad and ok == {f"limits.{k}": {"old": sealed, "new": sealed + 1}}
+        for v in (sealed - 1, 1, ..., None, 0, -1, True, float(sealed * 2), str(sealed * 2), [sealed * 2]):
+            ok, bad = diff(**{k: v})
+            assert not ok and bad and bad[0].startswith(f"limits.{k} (raise only"), (k, v)
+    ok, bad = diff(call_cap=3000, input_token_cap=5_000_000, max_calls=5)    # count may still go down
+    assert not bad and set(ok) == {"limits.call_cap", "limits.input_token_cap", "limits.max_calls"}
+    # absent in the sealed config = DEFAULTS
+    for k in ("call_cap", "input_token_cap"):
+        d = dr.DEFAULTS["limits"][k]
+        ok, bad = dr.config_reseal_diff({"limits": {}}, {"limits": {k: d + 1}})
+        assert not bad and ok == {f"limits.{k}": {"old": d, "new": d + 1}}
+        _, bad = dr.config_reseal_diff({"limits": {}}, {"limits": {k: d - 1}})
+        assert bad and bad[0].startswith(f"limits.{k} (raise only")
+        _, bad = dr.config_reseal_diff({"limits": {k: None}}, {"limits": {k: 10**12}})
+        assert bad and bad[0].startswith(f"limits.{k} (raise only")

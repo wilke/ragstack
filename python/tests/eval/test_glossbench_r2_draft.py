@@ -208,6 +208,26 @@ def test_assertion_guards_the_body(tmp_path: Path) -> None:
         gw.body({"model": "m", "max_tokens": 0}, [])
 
 
+def test_caps_cumulative_vs_per_segment(tmp_path: Path) -> None:
+    """call_cap / input_token_cap / output_token_cap count prior_gateway_usage + earlier
+    segments + this one (output_token_cap too, though the parent Control gets it nulled);
+    max_calls counts this segment only."""
+    base = {**dr.DEFAULTS["limits"], "input_token_cap": None, "output_token_cap": None, "call_cap": None}
+    prior = {"calls": 5, "prompt_tokens": 50, "completion_tokens": 30}
+    for cap, val in (("call_cap", 9), ("input_token_cap", 90), ("output_token_cap", 50)):
+        ctl = dr.R2Control({**base, cap: val, "prior_gateway_usage": prior}, tmp_path / "PAUSE",
+                           {"gateway_calls": 3, "gateway_prompt_tokens": 30, "gateway_completion_tokens": 15})
+        assert ctl.lim["output_token_cap"] is None and ctl.gateway_admit()      # 8 / 80 / 45 so far
+        ctl.account("gateway", 10, 5)                                            # 9 / 90 / 50
+        assert not ctl.gateway_admit() and ctl.reason == cap, cap
+    ctl = dr.R2Control({**base, "max_calls": 2, "prior_gateway_usage": prior}, tmp_path / "PAUSE",
+                       {"gateway_calls": 100, "gateway_prompt_tokens": 0, "gateway_completion_tokens": 0})
+    assert ctl.gateway_admit()
+    ctl.account("gateway")
+    ctl.account("gateway")
+    assert not ctl.gateway_admit() and ctl.reason.startswith("max_calls")
+
+
 def test_at_most_four_in_flight(tmp_path: Path) -> None:
     path, cfg = setup(tmp_path, pool_cfg={"n_papers": 6, "s1_per_paper": 3, "s2_per_paper": 2, "s3_per_paper": 2})
     gw = FakeGateway()
