@@ -14,12 +14,15 @@ imported and reports the check as absent; this builder serves the addendum
 * set O's census files (DEVIATIONS.md D-5): ``O-partner-check/partner-verdicts-O-53.json``,
   ``partner-judging-notes-O-53.json`` and ``analysis/d5-exclusions-O.json``, for the overlap counts.
 
-No question, quote, passage, answer, note text, record id, chunk id or paper id is copied. The one
-record an owner decision overrides is named by its sheet item id and by ``sha256(record_id)[:12]``.
+No question, quote, passage, answer, note text, record id, chunk id or paper id is copied. Each record
+an owner decision names is named by its sheet item id and by ``sha256(record_id)[:12]``.
 
 The as-typed figures are recomputed here from the labels and checked against the harness's import
 (``n_valid``, ``labels_sha256``, the Wilson interval to 1e-12). The reported figure applies the owner's
-decisions in ``DECISIONS``, each asserted against the labels it overrides.
+decisions in ``DECISIONS``, each asserted against the label state it names. A decision either overrides
+the typed label (``counted_as`` differs from it) or keeps it (``OWNER_KEEP_AS_TYPED``); for a set with
+kept items the artifact also carries the what-if in which they are counted invalid, which is not an owner
+decision and not the reported figure.
 
     python3 -I make_spot_validity_r3.py --root T3 --out spot-validity-r3.json
 
@@ -78,6 +81,22 @@ DECISIONS = [
         "decided_on": "2026-10-30",
         "decided_after": "the harness's as-typed import (40/40) and RESULTS.md; before this addendum",
     },
+] + [
+    {
+        "set": "A",
+        "item": item,
+        "record_alias_sha256_12": rec,
+        "typed": {"label": "valid", "denotes_quantity": "yes", "note_present": True},
+        "counted_as": "valid",
+        "reason_code": "OWNER_KEEP_AS_TYPED",
+        "reason": "typed 'valid' with denotes_quantity 'yes', but the owner's own note on the item says the "
+                  "number comes from a bibliographic (journal) citation. The owner decided to count it as "
+                  "typed, valid.",
+        "decided_by": "owner",
+        "decided_on": "2026-10-30",
+        "decided_after": "the harness's as-typed import (40/40), RESULTS.md and the first draft of this addendum",
+    }
+    for item, rec in (("s005", "69ff2277b1d4"), ("s013", "90baf7d0d273"))
 ]
 
 
@@ -149,6 +168,7 @@ def one_set(root: Path, s: str, census: dict | None) -> tuple[dict, dict]:
 
     applied = []
     k_rep = k_typed
+    n_kept = 0
     for d in (d for d in DECISIONS if d["set"] == s):
         it = items[d["item"]]
         rid = key["key"][d["item"]]
@@ -156,8 +176,14 @@ def one_set(root: Path, s: str, census: dict | None) -> tuple[dict, dict]:
         assert it["label"] == d["typed"]["label"]
         assert it.get("denotes_quantity") == d["typed"]["denotes_quantity"]
         assert bool(it.get("note")) == d["typed"]["note_present"]
-        if d["typed"]["label"] == "valid" and d["counted_as"] == "invalid":
+        assert d["counted_as"] in {"valid", "invalid"}
+        if d["counted_as"] == d["typed"]["label"]:
+            assert d["reason_code"] == "OWNER_KEEP_AS_TYPED"
+            n_kept += d["typed"]["label"] == "valid"
+        elif d["typed"]["label"] == "valid":
             k_rep -= 1
+        else:
+            k_rep += 1
         entry = {x: d[x] for x in ("item", "record_alias_sha256_12", "typed", "counted_as", "reason_code",
                                    "reason", "decided_by", "decided_on", "decided_after")}
         if census is not None:
@@ -182,6 +208,11 @@ def one_set(root: Path, s: str, census: dict | None) -> tuple[dict, dict]:
         "as_typed": as_typed,
         "decisions": applied,
         "reported": reading(k_rep, n),
+        "what_if_kept_counted_invalid": (
+            None if not n_kept else
+            {**reading(k_rep - n_kept, n),
+             "note": "not an owner decision and not the reported figure: the items the owner kept as typed "
+                     "(OWNER_KEEP_AS_TYPED), counted invalid instead"}),
         "harness_import": {
             "n_graded": imp["n_graded"], "n_valid": imp["n_valid"], "validity": imp["validity"],
             "wilson95": imp["wilson95"], "threshold": imp["threshold"], "below_threshold": imp["below_threshold"],
@@ -268,8 +299,10 @@ def main() -> int:
     a.out.write_text(json.dumps(art, indent=2, sort_keys=False, ensure_ascii=False) + "\n", encoding="utf-8")
     for s in ("O", "A"):
         r, t = sets[s]["reported"], sets[s]["as_typed"]
+        w = sets[s]["what_if_kept_counted_invalid"]
+        wtxt = f"  what-if {w['n_valid']}/{w['n']} {w['wilson95_3dp']}" if w else ""
         print(f"{s}: reported {r['n_valid']}/{r['n']} {r['wilson95_3dp']}  as typed {t['n_valid']}/{t['n']} "
-              f"{t['wilson95_3dp']}  below={r['below_threshold']}")
+              f"{t['wilson95_3dp']}  below={r['below_threshold']}{wtxt}")
     return 0
 
 
