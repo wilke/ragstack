@@ -667,3 +667,27 @@ and the counts-only artifact is
 
 What's next is unchanged, apart from this: the attachment question that round 3 was built to inform now
 has its record, and the record does not support switching the served rule to `mention`.
+
+## Addendum, 2026-10-30 (late night): round 3's spot-check validity is measured
+
+Round 3's record reported the layer-3 owner spot-check as **absent**: the labels had not been imported when
+`RESULTS.md` was committed. They are now. The figures are in the record's
+[spot-validity addendum](../glossbench-round3-2026-11/ADDENDUM-2026-10-30-spot-validity.md), with the
+counts-only artifact [`spot-validity-r3.json`](../glossbench-round3-2026-11/artifacts/spot-validity-r3.json).
+The rule is round 2's §3.3, carried into round 3: point-estimate validity below 0.85 marks a set *validity
+below threshold*.
+
+- **Set O: 39 / 40 valid, 0.975, Wilson 95% [0.871, 0.996].** As typed it was 40 / 40. One item was
+  labelled valid, but the owner's own note called its question ambiguous or wrong, and the record is one
+  of the census's 12 flags. The owner counted it as not valid. Either way, O is above the threshold, and
+  its status label is now *our three-layer check*, owner-spot-checked.
+- **Set A: 40 / 40 valid, 1.000, Wilson 95% [0.912, 1.000].** Two items were labelled valid, but the
+  owner's notes say their numbers come from a journal citation. The owner counted both as typed, valid. Had
+  they counted as not valid it would be 38 / 40, 0.950 [0.835, 0.986], still above the threshold at the
+  point estimate. It is descriptive only, and D-6 concerns its drafting, not this check.
+- **8 of O's 40 sampled records** are among the census's 53 discriminating records, and 1 is among its 12
+  flags. The two checks cover different populations.
+- A sample of 40 bounds the invalid rate (upper bound 0.129 on O); it does not show zero. The labels were
+  made after `RESULTS.md`'s figures existed, from sheets that name no arm.
+
+`RESULTS.md` is unchanged, and so is what's next.
