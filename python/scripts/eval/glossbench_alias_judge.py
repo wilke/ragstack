@@ -13,6 +13,9 @@ Subcommands (``--config CFG`` first; every output goes to the config's private `
     overlap --main-drafts PATH           round 2: calibration records whose id is in the study log
     analyse-variants                     round 2: every ``analysis.variants`` Qwen label set
     analyse-gate                         validation: the frozen C + E agreement rule (``gate`` block)
+    label --backend gateway --notice-acknowledged [--resume]          any gateway model (``judge_gw``)
+    tiebreak-subset                      tiebreaker: the self-consistency subset (TIEBREAKER-PLAN.md)
+    analyse-tiebreaker                   tiebreaker: each gateway judge vs Opus, refusals, the selection
 
 **Round 2** (a config with ``calib_dir`` = round 1's directory, read for ``pairs.jsonl`` and
 ``labels-opus.jsonl``, optionally pinned by ``pairs_sha256``): ``qwen.variant`` names a Qwen
@@ -122,7 +125,7 @@ import glossbench_alias_draft as ad  # noqa: E402
 import glossbench_r2_draft as dr  # noqa: E402
 
 EXIT_OK, EXIT_HARD_STOP, EXIT_PAUSED, EXIT_BUDGET = 0, 1, 75, ad.EXIT_BUDGET
-BACKENDS = ("opus", "cli", "qwen")
+BACKENDS = ("opus", "cli", "qwen", "gateway")
 EMPTY = ("empty", "empty0")
 STRATA = ("gold", "lex_same", "lex_other", "coll_same", "coll_diff")
 CALIB_SCHEMA = "alias-judge-calib/1"
@@ -235,6 +238,17 @@ DEFAULTS: dict[str, Any] = {
                  # analyse-variants: [{"name", "labels"}] Qwen label files scored against the
                  # Opus reference of ``calib_dir``; the n values and taus it reports
                  "variants": [], "report_n": [1, 3, 11, 21], "variant_taus": [0.8, 0.9]},
+    # backend ``gateway`` (TIEBREAKER-PLAN.md): any model on the partner gateway as a judge, one
+    # model per config. ``tag`` names the files (``labels-gw-<tag>.jsonl``); ``served_models``
+    # lists the reply ``model`` ids accepted for ``model`` (default: ``model`` itself) and any
+    # other id stops the run, storing nothing; every pair is labelled once (rep 1) and the pairs
+    # of ``subset_file`` (one pair id per line, pinned by ``subset_sha256``) ``subset_reps`` times
+    "judge_gw": {"base_url": None, "model": None, "tag": None, "served_models": None,
+                 "judge_version": "alias-judge/2", "max_tokens": 4096, "temperature": None, "inflight": 4,
+                 "empty_retry_s": 2.0, "subset_file": None, "subset_sha256": None, "subset_reps": 3},
+    # tiebreak-subset / analyse-tiebreaker (TIEBREAKER-PLAN.md)
+    "tiebreak": {"subset_seed": "20261031|tiebreaker|selfcons", "subset_unanimous": 100, "labels": [],
+                 "max_filtered_refusal": 0.05, "plan_commit": None},
     # analyse-gate (JUDGE-VALIDATION-PLAN.md): the frozen two-judge agreement rule
     "gate": {"c_labels": None, "e_labels": None, "c_n": 5, "e_n": 1, "e_report_n": 3,
              "min_accuracy": 0.98, "max_escalation": 0.05, "plan_commit": None},
@@ -251,12 +265,17 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         out[k] = {**v, **given}
     if out["calib"]["records"] not in CALIB_RECORDS:
         raise SystemExit(f"calib.records {out['calib']['records']!r}: one of {list(CALIB_RECORDS)}")
+    if out["judge_gw"]["judge_version"] not in JUDGE_SYSTEMS:
+        raise SystemExit(f"judge_gw.judge_version {out['judge_gw']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
+    t = out["judge_gw"]["tag"]
+    if t is not None and not re.fullmatch(r"[A-Za-z0-9_]+", str(t)):
+        raise SystemExit(f"judge_gw.tag {t!r}: letters, digits and _ only")
     if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
     v = out["qwen"]["variant"]
     if v is not None and not re.fullmatch(r"[A-Za-z0-9_]+", str(v)):
         raise SystemExit(f"qwen.variant {v!r}: letters, digits and _ only")
-    for blk in ("gateway", "cli", "qwen"):
+    for blk in ("gateway", "cli", "qwen", "judge_gw"):
         n = int(out[blk]["inflight"])
         if not 1 <= n <= MAX_INFLIGHT:
             raise SystemExit(f"{blk}.inflight = {n}: at most {MAX_INFLIGHT} in flight")
@@ -601,6 +620,21 @@ class Labeler:
         elif backend == "cli":
             plan.update({"model": self.cfg["cli"]["model"], "inflight": self.cfg["cli"]["inflight"],
                          "max_cost_usd": self.cfg["cli"]["max_cost_usd"]})
+        elif backend == "gateway":
+            jg = self.cfg["judge_gw"]
+            sub = self.gw_subset()
+            reps_sub = int(jg["subset_reps"])
+            calls = len(pairs) + len(sub) * (reps_sub - 1)
+            system = JUDGE_SYSTEMS[jg["judge_version"]]
+            plan.update({"model": jg["model"], "tag": jg["tag"], "base_url": str(jg["base_url"]),
+                         "served_models": self.gw_served(), "judge_version": jg["judge_version"],
+                         "system_sha256": g.sha_text(system), "max_tokens": jg["max_tokens"],
+                         "temperature": jg["temperature"], "inflight": jg["inflight"], "reps": 1,
+                         "subset_pairs": len(sub), "subset_reps": reps_sub,
+                         "subset_sha256": g.file_sha(jg["subset_file"]) if jg["subset_file"] else None,
+                         "calls": calls, "est_input_tokens": int(sum(chars) / len(chars) / dr.CHARS_PER_TOKEN_GATEWAY
+                                                                 * calls) if chars else 0,
+                         "max_output_tokens": calls * int(jg["max_tokens"])})
         else:
             plan.update({"model": q["model"], "n": q["n"], "temperature": q["temperature"],
                          "max_tokens": q["max_tokens"], "enable_thinking": q["enable_thinking"],
@@ -617,7 +651,13 @@ class Labeler:
         return g.sha_text(json.dumps(dict(plan), sort_keys=True))
 
     def key(self, backend: str) -> str:
-        """The file key of a backend: ``qwen-<variant>`` for a round-2 Qwen variant."""
+        """The file key of a backend: ``qwen-<variant>`` for a round-2 Qwen variant, ``gw-<tag>``
+        for a gateway judge."""
+        if backend == "gateway":
+            tag = self.cfg["judge_gw"]["tag"]
+            if not tag:
+                raise SystemExit("judge_gw.tag is required")
+            return f"gw-{tag}"
         v = self.cfg["qwen"]["variant"]
         return f"qwen-{v}" if backend == "qwen" and v is not None else backend
 
@@ -626,12 +666,18 @@ class Labeler:
         g.write_json_atomic(self.out / f"preflight-{self.key(backend)}.json",
                             {"plan": plan, "plan_sha256": self.plan_sha(plan), "t": g.now_iso(),
                              "provenance": self.provenance})
-        kind = {"opus": "GATEWAY SIZE", "cli": "CLI", "qwen": "QWEN"}[backend]
+        kind = {"opus": "GATEWAY SIZE", "cli": "CLI", "qwen": "QWEN", "gateway": "GATEWAY SIZE"}[backend]
         msg = (f"label backend={backend} model={plan.get('model')}: {plan['calls']} calls "
                f"({plan['pairs']} pairs x {plan['reps']}), ~{plan['est_input_tokens']} tokens in")
         if backend == "opus":
             msg += (f", ~{plan['est_output_tokens']} out (cap {plan['max_output_tokens']}), "
                     f"<= {plan['inflight']} in flight, fallback_model \"\"")
+        if backend == "gateway":
+            msg = (f"label backend=gateway model={plan['model']}: {plan['calls']} calls ({plan['pairs']} pairs x 1"
+                   f" + {plan['subset_pairs']} subset pairs x {plan['subset_reps'] - 1} more), "
+                   f"~{plan['est_input_tokens']} tokens in, max_tokens {plan['max_tokens']} (cap "
+                   f"{plan['max_output_tokens']} out), <= {plan['inflight']} in flight, fallback_model \"\", "
+                   f"prompt={plan['judge_version']}, served model in {plan['served_models']}")
         if backend == "qwen":
             msg += f", n={plan['n']} samples/call at T={plan['temperature']}, thinking={plan['enable_thinking']}"
             if plan.get("variant") is not None:
@@ -760,6 +806,144 @@ class Labeler:
         notice_line("GATEWAY", f"label backend=opus {status}: totals {json.dumps(tot, sort_keys=True)}; "
                     f"{len(st.rows)} labels stored", self.log_path)
         return EXIT_OK if status == "done" else EXIT_PAUSED
+
+    # -- any model on the partner gateway (TIEBREAKER-PLAN.md)
+    def gw_served(self) -> list[str]:
+        jg = self.cfg["judge_gw"]
+        return sorted({str(jg["model"]), *(str(x) for x in (jg["served_models"] or []))})
+
+    def gw_subset(self) -> list[str]:
+        """The self-consistency subset's pair ids (``judge_gw.subset_file``), checked against the
+        pinned sha256 and the pairs file."""
+        jg = self.cfg["judge_gw"]
+        if not jg["subset_file"]:
+            return []
+        path = Path(jg["subset_file"])
+        if jg["subset_sha256"] and g.file_sha(path) != jg["subset_sha256"]:
+            raise p4.HardStop(f"{path}: sha256 differs from judge_gw.subset_sha256")
+        ids = [x.strip() for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        known = {p["pair_id"] for p in self.w.pairs()}
+        if len(set(ids)) != len(ids) or not set(ids) <= known:
+            raise SystemExit(f"{path.name}: duplicate pair ids or ids not in pairs.jsonl")
+        return ids
+
+    def label_gw(self) -> int:
+        """One gateway model as a judge: rep 1 on every pair, reps 2.. on the subset. An empty
+        answer is re-issued once and then STORED (status ``empty``, no verdict): it is part of
+        what is measured. A reply whose model id is not in :meth:`gw_served` stops the run and
+        is not stored."""
+        jg, lim = self.cfg["judge_gw"], self.cfg["limits"]
+        if not jg.get("base_url") or not jg.get("model"):
+            raise SystemExit("judge_gw.base_url and judge_gw.model are required")
+        key = self.key("gateway")
+        url = str(jg["base_url"]).rstrip("/").removesuffix("/v1")
+        served = set(self.gw_served())
+        system = JUDGE_SYSTEMS[jg["judge_version"]]
+        st = self.store("gateway")
+        prev: Counter[str] = Counter()
+        tp = self.out / f"totals-{key}.json"
+        if tp.is_file():
+            segs = json.loads(tp.read_text())["segments"]
+            if segs:
+                prev.update({k: v for k, v in segs[-1]["totals"].items() if isinstance(v, int)
+                             and k.startswith("gateway")})
+        control = dr.R2Control(lim, self.out / "PAUSE", dict(prev))
+        budget: dict[str, Any] = {}
+        gw = ad.AliasGateway(url, control, {**lim, "empty_retries": 1, "empty_backoff_s": float(jg["empty_retry_s"])},
+                             self.out / f"calls-{key}.jsonl", on_budget=lambda ev: budget.setdefault("ev", ev))
+        spec = {"model": jg["model"], "tag": key, "max_tokens": int(jg["max_tokens"]),
+                "temperature": jg.get("temperature")}
+        ctl = Ctl(self.out, int(jg["inflight"]))
+        seg: Counter[str] = Counter()
+        pairs = self.w.pairs()
+        by_id = {p["pair_id"]: p for p in pairs}
+        sub = self.gw_subset()
+        wanted = [(p["pair_id"], 1) for p in pairs] + [(pid, r) for r in range(2, int(jg["subset_reps"]) + 1)
+                                                        for pid in sub]
+
+        def todo() -> list[tuple[str, int]]:
+            return [(pid, r) for pid, r in wanted if f"{key}|{pid}|r{r}" not in st]
+
+        def job(pid: str, r: int) -> Callable[[], Any]:
+            async def fn() -> None:
+                if ctl.stopped() or control.stopped():
+                    return
+                p = by_id[pid]
+                k = f"{key}|{pid}|r{r}"
+                prompt, cut = self.w.prompt(p)
+                msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+                res = None
+                t0 = time.time()
+                attempts = 0
+                for attempt in range(2):
+                    attempts += 1
+                    res = await gw.once(self.http, spec, msgs, "judge", k)
+                    if res is None:
+                        if control.reason:
+                            ctl.stop(control.reason)
+                        return
+                    if res["status"] in ("ok", "empty", "empty0", "truncated") and res.get("model") not in served:
+                        seg["gateway_model_mismatch"] += 1
+                        ctl.stop(f"served_model_mismatch:{res.get('model')}")
+                        return
+                    if res["status"] in EMPTY and attempt == 0:
+                        seg["gateway_empty_reissued"] += 1
+                        await asyncio.sleep(float(jg["empty_retry_s"]))
+                        continue
+                    break
+                assert res is not None
+                if res["status"] == "error":
+                    control.fail(str(res.get("error")))
+                    if control.reason:
+                        ctl.stop(control.reason)
+                    return
+                control.ok()
+                verdict, reason = parse_judgement(res.get("text") or "") if res["status"] == "ok" else (None, "")
+                st.put({"k": k, "pair_id": pid, "rep": r, "backend": "gateway", "status": res["status"],
+                        "verdict": verdict, "reason": reason, "text": res.get("text"), "model": res.get("model"),
+                        "requested_model": spec["model"], "pt": res.get("pt"), "ct": res.get("ct"),
+                        "reasoning_tokens": res.get("rt"), "finish": res.get("finish"), "attempts": attempts,
+                        "latency_s": round(time.time() - t0, 2), "defs_cut": cut,
+                        "prompt_sha256": g.sha_text(prompt), "judge_version": jg["judge_version"],
+                        "system_sha256": g.sha_text(system), "max_tokens": int(jg["max_tokens"]),
+                        "temperature": jg.get("temperature"), "endpoint": str(jg["base_url"]), "t": g.now_iso()})
+            return fn
+
+        async def go(items: list[tuple[str, int]]) -> None:
+            self.http = self.http_factory()
+            try:
+                await run_async([job(pid, r) for pid, r in items], ctl)
+            finally:
+                close = getattr(self.http, "aclose", None)
+                if close is not None:
+                    await close()
+
+        items = todo()
+        notice_line("GATEWAY", f"label backend=gateway model={jg['model']}: starting {len(items)} calls "
+                    f"({len(st.rows)} stored, <= {ctl.inflight()} in flight)", self.log_path)
+        for _ in range(2):                         # a failed call is re-issued once in a second pass
+            if not items or ctl.stopped() or control.stopped():
+                break
+            asyncio.run(go(items))
+            items = todo()
+        tot = {**{k: int(v) for k, v in control.totals()["since_start"].items()}, **{k: int(v) for k, v in seg.items()}}
+        stopped = ctl.reason or control.reason
+        if budget.get("ev"):
+            ev = {**budget["ev"], "totals": tot}
+            g.write_json_atomic(self.out / f"budget-stop-{key}.json", ev)
+            (self.out / "PAUSE").write_text(f"budget stop {ev['t']}: HTTP {ev['http_status']} ({ev['why']}); "
+                                            "remove, preflight, then label --resume\n", encoding="utf-8")
+            self.write_totals("gateway", tot, f"budget_stop:{ev['why']}")
+            notice_line("GATEWAY", f"label backend=gateway model={jg['model']} BUDGET STOP (HTTP "
+                        f"{ev['http_status']}, {ev['why']}); totals {json.dumps(tot, sort_keys=True)}", self.log_path)
+            return EXIT_BUDGET
+        left = todo()
+        status = f"paused:{stopped}" if stopped else ("done" if not left else f"paused:calls_failed:{len(left)}")
+        self.write_totals("gateway", tot, status)
+        notice_line("GATEWAY", f"label backend=gateway model={jg['model']} {status}: totals "
+                    f"{json.dumps(tot, sort_keys=True)}; {len(st.rows)} labels stored", self.log_path)
+        return EXIT_OK if status == "done" else (EXIT_HARD_STOP if str(stopped).startswith("served_model")
+                                                 else EXIT_PAUSED)
 
     # -- the Claude CLI
     def label_cli(self) -> int:
@@ -1448,6 +1632,140 @@ def analyse_gate(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[str, 
 
 # ------------------------------------------------------------------ CLI
 
+def tiebreak_subset(cfg: Mapping[str, Any], reps: int = 3) -> list[str]:
+    """TIEBREAKER-PLAN.md section 3: the no-reference pairs plus ``subset_unanimous`` Opus-unanimous
+    pairs drawn with ``random.Random(subset_seed).sample(sorted(unanimous ids), k)``; sorted."""
+    tb = cfg["tiebreak"]
+    cdir = calib_dir(cfg)
+    check_pairs_sha(cfg, cdir / "pairs.jsonl")
+    pids = sorted(json.loads(x)["pair_id"] for x in (cdir / "pairs.jsonl").read_text().splitlines() if x)
+    ref = opus_reference(p4.Store(cdir / "labels-opus.jsonl").rows.values(), reps)
+    noref = sorted(set(pids) - set(ref))
+    una = sorted(pid for pid, r in ref.items() if r["unanimous"] and pid in set(pids))
+    k = min(int(tb["subset_unanimous"]), len(una))
+    return sorted(noref + random.Random(str(tb["subset_seed"])).sample(una, k))
+
+
+def _pctl(xs: Sequence[float], q: float) -> float | None:
+    s = sorted(xs)
+    return round(s[min(len(s) - 1, int(q * (len(s) - 1) + 0.5))], 2) if s else None
+
+
+def analyse_tiebreaker(cfg: Mapping[str, Any], reps: int = 3) -> dict[str, Any]:
+    """TIEBREAKER-PLAN.md sections 4-5, per ``tiebreak.labels`` entry (``{"name", "labels"}``, a
+    ``labels-gw-<tag>.jsonl``): agreement with the Opus-unanimous reference (a pair without a
+    valid label counts as a disagreement), kappa on the valid pairs, false yes / no, refusal /
+    empty rates on all pairs and on the no-reference pairs, self-consistency on the subset,
+    tokens and latency; on the no-reference pairs the labels against the C + E gate (``gate``
+    block, optional) and against each other; then the selection rule."""
+    tb, gc = cfg["tiebreak"], cfg["gate"]
+    cdir = calib_dir(cfg)
+    check_pairs_sha(cfg, cdir / "pairs.jsonl")
+    pairs = {p["pair_id"]: p for p in (json.loads(x) for x in (cdir / "pairs.jsonl").read_text().splitlines() if x)}
+    opus_path = cdir / "labels-opus.jsonl"
+    ref_all = opus_reference(p4.Store(opus_path).rows.values(), reps)
+    una = sorted(pid for pid, r in ref_all.items() if r["unanimous"] and pid in pairs)
+    noref = sorted(set(pairs) - set(ref_all))
+    ref = {pid: int(ref_all[pid]["ref"]) for pid in una}
+    gate_final: dict[str, int | None] | None = None
+    inputs: dict[str, Any] = {"pairs_sha256": g.file_sha(cdir / "pairs.jsonl"), "opus_sha256": g.file_sha(opus_path)}
+    if gc["c_labels"] and gc["e_labels"]:
+        c_rows = {r["pair_id"]: r for r in p4.Store(Path(gc["c_labels"])).rows.values()}
+        e_rows = {r["pair_id"]: r for r in p4.Store(Path(gc["e_labels"])).rows.values()}
+        gate_final = {pid: gate_label(c_rows[pid]["verdicts"], e_rows[pid]["verdicts"], int(gc["c_n"]), int(gc["e_n"]))
+                      for pid in noref if pid in c_rows and pid in e_rows}
+        inputs.update({"c_sha256": g.file_sha(gc["c_labels"]), "e_sha256": g.file_sha(gc["e_labels"])})
+    res: dict[str, Any] = {"t": g.now_iso(), "plan_commit": tb["plan_commit"], "inputs": inputs,
+                           "classes": {"pairs": len(pairs), "unanimous": len(una), "no_reference": len(noref)},
+                           "judges": {}}
+    rep1: dict[str, dict[str, int | None]] = {}
+    for ent in tb["labels"]:
+        name, path = str(ent["name"]), Path(ent["labels"])
+        rows = list(p4.Store(path).rows.values())
+        by: dict[str, dict[int, Mapping[str, Any]]] = defaultdict(dict)
+        for r in rows:
+            by[r["pair_id"]][int(r["rep"])] = r
+        missing = sorted(set(pairs) - {pid for pid, d in by.items() if 1 in d})
+        if missing:
+            raise SystemExit(f"analyse-tiebreaker: {name}: {len(missing)} pairs without a rep-1 row")
+        lab = {pid: (None if by[pid][1].get("verdict") is None else int(by[pid][1]["verdict"])) for pid in pairs}
+        rep1[name] = lab
+
+        def agree(ids: Sequence[str], lab: Mapping[str, int | None] = lab) -> dict[str, Any]:
+            valid = [pid for pid in ids if lab[pid] is not None]
+            ok = sum(lab[pid] == ref[pid] for pid in valid)
+            return {"pairs": len(ids), "agree": ok, "agreement": round(ok / len(ids), 4) if ids else None,
+                    "agreement_ci95": wilson(ok, len(ids)), "invalid": len(ids) - len(valid),
+                    "false_yes": sum(lab[pid] == 1 and ref[pid] == 0 for pid in valid),
+                    "false_no": sum(lab[pid] == 0 and ref[pid] == 1 for pid in valid),
+                    "kappa_valid": (round(k, 4) if (k := kappa([int(lab[pid] or 0) for pid in valid],
+                                                                 [ref[pid] for pid in valid])) is not None else None),
+                    "by_stratum": {s_: {"pairs": len(x), "agree": sum(lab[pid] == ref[pid] for pid in x)}
+                                   for s_ in STRATA if (x := [pid for pid in ids if pairs[pid]["stratum"] == s_])}}
+
+        def refusal(ids: Sequence[str], lab: Mapping[str, int | None] = lab,
+                    by: Mapping[str, Mapping[int, Mapping[str, Any]]] = by) -> dict[str, Any]:
+            inv = [pid for pid in ids if lab[pid] is None]
+            return {"pairs": len(ids), "invalid": len(inv), "rate": round(len(inv) / len(ids), 4) if ids else None,
+                    "statuses": dict(Counter(str(by[pid][1].get("status")) for pid in inv))}
+
+        sub = sorted(pid for pid, d in by.items() if len(d) > 1)
+        rmax = max((len(by[pid]) for pid in sub), default=1)
+
+        def consistency(ids: Sequence[str], by: Mapping[str, Mapping[int, Mapping[str, Any]]] = by,
+                        rmax: int = rmax) -> dict[str, Any]:
+            full = [pid for pid in ids if all(i in by[pid] for i in range(1, rmax + 1))]
+            vs = {pid: [by[pid][i].get("verdict") for i in range(1, rmax + 1)] for pid in full}
+            same = sum(None not in v and len(set(v)) == 1 for v in vs.values())
+            return {"pairs": len(full), "reps": rmax, "all_valid_and_equal": same,
+                    "rate": round(same / len(full), 4) if full else None,
+                    "any_invalid": sum(None in v for v in vs.values())}
+
+        pt = [int(r.get("pt") or 0) for r in rows]
+        ct = [int(r.get("ct") or 0) for r in rows]
+        rt = [int(r.get("reasoning_tokens") or 0) for r in rows]
+        lat = [float(r["latency_s"]) for r in rows if r.get("latency_s") is not None]
+        n = len(rows) or 1
+        res["judges"][name] = {
+            "labels": str(path), "labels_sha256": g.file_sha(path), "rows": len(rows),
+            "models": dict(Counter(str(r.get("model")) for r in rows)),
+            "requested_models": dict(Counter(str(r.get("requested_model")) for r in rows)),
+            "judge_versions": dict(Counter(str(r.get("judge_version")) for r in rows)),
+            "agreement": {"all": agree(una), "excl_coll_diff": agree([pid for pid in una
+                                                                      if pairs[pid]["stratum"] != "coll_diff"])},
+            "refusal": {"all": refusal(sorted(pairs)), "no_reference": refusal(noref)},
+            "self_consistency": {"no_reference": consistency([pid for pid in sub if pid in set(noref)]),
+                                 "unanimous": consistency([pid for pid in sub if pid in ref])},
+            "cost": {"calls": len(rows), "prompt_tokens_mean": round(sum(pt) / n, 1),
+                     "completion_tokens_mean": round(sum(ct) / n, 1), "reasoning_tokens_mean": round(sum(rt) / n, 1),
+                     "total_tokens_mean": round((sum(pt) + sum(ct)) / n, 1), "prompt_tokens": sum(pt),
+                     "completion_tokens": sum(ct), "reasoning_tokens": sum(rt),
+                     "reissued_empty": sum(int(r.get("attempts") or 1) > 1 for r in rows)},
+            "latency_s": {"median": _pctl(lat, 0.5), "p90": _pctl(lat, 0.9), "max": max(lat) if lat else None},
+            "no_reference_labels": {"yes": sum(lab[pid] == 1 for pid in noref), "no": sum(lab[pid] == 0 for pid in noref),
+                                    "invalid": sum(lab[pid] is None for pid in noref)}}
+        if gate_final is not None:
+            both = [pid for pid in noref if lab[pid] is not None and gate_final.get(pid) is not None]
+            res["judges"][name]["vs_gate_no_reference"] = {
+                "pairs_both_labelled": len(both), "agree": sum(lab[pid] == gate_final[pid] for pid in both),
+                "judge_yes_gate_no": sum(lab[pid] == 1 and gate_final[pid] == 0 for pid in both),
+                "judge_no_gate_yes": sum(lab[pid] == 0 and gate_final[pid] == 1 for pid in both)}
+    names = sorted(rep1)
+    res["pairwise_no_reference"] = {
+        f"{a}|{b}": {"both_labelled": len(x := [pid for pid in noref if rep1[a][pid] is not None
+                                                and rep1[b][pid] is not None]),
+                     "agree": sum(rep1[a][pid] == rep1[b][pid] for pid in x)}
+        for i, a in enumerate(names) for b in names[i + 1:]}
+    cap = float(tb["max_filtered_refusal"])
+    elig = [nm for nm in names if (res["judges"][nm]["refusal"]["no_reference"]["rate"] or 0) <= cap]
+    elig.sort(key=lambda nm: (-res["judges"][nm]["agreement"]["all"]["agree"],
+                              res["judges"][nm]["cost"]["total_tokens_mean"]))
+    res["selection"] = {"rule": f"highest agreement on the unanimous pairs among judges with refusal <= {cap:.0%} "
+                                "on the no-reference pairs; tie -> lower mean total tokens per call",
+                        "eligible": elig, "selected": elig[0] if elig else None}
+    return res
+
+
 def provenance() -> dict[str, Any]:
     def git(*a: str) -> str:
         return subprocess.run(["git", "-C", str(_HERE), *a], capture_output=True, text=True).stdout.strip()
@@ -1485,6 +1803,10 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
     pv_.add_argument("--reps", type=int, default=3)
     pg_ = sub.add_parser("analyse-gate")
     pg_.add_argument("--reps", type=int, default=3)
+    pt_ = sub.add_parser("tiebreak-subset")
+    pt_.add_argument("--reps", type=int, default=3)
+    pat = sub.add_parser("analyse-tiebreaker")
+    pat.add_argument("--reps", type=int, default=3)
     po = sub.add_parser("overlap")
     po.add_argument("--main-drafts", required=True, type=Path)
     args = ap.parse_args(argv)
@@ -1510,6 +1832,22 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
         g.write_json_atomic(out / "analysis-gate.json", res)
         print(json.dumps({"classes": res["classes"], "primary": {k: {x: v[x] for x in (
             "pairs", "accuracy", "escalation_share", "verdict")} for k, v in res["primary"].items()}}, indent=1))
+        return EXIT_OK
+    if args.cmd == "tiebreak-subset":
+        path = out / "tiebreak-subset.txt"
+        if path.exists():
+            raise SystemExit(f"{path.name} exists; the subset is frozen once written")
+        ids = tiebreak_subset(cfg, args.reps)
+        path.write_text("".join(x + "\n" for x in ids), encoding="utf-8")
+        print(json.dumps({"subset": str(path), "pairs": len(ids), "sha256": g.file_sha(path)}))
+        return EXIT_OK
+    if args.cmd == "analyse-tiebreaker":
+        res = analyse_tiebreaker(cfg, args.reps)
+        res["provenance"] = pv
+        g.write_json_atomic(out / "analysis-tiebreaker.json", res)
+        print(json.dumps({"selection": res["selection"], "judges": {k: {
+            "agreement": v["agreement"]["all"]["agreement"], "refusal_no_reference": v["refusal"]["no_reference"]["rate"]}
+            for k, v in res["judges"].items()}}, indent=1))
         return EXIT_OK
     if args.cmd == "overlap":
         cdir = calib_dir(cfg)
@@ -1553,6 +1891,8 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
             return lab.label_opus(args.reps)
         if args.backend == "cli":
             return lab.label_cli()
+        if args.backend == "gateway":
+            return lab.label_gw()
         return lab.label_qwen()
     except p4.HardStop as e:
         g.log(f"HARD STOP: {e.reason}")

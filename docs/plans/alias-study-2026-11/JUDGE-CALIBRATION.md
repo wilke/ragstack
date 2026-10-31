@@ -385,3 +385,32 @@ CLI gave a verdict, the gate's label matches it on 21 (all 21 are "no"). The CLI
 67 refusals fall on the 83 no-reference pairs: it fails on the same pairs as the gateway and cannot serve as their
 tiebreaker. None of the 8 pairs the gate labels "yes" there has any Claude label. Throughput (587 pairs, 4 in flight): C took 1,086 s
 (2.7 samples/s) and E took 433 s (4.1 samples/s).
+
+## Tiebreaker: a non-Claude judge for the Opus-filtered pairs
+
+Plan: [TIEBREAKER-PLAN.md](TIEBREAKER-PLAN.md), frozen at 10a986c before any label. The private outputs are in
+`calib/tiebreaker/`. The validation set is the same: 587 pairs, 487 Opus-unanimous, 83 with no reference.
+Settings: prompt `alias-judge/2`, `max_tokens` 4096, the default temperature, `fallback_model: ""`, the models run
+one after the other with 4 in flight, and backend `gateway` from this PR. The gateway allow-list has **no GPT-6
+model**, so there are two candidates. Every reply came from the requested model. Sol's replies carry the versioned
+id `gpt-5.6-sol-2026-07-09`, which is pinned in the config. The accepted set is that id plus the requested name
+(plan §1), so a reply carrying the bare name `GPT-5.6 Sol` would also have been accepted; none did (953 / 953 rows
+carry the versioned id; Argon's 953 carry `Gemini 4 Argon`). Any other id stops the run and stores nothing.
+
+| judge | agreement (487) | κ | false yes | false no | without coll_diff | no label: all 587 / filtered 83 | self-consistency ×3: filtered 83 / unanimous 100 |
+|---|---|---|---|---|---|---|---|
+| GPT-5.6 Sol | 482 (0.990) | 0.971 | 3 | 2 | 403 / 408 | 0 / 0 | 83 / 100 |
+| Gemini 4 Argon | **485 (0.996)** | 0.988 | 2 | 0 | 406 / 408 | 0 / 0 | 82 / 100 |
+
+Argon's one inconsistency is an unparseable reply on rep 3 (unescaped quotes in the JSON), not a refusal.
+
+**Cost per call** (mean tokens in / out / reasoning; latency median and p90): Sol 896 / 48 / 11 (1.3 s, 2.1 s);
+Argon 935 / 50 / 9 (3.1 s, 4.9 s). Neither model returned an empty answer.
+
+**On the 83 filtered pairs** there is no reference, so these numbers are descriptive. Sol labels 75 no and 8 yes and
+agrees with the C + E gate on all 83. Argon labels 76 no and 7 yes and agrees with the gate on 82; on the remaining
+pair Argon says no and the gate says yes. Sol and Argon agree with each other on 82 of 83.
+
+**Selection (plan §5):** both models qualify (0 % refusal on the 83). **Gemini 4 Argon** is selected on agreement
+(485 vs 482); the cost tie-break is not needed. Gateway use: 1,909 labelling calls (Sol 956, including 3 HTTP
+502s that were re-issued; Argon 953), 1.74 M prompt and 93 k completion tokens, with no notice, no 429 and no budget stop.

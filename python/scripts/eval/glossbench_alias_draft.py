@@ -292,7 +292,9 @@ class AliasGateway(dr.R2Gateway):
                 st = "empty0" if ct == 0 else "empty"
             row = {"status": st, "pt": pt, "ct": ct, "finish": fin, "model": d.get("model")}
             self._log(step, key, row)
-            return {**row, "text": txt}
+            # reasoning tokens (OpenAI-style usage detail) for the caller; not in the calls log
+            rt = int((u.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+            return {**row, "text": txt, "rt": rt}
 
 
 class AliasRun(dr.Run):

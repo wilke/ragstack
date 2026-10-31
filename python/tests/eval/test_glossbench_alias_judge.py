@@ -737,3 +737,153 @@ def test_analyse_gate_end_to_end(world: Path) -> None:
     put("labels-qwen-E.jsonl", [{"k": f"qwen|{p}", "pair_id": p, "n": 3, "verdicts": ev[p], **meta} for p in ids[1:]])
     with pytest.raises(SystemExit, match="finish labelling"):
         jd.main(["--config", str(world), "analyse-gate"], prov=PROV)
+
+
+# ------------------------------------------------------------------ tiebreaker (TIEBREAKER-PLAN.md)
+
+def gw_cfg(world: Path, tag: str = "sol", model: str = "GPT-X Sol", served: list[str] | None = None,
+           subset: list[str] | None = None, **extra: Any) -> Path:
+    raw = json.loads(world.read_text())
+    jg: dict[str, Any] = {"base_url": "http://127.0.0.1:18999/v1", "model": model, "tag": tag,
+                          "served_models": served, "empty_retry_s": 0.0, **extra}
+    if subset is not None:
+        sp = out_of(world) / f"subset-{tag}.txt"
+        sp.write_text("".join(x + "\n" for x in subset))
+        jg.update({"subset_file": str(sp), "subset_sha256": jd.g.file_sha(sp)})
+    raw["judge_gw"] = jg
+    path = world.parent / f"cfg-gw-{tag}.json"
+    path.write_text(json.dumps(raw))
+    return path
+
+
+def test_gateway_backend_reps_terms_rows_and_resume(world: Path) -> None:
+    ids = [p["pair_id"] for p in pairs_of(world)]
+    cfg = gw_cfg(world, served=["gpt-x-sol-2026"], subset=ids[:2])
+    http = FakeHTTP(lambda b: chat(YES, model="gpt-x-sol-2026"))
+    assert label(cfg, "gateway", http) == 0
+    assert len(http.bodies) == len(ids) + 2 * 2 and http.peak <= 4
+    for b in http.bodies:
+        assert b["fallback_model"] == "" and b["max_tokens"] == 4096 and "temperature" not in b
+        assert b["model"] == "GPT-X Sol" and b["messages"][0]["content"] == jd.JUDGE_SYSTEM_V2
+    out = out_of(world)
+    rows = [json.loads(x) for x in (out / "labels-gw-sol.jsonl").read_text().splitlines()]
+    assert sorted((r["pair_id"], r["rep"]) for r in rows) == sorted(
+        [(p, 1) for p in ids] + [(p, r) for p in ids[:2] for r in (2, 3)])
+    assert all(r["verdict"] is True and r["model"] == "gpt-x-sol-2026" and r["requested_model"] == "GPT-X Sol"
+               and r["judge_version"] == "alias-judge/2" and r["latency_s"] is not None for r in rows)
+    plan = json.loads((out / "preflight-gw-sol.json").read_text())["plan"]
+    assert plan["calls"] == len(ids) + 4 and plan["served_models"] == ["GPT-X Sol", "gpt-x-sol-2026"]
+    assert "GATEWAY SIZE-NOTICE" in (out / "LOG").read_text()
+    http2 = FakeHTTP(lambda b: chat(YES, model="gpt-x-sol-2026"))
+    assert jd.main(["--config", str(cfg), "label", "--backend", "gateway", "--notice-acknowledged", "--resume"],
+                   http_factory=lambda: http2, prov=PROV) == 0
+    assert http2.bodies == []
+
+
+def test_gateway_backend_served_model_mismatch_stops_and_stores_nothing(world: Path) -> None:
+    """A reply from another model (a fallback) stops the run; the requested name matches only
+    itself and the pinned ``served_models``."""
+    cfg = gw_cfg(world, inflight=1)
+    assert label(cfg, "gateway", FakeHTTP(lambda b: chat(YES, model="GPT-4o"))) == jd.EXIT_HARD_STOP
+    out = out_of(world)
+    assert not (out / "labels-gw-sol.jsonl").exists() or not (out / "labels-gw-sol.jsonl").read_text().strip()
+    seg = json.loads((out / "totals-gw-sol.json").read_text())["segments"][-1]
+    assert seg["status"] == "paused:served_model_mismatch:GPT-4o" and seg["totals"]["gateway_model_mismatch"] == 1
+
+
+def test_gateway_backend_empty_is_reissued_once_then_stored(world: Path) -> None:
+    calls: dict[str, int] = {}
+
+    def reply(b: dict[str, Any]) -> Resp:
+        u = b["messages"][1]["content"]
+        calls[u] = calls.get(u, 0) + 1
+        return Resp(200, {"model": "GPT-X Sol", "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+                          "usage": {"prompt_tokens": 100, "completion_tokens": 0}})
+    cfg = gw_cfg(world)
+    assert label(cfg, "gateway", FakeHTTP(reply)) == 0
+    rows = [json.loads(x) for x in (out_of(world) / "labels-gw-sol.jsonl").read_text().splitlines()]
+    assert len(rows) == len(pairs_of(world))
+    assert all(r["status"] == "empty0" and r["verdict"] is None and r["attempts"] == 2 for r in rows)
+    assert set(calls.values()) <= {2, 4}          # the same user text may recur across pairs
+
+
+def test_gateway_backend_budget_stop_and_subset_pin(world: Path) -> None:
+    ids = [p["pair_id"] for p in pairs_of(world)]
+    cfg = gw_cfg(world, subset=ids[:1])
+    http = FakeHTTP(lambda b: Resp(503, {"error": {"type": "provider_notice", "message": "quota"}}))
+    assert label(cfg, "gateway", http) == jd.EXIT_BUDGET
+    out = out_of(world)
+    assert (out / "PAUSE").exists() and (out / "budget-stop-gw-sol.json").exists() and len(http.bodies) <= 4
+    (out / "PAUSE").unlink()
+    (out / "subset-sol.txt").write_text(ids[1] + "\n")              # the pinned subset changed
+    with pytest.raises(jd.p4.HardStop):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "gateway"], prov=PROV)
+
+
+def test_tiebreak_subset_and_analysis(world: Path) -> None:
+    pairs = pairs_of(world)
+    ids = [p["pair_id"] for p in pairs]
+    out = out_of(world)
+    truth = {p["pair_id"]: int(p["stratum"] == "gold") for p in pairs}
+    noref = ids[0]
+    opus = [{"k": f"opus|{pid}|r{r}", "pair_id": pid, "rep": r, "verdict": bool(truth[pid])}
+            for pid in ids if pid != noref for r in (1, 2, 3)]
+    (out / "labels-opus.jsonl").write_text("".join(json.dumps(r) + "\n" for r in opus))
+    raw = json.loads(world.read_text())
+    raw["tiebreak"] = {"subset_unanimous": 2, "plan_commit": "c" * 40}
+    world.write_text(json.dumps(raw))
+    assert jd.main(["--config", str(world), "tiebreak-subset"], prov=PROV) == 0
+    sub = (out / "tiebreak-subset.txt").read_text().split()
+    assert noref in sub and len(sub) == 3
+    _, c = jd.load_config(world)
+    assert jd.tiebreak_subset(c) == sub                              # deterministic
+    with pytest.raises(SystemExit, match="frozen"):
+        jd.main(["--config", str(world), "tiebreak-subset"], prov=PROV)
+
+    def write(name: str, lab: dict[str, Any], ct: int) -> Path:
+        rows = [{"k": f"gw|{pid}|r1", "pair_id": pid, "rep": 1, "verdict": lab[pid], "status": "ok" if lab[pid]
+                 is not None else "empty", "model": name, "requested_model": name, "pt": 100, "ct": ct,
+                 "latency_s": 1.0} for pid in ids]
+        rows += [{"k": f"gw|{pid}|r{r}", "pair_id": pid, "rep": r, "verdict": lab[pid], "status": "ok", "pt": 100,
+                  "ct": ct, "latency_s": 2.0} for pid in sub for r in (2, 3)]
+        path = out / f"labels-gw-{name}.jsonl"
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+
+    una = [pid for pid in ids if pid != noref]
+    perfect = {pid: bool(truth.get(pid)) for pid in ids}
+    wrong_one = {**perfect, una[0]: not perfect[una[0]]}
+    refuses = {**perfect, noref: None}                               # 100 % refusal on the no-reference pair
+    paths = {"a": write("a", wrong_one, 10), "b": write("b", perfect, 50), "c": write("c", perfect, 20),
+             "d": write("d", refuses, 5)}
+    raw["tiebreak"]["labels"] = [{"name": k, "labels": str(v)} for k, v in paths.items()]
+    world.write_text(json.dumps(raw))
+    assert jd.main(["--config", str(world), "analyse-tiebreaker"], prov=PROV) == 0
+    res = json.loads((out / "analysis-tiebreaker.json").read_text())
+    j = res["judges"]
+    assert res["classes"]["no_reference"] == 1 and res["classes"]["unanimous"] == len(una)
+    assert j["a"]["agreement"]["all"]["agree"] == len(una) - 1
+    assert j["a"]["agreement"]["all"]["false_yes"] + j["a"]["agreement"]["all"]["false_no"] == 1
+    assert j["d"]["refusal"]["no_reference"]["rate"] == 1.0 and j["d"]["refusal"]["all"]["invalid"] == 1
+    assert j["b"]["self_consistency"]["unanimous"]["rate"] == 1.0
+    assert j["b"]["cost"]["total_tokens_mean"] > j["c"]["cost"]["total_tokens_mean"]
+    # d refuses the filtered pair, a agrees less, b and c tie -> c (cheaper)
+    assert res["selection"]["eligible"] == ["c", "b", "a"] and res["selection"]["selected"] == "c"
+    assert res["pairwise_no_reference"]["a|b"] == {"both_labelled": 1, "agree": 1}
+
+
+def test_tiebreak_refusal_on_a_unanimous_pair_counts_as_disagreement(world: Path) -> None:
+    pairs = pairs_of(world)
+    ids = [p["pair_id"] for p in pairs]
+    out = out_of(world)
+    opus = [{"k": f"opus|{pid}|r{r}", "pair_id": pid, "rep": r, "verdict": True} for pid in ids for r in (1, 2, 3)]
+    (out / "labels-opus.jsonl").write_text("".join(json.dumps(r) + "\n" for r in opus))
+    lab = [{"k": f"g|{pid}|r1", "pair_id": pid, "rep": 1, "verdict": None if pid == ids[0] else True,
+            "status": "ok"} for pid in ids]
+    (out / "labels-gw-x.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lab))
+    raw = json.loads(world.read_text())
+    raw["tiebreak"] = {"labels": [{"name": "x", "labels": str(out / "labels-gw-x.jsonl")}]}
+    world.write_text(json.dumps(raw))
+    _, c = jd.load_config(world)
+    ag = jd.analyse_tiebreaker(c)["judges"]["x"]["agreement"]["all"]
+    assert ag["agree"] == len(ids) - 1 and ag["invalid"] == 1 and ag["agreement"] == round((len(ids) - 1) / len(ids), 4)
