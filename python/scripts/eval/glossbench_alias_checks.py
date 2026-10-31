@@ -58,9 +58,22 @@ cannot fail layer 1 on a matcher disagreement:
                             study of"), "the authors", "the proposed", "we", "our",
                             lowercase "us", "in this work", "described above", a
                             figure / table / section / equation / appendix /
-                            supplementary reference (:func:`self_references`) — a
-                            correct answer from ANOTHER paper counts as correct, so a
-                            question must be answerable without knowing the paper
+                            supplementary reference; and (prompt alias-draft/2, from
+                            the pilot's layer-2 rejects) study-specific framing: "the
+                            experiment / simulation / dataset / samples / patients /
+                            analysis / results" (not "... of", not a compound such as
+                            "the sample size"), "a ... dataset" (not a named one: "the
+                            ImageNet dataset"), "in a simulation", "according to the ...
+                            analysis", a list of abbreviations, "each sample", a protocol
+                            label ("Buffer A"; not "group A streptococcus"), a past
+                            passive narration ("was found", "were used"; not "was
+                            identified / isolated / detected / observed", which state
+                            established facts) (:func:`self_references`) — a correct answer
+                            from ANOTHER paper counts as correct, so a question must be
+                            answerable without knowing the paper
+``open_question``           an opening with no single reading: "what was significant
+                            about", "the general relationship", "what is involved in"
+                            (:func:`open_question`)
 ``quote_too_long``          over ``quote_max_chars`` (300)
 ``quote_not_in_paper``      the quote (gold normalisation) is not in the paper
 ``quote_not_unique``        it occurs more than once in the paper
@@ -168,6 +181,14 @@ def alias_variant_in(alias: str, text: str, alias_kind: str = "symbol") -> bool:
         canonical_text(text)) is not None
 
 
+def alias_key(alias: str, alias_kind: str | None = "symbol") -> str:
+    """The alias's normalised identity for the distinct-alias rule: the canonical symbol
+    (the shared matcher's normalisation), an abbreviation's plural ``s`` stripped
+    (:func:`alias_abbrev.normalize_sf`): ``MSC`` = ``MSCs``, ``Q_v`` = ``Qv``."""
+    key = canonical_symbol(str(alias))
+    return key if is_symbol(alias_kind) else aa.normalize_sf(key)
+
+
 def alias_in_question(alias: str, question: str, alias_kind: str = "symbol") -> bool:
     """The G question guard (module docstring): never weaker than :func:`alias_in_text`."""
     return aa.alias_occurs(alias, alias_kind or "symbol", question) or alias_variant_in(alias, question, alias_kind)
@@ -216,13 +237,50 @@ _SELF_REF = re.compile(
     rf"\b(?:this|the present|the current|these|our)\s+(?:{_DOC_NOUNS})\b"
     r"|\bthe (?:study|paper|article|manuscript|publication)\b(?!\s+(?:of|on|by)\b)"
     r"|\b(?:the|these|its) (?:authors?|researchers|investigators)\b"
-    r"|\bthe proposed\b|\b(?:we|our|ours|ourselves)\b|\bin this (?:work|context|setting)\b"
+    r"|\bthe proposed\b(?!\s+(?:mechanisms?|roles?|functions?|pathways?|explanations?|origins?|causes?|modes?|"
+    r"structures?|links?|interpretations?|hypothes[ie]s)\b)"
+    r"|\b(?:we|our|ours|ourselves)\b|\bin this (?:work|context|setting)\b"
     r"|\b(?:described|mentioned|reported|presented|shown|given|defined|discussed) (?:above|below|here|earlier)\b"
     r"|\b(?:fig(?:ure)?s?|tables?|sections?|eqs?|equations?|appendix|appendices|panels?|schemes?)\.?\s*"
     r"(?:\(\s*)?(?:[a-z]?\d+|[ivx]+\b|s\d+)"
     r"|\b(?:the|this|that|above|following|preceding) (?:fig(?:ure)?|table|section|equation|appendix|panel)s?\b"
     r"|\bsupplementary\b|\bsupporting information\b")
 _US = re.compile(r"\bus\b")                       # lowercase "us" only: "the US" is a country
+#: study-specific framing (from the 2026-10-30 pilot's layer-2 ``standalone`` rejects): the
+#: question presupposes ONE paper's own experiment, data or protocol even without naming it
+_STUDY_NOUNS = (r"experiments?|simulations?|trial|cohort|participants|respondents|patients|subjects|samples?|"
+                r"survey|dataset|data set|protocol|measurements?|results|findings|analysis|analyses")
+#: a noun used as a modifier is not the study's own thing: "the sample size", "the measurement error"
+_COMPOUND_HEAD = (r"sizes?|sizing|preparations?|volumes?|rates?|errors?|uncertaint(?:y|ies)|accuracy|precision|"
+                  r"times?|steps?|domains?|box|design|space|methods?|techniques?|pipelines?|frequenc(?:y|ies)|"
+                  r"means?|variance|distributions?|population|bias|noise|matrix|holders?|chambers?|periods?|"
+                  r"windows?|set-?up|levels?|units?|types?|protocols?|conditions?|procedures?|principles?|depth|areas?")
+_STUDY_REF = re.compile(
+    rf"\bthe (?:{_STUDY_NOUNS})\b(?!\s+(?:of|on|by|for|{_COMPOUND_HEAD})\b)"
+    r"|\bin (?:a|an|one) (?:simulation|experiment)\b"
+    r"|\baccording to (?:the|this|these)\s+(?:[\w-]+\s+){0,3}?(?:analys[ie]s|lists?|results?|findings?|data|"
+    r"experiments?|measurements?|protocol|survey|simulations?|abbreviations|observations?|"
+    r"passage|quote|text|excerpt)\b"
+    r"|\b(?:list|table) of abbreviations\b|\babbreviations? list\b"
+    r"|\b(?:this|the) (?:passage|excerpt|quote)\b"
+    r"|\b(?:each|every|the same)\s+(?:sample|patient|participant|subject|specimen|mouse|replicate|donor)s?\b"
+    # not "identified", "isolated", "detected", "observed": "which gene was identified as the cause of
+    # cystic fibrosis" states an established fact (review of #889)
+    r"|\b(?:was|were)\s+(?:\w+ly\s+)?(?:found|examined|measured|used|added|derived|ablated|performed|"
+    r"obtained|investigated|analy[sz]ed|tested|assessed|evaluated|suggested|applied|employed|"
+    r"selected|recorded|collected|chosen|compared|studied|determined|calculated|estimated|irradiated|treated|"
+    r"exposed|prepared|incubated|administered|enrolled|recruited|included|excluded|conducted|"
+    r"carried out)\b")
+#: "a ... dataset" whose modifiers are lowercase words ("the leaf vein dataset"); a named
+#: dataset ("the ImageNet dataset", "the TCGA data set") is a public thing, not the study's own
+_DATASET = re.compile(r"\b(?i:the|a|an|this|that)\s+((?:[\w-]+\s+){0,4}?)(?i:data\s?set)\b")
+#: a protocol label: "Buffer A", "sample 3" (the label is case-sensitive); not "group" ("group A
+#: streptococcus", "group 2 innate lymphoid cells"), "site", "step", "unit", "block" (standard names)
+_LABEL = re.compile(r"\b(?i:buffer|solution|medium|sample|patient|subject|participant|mouse|condition|"
+                    r"experiment|batch|ward|plot|run|arm)\s+(?:[A-Z]|\d+)\b")
+#: an open question with no single reading (the pilot's layer-2 ``single_reading`` rejects)
+_OPEN = re.compile(r"^\W*what (?:is|was|are|were) (?:so )?(?:significant|notable|important|interesting|special|"
+                   r"remarkable) about\b|\bgeneral relationship\b|^\W*what (?:is|are|was|were) involved in\b")
 
 
 def self_references(question: str) -> list[str]:
@@ -230,34 +288,54 @@ def self_references(question: str) -> list[str]:
     t = unicodedata.normalize("NFKC", question)
     hits = [m.group(0).strip() for m in _SELF_REF.finditer(t.casefold())]
     hits += [m.group(0) for m in _US.finditer(t)]
+    hits += [m.group(0).strip() for m in _STUDY_REF.finditer(t.casefold())]
+    hits += [m.group(0).casefold() for m in _DATASET.finditer(t) if not re.search(r"[A-Z0-9]", m.group(1))]
+    hits += [m.group(0) for m in _LABEL.finditer(t)]
     return list(dict.fromkeys(hits))
+
+
+def open_question(question: str) -> list[str]:
+    """Openings that leave a question without a single reading ("what was significant
+    about ...", "the general relationship", "what is involved in ...")."""
+    t = unicodedata.normalize("NFKC", question).casefold()
+    return [m.group(0).strip() for m in _OPEN.finditer(t)]
 
 
 # ------------------------------------------------------------------ prompts
 
 _ALIAS_WORD = {"symbol": "the symbol", "abbreviation": "the abbreviation"}
 
-DRAFT_SYSTEM_G = """You write one question for a retrieval benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
+#: recorded in every draft row and accepted record; bump on any change to the drafting
+#: prompts. alias-draft/1: the 2026-10-30 pilot. alias-draft/2: self-contained yet
+#: single-reading questions (name the passage's own distinguishing context, never the
+#: study's experiment, data or protocol), paraphrase, a verbatim quote of one sentence or less.
+PROMPT_VERSION = "alias-draft/2"
+
+_QUESTION_RULES = """The question must stand alone: a reader who has never seen this paper understands it, and a correct answer from another paper would also be correct. Never refer to the paper, its authors, its parts or its own work: no "this study", "the authors", "we", "our", no figure, table, section or equation, and no "the study", "the experiment", "the simulation", "the dataset", "the samples", "the patients", "the analysis", "each sample", a protocol label such as "Buffer A" or "group 2", or a narration of what "was found", "was measured" or "was used". Instead name the distinguishing context the passage itself gives (the organism, cell type, material, device, system, condition or method), and ask about it as a general fact. The question must have a single reading: specific enough that the passage's answer is the only correct one; never an open question such as "what is significant about", "what is involved in" or "the general relationship". Use your own words: do not copy the quote's wording apart from the TERM and names. Between 6 and 35 words."""
+
+_QUOTE_RULES = """copied exactly, character for character, from the passage (same spelling, punctuation, spacing, symbols and citation marks; never fix, shorten, reorder or join sentences); one sentence or part of one sentence, at most 300 characters"""
+
+DRAFT_SYSTEM_G = f"""You write one question for a retrieval benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
 
 You are told a TERM and a SHORT FORM (a symbol or an abbreviation) that the paper uses for it. The passage uses the short form and does not spell out the term. Write a question that asks about something the passage states about the TERM, then answer with a JSON object only, exactly these keys:
-{"question": "...", "answer": "...", "quote": "..."}
+{{"question": "...", "answer": "...", "quote": "..."}}
 
-- "question": ONE question. Name the TERM in words. Never write the SHORT FORM or any spelling of it. The question must stand alone: a reader who has never seen this paper understands it, and a correct answer from another paper would also be correct. Never refer to the paper, its authors or its parts: no "this study", "this paper", "the authors", "the proposed", "we", "our", "in this work", and no figure, table, section or equation. Between 6 and 35 words.
+- "question": ONE question. Name the TERM in words. Never write the SHORT FORM or any spelling of it. {_QUESTION_RULES}
 - "answer": short, in the passage's own words.
-- "quote": copied exactly, character for character, from the passage; at most 300 characters; it must contain the SHORT FORM and state the answer.
+- "quote": {_QUOTE_RULES}; it must contain the SHORT FORM and state the answer.
 
-If the passage states nothing about the TERM that such a question could ask, answer {"none": true}."""
+If the passage states nothing about the TERM that such a question could ask, answer {{"none": true}}."""
 
-DRAFT_SYSTEM_C = """You write one question for a retrieval benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
+DRAFT_SYSTEM_C = f"""You write one question for a retrieval benchmark from ONE passage of a scientific paper. Work only from the passage you are given.
 
 You are told a TERM that the passage spells out. Write a question that asks about something the passage states about the TERM, then answer with a JSON object only, exactly these keys:
-{"question": "...", "answer": "...", "quote": "..."}
+{{"question": "...", "answer": "...", "quote": "..."}}
 
-- "question": ONE question. Name the TERM in words. The question must stand alone: a reader who has never seen this paper understands it, and a correct answer from another paper would also be correct. Never refer to the paper, its authors or its parts: no "this study", "this paper", "the authors", "the proposed", "we", "our", "in this work", and no figure, table, section or equation. Between 6 and 35 words.
+- "question": ONE question. Name the TERM in words. {_QUESTION_RULES}
 - "answer": short, in the passage's own words.
-- "quote": copied exactly, character for character, from the passage; at most 300 characters; it must contain the TERM and state the answer.
+- "quote": {_QUOTE_RULES}; it must contain the TERM, spelled exactly as the passage spells it, and state the answer.
 
-If the passage states nothing about the TERM that such a question could ask, answer {"none": true}."""
+If the passage states nothing about the TERM that such a question could ask, answer {{"none": true}}."""
 
 REASON_WORDS = {
     "unparseable": "the answer was not the JSON object asked for",
@@ -266,9 +344,11 @@ REASON_WORDS = {
     "multiple_questions": "more than one question was asked",
     "question_too_short": "the question was too short",
     "question_too_long": "the question was too long",
-    "not_standalone": "the question referred to the paper, its authors or its parts",
-    "quote_too_long": "the quote was longer than 300 characters",
-    "quote_not_in_paper": "the quote was not copied exactly from the passage",
+    "not_standalone": "the question referred to the paper, its authors, its parts or its own experiment, data or "
+                      "protocol (name the passage's own context instead)",
+    "open_question": "the question was open-ended and had more than one reading",
+    "quote_too_long": "the quote was longer than 300 characters (quote one sentence or part of one)",
+    "quote_not_in_paper": "the quote was not copied exactly, character for character, from the passage",
     "quote_not_in_source": "the quote was not copied exactly from the passage",
     "quote_not_unique": "the quote also occurs elsewhere in the paper",
     "cut_by_boundary": "the quote was not copied exactly from the passage",
@@ -393,6 +473,10 @@ def layer1(draft: Mapping[str, Any] | None, parse_error: str | None, *, kind: st
     if refs:
         out["self_references"] = refs
         reasons.append("not_standalone")
+    vague = open_question(q)
+    if vague:
+        out["open_question"] = vague
+        reasons.append("open_question")
     # the quote: length, exactly once in the paper, inside one chunk, in the source chunk
     nq = g.gold_norm(quote)
     if len(quote) > int(c["quote_max_chars"]):
