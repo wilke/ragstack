@@ -394,6 +394,47 @@ def main() -> int:
                 "median_rank": {k: (statistics.median(rk[k].values()) if sel else None) for k in rends}}
     res["P"]["Q5"] = q5
 
+    # ---------------- POST-PLAN additions (not in PLAN.md; added after the planned outputs were seen)
+    stem_of = {d_: s for s, ds in doc_of_file.items() for d_ in ds}
+
+    def kind(doc: str) -> str:
+        s = stem_of.get(doc, "")
+        if re.fullmatch(r"pmc\d+", s, re.I):
+            return "pmcid-named"
+        if s.startswith("sha-"):
+            return "sha-named"
+        if s.startswith("10."):
+            return "doi-named"
+        return "other"
+
+    all_sources = set().union(*src.values())
+    pp: dict[str, Any] = {}
+    for g_ in ("lost", "kept", "won"):
+        sel = [r for r in rids if grp[r] == g_]
+        cross: Counter[str] = Counter()
+        for r in sel:
+            for c in above_gold(a4full[r], g_run["records"][r]) or []:
+                if not same_paper(r, c):
+                    cross[chunk_doc[c]] += 1
+        tot = sum(cross.values())
+        top = cross.most_common(2)
+        by_kind: Counter[str] = Counter()
+        for d_, x in cross.items():
+            by_kind[kind(d_)] += x
+        pp[g_] = {"records": len(sel), "distinct_queries": len({qtext[r] for r in sel}),
+                  "records_in_dominant_paper": max(Counter(g_run["records"][r]["cluster"] for r in sel).values(),
+                                                   default=0),
+                  "cross_paper_chunks_above_gold_A4": tot, "distinct_cross_paper_docs": len(cross),
+                  "share_in_top1_doc": round(top[0][1] / tot, 4) if tot else None,
+                  "share_in_top2_docs": round(sum(x for _, x in top) / tot, 4) if tot else None,
+                  "cross_paper_chunks_from_another_records_source_paper":
+                      sum(x for d_, x in cross.items() if d_ in all_sources),
+                  "cross_paper_chunks_by_doc_kind": dict(by_kind)}
+    first_gold = [next(c for c in a4full[r] if c in gold_ids(g_run["records"][r])) for r in rids if inpool[r]]
+    pp["Q4_population"] = {"records": len(first_gold), "distinct_first_gold_chunks": len(set(first_gold)),
+                           "distinct_queries": len({qtext[r] for r in rids if inpool[r]})}
+    res["P"]["post_plan"] = {"label": "POST-PLAN: added after the planned outputs were seen; descriptive", **pp}
+
     # ---------------- Q6: v4
     P4, rids4, grp4, _ = p_block(g_v4)  # type: ignore[misc]
     res["P_v4"] = {"note": "sensitivity: the addendum's v4 gold (source-paper scoped)", **P4}
