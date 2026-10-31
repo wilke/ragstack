@@ -210,3 +210,28 @@ def test_yield_cost_unreachable_and_reachable() -> None:
     r = aa.yield_cost([6] * 1000, 0.5, target=100)
     assert r["reachable"] and r["papers_to_attempt"] * r["usable_rate_per_paper"] >= 100
     assert r["calls"] == round(r["jobs"] * aa.CALLS_PER_JOB, -0) or abs(r["calls"] - r["jobs"] * aa.CALLS_PER_JOB) < 2
+
+
+# ---------------------------------------------------------------- review #887: guards a mutant survived
+def test_alignment_requires_first_letter_to_start_long_form() -> None:
+    # every letter after the first aligns to a word initial; only the first-letter check rejects it
+    assert aa.aligns("ACR", "acute cardiac rejection")
+    assert not aa.aligns("XCR", "acute cardiac rejection")
+
+
+def test_one_word_long_form_length_rule_alone() -> None:
+    # 'psoas' aligns with PS, so only the >= 6 chars rule rejects it
+    assert aa.aligns("PS", "psoas")
+    assert not aa.lf_ok("PS", "psoas")
+
+
+def test_plural_alias_counts_as_use_and_as_g_hit() -> None:
+    rows = [
+        _row("c1", "P1", "We isolated mesenchymal stem cells (MSC) from marrow."),
+        _row("c2", "P1", "All MSCs were passaged twice before use."),
+    ]
+    corpus = _corpus(rows)
+    (e,), _ = aa.build_abbrev_entries(corpus, COMMON)
+    assert e["use_chunk_ids"] == ["c2"]
+    G, _ = aa.g_candidates(corpus, [e])
+    assert [x["chunks"] for x in G["P1"]] == [["c2"]]

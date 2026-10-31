@@ -101,3 +101,21 @@ The cost drops if C is drafted only once a paper has 2 accepted G. In that case 
 * The precision figure is the author's reading of 40 sampled entries. It is not the owner's verdict, which goes in the review file.
 * p is assumed. The C acceptance rate is assumed equal to the G rate; the feasibility model used 0.5.
 * The collision rule uses disjoint content words, so a synonym long form (same expansion, different words) counts as a collision. The 50% rate is therefore an upper bound on true ambiguity.
+
+## Independent review (PR #887, 2026-10-30)
+
+These are post-hoc checks by a reviewer on the same run's outputs. They did not change the builder or the counts above.
+
+* **Reproduction.** A re-run from a clean checkout at `34fa58f` on the same inputs gives byte-identical `abbrev_entries.jsonl` and `merged_glossary.jsonl`. `recount.json` is identical apart from its time fields.
+* **Precision.** The reviewer judged 60 entries drawn with a different seed (887). 57 are correct. The three errors:
+  * one partial long form: the shortest aligned run took letters from inside words, giving `EMEM = essential medium`;
+  * one boundary artifact: a leading `-` copied into the long form, with the expansion itself correct;
+  * one place code that is not an abbreviation (a county name).
+  
+  The sample held no units, gene names or `IL`-type prefixes. Typos in the source are copied faithfully and were not counted as errors.
+* **Partial long forms, corpus-wide.** About 50 of 9,922 P1 entries (≈0.5%) have a longer aligned run that covers more of the abbreviation's letters as word initials. Most have repeated letters, e.g. `PPI = pump inhibitors` or `MEM = medium`. The rule keeps the shortest run. Such a partial primary makes the strict G test looser for that entry.
+* **Collision, normalised.** Lemmatised and case-folded words already absorb plural, case and hyphen variants. With a stronger normalisation (5-character prefixes of content words, plus `our`→`or`), 688 of 1,435 shared aliases still collide (47.9%). Sharing any non-stop 4-character prefix gives 666 (46.4%). A sample of 25 colliding aliases was almost all genuine homonyms (`AP`, `PA`, `NES`, `PIC`). The 50% figure is therefore not inflated by trivial variants.
+* **G matcher and hyphens.** Tokens split at hyphens, so `IL-6` yields the alias `IL`, `RT-PCR` yields `RT`, and `SARS-CoV-2` yields `SARS`. In 2,320 of 26,518 abbreviation G pairs (8.7%), every alias occurrence in the chunk is hyphen-attached. Dropping those pairs gives merged ≥2 G 847 → 838 and usable 800 → 791. A form without a hyphen, such as `TNFα`, is one token and is not matched, which undercounts. Plural (`MSCs`) and possessive (`BMI's`) forms match. The not-primary test uses the same `words()` normalisation on the primary and on the chunk.
+* **Yield.** A Monte Carlo of the stop rules reproduces the table (p = 0.315: 403 papers, ≈3,720 calls). Two caveats:
+  * 115 of the 800 usable papers have only one C chunk, so they can draft C at most once. Capping C jobs at the C-chunk count raises the cost to 430 papers and 3,919 calls at p = 0.315, and to 291 papers and 2,495 calls at p = 0.386.
+  * The paper count is set at the expected value, so reaching 100 usable papers has about a 50% chance.
