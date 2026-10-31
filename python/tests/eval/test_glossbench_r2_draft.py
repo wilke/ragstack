@@ -647,6 +647,9 @@ def test_every_verifier_call_is_isolation_checked_and_a_transient_anomaly_is_rei
     assert st["status"] == "complete" and st["totals"]["since_start"]["cli_isolation_anomalies"] == 1
 
 
+_persistent_marker: list[str] = [""]
+
+
 def test_a_persistent_anomaly_on_one_record_is_a_hard_stop(tmp_path: Path) -> None:
     path, cfg = _drafted(tmp_path)
     run(path, "preflight", "--stage", "verify", "--set", "O")
@@ -663,6 +666,7 @@ def test_a_persistent_anomaly_on_one_record_is_a_hard_stop(tmp_path: Path) -> No
     run(path2, "preflight", "--stage", "verify", "--set", "O")
     assert run(path2, "verify", "--set", "O", "--notice-acknowledged", cli=probe) == 0
     marker = first[1][-200:]
+    _persistent_marker[0] = marker
     cli = FlakyCtxCLI(bad_prompt=marker)
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 1
     assert sum(marker in c["input"] for c in cli.calls) == 3
@@ -671,7 +675,8 @@ def test_a_persistent_anomaly_on_one_record_is_a_hard_stop(tmp_path: Path) -> No
     assert all(marker not in (r.get("text") or "") for r in _verify_rows(cfg))
 
 
-def test_clear_hard_stop_resumes_only_with_the_matching_reason_and_a_note(tmp_path: Path) -> None:
+def test_clear_hard_stop_resumes_only_with_the_matching_reason_and_a_note(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path, cfg = _drafted(tmp_path)
     run(path, "preflight", "--stage", "verify", "--set", "O")
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FakeCLI(ctx=10_000_000)) == 1
@@ -681,7 +686,7 @@ def test_clear_hard_stop_resumes_only_with_the_matching_reason_and_a_note(tmp_pa
     # a plain resume, a wrong reason, a missing note: all refused, no call, state untouched
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", cli=cli) == 1
     assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
-               "usage_limit", "--clear-note", "x", cli=cli) == 1
+               "codex_isolation_failed", "--clear-note", "x", cli=cli) == 1
     with pytest.raises(SystemExit, match="clear-note"):
         run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
             "isolation_failed", cli=cli)
@@ -695,6 +700,9 @@ def test_clear_hard_stop_resumes_only_with_the_matching_reason_and_a_note(tmp_pa
                   "--clear-hard-stop", "isolation_failed", "--clear-note", "owner: CLI fallback, see PR"],
                  provenance=lambda: new, cli_runner=cli)
     assert rc == 0 and cli.calls
+    err = capsys.readouterr().err
+    assert ("verify HARD STOP CLEARED (isolation_failed) by" in err and "owner: CLI fallback, see PR" in err
+            and f"[commit {'c' * 40} -> {'d' * 40}]" in err)
     st = json.loads(state.read_text())
     assert st["status"] == "complete" and st["commit"] == "d" * 40
     (c,) = st["clearances"]
@@ -935,3 +943,91 @@ def test_promotion_condition_at_the_boundary() -> None:
     # the 30-judged floor: a smaller judged n fails whatever the bound
     assert dr.promotion_condition(29, 0)["met"] is False and dr.promotion_condition(29, 0)["upper_bound"] < 0.15
     assert dr.promotion_condition(30, 0)["met"] is True
+
+
+class FirstSeenBadCLI(FakeCLI):
+    """An anomalous context on the FIRST call of each of the first ``k`` distinct prompts after
+    the probe's; every re-issue is clean (so no record has two anomalies in a row)."""
+
+    def __init__(self, k: int) -> None:
+        super().__init__()
+        self.k, self.seen, self.bad = k, [], set()
+
+    def __call__(self, cmd: list[str], **kw: Any) -> SimpleNamespace:  # type: ignore[override]
+        with self.lock:
+            p = kw["input"]
+            mark = p not in self.seen and len(self.seen) >= 1 and len(self.bad) < self.k
+            if p not in self.seen:
+                self.seen.append(p)
+            if mark:
+                self.bad.add(p)
+        res = super().__call__(cmd, **kw)
+        if mark:
+            o = json.loads(res.stdout)
+            o["modelUsage"]["claude-opus-5-5"]["inputTokens"] = 10_000_000
+            res.stdout = json.dumps(o)
+        return res
+
+
+def test_isolation_anomalies_across_records_hit_the_segment_rate(tmp_path: Path) -> None:
+    """Single anomalies on distinct records (never two in a row): max(2, 5% of the segment)
+    are tolerated, one more is the hard stop."""
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    n_todo = len([r for r in acceptance(cfg) if r["layer"] == "l1" and r["verdict"] == "pass"])
+    assert 4 <= n_todo < 40                                    # 5% of the segment < 2: the floor applies
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FirstSeenBadCLI(2)) == 0
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["status"] == "complete" and st["totals"]["since_start"]["cli_isolation_anomalies"] == 2
+    path, cfg = _drafted(tmp_path / "b")
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FirstSeenBadCLI(3)) == 1
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["status"] == "hard_stop" and st["reason"] == "isolation_failed"
+
+
+def test_three_anomalies_in_a_row_stop_even_under_a_lax_segment_rate(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(dr, "ISOLATION_WAVE_RATE", 100.0)           # the segment rule can never fire
+    test_a_persistent_anomaly_on_one_record_is_a_hard_stop(tmp_path)
+
+
+@pytest.mark.parametrize("usage", [None, {}, {"claude-opus-5-5": {"input_tokens": 400, "output_tokens": 30}},
+                                   {"claude-opus-5-5": "400"}])
+def test_an_unreadable_usage_block_is_an_isolation_anomaly_not_a_clean_call(tmp_path: Path, usage: Any) -> None:
+    """Fail closed: a CLI that drops or renames ``modelUsage`` / its token fields must not
+    pass the isolation check with an unknown (or 0) context."""
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+
+    class Bare(FakeCLI):
+        def __call__(self, cmd: list[str], **kw: Any) -> SimpleNamespace:  # type: ignore[override]
+            res = super().__call__(cmd, **kw)
+            o = json.loads(res.stdout)
+            if usage is None:
+                del o["modelUsage"]
+            else:
+                o["modelUsage"] = usage
+            res.stdout = json.dumps(o)
+            return res
+
+    cli = Bare()
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=cli) == 1
+    st = json.loads((out(cfg) / "verify-state-O.json").read_text())
+    assert st["reason"] == "isolation_failed" and len(cli.calls) == 3
+    assert dr.cli_usage({"result": "{}", "modelUsage": usage}, "claude-opus-5-5")["context_tokens"] is None
+
+
+def test_clear_hard_stop_never_clears_a_budget_or_limit_stop(tmp_path: Path) -> None:
+    """Even a state that (by a bug or a hand edit) says hard_stop with a budget reason."""
+    path, cfg = _drafted(tmp_path)
+    run(path, "preflight", "--stage", "verify", "--set", "O")
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=FakeCLI(ctx=10_000_000)) == 1
+    state = out(cfg) / "verify-state-O.json"
+    for reason in ("budget_stop: HTTP 503 (provider_notice)", "usage_limit", "cli_cost_cap"):
+        st = json.loads(state.read_text())
+        st["reason"] = reason
+        state.write_text(json.dumps(st))
+        cli = FakeCLI()
+        assert run(path, "verify", "--set", "O", "--notice-acknowledged", "--resume", "--clear-hard-stop",
+                   reason, "--clear-note", "x", cli=cli) == 1
+        assert not cli.calls and json.loads(state.read_text())["reason"] == reason

@@ -813,3 +813,35 @@ def test_a_refusal_stop_reason_on_a_successful_exit_goes_to_codex(tmp_path: Path
     cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
     assert len(cx) == 3 and all(r["verdict"] == "pass" and r["verifier_refused"] == "claude" for r in cx)
     assert not any("l2_empty" in r["reasons"] for r in l2_rows(cfg))
+
+
+def test_cli_usage_safety_stops_alone_is_a_fallback() -> None:
+    """One model in ``modelUsage``, with output, but ``safety_stops`` > 0: still not a clean
+    answer from the configured verifier."""
+    o = {"result": "{}", "safety_stops": 1,
+         "modelUsage": {"claude-opus-5-5": {"inputTokens": 2500, "outputTokens": 90}}}
+    assert dr.cli_usage(o, "claude-opus-5-5")["fallback"]
+    # only another model listed (the configured one missing): a fallback
+    o = {"result": "{}", "modelUsage": {"claude-opus-5": {"inputTokens": 2500, "outputTokens": 90}}}
+    assert dr.cli_usage(o, "claude-opus-5-5")["fallback"]
+
+
+class LateCodexCtx(Clis):
+    """Codex's first call is clean; every later one reports a leaked context."""
+
+    @property
+    def codex_ctx(self) -> int:  # type: ignore[override]
+        return 2600 if len(self.codex) <= 1 else 10_000_000
+
+    @codex_ctx.setter
+    def codex_ctx(self, _v: int) -> None:
+        pass
+
+
+def test_every_codex_call_is_isolation_checked(tmp_path: Path) -> None:
+    path, cfg = _drafted(tmp_path)
+    clis = LateCodexCtx(lambda p: True)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 1
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    assert st["status"] == "hard_stop" and st["reason"] == "codex_isolation_failed"
+    assert len(clis.codex) == 2

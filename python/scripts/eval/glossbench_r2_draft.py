@@ -88,6 +88,9 @@ resumes a hard-stopped run when the owner sanctions it: the reason must equal th
 file's, the note is required, and the clearance (who, when, reason, note, the commit
 before and after) is logged and kept in the state file's ``clearances``. A cleared
 resume may run at a different commit (the fix); every other sha must still match.
+A budget / quota / usage-limit / cap stop (exit 76, ``provider_notice``, :data:`NEVER_CLEARABLE_RE`)
+is never cleared this way. An unreadable ``modelUsage`` (missing, renamed fields, context 0)
+counts as an isolation anomaly, never as a clean call.
 
 **Codex fallback verifier.** A usage-policy refusal by the Claude CLI (its safeguards
 flag the verifier prompt: :func:`is_refusal` on the error text, never a transport error
@@ -191,6 +194,10 @@ ISOLATION_RETRIES = 2
 #: more isolation anomalies than this share of a verify segment's records (and than
 #: ISOLATION_RETRIES) is a hard stop
 ISOLATION_WAVE_RATE = 0.05
+#: hard-stop / state reasons ``--clear-hard-stop`` never clears: a budget, quota, usage-limit
+#: or cap stop is the provider's or the owner's limit, not a harness anomaly (the budget stop is
+#: exit 76 / ``provider_notice``; it continues only through preflight + a fresh notice)
+NEVER_CLEARABLE_RE = re.compile(r"budget|provider_notice|quota|usage_limit|limit|_cap\b|max_calls", re.I)
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
 #: Codex's fixed context under the isolation flags (its own instructions, which no flag
 #: removes), measured by a synthetic probe on gpt-6-astra: 2,025 tokens
@@ -235,7 +242,10 @@ def cli_usage(obj: dict[str, Any], model: str) -> dict[str, Any]:
     is ~2x a single request. ``context_tokens`` here is the largest single request's
     context: the configured entry minus the other models' input, or the largest other
     entry. ``fallback`` is True when the answer did not come from the configured model."""
-    mu = obj.get("modelUsage") or {}
+    mu = obj.get("modelUsage")
+    # fail closed: a usage block this code cannot read (missing, renamed, not a mapping of
+    # mappings) yields context None or 0 -> None, which the isolation check counts as an anomaly
+    mu = {k: val for k, val in mu.items() if isinstance(val, dict)} if isinstance(mu, dict) else {}
     own_key = next((k for k, val in mu.items()
                     if k == model or val.get("canonicalModel") == model), None)
     if own_key is None:
@@ -249,6 +259,8 @@ def cli_usage(obj: dict[str, Any], model: str) -> dict[str, Any]:
         ctx = max(other_ctx) if other_ctx else None
     else:
         ctx = max([_ctx(own) - sum(other_ctx), *other_ctx]) if other_ctx else _ctx(own)
+    if ctx is not None and ctx <= 0:
+        ctx = None
     text = str(obj.get("result") or "")
     fallback = bool(safety > 0 or answered or (own_key is None and mu)
                     or (own_key is not None and int(own.get("outputTokens") or 0) == 0 and text.strip()))
@@ -811,6 +823,10 @@ class Run:
                       "resume passes --clear-hard-stop <reason> --clear-note \"<text>\"")
                 return EXIT_HARD_STOP
             if clear is not None:
+                if NEVER_CLEARABLE_RE.search(f"{clear['reason']} {st.get('reason') or ''}"):
+                    g.log(f"{stage} --clear-hard-stop refused: {st.get('reason')!r} is a budget / limit stop, "
+                          "never clearable (preflight, a fresh notice, then --resume)")
+                    return EXIT_HARD_STOP
                 if st.get("status") != "hard_stop":
                     g.log(f"{stage} --clear-hard-stop refused: the run is {st.get('status')}, not hard-stopped")
                     return EXIT_HARD_STOP
