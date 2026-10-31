@@ -298,8 +298,8 @@ n = 3 / 11: C 0.978 / 0.980, D 0.959 / 0.959, E 0.981 / 0.982.
 
 **Majority errors over all stored samples.** D makes 15: 13 FN and 2 FP. Five of the FN are coll_same
 G pairs, which is the round-1 pattern of rejecting a short form the passage's paper defines as the
-term. E makes 7: 3 FN and 4 FP. They are 2 in lex_same, 2 in lex_other and 3 in coll_same (1 FP and
-2 FN). C also makes 7, but only 3 of E's 7 are C's: E fixes 4 of C's errors and adds 4. Three of E's
+term. E makes 7: 3 FN and 4 FP. They are 2 in lex_same (FP), 3 in lex_other (1 FP, 2 FN) and 2 in
+coll_same (1 FP, 1 FN). C also makes 7, but only 3 of E's 7 are C's: E fixes 4 of C's errors and adds 4. Three of E's
 errors (and three of C's) are on overlap records.
 
 **Cascade at n = 21** (τ 0.8 / 0.9): C escalates 1.6 % / 2.4 % with accuracy 0.984 / 0.984. D
