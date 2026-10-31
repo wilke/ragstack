@@ -87,7 +87,8 @@ reported in the summary (``alias.papers_short_after_l2``), not redrafted.
 **run-waves** (after the 2026-10-30 pilot, whose layer-1 stop rule halted drafting on
 papers whose records the verifier then rejected). One command loops: plan the next wave
 (:mod:`glossbench_alias_waves`: papers activated in a seeded order only as needed, the
-next G/C jobs each unsatisfied paper still needs, no job on an alias already accepted)
+next G/C jobs each unsatisfied paper still needs, no job on an alias already accepted;
+with ``waves.c_first``, the default, a paper's C jobs before its G jobs)
 -> draft it (the gateway, every rule above) -> layer 1 over the new drafts
 (:meth:`AliasRun.check_new`: incremental; logged rows are never re-judged) -> layer 2
 (the CLI verifier, counted separately as ``cli_calls``) -> recompute each paper's
@@ -133,7 +134,7 @@ too), verifier, verifier_refused, verifier_model``.
     waves                      run-waves (glossbench_alias_waves.WAVE_DEFAULTS): target_papers,
                                accept_rate {G, C}, prior_weight, max_new_papers_per_wave, max_waves,
                                max_jobs_per_paper {G, C}, calls_per_job, prompt/completion_tokens_per_call,
-                               l1_pass_per_job {G, C}, pessimistic_factor, preflight_sims
+                               l1_pass_per_job {G, C}, pessimistic_factor, preflight_sims, c_first
     drafter, verifier, limits, yield_watch, prereg   as round 3 (glossbench_r2_draft.DEFAULTS)
 """
 from __future__ import annotations
@@ -780,7 +781,8 @@ class AliasRun(dr.Run):
         target = int(c["target_papers"])
         args = (states, order, n_active, info)
         kw: dict[str, Any] = {"goal": self.goal, "caps": self.caps(), "target": target, "max_new": int(c["max_new_papers_per_wave"]),
-              "max_waves": int(c["max_waves"]), "wave0": wave0, "sims": int(c["preflight_sims"])}
+              "max_waves": int(c["max_waves"]), "wave0": wave0, "sims": int(c["preflight_sims"]),
+              "c_first": bool(c["c_first"])}
         exp = wv.forecast(*args, rates=rr["rates"], seed=f"{self.header['seed']}|waves-preflight", **kw)
         pess_rates = {k: float(v) * float(c["pessimistic_factor"]) for k, v in rr["rates"].items()}
         pess = wv.forecast(*args, rates=pess_rates, seed=f"{self.header['seed']}|waves-preflight", **kw)
@@ -992,7 +994,7 @@ class AliasRun(dr.Run):
             order = self.wave_order(states)
             rr = self.wave_rates(outcomes)
             n, jobs, stop = wv.plan_wave(states, order, int(ws["n_active"]), target, rr["rates"], self.goal,
-                                         self.caps(), int(c["max_new_papers_per_wave"]))
+                                         self.caps(), int(c["max_new_papers_per_wave"]), bool(c["c_first"]))
             if stop is None and int(ws["wave"]) >= int(c["max_waves"]):
                 stop, n = "max_waves", int(ws["n_active"])
             if stop:

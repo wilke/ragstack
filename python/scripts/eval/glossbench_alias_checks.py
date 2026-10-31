@@ -61,11 +61,14 @@ cannot fail layer 1 on a matcher disagreement:
                             supplementary reference; and (prompt alias-draft/2, from
                             the pilot's layer-2 rejects) study-specific framing: "the
                             experiment / simulation / dataset / samples / patients /
-                            analysis / results" (not "... of"), "a ... dataset", "in a
-                            simulation", "according to the ... analysis", a list of
-                            abbreviations, "each sample", a protocol label ("Buffer A",
-                            "group 2"), a past passive narration ("was found", "were
-                            used", ...) (:func:`self_references`) — a correct answer
+                            analysis / results" (not "... of", not a compound such as
+                            "the sample size"), "a ... dataset" (not a named one: "the
+                            ImageNet dataset"), "in a simulation", "according to the ...
+                            analysis", a list of abbreviations, "each sample", a protocol
+                            label ("Buffer A"; not "group A streptococcus"), a past
+                            passive narration ("was found", "were used"; not "was
+                            identified / isolated / detected / observed", which state
+                            established facts) (:func:`self_references`) — a correct answer
                             from ANOTHER paper counts as correct, so a question must be
                             answerable without knowing the paper
 ``open_question``           an opening with no single reading: "what was significant
@@ -234,7 +237,9 @@ _SELF_REF = re.compile(
     rf"\b(?:this|the present|the current|these|our)\s+(?:{_DOC_NOUNS})\b"
     r"|\bthe (?:study|paper|article|manuscript|publication)\b(?!\s+(?:of|on|by)\b)"
     r"|\b(?:the|these|its) (?:authors?|researchers|investigators)\b"
-    r"|\bthe proposed\b|\b(?:we|our|ours|ourselves)\b|\bin this (?:work|context|setting)\b"
+    r"|\bthe proposed\b(?!\s+(?:mechanisms?|roles?|functions?|pathways?|explanations?|origins?|causes?|modes?|"
+    r"structures?|links?|interpretations?|hypothes[ie]s)\b)"
+    r"|\b(?:we|our|ours|ourselves)\b|\bin this (?:work|context|setting)\b"
     r"|\b(?:described|mentioned|reported|presented|shown|given|defined|discussed) (?:above|below|here|earlier)\b"
     r"|\b(?:fig(?:ure)?s?|tables?|sections?|eqs?|equations?|appendix|appendices|panels?|schemes?)\.?\s*"
     r"(?:\(\s*)?(?:[a-z]?\d+|[ivx]+\b|s\d+)"
@@ -245,25 +250,34 @@ _US = re.compile(r"\bus\b")                       # lowercase "us" only: "the US
 #: question presupposes ONE paper's own experiment, data or protocol even without naming it
 _STUDY_NOUNS = (r"experiments?|simulations?|trial|cohort|participants|respondents|patients|subjects|samples?|"
                 r"survey|dataset|data set|protocol|measurements?|results|findings|analysis|analyses")
+#: a noun used as a modifier is not the study's own thing: "the sample size", "the measurement error"
+_COMPOUND_HEAD = (r"sizes?|sizing|preparations?|volumes?|rates?|errors?|uncertaint(?:y|ies)|accuracy|precision|"
+                  r"times?|steps?|domains?|box|design|space|methods?|techniques?|pipelines?|frequenc(?:y|ies)|"
+                  r"means?|variance|distributions?|population|bias|noise|matrix|holders?|chambers?|periods?|"
+                  r"windows?|set-?up|levels?|units?|types?|protocols?|conditions?|procedures?|principles?|depth|areas?")
 _STUDY_REF = re.compile(
-    rf"\bthe (?:{_STUDY_NOUNS})\b(?!\s+(?:of|on|by|for)\b)"
-    r"|\b(?:the|a|an|this|that)\s+(?:[\w-]+\s+){0,4}?data\s?set\b"
+    rf"\bthe (?:{_STUDY_NOUNS})\b(?!\s+(?:of|on|by|for|{_COMPOUND_HEAD})\b)"
     r"|\bin (?:a|an|one) (?:simulation|experiment)\b"
     r"|\baccording to (?:the|this|these)\s+(?:[\w-]+\s+){0,3}?(?:analys[ie]s|lists?|results?|findings?|data|"
-    r"experiments?|measurements?|protocol|survey|model|simulations?|abbreviations|statistics|observations?|"
+    r"experiments?|measurements?|protocol|survey|simulations?|abbreviations|observations?|"
     r"passage|quote|text|excerpt)\b"
     r"|\b(?:list|table) of abbreviations\b|\babbreviations? list\b"
     r"|\b(?:this|the) (?:passage|excerpt|quote)\b"
-    r"|\b(?:each|every|the same)\s+(?:sample|patient|participant|subject|specimen|animal|mouse|section|replicate|"
-    r"donor|run|well|plate)s?\b"
-    r"|\b(?:was|were)\s+(?:\w+ly\s+)?(?:found|examined|observed|measured|used|added|derived|ablated|performed|"
-    r"obtained|detected|identified|investigated|analy[sz]ed|tested|assessed|evaluated|suggested|applied|employed|"
+    r"|\b(?:each|every|the same)\s+(?:sample|patient|participant|subject|specimen|mouse|replicate|donor)s?\b"
+    # not "identified", "isolated", "detected", "observed": "which gene was identified as the cause of
+    # cystic fibrosis" states an established fact (review of #889)
+    r"|\b(?:was|were)\s+(?:\w+ly\s+)?(?:found|examined|measured|used|added|derived|ablated|performed|"
+    r"obtained|investigated|analy[sz]ed|tested|assessed|evaluated|suggested|applied|employed|"
     r"selected|recorded|collected|chosen|compared|studied|determined|calculated|estimated|irradiated|treated|"
-    r"exposed|prepared|isolated|incubated|administered|enrolled|recruited|included|excluded|conducted|"
+    r"exposed|prepared|incubated|administered|enrolled|recruited|included|excluded|conducted|"
     r"carried out)\b")
-#: a protocol label: "Buffer A", "group 2", "sample 3" (the label is case-sensitive)
-_LABEL = re.compile(r"\b(?i:buffer|solution|medium|group|sample|patient|subject|participant|mouse|site|condition|"
-                    r"experiment|step|batch|ward|block|unit|plot|run|arm)\s+(?:[A-Z]|\d+)\b")
+#: "a ... dataset" whose modifiers are lowercase words ("the leaf vein dataset"); a named
+#: dataset ("the ImageNet dataset", "the TCGA data set") is a public thing, not the study's own
+_DATASET = re.compile(r"\b(?i:the|a|an|this|that)\s+((?:[\w-]+\s+){0,4}?)(?i:data\s?set)\b")
+#: a protocol label: "Buffer A", "sample 3" (the label is case-sensitive); not "group" ("group A
+#: streptococcus", "group 2 innate lymphoid cells"), "site", "step", "unit", "block" (standard names)
+_LABEL = re.compile(r"\b(?i:buffer|solution|medium|sample|patient|subject|participant|mouse|condition|"
+                    r"experiment|batch|ward|plot|run|arm)\s+(?:[A-Z]|\d+)\b")
 #: an open question with no single reading (the pilot's layer-2 ``single_reading`` rejects)
 _OPEN = re.compile(r"^\W*what (?:is|was|are|were) (?:so )?(?:significant|notable|important|interesting|special|"
                    r"remarkable) about\b|\bgeneral relationship\b|^\W*what (?:is|are|was|were) involved in\b")
@@ -275,6 +289,7 @@ def self_references(question: str) -> list[str]:
     hits = [m.group(0).strip() for m in _SELF_REF.finditer(t.casefold())]
     hits += [m.group(0) for m in _US.finditer(t)]
     hits += [m.group(0).strip() for m in _STUDY_REF.finditer(t.casefold())]
+    hits += [m.group(0).casefold() for m in _DATASET.finditer(t) if not re.search(r"[A-Z0-9]", m.group(1))]
     hits += [m.group(0) for m in _LABEL.finditer(t)]
     return list(dict.fromkeys(hits))
 

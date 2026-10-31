@@ -67,6 +67,7 @@
     "max_new_papers_per_wave": 150,
     "max_waves": 40,
     "max_jobs_per_paper": {"G": null, "C": null},
+    "c_first": true,
     "calls_per_job": 1.32,
     "prompt_tokens_per_call": 700,
     "completion_tokens_per_call": 1780,

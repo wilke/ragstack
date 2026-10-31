@@ -43,8 +43,9 @@ NOCAP: dict[str, int | None] = {"G": None, "C": None}
 
 
 def setup(tmp: Path, n_papers: int = 3, **waves: Any) -> tuple[Path, Path]:
+    """The world; ``c_first`` off unless given (most tests count G and C in one wave)."""
     path, cfg = world(tmp, n_papers=n_papers)
-    base._with(path, waves=waves)
+    base._with(path, waves={"c_first": False, **waves})
     return path, Path(cfg["out_dir"])
 
 
@@ -81,6 +82,41 @@ def test_plan_paper_distinct_aliases_and_exhaustion() -> None:
     capped = ps()
     capped.drafted |= {"g0", "g1"}
     assert wv.plan_paper(capped, GOAL, {"G": 2, "C": None}) is None      # the per-paper cap is spent
+
+
+def test_plan_paper_c_first() -> None:
+    p = ps()
+    assert wv.plan_paper(p, GOAL, NOCAP, c_first=True) == ["c0"]          # C only until its goal is met
+    p.drafted.add("c0")
+    assert wv.plan_paper(p, GOAL, NOCAP, c_first=True) == ["c1"]
+    p.drafted.add("c1")
+    assert wv.plan_paper(p, GOAL, NOCAP, c_first=True) is None            # both C failed: retired, no G spent
+    q = ps()
+    q.drafted.add("c0")
+    q.acc_c = 1
+    assert wv.plan_paper(q, GOAL, NOCAP, c_first=True) == ["g0", "g2"]    # then G, distinct aliases
+    r = ps(g=[("g0", "A"), ("g1", "A")])
+    assert wv.plan_paper(r, GOAL, NOCAP, c_first=True) is None            # feasibility judged on both kinds
+    assert wv.waves_config(None)["c_first"] is True
+    with pytest.raises(SystemExit):
+        wv.waves_config({"c_first": "yes"})
+
+
+def test_waves_c_first_end_to_end(tmp_path: Path) -> None:
+    """Default policy: wave 1 drafts only C jobs, wave 2 the G jobs of papers whose C was
+    accepted; a paper whose C jobs all fail never drafts a G job."""
+    path, out = setup(tmp_path, n_papers=2, target_papers=2, c_first=True, accept_rate={"G": 1.0, "C": 1.0})
+    gw = Gateway()
+    assert waves(path, gw) == 0
+    w = state(out)["waves"]
+    assert w["stop"] == "target_met" and w["wave"] == 2
+    assert [h["jobs_by_kind"] for h in w["history"]] == [{"C": 2}, {"G": 4}]
+    path, out = setup(tmp_path / "rej", n_papers=2, target_papers=2, c_first=True)
+    gw = Gateway()
+    assert waves(path, gw, AliasCLI(reject_if="SHORT FORM: (none: a control record)")) == 0   # every C rejected
+    assert state(out)["waves"]["stop"] == "pool_exhausted"
+    drafted = jsonl(out / "draft-alias-T.jsonl")
+    assert drafted and all(d["stratum"] == "C" for d in drafted)
 
 
 def test_probabilities_and_activation() -> None:
@@ -313,7 +349,7 @@ def test_incremental_check_judges_a_later_duplicate_without_rewriting_the_log(tm
     ("What drives the hydraulic retention time in a simulation of rivers?", True),
     ("Which mineral was found to raise the hydraulic retention time of soils?", True),
     ("Which reagent was added to Buffer B to stabilise the hydraulic retention time?", True),
-    ("How many cores per sample were drilled in group 2 to measure retention time?", True),
+    ("How many cores per sample were drilled in arm 2 to measure retention time?", True),
     ("How many cores were taken from each sample to measure hydraulic retention time?", True),
     ("What does the passage say about the hydraulic retention time?", True),
     ("What do the results indicate about the hydraulic retention time of reactors?", True),
@@ -328,6 +364,38 @@ def test_incremental_check_judges_a_later_duplicate_without_rewriting_the_log(tm
 ])
 def test_standalone_pilot_patterns(q: str, bad: bool) -> None:
     assert bool(ak.self_references(q)) is bad, ak.self_references(q)
+
+
+#: legitimate standalone questions (review of #889): the branch's patterns rejected 19 of these
+#: 20 — compound nouns ("the sample size"), named datasets and theories, standard names ("group A
+#: streptococcus", "step 1 of glycolysis"), established facts in the past passive ("was identified")
+LEGIT_STANDALONE = [
+    "How does the sample size affect the statistical power of a two-sided t-test?",
+    "What limits the measurement accuracy of a Michelson interferometer?",
+    "What is the proposed mechanism of action of metformin in hepatocytes?",
+    "Which gene was identified as the cause of cystic fibrosis?",
+    "From which organism was Taq polymerase originally isolated?",
+    "Which boson was detected at the Large Hadron Collider in 2012?",
+    "How many images does the ImageNet dataset contain?",
+    "Which handwritten digits are in the MNIST data set?",
+    "According to the Standard Model, which particle mediates the weak interaction?",
+    "According to the Bose-Einstein statistics, how do identical bosons occupy energy states?",
+    "Which diseases does group A streptococcus cause in children?",
+    "What cytokines do group 2 innate lymphoid cells secrete in allergic airway inflammation?",
+    "Why are group 1 metabotropic glutamate receptors coupled to phospholipase C?",
+    "What does site 1 protease cleave in the endoplasmic reticulum stress response?",
+    "How many chromosomes does each animal cell of Drosophila melanogaster carry?",
+    "Which enzyme catalyses step 1 of glycolysis in the cytosol?",
+    "What does the simulation time step limit in molecular dynamics of proteins?",
+    "What role does the analysis pipeline play in reducing batch effects in single-cell RNA sequencing?",
+    "How does the trial design of a crossover study control for between-subject variability?",
+    "What determines the survey depth of a radio telescope array?",
+]
+
+
+@pytest.mark.parametrize("q", LEGIT_STANDALONE)
+def test_standalone_patterns_spare_legitimate_questions(q: str) -> None:
+    assert not ak.self_references(q) and not ak.open_question(q), ak.self_references(q)
 
 
 @pytest.mark.parametrize("q,bad", [

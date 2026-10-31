@@ -13,7 +13,14 @@ passed LAYER 1; the verifier then rejected most of them, and only 1 of 12 papers
 jobs still needed, in the pool's seeded order (``rank``): G — ``goal.G`` minus the
 distinct aliases already accepted, at most one job per alias in a wave, and never a job
 on an alias that is already accepted (those are skipped for good); C — ``goal.C`` minus
-the accepted C. A paper is EXHAUSTED (nothing more is drafted for it, either kind) when
+the accepted C. With ``c_first`` (the default) a paper drafts only its C jobs until its
+C goal is met, and its G jobs after: a paper has at most two C candidates (the pool's
+``c_per_paper``) against up to six G, so C is the cheap gate — a paper whose C jobs all
+fail is retired before any G job is spent on it. On the real pool (set O, 796 reachable
+papers, the pilot's rates) this drafts ~23% fewer jobs for the same target (review of
+#889: an independent Monte Carlo, 1,446 -> 1,114 jobs for 100 papers), at the price of
+up to ``goal.C x 2`` extra waves. The satisfaction rule is unchanged, so the set of
+papers that can be satisfied is the same. A paper is EXHAUSTED (nothing more is drafted for it, either kind) when
 its remaining jobs can no longer satisfy it: fewer distinct unaccepted aliases than the
 G still needed, or fewer C jobs than the C still needed, or the per-paper cap
 (``max_jobs_per_paper``) is spent.
@@ -61,6 +68,8 @@ WAVE_DEFAULTS: dict[str, Any] = {
     #: the pessimistic preflight scenario: the accept rates times this factor
     "pessimistic_factor": 0.67,
     "preflight_sims": 400,
+    #: draft a paper's C jobs first and its G jobs only once its C goal is met (module docstring)
+    "c_first": True,
 }
 
 
@@ -83,6 +92,8 @@ def waves_config(given: Mapping[str, Any] | None) -> dict[str, Any]:
     for k in ("target_papers", "max_new_papers_per_wave", "max_waves", "preflight_sims"):
         if isinstance(c[k], bool) or int(c[k]) < 1:
             raise SystemExit(f"waves.{k} {c[k]!r}: at least 1")
+    if not isinstance(c["c_first"], bool):
+        raise SystemExit(f"waves.c_first {c['c_first']!r}: true or false")
     if not 0 < float(c["pessimistic_factor"]) <= 1:
         raise SystemExit(f"waves.pessimistic_factor {c['pessimistic_factor']!r}: in (0, 1]")
     return c
@@ -127,14 +138,18 @@ def reachable(ps: PaperState, goal: Mapping[str, int]) -> bool:
     return len({k for _, k in ps.g}) >= int(goal["G"]) and len(ps.c) >= int(goal["C"])
 
 
-def plan_paper(ps: PaperState, goal: Mapping[str, int], caps: Mapping[str, int | None]) -> list[str] | None:
-    """The paper's jobs for the next wave; ``[]`` when satisfied, None when exhausted."""
+def plan_paper(ps: PaperState, goal: Mapping[str, int], caps: Mapping[str, int | None],
+               c_first: bool = False) -> list[str] | None:
+    """The paper's jobs for the next wave; ``[]`` when satisfied, None when exhausted.
+    With ``c_first`` only C jobs while the C goal is unmet (feasibility is judged on both)."""
     ng, nc = need(ps, goal)
     if (ng, nc) == (0, 0):
         return []
     rg, rc = remaining(ps, caps)
     if len({k for _, k in rg}) < ng or len(rc) < nc:
         return None
+    if c_first and nc:
+        return rc[:nc]
     picks: list[str] = []
     keys: set[str] = set()
     for j, k in rg:
@@ -196,14 +211,14 @@ def activate(states: Mapping[str, PaperState], order: Sequence[str], n_active: i
 
 def plan_wave(states: Mapping[str, PaperState], order: Sequence[str], n_active: int, target: int,
               rates: Mapping[str, float], goal: Mapping[str, int], caps: Mapping[str, int | None],
-              max_new: int) -> tuple[int, list[str], str | None]:
+              max_new: int, c_first: bool = False) -> tuple[int, list[str], str | None]:
     """(new active count, the wave's job ids, a stop reason or None)."""
     if sum(satisfied(states[p], goal) for p in order[:n_active]) >= target:
         return n_active, [], "target_met"
     n = activate(states, order, n_active, target, rates, goal, caps, max_new)
     jobs: list[str] = []
     for p in order[:n]:
-        jobs += plan_paper(states[p], goal, caps) or []
+        jobs += plan_paper(states[p], goal, caps, c_first) or []
     if not jobs:
         return n, [], "pool_exhausted"
     return n, jobs, None
@@ -211,7 +226,7 @@ def plan_wave(states: Mapping[str, PaperState], order: Sequence[str], n_active: 
 
 def simulate(states: Mapping[str, PaperState], order: Sequence[str], n_active: int, job_info: Mapping[str, tuple[str, str, str]],
              rates: Mapping[str, float], goal: Mapping[str, int], caps: Mapping[str, int | None], target: int,
-             max_new: int, max_waves: int, wave0: int, rng: random.Random) -> dict[str, Any]:
+             max_new: int, max_waves: int, wave0: int, rng: random.Random, c_first: bool = False) -> dict[str, Any]:
     """One simulated run of the wave policy from the current state; ``job_info`` maps a job
     id to (paper, kind, alias key); each job is accepted at its kind's rate (the planner
     uses the same rates). Papers are copied only when touched."""
@@ -222,7 +237,7 @@ def simulate(states: Mapping[str, PaperState], order: Sequence[str], n_active: i
         if wave >= max_waves:
             stop = "max_waves"
             break
-        n_active, todo, stop = plan_wave(view, order, n_active, target, rates, goal, caps, max_new)
+        n_active, todo, stop = plan_wave(view, order, n_active, target, rates, goal, caps, max_new, c_first)
         if stop:
             break
         wave += 1
@@ -256,11 +271,12 @@ class _View(dict):  # type: ignore[type-arg]
 def forecast(states: Mapping[str, PaperState], order: Sequence[str], n_active: int,
              job_info: Mapping[str, tuple[str, str, str]], rates: Mapping[str, float], goal: Mapping[str, int],
              caps: Mapping[str, int | None], target: int, max_new: int, max_waves: int, wave0: int, sims: int,
-             seed: str) -> dict[str, Any]:
+             seed: str, c_first: bool = False) -> dict[str, Any]:
     """``sims`` seeded runs of :func:`simulate`: the mean and the 95th percentile of the
     jobs drafted (per kind and total), waves, papers activated, and P(target met)."""
     rng = random.Random(seed)
-    runs = [simulate(states, order, n_active, job_info, rates, goal, caps, target, max_new, max_waves, wave0, rng)
+    runs = [simulate(states, order, n_active, job_info, rates, goal, caps, target, max_new, max_waves, wave0, rng,
+                     c_first)
             for _ in range(int(sims))]
 
     def q95(xs: list[float]) -> float:
