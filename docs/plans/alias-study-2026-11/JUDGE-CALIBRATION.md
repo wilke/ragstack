@@ -393,7 +393,9 @@ Plan: [TIEBREAKER-PLAN.md](TIEBREAKER-PLAN.md), frozen at 10a986c before any lab
 Settings: prompt `alias-judge/2`, `max_tokens` 4096, the default temperature, `fallback_model: ""`, the models run
 one after the other with 4 in flight, and backend `gateway` from this PR. The gateway allow-list has **no GPT-6
 model**, so there are two candidates. Every reply came from the requested model. Sol's replies carry the versioned
-id `gpt-5.6-sol-2026-07-09`, which is pinned in the config.
+id `gpt-5.6-sol-2026-07-09`, which is pinned in the config. The accepted set is that id plus the requested name
+(plan §1), so a reply carrying the bare name `GPT-5.6 Sol` would also have been accepted; none did (953 / 953 rows
+carry the versioned id; Argon's 953 carry `Gemini 4 Argon`). Any other id stops the run and stores nothing.
 
 | judge | agreement (487) | κ | false yes | false no | without coll_diff | no label: all 587 / filtered 83 | self-consistency ×3: filtered 83 / unanimous 100 |
 |---|---|---|---|---|---|---|---|
