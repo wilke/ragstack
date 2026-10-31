@@ -608,3 +608,43 @@ def test_reseal_diff_rules() -> None:
     assert not bad and ok == {"waves.target_papers": {"old": 100, "new": 200}}
     _, bad = dr.config_reseal_diff(old, {**old, "waves": {"target_papers": True, "seed": 1}})
     assert bad and "increase only" in bad[0]
+
+
+def test_reseal_diff_caps_are_changed_never_dropped() -> None:
+    """A whitelisted cap may change but never vanish, go null or change type; a key under a
+    whitelisted parent that is not itself whitelisted is refused; prior_gateway_usage stays
+    append-only even in its dict form (no unknown keys, no malformed numbers)."""
+    old = {"waves": {"target_papers": 100, "c_first": True},
+           "limits": {"max_calls": 1892, "notice_overrun": 0.1, "output_token_cap": 3, "call_cap": 2500,
+                      "prior_gateway_usage": ["a", "b"]}}
+
+    def diff(**limits: Any) -> tuple[dict[str, Any], list[str]]:
+        new = json.loads(json.dumps(old))
+        for k, v in limits.items():
+            if v is ...:
+                new["limits"].pop(k)
+            else:
+                new["limits"][k] = v
+        return dr.config_reseal_diff(old, new)
+
+    for k in ("max_calls", "output_token_cap"):
+        for v in (..., None, "9e9", True, 0, -1, 1.5, {"x": 1}):
+            ok, bad = diff(**{k: v})
+            assert not ok and bad and bad[0].startswith(f"limits.{k} (a positive int"), (k, v)
+        ok, bad = diff(**{k: 5000})
+        assert not bad and list(ok) == [f"limits.{k}"]
+    for v in (..., None, -0.1, float("inf"), "0.2", False):
+        _, bad = diff(notice_overrun=v)
+        assert bad and bad[0].startswith("limits.notice_overrun (a number >= 0"), v
+    assert not diff(notice_overrun=0)[1] and not diff(notice_overrun=0.25)[1]
+    assert diff(call_cap=9999)[1] == ["limits.call_cap (not re-sealable)"]
+    assert diff(foo=1)[1] == ["limits.foo (not re-sealable)"]
+    for prior in ({"files": ["a", "b"], "zzz": 5}, {"files": ["a", "b"], "calls": "x"},
+                  {"files": ["a", "b"], "calls": -1}, {"files": "a"}, 5):
+        _, bad = diff(prior_gateway_usage=prior)
+        assert bad and bad[0].startswith("limits.prior_gateway_usage (malformed"), prior
+    assert not diff(prior_gateway_usage={"files": ["a", "b", "c"], "calls": 5})[1]
+    for k, v in (("c_first", False), ("max_waves", 9)):
+        new = json.loads(json.dumps(old))
+        new["waves"][k] = v
+        assert dr.config_reseal_diff(old, new)[1] == [f"waves.{k} (not re-sealable)"]

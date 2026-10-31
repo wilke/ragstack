@@ -97,8 +97,8 @@ counts as an isolation anomaly, never as a clean call.
 (the state keeps only ``config_sha256``, so the old file is required and its sha must equal
 the sealed one). The two configs are diffed key by key (dotted paths); only
 :data:`RESEAL_RULES` may change — ``waves.target_papers`` (increase only),
-``limits.max_calls``, ``limits.output_token_cap``, ``limits.notice_overrun``,
-``limits.prior_gateway_usage`` (append only: earlier files kept in order, numbers never
+``limits.max_calls``, ``limits.output_token_cap``, ``limits.notice_overrun`` (changed, never
+removed or nulled: a positive int, a number >= 0), ``limits.prior_gateway_usage`` (append only: earlier files kept in order, numbers never
 lowered) — and any other changed key (models, prompts, verifier, seeds, corpus / glossary
 paths, caps per paper, ``max_tokens``, in-flight, ...) refuses the resume, naming every
 such key. The re-seal (who, when, note, the diff, the config and code sha before and
@@ -214,12 +214,14 @@ ISOLATION_WAVE_RATE = 0.05
 NEVER_CLEARABLE_RE = re.compile(r"budget|provider_notice|quota|usage_limit|limit|_cap\b|max_calls", re.I)
 CLAUDE_FIXED_OVERHEAD = 1.25 * 574
 #: ``--reseal-config``: the only config keys (dotted paths) a re-seal may change, and how:
-#: ``any`` value, ``increase`` only (numbers), ``append`` only (``prior_gateway_usage``)
+#: ``count`` (a positive int, never removed or null: a cap is changed, never dropped),
+#: ``share`` (a finite number >= 0, never removed or null), ``increase`` only (an int),
+#: ``append`` only (``prior_gateway_usage``)
 RESEAL_RULES: dict[str, str] = {
     "waves.target_papers": "increase",
-    "limits.max_calls": "any",
-    "limits.output_token_cap": "any",
-    "limits.notice_overrun": "any",
+    "limits.max_calls": "count",
+    "limits.output_token_cap": "count",
+    "limits.notice_overrun": "share",
     "limits.prior_gateway_usage": "append",
 }
 #: values a key takes when the config leaves it out (for the ``increase`` rule)
@@ -273,9 +275,16 @@ def _prior_parts(spec: Any) -> tuple[dict[str, int], list[str]]:
     if isinstance(spec, list):
         return {}, [str(x) for x in spec]
     if isinstance(spec, dict):
-        return ({k: int(spec.get(k) or 0) for k in PRIOR_KEYS if k in spec},
-                [str(x) for x in (spec.get("files") or [])])
-    raise SystemExit("prior_gateway_usage: a dict, a path or a list of paths")
+        extra = sorted(set(spec) - {*PRIOR_KEYS, "files"})
+        if extra:
+            raise ValueError(f"unknown keys {extra}")
+        nums = {k: spec.get(k) or 0 for k in PRIOR_KEYS if k in spec}
+        files = spec.get("files") or []
+        if (not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in nums.values())
+                or not isinstance(files, list)):
+            raise ValueError("numbers must be ints >= 0 and files a list")
+        return nums, [str(x) for x in files]
+    raise ValueError("a dict, a path or a list of paths")
 
 
 def config_reseal_diff(old: dict[str, Any], new: dict[str, Any],
@@ -302,8 +311,18 @@ def config_reseal_diff(old: dict[str, Any], new: dict[str, Any],
                 continue
             allowed[key] = {"old": va, "new": vb}
             continue
+        if rule in ("count", "share"):
+            num = isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b)
+            if not (num and (b >= 0 if rule == "share" else (isinstance(b, int) and b > 0))):
+                refused.append(f"{key} ({'a positive int' if rule == 'count' else 'a number >= 0'}, "
+                               "never removed or null)")
+                continue
         if rule == "append":
-            (na, la), (nb, lb) = _prior_parts(a), _prior_parts(b)
+            try:
+                (na, la), (nb, lb) = _prior_parts(a), _prior_parts(b)
+            except ValueError as e:
+                refused.append(f"{key} (malformed: {e})")
+                continue
             if lb[:len(la)] != la or any(int(nb.get(k, 0)) < v for k, v in na.items()):
                 refused.append(f"{key} (append only: earlier files kept in order, numbers never lowered)")
                 continue
