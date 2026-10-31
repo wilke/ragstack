@@ -275,6 +275,33 @@ def test_pool_yield_gate_and_eligibility(tmp_path: Path) -> None:
         apool.corpus_config({"corpora": {}}, "../x")
 
 
+def test_pool_exclude_papers(tmp_path: Path) -> None:
+    ex = tmp_path / "exclude.txt"
+    ex.write_text("# study papers\nd2\n\nd2  # twice\nnot-a-paper\n")
+    _, cfg = world(tmp_path, n_papers=3, exclude_papers=str(ex))
+    out = Path(cfg["out_dir"])
+    rows = jsonl(out / "pool-alias-T.jsonl")
+    header, jobs = rows[0], rows[1:]
+    assert header["eval_papers"] == ["d1", "d3"] and jobs and {j["paper"] for j in jobs} == {"d1", "d3"}
+    m = json.loads((out / "pool-manifest-alias-T.json").read_text())
+    want = {"file": str(ex), "sha256": g.file_sha(ex), "ids": 2, "eligible_excluded": 1, "ids_not_in_export": 1}
+    assert header["exclude_papers"] == m["exclude_papers"] == want
+    assert m["counts"]["papers_eligible"] == 2 and m["counts"]["eval_papers"] == 2   # after the exclusion
+    # the unexcluded papers keep exactly the jobs they get without an exclusion (per-paper seeds)
+    _, cfg0 = world(tmp_path / "plain", n_papers=3)
+    jobs0 = jsonl(Path(cfg0["out_dir"]) / "pool-alias-T.jsonl")[1:]
+    assert [j for j in jobs0 if j["paper"] != "d2"] == jobs
+    assert jsonl(Path(cfg0["out_dir"]) / "pool-alias-T.jsonl")[0]["exclude_papers"] is None
+    # an empty or missing file refuses: an exclusion that excludes nothing must not pass silently
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing\n\n")
+    for bad in (empty, tmp_path / "missing.txt"):
+        with pytest.raises(SystemExit):
+            world(tmp_path / f"bad-{bad.stem}", n_papers=3, exclude_papers=str(bad))
+    with pytest.raises(SystemExit):
+        apool.pool_config({"alias_pool": {"exclude_papers": 3}})
+
+
 # ------------------------------------------------------------------ the drafter chain
 
 class Resp:

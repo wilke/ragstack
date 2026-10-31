@@ -12,6 +12,7 @@ Subcommands (``--config CFG`` first; every output goes to the config's private `
     analyse                              agreement, the n-curve, calibration, the cascade
     overlap --main-drafts PATH           round 2: calibration records whose id is in the study log
     analyse-variants                     round 2: every ``analysis.variants`` Qwen label set
+    analyse-gate                         validation: the frozen C + E agreement rule (``gate`` block)
 
 **Round 2** (a config with ``calib_dir`` = round 1's directory, read for ``pairs.jsonl`` and
 ``labels-opus.jsonl``, optionally pinned by ``pairs_sha256``): ``qwen.variant`` names a Qwen
@@ -24,6 +25,12 @@ its prompt version, system sha, thinking flag, reasoning tokens and endpoint (``
 ``qwen.require_served_model`` puts the endpoint in the plan (so a preflight for one server does
 not admit a run on another) and stops the run, storing nothing, on a reply whose served model
 id is not ``qwen.model``.
+
+**Validation** (JUDGE-VALIDATION-PLAN.md): ``calib.records: "accepted"`` builds the set from
+records with a layer-2 pass only; ``analyse-gate`` scores the frozen rule (``gate.c_labels`` /
+``gate.e_labels``: judge C's majority of its first ``c_n`` samples and judge E's first ``e_n``
+must agree, else the pair is escalated to the Opus reference) on the Opus-unanimous pairs, with
+and without ``coll_diff``, plus each judge alone and the split / no-reference pairs.
 
 **The judge task** (the study rule). Given a QUESTION (phrased with a primary TERM) and a
 PASSAGE (from any paper), does the passage answer the question? A passage from another paper
@@ -119,6 +126,7 @@ BACKENDS = ("opus", "cli", "qwen")
 EMPTY = ("empty", "empty0")
 STRATA = ("gold", "lex_same", "lex_other", "coll_same", "coll_diff")
 CALIB_SCHEMA = "alias-judge-calib/1"
+CALIB_RECORDS = ("l1_pass", "accepted")
 JUDGE_VERSION = "alias-judge/1"
 MAX_DEFS = 25
 MAX_INFLIGHT = g.MAX_INFLIGHT  # 4
@@ -206,7 +214,10 @@ def parse_judgement(text: str) -> tuple[bool | None, str]:
 DEFAULTS: dict[str, Any] = {
     "calib": {"seed": "20261031|judge-calib", "per_question": {"gold": 1, "lex_same": 1, "lex_other": 2,
                                                                 "collision": 2},
-              "bm25_k1": 1.2, "bm25_b": 0.75, "bm25_top": 200},
+              "bm25_k1": 1.2, "bm25_b": 0.75, "bm25_top": 200,
+              # which records become questions: "l1_pass" (round 1: every layer-1 pass) or
+              # "accepted" (the validation set: a layer-1 AND a layer-2 pass, as the study uses)
+              "records": "l1_pass"},
     "gateway": {"base_url": None, "model": None, "tag": "opus", "max_tokens": 2048, "temperature": None,
                 "inflight": 4, "empty_retry_s": 2.0},
     "cli": {"model": "claude-opus-5-5", "cli": "claude", "inflight": 3, "timeout_s": 300, "cwd": None,
@@ -224,6 +235,9 @@ DEFAULTS: dict[str, Any] = {
                  # analyse-variants: [{"name", "labels"}] Qwen label files scored against the
                  # Opus reference of ``calib_dir``; the n values and taus it reports
                  "variants": [], "report_n": [1, 3, 11, 21], "variant_taus": [0.8, 0.9]},
+    # analyse-gate (JUDGE-VALIDATION-PLAN.md): the frozen two-judge agreement rule
+    "gate": {"c_labels": None, "e_labels": None, "c_n": 5, "e_n": 1, "e_report_n": 3,
+             "min_accuracy": 0.98, "max_escalation": 0.05, "plan_commit": None},
 }
 
 
@@ -235,6 +249,8 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         if unknown:
             raise SystemExit(f"config block {k!r}: unknown keys {sorted(unknown)}")
         out[k] = {**v, **given}
+    if out["calib"]["records"] not in CALIB_RECORDS:
+        raise SystemExit(f"calib.records {out['calib']['records']!r}: one of {list(CALIB_RECORDS)}")
     if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
     v = out["qwen"]["variant"]
@@ -304,8 +320,11 @@ def meaning(primary_a: str, primary_b: str) -> str:
     return "same" if key(primary_a) & key(primary_b) else "diff"
 
 
-def load_pilot_records(pilots: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Records with a layer-1 pass from each pilot's draft + acceptance logs (never main)."""
+def load_pilot_records(pilots: Sequence[Mapping[str, Any]], records: str = "l1_pass") -> list[dict[str, Any]]:
+    """Records with a layer-1 pass from each pilot's draft + acceptance logs (never main);
+    with ``records="accepted"`` only those whose layer-2 verdict is also ``pass``."""
+    if records not in CALIB_RECORDS:
+        raise SystemExit(f"records {records!r}: one of {list(CALIB_RECORDS)}")
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for pi, p in enumerate(pilots):
@@ -321,6 +340,8 @@ def load_pilot_records(pilots: Sequence[Mapping[str, Any]]) -> list[dict[str, An
                 continue
             d = drafts.get(r["record_id"])
             if d is None or not d.get("draft"):
+                continue
+            if records == "accepted" and l2.get(r["record_id"]) != "pass":
                 continue
             q = d["draft"]["question"]
             k = (d["paper"], g.gold_norm(q))
@@ -1277,6 +1298,154 @@ def analyse_variants(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[s
     return res
 
 
+# ------------------------------------------------------------------ the agreement gate (validation)
+
+def majority(verdicts: Sequence[bool | int | None]) -> int | None:
+    """The majority of the valid verdicts; None when there is none or the valid ones tie."""
+    v = [int(x) for x in verdicts if x is not None]
+    if not v or 2 * sum(v) == len(v):
+        return None
+    return int(2 * sum(v) > len(v))
+
+
+def gate_label(c_verdicts: Sequence[bool | int | None], e_verdicts: Sequence[bool | int | None],
+               c_n: int = 5, e_n: int = 1) -> int | None:
+    """The frozen rule (JUDGE-VALIDATION-PLAN.md section 1): judge C's label is the majority of its
+    first ``c_n`` stored samples, judge E's the majority of its first ``e_n`` (``e_n`` = 1: the first
+    sample). Both labelled and equal: that label. Anything else (disagreement, no C majority, an
+    invalid E sample): None, i.e. escalated to the Opus reference."""
+    c, e = majority(list(c_verdicts)[:c_n]), majority(list(e_verdicts)[:e_n])
+    return c if c is not None and c == e else None
+
+
+def wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
+    if not n:
+        return None
+    p = k / n
+    d = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return [round(mid - half, 4), round(mid + half, 4)]
+
+
+def _judge_alone(lab: Mapping[str, int | None], ref: Mapping[str, int], ids: Sequence[str]) -> dict[str, Any]:
+    """One judge's own labels on ``ids``: a pair without a label counts as an error."""
+    ok = sum(lab.get(pid) == ref[pid] for pid in ids)
+    fp = sum(lab.get(pid) == 1 and ref[pid] == 0 for pid in ids)
+    fn = sum(lab.get(pid) == 0 and ref[pid] == 1 for pid in ids)
+    have = [pid for pid in ids if lab.get(pid) is not None]
+    return {"pairs": len(ids), "accuracy": round(ok / len(ids), 4) if ids else None,
+            "ci95": wilson(ok, len(ids)), "correct": ok, "fp": fp, "fn": fn, "no_label": len(ids) - len(have),
+            "kappa": kappa([int(lab[pid]) for pid in have], [ref[pid] for pid in have])}  # type: ignore[arg-type]
+
+
+def score_gate(ids: Sequence[str], final: Mapping[str, int | None], ref: Mapping[str, int],
+               pairs: Mapping[str, Mapping[str, Any]], g_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """The plan's primary metric on ``ids`` (pairs with a unanimous reference): an escalated pair
+    takes the reference label. Accuracy, escalation share, the verdict, the accepted subset,
+    and per stratum / record kind."""
+    esc = [pid for pid in ids if final[pid] is None]
+    acc_ids = [pid for pid in ids if final[pid] is not None]
+    wrong = [pid for pid in acc_ids if final[pid] != ref[pid]]
+    n = len(ids)
+    correct = n - len(wrong)
+    accuracy = correct / n if n else None
+    esc_share = len(esc) / n if n else None
+    verdict = None
+    if n:
+        verdict = "PASS" if (accuracy >= float(g_cfg["min_accuracy"])            # type: ignore[operator]
+                             and esc_share <= float(g_cfg["max_escalation"])) else "FAIL"  # type: ignore[operator]
+
+    def by(key: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for val in sorted({str(pairs[pid][key]) for pid in ids}):
+            sub = [pid for pid in ids if str(pairs[pid][key]) == val]
+            bad = sum(final[pid] is not None and final[pid] != ref[pid] for pid in sub)
+            out[val] = {"pairs": len(sub), "accuracy": round(1 - bad / len(sub), 4), "errors": bad,
+                        "escalated": sum(final[pid] is None for pid in sub)}
+        return out
+
+    return {"pairs": n, "accuracy": round(accuracy, 4) if accuracy is not None else None,
+            "accuracy_ci95": wilson(correct, n), "correct": correct,
+            "escalated": len(esc), "escalation_share": round(esc_share, 4) if esc_share is not None else None,
+            "escalation_ci95": wilson(len(esc), n), "verdict": verdict,
+            "accepted": {"pairs": len(acc_ids), "errors": len(wrong),
+                         "accuracy": round(1 - len(wrong) / len(acc_ids), 4) if acc_ids else None,
+                         "fp": sum(final[pid] == 1 for pid in wrong), "fn": sum(final[pid] == 0 for pid in wrong)},
+            "by_stratum": by("stratum"), "by_record_kind": by("record_kind")}
+
+
+def analyse_gate(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[str, Any]:
+    """JUDGE-VALIDATION-PLAN.md section 4, deterministic (the samples as stored): the reference
+    classes (unanimous / split / no reference), the gate's accuracy and escalation share on the
+    unanimous pairs with and without ``coll_diff``, each judge alone, and what the gate does on
+    the split and no-reference pairs."""
+    gc = cfg["gate"]
+    if not gc["c_labels"] or not gc["e_labels"]:
+        raise SystemExit("gate.c_labels and gate.e_labels are required")
+    cdir = calib_dir(cfg)
+    check_pairs_sha(cfg, cdir / "pairs.jsonl")
+    pairs = {p["pair_id"]: p for p in (json.loads(x) for x in (cdir / "pairs.jsonl").read_text().splitlines() if x)}
+    opus_path = cdir / "labels-opus.jsonl"
+    ref_all = opus_reference(p4.Store(opus_path).rows.values(), reps)
+    c_rows = {r["pair_id"]: r for r in p4.Store(Path(gc["c_labels"])).rows.values()}
+    e_rows = {r["pair_id"]: r for r in p4.Store(Path(gc["e_labels"])).rows.values()}
+    c_n, e_n, e_rn = int(gc["c_n"]), int(gc["e_n"]), int(gc["e_report_n"])
+    missing = {"c": sorted(set(pairs) - set(c_rows)), "e": sorted(set(pairs) - set(e_rows))}
+    if missing["c"] or missing["e"]:
+        raise SystemExit(f"analyse-gate: pairs without a C row {len(missing['c'])}, without an E row "
+                         f"{len(missing['e'])}; finish labelling first")
+    short = [pid for pid in pairs if int(c_rows[pid]["n"]) < c_n or int(e_rows[pid]["n"]) < max(e_n, e_rn)]
+    if short:
+        raise SystemExit(f"analyse-gate: {len(short)} pairs have fewer stored samples than the plan reads")
+    final = {pid: gate_label(c_rows[pid]["verdicts"], e_rows[pid]["verdicts"], c_n, e_n) for pid in pairs}
+    lab_c = {pid: majority(c_rows[pid]["verdicts"][:c_n]) for pid in pairs}
+    lab_e1 = {pid: majority(e_rows[pid]["verdicts"][:e_n]) for pid in pairs}
+    lab_e3 = {pid: majority(e_rows[pid]["verdicts"][:e_rn]) for pid in pairs}
+    una = sorted(pid for pid, r in ref_all.items() if r["unanimous"] and pid in pairs)
+    split = sorted(pid for pid, r in ref_all.items() if not r["unanimous"] and pid in pairs)
+    noref = sorted(set(pairs) - set(ref_all))
+    ref = {pid: int(ref_all[pid]["ref"]) for pid in una}
+    subsets = {"all": una, "excl_coll_diff": [pid for pid in una if pairs[pid]["stratum"] != "coll_diff"]}
+    res: dict[str, Any] = {
+        "t": g.now_iso(), "plan_commit": gc["plan_commit"],
+        "rule": {"c": f"majority of the first {c_n} stored samples", "e": f"majority of the first {e_n} stored "
+                 "sample(s)", "final": "C and E labelled and equal; otherwise escalated to the Opus reference",
+                 "min_accuracy": gc["min_accuracy"], "max_escalation": gc["max_escalation"]},
+        "inputs": {"pairs_sha256": g.file_sha(cdir / "pairs.jsonl"), "opus_sha256": g.file_sha(opus_path),
+                   "c_labels": str(gc["c_labels"]), "c_sha256": g.file_sha(gc["c_labels"]),
+                   "e_labels": str(gc["e_labels"]), "e_sha256": g.file_sha(gc["e_labels"])},
+        "judges": {k: {"served_models": dict(Counter(str(r.get("model")) for r in rows.values())),
+                       "endpoints": dict(Counter(str(r.get("endpoint")) for r in rows.values())),
+                       "judge_versions": dict(Counter(str(r.get("judge_version")) for r in rows.values())),
+                       "enable_thinking": dict(Counter(str(r.get("enable_thinking")) for r in rows.values())),
+                       "n": dict(Counter(int(r["n"]) for r in rows.values())),
+                       "invalid_samples": sum(int(r.get("invalid") or 0) for r in rows.values())}
+                   for k, rows in (("C", c_rows), ("E", e_rows))},
+        "classes": {"pairs": len(pairs), "unanimous": len(una), "split": len(split), "no_reference": len(noref),
+                    "unanimous_by_stratum": dict(Counter(pairs[pid]["stratum"] for pid in una)),
+                    "no_reference_by_stratum": dict(Counter(pairs[pid]["stratum"] for pid in noref))},
+        "primary": {}, "alone": {}}
+    for name, ids in subsets.items():
+        res["primary"][name] = score_gate(ids, final, ref, pairs, gc)
+        res["alone"][name] = {"C_maj5": _judge_alone(lab_c, ref, ids), "E_n1": _judge_alone(lab_e1, ref, ids),
+                              f"E_maj{e_rn}": _judge_alone(lab_e3, ref, ids)}
+    split_ref = [pid for pid in split if ref_all[pid]["ref"] is not None]
+    res["split"] = {"pairs": len(split), "escalated": sum(final[pid] is None for pid in split),
+                    "with_majority": len(split_ref),
+                    "accepted_agree_with_majority": sum(final[pid] is not None and final[pid] == ref_all[pid]["ref"]
+                                                        for pid in split_ref),
+                    "accepted_disagree_with_majority": sum(final[pid] is not None
+                                                           and final[pid] != ref_all[pid]["ref"] for pid in split_ref)}
+    res["no_reference"] = {"pairs": len(noref), "escalated": sum(final[pid] is None for pid in noref),
+                           "accepted_yes": sum(final[pid] == 1 for pid in noref),
+                           "accepted_no": sum(final[pid] == 0 for pid in noref)}
+    res["escalation_all_pairs"] = {"pairs": len(pairs), "escalated": sum(v is None for v in final.values()),
+                                   "share": round(sum(v is None for v in final.values()) / len(pairs), 4)
+                                   if pairs else None}
+    return res
+
+
 # ------------------------------------------------------------------ CLI
 
 def provenance() -> dict[str, Any]:
@@ -1314,6 +1483,8 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
     pa.add_argument("--reps", type=int, default=3)
     pv_ = sub.add_parser("analyse-variants")
     pv_.add_argument("--reps", type=int, default=3)
+    pg_ = sub.add_parser("analyse-gate")
+    pg_.add_argument("--reps", type=int, default=3)
     po = sub.add_parser("overlap")
     po.add_argument("--main-drafts", required=True, type=Path)
     args = ap.parse_args(argv)
@@ -1333,6 +1504,13 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
         g.write_json_atomic(out / "analysis-variants.json", res)
         print(json.dumps({k: res[k] for k in ("subset_sizes", "overlap")}, indent=1))
         return EXIT_OK
+    if args.cmd == "analyse-gate":
+        res = analyse_gate(cfg, out, args.reps)
+        res["provenance"] = pv
+        g.write_json_atomic(out / "analysis-gate.json", res)
+        print(json.dumps({"classes": res["classes"], "primary": {k: {x: v[x] for x in (
+            "pairs", "accuracy", "escalation_share", "verdict")} for k, v in res["primary"].items()}}, indent=1))
+        return EXIT_OK
     if args.cmd == "overlap":
         cdir = calib_dir(cfg)
         check_pairs_sha(cfg, cdir / "pairs.jsonl")
@@ -1347,7 +1525,7 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
             raise SystemExit("build-calib with calib_dir set: the set is frozen in calib_dir")
         if (out / "pairs.jsonl").exists():
             raise SystemExit("pairs.jsonl exists; the calibration set is frozen once built")
-        recs = load_pilot_records(cfg["pilots"])
+        recs = load_pilot_records(cfg["pilots"], cfg["calib"]["records"])
         pairs, counts = build_calib(recs, world.chunks, world.paper_of, world.glossary, cfg)
         with (out / "pairs.jsonl").open("w", encoding="utf-8") as fh:
             for p in pairs:
