@@ -1,0 +1,941 @@
+{
+ "schema": "rr-why/1",
+ "label": "EXPLORATORY, post-hoc; plan committed before computing",
+ "inputs_sha256": {
+  "P_pools": "6b5032d05623e8e2319c01e48ef31b94c7beac87800af081d32642f96f4932d3",
+  "P_rerank": "db97ddb0a20cfd9fa5f12432a4bf62efdb3b964ea9bf077f1a8e81f5e838f591",
+  "P_cache": "c3e23f215b410f5a04b72dc4ae3acd3256b82aa9b540dc98640b3360e1a5884a",
+  "P_gold": "e3848cccd636de2d8ab15285e82db1775869bcda029f377eae10bb65e3188eb7",
+  "P_dump": "cf40b91624ed6ca08533edd2211e2359c785b24c666326f0d5b222b4491bb60f",
+  "P_held": "c720261e39b87b2d35fd838d9960db2af485eb86a73ee7900ba7caa006dd9664",
+  "P_pairs": "f8d3b7f15144ed4ba23b2519751c2d9860c11acf131aadfddf75c6988eeebef5",
+  "P_gold_v4": "3624a46653703bbda5c4815812565f044f144c184e597c7f3956b88e44b9e590",
+  "v4_builder": "1bfb7ae49cb15f89c52e513958b51917836bc57d8be45fff8a778624e28ddafe",
+  "docsA_pools": "27ecc5f7526135a60cc301389e4d7c4c3ca6fc8d7b0e9d3cdb4faab7e4bb7222",
+  "docsA_rerank": "6c3bb440d88b73d446ca821fb09c52392b96325f5d33bb2a78352b32856c405a",
+  "docsA_gold": "70c9be3255694fa9b7f89853fd408dbc2c8c5052c3c342cd782edd9fc1738da5",
+  "docsA_questions": "b2fbbd564f1dd27e228bb5737041bab51c73691630ed66b2759b34d826465aa5"
+ },
+ "parameters": {
+  "top": 10,
+  "rare_df_share": 0.01,
+  "gold_rule": "any",
+  "rare_df_max_chunks": 144
+ },
+ "P": {
+  "n_included": 153,
+  "outcome_counts": {
+   "kept": 41,
+   "lost": 20,
+   "won": 11,
+   "neither": 81
+  },
+  "outcome_counts_in_hybrid50_pool": {
+   "kept": 41,
+   "lost": 20,
+   "won": 11,
+   "neither": 11
+  },
+  "Q1": {
+   "symbol": {
+    "records": 31,
+    "distinct_queries": 18,
+    "found@10 A0": 16,
+    "found@10 A4-50": 18,
+    "found@10 A5-50": 18,
+    "A4-50 vs A0: gained / lost": [
+     2,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.5
+   },
+   "digit": {
+    "records": 26,
+    "distinct_queries": 20,
+    "found@10 A0": 10,
+    "found@10 A4-50": 8,
+    "found@10 A5-50": 10,
+    "A4-50 vs A0: gained / lost": [
+     2,
+     4
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.6875
+   },
+   "unit": {
+    "records": 2,
+    "distinct_queries": 2,
+    "found@10 A0": 0,
+    "found@10 A4-50": 0,
+    "found@10 A5-50": 0,
+    "A4-50 vs A0: gained / lost": [
+     0,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": null
+   },
+   "none": {
+    "records": 109,
+    "distinct_queries": 44,
+    "found@10 A0": 37,
+    "found@10 A4-50": 30,
+    "found@10 A5-50": 30,
+    "A4-50 vs A0: gained / lost": [
+     9,
+     16
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.2295229434967041
+   },
+   "all": {
+    "records": 153,
+    "distinct_queries": 73,
+    "found@10 A0": 61,
+    "found@10 A4-50": 52,
+    "found@10 A5-50": 54,
+    "A4-50 vs A0: gained / lost": [
+     11,
+     20
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.14961278438568115
+   }
+  },
+  "Q3": {
+   "A4-50 (rr hybrid@50, 50 long)": {
+    "lost": {
+     "records_gold_in_list": 20,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 469,
+     "same_above_gold": 46,
+     "same_share_pooled": 0.0981,
+     "same_share_per_record_median": 0.0474
+    },
+    "kept": {
+     "records_gold_in_list": 41,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 15,
+     "chunks_above_gold": 115,
+     "same_above_gold": 40,
+     "same_share_pooled": 0.3478,
+     "same_share_per_record_median": 0.2083
+    },
+    "won": {
+     "records_gold_in_list": 11,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 3,
+     "chunks_above_gold": 25,
+     "same_above_gold": 3,
+     "same_share_pooled": 0.12,
+     "same_share_per_record_median": 0.0
+    },
+    "neither": {
+     "records_gold_in_list": 11,
+     "records_gold_not_in_list": 70,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 196,
+     "same_above_gold": 35,
+     "same_share_pooled": 0.1786,
+     "same_share_per_record_median": 0.0476
+    },
+    "all": {
+     "records_gold_in_list": 83,
+     "records_gold_not_in_list": 70,
+     "records_gold_at_rank_1": 18,
+     "chunks_above_gold": 805,
+     "same_above_gold": 124,
+     "same_share_pooled": 0.154,
+     "same_share_per_record_median": 0.0625
+    }
+   },
+   "A0 (bm25@100)": {
+    "lost": {
+     "records_gold_in_list": 20,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 3,
+     "chunks_above_gold": 66,
+     "same_above_gold": 41,
+     "same_share_pooled": 0.6212,
+     "same_share_per_record_median": 0.6667
+    },
+    "kept": {
+     "records_gold_in_list": 41,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 13,
+     "chunks_above_gold": 84,
+     "same_above_gold": 45,
+     "same_share_pooled": 0.5357,
+     "same_share_per_record_median": 0.7333
+    },
+    "won": {
+     "records_gold_in_list": 11,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 362,
+     "same_above_gold": 17,
+     "same_share_pooled": 0.047,
+     "same_share_per_record_median": 0.0145
+    },
+    "neither": {
+     "records_gold_in_list": 22,
+     "records_gold_not_in_list": 59,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 1102,
+     "same_above_gold": 48,
+     "same_share_pooled": 0.0436,
+     "same_share_per_record_median": 0.0137
+    },
+    "all": {
+     "records_gold_in_list": 94,
+     "records_gold_not_in_list": 59,
+     "records_gold_at_rank_1": 16,
+     "chunks_above_gold": 1614,
+     "same_above_gold": 151,
+     "same_share_pooled": 0.0936,
+     "same_share_per_record_median": 0.1722
+    }
+   }
+  },
+  "Q3_top10_same_paper_all_records": {
+   "A0": {
+    "chunks": 1530,
+    "same": 342,
+    "share": 0.2235
+   },
+   "A4-50": {
+    "chunks": 1530,
+    "same": 279,
+    "share": 0.1824
+   }
+  },
+  "checks": {
+   "records": 155,
+   "a4_offline_top10_equals_live": 155,
+   "records_source_paper_mapped_to_one_doc": 155
+  },
+  "Q2": {
+   "lost": {
+    "records_in_pool": 20,
+    "no_rare_query_token": 13,
+    "top_nongold_vs_gold_rare_tokens": {
+     "more": 2,
+     "equal": 4,
+     "fewer": 1
+    },
+    "gold_carries_any_rare": 5,
+    "top_nongold_carries_any_rare": 4,
+    "gold_at_rank_1": 0,
+    "gold_strictly_more_than_every_chunk_above": 0,
+    "gold_not_more_than_some_chunk_above": 7
+   },
+   "kept": {
+    "records_in_pool": 41,
+    "no_rare_query_token": 1,
+    "top_nongold_vs_gold_rare_tokens": {
+     "more": 6,
+     "equal": 32,
+     "fewer": 2
+    },
+    "gold_carries_any_rare": 37,
+    "top_nongold_carries_any_rare": 35,
+    "gold_at_rank_1": 15,
+    "gold_strictly_more_than_every_chunk_above": 0,
+    "gold_not_more_than_some_chunk_above": 25
+   },
+   "won": {
+    "records_in_pool": 11,
+    "no_rare_query_token": 3,
+    "top_nongold_vs_gold_rare_tokens": {
+     "more": 3,
+     "equal": 5
+    },
+    "gold_carries_any_rare": 5,
+    "top_nongold_carries_any_rare": 7,
+    "gold_at_rank_1": 3,
+    "gold_strictly_more_than_every_chunk_above": 0,
+    "gold_not_more_than_some_chunk_above": 5
+   },
+   "neither": {
+    "records_in_pool": 11,
+    "no_rare_query_token": 2,
+    "top_nongold_vs_gold_rare_tokens": {
+     "fewer": 2,
+     "equal": 5,
+     "more": 2
+    },
+    "gold_carries_any_rare": 6,
+    "top_nongold_carries_any_rare": 6,
+    "gold_at_rank_1": 0,
+    "gold_strictly_more_than_every_chunk_above": 1,
+    "gold_not_more_than_some_chunk_above": 8
+   },
+   "all": {
+    "records_in_pool": 83,
+    "no_rare_query_token": 19,
+    "top_nongold_vs_gold_rare_tokens": {
+     "more": 13,
+     "equal": 46,
+     "fewer": 5
+    },
+    "gold_carries_any_rare": 53,
+    "top_nongold_carries_any_rare": 52,
+    "gold_at_rank_1": 18,
+    "gold_strictly_more_than_every_chunk_above": 1,
+    "gold_not_more_than_some_chunk_above": 45
+   }
+  },
+  "Q4": {
+   "cache_rows": 955,
+   "cache_scores_descending_in_every_row": true,
+   "in_pool_records_scored": 83,
+   "cache_key_missing": 0,
+   "cache_order_mismatch": 0,
+   "margin_top_nongold_minus_gold": {
+    "lost": {
+     "n": 20,
+     "median": 0.1995,
+     "q1": 0.0957,
+     "q3": 0.2703,
+     "min": 0.0723,
+     "max": 0.7924
+    },
+    "kept": {
+     "n": 41,
+     "median": 0.0107,
+     "q1": -0.041,
+     "q3": 0.0898,
+     "min": -0.3008,
+     "max": 0.2642
+    },
+    "won": {
+     "n": 11,
+     "median": 0.0601,
+     "q1": -0.0271,
+     "q3": 0.1479,
+     "min": -0.2791,
+     "max": 0.2061
+    },
+    "neither": {
+     "n": 11,
+     "median": 0.3081,
+     "q1": 0.1726,
+     "q3": 0.5125,
+     "min": 0.0845,
+     "max": 0.6526
+    }
+   },
+   "margin_positive_count": {
+    "lost": 20,
+    "kept": 26,
+    "won": 8,
+    "neither": 11
+   },
+   "gold_symbol_density_per_100_chars": {
+    "n": 83,
+    "median": 0.8602,
+    "q1": 0.7328,
+    "q3": 0.8794,
+    "min": 0.0,
+    "max": 4.0606
+   },
+   "spearman_density_vs_reranked_rank": {
+    "n": 83,
+    "rho": 0.2734
+   },
+   "spearman_density_vs_bm25_rank": {
+    "n": 82,
+    "rho": -0.0538
+   },
+   "reranked_rank_by_query_class": {
+    "symbol": {
+     "n": 19,
+     "median": 2.0,
+     "q1": 1.0,
+     "q3": 7.0,
+     "min": 1.0,
+     "max": 12.0
+    },
+    "not_symbol": {
+     "n": 64,
+     "median": 9.0,
+     "q1": 2.75,
+     "q3": 22.25,
+     "min": 1.0,
+     "max": 35.0
+    }
+   },
+   "note": "records sharing a query share lists; values are descriptive, not independent observations"
+  },
+  "Q5": {
+   "gold_carries_glossary / symbol": {
+    "records": 16,
+    "found@10 content": 11,
+    "found@10 content+gloss": 15,
+    "found@10 content+shuffled": 10,
+    "gloss_vs_content_gold_rank": {
+     "up": 7,
+     "same": 4,
+     "down": 5
+    },
+    "shuffled_vs_content_gold_rank": {
+     "down": 2,
+     "up": 5,
+     "same": 9
+    },
+    "median_rank": {
+     "content": 4.0,
+     "content+gloss": 3.0,
+     "content+shuffled": 3.5
+    }
+   },
+   "gold_carries_glossary / not_symbol": {
+    "records": 50,
+    "found@10 content": 20,
+    "found@10 content+gloss": 27,
+    "found@10 content+shuffled": 19,
+    "gloss_vs_content_gold_rank": {
+     "up": 36,
+     "same": 8,
+     "down": 6
+    },
+    "shuffled_vs_content_gold_rank": {
+     "up": 14,
+     "same": 12,
+     "down": 24
+    },
+    "median_rank": {
+     "content": 18.0,
+     "content+gloss": 9.0,
+     "content+shuffled": 19.0
+    }
+   },
+   "gold_carries_glossary / all": {
+    "records": 66,
+    "found@10 content": 31,
+    "found@10 content+gloss": 42,
+    "found@10 content+shuffled": 29,
+    "gloss_vs_content_gold_rank": {
+     "up": 43,
+     "same": 12,
+     "down": 11
+    },
+    "shuffled_vs_content_gold_rank": {
+     "down": 26,
+     "up": 19,
+     "same": 21
+    },
+    "median_rank": {
+     "content": 12.5,
+     "content+gloss": 7.0,
+     "content+shuffled": 16.0
+    }
+   },
+   "gold_carries_no_glossary / symbol": {
+    "records": 3,
+    "found@10 content": 3,
+    "found@10 content+gloss": 3,
+    "found@10 content+shuffled": 3,
+    "gloss_vs_content_gold_rank": {
+     "down": 1,
+     "same": 2
+    },
+    "shuffled_vs_content_gold_rank": {
+     "same": 3
+    },
+    "median_rank": {
+     "content": 1,
+     "content+gloss": 1,
+     "content+shuffled": 1
+    }
+   },
+   "gold_carries_no_glossary / not_symbol": {
+    "records": 14,
+    "found@10 content": 9,
+    "found@10 content+gloss": 7,
+    "found@10 content+shuffled": 9,
+    "gloss_vs_content_gold_rank": {
+     "same": 9,
+     "down": 5
+    },
+    "shuffled_vs_content_gold_rank": {
+     "same": 12,
+     "down": 2
+    },
+    "median_rank": {
+     "content": 6.0,
+     "content+gloss": 7.0,
+     "content+shuffled": 6.0
+    }
+   },
+   "gold_carries_no_glossary / all": {
+    "records": 17,
+    "found@10 content": 12,
+    "found@10 content+gloss": 10,
+    "found@10 content+shuffled": 12,
+    "gloss_vs_content_gold_rank": {
+     "same": 11,
+     "down": 6
+    },
+    "shuffled_vs_content_gold_rank": {
+     "same": 15,
+     "down": 2
+    },
+    "median_rank": {
+     "content": 3,
+     "content+gloss": 3,
+     "content+shuffled": 3
+    }
+   }
+  },
+  "post_plan": {
+   "label": "POST-PLAN: added after the planned outputs were seen; descriptive",
+   "lost": {
+    "records": 20,
+    "distinct_queries": 8,
+    "records_in_dominant_paper": 20,
+    "cross_paper_chunks_above_gold_A4": 423,
+    "distinct_cross_paper_docs": 50,
+    "share_in_top1_doc": 0.1395,
+    "share_in_top2_docs": 0.2553,
+    "cross_paper_chunks_from_another_records_source_paper": 27,
+    "cross_paper_chunks_by_doc_kind": {
+     "sha-named": 59,
+     "pmcid-named": 273,
+     "doi-named": 91
+    }
+   },
+   "kept": {
+    "records": 41,
+    "distinct_queries": 26,
+    "records_in_dominant_paper": 40,
+    "cross_paper_chunks_above_gold_A4": 75,
+    "distinct_cross_paper_docs": 15,
+    "share_in_top1_doc": 0.5067,
+    "share_in_top2_docs": 0.6133,
+    "cross_paper_chunks_from_another_records_source_paper": 0,
+    "cross_paper_chunks_by_doc_kind": {
+     "sha-named": 61,
+     "pmcid-named": 14
+    }
+   },
+   "won": {
+    "records": 11,
+    "distinct_queries": 10,
+    "records_in_dominant_paper": 9,
+    "cross_paper_chunks_above_gold_A4": 22,
+    "distinct_cross_paper_docs": 10,
+    "share_in_top1_doc": 0.3182,
+    "share_in_top2_docs": 0.4545,
+    "cross_paper_chunks_from_another_records_source_paper": 0,
+    "cross_paper_chunks_by_doc_kind": {
+     "sha-named": 12,
+     "pmcid-named": 10
+    }
+   },
+   "Q4_population": {
+    "records": 83,
+    "distinct_first_gold_chunks": 21,
+    "distinct_queries": 45
+   }
+  }
+ },
+ "P_v4": {
+  "note": "sensitivity: the addendum's v4 gold (source-paper scoped)",
+  "n_included": 151,
+  "outcome_counts": {
+   "kept": 38,
+   "lost": 19,
+   "won": 9,
+   "neither": 85
+  },
+  "outcome_counts_in_hybrid50_pool": {
+   "kept": 38,
+   "lost": 19,
+   "won": 9,
+   "neither": 8
+  },
+  "Q1": {
+   "symbol": {
+    "records": 30,
+    "distinct_queries": 18,
+    "found@10 A0": 15,
+    "found@10 A4-50": 17,
+    "found@10 A5-50": 17,
+    "A4-50 vs A0: gained / lost": [
+     2,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.5
+   },
+   "digit": {
+    "records": 26,
+    "distinct_queries": 20,
+    "found@10 A0": 10,
+    "found@10 A4-50": 8,
+    "found@10 A5-50": 10,
+    "A4-50 vs A0: gained / lost": [
+     2,
+     4
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.6875
+   },
+   "unit": {
+    "records": 2,
+    "distinct_queries": 2,
+    "found@10 A0": 0,
+    "found@10 A4-50": 0,
+    "found@10 A5-50": 0,
+    "A4-50 vs A0: gained / lost": [
+     0,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": null
+   },
+   "none": {
+    "records": 108,
+    "distinct_queries": 44,
+    "found@10 A0": 34,
+    "found@10 A4-50": 26,
+    "found@10 A5-50": 26,
+    "A4-50 vs A0: gained / lost": [
+     7,
+     15
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.13380050659179688
+   },
+   "all": {
+    "records": 151,
+    "distinct_queries": 73,
+    "found@10 A0": 57,
+    "found@10 A4-50": 47,
+    "found@10 A5-50": 49,
+    "A4-50 vs A0: gained / lost": [
+     9,
+     19
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.08715855330228806
+   }
+  },
+  "Q3": {
+   "A4-50 (rr hybrid@50, 50 long)": {
+    "lost": {
+     "records_gold_in_list": 19,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 450,
+     "same_above_gold": 46,
+     "same_share_pooled": 0.1022,
+     "same_share_per_record_median": 0.0625
+    },
+    "kept": {
+     "records_gold_in_list": 38,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 13,
+     "chunks_above_gold": 115,
+     "same_above_gold": 43,
+     "same_share_pooled": 0.3739,
+     "same_share_per_record_median": 0.2222
+    },
+    "won": {
+     "records_gold_in_list": 9,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 3,
+     "chunks_above_gold": 21,
+     "same_above_gold": 3,
+     "same_share_pooled": 0.1429,
+     "same_share_per_record_median": 0.0556
+    },
+    "neither": {
+     "records_gold_in_list": 8,
+     "records_gold_not_in_list": 77,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 160,
+     "same_above_gold": 16,
+     "same_share_pooled": 0.1,
+     "same_share_per_record_median": 0.0465
+    },
+    "all": {
+     "records_gold_in_list": 74,
+     "records_gold_not_in_list": 77,
+     "records_gold_at_rank_1": 16,
+     "chunks_above_gold": 746,
+     "same_above_gold": 108,
+     "same_share_pooled": 0.1448,
+     "same_share_per_record_median": 0.0699
+    }
+   },
+   "A0 (bm25@100)": {
+    "lost": {
+     "records_gold_in_list": 19,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 3,
+     "chunks_above_gold": 63,
+     "same_above_gold": 38,
+     "same_share_pooled": 0.6032,
+     "same_share_per_record_median": 0.6667
+    },
+    "kept": {
+     "records_gold_in_list": 38,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 10,
+     "chunks_above_gold": 82,
+     "same_above_gold": 46,
+     "same_share_pooled": 0.561,
+     "same_share_per_record_median": 0.8
+    },
+    "won": {
+     "records_gold_in_list": 9,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 264,
+     "same_above_gold": 17,
+     "same_share_pooled": 0.0644,
+     "same_share_per_record_median": 0.0833
+    },
+    "neither": {
+     "records_gold_in_list": 25,
+     "records_gold_not_in_list": 60,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 1364,
+     "same_above_gold": 57,
+     "same_share_pooled": 0.0418,
+     "same_share_per_record_median": 0.0137
+    },
+    "all": {
+     "records_gold_in_list": 91,
+     "records_gold_not_in_list": 60,
+     "records_gold_at_rank_1": 13,
+     "chunks_above_gold": 1773,
+     "same_above_gold": 158,
+     "same_share_pooled": 0.0891,
+     "same_share_per_record_median": 0.1722
+    }
+   }
+  },
+  "Q3_top10_same_paper_all_records": {
+   "A0": {
+    "chunks": 1510,
+    "same": 331,
+    "share": 0.2192
+   },
+   "A4-50": {
+    "chunks": 1510,
+    "same": 276,
+    "share": 0.1828
+   }
+  }
+ },
+ "docsA": {
+  "n_included": 732,
+  "outcome_counts": {
+   "kept": 623,
+   "won": 84,
+   "neither": 19,
+   "lost": 6
+  },
+  "Q1": {
+   "symbol": {
+    "records": 21,
+    "distinct_queries": 21,
+    "found@10 A0": 20,
+    "found@10 A4-50": 21,
+    "found@10 A5-50": 21,
+    "A4-50 vs A0: gained / lost": [
+     1,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": 1.0
+   },
+   "digit": {
+    "records": 123,
+    "distinct_queries": 123,
+    "found@10 A0": 115,
+    "found@10 A4-50": 121,
+    "found@10 A5-50": 119,
+    "A4-50 vs A0: gained / lost": [
+     6,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": 0.03125
+   },
+   "unit": {
+    "records": 8,
+    "distinct_queries": 8,
+    "found@10 A0": 8,
+    "found@10 A4-50": 8,
+    "found@10 A5-50": 8,
+    "A4-50 vs A0: gained / lost": [
+     0,
+     0
+    ],
+    "mcnemar_exact_two_sided_descriptive": null
+   },
+   "none": {
+    "records": 591,
+    "distinct_queries": 591,
+    "found@10 A0": 497,
+    "found@10 A4-50": 568,
+    "found@10 A5-50": 551,
+    "A4-50 vs A0: gained / lost": [
+     77,
+     6
+    ],
+    "mcnemar_exact_two_sided_descriptive": 8.445814568882953e-17
+   },
+   "all": {
+    "records": 732,
+    "distinct_queries": 732,
+    "found@10 A0": 629,
+    "found@10 A4-50": 707,
+    "found@10 A5-50": 688,
+    "A4-50 vs A0: gained / lost": [
+     84,
+     6
+    ],
+    "mcnemar_exact_two_sided_descriptive": 1.081216606236162e-18
+   }
+  },
+  "Q3_same_page": {
+   "A4-50 (rr hybrid@50, 50 long)": {
+    "lost": {
+     "records_gold_in_list": 6,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 88,
+     "same_above_gold": 6,
+     "same_share_pooled": 0.0682,
+     "same_share_per_record_median": 0.0312
+    },
+    "kept": {
+     "records_gold_in_list": 623,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 442,
+     "chunks_above_gold": 339,
+     "same_above_gold": 118,
+     "same_share_pooled": 0.3481,
+     "same_share_per_record_median": 0.0
+    },
+    "won": {
+     "records_gold_in_list": 84,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 44,
+     "chunks_above_gold": 152,
+     "same_above_gold": 21,
+     "same_share_pooled": 0.1382,
+     "same_share_per_record_median": 0.0
+    },
+    "neither": {
+     "records_gold_in_list": 14,
+     "records_gold_not_in_list": 5,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 356,
+     "same_above_gold": 26,
+     "same_share_pooled": 0.073,
+     "same_share_per_record_median": 0.0627
+    },
+    "all": {
+     "records_gold_in_list": 727,
+     "records_gold_not_in_list": 5,
+     "records_gold_at_rank_1": 486,
+     "chunks_above_gold": 935,
+     "same_above_gold": 171,
+     "same_share_pooled": 0.1829,
+     "same_share_per_record_median": 0.0
+    }
+   },
+   "A0 (bm25@200)": {
+    "lost": {
+     "records_gold_in_list": 6,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 31,
+     "same_above_gold": 2,
+     "same_share_pooled": 0.0645,
+     "same_share_per_record_median": 0.0
+    },
+    "kept": {
+     "records_gold_in_list": 623,
+     "records_gold_not_in_list": 0,
+     "records_gold_at_rank_1": 337,
+     "chunks_above_gold": 868,
+     "same_above_gold": 175,
+     "same_share_pooled": 0.2016,
+     "same_share_per_record_median": 0.0
+    },
+    "won": {
+     "records_gold_in_list": 83,
+     "records_gold_not_in_list": 1,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 2932,
+     "same_above_gold": 105,
+     "same_share_pooled": 0.0358,
+     "same_share_per_record_median": 0.0234
+    },
+    "neither": {
+     "records_gold_in_list": 15,
+     "records_gold_not_in_list": 4,
+     "records_gold_at_rank_1": 0,
+     "chunks_above_gold": 888,
+     "same_above_gold": 27,
+     "same_share_pooled": 0.0304,
+     "same_share_per_record_median": 0.0261
+    },
+    "all": {
+     "records_gold_in_list": 727,
+     "records_gold_not_in_list": 5,
+     "records_gold_at_rank_1": 337,
+     "chunks_above_gold": 4719,
+     "same_above_gold": 309,
+     "same_share_pooled": 0.0655,
+     "same_share_per_record_median": 0.0
+    }
+   }
+  },
+  "Q3_top10_same_page_all_records": {
+   "A0": {
+    "chunks": 7320,
+    "same": 2087,
+    "share": 0.2851
+   },
+   "A4-50": {
+    "chunks": 7320,
+    "same": 2776,
+    "share": 0.3792
+   }
+  },
+  "not_run": "Q2, Q4, Q5: docs-A chunk text is only in the live index (out of scope)"
+ },
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.21+ff82cd4",
+  "describe": "v1.6.21-114-gff82cd4",
+  "commit": "ff82cd494d4dc80cb11ce6fb34bfb01a491e6c2a",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "n_docs": 5,
+    "n_spans": 40,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4",
+    "segmenter_version": "punkt-abbrev-v1"
+   }
+  ],
+  "recorded_at": "2026-10-31T02:15:47Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ],
+  "redacted": [
+   "host",
+   "image",
+   "installed_distribution",
+   "python"
+  ]
+ }
+}

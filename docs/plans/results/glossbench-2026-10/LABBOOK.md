@@ -723,3 +723,27 @@ The papers-OC owner verified both points independently on its side.
 
 **Disposition: no result changes.** The 153 of 155 is evidence that the gold construction is reproducible
 across chunkings. It is not evidence that the id sets match, and they do not. What's next is unchanged.
+
+## Addendum, 2026-10-30 (night): why the reranker orders papers-OC worse than BM25 — an exploratory reading
+
+**Tier: lab book (pointer).** The record is [`../reranker-test-2026-11/why/WHY.md`](../reranker-test-2026-11/why/WHY.md).
+Its plan was committed before computing and after the reranker test's results were known, so it is
+**post-hoc and exploratory**. The counts-only artifact is
+[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `ff82cd4` (clean). It uses the
+run's existing lists and cached scores only. No retrieval, reranker or model call was made. `RESULTS.md`
+and the gold-scope addendum are unchanged.
+
+- **Exact-token task: not supported.** 16 of the 20 records the reranker loses against BM25 have no
+  symbol, digit or unit in the query, and 13 of the 20 have no rare query token. On symbol queries the
+  reranker gains 2 and loses 0.
+- **Same-paper distractors: not supported, reversed.** In the lost records, 9.8 % (46 / 469) of the chunks
+  the reranker ranks above gold come from the source paper, against 62 % (41 / 66) of BM25's. The
+  reranker's distractors spread over 50 other documents.
+- **Symbol tokenisation: mixed.** Symbol-dense gold ranks somewhat worse after reranking (ρ +0.27, against
+  −0.05 under BM25), but only 21 distinct gold chunks lie behind it. The glossary lifts gold mostly on
+  non-symbol queries (up on 36 of 50).
+- **Gold definition: not the explanation.** Under v4 the shape holds: losses on plain queries (7 / 15) and
+  cross-paper distractors (10 % against 60 %).
+- **Caveat:** the 20 lost records carry 8 distinct queries, all in the dominant paper.
+
+What's next is unchanged.
