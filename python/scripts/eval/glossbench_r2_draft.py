@@ -48,7 +48,11 @@ after 3 backoffs, and the budget: cumulative gateway input tokens >=
 calls >= ``call_cap`` (4,000), counted across resumes plus
 ``prior_gateway_usage`` (what earlier steps of the round spent: a path or list of
 paths to their totals JSON / the frontier ``glossary.jsonl``, summed automatically
-by :func:`resolve_prior_usage`; a hand-entered dict is also accepted). Exit 1 = hard
+by :func:`resolve_prior_usage`; a hand-entered dict is also accepted). The running
+observed-calls counter (``limits.max_calls`` and/or ``limits.notice_overrun``) pauses
+mid-batch once the gateway HTTP requests admitted in this segment (retries included)
+reach ``max_calls`` or ``ceil(preflight calls * (1 + notice_overrun))``, whichever is
+smaller (D-5's "+10% of the notice" stop, previously manual). Exit 1 = hard
 stop (frozen-prereg sha mismatch, a resume against a different commit, config
 or pool, a failed isolation check). ``--resume`` continues a paused run.
 
@@ -219,7 +223,11 @@ DEFAULTS: dict[str, Any] = {
     "limits": {"input_token_cap": 5_000_000, "output_token_cap": 750_000, "call_cap": 4000,
                "prior_gateway_usage": {}, "max_fail_consecutive": 5, "max_fail_total": 20,
                "rate_backoffs_s": [30.0, 120.0, 600.0], "batch_calls": None,
-               "batch_input_tokens": None, "batch_output_tokens": None},
+               "batch_input_tokens": None, "batch_output_tokens": None,
+               # the running observed-calls counter: gateway HTTP requests admitted in this run
+               # segment (retries included) pause the run at max_calls, and at
+               # ceil(preflight calls * (1 + notice_overrun)) when notice_overrun is set (D-5's +10%)
+               "max_calls": None, "notice_overrun": None},
     "checks": dict(ck.CHECK_DEFAULTS),
     "spot": {"n": 40, "seed_base": "261101|spot", "threshold": 0.85},
     #: round-3 pools only: after the first ``after_jobs`` done jobs, a layer-1 pass rate below
@@ -365,11 +373,26 @@ class R2Control(p4.Control):
                               "gateway_prompt_tokens": self.prior_resolved["prompt_tokens"],
                               "gateway_completion_tokens": self.prior_resolved["completion_tokens"]})
 
+        #: the effective observed-calls cap of this segment (:meth:`set_call_cap`); None = none
+        self.call_cap_eff: int | None = None if limits.get("max_calls") is None else int(limits["max_calls"])
+
+    def set_call_cap(self, notice_calls: int | None) -> None:
+        """The segment's observed-calls cap: ``max_calls`` and, with ``notice_overrun``, the
+        preflight notice's calls plus that share (rounded up); the smaller one applies."""
+        caps = [] if self.caps.get("max_calls") is None else [int(self.caps["max_calls"])]
+        over = self.caps.get("notice_overrun")
+        if over is not None and notice_calls is not None:
+            caps.append(math.ceil(int(notice_calls) * (1 + float(over))))
+        self.call_cap_eff = min(caps) if caps else None
+
     def cumulative(self) -> Counter[str]:
         return self.prior + self.prev + self.seg
 
     def gateway_admit(self) -> bool:
         if not super().gateway_admit():
+            return False
+        if self.call_cap_eff is not None and self.seg["gateway_calls"] >= self.call_cap_eff:
+            self.stop(f"max_calls: {self.seg['gateway_calls']} observed gateway calls >= cap {self.call_cap_eff}")
             return False
         tot, lim = self.cumulative(), self.caps
         if lim.get("input_token_cap") is not None and tot["gateway_prompt_tokens"] >= lim["input_token_cap"]:
@@ -431,6 +454,25 @@ def record_id(set_: str, chunk_id: str, attempt: int, field: str | None = None) 
 
 class Run:
     """One set's drafting/acceptance directory."""
+
+    #: the verifier's contract (a subclass may draft another kind of record)
+    verify_system: str = ck.VERIFY_SYSTEM
+    verify_keys: tuple[str, ...] = ck.VERIFY_KEYS
+    redraw_exempt: frozenset[str] = ck.REDRAW_EXEMPT
+
+    def parse_verdict(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
+        return ck.parse_verdict(text)
+
+    def verify_schema(self) -> dict[str, Any]:
+        return {"type": "object", "additionalProperties": False,
+                "properties": {**{k: {"type": "boolean"} for k in self.verify_keys}, "reason": {"type": "string"}},
+                "required": [*self.verify_keys, "reason"]}
+
+    def run_layer1(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Layer 1 over one draft row (``check``)."""
+        return ck.layer1(row["draft"], row["parse_error"], stratum=row["stratum"], paper=row["paper"],
+                         source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.checks_cfg,
+                         field=self.spec_of(row))
 
     def __init__(self, cfg: dict[str, Any], cfg_sha: str, out: Path, set_: str,
                  provenance: Callable[[], dict[str, Any]] | None = None,
@@ -570,7 +612,7 @@ class Run:
             if row is None:
                 return False
             if row["status"] in DROPPED or row["l1_inline"]["verdict"] == "pass" \
-                    or set(row["l1_inline"]["reasons"]) & ck.REDRAW_EXEMPT:
+                    or set(row["l1_inline"]["reasons"]) & self.redraw_exempt:
                 return True
         return True
 
@@ -612,7 +654,7 @@ class Run:
         else:
             todo = self.verify_todo()
             v = self.cfg["verifier"]
-            chars = sum(len(self.verify_prompt(rec)) + len(ck.VERIFY_SYSTEM) for rec in todo)
+            chars = sum(len(self.verify_prompt(rec)) + len(self.verify_system) for rec in todo)
             plan = {"calls": len(todo), "est_input_tokens": math.ceil(chars / CHARS_PER_TOKEN_CLI),
                     "est_output_tokens": len(todo) * int(v["est_output_tokens"]), "models": [v["model"]],
                     "concurrency": int(v["inflight"]), "route": "CLI (off-gateway)",
@@ -695,6 +737,9 @@ class Run:
         self.gate(stage, acknowledged, self.prev_state)
         self.control = R2Control(self.cfg["limits"], self.p.pause, prev_tot,
                                  own_files=(self.p.state(stage), self.p.totals(stage)))
+        if stage == "draft":
+            pf = json.loads(self.p.preflight(stage).read_text())
+            self.control.set_call_cap((pf.get("plan") or {}).get("calls"))
         frozen = self.cfg["prereg"].get("sha256")
         if frozen and frozen != self.prereg:
             self.write_state(stage, "hard_stop", "prereg_sha_mismatch")
@@ -859,7 +904,7 @@ class Run:
                             self.control.fail("empty")
                         st.put(row)
                     if row["status"] in DROPPED or row["l1_inline"]["verdict"] == "pass" \
-                            or set(row["l1_inline"]["reasons"]) & ck.REDRAW_EXEMPT:
+                            or set(row["l1_inline"]["reasons"]) & self.redraw_exempt:
                         return
                     prev = row
 
@@ -969,9 +1014,7 @@ class Run:
                 added += self.log_row(log, {"k": f"draft|{row['record_id']}", "layer": "draft",
                                             "verdict": "dropped", "reasons": [row["status"]], "flags": [], **base})
                 continue
-            l1 = ck.layer1(row["draft"], row["parse_error"], stratum=row["stratum"], paper=row["paper"],
-                           source_chunk=self.corpus.chunks[row["chunk_id"]], idx=self.idx, cfg=self.checks_cfg,
-                           field=self.spec_of(row))
+            l1 = self.run_layer1(row)
             records.append({**row, "l1": l1})
         ck.cross_record(records)
         for r in records:
@@ -1037,7 +1080,7 @@ class Run:
         v = self.cfg["verifier"]
         return [v["cli"], "-p", "--model", v["model"], "--output-format", "json", "--restricted",
                 "--no-session-persistence", "--strict-mcp-config", "--tools", "", "--system-prompt",
-                ck.VERIFY_SYSTEM]
+                self.verify_system]
 
     def call_cli(self, prompt: str, cwd: Path) -> dict[str, Any]:
         v = self.cfg["verifier"]
@@ -1079,7 +1122,7 @@ class Run:
 
     def isolation(self, prompt: str, res: dict[str, Any], overhead: float = CLAUDE_FIXED_OVERHEAD
                   ) -> dict[str, Any]:
-        chars = len(prompt) + len(ck.VERIFY_SYSTEM)
+        chars = len(prompt) + len(self.verify_system)
         budget = ISOLATION_FACTOR * chars / CHARS_PER_TOKEN_CLI + overhead
         seen = res.get("context_tokens")
         tools = int(res.get("tool_events") or 0)
@@ -1118,8 +1161,8 @@ class Run:
             td = Path(td_)
             td.chmod(0o700)
             sysfile, schema, last = td / "system.md", td / "schema.json", td / "last.txt"
-            sysfile.write_text(ck.VERIFY_SYSTEM, encoding="utf-8")
-            schema.write_text(json.dumps(VERIFY_SCHEMA), encoding="utf-8")
+            sysfile.write_text(self.verify_system, encoding="utf-8")
+            schema.write_text(json.dumps(self.verify_schema()), encoding="utf-8")
             t0 = time.time()
             try:
                 p = self.cli_runner(self.codex_cmd(cwd, sysfile, schema, last), input=prompt, capture_output=True,
@@ -1220,7 +1263,7 @@ class Run:
                             hard.append("isolation_failed")
                             self.control.stop("isolation_failed")
                             return "stopped"
-                    verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
+                    verdict, err = self.parse_verdict(res.get("text") or "") if res["status"] == "ok" else (None, None)
                     last = {**res, "parse_error": err, "verdict": verdict, "attempt": attempt, "verifier": "claude"}
                     if verdict is not None:
                         self.control.ok()
@@ -1235,7 +1278,7 @@ class Run:
                     reasons = ["l2_empty" if last["status"] == "empty" else "l2_unparseable"]
                     l2_verdict = "reject"
                 else:
-                    reasons = [f"l2_{k}" for k in ck.VERIFY_KEYS if verdict[k] is False]
+                    reasons = [f"l2_{k}" for k in self.verify_keys if verdict[k] is False]
                     l2_verdict = "reject" if reasons else "pass"
                 rows.put({"k": f"verify|{rid}", "record_id": rid, "status": last["status"],
                           "text": last.get("text"), "model": last.get("model"),
@@ -1316,7 +1359,7 @@ class Run:
                             hard.append("codex_isolation_failed")
                             self.control.stop("codex_isolation_failed")
                             return {}
-                    verdict, err = ck.parse_verdict(res.get("text") or "") if res["status"] == "ok" \
+                    verdict, err = self.parse_verdict(res.get("text") or "") if res["status"] == "ok" \
                         else (None, "empty")
                     if verdict is not None:
                         return {**base, "verdict": verdict, "parse_error": None}

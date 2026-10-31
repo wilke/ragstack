@@ -1,0 +1,65 @@
+{
+  "_comment": "PRIVATE config template for the alias study (glossbench_alias_pool.py / glossbench_alias_draft.py). Copy OUTSIDE the repo and fill the <...> values; out_dir must be outside the repo. Drafter: Gemini 2.5 Pro via the gateway with max_tokens 16384 (round 3 D-6: upstream reasoning tokens); verify: Claude CLI <= 3 in flight with the Codex fallback on a usage-policy refusal. limits.notice_overrun 0.10 pauses a batch at +10% over the preflight notice's calls (D-5); max_calls is an absolute cap per segment. prior_gateway_usage: list the totals JSON of every earlier batch on the same budget. Exit codes: 0 ok, 1 hard stop, 75 paused, 76 budget stop (remove PAUSE, preflight, --resume).",
+  "out_dir": "</private/path/alias-out>",
+  "corpora": {
+    "O": {
+      "chunks": ["</private/path/chunks-export.jsonl.gz>"],
+      "expected_chunks": null,
+      "paper_key": "path_root",
+      "alias_glossary": "</private/path/alias-glossary.jsonl>"
+    }
+  },
+  "alias_pool": {
+    "seed_base": "261031|alias",
+    "n_papers": null,
+    "g_per_paper": 6,
+    "c_per_paper": 2,
+    "goal": {"G": 2, "C": 1},
+    "min_g_candidates": 2,
+    "min_c_candidates": 1,
+    "prior_pass_rate": {"G": 0.35, "C": 0.35},
+    "yield_calibration": null,
+    "yield_gate": 0.5
+  },
+  "alias": {"goal": {"G": 2, "C": 1}},
+  "alias_checks": {
+    "quote_max_chars": 300,
+    "leak_threshold": 0.5,
+    "question_min_words": 5,
+    "question_max_words": 40,
+    "question_max_chars": 300,
+    "answer_support_min": 0.5,
+    "primary_min_chars": 5
+  },
+  "drafter": {
+    "model": "Gemini 2.5 Pro",
+    "tag": "gemini25pro",
+    "base_url": "<gateway base url>",
+    "max_tokens": 16384,
+    "temperature": 0,
+    "inflight": 4,
+    "max_attempts_per_chunk": 2,
+    "est_output_tokens": 2500,
+    "passes": 2
+  },
+  "verifier": {
+    "model": "claude-opus-5-5",
+    "cli": "claude",
+    "inflight": 3,
+    "codex_fallback": true,
+    "codex_cli": "codex",
+    "codex_model": "gpt-6-astra",
+    "max_calls": 1000,
+    "max_cost_usd": 100.0
+  },
+  "limits": {
+    "input_token_cap": 2500000,
+    "output_token_cap": 1000000,
+    "call_cap": 2500,
+    "prior_gateway_usage": [],
+    "max_calls": null,
+    "notice_overrun": 0.10
+  },
+  "yield_watch": {"after_jobs": 100, "min_pass": 0.30},
+  "prereg": {"file": null, "sha256": null}
+}
