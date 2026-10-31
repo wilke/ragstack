@@ -212,13 +212,16 @@ coll_diff is 1.00 for every configuration. As in round 1, it is reported but is 
 | C | 1.00 | 0.89 | 0.99 | 1.00 | 1.00 | 0.985 | 0.976 |
 
 **Majority errors over all stored samples.** The baseline makes 18: 13 FN, all but one on G
-records, and 5 FP. A makes 18, of which 17 are the baseline's. B makes 8 (2 FN, 6 FP): it fixes 12
-baseline errors and adds 2. C makes 6 (1 FN, 5 FP): it fixes 13 and adds 1. All of C's errors
-are in lex_same (5) or lex_other (1). It has no collision error and no false no on a G record.
+records, and 5 FP. A makes 18, of which 17 are the baseline's. B makes 9 (2 FN, 7 FP): it fixes 12
+baseline errors and adds 3. C makes 7 (1 FN, 6 FP): it fixes 13 and adds 2. All of C's errors
+are in lex_same (6) or lex_other (1). It has no collision error and no false no on a G record.
+These are the n = 21 FP / FN of the table above, which the round-2 working notes first
+undercounted by one for B and C: they dropped the 2 unanimous pairs whose Opus log holds a
+re-issued fourth row.
 
 **Over-correction check.** The rule did not turn collisions or lexical non-answers into yeses.
-coll_diff has 0 FP in A and C, and coll_same has 0 FP in A and C (B has 1). C's false yeses (5, the
-baseline also has 5) are in lex_same and lex_other, and 4 of them are baseline errors. The
+coll_diff has 0 FP in A and C, and coll_same has 0 FP in A and C (B has 1). C's false yeses (6; the
+baseline has 5) are in lex_same and lex_other, and 4 of them are baseline errors. The
 residue is Qwen accepting a neighbouring chunk of the question's own paper that Opus rejects.
 
 **Cascade at n = 21** (accept Qwen when the share is ≥ τ or ≤ 1 − τ; Opus labels the rest):

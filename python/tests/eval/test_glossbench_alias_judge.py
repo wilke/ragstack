@@ -591,3 +591,18 @@ def test_analyse_variants_counts_and_overlap(world: Path, tmp_path: Path) -> Non
     assert res["variants"]["C"]["reasoning_tokens_per_sample"] == pytest.approx(600 / 7, abs=0.1)
     assert res["variants"]["C"]["judge_versions"] == {"alias-judge/2": len(pairs)}
     assert res["variants"]["C"]["subsets"]["unanimous"]["cascade"]["n_all"][0]["tau"] == 0.8
+
+
+def test_thinking_verdict_is_parsed_from_the_final_answer_only(world: Path) -> None:
+    """With thinking on, vLLM returns the thinking in ``message.reasoning``; a draft verdict
+    there (yes, or no, or both) must never become the sample's verdict."""
+    def reply(b: dict[str, Any]) -> Resp:
+        think = 'Maybe yes, maybe no. Draft: {"reason": "r", "answers": "yes"}'
+        ch = [{"index": i, "message": {"content": NO, "reasoning": think}, "finish_reason": "stop"}
+              for i in range(b["n"])]
+        return Resp(200, {"model": "q", "choices": ch, "usage": {"prompt_tokens": 9, "completion_tokens": 50}})
+    cfg = round2_cfg(world, "C", "alias-judge/2", True)
+    assert label(cfg, "qwen", FakeHTTP(reply)) == 0
+    rows = [json.loads(x) for x in (out_of(cfg) / "labels-qwen-C.jsonl").read_text().splitlines()]
+    assert rows and all(r["verdicts"] and set(r["verdicts"]) == {0} for r in rows)
+    assert all('"answers": "yes"' in r["reasoning_sample"][0] for r in rows)
