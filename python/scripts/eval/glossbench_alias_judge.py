@@ -18,7 +18,12 @@ Subcommands (``--config CFG`` first; every output goes to the config's private `
 configuration (files ``labels-qwen-<variant>.jsonl`` etc.), ``qwen.judge_version`` picks the
 system prompt (:data:`JUDGE_SYSTEMS`: ``alias-judge/2`` is /1 plus :data:`JUDGE_RULE_V2`) and
 ``qwen.enable_thinking`` the thinking switch (:data:`THINKING_SWITCH`). Each stored row carries
-its prompt version, system sha, thinking flag and reasoning tokens.
+its prompt version, system sha, thinking flag, reasoning tokens and endpoint (``qwen.base_url``).
+
+**Round 3** (another model on another endpoint): ``qwen.base_url`` / ``qwen.model`` name it, and
+``qwen.require_served_model`` puts the endpoint in the plan (so a preflight for one server does
+not admit a run on another) and stops the run, storing nothing, on a reply whose served model
+id is not ``qwen.model``.
 
 **The judge task** (the study rule). Given a QUESTION (phrased with a primary TERM) and a
 PASSAGE (from any paper), does the passage answer the question? A passage from another paper
@@ -208,7 +213,10 @@ DEFAULTS: dict[str, Any] = {
             "isolation_check": True, "max_calls": 1000, "max_cost_usd": 60.0},
     "qwen": {"base_url": None, "model": None, "n": 100, "temperature": 0.7, "max_tokens": 200,
              "enable_thinking": False, "inflight": 4, "timeout_s": 900, "judge_version": JUDGE_VERSION,
-             "variant": None},
+             "variant": None,
+             # round 3: refuse a reply whose served model id is not ``model`` (a shared endpoint
+             # can be redeployed under another model between preflight and run)
+             "require_served_model": False},
     "limits": {**dr.DEFAULTS["limits"], "input_token_cap": 3_000_000, "output_token_cap": 600_000,
                "call_cap": 1500},
     "analysis": {"bootstrap": 1000, "seed": 20261031, "plateau_eps": 0.005,
@@ -580,6 +588,8 @@ class Labeler:
                          "system_sha256": g.sha_text(JUDGE_SYSTEMS[q["judge_version"]])})
             if q["variant"] is not None:        # a round-2 variant; round 1's plan is unchanged
                 plan.update({"variant": q["variant"], "thinking_switch": THINKING_SWITCH})
+                if q["require_served_model"]:   # round 3: the endpoint is part of the plan
+                    plan.update({"base_url": str(q["base_url"]), "require_served_model": True})
         return plan
 
     def plan_sha(self, plan: Mapping[str, Any]) -> str:
@@ -884,6 +894,10 @@ class Labeler:
                     if fails["row"] >= 5:
                         ctl.stop("qwen_failures_5_in_a_row")
                     return
+                if q["require_served_model"] and d.get("model") != q["model"]:
+                    seg["qwen_model_mismatch"] += 1
+                    ctl.stop(f"served_model_mismatch:{d.get('model')}")
+                    return
                 fails["row"] = 0
                 ch = sorted(d["choices"], key=lambda x: int(x.get("index") or 0))
                 verdicts, finishes = [], Counter()
@@ -901,7 +915,7 @@ class Labeler:
                 if q["variant"] is not None:
                     extra = {"variant": q["variant"], "system_sha256": g.sha_text(system),
                              "thinking_switch": THINKING_SWITCH, "reasoning_tokens": rt,
-                             "max_tokens": int(q["max_tokens"]),
+                             "max_tokens": int(q["max_tokens"]), "endpoint": str(q["base_url"]),
                              "reasoning_sample": [((x.get("message") or {}).get("reasoning")
                                                    or (x.get("message") or {}).get("reasoning_content") or "")[:4000]
                                                   for x in ch[:1]]}
@@ -1248,6 +1262,7 @@ def analyse_variants(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[s
             "judge_versions": dict(Counter(str(r.get("judge_version")) for r in rows)),
             "enable_thinking": dict(Counter(str(r.get("enable_thinking")) for r in rows)),
             "served_models": dict(Counter(str(r.get("model")) for r in rows)),
+            "endpoints": dict(Counter(str(r.get("endpoint")) for r in rows)),
             "samples": n_samples, "invalid_samples": sum(int(r["invalid"]) for r in rows),
             "finish": dict(sum((Counter(r.get("finish") or {}) for r in rows), Counter())),
             "completion_tokens_per_sample": round(sum(int(r.get("ct") or 0) for r in rows) / n_samples, 1)
