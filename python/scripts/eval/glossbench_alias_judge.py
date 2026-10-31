@@ -10,6 +10,15 @@ Subcommands (``--config CFG`` first; every output goes to the config's private `
     label --backend cli --notice-acknowledged [--resume]              the Claude CLI
     label --backend qwen --notice-acknowledged [--resume]             local Qwen, n samples
     analyse                              agreement, the n-curve, calibration, the cascade
+    overlap --main-drafts PATH           round 2: calibration records whose id is in the study log
+    analyse-variants                     round 2: every ``analysis.variants`` Qwen label set
+
+**Round 2** (a config with ``calib_dir`` = round 1's directory, read for ``pairs.jsonl`` and
+``labels-opus.jsonl``, optionally pinned by ``pairs_sha256``): ``qwen.variant`` names a Qwen
+configuration (files ``labels-qwen-<variant>.jsonl`` etc.), ``qwen.judge_version`` picks the
+system prompt (:data:`JUDGE_SYSTEMS`: ``alias-judge/2`` is /1 plus :data:`JUDGE_RULE_V2`) and
+``qwen.enable_thinking`` the thinking switch (:data:`THINKING_SWITCH`). Each stored row carries
+its prompt version, system sha, thinking flag and reasoning tokens.
 
 **The judge task** (the study rule). Given a QUESTION (phrased with a primary TERM) and a
 PASSAGE (from any paper), does the passage answer the question? A passage from another paper
@@ -120,6 +129,19 @@ Rules:
 Answer with a JSON object only, exactly these keys, reason first:
 {"reason": "at most 25 words", "answers": "yes" | "no"}"""
 
+#: alias-judge/2 (round 2 of the calibration): /1 plus ONE rule, inserted after the short-form
+#: rule. Round 1 found Qwen's errors were mostly confident false "no"s on G pairs: a passage
+#: using a short form its paper defines as the TERM, judged as not about the TERM.
+JUDGE_RULE_V2 = ("- If the passage uses a short form (an abbreviation or a symbol) that its paper defines as the "
+                 "question's TERM, treat the short form as the TERM itself.")
+_V2_ANCHOR = '- "yes": the passage states'
+JUDGE_SYSTEM_V2 = JUDGE_SYSTEM.replace(_V2_ANCHOR, JUDGE_RULE_V2 + "\n" + _V2_ANCHOR, 1)
+JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2": JUDGE_SYSTEM_V2}
+#: how thinking is switched for Qwen3 on vLLM: the chat template's ``enable_thinking`` flag,
+#: sent as ``chat_template_kwargs``; the server returns the thinking in ``message.reasoning``
+#: and counts it in ``usage.completion_tokens_details.reasoning_tokens``.
+THINKING_SWITCH = "chat_template_kwargs.enable_thinking"
+
 
 def definitions_for(passage: str, entries: Sequence[Mapping[str, Any]]) -> tuple[list[tuple[str, str]], int]:
     """The passage paper's glossary entries whose alias occurs in the passage: sorted
@@ -185,11 +207,15 @@ DEFAULTS: dict[str, Any] = {
     "cli": {"model": "claude-opus-5-5", "cli": "claude", "inflight": 3, "timeout_s": 300, "cwd": None,
             "isolation_check": True, "max_calls": 1000, "max_cost_usd": 60.0},
     "qwen": {"base_url": None, "model": None, "n": 100, "temperature": 0.7, "max_tokens": 200,
-             "enable_thinking": False, "inflight": 4, "timeout_s": 900},
+             "enable_thinking": False, "inflight": 4, "timeout_s": 900, "judge_version": JUDGE_VERSION,
+             "variant": None},
     "limits": {**dr.DEFAULTS["limits"], "input_token_cap": 3_000_000, "output_token_cap": 600_000,
                "call_cap": 1500},
     "analysis": {"bootstrap": 1000, "seed": 20261031, "plateau_eps": 0.005,
-                 "taus": [0.6, 0.7, 0.8, 0.9], "cascade_n": [11, 21, 0]},
+                 "taus": [0.6, 0.7, 0.8, 0.9], "cascade_n": [11, 21, 0],
+                 # analyse-variants: [{"name", "labels"}] Qwen label files scored against the
+                 # Opus reference of ``calib_dir``; the n values and taus it reports
+                 "variants": [], "report_n": [1, 3, 11, 21], "variant_taus": [0.8, 0.9]},
 }
 
 
@@ -201,6 +227,11 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         if unknown:
             raise SystemExit(f"config block {k!r}: unknown keys {sorted(unknown)}")
         out[k] = {**v, **given}
+    if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
+        raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
+    v = out["qwen"]["variant"]
+    if v is not None and not re.fullmatch(r"[A-Za-z0-9_]+", str(v)):
+        raise SystemExit(f"qwen.variant {v!r}: letters, digits and _ only")
     for blk in ("gateway", "cli", "qwen"):
         n = int(out[blk]["inflight"])
         if not 1 <= n <= MAX_INFLIGHT:
@@ -407,12 +438,26 @@ def build_calib(records: Sequence[Mapping[str, Any]], chunks: Mapping[str, Any],
 
 # ------------------------------------------------------------------ the shared context
 
+def calib_dir(cfg: Mapping[str, Any]) -> Path:
+    """Where the frozen set (``pairs.jsonl``) and the Opus reference (``labels-opus.jsonl``)
+    live: ``calib_dir`` when set (a later round re-uses round 1's set and reference without
+    copying them), else ``out_dir``."""
+    return Path(cfg.get("calib_dir") or cfg["out_dir"])
+
+
+def check_pairs_sha(cfg: Mapping[str, Any], path: Path) -> None:
+    want = cfg.get("pairs_sha256")
+    if want and g.file_sha(path) != want:
+        raise p4.HardStop(f"{path}: sha256 differs from the config's pairs_sha256")
+
+
 class World:
     """The corpus, the glossary and the pairs, with the judge prompt per pair."""
 
     def __init__(self, cfg: Mapping[str, Any]) -> None:
         self.cfg = cfg
         self.out = Path(cfg["out_dir"])
+        self.calib_dir = calib_dir(cfg)
         rows = g.read_chunks(cfg["chunks"])
         rule = cfg.get("paper_key", "path_root")
         self.chunks = {r.chunk_id: r for r in rows}
@@ -424,9 +469,10 @@ class World:
         self.glossary = read_glossary(Path(cfg["glossary"]))
 
     def pairs(self) -> list[dict[str, Any]]:
-        path = self.out / "pairs.jsonl"
+        path = self.calib_dir / "pairs.jsonl"
         if not path.is_file():
             raise SystemExit("pairs.jsonl missing: run build-calib first")
+        check_pairs_sha(self.cfg, path)
         rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
         for p in rows:
             c = self.chunks.get(p["chunk_id"])
@@ -516,7 +562,7 @@ class Labeler:
         est_in = int(sum(chars) / dr.CHARS_PER_TOKEN_GATEWAY) * (reps if backend == "opus" else 1)
         plan = {"backend": backend, "pairs": len(pairs), "reps": reps if backend == "opus" else 1, "calls": calls,
                 "est_input_tokens": est_in, "judge_version": JUDGE_VERSION,
-                "pairs_sha256": g.file_sha(self.out / "pairs.jsonl"),
+                "pairs_sha256": g.file_sha(self.w.calib_dir / "pairs.jsonl"),
                 "system_sha256": g.sha_text(JUDGE_SYSTEM)}
         if backend == "opus":
             gw = self.cfg["gateway"]
@@ -529,15 +575,24 @@ class Labeler:
         else:
             plan.update({"model": q["model"], "n": q["n"], "temperature": q["temperature"],
                          "max_tokens": q["max_tokens"], "enable_thinking": q["enable_thinking"],
-                         "inflight": q["inflight"], "samples": len(pairs) * int(q["n"])})
+                         "inflight": q["inflight"], "samples": len(pairs) * int(q["n"]),
+                         "judge_version": q["judge_version"],
+                         "system_sha256": g.sha_text(JUDGE_SYSTEMS[q["judge_version"]])})
+            if q["variant"] is not None:        # a round-2 variant; round 1's plan is unchanged
+                plan.update({"variant": q["variant"], "thinking_switch": THINKING_SWITCH})
         return plan
 
     def plan_sha(self, plan: Mapping[str, Any]) -> str:
         return g.sha_text(json.dumps(dict(plan), sort_keys=True))
 
+    def key(self, backend: str) -> str:
+        """The file key of a backend: ``qwen-<variant>`` for a round-2 Qwen variant."""
+        v = self.cfg["qwen"]["variant"]
+        return f"qwen-{v}" if backend == "qwen" and v is not None else backend
+
     def preflight(self, backend: str, reps: int) -> dict[str, Any]:
         plan = self.plan(backend, reps)
-        g.write_json_atomic(self.out / f"preflight-{backend}.json",
+        g.write_json_atomic(self.out / f"preflight-{self.key(backend)}.json",
                             {"plan": plan, "plan_sha256": self.plan_sha(plan), "t": g.now_iso(),
                              "provenance": self.provenance})
         kind = {"opus": "GATEWAY SIZE", "cli": "CLI", "qwen": "QWEN"}[backend]
@@ -548,23 +603,25 @@ class Labeler:
                     f"<= {plan['inflight']} in flight, fallback_model \"\"")
         if backend == "qwen":
             msg += f", n={plan['n']} samples/call at T={plan['temperature']}, thinking={plan['enable_thinking']}"
+            if plan.get("variant") is not None:
+                msg += f", variant={plan['variant']} prompt={plan['judge_version']}"
         notice_line(kind, msg, self.log_path)
         return plan
 
     def gate(self, backend: str, reps: int, acknowledged: bool) -> None:
         if not acknowledged:
             raise SystemExit("label: run preflight, send the notice, then pass --notice-acknowledged")
-        pf = self.out / f"preflight-{backend}.json"
+        pf = self.out / f"preflight-{self.key(backend)}.json"
         if not pf.is_file():
-            raise SystemExit(f"label: no preflight-{backend}.json; run preflight first")
+            raise SystemExit(f"label: no preflight-{self.key(backend)}.json; run preflight first")
         if json.loads(pf.read_text())["plan_sha256"] != self.plan_sha(self.plan(backend, reps)):
             raise SystemExit("label: the plan changed since the preflight; run preflight again")
 
     def store(self, backend: str) -> p4.Store:
-        return p4.Store(self.out / f"labels-{backend}.jsonl")
+        return p4.Store(self.out / f"labels-{self.key(backend)}.jsonl")
 
     def write_totals(self, backend: str, totals: Mapping[str, Any], status: str) -> None:
-        path = self.out / f"totals-{backend}.json"
+        path = self.out / f"totals-{self.key(backend)}.json"
         prev = json.loads(path.read_text()) if path.is_file() else {"segments": []}
         prev["segments"].append({"t": g.now_iso(), "status": status, "totals": dict(totals),
                                  "provenance": self.provenance})
@@ -806,10 +863,11 @@ class Labeler:
                 if ctl.stopped():
                     return
                 prompt, cut = self.w.prompt(p)
+                system = JUDGE_SYSTEMS[q["judge_version"]]
                 body: dict[str, Any] = {
                     "model": q["model"], "n": int(q["n"]), "temperature": float(q["temperature"]),
                     "max_tokens": int(q["max_tokens"]),
-                    "messages": [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": prompt}],
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                     "chat_template_kwargs": {"enable_thinking": bool(q["enable_thinking"])}}
                 ts = time.time()
                 seg["qwen_calls"] += 1
@@ -834,9 +892,19 @@ class Labeler:
                     verdicts.append(None if v is None else int(v))
                     finishes[str(x.get("finish_reason"))] += 1
                 u = d.get("usage") or {}
+                rt = int((u.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
                 seg["qwen_prompt_tokens"] += int(u.get("prompt_tokens") or 0)
                 seg["qwen_completion_tokens"] += int(u.get("completion_tokens") or 0)
+                seg["qwen_reasoning_tokens"] += rt
                 seg["qwen_samples"] += len(ch)
+                extra: dict[str, Any] = {}
+                if q["variant"] is not None:
+                    extra = {"variant": q["variant"], "system_sha256": g.sha_text(system),
+                             "thinking_switch": THINKING_SWITCH, "reasoning_tokens": rt,
+                             "max_tokens": int(q["max_tokens"]),
+                             "reasoning_sample": [((x.get("message") or {}).get("reasoning")
+                                                   or (x.get("message") or {}).get("reasoning_content") or "")[:4000]
+                                                  for x in ch[:1]]}
                 st.put({"k": f"qwen|{p['pair_id']}", "pair_id": p["pair_id"], "backend": "qwen",
                         "model": d.get("model"), "requested_model": q["model"], "n": len(ch),
                         "verdicts": verdicts, "invalid": sum(v is None for v in verdicts),
@@ -845,7 +913,8 @@ class Labeler:
                         "pt": u.get("prompt_tokens"), "ct": u.get("completion_tokens"),
                         "temperature": q["temperature"], "enable_thinking": q["enable_thinking"],
                         "duration_s": round(time.time() - ts, 2), "defs_cut": cut,
-                        "prompt_sha256": g.sha_text(prompt), "judge_version": JUDGE_VERSION, "t": g.now_iso()})
+                        "prompt_sha256": g.sha_text(prompt), "judge_version": q["judge_version"], "t": g.now_iso(),
+                        **extra})
             return fn
 
         async def go() -> None:
@@ -940,8 +1009,11 @@ def _ci(xs: Sequence[float]) -> list[float]:
 
 
 def n_curve(yes: Sequence[int], valid: Sequence[int], ref: Sequence[int], strata: Sequence[str],
-            ns: Sequence[int], draws: int, seed: int) -> dict[int, dict[str, Any]]:
-    """Majority-vote agreement per odd ``n`` over ``draws`` hypergeometric subsamples."""
+            ns: Sequence[int], draws: int, seed: int,
+            groups: Mapping[str, Sequence[str]] | None = None) -> dict[int, dict[str, Any]]:
+    """Majority-vote agreement per odd ``n`` over ``draws`` hypergeometric subsamples; ``fp`` /
+    ``fn`` are the mean counts of false yes / false no per draw. ``groups``: further per-pair
+    labellings (e.g. the record kind) scored like the strata, as ``per_<name>_acc``."""
     import numpy as np
 
     rng = np.random.default_rng(seed)
@@ -962,8 +1034,15 @@ def n_curve(yes: Sequence[int], valid: Sequence[int], ref: Sequence[int], strata
         for s in sorted(set(strata)):
             msk = strata_a == s
             per[s] = round(float((vote[:, msk] == ref_a[msk]).mean()), 4)
+        fp = ((vote == 1) & (ref_a == 0)).sum(axis=1)
+        fn = ((vote == 0) & (ref_a == 1)).sum(axis=1)
         out[n] = {"acc": round(float(acc.mean()), 4), "acc_ci": _ci(list(acc)), "kappa": round(float(np.mean(ks)), 4),
-                  "kappa_ci": _ci(ks), "per_stratum_acc": per}
+                  "kappa_ci": _ci(ks), "per_stratum_acc": per,
+                  "fp": round(float(fp.mean()), 2), "fn": round(float(fn.mean()), 2)}
+        for gname, lab in (groups or {}).items():
+            la = np.array(lab)
+            out[n][f"per_{gname}_acc"] = {v: round(float((vote[:, la == v] == ref_a[la == v]).mean()), 4)
+                                          for v in sorted(set(lab))}
     return out
 
 
@@ -1075,6 +1154,114 @@ def analyse(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[str, Any]:
     return res
 
 
+# ------------------------------------------------------------------ round 2: variants
+
+def overlap_records(pairs: Iterable[Mapping[str, Any]], main_drafts: Path) -> dict[str, Any]:
+    """The calibration records whose ``record_id`` also occurs in the study's (main) draft log.
+    Only the ids are read; nothing of a main record is used. The main log grows while the study
+    runs, so the result carries the log's sha and line count at the time it was taken."""
+    ids: set[str] = set()
+    lines = 0
+    for r in p4.read_jsonl_repair_tail(main_drafts):
+        lines += 1
+        if r.get("record_id"):
+            ids.add(str(r["record_id"]))
+    pl = list(pairs)
+    hit = sorted({p["record_id"] for p in pl} & ids)
+    return {"records": hit, "questions": len(hit), "pairs": sum(p["record_id"] in hit for p in pl),
+            "main_drafts": str(main_drafts), "main_drafts_sha256": g.file_sha(main_drafts),
+            "main_drafts_rows": lines, "rule": "calibration record_id present in the main draft log",
+            "t": g.now_iso()}
+
+
+def score_variant(qw: Mapping[str, Mapping[str, Any]], ref: Mapping[str, Mapping[str, Any]],
+                  pairs: Mapping[str, Mapping[str, Any]], ids: Sequence[str], a: Mapping[str, Any]
+                  ) -> dict[str, Any] | None:
+    """One Qwen label set on the pairs ``ids`` (Opus-unanimous, labelled): the n-curve at
+    ``report_n`` with false-yes / false-no counts and per-stratum and per-record-kind accuracy,
+    and the cascade at ``variant_taus`` for every ``cascade_n`` (bootstrapped) and at all samples."""
+    import numpy as np
+
+    ids = [pid for pid in ids if pid in qw and sum(v is not None for v in qw[pid]["verdicts"]) > 0]
+    if not ids:
+        return None
+    yes = [sum(v for v in qw[pid]["verdicts"] if v is not None) for pid in ids]
+    val = [sum(v is not None for v in qw[pid]["verdicts"]) for pid in ids]
+    rr = [int(ref[pid]["ref"]) for pid in ids]
+    st = [pairs[pid]["stratum"] for pid in ids]
+    kinds = [pairs[pid]["record_kind"] for pid in ids]
+    top = max(val)
+    ns = [n for n in a["report_n"] if n <= top]
+    curve = n_curve(yes, val, rr, st, ns, int(a["bootstrap"]), int(a["seed"]), {"record_kind": kinds})
+    share = [y / v for y, v in zip(yes, val, strict=True)]
+    casc: dict[str, Any] = {"n_all": cascade(share, rr, a["variant_taus"])}
+    rng = np.random.default_rng(int(a["seed"]) + 7)
+    ya, va = np.array(yes), np.array(val)
+    for cn in a["cascade_n"]:
+        if not cn or cn > top:
+            continue
+        m = np.minimum(va, cn)
+        draws = [cascade(list(rng.hypergeometric(ya, va - ya, m) / m), rr, a["variant_taus"])
+                 for _ in range(int(a["bootstrap"]))]
+        casc[f"n{cn}"] = [{"tau": t, **{k: round(float(np.mean([d[i][k] for d in draws if d[i][k] is not None])), 4)
+                                        for k in ("escalation_rate", "accepted_accuracy", "cascade_accuracy")},
+                           "escalated_mean": round(float(np.mean([d[i]["escalated"] for d in draws])), 2)}
+                          for i, t in enumerate(a["variant_taus"])]
+    return {"pairs": len(ids), "ref_yes": sum(rr), "curve": {str(n): curve[n] for n in ns}, "cascade": casc,
+            "pairs_with_fewer_valid_than_max_n": sum(v < max(ns) for v in val)}
+
+
+def analyse_variants(cfg: Mapping[str, Any], out: Path, reps: int = 3) -> dict[str, Any]:
+    """Every ``analysis.variants`` label file against the Opus reference of ``calib_dir``, on
+    the Opus-unanimous pairs, in four subsets: all, without the pairs of records that overlap
+    the study (``overlap.json``), without ``coll_diff`` (decidable from the definitions block,
+    so not evidence of judgement), and without both."""
+    a = cfg["analysis"]
+    cdir = calib_dir(cfg)
+    check_pairs_sha(cfg, cdir / "pairs.jsonl")
+    pairs = {p["pair_id"]: p for p in (json.loads(x) for x in (cdir / "pairs.jsonl").read_text().splitlines() if x)}
+    ref = opus_reference(p4.Store(cdir / "labels-opus.jsonl").rows.values(), reps)
+    ov_path = out / "overlap.json"
+    ov = set(json.loads(ov_path.read_text())["records"]) if ov_path.is_file() else set()
+    una = sorted(pid for pid, r in ref.items() if r["unanimous"])
+    subsets = {"unanimous": una,
+               "excl_overlap": [pid for pid in una if pairs[pid]["record_id"] not in ov],
+               "excl_coll_diff": [pid for pid in una if pairs[pid]["stratum"] != "coll_diff"],
+               "excl_both": [pid for pid in una if pairs[pid]["record_id"] not in ov
+                             and pairs[pid]["stratum"] != "coll_diff"]}
+    res: dict[str, Any] = {"t": g.now_iso(), "reference": {"labels": str(cdir / "labels-opus.jsonl"),
+                                                           "sha256": g.file_sha(cdir / "labels-opus.jsonl"),
+                                                           "unanimous": len(una)},
+                           "pairs_sha256": g.file_sha(cdir / "pairs.jsonl"),
+                           "overlap": {"file": str(ov_path) if ov else None, "records": len(ov),
+                                       "pairs": sum(p["record_id"] in ov for p in pairs.values())},
+                           "subset_sizes": {k: len(v) for k, v in subsets.items()}, "variants": {}}
+    for v in a["variants"]:
+        f = Path(v["labels"])
+        rows = list(p4.Store(f).rows.values())
+        qw = {r["pair_id"]: r for r in rows}
+        tot_f = f.with_name(f.name.replace("labels-", "totals-").replace(".jsonl", ".json"))
+        tot = json.loads(tot_f.read_text())["segments"] if tot_f.is_file() else []
+        n_samples = sum(int(r["n"]) for r in rows)
+        info: dict[str, Any] = {
+            "labels": str(f), "sha256": g.file_sha(f), "pairs_labelled": len(qw),
+            "judge_versions": dict(Counter(str(r.get("judge_version")) for r in rows)),
+            "enable_thinking": dict(Counter(str(r.get("enable_thinking")) for r in rows)),
+            "served_models": dict(Counter(str(r.get("model")) for r in rows)),
+            "samples": n_samples, "invalid_samples": sum(int(r["invalid"]) for r in rows),
+            "finish": dict(sum((Counter(r.get("finish") or {}) for r in rows), Counter())),
+            "completion_tokens_per_sample": round(sum(int(r.get("ct") or 0) for r in rows) / n_samples, 1)
+            if n_samples else None,
+            "reasoning_tokens_per_sample": round(sum(int(r.get("reasoning_tokens") or 0) for r in rows) / n_samples, 1)
+            if n_samples else None,
+            "totals_segments": [{"status": s["status"], **{k: s["totals"].get(k) for k in
+                                 ("wall_s", "samples_per_s", "completion_tokens_per_s", "qwen_samples")}}
+                                for s in tot]}
+        info["subsets"] = {k: score_variant(qw, ref, pairs, ids, a) for k, ids in subsets.items()}
+        res["variants"][v["name"]] = info
+    return res
+
+
 # ------------------------------------------------------------------ CLI
 
 def provenance() -> dict[str, Any]:
@@ -1110,6 +1297,10 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
             p.add_argument("--resume", action="store_true")
     pa = sub.add_parser("analyse")
     pa.add_argument("--reps", type=int, default=3)
+    pv_ = sub.add_parser("analyse-variants")
+    pv_.add_argument("--reps", type=int, default=3)
+    po = sub.add_parser("overlap")
+    po.add_argument("--main-drafts", required=True, type=Path)
     args = ap.parse_args(argv)
     os.umask(0o077)
     _, cfg = load_config(args.config)
@@ -1121,8 +1312,24 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
         g.write_json_atomic(out / "analysis.json", res)
         print(json.dumps({k: res[k] for k in ("pairs", "opus") if k in res}, indent=1)[:4000])
         return EXIT_OK
+    if args.cmd == "analyse-variants":
+        res = analyse_variants(cfg, out, args.reps)
+        res["provenance"] = pv
+        g.write_json_atomic(out / "analysis-variants.json", res)
+        print(json.dumps({k: res[k] for k in ("subset_sizes", "overlap")}, indent=1))
+        return EXIT_OK
+    if args.cmd == "overlap":
+        cdir = calib_dir(cfg)
+        check_pairs_sha(cfg, cdir / "pairs.jsonl")
+        prs = [json.loads(x) for x in (cdir / "pairs.jsonl").read_text().splitlines() if x]
+        ov = {**overlap_records(prs, args.main_drafts), "provenance": pv}
+        g.write_json_atomic(out / "overlap.json", ov)
+        print(json.dumps({k: ov[k] for k in ("questions", "pairs", "main_drafts_rows")}))
+        return EXIT_OK
     world = World(cfg)
     if args.cmd == "build-calib":
+        if calib_dir(cfg) != out:
+            raise SystemExit("build-calib with calib_dir set: the set is frozen in calib_dir")
         if (out / "pairs.jsonl").exists():
             raise SystemExit("pairs.jsonl exists; the calibration set is frozen once built")
         recs = load_pilot_records(cfg["pilots"])
@@ -1146,7 +1353,7 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
         raise SystemExit("PAUSE present: remove it (and run preflight again) to continue")
     st = lab.store(args.backend)
     if st.rows and not args.resume:
-        raise SystemExit(f"labels-{args.backend}.jsonl has rows; pass --resume to continue")
+        raise SystemExit(f"labels-{lab.key(args.backend)}.jsonl has rows; pass --resume to continue")
     lab.gate(args.backend, args.reps, args.notice_acknowledged)
     try:
         if args.backend == "opus":

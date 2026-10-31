@@ -158,3 +158,93 @@ n = 1 is as good as n = 99, about 4 points below the reference. A cascade at τ 
 n ≈ 11 sends about 4 % of pairs to Opus and closes about half the gap. Two levers are
 untested: thinking on, and a prompt rule that a short form defined as the term IS the term.
 Either one would be a new judge version, re-run on this set.
+
+## Round 2: the two untested levers (alias-judge/2, thinking on)
+
+Run of 2026-10-31, harness commit `65a58e1` (clean). The set and the Opus reference are round
+1's, read in place (`calib_dir`; `pairs_sha256` pins `983b8d7c…`). Outputs are in `calib/round2/`
+(`analysis-variants.json`, `SHA256SUMS`). Local Qwen only (mango `:8004`, Qwen3.6-35B-A3B, at most
+4 requests in flight). There were no gateway or CLI calls.
+
+* **A**: `alias-judge/2` with thinking off. The prompt is /1 plus one rule (`JUDGE_RULE_V2`): *"If the passage uses a
+  short form (an abbreviation or a symbol) that its paper defines as the question's TERM, treat
+  the short form as the TERM itself."* The user message is unchanged.
+* **B**: `alias-judge/1` with thinking on. **C**: `alias-judge/2` with thinking on.
+* Thinking switch: `chat_template_kwargs: {"enable_thinking": true}`, vLLM's pass-through to
+  the Qwen3 chat template. The thinking comes back in `message.reasoning` and is counted in
+  `usage.completion_tokens_details.reasoning_tokens`. `max_tokens` was 8192 with thinking on and 200 with it off.
+* Each configuration took n = 21 samples per pair at T 0.7 on all 410 pairs. Every row records
+  its prompt version, system sha, thinking flag and reasoning tokens. The baseline is round 1's
+  n = 100 file, subsampled to the same n values.
+
+**Accuracy on the 372 Opus-unanimous pairs** (majority vote, 1,000 hypergeometric draws; FP is
+a false yes and FN a false no, mean counts):
+
+| config | n=1 acc | κ | FP | FN | n=21 acc | κ | FP | FN |
+|---|---|---|---|---|---|---|---|---|
+| baseline (/1, off) | 0.956 | 0.887 | 5.1 | 11.4 | 0.953 | 0.881 | 5.0 | 12.5 |
+| A (/2, off) | 0.956 | 0.888 | 5.7 | 10.9 | 0.952 | 0.878 | 6 | 12 |
+| B (/1, on) | 0.977 | 0.943 | 6.9 | 1.7 | 0.976 | 0.941 | 7 | 2 |
+| C (/2, on) | 0.976 | 0.941 | 7.5 | 1.5 | 0.981 | 0.954 | 6 | 1 |
+
+n = 3 / 11: baseline 0.955 / 0.954, A 0.956 / 0.955, B 0.978 / 0.978, C 0.978 / 0.980.
+
+**Subsets.** The review counted 5 questions and 30 pairs overlapping the study. The main draft log
+has grown since then. At this run (`overlap.json`, which records the log's sha and row count),
+7 calibration records and 50 pairs share a `record_id` with the study.
+
+| n = 1 → 21 | all 372 | without overlap (327) | without coll_diff (304) | without both (262) |
+|---|---|---|---|---|
+| baseline | 0.956 → 0.953 | 0.966 → 0.964 | 0.946 → 0.943 | 0.957 → 0.956 |
+| A | 0.956 → 0.952 | 0.966 → 0.966 | 0.946 → 0.941 | 0.958 → 0.958 |
+| B | 0.977 → 0.976 | 0.985 → 0.982 | 0.972 → 0.970 | 0.982 → 0.977 |
+| C | 0.976 → 0.981 | 0.985 → 0.988 | 0.971 → 0.977 | 0.981 → 0.985 |
+
+coll_diff is 1.00 for every configuration. As in round 1, it is reported but is not evidence of judgement.
+
+**Per-stratum accuracy at n = 21** (all 372; G / C is the record kind):
+
+| config | gold | lex_same | lex_other | coll_same | coll_diff | G | C |
+|---|---|---|---|---|---|---|---|
+| baseline | 0.97 | 0.86 | 0.97 | 0.94 | 1.00 | 0.930 | 0.982 |
+| A | 0.97 | 0.84 | 0.97 | 0.95 | 1.00 | 0.932 | 0.976 |
+| B | 1.00 | 0.88 | 0.99 | 0.99 | 1.00 | 0.976 | 0.976 |
+| C | 1.00 | 0.89 | 0.99 | 1.00 | 1.00 | 0.985 | 0.976 |
+
+**Majority errors over all stored samples.** The baseline makes 18: 13 FN, all but one on G
+records, and 5 FP. A makes 18, of which 17 are the baseline's. B makes 9 (2 FN, 7 FP): it fixes 12
+baseline errors and adds 3. C makes 7 (1 FN, 6 FP): it fixes 13 and adds 2. All of C's errors
+are in lex_same (6) or lex_other (1). It has no collision error and no false no on a G record.
+These are the n = 21 FP / FN of the table above, which the round-2 working notes first
+undercounted by one for B and C: they dropped the 2 unanimous pairs whose Opus log holds a
+re-issued fourth row.
+
+**Over-correction check.** The rule did not turn collisions or lexical non-answers into yeses.
+coll_diff has 0 FP in A and C, and coll_same has 0 FP in A and C (B has 1). C's false yeses (6; the
+baseline has 5) are in lex_same and lex_other, and 4 of them are baseline errors. The
+residue is Qwen accepting a neighbouring chunk of the question's own paper that Opus rejects.
+
+**Cascade at n = 21** (accept Qwen when the share is ≥ τ or ≤ 1 − τ; Opus labels the rest):
+
+| config | τ 0.8 escalated | cascade acc | τ 0.9 escalated | cascade acc |
+|---|---|---|---|---|
+| baseline | 3.0 % | 0.972 | 4.7 % | 0.980 |
+| A | 3.2 % | 0.973 | 4.3 % | 0.979 |
+| B | 1.6 % | 0.987 | 2.2 % | 0.987 |
+| C | 1.6 % | 0.984 | 2.4 % | 0.984 |
+
+Without the overlap records, τ 0.9 at n = 21 escalates 1.5 % for both B (0.994) and C (0.991).
+With thinking on, the remaining errors sit in confident bins, so escalation adds only 0.3–1 point.
+
+**Throughput** (410 requests × 21 samples, 4 in flight): A 177 s at 48.6 samples/s, 42
+completion tokens per sample, 2 invalid (length). B 1,524 s at 5.65 samples/s, 668 completion
+tokens per sample of which 631 reasoning, 0 invalid. C 1,556 s at 5.53 samples/s, 675 tokens per
+sample (638 reasoning), 1 invalid (length). Thinking costs about 16× the tokens and about 9× the
+time per sample.
+
+**Reading.** The prompt rule alone does nothing; Qwen's false noes survive an explicit rule.
+Thinking on removes them: FN falls from about 12 to 1–2, and gold, coll_same and lex_other reach
+about 1.00. With thinking on, the rule adds a little (C has no collision error and is best at
+n = 21), but at n = 1, B and C are within noise. Majority voting still buys little: C gains
+0.5 points from n = 1 to 21, and B gains none. The remaining gap to Opus, about 2 points (1.2
+without the overlap records), is false yeses on same-paper neighbouring chunks.

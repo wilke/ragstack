@@ -488,3 +488,121 @@ def test_cli_shim_does_not_scale_a_same_model_reask_twice() -> None:
     iso = sh.isolation(p, res)
     assert iso["requests"] == 2 and iso["budget"] == round(2 * one, 1) and not iso["PASS"]
     assert sh.isolation(p, {**res, "context_tokens": int(1.6 * one)})["PASS"]
+
+
+# ------------------------------------------------------------------ round 2: variants
+
+def test_v2_system_is_v1_plus_one_rule() -> None:
+    v1, v2 = jd.JUDGE_SYSTEMS["alias-judge/1"], jd.JUDGE_SYSTEMS["alias-judge/2"]
+    assert v1 == jd.JUDGE_SYSTEM and v2.count(jd.JUDGE_RULE_V2) == 1
+    assert v2.replace(jd.JUDGE_RULE_V2 + "\n", "", 1) == v1
+    assert v2.index(jd.JUDGE_RULE_V2) < v2.index('- "yes":')
+
+
+def round2_cfg(world: Path, variant: str, version: str, thinking: bool, **extra: Any) -> Path:
+    raw = json.loads(world.read_text())
+    r1 = raw["out_dir"]
+    raw["out_dir"] = str(Path(r1).parent / "round2")
+    raw["calib_dir"] = r1
+    raw["qwen"] = {**raw["qwen"], "variant": variant, "judge_version": version, "enable_thinking": thinking,
+                   "max_tokens": 4096}
+    raw.update(extra)
+    path = world.parent / f"cfg-{variant}.json"
+    path.write_text(json.dumps(raw))
+    return path
+
+
+def qwen_reply(yes_if: Any) -> Any:
+    def reply(b: dict[str, Any]) -> Resp:
+        sys_, user = b["messages"][0]["content"], b["messages"][1]["content"]
+        ans = YES if yes_if(sys_, user) else NO
+        ch = [{"index": i, "message": {"content": ans, "reasoning": "thinking..."}, "finish_reason": "stop"}
+              for i in range(b["n"])]
+        return Resp(200, {"model": "q", "choices": ch,
+                          "usage": {"prompt_tokens": 9, "completion_tokens": 700,
+                                    "completion_tokens_details": {"reasoning_tokens": 600}}})
+    return reply
+
+
+def test_qwen_variant_files_prompt_and_thinking(world: Path) -> None:
+    cfg = round2_cfg(world, "C", "alias-judge/2", True)
+    http = FakeHTTP(qwen_reply(lambda s, u: True))
+    assert label(cfg, "qwen", http) == 0
+    out = out_of(cfg)
+    assert (out / "labels-qwen-C.jsonl").is_file() and (out / "preflight-qwen-C.json").is_file()
+    assert not (out / "pairs.jsonl").exists()          # the set is read from calib_dir, not copied
+    b = http.bodies[0]
+    assert b["messages"][0]["content"] == jd.JUDGE_SYSTEM_V2
+    assert b["chat_template_kwargs"] == {"enable_thinking": True} and b["max_tokens"] == 4096
+    rows = [json.loads(x) for x in (out / "labels-qwen-C.jsonl").read_text().splitlines()]
+    assert all(r["judge_version"] == "alias-judge/2" and r["variant"] == "C" and r["enable_thinking"]
+               and r["reasoning_tokens"] == 600 and r["system_sha256"] == jd.g.sha_text(jd.JUDGE_SYSTEM_V2)
+               and r["thinking_switch"] == jd.THINKING_SWITCH for r in rows)
+    # round 1's own Qwen file is untouched
+    assert not (out_of(world) / "labels-qwen.jsonl").exists()
+
+
+def test_round2_pairs_sha_pin(world: Path) -> None:
+    cfg = round2_cfg(world, "A", "alias-judge/2", False, pairs_sha256="0" * 64)
+    with pytest.raises(jd.p4.HardStop):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "qwen"], prov=PROV)
+
+
+def test_unknown_judge_version_refused(world: Path) -> None:
+    cfg = round2_cfg(world, "A", "alias-judge/9", False)
+    with pytest.raises(SystemExit):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "qwen"], prov=PROV)
+
+
+def test_analyse_variants_counts_and_overlap(world: Path, tmp_path: Path) -> None:
+    pairs = pairs_of(world)
+
+    def opus(b: dict[str, Any]) -> Resp:
+        return chat(NO if "acetylcholine" in b["messages"][1]["content"] else YES)
+
+    assert label(world, "opus", FakeHTTP(opus), extra=["--reps", "3"]) == 0
+    # A: says no to everything except under prompt /2 -> false no's only on /1
+    cfg_a = round2_cfg(world, "A", "alias-judge/1", False)
+    assert label(cfg_a, "qwen", FakeHTTP(qwen_reply(lambda s, u: False))) == 0
+    cfg_c = round2_cfg(world, "C", "alias-judge/2", True)
+    assert label(cfg_c, "qwen", FakeHTTP(qwen_reply(lambda s, u: jd.JUDGE_RULE_V2 in s))) == 0
+    main_log = tmp_path / "main-draft.jsonl"
+    main_log.write_text(json.dumps({"record_id": "rec-1"}) + "\n" + json.dumps({"record_id": "other"}) + "\n")
+    assert jd.main(["--config", str(cfg_c), "overlap", "--main-drafts", str(main_log)], prov=PROV) == 0
+    out = out_of(cfg_c)
+    ov = json.loads((out / "overlap.json").read_text())
+    assert ov["records"] == ["rec-1"] and ov["pairs"] == len(pairs) and ov["main_drafts_rows"] == 2
+    raw = json.loads(cfg_c.read_text())
+    raw["analysis"] = {**raw.get("analysis", {}), "report_n": [1, 3, 7],
+                       "variants": [{"name": "A", "labels": str(out / "labels-qwen-A.jsonl")},
+                                    {"name": "C", "labels": str(out / "labels-qwen-C.jsonl")}]}
+    cfg_c.write_text(json.dumps(raw))
+    assert jd.main(["--config", str(cfg_c), "analyse-variants"], prov=PROV) == 0
+    res = json.loads((out / "analysis-variants.json").read_text())
+    n_yes = sum(1 for p in pairs if p["stratum"] != "coll_diff")
+    a = res["variants"]["A"]["subsets"]["unanimous"]
+    assert a["curve"]["7"]["fn"] == n_yes and a["curve"]["7"]["fp"] == 0
+    c = res["variants"]["C"]["subsets"]["unanimous"]
+    assert c["curve"]["1"]["fp"] == 1 and c["curve"]["1"]["fn"] == 0     # coll_diff over-corrected to yes
+    assert c["curve"]["1"]["per_stratum_acc"]["coll_diff"] == 0.0
+    assert set(c["curve"]["1"]["per_record_kind_acc"]) == {"G"}
+    assert res["variants"]["C"]["subsets"]["excl_overlap"] is None     # every pair is from rec-1
+    assert res["variants"]["C"]["subsets"]["excl_coll_diff"]["curve"]["1"]["acc"] == 1.0
+    assert res["variants"]["C"]["reasoning_tokens_per_sample"] == pytest.approx(600 / 7, abs=0.1)
+    assert res["variants"]["C"]["judge_versions"] == {"alias-judge/2": len(pairs)}
+    assert res["variants"]["C"]["subsets"]["unanimous"]["cascade"]["n_all"][0]["tau"] == 0.8
+
+
+def test_thinking_verdict_is_parsed_from_the_final_answer_only(world: Path) -> None:
+    """With thinking on, vLLM returns the thinking in ``message.reasoning``; a draft verdict
+    there (yes, or no, or both) must never become the sample's verdict."""
+    def reply(b: dict[str, Any]) -> Resp:
+        think = 'Maybe yes, maybe no. Draft: {"reason": "r", "answers": "yes"}'
+        ch = [{"index": i, "message": {"content": NO, "reasoning": think}, "finish_reason": "stop"}
+              for i in range(b["n"])]
+        return Resp(200, {"model": "q", "choices": ch, "usage": {"prompt_tokens": 9, "completion_tokens": 50}})
+    cfg = round2_cfg(world, "C", "alias-judge/2", True)
+    assert label(cfg, "qwen", FakeHTTP(reply)) == 0
+    rows = [json.loads(x) for x in (out_of(cfg) / "labels-qwen-C.jsonl").read_text().splitlines()]
+    assert rows and all(r["verdicts"] and set(r["verdicts"]) == {0} for r in rows)
+    assert all('"answers": "yes"' in r["reasoning_sample"][0] for r in rows)
