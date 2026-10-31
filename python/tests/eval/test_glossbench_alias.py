@@ -379,7 +379,7 @@ def test_chain_stop_rule_skips_later_waves(tmp_path: Path) -> None:
     # the verifier prompt version is recorded on every verdict and accepted record
     vrows = jsonl(out / "verify-alias-T.jsonl")
     l2 = [r for r in jsonl(out / "acceptance-alias-T.jsonl") if r["layer"] == "l2"]
-    assert vrows and all(r["verify_version"] == ak.VERIFY_VERSION == "alias-verify/2" for r in vrows)
+    assert vrows and all(r["verify_version"] == ak.VERIFY_VERSION == "alias-verify/3" for r in vrows)
     assert l2 and all(r["verify_version"] == ak.VERIFY_VERSION for r in l2)
     assert all(a["verifier_prompt_version"] == ak.VERIFY_VERSION for a in acc)
     assert s["alias"]["verifier_prompt_versions_accepted"] == {ak.VERIFY_VERSION: 9}
@@ -798,9 +798,12 @@ def test_verify_system_states_the_owners_definitions() -> None:
     # term_denoted never asks the passage to define the alias; supports stays strict
     assert "never set false because the passage or quote does not define the short form" in v
     assert '"supports" (strict)' in v
+    # alias-verify/3: a generic referent fails standalone; unstated purpose / qualifier, near-empty fail supports
+    assert "NAMES the distinguishing context" in v and '"different groups of children"' in v
+    assert "does not state why" in v and "qualifier" in v and "near-empty" in v
 
 
-# Six synthetic calibration records (no real paper text) with the verdict the owner's
+# Synthetic calibration records (no real paper text) with the verdict the owner's
 # definitions require. The offline test checks the input assembly; with
 # RAGSTACK_ALIAS_VERIFY_LIVE=1 the same records go to the Claude CLI once (the self-check
 # recorded in docs/plans/alias-study-2026-11/VERIFIER.md).
@@ -843,6 +846,41 @@ VERIFY_CASES: list[dict[str, Any]] = [
      "passage": "The HPV7 opens at 3 bar.",
      "rec": {"question": "At what pressure does the halden pressure valve close?", "answer": "5 bar",
              "quote": "The HPV7 opens at 3 bar."}},
+    # alias-verify/3
+    {"name": "generic_referent_groups", "kind": "C", "expect": {"standalone": False},
+     "entry": {"alias": "DSI", "primary": "dravel serum infusion", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Children in both arms received dravel serum infusion monthly, which may explain the similar titres.",
+     "rec": {"question": "What may explain similar antibody titres in different groups of children?",
+             "answer": "monthly dravel serum infusion",
+             "quote": "Children in both arms received dravel serum infusion monthly, which may explain the similar "
+                      "titres."}},
+    {"name": "generic_referent_simulation", "kind": "G", "expect": {"standalone": False},
+     "entry": {"alias": "PXR", "primary": "pellox reactor", "alias_kind": "abbreviation"},
+     "definition": "The pellox reactor (PXR) was modelled as a cylinder.",
+     "passage": "In the simulation, the PXR wall was set to 4 mm of steel.",
+     "rec": {"question": "In a simulation, what wall thickness was assigned to the pellox reactor?",
+             "answer": "4 mm of steel", "quote": "In the simulation, the PXR wall was set to 4 mm of steel."}},
+    {"name": "purpose_not_stated", "kind": "C", "expect": {"supports": False},
+     "entry": {"alias": "GTB", "primary": "grannox tryptic broth", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Strains of Velmira tauri were grown overnight in grannox tryptic broth at 37 C.",
+     "rec": {"question": "For what purpose is grannox tryptic broth used with Velmira tauri strains?",
+             "answer": "overnight grown cultures",
+             "quote": "Strains of Velmira tauri were grown overnight in grannox tryptic broth at 37 C."}},
+    {"name": "qualifier_not_stated", "kind": "G", "expect": {"supports": False},
+     "entry": {"alias": "QLR", "primary": "quellin resistance genes", "alias_kind": "abbreviation"},
+     "definition": "Quellin resistance genes (QLR) confer tolerance to quellin.",
+     "passage": "In Tarvia coli, QLR have been reported.",
+     "rec": {"question": "In which bacterial species recovered from river sediment have quellin resistance genes "
+                         "been reported?", "answer": "Tarvia coli",
+             "quote": "In Tarvia coli, QLR have been reported."}},
+    {"name": "near_empty_answer", "kind": "G", "expect": {"supports": False},
+     "entry": {"alias": "ZC", "primary": "zentric chromatography", "alias_kind": "abbreviation"},
+     "definition": "Samples were separated by zentric chromatography (ZC).",
+     "passage": "Fig 3 ZC analysis of pooled and single Morvax-B1 fractions.",
+     "rec": {"question": "What was zentric chromatography used for on pooled and single Morvax-B1 fractions?",
+             "answer": "analysis", "quote": "Fig 3 ZC analysis of pooled and single Morvax-B1 fractions."}},
 ]
 
 
