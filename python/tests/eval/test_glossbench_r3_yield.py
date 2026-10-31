@@ -845,3 +845,92 @@ def test_every_codex_call_is_isolation_checked(tmp_path: Path) -> None:
     st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
     assert st["status"] == "hard_stop" and st["reason"] == "codex_isolation_failed"
     assert len(clis.codex) == 2
+
+
+# ------------------------------------------------------------------ 4b. a safeguard re-ask on the SAME model
+
+def _one_budget(prompt: str, system: str) -> float:
+    """The unscaled isolation budget of one request (``Run.isolation`` with k = 1)."""
+    return dr.ISOLATION_FACTOR * (len(prompt) + len(system)) / dr.CHARS_PER_TOKEN_CLI + dr.CLAUDE_FIXED_OVERHEAD
+
+
+class SameModelReask(Clis):
+    """The refused prompts come back as a safeguard stop re-asked on the SAME model (seen
+    2026-10-31): one ``modelUsage`` entry, ``safety_stops`` 1, ``num_turns`` 2, the summed
+    context of both requests = ``factor`` x one request's budget, the same model's answer."""
+
+    def __init__(self, refuse: Any, factor: float, **kw: Any) -> None:
+        super().__init__(refuse, **kw)
+        self.factor = factor
+
+    def __call__(self, cmd: list[str], *, input: str, **kw: Any) -> SimpleNamespace:  # noqa: A002  # type: ignore[override]
+        if cmd[0] == "codex" or not self.refuse(input):
+            return super().__call__(cmd, input=input, **kw)
+        self.claude.append({"input": input, "cwd": kw["cwd"]})
+        system = cmd[cmd.index("--system-prompt") + 1]
+        ctx = int(self.factor * _one_budget(input, system))
+        out = {"type": "result", "is_error": False, "stop_reason": "end_turn", "result": json.dumps(OK_VERDICT),
+               "num_turns": 2, "safety_stops": 1, "total_cost_usd": 0.03,
+               "modelUsage": {"claude-opus-5-5": {"inputTokens": ctx, "outputTokens": 30}}}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(out), stderr="")
+
+
+class _Iso:
+    verify_system = dr.ck.VERIFY_SYSTEM
+    isolation = dr.Run.isolation
+
+
+def test_isolation_budget_scales_only_for_a_same_model_reask() -> None:
+    p = "x" * 3000
+    one = _one_budget(p, dr.ck.VERIFY_SYSTEM)
+    same = {"context_tokens": int(1.4 * one), "safety_stops": 1, "served_models": {"claude-opus-5-5": [0, 30]}}
+    iso = _Iso().isolation(p, same)
+    assert iso["PASS"] and iso["requests"] == 2 and iso["budget"] == round(2 * one, 1)
+    # an internal haiku call does not make it cross-model
+    assert _Iso().isolation(p, {**same, "served_models": {"claude-opus-5-5": [0, 30],
+                                                          "claude-haiku-4-5": [50, 5]}})["PASS"]
+    assert not _Iso().isolation(p, {**same, "safety_stops": 0})["PASS"]                 # no stop: no scaling
+    cross = {**same, "served_models": {"claude-opus-5-5": [0, 0], "claude-opus-5": [0, 30]}}
+    assert not _Iso().isolation(p, cross)["PASS"] and "requests" not in _Iso().isolation(p, cross)
+    assert not _Iso().isolation(p, {k: v for k, v in same.items() if k != "served_models"})["PASS"]  # fail closed
+    # a real leak (tens of thousands of tokens) still fails at k = 2 (and at k = 3)
+    leak = {**same, "context_tokens": 40_000}
+    assert 2 * one < 40_000 and not _Iso().isolation(p, leak)["PASS"]
+    assert not _Iso().isolation(p, {**leak, "safety_stops": 2})["PASS"]
+
+
+def test_a_same_model_reask_passes_isolation_and_goes_to_codex(tmp_path: Path) -> None:
+    """The alias main run's second ``isolation_failed`` (2026-10-31): a same-model re-ask at
+    1.31-1.40x one budget. Scaled by k it is clean, and the answer is still a refusal (#891)."""
+    path, cfg = _drafted(tmp_path)
+    clis = SameModelReask(dusk, factor=1.4)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == len(clis.codex) == 3
+    assert sum(dusk(c["input"]) for c in clis.claude) == 3                # no re-ask on Claude
+    vrows = jsonl(Path(cfg["out_dir"]) / "verify-O.jsonl")
+    assert all("safety_stop_fallback" in r["refusal_text"] and r["isolation_anomalies"] == 0
+               for r in vrows if r["verifier"] == "codex")
+    tot = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())["totals"]["since_start"]
+    assert tot["cli_safety_fallbacks"] == 3 and not tot.get("cli_isolation_anomalies")
+    assert not tot.get("cli_isolation_anomalies_safety")
+
+
+def test_a_safety_explained_anomaly_cannot_loop_and_goes_to_codex(tmp_path: Path) -> None:
+    """An anomaly that persists after a safeguard stop (here 10x one budget, over k = 2) is
+    discarded and re-asked at most ISOLATION_RETRIES times, then routed to codex as a
+    refusal; it never counts toward the ``isolation_failed`` hard stop."""
+    path, cfg = _drafted(tmp_path)
+    clis = SameModelReask(dusk, factor=10.0)
+    assert run(path, "verify", "--set", "O", "--notice-acknowledged", cli=clis) == 0
+    per = dr.ISOLATION_RETRIES + 1
+    assert sum(dusk(c["input"]) for c in clis.claude) == 3 * per
+    cx = [r for r in l2_rows(cfg) if r["verifier"] == "codex"]
+    assert len(cx) == len(clis.codex) == 3 and all(r["verifier_refused"] == "claude" for r in cx)
+    vrows = jsonl(Path(cfg["out_dir"]) / "verify-O.jsonl")
+    assert all("safety_stop_isolation_anomaly" in r["refusal_text"] and r["isolation_anomalies"] == per
+               for r in vrows if r["verifier"] == "codex")
+    st = json.loads((Path(cfg["out_dir"]) / "verify-state-O.json").read_text())
+    tot = st["totals"]["since_start"]
+    assert st["status"] == "complete" and not tot.get("cli_isolation_anomalies")
+    assert tot["cli_isolation_anomalies_safety"] == 3 * per and tot["cli_safety_fallbacks"] == 3

@@ -102,6 +102,13 @@ input of both requests, ~2x — the alias main run's ``isolation_failed``, 2026-
 27 of 318 rows, verdicts actually from ``claude-opus-5``). Such an answer is not the
 configured verifier's: it is treated as a refusal (the codex fallback below), counted
 as ``cli_safety_fallbacks``, and the row keeps ``served_models`` and ``safety_stops``.
+When the CLI re-asks the SAME model instead (one non-haiku ``modelUsage`` entry carrying
+the summed input of all k = 1 + ``safety_stops`` requests) the isolation budget is scaled
+by k (:func:`same_model_requests`, as the alias judge does); a cross-model fallback is not
+scaled. An isolation anomaly on a call with ``safety_stops`` > 0 is discarded and re-asked
+but never counts toward the ``isolation_failed`` hard stop: it counts against the record's
+own ISOLATION_RETRIES, and past them the record goes to the codex fallback as a refusal
+(``cli_isolation_anomalies_safety``).
 
 **Clearing a hard stop.** ``--resume --clear-hard-stop <reason> --clear-note "<text>"``
 resumes a hard-stopped run when the owner sanctions it: the reason must equal the state
@@ -411,6 +418,18 @@ def cli_usage(obj: dict[str, Any], model: str) -> dict[str, Any]:
     return {"model": own_key, "context_tokens": ctx, "output_tokens": own.get("outputTokens") if own else None,
             "served_models": {k: [_ctx(val), int(val.get("outputTokens") or 0)] for k, val in mu.items()},
             "safety_stops": safety, "fallback": fallback, "answered_by": answered[0] if answered else None}
+
+
+def same_model_requests(res: dict[str, Any]) -> int:
+    """How many requests one CLI call's context sums: 1 + ``safety_stops`` when a safeguard
+    stop was re-asked on the same model (``served_models`` has one non-haiku entry), else 1
+    (no stop, a cross-model fallback, or ``served_models`` missing: fail closed)."""
+    safety = int(res.get("safety_stops") or 0)
+    served = res.get("served_models")
+    if safety <= 0 or not isinstance(served, dict):
+        return 1
+    main = [m for m in served if not str(m).startswith("claude-haiku")]
+    return 1 + safety if len(main) == 1 else 1
 
 
 def is_refusal(stdout: str, stderr: str, obj: dict[str, Any] | None) -> bool:
@@ -1453,12 +1472,24 @@ class Run:
 
     def isolation(self, prompt: str, res: dict[str, Any], overhead: float = CLAUDE_FIXED_OVERHEAD
                   ) -> dict[str, Any]:
+        """The context-size check. On a safeguard stop the CLI may re-ask the SAME prompt on the
+        SAME model (``safety_stops`` more requests, one non-haiku ``modelUsage`` entry carrying
+        the summed input of every request, seen 2026-10-31 at 1.31-1.40x one budget): the budget
+        is then scaled by k = 1 + ``safety_stops``, as the alias judge's check does (#894). A
+        cross-model fallback is not scaled (:func:`cli_usage` already reports the largest
+        single request) and a call without ``served_models`` is not scaled (fail closed). A
+        real leak (CLAUDE.md, tool definitions: tens of thousands of tokens) still fails."""
         chars = len(prompt) + len(self.verify_system)
         budget = ISOLATION_FACTOR * chars / CHARS_PER_TOKEN_CLI + overhead
+        k = same_model_requests(res)
+        budget *= k
         seen = res.get("context_tokens")
         tools = int(res.get("tool_events") or 0)
-        return {"chars": chars, "budget": round(budget, 1), "context_tokens": seen, "tool_events": tools,
-                "PASS": seen is not None and seen <= budget and not tools}
+        iso = {"chars": chars, "budget": round(budget, 1), "context_tokens": seen, "tool_events": tools,
+               "PASS": seen is not None and seen <= budget and not tools}
+        if k > 1:
+            iso["requests"] = k
+        return iso
 
     # -------------------------------------------------------- the codex fallback
     def codex_cmd(self, cwd: Path, sysfile: Path, schema: Path, lastmsg: Path) -> list[str]:
@@ -1575,6 +1606,7 @@ class Run:
             refused_cost = 0.0
             attempt = 0          # answered (isolation-clean) or failed calls, at most 2
             in_a_row = 0         # consecutive isolation anomalies on this record
+            safety_discards = 0  # anomalies explained by a safeguard stop (never a hard stop)
             iso_total = 0
             while attempt < 2:
                 with self._lock:
@@ -1597,16 +1629,37 @@ class Run:
                     with self._lock:
                         self.control.account("cli", int(res.get("context_tokens") or 0),
                                              int(res.get("output_tokens") or 0), call=False)
+                        clean = True
                         if v["isolation_check"]:
                             iso = self.isolation(prompt, res)
                             if not iso["PASS"]:
-                                in_a_row += 1
                                 iso_total += 1
-                                if iso_anomaly(rid, iso, in_a_row):
-                                    return "stopped"
-                                continue
-                            checked["done"] = True
-                        in_a_row = 0
+                                if int(res.get("safety_stops") or 0) > 0:
+                                    # explained by the safeguard stop: a discarded verdict that
+                                    # counts against this record's own retries, never toward the
+                                    # hard stop; past ISOLATION_RETRIES it is routed to codex as
+                                    # a refusal (the record cannot loop)
+                                    safety_discards += 1
+                                    self.control.seg["cli_isolation_anomalies_safety"] += 1
+                                    g.log(f"verify: isolation anomaly on {rid} after a safeguard stop "
+                                          f"(safety_stops {res.get('safety_stops')}; {safety_discards} on this "
+                                          f"record): context {iso['context_tokens']} > budget {iso['budget']} "
+                                          f"or tool events {iso['tool_events']}; verdict discarded")
+                                    if safety_discards <= ISOLATION_RETRIES:
+                                        continue
+                                    clean = False
+                                    res = {**res, "status": "refused", "fallback": True, "text": "",
+                                           "error": f"safety_stop_isolation_anomaly: {safety_discards} discarded "
+                                                    f"(safety_stops {res.get('safety_stops')})"}
+                                else:
+                                    in_a_row += 1
+                                    if iso_anomaly(rid, iso, in_a_row):
+                                        return "stopped"
+                                    continue
+                            if clean:
+                                checked["done"] = True
+                        if clean:
+                            in_a_row = 0
                 if res["status"] == "refused":
                     refusal = str(res.get("error") or "")
                     refused_cost += float(res.get("cost_usd") or 0)

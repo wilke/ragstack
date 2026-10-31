@@ -476,3 +476,15 @@ def test_cli_safety_retry_on_same_model_is_refused_not_an_anomaly(world: Path) -
     # a real leak still fails the check
     sh = jd._CliShim({"model": "claude-opus-5-5"}, runner)
     assert not sh.isolation("x" * 100, {"context_tokens": 40_000, "safety_stops": 1})["PASS"]
+
+
+def test_cli_shim_does_not_scale_a_same_model_reask_twice() -> None:
+    # the verifier's check now scales a same-model re-ask itself (k = 2); the shim must not
+    # scale it again (k^2 = 4 would let a 2.5x context through)
+    sh = jd._CliShim({"model": "claude-opus-5-5"}, lambda *a, **k: None)
+    p = "x" * 3000
+    one = 2 * (len(p) + len(jd.JUDGE_SYSTEM)) / 3.5 + 1.25 * 574
+    res = {"context_tokens": int(2.5 * one), "safety_stops": 1, "served_models": {"claude-opus-5-5": [0, 30]}}
+    iso = sh.isolation(p, res)
+    assert iso["requests"] == 2 and iso["budget"] == round(2 * one, 1) and not iso["PASS"]
+    assert sh.isolation(p, {**res, "context_tokens": int(1.6 * one)})["PASS"]
