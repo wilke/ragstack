@@ -691,3 +691,35 @@ below threshold*.
   made after `RESULTS.md`'s figures existed, from sheets that name no arm.
 
 `RESULTS.md` is unchanged, and so is what's next.
+
+## Addendum, 2026-10-30 (night): the papers-OC owner's document-scoped gold, cross-checked against v4
+
+**Tier: lab book.** This changes no figure in the reranker test's
+[`RESULTS.md`](../reranker-test-2026-11/RESULTS.md) or its
+[gold-scope addendum](../reranker-test-2026-11/ADDENDUM-2026-10-30-gold-scope.md), and edits neither.
+
+The papers-OC owner regenerated its gold ids document-scoped: the corrected holds rule, with gold scoped to
+each pair's source paper by PMCID or DOI. It is a **private set**, cited by sha256
+`5983c046fe57f170d8bedab00db8ae85cbe1bc7475cb9223b959db22d1519237`, and it supersedes by reference the
+2026-10-22 set (sha256 `24a2bdcf…`). Gold chunks went 467 → 295 → 188, and 153 of 155 records keep at
+least one. External: we hold the digest, not the set.
+
+We compared it with the addendum's v4, our source-paper scoping on the bench copy. v4 was rebuilt
+byte-identically from `variant4.py` (sha256 `1bfb7ae4…`).
+
+- **Chunk ids are not portable across chunkings.** None of the owner's gold chunk ids occurs among the bench
+  copy's 14,456 chunks, and no chunk matches exactly in content. For one paper the bench copy has 35 chunks
+  and the owner's has 43.
+- **Gold agrees at the document level on 153 of 155 records.** All 155 join by source file, and 132 also have
+  the same gold count. Totals are 161 chunks ours against 188 theirs; those are not comparable across
+  chunkings.
+- **PMCID-only keying in v4 made no difference.** Every record's source paper carries a PMCID that names a
+  bench-copy paper; the bench copy's DOI-named papers are none of them.
+- **The residual 2 records** share one 11-character value quote. It sits whole in one chunk of the owner's
+  chunking and straddles a boundary in the bench chunking. The same rule keeps it there and rejects the
+  tail-only match here, which is the rule behaving as designed.
+
+The papers-OC owner verified both points independently on its side.
+
+**Disposition: no result changes.** The 153 of 155 is evidence that the gold construction is reproducible
+across chunkings. It is not evidence that the id sets match, and they do not. What's next is unchanged.
