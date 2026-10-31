@@ -11,7 +11,7 @@ the planned outputs had been seen (`9094c5a`); this file says where it uses that
 155 records sit in one paper, and its 155 records carry 73 distinct queries. Exact McNemar values are
 printed because the plan asked for them. They describe; they decide nothing.
 
-Source: [`why-results.json`](why-results.json) (counts only), run at `ff82cd4` from a clean tree
+Source: [`why-results.json`](why-results.json) (counts only), run at `6c09a0d` from a clean tree
 (`dirty false, untracked 0, citable true`, not in a tools image). No retrieval, reranker, store, gateway or
 model call was made. Q4's scores were **looked up** in the run's hash-keyed score cache, never recomputed;
 all 83 in-pool records' cached orders reproduce the committed reranked lists (missing 0, mismatched 0). The
@@ -187,7 +187,7 @@ the planned outputs had been seen.
 
 ## Reproducing
 
-At `ff82cd4` in a clean tree, with the run's private outputs, the papers-OC records and the rebuilt v4 gold
+At `6c09a0d` in a clean tree, with the run's private outputs, the papers-OC records and the rebuilt v4 gold
 supplied by their owner:
 
 ```

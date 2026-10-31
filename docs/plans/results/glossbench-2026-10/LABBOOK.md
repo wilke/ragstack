@@ -729,7 +729,7 @@ across chunkings. It is not evidence that the id sets match, and they do not. Wh
 **Tier: lab book (pointer).** The record is [`../reranker-test-2026-11/why/WHY.md`](../reranker-test-2026-11/why/WHY.md).
 Its plan was committed before computing and after the reranker test's results were known, so it is
 **post-hoc and exploratory**. The counts-only artifact is
-[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `ff82cd4` (clean). It uses the
+[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `6c09a0d` (clean). It uses the
 run's existing lists and cached scores only. No retrieval, reranker or model call was made. `RESULTS.md`
 and the gold-scope addendum are unchanged.
 

@@ -905,9 +905,9 @@
  },
  "provenance": {
   "schema": 1,
-  "version": "v1.6.21+ff82cd4",
-  "describe": "v1.6.21-114-gff82cd4",
-  "commit": "ff82cd494d4dc80cb11ce6fb34bfb01a491e6c2a",
+  "version": "v1.6.21+6c09a0d",
+  "describe": "v1.6.21-116-g6c09a0d",
+  "commit": "6c09a0dd91da19415583dd02997143f18aff68a7",
   "dirty": false,
   "untracked": 0,
   "source": "git",
@@ -926,7 +926,7 @@
     "segmenter_version": "punkt-abbrev-v1"
    }
   ],
-  "recorded_at": "2026-10-31T02:15:47Z",
+  "recorded_at": "2026-10-31T02:17:43Z",
   "citable": true,
   "warnings": [
    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
