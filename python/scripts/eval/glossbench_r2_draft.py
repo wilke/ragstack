@@ -458,6 +458,9 @@ class Run:
     #: the verifier's contract (a subclass may draft another kind of record)
     verify_system: str = ck.VERIFY_SYSTEM
     verify_keys: tuple[str, ...] = ck.VERIFY_KEYS
+    #: a verifier prompt version, recorded as ``verify_version`` in every verify row and l2
+    #: log row when set (the alias study's; round 2/3 rows carry none)
+    verify_version: str | None = None
     redraw_exempt: frozenset[str] = ck.REDRAW_EXEMPT
 
     def parse_verdict(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -1219,6 +1222,7 @@ class Run:
         checked = {"done": not bool(v["isolation_check"])}
         codex_checked = {"done": not bool(v["isolation_check"])}
         hard: list[str] = []
+        ver = {"verify_version": self.verify_version} if self.verify_version else {}
 
         def one(rec: dict[str, Any]) -> str:
             """Verify one record; returns ``refused`` when Claude refused it (whatever codex did)."""
@@ -1294,14 +1298,15 @@ class Run:
                           "verifier": last["verifier"], "verifier_refused": "claude" if refusal is not None else None,
                           "refusal_text": refusal, "error": last.get("error"),
                           "unavailable_reason": last.get("unavailable_reason"),
-                          "prompt_sha256": g.sha_text(prompt), "t": g.now_iso()})
+                          "prompt_sha256": g.sha_text(prompt), **ver, "t": g.now_iso()})
                 self.log_row(log, {"k": f"l2|{rid}", "layer": "l2", "verdict": l2_verdict,
                                    "reasons": reasons, "flags": [], "fields": verdict, "served_model": last.get("model"),
                                    "verifier": last["verifier"],
                                    "verifier_refused": "claude" if refusal is not None else None,
                                    "unavailable_reason": last.get("unavailable_reason"),
                                    "record_id": rid, "set": self.set, "paper": rec["paper"],
-                                   "stratum": rec["l1"]["stratum"], "attempt": rec["attempt"], "t": g.now_iso()})
+                                   "stratum": rec["l1"]["stratum"], "attempt": rec["attempt"], **ver,
+                                   "t": g.now_iso()})
             return "refused" if refusal is not None else "done"
 
         if todo:

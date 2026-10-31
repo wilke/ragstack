@@ -397,25 +397,71 @@ def parse_draft(text: str) -> tuple[dict[str, Any] | None, str | None]:
     return {k: obj[k] for k in DRAFT_KEYS}, None
 
 
-VERIFY_SYSTEM = """You check ONE benchmark record drafted from a scientific paper. Judge only from the text you are given; never from outside knowledge.
+#: recorded in every verify row and l2 log row (``verify_version``) and in each accepted
+#: record (``verifier_prompt_version``); bump on any change to :data:`VERIFY_SYSTEM` or
+#: :func:`verify_prompt`. alias-verify/1 (rows without the field): the two pilots of
+#: 2026-10-30/31. alias-verify/2: the owner's definitions (docs/plans/alias-study-2026-11/
+#: VERIFIER.md) -- ``standalone`` is "does not refer to its source document" and allows a
+#: study-specific fact whose context the question names; ``single_reading`` is about the
+#: question's meaning, not the number of valid answers; G records carry the glossary entry
+#: (and the definition sentence when the entry has a definition chunk), so ``term_denoted``
+#: never asks the passage to define the short form. alias-verify/3: tightened after the v2
+#: spot-read -- ``standalone`` also fails a generic referent to the paper's own experiment,
+#: cohort or model ("a simulation", "different groups of children"); ``supports`` fails an
+#: unstated purpose, a qualifier the quote does not state, and a near-empty answer.
+VERIFY_VERSION = "alias-verify/3"
+
+VERIFY_SYSTEM = """You check ONE benchmark record drafted from a scientific paper. Judge only from the text you are given; never from outside knowledge. A later judge will compare answers from OTHER papers against this question; a correct answer from another paper counts as correct. Your job is not to predict that comparison.
 
 Answer with a JSON object only, exactly these keys:
 {"supports": true|false, "standalone": true|false, "term_denoted": true|false, "single_reading": true|false, "reason": "..."}
 
-- "supports": the QUOTE alone states the ANSWER to the QUESTION (reading the SHORT FORM in the quote as the TERM, when a short form is given).
-- "standalone": a reader who has never seen this paper understands the question and would accept a correct answer from any source; it does not refer to the paper, its authors, or a figure, table, section or equation.
-- "term_denoted": when a SHORT FORM is given, in this paper the short form in the quote stands for the TERM the question asks with (use the definition passage). When none is given, the quote's term is the TERM the question asks with.
-- "single_reading": the question can be read in exactly one way.
-- "reason": at most 25 words, pointing to the paper's own words."""
+- "supports" (strict): the QUOTE alone states the ANSWER to exactly what the QUESTION asks (reading the SHORT FORM in the quote as the TERM, when a short form is given). False when: the answer is not stated in the quote, is inferred beyond it, contradicts or reverses it, or needs text outside the quote (e.g. a table value whose column the quote does not name); the question asks for a purpose, reason, cause or function and the quote does not state one (a quote saying something was used or done does not state why); the question or the answer carries a qualifier (an organism, place, population, condition, time, quantity) that the quote does not state; the answer is near-empty (it restates the question or a word of it, or is a generic word such as "analysis", "important" or "yes" that answers nothing).
+- "standalone": the question does not refer to its source document, and it NAMES the distinguishing context of anything study-specific it asks about. False when it mentions the paper, study, work, article, the authors, "we", "our", "us", a figure, table, section, equation, appendix or supplement, "the passage", "the quote", "the list of abbreviations"; and False when it refers to the paper's own experiment, cohort, sample, model or protocol by a generic referent with no identifying detail ("a simulation", "an experiment", "the experiment", "the model", "the samples", "the isolates", "the patients", "different groups of children", "each sample", "Buffer A", "the dataset"). The question MAY ask about a study-specific fact (a cohort, isolates, an experiment, a measured value, a figure's value, a convention) provided it names the distinguishing context in its own words (organism, population, place, material, device, condition, method): "Klebsiella pneumoniae oral isolates" or "Monte Carlo simulation of a Gammacell 220 irradiator with EGSnrc" pass. Never set false because the fact holds only for that study, because other studies would report other values, because the preparation or setup is specific to the paper, or because it is the paper's own convention.
+- "term_denoted": when a SHORT FORM is given, the GLOSSARY ENTRY states what it stands for in this paper; take the entry as given. By construction the passage and the quote contain only the short form, never the term spelled out, so never set false because the passage or quote does not define the short form. False only when the quote evidently uses the short form for something other than the TERM, or the question asks with a different term than the TERM. When no short form is given (a control record), the quote's term is the TERM the question asks with.
+- "single_reading": the question's MEANING is unambiguous: a competent reader knows exactly what is being asked (which entity, quantity, property or relation, under which condition). False only when the wording itself admits two or more different interpretations of WHAT is asked (an open "what is significant/notable about", an unclear referent, a word whose two senses change the question). Never set false because another passage or paper could give a different valid answer, or because more than one correct answer exists.
+- "reason": at most 25 words, pointing to the record's own words."""
 
 VERIFY_KEYS = ("supports", "standalone", "term_denoted", "single_reading")
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
+
+
+def definition_sentence(definition: str, alias: str, primary: str, alias_kind: str = "abbreviation") -> str:
+    """The sentence of the definition chunk that defines ``alias``: the first sentence holding
+    both the alias (:func:`alias_in_text`) and the primary (:func:`primary_literal_in`), else the
+    first holding the alias; empty when none (or no chunk)."""
+    if not definition:
+        return ""
+    sents = [x.strip() for x in _SENT_SPLIT.split(definition) if x.strip()]
+    with_alias = [x for x in sents if alias_in_text(alias, x, alias_kind)]
+    both = [x for x in with_alias if primary_literal_in(primary, x)]
+    pick = (both or with_alias or [""])[0]
+    return pick[:600]
+
+
+def glossary_line(entry: Mapping[str, Any]) -> str:
+    word = _ALIAS_WORD.get(str(entry.get("alias_kind") or ""), "the short form")
+    return f'in this paper {word} "{entry["alias"]}" stands for "{entry["primary"]}".'
 
 
 def verify_prompt(kind: str, rec: Mapping[str, Any], entry: Mapping[str, Any], passage: str,
                   definition: str, title: str) -> str:
+    """The verifier's input. G: the glossary entry always, then the definition sentence
+    from the entry's definition chunk (the whole chunk when no sentence is found; nothing
+    when the entry has no chunk, e.g. an extracted symbol)."""
     short = entry["alias"] if kind == "G" else None
-    return (f"PAPER TITLE: {title or '(unknown)'}\n\n"
-            + (f"DEFINITION PASSAGE:\n<<<\n{definition}\n>>>\n\n" if kind == "G" and definition else "")
+    head = f"PAPER TITLE: {title or '(unknown)'}\n\n"
+    if kind == "G":
+        head += f"GLOSSARY ENTRY (given; take it as true): {glossary_line(entry)}\n"
+        sent = definition_sentence(definition, str(entry["alias"]), str(entry["primary"]),
+                                   str(entry.get("alias_kind") or "abbreviation"))
+        if sent:
+            head += f"DEFINITION SENTENCE (from the paper): {sent}\n"
+        elif definition:
+            head += f"DEFINITION PASSAGE (from the paper):\n<<<\n{definition}\n>>>\n"
+        head += "\n"
+    return (head
             + f"PASSAGE:\n<<<\n{passage}\n>>>\n\n"
             f"TERM: {entry['primary']}\n"
             f"SHORT FORM: {short if short else '(none: a control record)'}\n"

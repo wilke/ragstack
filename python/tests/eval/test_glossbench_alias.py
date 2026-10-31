@@ -369,9 +369,20 @@ def test_chain_stop_rule_skips_later_waves(tmp_path: Path) -> None:
     s = json.loads((out / "acceptance-summary-alias-T.json").read_text())
     assert s["alias"]["jobs_skipped_by_stop_rule"] == {"G": 3 * 4, "C": 3}
     assert s["alias"]["papers_satisfied_accepted"] == {"G": 3, "C": 3}
-    # the verifier gets the alias contract, the definition passage for G
+    # the verifier gets the alias contract; G: the glossary entry and the definition sentence
     assert all(c["cmd"][-1] == ak.VERIFY_SYSTEM for c in cli.calls)
-    assert any("DEFINITION PASSAGE" in c["input"] for c in cli.calls)
+    g_calls = [c for c in cli.calls if "SHORT FORM: (none" not in c["input"]]
+    assert g_calls and all("GLOSSARY ENTRY" in c["input"] for c in g_calls)
+    assert all('"ACH" stands for "air change rate"' in c["input"] and "DEFINITION SENTENCE" in c["input"]
+               for c in g_calls if "SHORT FORM: ACH" in c["input"])
+    assert not any("GLOSSARY ENTRY" in c["input"] for c in cli.calls if c not in g_calls)
+    # the verifier prompt version is recorded on every verdict and accepted record
+    vrows = jsonl(out / "verify-alias-T.jsonl")
+    l2 = [r for r in jsonl(out / "acceptance-alias-T.jsonl") if r["layer"] == "l2"]
+    assert vrows and all(r["verify_version"] == ak.VERIFY_VERSION == "alias-verify/3" for r in vrows)
+    assert l2 and all(r["verify_version"] == ak.VERIFY_VERSION for r in l2)
+    assert all(a["verifier_prompt_version"] == ak.VERIFY_VERSION for a in acc)
+    assert s["alias"]["verifier_prompt_versions_accepted"] == {ak.VERIFY_VERSION: 9}
     st = json.loads((out / "draft-state-alias-T.json").read_text())
     assert st["status"] == "complete" and st["yield_watch"]["status"] == "not_reached"
 
@@ -731,3 +742,179 @@ def test_resume_does_not_double_count_calls(tmp_path: Path) -> None:
     st = json.loads((out / "draft-state-alias-T.json").read_text())
     assert st["totals"]["since_start"]["gateway_calls"] == 3 + len(gw2.bodies) == 3 + 7
     assert st["totals"]["since_resume"]["gateway_calls"] == 7
+
+
+# ------------------------------------------------------------------ the verifier's input (alias-verify/2)
+
+DEF_CHUNK = ("Ventilation was assessed in four wards. The air change rate (ACH) was estimated from tracer "
+             "gas decay. Doors were kept shut.")
+
+
+def test_verify_prompt_g_carries_glossary_entry_and_definition_sentence() -> None:
+    entry = {"alias": "ACH", "primary": "air change rate", "alias_kind": "abbreviation"}
+    rec = {"question": "q?", "answer": "a", "quote": "the ACH fell"}
+    p = ak.verify_prompt("G", rec, entry, "The ACH fell.", DEF_CHUNK, "T")
+    assert 'GLOSSARY ENTRY (given; take it as true): in this paper the abbreviation "ACH" stands for ' \
+           '"air change rate".' in p
+    assert "DEFINITION SENTENCE (from the paper): The air change rate (ACH) was estimated from tracer gas decay." in p
+    assert "DEFINITION PASSAGE" not in p and "Doors were kept shut" not in p
+    # a symbol from the extractor has no definition chunk: the entry alone
+    sym = {"alias": "ωL", "primary": "laser angular frequency", "alias_kind": "symbol"}
+    p = ak.verify_prompt("G", rec, sym, "only ωL light is present", "", "T")
+    assert 'the symbol "ωL" stands for "laser angular frequency"' in p and "DEFINITION" not in p
+    # a definition chunk with no sentence holding the alias: the whole chunk, as before
+    p = ak.verify_prompt("G", rec, entry, "The ACH fell.", "Ventilation was assessed.", "T")
+    assert "DEFINITION PASSAGE (from the paper):\n<<<\nVentilation was assessed.\n>>>" in p
+    # a control record gets no glossary entry
+    p = ak.verify_prompt("C", rec, entry, "The air change rate fell.", DEF_CHUNK, "T")
+    assert "GLOSSARY ENTRY" not in p and "DEFINITION" not in p and "SHORT FORM: (none" in p
+
+
+def test_definition_sentence_prefers_alias_with_primary() -> None:
+    d = "ACH matters. The air change rate (ACH) is set by fans. ACH again."
+    assert ak.definition_sentence(d, "ACH", "air change rate") == "The air change rate (ACH) is set by fans."
+    assert ak.definition_sentence("ACH matters. No more.", "ACH", "air change rate") == "ACH matters."
+    assert ak.definition_sentence("", "ACH", "air change rate") == ""
+
+
+def test_accepted_row_marks_legacy_verdicts_alias_verify_1() -> None:
+    run = object.__new__(ad.AliasRun)
+    run.set = "T"
+    base = {"record_id": "r", "stratum": "G", "draft": {"question": "q", "answer": "a", "quote": "x"},
+            "alias": "A", "primary": "p", "alias_kind": "symbol", "paper": "P", "doc_id": "d", "chunk_id": "c",
+            "job_id": "j", "l1": {"gold_chunk_ids": ["c"], "flags": []}}
+    assert run.accepted_row({**base, "l2": {"verdict": "pass"}})["verifier_prompt_version"] == "alias-verify/1"
+    assert run.accepted_row({**base, "l2": {"verdict": "pass", "verify_version": "alias-verify/2"}}
+                            )["verifier_prompt_version"] == "alias-verify/2"
+
+
+def test_verify_system_states_the_owners_definitions() -> None:
+    v = ak.VERIFY_SYSTEM
+    # standalone = no reference to the source document; a named study-specific fact is allowed
+    assert "does not refer to its source document" in v and "MAY ask about a study-specific fact" in v
+    assert "Never set false because the fact holds only for that study" in v
+    # single_reading = meaning, not the number of valid answers
+    assert "MEANING is unambiguous" in v and "more than one correct answer exists" in v
+    # term_denoted never asks the passage to define the alias; supports stays strict
+    assert "never set false because the passage or quote does not define the short form" in v
+    assert '"supports" (strict)' in v
+    # alias-verify/3: a generic referent fails standalone; unstated purpose / qualifier, near-empty fail supports
+    assert "NAMES the distinguishing context" in v and '"different groups of children"' in v
+    assert "does not state why" in v and "qualifier" in v and "near-empty" in v
+    # alias-verify/1's criteria are gone: they rejected a correct study-specific fact and
+    # counted valid answers instead of judging the meaning (review #890)
+    low = v.lower()
+    assert "any source" not in low and "outside this study" not in low and "true outside" not in low
+    assert "exactly one way" not in low
+
+
+# Synthetic calibration records (no real paper text) with the verdict the owner's
+# definitions require. The offline test checks the input assembly; with
+# RAGSTACK_ALIAS_VERIFY_LIVE=1 the same records go to the Claude CLI once (the self-check
+# recorded in docs/plans/alias-study-2026-11/VERIFIER.md).
+VERIFY_CASES: list[dict[str, Any]] = [
+    {"name": "study_specific_but_named", "kind": "G", "expect": {},
+     "entry": {"alias": "ZRX", "primary": "zorbacin", "alias_kind": "abbreviation"},
+     "definition": "Isolates were screened against zorbacin (ZRX), a synthetic test antibiotic.",
+     "passage": "Of the Florbia vulgaris isolates from the Ostrava river survey, 31.5% were resistant to ZRX.",
+     "rec": {"question": "What share of Florbia vulgaris isolates from the Ostrava river survey were resistant "
+                         "to zorbacin?", "answer": "31.5%",
+             "quote": "Of the Florbia vulgaris isolates from the Ostrava river survey, 31.5% were resistant to ZRX."}},
+    {"name": "refers_to_this_study", "kind": "C", "expect": {"standalone": False},
+     "entry": {"alias": "QFB", "primary": "quillon flux buffer", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Samples were washed twice in quillon flux buffer before imaging.",
+     "rec": {"question": "In this study, how many times were samples washed in quillon flux buffer?",
+             "answer": "twice", "quote": "Samples were washed twice in quillon flux buffer before imaging."}},
+    {"name": "ambiguous_meaning", "kind": "C", "expect": {"single_reading": False},
+     "entry": {"alias": "MVK", "primary": "marvellan kinase", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Marvellan kinase is notable for its unusual dimer interface and its cold stability.",
+     "rec": {"question": "What is notable about marvellan kinase?", "answer": "its unusual dimer interface",
+             "quote": "Marvellan kinase is notable for its unusual dimer interface and its cold stability."}},
+    {"name": "many_answers_clear_meaning", "kind": "C", "expect": {},
+     "entry": {"alias": "TPL", "primary": "tervian plastid lattice", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "One function of the tervian plastid lattice is anchoring the starch granules.",
+     "rec": {"question": "What is one function of the tervian plastid lattice?",
+             "answer": "anchoring the starch granules",
+             "quote": "One function of the tervian plastid lattice is anchoring the starch granules."}},
+    {"name": "alias_defined_only_by_glossary", "kind": "G", "expect": {},
+     "entry": {"alias": "κq", "primary": "quorvex damping constant", "alias_kind": "symbol"},
+     "definition": "",
+     "passage": "Above 40 K the oscillation decays faster because κq doubles.",
+     "rec": {"question": "How does the quorvex damping constant change above 40 K?", "answer": "it doubles",
+             "quote": "Above 40 K the oscillation decays faster because κq doubles."}},
+    {"name": "answer_not_supported", "kind": "G", "expect": {"supports": False},
+     "entry": {"alias": "HPV7", "primary": "halden pressure valve", "alias_kind": "abbreviation"},
+     "definition": "The halden pressure valve (HPV7) regulates the outlet line.",
+     "passage": "The HPV7 opens at 3 bar.",
+     "rec": {"question": "At what pressure does the halden pressure valve close?", "answer": "5 bar",
+             "quote": "The HPV7 opens at 3 bar."}},
+    # alias-verify/3
+    {"name": "generic_referent_groups", "kind": "C", "expect": {"standalone": False},
+     "entry": {"alias": "DSI", "primary": "dravel serum infusion", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Children in both arms received dravel serum infusion monthly, which may explain the similar titres.",
+     "rec": {"question": "What may explain similar antibody titres in different groups of children?",
+             "answer": "monthly dravel serum infusion",
+             "quote": "Children in both arms received dravel serum infusion monthly, which may explain the similar "
+                      "titres."}},
+    {"name": "generic_referent_simulation", "kind": "G", "expect": {"standalone": False},
+     "entry": {"alias": "PXR", "primary": "pellox reactor", "alias_kind": "abbreviation"},
+     "definition": "The pellox reactor (PXR) was modelled as a cylinder.",
+     "passage": "In the simulation, the PXR wall was set to 4 mm of steel.",
+     "rec": {"question": "In a simulation, what wall thickness was assigned to the pellox reactor?",
+             "answer": "4 mm of steel", "quote": "In the simulation, the PXR wall was set to 4 mm of steel."}},
+    {"name": "purpose_not_stated", "kind": "C", "expect": {"supports": False},
+     "entry": {"alias": "GTB", "primary": "grannox tryptic broth", "alias_kind": "abbreviation"},
+     "definition": "",
+     "passage": "Strains of Velmira tauri were grown overnight in grannox tryptic broth at 37 C.",
+     "rec": {"question": "For what purpose is grannox tryptic broth used with Velmira tauri strains?",
+             "answer": "overnight grown cultures",
+             "quote": "Strains of Velmira tauri were grown overnight in grannox tryptic broth at 37 C."}},
+    {"name": "qualifier_not_stated", "kind": "G", "expect": {"supports": False},
+     "entry": {"alias": "QLR", "primary": "quellin resistance genes", "alias_kind": "abbreviation"},
+     "definition": "Quellin resistance genes (QLR) confer tolerance to quellin.",
+     "passage": "In Tarvia coli, QLR have been reported.",
+     "rec": {"question": "In which bacterial species recovered from river sediment have quellin resistance genes "
+                         "been reported?", "answer": "Tarvia coli",
+             "quote": "In Tarvia coli, QLR have been reported."}},
+    {"name": "near_empty_answer", "kind": "G", "expect": {"supports": False},
+     "entry": {"alias": "ZC", "primary": "zentric chromatography", "alias_kind": "abbreviation"},
+     "definition": "Samples were separated by zentric chromatography (ZC).",
+     "passage": "Fig 3 ZC analysis of pooled and single Morvax-B1 fractions.",
+     "rec": {"question": "What was zentric chromatography used for on pooled and single Morvax-B1 fractions?",
+             "answer": "analysis", "quote": "Fig 3 ZC analysis of pooled and single Morvax-B1 fractions."}},
+]
+
+
+@pytest.mark.parametrize("case", VERIFY_CASES, ids=[c["name"] for c in VERIFY_CASES])
+def test_verify_cases_assemble(case: dict[str, Any]) -> None:
+    p = ak.verify_prompt(case["kind"], case["rec"], case["entry"], case["passage"], case["definition"], "Synthetic")
+    assert f"QUESTION: {case['rec']['question']}" in p and f"QUOTE: {case['rec']['quote']}" in p
+    assert ("GLOSSARY ENTRY" in p) is (case["kind"] == "G")
+    if case["kind"] == "G":
+        assert ak.alias_in_text(case["entry"]["alias"], case["rec"]["quote"], case["entry"]["alias_kind"])
+        assert not ak.primary_literal_in(case["entry"]["primary"], case["passage"])
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("RAGSTACK_ALIAS_VERIFY_LIVE"),
+                    reason="live Claude CLI self-check (RAGSTACK_ALIAS_VERIFY_LIVE=1)")
+@pytest.mark.parametrize("case", VERIFY_CASES, ids=[c["name"] for c in VERIFY_CASES])
+def test_verify_cases_live(case: dict[str, Any], tmp_path: Path) -> None:
+    import subprocess
+
+    p = ak.verify_prompt(case["kind"], case["rec"], case["entry"], case["passage"], case["definition"], "Synthetic")
+    cmd = ["claude", "-p", "--model", "claude-opus-5-5", "--output-format", "json", "--restricted",
+           "--no-session-persistence", "--strict-mcp-config", "--tools", "", "--system-prompt", ak.VERIFY_SYSTEM]
+    r = subprocess.run(cmd, input=p, capture_output=True, text=True, cwd=str(tmp_path), timeout=300)
+    verdict, err = ak.parse_verdict(json.loads(r.stdout)["result"])
+    assert verdict is not None, err
+    want = {**dict.fromkeys(ak.VERIFY_KEYS, True), **case["expect"]}
+    got = {k: verdict[k] for k in ak.VERIFY_KEYS}
+    # a failing case must fail on its key; the other keys are not asserted for it
+    if case["expect"]:
+        assert all(got[k] == v for k, v in case["expect"].items()), (got, verdict["reason"])
+    else:
+        assert got == want, (got, verdict["reason"])

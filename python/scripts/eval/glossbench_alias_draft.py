@@ -121,7 +121,9 @@ would stop the run early).
 answer, quote, alias, primary, alias_kind, paper, doc_id, source_chunk_id, gold_chunks
 (the quote-bearing chunk ids), binding_terms ([primary]), flags, pilot, model,
 prompt_sha256, prompt_version (:data:`glossbench_alias_checks.PROMPT_VERSION`; the draft rows carry it
-too), verifier, verifier_refused, verifier_model``.
+too), verifier, verifier_refused, verifier_model, verifier_prompt_version``
+(:data:`glossbench_alias_checks.VERIFY_VERSION`, also ``verify_version`` on every verify row and l2
+log row; absent = alias-verify/1).
 
 **Private config** (template: ``python/scripts/eval/examples/glossbench-alias-config.example.json``)::
 
@@ -293,6 +295,7 @@ class AliasRun(dr.Run):
 
     verify_system = ak.VERIFY_SYSTEM
     verify_keys = ak.VERIFY_KEYS
+    verify_version = ak.VERIFY_VERSION
     redraw_exempt = ak.REDRAW_EXEMPT
 
     def __init__(self, *a: Any, **kw: Any) -> None:
@@ -640,6 +643,9 @@ class AliasRun(dr.Run):
                 "verifier": (r["l2"].get("verifier") or "claude") if r.get("l2") else None,
                 "verifier_refused": (r.get("l2") or {}).get("verifier_refused"),
                 "verifier_model": (r.get("l2") or {}).get("served_model"),
+                # l2 rows written before the field existed used the pilots' verifier (alias-verify/1)
+                "verifier_prompt_version": ((r.get("l2") or {}).get("verify_version") or "alias-verify/1")
+                if r.get("l2") else None,
                 "gold_chunks": r["l1"]["gold_chunk_ids"], "flags": r["l1"]["flags"]}
 
     def summary(self) -> int:
@@ -666,6 +672,8 @@ class AliasRun(dr.Run):
             "realised": self.realised(),
             "prompt_versions_accepted": dict(Counter(str(r.get("prompt_version") or "alias-draft/1")
                                                      for r in self.accepted())),
+            "verifier_prompt_versions_accepted": dict(Counter(
+                str((r.get("l2") or {}).get("verify_version") or "alias-verify/1") for r in self.accepted())),
         }
         wst = self.read_state("waves")
         if wst is not None:
