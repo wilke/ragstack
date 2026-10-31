@@ -648,3 +648,92 @@ def test_round3_default_plan_unchanged(world: Path) -> None:
     _, c = jd.load_config(cfg)
     plan = jd.Labeler(c, jd.World(c)).plan("qwen", 1)
     assert "base_url" not in plan and "require_served_model" not in plan
+
+
+# ------------------------------------------------------------------ validation (JUDGE-VALIDATION-PLAN.md)
+
+def test_build_calib_accepted_records_only(tmp_path: Path) -> None:
+    cfg = make_world(tmp_path)
+    raw = json.loads(cfg.read_text())
+    pilot = raw["pilots"][0]
+    assert [r["record_id"] for r in jd.load_pilot_records([pilot])] == ["rec-1"]      # l1 pass, l2 reject
+    assert jd.load_pilot_records([pilot], "accepted") == []
+    acc = Path(pilot["acceptance"])
+    acc.write_text(acc.read_text().replace('"verdict": "reject", "record_id": "rec-1"',
+                                           '"verdict": "pass", "record_id": "rec-1"'))
+    assert [r["l2"] for r in jd.load_pilot_records([pilot], "accepted")] == ["pass"]
+    with pytest.raises(SystemExit):
+        jd.load_pilot_records([pilot], "everything")
+    raw["calib"]["records"] = "nope"
+    cfg.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="calib.records"):
+        jd.main(["--config", str(cfg), "build-calib"], prov=PROV)
+    raw["calib"]["records"] = "accepted"
+    cfg.write_text(json.dumps(raw))
+    assert jd.main(["--config", str(cfg), "build-calib"], prov=PROV) == 0
+    man = json.loads((out_of(cfg) / "calib-manifest.json").read_text())
+    assert man["calib"]["records"] == "accepted" and man["counts"]["records_by_l2"] == {"pass": 1}
+
+
+def test_majority_and_gate_label() -> None:
+    assert jd.majority([1, 1, 0, None, 0]) is None                 # a tie among the valid samples
+    assert jd.majority([None, None]) is None and jd.majority([True, None, True]) == 1
+    assert jd.gate_label([1, 1, 1, 0, 0], [1, 0, 0]) == 1           # E's first sample only
+    assert jd.gate_label([1, 1, 1, 0, 0], [0, 1, 1]) is None        # disagreement -> escalated
+    assert jd.gate_label([1, 1, 0, 0, None], [1]) is None           # no C majority -> escalated
+    assert jd.gate_label([0, 0, 0, 0, 0], [None, 0, 0]) is None     # invalid E sample -> escalated
+    assert jd.gate_label([0, 0, 0, 1, 1, 1, 1], [0]) == 0           # only the first c_n samples count
+    assert jd.wilson(0, 0) is None and jd.wilson(98, 100) == [0.9300, 0.9945]
+
+
+def test_analyse_gate_end_to_end(world: Path) -> None:
+    pairs = pairs_of(world)
+    out = out_of(world)
+    ids = [p["pair_id"] for p in pairs]
+    assert len(ids) >= 5
+    truth = {pid: int(p["stratum"] == "gold") for pid, p in zip(ids, pairs, strict=True)}
+    a, b, c, d, e = ids[:5]
+
+    def put(name: str, rows: list[dict[str, Any]]) -> Path:
+        path = out / name
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+
+    opus = []
+    for pid in ids:
+        if pid == d:
+            continue                                                # no reference (Opus-filtered)
+        for r in (1, 2, 3):
+            if pid == e and r == 3:
+                continue                                            # e: 2 agreeing labels, no third -> split
+            v = truth[pid] if not (pid == c and r == 3) else 1 - truth[pid]   # c: a 2-1 split
+            opus.append({"k": f"opus|{pid}|r{r}", "pair_id": pid, "rep": r, "verdict": bool(v)})
+    put("labels-opus.jsonl", opus)
+    cv = {pid: [truth[pid]] * 5 for pid in ids}
+    ev = {pid: [truth[pid]] * 3 for pid in ids}
+    cv[a] = [1 - truth[a]] * 3 + [truth[a]] * 2                    # C wrong, E right -> escalated
+    cv[b] = [1 - truth[b]] * 5
+    ev[b] = [1 - truth[b], truth[b], truth[b]]                     # both wrong (E sample 0) -> a gate error
+    meta = {"model": "q", "endpoint": "http://x/v1", "judge_version": "alias-judge/2", "enable_thinking": True}
+    cl = put("labels-qwen-C.jsonl", [{"k": f"qwen|{p}", "pair_id": p, "n": 5, "verdicts": cv[p], **meta} for p in ids])
+    el = put("labels-qwen-E.jsonl", [{"k": f"qwen|{p}", "pair_id": p, "n": 3, "verdicts": ev[p], **meta} for p in ids])
+    raw = json.loads(world.read_text())
+    raw["gate"] = {"c_labels": str(cl), "e_labels": str(el), "plan_commit": "a" * 40}
+    world.write_text(json.dumps(raw))
+    assert jd.main(["--config", str(world), "analyse-gate"], prov=PROV) == 0
+    res = json.loads((out / "analysis-gate.json").read_text())
+    n_una = len(ids) - 3
+    assert res["classes"] == {**res["classes"], "pairs": len(ids), "unanimous": n_una, "split": 2, "no_reference": 1}
+    pa = res["primary"]["all"]
+    assert pa["pairs"] == n_una and pa["escalated"] == 1 and pa["accepted"]["errors"] == 1
+    assert pa["accuracy"] == round((n_una - 1) / n_una, 4) and pa["escalation_share"] == round(1 / n_una, 4)
+    assert pa["verdict"] == "FAIL" and res["plan_commit"] == "a" * 40
+    al = res["alone"]["all"]
+    assert al["C_maj5"]["correct"] == n_una - 2 and al["E_n1"]["correct"] == n_una - 1
+    assert al["E_maj3"]["correct"] == n_una
+    assert res["split"]["pairs"] == 2 and res["split"]["with_majority"] == 2 and res["no_reference"]["pairs"] == 1
+    assert res["escalation_all_pairs"]["escalated"] == 1
+    # an incomplete label file refuses
+    put("labels-qwen-E.jsonl", [{"k": f"qwen|{p}", "pair_id": p, "n": 3, "verdicts": ev[p], **meta} for p in ids[1:]])
+    with pytest.raises(SystemExit, match="finish labelling"):
+        jd.main(["--config", str(world), "analyse-gate"], prov=PROV)

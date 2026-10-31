@@ -37,6 +37,13 @@ every question) is dropped (counted).
 C candidates. ``n_papers`` (null = all) are drawn by ``random.Random("<seed_base>|<set>")``
 from the sorted eligible ids.
 
+**Excluded papers** (``exclude_papers``: a path, or null). A text file with one paper id per line
+(the export's ``paper_key``; blank lines and ``#`` comments ignored). Those papers are removed from
+the eligible ids BEFORE the draw, so no job is ever planned on them. The file's sha256, the
+number of ids it lists, and how many of them were eligible are recorded in the pool header and
+the manifest (``papers_eligible`` there counts after the exclusion). The validation set of the judge (JUDGE-VALIDATION-PLAN.md) uses it to keep the
+study's papers out.
+
 **Jobs, per paper, seeded.** ``g_per_paper`` (6) G and ``c_per_paper`` (2) C jobs, the
 order seeded per paper and kind (``<seed>|<kind>|<paper>``): the entries in a seeded
 order, each entry's candidate chunks in a seeded order, then round-robin over the
@@ -64,7 +71,7 @@ Usage::
 
 Config ``alias_pool`` (defaults :data:`DEFAULTS`): seed_base, n_papers, g_per_paper,
 c_per_paper, goal {G, C}, min_g_candidates, min_c_candidates, prior_pass_rate {G, C},
-yield_calibration {G, C} | null, yield_gate.
+yield_calibration {G, C} | null, yield_gate, exclude_papers (path | null).
 """
 from __future__ import annotations
 
@@ -105,6 +112,7 @@ DEFAULTS: dict[str, Any] = {
     "prior_pass_rate": {"G": 0.35, "C": 0.35},
     "yield_calibration": None,
     "yield_gate": 0.5,
+    "exclude_papers": None,
 }
 
 
@@ -142,6 +150,8 @@ def pool_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
     yg = p["yield_gate"]
     if isinstance(yg, bool) or not isinstance(yg, (int, float)) or not 0 <= float(yg) <= 1:
         raise SystemExit(f"alias_pool.yield_gate {yg!r}: a number in [0, 1]")
+    if p["exclude_papers"] is not None and not isinstance(p["exclude_papers"], str):
+        raise SystemExit(f"alias_pool.exclude_papers {p['exclude_papers']!r}: a path or null")
     return p
 
 
@@ -163,6 +173,19 @@ def read_glossary(path: str | Path) -> list[dict[str, Any]]:
                 raise SystemExit(f"{Path(path).name}:{i}: kind {row['kind']!r} not in {ak.ALIAS_KINDS}")
             out.append(row)
     return out
+
+
+def read_exclude_papers(path: str | Path) -> list[str]:
+    """The paper ids of an ``exclude_papers`` file: one per line, blank lines and ``#`` comments
+    ignored, sorted and de-duplicated. A missing or empty file is an error (an exclusion that
+    silently excludes nothing is the failure this guards against)."""
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit(f"alias_pool.exclude_papers: {p} is not a file")
+    ids = sorted({x.split("#", 1)[0].strip() for x in p.read_text(encoding="utf-8").splitlines()} - {""})
+    if not ids:
+        raise SystemExit(f"alias_pool.exclude_papers: {p} lists no paper")
+    return ids
 
 
 def binom_expected_min(n: int, p: float, goal: int) -> float:
@@ -289,6 +312,13 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, provenance: Any = None) 
     eligible = sorted(p for p, kinds in cand.items()
                       if sum(len(v) for v in kinds["G"].values()) >= int(pc["min_g_candidates"])
                       and sum(len(v) for v in kinds["C"].values()) >= int(pc["min_c_candidates"]))
+    excl: dict[str, Any] | None = None
+    if pc["exclude_papers"]:
+        ex_ids = set(read_exclude_papers(pc["exclude_papers"]))
+        excl = {"file": str(pc["exclude_papers"]), "sha256": g.file_sha(pc["exclude_papers"]),
+                "ids": len(ex_ids), "eligible_excluded": sum(p in ex_ids for p in eligible),
+                "ids_not_in_export": len(ex_ids - set(corpus.doc_paper.values()))}
+        eligible = [p for p in eligible if p not in ex_ids]
     seed = f"{pc['seed_base']}|{set_}"
     n = pc["n_papers"]
     papers = sorted(random.Random(seed).sample(eligible, len(eligible) if n is None else min(int(n), len(eligible))))
@@ -330,7 +360,7 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, provenance: Any = None) 
                                 "alias_glossary": g.file_sha(cc["alias_glossary"])},
               "design": {k: pc[k] for k in ("g_per_paper", "c_per_paper", "goal", "min_g_candidates",
                                             "min_c_candidates", "n_papers")},
-              "commit": prov.get("commit"), "yield": yld}
+              "commit": prov.get("commit"), "yield": yld, "exclude_papers": excl}
     pool_path = out / f"pool-{label(set_)}.jsonl"
     tmp = pool_path.with_suffix(".jsonl.tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -344,7 +374,7 @@ def build(cfg: dict[str, Any], set_: str, out: Path, *, provenance: Any = None) 
                     "jobs": dict(Counter(j["stratum"] for j in jobs)),
                     "jobs_by_wave": {f"{k}{w}": c for (k, w), c in sorted(Counter(
                         (j["stratum"], j["wave"]) for j in jobs).items())}},
-                "yield": yld, "pool_sha256": g.file_sha(pool_path),
+                "yield": yld, "exclude_papers": excl, "pool_sha256": g.file_sha(pool_path),
                 "eval_papers_sha256": g.sha_text("\n".join(papers)), "provenance": prov, "citable": g.citable(prov)}
     g.write_json_atomic(out / f"pool-manifest-{label(set_)}.json", manifest)
     return manifest

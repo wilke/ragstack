@@ -319,3 +319,69 @@ C's 6 / 1), and it gives up C's perfect coll_same for fewer lex_same false yeses
 buys E almost nothing (0.980 → 0.981), so n = 1 to 3 is deployable. The two thinking judges are
 interchangeable on accuracy. E is cheaper per sample and needs no voting. The two judges share
 only 3 errors, which leaves an untested option: a C + E agreement gate.
+
+## Validation: the frozen C + E agreement rule, out of sample
+
+The plan is [JUDGE-VALIDATION-PLAN.md](JUDGE-VALIDATION-PLAN.md), committed as `e2713e1` before any
+data existed. The run is of 2026-10-31, with code at `390777d` (clean). The outputs are in `calib/validation/`
+(`analysis-gate.json`, `provenance.json`, `SHA256SUMS`). Every output records the plan's sha. The rule under test was
+selected on rounds 1–3. Judge C is Qwen3.6-35B-A3B (`:8004`) with alias-judge/2, thinking on, and the majority
+of 5 samples. Judge E is Qwen3.8-27B (`:8008`) with alias-judge/2, thinking on, and n = 1, the first of 3
+stored samples. When C and E agree, their label stands. When they disagree, or either gives no label, the
+pair is escalated to the Opus reference.
+
+**Fresh questions.** 377 papers were excluded: the main run's 355 activated papers (every drafted and every
+satisfied paper among them), the pilot-1 and pilot-2 papers, and the question papers of the calibration set.
+The pool builder's new `alias_pool.exclude_papers` dropped them before its seeded draw, leaving 480
+eligible papers. The questions were drafted with the study's pipeline (alias-draft/2, verifier alias-verify/3,
+`run-waves`, pool seed `261031|alias|validation|V`) in a separate output directory, and nothing in `out/main` was
+written. The run stopped at its target after 5 waves: 37 papers activated (none excluded) and 24 satisfied.
+It accepted **83 records (52 G, 31 C) from 31 papers**. One setting differs from the main config besides the
+paths, seeds, caps and the exclusion: `waves.accept_rate` was set to the main run's realised rates (G 0.465,
+C 0.553) instead of the default prior. It sizes the waves only. The plan said the settings were copied (review
+note, #898). The gateway took 203 calls, 172 k tokens in and
+425 k out. The verifier took 122 CLI calls (13 safeguard fallbacks went to Codex).
+
+**Pairs.** Pairs were built with round 1's construction and quotas on the accepted records only
+(`calib.records: "accepted"`, seed `20261031|judge-validation`). That gave **587 pairs from 83 questions**: gold 83,
+lex_same 81, lex_other 166, coll_same 163, coll_diff 94, or 377 G and 210 C by record kind. That is 7.1 pairs per
+question, so the plan's estimate of 400–500 was low. The file was kept whole.
+
+**Opus reference** (`Claude Opus 5.5`, alias-judge/1, 3 repetitions). The run stopped at its own call cap of
+2,300 calls: the 1,761-call batch plus re-issues of empty answers. It used 3.06 M tokens in and 121 k out. 487
+pairs are unanimous, 17 are split (5 split 2–1, 12 lack a third label), and **83 have no reference**. Of those 83,
+81 were empty on all 7–10 attempts, a provider-side filter clustered on 20 questions, as in round 1. The other 2
+had no parseable verdict. By stratum, the no-reference pairs are gold 6, lex_same 10, lex_other 27, coll_same 28
+and coll_diff 12.
+
+**Result per the plan** (the 487 Opus-unanimous pairs; Wilson 95 % intervals):
+
+| subset | pairs | accuracy | escalated | verdict |
+|---|---|---|---|---|
+| all strata (primary) | 487 | **0.992** [0.979, 0.997] | 12 (**2.5 %**) [1.4, 4.3] | **PASS** |
+| without coll_diff (secondary) | 408 | 0.990 [0.975, 0.996] | 12 (2.9 %) [1.7, 5.1] | PASS |
+
+The pass criterion is accuracy ≥ 0.98 with at most 5 % escalated. The in-sample figures were 0.992 and 2.7 %.
+On the 475 pairs the gate accepts, it makes 4 errors, all false yeses: 3 in lex_same and 1 in coll_same, and 3 of
+the 4 on C records. coll_diff, gold and lex_other have no errors. Escalations by stratum are gold 1, lex_same 3,
+lex_other 5, coll_same 3 and coll_diff 0.
+
+**Each judge alone** (the same 487 pairs; no pair lacked a label):
+
+| judge | accuracy | κ | FP | FN | without coll_diff |
+|---|---|---|---|---|---|
+| C, majority of 5 | 0.975 | 0.931 | 10 | 2 | 0.971 |
+| E, n = 1 | 0.984 | 0.953 | 5 | 3 | 0.980 |
+| E, majority of 3 | 0.984 | 0.953 | 4 | 4 | 0.980 |
+
+On the split pairs, the gate escalated none of the 17. It agrees with the Opus majority on 15 and disagrees on
+2. On the 83 no-reference pairs it escalated none, and labelled 75 no and 8 yes. Over all 587 pairs it
+escalated 12 (2.0 %).
+
+**Exploratory (not in the plan).** The Claude CLI (`claude-opus-5-5`, once per pair) agrees with the Opus
+reference on 483 of the 483 unanimous pairs where it gave a verdict (κ 1.00). It refused 67 pairs, 61 of them as
+#891 safeguard fallbacks. On all 4 gate errors the CLI sides with Opus. On the 21 no-reference pairs where the
+CLI gave a verdict, the gate's label matches it on 21 (all 21 are "no"). The CLI refused the other 62, so 62 of its
+67 refusals fall on the 83 no-reference pairs: it fails on the same pairs as the gateway and cannot serve as their
+tiebreaker. None of the 8 pairs the gate labels "yes" there has any Claude label. Throughput (587 pairs, 4 in flight): C took 1,086 s
+(2.7 samples/s) and E took 433 s (4.1 samples/s).
