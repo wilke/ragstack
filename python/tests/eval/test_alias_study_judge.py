@@ -105,6 +105,30 @@ def test_prompt_is_blind_to_arm_and_cell(tmp_path: Path) -> None:
         assert word not in a.split("PASSAGE:")[0].lower() + a.split(">>>")[-1].lower()
 
 
+def test_glossary_files_per_arm_feed_the_definitions_block(tmp_path: Path) -> None:
+    """Review of #904: an expanded arm's passages need their own papers' entries. With only the
+    base glossary, every neighbour prompt reads "(none listed)" and the manifest says so."""
+    w, cp = world(tmp_path)
+    assert main(cp, "build-pairs") == 0
+    man = json.loads((w.tmp / "judge" / "pairs-manifest.json").read_text())
+    cov = man["counts"]["definitions_coverage"]
+    assert cov["neighbour"]["share"] == 0.0 and cov["base"]["share"] == 1.0
+    added = fx.write_jsonl(tmp_path / "glossary-neighbour.jsonl",
+                           [{"alias": "AB", "primary": "alpha bravo", "kind": "abbreviation", "paper": p,
+                             "doc_id": f"d-{p}"} for p in w.added["neighbour"]])
+    tmp2 = tmp_path / "two"
+    tmp2.mkdir()
+    w2, cp2 = world(tmp2, glossary=[str(w.glossary), str(added)])
+    assert main(cp2, "build-pairs") == 0
+    man2 = json.loads((tmp2 / "judge" / "pairs-manifest.json").read_text())
+    assert man2["counts"]["definitions_coverage"]["neighbour"]["share"] == 1.0
+    assert len(man2["inputs_sha256"]["glossaries"]) == 2
+    pl = aj.Pipeline(aj.load_config(cp2), provenance=PROV)
+    p = next(x for x in pl.registry() if x["arm"] == "neighbour")
+    prompt = aj.StudyWorld(aj.harness_cfg(pl.cfg, "C"), pl.chunks(), pl.glossary(), [p]).prompt(p)[0]
+    assert '"AB" stands for "alpha bravo"' in prompt
+
+
 # ------------------------------------------------------------------ rule pieces
 
 def row(verdicts: list[Any]) -> dict[str, Any]:

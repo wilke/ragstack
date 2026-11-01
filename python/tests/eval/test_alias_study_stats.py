@@ -268,6 +268,7 @@ def test_reranker_and_growth_rules() -> None:
 
 def test_draw_gap_flag() -> None:
     assert st.within_draw_variation(-1.0, 1.5) and not st.within_draw_variation(-2.0, 1.5)
+    assert not st.within_draw_variation(-1.5, 1.5) and not st.within_draw_variation(1.5, -1.5)  # "smaller than"
     assert not st.within_draw_variation(None, 1.0)
 
 
@@ -342,6 +343,8 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
     assert res["layer1"]["H1"]["c_gate"]["verdict"] == "passes"
     assert res["layer1"]["H2"]["status"] == GATE_OR_NOT(res)
     assert res["layer2"]["decisions"]["attach_merged_glossary"]["fires"] is True
+    # the injected P99-c0 has no final label: counted (a dry run), refused otherwise (review of #904)
+    assert res["label_coverage"]["pairs_without_final_label"] == sum(r["kind"] == "G" for r in w.records)
     assert res["citable"] is False and res["dry_run"] is True
     assert res["layer2"]["cells"][st.L("base", "none", "default")]["descriptive_leg"]["found10"]["n"] == 2
     assert res["sensitivities"]["without_codex_verdicts"]["records"] < len(asc.split_records(w.records)[0])
@@ -349,6 +352,17 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
     assert asc.public_problems(res, {r["record_id"] for r in w.records}) == []
     assert asc.public_problems({"x": w.records[0]["record_id"]}, {w.records[0]["record_id"]}) == ["an id"]
     assert asc.public_problems({"x": "…" + w.records[0]["question"][:45]}, [], [w.records[0]["question"]])
+
+
+def test_label_coverage_counts_pairs_without_a_final_label() -> None:
+    rec = {"record_id": "r1", "gold_chunks": ["g"]}
+    rows = {"base|none|default": [{"record_id": "r1", "ranked_chunk_ids": ["g", "a", "b"]}],
+            "base|none|bm25": [{"record_id": "r1", "ranked_chunk_ids": ["b", "c"]},
+                               {"record_id": "r1", "failed": True, "ranked_chunk_ids": None}]}
+    final = {("r1", "a"): {}, ("r1", "b"): {}}
+    cov = st.label_coverage(rows, {"r1": rec}, final)
+    assert cov["pairs_without_final_label"] == 1 and cov["instances_per_leg"] == {"base|none|bm25": 1}
+    assert st.label_coverage(rows, {"r1": rec}, {**final, ("r1", "c"): {}})["pairs_without_final_label"] == 0
 
 
 def GATE_OR_NOT(res: dict[str, Any]) -> str:  # noqa: N802

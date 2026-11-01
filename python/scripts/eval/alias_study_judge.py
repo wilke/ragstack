@@ -135,9 +135,38 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def glossary_paths(cfg: Mapping[str, Any]) -> list[Path]:
+    """``glossary``: one merged-glossary file, or a list (the base file plus each expanded arm's
+    added-paper file, §5.3), read together: the definitions block of a neighbour or random
+    passage needs its own paper's entries (§6.2), or that arm's prompts would systematically read
+    *(none listed)*, a difference by arm the judge could see."""
+    g = cfg["glossary"]
+    return [Path(g)] if isinstance(g, str) else [Path(x) for x in g]
+
+
+def read_glossaries(paths: Sequence[Path]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for p in paths:
+        for paper, entries in jd.read_glossary(p).items():
+            out.setdefault(paper, []).extend(entries)
+    return out
+
+
+def definitions_coverage(pairs: Sequence[Mapping[str, Any]], glossary: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
+    """Per arm: pairs whose passage paper has at least one glossary entry. A paper may define
+    nothing, but an expanded arm far below base points at a missing added-paper glossary file."""
+    tot: Counter[str] = Counter()
+    cov: Counter[str] = Counter()
+    for p in pairs:
+        tot[p["arm"]] += 1
+        cov[p["arm"]] += int(bool(glossary.get(str(p["c_paper"]))))
+    return {a: {"pairs": tot[a], "passage_paper_has_entries": cov[a],
+                "share": round(cov[a] / tot[a], 4) if tot[a] else None} for a in sorted(tot)}
+
+
 def harness_cfg(cfg: Mapping[str, Any], backend: str) -> dict[str, Any]:
     """The calibration harness's config for one backend (``glossbench_alias_judge.merged``)."""
-    base: dict[str, Any] = {"out_dir": cfg["out_dir"], "chunks": [], "glossary": cfg["glossary"],
+    base: dict[str, Any] = {"out_dir": cfg["out_dir"], "chunks": [], "glossary": str(glossary_paths(cfg)[0]),
                             "paper_key": "path_root", "limits": dict(cfg.get("limits") or {})}
     if backend in ("C", "E"):
         blk = dict(cfg["judge_c" if backend == "C" else "judge_e"])
@@ -404,7 +433,7 @@ class Pipeline:
 
     def glossary(self) -> dict[str, list[dict[str, Any]]]:
         if self._glossary is None:
-            self._glossary = jd.read_glossary(Path(self.cfg["glossary"]))
+            self._glossary = read_glossaries(glossary_paths(self.cfg))
         return self._glossary
 
     def build(self) -> dict[str, Any]:
@@ -421,9 +450,11 @@ class Pipeline:
         bl = batches(pairs, int(self.cfg["batch_size"]))
         jd.g.write_json_atomic(self.out / "batches.json", {"batch_size": int(self.cfg["batch_size"]), "batches": bl,
                                                            "seed": asc.SEEDS["judge_order"]})
+        counts["definitions_coverage"] = definitions_coverage(pairs, self.glossary())
         man = {"schema": PAIRS_SCHEMA, "counts": counts, "batches": len(bl),
                "pairs_sha256": asc.sha256_file(self.pairs_path),
                "inputs_sha256": {"records": asc.sha256_file(self.cfg["records"]),
+                                 "glossaries": [asc.sha256_file(x) for x in glossary_paths(self.cfg)],
                                  **{f"chunks_{a}": asc.sha256_file(p) for a, p in self.cfg["chunk_exports"].items()}},
                "provenance": self.prov, "t": jd.g.now_iso()}
         jd.g.write_json_atomic(self.out / "pairs-manifest.json", man)

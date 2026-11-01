@@ -417,6 +417,26 @@ class Data:
         return {leg: leg_outcomes(rows, self.by_id, lab, self.pair_paper) for leg, rows in self.rows.items()}
 
 
+def label_coverage(rows: Mapping[str, Sequence[Mapping[str, Any]]], by_id: Mapping[str, Mapping[str, Any]],
+                   final: Mapping[tuple[str, str], Mapping[str, Any]]) -> dict[str, Any]:
+    """Every top-10 non-gold (record, chunk) of every leg must have a final judge row (§6.2: one
+    final label serves every cell). A pair without one would be scored *not answering* silently,
+    unlike an *unjudged* pair, which the judge counts and flags (§6.3). Returns the counts."""
+    missing: set[tuple[str, str]] = set()
+    per_leg: Counter[str] = Counter()
+    for leg, rs in rows.items():
+        for row in rs:
+            rec = by_id.get(row["record_id"])
+            if rec is None or row.get("failed"):
+                continue
+            gold = rec["gold_chunks"][0]
+            for c in (row.get("ranked_chunk_ids") or [])[:asc.FOUND_K]:
+                if c != gold and (row["record_id"], c) not in final:
+                    missing.add((row["record_id"], c))
+                    per_leg[leg] += 1
+    return {"pairs_without_final_label": len(missing), "instances_per_leg": dict(per_leg)}
+
+
 def cell_gates(spec: Spec, gates: Mapping[str, str | None]) -> list[str]:
     return [f"{leg}: {gates[leg]}" for _, leg in spec if gates.get(leg)]
 
@@ -649,8 +669,12 @@ def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     if not cfg.get("dry_run") and (an["n_perm"] != 10_000 or an["n_boot"] != 10_000):
         raise SystemExit("n_perm and n_boot are 10,000 (prereg §7); other values only in a dry run")
     reach = cfg.get("reach")
+    cov = label_coverage(d.rows, d.by_id, d.final)
+    if cov["pairs_without_final_label"] and not cfg.get("dry_run"):
+        raise SystemExit(f"{cov['pairs_without_final_label']} top-10 non-gold pair(s) of the legs have no final judge "
+                         "label (judging not finished, or a leg changed after build-pairs); nothing analysed")
     prim = d.outcomes("primary")
-    res: dict[str, Any] = {"schema": SCHEMA, "record_set": d.identity,
+    res: dict[str, Any] = {"schema": SCHEMA, "record_set": d.identity, "label_coverage": cov,
                            "seeds": {"perm": asc.SEEDS["perm"], "boot": asc.SEEDS["boot"], "rule": asc.SEED_RULE},
                            "n_perm": an["n_perm"], "n_boot": an["n_boot"], "leg_gates": dict(d.gates), "runs": d.runs}
     l1 = layer1(d.bal, prim, d.gates, reach, an)
