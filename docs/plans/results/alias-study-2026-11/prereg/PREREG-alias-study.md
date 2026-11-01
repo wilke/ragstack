@@ -164,11 +164,13 @@ graphical (weight-passing) form of Holm with one added node:
 - Initial levels: H1 α/2, H2 α/2, H1b 0.
 - When H1 is rejected, its whole level passes to H1b. When H1b is rejected, its level passes to H2. When
   H2 is rejected, its level passes to H1, or to H1b if H1 is already rejected.
-- So H1 and H2 are Holm over 2. H1b is tested only after H1 is confirmed, at H1's whole level, not a
-  split of it. It is tested at α/2 = 0.025 if H2 is not rejected, and at α = 0.05 once H2 is. It adds no
-  Holm member and costs H1 and H2 nothing. This is the reading of "H1b at full α" that keeps the
-  family-wise error at α (§14 O2). Testing H1b at 0.05 whenever H1 is confirmed, whatever H2 does, would
-  not.
+- So H1 and H2 start as Holm over 2. H1b is tested only after H1 is confirmed, at H1's whole level, not
+  a split of it. It is tested at α/2 = 0.025 if H2 is not rejected, and at α = 0.05 once H2 is. It adds no
+  Holm member and costs H1 nothing. **It costs H2 one thing:** under plain Holm over 2, H2 would be
+  retested at α = 0.05 as soon as H1 is rejected; here H1's level reaches H2 only after H1b is also
+  rejected, so when H1 is confirmed and H1b is not, H2 stays at 0.025. H2's power floor in §8 is computed
+  at 0.025 and is unaffected. This is the reading of "H1b at full α" that keeps the family-wise error at
+  α (§14 O2). Testing H1b at 0.05 whenever H1 is confirmed, whatever H2 does, would not.
 - A GATE-NOT-EVALUABLE or absent member enters at p = 1.0, and the family is never shrunk (round 3 D14).
 
 **Why these forms.**
@@ -318,12 +320,17 @@ fixed before any retrieval, so the split cannot depend on an outcome.
    every paper activated by the 200-paper run (355 activated; 377 papers excluded in all, §6.4). The
    extension activated further papers in the same seeded order, and the validation exclusion did not
    cover them. Scratch counts, made for this draft: **91** of the 300 satisfied papers are outside the
-   validation exclusion list; **8** of the 300 had validation records drafted on them (69 validation
-   drafts, 43 passed) and carry **24** balanced-set records (16 G, 8 C); **6** of the 300 are question
-   papers of **121** of the 587 validation pairs; and **35** validation pairs have a balanced-set gold
-   chunk as their passage (21 of them with a question paper among the 300). So the judge's validation
+   validation exclusion list; **8** of the 300 had validation records drafted on them (44 validation
+   drafts, 25 passed layer 1, 18 accepted) and carry **24** balanced-set records (16 G, 8 C); **6** of the
+   300 are question papers of **121** of the 587 validation pairs; **39** validation pairs (35 distinct
+   chunks) have a balanced-set gold chunk as their passage (21 of them with a question paper among the
+   300); and, independently of the extension, **190** of the 587 pairs have their passage on one of the
+   300 papers (**243** pairs touch a study paper as question or passage paper). So the judge's validation
    figure is **not fully out of sample** with respect to the study papers, and BM25 candidate lists were
-   computed for validation questions on 8 study papers. No study record was retrieved or judged. A
+   computed for validation questions on 6 study papers. A scratch re-score of the frozen validation rule
+   (C + E, escalations to Opus) without those pairs still passes the plan's criterion: without the 121
+   pairs, **0.992** on 388 Opus-unanimous pairs, 2.8 % escalated; without all 243, **0.990** on 287,
+   2.8 % escalated (excluding coll_diff: 0.991 / 3.5 % and 0.988 / 3.3 %). No study record was retrieved or judged. A
    sensitivity without the 8 papers is printed beside H1, H1b and H2 (§7), and the committed recount
    (§15) reproduces these counts.
 7. **Layer-3 record validity is open.** No owner spot check of the records has been recorded. §13.4 fixes
@@ -555,7 +562,7 @@ adds it (below).
 | member (n) | q .02 | q .03 | q .05 | q .10 | q .20 |
 |---|---|---|---|---|---|
 | **H1**, p .85 (600) | .68 | .85 | **.97** | 1.00 | 1.00 |
-| **H1**, p .70 (600) | .28 | .40 | .60 | **.88** | .99 |
+| **H1**, p .70 (600) | .28 | .40 | .59 | **.88** | .99 |
 | **H2**, p .85 (900) | .85 | .96 | 1.00 | 1.00 | 1.00 |
 | **H2**, p .70 (900) | .40 | .55 | .77 | .97 | 1.00 |
 
@@ -729,7 +736,7 @@ Only items not settled by D1–D10.
 | O7 | Gateway caps for the judge | set from the realised deduplicated pair count before the freeze: Argon ≤ 4 % and Opus ≤ 6 % of pairs, with an absolute ceiling agreed with the papers-OC owner |
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
 | O9 | Seed base | `261101|alias|study`, fixed at freeze |
-| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records), or re-score the validation without the 6 question papers' 121 pairs |
+| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
 
 ## 15. What must exist before freeze
 
