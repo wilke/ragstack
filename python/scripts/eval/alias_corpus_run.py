@@ -537,7 +537,7 @@ def stage_scan(lay: Layout, workers: int) -> dict:
     files = [f["url"] for f in works["files"]]
     pool_dir = lay.meta / "pool"
     jobs = [(u, str(pool_dir / (hashlib.sha1(u.encode()).hexdigest()[:16] + ".jsonl")), win) for u in files]
-    log(f"scan: snapshot {man['date']}, {len(files)} files, {works['meta']['content_length'] / 1e9:.0f} GB; "
+    log(f"scan: snapshot {man['date']}, {len(files)} files, {works['content_length'] / 1e9:.0f} GB; "
         f"{len(win)} topics; {workers} workers")
     done = n_in = n_keep = 0
     t0 = time.time()
