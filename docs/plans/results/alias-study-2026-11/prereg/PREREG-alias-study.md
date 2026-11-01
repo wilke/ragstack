@@ -114,7 +114,7 @@ added, redrafted or dropped for any reason after the freeze.
 | accepted records | **734** (G 458, C 276) on **276** papers |
 | satisfied papers (≥ 2 accepted G on distinct aliases and ≥ 1 accepted C) | **200**, each with **exactly 2 G and 1 C** (the stop rule ends a paper at its goal): **600 records**, 400 G / 200 C |
 | records on unsatisfied papers | 134 (G 58, C 76) on 76 papers |
-| record set file | `accepted-alias-O.jsonl`, sha256 **`4aa0a36d9b1f3dc876a4f4d8b275d02b4ef1e15d4d014a4a1545b0cd4e13bcb0`** (private) |
+| record set file | `accepted-alias-O.jsonl`, sha256 **`4aa0a36d9b1f3dc876a4f4d8b275d02b4ef1e15d4d014a4a1545b0cd4e13bcb0`** of the file's bytes, equal to the `accepted_sha256` the acceptance summary records (private) |
 | alias kind of the 600 (G / C) | abbreviation 335 / 170, symbol 63 / 26, both 2 / 4 |
 | gold | one source chunk per record (`gold_chunks` length 1 on all 734) |
 | corpus | the OA-1000 chunk export, 32,765 chunks @512, 12,560 documents, 1,000 papers (sha256 `ff16e611…`) |
@@ -266,8 +266,8 @@ pairs where Opus answers. **Alarm:** agreement between the final label and Opus 
 100 Opus-answered pairs, cumulatively or in any batch, **pauses labelling**. The pause is reported to the
 owner and recorded as a deviation. Opus labels never replace a final label. The Opus-filtered share of
 the sample is printed. **Topic filter:** Opus via the gateway returns empty answers on some questions,
-clustered on vaccine and virus topics: 33 of 410 calibration pairs and 83 of 587 validation pairs had no
-answer on any attempt. The Claude CLI refuses most of the same pairs, while Argon and both Qwen judges
+clustered on vaccine and virus topics: 33 of 410 calibration pairs and 81 of 587 validation pairs had no
+answer on any attempt (83 validation pairs have no reference; the other 2 had no parseable verdict). The Claude CLI refuses most of the same pairs, while Argon and both Qwen judges
 answer them. A filtered pair is **not** a drift failure. It is excluded from the drift agreement and
 counted.
 
@@ -281,7 +281,7 @@ study result.
 | in-sample C + E agreement rule (410 pairs, 372 Opus-unanimous) | accuracy 0.992, 2.7 % escalated | JUDGE-CALIBRATION.md rounds 2–3 (#896 `65a58e1`, #897 `9dabeb4`) |
 | **out-of-sample validation**, plan frozen first (`e2713e1`), run at `390777d` | **0.992** [0.979, 0.997] on 487 Opus-unanimous pairs; 2.5 % escalated; PASS against ≥ 0.98 and ≤ 5 %; 377 papers excluded, every study paper among them | JUDGE-VALIDATION-PLAN.md; JUDGE-CALIBRATION.md *Validation* (#898) |
 | **tiebreaker selection**, plan frozen first (`10a986c`) | `Gemini 4 Argon` **0.996** agreement with Opus on the 487 (κ 0.988; 0 of 83 filtered pairs unlabelled); `GPT-5.6 Sol` 0.990; Argon selected on agreement | TIEBREAKER-PLAN.md; JUDGE-CALIBRATION.md *Tiebreaker* (#899, `5e6a722`) |
-| residual errors of the gate | 4 on 475 accepted pairs, all false yes, 3 of them on same-paper non-gold chunks (lex_same) | JUDGE-CALIBRATION.md *Validation* |
+| residual errors of the gate | 4 on 475 accepted pairs, all false yes: 3 on same-paper non-gold chunks (lex_same) and 1 in coll_same; 3 of the 4 on C records | JUDGE-CALIBRATION.md *Validation* |
 | the composed rule (C + E, then Argon), replayed on the validation labels | 482 of 487 (0.990); 12 sent to Argon, 11 of them right; 0 unlabelled | **scratch replay for this draft, post-selection, not citable**; the committed replay is a pre-freeze item (§14) |
 
 **What the calibration does not show.** Validation scored the C + E rule with **Opus** labelling the
@@ -440,8 +440,8 @@ so in its sentence. Re-running a leg after a hard stop is a deviation entry, not
    C. The 200 satisfied papers are those the stop rule reached first in a seeded order, and the estimand
    is conditional on them. Abbreviations dominate: 335 of 400 G records on satisfied papers.
 3. **The judge is not truth.** found@10 inherits the judge's errors. On the validation set those errors
-   were few (§5.4) but were false yeses on same-paper non-gold chunks, which inflate found@10
-   symmetrically across arms only if such chunks are retrieved equally often.
+   were few (§5.4) but were all false yeses, 3 of 4 on same-paper non-gold chunks, which inflate found@10
+   equally across arms only if such chunks are retrieved equally often.
 4. **Layer-3 judge validity:** the owner spot-checks a seeded sample of judged pairs, blind to cell
    (proposed: 40 judged-*answers* pairs whose record had no gold in the top 10, plus 20 judged-*not*
    pairs; seed `<seed base>|spot|judge`; §13 O8). **Rule, as round 3's:** a validity point estimate below
