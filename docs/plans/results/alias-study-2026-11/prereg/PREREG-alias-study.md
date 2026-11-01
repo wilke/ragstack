@@ -15,9 +15,9 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 | # | decision, in short | where |
 |---|---|---|
-| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, tested only if H1 is confirmed, fixed sequence, no extra Holm member; the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
+| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, no extra Holm member (routing amended by §14 O2, Option B: tested at α = 0.05 only if H1 **and** H2 are confirmed, fixed sequence after the Holm pair); the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
 | D2 | H2 = neighbour vs random (average of two draws), default, none, one-sided, judged found@10; confirmed only if gold-only found@10 also drops (a gate, not a third test); drift stratified by arm; per-arm false-yes rates | §3.1, §3.2, §6.3 |
-| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after H1); Layer 2 serving decisions on CI-based thresholds, no gates; H3 moves to Layer 2 with a 95 % CI | §3 |
+| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after both H1 and H2, §14 O2); Layer 2 serving decisions on CI-based thresholds, no gates; H3 moves to Layer 2 with a 95 % CI | §3 |
 | D4 | neighbour caps: ≤ 5 references (most cited) + ≤ 5 citers (most recent), open-access full text, via OpenAlex, deduplicated against OA-1000 | §5.1 |
 | D5 | random arm "same field": matched count per study paper, same OpenAlex primary topic, OA full text, no citation link to any study paper, year ± 3, seeded content-blind rule | §5.1 |
 | D6 | two random draws; one noise repeat per arm; a rank-based secondary (Layer 2); H2 power from the realised layout; raising the caps is the lever | §5.1, §5.4, §3.3, §8 |
@@ -142,7 +142,7 @@ Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
 | id | hypothesis | records | cells compared | type | per-cluster statistic |
 |---|---|---|---|---|---|
 | **H1** | the merged glossary raises found@10 on G records | the **600 G** records of the balanced set (§4.2) | corpus **base**, retriever **default**: glossary **merged** vs **none** | superiority, **one-sided** (> 0) | per paper: Σ over its 2 G records of hit(merged) − hit(none) ∈ {−2, …, +2} |
-| **H1b** | the gain on G exceeds the change on C (alias-specific) | the **900** balanced records (600 G, 300 C) | as H1 | difference-in-differences, **one-sided** (> 0); tested **only if H1 is confirmed** | per paper: ½ Σ over its G records of Δ − its C record's Δ, with Δ = hit(merged) − hit(none) |
+| **H1b** | the gain on G exceeds the change on C (alias-specific) | the **900** balanced records (600 G, 300 C) | as H1 | difference-in-differences, **one-sided** (> 0); tested **only if H1 and H2 are both confirmed**, at α = 0.05 | per paper: ½ Σ over its G records of Δ − its C record's Δ, with Δ = hit(merged) − hit(none) |
 | **H2** | citation neighbours reduce found@10 more than random same-field papers | the **900** balanced records | retriever **default**, glossary **none**: corpus **neighbour** vs **random** (the average of random-1 and random-2) | superiority, **one-sided** (< 0); **gold-only direction gate** | per paper: Σ over its 3 records of hit(neighbour) − ½ [hit(random-1) + hit(random-2)] |
 
 **Gates specific to Layer 1** (in addition to the general gates of §9.1):
@@ -159,25 +159,49 @@ Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
   no p value in the family. If the judged test is significant and the gate fails, H2 is *not confirmed
   (gold-only direction gate)*, and for the multiplicity procedure it counts as not rejected (§14 O3).
 
-**Multiplicity: Holm over 2, with H1b in fixed sequence after H1.** α = 0.05. The procedure is the
-graphical (weight-passing) form of Holm with one added node:
-- Initial levels: H1 α/2, H2 α/2, H1b 0.
-- When H1 is rejected, its whole level passes to H1b. When H1b is rejected, its level passes to H2. When
-  H2 is rejected, its level passes to H1, or to H1b if H1 is already rejected.
-- So H1 and H2 start as Holm over 2. H1b is tested only after H1 is confirmed, at H1's whole level, not
-  a split of it. It is tested at α/2 = 0.025 if H2 is not rejected, and at α = 0.05 once H2 is. It adds no
-  Holm member and costs H1 nothing. **It costs H2 one thing:** under plain Holm over 2, H2 would be
-  retested at α = 0.05 as soon as H1 is rejected; here H1's level reaches H2 only after H1b is also
-  rejected, so when H1 is confirmed and H1b is not, H2 stays at 0.025. H2's power floor in §8 is computed
-  at 0.025 and is unaffected. This is the reading of "H1b at full α" that keeps the family-wise error at
-  α (§14 O2). Testing H1b at 0.05 whenever H1 is confirmed, whatever H2 does, would not.
+**Multiplicity: Holm over H1 and H2, then H1b in fixed sequence after both (owner, 2026-11-01, §14
+O2).** α = 0.05, all members one-sided. In graphical (weight-passing) form (Bretz, Maurer, Brannath and
+Posch 2009, *A graphical approach to sequentially rejective multiple test procedures*, Statistics in
+Medicine 28(4):586–604, doi:10.1002/sim.3495):
+
+| node | initial level | when it is rejected, its level passes to |
+|---|---|---|
+| **H1** | α/2 = 0.025 | H2 (weight 1); to H1b once H2 is also rejected |
+| **H2** | α/2 = 0.025 | H1 (weight 1); to H1b once H1 is also rejected |
+| **H1b** | 0 | — (last node) |
+
+```
+         weight 1
+  H1  ────────────>  H2
+ .025 <────────────  .025
+         weight 1
+
+  H1 and H2 both rejected  ──>  H1b tested at α = 0.05
+```
+
+- **H1 and H2 are Holm over 2.** Each is tested first at 0.025. If H1 is confirmed, its 0.025 passes to
+  H2, which is then tested at 0.05; if H2 is confirmed, its 0.025 passes to H1, which is then tested at
+  0.05. This is exactly the Holm procedure over the pair.
+- **H1b is tested only if both H1 and H2 are confirmed, at α = 0.05.** If either is not confirmed
+  (including *not confirmed*, GATE-NOT-EVALUABLE or absent), H1b is **not tested**; its estimate, CI and
+  power are reported descriptively (§3.2). H1b adds no Holm member and costs neither H1 nor H2 anything.
+- **H2's gold-only direction gate** failing makes H2 *not confirmed*: it passes no level to H1, and H1b is
+  not tested (§14 O3).
 - A GATE-NOT-EVALUABLE or absent member enters at p = 1.0, and the family is never shrunk (round 3 D14).
+
+**Why this controls the family-wise error at 0.05 (strong control).** Let I be the set of true null
+hypotheses. If I contains H1 or H2, a false rejection of H1b requires rejecting both H1 and H2, so it
+requires a false rejection inside the Holm pair; the family-wise error is then the Holm pair's, which is
+≤ 0.05. If I = {H1b} alone, the only possible error is p(H1b) ≤ 0.05, with probability ≤ 0.05. This is
+the fixed-sequence argument, and the procedure is a closed test; in the graphical notation of Bretz et
+al. it is the limit of the graph with ε-weight edges H1 → H1b and H2 → H1b as ε → 0.
 
 **Why these forms.**
 - **H1 is G-only, with C as a gate (D1).** The DiD form of v0 gave each paper's single C record the weight
   of its two G records and needed 10–20 % of G records discordant (v0 §7). The G-only test at Holm over
   2 is resolvable at much lower discordance (§8). The price is a weaker control, which the C gate and
-  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain.
+  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain and H2 has also been
+  confirmed (§14 O2); otherwise it is descriptive.
 - **H2 is neighbour vs random, not neighbour vs base.** Adding any papers adds distractors. The random arm
   holds the number of added papers, their field and their age fixed, so H2 reads what is specific to
   *citation* neighbours. Two random draws, averaged, keep one unlucky draw from deciding H2 (§5.1).
@@ -190,11 +214,15 @@ graphical (weight-passing) form of Holm with one added node:
 
 ### 3.2 Outcome interpretation, H1 × H1b
 
+H1b is tested only when H1 **and** H2 are both confirmed (§3.1), so its *confirmed*, *not confirmed* and
+*GATE-NOT-EVALUABLE* rows below arise only when H2 is confirmed.
+
 | H1 | H1b | reading |
 |---|---|---|
 | **confirmed** | **confirmed** | the merged glossary makes alias passages findable, and the gain on G exceeds the change on C: an alias-specific gain |
 | **confirmed** | **not confirmed** | G gained and C did not move clearly (the gate passed), but the G gain was not shown to exceed the C change. The gain is on alias questions; its specificity is unresolved. Read beside the baseline C found@10 (ceiling, §2 item 4) and H1b's power floor |
 | **confirmed** | **GATE-NOT-EVALUABLE** | as the row above, and H1b could not be read (for example too few non-zero clusters) |
+| **confirmed** | *not tested* (H2 not confirmed) | G gained and C did not move clearly; H1b's level was never released because H2 was not confirmed (including its gold-only gate failing, or H2 GATE-NOT-EVALUABLE). The specificity is unresolved; H1b's estimate, CI and power at α = 0.05 are printed descriptively, never as a test |
 | **not confirmed** | *absent* (not tested) | no evidence that the glossary helps alias questions; the power floor of §8 is printed beside it. Not a null unless the power at the stated scenario is ≥ .80 |
 | **GATE-NOT-EVALUABLE** | *absent* (not tested) | the design could not read H1: C moved clearly, the reach gate failed, or a general gate fired. Nothing is said about the glossary's effect on G, in either direction |
 
@@ -555,7 +583,8 @@ gets d ∈ {−1, 0, +1}: non-zero with probability q, in the hypothesised direc
 
   μ = q (2p − 1),  σ² = q − μ²,  power = Φ( √n · μ / σ − z ),
 
-with z = 1.95996 for the Holm worst case, one-sided α/2 = 0.025. This treats records as independent and
+with z = 1.95996 for the Holm worst case, one-sided α/2 = 0.025 (the conditional rows use z = 1.64485,
+one-sided α = 0.05). This treats records as independent and
 paper-level shares as constant. A paper-level spread of p lowers power somewhat; the committed simulation
 adds it (below).
 
@@ -566,7 +595,20 @@ adds it (below).
 | **H2**, p .85 (900) | .85 | .96 | 1.00 | 1.00 | 1.00 |
 | **H2**, p .70 (900) | .40 | .55 | .77 | .97 | 1.00 |
 
-**The two planning scenarios for H1** are q 5 % / p .85 and q 10 % / p .70: power **≈ 0.97** and **≈ 0.88**.
+**Conditional power at α = 0.05** (§3.1: H2 is tested at 0.05 once H1 is confirmed, and H1 at 0.05 once H2
+is confirmed). These are powers *given* that the other member was confirmed; the unconditional floor is
+the 0.025 table above.
+
+| member (n), at α = 0.05 | q .02 | q .03 | q .05 | q .10 | q .20 |
+|---|---|---|---|---|---|
+| **H1**, p .85 (600), given H2 confirmed | .79 | .91 | .99 | 1.00 | 1.00 |
+| **H1**, p .70 (600), given H2 confirmed | .40 | .52 | .71 | .93 | 1.00 |
+| **H2**, p .85 (900), given H1 confirmed | .91 | .98 | 1.00 | 1.00 | 1.00 |
+| **H2**, p .70 (900), given H1 confirmed | .52 | .67 | .85 | .99 | 1.00 |
+
+**The two planning scenarios for H1** are q 5 % / p .85 and q 10 % / p .70: power **≈ 0.97** and **≈ 0.88**
+at 0.025 (≈ 0.99 and ≈ 0.93 given H2 confirmed). For H2 at the same two scenarios: 1.00 and .97 at 0.025;
+given H1 confirmed, 1.00 and .99 (and at q 5 % / p .70, .77 → .85).
 The 80 %-power MDE, from μ = k · √(q / (n + k²)) with k = 1.960 + 0.842, is 2.5 points for H1 at q 5 % and
 2.1 points for H2 at q 5 % (3.6 and 2.9 at q 10 %).
 
@@ -590,7 +632,7 @@ agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, 
 before the freeze**; that is the lever, and it acts on metadata counts only.
 
 **Evaluability floor.** With k non-zero clusters the minimum attainable one-sided p is 2^−k. At the Holm
-worst case α/2 a member needs k ≥ 6.
+worst case α/2 a member needs k ≥ 6; at α = 0.05 (H1b, or H1 / H2 after the other is confirmed) k ≥ 5.
 
 ## 9. Gates, stops, and restore points
 
@@ -728,7 +770,7 @@ Only items not settled by D1–D10.
 | # | decision | proposal in this draft |
 |---|---|---|
 | O1 | **Numeric definition of "C moves clearly"** (the C gate) | the 95 % paper-bootstrap CI of C's net change excludes 0 **and** \|net\| ≥ 2 points (6 of 300 records), in either direction |
-| O2 | Reading of "H1b at full α" | the graphical procedure of §3.1: H1b inherits H1's whole level (0.025, or 0.05 once H2 is rejected). A flat 0.05 for H1b regardless of H2 would not hold family-wise error at α |
+| O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8 |
 | O3 | H2 when the judged test is significant but the gold-only gate fails | label *not confirmed (gold-only direction gate)*; counted as not rejected, so it passes no level on |
 | O4 | Minimum Opus-answered pairs before a drift alarm can fire | 100 per scope (overall and per arm), carried from v0 |
 | O5 | Attribution of a neighbour shared by several study papers | the first study paper in the seeded order `<seed base>|nbr|order`; no replacement for the others |
@@ -742,7 +784,7 @@ Only items not settled by D1–D10.
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1–O10 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O2 decided 2026-11-01; O1, O3–O10 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open |
