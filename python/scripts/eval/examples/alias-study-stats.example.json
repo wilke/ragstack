@@ -1,0 +1,21 @@
+{
+ "_comment": "alias_study_stats.py --config: private inputs; the results hold counts only.",
+ "records": "/private/alias-study/accepted-alias-O.jsonl",
+ "runs_dir": "/private/alias-study/runs",
+ "judge_dir": "/private/alias-study/judge",
+ "reach": {
+  "count": 0,
+  "of": 600
+ },
+ "sensitivity_sets": {
+  "without_calibration_overlap": "/private/alias-study/lists/calibration-overlap-record-ids.txt",
+  "without_pilot_papers": "/private/alias-study/lists/pilot-papers.txt",
+  "without_validation_papers": "/private/alias-study/lists/validation-papers.txt"
+ },
+ "collision": "/private/alias-study/lists/collision-by-record.json",
+ "spot_records": {
+  "valid": 0,
+  "n": 40
+ },
+ "spot_judge": "/private/alias-study/spot/judge-owner-labels.jsonl"
+}
