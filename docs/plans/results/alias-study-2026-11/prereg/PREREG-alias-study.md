@@ -151,12 +151,15 @@ Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
 - **The C gate on H1 (rule C; owner, 2026-11-01, §14 O1).** H1 reads the G records alone, so a general
   shift that C records share would pass as a glossary effect. On base × default, glossary merged vs none,
   let ΔG be the net change in found@10 of the 600 G records and ΔC that of the 300 C records, both in
-  points (merged − none). H1 is **GATE-NOT-EVALUABLE**, and H1b is not tested, when **all three** hold:
-  (a) ΔC has the **same sign** as ΔG; (b) |ΔC| ≥ ½ |ΔG|; (c) the 95 % CI of ΔC (paper-cluster
+  points (merged − none). **H1 is one-sided (a gain on G), so the gate is evaluated only when ΔG > 0.**
+  When ΔG ≤ 0, H1 cannot be confirmed whatever C does, the gate is **moot** (verdict printed as *C gate
+  moot, ΔG ≤ 0*), and H1 is read as not confirmed on its own test. When ΔG > 0, H1 is
+  **GATE-NOT-EVALUABLE**, and H1b is not tested, when **all three** hold: (a) ΔC has the **same sign** as
+  ΔG, that is ΔC > 0; (b) |ΔC| ≥ ½ |ΔG|; (c) the 95 % CI of ΔC (paper-cluster
   percentile bootstrap, 10,000 resamples, seed `261101|alias|boot`, §5.5) excludes 0. **A C drop never
-  trips the gate**, whatever ΔG does: the gate fires only on a C rise that keeps pace with a G rise. A C
-  drop is read in Layer 2, by the C-cost rule (≤ 1 point, §3.3). If ΔG = 0, (a) cannot hold and the gate
-  does not fire. Printed beside H1 whatever the verdict: ΔC with its CI, ΔG, the ratio ΔC / ΔG, and the
+  trips the gate**: with ΔG > 0, condition (a) excludes it, and with ΔG ≤ 0 the gate is moot, so there is
+  no case in which "same sign" and "a C drop never trips" conflict. The gate fires only on a C rise that
+  keeps pace with a G rise. A C drop is read in Layer 2, by the C-cost rule (≤ 1 point, §3.3). Printed beside H1 whatever the verdict: ΔC with its CI, ΔG, the ratio ΔC / ΔG, and the
   baseline C found@10 (base × default × none) with its headroom to 100 %. **Ceiling note:** if the
   headroom is below ½ ΔG (in records, 300 C), condition (b) cannot be met upward, so the gate cannot fire
   however much C would have risen without the ceiling; the sentence quoting H1 then says *C gate
@@ -407,6 +410,11 @@ paper:
 - **Expected size, an estimate:** about 9–10 added per study paper, so about **2,800** papers for 300, and,
   at OA-1000's 32.8 chunks per paper, on the order of 90,000 added chunks. The realised counts go in the
   manifest.
+- **Feasibility (scratch, not citable):** an offline OpenAlex count for this draft resolved 298 of the 300
+  study papers and found **2,625** unique neighbours, **60.8 %** with a PMCID and **39.2 %** with a PDF or
+  other open-access copy only; a random same-topic pool is about **32 %** PMC, so the PDF-share matching
+  below is required, and it is feasible: the smallest per-paper pool holds 160 open-access works, 72 of
+  them non-PMC. The committed manifests (§15 item 4) replace these counts.
 
 **Random selection (D5).** For each study paper and each draw *d* ∈ {1, 2}, as many random papers as were
 **attributed to it** in the neighbour arm (its attributed count, above, after the control-character
@@ -443,7 +451,7 @@ OA-1000 holds **0** chunks with such a character among its 32,765 (scratch count
 this draft), so any such character is foreign to the base text; in practice a C0 character in extracted
 PDF text is a lost glyph (a symbol or ligature the font maps to a control code), which corrupts exactly
 the short forms this study is about. At about 33 chunks per paper the threshold excludes a PDF paper with
-**one** affected chunk, and only a paper of more than 200 chunks is allowed a single stray character. If
+**one** affected chunk, and only a paper of at least 200 chunks is allowed a single stray character. If
 the extractor emits form feeds (U+000C) as page breaks, every PDF would fail; the extraction for the expanded corpora (§15
 item 5) counts this before the freeze, and if it happens the owner decides the remedy on that count, as a
 recorded change to this text. **An excluded neighbour is not replaced** (the caps stay caps), and the
@@ -497,8 +505,7 @@ pipeline at the same versions** (owner, 2026-11-01):
   ids, the `rules/3` version, the `alias_abbrev.py` commit, the code commit and `experiment_provenance()`,
   and the sha256 of every glossary file (per arm), with a census of entries per added paper by `kind`.
 
-The
-judge's definitions block (§6.2) reads the merged glossary in every cell, so the judge context does not
+The judge's definitions block (§6.2) reads the merged glossary in every cell, so the judge context does not
 depend on the glossary arm.
 
 ### 5.4 Volume
@@ -840,7 +847,7 @@ Only items not settled by D1–D10.
 
 | # | decision | proposal in this draft |
 |---|---|---|
-| O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's ≤ 1-point C-cost rule). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
+| O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** Evaluated only when ΔG > 0 (H1 is one-sided; at ΔG ≤ 0 the gate is moot). H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's ≤ 1-point C-cost rule). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
 | O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8 |
 | O3 | H2 when the judged test is significant but the gold-only gate fails | label *not confirmed (gold-only direction gate)*; counted as not rejected, so it passes no level on |
 | O4 | Minimum Opus-answered pairs before a drift alarm can fire | 100 per scope (overall and per arm), carried from v0 |
