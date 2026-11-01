@@ -541,8 +541,18 @@ class Runner:
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  probe_chunks: Sequence[tuple[str, str, str]] | None = None,
                  probe_unavailable: str | None = None, probe_source: str | None = None,
-                 boost_declared: float | None = None, probe_max_glossaries: int = gbp.PROBE_TOP_K) -> None:
+                 boost_declared: float | None = None, probe_max_glossaries: int = gbp.PROBE_TOP_K,
+                 conditions: Sequence[str] | None = None,
+                 job_order: Callable[[Mapping[str, Any], str], str] | None = None) -> None:
         self.cfg, self.corpus, self.arm = cfg, corpus, arm
+        # the alias study (alias_study_run.py): a run may measure a subset of the configured
+        # conditions (its noise repeat is ``base`` only) and issue its calls in a seeded order
+        # (``job_order(record, condition)`` -> sort key); both default to round 3's behaviour
+        self.conditions = list(conditions) if conditions is not None else list(cfg["conditions"])
+        unknown = [c for c in self.conditions if c not in cfg["conditions"]]
+        if unknown or not self.conditions:
+            raise Refused(f"conditions {unknown or self.conditions} are not configured conditions")
+        self.job_order = job_order
         self.label = arm_label(arm, repeat)
         self.records = [r for r in records if r["corpus"] == corpus]
         if not self.records:
@@ -672,8 +682,11 @@ class Runner:
                 raise Refused(f"glossary boost check: {self.boost_check['status']} - "
                               f"{self.boost_check['reason']} (nothing measured; "
                               f"{self.label}.boost-check.json has the probes)")
-            jobs = [(rec, cond) for rec in self.records for cond in self.cfg["conditions"]
+            jobs = [(rec, cond) for rec in self.records for cond in self.conditions
                     if f"{rec['record_id']}|{cond}" not in done]
+            if self.job_order is not None:
+                order = self.job_order
+                jobs.sort(key=lambda j: order(j[0], j[1]))
             sem = asyncio.Semaphore(self.inflight)
 
             async def one(rec: Mapping[str, Any], cond: str) -> None:
@@ -707,7 +720,13 @@ class Runner:
                 if live_after != census:
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")
+            await self._after_jobs(client, server)
         return self._finish(done, swap, census, live_before, live_after, server)
+
+    async def _after_jobs(self, client: httpx.AsyncClient, server: dict[str, Any]) -> None:
+        """A hook after the last call, with the API client still open (round 3: nothing).
+        The alias study re-reads ``/v1/config`` here and compares its hash with the start's;
+        it may set :attr:`hard_stop` and add keys to ``server``, which the summary records."""
 
     def _exhaustion_boost(self) -> float | None:
         """The glossary boost the count query uses. Matching depends only on its sign
@@ -835,7 +854,7 @@ class Runner:
         per_cond: dict[str, Any] = {}
         n_calls = n_failed = 0
         expected = len(self.records)
-        for cond in self.cfg["conditions"]:
+        for cond in self.conditions:
             rows = [r for r in done.values() if r["condition"] == cond]
             ok = [r for r in rows if not r.get("failed")]
             # a short bm25 list verified exhausted is the complete list: not short

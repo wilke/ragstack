@@ -1,0 +1,106 @@
+{
+ "_comment": "alias_study_run.py --config: private; every path and id below is a placeholder. found10's keys apply (api, corpora, arms, census, server_assumed).",
+ "api": {
+  "base_url": "http://<bench API host>:<port>",
+  "api_key_env": "ALIAS_STUDY_ADMIN_KEY",
+  "inflight": 4,
+  "retries": 3
+ },
+ "census": {
+  "es_url": "http://<bench index host>:<port>"
+ },
+ "server_assumed": {
+  "retrieval_candidate_multiplier": 2,
+  "rrf_k": 60
+ },
+ "corpora": {
+  "base": {
+   "collection": "<bench collection, base>",
+   "index": "ragstack_lib_bench_<base>",
+   "expected_chunks": 0,
+   "es_id_prefix": "<tenant>:",
+   "bm25_scope": {
+    "tenant": "<tenant>",
+    "extra_tenants": []
+   },
+   "chunk_export": [
+    "/private/alias-study/exports/chunks-base.jsonl"
+   ],
+   "restore_point": "/private/alias-study/ops/restore-base.json"
+  },
+  "neighbour": {
+   "collection": "<bench collection, neighbour>",
+   "index": "ragstack_lib_bench_<neighbour>",
+   "expected_chunks": 0,
+   "es_id_prefix": "<tenant>:",
+   "bm25_scope": {
+    "tenant": "<tenant>",
+    "extra_tenants": []
+   },
+   "chunk_export": [
+    "/private/alias-study/exports/chunks-base.jsonl",
+    "/private/alias-study/exports/added-neighbour.jsonl"
+   ],
+   "restore_point": "/private/alias-study/ops/restore-neighbour.json"
+  },
+  "random1": {
+   "collection": "<bench collection, random1>",
+   "index": "ragstack_lib_bench_<random1>",
+   "expected_chunks": 0,
+   "es_id_prefix": "<tenant>:",
+   "bm25_scope": {
+    "tenant": "<tenant>",
+    "extra_tenants": []
+   },
+   "chunk_export": [
+    "/private/alias-study/exports/chunks-base.jsonl",
+    "/private/alias-study/exports/added-random1.jsonl"
+   ],
+   "restore_point": "/private/alias-study/ops/restore-random1.json"
+  },
+  "random2": {
+   "collection": "<bench collection, random2>",
+   "index": "ragstack_lib_bench_<random2>",
+   "expected_chunks": 0,
+   "es_id_prefix": "<tenant>:",
+   "bm25_scope": {
+    "tenant": "<tenant>",
+    "extra_tenants": []
+   },
+   "chunk_export": [
+    "/private/alias-study/exports/chunks-base.jsonl",
+    "/private/alias-study/exports/added-random2.jsonl"
+   ],
+   "restore_point": "/private/alias-study/ops/restore-random2.json"
+  }
+ },
+ "arms": {
+  "none": {
+   "stamps": [
+    "<none-arm version>"
+   ],
+   "attach": null,
+   "glossary_file_sha256": {
+    "base": "<sha256>",
+    "neighbour": "<sha256>",
+    "random1": "<sha256>",
+    "random2": "<sha256>"
+   }
+  },
+  "merged": {
+   "stamp_prefixes": [
+    "<merged-arm version prefix>"
+   ],
+   "attach": "mention",
+   "glossary_file_sha256": {
+    "base": "<sha256>",
+    "neighbour": "<sha256>",
+    "random1": "<sha256>",
+    "random2": "<sha256>"
+   }
+  }
+ },
+ "records": "/private/alias-study/accepted-alias-O.jsonl",
+ "gold_hashes": "/private/alias-study/runs/gold-hashes.json",
+ "out_dir": "/private/alias-study/runs"
+}
