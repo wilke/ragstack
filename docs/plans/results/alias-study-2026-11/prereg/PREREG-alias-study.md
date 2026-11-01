@@ -15,9 +15,9 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 | # | decision, in short | where |
 |---|---|---|
-| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, tested only if H1 is confirmed, fixed sequence, no extra Holm member; the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
+| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, no extra Holm member (routing amended by §14 O2, Option B: tested at α = 0.05 only if H1 **and** H2 are confirmed, fixed sequence after the Holm pair); the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
 | D2 | H2 = neighbour vs random (average of two draws), default, none, one-sided, judged found@10; confirmed only if gold-only found@10 also drops (a gate, not a third test); drift stratified by arm; per-arm false-yes rates | §3.1, §3.2, §6.3 |
-| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after H1); Layer 2 serving decisions on CI-based thresholds, no gates; H3 moves to Layer 2 with a 95 % CI | §3 |
+| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after both H1 and H2, §14 O2); Layer 2 serving decisions on CI-based thresholds, no gates; H3 moves to Layer 2 with a 95 % CI | §3 |
 | D4 | neighbour caps: ≤ 5 references (most cited) + ≤ 5 citers (most recent), open-access full text, via OpenAlex, deduplicated against OA-1000 | §5.1 |
 | D5 | random arm "same field": matched count per study paper, same OpenAlex primary topic, OA full text, no citation link to any study paper, year ± 3, seeded content-blind rule | §5.1 |
 | D6 | two random draws; one noise repeat per arm; a rank-based secondary (Layer 2); H2 power from the realised layout; raising the caps is the lever | §5.1, §5.4, §3.3, §8 |
@@ -200,7 +200,8 @@ al. it is the limit of the graph with ε-weight edges H1 → H1b and H2 → H1b 
 - **H1 is G-only, with C as a gate (D1).** The DiD form of v0 gave each paper's single C record the weight
   of its two G records and needed 10–20 % of G records discordant (v0 §7). The G-only test at Holm over
   2 is resolvable at much lower discordance (§8). The price is a weaker control, which the C gate and
-  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain.
+  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain and H2 has also been
+  confirmed (§14 O2); otherwise it is descriptive.
 - **H2 is neighbour vs random, not neighbour vs base.** Adding any papers adds distractors. The random arm
   holds the number of added papers, their field and their age fixed, so H2 reads what is specific to
   *citation* neighbours. Two random draws, averaged, keep one unlucky draw from deciding H2 (§5.1).
@@ -213,8 +214,8 @@ al. it is the limit of the graph with ε-weight edges H1 → H1b and H2 → H1b 
 
 ### 3.2 Outcome interpretation, H1 × H1b
 
-H1b is tested only when H1 **and** H2 are both confirmed (§3.1), so its *confirmed* and *not confirmed*
-rows below arise only when H2 is confirmed.
+H1b is tested only when H1 **and** H2 are both confirmed (§3.1), so its *confirmed*, *not confirmed* and
+*GATE-NOT-EVALUABLE* rows below arise only when H2 is confirmed.
 
 | H1 | H1b | reading |
 |---|---|---|
