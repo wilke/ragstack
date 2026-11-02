@@ -3,7 +3,12 @@
 **Status: DRAFT — not frozen; owner review pending.** This version folds in the owner's ten decisions of
 2026-11-01 (table below), and their later decisions of the same day on O1 (the C gate, rule C), O2
 (H1b routing), O5 (shared neighbours), O6 (text format and the control-character screen) and O9 (seeds),
-with the glossary pipeline for added papers (§5.3). The items still open are in §14. Nothing in this text binds a run until it is
+with the glossary pipeline for added papers (§5.3). It also folds in the owner's resolutions of
+2026-11-01 from the #904 code review (seed derivation, the power seed, the drift sample, the
+minimum-attainable-p level, H1b with a missing record, the Opus cap, the admin key, the caps lever and
+the exact sign-flip p: §5.5, §6.3, §7, §8, §9.2) and the corpus-build decisions of the same day
+(neighbour walk-down, article types, random-draw matching, the recorded build facts: §5.1, §7). The
+items still open are in §14. Nothing in this text binds a run until it is
 frozen by the procedure in this directory's `README.md`. At freeze the text is frozen **as written**, and
 its sha256 goes into the README and a private `PREREG.sha256`, never into this file. After freeze this
 file is never edited. Any later change is a `DEVIATIONS.md` entry.
@@ -59,8 +64,19 @@ build outputs of the record set (§4), the judge-calibration, validation and tie
 scratch computations made for the drafts: the v0 power sketch, the normal-approximation powers of §8, a
 replay of the judge rule on the validation labels (§6.4), and the recounts of §4 that are marked as
 scratch, including the overlap between the study papers and the judge validation set (§4.3 item 6). **No retrieval of any kind has been run on any study record**, and no found@10 figure for any
-record exists under any arm (§4.3 item 6 lists the one partial exception). **No neighbour or random paper
-has been selected**, and no OpenAlex query for this study has been made. The study's corpus-arm design and
+record exists under any arm (§4.3 item 6 lists the one partial exception). **Corpus build (offline, #905
+at `dd8ef5b`).** Between 2026-11-01T21:42Z and 2026-11-02T03:18Z the corpus builder ran once, under
+the §5.1 rules as they stood before this version (no walk-down, no article-type filter, no type or
+chunk-band matching, seeds `…|random|1` and `…|random|2`). It made **861** keyless OpenAlex API queries
+(logged; its cache was seeded from the earlier scratch feasibility count of §5.1), read the **OpenAlex
+parquet snapshot of 2026-10-14** for the random pools, downloaded NCBI's **PMC-ids** file, and fetched
+**5,273** JATS files from the PMC OA bucket and **4,535** PDFs from OpenAlex OA locations (14,507 works
+resolved). It selected 2,580 neighbours, of which **1,553** were kept, and two random draws of 1,553
+each (overlap 6), and chunked them at `tok512o0` (61,460 / 43,910 / 44,759 chunks). These are counts in
+the private manifest `counts.json` (sha256 `d54464ea…`). The build read bibliographic metadata and
+paper full text only: **no store or index write, no retrieval, no model or judge call, and no outcome
+data** of any kind. Its selections predate this version's rules and are re-drawn under them (§15 item
+4); the counts above shaped none of this version's decisions except as stated in §5.1. The study's corpus-arm design and
 its retriever factor were chosen after seeing round 3's null and the reranker test's reading that the
 reranker can lose to BM25 on some corpora. H1's form (G-only, with C as a gate) and the extension of the
 record set from 200 to 300 papers were both decided after v0's power sketch showed the DiD form weak, on
@@ -400,6 +416,14 @@ paper:
   the **5 most cited** (OpenAlex citation count at query time).
 - **Citers:** of the works that cite it, have open-access full text and are not in OA-1000, the **5 most
   recent** (OpenAlex publication date).
+- **Walk-down (owner, 2026-11-01).** Each ranked list (references by citation count, citers by date) is
+  walked down past works that **cannot be fetched**: not in the PMC OA subset and with no licensed OA
+  PDF, refused by robots, HTTP 403 or 429, a download that is not a PDF, or a PDF paper excluded by the
+  control-character screen (below). The walk stops when the paper has **5 references and 5 citers**, or
+  when the list ends. The skipped works, by reason, are counted in the manifest.
+- **Article types (owner, 2026-11-01).** Only **research articles and reviews** are taken, in both the
+  neighbour and the random arms. Errata, editorials, letters, comments, retractions and paratext are
+  dropped before ranking and do not count towards a cap. The drops by type are counted per arm.
 - Ties are broken by sha256 of `261101|alias|neighbours|tie|<refs or citers>|<study paper>|<work id>`,
   ascending (§5.5).
 - **Shared neighbours (owner, 2026-11-01, §14 O5):** a work that is a neighbour of several study papers
@@ -424,10 +448,17 @@ arm, less any printed shortfall. They are drawn from works that:
 - have **open-access full text**;
 - have a publication year within **± 3** of the study paper's;
 - are not in OA-1000, not in the neighbour arm, and **neither cite nor are cited by any study paper**;
-- are not already drawn for another study paper in the same draw.
+- are not already drawn for another study paper in the same draw;
+- are research articles or reviews (above).
+
+**Matching per study paper (owner, 2026-11-01).** In addition to the rules above, each draw is matched
+per study paper to that paper's attributed neighbours on **paper count**, **article type** (research
+article / review) and **chunk-length band** (the paper's chunk count at `tok512o0`, in bands fixed by the
+committed selector before any draw and recorded in the manifest), and on the PDF share (below). Where
+a cell of that match is short, the shortfall is printed per draw.
 
 The candidates are ordered by sha256 of `<draw seed>|<study paper>|<work id>`, ascending, with draw seed
-`261101|alias|random|1` or `261101|alias|random|2` (§5.5), and the first eligible ones are taken. The
+`261101|alias|random-1-v2` or `261101|alias|random-2-v2` (§5.5), and the first eligible ones are taken. The
 study papers are served in the neighbour arm's attribution order, so that a candidate eligible for two
 study papers goes to the earlier one. The rule reads metadata only and is blind to content. The two draws use their own
 seeds and may overlap. Their overlap is counted and printed. If a study paper has fewer eligible
@@ -442,6 +473,22 @@ papers as that study paper's attributed neighbours have, and the rest from JATS 
 is short the other fills in, and the per-arm PDF share and its difference from the neighbour arm's are
 printed. The source of every added paper is recorded, and the JATS / PDF mix is printed per arm and draw.
 
+**Build facts (owner, 2026-11-01).** These are how the corpus build reads the rules above. They are
+recorded here as design facts, because the text is not frozen; after the freeze any such departure is a
+`DEVIATIONS.md` entry.
+- **Random pools** are drawn from the **OpenAlex parquet snapshot of 2026-10-14**. The study papers'
+  topics are read from the **live OpenAlex API**. The snapshot date and the API query date are both in
+  the manifest.
+- **PMCIDs** come from NCBI's **PMC-ids** file (the snapshot's ids carry none).
+- **"Open-access full text"** means a PMCID in the **PMC OA subset**, or an OpenAlex OA location with a
+  **licensed OA PDF**. A landing page does not count.
+- **JATS** is taken from the **PMC OA bucket**, the source OA-1000 was built from.
+- **"Not in OA-1000"** is matched on the OpenAlex id, the DOI and the title; a match on any one excludes
+  the work.
+- **Reference lists.** PDF-sourced papers keep their reference lists; OA-1000's text had none. This is a
+  **known difference** between the added and the base text, and the share of added chunks that fall in a
+  reference list is reported per arm and draw.
+
 **Control-character screen (owner, 2026-11-01, §14 O6).** Every added paper in every arm, after
 extraction and chunking at `tok512o0` and before it counts towards its arm, is scanned for **C0 control
 characters other than tab, newline and carriage return** (U+0000–U+0008, U+000B, U+000C,
@@ -454,15 +501,16 @@ the short forms this study is about. At about 33 chunks per paper the threshold 
 **one** affected chunk, and only a paper of at least 200 chunks is allowed a single stray character. If
 the extractor emits form feeds (U+000C) as page breaks, every PDF would fail; the extraction for the expanded corpora (§15
 item 5) counts this before the freeze, and if it happens the owner decides the remedy on that count, as a
-recorded change to this text. **An excluded neighbour is not replaced** (the caps stay caps), and the
-attributed counts are taken after the screen. **An excluded random candidate is skipped**, and the draw
+recorded change to this text. **An excluded neighbour is walked past** (the walk-down above): the next
+work on its ranked list is tried, within the caps, and the attributed counts are taken after the screen. **An excluded random candidate is skipped**, and the draw
 continues in its seeded order. Exclusions are counted and printed **per arm and draw**, split by
 references and citers in the neighbour arm.
 
 **Manifests.** Before any retrieval, a manifest per expanded arm records, as counts in public: references
-and citers found, open-access, already in OA-1000, deduplicated, added per study paper (distribution),
-chunks added, text-source mix, control-character exclusions, random shortfalls, the draw-to-draw overlap,
-the seed strings (§5.5), and the OpenAlex query date.
+and citers found, open-access, already in OA-1000, deduplicated, skipped by the walk-down (by reason),
+dropped by article type, added per study paper (distribution), chunks added, text-source mix,
+control-character exclusions, random shortfalls (by matching cell), the draw-to-draw overlap, the
+seed strings (§5.5), the snapshot date and the OpenAlex query date.
 The ids live only in the private manifests, whose sha256s are public.
 
 **If the realised neighbour count leaves H2 underpowered** at the planning scenarios (§8), the lever is
@@ -519,16 +567,19 @@ for retrieval.
 One recorded seed string per draw, fixed here and copied into every manifest and artifact that uses it.
 They follow the project's `<yymmdd>|<study>|<purpose>` pattern (the pool seed was `261031|alias|main|O`).
 The **seed base** is `261101|alias`. Every hash below is sha256 of the seed string followed by `|` and
-the named parts, ascending.
+the named parts, ascending. **Where a numeric RNG seed is needed** (the permutation, bootstrap and power
+draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as an unsigned integer
+(owner, 2026-11-01; `alias_study_common.seed_int`).
 
 | draw | seed string | what it orders |
 |---|---|---|
 | **neighbour selection** | `261101\|alias\|neighbours` | tie-breaks within the reference and citer caps (`…\|tie\|<refs or citers>\|<study paper>\|<work id>`) and the attribution order of shared neighbours (`…\|order\|<study paper>`), §5.1 |
-| **random draw 1** | `261101\|alias\|random\|1` | the candidate order of random-1 (`…\|<study paper>\|<work id>`), §5.1 |
-| **random draw 2** | `261101\|alias\|random\|2` | the candidate order of random-2, §5.1 |
+| **random draw 1** | `261101\|alias\|random-1-v2` | the candidate order of random-1 (`…\|<study paper>\|<work id>`), §5.1 (owner, 2026-11-01, with the matching rule; replaces `…\|random\|1`) |
+| **random draw 2** | `261101\|alias\|random-2-v2` | the candidate order of random-2, §5.1 (replaces `…\|random\|2`) |
 | **noise repeats** | `261101\|alias\|noise` | the request order of each repeat leg (`…\|<corpus arm>`), so a repeat is not a replay of the first leg's request sequence, §9.4 |
 | **bootstrap** | `261101\|alias\|boot` | every paper-cluster percentile bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7) and every Layer-2 CI (§3.3) |
-| permutation | `261101\|alias\|perm` | the sign-flip test, §7 |
+| permutation | `261101\|alias\|perm` | the sign-flip test where Monte Carlo is used, §7 |
+| power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
 | judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
 | drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
 | record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 |
@@ -576,10 +627,17 @@ stored.
 
 **Drift reference, stratified by arm.** A seeded **5 %** sample of the deduplicated pairs, drawn per
 labelling batch (`261101|alias|drift|<batch>`) and allocated **equally across the three arms** (base,
-neighbour, random), each stratum capped at its size, is re-labelled by Opus. Agreement is computed on the
+neighbour, random), each stratum capped at its size, is re-labelled by Opus. **Sample arithmetic
+(owner, 2026-11-01):** a labelling batch is **2,000** deduplicated pairs (the last batch takes the
+remainder); the sample size is 5 % of the batch **rounded half up**; it is split equally across the
+three arms (the remainder to base, then neighbour); a stratum smaller than its share is taken whole, and
+its **shortfall is reallocated** equally to the arms that still have pairs, until the sample size is
+reached or every stratum is exhausted; within a stratum the first pairs in the order
+`sha256(261101|alias|drift|<batch>|<pair>)` are taken. Agreement is computed on the
 pairs where Opus answers. **Alarm, checked after every judging batch:** cumulative agreement between the
 final label and Opus below **0.97 overall**, or below **0.95 in any arm**, **pauses labelling**. Each
-check needs at least 100 Opus-answered pairs in its scope before it can fire (carried from v0; §14 O4).
+check needs at least **100** Opus-answered pairs in its scope before it can fire (owner, 2026-11-01;
+§14 O4).
 The pause is reported to the owner, the owner decides the remedy, and the remedy is recorded as a
 deviation. Opus labels never replace a final label. The Opus-filtered share of the sample is printed per
 arm. **Topic filter:** Opus via the gateway returns empty answers on some questions, clustered on vaccine
@@ -622,16 +680,44 @@ There are at most 10 non-gold chunks per record and leg, so 30,548 lists give an
 it is far smaller, because most top-10 lists repeat across retrievers, glossary arms and the repeats. At
 the validation throughput, judge C took about 1.85 s per pair and judge E about 0.74 s per pair (4 in
 flight). The tiebreaker load is expected at about 2–2.5 % of pairs and Opus at 5 %. **Gateway caps for
-the judge** are set before the freeze from the realised pair count (§14 O7). The budget stop and `PAUSE`
+the judge** are set before the freeze from the realised pair count (§14 O7). **The Opus drift cap**
+(owner, 2026-11-01) is **7 % of the judged (deduplicated) pairs**, and it counts **every Opus call,
+re-issued calls included** (the cumulative calls log plus the planned selection may not exceed it). The budget stop and `PAUSE`
 apply, as in the calibration harness.
 
 ## 7. Analysis
 
 Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 
-- **Test (Layer 1 only):** paper-clustered sign-flip permutation on the per-cluster statistic of §3.1,
-  10,000 flips, seed `261101|alias|perm`, exact enumeration at ≤ 20 non-zero clusters, p = (1 + #{≥ obs}) /
-  (1 + n). All three members are one-sided.
+- **Test (Layer 1 only):** paper-clustered sign-flip test on the per-cluster statistic of §3.1, with an
+  **exact discrete (conditional) p-value** (owner, 2026-11-01). Conditional on the observed magnitudes
+  |S_j| of the non-zero paper scores, the null distribution of Σ ε_j |S_j| (ε_j = ±1, equally likely)
+  is computed **exactly**: by enumeration of the 2^k sign vectors at ≤ 20 non-zero clusters, and
+  otherwise by convolution of the k two-point distributions on the scores' lattice (H1's paper scores
+  are integers in {−2, …, +2}; H1b's and H2's are multiples of ½), which is exact and feasible at 300
+  clusters. p = #{T* at least as extreme as T} / 2^k, ties counted in the tail. **Only if** neither is
+  feasible is the p Monte Carlo, 10,000 flips, seed `261101|alias|perm`, with the corrected
+  p = (b + 1) / (m + 1). *Why:* the #904 review simulated the plain Monte-Carlo sign-flip at 0.05 as
+  slightly anti-conservative (0.052–0.054) for H1b under a skewed sparse null; the exact (or corrected)
+  p is used for **H1, H1b and H2 alike**, for consistency. All three members are one-sided. The
+  mid-p is printed as a sensitivity and never decides.
+- **The tested null** is the **sharp null of no glossary (H1, H1b) or corpus-arm (H2) effect on any
+  question**: within each question the conditions compared are exchangeable, so each paper's score S_j
+  is symmetric about 0 and its sign is independent of |S_j| and of the other papers. Under that null
+  the exact conditional sign-flip p above is **exactly level-α**: P(p ≤ α) ≤ α, with equality
+  whenever α is an attainable value of the discrete null distribution, so no simulation is needed to
+  establish its size. It does not test a weaker null of zero mean
+  effect with a skewed per-paper distribution; a rejection is read as evidence against the sharp null.
+- **Minimum attainable p** (owner, 2026-11-01) is 2^−k for the exact p and max(2^−k, 1/(m + 1)) for
+  the Monte-Carlo p. It is judged against the **final level** at which the member is tested: for H1 and
+  H2 the level after any level passed by the other member (0.025, or 0.05 once the other is confirmed),
+  for H1b 0.05. A member whose minimum attainable p exceeds 0.025 can therefore still be evaluated, and
+  rejected, at 0.05.
+- **H1b with a missing record** (owner, 2026-11-01: as implemented in `alias_study_stats.h1b_values`):
+  a record excluded under *Missing data* (below) drops out of its paper's statistic. A paper's H1b score
+  is **the mean of Δ over its remaining G records minus its C record's Δ**
+  (with both G records present this is ½ Σ_G Δ − Δ_C, as in §3.1). **A paper whose C record, or both of
+  whose G records, are excluded is dropped** from H1b, and it is counted with the missing records.
 - **Multiplicity:** the graphical Holm-with-gatekeeping procedure of §3.1. Gated or absent members at p =
   1.0. `holm_drop_gated` is a labelled sensitivity that never decides.
 - **Beside every Layer-1 member:** the 95 % paper-bootstrap percentile CI of the net statistic (10,000
@@ -643,7 +729,9 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 - **Declared sensitivities**, printed beside H1, H1b and H2 and never deciding: without the 47
   Codex-verdict records; without the 2 calibration-overlap records; without the 13 satisfied papers that
   were pilot papers; without the 8 satisfied papers that carry validation records (§4.3 item 6); unjudged pairs as *answering*; tiebreaker-labelled pairs set to each primary judge's
-  own label in turn; H2 against random-1 alone and random-2 alone.
+  own label in turn; H2 against random-1 alone and random-2 alone; **H2 with a chunk-volume covariate**
+  (owner, 2026-11-01): the H2 contrast adjusted for the difference in added chunks between the neighbour
+  arm and the random average, per study paper, reported as a sensitivity that never decides.
 - **Missing data:** a record whose retrieval call failed in any cell of a contrast is excluded from it
   and counted. `family_missing_as_not_found` is the one pre-named sensitivity. More than 2 % failed calls
   in a leg is a hard stop.
@@ -705,9 +793,12 @@ not a null unless the power at the stated scenario is ≥ .80.
 **The committed calculation (pre-freeze, §15)** runs on the realised layout and, for H2, on the realised
 neighbour and random counts per study paper. It repeats the table above by the normal approximation and
 by simulation of the cluster sign-flip test (2,000 simulations × 2,000 flips, a between-paper SD of p of
-.15, a fixed seed), and it computes H2 with the two-draw average and the gold-only gate under stated
-agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of §5.1 are raised
-before the freeze**; that is the lever, and it acts on metadata counts only.
+.15, seed `261101|alias|power`, §5.5), and it computes H2 with the two-draw average and the gold-only gate
+under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
+§5.1 are raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power
+the lever reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the
+gold-only direction gate passes, not the test's power alone. **Which agreement level `a` (1.0, 0.8 or
+0.6 in the committed calculation) the lever reads is open** (§14 O11).
 
 **Evaluability floor.** With k non-zero clusters the minimum attainable one-sided p is 2^−k. At the Holm
 worst case α/2 a member needs k ≥ 6; at α = 0.05 (H1b, or H1 / H2 after the other is confirmed) k ≥ 5.
@@ -737,7 +828,8 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
   32,765; the expanded arms as built). The `metadata.symbol_glossary_version` stamp census equals the
   glossary arm. Every gold chunk id is present, with the same content hash, in all four corpus arms.
 - **Admin config hash:** `/v1/config` is read at the start and the end of the leg. The two reads must be
-  identical, as in round 3 §5 note 2(c). A difference stops the leg, and the leg is re-run after the cause
+  identical, as in round 3 §5 note 2(c). **An admin credential is required** (owner, 2026-11-01): if
+  `/v1/config` is not readable, the leg is refused and nothing is measured. A difference stops the leg, and the leg is re-run after the cause
   is found and recorded.
 - **Depth read-back:** the served depth is checked against the requested depth on every request.
 - **BM25 exhaustion verifier** (#877, `bm25_exhaustion.py`, round 3 §5 note 3, unchanged): a short `bm25`
@@ -850,19 +942,20 @@ Only items not settled by D1–D10.
 | O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** Evaluated only when ΔG > 0 (H1 is one-sided; at ΔG ≤ 0 the gate is moot). H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's ≤ 1-point C-cost rule). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
 | O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8 |
 | O3 | H2 when the judged test is significant but the gold-only gate fails | label *not confirmed (gold-only direction gate)*; counted as not rejected, so it passes no level on |
-| O4 | Minimum Opus-answered pairs before a drift alarm can fire | 100 per scope (overall and per arm), carried from v0 |
+| O4 | Minimum Opus-answered pairs before a drift alarm can fire | **Decided (owner, 2026-11-01).** 100 per scope (overall and per arm); with it the drift-sample arithmetic: 5 % of each 2,000-pair batch rounded half up, a capped stratum's shortfall reallocated to the others. Written in §6.3 |
 | O5 | Attribution of a neighbour shared by several study papers | **Decided (owner, 2026-11-01).** Added once; attributed to the first study paper in the seeded order (`261101\|alias\|neighbours`, `…\|order\|<study paper>`); no replacement for the others; each random draw takes per study paper as many papers as were attributed to it, so the arms hold equal unique counts. Written in §5.1 |
 | O6 | How "prefer PMC/JATS" is applied | **Decided (owner, 2026-11-01).** PMC JATS XML for every added paper in both arms where it exists; the random arm's PDF share matched to the neighbour arm's; every added paper scanned for C0 control characters (other than tab, newline, carriage return), a PDF paper excluded when any occurs in > 0.5 % of its chunks; exclusions counted per arm. Written in §5.1 |
-| O7 | Gateway caps for the judge | set from the realised deduplicated pair count before the freeze: Argon ≤ 4 % and Opus ≤ 6 % of pairs, with an absolute ceiling agreed with the papers-OC owner |
+| O7 | Gateway caps for the judge | **Opus decided (owner, 2026-11-01):** ≤ 7 % of judged pairs, re-issued calls counted (§6.5). Still open: Argon ≤ 4 % of pairs, and the absolute ceiling agreed with the papers-OC owner, set from the realised deduplicated pair count before the freeze |
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
-| O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5 |
+| O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
 | O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
+| O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.6 in `alias_study_power`) | **open — the owner chooses before the freeze**; not chosen in this text |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O5, O6 and O9 decided 2026-11-01; O3, O4, O7, O8 and O10 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); O3, O7 (Argon, ceiling), O8, O10 and O11 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open |
