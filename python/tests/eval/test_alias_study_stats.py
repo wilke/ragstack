@@ -391,3 +391,25 @@ def test_the_frozen_record_set_reproduces() -> None:
     recs = asc.load_records(PRIVATE)
     ident = asc.verify_record_set(PRIVATE, recs)
     assert (ident["records"], ident["balanced"], ident["descriptive"]) == (1091, 900, 191)
+
+
+# ------------------------------------------------------------------ the exact member p (§7)
+
+def test_member_test_uses_the_exact_lattice_p_above_20_papers() -> None:
+    """30 papers, scores multiples of 1/2: the p is the exact lattice p (not Monte Carlo), and
+    the minimum attainable p is 2^-30, not the Monte-Carlo floor 1/(n_perm + 1) = 1/2001."""
+    import chunktrial_stats as cs
+
+    clusters, vals = [], []
+    for i in range(30):
+        clusters += [f"P{i}", f"P{i}"]
+        vals += [1.0, 0.5 if i % 3 else -1.5]
+    t = st.member_test(clusters, vals, "greater", AN)
+    assert t["p_method"] == "lattice" and t["n_nonzero"] == 30
+    _, sums, _ = st.cluster_sums(clusters, vals)
+    assert t["p"] == pytest.approx(cs.sign_flip_lattice(sums, "greater")["p"], abs=1e-15)
+    assert t["p"] != t["p_perm"]
+    assert t["min_attainable_p"] == pytest.approx(2.0 ** -30)
+    # all 30 papers positive: p = 2^-30 is reachable, where the round-3 MC p bottoms at 1/2001
+    top = st.member_test([f"P{i}" for i in range(30)], [1.0] * 30, "greater", AN)
+    assert top["p"] == pytest.approx(2.0 ** -30) and top["p_perm"] == pytest.approx(1 / 2001)

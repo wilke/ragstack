@@ -63,3 +63,26 @@ def test_h2_gold_gate_costs_power_when_gold_disagrees() -> None:
 def test_compute_refuses_another_layout() -> None:
     with pytest.raises(SystemExit):
         pw.compute({"clusters": 10, "shapes": [[2, 1], [1, 1]]}, None, 10, 10)
+
+
+def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lever reads confirm_a<a>, not test_only; without an a it is undecided (None)."""
+    fake = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
+                      "confirm_a0.7": 0.79}, "0.05": {}}
+    monkeypatch.setattr(pw, "simulate_h1", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
+    seen: list[tuple[float, ...]] = []
+
+    def h2(*a: object, agreements: tuple[float, ...] = pw.AGREEMENTS, **k: object) -> dict[str, object]:
+        seen.append(tuple(agreements))
+        return fake
+    monkeypatch.setattr(pw, "simulate_h2", h2)
+    lay = {"clusters": 300, "shapes": [[2, 1]]}
+    undecided = pw.compute(lay, None, 10, 10)
+    assert undecided["h2_caps_lever_fires"] is None
+    assert undecided["caps_lever_by_agreement"] == {"a1": False, "a0.8": False, "a0.6": True}
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.8)["h2_caps_lever_fires"] is False
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.6)["h2_caps_lever_fires"] is True   # test_only .90 would not fire
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.7)["h2_caps_lever_fires"] is True   # an a outside the grid is simulated
+    assert seen[-1] == (1.0, 0.8, 0.6, 0.7)
+    with pytest.raises(SystemExit):
+        pw.compute(lay, None, 10, 10, lever_agreement=1.5)

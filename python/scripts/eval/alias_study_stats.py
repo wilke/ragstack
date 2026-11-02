@@ -18,8 +18,11 @@ counted (§7 *Missing data*); ``family_missing_as_not_found`` scores it 0 (a sen
 **Layer 1 (§3.1).** Each member is a linear contrast of cell outcomes per record (H1:
 merged - none on base x default, G records; H2: neighbour - (random-1 + random-2)/2 on
 default x none, all 900; H1b: per paper, the mean of its G records' H1 difference minus its C
-record's), summed per paper, tested by the paper sign-flip test (``chunktrial_stats``:
-10,000 flips, exact at <= 20 non-zero papers, seed ``261101|alias|perm``). The members run
+record's), summed per paper, tested by the paper sign-flip test with the exact conditional p at any
+number of papers (``chunktrial_stats.sign_flip_test_exact``: enumeration at <= 20 non-zero papers,
+lattice convolution above; Monte Carlo, 10,000 flips, seed ``261101|alias|perm``, (b + 1)/(m + 1),
+only if the lattice is infeasible). The tested null is the sharp null of per-paper sign symmetry
+(§7); the minimum attainable p is 2^-k for k non-zero papers (max(2^-k, 1/(m + 1)) for MC). The members run
 through the Option-B procedure (:func:`layer1_procedure`): H1 and H2 start at 0.025 each and a
 rejected member passes its level to the other (Holm over 2); H1b is tested at 0.05 only when
 both are rejected. A member is GATE-NOT-EVALUABLE (p = 1.0 in the procedure) when its minimum
@@ -188,12 +191,13 @@ def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str
     names, sums, cnt = cluster_sums(clusters, vals)
     if sums.size == 0:
         return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
-    t = cs.sign_flip_test(sums, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]), alternative=alternative)  # type: ignore[arg-type]
+    t = cs.sign_flip_test_exact(sums, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]),
+                                alternative=alternative)  # type: ignore[arg-type]
     k = int(t["n_pages_nonzero"])
-    mp = 2.0 ** -k if k <= cs.EXACT_MAX_PAGES else max(2.0 ** -k, 1.0 / (1 + int(an["n_perm"])))
+    mp = float(t["min_attainable_p"])
     arr = np.asarray(vals)
     return {"n": len(vals), "papers": int(sums.size), "n_nonzero": k, "statistic": t["statistic"], "p": t["p"],
-            "p_exact": t["p_exact"], "p_perm": t["p_perm"], "p_mid": t["p_mid"], "min_attainable_p": mp,
+            "p_exact": t["p_exact"], "p_perm": t["p_perm"], "p_mid": t["p_mid"], "p_method": t["p_method"], "min_attainable_p": mp,
             "net_points": round(100 * float(arr.sum()) / len(vals), 4),
             "ci95": boot_ci(sums, cnt, int(an["n_boot"]), int(an["boot_seed"])),
             "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()), "alternative": alternative}

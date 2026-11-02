@@ -152,8 +152,31 @@ def test_drift_sample_allocation() -> None:
             [{"pair_id": f"r{i}", "arm": "random"} for i in range(2)]
     s = aj.drift_sample(1, pairs, 0.05)               # round(9.85) = 10 -> 4 / 3 / 3, random capped at 2
     arms = [p[0] for p in s]
-    assert (arms.count("b"), arms.count("n"), arms.count("r")) == (4, 3, 2)
+    # random's shortfall of 1 goes to the arms that still have pairs (remainder to base first)
+    assert (arms.count("b"), arms.count("n"), arms.count("r")) == (5, 3, 2) and len(s) == 10
     assert s == aj.drift_sample(1, pairs, 0.05) and set(s) != set(aj.drift_sample(2, pairs, 0.05))
+
+
+def test_drift_size_rounds_half_up_exactly() -> None:
+    assert aj.drift_size(2000, 0.05) == 100
+    assert aj.drift_size(2010, 0.05) == 101            # 100.5 -> 101 (half up, not to even)
+    assert aj.drift_size(2009, 0.05) == 100 and aj.drift_size(30, 0.05) == 2   # 100.45, 1.5
+    assert aj.drift_size(29, 0.05) == 1                                          # 1.45
+
+
+def test_drift_allocation_reallocates_until_reached_or_exhausted() -> None:
+    assert aj.drift_allocation(100, {"base": 1000, "neighbour": 1000, "random": 1000}) == \
+        {"base": 34, "neighbour": 33, "random": 33}
+    # random holds 5: its shortfall 28 splits 14 / 14 over base and neighbour
+    assert aj.drift_allocation(100, {"base": 1000, "neighbour": 1000, "random": 5}) == \
+        {"base": 48, "neighbour": 47, "random": 5}
+    # a second round: neighbour also runs dry, base takes the rest
+    assert aj.drift_allocation(100, {"base": 1000, "neighbour": 20, "random": 5}) == \
+        {"base": 75, "neighbour": 20, "random": 5}
+    # every stratum exhausted before the size is reached
+    assert aj.drift_allocation(100, {"base": 30, "neighbour": 20, "random": 5}) == \
+        {"base": 30, "neighbour": 20, "random": 5}
+    assert aj.drift_allocation(0, {"base": 3}) == {"base": 0, "neighbour": 0, "random": 0}
 
 
 def drift_inputs(n: int, agree: int, arm: str = "base", filtered: int = 0
@@ -268,6 +291,28 @@ def test_caps_refuse(tmp_path: Path) -> None:
     pl.check_caps("argon", int(0.04 * total))
     with pytest.raises(SystemExit, match="argon cap"):
         pl.check_caps("argon", int(0.04 * total) + 1)
+
+
+def test_opus_cap_default_is_7_percent_and_counts_reissued_calls(tmp_path: Path) -> None:
+    assert aj.DEFAULTS["caps"]["opus_share"] == 0.07
+    w, cp = world(tmp_path, batch_size=100000, drift={"share": 0.5})
+    fake = dry.FakeJudges()
+    assert main(cp, "build-pairs") == 0
+    for be in aj.BACKENDS:
+        assert label(cp, 1, be, fake) == 0, be
+    pl = aj.Pipeline(aj.load_config(cp), provenance=PROV)
+    sampled = len(pl.selection(1, "opus"))
+    opus_http = fake.calls["Claude Opus 5.5"]
+    # the fake answers some pairs empty: the harness re-issues them, so HTTP calls > sampled pairs,
+    # and the cap's count is every HTTP call, re-issues included
+    assert opus_http > sampled
+    assert pl.calls_so_far("opus") == opus_http
+    cfg = aj.load_config(cp)
+    cfg["caps"]["opus_share"] = (opus_http + 0.5) / len(pl.registry())
+    tight = aj.Pipeline(cfg, provenance=PROV)
+    tight.check_caps("opus", 0)
+    with pytest.raises(SystemExit, match="opus cap"):
+        tight.check_caps("opus", 1)
 
 
 class Disagree(dry.FakeJudges):

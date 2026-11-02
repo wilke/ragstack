@@ -30,6 +30,11 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
      with probability a and is its negative otherwise; H2 is confirmed when p <= level AND
      the gold-only net < 0.
 
+**The caps lever (§8)** reads H2's power to *confirm* (the judged test AND the gold-only gate) at
+q 5 %, p .85, rho 1, level 0.025, at the agreement ``--lever-agreement``; below .80 it fires. The
+prereg leaves ``a`` open (§14 O11), so without the flag the lever is undecided and the output
+gives its verdict for each simulated ``a``.
+
 **Stated assumptions** (in the output): SD of p 0.15; rho in {1.0, 0.5}; agreement a in
 {1.0, 0.8, 0.6}; the seed ``261101|alias|power`` (not in the prereg's
 seed table, §5.5, which fixes "a fixed seed" without naming it). The realised neighbour and
@@ -59,6 +64,11 @@ QS = (0.02, 0.03, 0.05, 0.10, 0.20)
 PS = (0.85, 0.70)
 SD_P = 0.15
 AGREEMENTS = (1.0, 0.8, 0.6)
+#: §8: the agreement ``a`` between the gold-only and the judged change that the caps lever reads.
+#: None: not fixed by the prereg yet (§14 O11); set it with ``--lever-agreement``.
+LEVER_AGREEMENT: float | None = None
+#: §8: the lever fires when H2's simulated power to confirm is below this
+LEVER_POWER = 0.80
 #: the share of a record's neighbour-vs-draw discordance that both random draws share: 1.0 is the
 #: prereg's three-valued approximation (the draws identical); 0.5 lets the average cut noise
 RHOS = (1.0, 0.5)
@@ -169,7 +179,17 @@ def layout_from_records(path: Path) -> dict[str, Any]:
             "papers": sorted(per)}
 
 
-def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int) -> dict[str, Any]:
+def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int,
+            lever_agreement: float | None = LEVER_AGREEMENT) -> dict[str, Any]:
+    """Both methods on the layout, and the caps lever (§8): H2's simulated power to *confirm* at
+    q 5 %, p .85, rho 1, level 0.025 -- the judged test rejects AND the gold-only direction gate
+    passes at agreement ``lever_agreement`` -- below .80 fires it. With ``lever_agreement`` None
+    (the prereg leaves ``a`` open, §14 O11) the lever is reported for every simulated ``a`` and
+    ``h2_caps_lever_fires`` is None: undecided, not "does not fire"."""
+    if lever_agreement is not None and not 0.0 <= lever_agreement <= 1.0:
+        raise SystemExit(f"lever agreement {lever_agreement!r}: a share in [0, 1]")
+    agreements = tuple(AGREEMENTS) + (() if lever_agreement is None or lever_agreement in AGREEMENTS
+                                      else (float(lever_agreement),))
     if layout["shapes"] != [[2, 1]]:
         raise SystemExit(f"layout is not exactly 2 G + 1 C per paper: {layout['shapes']}")
     nc = int(layout["clusters"])
@@ -185,15 +205,24 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
             s1 = simulate_h1(nc, 2, q, p, n_sims=n_sims, n_flips=n_flips, seed=seed + 100 * i + j)
             sim["H1"][key] = {k: v for k, v in s1.items() if k in ("0.025", "0.05")}
             for t, rho in enumerate(RHOS):
-                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, n_sims=n_sims, n_flips=n_flips,
-                                 seed=seed + 10_000 * (t + 1) + 100 * i + j)
+                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, agreements=agreements, n_sims=n_sims,
+                                 n_flips=n_flips, seed=seed + 10_000 * (t + 1) + 100 * i + j)
                 sim["H2"].setdefault(f"rho{rho:g}", {})[key] = {k: v for k, v in s2.items() if k in ("0.025", "0.05")}
     mde = {"H1": {f"q{q:g}": round(mde80_points(n_h1, q), 2) for q in QS},
            "H2": {f"q{q:g}": round(mde80_points(n_h2, q), 2) for q in QS}}
     h2_lever = sim["H2"]["rho1"]["p0.85_q0.05"]["0.025"]
+    by_a = {f"a{a:g}": bool(h2_lever[f"confirm_a{a:g}"] < LEVER_POWER) for a in agreements}
+    if lever_agreement is None:
+        fires: bool | None = None
+        lever_note = "agreement a not fixed (§14 O11): the lever is undecided; per-a verdicts in caps_lever_by_agreement"
+    else:
+        fires = by_a[f"a{lever_agreement:g}"]
+        lever_note = f"confirm power (test and gold-only gate) at a = {lever_agreement:g}"
     return {"normal_approximation": normal, "simulation": sim, "mde80_points": mde,
             "h2_at_q05_p85_alpha025": h2_lever,
-            "h2_caps_lever_fires": bool(h2_lever["test_only"] < 0.80),
+            "caps_lever_agreement": lever_agreement, "caps_lever_by_agreement": by_a,
+            "caps_lever_note": lever_note,
+            "h2_caps_lever_fires": fires,
             "evaluability_floor": {"alpha_0.025_min_nonzero_clusters": 6, "alpha_0.05_min_nonzero_clusters": 5}}
 
 
@@ -204,6 +233,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="JSON {paper: attributed neighbour count} from the neighbour manifest (§15 item 4)")
     ap.add_argument("--sims", type=int, default=2000)
     ap.add_argument("--flips", type=int, default=2000)
+    ap.add_argument("--lever-agreement", type=float, default=LEVER_AGREEMENT,
+                    help="agreement a the caps lever reads (§8; open in the prereg, §14 O11): without it the "
+                         "lever is reported per a and left undecided")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
     if args.records is not None:
@@ -222,7 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         q_scale = list(vals / vals.mean()) if vals.mean() > 0 else None
         counts_note = (f"q scaled per paper by its attributed neighbour count / mean count (mean {vals.mean():.2f}, "
                        f"min {vals.min():g}, max {vals.max():g}); counts sha256 {asc.sha256_file(args.neighbour_counts)}")
-    res = compute(layout, q_scale, args.sims, args.flips)
+    res = compute(layout, q_scale, args.sims, args.flips, args.lever_agreement)
     try:
         from ragstack.provenance import experiment_provenance
         prov = experiment_provenance()
@@ -230,13 +262,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         prov = {}
     out = {"schema": "alias-study-power/1", "layout": layout, **res,
            "assumptions": {"sd_p_between_papers": SD_P, "rho_shared_discordance": list(RHOS),
-                           "gold_agreement": list(AGREEMENTS), "neighbour_counts": counts_note,
+                           "gold_agreement": list(AGREEMENTS), "lever_agreement": args.lever_agreement,
+                           "neighbour_counts": counts_note,
                            "seed": POWER_SEED, "seed_rule": asc.SEED_RULE, "sims": args.sims, "flips": args.flips},
            "provenance": prov, "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0)}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"H1_sim": res["simulation"]["H1"]["p0.85_q0.05"], "H2_sim": res["h2_at_q05_p85_alpha025"],
-                      "caps_lever": res["h2_caps_lever_fires"]}, indent=1))
+                      "caps_lever": res["h2_caps_lever_fires"], "caps_lever_by_agreement": res["caps_lever_by_agreement"]},
+                     indent=1))
     return 0
 
 
