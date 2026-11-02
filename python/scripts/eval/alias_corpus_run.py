@@ -106,7 +106,7 @@ class Layout:
 
     def __init__(self, root: str) -> None:
         self.root = Path(root)
-        for sub in ("raw/jats", "raw/pdf", "text", "chunks", "logs", "meta", "meta/pool",
+        for sub in ("raw/jats", "raw/pdf", "text", "chunks", "logs", "meta", "meta/pool-v2",
                     "manifests", "state", "tmp"):
             d = self.root / sub
             d.mkdir(parents=True, exist_ok=True)
@@ -470,6 +470,67 @@ SCAN_COLS = ["id", "doi", "title", "type", "publication_year", "primary_topic.id
              "best_oa_location.pdf_url", "best_oa_location.license"]
 
 
+PMC_IDS_URL = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz"
+POOL_DIR = "pool-v2"  # v1 (superseded): the snapshot's ``ids`` carries no pmcid, so v1 saw no PMC route
+_PMC_MAP: dict[str, dict[str, str]] = {}
+
+
+def _scan_init(map_path: str) -> None:
+    import pickle
+
+    with open(map_path, "rb") as f:
+        _PMC_MAP.update(pickle.load(f))
+
+
+def build_pmc_map(lay: Layout) -> dict:
+    """NCBI's PMC-ids.csv.gz (PMID / DOI -> PMCID), pickled for the scan workers.
+
+    The parquet snapshot's ``ids`` map has no ``pmcid`` key (the API's has), so the snapshot alone
+    cannot tell a PMC copy exists; this file is the public mapping PMC itself publishes."""
+    import csv
+    import gzip
+    import pickle
+
+    gz = lay.meta / "PMC-ids.csv.gz"
+    if not gz.exists():
+        st, body, _ = http_get(PMC_IDS_URL, None, 2 << 30, timeout=120, deadline_s=3600)
+        if body is None:
+            raise SystemExit(f"PMC-ids download failed: {st}")
+        write_bytes(gz, body)
+    pmid: dict[str, str] = {}
+    doi: dict[str, str] = {}
+    with gzip.open(gz, "rt", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            pm = ac.norm_pmcid(row.get("PMCID"))
+            if not pm:
+                continue
+            if row.get("PMID"):
+                pmid[row["PMID"].strip()] = pm
+            d = ac.norm_doi(row.get("DOI"))
+            if d:
+                doi[d] = pm
+    out = lay.meta / "pmc-map.pkl"
+    with open(out, "wb") as f:
+        pickle.dump({"pmid": pmid, "doi": doi}, f, protocol=pickle.HIGHEST_PROTOCOL)
+    return {"pmc_ids_sha256": sha256_file(gz), "pmid_keys": len(pmid), "doi_keys": len(doi), "path": str(out)}
+
+
+def _with_pmcid(r: dict) -> dict:
+    """Inject the PMCID from the PMC-ids map into a snapshot row's ``ids`` (by PMID, then DOI)."""
+    ids = dict(r.get("ids") or [])
+    if ids.get("pmcid"):
+        return r
+    pm = None
+    if ids.get("pmid"):
+        pm = _PMC_MAP.get("pmid", {}).get(ids["pmid"].rsplit("/", 1)[-1].strip())
+    if not pm:
+        d = ac.norm_doi(r.get("doi") or ids.get("doi"))
+        pm = _PMC_MAP.get("doi", {}).get(d) if d else None
+    if pm:
+        r = dict(r, ids=[*list(r.get("ids") or []), ["pmcid", pm]])
+    return r
+
+
 def _scan_file(args: tuple[str, str, dict[str, list[int]]]) -> tuple[str, int, int]:
     """One snapshot parquet file -> the rows in a wanted (topic, year) window with OA full text."""
     import pyarrow as pa
@@ -503,6 +564,7 @@ def _scan_file(args: tuple[str, str, dict[str, list[int]]]) -> tuple[str, int, i
                     t = (r.get("primary_topic") or {}).get("id")
                     if (t, r.get("publication_year")) not in pairs:
                         continue
+                    r = _with_pmcid(r)
                     w = ac.work_from_snapshot(r)
                     if w.oa_fulltext:
                         keep.append(r)
@@ -535,13 +597,15 @@ def stage_scan(lay: Layout, workers: int) -> dict:
     write_bytes(lay.meta / "snapshot-manifest.json", json.dumps(man).encode())
     works = next(e for e in man["entities"] if e["entity"] == "works")
     files = [f["url"] for f in works["files"]]
-    pool_dir = lay.meta / "pool"
+    pmc = build_pmc_map(lay)
+    log(f"scan: PMC-ids map {pmc['pmid_keys']:,} PMIDs, {pmc['doi_keys']:,} DOIs")
+    pool_dir = lay.meta / POOL_DIR
     jobs = [(u, str(pool_dir / (hashlib.sha1(u.encode()).hexdigest()[:16] + ".jsonl")), win) for u in files]
     log(f"scan: snapshot {man['date']}, {len(files)} files, {works['content_length'] / 1e9:.0f} GB; "
         f"{len(win)} topics; {workers} workers")
     done = n_in = n_keep = 0
     t0 = time.time()
-    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+    with cf.ProcessPoolExecutor(max_workers=workers, initializer=_scan_init, initargs=(pmc["path"],)) as ex:
         for _url, a, b in ex.map(_scan_file, jobs, chunksize=1):
             done += 1
             if a >= 0:
@@ -549,7 +613,8 @@ def stage_scan(lay: Layout, workers: int) -> dict:
                 n_keep += b
             if done % 50 == 0:
                 log(f"scan: {done}/{len(files)} files, rows read {n_in:,}, kept {n_keep:,}, {time.time() - t0:.0f}s")
-    res = {"snapshot_date": man["date"], "files": len(files), "topics": len(win), "rows_read_this_run": n_in,
+    res = {"pmc_map": {k: v for k, v in pmc.items() if k != "path"}, "pool_dir": POOL_DIR,
+           "snapshot_date": man["date"], "files": len(files), "topics": len(win), "rows_read_this_run": n_in,
            "rows_kept_this_run": n_keep, "columns": SCAN_COLS, "windows": win,
            "manifest_sha256": sha256_file(lay.meta / "snapshot-manifest.json"), "finished": now()}
     write_json(lay.state / "scan.json", res)
@@ -560,7 +625,7 @@ def stage_scan(lay: Layout, workers: int) -> dict:
 def load_pool(lay: Layout) -> dict[str, list[ac.Work]]:
     """topic -> candidate works (deduplicated by work id)."""
     by_topic: dict[str, dict[str, ac.Work]] = defaultdict(dict)
-    for f in sorted((lay.meta / "pool").glob("*.jsonl")):
+    for f in sorted((lay.meta / POOL_DIR).glob("*.jsonl")):
         for line in open(f):
             w = ac.work_from_snapshot(json.loads(line))
             if w.topic and w.wid:
@@ -755,6 +820,8 @@ class Builder:
             self.works[w.wid] = w
             f = self.futs.get(w.wid)
             if f is None:
+                if w.wid in self.done and self._stale(w, self.done[w.wid]):
+                    del self.done[w.wid]
                 if w.wid in self.done:
                     f = cf.Future()
                     f.set_result(self.done[w.wid])
@@ -762,6 +829,14 @@ class Builder:
                     f = self.pool.submit(self._resolve_safe, w)
                 self.futs[w.wid] = f
             return f
+
+    @staticmethod
+    def _stale(w: ac.Work, rec: dict) -> bool:
+        """A memoised outcome made without trying the JATS route, for a work now known to have a
+        PMCID (the v1 pool lacked PMCIDs): resolve it again."""
+        tried_jats = rec.get("route") == "jats" or any(
+            (a or {}).get("route") == "jats" for a in rec.get("attempts") or [])
+        return bool(w.pmcid) and not tried_jats
 
     def resolve(self, w: ac.Work) -> dict:
         return self.resolve_async(w).result()

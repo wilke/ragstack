@@ -182,3 +182,25 @@ def test_strip_back_drops_back_keeps_floats_group():
            b"<floats-group><fig><caption>c</caption></fig></floats-group></article>")
     out = run.strip_back(raw)
     assert b"<back>" not in out and b"<floats-group>" in out and b"<body>" in out
+
+
+def test_snapshot_rows_get_pmcid_from_the_pmc_ids_map():
+    import alias_corpus_run as run
+
+    run._PMC_MAP.clear()
+    run._PMC_MAP.update({"pmid": {"111": "PMC9"}, "doi": {"10.5/q": "PMC8"}})
+    by_pmid = run._with_pmcid({"ids": [["pmid", "https://pubmed.ncbi.nlm.nih.gov/111"]], "doi": None})
+    by_doi = run._with_pmcid({"ids": [], "doi": "https://doi.org/10.5/Q"})
+    none = run._with_pmcid({"ids": [["pmid", "https://pubmed.ncbi.nlm.nih.gov/222"]], "doi": None})
+    assert ac.work_from_snapshot(by_pmid).pmcid == "PMC9" and ac.work_from_snapshot(by_doi).pmcid == "PMC8"
+    assert ac.work_from_snapshot(none).pmcid is None
+
+
+def test_memoised_pdf_outcome_is_stale_once_a_pmcid_is_known():
+    import alias_corpus_run as run
+
+    pdf_only = {"ok": True, "route": "pdf", "attempts": [{"route": "pdf"}]}
+    assert run.Builder._stale(ac.Work(wid="W1", pmcid="PMC1"), pdf_only)
+    assert not run.Builder._stale(ac.Work(wid="W1"), pdf_only)
+    tried = {"ok": True, "route": "pdf", "attempts": [{"route": "jats", "reason": "pmc_not_in_oa_subset"}]}
+    assert not run.Builder._stale(ac.Work(wid="W1", pmcid="PMC1"), tried)
