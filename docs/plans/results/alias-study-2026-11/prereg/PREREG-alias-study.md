@@ -64,8 +64,19 @@ build outputs of the record set (§4), the judge-calibration, validation and tie
 scratch computations made for the drafts: the v0 power sketch, the normal-approximation powers of §8, a
 replay of the judge rule on the validation labels (§6.4), and the recounts of §4 that are marked as
 scratch, including the overlap between the study papers and the judge validation set (§4.3 item 6). **No retrieval of any kind has been run on any study record**, and no found@10 figure for any
-record exists under any arm (§4.3 item 6 lists the one partial exception). **No neighbour or random paper
-has been selected**, and no OpenAlex query for this study has been made. The study's corpus-arm design and
+record exists under any arm (§4.3 item 6 lists the one partial exception). **Corpus build (offline, #905
+at `dd8ef5b`).** Between 2026-11-01T21:42Z and 2026-11-02T03:18Z the corpus builder ran once, under
+the §5.1 rules as they stood before this version (no walk-down, no article-type filter, no type or
+chunk-band matching, seeds `…|random|1` and `…|random|2`). It made **861** keyless OpenAlex API queries
+(logged; its cache was seeded from the earlier scratch feasibility count of §5.1), read the **OpenAlex
+parquet snapshot of 2026-10-14** for the random pools, downloaded NCBI's **PMC-ids** file, and fetched
+**5,273** JATS files from the PMC OA bucket and **4,535** PDFs from OpenAlex OA locations (14,507 works
+resolved). It selected 2,580 neighbours, of which **1,553** were kept, and two random draws of 1,553
+each (overlap 6), and chunked them at `tok512o0` (61,460 / 43,910 / 44,759 chunks). These are counts in
+the private manifest `counts.json` (sha256 `d54464ea…`). The build read bibliographic metadata and
+paper full text only: **no store or index write, no retrieval, no model or judge call, and no outcome
+data** of any kind. Its selections predate this version's rules and are re-drawn under them (§15 item
+4); the counts above shaped none of this version's decisions except as stated in §5.1. The study's corpus-arm design and
 its retriever factor were chosen after seeing round 3's null and the reranker test's reading that the
 reranker can lose to BM25 on some corpora. H1's form (G-only, with C as a gate) and the extension of the
 record set from 200 to 300 papers were both decided after v0's power sketch showed the DiD form weak, on
@@ -690,6 +701,13 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
   slightly anti-conservative (0.052–0.054) for H1b under a skewed sparse null; the exact (or corrected)
   p is used for **H1, H1b and H2 alike**, for consistency. All three members are one-sided. The
   mid-p is printed as a sensitivity and never decides.
+- **The tested null** is the **sharp null of no glossary (H1, H1b) or corpus-arm (H2) effect on any
+  question**: within each question the conditions compared are exchangeable, so each paper's score S_j
+  is symmetric about 0 and its sign is independent of |S_j| and of the other papers. Under that null
+  the exact conditional sign-flip p above is **exactly level-α**: P(p ≤ α) ≤ α, with equality
+  whenever α is an attainable value of the discrete null distribution, so no simulation is needed to
+  establish its size. It does not test a weaker null of zero mean
+  effect with a skewed per-paper distribution; a rejection is read as evidence against the sharp null.
 - **Minimum attainable p** (owner, 2026-11-01) is 2^−k for the exact p and max(2^−k, 1/(m + 1)) for
   the Monte-Carlo p. It is judged against the **final level** at which the member is tested: for H1 and
   H2 the level after any level passed by the other member (0.025, or 0.05 once the other is confirmed),
@@ -779,7 +797,8 @@ by simulation of the cluster sign-flip test (2,000 simulations × 2,000 flips, a
 under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
 §5.1 are raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power
 the lever reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the
-gold-only direction gate passes, not the test's power alone.
+gold-only direction gate passes, not the test's power alone. **Which agreement level `a` (1.0, 0.8 or
+0.6 in the committed calculation) the lever reads is open** (§14 O11).
 
 **Evaluability floor.** With k non-zero clusters the minimum attainable one-sided p is 2^−k. At the Holm
 worst case α/2 a member needs k ≥ 6; at α = 0.05 (H1b, or H1 / H2 after the other is confirmed) k ≥ 5.
@@ -930,12 +949,13 @@ Only items not settled by D1–D10.
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
 | O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
 | O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
+| O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.6 in `alias_study_power`) | **open — the owner chooses before the freeze**; not chosen in this text |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); O3, O7 (Argon, ceiling), O8 and O10 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); O3, O7 (Argon, ceiling), O8, O10 and O11 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open |
