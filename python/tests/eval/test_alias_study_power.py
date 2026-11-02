@@ -63,3 +63,15 @@ def test_h2_gold_gate_costs_power_when_gold_disagrees() -> None:
 def test_compute_refuses_another_layout() -> None:
     with pytest.raises(SystemExit):
         pw.compute({"clusters": 10, "shapes": [[2, 1], [1, 1]]}, None, 10, 10)
+
+
+def test_dose_scales_q_with_realised_added_papers() -> None:
+    papers = [f"P{i}" for i in range(300)]
+    vals, per, dose = pw.dose_scale(dict.fromkeys(papers, 5), papers, 2800)
+    assert per == pytest.approx(2800 / 300) and dose == pytest.approx(1500 / 2800)
+    assert (vals / per).mean() == pytest.approx(dose)   # the average q multiplier is the dose, not 1
+    full = pw.compute({"clusters": 300, "shapes": [[2, 1]]}, None, 20, 20)
+    half = pw.compute({"clusters": 300, "shapes": [[2, 1]]}, list(vals / per), 20, 20, dose=dose)
+    k = "p0.7_q0.05"
+    assert half["normal_approximation"]["H2_at_realised_dose"][k]["0.025"] < full["normal_approximation"]["H2"][k]["0.025"]
+    assert full["normal_approximation"]["H2_at_realised_dose"][k] == full["normal_approximation"]["H2"][k]
