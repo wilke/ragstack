@@ -1,15 +1,15 @@
 # Pre-registration, alias study (OA-1000) — DRAFT v3, 2026-11-03
 
 **Status: DRAFT — not frozen; owner review pending.** Version 3 folds in the owner's decisions of
-2026-11-03 (R12–R24, the second table below): a C cost rule that reads the point estimate (−1 point) and
+2026-11-03 (R12–R25, the second table below): a C cost rule that reads the point estimate (−1 point) and
 the CI's lower bound (−3.6 points, the design's detection limit for C), the judge false-yes bound on H2
 always taking the larger of the random arm's and the pooled limit, *fragile* restricted to named re-tests
 of H1 and H2, a judged-pair spot check of 100 pairs, the corpus build facts of the v3 pass (six length
 bands, the carry-over re-draw, the fetch budget, the relaxation order), a nearest-band fill at the last
 relaxation level, a repetition screen for every added paper, and the chunk-volume target read as a build
 target covered by H2's chunk-volume covariate; and stage A extended by the inactive-reranker gate's
-norerank cells, the placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane
-covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
+norerank cells (retrieval and judging) and the Layer-1 attachments' BM25 cells (retrieval only), the
+placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
 discordant records. Version 2 folded in the changes the owner approved
 on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
 below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
@@ -52,9 +52,9 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 **Owner decisions of 2026-11-02 and 2026-11-03, and where each is written.** R1–R11 were adopted from an
 independent methodology review, 2026-11-02; the review's text is not part of this record, what the owner
-adopted from it is. R12–R24 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
+adopted from it is. R12–R25 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
 bound, the *fragile* rule, the spot check, the corpus build, stage A, the placebo, the re-tests behind
-*fragile* and the equivalence reading.
+*fragile* the equivalence reading and the stage of the BM25 legs.
 
 | # | decision, in short | where |
 |---|---|---|
@@ -66,7 +66,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A, the placeb
 | R6 | **fixed sensitivities**, never deciding, with a *fragile* label when one flips a verdict (**narrowed by R14**; the studentized test **replaced by R22**) | §7 |
 | R7 | **placebo glossary leg** (base × default, entries permuted across papers), descriptive (own entries **removed by R21**) | §5.3, §5.4 |
 | R8 | **pre-freeze pilot** on the 191 held-out records, with its allowed consequences fixed now | §5.6 |
-| R9 | **two stages after the freeze** (stage A: the Layer-1 legs; stage B: the rest) and **judging on demand** (stage A **extended by R20**) | §5.7, §6.2 |
+| R9 | **two stages after the freeze** (stage A: the Layer-1 legs; stage B: the rest) and **judging on demand** (stage A **extended by R20 and R25**) | §5.7, §6.2 |
 | R10 | **freeze verification** by a signed annotated git tag pushed to the public repository, plus the private `PREREG.sha256` | README, §15 |
 | R11 | **H2's estimand** stated | §3.1 |
 | R12 | **C cost rule** (replaces R2's margin-only rule). In the attach decision, step (2) is *do not attach (C cost)* when the point estimate ΔC **< −1 point** or C_lo **< −3.6 points**; *attach* (step 3) needs L ≥ 2, L_lo > 0, ΔC ≥ −1 and C_lo ≥ −3.6. −3.6 is the smallest C change 300 C records detect with 80 % power at 5 % discordance (two-sided 0.05); a C cost smaller than about 3.6 points cannot be ruled out, and this is stated | §3.1, §3.3, §8, §13.9–13.10, §14 O1 |
@@ -77,11 +77,12 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A, the placeb
 | R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order, assigned by a global greedy over (slot, candidate) pairs; 0 new fetches | §5.1 |
 | R18 | **repetition screen**: every added paper in every arm, after the C0 screen; distinct-chunk ratio < 0.90 excluded and replaced like other exclusions | §5.1, §15 |
 | R19 | **residual chunk-volume gap accepted**: ±5 % of the neighbour arm's chunks is a build target, not a gate; the gap is covered by H2's pre-named chunk-volume covariate sensitivity (which by R14 can make H2 fragile); the deeper search for ≥ 80-chunk slots declined | §5.1, §7, §13.11 |
-| R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
+| R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged (stage-A retrieval **extended by R25**) | §5.4, §5.7, §6.2, §9.1 |
 | R21 | **placebo self-entries removed**: after the derangement, every entry equal to one of the receiving paper's own merged entries is dropped; drops counted per paper and in total; a paper left empty gets no placebo field and is counted | §5.3 |
 | R22 | **bootstrap-t replaces the studentized randomization test**: a one-sided paper-cluster bootstrap-t (seed `261101\|alias\|boot`). The *fragile* set is H1 = bootstrap-t + topic clustering, and H2 = bootstrap-t + topic clustering + volume covariate. §7's statement about the weak null is corrected | §3.4, §5.5, §7 |
 | R23 | **the H2 volume-covariate re-test** is a Freedman–Lane sign-flip with the studentized intercept (10,000 flips, seed `261101\|alias\|perm`), reusing the primary's unadjusted gold-only gate; closes O13 | §5.5, §7, §14 O13, §15 item 19 |
 | R24 | **equivalence with zero discordant records** prints *not resolved* with the count, never *no effect larger than 0 points*; Wilson upper limits are rounded up | §3.3 |
+| R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total; the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -768,7 +769,9 @@ order in which the slots are listed. It is greedy, **not a minimum-total assignm
 bands 5 and 3 and candidates in bands 4 and 0, it pairs 3 ↔ 4 first (distance 1, the band-3 slot first
 in cell order) and then 5 ↔ 0, a total band distance of 6, where a minimum-total assignment (5 ↔ 4,
 3 ↔ 0) has 4. On the 8 study papers of the v4 build with several `any` slots, a minimum-total assignment
-gives the same totals as the greedy (checked in the #915 review).
+gives the same totals as the greedy (checked in the #915 review). The v4 manifests' `any_rule` string
+("open slots served in sorted cell order") undersells this order, in which sorted cell order is only the
+fourth tie-break; the corpus fix corrects the string.
 
 **Chunk volume (owner, 2026-11-03, R19).** Each random draw's total added chunks is targeted at **± 5 %**
 of the neighbour arm's. This is a **build target, not a gate**: a draw outside it is used as built, and
@@ -824,7 +827,9 @@ one neighbour fewer, and each draw one random slot fewer, than in v3 (2,423 pape
 | shortfall | — | 0 | 0 |
 | draw-to-draw overlap | — | 201 | 201 |
 
-Both draws are within ± 5 % of the neighbour arm's chunks. The **≥ 80 band is still short** in both
+Both draws are within ± 5 % of the neighbour arm's chunks. These are the **uncapped** figures, the
+headline. `counts-v4.json` also records them under a 500-chunks-per-paper cap (one neighbour paper lies
+above it): −4.27 % and −4.50 % capped, against −4.51 % and −4.75 % uncapped. The **≥ 80 band is still short** in both
 draws: 118 neighbour papers against 99 and 100. **Fetches:** the first v4 run (`e9379c1`, superseded)
 made 41 paper fetches and 51 PMC metadata lookups; the final run (`1574286`) re-used them and made none.
 
@@ -900,8 +905,9 @@ depend on the glossary arm.
 
 24 cells, plus **one noise repeat per corpus arm** (default × none, run twice; §9.4), plus the **placebo
 leg** (base × default × placebo, §5.3): 29 legs × 1,091 records = **31,639** retrieval calls, at ≤ 4 in
-flight against the bench copies. Moving the 5 norerank cells into stage A (R20, §5.7) changes the order
-of the calls, not their number. After the freeze the 191 pilot records are run again in every leg as
+flight against the bench copies. Moving the 5 norerank and the 5 BM25 cells of the Layer-1 attachments
+into stage-A retrieval (R20, R25, §5.7: 19 legs, 20,729 calls) changes the order of the calls, not their
+number. After the freeze the 191 pilot records are run again in every leg as
 the descriptive leg (§4.2). No gateway call is made for retrieval. The pilot (§5.6) adds its own calls
 before the freeze.
 
@@ -966,22 +972,38 @@ before the freeze, and the freeze commit's text includes them.
 
 ### 5.7 After the freeze: two stages (R9)
 
-- **Stage A, the Layer-1 legs and every Layer-1 gate's cells** (R20; owner, 2026-11-03): base × default
-  × none, base × default × merged, neighbour × default × none, random-1 × default × none, random-2 ×
-  default × none, the noise repeat of each corpus arm (default × none, §9.4), and the **5 norerank cells**
-  the inactive-reranker gate reads (§9.1), one for each Layer-1 corpus × glossary condition: base ×
-  norerank × none, base × norerank × merged, neighbour × norerank × none, random-1 × norerank × none,
-  random-2 × norerank × none. In all **14 legs**: 10 cells and 4 noise repeats. They are retrieved, their found@10 pairs are judged (§6.2), and the stage-A outputs (hits, pair labels, logs, as
-  private files with public sha256s) are **committed before stage B starts**.
-- **Stage B, everything else**: the remaining 14 cells, the placebo leg, and the pairs that only RR@10
-  or a descriptive split needs (§6.2).
+Each stage has a **retrieval** part and a **judging** part, and since R25 they differ: the stage a leg
+is retrieved in is not always the stage its pairs are judged in. A **Layer-1 attachment** is one of the
+five corpus × glossary conditions the Layer-1 members read: base × none, base × merged, neighbour × none,
+random-1 × none, random-2 × none.
+
+- **Stage A retrieval** (R20, R25; owner, 2026-11-03): each of the 5 Layer-1 attachments under all three
+  retrievers (default, norerank, BM25: 15 cells), plus the noise repeat of each corpus arm (default ×
+  none, §9.4): **19 legs**, 20,729 retrieval calls. The 5 norerank cells are the ones the
+  inactive-reranker gate reads (§9.1): base × norerank × none, base × norerank × merged, neighbour ×
+  norerank × none, random-1 × norerank × none, random-2 × norerank × none. An attachment's three
+  retriever legs are retrieved **in one run**, with its glossary swapped onto the bench index **once in
+  total** (§9.3); no stage-B re-swap of a Layer-1 attachment is made.
+- **Stage A judging**: the found@10 pairs (§6.2) of the 5 default and 5 norerank cells and the 4 noise
+  repeats: **14 legs**. The BM25 legs retrieved in stage A are **not** judged in stage A.
+- **The stage-A commit**: the stage-A outputs (hits, pair labels, logs, as private files with public
+  sha256s) are **committed before stage B starts**. It pins the BM25 rows retrieved in stage A as
+  well; their labels arrive in stage B.
+- **Stage B retrieval**: the remaining 9 cells and the placebo leg (10 legs). **Stage B judging**: the
+  found@10 pairs of the 5 BM25 cells retrieved in stage A and of the stage-B legs, then the pairs that
+  only RR@10 or a descriptive split needs (§6.2).
 - *Why R20:* the inactive-reranker gate is a Layer-1 gate (§9.1), but its norerank cells were in stage B,
   which contradicted "the Layer-1 analysis can be run after stage A". Now every Layer-1 gate is read
   after stage A alone. The cost: 5 × 1,091 retrieval calls and their found@10 judge pairs move earlier;
   the total is unchanged.
+- *Why R25:* retrieving the BM25 legs with their attachment's other legs removes the base re-swaps,
+  which are store writes needing management windows (§9.3); it removes a layout in which one
+  attachment's outputs are split across the two stages' files; and the inactive-reranker gate then
+  compares legs from one run. The cost: 5 × 1,091 BM25 calls move earlier; no extra judging comes before
+  the Layer-1 analysis; the total is unchanged.
 - **A stage-A label is never changed by stage B.** Pairs are deduplicated across cells (§6.2), so a pair
-  that stage B meets again keeps its stage-A label; stage B labels only new pairs. Stage B cannot move a
-  Layer-1 figure.
+  that stage-B judging meets again keeps its stage-A label; stage-B judging labels only new pairs. Stage
+  B cannot move a Layer-1 figure.
 - No analysis is run until stage A is committed and both owner spot checks (§13.4, §13.5) are committed.
   The judged-pair spot check is drawn from stage A's labels (§13.5), so the Layer-1 analysis can be run
   after stage A without waiting for stage B.
@@ -999,8 +1021,9 @@ is H2's direction gate. **RR@10** (Layer 2) uses the same labels.
 - **Only top-10 non-gold chunks** are judged. The gold chunk is a hit by definition.
 - **Judging on demand (R9).** For found@10, a non-gold pair (record, chunk) is judged **only if the
   record's gold chunk is outside that cell's top 10**: when the gold is in the top 10 the record is a hit
-  whatever the other chunks are. Stage A (§5.7) judges the pairs its 14 legs need this way, first (R20). Stage B
-  judges the pairs its own legs need for found@10, then the pairs that **RR@10** needs (non-gold chunks
+  whatever the other chunks are. Stage-A judging (§5.7) labels the pairs its 14 legs need this way,
+  first (R20, R25). Stage-B judging labels the found@10 pairs of the 5 BM25 legs retrieved in stage A
+  and of the legs retrieved in stage B, then the pairs that **RR@10** needs (non-gold chunks
   ranked **above** the gold in a cell where the gold is in the top 10, stage-A legs included) and those
   the descriptive splits of §3.3 and §7 need. A pair is labelled once, whatever first asked for it.
 - **Pairs are deduplicated across cells.** The unit is (record, chunk). One final label serves every cell
@@ -1388,8 +1411,9 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
 ### 9.3 Restore points
 
 Every store write is made on a **bench copy**, never on a live collection. Store writes are building the
-three expanded collections and every glossary swap. Each write goes inside a management window, under a
-reviewed live-ops plan. Before each write a **restore point** is recorded: the snapshot id, the chunk
+three expanded collections and every glossary swap. Each Layer-1 attachment's glossary is swapped onto
+its bench index **once in total**, for all three of its retriever legs in stage-A retrieval, with no
+stage-B re-swap (R25, §5.7). Each write goes inside a management window, under a reviewed live-ops plan. Before each write a **restore point** is recorded: the snapshot id, the chunk
 count and the stamp census. After the write the census must match the plan. At the end of the run every
 collection is restored to its recorded state, and the restore is verified by census. A failed restore
 blocks every later leg until it is repaired.
@@ -1556,7 +1580,7 @@ read retrieval, judge or outcome data. The pilot (§5.6) is run
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R24.
+Only items not settled by D1–D10 and R1–R25.
 
 | # | decision | proposal in this draft |
 |---|---|---|
@@ -1578,7 +1602,7 @@ Only items not settled by D1–D10 and R1–R24.
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R24 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R25 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, run at `1574286`) exists and its counts are entered in §5.1; its private manifests' sha256s are public there; the #915 review is open |
@@ -1597,5 +1621,5 @@ Only items not settled by D1–D10 and R1–R24.
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
 | 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (review open); the v4 build ran on it (item 4) |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
-| 20 | **The stage-A leg list** (R20, §5.7): the 14 legs, with the 5 norerank cells the inactive-reranker gate reads, checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
+| 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
 
