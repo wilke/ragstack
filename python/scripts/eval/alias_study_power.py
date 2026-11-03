@@ -186,7 +186,7 @@ def layout_from_records(path: Path) -> dict[str, Any]:
 
 
 def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int,
-            dose: float = 1.0) -> dict[str, Any]:
+            dose: float = 1.0, agreements: Sequence[float] = AGREEMENTS) -> dict[str, Any]:
     """``q_scale``: per-paper multipliers of q for H2 (dose included); ``dose``: the realised
     added papers over the planned, for the H2 normal approximation at the realised dose."""
     if layout["shapes"] != [[2, 1]]:
@@ -206,7 +206,7 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
             s1 = simulate_h1(nc, 2, q, p, n_sims=n_sims, n_flips=n_flips, seed=seed + 100 * i + j)
             sim["H1"][key] = {k: v for k, v in s1.items() if k in ("0.025", "0.05")}
             for t, rho in enumerate(RHOS):
-                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, n_sims=n_sims, n_flips=n_flips,
+                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, agreements=agreements, n_sims=n_sims, n_flips=n_flips,
                                  seed=seed + 10_000 * (t + 1) + 100 * i + j)
                 sim["H2"].setdefault(f"rho{rho:g}", {})[key] = {k: v for k, v in s2.items() if k in ("0.025", "0.05")}
     mde = {"H1": {f"q{q:g}": round(mde80_points(n_h1, q), 2) for q in QS},
@@ -227,8 +227,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="the added papers the q grid refers to (prereg §5.1 estimate: 2,800)")
     ap.add_argument("--sims", type=int, default=2000)
     ap.add_argument("--flips", type=int, default=2000)
+    ap.add_argument("--agreements", default=",".join(f"{a:g}" for a in AGREEMENTS),
+                    help="comma-separated gold-agreement levels a for the H2 gold-only gate (default %(default)s; "
+                         "the simulated values of a later level depend on the earlier ones in the list: one RNG stream)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
+    agreements = tuple(float(x) for x in args.agreements.split(",") if x.strip())
+    if not agreements or any(not 0.0 <= a <= 1.0 for a in agreements):
+        raise SystemExit(f"--agreements: levels in [0, 1] required, got {args.agreements!r}")
     if args.records is not None:
         layout = layout_from_records(args.records)
         papers = layout.pop("papers")
@@ -248,7 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                        f"({args.planned_added:g} / {len(papers)} = {per_planned:.3f}); realised mean {vals.mean():.2f}, "
                        f"min {vals.min():g}, max {vals.max():g}, total {vals.sum():g}, dose {dose:.4f}; "
                        f"counts sha256 {asc.sha256_file(args.neighbour_counts)}")
-    res = compute(layout, q_scale, args.sims, args.flips, dose=dose)
+    res = compute(layout, q_scale, args.sims, args.flips, dose=dose, agreements=agreements)
     try:
         from ragstack.provenance import experiment_provenance
         prov = experiment_provenance()
@@ -257,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out = {"schema": "alias-study-power/1", "layout": layout, **res,
            "assumptions": {"sd_p_between_papers": SD_P, "planned_added": args.planned_added,
                            "dose_rule": "H2 discordance linear in added papers (q at the planned dose)", "rho_shared_discordance": list(RHOS),
-                           "gold_agreement": list(AGREEMENTS), "neighbour_counts": counts_note,
+                           "gold_agreement": list(agreements), "neighbour_counts": counts_note,
                            "seed": POWER_SEED, "seed_rule": asc.SEED_RULE, "sims": args.sims, "flips": args.flips},
            "provenance": prov, "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0)}
     args.out.parent.mkdir(parents=True, exist_ok=True)

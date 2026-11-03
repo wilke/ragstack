@@ -87,9 +87,9 @@ def test_main_passes_the_dose_scaled_q_to_compute(tmp_path: Path, monkeypatch: p
     seen: dict = {}
     real = pw.compute
 
-    def fake_compute(layout, q_scale, n_sims, n_flips, dose=1.0):
-        seen.update(q_scale=q_scale, dose=dose)
-        return real(layout, q_scale, 2, 2, dose=dose)
+    def fake_compute(layout, q_scale, n_sims, n_flips, dose=1.0, agreements=pw.AGREEMENTS):
+        seen.update(q_scale=q_scale, dose=dose, agreements=agreements)
+        return real(layout, q_scale, 2, 2, dose=dose, agreements=agreements)
 
     monkeypatch.setattr(pw, "compute", fake_compute)
     counts = tmp_path / "counts.json"
@@ -100,3 +100,17 @@ def test_main_passes_the_dose_scaled_q_to_compute(tmp_path: Path, monkeypatch: p
     assert sum(seen["q_scale"]) / 300 == pytest.approx(2100 / 2800)
     assert seen["q_scale"][1] == pytest.approx(10 / (2800 / 300))
     assert json.loads((tmp_path / "out.json").read_text())["h2_dose"] == pytest.approx(0.75)
+
+
+def test_main_passes_the_agreement_levels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--agreements reaches simulate_h2 (owner, 2026-11-02: a = 0.7 / 0.6) and the output keys."""
+    monkeypatch.setattr(pw, "PS", (0.85,))
+    monkeypatch.setattr(pw, "QS", (0.05,))
+    out = tmp_path / "out.json"
+    assert pw.main(["--out", str(out), "--sims", "4", "--flips", "4", "--agreements", "0.7,0.6"]) == 0
+    res = json.loads(out.read_text())
+    row = res["simulation"]["H2"]["rho1"]["p0.85_q0.05"]["0.025"]
+    assert set(row) == {"test_only", "confirm_a0.7", "confirm_a0.6"}
+    assert res["assumptions"]["gold_agreement"] == [0.7, 0.6]
+    with pytest.raises(SystemExit):
+        pw.main(["--out", str(out), "--agreements", "1.5"])
