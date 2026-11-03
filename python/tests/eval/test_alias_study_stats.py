@@ -574,6 +574,35 @@ def test_freedman_lane_reads_the_intercept_not_the_volume() -> None:
     assert st.freedman_lane_intercept(np.ones(5), np.ones(5), "less", 100, 1)["p"] is None   # constant covariate
 
 
+def test_freedman_lane_flips_the_restricted_residuals() -> None:
+    """Freedman–Lane flips the residuals of the **restricted** model S = g x (no intercept), not
+    the full model's: re-implemented here independently, the p and the null law match exactly.
+    Under an effect the two differ (the restricted residuals carry the intercept)."""
+    rng = np.random.default_rng(8)
+    x = rng.uniform(0.5, 3.0, 30)
+    y = -0.4 + 0.3 * x + rng.normal(0.0, 0.5, 30)
+    got = st.freedman_lane_intercept(y, x, "less", 500, 4)
+    X = np.column_stack([np.ones(30), x])
+    inv = np.linalg.inv(X.T @ X)
+
+    def t_int(v: np.ndarray) -> float:
+        coef = inv @ X.T @ v
+        r = v - X @ coef
+        return float(coef[0] / np.sqrt(r @ r / 28 * inv[0, 0]))
+
+    def p_with(resid: np.ndarray, fit: np.ndarray) -> float:
+        eps = np.random.default_rng(4).integers(0, 2, size=(500, 30)).astype(float) * 2 - 1
+        t_obs = t_int(y)
+        return (sum(t_int(fit + e * resid) <= t_obs + 1e-9 for e in eps) + 1) / 501
+
+    g_r = float(x @ y / (x @ x))
+    restricted = p_with(y - g_r * x, g_r * x)
+    coef = inv @ X.T @ y
+    full = p_with(y - X @ coef, g_r * x)
+    assert got["p"] == pytest.approx(restricted) and got["restricted_slope"] == pytest.approx(g_r)
+    assert restricted != pytest.approx(full)
+
+
 def test_bootstrap_t_type_one_error_under_a_skewed_mean_zero_null() -> None:
     """S_j = Exp(1) - 1 (mean 0, right-skewed), 50 papers: the one-sided bootstrap-t rejects
     near .05 (small reps, loose bound), in both directions."""
@@ -775,7 +804,7 @@ def commit_stage_a(world: fx.World, mode: str = "dry_run", runs_mode: str | None
     return jdir
 
 
-def committed_world(tmp_path: Path, label: Any = None, patch: Any = None, **kw: Any) -> fx.World:
+def committed_world(tmp_path: Path, label: Any = None, patch: Any = None, inject: bool = True, **kw: Any) -> fx.World:
     """The e2e world: H1's base x none x default G records lose their gold (an unlabelled P99-c0 in
     its place), every other leg holds the gold at rank 1; final labels; stage A committed."""
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -783,7 +812,7 @@ def committed_world(tmp_path: Path, label: Any = None, patch: Any = None, **kw: 
 
     def top(leg: str, rec: dict[str, Any]) -> list[str]:
         t = w.default_top10(leg, rec)
-        if leg == st.L("base", "none", "default") and rec["kind"] == "G":
+        if inject and leg == st.L("base", "none", "default") and rec["kind"] == "G":
             t = [x for x in t if x != rec["gold_chunks"][0]] + ["P99-c0"]
         return t
 
@@ -827,12 +856,30 @@ def _e2e_patch(w: fx.World) -> None:
         "placebo_glossary": {"counts": {"placebo_dropped_own_entries": 7}}}))
 
 
-def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
+def test_public_copy_strips_host_and_public_problems_refuses_one() -> None:
+    res = {"provenance": {"host": "box-1", "warnings": ["w"], "commit": "c" * 40, "dirty": False},
+           "runs": {"base/none": {"provenance": {"host": "box-2", "commit": "d"}}}, "n": 1}
+    pub = st.public_copy(res)
+    assert pub["provenance"] == {"commit": "c" * 40, "dirty": False} and pub["runs"]["base/none"]["provenance"] == {"commit": "d"}
+    assert res["provenance"]["host"] == "box-1"                            # the private copy keeps it
+    assert asc.public_problems(pub, []) == []
+    assert asc.public_problems({"a": [{"host": None}]}, []) == ["a host field"]
+    assert asc.public_problems({"Hostname": "x"}, []) == ["a Hostname field"]
+
+
+def test_analyse_end_to_end_and_public_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ragstack.provenance as rp
+
+    monkeypatch.setattr(rp, "experiment_provenance", lambda **kw: {"host": "private-box", "warnings": ["x"],
+                                                                   "commit": "e" * 40, "dirty": False, "untracked": 0})
     w = committed_world(tmp_path, patch=_e2e_patch)
     cp = e2e_config(w, tmp_path)
     assert st.main(["--config", str(cp), "--out", str(tmp_path / "res.json"), "--public", str(tmp_path / "pub.json")]) == 0
     res = json.loads((tmp_path / "res.json").read_text())
     assert res["schema"] == "alias-study-results/2"
+    pub = json.loads((tmp_path / "pub.json").read_text())
+    assert res["provenance"]["host"] == "private-box" and "host" not in pub["provenance"]
+    assert "warnings" not in pub["provenance"] and asc.host_keys(pub) == set()
     l1 = res["layer1"]
     assert l1["H1"]["status"] == st.CONFIRMED and l1["H1"]["net_points"] == 100.0 and l1["H1"]["level"] == 0.05
     assert l1["H1"]["c_gate"]["verdict"] == "passes" and l1["H1b"]["tested"] is True
@@ -882,7 +929,8 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
     assert res["layer2"]["cells"][st.L("base", "none", "default")]["descriptive_leg"]["found10"]["n"] == 2
     assert res["sensitivities"]["without_codex_verdicts"]["records"] < len(asc.split_records(w.records)[0])
     # the public check refuses a record id smuggled into the results
-    assert asc.public_problems(res, {r["record_id"] for r in w.records}) == []
+    assert asc.public_problems(pub, {r["record_id"] for r in w.records}) == []
+    assert asc.public_problems(res, []) == ["a host field"]                 # the private copy is not publishable
     assert asc.public_problems({"x": w.records[0]["record_id"]}, {w.records[0]["record_id"]}) == ["an id"]
     assert asc.public_problems({"x": "…" + w.records[0]["question"][:45]}, [], [w.records[0]["question"]])
 
@@ -974,6 +1022,32 @@ def test_modes_must_agree(tmp_path: Path) -> None:
         st.Data(json.loads(e2e_config(w3, tmp_path / "c").read_text()))
 
 
+def test_main_run_refuses_a_u_cross_check_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside a dry run the frozen stage-A summary's false_yes_among_answers must equal the stage-A
+    final rows; here the summary claims 5 Opus-answered *answers* pairs the rows do not hold."""
+    import alias_study_judge as aj
+
+    monkeypatch.setattr(aj, "public_tracked_at_head", lambda path, repo=None: True)
+    monkeypatch.setattr(asc, "verify_record_set", lambda path, recs: {"stub": True})
+    js = {"drift": {"scopes": {sc: {"false_yes_among_answers": {"k": 1, "n": 5}}
+                               for sc in ("overall", "base", "neighbour", "random")}}}
+    w = committed_world(tmp_path, inject=False, mode="main", judge_summary=js)
+    (tmp_path / "rec.json").write_text(json.dumps({"valid": 38, "n": 40, "sheet_sha256": "ab" * 32}))
+    fx.write_jsonl(tmp_path / "judge-spot.jsonl", [])
+    cfg = json.loads(e2e_config(w, tmp_path, dry_run=False, analysis_stage="A", n_perm=10_000, n_boot=10_000,
+                                spot_checks={"records": str(tmp_path / "rec.json"),
+                                             "judge": str(tmp_path / "judge-spot.jsonl")}).read_text())
+    with pytest.raises(SystemExit, match="differs from the stage-A final rows"):
+        st.analyse(cfg)
+
+
+def test_commit_mode_must_be_the_stats_mode(tmp_path: Path) -> None:
+    """Markers that agree with the config do not cover a commit made in another mode."""
+    w = committed_world(tmp_path, mode="pilot", runs_mode="dry_run", judge_mode="dry_run")
+    with pytest.raises(SystemExit, match="committed in mode 'pilot'"):
+        st.study_preflight(json.loads(e2e_config(w, tmp_path).read_text()))
+
+
 def test_judge_dir_must_be_the_committed_one(tmp_path: Path) -> None:
     import shutil
 
@@ -999,7 +1073,7 @@ def test_pilot_and_main_spot_check_gate(tmp_path: Path, monkeypatch: pytest.Monk
     cfg = json.loads(e2e_config(wm, tmp_path / "m", dry_run=False).read_text())
     with pytest.raises(SystemExit, match="spot check"):
         st.study_preflight(cfg)
-    (tmp_path / "rec.json").write_text(json.dumps({"valid": 38, "n": 40}))
+    (tmp_path / "rec.json").write_text(json.dumps({"valid": 38, "n": 40, "sheet_sha256": "ab" * 32}))
     fx.write_jsonl(tmp_path / "judge-spot.jsonl", [])
     cfg["spot_checks"] = {"records": str(tmp_path / "rec.json"), "judge": str(tmp_path / "judge-spot.jsonl")}
     pre = st.study_preflight(cfg)
@@ -1059,10 +1133,13 @@ def test_false_yes_from_the_judge_summary_and_filters() -> None:
     assert st.false_yes_counts(rows)["random"]["n"] == 4
     assert st.false_yes_counts(rows, stage="A")["random"]["n"] == 3          # stage-B rows left out
     # U reads the frozen stage-A summary when it has the counts; the rows are its cross-check
-    cnt, src, same = st.false_yes_inputs(js, rows)
+    cnt, src, same = st.false_yes_inputs(js, rows, strict=False)
     assert cnt["random"]["n"] == 10 and src.startswith("stage-a/judge-summary.json") and same is False
     cnt2, src2, same2 = st.false_yes_inputs({}, rows)
     assert cnt2["random"]["n"] == 3 and src2.startswith("final.jsonl") and same2 is None
+    with pytest.raises(SystemExit, match="differs from the stage-A final rows"):
+        st.false_yes_inputs(js, rows, strict=True)                          # outside a dry run: refused
+    assert st.false_yes_inputs(js, rows, strict=False)[2] is False          # a dry run records it
 
 
 def test_agreement_metrics_by_hand() -> None:
@@ -1081,7 +1158,8 @@ def test_judge_spot_check_r15(tmp_path: Path) -> None:
     d = st.Data.__new__(st.Data)
     fin = {}
     for i in range(60):                                 # the 60 sheet pairs: 40 not / 15 answers / 5 tiebroken, base
-        src, lab = ("agree", 0) if i < 40 else (("agree", 1) if i < 55 else ("tiebreak", 1))
+        src, lab = ("agree", 0) if i < 40 else (("agree", 1) if i < 55 else (("tiebreak", 1) if i < 58
+                                                                             else ("tiebreak_r2", 1)))
         fin[("r", f"c{i}")] = {"pair_id": f"p{i}", "arm": "base", "source": src, "label": lab, "stage": "A"}
     for i in range(360):                                # stage A holds many more *not* labels than the sheet
         fin[("r", f"n{i}")] = {"pair_id": f"n{i}", "arm": "base", "source": "agree", "label": 0, "stage": "A"}
@@ -1092,13 +1170,16 @@ def test_judge_spot_check_r15(tmp_path: Path) -> None:
     spot[40]["owner_label"] = 0                         # one answers pair the owner calls not
     spot.append({"pair_id": "pu", "owner_label": 1})
     fx.write_jsonl(tmp_path / "spot.jsonl", spot)
-    (tmp_path / "rec.json").write_text(json.dumps({"valid": 33, "n": 40}))
+    (tmp_path / "rec.json").write_text(json.dumps({"valid": 33, "n": 40, "sheet_sha256": "cd" * 32}))
     out = st.spot_flags({"spot_checks": {"records": str(tmp_path / "rec.json"), "judge": str(tmp_path / "spot.jsonl")}}, d)
     rv = out["record_validity"]
     assert rv["rate"] == 33 / 40 and rv["below_threshold"] is True                 # 0.825 < 0.85
+    assert rv["sheet_sha256"] == "cd" * 32
     jv = out["judge_validity"]
     assert jv["strata"]["answers"] == {"agree": 14, "n": 15, "rate": 14 / 15, "wilson95": st._wilson(14, 15)}
     assert jv["unjudged"] == 1 and jv["n"] == 60
+    # the first version's re-issue source (tiebreak_r2) is tiebroken too: 3 tiebreak + 2 tiebreak_r2
+    assert jv["strata"]["tiebroken"]["n"] == 5
     assert jv["reweighted_agreement"] == pytest.approx((400 * 1 + 15 * 14 / 15 + 5 * 1) / 420)
     assert jv["reweighted_agreement"] != pytest.approx(59 / 60)                   # not the raw agreement
     assert jv["below_threshold"] is False                                         # 0.933 and 0.983
@@ -1107,6 +1188,25 @@ def test_judge_spot_check_r15(tmp_path: Path) -> None:
     out2 = st.spot_flags({"spot_checks": {"judge": str(tmp_path / "spot.jsonl")}}, d)
     assert out2["judge_validity"]["below_threshold"] is True
     assert out2["record_validity"].startswith("absent")
+
+
+def test_spot_check_files_are_enforced(tmp_path: Path) -> None:
+    """§13.4: n = 40 and the sheet's sha256; §13.5: every judge pair labelled in stage A."""
+    d = st.Data.__new__(st.Data)
+    d.final = {("r", "a"): {"pair_id": "pa", "arm": "base", "source": "agree", "label": 1, "stage": "A"},
+               ("r", "b"): {"pair_id": "pb", "arm": "base", "source": "agree", "label": 1, "stage": "B"}}
+    rec = tmp_path / "rec.json"
+    for bad, msg in (({"valid": 30, "n": 39, "sheet_sha256": "ab" * 32}, "not the 40 records"),
+                     ({"valid": 30, "n": 40}, "sheet_sha256"), ({"valid": 30, "n": 40, "sheet_sha256": "xyz"}, "sheet_sha256"),
+                     ({"valid": 41, "n": 40, "sheet_sha256": "ab" * 32}, "valid = 41")):
+        rec.write_text(json.dumps(bad))
+        with pytest.raises(SystemExit, match=msg):
+            st.spot_flags({"spot_checks": {"records": str(rec)}}, d)
+    fx.write_jsonl(tmp_path / "j.jsonl", [{"pair_id": "pa", "owner_label": 1}, {"pair_id": "pb", "owner_label": 1}])
+    with pytest.raises(SystemExit, match="from stage B"):
+        st.spot_flags({"spot_checks": {"judge": str(tmp_path / "j.jsonl")}}, d)
+    fx.write_jsonl(tmp_path / "j.jsonl", [{"pair_id": "pa", "owner_label": 1}])
+    assert st.spot_flags({"spot_checks": {"judge": str(tmp_path / "j.jsonl")}}, d)["judge_validity"]["n"] == 1
 
 
 def test_citable_needs_every_check() -> None:

@@ -85,6 +85,7 @@ import argparse
 import itertools
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -934,16 +935,20 @@ def false_yes_from_summary(js: Mapping[str, Any]) -> dict[str, dict[str, Any]] |
     return out
 
 
-def false_yes_inputs(stage_a_summary: Mapping[str, Any], final: Mapping[Any, Mapping[str, Any]]
-                     ) -> tuple[dict[str, dict[str, Any]], str, bool | None]:
+def false_yes_inputs(stage_a_summary: Mapping[str, Any], final: Mapping[Any, Mapping[str, Any]],
+                     strict: bool = True) -> tuple[dict[str, dict[str, Any]], str, bool | None]:
     """§3.4 (R13): U's counts from the **frozen stage-A judge summary** (H2's judged pairs are all
     stage A), cross-checked against the stage-A final rows; the rows only when that summary
-    carries no ``false_yes_among_answers``. Returns (counts, source, cross-check equal)."""
+    carries no ``false_yes_among_answers``. Returns (counts, source, cross-check equal). With
+    ``strict`` (every mode but the dry run) a mismatch is refused."""
     rows_cnt = false_yes_counts(final, stage="A")
     sum_cnt = false_yes_from_summary(stage_a_summary)
     if sum_cnt is None:
         return rows_cnt, "final.jsonl (stage A rows)", None
     same = all((sum_cnt[s]["k"], sum_cnt[s]["n"]) == (rows_cnt[s]["k"], rows_cnt[s]["n"]) for s in FALSE_YES_SCOPES)
+    if strict and not same:
+        raise SystemExit("the frozen stage-A judge summary's false_yes_among_answers differs from the stage-A final "
+                         "rows (§3.4, R13): the labels or the summary changed after the commit; nothing analysed")
     return sum_cnt, "stage-a/judge-summary.json false_yes_among_answers", same
 
 
@@ -1226,6 +1231,7 @@ def noise_floor(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
     return out
 
 
+#: §13.4: the record spot check is exactly 40 records, committed as counts with the sheet's sha256
 SPOT_RECORDS_N = 40
 SPOT_JUDGE_N = 100
 SPOT_RECORDS_RULE = 0.85
@@ -1272,8 +1278,9 @@ def spot_stratum(f: Mapping[str, Any]) -> str | None:
 
 
 def spot_flags(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
-    """§13.4-13.5 (R15), from ``spot_checks: {records, judge}``. *Records*: a JSON ``{valid, n}``
-    (the 40-record sheet's counts); validity below 0.85 flags every result sentence. *Judge*: one
+    """§13.4-13.5 (R15), from ``spot_checks: {records, judge}``. *Records*: a JSON ``{valid, n,
+    sheet_sha256}`` (the sheet's counts and sha256; n must be 40, the sha present); validity below
+    0.85 flags every result sentence. A judge pair whose final label is not from stage A is refused. *Judge*: one
     row per owner-labelled pair (``pair_id``, ``owner_label``), 100 pairs drawn from stage A's
     labels, stratified by the final label: per-stratum agreement with Wilson intervals, the §6.6
     metrics, per-arm false yes, and the agreement re-weighted to the stage-A label shares (each
@@ -1285,8 +1292,16 @@ def spot_flags(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
     if rp and Path(rp).is_file():
         r = json.loads(Path(rp).read_text())
         k, n = int(r["valid"]), int(r["n"])
-        out["record_validity"] = {"valid": k, "n": n, "n_expected": SPOT_RECORDS_N, "rate": k / n if n else None,
-                                  "wilson95": _wilson(k, n), "below_threshold": bool(n and k / n < SPOT_RECORDS_RULE)}
+        sheet = str(r.get("sheet_sha256") or "")
+        if n != SPOT_RECORDS_N:
+            raise SystemExit(f"the record spot check has n = {n}, not the {SPOT_RECORDS_N} records of §13.4")
+        if not re.fullmatch(r"[0-9a-f]{64}", sheet):
+            raise SystemExit("the record spot check names no sheet_sha256 (§13.4: committed as counts with the "
+                             "sheet's sha)")
+        if not 0 <= k <= n:
+            raise SystemExit(f"the record spot check has valid = {k} of n = {n}")
+        out["record_validity"] = {"valid": k, "n": n, "sheet_sha256": sheet, "rate": k / n,
+                                  "wilson95": _wilson(k, n), "below_threshold": k / n < SPOT_RECORDS_RULE}
     else:
         out["record_validity"] = "absent (owner spot check not committed)"
     jp = sc.get("judge")
@@ -1297,7 +1312,12 @@ def spot_flags(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
     cells: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
     no_final = no_stratum = 0
     per_arm: dict[str, Counter[str]] = defaultdict(Counter)
-    for x in asc.read_jsonl(jp):
+    rows = asc.read_jsonl(jp)
+    late = [x["pair_id"] for x in rows if (fin_by_pair.get(x["pair_id"]) or {}).get("stage", "A") != "A"]
+    if late:
+        raise SystemExit(f"{len(late)} judge spot-check pair(s) have a final label from stage B: the 100 pairs are "
+                         "drawn from stage A's labels (§13.5)")
+    for x in rows:
         f = fin_by_pair.get(x["pair_id"])
         if f is None:
             no_final += 1
@@ -1814,7 +1834,7 @@ def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     jsa = getattr(d, "stage_a_judge_summary", None) or {}
     l1["H2"]["false_yes_per_arm"] = {a: (js.get("drift", {}).get("scopes", {}).get(a) or {}).get("false_yes")
                                      for a in asc.ARM_GROUPS} if js else "absent (no judge summary)"
-    counts, source, cross = false_yes_inputs(jsa, d.final)
+    counts, source, cross = false_yes_inputs(jsa, d.final, strict=not cfg.get("dry_run"))
     fy = false_yes_bound(l1["H2"].get("net_points"), counts, judged_only_hits(d.bal, prim), int(l1["H2"].get("n") or 0))
     fy["source"], fy["cross_check_with_final_rows"] = source, cross
     l1["H2"]["judge_false_yes_bound"] = fy
@@ -1893,6 +1913,23 @@ def reach_for(reach: Mapping[str, Any] | None, n_g: int) -> Mapping[str, Any] | 
     return {"count": n_g if ok else 0, "of": n_g}
 
 
+#: dropped from every ``provenance`` mapping of the public copy (as chunktrial_export_public.py
+#: does): a host name can be private, and the warnings are context, not identity
+PUBLIC_DROP_PROVENANCE = ("host", "warnings")
+
+
+def public_copy(obj: Any, _in_prov: bool = False) -> Any:
+    """The ``--public`` copy: ``obj`` with ``host`` and ``warnings`` dropped from every
+    ``provenance`` mapping. :func:`alias_study_common.public_problems` then refuses any host
+    field left anywhere."""
+    if isinstance(obj, Mapping):
+        return {k: public_copy(v, k == "provenance") for k, v in obj.items()
+                if not (_in_prov and k in PUBLIC_DROP_PROVENANCE)}
+    if isinstance(obj, list):
+        return [public_copy(v) for v in obj]
+    return obj
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--config", required=True, type=Path)
@@ -1916,12 +1953,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         forbidden = {r["record_id"] for r in d.records} | {str(r["paper"]) for r in d.records} | \
                     {r["gold_chunks"][0] for r in d.records} | {c for _, c in d.final}
         texts = [r["question"] for r in d.records]
-        bad = asc.public_problems(res, forbidden, texts)
+        pub = public_copy(res)
+        bad = asc.public_problems(pub, forbidden, texts)
         if bad:
             print(f"REFUSED: the public copy would carry {len(bad)} private string(s) ({sorted(set(bad))})",
                   file=sys.stderr)
             return 1
-        args.public.write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        args.public.write_text(json.dumps(pub, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
     print(json.dumps({h: {k: res["layer1"][h].get(k) for k in ("status", "p", "net_points", "level")}
                       for h in ("H1", "H2", "H1b")}, indent=1))
     return 0

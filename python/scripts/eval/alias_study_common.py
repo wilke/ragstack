@@ -224,18 +224,38 @@ def string_values(obj: Any) -> Iterator[str]:
             yield from string_values(v)
 
 
+#: keys a public artifact never carries: a host name can be private (chunktrial_export_public.py
+#: strips ``host`` and ``warnings`` from its provenance for the same reason)
+HOST_KEYS = frozenset({"host", "hostname"})
+
+
+def host_keys(obj: Any) -> set[str]:
+    """The host-naming keys anywhere in ``obj`` (:data:`HOST_KEYS`)."""
+    out: set[str] = set()
+    if isinstance(obj, Mapping):
+        for k, v in obj.items():
+            if str(k).lower() in HOST_KEYS:
+                out.add(str(k))
+            out |= host_keys(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            out |= host_keys(v)
+    return out
+
+
 def public_problems(obj: Any, forbidden: Iterable[str], texts: Iterable[str] = ()) -> list[str]:
     """§11: a public artifact holds counts, rates, model ids, versions, shas only. Every string
     in ``obj`` (keys included) is checked: equal to (or containing) a forbidden id (record,
     paper, chunk ids), or containing a private text (a question, a passage: any 40-character
-    window of it), is a problem. Returns the problems (empty = publishable)."""
+    window of it), is a problem, and so is any ``host`` field (:data:`HOST_KEYS`), whatever its
+    value. Returns the problems (empty = publishable)."""
     ids = {x for x in forbidden if x}
     windows: set[str] = set()
     for t in texts:
         t = " ".join(str(t).split())
         if len(t) >= 40:
             windows.update(t[i:i + 40] for i in range(0, len(t) - 39, 20))
-    bad = []
+    bad = [f"a {k} field" for k in sorted(host_keys(obj))]
     for s in string_values(obj):
         flat = " ".join(s.split())
         if s in ids or any(i in s for i in ids if len(i) >= 8):
