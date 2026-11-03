@@ -56,8 +56,10 @@ every cell's found@10 and found@10-gold; the pilot's only reader is ``alias_stud
 :func:`alias_study_judge.analysis_gate` must pass (stage A committed and verified;
 ``spot_checks: {records, judge}`` present, waived and recorded only in a dry run), and
 ``judge_dir`` must be the directory stage A was committed from. Legs are read through :func:`alias_study_run.leg_files` (the 29 legs of
-:func:`alias_study_common.all_legs`); a run measured in another mode is refused; found10's
-inactive-reranker verdict gates the default leg.
+:func:`alias_study_common.all_legs`); a leg is complete only as
+:func:`alias_study_run.run_status` reads it (a summary without the runner's study block, or
+without its mode or stage, was killed mid-write and is gated as incomplete); a complete run
+measured in another mode is refused; found10's inactive-reranker verdict gates the default leg.
 
 **Two analysis stages** (``analysis_stage``). ``A``: Layer 1 after stage A (and its
 sensitivities); every found@10 pair the 14 judging-stage-A legs demand
@@ -627,8 +629,12 @@ class Data:
             cond = asc.RETRIEVERS[r]
             cst = (s.get("conditions") or {}).get(cond) or {}
             gate = None
-            if s["status"] != "complete":
-                gate = f"{GATE}: run {key} is {s['status']}"
+            # the runner's own reading (alias_study_run.run_status): a summary whose study block, or
+            # its mode or stage, is missing was killed between found10's write and the runner's, and
+            # is incomplete whatever its status says
+            run_st = status.get(leg)
+            if run_st != "complete":
+                gate = f"{GATE}: run {key} is {run_st}"
             elif cst.get("gate"):
                 gate = cst["gate"]
             elif r == "default" and _identical_to_norerank(cst.get("identical_to_norerank")):
@@ -636,12 +642,12 @@ class Data:
             self.gates[leg] = gate
             if key not in self.runs:
                 st = s.get("study") or {}
-                if st.get("mode") not in (None, self.preflight["mode"]):
+                if run_st == "complete" and st.get("mode") != self.preflight["mode"]:
                     raise SystemExit(f"run {key} was measured in mode {st.get('mode')!r}, the statistics config is "
                                      f"{self.preflight['mode']!r} (§5.6)")
                 cen = s.get("census") or {}
                 self.runs[key] = {
-                    "status": s["status"], "citable": s.get("citable"),
+                    "status": run_st, "citable": s.get("citable"),
                     "commit": (s.get("provenance") or {}).get("commit"), "summary_sha256": asc.sha256_file(sp),
                     "rows_sha256": asc.sha256_file(rp) if rp.is_file() else None,
                     "mode": st.get("mode"), "stage": st.get("stage"), "leg_stages": st.get("leg_stages"),
